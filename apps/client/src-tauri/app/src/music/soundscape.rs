@@ -98,7 +98,7 @@ impl SoundscapeError {
     fn audio_device() -> Self {
         Self {
             code: "audio-device".into(),
-            message: "The background sound output is unavailable.".into(),
+            message: "The soundscape output is unavailable.".into(),
         }
     }
 
@@ -112,7 +112,7 @@ impl SoundscapeError {
     fn backend() -> Self {
         Self {
             code: "backend".into(),
-            message: "The background sound engine is unavailable.".into(),
+            message: "The soundscape engine is unavailable.".into(),
         }
     }
 }
@@ -480,15 +480,11 @@ impl EngineCore {
                 .iter()
                 .any(|level| !level.is_finite() || !(0.0..=2.0).contains(level))
         {
-            return Err(SoundscapeError::validation(
-                "Invalid background sound levels.",
-            ));
+            return Err(SoundscapeError::validation("Invalid soundscape levels."));
         }
         if let Some(request) = self.last_request.as_mut() {
             if levels.len() != 1 + request.extra_sources.len() {
-                return Err(SoundscapeError::validation(
-                    "Background sound selection changed.",
-                ));
+                return Err(SoundscapeError::validation("Soundscape selection changed."));
             }
             request.level = levels[0];
             for (layer, level) in request.extra_sources.iter_mut().zip(levels.iter().skip(1)) {
@@ -617,7 +613,7 @@ type OutputGuard = Box<dyn Fn() -> bool + Send>;
 fn check_output_guard(guard: Option<&OutputGuard>) -> Result<(), SoundscapeError> {
     if guard.is_some_and(|guard| !guard()) {
         return Err(SoundscapeError::validation(
-            "The accepted background sound was superseded.",
+            "The accepted soundscape was superseded.",
         ));
     }
     Ok(())
@@ -788,7 +784,7 @@ fn validate_request(request: &SoundscapeStartRequest) -> Result<(), SoundscapeEr
         ));
     }
     if request.extra_sources.len() >= MAX_SOUNDSCAPE_LAYERS {
-        return Err(SoundscapeError::validation("Too many background sounds."));
+        return Err(SoundscapeError::validation("Too many soundscape sounds."));
     }
     let mut ids = std::collections::HashSet::new();
     for layer in std::iter::once(SoundscapeLayer {
@@ -801,7 +797,7 @@ fn validate_request(request: &SoundscapeStartRequest) -> Result<(), SoundscapeEr
     {
         if layer.source_id.trim().is_empty() || !ids.insert(layer.source_id) {
             return Err(SoundscapeError::validation(
-                "Background sounds need distinct source ids.",
+                "Soundscape sounds need distinct source ids.",
             ));
         }
         if !layer.level.is_finite() || !(0.0..=2.0).contains(&layer.level) {

@@ -27,13 +27,13 @@ function assignmentPlaylistId(assignment: MusicContextAssignmentDraft | undefine
   return assignment && behaviorUsesPlaylist(assignment.behavior) ? assignment.playlistId : null;
 }
 
-/** Reads the background sound a single row chooses, where a missing row changes nothing. */
+/** Reads the soundscape a single row chooses, where a missing row changes nothing. */
 function assignmentSound(assignment: MusicContextAssignmentDraft | undefined): MusicSoundChoice {
   return assignment ? soundChoiceFromAssignment(assignment) : { kind: "keep" };
 }
 
 /**
- * Resolves the playlist a phase plays for the event. Music and background sound resolve
+ * Resolves the playlist a phase plays for the event. Music and soundscape resolve
  * independently like the native session: the override decides music only when its music
  * behavior is set, otherwise the project snapshot does.
  *
@@ -53,13 +53,13 @@ export function effectiveEventPlaylistId(
 }
 
 /**
- * Resolves the background sound a phase uses for the event: the override when its sound behavior
+ * Resolves the soundscape a phase uses for the event: the override when its sound behavior
  * is set, otherwise the project snapshot.
  *
  * @param overrides - Event override drafts.
  * @param snapshots - Project intent copied onto the event.
  * @param phase - Phase to resolve.
- * @returns The effective background sound choice.
+ * @returns The effective soundscape choice.
  */
 export function effectiveEventSound(
   overrides: readonly MusicContextAssignmentDraft[],
@@ -72,7 +72,7 @@ export function effectiveEventSound(
 }
 
 /**
- * Applies a playlist choice for one phase without touching its background sound. A choice equal
+ * Applies a playlist choice for one phase without touching its soundscape. A choice equal
  * to the project snapshot clears the music override so the event keeps following its project; any
  * other choice plays that playlist automatically, or silence for null.
  *
@@ -97,14 +97,14 @@ export function chooseEventPlaylist(
 }
 
 /**
- * Applies a background sound choice for one phase without touching its music. A choice equal to
+ * Applies a soundscape choice for one phase without touching its music. A choice equal to
  * the project snapshot clears the sound override; "Don't change" over a project sound is stored as
  * keeping the current sound so the project sound does not apply.
  *
  * @param overrides - Event override drafts.
  * @param snapshots - Project intent copied onto the event.
  * @param phase - Phase being changed.
- * @param choice - Chosen background sound.
+ * @param choice - Chosen soundscape.
  * @returns The complete next override drafts.
  */
 export function chooseEventSound(
@@ -122,13 +122,13 @@ export function chooseEventSound(
     : assignment);
 }
 
-/** Whether a background sound choice starts sound when its phase begins. */
+/** Whether a soundscape choice starts sound when its phase begins. */
 export function eventSoundPlays(choice: MusicSoundChoice): boolean {
   return choice.kind === "sound" || choice.kind === "preset";
 }
 
 /**
- * Silences music and background sound in every listed phase that currently plays them.
+ * Silences music and soundscape in every listed phase that currently plays them.
  *
  * @param overrides - Event override drafts.
  * @param snapshots - Project intent copied onto the event.
@@ -151,7 +151,7 @@ export function silenceEventMusic(
 }
 
 /**
- * Clears the overrides of the listed phases so their music and background sound follow the
+ * Clears the overrides of the listed phases so their music and soundscape follow the
  * project snapshot again.
  *
  * @param overrides - Event override drafts.
@@ -168,7 +168,7 @@ export function restoreEventMusic(
 }
 
 /**
- * Whether the project snapshot plays a playlist or background sound in any listed phase.
+ * Whether the project snapshot plays a playlist or soundscape in any listed phase.
  *
  * @param snapshots - Project intent copied onto the event.
  * @param phases - Phases to inspect.

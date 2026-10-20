@@ -290,7 +290,7 @@ pub fn validate_drafts(
     Ok(())
 }
 
-/// A selected background sound names one sound or one preset; other behaviors name neither.
+/// A selected soundscape names one sound or one preset; other behaviors name neither.
 fn validate_soundscape_choice(assignment: &MusicContextAssignmentDraft) -> MusicLibraryResult<()> {
     let selections = usize::from(assignment.soundscape_id.is_some())
         + usize::from(assignment.soundscape_preset_id.is_some());

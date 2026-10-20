@@ -231,7 +231,7 @@ pub async fn remove(
     )
     .fetch_all(&mut *transaction)
     .await
-    .map_err(|error| MusicLibraryError::database("load selected background sounds", error))?;
+    .map_err(|error| MusicLibraryError::database("load selected soundscape sounds", error))?;
     let result = sqlx::query(
         "DELETE FROM music_soundscapes
          WHERE id = ? AND source_kind = 'local-loop' AND version = ?",
@@ -260,7 +260,7 @@ pub async fn remove(
         .bind(remaining_count as i64)
         .execute(&mut *transaction)
         .await
-        .map_err(|error| MusicLibraryError::database("update selected background sounds", error))?;
+        .map_err(|error| MusicLibraryError::database("update selected soundscape sounds", error))?;
     }
     super::writes::commit(transaction, "commit soundscape removal").await
 }
@@ -278,7 +278,7 @@ pub async fn state(pool: &SqlitePool) -> MusicLibraryResult<MusicSoundscapeState
     )
     .fetch_all(pool)
     .await
-    .map_err(|error| MusicLibraryError::database("load selected background sounds", error))?;
+    .map_err(|error| MusicLibraryError::database("load selected soundscape sounds", error))?;
     Ok(MusicSoundscapeState {
         automatic_intent: row.8,
         active_soundscape_id: row.0,
@@ -323,7 +323,7 @@ pub async fn update_state(
     if request.active_ids.len() > MAX_SOUNDSCAPE_LAYERS {
         return Err(MusicLibraryError::validation(
             "activeIds",
-            "cannot play more than 16 background sounds",
+            "cannot play more than 16 soundscape sounds",
         ));
     }
     if !request.multiple_enabled && request.active_ids.len() > 1 {
@@ -344,7 +344,7 @@ pub async fn update_state(
         if !unique.insert(id) {
             return Err(MusicLibraryError::validation(
                 "activeIds",
-                "duplicate background sound",
+                "duplicate soundscape sound",
             ));
         }
         let exists: Option<i64> =
@@ -394,7 +394,7 @@ pub async fn update_state(
     sqlx::query("DELETE FROM music_soundscape_active_selections")
         .execute(&mut *transaction)
         .await
-        .map_err(|error| MusicLibraryError::database("clear selected background sounds", error))?;
+        .map_err(|error| MusicLibraryError::database("clear selected soundscape sounds", error))?;
     for (position, id) in request.active_ids.iter().enumerate() {
         sqlx::query(
             "INSERT INTO music_soundscape_active_selections (position, soundscape_id) VALUES (?, ?)",
@@ -403,7 +403,7 @@ pub async fn update_state(
         .bind(id)
         .execute(&mut *transaction)
         .await
-        .map_err(|error| MusicLibraryError::database("save selected background sound", error))?;
+        .map_err(|error| MusicLibraryError::database("save selected soundscape sound", error))?;
     }
     super::writes::commit(transaction, "commit soundscape state update").await?;
     state(pool).await

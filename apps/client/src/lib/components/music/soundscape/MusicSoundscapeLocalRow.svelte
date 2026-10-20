@@ -57,7 +57,7 @@
       });
       editing = false;
     } catch (error) {
-      console.error("Could not edit background sound", error);
+      console.error("Could not edit soundscape sound", error);
     }
   }
 
@@ -78,7 +78,7 @@
         updatedAtMs: Date.now(),
       });
     } catch (error) {
-      console.error("Could not move background sound", error);
+      console.error("Could not move soundscape sound", error);
     }
   }
 </script>

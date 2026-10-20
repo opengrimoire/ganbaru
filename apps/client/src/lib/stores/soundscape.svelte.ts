@@ -100,7 +100,7 @@ class SoundscapeStore {
         const available = persisted.activeIds.filter((id) => definitions.some((definition) => definition.id === id && definition.availability === "available"));
         if (available.length > 0) await this.startSelection(available, available.length !== persisted.activeIds.length);
         else {
-          this.error = "The selected background sound is unavailable.";
+          this.error = "The selected sound is unavailable.";
           await this.persistState(persisted.activeIds, false, persisted.volume);
         }
       }
@@ -174,7 +174,7 @@ class SoundscapeStore {
     if (action.kind === "pause") await this.pause();
     else if (action.kind === "resume") await this.resume();
     else if (action.kind === "stop") await this.stop();
-    else if (action.ids.length > MAX_SOUNDSCAPE_LAYERS) this.error = "Too many background sounds are selected.";
+    else if (action.ids.length > MAX_SOUNDSCAPE_LAYERS) this.error = "Too many soundscape sounds are selected.";
     else await this.startSelection(action.ids);
   }
 
@@ -197,7 +197,7 @@ class SoundscapeStore {
       .filter((id) => this.definitions.some((definition) => definition.id === id && definition.availability === "available"))
       .slice(0, MAX_SOUNDSCAPE_LAYERS);
     if (available.length === 0) {
-      this.error = "This background sound needs to be repaired before it can play.";
+      this.error = "This sound needs to be repaired before it can play.";
       return;
     }
     await this.startSelection(available, true, available.length > 1 || (this.persisted?.multipleEnabled ?? false));
@@ -227,12 +227,12 @@ class SoundscapeStore {
   private async startSelection(ids: string[], persist = true, multipleEnabled = this.persisted?.multipleEnabled ?? false): Promise<void> {
     if (this.playbackPending) return;
     if (!multipleEnabled && ids.length > 1) {
-      this.error = "Multiple background sounds are disabled.";
+      this.error = "Multiple soundscape sounds are disabled.";
       return;
     }
     const definitions = ids.map((id) => this.definitions.find((entry) => entry.id === id));
     if (definitions.some((entry) => !entry || entry.availability !== "available") || ids.length === 0) {
-      this.error = "This background sound needs to be repaired before it can play.";
+      this.error = "This sound needs to be repaired before it can play.";
       return;
     }
     const [first] = definitions as MusicSoundscapeDefinition[];

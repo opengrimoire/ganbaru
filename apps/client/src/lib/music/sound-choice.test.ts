@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { soundChoiceFields, soundChoiceFromAssignment, soundChoicesEqual, type MusicSoundChoice } from "./sound-choice";
 
-describe("background sound choices", () => {
+describe("soundscape choices", () => {
   it("round trips every choice through assignment fields", () => {
     const choices: MusicSoundChoice[] = [
       { kind: "keep" },

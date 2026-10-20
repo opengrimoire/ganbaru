@@ -13,7 +13,7 @@ pub async fn presets(pool: &SqlitePool) -> MusicLibraryResult<Vec<MusicSoundscap
     )
     .fetch_all(pool)
     .await
-    .map_err(|error| MusicLibraryError::database("load background sound presets", error))?;
+    .map_err(|error| MusicLibraryError::database("load soundscape presets", error))?;
     let mut sounds = HashMap::<String, Vec<String>>::new();
     for (preset_id, soundscape_id) in sqlx::query_as::<_, (String, String)>(
         "SELECT preset_id, soundscape_id FROM music_soundscape_preset_sounds
@@ -21,7 +21,7 @@ pub async fn presets(pool: &SqlitePool) -> MusicLibraryResult<Vec<MusicSoundscap
     )
     .fetch_all(pool)
     .await
-    .map_err(|error| MusicLibraryError::database("load background sound preset sounds", error))?
+    .map_err(|error| MusicLibraryError::database("load soundscape preset sounds", error))?
     {
         sounds.entry(preset_id).or_default().push(soundscape_id);
     }
@@ -45,9 +45,10 @@ pub async fn upsert(
     request: MusicSoundscapePresetWrite,
 ) -> MusicLibraryResult<MusicSoundscapePreset> {
     validate_write(&request)?;
-    let mut transaction = pool.begin().await.map_err(|error| {
-        MusicLibraryError::database("begin background sound preset update", error)
-    })?;
+    let mut transaction = pool
+        .begin()
+        .await
+        .map_err(|error| MusicLibraryError::database("begin soundscape preset update", error))?;
     for id in &request.soundscape_ids {
         let exists: bool =
             sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM music_soundscapes WHERE id = ?)")
@@ -55,10 +56,10 @@ pub async fn upsert(
                 .fetch_one(&mut *transaction)
                 .await
                 .map_err(|error| {
-                    MusicLibraryError::database("check background sound preset sound", error)
+                    MusicLibraryError::database("check soundscape preset sound", error)
                 })?;
         if !exists {
-            return Err(MusicLibraryError::not_found("background sound", id));
+            return Err(MusicLibraryError::not_found("soundscape sound", id));
         }
     }
     let existing = sqlx::query_as::<_, (i64, i64)>(
@@ -67,16 +68,16 @@ pub async fn upsert(
     .bind(&request.id)
     .fetch_optional(&mut *transaction)
     .await
-    .map_err(|error| MusicLibraryError::database("load background sound preset version", error))?;
+    .map_err(|error| MusicLibraryError::database("load soundscape preset version", error))?;
     if let Some((_, version)) = existing {
         if request.expected_version != Some(version) {
             return Err(MusicLibraryError::conflict(
-                "the background sound preset changed before this update",
+                "the soundscape preset changed before this update",
             ));
         }
     } else if request.expected_version.is_some() {
         return Err(MusicLibraryError::not_found(
-            "background sound preset",
+            "soundscape preset",
             &request.id,
         ));
     }
@@ -97,14 +98,12 @@ pub async fn upsert(
     .bind(version)
     .execute(&mut *transaction)
     .await
-    .map_err(|error| MusicLibraryError::database("save background sound preset", error))?;
+    .map_err(|error| MusicLibraryError::database("save soundscape preset", error))?;
     sqlx::query("DELETE FROM music_soundscape_preset_sounds WHERE preset_id = ?")
         .bind(&request.id)
         .execute(&mut *transaction)
         .await
-        .map_err(|error| {
-            MusicLibraryError::database("replace background sound preset sounds", error)
-        })?;
+        .map_err(|error| MusicLibraryError::database("replace soundscape preset sounds", error))?;
     for (position, soundscape_id) in request.soundscape_ids.iter().enumerate() {
         sqlx::query(
             "INSERT INTO music_soundscape_preset_sounds (preset_id, position, soundscape_id)
@@ -115,11 +114,9 @@ pub async fn upsert(
         .bind(soundscape_id)
         .execute(&mut *transaction)
         .await
-        .map_err(|error| {
-            MusicLibraryError::database("save background sound preset sound", error)
-        })?;
+        .map_err(|error| MusicLibraryError::database("save soundscape preset sound", error))?;
     }
-    super::writes::commit(transaction, "commit background sound preset update").await?;
+    super::writes::commit(transaction, "commit soundscape preset update").await?;
     Ok(MusicSoundscapePreset {
         id: request.id,
         name,
@@ -143,10 +140,10 @@ pub async fn remove(
         .bind(expected_version)
         .execute(pool)
         .await
-        .map_err(|error| MusicLibraryError::database("remove background sound preset", error))?;
+        .map_err(|error| MusicLibraryError::database("remove soundscape preset", error))?;
     if result.rows_affected() == 0 {
         return Err(MusicLibraryError::conflict(
-            "the background sound preset changed before removal",
+            "the soundscape preset changed before removal",
         ));
     }
     Ok(())

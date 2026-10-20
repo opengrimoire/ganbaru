@@ -92,7 +92,7 @@ pub(super) async fn prepare(
             .execute(&mut *connection)
             .await
             .map_err(|error| {
-                MusicLibraryError::database("select accepted background sound", error)
+                MusicLibraryError::database("select accepted soundscape", error)
             })?;
         }
     }
@@ -113,7 +113,7 @@ pub(super) async fn prepare(
     .bind(now_ms())
     .fetch_one(&mut *connection)
     .await
-    .map_err(|error| MusicLibraryError::database("persist accepted background sound", error))?;
+    .map_err(|error| MusicLibraryError::database("persist accepted soundscape", error))?;
     Ok(PreparedSoundscape {
         action: Some(request),
         version: Some(version),
@@ -158,7 +158,7 @@ async fn read_layer(
            AND (l.absolute_path IS NULL OR length(CAST(l.absolute_path AS BLOB)) <= ?)
            AND CASE WHEN s.source_kind = 'local-loop' THEN l.availability ELSE s.availability END = 'available'",
     ).bind(device_id).bind(&id).bind(MAX_SOUND_SOURCE_ID_BYTES).bind(MAX_SOUND_PATH_BYTES).fetch_optional(&mut *connection).await
-        .map_err(|error| MusicLibraryError::database("read accepted background sound", error))?;
+        .map_err(|error| MusicLibraryError::database("read accepted soundscape", error))?;
     let Some(source) = source else {
         return Ok(None);
     };
@@ -229,7 +229,7 @@ impl Owner {
             return Ok(());
         };
         let delivery_permit = DELIVERY_GATE.clone().try_acquire_owned().map_err(|_| {
-            MusicLibraryError::conflict("An earlier background sound delivery is still draining")
+            MusicLibraryError::conflict("An earlier soundscape delivery is still draining")
         })?;
         let cancelled = Arc::new(AtomicBool::new(false));
         let worker_cancelled = cancelled.clone();
@@ -268,7 +268,7 @@ impl Owner {
                         Ok(true) => {}
                         Ok(false) => return false,
                         Err(error) => {
-                            eprintln!("background sound authority: {error}");
+                            eprintln!("soundscape authority: {error}");
                             return false;
                         }
                     }
@@ -289,27 +289,24 @@ impl Owner {
                     }) {
                         Ok(version) => version == accepted_version,
                         Err(error) => {
-                            eprintln!("background sound state authority: {error}");
+                            eprintln!("soundscape state authority: {error}");
                             false
                         }
                     }
                 }),
             )
             .map_err(|error| {
-                MusicLibraryError::runtime(
-                    "execute accepted background sound",
-                    format!("{error:?}"),
-                )
+                MusicLibraryError::runtime("execute accepted soundscape", format!("{error:?}"))
             })
         });
         let result = match tokio::time::timeout(DELIVERY_TIMEOUT, worker).await {
             Ok(result) => result.map_err(|error| {
-                MusicLibraryError::runtime("receive background sound delivery", error)
+                MusicLibraryError::runtime("receive soundscape delivery", error)
             })?,
             Err(_) => {
                 cancelled.store(true, Ordering::Release);
                 Err(MusicLibraryError::runtime(
-                    "background sound delivery",
+                    "soundscape delivery",
                     "native acknowledgement timed out; the retained worker must drain",
                 ))
             }
@@ -318,7 +315,7 @@ impl Owner {
             let _permit = self.write_permit().await?;
             sqlx::query("UPDATE music_soundscape_state SET desired_playing = 0, version = version + 1, updated_at_ms = MAX(updated_at_ms + 1, ?) WHERE singleton = 1 AND version = ?")
                 .bind(now_ms()).bind(accepted_version).execute(self.pool.as_ref().expect("initialized music pool")).await
-                .map_err(|error| MusicLibraryError::database("revoke failed automatic background sound", error))?;
+                .map_err(|error| MusicLibraryError::database("revoke failed automatic soundscape", error))?;
         }
         result.map(|_| ())
     }

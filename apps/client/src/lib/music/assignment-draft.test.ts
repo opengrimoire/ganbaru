@@ -37,7 +37,7 @@ describe("music assignment drafts", () => {
     expect(persistedMusicAssignmentDrafts(withSoundscape).map((entry) => entry.phase)).toEqual(["long-break"]);
   });
 
-  it("clears background sound references when the phase stops selecting a sound", () => {
+  it("clears soundscape references when the phase stops selecting a sound", () => {
     const drafts = completeMusicAssignmentDrafts([]);
     const withPreset = updateMusicAssignmentDraft(drafts, "focus", { soundscapeBehavior: "play-selected", soundscapePresetId: "preset-1" });
     const silenced = updateMusicAssignmentDraft(withPreset, "focus", { soundscapeBehavior: "pause-soundscape" })[0];

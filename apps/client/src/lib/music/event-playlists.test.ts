@@ -81,7 +81,7 @@ describe("event playlist choices", () => {
     expect(persistedMusicAssignmentDrafts(silentAgain)).toEqual([]);
   });
 
-  it("keeps the phase's background sound when a playlist is chosen or reverted", () => {
+  it("keeps the phase's soundscape when a playlist is chosen or reverted", () => {
     const overrides = [draft("focus", { behavior: "keep-current-music", soundscapeId: "rain", soundscapeBehavior: "play-selected" })];
     const chosen = chooseEventPlaylist(overrides, projectSnapshot, "focus", "lofi");
     expect(chosen[0]).toMatchObject({
@@ -101,7 +101,7 @@ describe("event playlist choices", () => {
   });
 });
 
-describe("event background sound choices", () => {
+describe("event soundscape choices", () => {
   it("shows the project sound until the event overrides it", () => {
     expect(effectiveEventSound([], rainySnapshot, "focus")).toEqual({ kind: "preset", presetId: "evening" });
     expect(effectiveEventSound([], rainySnapshot, "short-break")).toEqual({ kind: "silence" });
@@ -145,7 +145,7 @@ describe("event music toggle", () => {
     expect(silenced[1]).toEqual(draft("short-break"));
   });
 
-  it("silences background sound with music and leaves quiet phases alone", () => {
+  it("silences soundscape with music and leaves quiet phases alone", () => {
     const silenced = silenceEventMusic([], rainySnapshot, eventMusicPhases(true));
     expect(effectiveEventSound(silenced, rainySnapshot, "focus")).toEqual({ kind: "silence" });
     expect(silenced[1]).toEqual(draft("short-break"));

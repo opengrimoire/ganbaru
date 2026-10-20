@@ -19,7 +19,7 @@ Key rules:
 
 ## Vault lifecycle
 
-Vault changes revoke new playback admission immediately and wait a bounded time for the native owner to pause, stop its backend, and release its database context. Handoff waits for acknowledged shutdown of music and background sounds or reports a timeout. A newer resume always wins over an older queued freeze, and reactivation rereads the authorized vault without resuming playback automatically. Focus and Music share these lifecycle revision rules.
+Vault changes revoke new playback admission immediately and wait a bounded time for the native owner to pause, stop its backend, and release its database context. Handoff waits for acknowledged shutdown of music and soundscapes or reports a timeout. A newer resume always wins over an older queued freeze, and reactivation rereads the authorized vault without resuming playback automatically. Focus and Music share these lifecycle revision rules.
 
 ## Transport and queue
 

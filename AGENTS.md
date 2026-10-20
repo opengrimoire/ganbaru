@@ -249,7 +249,7 @@ Read `docs/testing/README.md` when changing tests, validation scripts, task orde
 - Sentence case in headings, list items, comments, documentation, branch names, and commit messages. Every list item starts with a capital letter unless it begins with code or a literal identifier. Correct nearby violations when editing a file.
 - Do not hard-wrap markdown paragraphs or list items; keep each on one line.
 - Comments describe current code and its reasons in a neutral voice. Do not narrate changes or history ("previously", "no longer", "new approach"), restate the code, or keep commented-out code. Doc comments use rustdoc in Rust, JSDoc in TypeScript and JavaScript, and KDoc in Kotlin.
-- Use the current domain vocabulary consistently, for example vault (not data folder) and Calendar occurrence (not block). Renames never change persisted or wire names (SQLite columns, config keys, i18n keys, Tauri command names, serde fields) unless a deliberate migration does. File naming and placement rules live in `docs/architecture/frontend.md`; timestamp naming lives in `docs/data/schema/README.md`.
+- Use the current domain vocabulary consistently, for example vault (not data folder), Calendar occurrence (not block), and soundscape (not background sound). Renames never change persisted or wire names (SQLite columns, config keys, i18n keys, Tauri command names, serde fields) unless a deliberate migration does. File naming and placement rules live in `docs/architecture/frontend.md`; timestamp naming lives in `docs/data/schema/README.md`.
 - Prefer Tailwind canonical utilities over arbitrary values unless the value is genuinely custom.
 
 ### Responsive UI

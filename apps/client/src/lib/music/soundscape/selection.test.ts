@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { soundSelectionAction } from "./selection";
 
-describe("background sound selection", () => {
+describe("soundscape selection", () => {
   it("replaces sounds in the default one-at-a-time mode", () => {
     expect(soundSelectionAction(["brown"], "pink", false, "playing")).toEqual({ kind: "start", ids: ["pink"] });
     expect(soundSelectionAction(["brown"], "brown", false, "playing")).toEqual({ kind: "pause" });

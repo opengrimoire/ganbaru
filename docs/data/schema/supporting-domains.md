@@ -28,7 +28,7 @@ Music separates canonical library identity from physical source location and pla
 - Source collections (local collections, YouTube playlists, and other discovery sources) keep refresh generation and failure state. Refresh and relink use staged generations so a failed scan leaves the previous library usable.
 - User playlists and ordered memberships are independent of source collections; removing or refreshing a source never silently destroys a playlist.
 - Related families cover skip ranges, item signals, snoozes, statistics, recent selections, refresh issues, context assignments, soundscapes, and soundscape presets.
-- A context assignment that plays a background sound names exactly one sound or one preset; other background behaviors name neither. Preset references are not foreign keys, so a removed preset stays an explicit unavailable reference. Preset sound membership cascades when a sound is removed, and an emptied preset is kept.
+- A context assignment that plays a soundscape names exactly one sound or one preset; other soundscape behaviors name neither. Preset references are not foreign keys, so a removed preset stays an explicit unavailable reference. Preset sound membership cascades when a sound is removed, and an emptied preset is kept.
 
 Music bytes stay in the user's library and are never copied into the vault because an item was indexed. Relative identities and platform document handles are revalidated before playback.
 
@@ -36,7 +36,7 @@ Import receipts store the action identity, request hash, and result in the same 
 
 Native session checkpoints are keyed by device ID and hold portable item and membership IDs, playback settings, bounded navigation history, and queue state, never resolved paths, content URIs, or decoder handles. Copying a vault copies these records, not permission to resume another device's playback. Recovery rebuilds the local queue against current rows and bindings and starts paused. Listening counters, checkpoint changes, and action receipts share one transaction.
 
-Background sound state records whether a selection was manual or automatic. An automatic selection restored after restart is displayed but never starts output by itself; a fresh native Focus phase decision is required.
+Soundscape state records whether a selection was manual or automatic. An automatic selection restored after restart is displayed but never starts output by itself; a fresh native Focus phase decision is required.
 
 ## Distraction blocker
 

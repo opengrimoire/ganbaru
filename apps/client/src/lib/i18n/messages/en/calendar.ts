@@ -259,9 +259,9 @@ export const calendar = {
     taskLinksRecurring: "Task links are available for single events.",
     music: "Music",
     musicPlaylist: "Playlist",
-    musicSound: "Background sound",
+    musicSound: "Soundscape",
     musicPhasePlaylist: (phase: string) => `${phase} playlist`,
-    musicPhaseSound: (phase: string) => `${phase} background sound`,
+    musicPhaseSound: (phase: string) => `${phase} soundscape`,
     musicPhases: (focus: boolean, shortBreak: boolean, longBreak: boolean) => {
       if (focus && shortBreak && longBreak) return "Focus, short and long break";
       if (focus && (shortBreak || longBreak)) return `Focus and ${shortBreak ? "short" : "long"} break`;

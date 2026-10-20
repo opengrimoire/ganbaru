@@ -19,8 +19,8 @@
   const MAX_PRESET_NAME_CHARS = 80;
 
   /**
-   * Creates or edits a background sound preset by picking its sounds explicitly. While it is open, Music and background
-   * sounds pause and the draft plays in an isolated preview; leaving brings back what was playing, unchanged.
+   * Creates or edits a soundscape preset by picking its sounds explicitly. While it is open, Music and the soundscape
+   * pause and the draft plays in an isolated preview; leaving brings back what was playing, unchanged.
    */
   let {
     preset = null,
@@ -105,7 +105,7 @@
       });
       onDone(saved);
     } catch (error) {
-      console.error("Could not save background sound preset", error);
+      console.error("Could not save soundscape preset", error);
     }
   }
 </script>

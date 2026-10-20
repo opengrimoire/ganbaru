@@ -8,13 +8,13 @@ Project settings can define:
 - Default event color, optional event name, and timed duration or all-day behavior.
 - Default Pomodoro mode and custom rhythm.
 - Global or project-specific idle behavior.
-- Focus, short break, and long break playlists and background sounds.
+- Focus, short break, and long break playlists and soundscapes.
 - Project-local statuses, priorities, tags, and custom fields.
 - Working folders where the platform supports them.
 
 New projects default to no event name, the adaptive Pomodoro preset, global idle behavior, and no playlists unless a template says otherwise.
 
-Playlist selectors list real Music playlists. Choosing a playlist plays it automatically during that phase; choosing None means silence. On platforms with background sounds, each phase also chooses Don't change, Silence, a preset, or one sound, independently of its playlist. A missing or deleted playlist, sound, or preset remains an explicit unavailable assignment with a repair path. Track-level settings stay in Music playlist membership data; see [Music automation](../music/automation.md).
+Playlist selectors list real Music playlists. Choosing a playlist plays it automatically during that phase; choosing None means silence. On platforms with soundscapes, each phase also chooses Don't change, Silence, a preset, or one sound, independently of its playlist. A missing or deleted playlist, sound, or preset remains an explicit unavailable assignment with a repair path. Track-level settings stay in Music playlist membership data; see [Music automation](../music/automation.md).
 
 Work-environment and anti-distraction defaults are planned and must not appear as functional selectors until their storage and runtime behavior exist.
 

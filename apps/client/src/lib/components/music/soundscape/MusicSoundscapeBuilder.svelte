@@ -81,7 +81,7 @@
         updatedAtMs: Date.now(),
       });
     } catch (error) {
-      console.error("Could not add background sound", error);
+      console.error("Could not add soundscape sound", error);
     }
   }
 
@@ -104,7 +104,7 @@
       });
       pendingSound = null;
     } catch (error) {
-      console.error("Could not save background sound", error);
+      console.error("Could not save soundscape sound", error);
     }
   }
 
@@ -142,7 +142,7 @@
       });
       editingGroupId = null;
     } catch (error) {
-      console.error("Could not save background sound group", error);
+      console.error("Could not save soundscape group", error);
     }
   }
 
@@ -276,7 +276,7 @@
 {/snippet}
 
 {#if pendingDelete}
-  <ConfirmDialog title={t("music.soundscape.removeTitle")} message={t("music.soundscape.removeMessage", pendingDelete.name)} confirmLabel={t("music.soundscape.remove")} cancelLabel={t("common.cancel")} onConfirm={() => { const definition = pendingDelete; pendingDelete = null; if (definition) void soundscape.removeDefinition(definition).catch((error) => console.error("Could not remove background sound", error)); }} onCancel={() => pendingDelete = null} />
+  <ConfirmDialog title={t("music.soundscape.removeTitle")} message={t("music.soundscape.removeMessage", pendingDelete.name)} confirmLabel={t("music.soundscape.remove")} cancelLabel={t("common.cancel")} onConfirm={() => { const definition = pendingDelete; pendingDelete = null; if (definition) void soundscape.removeDefinition(definition).catch((error) => console.error("Could not remove soundscape sound", error)); }} onCancel={() => pendingDelete = null} />
 {/if}
 {#if presetEditor}
   {#key presetEditor}
@@ -286,9 +286,9 @@
 {#if pendingPresetDelete}
   <!-- Portaled after the preset editor modal so the confirmation stacks above it. -->
   <div use:portal>
-    <ConfirmDialog title={t("music.soundscape.preset.removeTitle")} message={t("music.soundscape.preset.removeMessage", pendingPresetDelete.name)} confirmLabel={t("music.soundscape.preset.remove")} cancelLabel={t("common.cancel")} onConfirm={() => { const preset = pendingPresetDelete; pendingPresetDelete = null; if (presetEditor?.preset?.id === preset?.id) presetEditor = null; if (preset) void soundscape.removePreset(preset).catch((error) => console.error("Could not remove background sound preset", error)); }} onCancel={() => pendingPresetDelete = null} />
+    <ConfirmDialog title={t("music.soundscape.preset.removeTitle")} message={t("music.soundscape.preset.removeMessage", pendingPresetDelete.name)} confirmLabel={t("music.soundscape.preset.remove")} cancelLabel={t("common.cancel")} onConfirm={() => { const preset = pendingPresetDelete; pendingPresetDelete = null; if (presetEditor?.preset?.id === preset?.id) presetEditor = null; if (preset) void soundscape.removePreset(preset).catch((error) => console.error("Could not remove soundscape preset", error)); }} onCancel={() => pendingPresetDelete = null} />
   </div>
 {/if}
 {#if pendingGroupDelete}
-  <ConfirmDialog title={t("music.soundscape.removeGroup")} message={t("music.soundscape.removeGroupMessage", pendingGroupDelete.name)} confirmLabel={t("music.soundscape.removeGroup")} cancelLabel={t("common.cancel")} onConfirm={() => { const group = pendingGroupDelete; pendingGroupDelete = null; editingGroupId = null; if (group) void soundscape.removeGroup(group).then(() => { if (filter === `group:${group.id}`) onGroupRemoved(); }).catch((error) => console.error("Could not remove background sound group", error)); }} onCancel={() => pendingGroupDelete = null} />
+  <ConfirmDialog title={t("music.soundscape.removeGroup")} message={t("music.soundscape.removeGroupMessage", pendingGroupDelete.name)} confirmLabel={t("music.soundscape.removeGroup")} cancelLabel={t("common.cancel")} onConfirm={() => { const group = pendingGroupDelete; pendingGroupDelete = null; editingGroupId = null; if (group) void soundscape.removeGroup(group).then(() => { if (filter === `group:${group.id}`) onGroupRemoved(); }).catch((error) => console.error("Could not remove soundscape group", error)); }} onCancel={() => pendingGroupDelete = null} />
 {/if}

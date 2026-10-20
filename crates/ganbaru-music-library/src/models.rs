@@ -707,7 +707,7 @@ pub struct MusicSoundscapeGroupWrite {
     pub updated_at_ms: i64,
 }
 
-/// A named, ordered mix of background sounds applied as one choice.
+/// A named, ordered mix of soundscape sounds applied as one choice.
 #[cfg(desktop)]
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]

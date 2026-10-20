@@ -17,7 +17,7 @@ struct AssignmentRow {
     soundscape_preset_id: Option<String>,
 }
 
-/// Resolves music and background sound independently: each takes the most specific layer
+/// Resolves music and soundscape independently: each takes the most specific layer
 /// (event override, work environment, then project snapshot) that does not inherit it. The
 /// source names the layer that chose the music, or the sound when no layer chose music.
 async fn resolve_assignment(
@@ -472,9 +472,7 @@ impl Owner {
             )
             .fetch_one(self.pool.as_ref().expect("initialized music pool"))
             .await
-            .map_err(|error| {
-                MusicLibraryError::database("project accepted background sound", error)
-            })?;
+            .map_err(|error| MusicLibraryError::database("project accepted soundscape", error))?;
             self.state.soundscape_version = Some(version);
             self.publish(false)?;
         }

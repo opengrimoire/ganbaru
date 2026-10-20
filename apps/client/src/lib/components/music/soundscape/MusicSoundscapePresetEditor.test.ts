@@ -94,7 +94,7 @@ function lastPreview(): readonly string[] | undefined {
   return previewSounds.mock.calls.at(-1)?.[0];
 }
 
-describe("Background sound preset editor", () => {
+describe("Soundscape preset editor", () => {
   it("starts a new preset empty instead of copying what is playing", async () => {
     await render();
     expect([...document.body.querySelectorAll('button[aria-pressed="true"]')]).toHaveLength(0);

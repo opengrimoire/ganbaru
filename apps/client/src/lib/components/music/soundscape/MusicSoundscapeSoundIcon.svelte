@@ -5,7 +5,7 @@
   import type { MusicSoundscapeDefinition } from "$lib/music/soundscape/contracts";
   import MusicSoundscapeGroupIcon from "./MusicSoundscapeGroupIcon.svelte";
 
-  /** Icon for one background sound: generated rain uses its intensity icon, other sounds use their chosen icon. */
+  /** Icon for one soundscape sound: generated rain uses its intensity icon, other sounds use their chosen icon. */
   let { definition, size = 16 }: { definition: MusicSoundscapeDefinition; size?: number } = $props();
 </script>
 

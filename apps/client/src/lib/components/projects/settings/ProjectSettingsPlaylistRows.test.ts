@@ -105,7 +105,7 @@ describe("Project playlist rows", () => {
     expect(assignments[1].playlistId).toBe(playlist.id);
   });
 
-  it("replaces legacy playback with automatic playback while keeping each phase's background sound", async () => {
+  it("replaces legacy playback with automatic playback while keeping each phase's soundscape", async () => {
     const assignments = updateMusicAssignmentDraft([], "focus", {
       behavior: "prepare-silently", playlistId: playlist.id,
       soundscapeBehavior: "play-selected", soundscapeId: "rain",
@@ -119,19 +119,19 @@ describe("Project playlist rows", () => {
 
   it("chooses a background preset or silence per phase without touching music", async () => {
     const onChange = await render(updateMusicAssignmentDraft([], "short-break", { behavior: "pause-music" }));
-    expect(target.querySelector('[aria-label="Short break background sound"]')?.textContent).toContain("Don't change");
-    await choose("Short break background sound", "Evening");
+    expect(target.querySelector('[aria-label="Short break soundscape"]')?.textContent).toContain("Don't change");
+    await choose("Short break soundscape", "Evening");
     expect(onChange.mock.calls[0][0][1]).toMatchObject({
       behavior: "pause-music", soundscapeBehavior: "play-selected", soundscapeId: null, soundscapePresetId: "evening",
     });
-    await choose("Focus background sound", "Silence");
+    await choose("Focus soundscape", "Silence");
     expect(onChange.mock.calls[1][0][0]).toMatchObject({ behavior: "inherit", soundscapeBehavior: "pause-soundscape", soundscapePresetId: null });
     expect(persistedMusicAssignmentDrafts(onChange.mock.calls[1][0]).map((assignment) => assignment.phase)).toEqual(["focus", "short-break"]);
   });
 
-  it("flags a deleted background sound so the phase can be repaired", async () => {
+  it("flags a deleted soundscape sound so the phase can be repaired", async () => {
     await render(updateMusicAssignmentDraft([], "long-break", { soundscapeBehavior: "play-selected", soundscapeId: "deleted" }));
-    expect(target.querySelector('[aria-label="Long break background sound"]')?.textContent).toContain("Selected sound is unavailable");
+    expect(target.querySelector('[aria-label="Long break soundscape"]')?.textContent).toContain("Selected sound is unavailable");
   });
 
   it("keeps an unavailable playlist explicit and lets the picker repair it", async () => {

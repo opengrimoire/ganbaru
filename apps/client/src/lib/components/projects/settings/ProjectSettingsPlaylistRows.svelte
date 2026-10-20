@@ -41,7 +41,7 @@
   });
   const phaseAssignments = $derived(completeMusicAssignmentDrafts(assignments));
 
-  /** Stage playlist phase choices, with automatic playback or silence, keeping each phase's background sound. */
+  /** Stage playlist phase choices, with automatic playback or silence, keeping each phase's soundscape. */
   function selectPlaylist(phase: MusicActivityPhase, playlistId: string | null): void {
     if (disabled || loadingPlaylists) return;
     onChange(phaseAssignments.map((assignment): MusicContextAssignmentDraft => {
@@ -56,7 +56,7 @@
     }));
   }
 
-  /** Stage one phase's background sound without touching its music. */
+  /** Stage one phase's soundscape without touching its music. */
   function selectSound(phase: MusicActivityPhase, choice: MusicSoundChoice): void {
     if (disabled) return;
     onChange(updateMusicAssignmentDraft(phaseAssignments, phase, soundChoiceFields(choice)));

@@ -1,6 +1,6 @@
-# Background sounds
+# Soundscapes
 
-**Implemented on desktop.** Background sounds play through a native audio engine independently of Music playback. Platforms without the engine omit these controls.
+**Implemented on desktop.** A soundscape is the set of non-music sounds playing alongside Music, either one sound or several layered sounds. The UI calls this feature Soundscapes (Paisajes sonoros), its parts sounds, and saved combinations presets; it never calls it background sound, since music plays in the background too. Soundscapes play through a native audio engine independently of Music playback. Platforms without the engine omit these controls.
 
 ## Playback
 
@@ -14,7 +14,7 @@ Users can add their own local audio loops with a chosen name and icon (using the
 
 ## Presets
 
-A preset is a named set of up to 16 sounds with an icon. Presets store only which sounds play, not volumes; overall and section levels stay global. Presets are created and edited only in the builder's Presets section, by picking their sounds explicitly in a modal editor. While it is open, Music and background sounds pause and the draft plays as an isolated preview, which can be turned off; the preview never becomes the saved selection, and saving or leaving brings back exactly what was playing. Presets play from the builder and the background sound controls, and the preset that matches the current selection is highlighted. Playing a preset starts its available sounds together and turns on layered mode when it has more than one sound. Projects and events can choose a preset for any phase.
+A preset is a named set of up to 16 sounds with an icon. Presets store only which sounds play, not volumes; overall and section levels stay global. Presets are created and edited only in the builder's Presets section, by picking their sounds explicitly in a modal editor. While it is open, Music and the soundscape pause and the draft plays as an isolated preview, which can be turned off; the preview never becomes the saved selection, and saving or leaving brings back exactly what was playing. Presets play from the builder and the soundscape controls, and the preset that matches the current selection is highlighted. Playing a preset starts its available sounds together and turns on layered mode when it has more than one sound. Projects and events can choose a preset for any phase.
 
 ## Storage
 

@@ -9,7 +9,7 @@ function sound(id: string, name: string): MusicSoundscapeDefinition {
   };
 }
 
-describe("background sound preset drafts", () => {
+describe("soundscape preset drafts", () => {
   it("adds sounds at the end and removes them without reordering the rest", () => {
     expect(togglePresetDraftSound([], "rain")).toEqual(["rain"]);
     expect(togglePresetDraftSound(["rain", "cafe"], "fire")).toEqual(["rain", "cafe", "fire"]);

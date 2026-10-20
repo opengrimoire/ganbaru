@@ -1,16 +1,16 @@
 import type { MusicContextAssignmentDraft, MusicSoundscapeBehavior } from "./context-assignment";
 
-/** Background sound choice for one Focus phase, as shown in the phase pickers. */
+/** Soundscape choice for one Focus phase, as shown in the phase pickers. */
 export type MusicSoundChoice =
   | { kind: "keep" }
   | { kind: "silence" }
   | { kind: "sound"; soundscapeId: string }
   | { kind: "preset"; presetId: string };
 
-/** Assignment fields that carry the background sound part of a phase. */
+/** Assignment fields that carry the soundscape part of a phase. */
 export type MusicSoundChoiceFields = Pick<MusicContextAssignmentDraft, "soundscapeBehavior" | "soundscapeId" | "soundscapePresetId">;
 
-/** Reads the background sound choice stored on an assignment, treating inherit and keep alike. */
+/** Reads the soundscape choice stored on an assignment, treating inherit and keep alike. */
 export function soundChoiceFromAssignment(assignment: MusicSoundChoiceFields): MusicSoundChoice {
   if (assignment.soundscapeBehavior === "pause-soundscape") return { kind: "silence" };
   if (assignment.soundscapeBehavior !== "play-selected") return { kind: "keep" };
@@ -44,7 +44,7 @@ export function soundChoicesEqual(left: MusicSoundChoice, right: MusicSoundChoic
   return true;
 }
 
-/** Reports whether a choice changes the background sound when its phase starts. */
+/** Reports whether a choice changes the soundscape when its phase starts. */
 export function soundChoiceIsActive(choice: MusicSoundChoice): boolean {
   return choice.kind !== "keep";
 }

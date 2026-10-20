@@ -65,7 +65,7 @@ export interface MusicSoundscapeGroupWrite {
   updatedAtMs: number;
 }
 
-/** Saved set of background sounds that plays together; volume and section levels stay global. Removing a sound can leave a preset empty until it is edited. */
+/** Saved set of soundscape sounds that plays together; volume and section levels stay global. Removing a sound can leave a preset empty until it is edited. */
 export interface MusicSoundscapePreset {
   id: string;
   name: string;

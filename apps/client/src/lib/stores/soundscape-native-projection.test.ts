@@ -66,7 +66,7 @@ describe("native background playback projection", () => {
     const store = getSoundscapeStore();
     await store.initialize();
     await expect(store.togglePlayback()).resolves.toBeUndefined();
-    expect(store.error).toBe("Multiple background sounds are disabled.");
+    expect(store.error).toBe("Multiple soundscape sounds are disabled.");
     expect(store.playbackPending).toBe(false);
     expect(api.startSoundscape).not.toHaveBeenCalled();
   });
@@ -110,7 +110,7 @@ describe("native background playback projection", () => {
     const store = getSoundscapeStore();
     await store.initialize();
     await store.playPreset({ soundscapeIds: ["gone"] });
-    expect(store.error).toBe("This background sound needs to be repaired before it can play.");
+    expect(store.error).toBe("This sound needs to be repaired before it can play.");
     expect(api.startSoundscape).not.toHaveBeenCalled();
   });
 });

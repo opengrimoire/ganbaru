@@ -56,7 +56,7 @@
   const showSounds = platformHasCapability(BUILD_PLATFORM_PROFILE, "music.soundscapes");
   const triggerClass = "rounded border-0 bg-black/5 font-normal text-event-panel-input-text hover:bg-black/10 disabled:hover:bg-black/5 dark:bg-black/15 dark:hover:bg-black/25 dark:disabled:hover:bg-black/15";
   const phases = $derived(eventMusicPhases(pomodoroEnabled));
-  /** Pomodoro events with background sounds show one row per phase with a playlist and a sound column. */
+  /** Pomodoro events with soundscapes show one row per phase with a playlist and a sound column. */
   const phaseColumns = $derived(showSounds && pomodoroEnabled);
   const rows = $derived(phases.map((phase) => {
     const sound = effectiveEventSound(overrides, snapshots, phase);

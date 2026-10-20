@@ -143,7 +143,7 @@ Working tree review measures changed files before it copies them into its tempor
 
 Whether a finished assignment is ready for review comes from the files recorded for its turn, and in a Git folder those include the post-turn checkpoint diff, which is captured before the completion is recorded. A provider therefore cannot skip review by omitting changed files. The diff covers the whole folder since the thread's previous checkpoint, so concurrent edits by others can also mark work for review. Folders without Git rely on the files the provider reports.
 
-Restore is a scoped Git or filesystem operation, not a database rollback. It cannot change organizational messages, memberships, approvals, or another project's files. Previewing and applying a restore are separate authority checks. Native work runs outside database transactions, and retryable cleanup records prevent a failed step from appearing successful.
+Restore is a scoped Git or filesystem operation, not a database rollback. It cannot change organizational messages, memberships, approvals, or another project's files. Previewing and applying a restore are separate authority checks. Native work runs outside database transactions, and retryable cleanup records prevent a failed step from appearing successful. Every claimed cleanup job ends completed or failed; a job an interrupted run left running for more than 15 minutes is released for retry, and diagnostics count it as failed.
 
 ## Revocation
 

@@ -249,6 +249,7 @@ pub async fn run_due_attachment_cleanup(
     vault_root: &Path,
     now: &UtcTimestamp,
 ) -> ChatResult<u64> {
+    super::lifecycle::release_stale_cleanup_jobs(pool, "attachment_file", now).await?;
     let rows = sqlx::query(
         "SELECT id, exact_target FROM chat_cleanup_jobs
          WHERE cleanup_kind = 'attachment_file'
@@ -263,7 +264,7 @@ pub async fn run_due_attachment_cleanup(
     for row in rows {
         let cleanup_id: String = row.try_get("id").map_err(persistence_error)?;
         let relative_path: String = row.try_get("exact_target").map_err(persistence_error)?;
-        sqlx::query(
+        let claimed = sqlx::query(
             "UPDATE chat_cleanup_jobs SET state = 'running', attempt_count = attempt_count + 1,
                     updated_at = ? WHERE id = ? AND state IN ('pending', 'failed')",
         )
@@ -272,6 +273,9 @@ pub async fn run_due_attachment_cleanup(
         .execute(pool)
         .await
         .map_err(persistence_error)?;
+        if claimed.rows_affected() != 1 {
+            continue;
+        }
         let still_referenced: bool = sqlx::query_scalar(
             "SELECT EXISTS(
                 SELECT 1 FROM chat_attachments a

@@ -38,7 +38,7 @@ Unknown packages, system UIDs, Ganbaru, Home, Settings, dialer, and protected ap
 
 The app does not request `MANAGE_EXTERNAL_STORAGE` or legacy broad shared-storage access. Live vault data stays application-private. System pickers grant only user-selected inputs and destinations.
 
-Persisted document permissions are retained only for sources that require ongoing access, such as the selected Music tree.
+Persisted document permissions are retained only for sources that require ongoing access, such as the selected Music tree and chosen artwork. Native Music reads a direct document URI only when it is itself a persisted read grant or lies inside a persisted tree grant, so a supplied locator cannot reach other providers the app can read implicitly, including its own.
 
 ## Other excluded permissions
 

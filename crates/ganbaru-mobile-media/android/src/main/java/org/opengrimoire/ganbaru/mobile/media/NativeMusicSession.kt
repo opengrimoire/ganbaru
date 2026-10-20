@@ -14,6 +14,14 @@ import org.json.JSONObject
 /** Prefix of selected-tree media locators produced by the Rust Music queue. */
 private const val SAF_LOCATOR_PREFIX = "ganbaru-saf:"
 
+/**
+ * Whether a direct document URI is itself a persisted read grant or a document inside a persisted
+ * tree grant. Direct URIs without such a grant would otherwise reach any provider the app can
+ * read implicitly, including its own.
+ */
+internal fun isCoveredByReadGrant(uri: String, grants: Collection<String>): Boolean =
+  grants.any { grant -> uri == grant || (grant.contains("/tree/") && uri.startsWith("$grant/document/")) }
+
 /** Typed interruption context for the native session owner. */
 internal enum class NativeMusicInterruption(val wireValue: String) {
   ServiceStopped("service-stopped"),
@@ -117,7 +125,11 @@ object NativeMusicSession {
    */
   fun resolveUri(context: Context, locator: String): Uri {
     val direct = Uri.parse(locator)
-    if (direct.scheme == "content") return direct
+    if (direct.scheme == "content") {
+      val grants = context.contentResolver.persistedUriPermissions.filter { it.isReadPermission }.map { it.uri.toString() }
+      require(isCoveredByReadGrant(direct.toString(), grants)) { "Media access needs to be selected again" }
+      return direct
+    }
     require(locator.startsWith(SAF_LOCATOR_PREFIX)) { "Android media requires a selected document" }
     val encoded = locator.removePrefix(SAF_LOCATOR_PREFIX)
     val separator = encoded.indexOf('#')

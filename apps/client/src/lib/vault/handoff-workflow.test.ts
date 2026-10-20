@@ -37,6 +37,15 @@ describe("formatHandoffError", () => {
     );
   });
 
+  it("explains the per-device snapshot limit instead of a connectivity failure", () => {
+    const message =
+      "this device requested the vault too often; wait before refreshing or switching again";
+    expect(formatHandoffError(message, t)).toBe("vaultHandoff.bundleRequestLimit");
+    expect(formatOwnershipHandoffError(new Error(message), t)).toBe(
+      "vaultHandoff.bundleRequestLimit",
+    );
+  });
+
   it("explains disabled linking instead of a connectivity or transfer failure", () => {
     const message =
       "vault linking is disabled because its saved state could not be loaded: read pairing state: network transfer is active";

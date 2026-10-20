@@ -94,6 +94,9 @@ export function formatHandoffError(cause: unknown, t: Translate): string {
   if (lower.includes("vault ownership changed too often")) {
     return t("vaultHandoff.ownershipChurnLimit");
   }
+  if (lower.includes("requested the vault too often")) {
+    return t("vaultHandoff.bundleRequestLimit");
+  }
   if (isCoordinatorBusy(lower)) {
     return t("vaultHandoff.coordinatorBusy");
   }

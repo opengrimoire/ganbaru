@@ -196,6 +196,8 @@ export const vaultHandoff = {
     "The coordinating computer has another vault open. Open the linked vault there, then retry.",
   ownershipChurnLimit:
     "Editing moved between devices too many times in the last hour. Wait a while, then switch devices again.",
+  bundleRequestLimit:
+    "This device asked for the vault too many times in the last hour. Wait a while, then refresh or switch devices again.",
   linkingDisabled:
     "Device linking is off on this device because its saved linking data could not be read. Your vault still works here; restart the app, and if this persists, link the device again.",
   coordinatorBusy:

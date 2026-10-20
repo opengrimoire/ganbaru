@@ -65,6 +65,11 @@ impl<R: Runtime> CoordinatorState<R> {
                     );
                 }
                 self.ensure_owner_is_reachable(&status.owner_device_id, purpose)?;
+                // A waiting device polls here; only a new upload request makes the owner build
+                // another snapshot.
+                if self.pairing.requested_upload()? != Some(purpose) {
+                    self.bundle_preparations.admit(&device_id, Instant::now())?;
+                }
                 if purpose == BundlePurpose::Refresh {
                     self.waiting_refresh_targets.insert(device_id.clone());
                 }
@@ -76,6 +81,8 @@ impl<R: Runtime> CoordinatorState<R> {
             }
         }
         if status.can_write {
+            // A relayed refresh was counted when its upload was requested.
+            self.bundle_preparations.admit(&device_id, Instant::now())?;
             let pool = crate::db::connect_vault(&self.app).await?;
             crate::distractions::linked::drain_local_spool(
                 &self.app,

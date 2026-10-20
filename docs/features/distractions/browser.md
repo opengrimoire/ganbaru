@@ -13,7 +13,7 @@ The extension:
 - Rechecks open tabs when rules, phase, or budget state changes.
 - Reports bounded diagnostics and normalized block events.
 
-It does not reproduce the settings editor, inspect all traffic, inject UI into arbitrary pages, or contact a remote Ganbaru service.
+It does not reproduce the settings editor, inspect all traffic, inject UI into arbitrary pages, or contact a remote Ganbaru service. It requests no host access: tab URLs come from the `tabs` permission and navigation events from `webNavigation`, so a compromised extension still cannot read or change page content.
 
 ## Native messaging
 

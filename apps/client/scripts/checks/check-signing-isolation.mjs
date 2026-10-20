@@ -55,6 +55,14 @@ const UNVERIFIED_DOWNLOAD_FIXTURE = `jobs:
           unzip tools.zip
 `;
 
+/** Fixture that stores a token in a remote URL, which the credential URL check must reject. */
+const CREDENTIAL_URL_FIXTURE = `jobs:
+  publish:
+    steps:
+      - name: remote
+        run: git remote set-url origin "https://x-access-token:\${GITHUB_TOKEN}@github.com/\${GITHUB_REPOSITORY}.git"
+`;
+
 /** Count leading spaces. */
 function indentation(line) {
   return line.length - line.trimStart().length;
@@ -167,11 +175,32 @@ export function unverifiedDownloadViolations(text) {
   return violations;
 }
 
+/**
+ * Lists commands that put credentials in an HTTP URL, where git persists them in `.git/config` for later steps.
+ *
+ * @param {string} text Workflow source.
+ * @returns {string[]} Human readable violations.
+ */
+export function credentialUrlViolations(text) {
+  const violations = [];
+  for (const [job, lines] of workflowJobs(text)) {
+    for (const command of runCommands(lines)) {
+      if (/https?:\/\/[^\s"'/@]+@/u.test(command)) {
+        violations.push(`${job}: URL carries credentials: ${command}`);
+      }
+    }
+  }
+  return violations;
+}
+
 if (!signingIsolationViolations(REJECTED_FIXTURE).length) {
   throw new Error("Signing isolation check accepted its rejected fixture");
 }
 if (!unverifiedDownloadViolations(UNVERIFIED_DOWNLOAD_FIXTURE).length) {
   throw new Error("Download check accepted its unverified fixture");
+}
+if (!credentialUrlViolations(CREDENTIAL_URL_FIXTURE).length) {
+  throw new Error("Credential URL check accepted its rejected fixture");
 }
 
 const workflowPaths = readdirSync(path.join(REPO_ROOT, WORKFLOW_DIR))
@@ -202,7 +231,11 @@ const downloadFailed = reportViolations(
   "Downloaded tools must be verified against a pinned SHA-256 before use:",
   unverifiedDownloadViolations,
 );
-if (signingFailed || downloadFailed) process.exit(1);
+const credentialFailed = reportViolations(
+  "Workflow tokens must be passed per command, never stored in a remote URL:",
+  credentialUrlViolations,
+);
+if (signingFailed || downloadFailed || credentialFailed) process.exit(1);
 console.log(
-  `Signing jobs in ${workflowPaths.length} workflows are isolated from workspace code, and every download is checksum-verified.`,
+  `${workflowPaths.length} workflows keep signing isolated, verify every download, and keep credentials out of URLs.`,
 );

@@ -36,7 +36,7 @@ Normal changes enter through pull requests. Protected branches, release tags, en
 
 Release jobs follow least privilege:
 
-- Checkout credentials are not persisted.
+- Checkout credentials are not persisted, and jobs that push give the workflow token to each git command as a per-command header and to `gh` only in the step that uses it; no token is written into a remote URL or `.git/config`, which `check:workflows` enforces.
 - Third-party actions use reviewed immutable commit pins.
 - Pull request code never runs in a privileged `pull_request_target` context.
 - Build, signing, release publication, package-repository publication, and AUR publication use separate jobs and credentials.

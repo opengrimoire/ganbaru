@@ -69,14 +69,26 @@ struct MockDesktopProcessController {
     fallback: Option<super::ObservedDesktopProcess>,
     signals: Vec<super::DesktopProcessSignal>,
     waits: usize,
+    pins: usize,
+    calls: Vec<&'static str>,
 }
 
 #[cfg(target_os = "linux")]
 impl super::DesktopProcessController for MockDesktopProcessController {
+    /// The order in which the process was pinned.
+    type Pinned = usize;
+
+    fn pin(&mut self, _process_id: u32) -> Result<Option<usize>, String> {
+        self.calls.push("pin");
+        self.pins += 1;
+        Ok(Some(self.pins))
+    }
+
     fn observe(
         &mut self,
         _process_id: u32,
     ) -> Result<Option<super::ObservedDesktopProcess>, String> {
+        self.calls.push("observe");
         Ok(self
             .observations
             .pop_front()
@@ -85,9 +97,14 @@ impl super::DesktopProcessController for MockDesktopProcessController {
 
     fn signal(
         &mut self,
-        _process_id: u32,
+        pinned: &usize,
         signal: super::DesktopProcessSignal,
     ) -> Result<(), String> {
+        assert_eq!(
+            *pinned, 1,
+            "signals go to the process pinned before the first check"
+        );
+        self.calls.push("signal");
         self.signals.push(signal);
         Ok(())
     }
@@ -106,6 +123,8 @@ fn close_process_rechecks_identity_before_kill_fallback() {
         fallback: Some(observed),
         signals: Vec::new(),
         waits: 0,
+        pins: 0,
+        calls: Vec::new(),
     };
     let mut authorization_checks = 0;
 
@@ -124,6 +143,59 @@ fn close_process_rechecks_identity_before_kill_fallback() {
     );
     assert_eq!(controller.waits, 8);
     assert_eq!(authorization_checks, 2);
+    assert_eq!(controller.pins, 1);
+    assert_eq!(&controller.calls[..3], ["pin", "observe", "signal"]);
+}
+
+/// Spawns a child that waits to be signalled.
+#[cfg(target_os = "linux")]
+fn sleeping_child() -> std::process::Child {
+    std::process::Command::new("sleep")
+        .arg("30")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("spawn sleep")
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_pinned_process_receives_the_signal() {
+    use std::os::unix::process::ExitStatusExt;
+
+    let mut child = sleeping_child();
+    let pinned = super::process_control::pin_linux_process(child.id())
+        .unwrap()
+        .expect("live child is pinned");
+
+    super::process_control::signal_linux_process(&pinned, super::DesktopProcessSignal::Term)
+        .unwrap();
+
+    assert_eq!(child.wait().unwrap().signal(), Some(libc::SIGTERM));
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_pinned_process_that_exited_is_never_signalled_by_its_old_pid() {
+    let mut child = sleeping_child();
+    let process_id = child.id();
+    let pinned = super::process_control::pin_linux_process(process_id)
+        .unwrap()
+        .expect("live child is pinned");
+    child.kill().unwrap();
+    child.wait().unwrap();
+
+    let result =
+        super::process_control::signal_linux_process(&pinned, super::DesktopProcessSignal::Kill);
+
+    match pinned {
+        super::process_control::PinnedLinuxProcess::Pidfd(_) => assert!(
+            result.is_err(),
+            "a pidfd keeps naming the exited process, so the signal cannot reach a PID reuse"
+        ),
+        super::process_control::PinnedLinuxProcess::Pid(_) => {}
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -134,6 +206,8 @@ fn already_exited_process_does_not_report_an_accepted_close() {
         fallback: None,
         signals: Vec::new(),
         waits: 0,
+        pins: 0,
+        calls: Vec::new(),
     };
     let signalled =
         super::close_desktop_process_with(&valid_close_request(), &mut controller, |_| Ok(()))
@@ -150,6 +224,8 @@ fn close_process_stops_when_process_exits_between_checks() {
         fallback: None,
         signals: Vec::new(),
         waits: 0,
+        pins: 0,
+        calls: Vec::new(),
     };
 
     super::close_desktop_process_with(&valid_close_request(), &mut controller, |_| Ok(())).unwrap();
@@ -168,6 +244,8 @@ fn close_process_rejects_pid_reuse_after_term() {
         fallback: None,
         signals: Vec::new(),
         waits: 0,
+        pins: 0,
+        calls: Vec::new(),
     };
 
     assert!(
@@ -185,6 +263,8 @@ fn close_process_rejects_stale_rule_before_term() {
         fallback: None,
         signals: Vec::new(),
         waits: 0,
+        pins: 0,
+        calls: Vec::new(),
     };
 
     assert!(
@@ -205,6 +285,8 @@ fn close_process_rejects_rule_revoked_before_kill_fallback() {
         fallback: Some(observed),
         signals: Vec::new(),
         waits: 0,
+        pins: 0,
+        calls: Vec::new(),
     };
     let mut authorization_checks = 0;
 

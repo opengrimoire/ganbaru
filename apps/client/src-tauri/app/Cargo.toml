@@ -85,6 +85,7 @@ tauri-plugin-fs = { workspace = true }
 [target.'cfg(target_os = "linux")'.dependencies]
 cairo-rs = { workspace = true }
 gtk = { workspace = true }
+rustix = { workspace = true }
 webkit2gtk = { workspace = true }
 wayland-client = { workspace = true }
 wayland-protocols-wlr = { workspace = true }

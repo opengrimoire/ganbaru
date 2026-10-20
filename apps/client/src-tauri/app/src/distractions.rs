@@ -15,8 +15,6 @@ use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 #[cfg(desktop)]
 use std::path::{Path, PathBuf};
-#[cfg(all(desktop, target_os = "linux"))]
-use std::process::Stdio;
 #[cfg(desktop)]
 use std::sync::atomic::{AtomicU64, Ordering};
 #[cfg(desktop)]

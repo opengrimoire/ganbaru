@@ -40,7 +40,12 @@ struct AuthorizedScope {
 #[serde(rename_all = "camelCase")]
 struct StoredNetworkAccess {
     schema_version: u32,
+    /// Scopes whose firewall rules are in place.
     scopes: Vec<AuthorizedScope>,
+    /// Scopes recorded before their rules were applied. A rule that failed partway may exist,
+    /// so revoking removes these too, and granting again applies them again.
+    #[serde(default)]
+    pending: Vec<AuthorizedScope>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -122,48 +127,86 @@ pub fn grant(
     }
 
     let mut stored = read_state(config_dir)?;
-    for candidate in firewalls {
-        if stored.scopes.iter().any(|saved| saved == &candidate) {
-            continue;
-        }
-        apply_scope(&candidate, true)?;
-        if stored.scopes.len() >= MAX_AUTHORIZED_SCOPES {
-            return Err("too many saved Linux network access scopes".to_string());
-        }
-        stored.scopes.push(candidate);
-        persist_state(config_dir, &stored)?;
-    }
+    grant_scopes(
+        &mut stored,
+        firewalls,
+        |state| persist_state(config_dir, state),
+        |scope| apply_scope(scope, true),
+    )?;
     Ok(NetworkAccessStatus {
         state: NetworkAccessState::Granted,
     })
 }
 
+/// Applies the rules of `candidates` that `stored` does not hold yet.
+///
+/// Capacity is checked before any rule changes. Each scope is persisted as pending before its
+/// rule is applied and moved to the granted scopes after, so a failure or crash between the two
+/// never leaves a root rule without a record that revoking can find.
+fn grant_scopes(
+    stored: &mut StoredNetworkAccess,
+    candidates: Vec<AuthorizedScope>,
+    mut persist: impl FnMut(&StoredNetworkAccess) -> Result<(), String>,
+    mut apply: impl FnMut(&AuthorizedScope) -> Result<(), String>,
+) -> Result<(), String> {
+    let missing: Vec<AuthorizedScope> = candidates
+        .into_iter()
+        .filter(|candidate| !stored.scopes.contains(candidate))
+        .collect();
+    let new_records = missing
+        .iter()
+        .filter(|candidate| !stored.pending.contains(candidate))
+        .count();
+    if stored.scopes.len() + stored.pending.len() + new_records > MAX_AUTHORIZED_SCOPES {
+        return Err("too many saved Linux network access scopes".to_string());
+    }
+    for candidate in missing {
+        if !stored.pending.contains(&candidate) {
+            stored.pending.push(candidate.clone());
+            persist(stored)?;
+        }
+        apply(&candidate)?;
+        stored.pending.retain(|pending| pending != &candidate);
+        stored.scopes.push(candidate);
+        persist(stored)?;
+    }
+    Ok(())
+}
+
 pub fn revoke(config_dir: &Path) -> Result<NetworkAccessStatus, String> {
     let mut stored = read_state(config_dir)?;
-    let mut retained = Vec::new();
-    let mut first_error = None;
-    for scope in &stored.scopes {
-        if let Err(error) = apply_scope(scope, false) {
-            retained.push(scope.clone());
-            if first_error.is_none() {
-                first_error = Some(error);
-            }
-        }
-    }
-    stored.scopes = retained;
+    let result = revoke_scopes(&mut stored, |scope| apply_scope(scope, false));
     persist_state(config_dir, &stored)?;
-    if let Some(error) = first_error {
-        return Err(error);
-    }
+    result?;
     Ok(NetworkAccessStatus {
         state: NetworkAccessState::AuthorizationRequired,
     })
+}
+
+/// Removes the rules of every granted and pending scope, keeping the scopes whose removal
+/// failed so a later revoke can retry them. Returns the first failure.
+fn revoke_scopes(
+    stored: &mut StoredNetworkAccess,
+    mut remove: impl FnMut(&AuthorizedScope) -> Result<(), String>,
+) -> Result<(), String> {
+    let mut first_error = None;
+    for scopes in [&mut stored.scopes, &mut stored.pending] {
+        scopes.retain(|scope| match remove(scope) {
+            Ok(()) => false,
+            Err(error) => {
+                first_error.get_or_insert(error);
+                true
+            }
+        });
+    }
+    first_error.map_or(Ok(()), Err)
 }
 
 fn empty_state() -> StoredNetworkAccess {
     StoredNetworkAccess {
         schema_version: STATE_SCHEMA_VERSION,
         scopes: Vec::new(),
+        pending: Vec::new(),
     }
 }
 
@@ -646,10 +689,10 @@ fn read_state(config_dir: &Path) -> Result<StoredNetworkAccess, String> {
     if state.schema_version != STATE_SCHEMA_VERSION {
         return Err("network access state version is unsupported".to_string());
     }
-    if state.scopes.len() > MAX_AUTHORIZED_SCOPES {
+    if state.scopes.len() + state.pending.len() > MAX_AUTHORIZED_SCOPES {
         return Err("network access state has too many scopes".to_string());
     }
-    for scope in &state.scopes {
+    for scope in state.scopes.iter().chain(&state.pending) {
         validate_authorized_scope(scope)?;
     }
     Ok(state)
@@ -753,6 +796,90 @@ bad/interface 0001A8C0 00000000 0001 0 0 600 00FFFFFF 0 0 0\n";
             .into_iter()
             .map(str::to_string);
         assert!(parse_privileged_helper_scope(&mut broad).is_err());
+    }
+
+    fn numbered_scope(index: u8) -> AuthorizedScope {
+        AuthorizedScope {
+            firewall: FirewallKind::Ufw,
+            interface: "wlp2s0".to_string(),
+            local_address: Ipv4Addr::new(192, 168, index, 66),
+            source_network: format!("192.168.{index}.0/24"),
+            port: COORDINATOR_PORT,
+            zone: None,
+        }
+    }
+
+    #[test]
+    fn a_full_record_refuses_a_grant_before_any_rule_changes() {
+        let mut stored = empty_state();
+        stored.scopes = (0..30).map(numbered_scope).collect();
+        stored.pending = vec![numbered_scope(30)];
+        let mut applied = Vec::new();
+        let result = grant_scopes(
+            &mut stored,
+            vec![numbered_scope(31), numbered_scope(32)],
+            |_| Ok(()),
+            |scope| {
+                applied.push(scope.clone());
+                Ok(())
+            },
+        );
+        assert!(result.is_err());
+        assert!(applied.is_empty());
+        assert_eq!(stored.scopes.len() + stored.pending.len(), 31);
+
+        let granted = grant_scopes(
+            &mut stored,
+            vec![numbered_scope(30), numbered_scope(31)],
+            |_| Ok(()),
+            |scope| {
+                applied.push(scope.clone());
+                Ok(())
+            },
+        );
+        assert!(granted.is_ok());
+        assert_eq!(applied, vec![numbered_scope(30), numbered_scope(31)]);
+        assert_eq!(stored.scopes.len(), MAX_AUTHORIZED_SCOPES);
+        assert!(stored.pending.is_empty());
+    }
+
+    #[test]
+    fn a_rule_is_recorded_before_it_is_applied_and_a_failed_one_stays_revocable() {
+        let mut stored = empty_state();
+        let mut persisted: Vec<(usize, usize)> = Vec::new();
+        let result = grant_scopes(
+            &mut stored,
+            vec![numbered_scope(1), numbered_scope(2)],
+            |state| {
+                persisted.push((state.scopes.len(), state.pending.len()));
+                Ok(())
+            },
+            |scope| {
+                if scope == &numbered_scope(2) {
+                    Err("firewalld failed after the runtime rule".to_string())
+                } else {
+                    Ok(())
+                }
+            },
+        );
+        assert!(result.is_err());
+        assert_eq!(persisted, vec![(0, 1), (1, 0), (1, 1)]);
+        assert_eq!(stored.scopes, vec![numbered_scope(1)]);
+        assert_eq!(stored.pending, vec![numbered_scope(2)]);
+
+        let mut removed = Vec::new();
+        let revoked = revoke_scopes(&mut stored, |scope| {
+            removed.push(scope.clone());
+            if scope == &numbered_scope(1) {
+                Err("authorization was cancelled".to_string())
+            } else {
+                Ok(())
+            }
+        });
+        assert!(revoked.is_err());
+        assert_eq!(removed, vec![numbered_scope(1), numbered_scope(2)]);
+        assert_eq!(stored.scopes, vec![numbered_scope(1)]);
+        assert!(stored.pending.is_empty());
     }
 
     #[test]

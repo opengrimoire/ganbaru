@@ -154,7 +154,7 @@ jobs:
     name: windows Rust check
     if: github.event_name != 'push'
     runs-on: windows-2022
-    timeout-minutes: 45
+    timeout-minutes: 60
     permissions:
       contents: read
     env:
@@ -171,8 +171,8 @@ jobs:
       - name: fetch Rust dependencies
         run: cargo fetch --locked
 
-      - name: check Windows Rust
-        run: cargo check -p ganbaru --locked
+      - name: lint Windows Rust
+        run: cargo clippy -p ganbaru -p ganbaru-tauri-app -p ganbaru-chat -p ganbaru-chat-providers -p ganbaru-native-messaging --locked --all-targets -- -D warnings
 
   android:
     name: Android ARM64 build

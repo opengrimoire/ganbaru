@@ -163,6 +163,8 @@ Each entry names the owning modules, why the boundary exists, its key safety inv
 
 Linux-host tests and Android ARM64 checks cover much of the inventory, but Windows and macOS boundaries still require compilation and native tests on correctly provisioned hosts. The WebView2 page request bridge was type-checked and linted for the Windows target against the locked `webview2-com` bindings outside the app crate; its runtime acceptance is pending. Linux-host tests do not replace runtime capture, keyboard-hook, system-media, power, window-lifecycle, or process-exit acceptance on the owning platforms. Neither `pnpm -w run validate` nor `validate:full` replaces manual unsafe review.
 
+Pull request CI runs clippy with denied warnings over every target of the crates that own Windows boundaries (`ganbaru`, `ganbaru-tauri-app`, `ganbaru-chat`, `ganbaru-chat-providers`, and `ganbaru-native-messaging`) on a Windows runner. No CI job compiles the macOS boundaries (IOKit power assertions, macOS window presentation, and macOS foreground inspection): macOS is future platform work, so those modules must be compiled and linted on a macOS host before any change to them merges, and a macOS check job belongs with macOS platform delivery.
+
 ## Change discipline
 
 A change that introduces or materially alters unsafe Rust must include:

@@ -10,7 +10,7 @@ Rust owns provider discovery, startup, transport, cancellation, event ingestion,
 
 Owned local OpenCode servers are always authenticated. Every start generates a fresh 32-byte password from the operating-system CSPRNG, passes it only through the child environment, keeps it in memory for basic authentication, and never persists it. Startup fails closed unless a request without credentials to a protected route returns 401, because loopback ports are reachable by every local user. Only an owned, authenticated server receives the internal MCP endpoint and its bearer token; external OpenCode servers never do.
 
-One driver generation owns an active thread. Events from a stopped, settled, or mismatched generation cannot enter the projection stream. Shutdown rejects new commands, flushes bounded pending events, and enforces deadlines even when a provider hangs.
+One driver generation owns an active thread. Events from a stopped, settled, or mismatched generation cannot enter the projection stream. Shutdown rejects new commands, flushes bounded pending events, and enforces deadlines even when a provider hangs. Reads, interrupts, approvals, and status checks use an existing runtime owner and never create one; owners are created only by sends, restores, and forced stops of existing threads, and a stopped owner that nothing references is evicted after the idle timeout.
 
 Provider-native approval, trust, sandbox, or workspace state is defense in depth. It never widens folder, channel, runtime, or internal-tool authority granted by Ganbaru.
 

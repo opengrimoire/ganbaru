@@ -27,14 +27,12 @@ pub(crate) async fn compact_context(
     let pool = chat_pool(app.clone(), db_url).await?;
     let owner = app
         .state::<ChatRuntimeRegistry>()
-        .owner(thread_id.clone())?;
-    let session_id = owner.snapshot()?.session_id.ok_or_else(|| {
-        ChatError::new(
-            ChatErrorCode::InvalidStateTransition,
-            "Chat session is not running",
-            true,
-        )
-    })?;
+        .existing_owner(&thread_id)?
+        .ok_or_else(session_not_running_error)?;
+    let session_id = owner
+        .snapshot()?
+        .session_id
+        .ok_or_else(session_not_running_error)?;
     match claim_command_receipt(
         &pool,
         &client_command_id,
@@ -107,8 +105,12 @@ pub(crate) async fn read_mcp_status(
                 true,
             ));
         }
-        let owner = app.state::<ChatRuntimeRegistry>().owner(thread_id)?;
-        if let Some(session_id) = owner.snapshot()?.session_id {
+        let owner = app
+            .state::<ChatRuntimeRegistry>()
+            .existing_owner(&thread_id)?;
+        if let Some(owner) = owner
+            && let Some(session_id) = owner.snapshot()?.session_id
+        {
             return owner
                 .read_mcp_status(
                     McpStatusRequest {
@@ -185,21 +187,24 @@ pub(crate) async fn stop_session(
     client_command_id: ChatCommandId,
 ) -> ChatResult<DriverOperationReceipt> {
     let pool = chat_pool(app.clone(), db_url).await?;
-    let owner = app
-        .state::<ChatRuntimeRegistry>()
-        .owner(thread_id.clone())?;
+    let registry = app.state::<ChatRuntimeRegistry>();
+    let owner = match registry.existing_owner(&thread_id)? {
+        Some(owner) => owner,
+        None if force => {
+            require_active_thread(&pool, &thread_id).await?;
+            registry.owner(thread_id.clone())?
+        }
+        None => return Err(session_not_running_error()),
+    };
     let runtime_snapshot = owner.snapshot()?;
     let interrupt_context = if force {
         None
     } else {
         Some((
-            runtime_snapshot.session_id.clone().ok_or_else(|| {
-                ChatError::new(
-                    ChatErrorCode::InvalidStateTransition,
-                    "Chat session is not running",
-                    true,
-                )
-            })?,
+            runtime_snapshot
+                .session_id
+                .clone()
+                .ok_or_else(session_not_running_error)?,
             runtime_snapshot.active_turn_id.clone().ok_or_else(|| {
                 ChatError::new(
                     ChatErrorCode::InvalidStateTransition,
@@ -269,6 +274,37 @@ pub(crate) async fn stop_session(
         )
         .await;
     complete_driver_operation(&pool, &client_command_id, result).await
+}
+
+/// Confirms that a thread exists and is not archived before a runtime owner is created for it.
+async fn require_active_thread(
+    pool: &sqlx::SqlitePool,
+    thread_id: &ChatThreadId,
+) -> ChatResult<()> {
+    let exists: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM chat_threads WHERE id = ? AND archived_at IS NULL)",
+    )
+    .bind(thread_id.as_str())
+    .fetch_one(pool)
+    .await
+    .map_err(persistence_error)?;
+    if exists {
+        Ok(())
+    } else {
+        Err(ChatError::new(
+            ChatErrorCode::NotFound,
+            "Chat thread was not found",
+            true,
+        ))
+    }
+}
+
+fn session_not_running_error() -> ChatError {
+    ChatError::new(
+        ChatErrorCode::InvalidStateTransition,
+        "Chat session is not running",
+        true,
+    )
 }
 
 fn operation_context(operation_id: &str, timeout: Duration) -> DriverOperationContext {

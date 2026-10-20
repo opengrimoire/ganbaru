@@ -1,10 +1,12 @@
 use crate::models::{
     ChatAttachmentId, ChatError, ChatErrorCode, ChatResult, ProjectWorkingFolderId, UtcTimestamp,
 };
+use ganbaru_atomic_files::{FinalSymlink, read_regular_file_capped};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use sqlx::{Row, SqlitePool};
 use std::fs;
+use std::io;
 use std::path::{Component, Path, PathBuf};
 
 const MAX_ATTACHMENT_BYTES: u64 = 50 * 1024 * 1024;
@@ -51,29 +53,19 @@ pub async fn import_attachment(
     requested_kind: ChatAttachmentKind,
     now: &UtcTimestamp,
 ) -> ChatResult<ChatAttachmentRead> {
-    let metadata = fs::symlink_metadata(source_path).map_err(io_error)?;
-    if metadata.file_type().is_symlink()
-        || !metadata.is_file()
-        || metadata.len() > MAX_ATTACHMENT_BYTES
-    {
-        return Err(ChatError::validation(
-            "attachment",
-            "Attachment is not a supported bounded file",
-        ));
-    }
     let display_name = source_path
         .file_name()
         .and_then(|value| value.to_str())
         .filter(|value| !value.trim().is_empty() && value.len() <= 1000)
         .map(display_name_without_control_characters)
         .ok_or_else(|| ChatError::validation("attachment.name", "Attachment name is invalid"))?;
-    let bytes = fs::read(source_path).map_err(io_error)?;
-    if bytes.len() as u64 != metadata.len() {
-        return Err(ChatError::validation(
-            "attachment",
-            "Attachment changed during import",
-        ));
-    }
+    let bytes = read_regular_file_capped(source_path, MAX_ATTACHMENT_BYTES, FinalSymlink::Refuse)
+        .map_err(|error| match error.kind() {
+        io::ErrorKind::FileTooLarge | io::ErrorKind::InvalidInput => {
+            ChatError::validation("attachment", "Attachment is not a supported bounded file")
+        }
+        _ => io_error(error),
+    })?;
     persist_attachment_bytes(
         pool,
         vault_root,
@@ -233,15 +225,15 @@ pub fn read_managed_attachment_bytes(
     attachment: &ChatAttachmentRead,
 ) -> ChatResult<(PathBuf, Vec<u8>)> {
     let path = resolve_managed_path(vault_root, &attachment.managed_relative_path)?;
-    let metadata = fs::symlink_metadata(&path).map_err(io_error)?;
-    if metadata.file_type().is_symlink()
-        || !metadata.is_file()
-        || metadata.len() != attachment.byte_size
-        || metadata.len() > MAX_ATTACHMENT_BYTES
-    {
+    let bytes = read_regular_file_capped(
+        &path,
+        attachment.byte_size.min(MAX_ATTACHMENT_BYTES),
+        FinalSymlink::Refuse,
+    )
+    .map_err(|_| invalid_attachment_error())?;
+    if bytes.len() as u64 != attachment.byte_size {
         return Err(invalid_attachment_error());
     }
-    let bytes = fs::read(&path).map_err(io_error)?;
     if format!("{:x}", Sha256::digest(&bytes)) != attachment.sha256 {
         return Err(ChatError::new(
             ChatErrorCode::Conflict,

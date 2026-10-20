@@ -331,3 +331,64 @@ fn picked_attachments_show_control_characters_as_replacement_characters() {
         fs::remove_dir_all(&vault_root).unwrap();
     });
 }
+
+#[cfg(unix)]
+#[test]
+fn attachment_reads_go_through_one_bounded_handle_without_links() {
+    tauri::async_runtime::block_on(async {
+        let pool = pool_with_thread().await;
+        let vault_root = std::env::temp_dir().join(format!(
+            "ganbaru-chat-attachment-handle-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&vault_root).unwrap();
+        let working_folder_id = ProjectWorkingFolderId::new("workspace-1").unwrap();
+        let now = UtcTimestamp::new(NOW).unwrap();
+        let target = vault_root.join("target.txt");
+        fs::write(&target, b"linked context").unwrap();
+        let link = vault_root.join("link.txt");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        for (index, source) in [link.as_path(), std::path::Path::new("/dev/null")]
+            .into_iter()
+            .enumerate()
+        {
+            let error = import_attachment(
+                &pool,
+                &vault_root,
+                &working_folder_id,
+                ChatAttachmentId::new(format!("attachment-refused-{index}")).unwrap(),
+                source,
+                ChatAttachmentKind::TextSnippet,
+                &now,
+            )
+            .await
+            .unwrap_err();
+            assert_eq!(error.code, ChatErrorCode::Validation, "{source:?}");
+        }
+
+        let imported = import_attachment(
+            &pool,
+            &vault_root,
+            &working_folder_id,
+            ChatAttachmentId::new("attachment-grown").unwrap(),
+            &target,
+            ChatAttachmentKind::TextSnippet,
+            &now,
+        )
+        .await
+        .unwrap();
+        let (_, bytes) = read_managed_attachment_bytes(&vault_root, &imported).unwrap();
+        assert_eq!(bytes, b"linked context");
+        let managed = vault_root.join(&imported.managed_relative_path);
+        fs::write(&managed, b"linked context grown past its recorded size").unwrap();
+        assert!(read_managed_attachment_bytes(&vault_root, &imported).is_err());
+        fs::remove_file(&managed).unwrap();
+        std::os::unix::fs::symlink(&target, &managed).unwrap();
+        assert!(read_managed_attachment_bytes(&vault_root, &imported).is_err());
+        fs::remove_dir_all(&vault_root).unwrap();
+    });
+}

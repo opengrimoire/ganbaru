@@ -6,6 +6,8 @@ pub(crate) mod contact_requests;
 pub(crate) mod coordinator;
 #[cfg(desktop)]
 pub(crate) mod enrollment_approval;
+#[cfg(desktop)]
+mod key_store;
 pub(crate) mod receiver;
 pub(crate) mod source;
 pub(crate) mod transport;
@@ -215,6 +217,8 @@ fn initialize_linking<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<(), Strin
         .map_err(|error| format!("find app config directory: {error}"))?;
     let device_id = super::ensure_device_id(app)?;
     let pairing = app.state::<PairingManager>();
+    #[cfg(desktop)]
+    pairing.set_identity_key_store(std::sync::Arc::new(key_store::KeyringIdentityKeyStore))?;
     pairing.initialize(config_dir, device_id)?;
     if let Some(coordinator) = pairing.coordinator_pin()? {
         app.state::<super::ownership::VaultOwnershipManager>()
@@ -490,11 +494,8 @@ pub(crate) fn handoff_enrollment_code(
     invitation: String,
 ) -> Result<String, String> {
     let invitation = decode_invitation(&invitation, protocol::unix_time_ms())?;
-    let (_, identity) = app.state::<PairingManager>().identity()?;
-    Ok(pairing::enrollment_code(
-        &invitation,
-        identity.certificate.as_ref(),
-    ))
+    let certificate = app.state::<PairingManager>().certificate()?;
+    Ok(pairing::enrollment_code(&invitation, certificate.as_ref()))
 }
 
 /// Answers the enrollment waiting on this coordinator.
@@ -561,7 +562,7 @@ pub(crate) fn handoff_pairing_status<R: Runtime>(
     app: tauri::AppHandle<R>,
 ) -> Result<PairingStatus, String> {
     let manager = app.state::<PairingManager>();
-    let (device_id, _) = manager.identity()?;
+    let device_id = manager.device_id()?;
     let coordinator = manager.coordinator_pin()?;
     let vault_id = status_vault_id(coordinator.as_ref(), || super::active_vault_id(&app).ok());
     let peers = match vault_id.as_deref() {

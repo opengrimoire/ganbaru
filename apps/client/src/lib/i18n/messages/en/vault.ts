@@ -198,6 +198,10 @@ export const vaultHandoff = {
     "Editing moved between devices too many times in the last hour. Wait a while, then switch devices again.",
   bundleRequestLimit:
     "This device asked for the vault too many times in the last hour. Wait a while, then refresh or switch devices again.",
+  deviceKeyMissing:
+    "This device's linking key is missing from the system keyring. Unlink this device, then link it again.",
+  deviceKeyUnavailable:
+    "This device's linking key could not be read from the system keyring. Unlock the keyring or sign in again, then retry.",
   linkingDisabled:
     "Device linking is off on this device because its saved linking data could not be read. Your vault still works here; restart the app, and if this persists, link the device again.",
   coordinatorBusy:

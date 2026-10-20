@@ -145,6 +145,17 @@ where
         .map_err(|error| format!("flush transfer bundle: {error}"))
 }
 
+/// Loads the device ID and TLS identity on a blocking thread, because the first load may wait on
+/// the operating-system keyring.
+pub(crate) async fn load_tls_identity(
+    manager: &PairingManager,
+) -> Result<(String, TlsIdentity), String> {
+    let manager = manager.clone();
+    tokio::task::spawn_blocking(move || manager.identity())
+        .await
+        .map_err(|error| format!("load device linking key: {error}"))?
+}
+
 pub(crate) async fn enroll(
     manager: &PairingManager,
     invitation: &PairingInvitation,
@@ -156,7 +167,7 @@ pub(crate) async fn enroll(
         .endpoint
         .parse()
         .map_err(|_| "pairing endpoint is invalid".to_string())?;
-    let (device_id, identity) = manager.identity()?;
+    let (device_id, identity) = load_tls_identity(manager).await?;
     let mut stream = connect_pinned(endpoint, &invitation.coordinator_fingerprint, None).await?;
     timeout_control(write_control(
         &mut stream,
@@ -211,7 +222,7 @@ pub(crate) async fn request_bundle(
     let coordinator = manager
         .coordinator_pin()?
         .ok_or_else(|| "this device is not linked to a coordinator".to_string())?;
-    let (device_id, _) = manager.identity()?;
+    let device_id = manager.device_id()?;
     let started = tokio::time::Instant::now();
     loop {
         if cancellation.is_cancelled() {
@@ -350,7 +361,7 @@ pub(crate) async fn upload_bundle(
         .endpoint
         .parse()
         .map_err(|_| "coordinator endpoint is invalid".to_string())?;
-    let (_, identity) = manager.identity()?;
+    let (_, identity) = load_tls_identity(manager).await?;
     let mut stream = connect_pinned(
         endpoint,
         &coordinator.certificate_fingerprint,
@@ -420,7 +431,7 @@ pub(crate) async fn probe_coordinator(
     let coordinator = manager
         .coordinator_pin()?
         .ok_or_else(|| "this device is not linked to a coordinator".to_string())?;
-    let (device_id, _) = manager.identity()?;
+    let device_id = manager.device_id()?;
     match authenticated_exchange(
         manager,
         ControlMessage::RefreshRequest {
@@ -460,7 +471,7 @@ pub(crate) async fn exchange_distractions(
     let coordinator = manager
         .coordinator_pin()?
         .ok_or_else(|| "this device is not linked to a coordinator".to_string())?;
-    let (device_id, _) = manager.identity()?;
+    let device_id = manager.device_id()?;
     match authenticated_exchange(
         manager,
         ControlMessage::DistractionsExchange {
@@ -504,7 +515,7 @@ pub(crate) async fn request_person_key(manager: &PairingManager) -> Result<Contr
     let coordinator = manager
         .coordinator_pin()?
         .ok_or_else(|| "this device is not linked to a coordinator".to_string())?;
-    let (device_id, _) = manager.identity()?;
+    let device_id = manager.device_id()?;
     authenticated_exchange(
         manager,
         ControlMessage::PersonKeyRequest {
@@ -522,7 +533,7 @@ pub(crate) fn sync_peer(manager: &PairingManager) -> Result<Option<(String, Stri
     let Some(coordinator) = manager.coordinator_pin()? else {
         return Ok(None);
     };
-    let (device_id, _) = manager.identity()?;
+    let device_id = manager.device_id()?;
     Ok(Some((coordinator.vault_id, device_id)))
 }
 
@@ -545,7 +556,7 @@ async fn authenticated_exchange(
         .endpoint
         .parse()
         .map_err(|_| "coordinator endpoint is invalid".to_string())?;
-    let (_, identity) = manager.identity()?;
+    let (_, identity) = load_tls_identity(manager).await?;
     let mut stream = connect_pinned(
         endpoint,
         &coordinator.certificate_fingerprint,
@@ -602,7 +613,7 @@ async fn download_bundle_inner(
         .endpoint
         .parse()
         .map_err(|_| "coordinator endpoint is invalid".to_string())?;
-    let (_, identity) = manager.identity()?;
+    let (_, identity) = load_tls_identity(manager).await?;
     let mut stream = connect_pinned(
         endpoint,
         &coordinator.certificate_fingerprint,

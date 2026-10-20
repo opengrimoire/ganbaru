@@ -30,7 +30,7 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 const PAIRING_STATE_FILE: &str = "vault-handoff.json";
 const PAIRING_STATE_SCHEMA_VERSION: u32 = 2;
@@ -47,8 +47,27 @@ const ENROLLMENT_CODE_DOMAIN: &[u8] = b"ganbaru-enrollment-code-v1";
 struct StoredIdentity {
     device_id: String,
     certificate: String,
-    private_key: String,
+    /// The PKCS#8 key while it stays in this private file; `None` once it lives in the
+    /// [`IdentityKeyStore`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    private_key: Option<String>,
 }
+
+/// Device-local secret storage for the TLS private key, such as the operating-system keyring.
+/// Calls may block on platform services.
+pub trait IdentityKeyStore: Send + Sync {
+    /// The stored PKCS#8 key, or `None` when this device has no entry.
+    fn read(&self, device_id: &str) -> Result<Option<Vec<u8>>, String>;
+    fn write(&self, device_id: &str, pkcs8: &[u8]) -> Result<(), String>;
+    fn remove(&self, device_id: &str) -> Result<(), String>;
+}
+
+/// Prefix of the error returned while the key store holding the TLS key cannot be read.
+pub const DEVICE_KEY_UNAVAILABLE_ERROR: &str =
+    "this device's linking key could not be read from the system keyring";
+/// Error returned when a linked device's TLS key is gone from its key store. Unlinking lets the
+/// next use create a fresh identity, because no peer pins it anymore.
+pub const DEVICE_KEY_MISSING_ERROR: &str = "this device's linking key is missing from the system keyring; unlink this device and link it again";
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -194,6 +213,10 @@ struct PairingManagerInner {
     state: Option<PairingStateFile>,
     /// Why startup disabled linking; pairing operations report it instead of running.
     disabled_reason: Option<String>,
+    /// Where the TLS key moves out of the state file; without one it stays in the file.
+    key_store: Option<Arc<dyn IdentityKeyStore>>,
+    /// The PKCS#8 key once loaded, so later handshakes do not reach the key store again.
+    private_key: Option<Vec<u8>>,
     #[cfg(desktop)]
     invitations: BTreeMap<String, PendingInvitation>,
     #[cfg(desktop)]
@@ -252,6 +275,7 @@ impl PairingManager {
         inner.staging_root = Some(staging_root);
         inner.state = Some(state);
         inner.disabled_reason = None;
+        inner.private_key = None;
         #[cfg(desktop)]
         {
             inner.invitations.clear();
@@ -269,6 +293,7 @@ impl PairingManager {
         inner.state_path = None;
         inner.staging_root = None;
         inner.disabled_reason = Some(reason);
+        inner.private_key = None;
         #[cfg(desktop)]
         {
             inner.invitations.clear();
@@ -277,13 +302,147 @@ impl PairingManager {
         Ok(())
     }
 
-    pub fn identity(&self) -> Result<(String, TlsIdentity), String> {
+    /// Selects where the TLS key is kept. The key moves there on its next load and stays in the
+    /// private state file whenever the store refuses it.
+    pub fn set_identity_key_store(&self, store: Arc<dyn IdentityKeyStore>) -> Result<(), String> {
+        let mut inner = self.lock()?;
+        inner.key_store = Some(store);
+        inner.private_key = None;
+        Ok(())
+    }
+
+    /// This device's pairing ID, read without loading the TLS key.
+    pub fn device_id(&self) -> Result<String, String> {
         let inner = self.lock()?;
-        let state = initialized_state(&inner)?;
-        Ok((
-            state.identity.device_id.clone(),
-            decode_identity(&state.identity)?,
-        ))
+        Ok(initialized_state(&inner)?.identity.device_id.clone())
+    }
+
+    /// This device's TLS certificate, read without loading the private key.
+    pub fn certificate(&self) -> Result<CertificateDer<'static>, String> {
+        let inner = self.lock()?;
+        decode_certificate(&initialized_state(&inner)?.identity.certificate)
+    }
+
+    /// The device ID and TLS identity. The first call may block on the key store, so async
+    /// callers run it on a blocking thread.
+    pub fn identity(&self) -> Result<(String, TlsIdentity), String> {
+        let (device_id, certificate, stored_key, store) = {
+            let inner = self.lock()?;
+            let identity = &initialized_state(&inner)?.identity;
+            let certificate = decode_certificate(&identity.certificate)?;
+            if let Some(key) = inner.private_key.as_ref() {
+                return Ok((
+                    identity.device_id.clone(),
+                    tls_identity(certificate, key.clone()),
+                ));
+            }
+            (
+                identity.device_id.clone(),
+                certificate,
+                identity.private_key.clone(),
+                inner.key_store.clone(),
+            )
+        };
+        let key = match (stored_key, store) {
+            (Some(encoded), store) => {
+                let key = decode_private_key(&encoded)?;
+                if let Some(store) = store {
+                    self.move_key_to_store(store.as_ref(), &device_id, &encoded, &key);
+                }
+                key
+            }
+            (None, Some(store)) => match store.read(&device_id) {
+                Ok(Some(key)) => {
+                    validate_private_key(&key)?;
+                    key
+                }
+                Ok(None) => return self.replace_lost_identity(&device_id),
+                Err(error) => return Err(format!("{DEVICE_KEY_UNAVAILABLE_ERROR}: {error}")),
+            },
+            (None, None) => {
+                return Err(format!(
+                    "{DEVICE_KEY_UNAVAILABLE_ERROR}: no key store is configured"
+                ));
+            }
+        };
+        let mut inner = self.lock()?;
+        if initialized_state(&inner)?.identity.device_id == device_id {
+            inner.private_key = Some(key.clone());
+        }
+        Ok((device_id, tls_identity(certificate, key)))
+    }
+
+    /// Moves the TLS key from the state file into `store`. The file keeps the key unless the
+    /// store returns the same bytes and the file is rewritten without it.
+    fn move_key_to_store(
+        &self,
+        store: &dyn IdentityKeyStore,
+        device_id: &str,
+        encoded: &str,
+        key: &[u8],
+    ) {
+        let stored = store
+            .write(device_id, key)
+            .and_then(|()| store.read(device_id))
+            .and_then(|read| match read {
+                Some(read) if read == key => Ok(()),
+                _ => Err("the key store returned different bytes".to_string()),
+            });
+        if let Err(error) = stored {
+            eprintln!("device linking key stays in the private pairing file: {error}");
+            return;
+        }
+        let persisted = (|| {
+            let mut inner = self.lock()?;
+            let state = initialized_state(&inner)?;
+            if state.identity.device_id != device_id
+                || state.identity.private_key.as_deref() != Some(encoded)
+            {
+                return Ok(());
+            }
+            let mut next = state.clone();
+            next.identity.private_key = None;
+            let path = inner
+                .state_path
+                .clone()
+                .ok_or_else(|| "pairing state path is not initialized".to_string())?;
+            persist_state(&path, &next)?;
+            inner.state = Some(next);
+            Ok::<(), String>(())
+        })();
+        if let Err(error) = persisted {
+            eprintln!("device linking key stays in the private pairing file: {error}");
+            if let Err(error) = store.remove(device_id) {
+                eprintln!("remove unused device linking key: {error}");
+            }
+        }
+    }
+
+    /// Creates a fresh identity after the stored key vanished, but only while no peer or
+    /// coordinator pins the old certificate; otherwise the user must unlink first.
+    fn replace_lost_identity(&self, device_id: &str) -> Result<(String, TlsIdentity), String> {
+        {
+            let mut inner = self.lock()?;
+            let state = initialized_state(&inner)?;
+            if state.identity.device_id != device_id || state.identity.private_key.is_some() {
+                drop(inner);
+                return self.identity();
+            }
+            if !state.linked_peers.is_empty() || state.coordinator.is_some() {
+                return Err(DEVICE_KEY_MISSING_ERROR.to_string());
+            }
+            let mut next = state.clone();
+            next.identity = create_identity(device_id.to_string())?;
+            let path = inner
+                .state_path
+                .clone()
+                .ok_or_else(|| "pairing state path is not initialized".to_string())?;
+            persist_state(&path, &next)?;
+            inner.state = Some(next);
+            #[cfg(desktop)]
+            inner.invitations.clear();
+        }
+        self.identity()
     }
 
     pub fn linked_peers(&self) -> Result<Vec<LinkedPeer>, String> {
@@ -734,22 +893,32 @@ fn create_identity(device_id: String) -> Result<StoredIdentity, String> {
     Ok(StoredIdentity {
         device_id,
         certificate: base64::engine::general_purpose::STANDARD.encode(certificate.der().as_ref()),
-        private_key: base64::engine::general_purpose::STANDARD.encode(signing_key.serialize_der()),
+        private_key: Some(
+            base64::engine::general_purpose::STANDARD.encode(signing_key.serialize_der()),
+        ),
     })
 }
 
-fn decode_identity(identity: &StoredIdentity) -> Result<TlsIdentity, String> {
-    let certificate = decode_certificate(&identity.certificate)?;
+fn decode_private_key(encoded: &str) -> Result<Vec<u8>, String> {
     let private_key = base64::engine::general_purpose::STANDARD
-        .decode(&identity.private_key)
+        .decode(encoded)
         .map_err(|error| format!("decode device private key: {error}"))?;
+    validate_private_key(&private_key)?;
+    Ok(private_key)
+}
+
+fn validate_private_key(private_key: &[u8]) -> Result<(), String> {
     if private_key.is_empty() || private_key.len() > MAX_CERTIFICATE_BYTES {
         return Err("device private key has an invalid size".to_string());
     }
-    Ok(TlsIdentity {
+    Ok(())
+}
+
+fn tls_identity(certificate: CertificateDer<'static>, private_key: Vec<u8>) -> TlsIdentity {
+    TlsIdentity {
         certificate,
         private_key: PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(private_key)),
-    })
+    }
 }
 
 pub fn decode_certificate(encoded: &str) -> Result<CertificateDer<'static>, String> {

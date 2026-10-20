@@ -208,6 +208,10 @@ export const vaultHandoff = {
     "La edición cambió de dispositivo demasiadas veces en la última hora. Espera un rato y vuelve a cambiar de dispositivo.",
   bundleRequestLimit:
     "Este dispositivo pidió la bóveda demasiadas veces en la última hora. Espera un rato y vuelve a actualizar o a cambiar de dispositivo.",
+  deviceKeyMissing:
+    "Falta la clave de vinculación de este dispositivo en el llavero del sistema. Desvincula este dispositivo y vuelve a vincularlo.",
+  deviceKeyUnavailable:
+    "No se pudo leer la clave de vinculación de este dispositivo desde el llavero del sistema. Desbloquea el llavero o vuelve a iniciar sesión y reintenta.",
   linkingDisabled:
     "La vinculación de dispositivos está desactivada en este dispositivo porque no se pudieron leer sus datos de vinculación guardados. Tu bóveda sigue funcionando aquí; reinicia la aplicación y, si continúa, vuelve a vincular el dispositivo.",
   coordinatorBusy:

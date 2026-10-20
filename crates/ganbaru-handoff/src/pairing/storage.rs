@@ -3,7 +3,8 @@
 use super::{
     MAX_LINKED_PEERS, MAX_REVOKED_PEERS, PAIRING_STATE_SCHEMA_VERSION, PairingManagerInner,
     PairingStateFile, PendingAcknowledgement, StoredIncomingTransfer, StoredOutgoingTransfer,
-    certificate_fingerprint, decode_certificate, decode_identity, initialized_state, random_token,
+    certificate_fingerprint, decode_certificate, decode_private_key, initialized_state,
+    random_token,
 };
 use crate::protocol::{self, BundlePurpose, validate_device_label, validate_identifier};
 use std::fs;
@@ -118,7 +119,10 @@ pub(super) fn validate_state(
         return Err("pairing identity belongs to a different device".to_string());
     }
     validate_identifier("device id", &state.identity.device_id)?;
-    decode_identity(&state.identity)?;
+    decode_certificate(&state.identity.certificate)?;
+    if let Some(private_key) = state.identity.private_key.as_deref() {
+        decode_private_key(private_key)?;
+    }
     if state.linked_peers.len() > MAX_LINKED_PEERS {
         return Err("too many linked devices are stored".to_string());
     }

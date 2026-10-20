@@ -1072,3 +1072,169 @@ fn a_discarded_invitation_cannot_be_verified_or_enrolled() {
     );
     assert!(manager.linked_peers().expect("peers").is_empty());
 }
+
+/// In-memory stand-in for the operating-system keyring.
+#[derive(Default)]
+struct MemoryKeyStore {
+    keys: Mutex<BTreeMap<String, Vec<u8>>>,
+    refuse_writes: bool,
+    fail_reads: bool,
+    reads: std::sync::atomic::AtomicUsize,
+}
+
+impl MemoryKeyStore {
+    fn key(&self, device_id: &str) -> Option<Vec<u8>> {
+        self.keys.lock().expect("keys").get(device_id).cloned()
+    }
+
+    fn forget(&self, device_id: &str) {
+        self.keys.lock().expect("keys").remove(device_id);
+    }
+}
+
+impl IdentityKeyStore for MemoryKeyStore {
+    fn read(&self, device_id: &str) -> Result<Option<Vec<u8>>, String> {
+        self.reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if self.fail_reads {
+            return Err("keyring is locked".to_string());
+        }
+        Ok(self.key(device_id))
+    }
+
+    fn write(&self, device_id: &str, pkcs8: &[u8]) -> Result<(), String> {
+        if self.refuse_writes {
+            return Err("no keyring service".to_string());
+        }
+        self.keys
+            .lock()
+            .expect("keys")
+            .insert(device_id.to_string(), pkcs8.to_vec());
+        Ok(())
+    }
+
+    fn remove(&self, device_id: &str) -> Result<(), String> {
+        self.forget(device_id);
+        Ok(())
+    }
+}
+
+fn manager_with_store(root: &Path, store: &Arc<MemoryKeyStore>) -> PairingManager {
+    let manager = PairingManager::default();
+    manager
+        .set_identity_key_store(store.clone())
+        .expect("key store");
+    manager
+        .initialize(root.to_path_buf(), "device-desktop".to_string())
+        .expect("initialize");
+    manager
+}
+
+fn state_text(root: &Path) -> String {
+    fs::read_to_string(root.join(PAIRING_STATE_FILE)).expect("pairing state")
+}
+
+fn private_key_bytes(identity: &TlsIdentity) -> Vec<u8> {
+    identity.private_key.secret_der().to_vec()
+}
+
+#[test]
+fn tls_key_moves_into_the_key_store_and_leaves_the_state_file() {
+    let temporary = TestDirectory::new("key-store-move");
+    let store = Arc::new(MemoryKeyStore::default());
+    let manager = manager_with_store(temporary.path(), &store);
+
+    assert_eq!(manager.device_id().expect("device id"), "device-desktop");
+    assert_eq!(
+        store.reads.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "reading the device ID never reaches the key store"
+    );
+
+    let (_, identity) = manager.identity().expect("identity");
+    let key = private_key_bytes(&identity);
+    KeyPair::try_from(key.as_slice()).expect("stored key is a usable PKCS#8 key");
+    assert_eq!(store.key("device-desktop").as_deref(), Some(key.as_slice()));
+    assert!(!state_text(temporary.path()).contains("privateKey"));
+
+    let restarted = manager_with_store(temporary.path(), &store);
+    let (_, reloaded) = restarted.identity().expect("reloaded identity");
+    assert_eq!(private_key_bytes(&reloaded), key);
+    assert_eq!(reloaded.certificate, identity.certificate);
+
+    let reads = store.reads.load(std::sync::atomic::Ordering::SeqCst);
+    restarted.identity().expect("cached identity");
+    assert_eq!(
+        store.reads.load(std::sync::atomic::Ordering::SeqCst),
+        reads,
+        "a loaded key is reused without another key store read"
+    );
+}
+
+#[test]
+fn tls_key_stays_in_the_state_file_when_the_key_store_refuses_it() {
+    let temporary = TestDirectory::new("key-store-refused");
+    let store = Arc::new(MemoryKeyStore {
+        refuse_writes: true,
+        ..MemoryKeyStore::default()
+    });
+    let manager = manager_with_store(temporary.path(), &store);
+
+    let (_, identity) = manager.identity().expect("identity from the state file");
+    assert!(store.key("device-desktop").is_none());
+    assert!(state_text(temporary.path()).contains("privateKey"));
+
+    let without_store = PairingManager::default();
+    without_store
+        .initialize(temporary.path().to_path_buf(), "device-desktop".to_string())
+        .expect("initialize without a key store");
+    let (_, reloaded) = without_store.identity().expect("identity");
+    assert_eq!(private_key_bytes(&reloaded), private_key_bytes(&identity));
+}
+
+#[test]
+fn a_lost_tls_key_blocks_a_linked_device_until_it_is_unlinked() {
+    let temporary = TestDirectory::new("key-store-lost");
+    let store = Arc::new(MemoryKeyStore::default());
+    let manager = manager_with_store(temporary.path(), &store);
+    enroll_device(&manager, "device-phone", "Phone", 100);
+    let (_, original) = manager.identity().expect("identity");
+    store.forget("device-desktop");
+
+    let restarted = manager_with_store(temporary.path(), &store);
+    assert_eq!(
+        restarted.identity().map(|_| ()).unwrap_err(),
+        DEVICE_KEY_MISSING_ERROR
+    );
+    assert_eq!(restarted.linked_peers().expect("linked peers").len(), 1);
+    assert!(!state_text(temporary.path()).contains("privateKey"));
+
+    restarted.unlink().expect("unlink");
+    let (_, replaced) = restarted.identity().expect("fresh identity");
+    assert_ne!(replaced.certificate, original.certificate);
+    assert_eq!(
+        store.key("device-desktop").as_deref(),
+        Some(private_key_bytes(&replaced).as_slice())
+    );
+}
+
+#[test]
+fn an_unreadable_key_store_reports_the_failure_without_replacing_the_identity() {
+    let temporary = TestDirectory::new("key-store-unreadable");
+    let store = Arc::new(MemoryKeyStore::default());
+    let manager = manager_with_store(temporary.path(), &store);
+    let (_, original) = manager.identity().expect("identity");
+    let before = state_text(temporary.path());
+
+    let locked = Arc::new(MemoryKeyStore {
+        fail_reads: true,
+        ..MemoryKeyStore::default()
+    });
+    let restarted = manager_with_store(temporary.path(), &locked);
+    let error = restarted.identity().map(|_| ()).unwrap_err();
+    assert!(error.starts_with(DEVICE_KEY_UNAVAILABLE_ERROR), "{error}");
+    assert_eq!(state_text(temporary.path()), before);
+
+    let unlocked = manager_with_store(temporary.path(), &store);
+    let (_, reloaded) = unlocked.identity().expect("identity after unlock");
+    assert_eq!(reloaded.certificate, original.certificate);
+}

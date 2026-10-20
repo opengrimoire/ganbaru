@@ -11,7 +11,7 @@ use crate::vault::handoff::enrollment_approval::{
     ENROLLMENT_DECLINED_MESSAGE, ENROLLMENT_UNANSWERED_MESSAGE, EnrollmentApprovals,
     EnrollmentDecision,
 };
-use crate::vault::handoff::pairing::{Enrollment, PairingManager};
+use crate::vault::handoff::pairing::{Enrollment, PairingManager, TlsIdentity};
 use crate::vault::handoff::protocol::{
     BundleMetadata, BundlePurpose, ControlMessage, PROTOCOL_VERSION, TRANSFER_CHUNK_BYTES,
     read_control, read_control_limited, unix_time_ms, write_control,
@@ -48,23 +48,26 @@ struct CachedServerConfig {
 }
 
 impl ServerConfigCache {
-    fn current(&self, manager: &PairingManager) -> Result<Arc<rustls::ServerConfig>, String> {
+    async fn current(&self, manager: &PairingManager) -> Result<Arc<rustls::ServerConfig>, String> {
         let client_certificates = manager.client_auth_certificates()?;
-        let mut cached = self
-            .0
-            .lock()
-            .map_err(|_| "coordinator TLS configuration lock is unavailable".to_string())?;
-        if let Some(cached) = cached.as_ref()
+        if let Some(cached) = self.lock()?.as_ref()
             && cached.client_certificates == client_certificates
         {
             return Ok(cached.config.clone());
         }
-        let config = Arc::new(server_config(manager, client_certificates.clone())?);
-        *cached = Some(CachedServerConfig {
+        let (_, identity) = super::load_tls_identity(manager).await?;
+        let config = Arc::new(server_config(identity, client_certificates.clone())?);
+        *self.lock()? = Some(CachedServerConfig {
             client_certificates,
             config: config.clone(),
         });
         Ok(config)
+    }
+
+    fn lock(&self) -> Result<std::sync::MutexGuard<'_, Option<CachedServerConfig>>, String> {
+        self.0
+            .lock()
+            .map_err(|_| "coordinator TLS configuration lock is unavailable".to_string())
     }
 }
 
@@ -185,7 +188,7 @@ async fn handle_connection(
             },
         limits,
     } = services;
-    let config = configs.current(&manager)?;
+    let config = configs.current(&manager).await?;
     let mut stream = tokio::time::timeout(
         TLS_HANDSHAKE_TIMEOUT,
         TlsAcceptor::from(config).accept(socket),
@@ -319,7 +322,7 @@ async fn handle_connection(
             if let Err(error) = manager.enroll_peer(enrollment, requested_at_ms) {
                 return send_error(&mut stream, "enrollment_rejected", &error, false).await;
             }
-            let (coordinator_device_id, _) = manager.identity()?;
+            let coordinator_device_id = manager.device_id()?;
             let coordinator_device_label = suggested_device_label();
             timeout_control(write_control(
                 &mut stream,
@@ -954,10 +957,9 @@ async fn serve_upload(
 }
 
 fn server_config(
-    manager: &PairingManager,
+    identity: TlsIdentity,
     client_certificates: Vec<CertificateDer<'static>>,
 ) -> Result<rustls::ServerConfig, String> {
-    let (_, identity) = manager.identity()?;
     let builder = rustls::ServerConfig::builder();
     let config = if !client_certificates.is_empty() {
         let mut roots = RootCertStore::empty();

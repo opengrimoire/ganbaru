@@ -27,6 +27,17 @@ function isCoordinatorBusy(message: string): boolean {
   return message.includes("handling too many connections");
 }
 
+/** Guidance when this device's linking key is missing from or unreadable in the system keyring. */
+function deviceKeyMessage(
+  message: string,
+): "vaultHandoff.deviceKeyMissing" | "vaultHandoff.deviceKeyUnavailable" | null {
+  if (message.includes("linking key is missing")) return "vaultHandoff.deviceKeyMissing";
+  if (message.includes("linking key could not be read")) {
+    return "vaultHandoff.deviceKeyUnavailable";
+  }
+  return null;
+}
+
 /** Guidance for an enrollment the coordinator user declined, missed, or could not answer. */
 function enrollmentApprovalMessage(
   message: string,
@@ -65,6 +76,8 @@ export function formatHandoffError(cause: unknown, t: Translate): string {
   if (isLinkingDisabled(lower)) {
     return t("vaultHandoff.linkingDisabled");
   }
+  const keyMessage = deviceKeyMessage(lower);
+  if (keyMessage) return t(keyMessage);
   const enrollmentMessage = enrollmentApprovalMessage(lower);
   if (enrollmentMessage) return t(enrollmentMessage);
   if (lower.includes("chat terminals")) {
@@ -124,7 +137,12 @@ export function formatPairingCodeError(cause: unknown, t: Translate): string {
 /** Converts ownership connectivity failures into main-device guidance. */
 export function formatOwnershipHandoffError(cause: unknown, t: Translate): string {
   const lower = errorText(cause).toLowerCase();
-  if (!isLinkingDisabled(lower) && !isCoordinatorBusy(lower) && isConnectivityFailure(lower)) {
+  if (
+    !isLinkingDisabled(lower)
+    && !isCoordinatorBusy(lower)
+    && !deviceKeyMessage(lower)
+    && isConnectivityFailure(lower)
+  ) {
     return t("vaultHandoff.ownerUnreachable");
   }
   return formatHandoffError(cause, t);

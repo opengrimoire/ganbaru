@@ -249,7 +249,7 @@ async fn receive(
         preserve_local_copy,
     )
     .await?;
-    let (device_id, _) = pairing.identity()?;
+    let device_id = pairing.device_id()?;
     let pending = PendingAcknowledgement {
         vault_id: metadata.vault_id.clone(),
         device_id,
@@ -302,7 +302,7 @@ async fn resume_committed_ownership(
         !pairing.replica_ready()?,
     )
     .await?;
-    let (device_id, _) = pairing.identity()?;
+    let device_id = pairing.device_id()?;
     let pending = PendingAcknowledgement {
         vault_id: vault_id.to_string(),
         device_id,

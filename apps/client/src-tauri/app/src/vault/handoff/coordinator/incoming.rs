@@ -52,7 +52,7 @@ impl<R: Runtime> CoordinatorState<R> {
                         false,
                     )
                     .await?;
-                    let (device_id, _) = self.pairing.identity()?;
+                    let device_id = self.pairing.device_id()?;
                     self.pairing
                         .complete_incoming_activation(PendingAcknowledgement {
                             vault_id: metadata.vault_id.clone(),
@@ -72,7 +72,7 @@ impl<R: Runtime> CoordinatorState<R> {
             }
             return Err("another uploaded vault transfer is pending".to_string());
         }
-        let (local_device_id, _) = self.pairing.identity()?;
+        let local_device_id = self.pairing.device_id()?;
         let status = self
             .app
             .state::<VaultOwnershipManager>()
@@ -111,7 +111,7 @@ impl<R: Runtime> CoordinatorState<R> {
                 false,
             )
             .await?;
-            let (device_id, _) = self.pairing.identity()?;
+            let device_id = self.pairing.device_id()?;
             self.pairing
                 .complete_incoming_activation(PendingAcknowledgement {
                     vault_id: metadata.vault_id.clone(),
@@ -163,7 +163,7 @@ impl<R: Runtime> CoordinatorState<R> {
             }
             return Err("another uploaded vault transfer is pending".to_string());
         }
-        let (local_device_id, _) = self.pairing.identity()?;
+        let local_device_id = self.pairing.device_id()?;
         let status = self
             .app
             .state::<VaultOwnershipManager>()
@@ -261,7 +261,7 @@ impl<R: Runtime> CoordinatorState<R> {
                 metadata.generation,
             )?;
         }
-        let (device_id, _) = self.pairing.identity()?;
+        let device_id = self.pairing.device_id()?;
         self.pairing
             .complete_incoming_activation(PendingAcknowledgement {
                 vault_id: metadata.vault_id,

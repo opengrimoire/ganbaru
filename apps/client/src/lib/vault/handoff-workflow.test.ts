@@ -55,6 +55,18 @@ describe("formatHandoffError", () => {
     );
   });
 
+  it("explains a missing or unreadable device linking key instead of a connectivity failure", () => {
+    const missing =
+      "this device's linking key is missing from the system keyring; unlink this device and link it again";
+    expect(formatHandoffError(missing, t)).toBe("vaultHandoff.deviceKeyMissing");
+    const unavailable =
+      "this device's linking key could not be read from the system keyring: secret service connection unavailable";
+    expect(formatHandoffError(unavailable, t)).toBe("vaultHandoff.deviceKeyUnavailable");
+    expect(formatOwnershipHandoffError(new Error(unavailable), t)).toBe(
+      "vaultHandoff.deviceKeyUnavailable",
+    );
+  });
+
   it("explains a busy coordinator instead of a connectivity failure", () => {
     const message = "the coordinator is handling too many connections; retry shortly";
     expect(formatHandoffError(message, t)).toBe("vaultHandoff.coordinatorBusy");

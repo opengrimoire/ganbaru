@@ -66,6 +66,8 @@ Secrets are different. Provider credentials live behind operating-system credent
 
 Sync writer keys are per installation and per vault. Desktop stores them in the operating-system keyring; Android stores them in private application files, with the same protection as the person key, until Keystore wrapping is implemented. Neither location is inside the vault, so writer keys never enter snapshots, backups, or device transfers. A restored or copied database is detected and gets a new writer instead of reusing an old key's sequence.
 
+The device linking TLS key follows the same rule. Desktop moves it from the private pairing state file into the operating-system keyring the first time linking needs it, and keeps it in the private file only when no keyring accepts it, so keyring-less Linux desktops can still link. Android keeps it in the private file until Keystore wrapping is implemented. A key that disappears from the keyring is never silently replaced while peers pin this device, because a new certificate would break every link; the device reports the problem and is relinked by the user.
+
 ## Future synchronization encryption
 
 **Planned.** Remote sync must use end-to-end encryption in addition to transport encryption. The accepted design uses signed, encrypted resource-scoped operations and immutable asset chunks, delivered directly or through an optional user-hosted Rust relay that stores opaque records.

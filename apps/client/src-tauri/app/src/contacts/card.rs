@@ -97,9 +97,9 @@ pub(crate) fn resolve_delivery_hint<R: Runtime>(app: &AppHandle<R>) -> DeliveryH
         use crate::vault::handoff::pairing::certificate_fingerprint;
         let lifecycle = app.state::<crate::vault::handoff::CoordinatorLifecycle>();
         if let Ok(Some(endpoint)) = lifecycle.endpoint()
-            && let Ok((_, identity)) = manager.identity()
+            && let Ok(certificate) = manager.certificate()
         {
-            let fingerprint = certificate_fingerprint(identity.certificate.as_ref());
+            let fingerprint = certificate_fingerprint(certificate.as_ref());
             return bounded_hint(endpoint.to_string(), &fingerprint);
         }
     }

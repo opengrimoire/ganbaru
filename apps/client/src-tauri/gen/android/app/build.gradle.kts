@@ -129,11 +129,46 @@ fun registerInitScriptOriginTask(profile: String, rule: String) =
 val releaseInitScriptOrigins = registerInitScriptOriginTask("Release", appOriginInitScriptRule)
 val debugInitScriptOrigins = registerInitScriptOriginTask("Debug", anyOriginInitScriptRule)
 
+// AppOriginChromeClient forwards these generated RustWebChromeClient callbacks. A wry update that overrides a different
+// set would silently lose behavior such as file inputs or dialogs, so the build stops until the wrapper is reviewed.
+val rustWebChromeClientSource =
+    layout.projectDirectory.file("src/main/java/org/opengrimoire/ganbaru/generated/RustWebChromeClient.kt").asFile
+val forwardedChromeClientCallbacks = setOf(
+    "onShowCustomView",
+    "onHideCustomView",
+    "onPermissionRequest",
+    "onJsAlert",
+    "onJsConfirm",
+    "onJsPrompt",
+    "onGeolocationPermissionsShowPrompt",
+    "onShowFileChooser",
+    "onConsoleMessage",
+    "onReceivedTitle",
+)
+
+fun registerChromeClientCallbackTask(profile: String) =
+    tasks.register("rustWebChromeClientCallbacks$profile") {
+        val source = rustWebChromeClientSource
+        val expected = forwardedChromeClientCallbacks
+        mustRunAfter(tasks.matching { it.name.startsWith("rustBuild") && it.name.endsWith(profile) })
+        doLast {
+            val overridden = Regex("""(?m)^  override fun (\w+)""").findAll(source.readText()).map { it.groupValues[1] }.toSet()
+            if (overridden != expected) {
+                throw GradleException(
+                    "Generated RustWebChromeClient.kt overrides $overridden; AppOriginChromeClient forwards $expected. Review $source",
+                )
+            }
+        }
+    }
+
+val releaseChromeClientCallbacks = registerChromeClientCallbackTask("Release")
+val debugChromeClientCallbacks = registerChromeClientCallbackTask("Debug")
+
 tasks.matching { it.name.startsWith("compile") && it.name.endsWith("ReleaseKotlin") }.configureEach {
-    dependsOn(releaseInitScriptOrigins)
+    dependsOn(releaseInitScriptOrigins, releaseChromeClientCallbacks)
 }
 tasks.matching { it.name.startsWith("compile") && it.name.endsWith("DebugKotlin") }.configureEach {
-    dependsOn(debugInitScriptOrigins)
+    dependsOn(debugInitScriptOrigins, debugChromeClientCallbacks)
 }
 
 dependencies {

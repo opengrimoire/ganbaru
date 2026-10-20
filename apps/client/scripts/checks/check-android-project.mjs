@@ -84,6 +84,7 @@ const [
   mobileDistractionsManifest,
   mobileNotificationsPlugin,
   mobileDistractionsPlugin,
+  webViewPermissionPolicy,
 ] =
   await Promise.all([
     readAndroidFile("build.gradle.kts"),
@@ -128,6 +129,7 @@ const [
     readClientFile(
       "../../crates/ganbaru-mobile-distractions/android/src/main/java/org/opengrimoire/ganbaru/mobile/distractions/MobileDistractionsPlugin.kt",
     ),
+    readAndroidFile("app/src/main/java/org/opengrimoire/ganbaru/WebViewPermissionPolicy.kt"),
   ]);
 
 const failures = [];
@@ -224,9 +226,29 @@ for (const expected of [
   'val appOriginInitScriptRule = "setOf(\\"http://tauri.localhost\\", \\"https://tauri.localhost\\")"',
   'registerInitScriptOriginTask("Release", appOriginInitScriptRule)',
   'it.name.endsWith("ReleaseKotlin")',
-  "dependsOn(releaseInitScriptOrigins)",
+  "dependsOn(releaseInitScriptOrigins, releaseChromeClientCallbacks)",
 ]) {
   requireText(appBuild, expected, "release init script origin restriction", failures);
+}
+
+for (const expected of [
+  "registerChromeClientCallbackTask(\"Release\")",
+  "dependsOn(releaseInitScriptOrigins, releaseChromeClientCallbacks)",
+  "dependsOn(debugInitScriptOrigins, debugChromeClientCallbacks)",
+]) {
+  requireText(appBuild, expected, "generated chrome client callback pin", failures);
+}
+for (const expected of [
+  "Handler(Looper.getMainLooper()).post { installPermissionPolicy(webView) }",
+  "webView.webChromeClient = AppOriginChromeClient(",
+]) {
+  requireText(mainActivity, expected, "WebView permission policy", failures);
+}
+for (const expected of [
+  "if (allowed) delegate.onPermissionRequest(request) else request.deny()",
+  "callback?.invoke(origin, false, false)",
+]) {
+  requireText(webViewPermissionPolicy, expected, "WebView permission policy", failures);
 }
 
 requireText(rootBuild, 'classpath("com.android.tools.build:gradle:8.11.0")', "root build", failures);

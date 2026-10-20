@@ -36,6 +36,8 @@ The current adapter targets public Notion API version `2026-03-11`. It can impor
 
 Responses stream into strict byte limits before JSON parsing, require JSON media types, bound pagination and object counts, detect repeated cursors, cap retry waits, and cancel when the operation is dropped. Remote response bodies never appear in errors.
 
+Each page or row body accepts up to 5,000 blocks. One import makes at most 50,000 API requests and fetches at most 100,000 blocks; past 20,000 comments, later comments are skipped with a note. The user can stop a running import, while closing the dialog lets it finish in the background. A stop, or reaching the request or block budget, keeps every source finished before it, skips the source in progress and later ones with a note naming where it stopped, and rebuilds search and link indexes.
+
 Supported objects convert to local Notion-shaped contracts. Unsupported blocks become visible placeholders. Unsupported properties degrade only through an explicit documented representation and diagnostic. Provider-hosted file URLs and upload identities are not downloaded automatically.
 
 ## Notion export-folder import

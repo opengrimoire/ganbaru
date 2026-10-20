@@ -174,8 +174,10 @@
     includeUsers: boolean;
     keepExternalFileReferences: boolean;
     projectId: string | null;
+    importId: string;
   }) {
     const request: Omit<NotesNotionApiImportRequest, "parent"> = {
+      import_id: input.importId,
       integration_token: input.integrationToken,
       source_workspace_id: input.sourceWorkspaceId,
       page_ids: input.pageIds,
@@ -249,6 +251,7 @@
           embedded
           description={operationDescription()}
           onImport={importNotionApi}
+          onStop={notes.stopNotionApiImport}
           onCancel={onCancel}
         />
       {:else if loadedDialog.operation === "notion-export-import"}

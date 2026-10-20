@@ -1,5 +1,6 @@
 import {
   importNotesHtmlPage,
+  cancelNotesNotionApiImport,
   importNotesNotionApi,
   importNotesNotionExportFolder,
   saveNotesAgentBridge,
@@ -73,6 +74,11 @@ export function createNotesTransferActions(context: NotesTransferActionsContext)
     return result;
   }
 
+  /** Stops the Notion API import started with `importId`; its finished sources are kept. */
+  function stopNotionApiImport(importId: string): Promise<boolean> {
+    return cancelNotesNotionApiImport(importId);
+  }
+
   async function importNotionExportFolder(
     input: Omit<NotesNotionExportImportRequest, "parent"> & { parent?: NotesParent },
   ): Promise<NotesNotionExportImportResult | null> {
@@ -109,6 +115,7 @@ export function createNotesTransferActions(context: NotesTransferActionsContext)
   return {
     importHtmlPage,
     importNotionApi,
+    stopNotionApiImport,
     importNotionExportFolder,
     exportHtmlArchive,
     exportJsonGraph,

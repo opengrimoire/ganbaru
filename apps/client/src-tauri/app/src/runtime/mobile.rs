@@ -29,6 +29,7 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
         .manage(vault::handoff::source::SourceLifecycle::default())
         .manage(crate::sync::SyncRuntime::default())
         .manage(crate::sync::SyncSubscribers::default())
+        .manage(notes::notion_api_import::NotionApiImportCancellations::default())
         .invoke_handler(tauri::generate_handler![
             vault::vault_read_app_state,
             vault::vault_device_id,
@@ -263,6 +264,7 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
             notes::notes_resolve_unresolved_link,
             notes::notes_import_html_page,
             notes::notes_import_notion_api,
+            notes::notes_cancel_notion_api_import,
             notes::notes_local_user,
             notes::notes_update_local_user,
             notes::notes_list_page_templates,

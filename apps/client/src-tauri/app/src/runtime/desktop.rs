@@ -232,6 +232,7 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
         .manage(vault::handoff::source::SourceLifecycle::default())
         .manage(crate::sync::SyncRuntime::default())
         .manage(crate::sync::SyncSubscribers::default())
+        .manage(notes::notion_api_import::NotionApiImportCancellations::default())
         .manage(sound_effects::AppSoundState::default())
         .manage(pomodoro::overlay::PomodoroOverlayState::default())
         .manage(music::player::MediaPlayerState::default())
@@ -735,6 +736,7 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
             notes::notes_resolve_unresolved_link,
             notes::notes_import_html_page,
             notes::notes_import_notion_api,
+            notes::notes_cancel_notion_api_import,
             notes::notes_import_notion_export_folder,
             notes::notes_pick_and_write_html_archive,
             notes::notes_pick_and_write_json_graph,

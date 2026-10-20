@@ -1,5 +1,5 @@
 use crate::db::connect_sqlite;
-use tauri::{AppHandle, Runtime};
+use tauri::{AppHandle, Runtime, State};
 
 mod data_source_row_hierarchy;
 mod database_management;
@@ -7,6 +7,7 @@ mod database_management;
 mod export_dialogs;
 pub(crate) mod external_links;
 mod file_assets;
+pub(crate) mod notion_api_import;
 mod page_cover_assets;
 mod page_icon_assets;
 pub(crate) mod project_history;
@@ -305,15 +306,37 @@ pub async fn notes_import_html_page<R: Runtime>(
     project_history::mutation_result(&pool, value).await
 }
 
+/// Imports Notion pages and data sources; a request with `import_id` can be stopped with
+/// `notes_cancel_notion_api_import`, keeping the sources finished before the stop.
 #[tauri::command]
 pub async fn notes_import_notion_api<R: Runtime>(
     app: AppHandle<R>,
+    imports: State<'_, notion_api_import::NotionApiImportCancellations>,
     db_url: String,
     request: NoteNotionApiImportRequest,
 ) -> Result<project_history::NotesMutationResultDto<NoteNotionApiImportDto>, String> {
+    let registered = request
+        .import_id
+        .as_deref()
+        .map(|import_id| imports.register(import_id))
+        .transpose()?;
     let pool = connect_sqlite(app, db_url).await?;
-    let value = transfers::notion_api_import::import_from_api(&pool, request).await?;
+    let unaddressed = transfers::notion_api_import::NotionImportCancellation::new();
+    let cancellation = registered
+        .as_ref()
+        .map_or(&unaddressed, |registered| registered.cancellation());
+    let value = transfers::notion_api_import::import_from_api(&pool, request, cancellation).await?;
+    drop(registered);
     project_history::mutation_result(&pool, value).await
+}
+
+/// Stops a running Notion API import; `false` when no import with that ID is running.
+#[tauri::command]
+pub fn notes_cancel_notion_api_import(
+    imports: State<'_, notion_api_import::NotionApiImportCancellations>,
+    import_id: String,
+) -> Result<bool, String> {
+    imports.cancel(&import_id)
 }
 
 #[cfg(desktop)]

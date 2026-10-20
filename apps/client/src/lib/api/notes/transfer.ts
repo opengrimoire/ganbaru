@@ -42,6 +42,18 @@ export async function importNotesNotionApi(
   );
 }
 
+/**
+ * Stops a running Notion API import started with `import_id`; sources finished before the stop
+ * stay imported. Resolves `false` when no import with that ID is running.
+ */
+export async function cancelNotesNotionApiImport(importId: string): Promise<boolean> {
+  const value = await invoke<unknown>("notes_cancel_notion_api_import", { importId });
+  if (typeof value !== "boolean") {
+    throw new Error("Notion import stop returned an invalid response");
+  }
+  return value;
+}
+
 /** Pick a Notion export folder natively and import it; `null` means the picker was canceled. */
 export async function importNotesNotionExportFolder(
   request: NotesNotionExportImportRequest,

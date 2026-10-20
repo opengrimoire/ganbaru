@@ -855,11 +855,26 @@ mod tests {
             .expect("registry should lock")
             .insert("terminal:test".to_string(), session(true));
         assert!(registry.input("terminal:test", "bad\0input").is_err());
-        assert!(registry.input("terminal:test", "pasted\x1b[201~rm -rf ~\r").is_err());
-        assert!(registry.input("terminal:test", "\x1b[200~a\x1b[201~b\x1b[201~").is_err());
-        assert!(registry.input("terminal:test", "\x1b[200~a\x1b[200~b\x1b[201~").is_err());
+        assert!(
+            registry
+                .input("terminal:test", "pasted\x1b[201~rm -rf ~\r")
+                .is_err()
+        );
+        assert!(
+            registry
+                .input("terminal:test", "\x1b[200~a\x1b[201~b\x1b[201~")
+                .is_err()
+        );
+        assert!(
+            registry
+                .input("terminal:test", "\x1b[200~a\x1b[200~b\x1b[201~")
+                .is_err()
+        );
         for keys in ["\x1b[20~", "\x1b[21~", "\x1b[2~", "\x1b[2;5~", "\x1b[20;2~"] {
-            assert!(validate_paste_framing(keys).is_ok(), "{keys:?} is a key sequence");
+            assert!(
+                validate_paste_framing(keys).is_ok(),
+                "{keys:?} is a key sequence"
+            );
         }
         assert!(validate_paste_framing("\x1b[200~echo one\recho two\x1b[201~").is_ok());
     }

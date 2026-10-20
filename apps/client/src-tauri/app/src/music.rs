@@ -513,12 +513,7 @@ fn music_interchange_file_name(default_name: &str, extension: &str) -> Result<St
 pub async fn music_artwork_data_url(app: tauri::AppHandle, path: String) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let path = authorize(&app, &path, MusicPathKind::File)?;
-        let metadata = fs::metadata(&path)
-            .map_err(|error| format!("failed to inspect artwork file: {error}"))?;
-        if metadata.len() > MAX_ARTWORK_BYTES {
-            return Err("artwork file exceeds the 12 MB display limit".to_string());
-        }
-        let bytes = fs::read(&path).map_err(|error| format!("failed to read artwork: {error}"))?;
+        let bytes = read_bounded_artwork(&path, MAX_ARTWORK_BYTES)?;
         let content_type = artwork_content_type(&bytes)
             .ok_or_else(|| "selected artwork is not a supported image".to_string())?;
         Ok(format!(
@@ -576,6 +571,25 @@ pub async fn music_embedded_artwork_data_url(
     app.mobile_media()
         .artwork_data_url(&path, true, MAX_ARTWORK_BYTES)
         .await
+}
+
+/// Reads at most `limit` bytes from one open handle, so a file that grows or is swapped after
+/// authorization cannot force an unbounded read.
+#[cfg(desktop)]
+fn read_bounded_artwork(path: &Path, limit: u64) -> Result<Vec<u8>, String> {
+    use std::io::Read;
+    let file = fs::File::open(path).map_err(|error| format!("failed to read artwork: {error}"))?;
+    let mut bytes = Vec::new();
+    file.take(limit.saturating_add(1))
+        .read_to_end(&mut bytes)
+        .map_err(|error| format!("failed to read artwork: {error}"))?;
+    if bytes.len() as u64 > limit {
+        return Err(format!(
+            "artwork file exceeds the {} MB display limit",
+            limit / (1024 * 1024)
+        ));
+    }
+    Ok(bytes)
 }
 
 #[cfg(desktop)]
@@ -998,6 +1012,26 @@ mod tests {
             Some("image/jpeg")
         );
         assert_eq!(artwork_content_type(b"not an image"), None);
+    }
+
+    #[test]
+    fn artwork_data_url_reads_at_most_the_limit_from_one_handle() {
+        let directory = unique_temporary_dir("ganbaru-artwork-bound");
+        fs::create_dir_all(&directory).unwrap();
+        let fits = directory.join("fits.png");
+        let grown = directory.join("grown.png");
+        fs::write(&fits, [7_u8; 16]).unwrap();
+        fs::write(&grown, [7_u8; 17]).unwrap();
+
+        assert_eq!(read_bounded_artwork(&fits, 16).unwrap().len(), 16);
+        assert!(read_bounded_artwork(&grown, 16).is_err());
+        #[cfg(unix)]
+        {
+            let endless = directory.join("endless.png");
+            std::os::unix::fs::symlink("/dev/zero", &endless).unwrap();
+            assert!(read_bounded_artwork(&endless, 16).is_err());
+        }
+        fs::remove_dir_all(&directory).unwrap();
     }
 
     fn unique_temporary_dir(name: &str) -> PathBuf {

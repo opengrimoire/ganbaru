@@ -6,13 +6,14 @@ import { lstatSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSyn
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { packageRepoPublicKey } from "./release-public-keys.mjs";
+
+export { packageRepoPublicKey };
 
 /** Checksum manifest published with every release and signed inside the signing job. */
 export const CHECKSUM_MANIFEST = "SHA256SUMS";
 /** Detached ASCII-armored signature of the checksum manifest. */
 export const CHECKSUM_SIGNATURE = `${CHECKSUM_MANIFEST}.asc`;
-/** Environment variable holding the package repository public key that verifies release manifests. */
-export const PUBLIC_KEY_ENV = "GANBARU_PACKAGE_REPO_PUBLIC_KEY";
 
 const SHA256_HEX = /^[0-9a-f]{64}$/u;
 
@@ -144,7 +145,7 @@ function run(command, args, options = {}) {
  */
 export function verifyDetachedSignature(armoredPublicKey, dataPath, signaturePath) {
   if (!armoredPublicKey.includes("BEGIN PGP PUBLIC KEY BLOCK")) {
-    throw new Error(`${PUBLIC_KEY_ENV} must be an ASCII-armored public key`);
+    throw new Error("The package repository public key must be ASCII-armored");
   }
   const home = mkdtempSync(path.join(tmpdir(), "ganbaru-verify-"));
   try {
@@ -160,20 +161,6 @@ export function verifyDetachedSignature(armoredPublicKey, dataPath, signaturePat
   } finally {
     rmSync(home, { recursive: true, force: true });
   }
-}
-
-/**
- * Reads the public key that verifies release and repository manifests.
- *
- * @returns {string} ASCII-armored public key.
- */
-export function packageRepoPublicKey() {
-  const key = process.env[PUBLIC_KEY_ENV]?.trim();
-  if (!key) throw new Error(`${PUBLIC_KEY_ENV} must be set`);
-  if (!key.includes("BEGIN PGP PUBLIC KEY BLOCK")) {
-    throw new Error(`${PUBLIC_KEY_ENV} must be an ASCII-armored public key`);
-  }
-  return `${key}\n`;
 }
 
 /**

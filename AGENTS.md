@@ -94,7 +94,7 @@ apps/
       permissions/: app command permission sets granted by capabilities
       gen/android/: generated Android project and native platform integration
       gen/schemas/: generated Tauri schema files
-      package-repo/: generated package repository public key staging (ignored)
+      release-keys/: committed Tauri updater and package repository public keys
       packaging/: Linux package lifecycle scripts (deb/, rpm/), desktop entry template, and polkit policy (linux/)
       icons/, build.rs, tauri.conf.json, tauri.dev.conf.json, tauri.android.conf.json, Cargo.toml
 crates/

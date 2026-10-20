@@ -16,10 +16,7 @@ Release credentials belong in the protected `release` GitHub environment. They m
 | `GANBARU_PACKAGE_REPO_GPG_PASSPHRASE` | Package repository key passphrase |
 | `AUR_SSH_PRIVATE_KEY` | Dedicated AUR publishing key |
 
-Repository variables hold public material:
-
-- `TAURI_UPDATER_PUBLIC_KEY`
-- `GANBARU_PACKAGE_REPO_PUBLIC_KEY`
+The public keys are committed in `apps/client/src-tauri/release-keys/` (`tauri-updater.pub` and `ganbaru-package-repo.asc`), so changing the key that installed apps and package managers trust is a reviewed source change. Release scripts read only those files. The optional repository variables `TAURI_UPDATER_PUBLIC_KEY` and `GANBARU_PACKAGE_REPO_PUBLIC_KEY` are copies: when set, a release fails unless they match the committed keys. Rotate a key by changing the committed file through a pull request, then updating or clearing the variable.
 
 ## Tauri updater key
 

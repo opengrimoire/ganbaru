@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 
-import { mkdirSync, writeFileSync } from "node:fs";
+import { writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { packageRepoPublicKey, updaterPublicKey } from "./release-public-keys.mjs";
 
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const CLIENT_ROOT = path.resolve(SCRIPT_DIR, "..", "..");
@@ -11,14 +12,8 @@ const RELEASE_CONFIG_PATH = path.join(
   "src-tauri",
   "tauri.release.conf.json",
 );
-const PACKAGE_REPO_PUBLIC_KEY_PATH = path.join(
-  CLIENT_ROOT,
-  "src-tauri",
-  "package-repo",
-  "ganbaru-package-repo.asc",
-);
 const PACKAGE_REPO_PUBLIC_KEY_BUNDLE_SOURCE =
-  "package-repo/ganbaru-package-repo.asc";
+  "release-keys/ganbaru-package-repo.asc";
 const PACKAGE_REPO_PUBLIC_KEY_INSTALL_PATH =
   "/usr/lib/ganbaru/package-repo/ganbaru-package-repo.asc";
 const POLKIT_POLICY_BUNDLE_SOURCE =
@@ -30,20 +25,6 @@ const LINKING_FIREWALL_HELPER_BUNDLE_SOURCE =
 const LINKING_FIREWALL_HELPER_INSTALL_PATH =
   "/usr/lib/ganbaru/ganbaru-linking-firewall";
 const GITHUB_REPOSITORY_PATTERN = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u;
-
-/**
- * Reads a required environment variable without exposing its value.
- *
- * @param {string} name Environment variable name.
- * @returns {string} Trimmed environment variable value.
- */
-function readRequiredEnv(name) {
-  const value = process.env[name]?.trim();
-  if (!value) {
-    throw new Error(`${name} must be set`);
-  }
-  return value;
-}
 
 /**
  * Builds the release feed URL used by Tauri's updater.
@@ -69,22 +50,9 @@ function updaterEndpoint() {
   return `https://github.com/${repository}/releases/latest/download/latest.json`;
 }
 
-/**
- * Normalizes the package repository public key used by Linux installers.
- *
- * @returns {string} ASCII-armored OpenPGP public key.
- */
-function packageRepoPublicKey() {
-  const key = readRequiredEnv("GANBARU_PACKAGE_REPO_PUBLIC_KEY");
-  if (!key.includes("BEGIN PGP PUBLIC KEY BLOCK")) {
-    throw new Error("GANBARU_PACKAGE_REPO_PUBLIC_KEY must be an ASCII-armored public key");
-  }
-  return key.endsWith("\n") ? key : `${key}\n`;
-}
-
-const packageRepoPublicKeyContent = packageRepoPublicKey();
-mkdirSync(path.dirname(PACKAGE_REPO_PUBLIC_KEY_PATH), { recursive: true });
-writeFileSync(PACKAGE_REPO_PUBLIC_KEY_PATH, packageRepoPublicKeyContent, "utf8");
+// The bundled package repository key is the committed file itself; reading it validates the format and any
+// configured copy before the bundle refers to it.
+packageRepoPublicKey();
 
 const config = {
   $schema: "https://schema.tauri.app/config/2",
@@ -115,7 +83,7 @@ const config = {
   },
   plugins: {
     updater: {
-      pubkey: readRequiredEnv("TAURI_UPDATER_PUBLIC_KEY"),
+      pubkey: updaterPublicKey(),
       endpoints: [updaterEndpoint()],
       windows: {
         installMode: "passive",

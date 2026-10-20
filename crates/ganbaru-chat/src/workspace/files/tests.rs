@@ -383,6 +383,77 @@ fn save_rejects_binary_oversized_excluded_and_symbolic_files() {
 
 #[cfg(unix)]
 #[test]
+fn bounded_previews_and_saves_accept_the_caller_limit_and_refuse_one_byte_more() {
+    const LIMIT: u64 = 4 * 1024 * 1024;
+    let directory = TestDirectory::new();
+    fs::write(directory.0.join("limit.md"), vec![b'a'; LIMIT as usize]).expect("file should write");
+    fs::write(directory.0.join("over.md"), vec![b'a'; LIMIT as usize + 1])
+        .expect("file should write");
+    let authorized = directory.authorized(RepositoryKind::None);
+
+    let at_limit = preview_workspace_file_within(&authorized, "limit.md", LIMIT)
+        .expect("file at the limit should preview");
+    assert!(!at_limit.oversized);
+    assert_eq!(at_limit.byte_size, LIMIT);
+    assert!(
+        preview_workspace_file(&authorized, "limit.md")
+            .expect("Chat preview should read metadata")
+            .oversized
+    );
+    assert!(
+        preview_workspace_file_within(&authorized, "over.md", LIMIT)
+            .expect("oversized metadata should read")
+            .oversized
+    );
+
+    let revision = at_limit
+        .content_revision
+        .expect("text should have a revision");
+    let replacement = "b".repeat(LIMIT as usize);
+    let saved = save_workspace_file_within(&authorized, "limit.md", &replacement, &revision, LIMIT)
+        .expect("contents at the limit should save");
+    assert_eq!(saved.byte_size, LIMIT);
+    let revision = saved
+        .content_revision
+        .expect("saved text should have a revision");
+    let error = save_workspace_file_within(
+        &authorized,
+        "limit.md",
+        &"c".repeat(LIMIT as usize + 1),
+        &revision,
+        LIMIT,
+    )
+    .expect_err("contents over the limit should be refused");
+    assert_eq!(error.code, ChatErrorCode::Validation);
+    assert_eq!(
+        fs::read(directory.0.join("limit.md")).expect("file should read"),
+        replacement.as_bytes()
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn bounded_previews_and_saves_refuse_a_symlinked_parent() {
+    let directory = TestDirectory::new();
+    let outside = TestDirectory::new();
+    fs::write(outside.0.join("notes.md"), "outside\n").expect("outside file should write");
+    std::os::unix::fs::symlink(&outside.0, directory.0.join("docs"))
+        .expect("parent symlink should be created");
+    let authorized = directory.authorized(RepositoryKind::None);
+
+    assert!(preview_workspace_file_within(&authorized, "docs/notes.md", 4096).is_err());
+    let revision = workspace_file_revision("docs/notes.md", b"outside\n");
+    assert!(
+        save_workspace_file_within(&authorized, "docs/notes.md", "replaced\n", &revision, 4096)
+            .is_err()
+    );
+    assert_eq!(
+        fs::read_to_string(outside.0.join("notes.md")).expect("outside file should read"),
+        "outside\n"
+    );
+}
+
+#[test]
 fn descriptor_relative_file_open_does_not_follow_a_replaced_parent_path() {
     let directory = TestDirectory::new();
     let original = directory.0.join("original");

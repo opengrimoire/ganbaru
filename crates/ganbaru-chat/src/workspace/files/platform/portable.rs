@@ -243,6 +243,7 @@ pub(in crate::workspace::files) fn write_workspace_text_atomically(
     relative_path: &str,
     contents: &str,
     expected_revision: &str,
+    _max_bytes: u64,
 ) -> ChatResult<()> {
     if workspace_path_contains_symlink(root, relative_path)? {
         return Err(ChatError::new(

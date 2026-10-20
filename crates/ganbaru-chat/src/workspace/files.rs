@@ -178,6 +178,20 @@ pub fn preview_workspace_file(
     authorized: &AuthorizedWorkingFolder,
     relative_path: &str,
 ) -> ChatResult<ProjectWorkingFolderFilePreview> {
+    preview_workspace_file_within(authorized, relative_path, MAX_PREVIEW_BYTES)
+}
+
+/// Previews one workspace file whose text may be at most `max_bytes`.
+///
+/// Every path component is opened relative to the previous directory handle
+/// without following symbolic links or reparse points, so a component swapped
+/// during the read cannot redirect it outside the working folder. A larger
+/// file is reported as oversized without reading its contents.
+pub fn preview_workspace_file_within(
+    authorized: &AuthorizedWorkingFolder,
+    relative_path: &str,
+    max_bytes: u64,
+) -> ChatResult<ProjectWorkingFolderFilePreview> {
     validate_required_relative_path(relative_path)?;
     if safety_excluded(relative_path) {
         return Err(ChatError::new(
@@ -200,7 +214,7 @@ pub fn preview_workspace_file(
         .and_then(|value| value.to_str())
         .ok_or_else(|| ChatError::validation("relativePath", "Workspace filename is unsupported"))?
         .to_string();
-    if metadata.len() > MAX_PREVIEW_BYTES {
+    if metadata.len() > max_bytes {
         return Ok(ProjectWorkingFolderFilePreview {
             relative_path: relative_path.to_string(),
             display_name,
@@ -215,7 +229,7 @@ pub fn preview_workspace_file(
     let modified = metadata.modified().ok();
     let mut bytes = Vec::with_capacity(usize::try_from(metadata.len()).unwrap_or_default());
     (&mut file)
-        .take(MAX_PREVIEW_BYTES + 1)
+        .take(max_bytes + 1)
         .read_to_end(&mut bytes)
         .map_err(file_error)?;
     let after = file.metadata().map_err(file_error)?;
@@ -262,6 +276,28 @@ pub fn save_workspace_file(
     contents: &str,
     expected_revision: &str,
 ) -> ChatResult<ProjectWorkingFolderFilePreview> {
+    save_workspace_file_within(
+        authorized,
+        relative_path,
+        contents,
+        expected_revision,
+        MAX_PREVIEW_BYTES,
+    )
+}
+
+/// Replaces one workspace text file of at most `max_bytes` when its content
+/// revision still matches.
+///
+/// The replacement is written to a new temporary file in the parent directory
+/// handle and exchanged with the target, and both the displaced and installed
+/// files are verified before the temporary name is removed.
+pub fn save_workspace_file_within(
+    authorized: &AuthorizedWorkingFolder,
+    relative_path: &str,
+    contents: &str,
+    expected_revision: &str,
+    max_bytes: u64,
+) -> ChatResult<ProjectWorkingFolderFilePreview> {
     validate_required_relative_path(relative_path)?;
     if safety_excluded(relative_path) {
         return Err(ChatError::new(
@@ -270,16 +306,19 @@ pub fn save_workspace_file(
             false,
         ));
     }
-    if contents.len() as u64 > MAX_PREVIEW_BYTES || contents.contains('\0') {
+    if contents.len() as u64 > max_bytes || contents.contains('\0') {
         return Err(ChatError::validation(
             "contents",
-            "Workspace files must be UTF-8 text no larger than 1 MiB",
+            format!(
+                "Workspace files must be UTF-8 text no larger than {} MiB",
+                max_bytes / (1024 * 1024)
+            ),
         ));
     }
     let _guard = WORKSPACE_FILE_WRITE_LOCK
         .lock()
         .map_err(|_| workspace_file_write_error())?;
-    let current = preview_workspace_file(authorized, relative_path)?;
+    let current = preview_workspace_file_within(authorized, relative_path, max_bytes)?;
     let current_revision = current.content_revision.as_deref().ok_or_else(|| {
         ChatError::validation("relativePath", "Workspace file is not editable text")
     })?;
@@ -295,8 +334,9 @@ pub fn save_workspace_file(
         relative_path,
         contents,
         expected_revision,
+        max_bytes,
     )?;
-    preview_workspace_file(authorized, relative_path)
+    preview_workspace_file_within(authorized, relative_path, max_bytes)
 }
 
 /// Deletes one bounded regular text file when its content revision still matches.

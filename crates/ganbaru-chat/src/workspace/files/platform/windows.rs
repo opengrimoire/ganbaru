@@ -43,6 +43,7 @@ fn windows_file_identity(file: &File) -> std::io::Result<WindowsFileIdentity> {
 fn windows_regular_file_state(
     path: &Path,
     relative_path: &str,
+    max_bytes: u64,
 ) -> ChatResult<(WindowsFileIdentity, String)> {
     use std::os::windows::fs::OpenOptionsExt;
 
@@ -61,7 +62,7 @@ fn windows_regular_file_state(
         return Err(workspace_file_recovery_error());
     }
     let identity = windows_file_identity(&file).map_err(|_| workspace_file_recovery_error())?;
-    let (revision, _) = revision_and_permissions(&mut file, relative_path)?;
+    let (revision, _) = revision_and_permissions(&mut file, relative_path, max_bytes)?;
     Ok((identity, revision))
 }
 
@@ -293,7 +294,8 @@ pub(in crate::workspace::files) fn delete_workspace_file_atomically(
     let (_current_parents, mut current) = windows_open_regular_file(root, relative_path)?;
     let current_identity =
         windows_file_identity(&current).map_err(|_| workspace_file_write_error())?;
-    let (current_revision, _) = revision_and_permissions(&mut current, relative_path)?;
+    let (current_revision, _) =
+        revision_and_permissions(&mut current, relative_path, MAX_PREVIEW_BYTES)?;
     if current_revision != expected_revision {
         return Err(stale_workspace_file_error());
     }
@@ -301,8 +303,8 @@ pub(in crate::workspace::files) fn delete_workspace_file_atomically(
     let backup = windows_private_artifact_path(&parent, "backup")
         .map_err(|_| workspace_file_recovery_error())?;
     windows_move_file_no_replace(&target, &backup).map_err(|_| workspace_file_recovery_error())?;
-    let displaced_matches =
-        windows_regular_file_state(&backup, relative_path).is_ok_and(|(identity, revision)| {
+    let displaced_matches = windows_regular_file_state(&backup, relative_path, MAX_PREVIEW_BYTES)
+        .is_ok_and(|(identity, revision)| {
             identity == current_identity && revision == expected_revision
         });
     if !displaced_matches {
@@ -321,6 +323,7 @@ pub(in crate::workspace::files) fn write_workspace_text_atomically(
     relative_path: &str,
     contents: &str,
     expected_revision: &str,
+    max_bytes: u64,
 ) -> ChatResult<()> {
     use std::os::windows::fs::OpenOptionsExt;
 
@@ -338,7 +341,8 @@ pub(in crate::workspace::files) fn write_workspace_text_atomically(
     let (_current_parents, mut current) = windows_open_regular_file(root, relative_path)?;
     let current_identity =
         windows_file_identity(&current).map_err(|_| workspace_file_write_error())?;
-    let (current_revision, permissions) = revision_and_permissions(&mut current, relative_path)?;
+    let (current_revision, permissions) =
+        revision_and_permissions(&mut current, relative_path, max_bytes)?;
     if current_revision != expected_revision {
         return Err(stale_workspace_file_error());
     }
@@ -376,8 +380,8 @@ pub(in crate::workspace::files) fn write_workspace_text_atomically(
         // ReplaceFileW can move the original to its backup before reporting failure.
         // Restore that documented partial state only after verifying the original bytes.
         let target_exists = fs::symlink_metadata(&target).is_ok();
-        let backup_is_original =
-            windows_regular_file_state(&backup, relative_path).is_ok_and(|(identity, revision)| {
+        let backup_is_original = windows_regular_file_state(&backup, relative_path, max_bytes)
+            .is_ok_and(|(identity, revision)| {
                 identity == current_identity && revision == expected_revision
             });
         if !target_exists && backup_is_original {
@@ -390,12 +394,12 @@ pub(in crate::workspace::files) fn write_workspace_text_atomically(
         return Err(workspace_file_recovery_error());
     }
 
-    let displaced_is_original =
-        windows_regular_file_state(&backup, relative_path).is_ok_and(|(identity, revision)| {
+    let displaced_is_original = windows_regular_file_state(&backup, relative_path, max_bytes)
+        .is_ok_and(|(identity, revision)| {
             identity == current_identity && revision == expected_revision
         });
-    let installed_is_replacement =
-        windows_regular_file_state(&target, relative_path).is_ok_and(|(identity, revision)| {
+    let installed_is_replacement = windows_regular_file_state(&target, relative_path, max_bytes)
+        .is_ok_and(|(identity, revision)| {
             identity == replacement_identity && revision == replacement_revision
         });
     if !displaced_is_original {

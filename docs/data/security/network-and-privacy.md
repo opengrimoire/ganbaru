@@ -9,7 +9,7 @@ Current code uses the network only for these feature-owned purposes:
 - Update checks: the desktop updater and, on Android, the GitHub releases API.
 - User-selected coding-agent providers, whose native processes contact their configured service.
 - Chat hosted source control: GitHub, GitLab, and Azure DevOps through their user-installed CLIs, and Bitbucket through its API with a stored credential.
-- YouTube playback, metadata, and thumbnails for the Music player.
+- YouTube playback, metadata, and thumbnails for the Music player. Metadata and thumbnail lookups share one client per purpose, refuse redirects, time out, run under a global concurrency bound, and abandon a response body as soon as it exceeds its size cap instead of buffering it.
 - User-initiated Notion API import and remote project-icon import from a user-supplied HTTPS URL.
 - Chat browser previews and URLs explicitly opened by the user.
 - Local LAN device linking and whole-vault handoff, restricted to a private LAN address with pinned certificates and mutual TLS (see [Synchronization](../sync.md)). The listener bounds connections before they cost work: connections without a linked, unrevoked device certificate share a small global budget and a smaller budget per IPv4 address or IPv6 /64, linked devices draw from a separate budget so a flood from one host cannot lock them out, frames before authentication are capped at 16 KiB, handshakes and idle reads time out, and transient accept errors back off instead of stopping the listener. A linked device refused for a full budget sees a retryable busy error.

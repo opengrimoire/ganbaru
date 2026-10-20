@@ -205,6 +205,56 @@ fn revoked_peer_is_remembered_across_restart_and_removed_by_reenrollment() {
 }
 
 #[test]
+fn stored_coordinator_pins_must_use_the_lowercase_fingerprint_format() {
+    let phone_root = TestDirectory::new("coordinator-pin-format-phone");
+    let phone = PairingManager::default();
+    phone
+        .initialize(phone_root.path().to_path_buf(), "device-phone".to_string())
+        .expect("initialize phone");
+    let desktop_root = TestDirectory::new("coordinator-pin-format-desktop");
+    let desktop = PairingManager::default();
+    desktop
+        .initialize(
+            desktop_root.path().to_path_buf(),
+            "device-desktop".to_string(),
+        )
+        .expect("initialize desktop");
+    let invitation = desktop
+        .create_invitation(
+            "127.0.0.1:41000".parse().expect("endpoint"),
+            "vault-1".to_string(),
+            1,
+            crate::protocol::test_compatibility(),
+            100,
+        )
+        .expect("invitation");
+    let (_, desktop_identity) = desktop.identity().expect("desktop identity");
+    phone
+        .record_coordinator(&invitation, desktop_identity.certificate.as_ref(), None)
+        .expect("record coordinator");
+    drop(phone);
+
+    let state_path = phone_root.path().join(PAIRING_STATE_FILE);
+    let mut stored: serde_json::Value =
+        serde_json::from_slice(&fs::read(&state_path).expect("read state")).expect("decode state");
+    stored["coordinator"]["certificateFingerprint"] =
+        serde_json::Value::from(invitation.coordinator_fingerprint.to_ascii_uppercase());
+    fs::write(
+        &state_path,
+        serde_json::to_vec(&stored).expect("encode state"),
+    )
+    .expect("write state");
+
+    let error = PairingManager::default()
+        .initialize(phone_root.path().to_path_buf(), "device-phone".to_string())
+        .expect_err("reject an uppercase coordinator pin");
+    assert!(
+        error.contains("coordinator certificate fingerprint is invalid"),
+        "{error}"
+    );
+}
+
+#[test]
 fn linked_client_accepts_only_its_existing_coordinator() {
     let phone_root = TestDirectory::new("coordinator-target-phone");
     let phone = PairingManager::default();
@@ -306,6 +356,15 @@ fn linked_client_accepts_only_its_existing_coordinator() {
     assert!(
         phone
             .ensure_enrollment_target(&different_certificate)
+            .unwrap_err()
+            .contains("already linked to another coordinator")
+    );
+    let mut uppercase_certificate = refreshed.clone();
+    uppercase_certificate.coordinator_fingerprint =
+        refreshed.coordinator_fingerprint.to_ascii_uppercase();
+    assert!(
+        phone
+            .ensure_enrollment_target(&uppercase_certificate)
             .unwrap_err()
             .contains("already linked to another coordinator")
     );

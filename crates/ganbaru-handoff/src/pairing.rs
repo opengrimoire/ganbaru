@@ -879,9 +879,7 @@ fn ensure_enrollment_target(
         Some(coordinator)
             if coordinator.device_id == invitation.coordinator_device_id
                 && coordinator.vault_id == invitation.vault_id
-                && coordinator
-                    .certificate_fingerprint
-                    .eq_ignore_ascii_case(&invitation.coordinator_fingerprint) =>
+                && coordinator.certificate_fingerprint == invitation.coordinator_fingerprint =>
         {
             Ok(())
         }

@@ -140,7 +140,7 @@ impl PairingInvitation {
         self.compatibility.validate()?;
         validate_identifier("invitation id", &self.invitation_id)?;
         validate_identifier("invitation secret", &self.secret)?;
-        validate_identifier("coordinator fingerprint", &self.coordinator_fingerprint)?;
+        validate_certificate_fingerprint("coordinator fingerprint", &self.coordinator_fingerprint)?;
         validate_identifier("coordinator device id", &self.coordinator_device_id)?;
         validate_identifier("vault id", &self.vault_id)?;
         let endpoint = self
@@ -1266,6 +1266,26 @@ pub fn validate_device_label(field: &str, label: &str) -> Result<(), String> {
         .map_err(|error| format!("{field} is invalid: {error}"))
 }
 
+/// Accepts only the form certificate fingerprints are produced in: the SHA-256 of the DER
+/// certificate as 64 lowercase hex characters. Every stored, scanned, or received fingerprint
+/// passes this check so pins can be compared exactly.
+pub fn validate_certificate_fingerprint(label: &str, value: &str) -> Result<(), String> {
+    if value.len() != 64
+        || !value
+            .bytes()
+            .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
+    {
+        return Err(format!("{label} is invalid"));
+    }
+    Ok(())
+}
+
+/// The 32-byte digest of a fingerprint that passes [`validate_certificate_fingerprint`].
+pub fn decode_certificate_fingerprint(value: &str) -> Option<[u8; 32]> {
+    validate_certificate_fingerprint("certificate fingerprint", value).ok()?;
+    decode_qr_digest(value, "certificate fingerprint").ok()
+}
+
 pub fn validate_identifier(label: &str, value: &str) -> Result<(), String> {
     if value.is_empty()
         || value.len() > MAX_IDENTIFIER_BYTES
@@ -1420,6 +1440,35 @@ mod tests {
         );
     }
 
+    #[test]
+    fn certificate_fingerprints_require_exactly_64_lowercase_hex_characters() {
+        let lowercase = "0123456789abcdef".repeat(4);
+        assert!(validate_certificate_fingerprint("fingerprint", &lowercase).is_ok());
+        let digest = decode_certificate_fingerprint(&lowercase).expect("lowercase digest");
+        assert_eq!(encode_qr_digest(digest), lowercase);
+        for invalid in [
+            lowercase.to_ascii_uppercase(),
+            format!("+{}", &lowercase[1..]),
+            format!("{} ", &lowercase[1..]),
+            lowercase[1..].to_string(),
+            format!("{lowercase}0"),
+            "g".repeat(64),
+        ] {
+            assert!(
+                validate_certificate_fingerprint("fingerprint", &invalid).is_err(),
+                "{invalid}"
+            );
+            assert!(
+                decode_certificate_fingerprint(&invalid).is_none(),
+                "{invalid}"
+            );
+            let invitation = PairingInvitation {
+                coordinator_fingerprint: invalid.clone(),
+                ..qr_invitation()
+            };
+            assert!(invitation.validate(0).is_err(), "{invalid}");
+        }
+    }
     #[test]
     fn invitations_with_non_lan_endpoints_fail_validation() {
         for endpoint in [

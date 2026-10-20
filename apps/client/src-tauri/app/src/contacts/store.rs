@@ -98,19 +98,6 @@ pub(crate) fn encode_hex(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
-/// Decodes a 64-character lowercase or uppercase hex digest.
-pub(crate) fn decode_hex_digest(text: &str) -> Option<[u8; 32]> {
-    if text.len() != 64 {
-        return None;
-    }
-    let mut digest = [0u8; 32];
-    for (index, chunk) in text.as_bytes().chunks(2).enumerate() {
-        let pair = std::str::from_utf8(chunk).ok()?;
-        digest[index] = u8::from_str_radix(pair, 16).ok()?;
-    }
-    Some(digest)
-}
-
 /// A trust decision together with the expiry it implies when granted now.
 #[derive(Clone, Debug)]
 pub(crate) struct TrustGrant {

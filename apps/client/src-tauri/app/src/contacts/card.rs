@@ -107,7 +107,9 @@ pub(crate) fn resolve_delivery_hint<R: Runtime>(app: &AppHandle<R>) -> DeliveryH
 }
 
 fn bounded_hint(endpoint: String, fingerprint_hex: &str) -> DeliveryHint {
-    let Some(fingerprint) = super::store::decode_hex_digest(fingerprint_hex) else {
+    let Some(fingerprint) =
+        ganbaru_handoff::protocol::decode_certificate_fingerprint(fingerprint_hex)
+    else {
         return DeliveryHint::unreachable();
     };
     if endpoint.is_empty() || endpoint.len() > MAX_ENDPOINT_HINT_BYTES {

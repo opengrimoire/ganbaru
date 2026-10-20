@@ -178,9 +178,10 @@ pub(super) fn validate_state(
             .endpoint
             .parse::<std::net::SocketAddr>()
             .map_err(|_| "coordinator endpoint is invalid".to_string())?;
-        if coordinator.certificate_fingerprint.len() != 64 {
-            return Err("coordinator certificate fingerprint is invalid".to_string());
-        }
+        protocol::validate_certificate_fingerprint(
+            "coordinator certificate fingerprint",
+            &coordinator.certificate_fingerprint,
+        )?;
         if let Some(label) = coordinator.device_label.as_deref() {
             validate_device_label("coordinator device label", label)?;
         }

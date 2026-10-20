@@ -120,9 +120,36 @@ pub fn shares_on_link_prefix(target: Ipv6Addr, source: Ipv6Addr) -> bool {
     (u128::from(target) & mask) == (u128::from(source) & mask)
 }
 
+/// Private and link-local IPv4 blocks, as network and prefix length.
+const PRIVATE_IPV4_BLOCKS: [(Ipv4Addr, u32); 4] = [
+    (Ipv4Addr::new(10, 0, 0, 0), 8),
+    (Ipv4Addr::new(172, 16, 0, 0), 12),
+    (Ipv4Addr::new(192, 168, 0, 0), 16),
+    (Ipv4Addr::new(169, 254, 0, 0), 16),
+];
+/// Shared address space used by overlays, as network and prefix length.
+const OVERLAY_IPV4_BLOCK: (Ipv4Addr, u32) = (Ipv4Addr::new(100, 64, 0, 0), 10);
+
+/// Network mask of an IPv4 prefix length of at most 32.
+pub fn ipv4_mask(prefix: u32) -> u32 {
+    u32::MAX.checked_shl(32 - prefix.min(32)).unwrap_or(0)
+}
+
+fn block_contains((network, prefix): (Ipv4Addr, u32), address: Ipv4Addr) -> bool {
+    u32::from(address) & ipv4_mask(prefix) == u32::from(network)
+}
+
+/// The private, link-local, or overlay IPv4 block that holds `address`, as network and prefix
+/// length. Every IPv4 LAN peer address lies in one of these blocks.
+pub fn ipv4_lan_block(address: Ipv4Addr) -> Option<(Ipv4Addr, u32)> {
+    PRIVATE_IPV4_BLOCKS
+        .into_iter()
+        .chain([OVERLAY_IPV4_BLOCK])
+        .find(|block| block_contains(*block, address))
+}
+
 fn classify_ipv4(address: Ipv4Addr) -> Result<DialAddressClass, DialTargetError> {
-    let [first, second, _, _] = address.octets();
-    if first == 0 {
+    if address.octets()[0] == 0 {
         return Err(DialTargetError::Unspecified);
     }
     if address.is_loopback() {
@@ -137,13 +164,11 @@ fn classify_ipv4(address: Ipv4Addr) -> Result<DialAddressClass, DialTargetError>
     if address.is_documentation() {
         return Err(DialTargetError::Documentation);
     }
-    if address.is_private() || address.is_link_local() {
-        return Ok(DialAddressClass::PrivateLan);
+    match ipv4_lan_block(address) {
+        Some(OVERLAY_IPV4_BLOCK) => Ok(DialAddressClass::Overlay),
+        Some(_) => Ok(DialAddressClass::PrivateLan),
+        None => Err(DialTargetError::Public),
     }
-    if first == 100 && (second & 0xc0) == 64 {
-        return Ok(DialAddressClass::Overlay);
-    }
-    Err(DialTargetError::Public)
 }
 
 fn classify_ipv6(address: Ipv6Addr) -> Result<DialAddressClass, DialTargetError> {

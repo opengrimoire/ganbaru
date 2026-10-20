@@ -7,6 +7,7 @@ use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
+use crate::dial::{ipv4_lan_block, ipv4_mask};
 use crate::protocol::{COORDINATOR_PORT, DEVELOPMENT_COORDINATOR_PORT};
 
 const STATE_FILE: &str = "vault-handoff-network-access.json";
@@ -170,8 +171,20 @@ fn current_lan_scope(local_address: Ipv4Addr) -> Result<LanScope, String> {
     let route = fs::read_to_string("/proc/net/route")
         .map_err(|error| format!("read Linux network route: {error}"))?;
     let (interface, mask) = parse_local_ipv4_route(&route, local_address)?;
-    let prefix = ipv4_prefix(mask)?;
-    let network = Ipv4Addr::from(u32::from(local_address) & u32::from(mask));
+    lan_scope(interface, local_address, mask)
+}
+
+/// The scope of a connected route, narrowed to the private block of `local_address` when the
+/// route is broader, so the opened source never extends past that block.
+fn lan_scope(
+    interface: String,
+    local_address: Ipv4Addr,
+    mask: Ipv4Addr,
+) -> Result<LanScope, String> {
+    let (_, block_prefix) = ipv4_lan_block(local_address)
+        .ok_or_else(|| "this device's address is not on a private network".to_string())?;
+    let prefix = ipv4_prefix(mask)?.max(block_prefix);
+    let network = Ipv4Addr::from(u32::from(local_address) & ipv4_mask(prefix));
     Ok(LanScope {
         interface,
         local_address,
@@ -202,7 +215,7 @@ fn parse_local_ipv4_route(
         let destination = Ipv4Addr::from(raw_destination.swap_bytes());
         let prefix = ipv4_prefix(mask)?;
         if prefix == 0
-            || !(destination.is_private() || destination.is_link_local())
+            || ipv4_lan_block(destination).is_none()
             || u32::from(local_address) & u32::from(mask) != u32::from(destination)
         {
             continue;
@@ -460,8 +473,9 @@ fn apply_scope_privileged(scope: &AuthorizedScope, grant: bool) -> Result<(), St
 }
 
 fn validate_authorized_scope(scope: &AuthorizedScope) -> Result<(), String> {
+    let block = ipv4_lan_block(scope.local_address);
     if !is_valid_interface(&scope.interface)
-        || !(scope.local_address.is_private() || scope.local_address.is_link_local())
+        || block.is_none()
         || !matches!(scope.port, COORDINATOR_PORT | DEVELOPMENT_COORDINATOR_PORT)
     {
         return Err("saved Linux network access scope is invalid".to_string());
@@ -476,14 +490,10 @@ fn validate_authorized_scope(scope: &AuthorizedScope) -> Result<(), String> {
     let prefix = prefix
         .parse::<u32>()
         .map_err(|_| "saved Linux network prefix is invalid".to_string())?;
-    if prefix > 32 || !(network.is_private() || network.is_link_local()) {
-        return Err("saved Linux network source is invalid".to_string());
+    if block.is_none_or(|(_, block_prefix)| prefix > 32 || prefix < block_prefix) {
+        return Err("saved Linux network source extends past its private block".to_string());
     }
-    let mask = if prefix == 0 {
-        0
-    } else {
-        u32::MAX << (32 - prefix)
-    };
+    let mask = ipv4_mask(prefix);
     if u32::from(network) & mask != u32::from(network)
         || u32::from(scope.local_address) & mask != u32::from(network)
     {
@@ -704,6 +714,63 @@ bad/interface 0001A8C0 00000000 0001 0 0 600 00FFFFFF 0 0 0\n";
         unsupported_port.source_network = "192.168.1.0/24".to_string();
         unsupported_port.port = 44_000;
         assert!(validate_authorized_scope(&unsupported_port).is_err());
+    }
+
+    #[test]
+    fn opened_sources_stay_inside_the_private_block_of_the_local_address() {
+        let scope = |local: [u8; 4], source: &str| AuthorizedScope {
+            firewall: FirewallKind::Ufw,
+            interface: "wlp2s0".to_string(),
+            local_address: Ipv4Addr::from(local),
+            source_network: source.to_string(),
+            port: COORDINATOR_PORT,
+            zone: None,
+        };
+        for (local, source) in [
+            ([10, 1, 2, 3], "10.0.0.0/7"),
+            ([192, 168, 1, 66], "192.168.0.0/13"),
+            ([169, 254, 1, 2], "169.254.0.0/15"),
+            ([100, 101, 2, 3], "100.0.0.0/8"),
+        ] {
+            assert!(
+                validate_authorized_scope(&scope(local, source)).is_err(),
+                "{source} must be refused"
+            );
+        }
+        for (local, source) in [
+            ([10, 1, 2, 3], "10.0.0.0/8"),
+            ([172, 20, 1, 2], "172.16.0.0/12"),
+            ([100, 101, 2, 3], "100.64.0.0/10"),
+            ([100, 101, 2, 3], "100.101.2.0/24"),
+        ] {
+            assert!(
+                validate_authorized_scope(&scope(local, source)).is_ok(),
+                "{source} must be accepted"
+            );
+        }
+
+        let mut broad = ["grant", "ufw", "wlp2s0", "10.1.2.3", "10.0.0.0/7", "-"]
+            .into_iter()
+            .map(str::to_string);
+        assert!(parse_privileged_helper_scope(&mut broad).is_err());
+    }
+
+    #[test]
+    fn a_connected_route_broader_than_its_block_is_narrowed_to_the_block() {
+        let local = Ipv4Addr::new(10, 1, 2, 3);
+        let wide = lan_scope("eth0".to_string(), local, Ipv4Addr::new(254, 0, 0, 0)).unwrap();
+        assert_eq!(wide.source_network, "10.0.0.0/8");
+        let narrow = lan_scope("eth0".to_string(), local, Ipv4Addr::new(255, 255, 255, 0)).unwrap();
+        assert_eq!(narrow.source_network, "10.1.2.0/24");
+        let overlay = Ipv4Addr::new(100, 101, 2, 3);
+        let route = "Iface Destination Gateway Flags RefCnt Use Metric Mask MTU Window IRTT\n\
+tailscale0 00004064 00000000 0001 0 0 0 0000C0FF 0 0 0\n";
+        let (interface, mask) = parse_local_ipv4_route(route, overlay).expect("overlay route");
+        assert_eq!(interface, "tailscale0");
+        assert_eq!(
+            lan_scope(interface, overlay, mask).unwrap().source_network,
+            "100.64.0.0/10"
+        );
     }
 
     #[test]

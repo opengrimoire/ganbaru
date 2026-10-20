@@ -187,3 +187,19 @@ zip = { version = "9.0.4", default-features = false, features = ["deflate"] }
 
 [profile.dev]
 debug = "line-tables-only"
+
+# The Notes HTML sanitizer stack dominates import time and is too slow for import tests when unoptimized.
+[profile.dev.package.ammonia]
+opt-level = 3
+
+[profile.dev.package.html5ever]
+opt-level = 3
+
+[profile.dev.package.markup5ever]
+opt-level = 3
+
+[profile.dev.package.tendril]
+opt-level = 3
+
+[profile.dev.package.string_cache]
+opt-level = 3

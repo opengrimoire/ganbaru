@@ -2,9 +2,10 @@
 
 use super::super::internal_mcp::generate_opaque_handle;
 use super::common::{
-    MAX_MESSAGE_BYTES, effective_runtime_approval as narrower_runtime_approval, new_id,
-    parse_approval_policy, parse_runtime_approval_policy, sha256_hex, teammate_runtime_approval,
-    truncate_utf8, wire_runtime_approval_policy,
+    MAX_MESSAGE_BYTES, TeammateHistoryAccess,
+    effective_runtime_approval as narrower_runtime_approval, new_id, parse_approval_policy,
+    parse_runtime_approval_policy, sha256_hex, teammate_runtime_approval, truncate_utf8,
+    wire_runtime_approval_policy,
 };
 use super::{
     MAX_CHANNEL_CONTEXT_MESSAGES, MAX_THREAD_CONTEXT_REPLIES, i64_value, identifier_error,
@@ -23,8 +24,10 @@ pub(super) async fn freeze_context_package(
     now: &UtcTimestamp,
 ) -> ChatResult<()> {
     let thread_row = sqlx::query(
-        "SELECT thread.conversation_id, thread.root_item_id, channel.project_id
+        "SELECT thread.conversation_id, thread.root_item_id, root_item.ordinal AS root_ordinal,
+                channel.project_id
          FROM chat_reply_threads thread
+         JOIN chat_conversation_items root_item ON root_item.id = thread.root_item_id
          JOIN chat_channels channel ON channel.conversation_id = thread.conversation_id
          WHERE thread.id = ?",
     )
@@ -47,6 +50,11 @@ pub(super) async fn freeze_context_package(
             .map_err(persistence_error)?,
     )
     .map_err(identifier_error)?;
+    let root_ordinal = u64_value(
+        thread_row
+            .try_get("root_ordinal")
+            .map_err(persistence_error)?,
+    )?;
     let access = read_assignment_access(
         transaction,
         &conversation_id,
@@ -54,6 +62,9 @@ pub(super) async fn freeze_context_package(
         teammate_id,
     )
     .await?;
+    // The trigger is addressed to the teammate; the rest of the thread is
+    // channel history at the root's position.
+    let thread_visible = access.history.admits_position(root_ordinal);
     let source_rows = sqlx::query(
         "SELECT item.id, item.ordinal, revision.revision, revision.normalized_markdown,
                 CASE
@@ -66,21 +77,23 @@ pub(super) async fn freeze_context_package(
          JOIN chat_communication_message_revisions revision
            ON revision.id = message.current_revision_id
          WHERE message.deleted_at IS NULL
-           AND (item.reply_thread_id = ? OR item.id IN (?, ?))
+           AND (item.id = ? OR (? AND (item.reply_thread_id = ? OR item.id = ?)))
          ORDER BY CASE WHEN item.id = ? THEN 0 ELSE 1 END, item.ordinal DESC
          LIMIT ?",
     )
     .bind(triggering_message_item_id.as_str())
     .bind(root_item_id.as_str())
+    .bind(triggering_message_item_id.as_str())
+    .bind(thread_visible)
     .bind(reply_thread_id.as_str())
     .bind(root_item_id.as_str())
-    .bind(triggering_message_item_id.as_str())
     .bind(triggering_message_item_id.as_str())
     .bind(i64::try_from(MAX_THREAD_CONTEXT_REPLIES + 2).unwrap_or(52))
     .fetch_all(&mut **transaction)
     .await
     .map_err(persistence_error)?;
-    let channel_rows = if access.read_history {
+    let channel_visible_from = access.history.visible_from().map(i64_value).transpose()?;
+    let channel_rows = if let Some(visible_from) = channel_visible_from {
         sqlx::query(
             "SELECT item.id, item.ordinal, revision.revision, revision.normalized_markdown
          FROM chat_conversation_items item
@@ -90,13 +103,12 @@ pub(super) async fn freeze_context_package(
          WHERE item.conversation_id = ? AND item.reply_thread_id IS NULL
            AND item.id != ?
            AND message.deleted_at IS NULL
-           AND (? IS NULL OR item.ordinal >= ?)
+           AND item.ordinal >= ?
          ORDER BY item.ordinal DESC LIMIT ?",
         )
         .bind(conversation_id.as_str())
         .bind(root_item_id.as_str())
-        .bind(access.history_from_ordinal.map(i64_value).transpose()?)
-        .bind(access.history_from_ordinal.map(i64_value).transpose()?)
+        .bind(visible_from)
         .bind(i64::try_from(MAX_CHANNEL_CONTEXT_MESSAGES).unwrap_or(20))
         .fetch_all(&mut **transaction)
         .await
@@ -104,27 +116,30 @@ pub(super) async fn freeze_context_package(
     } else {
         Vec::new()
     };
-    let thread_total: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM chat_conversation_items item
-         JOIN chat_communication_messages message ON message.item_id = item.id
-         WHERE item.reply_thread_id = ? AND message.deleted_at IS NULL",
-    )
-    .bind(reply_thread_id.as_str())
-    .fetch_one(&mut **transaction)
-    .await
-    .map_err(persistence_error)?;
-    let channel_total: i64 = if access.read_history {
+    let thread_total: i64 = if thread_visible {
+        sqlx::query_scalar(
+            "SELECT count(*) FROM chat_conversation_items item
+             JOIN chat_communication_messages message ON message.item_id = item.id
+             WHERE item.reply_thread_id = ? AND message.deleted_at IS NULL",
+        )
+        .bind(reply_thread_id.as_str())
+        .fetch_one(&mut **transaction)
+        .await
+        .map_err(persistence_error)?
+    } else {
+        0
+    };
+    let channel_total: i64 = if let Some(visible_from) = channel_visible_from {
         sqlx::query_scalar(
             "SELECT count(*) FROM chat_conversation_items item
              JOIN chat_communication_messages message ON message.item_id = item.id
              WHERE item.conversation_id = ? AND item.reply_thread_id IS NULL
                AND item.id != ? AND message.deleted_at IS NULL
-               AND (? IS NULL OR item.ordinal >= ?)",
+               AND item.ordinal >= ?",
         )
         .bind(conversation_id.as_str())
         .bind(root_item_id.as_str())
-        .bind(access.history_from_ordinal.map(i64_value).transpose()?)
-        .bind(access.history_from_ordinal.map(i64_value).transpose()?)
+        .bind(visible_from)
         .fetch_one(&mut **transaction)
         .await
         .map_err(persistence_error)?
@@ -396,8 +411,7 @@ struct AssignmentAccess {
     access_revision: u64,
     access_profile_revision_id: ChatAccessProfileRevisionId,
     maximum_folder_capability: String,
-    read_history: bool,
-    history_from_ordinal: Option<u64>,
+    history: TeammateHistoryAccess,
     channel_runtime_approval_policy: Option<String>,
     scratch_runtime_approval_policy: Option<String>,
     teammate_runtime_approval_policy: ChatRuntimeApprovalPolicy,
@@ -570,13 +584,12 @@ async fn read_assignment_access(
         .try_get::<i64, _>("history_boundary_inherits_profile")
         .map_err(persistence_error)?
         == 1;
-    let effective_history_from_ordinal = if profile_history_boundary == "from_grant"
-        || (!history_inherits && stored_history_boundary == "from_grant")
-    {
-        history_from_ordinal
-    } else {
-        None
-    };
+    let history = TeammateHistoryAccess::resolve(
+        read_history,
+        profile_history_boundary == "from_grant"
+            || (!history_inherits && stored_history_boundary == "from_grant"),
+        history_from_ordinal,
+    );
     Ok(AssignmentAccess {
         requester_participant_id: ChatParticipantId::new(
             row.try_get::<String, _>("requester_participant_id")
@@ -597,8 +610,7 @@ async fn read_assignment_access(
         maximum_folder_capability: row
             .try_get("maximum_folder_capability")
             .map_err(persistence_error)?,
-        read_history,
-        history_from_ordinal: effective_history_from_ordinal,
+        history,
         channel_runtime_approval_policy: row
             .try_get("channel_runtime_approval_policy")
             .map_err(persistence_error)?,

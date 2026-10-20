@@ -352,6 +352,41 @@ pub(super) fn parse_history_boundary(
     }
 }
 
+/// Channel history one teammate membership may read, resolved from the
+/// membership and its access profile revision.
+///
+/// Positions are top-level channel ordinals. A reply thread sits at its root's
+/// position, because reply ordinals count within their thread.
+#[cfg(desktop)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct TeammateHistoryAccess {
+    visible_from: Option<u64>,
+}
+
+#[cfg(desktop)]
+impl TeammateHistoryAccess {
+    /// Resolves effective history access. A `from_grant` boundary without a
+    /// lower ordinal admits nothing.
+    pub(super) fn resolve(read_history: bool, from_grant: bool, from_ordinal: Option<u64>) -> Self {
+        let visible_from = match (read_history, from_grant) {
+            (false, _) => None,
+            (true, true) => from_ordinal,
+            (true, false) => Some(1),
+        };
+        Self { visible_from }
+    }
+
+    /// Returns the lowest readable position, or `None` when no history is readable.
+    pub(super) fn visible_from(self) -> Option<u64> {
+        self.visible_from
+    }
+
+    /// Returns whether the message or reply thread at `position` is readable.
+    pub(super) fn admits_position(self, position: u64) -> bool {
+        self.visible_from.is_some_and(|lower| lower <= position)
+    }
+}
+
 #[cfg(desktop)]
 pub(super) fn wire_history_boundary(value: &ChatHistoryBoundary) -> &'static str {
     match value {

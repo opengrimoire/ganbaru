@@ -974,3 +974,146 @@ fn fts_queries_are_bounded_and_quote_each_term() {
     assert!(normalized_fts_query("   ").is_err());
     assert!(normalized_fts_query(&"x".repeat(501)).is_err());
 }
+
+#[test]
+fn history_access_admits_positions_from_its_lower_bound() {
+    let entire = super::common::TeammateHistoryAccess::resolve(true, false, None);
+    assert_eq!(entire.visible_from(), Some(1));
+    assert!(entire.admits_position(1));
+
+    let from_grant = super::common::TeammateHistoryAccess::resolve(true, true, Some(5));
+    assert!(!from_grant.admits_position(4));
+    assert!(from_grant.admits_position(5));
+
+    let unreadable = super::common::TeammateHistoryAccess::resolve(false, false, None);
+    assert_eq!(unreadable.visible_from(), None);
+    assert!(!unreadable.admits_position(u64::MAX));
+
+    let unstamped = super::common::TeammateHistoryAccess::resolve(true, true, None);
+    assert_eq!(unstamped.visible_from(), None);
+}
+
+/// Freezes the seeded review assignment for a reply that mentions the agent,
+/// with the given channel history settings, and returns the source kinds and
+/// the excluded thread reply count.
+async fn freeze_review_reply_context(
+    read_history: bool,
+    history_from_ordinal: Option<i64>,
+) -> (Vec<String>, i64) {
+    let pool = migrated_pool().await;
+    seed_review_assignment_with_stranded_replies(&pool).await;
+    sqlx::raw_sql(
+        "INSERT INTO chat_conversation_items
+             (id, conversation_id, item_kind, ordinal, created_at)
+         VALUES ('item:review-later', 'conversation:review', 'message', 2,
+                 '2026-08-04T17:03:00.000Z');
+         INSERT INTO chat_communication_messages
+             (item_id, author_participant_id, author_label_snapshot, created_at)
+         VALUES ('item:review-later', 'participant:local-owner', 'You',
+                 '2026-08-04T17:03:00.000Z');
+         INSERT INTO chat_communication_message_revisions
+             (id, message_item_id, revision, normalized_markdown, created_at)
+         VALUES ('revision:review-later', 'item:review-later', 1, 'Later update',
+                 '2026-08-04T17:03:00.000Z');
+         UPDATE chat_communication_messages
+         SET current_revision_id = 'revision:review-later'
+         WHERE item_id = 'item:review-later';",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "UPDATE chat_teammate_channel_memberships
+         SET read_history = ?, read_history_inherits_profile = 0,
+             history_boundary = ?, history_boundary_inherits_profile = 0,
+             history_from_ordinal = ?
+         WHERE teammate_id = 'participant:review-agent'",
+    )
+    .bind(read_history)
+    .bind(if history_from_ordinal.is_some() {
+        "from_grant"
+    } else {
+        "entire"
+    })
+    .bind(history_from_ordinal)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let mut transaction = pool.begin().await.unwrap();
+    super::context::freeze_context_package(
+        &mut transaction,
+        &ChatWorkAssignmentId::new("assignment:review").unwrap(),
+        &ChatReplyThreadId::new("reply-thread:review").unwrap(),
+        &ChatConversationItemId::new("item:review-reply-2").unwrap(),
+        &ChatParticipantId::new("participant:review-agent").unwrap(),
+        None,
+        &UtcTimestamp::new("2026-08-04T17:04:00.000Z").unwrap(),
+    )
+    .await
+    .unwrap();
+    transaction.commit().await.unwrap();
+    let kinds = sqlx::query_scalar(
+        "SELECT source.source_kind || ':' || source.source_id
+         FROM chat_assignment_context_sources source
+         JOIN chat_assignment_context_packages package ON package.id = source.context_package_id
+         WHERE package.assignment_id = 'assignment:review'
+         ORDER BY source.ordinal",
+    )
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    let excluded = sqlx::query_scalar(
+        "SELECT excluded_thread_reply_count FROM chat_assignment_context_packages
+         WHERE assignment_id = 'assignment:review'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    (kinds, excluded)
+}
+
+#[test]
+fn context_packages_include_threads_within_the_history_boundary() {
+    tauri::async_runtime::block_on(async {
+        let (kinds, excluded) = freeze_review_reply_context(true, None).await;
+        assert_eq!(
+            kinds,
+            [
+                "thread_reply:item:review-reply-1",
+                "thread_root:item:review-root",
+                "trigger:item:review-reply-2",
+                "channel_message:item:review-later",
+            ]
+            .map(String::from)
+        );
+        assert_eq!(excluded, 0);
+
+        let (kinds, _) = freeze_review_reply_context(true, Some(1)).await;
+        assert!(kinds.contains(&"thread_root:item:review-root".to_string()));
+    });
+}
+
+#[test]
+fn context_packages_exclude_threads_rooted_before_the_history_boundary() {
+    tauri::async_runtime::block_on(async {
+        let (kinds, excluded) = freeze_review_reply_context(true, Some(2)).await;
+        assert_eq!(
+            kinds,
+            [
+                "trigger:item:review-reply-2",
+                "channel_message:item:review-later",
+            ]
+            .map(String::from)
+        );
+        assert_eq!(excluded, 0);
+    });
+}
+
+#[test]
+fn context_packages_without_history_access_hold_only_the_trigger() {
+    tauri::async_runtime::block_on(async {
+        let (kinds, excluded) = freeze_review_reply_context(false, None).await;
+        assert_eq!(kinds, ["trigger:item:review-reply-2".to_string()]);
+        assert_eq!(excluded, 0);
+    });
+}

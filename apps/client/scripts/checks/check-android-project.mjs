@@ -172,6 +172,14 @@ for (const nativeOnly of [
     failures.push(`Android capability must keep native Focus authority private: ${nativeOnly}`);
   }
 }
+// Document picker and download commands take app-private paths, so only Rust callers that derive those paths may
+// reach them.
+for (const permission of androidCapabilityConfig.permissions) {
+  const identifier = typeof permission === "string" ? permission : permission.identifier;
+  if (identifier.startsWith("ganbaru-mobile-documents:")) {
+    failures.push(`Android capability must keep document transfer commands native-only: ${identifier}`);
+  }
+}
 for (const expected of [
   'const PLUGIN_NAME: &str = "ganbaru-mobile-notifications";',
   "tauri::plugin::Builder::new(PLUGIN_NAME)",

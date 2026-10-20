@@ -46,7 +46,7 @@ Current features do not request contacts, microphone, location, screen capture, 
 
 ## WebView and bridge
 
-The mobile capability grants only commands required by shared features and Android adapters. It does not expose a generic filesystem, process, shell, network, or event capability.
+The mobile capability grants only commands required by shared features and Android adapters. It does not expose a generic filesystem, process, shell, network, or event capability. Document picker and download plugin commands are native-only: Rust derives the app-private paths they read or write, and the webview cannot call them.
 
 Untrusted file and native responses are validated before becoming typed frontend state. External URL opening is limited to supported safe schemes and explicit user action. Production content policy does not allow arbitrary remote script or image authority.
 

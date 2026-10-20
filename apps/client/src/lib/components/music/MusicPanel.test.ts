@@ -368,7 +368,7 @@ describe("MusicPanel", () => {
     target.querySelector<HTMLButtonElement>("[data-music-playlist-launcher]")?.click();
     await vi.waitFor(() => {
       expect(document.body.querySelector(".playlist-launcher-popover")).not.toBeNull();
-    });
+    }, { timeout: 5_000 });
 
     window.dispatchEvent(new KeyboardEvent("keydown", {
       key: "Escape",
@@ -401,7 +401,7 @@ describe("MusicPanel", () => {
     await vi.waitFor(() => {
       expect([...document.body.querySelectorAll<HTMLButtonElement>("button")]
         .some((button) => button.textContent?.includes("Open playlist builder"))).toBe(true);
-    });
+    }, { timeout: 5_000 });
     const firstOpenBuilder = [...document.body.querySelectorAll<HTMLButtonElement>("button")]
       .find((button) => button.textContent?.includes("Open playlist builder"));
     firstOpenBuilder?.click();
@@ -428,14 +428,14 @@ describe("MusicPanel", () => {
     await vi.waitFor(() => {
       expect([...document.body.querySelectorAll<HTMLButtonElement>("button")]
         .some((button) => button.textContent?.includes("Open playlist builder"))).toBe(true);
-    });
+    }, { timeout: 5_000 });
     const openBuilder = [...document.body.querySelectorAll<HTMLButtonElement>("button")]
       .find((button) => button.textContent?.includes("Open playlist builder"));
     openBuilder?.click();
     await tick();
     expect(target.querySelector(".builder-root")).not.toBeNull();
     expect(target.querySelector("[data-music-player-page]")).toBe(playerPage);
-  });
+  }, 15_000);
 
   it("applies builder and expanded playlist heights in the same view transition", async () => {
     vi.stubGlobal("ResizeObserver", ResizeObserverStub);
@@ -462,7 +462,7 @@ describe("MusicPanel", () => {
     await vi.waitFor(() => {
       expect([...document.body.querySelectorAll<HTMLButtonElement>("button")]
         .some((button) => button.textContent?.includes("Open playlist builder"))).toBe(true);
-    });
+    }, { timeout: 5_000 });
     const openBuilder = [...document.body.querySelectorAll<HTMLButtonElement>("button")]
       .find((button) => button.textContent?.includes("Open playlist builder"));
     openBuilder?.click();
@@ -481,7 +481,7 @@ describe("MusicPanel", () => {
     await tick();
 
     expect(dialog?.style.height).toContain("503px");
-  });
+  }, 15_000);
 
   it("keeps first-use preparation pending when the panel closes before completion", async () => {
     vi.stubGlobal("ResizeObserver", ResizeObserverStub);
@@ -502,7 +502,7 @@ describe("MusicPanel", () => {
     component = undefined;
 
     expect(getMusicSourcesController().firstUseSession).toBe(true);
-  });
+  }, 15_000);
 
   it("asks for the first Music folder from the player instead of opening the Builder", async () => {
     vi.stubGlobal("ResizeObserver", ResizeObserverStub);

@@ -26,6 +26,7 @@ pub mod data_store;
 pub mod model_access;
 mod navigation;
 mod page_hook;
+mod page_requests;
 mod persistence;
 mod repository;
 mod webview;
@@ -138,6 +139,8 @@ pub struct ChatBrowserManager {
     tabs: Arc<Mutex<HashMap<String, RuntimeBrowserTab>>>,
     recording: Arc<Mutex<Option<ActiveRecording>>>,
     pending_approvals: Arc<Mutex<HashMap<ChatThreadId, approvals::PendingPreviewApproval>>>,
+    /// Page permission requests and dialogs waiting for the user, and remembered answers.
+    page_requests: Arc<Mutex<page_requests::PageRequestState>>,
     data_sweeps: data_store::PreviewDataSweeps,
     /// One lock per thread so model captures run one at a time and the quota check cannot race the insert.
     model_captures: Arc<Mutex<HashMap<ChatThreadId, Arc<tokio::sync::Mutex<()>>>>>,
@@ -237,6 +240,7 @@ impl ChatBrowserManager {
         if let Ok(mut pending) = self.pending_approvals.lock() {
             pending.remove(thread_id);
         }
+        self.forget_thread_page_requests(app, thread_id);
         let labels = if let Ok(mut tabs) = self.tabs.lock() {
             let ids = tabs
                 .iter()
@@ -261,6 +265,7 @@ impl ChatBrowserManager {
         app: &tauri::AppHandle<R>,
         matches: impl Fn(&ProjectWorkingFolderId) -> bool,
     ) {
+        self.forget_page_permissions();
         let labels = self
             .tabs
             .lock()
@@ -285,6 +290,7 @@ impl ChatBrowserManager {
         if let Ok(mut pending) = self.pending_approvals.lock() {
             pending.clear();
         }
+        self.forget_all_page_requests(app);
         let labels = if let Ok(mut tabs) = self.tabs.lock() {
             std::mem::take(&mut *tabs)
                 .into_values()
@@ -828,14 +834,15 @@ pub(crate) async fn chat_browser_click(
     thread_id: ChatThreadId,
     tab_id: String,
     selector: String,
-) -> ChatResult<()> {
+) -> ChatResult<page_requests::ModelActionDialogs> {
     let selector = js_string(&selector, "selector")?;
-    run_script(
+    run_model_action(
         &app,
         &thread_id,
         &tab_id,
         &format!("document.querySelector({selector})?.click()"),
     )
+    .await
 }
 
 pub(crate) async fn chat_browser_type(
@@ -844,10 +851,10 @@ pub(crate) async fn chat_browser_type(
     tab_id: String,
     selector: String,
     text: String,
-) -> ChatResult<()> {
+) -> ChatResult<page_requests::ModelActionDialogs> {
     let selector = js_string(&selector, "selector")?;
     let text = js_string(&text, "text")?;
-    run_script(
+    run_model_action(
         &app,
         &thread_id,
         &tab_id,
@@ -855,6 +862,7 @@ pub(crate) async fn chat_browser_type(
             "(()=>{{const e=document.querySelector({selector});if(e){{e.focus();e.value={text};e.dispatchEvent(new Event('input',{{bubbles:true}}));}}}})()"
         ),
     )
+    .await
 }
 
 pub(crate) async fn chat_browser_press(
@@ -862,9 +870,9 @@ pub(crate) async fn chat_browser_press(
     thread_id: ChatThreadId,
     tab_id: String,
     key: String,
-) -> ChatResult<()> {
+) -> ChatResult<page_requests::ModelActionDialogs> {
     let key = js_string(&key, "key")?;
-    run_script(
+    run_model_action(
         &app,
         &thread_id,
         &tab_id,
@@ -872,6 +880,7 @@ pub(crate) async fn chat_browser_press(
             "document.activeElement?.dispatchEvent(new KeyboardEvent('keydown',{{key:{key},bubbles:true}}))"
         ),
     )
+    .await
 }
 
 pub(crate) async fn chat_browser_scroll(
@@ -880,14 +889,31 @@ pub(crate) async fn chat_browser_scroll(
     tab_id: String,
     x: f64,
     y: f64,
-) -> ChatResult<()> {
+) -> ChatResult<page_requests::ModelActionDialogs> {
     if !x.is_finite() || !y.is_finite() || x.abs() > 1_000_000.0 || y.abs() > 1_000_000.0 {
         return Err(ChatError::validation(
             "scroll",
             "Browser scroll distance is invalid",
         ));
     }
-    run_script(&app, &thread_id, &tab_id, &format!("scrollBy({x},{y})"))
+    run_model_action(&app, &thread_id, &tab_id, &format!("scrollBy({x},{y})")).await
+}
+
+/// Runs a model tool action on a tab and waits for it, dismissing the dialogs the page
+/// raises meanwhile so they neither stall the action nor reach the user. The dismissed
+/// dialogs are returned for the model.
+async fn run_model_action(
+    app: &tauri::AppHandle,
+    thread_id: &ChatThreadId,
+    tab_id: &str,
+    script: &str,
+) -> ChatResult<page_requests::ModelActionDialogs> {
+    owned_tab(app, thread_id, tab_id)?;
+    let window = app
+        .state::<ChatBrowserManager>()
+        .begin_model_action(app, tab_id);
+    evaluate_script(app, thread_id, tab_id, &format!("void({script})")).await?;
+    Ok(window.finish())
 }
 
 #[tauri::command]
@@ -909,6 +935,8 @@ pub async fn chat_browser_close(
         }
         app.state::<ChatBrowserManager>()
             .cancel_recording(|recording| recording.tab_id == tab_id);
+        app.state::<ChatBrowserManager>()
+            .refuse_tab_page_requests(&app, &tab_id);
         if let Some(webview) = app.get_webview(&tab.webview_label) {
             webview.close().map_err(|_| browser_unavailable_error())?;
         }

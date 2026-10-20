@@ -37,6 +37,7 @@
   let discoveredServers: chatApi.DiscoveredPreviewServer[] = $state([]);
   let modelOrigins = $state<string[]>([]);
   let approval = $state<chatApi.PreviewApproval | null>(null);
+  let promptText = $state("");
   let error: string | null = $state(null);
   let preset: ViewportPreset = $state("responsive");
   let resizeObserver: ResizeObserver | null = null;
@@ -70,19 +71,59 @@
   async function loadApproval(selectedThreadId: string): Promise<void> {
     try {
       const pending = await chatApi.readPendingBrowserApproval(selectedThreadId);
-      if (selectedThreadId === loadedThreadId) approval = pending;
+      if (selectedThreadId !== loadedThreadId) return;
+      if (!sameApproval(approval, pending)) {
+        promptText = pending?.kind === "dialog" ? pending.defaultText : "";
+      }
+      approval = pending;
     } catch (reason) {
       error = message(reason);
+    }
+  }
+
+  function sameApproval(current: chatApi.PreviewApproval | null, next: chatApi.PreviewApproval | null): boolean {
+    if (current === null || next === null) return current === next;
+    if ("requestId" in current && "requestId" in next) return current.requestId === next.requestId;
+    return current.kind === next.kind;
+  }
+
+  function approvalText(pending: chatApi.PreviewApproval): string {
+    switch (pending.kind) {
+      case "navigation": return t("chat.browser.approvalNavigation", pending.origin);
+      case "network": return t("chat.browser.approvalNetwork");
+      case "permission": return t("chat.browser.pagePermission", pending.origin, t(`chat.browser.pagePermissions.${pending.permission}`));
+      case "dialog": return t(`chat.browser.pageDialog.${pending.dialogKind}`, pending.origin);
+    }
+  }
+
+  function approvalChoices(pending: chatApi.PreviewApproval): { refuse: string | null; accept: string } {
+    if (pending.kind === "permission") {
+      return { refuse: t("chat.browser.pagePermissionDeny"), accept: t("chat.browser.approvalAllow") };
+    }
+    if (pending.kind !== "dialog") {
+      return { refuse: t("chat.browser.approvalDismiss"), accept: t("chat.browser.approvalAllow") };
+    }
+    switch (pending.dialogKind) {
+      case "alert": return { refuse: null, accept: t("chat.browser.pageDialogOk") };
+      case "beforeUnload": return { refuse: t("chat.browser.pageDialogStay"), accept: t("chat.browser.pageDialogLeave") };
+      default: return { refuse: t("chat.browser.pageDialogCancel"), accept: t("chat.browser.pageDialogOk") };
     }
   }
 
   async function resolveApproval(allow: boolean): Promise<void> {
     if (!threadId || !approval) return;
     const selectedThread = threadId;
+    const resolved = approval;
+    const page = "requestId" in resolved
+      ? {
+        requestId: resolved.requestId,
+        text: allow && resolved.kind === "dialog" && resolved.dialogKind === "prompt" ? promptText : undefined,
+      }
+      : undefined;
     approval = null;
     error = null;
     try {
-      const navigated = await chatApi.resolveBrowserApproval(selectedThread, allow);
+      const navigated = await chatApi.resolveBrowserApproval(selectedThread, allow, page);
       if (navigated && selectedThread === threadId) {
         tabs = tabs.map((tab) => tab.tabId === navigated.tabId ? navigated : tab);
         if (navigated.tabId === tabId) {
@@ -92,6 +133,8 @@
       }
     } catch (reason) {
       error = message(reason);
+    } finally {
+      if (selectedThread === loadedThreadId) void loadApproval(selectedThread);
     }
   }
 
@@ -443,11 +486,16 @@
     {#if browserTab}<span>{browserTab.viewportWidth} × {browserTab.viewportHeight}</span>{/if}
   </div>
   {#if approval}
+    {@const choices = approvalChoices(approval)}
     <div class="approval" role="alert">
-      <p>{approval.kind === "navigation" ? t("chat.browser.approvalNavigation", approval.origin) : t("chat.browser.approvalNetwork")}</p>
+      <p>{approvalText(approval)}</p>
+      {#if approval.kind === "dialog" && approval.message}<p class="page-message">{approval.message}</p>{/if}
+      {#if approval.kind === "dialog" && approval.dialogKind === "prompt"}
+        <input class="field page-text" bind:value={promptText} spellcheck="false" aria-label={t("chat.browser.pageDialogText")} />
+      {/if}
       <div>
-        <button type="button" class="chat-secondary-button" onclick={() => void resolveApproval(false)}>{t("chat.browser.approvalDismiss")}</button>
-        <button type="button" class="chat-primary-button" onclick={() => void resolveApproval(true)}>{t("chat.browser.approvalAllow")}</button>
+        {#if choices.refuse}<button type="button" class="chat-secondary-button" onclick={() => void resolveApproval(false)}>{choices.refuse}</button>{/if}
+        <button type="button" class="chat-primary-button" onclick={() => void resolveApproval(true)}>{choices.accept}</button>
       </div>
     </div>
   {/if}
@@ -488,5 +536,7 @@
   .approval { display: flex; flex-wrap: wrap; align-items: center; gap: 0.4rem 0.6rem; border-bottom: 1px solid var(--border); padding: 0.45rem 0.65rem; font-size: calc(0.68rem * var(--type-scale)); }
   .approval p { min-width: 12rem; flex: 1; }
   .approval div { display: flex; margin-left: auto; gap: 0.35rem; }
+  .approval .page-message { min-width: 0; flex-basis: 100%; max-height: 8rem; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .approval .page-text { flex-basis: 100%; min-width: 0; }
   .artifact-status { border-bottom: 1px solid var(--border); padding: 0.35rem 0.65rem; color: var(--muted-foreground); font-size: calc(0.66rem * var(--type-scale)); }
 </style>

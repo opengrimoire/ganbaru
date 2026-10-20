@@ -759,48 +759,40 @@ impl ThreadMcpHandler {
                 Ok(serde_json::to_value(resource)
                     .map_err(|_| preview_tool_error("encode browser screenshot"))?)
             }
-            "preview_click" => {
-                super::preview::chat_browser_click(
-                    self.app.clone(),
-                    self.thread_id.clone(),
-                    tab_id()?,
-                    string_argument(arguments, "selector")?.to_string(),
-                )
-                .await?;
-                Ok(serde_json::json!({ "accepted": true }))
-            }
-            "preview_type" => {
-                super::preview::chat_browser_type(
-                    self.app.clone(),
-                    self.thread_id.clone(),
-                    tab_id()?,
-                    string_argument(arguments, "selector")?.to_string(),
-                    string_argument(arguments, "text")?.to_string(),
-                )
-                .await?;
-                Ok(serde_json::json!({ "accepted": true }))
-            }
-            "preview_press" => {
-                super::preview::chat_browser_press(
-                    self.app.clone(),
-                    self.thread_id.clone(),
-                    tab_id()?,
-                    string_argument(arguments, "key")?.to_string(),
-                )
-                .await?;
-                Ok(serde_json::json!({ "accepted": true }))
-            }
-            "preview_scroll" => {
-                super::preview::chat_browser_scroll(
-                    self.app.clone(),
-                    self.thread_id.clone(),
-                    tab_id()?,
-                    number_argument(arguments, "x")?,
-                    number_argument(arguments, "y")?,
-                )
-                .await?;
-                Ok(serde_json::json!({ "accepted": true }))
-            }
+            "preview_click" => super::preview::chat_browser_click(
+                self.app.clone(),
+                self.thread_id.clone(),
+                tab_id()?,
+                string_argument(arguments, "selector")?.to_string(),
+            )
+            .await
+            .map(|dialogs| dialogs.tool_result()),
+            "preview_type" => super::preview::chat_browser_type(
+                self.app.clone(),
+                self.thread_id.clone(),
+                tab_id()?,
+                string_argument(arguments, "selector")?.to_string(),
+                string_argument(arguments, "text")?.to_string(),
+            )
+            .await
+            .map(|dialogs| dialogs.tool_result()),
+            "preview_press" => super::preview::chat_browser_press(
+                self.app.clone(),
+                self.thread_id.clone(),
+                tab_id()?,
+                string_argument(arguments, "key")?.to_string(),
+            )
+            .await
+            .map(|dialogs| dialogs.tool_result()),
+            "preview_scroll" => super::preview::chat_browser_scroll(
+                self.app.clone(),
+                self.thread_id.clone(),
+                tab_id()?,
+                number_argument(arguments, "x")?,
+                number_argument(arguments, "y")?,
+            )
+            .await
+            .map(|dialogs| dialogs.tool_result()),
             "preview_wait_for" => {
                 let selector = string_argument(arguments, "selector")?;
                 let timeout = u32_argument(arguments, "timeoutMs")?.min(10_000);
@@ -884,7 +876,7 @@ fn preview_tools() -> Vec<Tool> {
         ),
         preview_tool(
             "preview_click",
-            "Click an element in the active preview",
+            "Click an element in the active preview. Page dialogs raised meanwhile are dismissed and listed in dismissedDialogs",
             string_schema("selector"),
         ),
         preview_tool(

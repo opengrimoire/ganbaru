@@ -265,17 +265,83 @@ export async function allowPreviewModelOrigin(threadId: ChatThreadId, tabId: str
 /** Event emitted when a Chat thread gets a new pending browser preview approval. */
 export const CHAT_BROWSER_APPROVAL_EVENT = "chat://browser-approval";
 
-/** An approval the coding agent is waiting on in the Browser panel. */
+/** Page capabilities a preview page can ask the user for. */
+export const PREVIEW_PAGE_PERMISSIONS = [
+  "camera",
+  "microphone",
+  "cameraAndMicrophone",
+  "screenCapture",
+  "location",
+  "notifications",
+  "clipboard",
+  "pointerLock",
+  "protectedMedia",
+  "storageAccess",
+  "sensors",
+  "fileAccess",
+  "localFonts",
+  "midi",
+  "windowManagement",
+] as const;
+
+/** A page capability a preview page can ask the user for. */
+export type PreviewPagePermission = (typeof PREVIEW_PAGE_PERMISSIONS)[number];
+
+/** Page dialogs a preview page can open. */
+export const PREVIEW_PAGE_DIALOG_KINDS = ["alert", "confirm", "prompt", "beforeUnload"] as const;
+
+/** A page dialog a preview page can open. */
+export type PreviewPageDialogKind = (typeof PREVIEW_PAGE_DIALOG_KINDS)[number];
+
+/** An approval the coding agent or a preview page is waiting on in the Browser panel. */
 export type PreviewApproval =
   | { kind: "navigation"; origin: string }
-  | { kind: "network" };
+  | { kind: "network" }
+  | { kind: "permission"; requestId: number; origin: string; permission: PreviewPagePermission }
+  | {
+    kind: "dialog";
+    requestId: number;
+    origin: string;
+    dialogKind: PreviewPageDialogKind;
+    message: string;
+    defaultText: string;
+  };
 
-function parsePreviewApproval(value: unknown): PreviewApproval | null {
+function isOneOf<T extends string>(values: readonly T[], value: unknown): value is T {
+  return typeof value === "string" && (values as readonly string[]).includes(value);
+}
+
+function isRequestId(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
+}
+
+/**
+ * Validates the pending approval the backend returns.
+ *
+ * @param value Untrusted command result.
+ * @returns The approval, or `null` when nothing is waiting.
+ * @throws When the result is not a known approval shape.
+ */
+export function parsePreviewApproval(value: unknown): PreviewApproval | null {
   if (value === null) return null;
   if (typeof value !== "object") throw new Error("Invalid browser approval");
-  const { kind, origin } = value as Record<string, unknown>;
+  const { kind, origin, requestId, permission, dialogKind, message, defaultText } =
+    value as Record<string, unknown>;
   if (kind === "network") return { kind };
-  if (kind === "navigation" && typeof origin === "string") return { kind, origin };
+  if (typeof origin !== "string") throw new Error("Invalid browser approval");
+  if (kind === "navigation") return { kind, origin };
+  if (kind === "permission" && isRequestId(requestId) && isOneOf(PREVIEW_PAGE_PERMISSIONS, permission)) {
+    return { kind, requestId, origin, permission };
+  }
+  if (
+    kind === "dialog"
+    && isRequestId(requestId)
+    && isOneOf(PREVIEW_PAGE_DIALOG_KINDS, dialogKind)
+    && typeof message === "string"
+    && typeof defaultText === "string"
+  ) {
+    return { kind, requestId, origin, dialogKind, message, defaultText };
+  }
   throw new Error("Invalid browser approval");
 }
 
@@ -287,10 +353,22 @@ export async function readPendingBrowserApproval(threadId: ChatThreadId): Promis
 /**
  * Allows or dismisses a thread's pending approval. Allowing a navigation opens it and returns
  * the updated tab.
+ *
+ * @param threadId Thread whose Browser panel shows the approval.
+ * @param allow Allow the request, or accept the page dialog.
+ * @param page The page request being answered and, for an accepted prompt, its text.
  */
-export async function resolveBrowserApproval(threadId: ChatThreadId, allow: boolean): Promise<BrowserTabRead | null> {
+export async function resolveBrowserApproval(
+  threadId: ChatThreadId,
+  allow: boolean,
+  page?: { requestId: number; text?: string },
+): Promise<BrowserTabRead | null> {
   const value = await invoke<unknown>("chat_browser_resolve_approval", {
-    dbUrl: await ensureDbUrl(), threadId, allow,
+    dbUrl: await ensureDbUrl(),
+    threadId,
+    allow,
+    requestId: page?.requestId ?? null,
+    text: page?.text ?? null,
   });
   return value === null ? null : parseBrowserTabRead(value);
 }

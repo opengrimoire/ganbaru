@@ -40,6 +40,8 @@ Previews use isolated app-owned webviews with narrowly scoped capture controls. 
 
 The model can use loopback previews such as a local development server. A thread remembers the local addresses the user opened; when a page or the model moves to a different local port, the Browser panel asks once with an Allow button and the thread remembers the answer. If the run's sandbox has no network access, the Browser panel also asks once per session before the model may use preview tools. To let it work on an external site, for example one the user is logged into, the user allows that site once from the Browser panel; the choice is remembered for that site in that thread and can be revoked from the panel or from Chat permission settings.
 
+When a previewed page asks for the camera, microphone, location, notifications, clipboard, or another capability, the Browser panel names the site and asks; the answer is remembered for that site in that thread. Page dialogs (`alert`, `confirm`, `prompt`, and leave-page confirmations) appear in the Browser panel too. Dialogs a page opens while the model is clicking, typing, or scrolling are dismissed and reported to the model.
+
 ## Workspace observation
 
 Filesystem observation keeps Files, Review, and source-control views fresh. Events are debounced, bounded, and reconciled with authoritative reads; observation never replaces revision checks.

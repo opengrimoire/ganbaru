@@ -78,12 +78,19 @@ pub(super) async fn create_child_browser_webview(
     let main = app
         .get_window("main")
         .ok_or_else(browser_unavailable_error)?;
-    main.add_child(
-        builder,
-        tauri::LogicalPosition::new(bounds.x, bounds.y),
-        tauri::LogicalSize::new(bounds.width, bounds.height),
-    )
-    .map_err(|_| browser_unavailable_error())?;
+    let webview = main
+        .add_child(
+            builder,
+            tauri::LogicalPosition::new(bounds.x, bounds.y),
+            tauri::LogicalSize::new(bounds.width, bounds.height),
+        )
+        .map_err(|_| browser_unavailable_error())?;
+    if let Err(error) =
+        super::page_requests::install(app, &webview, &request.thread_id, &request.tab_id)
+    {
+        let _ = webview.close();
+        return Err(error);
+    }
     let read = BrowserTabRead {
         thread_id: request.thread_id.clone(),
         tab_id: request.tab_id.clone(),

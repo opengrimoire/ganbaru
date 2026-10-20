@@ -849,6 +849,23 @@ pub async fn music_library_remove_soundscape_preset(
     ganbaru_music_library::soundscape_presets::remove(&pool, &preset_id, expected_version).await
 }
 
+/// Saves the level a preset plays at relative to the Music volume; the latest slider position wins.
+#[cfg(desktop)]
+#[tauri::command]
+pub async fn music_library_set_soundscape_preset_level(
+    app: tauri::AppHandle,
+    db_url: String,
+    preset_id: String,
+    level: f64,
+    updated_at_ms: i64,
+) -> MusicLibraryResult<MusicSoundscapePreset> {
+    let pool = connect_sqlite(app, db_url)
+        .await
+        .map_err(connection_error)?;
+    ganbaru_music_library::soundscape_presets::set_level(&pool, &preset_id, level, updated_at_ms)
+        .await
+}
+
 #[cfg(desktop)]
 #[tauri::command]
 pub async fn music_library_upsert_soundscape(

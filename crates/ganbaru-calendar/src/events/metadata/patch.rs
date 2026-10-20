@@ -172,7 +172,6 @@ impl Metadata {
                             phase: value.phase.as_ref().into(),
                             behavior: value.behavior.as_ref().into(),
                             playlist_id: value.playlist_id.clone(),
-                            soundscape_id: value.soundscape_id.clone(),
                             soundscape_preset_id: value.soundscape_preset_id.clone(),
                             soundscape_behavior: value.soundscape_behavior.as_ref().into(),
                             provenance_kind: value.provenance_kind.as_ref().into(),

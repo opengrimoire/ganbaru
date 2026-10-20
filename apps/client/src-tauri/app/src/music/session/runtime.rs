@@ -119,6 +119,9 @@ struct Owner {
     lifecycle: LifecycleControl,
     #[cfg(desktop)]
     completion_duck: Option<completion::CompletionDuck>,
+    /// Music volume setting last pushed to the soundscape engine, which plays relative to it.
+    #[cfg(desktop)]
+    soundscape_master: Option<f64>,
 }
 
 fn now_ms() -> i64 {
@@ -214,6 +217,8 @@ pub(crate) fn setup(app: &tauri::AppHandle) {
             lifecycle,
             #[cfg(desktop)]
             completion_duck: None,
+            #[cfg(desktop)]
+            soundscape_master: None,
         };
         let mut interval = tokio::time::interval(OBSERVATION_INTERVAL);
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -1518,10 +1523,26 @@ impl Owner {
             })?;
             crate::tray::publish_music_session(&self.app, &snapshot)
                 .map_err(|error| MusicLibraryError::runtime("publish Music tray", error))?;
+            self.push_soundscape_master();
         }
         self.subscriptions.publish(snapshot);
         self.subscriptions.flush(now_ms());
         Ok(())
+    }
+
+    /// Keeps the soundscape at its preset level relative to the Music volume setting, which applies
+    /// even while Music is paused or empty; mute silences both.
+    #[cfg(desktop)]
+    fn push_soundscape_master(&mut self) {
+        let master = if self.state.muted {
+            0.0
+        } else {
+            self.state.volume
+        };
+        if self.soundscape_master != Some(master) {
+            self.soundscape_master = Some(master);
+            crate::music::soundscape::set_master(&self.app, master);
+        }
     }
 
     async fn tick(&mut self) -> MusicLibraryResult<()> {

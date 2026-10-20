@@ -32,7 +32,6 @@ fn draft(
         phase,
         behavior,
         playlist_id: Some("playlist-1".to_string()),
-        soundscape_id: None,
         soundscape_preset_id: None,
         soundscape_behavior: MusicSoundscapeBehavior::Inherit,
         provenance_kind: MusicAssignmentProvenanceKind::Explicit,
@@ -180,7 +179,7 @@ fn work_environment_contract_round_trips_without_a_settings_surface() {
 }
 
 #[test]
-fn context_assignments_select_one_sound_or_one_preset() {
+fn context_assignments_select_only_presets() {
     block_on(async {
         let pool = pool().await;
         let mut preset = draft(MusicActivityPhase::Focus, MusicAssignmentBehavior::Inherit);
@@ -198,19 +197,16 @@ fn context_assignments_select_one_sound_or_one_preset() {
         .await
         .unwrap();
         assert_eq!(saved[0].soundscape_preset_id.as_deref(), Some("preset-1"));
-        assert_eq!(saved[0].soundscape_id, None);
 
-        let mut both = preset.clone();
-        both.soundscape_id = Some("generated-brown-noise".to_string());
         let mut neither = preset.clone();
         neither.soundscape_preset_id = None;
-        let mut paused_with_sound = preset;
-        paused_with_sound.soundscape_behavior = MusicSoundscapeBehavior::PauseSoundscape;
-        for invalid in [both, neither, paused_with_sound] {
+        let mut paused_with_preset = preset;
+        paused_with_preset.soundscape_behavior = MusicSoundscapeBehavior::PauseSoundscape;
+        for invalid in [neither, paused_with_preset] {
             let error =
                 super::validate_drafts(MusicAssignmentOwnerKind::ProjectDefault, &[invalid])
                     .unwrap_err();
-            assert_eq!(error.field.as_deref(), Some("soundscapeId"));
+            assert_eq!(error.field.as_deref(), Some("soundscapePresetId"));
         }
     });
 }

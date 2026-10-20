@@ -30,16 +30,19 @@ pub(crate) enum GeneratedNoiseKind {
     Brown,
 }
 
+/// One preset to play: its first sound, the remaining sounds, and the preset level.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct SoundscapeStartRequest {
     pub source_id: String,
     pub generated_kind: Option<GeneratedNoiseKind>,
     pub local_path: Option<String>,
+    /// Share of the preset level this sound plays at, from 0 to 1.
     pub level: f64,
     #[serde(default)]
     pub extra_sources: Vec<SoundscapeLayer>,
-    pub volume: f64,
+    /// Multiplier of the Music volume setting, from 0 to 2.
+    pub preset_level: f64,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -48,6 +51,7 @@ pub(crate) struct SoundscapeLayer {
     pub source_id: String,
     pub generated_kind: Option<GeneratedNoiseKind>,
     pub local_path: Option<String>,
+    /// Share of the preset level this sound plays at, from 0 to 1.
     pub level: f64,
 }
 
@@ -65,7 +69,6 @@ pub(crate) enum SoundscapeStatus {
 pub(crate) struct SoundscapeSnapshot {
     pub status: SoundscapeStatus,
     pub source_id: Option<String>,
-    pub volume: f64,
     pub error_code: Option<String>,
 }
 
@@ -74,7 +77,6 @@ impl Default for SoundscapeSnapshot {
         Self {
             status: SoundscapeStatus::Idle,
             source_id: None,
-            volume: 0.1,
             error_code: None,
         }
     }
@@ -271,12 +273,11 @@ fn open_decoder(path: &str) -> Result<Decoder<BufReader<File>>, SoundscapeError>
 struct ActiveOutput {
     _sink: MixerDeviceSink,
     players: Vec<Player>,
-    request: SoundscapeStartRequest,
 }
 
 impl ActiveOutput {
     fn open(
-        request: SoundscapeStartRequest,
+        request: &SoundscapeStartRequest,
         guard: Option<&OutputGuard>,
     ) -> Result<Self, SoundscapeError> {
         check_output_guard(guard)?;
@@ -318,16 +319,14 @@ impl ActiveOutput {
         Ok(Self {
             _sink: sink,
             players,
-            request,
         })
     }
 
-    fn stop(mut self) {
+    fn stop(self) {
         ramp_players(&self.players, &vec![0.0; self.players.len()]);
         for player in &self.players {
             player.stop();
         }
-        self.request.volume = 0.0;
     }
 }
 
@@ -336,6 +335,8 @@ struct EngineCore {
     output: Option<ActiveOutput>,
     last_request: Option<SoundscapeStartRequest>,
     snapshot: SoundscapeSnapshot,
+    /// Music volume setting, or zero while muted; silent until the Music session reports it.
+    master: f64,
 }
 
 impl EngineCore {
@@ -358,7 +359,8 @@ impl EngineCore {
             }
             EngineCommand::Pause => Ok(self.pause()),
             EngineCommand::Stop => Ok(self.stop()),
-            EngineCommand::SetVolume(volume) => self.set_volume(volume),
+            EngineCommand::SetPresetLevel(level) => self.set_preset_level(level),
+            EngineCommand::SetMaster(master) => Ok(self.set_master(master)),
             EngineCommand::SetLevels(levels) => self.set_levels(levels),
             EngineCommand::Snapshot => Ok(self.snapshot.clone()),
         }
@@ -366,12 +368,11 @@ impl EngineCore {
 
     fn start(
         &mut self,
-        mut request: SoundscapeStartRequest,
+        request: SoundscapeStartRequest,
         guard: Option<&OutputGuard>,
     ) -> Result<SoundscapeSnapshot, SoundscapeError> {
         check_output_guard(guard)?;
         validate_request(&request)?;
-        request.volume = clamp_volume(request.volume);
         for path in std::iter::once(request.local_path.as_deref())
             .chain(
                 request
@@ -384,7 +385,7 @@ impl EngineCore {
             StreamingLoopSource::open(path)?;
         }
         check_output_guard(guard)?;
-        match ActiveOutput::open(request.clone(), guard) {
+        match ActiveOutput::open(&request, guard) {
             Ok(output) => {
                 check_output_guard(guard)?;
                 self.stop_output();
@@ -392,13 +393,12 @@ impl EngineCore {
                     self.snapshot.status = SoundscapeStatus::Idle;
                     return Err(error);
                 }
-                ramp_players(&output.players, &layer_targets(&request));
+                ramp_players(&output.players, &layer_targets(&request, self.master));
                 self.output = Some(output);
                 self.last_request = Some(request.clone());
                 self.snapshot = SoundscapeSnapshot {
                     status: SoundscapeStatus::Playing,
                     source_id: Some(request.source_id),
-                    volume: request.volume,
                     error_code: None,
                 };
                 Ok(self.snapshot.clone())
@@ -433,7 +433,7 @@ impl EngineCore {
                 player.play();
             }
             if let Some(request) = self.last_request.as_ref() {
-                ramp_players(&output.players, &layer_targets(request));
+                ramp_players(&output.players, &layer_targets(request, self.master));
             }
             self.snapshot.status = SoundscapeStatus::Playing;
             self.snapshot.error_code = None;
@@ -445,40 +445,36 @@ impl EngineCore {
     fn stop(&mut self) -> SoundscapeSnapshot {
         self.stop_output();
         self.last_request = None;
-        let volume = self.snapshot.volume;
-        self.snapshot = SoundscapeSnapshot {
-            volume,
-            ..SoundscapeSnapshot::default()
-        };
+        self.snapshot = SoundscapeSnapshot::default();
         self.snapshot.clone()
     }
 
-    fn set_volume(&mut self, volume: f64) -> Result<SoundscapeSnapshot, SoundscapeError> {
-        if !volume.is_finite() || !(0.0..=1.0).contains(&volume) {
+    fn set_preset_level(&mut self, level: f64) -> Result<SoundscapeSnapshot, SoundscapeError> {
+        if !valid_preset_level(level) {
             return Err(SoundscapeError::validation(
-                "Volume must be between zero and one.",
+                "The preset level must be between zero and two.",
             ));
         }
-        self.snapshot.volume = volume;
         if let Some(request) = self.last_request.as_mut() {
-            request.volume = volume;
+            request.preset_level = level;
         }
-        if self.snapshot.status == SoundscapeStatus::Playing {
-            if let Some(output) = self.output.as_ref() {
-                if let Some(request) = self.last_request.as_ref() {
-                    set_player_levels(&output.players, &layer_targets(request));
-                }
-            }
-        }
+        self.apply_levels();
         Ok(self.snapshot.clone())
+    }
+
+    /// Follows the Music volume setting; invalid values are ignored because nobody awaits this command.
+    fn set_master(&mut self, master: f64) -> SoundscapeSnapshot {
+        if master.is_finite() {
+            self.master = master.clamp(0.0, 1.0);
+            self.apply_levels();
+        }
+        self.snapshot.clone()
     }
 
     fn set_levels(&mut self, levels: Vec<f64>) -> Result<SoundscapeSnapshot, SoundscapeError> {
         if levels.is_empty()
             || levels.len() > MAX_SOUNDSCAPE_LAYERS
-            || levels
-                .iter()
-                .any(|level| !level.is_finite() || !(0.0..=2.0).contains(level))
+            || levels.iter().any(|level| !valid_sound_level(*level))
         {
             return Err(SoundscapeError::validation("Invalid soundscape levels."));
         }
@@ -490,13 +486,19 @@ impl EngineCore {
             for (layer, level) in request.extra_sources.iter_mut().zip(levels.iter().skip(1)) {
                 layer.level = *level;
             }
-            if self.snapshot.status == SoundscapeStatus::Playing {
-                if let Some(output) = self.output.as_ref() {
-                    set_player_levels(&output.players, &layer_targets(request));
-                }
-            }
         }
+        self.apply_levels();
         Ok(self.snapshot.clone())
+    }
+
+    /// Moves playing layers to their current targets without a ramp, for continuous slider changes.
+    fn apply_levels(&self) {
+        if self.snapshot.status != SoundscapeStatus::Playing {
+            return;
+        }
+        if let (Some(output), Some(request)) = (self.output.as_ref(), self.last_request.as_ref()) {
+            set_player_levels(&output.players, &layer_targets(request, self.master));
+        }
     }
 
     fn recover(
@@ -522,7 +524,9 @@ enum EngineCommand {
     Pause,
     ResumeGuarded(OutputGuard),
     Stop,
-    SetVolume(f64),
+    SetPresetLevel(f64),
+    /// Music volume setting pushed by the Music session; no caller waits for the reply.
+    SetMaster(f64),
     SetLevels(Vec<f64>),
     RecoverGuarded(OutputGuard),
     Snapshot,
@@ -573,6 +577,12 @@ impl EngineController {
             .send(EngineMessage::Command(command, reply))
             .map_err(|_| SoundscapeError::backend())?;
         await_reply(&receiver, ENGINE_REPLY_TIMEOUT)
+    }
+
+    /// Queues a command without waiting, for callers that must never block on audio work.
+    fn notify(&self, command: EngineCommand) {
+        let (reply, _receiver) = mpsc::channel();
+        let _ = self.sender.send(EngineMessage::Command(command, reply));
     }
 }
 
@@ -682,6 +692,15 @@ pub(crate) fn stop_blocking(app: &tauri::AppHandle) -> Result<SoundscapeSnapshot
         .dispatch(EngineCommand::Stop)
 }
 
+/// Makes the soundscape follow the Music volume setting, where `master` is zero while Music is muted.
+///
+/// The command is queued without waiting so a Music session publish never blocks on the audio worker.
+pub(crate) fn set_master(app: &tauri::AppHandle, master: f64) {
+    if let Some(state) = app.try_state::<SoundscapeEngineState>() {
+        state.controller.notify(EngineCommand::SetMaster(master));
+    }
+}
+
 #[tauri::command]
 pub(crate) async fn music_soundscape_start(
     app: tauri::AppHandle,
@@ -729,12 +748,12 @@ pub(crate) async fn music_soundscape_stop(
 }
 
 #[tauri::command]
-pub(crate) async fn music_soundscape_set_volume(
+pub(crate) async fn music_soundscape_set_preset_level(
     app: tauri::AppHandle,
-    volume: f64,
+    level: f64,
 ) -> Result<SoundscapeSnapshot, SoundscapeError> {
     run_engine(app, move |_, controller| {
-        controller.dispatch(EngineCommand::SetVolume(volume))
+        controller.dispatch(EngineCommand::SetPresetLevel(level))
     })
     .await
 }
@@ -778,9 +797,9 @@ fn validate_request(request: &SoundscapeStartRequest) -> Result<(), SoundscapeEr
             "A stable source id is required.",
         ));
     }
-    if !request.volume.is_finite() || !(0.0..=1.0).contains(&request.volume) {
+    if !valid_preset_level(request.preset_level) {
         return Err(SoundscapeError::validation(
-            "Volume must be between zero and one.",
+            "The preset level must be between zero and two.",
         ));
     }
     if request.extra_sources.len() >= MAX_SOUNDSCAPE_LAYERS {
@@ -800,9 +819,9 @@ fn validate_request(request: &SoundscapeStartRequest) -> Result<(), SoundscapeEr
                 "Soundscape sounds need distinct source ids.",
             ));
         }
-        if !layer.level.is_finite() || !(0.0..=2.0).contains(&layer.level) {
+        if !valid_sound_level(layer.level) {
             return Err(SoundscapeError::validation(
-                "Sound levels must be between zero and two.",
+                "Sound levels must be between zero and one.",
             ));
         }
         match (layer.generated_kind, layer.local_path.as_deref()) {
@@ -818,20 +837,25 @@ fn validate_request(request: &SoundscapeStartRequest) -> Result<(), SoundscapeEr
     Ok(())
 }
 
-fn clamp_volume(value: f64) -> f64 {
-    if value.is_finite() {
-        value.clamp(0.0, 1.0)
-    } else {
-        0.1
-    }
+fn valid_preset_level(level: f64) -> bool {
+    level.is_finite() && (0.0..=2.0).contains(&level)
 }
 
-fn layer_volume(volume: f64, count: usize) -> f64 {
-    volume / count.max(1) as f64
+fn valid_sound_level(level: f64) -> bool {
+    level.is_finite() && (0.0..=1.0).contains(&level)
 }
 
-fn layer_targets(request: &SoundscapeStartRequest) -> Vec<f32> {
-    let base = layer_volume(request.volume, 1 + request.extra_sources.len());
+/// The preset output, Music volume times preset level clamped to full scale, shared evenly by the layers.
+fn layer_volume(master: f64, preset_level: f64, count: usize) -> f64 {
+    (master * preset_level).clamp(0.0, 1.0) / count.max(1) as f64
+}
+
+fn layer_targets(request: &SoundscapeStartRequest, master: f64) -> Vec<f32> {
+    let base = layer_volume(
+        master,
+        request.preset_level,
+        1 + request.extra_sources.len(),
+    );
     std::iter::once(request.level)
         .chain(request.extra_sources.iter().map(|layer| layer.level))
         .map(|level| (base * level).clamp(0.0, 1.0) as f32)
@@ -923,7 +947,7 @@ mod tests {
             local_path: None,
             level: 1.0,
             extra_sources: Vec::new(),
-            volume: 0.1,
+            preset_level: 0.5,
         };
         assert!(
             core.handle(EngineCommand::Automatic(Some(request), Box::new(|| false)))
@@ -993,13 +1017,13 @@ mod tests {
             local_path: Some("/tmp/rain.wav".into()),
             level: 1.0,
             extra_sources: Vec::new(),
-            volume: 0.4,
+            preset_level: 0.5,
         };
         assert!(validate_request(&request).is_err());
     }
 
     #[test]
-    fn layered_requests_require_distinct_sources_and_reduce_each_layer_level() {
+    fn layered_requests_require_distinct_sources_and_share_the_preset_output() {
         let request = SoundscapeStartRequest {
             source_id: "brown".into(),
             generated_kind: Some(GeneratedNoiseKind::Brown),
@@ -1011,16 +1035,27 @@ mod tests {
                 local_path: None,
                 level: 0.5,
             }],
-            volume: 0.1,
+            preset_level: 0.5,
         };
         assert!(validate_request(&request).is_ok());
-        assert!((layer_volume(0.1, 2) - 0.05).abs() < f64::EPSILON);
-        assert_eq!(layer_targets(&request), vec![0.05, 0.025]);
-        let excessive = SoundscapeStartRequest {
-            level: 2.1,
-            ..request.clone()
-        };
-        assert!(validate_request(&excessive).is_err());
+        assert!((layer_volume(0.4, 0.5, 2) - 0.1).abs() < f64::EPSILON);
+        assert_eq!(layer_targets(&request, 0.4), vec![0.1, 0.05]);
+        for invalid in [
+            SoundscapeStartRequest {
+                level: 1.1,
+                ..request.clone()
+            },
+            SoundscapeStartRequest {
+                preset_level: 2.1,
+                ..request.clone()
+            },
+            SoundscapeStartRequest {
+                preset_level: f64::NAN,
+                ..request.clone()
+            },
+        ] {
+            assert!(validate_request(&invalid).is_err());
+        }
         let duplicate = SoundscapeStartRequest {
             extra_sources: vec![SoundscapeLayer {
                 source_id: "brown".into(),
@@ -1031,6 +1066,24 @@ mod tests {
             ..request
         };
         assert!(validate_request(&duplicate).is_err());
+    }
+
+    #[test]
+    fn preset_output_follows_music_volume_and_clamps_at_full_scale() {
+        assert_eq!(layer_volume(0.0, 2.0, 1), 0.0);
+        assert_eq!(layer_volume(0.6, 1.0, 1), 0.6);
+        assert_eq!(layer_volume(0.8, 2.0, 1), 1.0);
+        assert_eq!(layer_volume(0.8, 2.0, 4), 0.25);
+        let mut core = EngineCore::default();
+        assert_eq!(core.master, 0.0);
+        core.set_master(0.7);
+        assert_eq!(core.master, 0.7);
+        core.set_master(f64::NAN);
+        assert_eq!(core.master, 0.7);
+        core.set_master(1.5);
+        assert_eq!(core.master, 1.0);
+        assert!(core.set_preset_level(2.5).is_err());
+        assert!(core.set_levels(vec![1.2]).is_err());
     }
 
     #[test]

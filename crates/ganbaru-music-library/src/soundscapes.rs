@@ -226,12 +226,6 @@ pub async fn remove(
         .begin()
         .await
         .map_err(|error| MusicLibraryError::database("begin soundscape removal", error))?;
-    let active_ids: Vec<String> = sqlx::query_scalar(
-        "SELECT soundscape_id FROM music_soundscape_active_selections ORDER BY position",
-    )
-    .fetch_all(&mut *transaction)
-    .await
-    .map_err(|error| MusicLibraryError::database("load selected soundscape sounds", error))?;
     let result = sqlx::query(
         "DELETE FROM music_soundscapes
          WHERE id = ? AND source_kind = 'local-loop' AND version = ?",
@@ -246,144 +240,79 @@ pub async fn remove(
             "the soundscape changed or cannot be removed",
         ));
     }
-    if active_ids.iter().any(|id| id == soundscape_id) {
-        let first_remaining = active_ids.iter().find(|id| id.as_str() != soundscape_id);
-        let remaining_count = active_ids.len() - 1;
-        sqlx::query(
-            "UPDATE music_soundscape_state
-             SET active_soundscape_id = ?,
-                 desired_playing = CASE WHEN ? = 0 THEN 0 ELSE desired_playing END,
-                 updated_at_ms = updated_at_ms + 1, version = version + 1
-             WHERE singleton = 1",
-        )
-        .bind(first_remaining)
-        .bind(remaining_count as i64)
-        .execute(&mut *transaction)
-        .await
-        .map_err(|error| MusicLibraryError::database("update selected soundscape sounds", error))?;
-    }
+    // Preset sounds cascade with the sound; an active preset left silent stops wanting playback.
+    sqlx::query(
+        "UPDATE music_soundscape_state
+         SET desired_playing = 0, updated_at_ms = updated_at_ms + 1, version = version + 1
+         WHERE singleton = 1 AND desired_playing = 1 AND NOT EXISTS (
+             SELECT 1 FROM music_soundscape_preset_sounds
+             WHERE preset_id = music_soundscape_state.active_preset_id
+         )",
+    )
+    .execute(&mut *transaction)
+    .await
+    .map_err(|error| MusicLibraryError::database("stop the emptied soundscape preset", error))?;
     super::writes::commit(transaction, "commit soundscape removal").await
 }
 
+/// The remembered soundscape preset and whether it should play.
 pub async fn state(pool: &SqlitePool) -> MusicLibraryResult<MusicSoundscapeState> {
-    let row = sqlx::query_as::<_, (Option<String>, bool, Option<f64>, Option<f64>, bool, f64, i64, i64, bool)>(
-        "SELECT active_soundscape_id, multiple_enabled, generated_level, local_level, desired_playing, volume, updated_at_ms, version, automatic_intent
+    let row = sqlx::query_as::<_, (Option<String>, bool, i64, i64, bool)>(
+        "SELECT active_preset_id, desired_playing, updated_at_ms, version, automatic_intent
          FROM music_soundscape_state WHERE singleton = 1",
     )
     .fetch_one(pool)
     .await
     .map_err(|error| MusicLibraryError::database("load soundscape state", error))?;
-    let active_ids = sqlx::query_scalar(
-        "SELECT soundscape_id FROM music_soundscape_active_selections ORDER BY position",
-    )
-    .fetch_all(pool)
-    .await
-    .map_err(|error| MusicLibraryError::database("load selected soundscape sounds", error))?;
     Ok(MusicSoundscapeState {
-        automatic_intent: row.8,
-        active_soundscape_id: row.0,
-        active_ids,
-        multiple_enabled: row.1,
-        generated_level: row.2,
-        local_level: row.3,
-        desired_playing: row.4,
-        volume: row.5,
-        updated_at_ms: row.6,
-        version: row.7,
+        automatic_intent: row.4,
+        active_preset_id: row.0,
+        desired_playing: row.1,
+        updated_at_ms: row.2,
+        version: row.3,
     })
 }
 
+/// Records a manual preset choice under optimistic versioning, clearing automatic intent.
 pub async fn update_state(
     pool: &SqlitePool,
     request: MusicSoundscapeStateWrite,
 ) -> MusicLibraryResult<MusicSoundscapeState> {
-    if !request.volume.is_finite() || !(0.0..=1.0).contains(&request.volume) {
-        return Err(MusicLibraryError::validation(
-            "volume",
-            "must be a finite value between zero and one",
-        ));
-    }
-    for (name, level) in [
-        ("generatedLevel", request.generated_level),
-        ("localLevel", request.local_level),
-    ] {
-        if level.is_some_and(|value| !value.is_finite() || !(0.0..=2.0).contains(&value)) {
-            return Err(MusicLibraryError::validation(
-                name,
-                "must be between zero and two",
-            ));
-        }
-    }
     if request.updated_at_ms <= 0 {
         return Err(MusicLibraryError::validation(
             "updatedAt",
             "must be positive",
         ));
     }
-    if request.active_ids.len() > MAX_SOUNDSCAPE_LAYERS {
-        return Err(MusicLibraryError::validation(
-            "activeIds",
-            "cannot play more than 16 soundscape sounds",
-        ));
-    }
-    if !request.multiple_enabled && request.active_ids.len() > 1 {
-        return Err(MusicLibraryError::validation(
-            "activeIds",
-            "multiple sounds are disabled",
-        ));
-    }
-    if request.active_soundscape_id.as_ref() != request.active_ids.first() {
-        return Err(MusicLibraryError::validation(
-            "activeIds",
-            "the first sound must be active",
-        ));
-    }
-    let mut unique = std::collections::HashSet::new();
-    for id in &request.active_ids {
-        validate_id(id, "activeSoundscapeId")?;
-        if !unique.insert(id) {
-            return Err(MusicLibraryError::validation(
-                "activeIds",
-                "duplicate soundscape sound",
-            ));
+    if let Some(preset_id) = &request.active_preset_id {
+        validate_id(preset_id, "activePresetId")?;
+        let exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM music_soundscape_presets WHERE id = ?)",
+        )
+        .bind(preset_id)
+        .fetch_one(pool)
+        .await
+        .map_err(|error| MusicLibraryError::database("validate active soundscape preset", error))?;
+        if !exists {
+            return Err(MusicLibraryError::not_found("soundscape preset", preset_id));
         }
-        let exists: Option<i64> =
-            sqlx::query_scalar("SELECT 1 FROM music_soundscapes WHERE id = ?")
-                .bind(id)
-                .fetch_optional(pool)
-                .await
-                .map_err(|error| {
-                    MusicLibraryError::database("validate active soundscape", error)
-                })?;
-        if exists.is_none() {
-            return Err(MusicLibraryError::not_found("soundscape", id));
-        }
-    }
-    if request.active_ids.is_empty() && request.desired_playing {
+    } else if request.desired_playing {
         return Err(MusicLibraryError::validation(
             "desiredPlaying",
-            "cannot be enabled without an active soundscape",
+            "cannot be enabled without an active soundscape preset",
         ));
     }
-    let mut transaction = pool
-        .begin()
-        .await
-        .map_err(|error| MusicLibraryError::database("begin soundscape state update", error))?;
     let result = sqlx::query(
         "UPDATE music_soundscape_state
-         SET active_soundscape_id = ?, multiple_enabled = ?, generated_level = ?, local_level = ?, desired_playing = ?, volume = ?,
-             updated_at_ms = ?, version = version + 1, automatic_intent = 0
+         SET active_preset_id = ?, desired_playing = ?, updated_at_ms = ?, version = version + 1,
+             automatic_intent = 0
          WHERE singleton = 1 AND version = ?",
     )
-    .bind(request.active_soundscape_id)
-    .bind(request.multiple_enabled)
-    .bind(request.generated_level)
-    .bind(request.local_level)
+    .bind(&request.active_preset_id)
     .bind(request.desired_playing)
-    .bind(request.volume)
     .bind(request.updated_at_ms)
     .bind(request.expected_version)
-    .execute(&mut *transaction)
+    .execute(pool)
     .await
     .map_err(|error| MusicLibraryError::database("update soundscape state", error))?;
     if result.rows_affected() == 0 {
@@ -391,21 +320,6 @@ pub async fn update_state(
             "the soundscape state changed before this update",
         ));
     }
-    sqlx::query("DELETE FROM music_soundscape_active_selections")
-        .execute(&mut *transaction)
-        .await
-        .map_err(|error| MusicLibraryError::database("clear selected soundscape sounds", error))?;
-    for (position, id) in request.active_ids.iter().enumerate() {
-        sqlx::query(
-            "INSERT INTO music_soundscape_active_selections (position, soundscape_id) VALUES (?, ?)",
-        )
-        .bind(position as i64)
-        .bind(id)
-        .execute(&mut *transaction)
-        .await
-        .map_err(|error| MusicLibraryError::database("save selected soundscape sound", error))?;
-    }
-    super::writes::commit(transaction, "commit soundscape state update").await?;
     state(pool).await
 }
 
@@ -648,83 +562,58 @@ mod tests {
                 MusicSoundscapeAvailability::Missing
             );
 
+            crate::soundscape_presets::upsert(
+                &pool,
+                MusicSoundscapePresetWrite {
+                    id: "rain-only".into(),
+                    name: "Rain".into(),
+                    icon: "lucide:cloud-rain".into(),
+                    level: 0.5,
+                    sounds: vec![MusicSoundscapePresetSound {
+                        soundscape_id: saved.id.clone(),
+                        level: 1.0,
+                    }],
+                    expected_version: None,
+                    updated_at_ms: 1_700_000_000_001,
+                },
+            )
+            .await
+            .unwrap();
             let initial = state(&pool).await.unwrap();
+            assert_eq!(initial.active_preset_id, None);
             let playing = update_state(
                 &pool,
                 MusicSoundscapeStateWrite {
-                    active_soundscape_id: Some(saved.id.clone()),
-                    active_ids: vec![saved.id.clone()],
-                    multiple_enabled: false,
-                    generated_level: None,
-                    local_level: None,
+                    active_preset_id: Some("rain-only".into()),
                     desired_playing: true,
-                    volume: 0.42,
                     expected_version: initial.version,
                     updated_at_ms: 1_700_000_000_001,
                 },
             )
             .await
             .unwrap();
-            assert_eq!(playing.active_soundscape_id.as_deref(), Some("local-rain"));
-            assert_eq!(playing.active_ids, vec!["local-rain"]);
-            assert!(!playing.multiple_enabled);
-            assert_eq!(playing.volume, 0.42);
-            assert!(
-                update_state(
-                    &pool,
-                    MusicSoundscapeStateWrite {
-                        active_soundscape_id: Some("local-rain".into()),
-                        active_ids: vec!["local-rain".into(), "generated-brown-noise".into()],
-                        multiple_enabled: false,
-                        generated_level: None,
-                        local_level: None,
-                        desired_playing: true,
-                        volume: 0.42,
-                        expected_version: playing.version,
-                        updated_at_ms: 1_700_000_000_002,
-                    }
-                )
-                .await
-                .is_err()
-            );
-            assert!(
-                update_state(
-                    &pool,
-                    MusicSoundscapeStateWrite {
-                        active_soundscape_id: None,
-                        active_ids: Vec::new(),
-                        multiple_enabled: false,
-                        generated_level: None,
-                        local_level: None,
-                        desired_playing: true,
-                        volume: 0.5,
-                        expected_version: playing.version,
-                        updated_at_ms: 1_700_000_000_002,
-                    }
-                )
-                .await
-                .is_err()
-            );
-
-            let layered = update_state(
-                &pool,
-                MusicSoundscapeStateWrite {
-                    active_soundscape_id: Some(saved.id.clone()),
-                    active_ids: vec![saved.id.clone(), "generated-brown-noise".into()],
-                    multiple_enabled: true,
-                    generated_level: Some(1.25),
-                    local_level: None,
-                    desired_playing: true,
-                    volume: 0.42,
-                    expected_version: playing.version,
-                    updated_at_ms: 1_700_000_000_003,
-                },
-            )
-            .await
-            .unwrap();
-            assert_eq!(layered.active_ids.len(), 2);
-            assert!(layered.multiple_enabled);
-            assert_eq!(layered.generated_level, Some(1.25));
+            assert_eq!(playing.active_preset_id.as_deref(), Some("rain-only"));
+            assert!(playing.desired_playing);
+            assert!(!playing.automatic_intent);
+            for (active_preset_id, expected_version) in [
+                (Some("removed-preset"), playing.version),
+                (None, playing.version),
+                (Some("rain-only"), initial.version),
+            ] {
+                assert!(
+                    update_state(
+                        &pool,
+                        MusicSoundscapeStateWrite {
+                            active_preset_id: active_preset_id.map(str::to_owned),
+                            desired_playing: true,
+                            expected_version,
+                            updated_at_ms: 1_700_000_000_002,
+                        }
+                    )
+                    .await
+                    .is_err()
+                );
+            }
 
             std::fs::remove_file(&path).unwrap();
             let missing = definitions(&pool, "device-a")
@@ -777,8 +666,9 @@ mod tests {
                 .await
                 .unwrap();
             let after_removal = state(&pool).await.unwrap();
-            assert_eq!(after_removal.active_ids, vec!["generated-brown-noise"]);
-            assert!(after_removal.desired_playing);
+            assert_eq!(after_removal.active_preset_id.as_deref(), Some("rain-only"));
+            assert!(!after_removal.desired_playing);
+            assert!(after_removal.version > playing.version);
             assert!(
                 definitions(&pool, "device-a")
                     .await

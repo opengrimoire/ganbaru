@@ -89,72 +89,6 @@ pub(super) fn membership(index: usize) -> MusicMembershipWrite {
 }
 
 #[test]
-fn soundscape_selection_preserves_order_and_removal_updates_state() {
-    crate::test_support::block_on(async {
-        let pool = pool().await;
-        let initial = super::soundscapes::state(&pool).await.unwrap();
-        let selected = super::soundscapes::update_state(
-            &pool,
-            MusicSoundscapeStateWrite {
-                active_soundscape_id: Some("generated-pink-noise".to_string()),
-                active_ids: vec![
-                    "generated-pink-noise".to_string(),
-                    "generated-brown-noise".to_string(),
-                ],
-                multiple_enabled: true,
-                generated_level: None,
-                local_level: None,
-                desired_playing: true,
-                volume: 0.1,
-                expected_version: initial.version,
-                updated_at_ms: initial.updated_at_ms + 1,
-            },
-        )
-        .await
-        .unwrap();
-        assert_eq!(
-            selected.active_ids,
-            ["generated-pink-noise", "generated-brown-noise"]
-        );
-        assert!(selected.desired_playing);
-
-        sqlx::query(
-            "INSERT INTO music_soundscapes
-                (id, source_kind, name, availability, created_at_ms, updated_at_ms, version)
-             VALUES ('local-test', 'local-loop', 'Test', 'missing', 1, 1, 1)",
-        )
-        .execute(&pool)
-        .await
-        .unwrap();
-        let with_local = super::soundscapes::update_state(
-            &pool,
-            MusicSoundscapeStateWrite {
-                active_soundscape_id: Some("local-test".to_string()),
-                active_ids: vec!["local-test".to_string()],
-                multiple_enabled: false,
-                generated_level: None,
-                local_level: None,
-                desired_playing: true,
-                volume: 0.1,
-                expected_version: selected.version,
-                updated_at_ms: selected.updated_at_ms + 1,
-            },
-        )
-        .await
-        .unwrap();
-        assert_eq!(with_local.active_ids, ["local-test"]);
-        super::soundscapes::remove(&pool, "local-test", 1)
-            .await
-            .unwrap();
-        let after_removal = super::soundscapes::state(&pool).await.unwrap();
-        assert!(after_removal.active_ids.is_empty());
-        assert_eq!(after_removal.active_soundscape_id, None);
-        assert!(!after_removal.desired_playing);
-        assert_eq!(after_removal.version, with_local.version + 1);
-    });
-}
-
-#[test]
 fn typed_enums_reject_unknown_external_values() {
     let error = serde_json::from_str::<MusicWeight>(r#""always""#).unwrap_err();
     assert!(error.to_string().contains("unknown variant"));
@@ -622,7 +556,6 @@ fn deletion_requires_current_impact_and_repairs_assignments_atomically() {
                 phase: MusicActivityPhase::Focus,
                 behavior: MusicAssignmentBehavior::PlayAutomatically,
                 playlist_id: Some("playlist-1".to_string()),
-                soundscape_id: None,
                 soundscape_preset_id: None,
                 soundscape_behavior: MusicSoundscapeBehavior::Inherit,
                 provenance_kind: MusicAssignmentProvenanceKind::Explicit,

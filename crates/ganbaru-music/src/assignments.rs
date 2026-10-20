@@ -72,8 +72,6 @@ pub struct MusicContextAssignment {
     pub phase: MusicActivityPhase,
     pub behavior: MusicAssignmentBehavior,
     pub playlist_id: Option<String>,
-    pub soundscape_id: Option<String>,
-    #[serde(default)]
     pub soundscape_preset_id: Option<String>,
     pub soundscape_behavior: MusicSoundscapeBehavior,
     pub provenance_kind: MusicAssignmentProvenanceKind,
@@ -88,8 +86,6 @@ pub struct MusicContextAssignmentDraft {
     pub phase: MusicActivityPhase,
     pub behavior: MusicAssignmentBehavior,
     pub playlist_id: Option<String>,
-    pub soundscape_id: Option<String>,
-    #[serde(default)]
     pub soundscape_preset_id: Option<String>,
     pub soundscape_behavior: MusicSoundscapeBehavior,
     pub provenance_kind: MusicAssignmentProvenanceKind,
@@ -118,7 +114,6 @@ pub type AssignmentRow = (
     Option<String>,
     i64,
     i64,
-    Option<String>,
 );
 
 /// The assignments of one owner, ordered by phase.
@@ -129,8 +124,8 @@ pub async fn load_assignments(
 ) -> MusicLibraryResult<Vec<MusicContextAssignment>> {
     validate_id(owner_id, "ownerId")?;
     let rows = sqlx::query_as::<_, AssignmentRow>(
-        "SELECT owner_kind, owner_id, phase, behavior, playlist_id, soundscape_id, soundscape_behavior,
-                provenance_kind, provenance_id, updated_at_ms, version, soundscape_preset_id
+        "SELECT owner_kind, owner_id, phase, behavior, playlist_id, soundscape_preset_id, soundscape_behavior,
+                provenance_kind, provenance_id, updated_at_ms, version
          FROM music_context_assignments
          WHERE owner_kind = ? AND owner_id = ?
          ORDER BY CASE phase WHEN 'focus' THEN 0 WHEN 'short-break' THEN 1 ELSE 2 END",
@@ -206,22 +201,21 @@ pub async fn replace_assignments_in_transaction(
             + 1;
         sqlx::query(
             "INSERT INTO music_context_assignments
-                (owner_kind, owner_id, phase, behavior, playlist_id, soundscape_id, soundscape_behavior,
-                 provenance_kind, provenance_id, updated_at_ms, version, soundscape_preset_id)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (owner_kind, owner_id, phase, behavior, playlist_id, soundscape_preset_id, soundscape_behavior,
+                 provenance_kind, provenance_id, updated_at_ms, version)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(owner_kind.as_ref())
         .bind(owner_id)
         .bind(assignment.phase.as_ref())
         .bind(assignment.behavior.as_ref())
         .bind(assignment.playlist_id)
-        .bind(assignment.soundscape_id)
+        .bind(assignment.soundscape_preset_id)
         .bind(assignment.soundscape_behavior.as_ref())
         .bind(assignment.provenance_kind.as_ref())
         .bind(assignment.provenance_id)
         .bind(updated_at_ms)
         .bind(version)
-        .bind(assignment.soundscape_preset_id)
         .execute(&mut **transaction)
         .await
         .map_err(|error| {
@@ -263,7 +257,6 @@ pub fn validate_drafts(
             ));
         }
         validate_optional_id(&assignment.playlist_id, "playlistId")?;
-        validate_optional_id(&assignment.soundscape_id, "soundscapeId")?;
         validate_optional_id(&assignment.soundscape_preset_id, "soundscapePresetId")?;
         validate_optional_id(&assignment.provenance_id, "provenanceId")?;
         validate_soundscape_choice(assignment)?;
@@ -290,23 +283,21 @@ pub fn validate_drafts(
     Ok(())
 }
 
-/// A selected soundscape names one sound or one preset; other behaviors name neither.
+/// A selected soundscape names one preset; other behaviors name none.
 fn validate_soundscape_choice(assignment: &MusicContextAssignmentDraft) -> MusicLibraryResult<()> {
-    let selections = usize::from(assignment.soundscape_id.is_some())
-        + usize::from(assignment.soundscape_preset_id.is_some());
-    match assignment.soundscape_behavior {
-        MusicSoundscapeBehavior::PlaySelected if selections != 1 => {
-            Err(MusicLibraryError::validation(
-                "soundscapeId",
-                "play-selected requires exactly one sound or preset",
-            ))
-        }
-        MusicSoundscapeBehavior::PlaySelected => Ok(()),
-        _ if selections != 0 => Err(MusicLibraryError::validation(
-            "soundscapeId",
-            "only play-selected may name a sound or preset",
+    match (
+        assignment.soundscape_behavior,
+        assignment.soundscape_preset_id.is_some(),
+    ) {
+        (MusicSoundscapeBehavior::PlaySelected, false) => Err(MusicLibraryError::validation(
+            "soundscapePresetId",
+            "play-selected requires a preset",
         )),
-        _ => Ok(()),
+        (MusicSoundscapeBehavior::PlaySelected, true) | (_, false) => Ok(()),
+        (_, true) => Err(MusicLibraryError::validation(
+            "soundscapePresetId",
+            "only play-selected may name a preset",
+        )),
     }
 }
 
@@ -343,8 +334,7 @@ pub fn decode(row: AssignmentRow) -> MusicLibraryResult<MusicContextAssignment> 
         behavior: MusicAssignmentBehavior::try_from(row.3.as_str())
             .map_err(|message| MusicLibraryError::runtime("decode assignment behavior", message))?,
         playlist_id: row.4,
-        soundscape_id: row.5,
-        soundscape_preset_id: row.11,
+        soundscape_preset_id: row.5,
         soundscape_behavior: MusicSoundscapeBehavior::try_from(row.6.as_str())
             .map_err(|message| MusicLibraryError::runtime("decode soundscape behavior", message))?,
         provenance_kind: MusicAssignmentProvenanceKind::try_from(row.7.as_str()).map_err(

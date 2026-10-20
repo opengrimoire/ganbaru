@@ -538,13 +538,11 @@ async fn import_assignments(
         };
         sqlx::query(
             "INSERT INTO music_context_assignments
-                (owner_kind, owner_id, phase, behavior, playlist_id, soundscape_id,
-                 soundscape_behavior, provenance_kind, provenance_id, updated_at_ms, version,
-                 soundscape_preset_id)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
+                (owner_kind, owner_id, phase, behavior, playlist_id, soundscape_preset_id,
+                 soundscape_behavior, provenance_kind, provenance_id, updated_at_ms, version)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
              ON CONFLICT(owner_kind, owner_id, phase) DO UPDATE SET
                 behavior = excluded.behavior, playlist_id = excluded.playlist_id,
-                soundscape_id = excluded.soundscape_id,
                 soundscape_preset_id = excluded.soundscape_preset_id,
                 soundscape_behavior = excluded.soundscape_behavior,
                 provenance_kind = excluded.provenance_kind,
@@ -556,12 +554,11 @@ async fn import_assignments(
         .bind(assignment.phase.as_ref())
         .bind(assignment.behavior.as_ref())
         .bind(imported_playlist_id)
-        .bind(&assignment.soundscape_id)
+        .bind(&assignment.soundscape_preset_id)
         .bind(assignment.soundscape_behavior.as_ref())
         .bind(assignment.provenance_kind.as_ref())
         .bind(&assignment.provenance_id)
         .bind(imported_at)
-        .bind(&assignment.soundscape_preset_id)
         .execute(&mut **transaction)
         .await
         .map_err(|error| MusicLibraryError::database("import music context assignment", error))?;

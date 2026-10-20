@@ -14,12 +14,11 @@ static DELIVERY_GATE: LazyLock<Arc<tokio::sync::Semaphore>> =
     LazyLock::new(|| Arc::new(tokio::sync::Semaphore::new(1)));
 
 #[derive(sqlx::FromRow)]
-struct AcceptedSoundscapeSource {
+struct AcceptedPresetSound {
+    soundscape_id: String,
+    level: f64,
     generated_kind: Option<String>,
     absolute_path: Option<String>,
-    volume: f64,
-    generated_level: Option<f64>,
-    local_level: Option<f64>,
 }
 
 pub(super) struct PreparedSoundscape {
@@ -28,13 +27,12 @@ pub(super) struct PreparedSoundscape {
     pub missing: bool,
 }
 
-/// Read only the selected sounds, with SQL size predicates before path allocation. A preset plays
+/// Read only the selected preset, with SQL size predicates before path allocation. A preset plays
 /// the sounds still available on this device and reports missing only when none remain.
 pub(super) async fn prepare(
     connection: &mut sqlx::SqliteConnection,
     device_id: &str,
     behavior: &str,
-    soundscape_id: Option<&str>,
     preset_id: Option<&str>,
 ) -> MusicLibraryResult<PreparedSoundscape> {
     use ganbaru_music::assignments::MusicSoundscapeBehavior;
@@ -52,117 +50,91 @@ pub(super) async fn prepare(
         return Ok(empty(false));
     }
     let request = if behavior == MusicSoundscapeBehavior::PlaySelected {
-        let ids = selected_ids(connection, soundscape_id, preset_id).await?;
-        let mut layers = Vec::with_capacity(ids.len());
-        for id in ids {
-            if let Some(layer) = read_layer(connection, device_id, id).await? {
-                layers.push(layer);
-            }
-        }
-        let mut layers = layers.into_iter();
-        let Some((first, volume)) = layers.next() else {
+        let Some(preset_id) = preset_id else {
             return Ok(empty(true));
         };
-        Some(SoundscapeStartRequest {
-            source_id: first.source_id,
-            generated_kind: first.generated_kind,
-            local_path: first.local_path,
-            level: first.level,
-            extra_sources: layers.map(|(layer, _)| layer).collect(),
-            volume,
-        })
+        let Some(request) = read_preset(connection, device_id, preset_id).await? else {
+            return Ok(empty(true));
+        };
+        Some((preset_id, request))
     } else {
         None
     };
-    if let Some(request) = &request {
-        sqlx::query("DELETE FROM music_soundscape_active_selections")
-            .execute(&mut *connection)
-            .await
-            .map_err(|error| {
-                MusicLibraryError::database("replace automatic background selection", error)
-            })?;
-        let ids = std::iter::once(&request.source_id)
-            .chain(request.extra_sources.iter().map(|layer| &layer.source_id));
-        for (position, id) in ids.enumerate() {
-            sqlx::query(
-                "INSERT INTO music_soundscape_active_selections(position, soundscape_id) VALUES (?, ?)",
-            )
-            .bind(position as i64)
-            .bind(id)
-            .execute(&mut *connection)
-            .await
-            .map_err(|error| {
-                MusicLibraryError::database("select accepted soundscape", error)
-            })?;
-        }
-    }
-    let layered = request
-        .as_ref()
-        .is_some_and(|request| !request.extra_sources.is_empty());
     let version: i64 = sqlx::query_scalar(
         "UPDATE music_soundscape_state
-         SET active_soundscape_id = CASE WHEN ? THEN ? ELSE active_soundscape_id END,
-             multiple_enabled = CASE WHEN ? THEN 1 ELSE multiple_enabled END,
+         SET active_preset_id = CASE WHEN ? THEN ? ELSE active_preset_id END,
              desired_playing = ?, automatic_intent = 1, version = version + 1, updated_at_ms = MAX(updated_at_ms + 1, ?)
          WHERE singleton = 1 RETURNING version",
     )
     .bind(request.is_some())
-    .bind(request.as_ref().map(|request| &request.source_id))
-    .bind(layered)
+    .bind(request.as_ref().map(|(preset_id, _)| *preset_id))
     .bind(request.is_some())
     .bind(now_ms())
     .fetch_one(&mut *connection)
     .await
     .map_err(|error| MusicLibraryError::database("persist accepted soundscape", error))?;
     Ok(PreparedSoundscape {
-        action: Some(request),
+        action: Some(request.map(|(_, request)| request)),
         version: Some(version),
         missing: false,
     })
 }
 
-/// The sound ids one assignment selects, in playback order.
-async fn selected_ids(
-    connection: &mut sqlx::SqliteConnection,
-    soundscape_id: Option<&str>,
-    preset_id: Option<&str>,
-) -> MusicLibraryResult<Vec<String>> {
-    if let Some(preset_id) = preset_id {
-        return sqlx::query_scalar(
-            "SELECT soundscape_id FROM music_soundscape_preset_sounds
-             WHERE preset_id = ? AND length(CAST(soundscape_id AS BLOB)) <= ?
-             ORDER BY position LIMIT ?",
-        )
-        .bind(preset_id)
-        .bind(MAX_SOUND_SOURCE_ID_BYTES)
-        .bind(MAX_SOUNDSCAPE_LAYERS as i64)
-        .fetch_all(&mut *connection)
-        .await
-        .map_err(|error| MusicLibraryError::database("read accepted background preset", error));
-    }
-    Ok(soundscape_id.map(str::to_owned).into_iter().collect())
-}
-
-/// One available sound as an engine layer, with the output volume shared by every layer.
-async fn read_layer(
+/// The preset as one engine request over its sounds available on this device, in playback order.
+async fn read_preset(
     connection: &mut sqlx::SqliteConnection,
     device_id: &str,
-    id: String,
-) -> MusicLibraryResult<Option<(SoundscapeLayer, f64)>> {
-    let source: Option<AcceptedSoundscapeSource> = sqlx::query_as(
-        "SELECT s.generated_kind, l.absolute_path, st.volume, st.generated_level, st.local_level
-         FROM music_soundscapes s
-         JOIN music_soundscape_state st ON st.singleton = 1
-         LEFT JOIN music_soundscape_locations l ON l.soundscape_id = s.id AND l.device_id = ?
-         WHERE s.id = ? AND length(CAST(s.id AS BLOB)) <= ?
-           AND (l.absolute_path IS NULL OR length(CAST(l.absolute_path AS BLOB)) <= ?)
-           AND CASE WHEN s.source_kind = 'local-loop' THEN l.availability ELSE s.availability END = 'available'",
-    ).bind(device_id).bind(&id).bind(MAX_SOUND_SOURCE_ID_BYTES).bind(MAX_SOUND_PATH_BYTES).fetch_optional(&mut *connection).await
-        .map_err(|error| MusicLibraryError::database("read accepted soundscape", error))?;
-    let Some(source) = source else {
+    preset_id: &str,
+) -> MusicLibraryResult<Option<SoundscapeStartRequest>> {
+    let preset_level: Option<f64> =
+        sqlx::query_scalar("SELECT level FROM music_soundscape_presets WHERE id = ?")
+            .bind(preset_id)
+            .fetch_optional(&mut *connection)
+            .await
+            .map_err(|error| {
+                MusicLibraryError::database("read accepted soundscape preset", error)
+            })?;
+    let Some(preset_level) = preset_level else {
         return Ok(None);
     };
-    let generated_kind = match source.generated_kind.as_deref() {
+    let sounds: Vec<AcceptedPresetSound> = sqlx::query_as(
+        "SELECT ps.soundscape_id, ps.level, s.generated_kind, l.absolute_path
+         FROM music_soundscape_preset_sounds ps
+         JOIN music_soundscapes s ON s.id = ps.soundscape_id
+         LEFT JOIN music_soundscape_locations l ON l.soundscape_id = s.id AND l.device_id = ?
+         WHERE ps.preset_id = ? AND length(CAST(s.id AS BLOB)) <= ?
+           AND (l.absolute_path IS NULL OR length(CAST(l.absolute_path AS BLOB)) <= ?)
+           AND CASE WHEN s.source_kind = 'local-loop' THEN l.availability ELSE s.availability END = 'available'
+         ORDER BY ps.position LIMIT ?",
+    )
+    .bind(device_id)
+    .bind(preset_id)
+    .bind(MAX_SOUND_SOURCE_ID_BYTES)
+    .bind(MAX_SOUND_PATH_BYTES)
+    .bind(MAX_SOUNDSCAPE_LAYERS as i64)
+    .fetch_all(&mut *connection)
+    .await
+    .map_err(|error| MusicLibraryError::database("read accepted soundscape sounds", error))?;
+    let mut layers = sounds
+        .into_iter()
+        .map(layer)
+        .collect::<MusicLibraryResult<Vec<_>>>()?
+        .into_iter();
+    let Some(first) = layers.next() else {
+        return Ok(None);
+    };
+    Ok(Some(SoundscapeStartRequest {
+        source_id: first.source_id,
+        generated_kind: first.generated_kind,
+        local_path: first.local_path,
+        level: first.level,
+        extra_sources: layers.collect(),
+        preset_level,
+    }))
+}
+
+fn layer(sound: AcceptedPresetSound) -> MusicLibraryResult<SoundscapeLayer> {
+    let generated_kind = match sound.generated_kind.as_deref() {
         Some("white") => Some(GeneratedNoiseKind::White),
         Some("pink") => Some(GeneratedNoiseKind::Pink),
         Some("brown") => Some(GeneratedNoiseKind::Brown),
@@ -174,21 +146,12 @@ async fn read_layer(
             ));
         }
     };
-    let level = if generated_kind.is_some() {
-        source.generated_level
-    } else {
-        source.local_level
-    }
-    .unwrap_or(1.0);
-    Ok(Some((
-        SoundscapeLayer {
-            source_id: id,
-            generated_kind,
-            local_path: source.absolute_path,
-            level,
-        },
-        source.volume,
-    )))
+    Ok(SoundscapeLayer {
+        source_id: sound.soundscape_id,
+        generated_kind,
+        local_path: sound.absolute_path,
+        level: sound.level,
+    })
 }
 
 impl Owner {

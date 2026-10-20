@@ -146,6 +146,7 @@ fn mobile_runtime_excludes_desktop_only_commands() {
         "music::library::commands::music_library_soundscape_presets",
         "music::library::commands::music_library_upsert_soundscape_preset",
         "music::library::commands::music_library_remove_soundscape_preset",
+        "music::library::commands::music_library_set_soundscape_preset_level",
     ] {
         assert!(
             !MOBILE_RUNTIME.contains(command),

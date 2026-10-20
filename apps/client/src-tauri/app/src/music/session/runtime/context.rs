@@ -13,7 +13,6 @@ struct AssignmentRow {
     behavior: String,
     playlist_id: Option<String>,
     soundscape_behavior: String,
-    soundscape_id: Option<String>,
     soundscape_preset_id: Option<String>,
 }
 
@@ -31,13 +30,12 @@ async fn resolve_assignment(
            (owner_id = ? AND owner_kind IN ('event-override', 'event-snapshot'))
            OR (owner_kind = 'work-environment' AND owner_id =
              (SELECT environment_id FROM calendar_events WHERE id = ?)))
-         AND (length(CAST(playlist_id AS BLOB)) > ? OR length(CAST(soundscape_id AS BLOB)) > ?
+         AND (length(CAST(playlist_id AS BLOB)) > ?
            OR length(CAST(soundscape_preset_id AS BLOB)) > ?))",
     )
     .bind(phase.as_ref())
     .bind(event_id)
     .bind(event_id)
-    .bind(MAX_CONTEXT_REFERENCE_BYTES)
     .bind(MAX_CONTEXT_REFERENCE_BYTES)
     .bind(MAX_CONTEXT_REFERENCE_BYTES)
     .fetch_one(&mut *connection)
@@ -50,8 +48,7 @@ async fn resolve_assignment(
         ));
     }
     let layers: Vec<AssignmentRow> = sqlx::query_as(
-        "SELECT owner_kind AS source, behavior, playlist_id, soundscape_behavior, soundscape_id,
-                soundscape_preset_id
+        "SELECT owner_kind AS source, behavior, playlist_id, soundscape_behavior, soundscape_preset_id
          FROM music_context_assignments
          WHERE phase = ? AND (behavior != 'inherit' OR soundscape_behavior != 'inherit') AND (
            (owner_id = ? AND owner_kind IN ('event-override', 'event-snapshot'))
@@ -80,7 +77,6 @@ async fn resolve_assignment(
         playlist_id: music.and_then(|layer| layer.playlist_id.clone()),
         soundscape_behavior: sound
             .map_or_else(|| inherit.into(), |layer| layer.soundscape_behavior.clone()),
-        soundscape_id: sound.and_then(|layer| layer.soundscape_id.clone()),
         soundscape_preset_id: sound.and_then(|layer| layer.soundscape_preset_id.clone()),
     }))
 }
@@ -285,7 +281,6 @@ impl Owner {
             behavior,
             playlist_id,
             soundscape_behavior,
-            soundscape_id,
             soundscape_preset_id,
         } = assignment;
         let behavior = MusicAssignmentBehavior::try_from(behavior.as_str())
@@ -420,12 +415,11 @@ impl Owner {
             &mut transaction,
             &self.device_id,
             &soundscape_behavior,
-            soundscape_id.as_deref(),
             soundscape_preset_id.as_deref(),
         )
         .await?;
         #[cfg(mobile)]
-        let _ = (soundscape_behavior, soundscape_id, soundscape_preset_id);
+        let _ = (soundscape_behavior, soundscape_preset_id);
         #[cfg(desktop)]
         if soundscape.missing
             && let Some(context) = &mut next.context

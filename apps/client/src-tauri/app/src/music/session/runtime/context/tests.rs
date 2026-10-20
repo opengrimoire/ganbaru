@@ -62,7 +62,7 @@ async fn native_music_context_resolves_precedence_for_every_committed_phase_and_
                 .unwrap();
             assert_eq!(resolved.source, owner);
         }
-        sqlx::query("UPDATE music_context_assignments SET behavior = 'inherit', soundscape_behavior = 'play-selected', soundscape_id = 'background' WHERE owner_kind = 'event-override' AND phase = ?")
+        sqlx::query("UPDATE music_context_assignments SET behavior = 'inherit', soundscape_behavior = 'play-selected', soundscape_preset_id = 'background' WHERE owner_kind = 'event-override' AND phase = ?")
             .bind(phase.as_ref()).execute(&pool).await.unwrap();
         {
             let mut connection = pool.acquire().await.unwrap();
@@ -72,7 +72,7 @@ async fn native_music_context_resolves_precedence_for_every_committed_phase_and_
                 .unwrap();
             assert_eq!(resolved.source, "work-environment");
             assert_eq!(resolved.behavior, "pause-music");
-            assert_eq!(resolved.soundscape_id.as_deref(), Some("background"));
+            assert_eq!(resolved.soundscape_preset_id.as_deref(), Some("background"));
         }
         sqlx::query("UPDATE music_context_assignments SET behavior = 'inherit' WHERE owner_kind IN ('work-environment', 'event-snapshot') AND phase = ?")
             .bind(phase.as_ref()).execute(&pool).await.unwrap();

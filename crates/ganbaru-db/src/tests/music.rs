@@ -1,4 +1,4 @@
-use super::helpers::migrated_memory_pool;
+use super::helpers::{memory_pool_migrated_through, migrated_memory_pool};
 use crate::run_migrations;
 use sqlx::Row;
 
@@ -205,5 +205,139 @@ fn default_playlists_have_a_complete_order_without_memberships_or_obsolete_resum
             "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'music_playback_states'",
         ).fetch_one(&pool).await.unwrap();
         assert_eq!(obsolete_tables, 0);
+    });
+}
+
+#[test]
+fn fresh_vaults_seed_one_rain_preset_per_generated_sound() {
+    super::block_on(async {
+        let pool = migrated_memory_pool().await;
+        let presets: Vec<(String, String, f64, String, f64)> = sqlx::query_as(
+            "SELECT p.id, p.name, p.level, s.soundscape_id, s.level
+             FROM music_soundscape_presets p JOIN music_soundscape_preset_sounds s ON s.preset_id = p.id
+             ORDER BY p.id",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            presets,
+            vec![
+                (
+                    "preset-generated-brown-noise".into(),
+                    "Soft rain".into(),
+                    0.5,
+                    "generated-brown-noise".into(),
+                    1.0
+                ),
+                (
+                    "preset-generated-pink-noise".into(),
+                    "Rain".into(),
+                    0.5,
+                    "generated-pink-noise".into(),
+                    1.0
+                ),
+                (
+                    "preset-generated-white-noise".into(),
+                    "Windy rain".into(),
+                    0.5,
+                    "generated-white-noise".into(),
+                    1.0
+                ),
+            ]
+        );
+        let state: (Option<String>, i64) = sqlx::query_as(
+            "SELECT active_preset_id, desired_playing FROM music_soundscape_state WHERE singleton = 1",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(state, (None, 0));
+        for sql in [
+            "UPDATE music_soundscape_presets SET level = 2.1",
+            "UPDATE music_soundscape_preset_sounds SET level = 1.1",
+            "UPDATE music_soundscape_preset_sounds SET level = -0.1",
+        ] {
+            assert!(sqlx::query(sql).execute(&pool).await.is_err(), "{sql}");
+        }
+    });
+}
+
+#[test]
+fn preset_mix_migration_turns_sound_choices_into_presets() {
+    super::block_on(async {
+        const BEFORE_PRESET_MIXES: i64 = 20261019120000;
+        let pool = memory_pool_migrated_through(BEFORE_PRESET_MIXES).await;
+        sqlx::raw_sql(
+            "INSERT INTO music_soundscapes (id, source_kind, name, icon, availability, created_at_ms, updated_at_ms)
+                 VALUES ('loop-1', 'local-loop', 'Thunder', 'lucide:cloud-lightning', 'available', 1, 1);
+             INSERT INTO music_context_assignments
+                 (owner_kind, owner_id, phase, behavior, soundscape_id, provenance_kind, updated_at_ms, soundscape_behavior)
+                 VALUES ('project-default', 'project-1', 'focus', 'inherit', 'loop-1', 'explicit', 1, 'play-selected'),
+                        ('project-default', 'project-1', 'short-break', 'inherit', 'generated-pink-noise', 'explicit', 1, 'play-selected'),
+                        ('project-default', 'project-1', 'long-break', 'inherit', 'removed-sound', 'explicit', 1, 'play-selected');
+             UPDATE music_soundscape_state SET active_soundscape_id = 'generated-brown-noise', desired_playing = 1, volume = 0.4;",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        run_migrations(&pool).await.unwrap();
+
+        let assignments: Vec<(String, Option<String>)> = sqlx::query_as(
+            "SELECT phase, soundscape_preset_id FROM music_context_assignments ORDER BY phase",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            assignments,
+            vec![
+                ("focus".into(), Some("preset-loop-1".into())),
+                ("long-break".into(), Some("preset-removed-sound".into())),
+                (
+                    "short-break".into(),
+                    Some("preset-generated-pink-noise".into())
+                ),
+            ]
+        );
+        let local: (String, String, String) = sqlx::query_as(
+            "SELECT p.name, p.icon, s.soundscape_id FROM music_soundscape_presets p
+             JOIN music_soundscape_preset_sounds s ON s.preset_id = p.id WHERE p.id = 'preset-loop-1'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            local,
+            (
+                "Thunder".into(),
+                "lucide:cloud-lightning".into(),
+                "loop-1".into()
+            )
+        );
+        let dangling: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM music_soundscape_presets WHERE id = 'preset-removed-sound'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(dangling, 0);
+        let state: (Option<String>, i64) = sqlx::query_as(
+            "SELECT active_preset_id, desired_playing FROM music_soundscape_state WHERE singleton = 1",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(state, (Some("preset-generated-brown-noise".into()), 1));
+        let removed_columns: i64 = sqlx::query_scalar(
+            "SELECT
+                (SELECT COUNT(*) FROM pragma_table_info('music_context_assignments') WHERE name = 'soundscape_id')
+                + (SELECT COUNT(*) FROM pragma_table_info('calendar_event_archive_music_assignments') WHERE name = 'soundscape_id')",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(removed_columns, 0);
     });
 }

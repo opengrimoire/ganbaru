@@ -301,8 +301,8 @@
         <Loading layout="fill" label={t("music.itemMenu.loading")} class="h-24" />
       {:else}
         {#if error}<Notice class="px-2 text-panel-detail" message={error} />{/if}
-        <div class="flex items-center justify-between gap-2 pl-2">
-          <span class="section-label shrink-0">{t("music.preferences.applyTo")}</span>
+        <div class="flex items-center justify-between gap-2">
+          <span class="menu-label shrink-0">{t("music.preferences.applyTo")}</span>
           <Select
             value={scopePlaylistId ?? ""}
             options={scopeOptions}
@@ -317,14 +317,14 @@
           />
         </div>
         <div class="flex flex-col gap-1">
-          <div class="flex items-center justify-between gap-2 px-2 pt-1.5">
+          <div class="menu-label flex items-center justify-between gap-2">
             <div bind:this={frequencyHeader} class="relative flex min-w-0 items-center gap-1.5">
-              <span class="section-label">{t("music.preferences.likelihood")}</span>
+              <span>{t("music.preferences.likelihood")}</span>
               {#if player.playbackMode !== "mix"}
                 <button type="button" data-music-frequency-warning-trigger class="group grid h-5 w-5 shrink-0 place-items-center rounded-full focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-ring" aria-label={frequencyInactiveText} onpointerenter={(event) => { void showFrequencyTooltip(event.currentTarget); }} onpointerleave={hideFrequencyTooltip} onfocus={(event) => { void showFrequencyTooltip(event.currentTarget); }} onblur={hideFrequencyTooltip}><span class="grid h-3.5 w-3.5 place-items-center rounded-full border border-muted-foreground/50 text-[0.55rem] leading-none font-bold text-muted-foreground group-hover:bg-secondary group-hover:text-foreground" aria-hidden="true">!</span></button>
               {/if}
             </div>
-            {#if targetMemberships.length > 0}<span class="text-panel-detail text-muted-foreground">{currentWeight ? t(`music.builder.weight.${currentWeight}`) : t("music.preferences.mixed")}</span>{/if}
+            {#if targetMemberships.length > 0}<span class="font-normal">{currentWeight ? t(`music.builder.weight.${currentWeight}`) : t("music.preferences.mixed")}</span>{/if}
           </div>
           <div class="grid grid-cols-5 gap-1" role="group" aria-label={t("music.preferences.likelihood")}>
             {#each MUSIC_WEIGHT_ORDER as weight, index (weight)}
@@ -338,17 +338,17 @@
                 aria-label={weightLabel(weight)}
                 data-app-tooltip={weightLabel(weight)}
                 aria-pressed={currentWeight === weight}
-                class={currentWeight === weight ? "die-choice active-die" : "die-choice"}
-              ><Die size={20} strokeWidth={1.6} /></button>
+                class={["choice disabled:cursor-not-allowed disabled:opacity-35", currentWeight === weight ? "bg-primary/10 text-primary" : "text-muted-foreground hover:bg-accent/70 hover:text-foreground"]}
+              ><Die size={18} strokeWidth={1.6} /></button>
             {/each}
           </div>
         </div>
 
         <div class="flex flex-col gap-1">
-          <span class="section-label px-2 pt-1.5">{t("music.preferences.snooze")}</span>
+          <span class="menu-label">{t("music.preferences.snooze")}</span>
           <div class="grid grid-cols-3 gap-1">
             {#each snoozePresets as duration (duration)}
-              <button type="button" onclick={() => { void snooze(duration); }} aria-disabled={busy} aria-pressed={selectedSnooze === duration} class="snooze-choice">{t(`music.preferences.${duration}`)}</button>
+              <button type="button" onclick={() => { void snooze(duration); }} aria-disabled={busy} aria-pressed={selectedSnooze === duration} class={["snooze-choice choice px-1", selectedSnooze === duration ? "bg-primary/10" : "hover:bg-accent/70"]}>{t(`music.preferences.${duration}`)}</button>
             {/each}
           </div>
         </div>
@@ -375,12 +375,5 @@
 {/if}
 
 <style>
-  .section-label { color: var(--muted-foreground); font-size: var(--panel-detail-font-size); font-weight: 500; }
-  .snooze-choice { min-height: var(--panel-row-height); border-radius: var(--floating-item-radius); padding-inline: 0.25rem; color: var(--foreground); }
-  .snooze-choice:hover { background: color-mix(in srgb, var(--accent) 70%, transparent); }
-  .snooze-choice[aria-pressed="true"] { background: color-mix(in srgb, var(--primary) 10%, transparent); }
-  .die-choice { display: inline-flex; height: 2.25rem; align-items: center; justify-content: center; border-radius: var(--floating-item-radius); color: var(--muted-foreground); }
-  .die-choice:hover { background: color-mix(in srgb, var(--accent) 70%, transparent); color: var(--foreground); }
-  .die-choice.active-die { background: color-mix(in srgb, var(--primary) 10%, transparent); color: var(--primary); }
-  .die-choice:disabled { cursor: not-allowed; opacity: 0.35; }
+  .choice { display: inline-flex; min-height: var(--panel-row-height); align-items: center; justify-content: center; border-radius: var(--floating-item-radius); transition: background-color 150ms, color 150ms; }
 </style>

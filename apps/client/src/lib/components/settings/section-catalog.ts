@@ -3,7 +3,7 @@ import Palette from "@lucide/svelte/icons/palette";
 import UserRound from "@lucide/svelte/icons/user-round";
 import UsersRound from "@lucide/svelte/icons/users-round";
 import Calendar from "@lucide/svelte/icons/calendar";
-import Folder from "@lucide/svelte/icons/folder";
+import BriefcaseBusiness from "@lucide/svelte/icons/briefcase-business";
 import Book from "@lucide/svelte/icons/book";
 import MessageSquare from "@lucide/svelte/icons/message-square";
 import GlobeOff from "@lucide/svelte/icons/globe-off";
@@ -32,7 +32,7 @@ export const SETTINGS_SECTIONS: SettingsSectionMeta[] = [
   { id: "profile", labelKey: "settings.section.profile", icon: UserRound },
   { id: "contacts", labelKey: "settings.section.contacts", icon: UsersRound },
   { id: "calendars", labelKey: "settings.section.calendars", icon: Calendar },
-  { id: "projects", labelKey: "settings.section.projects", icon: Folder },
+  { id: "projects", labelKey: "settings.section.projects", icon: BriefcaseBusiness },
   { id: "notes", labelKey: "settings.section.notes", icon: Book },
   { id: "chat", labelKey: "settings.section.chat", icon: MessageSquare },
   { id: "focus", labelKey: "settings.section.focus", icon: Timer },

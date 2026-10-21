@@ -12,7 +12,7 @@
   import ProjectIcon from "$lib/components/projects/ProjectIcon.svelte";
   import Bell from "@lucide/svelte/icons/bell";
   import CalendarDays from "@lucide/svelte/icons/calendar-days";
-  import Folder from "@lucide/svelte/icons/folder";
+  import BriefcaseBusiness from "@lucide/svelte/icons/briefcase-business";
   import ListChecks from "@lucide/svelte/icons/list-checks";
   import UserRound from "@lucide/svelte/icons/user-round";
   import { NotesMentionPreviewHover } from "./mention-preview-hover.svelte";
@@ -276,7 +276,7 @@
   }
 
   const focusable = $derived(navigable && element !== null && !element.closest("[contenteditable='true']"));
-</script>{#snippet mentionIcon(size: number | string, strokeWidth: number, projectIconSize: number)}{#if mention.mention.type === "user"}<UserRound {size} {strokeWidth} />{:else if mention.mention.type === "date"}{#if reminder}<Bell {size} {strokeWidth} />{:else}<CalendarDays {size} {strokeWidth} />{/if}{:else if objectMention?.type === "project"}{#if project?.icon}<ProjectIcon name={project.icon} size={projectIconSize} />{:else}<Folder {size} {strokeWidth} />{/if}{:else if objectMention?.type === "project_task"}<ListChecks {size} {strokeWidth} />{:else if objectMention?.type === "calendar_event"}<CalendarDays {size} {strokeWidth} />{/if}{/snippet}{#snippet icon()}<span class="notes-mention-chip-icon" data-notes-editor-sentinel="decoration" aria-hidden="true">{@render mentionIcon("1em", 1.75, PROJECT_ICON_SIZE_PX)}</span>{/snippet}{#snippet previewIcon()}{@render mentionIcon(PREVIEW_ICON_SIZE_PX, 1.5, PREVIEW_ICON_SIZE_PX)}{/snippet}{#if navigable}<span
+</script>{#snippet mentionIcon(size: number | string, strokeWidth: number, projectIconSize: number)}{#if mention.mention.type === "user"}<UserRound {size} {strokeWidth} />{:else if mention.mention.type === "date"}{#if reminder}<Bell {size} {strokeWidth} />{:else}<CalendarDays {size} {strokeWidth} />{/if}{:else if objectMention?.type === "project"}{#if project?.icon}<ProjectIcon name={project.icon} size={projectIconSize} />{:else}<BriefcaseBusiness {size} {strokeWidth} />{/if}{:else if objectMention?.type === "project_task"}<ListChecks {size} {strokeWidth} />{:else if objectMention?.type === "calendar_event"}<CalendarDays {size} {strokeWidth} />{/if}{/snippet}{#snippet icon()}<span class="notes-mention-chip-icon" data-notes-editor-sentinel="decoration" aria-hidden="true">{@render mentionIcon("1em", 1.75, PROJECT_ICON_SIZE_PX)}</span>{/snippet}{#snippet previewIcon()}{@render mentionIcon(PREVIEW_ICON_SIZE_PX, 1.5, PREVIEW_ICON_SIZE_PX)}{/snippet}{#if navigable}<span
   {...attributes}
   bind:this={element}
   use:mentionEvents

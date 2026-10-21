@@ -1,5 +1,5 @@
 <script lang="ts">
-  import Folder from "@lucide/svelte/icons/folder";
+  import BriefcaseBusiness from "@lucide/svelte/icons/briefcase-business";
   import FolderX from "@lucide/svelte/icons/folder-x";
   import Notice from "$lib/components/ui/Notice.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
@@ -54,7 +54,7 @@
         navigatorOpen = !navigatorOpen;
       }}
     >
-      <Folder size={14} strokeWidth={1.75} />
+      <BriefcaseBusiness size={14} strokeWidth={1.75} />
       <span>{t("projects.navigator.open")}</span>
     </button>
     {#if navigatorOpen}

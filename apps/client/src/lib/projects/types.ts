@@ -168,7 +168,7 @@ export interface Project {
   updatedAt: string;
 }
 
-export const DEFAULT_PROJECT_ICON = "lucide:folder";
+export const DEFAULT_PROJECT_ICON = "lucide:briefcase-business";
 export const DEFAULT_PROJECT_GROUP_ICON = "lucide:layers";
 
 /** Settings every new project starts with; the person chooses only its name and icon at creation. */

@@ -21,7 +21,7 @@
     onCancel,
   }: {
     name: string;
-    /** A project icon value, such as `lucide:folder` or `emoji:...`. */
+    /** A project icon value, such as `lucide:briefcase-business` or `emoji:...`. */
     icon: string;
     placeholder: string;
     mobileLayout?: boolean;

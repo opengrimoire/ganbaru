@@ -44,13 +44,7 @@ pub async fn chat_list_channels(
     archived: bool,
 ) -> ChatResult<Vec<ChatChannelRead>> {
     validate_project_id(&project_id)?;
-    read_channels(
-        &chat_pool(app, db_url).await?,
-        Some(&project_id),
-        archived,
-        None,
-    )
-    .await
+    read_channels(&chat_pool(app, db_url).await?, Some(&project_id), archived).await
 }
 
 #[tauri::command]
@@ -58,7 +52,7 @@ pub async fn chat_list_navigation_channels(
     app: tauri::AppHandle,
     db_url: String,
 ) -> ChatResult<Vec<ChatChannelRead>> {
-    read_channels(&chat_pool(app, db_url).await?, None, false, None).await
+    read_channels(&chat_pool(app, db_url).await?, None, false).await
 }
 
 #[tauri::command]
@@ -245,7 +239,6 @@ async fn read_channels(
     pool: &SqlitePool,
     project_id: Option<&str>,
     archived: bool,
-    search: Option<(&str, u32)>,
 ) -> ChatResult<Vec<ChatChannelRead>> {
     let archive_clause = if archived {
         "channel.archived_at IS NOT NULL"
@@ -260,27 +253,16 @@ async fn read_channels(
             WHERE project.id = channel.project_id AND project.status != 'archived'
           )"
     };
-    let search_clause = if search.is_some() {
-        " AND (lower(channel.name) LIKE '%' || ? || '%' OR lower(channel.topic) LIKE '%' || ? || '%')"
-    } else {
-        ""
-    };
-    let limit = search
-        .map(|(_, limit)| limit)
-        .unwrap_or(MAX_CHANNEL_RESULTS);
     let query = channel_read_query(
-        &format!("{archive_clause}{project_clause}{search_clause}"),
+        &format!("{archive_clause}{project_clause}"),
         Some("channel.is_default DESC, channel.name COLLATE NOCASE, channel.id LIMIT ?"),
     );
     let mut prepared = sqlx::query(AssertSqlSafe(query.as_str()));
     if let Some(project_id) = project_id {
         prepared = prepared.bind(project_id);
     }
-    if let Some((search, _)) = search {
-        prepared = prepared.bind(search).bind(search);
-    }
     let rows = prepared
-        .bind(i64::from(limit))
+        .bind(i64::from(MAX_CHANNEL_RESULTS))
         .fetch_all(pool)
         .await
         .map_err(persistence_error)?;

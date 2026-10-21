@@ -439,3 +439,76 @@ fn projection_failure_rolls_back_event_and_thread_advance() {
         assert_eq!(thread.get::<i64, _>("last_event_sequence"), 0);
     });
 }
+
+#[test]
+fn colliding_provider_item_ids_never_change_another_threads_projections() {
+    tauri::async_runtime::block_on(async {
+        let pool = pool_with_thread().await;
+        sqlx::query(
+            "INSERT INTO chat_threads
+                (id, project_id, working_folder_id, title, provider_family_id, provider_instance_id,
+                 continuation_group_id, safety_mode, interaction_mode, state,
+                 last_activity_at, created_at, updated_at)
+             SELECT 'thread-2', project_id, working_folder_id, title, provider_family_id,
+                    provider_instance_id, 'continuation-2', safety_mode, interaction_mode, state,
+                    last_activity_at, created_at, updated_at
+             FROM chat_threads WHERE id = 'thread-1'",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        append_canonical_event(&pool, content_event("event-1", "Private reply"))
+            .await
+            .unwrap();
+        let activity = |event_id: &str, title: &str| {
+            canonical_request(
+                event_id,
+                None,
+                CanonicalEvent::ItemStarted(ItemLifecycleEvent {
+                    item_id: "command-1".to_string(),
+                    kind: CanonicalItemKind::CommandExecution,
+                    status: ActivityStatus::Active,
+                    title: Some(title.to_string()),
+                    detail: None,
+                    safe_metadata: None,
+                }),
+            )
+        };
+        append_canonical_event(&pool, activity("event-2", "ls"))
+            .await
+            .unwrap();
+
+        let mut foreign_text = content_event("event-3", " injected");
+        foreign_text.runtime.thread_id = ChatThreadId::new("thread-2").unwrap();
+        append_canonical_event(&pool, foreign_text).await.unwrap();
+        let mut foreign_activity = activity("event-4", "rm -rf");
+        foreign_activity.runtime.thread_id = ChatThreadId::new("thread-2").unwrap();
+        append_canonical_event(&pool, foreign_activity)
+            .await
+            .unwrap();
+
+        let message: (String, String) = sqlx::query_as(
+            "SELECT thread_id, normalized_markdown FROM chat_messages
+             WHERE id = 'assistant-message-1'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            message,
+            ("thread-1".to_string(), "Private reply".to_string())
+        );
+        let title: String =
+            sqlx::query_scalar("SELECT title FROM chat_activities WHERE id = 'command-1'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(title, "ls");
+        let foreign_preview: Option<String> =
+            sqlx::query_scalar("SELECT latest_preview FROM chat_threads WHERE id = 'thread-2'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_ne!(foreign_preview.as_deref(), Some("Private reply"));
+    });
+}

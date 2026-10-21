@@ -142,7 +142,7 @@ async fn route_server_request(
     method: &str,
     params: Value,
 ) -> ChatResult<()> {
-    let provider_request_id = provider_request_id(&rpc_id)?;
+    let provider_request_id = provider_request_id(&resources.normalizer.session_id(), &rpc_id)?;
     let object = params
         .as_object()
         .ok_or_else(|| protocol_error("server request params"))?;
@@ -699,7 +699,8 @@ async fn resolve_provider_cleared_request(
     let Some(raw_request_id) = object.get("requestId") else {
         return Ok(());
     };
-    let provider_request_id = provider_request_id(raw_request_id)?;
+    let provider_request_id =
+        provider_request_id(&resources.normalizer.session_id(), raw_request_id)?;
     let pending = resources
         .pending_requests
         .lock()
@@ -905,10 +906,17 @@ fn permission_summary(requested: &Value) -> Value {
     })
 }
 
-fn provider_request_id(id: &Value) -> ChatResult<ProviderRequestId> {
+/// Codex numbers server requests per app-server process, so the session keeps
+/// request IDs from different processes apart in the vault's pending requests.
+pub(super) fn provider_request_id(
+    session_id: &ProviderSessionId,
+    id: &Value,
+) -> ChatResult<ProviderRequestId> {
     let serialized = serde_json::to_vec(id).map_err(|_| protocol_error("request ID"))?;
     let mut digest = Sha256::new();
-    digest.update(b"ganbaru-codex-rpc-request-v1\0");
+    digest.update(b"ganbaru-codex-rpc-request-v2\0");
+    digest.update(session_id.as_str().as_bytes());
+    digest.update(b"\0");
     digest.update(serialized);
     ProviderRequestId::new(format!("codex-request-{:x}", digest.finalize()))
         .map_err(|_| protocol_error("request ID"))

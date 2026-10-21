@@ -24,7 +24,7 @@ Provider configuration and model mapping are separate from provider sessions. Ch
 
 ## Canonical events and projections
 
-Provider events are validated, bounded, normalized, and appended as canonical application events. Sequence and projection changes commit before a lightweight frontend notification is emitted.
+Provider events are validated, bounded, normalized, and appended as canonical application events. Sequence and projection changes commit before a lightweight frontend notification is emitted. Event, item, and request IDs that a provider numbers per process are scoped to the provider session, and a projection row keyed by a provider item ID is only ever updated by events of its own thread.
 
 The combined timeline, turn state, message view, command activity, usage summary, and inspector data are projections. They may be persisted for performance but remain rebuildable from canonical events and organizational messages. Projection rebuild preserves channel and authorization scope.
 

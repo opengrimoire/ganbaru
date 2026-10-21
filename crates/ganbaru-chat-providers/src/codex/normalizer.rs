@@ -291,7 +291,8 @@ impl CodexEventNormalizer {
 
     fn fallback_id(&self, kind: &str) -> String {
         format!(
-            "codex-{kind}-{}",
+            "{}:{kind}:{}",
+            self.session_id.as_str(),
             self.next_fallback_id.fetch_add(1, Ordering::Relaxed)
         )
     }

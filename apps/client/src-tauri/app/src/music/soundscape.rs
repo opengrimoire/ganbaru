@@ -4,12 +4,13 @@ use std::{
     path::Path,
     sync::{Mutex, mpsc},
     thread::{self, JoinHandle},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use ganbaru_music_library::soundscapes::MAX_SOUNDSCAPE_LAYERS;
 use rodio::{
     ChannelCount, Decoder, DeviceSinkBuilder, MixerDeviceSink, Player, SampleRate, Source,
+    mixer::Mixer,
 };
 use serde::{Deserialize, Serialize};
 use tauri::Manager;
@@ -20,7 +21,10 @@ const RAMP_MILLIS: u64 = 40;
 const RAMP_STEPS: u64 = 8;
 const NOISE_AMPLITUDE: f32 = 0.22;
 /// How long a freshly started soundscape takes to rise from silence, so choosing one does not start abruptly.
+/// Layer changes in a playing mix glide over the same time, so linear fades in and out keep the sum steady.
 const START_FADE: Duration = Duration::from_millis(2_500);
+/// How often the engine worker moves gliding layer volumes.
+const GLIDE_TICK: Duration = Duration::from_millis(20);
 /// Longest a command waits for the engine worker before reporting the engine unavailable.
 const ENGINE_REPLY_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -45,6 +49,10 @@ pub(crate) struct SoundscapeStartRequest {
     pub extra_sources: Vec<SoundscapeLayer>,
     /// Multiplier of the Music volume setting, from 0 to 2.
     pub preset_level: f64,
+    /// Changes a playing mix in place: layers that keep playing stay audible, new ones fade in, and dropped ones
+    /// fade out. Without output to change, the request starts from silence as usual.
+    #[serde(default)]
+    pub keep_playing_layers: bool,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -273,8 +281,10 @@ fn open_decoder(path: &str) -> Result<Decoder<BufReader<File>>, SoundscapeError>
 }
 
 struct ActiveOutput {
-    _sink: MixerDeviceSink,
+    sink: MixerDeviceSink,
     players: Vec<Player>,
+    /// Source id of each player, in the same order.
+    ids: Vec<String>,
 }
 
 impl ActiveOutput {
@@ -293,37 +303,55 @@ impl ActiveOutput {
             .and_then(|builder| builder.open_sink_or_fallback())
             .map_err(|_| SoundscapeError::audio_device())?;
         sink.log_on_drop(false);
-        let mut players = Vec::with_capacity(1 + request.extra_sources.len());
-        for layer in std::iter::once(SoundscapeLayer {
-            source_id: request.source_id.clone(),
-            generated_kind: request.generated_kind,
-            local_path: request.local_path.clone(),
-            level: request.level,
-        })
-        .chain(request.extra_sources.iter().cloned())
-        {
-            let player = Player::connect_new(sink.mixer());
-            player.set_volume(0.0);
-            match (layer.generated_kind, layer.local_path.as_deref()) {
-                (Some(kind), None) => player.append(
-                    NoiseSource::new(kind, seed_from_id(&layer.source_id)).fade_in(START_FADE),
-                ),
-                (None, Some(path)) => {
-                    player.append(StreamingLoopSource::open(path)?.fade_in(START_FADE))
-                }
-                _ => {
-                    return Err(SoundscapeError::validation(
-                        "Choose a generated noise or local loop source.",
-                    ));
-                }
-            }
-            players.push(player);
-        }
+        let layers = request_layers(request);
+        let players = layers
+            .iter()
+            .map(|layer| layer_player(sink.mixer(), layer))
+            .collect::<Result<Vec<_>, _>>()?;
         check_output_guard(guard)?;
         Ok(Self {
-            _sink: sink,
+            sink,
             players,
+            ids: layers.into_iter().map(|layer| layer.source_id).collect(),
         })
+    }
+
+    /// Moves to the request's layers in place. Layers that keep playing are untouched, new layers start at their
+    /// target and rise through their source fade, and the players of dropped layers are returned so they can fade
+    /// out. Nothing changes when a new layer cannot open.
+    fn change_layers(
+        &mut self,
+        request: &SoundscapeStartRequest,
+        targets: &[f32],
+    ) -> Result<Vec<Player>, SoundscapeError> {
+        let layers = request_layers(request);
+        let ids = layers
+            .iter()
+            .map(|layer| layer.source_id.clone())
+            .collect::<Vec<_>>();
+        let plan = reuse_plan(&self.ids, &ids);
+        let mut fresh = Vec::new();
+        for ((layer, reuse), target) in layers.iter().zip(&plan).zip(targets) {
+            if reuse.is_none() {
+                let player = layer_player(self.sink.mixer(), layer)?;
+                player.set_volume(*target);
+                fresh.push(player);
+            }
+        }
+        let mut fresh = fresh.into_iter();
+        let mut previous = std::mem::take(&mut self.players)
+            .into_iter()
+            .map(Some)
+            .collect::<Vec<_>>();
+        for reuse in &plan {
+            let player = match reuse {
+                Some(index) => previous[*index].take(),
+                None => fresh.next(),
+            };
+            self.players.extend(player);
+        }
+        self.ids = ids;
+        Ok(previous.into_iter().flatten().collect())
     }
 
     fn stop(self) {
@@ -334,6 +362,15 @@ impl ActiveOutput {
     }
 }
 
+/// Layer volumes moving to their targets after the playing mix changed, advanced by the engine worker.
+struct VolumeGlide {
+    started: Instant,
+    /// Volume of each playing layer when the glide began, in player order.
+    from: Vec<f32>,
+    /// Players of dropped layers with the volume they fade out from; they stop when the glide ends.
+    retiring: Vec<(Player, f32)>,
+}
+
 #[derive(Default)]
 struct EngineCore {
     output: Option<ActiveOutput>,
@@ -341,6 +378,7 @@ struct EngineCore {
     snapshot: SoundscapeSnapshot,
     /// Music volume setting, or zero while muted; silent until the Music session reports it.
     master: f64,
+    glide: Option<VolumeGlide>,
 }
 
 impl EngineCore {
@@ -389,6 +427,9 @@ impl EngineCore {
             StreamingLoopSource::open(path)?;
         }
         check_output_guard(guard)?;
+        if request.keep_playing_layers && self.snapshot.status == SoundscapeStatus::Playing {
+            return self.change_layers(request);
+        }
         match ActiveOutput::open(&request, guard) {
             Ok(output) => {
                 check_output_guard(guard)?;
@@ -416,7 +457,81 @@ impl EngineCore {
         }
     }
 
+    /// Changes the playing mix to the request's layers without restarting the layers it keeps.
+    fn change_layers(
+        &mut self,
+        request: SoundscapeStartRequest,
+    ) -> Result<SoundscapeSnapshot, SoundscapeError> {
+        let Some(output) = self.output.as_mut() else {
+            return Err(SoundscapeError::backend());
+        };
+        let targets = layer_targets(&request, self.master);
+        let dropped = match output.change_layers(&request, &targets) {
+            Ok(dropped) => dropped,
+            Err(error) => {
+                self.snapshot.error_code = Some(error.code.clone());
+                return Err(error);
+            }
+        };
+        // Layers still fading out from an earlier change continue from where they are now.
+        let retiring = self
+            .glide
+            .take()
+            .into_iter()
+            .flat_map(|glide| glide.retiring.into_iter().map(|(player, _)| player))
+            .chain(dropped)
+            .map(|player| {
+                let volume = player.volume();
+                (player, volume)
+            })
+            .collect();
+        self.glide = Some(VolumeGlide {
+            started: Instant::now(),
+            from: output.players.iter().map(Player::volume).collect(),
+            retiring,
+        });
+        self.snapshot.source_id = Some(request.source_id.clone());
+        self.snapshot.error_code = None;
+        self.last_request = Some(request);
+        Ok(self.snapshot.clone())
+    }
+
+    /// Moves gliding layers toward their current targets, and stops dropped layers once the glide ends.
+    fn advance_glide(&mut self, now: Instant) {
+        let Some(glide) = self.glide.as_ref() else {
+            return;
+        };
+        let progress = glide_progress(now.saturating_duration_since(glide.started));
+        if let (Some(output), Some(request)) = (self.output.as_ref(), self.last_request.as_ref()) {
+            let targets = layer_targets(request, self.master);
+            for ((player, from), target) in output.players.iter().zip(&glide.from).zip(targets) {
+                player.set_volume(ramp_between(*from, target, progress));
+            }
+        }
+        for (player, from) in &glide.retiring {
+            player.set_volume(ramp_between(*from, 0.0, progress));
+        }
+        if progress >= 1.0 {
+            self.finish_glide();
+        }
+    }
+
+    /// Ends a glide early, stopping the layers that were fading out.
+    fn finish_glide(&mut self) {
+        if let Some(glide) = self.glide.take() {
+            for (player, _) in glide.retiring {
+                player.stop();
+            }
+        }
+    }
+
+    /// How long the worker may wait for a command before moving the glide again.
+    fn glide_tick(&self) -> Option<Duration> {
+        self.glide.as_ref().map(|_| GLIDE_TICK)
+    }
+
     fn pause(&mut self) -> SoundscapeSnapshot {
+        self.finish_glide();
         if let Some(output) = self.output.as_ref() {
             ramp_players(&output.players, &vec![0.0; output.players.len()]);
             for player in &output.players {
@@ -495,9 +610,14 @@ impl EngineCore {
         Ok(self.snapshot.clone())
     }
 
-    /// Moves playing layers to their current targets without a ramp, for continuous slider changes.
-    fn apply_levels(&self) {
+    /// Moves playing layers to their current targets without a ramp, for continuous slider changes. A running glide
+    /// keeps going toward the new targets instead.
+    fn apply_levels(&mut self) {
         if self.snapshot.status != SoundscapeStatus::Playing {
+            return;
+        }
+        if self.glide.is_some() {
+            self.advance_glide(Instant::now());
             return;
         }
         if let (Some(output), Some(request)) = (self.output.as_ref(), self.last_request.as_ref()) {
@@ -509,14 +629,16 @@ impl EngineCore {
         &mut self,
         guard: Option<&OutputGuard>,
     ) -> Result<SoundscapeSnapshot, SoundscapeError> {
-        let request = self
+        let mut request = self
             .last_request
             .clone()
             .ok_or_else(SoundscapeError::backend)?;
+        request.keep_playing_layers = false;
         self.start(request, guard)
     }
 
     fn stop_output(&mut self) {
+        self.finish_glide();
         if let Some(output) = self.output.take() {
             output.stop();
         }
@@ -556,16 +678,30 @@ impl EngineController {
             .name("ganbaru-soundscape".into())
             .spawn(move || {
                 let mut core = EngineCore::default();
-                while let Ok(message) = receiver.recv() {
+                loop {
+                    // A running glide wakes the worker on every tick; otherwise it sleeps until a command arrives.
+                    let message = match core.glide_tick() {
+                        Some(tick) => match receiver.recv_timeout(tick) {
+                            Ok(message) => Some(message),
+                            Err(mpsc::RecvTimeoutError::Timeout) => None,
+                            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                        },
+                        None => match receiver.recv() {
+                            Ok(message) => Some(message),
+                            Err(_) => break,
+                        },
+                    };
                     match message {
-                        EngineMessage::Command(command, reply) => {
+                        Some(EngineMessage::Command(command, reply)) => {
                             let _ = reply.send(core.handle(command));
                         }
-                        EngineMessage::Shutdown => {
+                        Some(EngineMessage::Shutdown) => {
                             core.stop_output();
                             break;
                         }
+                        None => {}
                     }
+                    core.advance_glide(Instant::now());
                 }
             })
             .expect("failed to start soundscape worker");
@@ -810,14 +946,7 @@ fn validate_request(request: &SoundscapeStartRequest) -> Result<(), SoundscapeEr
         return Err(SoundscapeError::validation("Too many soundscape sounds."));
     }
     let mut ids = std::collections::HashSet::new();
-    for layer in std::iter::once(SoundscapeLayer {
-        source_id: request.source_id.clone(),
-        generated_kind: request.generated_kind,
-        local_path: request.local_path.clone(),
-        level: request.level,
-    })
-    .chain(request.extra_sources.iter().cloned())
-    {
+    for layer in request_layers(request) {
         if layer.source_id.trim().is_empty() || !ids.insert(layer.source_id) {
             return Err(SoundscapeError::validation(
                 "Soundscape sounds need distinct source ids.",
@@ -866,6 +995,51 @@ fn layer_targets(request: &SoundscapeStartRequest, master: f64) -> Vec<f32> {
         .collect()
 }
 
+/// Every layer of a request in play order: the first sound, then the extra sources.
+fn request_layers(request: &SoundscapeStartRequest) -> Vec<SoundscapeLayer> {
+    std::iter::once(SoundscapeLayer {
+        source_id: request.source_id.clone(),
+        generated_kind: request.generated_kind,
+        local_path: request.local_path.clone(),
+        level: request.level,
+    })
+    .chain(request.extra_sources.iter().cloned())
+    .collect()
+}
+
+/// A silent player on the mixer whose source rises from silence over the start fade.
+fn layer_player(mixer: &Mixer, layer: &SoundscapeLayer) -> Result<Player, SoundscapeError> {
+    let player = Player::connect_new(mixer);
+    player.set_volume(0.0);
+    match (layer.generated_kind, layer.local_path.as_deref()) {
+        (Some(kind), None) => player
+            .append(NoiseSource::new(kind, seed_from_id(&layer.source_id)).fade_in(START_FADE)),
+        (None, Some(path)) => player.append(StreamingLoopSource::open(path)?.fade_in(START_FADE)),
+        _ => {
+            return Err(SoundscapeError::validation(
+                "Choose a generated noise or local loop source.",
+            ));
+        }
+    }
+    Ok(player)
+}
+
+/// For each next layer, the index of the playing layer that continues as it, or `None` when it starts fresh.
+fn reuse_plan(playing: &[String], next: &[String]) -> Vec<Option<usize>> {
+    next.iter()
+        .map(|id| playing.iter().position(|entry| entry == id))
+        .collect()
+}
+
+/// Share of a layer glide completed after this much time, from 0 to 1.
+fn glide_progress(elapsed: Duration) -> f32 {
+    (elapsed.as_secs_f32() / START_FADE.as_secs_f32()).min(1.0)
+}
+
+fn ramp_between(from: f32, to: f32, progress: f32) -> f32 {
+    from + (to - from) * progress
+}
+
 fn set_player_levels(players: &[Player], levels: &[f32]) {
     for (player, level) in players.iter().zip(levels) {
         player.set_volume(*level);
@@ -883,8 +1057,7 @@ fn ramp_players(players: &[Player], targets: &[f32]) {
 }
 
 fn ramp_value(from: f32, to: f32, step: u64) -> f32 {
-    let progress = step as f32 / RAMP_STEPS as f32;
-    from + (to - from) * progress
+    ramp_between(from, to, step as f32 / RAMP_STEPS as f32)
 }
 
 fn seed_from_id(value: &str) -> u64 {
@@ -952,6 +1125,7 @@ mod tests {
             level: 1.0,
             extra_sources: Vec::new(),
             preset_level: 0.5,
+            keep_playing_layers: false,
         };
         assert!(
             core.handle(EngineCommand::Automatic(Some(request), Box::new(|| false)))
@@ -1022,6 +1196,7 @@ mod tests {
             level: 1.0,
             extra_sources: Vec::new(),
             preset_level: 0.5,
+            keep_playing_layers: false,
         };
         assert!(validate_request(&request).is_err());
     }
@@ -1040,6 +1215,7 @@ mod tests {
                 level: 0.5,
             }],
             preset_level: 0.5,
+            keep_playing_layers: false,
         };
         assert!(validate_request(&request).is_ok());
         assert!((layer_volume(0.4, 0.5, 2) - 0.1).abs() < f64::EPSILON);
@@ -1106,5 +1282,38 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(up.last().copied(), Some(0.8));
         assert!(up.windows(2).all(|pair| pair[1] >= pair[0]));
+    }
+
+    #[test]
+    fn changing_layers_keeps_the_ones_still_chosen_and_starts_only_new_ones() {
+        let ids = |values: &[&str]| {
+            values
+                .iter()
+                .map(|value| (*value).to_string())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            reuse_plan(&ids(&["brown", "rain"]), &ids(&["brown", "rain", "pink"])),
+            vec![Some(0), Some(1), None]
+        );
+        assert_eq!(
+            reuse_plan(&ids(&["brown", "rain", "pink"]), &ids(&["pink", "brown"])),
+            vec![Some(2), Some(0)]
+        );
+        assert_eq!(reuse_plan(&ids(&["brown"]), &ids(&["white"])), vec![None]);
+    }
+
+    #[test]
+    fn layer_glides_last_as_long_as_the_start_fade_and_keep_the_sum_steady() {
+        assert_eq!(glide_progress(Duration::ZERO), 0.0);
+        assert_eq!(glide_progress(START_FADE / 2), 0.5);
+        assert_eq!(glide_progress(START_FADE * 2), 1.0);
+        // A kept layer gliding from full to half while a new layer's fade rises to half sums to full throughout.
+        for step in 0..=10 {
+            let progress = step as f32 / 10.0;
+            let kept = ramp_between(0.4, 0.2, progress);
+            let added = ramp_between(0.0, 0.2, progress);
+            assert!((kept + added - 0.4).abs() < 1e-6);
+        }
     }
 }

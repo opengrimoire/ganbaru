@@ -103,6 +103,8 @@ export interface MusicSoundscapeStartRequest extends MusicSoundscapeStartLayer {
   extraSources: MusicSoundscapeStartLayer[];
   /** Multiplier of the Music volume setting, from 0 to 2. */
   presetLevel: number;
+  /** Changes a playing mix in place, so layers that stay chosen keep playing and only new ones fade in. */
+  keepPlayingLayers?: boolean;
 }
 
 const sourceKinds = new Set<MusicSoundscapeSourceKind>(["generated-noise", "local-loop", "bundled-loop"]);

@@ -18,7 +18,7 @@ Layers are managed only in the builder, in one list with generated layers first.
 
 ## Mixing
 
-A soundscape mixes up to 16 layers. Each layer has a level from 0 to 100 within the mix, and the soundscape has its overall level relative to Music. Each generated layer starts with a one-layer rain soundscape so the soundscape controls are never empty. Soundscapes are created and edited in the builder through a modal editor. While it is open, Music and the soundscape pause and the draft plays as an isolated preview, which can be turned off; the preview never changes what is playing, and saving or leaving brings back exactly what was playing. The playing soundscape is highlighted in the builder and the soundscape controls. Projects and events choose a soundscape for any phase.
+A soundscape mixes up to 16 layers. Each layer has a level from 0 to 100 within the mix, and the soundscape has its overall level relative to Music. Each generated layer starts with a one-layer rain soundscape so the soundscape controls are never empty. Soundscapes are created and edited in the builder through a modal editor. While it is open, Music and the soundscape pause and the draft plays as an isolated preview, which can be turned off. Choosing or removing a layer in the draft never restarts the layers it keeps: added layers fade in and removed ones fade out while the rest settle at their new share. The preview never changes what is playing, and saving or leaving brings back exactly what was playing. The playing soundscape is highlighted in the builder and the soundscape controls. Projects and events choose a soundscape for any phase.
 
 ## Storage
 

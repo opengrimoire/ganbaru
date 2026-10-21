@@ -146,6 +146,7 @@ async fn read_preset(
         level: first.level,
         extra_sources: layers.collect(),
         preset_level,
+        keep_playing_layers: false,
     }))
 }
 

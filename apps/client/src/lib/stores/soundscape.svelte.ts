@@ -308,7 +308,8 @@ class SoundscapeStore {
     }
     const request = this.startRequest(target);
     if (!request) return;
-    this.snapshot = await startSoundscape(request);
+    // Layers the draft keeps continue untouched; only the first preview mix starts from silence.
+    this.snapshot = await startSoundscape(current ? { ...request, keepPlayingLayers: true } : request);
     preview.replacedOutput = true;
     preview.playing = { ids, levels, level: target.level };
   }

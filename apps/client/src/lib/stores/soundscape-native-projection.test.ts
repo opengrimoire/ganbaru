@@ -245,13 +245,14 @@ describe("isolated preset preview", () => {
     expect(api.setSoundscapePresetLevel).toHaveBeenCalledExactlyOnceWith(1.1);
   });
 
-  it("restarts the preview when the sounds change", async () => {
+  it("changes the playing preview in place when the layers change", async () => {
     const store = await playingStore();
     await store.beginPreview();
     await store.previewMix(rainOnly);
-    await store.previewMix({ sounds: [{ soundscapeId: "noise", level: 1 }], level: 0.5 });
+    expect(api.startSoundscape).toHaveBeenLastCalledWith(expect.not.objectContaining({ keepPlayingLayers: true }));
+    await store.previewMix({ sounds: [{ soundscapeId: "rain", level: 1 }, { soundscapeId: "noise", level: 1 }], level: 0.5 });
     expect(api.startSoundscape).toHaveBeenCalledTimes(2);
-    expect(api.startSoundscape).toHaveBeenLastCalledWith(expect.objectContaining({ sourceId: "noise" }));
+    expect(api.startSoundscape).toHaveBeenLastCalledWith(expect.objectContaining({ sourceId: "rain", keepPlayingLayers: true }));
   });
 
   it("resumes the paused output when the preview never played anything", async () => {

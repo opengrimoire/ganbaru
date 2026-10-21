@@ -88,10 +88,7 @@
             {/each}
           </div>
         {/if}
-        <div class="flex flex-col pt-2">
-          <hr class="menu-separator" />
-          <button type="button" class="menu-item justify-between text-muted-foreground hover:text-foreground" onclick={() => { open = false; onOpenSoundscapes(); }}><span>{t("music.soundscape.openBuilder")}</span><ChevronRight size={14} /></button>
-        </div>
+        <button type="button" class="menu-item mt-3 justify-between text-muted-foreground hover:text-foreground" onclick={() => { open = false; onOpenSoundscapes(); }}><span>{t("music.soundscape.openBuilder")}</span><ChevronRight size={14} /></button>
       </div>
     </div>
   {/if}

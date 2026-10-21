@@ -153,12 +153,16 @@ async fn working_snapshot(
     repository: &TestRepository,
     mode: ReviewWorkingTreeMode,
 ) -> Arc<ReviewSnapshot> {
+    working_snapshot_at(repository.path(), mode).await
+}
+
+async fn working_snapshot_at(root: &Path, mode: ReviewWorkingTreeMode) -> Arc<ReviewSnapshot> {
     let source = working_source(mode);
-    let material = working_tree_material(repository.folder(), mode)
+    let material = working_tree_material(GitFolder::untrusted(root), mode)
         .await
         .expect("working snapshot should capture");
     let mut files = git_files(
-        repository.folder(),
+        GitFolder::untrusted(root),
         &material.before_oid,
         &material.after_oid,
         &source,
@@ -199,7 +203,7 @@ async fn working_snapshot(
         working_folder_id: ProjectWorkingFolderId::new("workspace:review-test")
             .expect("working folder ID should be valid"),
         environment_id: "environment:review-test".to_string(),
-        root: repository.path().to_path_buf(),
+        root: root.to_path_buf(),
         git_trust: GitFolderTrust::Untrusted,
         source,
         source_label: material.label,
@@ -1267,5 +1271,55 @@ async fn subdirectory_folders_capture_their_own_changes_with_root_relative_paths
             ("sub/new.txt", "added"),
             ("sub/removed.txt", "deleted"),
         ]
+    );
+}
+
+#[tokio::test]
+async fn subdirectory_folders_read_and_discard_the_reviewed_file_not_a_nested_namesake() {
+    let repository = TestRepository::new();
+    repository.write("sub/a.txt", "reviewed\n");
+    repository.write("sub/sub/a.txt", "namesake\n");
+    repository.commit_all();
+    repository.write("sub/a.txt", "reviewed change\n");
+    repository.write("sub/sub/a.txt", "namesake change\n");
+    let subdirectory = repository.path().join("sub");
+
+    let snapshot = working_snapshot_at(&subdirectory, ReviewWorkingTreeMode::Unstaged).await;
+    let reviewed = review_file(&snapshot.files, "sub/a.txt");
+    let patch = read_patch_page(&snapshot, &reviewed.read.file_id, 0, 64 * 1024)
+        .await
+        .expect("subdirectory patch should read");
+    let text = patch.patch.expect("patch text should be present");
+    assert!(text.contains("+reviewed change"), "{text}");
+    assert!(!text.contains("namesake"), "{text}");
+
+    let request = ApplyChatReviewActionRequest {
+        thread_id: None,
+        snapshot_id: snapshot.snapshot_id.clone(),
+        working_folder_id: snapshot.working_folder_id.clone(),
+        execution_environment_id: Some(snapshot.environment_id.clone()),
+        expected_review_revision: snapshot.review_revision.clone(),
+        file_id: Some(reviewed.read.file_id.clone()),
+        hunk_ids: Vec::new(),
+        operation: ReviewAction::Discard,
+        confirmed: true,
+        client_operation_id: "operation:discard-subdirectory".to_string(),
+    };
+    apply_action(
+        &snapshot,
+        snapshot.git_folder(),
+        &request,
+        ReviewWorkingTreeMode::Unstaged,
+    )
+    .await
+    .expect("subdirectory discard should apply");
+
+    assert_eq!(
+        fs::read_to_string(subdirectory.join("a.txt")).expect("reviewed file should read"),
+        "reviewed\n"
+    );
+    assert_eq!(
+        fs::read_to_string(subdirectory.join("sub/a.txt")).expect("namesake should read"),
+        "namesake change\n"
     );
 }

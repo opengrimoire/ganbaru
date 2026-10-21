@@ -30,6 +30,8 @@ When a checkpoint pair is unavailable, review falls back to the provider-reporte
 
 A changed file too large to review is listed with a notice instead of a diff, and it can still be staged, unstaged, or discarded as a whole.
 
+A working folder may be a subdirectory of its repository. Review and source control then list paths from the repository root, and staging, unstaging, discarding, and diffs act on exactly the listed file, as the user's own `git` would from that folder.
+
 ## Terminal
 
 Terminals are bound to one authorized execution target and thread. The frontend receives a narrow stream and input boundary, not a generic process API. Closing a terminal view does not necessarily stop its process, and lifecycle and stop controls stay truthful. Output is bounded, untrusted text; escape sequences cannot become application commands or links without validation.

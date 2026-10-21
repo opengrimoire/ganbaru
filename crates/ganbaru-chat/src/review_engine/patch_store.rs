@@ -1,6 +1,7 @@
 //! Patch paging, spooling, and temporary Git object storage.
 
 use super::super::models::{ChatError, ChatErrorCode, ChatResult};
+use super::actions::folder_paths;
 use super::contracts::{ReviewDiffSource, ReviewFilePatchRead, ReviewHunkRead, ReviewPatchState};
 use super::material::deterministic_diff_arguments;
 use super::patch_parser::{parse_hunk_header, parse_patch};
@@ -131,10 +132,11 @@ async fn load_patch_index(
         let context = format!("--unified={}", snapshot.context_lines);
         let mut arguments =
             deterministic_diff_arguments(snapshot.ignore_whitespace, Some(&context));
-        arguments.extend([before, after, "--", &file.read.relative_path]);
-        if let Some(previous) = file.read.previous_relative_path.as_deref() {
-            arguments.push(previous);
-        }
+        let mut owned = vec![file.read.relative_path.clone()];
+        owned.extend(file.read.previous_relative_path.clone());
+        let owned = folder_paths(snapshot.git_folder(), &owned).await?;
+        arguments.extend([before, after, "--"]);
+        arguments.extend(owned.iter().map(String::as_str));
         let spool = Arc::new(ReviewTemporaryFile::new("patch")?);
         git::review_output_to_file_in_storage(
             snapshot.git_folder(),

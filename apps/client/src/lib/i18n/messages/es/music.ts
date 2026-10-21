@@ -146,7 +146,7 @@ export const music = {
     playingInBackground: "Reproduciendo en segundo plano",
     notPlaying: "Sin reproducir",
     level: "Nivel del paisaje sonoro",
-    levelHint: "Comparado con el volumen de tu música",
+    levelHint: "Relativo al volumen de tu música",
     levelValue: (adjustment: string) => `${adjustment} respecto al volumen de tu música`,
     noActivePreset: "Elige un preajuste para ajustar su nivel",
     makePreset: "Crear preajuste",

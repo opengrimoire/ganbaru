@@ -121,6 +121,47 @@ fn block_frontier_batches_children_for_multiple_parents() {
 }
 
 #[test]
+fn block_frontier_reads_accept_the_parent_cap_and_refuse_one_more() {
+    crate::test_block_on(async {
+        let pool = migrated_memory_pool().await;
+        create_page(&pool, PAGE_A, BLOCK_A).await;
+        writes::append_block_children(
+            &pool,
+            NoteAppendBlockChildren {
+                parent: block_parent(BLOCK_A),
+                after: None,
+                children: vec![block(BLOCK_B, "paragraph", paragraph_payload("Child"))],
+            },
+        )
+        .await
+        .unwrap();
+        let mut parent_ids = (1..reads::MAX_BLOCK_FRONTIER_PARENT_IDS)
+            .map(|index| format!("00000000-0000-4000-8000-{index:012x}"))
+            .collect::<Vec<_>>();
+        parent_ids.push(BLOCK_A.to_string());
+
+        let frontier =
+            serde_json::to_value(reads::block_frontier(&pool, &parent_ids).await.unwrap()).unwrap();
+        assert_eq!(frontier["blocks"][0]["id"], BLOCK_B);
+        let outlines = reads::block_outline_frontier(&pool, PAGE_A, &parent_ids)
+            .await
+            .unwrap();
+        assert_eq!(serde_json::to_value(outlines).unwrap()[0]["id"], BLOCK_B);
+
+        parent_ids.push(BLOCK_C.to_string());
+        let error = reads::block_frontier(&pool, &parent_ids)
+            .await
+            .err()
+            .unwrap();
+        assert!(error.contains("limited to"), "{error}");
+        let error = reads::block_outline_frontier(&pool, PAGE_A, &parent_ids)
+            .await
+            .unwrap_err();
+        assert!(error.contains("limited to"), "{error}");
+    });
+}
+
+#[test]
 fn page_breadcrumb_resolves_unloaded_ancestor_rows() {
     crate::test_block_on(async {
         let pool = migrated_memory_pool().await;

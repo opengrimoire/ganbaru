@@ -34,7 +34,7 @@ Cursor and Grok use the official Agent Client Protocol (ACP v1). They share one 
 
 ## OpenCode
 
-OpenCode runs as a local server reached through its HTTP and event-stream interfaces. Ganbaru reconciles streamed and fetched history, deduplicates events, reconnects within bounds, and keeps cancellation and session ownership explicit.
+OpenCode runs as a local server reached through its HTTP and event-stream interfaces. Ganbaru reconciles streamed and fetched history, deduplicates events, keeps events whose own or nested session ID names another session (such as a subagent) out of the thread, reconnects within bounds, and keeps cancellation and session ownership explicit.
 
 ## Compatibility
 

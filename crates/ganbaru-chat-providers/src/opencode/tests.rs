@@ -1029,6 +1029,27 @@ fn malformed_and_cross_session_events_are_bounded() {
         )
         .unwrap()
         .is_empty());
+    for nested in [
+        json!({ "type": "message.updated", "properties": { "info": { "id": "msg_child", "sessionID": "ses_child", "role": "assistant" } } }),
+        json!({ "type": "message.part.updated", "properties": { "part": { "id": "part_child", "sessionID": "ses_child", "messageID": "msg_child", "type": "text", "text": "child" } } }),
+        json!({ "type": "message.part.updated", "properties": { "sessionID": "ses_fixture", "part": { "id": "part_mixed", "sessionID": "ses_child", "messageID": "msg_child", "type": "text", "text": "mixed" } } }),
+        json!({ "type": "session.updated", "properties": { "info": { "id": "ses_child", "title": "Subagent" } } }),
+    ] {
+        assert!(
+            normalizer
+                .normalize(&mut state, nested.clone())
+                .unwrap()
+                .is_empty(),
+            "{nested}"
+        );
+    }
+    assert!(!normalizer
+        .normalize(
+            &mut state,
+            json!({ "type": "session.updated", "properties": { "info": { "id": "ses_fixture", "title": "Renamed" } } })
+        )
+        .unwrap()
+        .is_empty());
     assert!(normalizer
         .normalize(
             &mut state,

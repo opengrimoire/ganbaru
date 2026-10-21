@@ -156,6 +156,37 @@ impl OpenCodeRouteState {
     }
 }
 
+/// Whether an event names a session other than `session_id`. Events carry the session at the
+/// top level and again inside the message, part, or session record they describe; a mismatch
+/// in any of them, such as a subagent's child session, keeps the event out of this thread.
+fn names_another_session(
+    event_type: &str,
+    properties: &serde_json::Map<String, Value>,
+    session_id: &str,
+) -> bool {
+    let nested = |record: &str, key: &str| {
+        properties
+            .get(record)
+            .and_then(Value::as_object)
+            .and_then(|record| record.get(key))
+            .and_then(Value::as_str)
+    };
+    let session_record_id = if event_type.starts_with("session.") {
+        nested("info", "id")
+    } else {
+        None
+    };
+    [
+        properties.get("sessionID").and_then(Value::as_str),
+        nested("info", "sessionID"),
+        nested("part", "sessionID"),
+        session_record_id,
+    ]
+    .into_iter()
+    .flatten()
+    .any(|named| named != session_id)
+}
+
 pub struct OpenCodeEventNormalizer {
     provider_instance_id: ProviderInstanceId,
     thread_id: ChatThreadId,
@@ -195,10 +226,7 @@ impl OpenCodeEventNormalizer {
             .ok_or_else(|| protocol_error("event properties"))?;
         if event_type != "server.connected"
             && event_type != "server.heartbeat"
-            && properties
-                .get("sessionID")
-                .and_then(Value::as_str)
-                .is_some_and(|session_id| session_id != state.provider_thread_id)
+            && names_another_session(event_type, properties, &state.provider_thread_id)
         {
             return Ok(Vec::new());
         }

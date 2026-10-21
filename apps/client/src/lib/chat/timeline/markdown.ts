@@ -13,7 +13,7 @@ const SANITIZER_CONFIG: Config = {
     "hr", "li", "ol", "p", "pre", "strong", "table", "tbody", "td", "th", "thead", "tr", "ul",
   ],
   ALLOWED_ATTR: ["href", "title", "data-chat-external-link"],
-  ALLOW_DATA_ATTR: true,
+  ALLOW_DATA_ATTR: false,
 };
 
 const CHAT_MARKDOWN_RENDERER: RendererObject = {
@@ -45,7 +45,14 @@ const parser = new Marked({
  */
 export function renderChatMarkdown(markdown: string): string {
   const bounded = boundChatMarkdown(markdown);
-  const html = parser.parse(bounded, { async: false });
+  return sanitizeChatMarkdownHtml(parser.parse(bounded, { async: false }));
+}
+
+/**
+ * Sanitizes a rendered Chat fragment. Among `data-*` attributes only the renderer's
+ * `data-chat-external-link` marker is allowed, so other data attributes cannot reach handlers.
+ */
+export function sanitizeChatMarkdownHtml(html: string): string {
   return DOMPurify.sanitize(html, SANITIZER_CONFIG);
 }
 

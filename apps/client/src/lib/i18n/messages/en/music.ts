@@ -40,7 +40,7 @@ export const music = {
   },
   preferences: {
     title: "Mix and snooze",
-    applyTo: "This track in",
+    applyTo: "For this track in",
     snooze: "Snooze",
     everywhere: "All playlists",
     day: "1 day",
@@ -146,7 +146,7 @@ export const music = {
       missing: "Selected soundscape is unavailable",
       search: "Search soundscapes",
       noMatches: "No soundscapes match this search.",
-      noPresets: "No soundscapes yet. Make one from a layer in the soundscape builder.",
+      noPresets: "No soundscapes yet. Create one in the soundscape builder.",
     },
     preset: {
       name: "Soundscape name",

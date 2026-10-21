@@ -251,9 +251,9 @@ export const calendar = {
     taskLinksRecurring: "Los vínculos de tareas están disponibles para eventos individuales.",
     music: "Música",
     musicPlaylist: "Playlist",
-    musicSound: "Paisaje sonoro",
+    musicSound: "Sonido ambiental",
     musicPhasePlaylist: (phase: string) => `Playlist (${phase})`,
-    musicPhaseSound: (phase: string) => `Paisaje sonoro (${phase})`,
+    musicPhaseSound: (phase: string) => `Sonido ambiental (${phase})`,
     musicPhases: (focus: boolean, shortBreak: boolean, longBreak: boolean) => {
       if (focus && shortBreak && longBreak) return "Enfoque, descanso corto y largo";
       if (focus && (shortBreak || longBreak)) return `Enfoque y descanso ${shortBreak ? "corto" : "largo"}`;

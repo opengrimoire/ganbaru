@@ -284,10 +284,6 @@
   }
 </script>
 
-{#snippet hintBadge(glyph: string)}
-  <span class="grid h-3.5 w-3.5 place-items-center rounded-full border border-muted-foreground/50 text-[0.55rem] leading-none font-bold text-muted-foreground group-hover:bg-secondary group-hover:text-foreground" aria-hidden="true">{glyph}</span>
-{/snippet}
-
 <div bind:this={root} class="relative">
   <button
     bind:this={trigger}
@@ -306,10 +302,7 @@
       {:else}
         {#if error}<Notice message={error} />{/if}
         <div class="-mr-1.5 flex items-center justify-between gap-3">
-          <div class="flex shrink-0 items-center gap-1.5">
-            <span>{t("music.preferences.applyTo")}</span>
-            <button type="button" data-music-apply-to-hint class="hint-trigger group" aria-label={t("music.preferences.applyToHint")} data-app-tooltip={t("music.preferences.applyToHint")}>{@render hintBadge("i")}</button>
-          </div>
+          <span class="shrink-0">{t("music.preferences.applyTo")}</span>
           <Select
             value={scopePlaylistId ?? ""}
             options={scopeOptions}
@@ -329,7 +322,7 @@
             <div bind:this={frequencyHeader} class="relative flex min-w-0 items-center gap-1.5">
               <span>{t("music.preferences.likelihood")}</span>
               {#if player.playbackMode !== "mix"}
-                <button type="button" data-music-frequency-warning-trigger class="hint-trigger group" aria-label={frequencyInactiveText} onpointerenter={(event) => { void showFrequencyTooltip(event.currentTarget); }} onpointerleave={hideFrequencyTooltip} onfocus={(event) => { void showFrequencyTooltip(event.currentTarget); }} onblur={hideFrequencyTooltip}>{@render hintBadge("!")}</button>
+                <button type="button" data-music-frequency-warning-trigger class="group grid h-5 w-5 shrink-0 place-items-center rounded-full focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-ring" aria-label={frequencyInactiveText} onpointerenter={(event) => { void showFrequencyTooltip(event.currentTarget); }} onpointerleave={hideFrequencyTooltip} onfocus={(event) => { void showFrequencyTooltip(event.currentTarget); }} onblur={hideFrequencyTooltip}><span class="grid h-3.5 w-3.5 place-items-center rounded-full border border-muted-foreground/50 text-[0.55rem] leading-none font-bold text-muted-foreground group-hover:bg-secondary group-hover:text-foreground" aria-hidden="true">!</span></button>
               {/if}
             </div>
             {#if targetMemberships.length > 0}<span class="text-muted-foreground">{currentWeight ? t(`music.builder.weight.${currentWeight}`) : t("music.preferences.mixed")}</span>{/if}
@@ -383,7 +376,5 @@
 {/if}
 
 <style>
-  .hint-trigger { display: grid; height: 1.25rem; width: 1.25rem; flex-shrink: 0; place-items: center; border-radius: 9999px; }
-  .hint-trigger:focus-visible { outline: 2px solid var(--ring); outline-offset: 1px; }
   .choice { display: inline-flex; align-items: center; justify-content: center; border-radius: var(--floating-item-radius); transition: background-color 150ms, color 150ms; }
 </style>

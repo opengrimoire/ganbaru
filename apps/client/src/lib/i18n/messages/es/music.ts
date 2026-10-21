@@ -44,7 +44,6 @@ export const music = {
   preferences: {
     title: "Mix y pausa",
     applyTo: "Aplicar a",
-    applyToHint: "Estos ajustes solo cambian la pista actual, en todas las playlists o solo en la que elijas.",
     snooze: "Posponer",
     everywhere: "En todas",
     day: "1 día",

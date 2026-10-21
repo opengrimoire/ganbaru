@@ -2,7 +2,8 @@
 //! process memory sampling, and dense dataset seeding.
 
 use crate::db;
-use std::path::PathBuf;
+use ganbaru_atomic_files::{FileAccess, FinalSymlink};
+use std::path::{Path, PathBuf};
 use tauri::Manager;
 
 pub(crate) mod memory;
@@ -17,6 +18,40 @@ fn benchmark_state_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     let mut path = app.path().app_config_dir().map_err(|e| e.to_string())?;
     path.push("benchmark-state.json");
     Ok(path)
+}
+
+/// Largest benchmark state file the harness writes or reads, far above the phase results a run
+/// records, so only a runaway or hostile payload is refused.
+const BENCHMARK_STATE_MAX_BYTES: u64 = 16 * 1024 * 1024;
+
+/// Reads the benchmark state file within [`BENCHMARK_STATE_MAX_BYTES`], or `None` when absent.
+fn read_benchmark_state_file(path: &Path) -> Result<Option<String>, String> {
+    match ganbaru_atomic_files::read_regular_file_capped(
+        path,
+        BENCHMARK_STATE_MAX_BYTES,
+        FinalSymlink::Refuse,
+    ) {
+        Ok(bytes) => String::from_utf8(bytes)
+            .map(Some)
+            .map_err(|_| "benchmark state is not UTF-8".to_string()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(format!("read benchmark state: {error}")),
+    }
+}
+
+/// Writes the benchmark state file atomically after checking [`BENCHMARK_STATE_MAX_BYTES`].
+fn write_benchmark_state_file(path: &Path, json: &str) -> Result<(), String> {
+    let byte_count = json.len() as u64;
+    if byte_count > BENCHMARK_STATE_MAX_BYTES {
+        return Err(format!(
+            "benchmark state is {byte_count} bytes, exceeding the limit of {BENCHMARK_STATE_MAX_BYTES} bytes"
+        ));
+    }
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    ganbaru_atomic_files::write_file_atomically(path, json.as_bytes(), FileAccess::Default)
+        .map_err(|error| format!("write benchmark state: {error}"))
 }
 
 /// Path to the isolated SQLite file the benchmark harness uses for both
@@ -64,22 +99,12 @@ pub(crate) async fn teardown_benchmark_db(app: tauri::AppHandle) -> Result<(), S
 
 #[tauri::command]
 pub(crate) fn read_benchmark_state(app: tauri::AppHandle) -> Result<Option<String>, String> {
-    let path = benchmark_state_path(&app)?;
-    if !path.exists() {
-        return Ok(None);
-    }
-    let contents = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
-    Ok(Some(contents))
+    read_benchmark_state_file(&benchmark_state_path(&app)?)
 }
 
 #[tauri::command]
 pub(crate) fn write_benchmark_state(app: tauri::AppHandle, json: String) -> Result<(), String> {
-    let path = benchmark_state_path(&app)?;
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-    }
-    std::fs::write(&path, json).map_err(|e| e.to_string())?;
-    Ok(())
+    write_benchmark_state_file(&benchmark_state_path(&app)?, &json)
 }
 
 #[tauri::command]
@@ -123,9 +148,8 @@ fn benchmark_relaunch_pending(app: &tauri::AppHandle) -> bool {
             return false;
         }
     };
-    match std::fs::read_to_string(&path) {
-        Ok(json) => state_names_pending_benchmark(&json),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+    match read_benchmark_state_file(&path) {
+        Ok(json) => json.is_some_and(|json| state_names_pending_benchmark(&json)),
         Err(error) => {
             eprintln!("benchmark state unreadable: {error}");
             false
@@ -143,7 +167,10 @@ pub(crate) fn select_database_target(app: tauri::AppHandle, benchmark: bool) -> 
 
 #[cfg(test)]
 mod tests {
-    use super::state_names_pending_benchmark;
+    use super::{
+        BENCHMARK_STATE_MAX_BYTES, read_benchmark_state_file, state_names_pending_benchmark,
+        write_benchmark_state_file,
+    };
 
     #[test]
     fn only_pending_benchmark_state_selects_the_benchmark_database() {
@@ -163,5 +190,42 @@ mod tests {
         ] {
             assert!(!state_names_pending_benchmark(json), "{json}");
         }
+    }
+
+    #[test]
+    fn benchmark_state_round_trips_within_its_size_limit() {
+        let directory = std::env::temp_dir().join(format!(
+            "ganbaru-benchmark-state-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("test clock should be valid")
+                .as_nanos()
+        ));
+        let path = directory.join("benchmark-state.json");
+        assert_eq!(read_benchmark_state_file(&path), Ok(None));
+
+        write_benchmark_state_file(&path, r#"{"stage":"phase-a-pending"}"#)
+            .expect("state should write");
+        assert_eq!(
+            read_benchmark_state_file(&path),
+            Ok(Some(r#"{"stage":"phase-a-pending"}"#.to_string()))
+        );
+
+        let oversized = "x".repeat(BENCHMARK_STATE_MAX_BYTES as usize + 1);
+        write_benchmark_state_file(&path, &oversized).expect_err("oversized state is refused");
+        assert_eq!(
+            read_benchmark_state_file(&path),
+            Ok(Some(r#"{"stage":"phase-a-pending"}"#.to_string())),
+            "a refused write keeps the previous state"
+        );
+
+        std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .and_then(|file| file.set_len(BENCHMARK_STATE_MAX_BYTES + 1))
+            .expect("state should grow");
+        read_benchmark_state_file(&path).expect_err("oversized state is not read");
+        std::fs::remove_dir_all(&directory).expect("test directory should be removed");
     }
 }

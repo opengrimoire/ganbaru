@@ -46,7 +46,7 @@ A vault can come from someone else, so its contents must not redirect app writes
 
 The active vault path is configuration, not a hardcoded Documents location. Managed child paths are derived below the validated active root.
 
-Rust fixes which database each process serves when the frontend first asks: the vault, or on desktop the isolated benchmark database, which it selects only when the persisted benchmark state names a pending benchmark relaunch. The choice holds until the process exits, and the database a command names is an assertion checked against it, so a webview cannot switch databases mid-session or reach the other one. Rust-owned runtimes always open the vault, and benchmark fixture commands write only the benchmark database of a benchmark process.
+Rust fixes which database each process serves when the frontend first asks: the vault, or on desktop the isolated benchmark database, which it selects only when the persisted benchmark state names a pending benchmark relaunch. The choice holds until the process exits, and the database a command names is an assertion checked against it, so a webview cannot switch databases mid-session or reach the other one. Rust-owned runtimes always open the vault, and benchmark fixture commands write only the benchmark database of a benchmark process. The benchmark state file is read and written within a fixed size limit (16 MiB).
 
 ## Managed assets
 

@@ -424,6 +424,7 @@ pub async fn vault_pick_and_write_ics_export(
     default_name: String,
     contents: String,
 ) -> Result<bool, String> {
+    require_text_within_limit(&contents, ICS_PLAIN_MAX_BYTES, "ICS export")?;
     let default_name = default_file_name(&default_name, "calendar", "ics");
     let Some(path) = on_dialog_thread(move || {
         pick_save_path(

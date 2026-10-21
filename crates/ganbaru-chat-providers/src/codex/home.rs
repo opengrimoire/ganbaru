@@ -318,9 +318,14 @@ fn fallback_executable_directories(home: &Path) -> Vec<PathBuf> {
             home.join(".bun").join("bin"),
             home.join(".cargo").join("bin"),
             home.join(".volta").join("bin"),
-            PathBuf::from("/opt/homebrew/bin"),
-            PathBuf::from("/home/linuxbrew/.linuxbrew/bin"),
         ]
+        .into_iter()
+        .chain(
+            crate::executable_search::PLATFORM_EXECUTABLE_DIRECTORIES
+                .iter()
+                .map(PathBuf::from),
+        )
+        .collect()
     }
 }
 
@@ -534,10 +539,10 @@ fn find_on_path(name: &str, environment: &BTreeMap<String, String>) -> Option<Pa
         .1
         .clone();
     let extensions = executable_extensions(name, environment);
-    for directory in std::env::split_paths(OsStr::new(&path)) {
+    for directory in crate::executable_search::path_search_directories(OsStr::new(&path)) {
         for extension in &extensions {
             let candidate = directory.join(format!("{name}{extension}"));
-            if candidate.is_file() && is_executable(&candidate) {
+            if crate::executable_search::is_safe_executable_candidate(&candidate) {
                 return Some(candidate);
             }
         }

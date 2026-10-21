@@ -18,6 +18,7 @@ use ganbaru_chat_providers::runtime_review::{
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
+use std::path::Path;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
@@ -39,6 +40,8 @@ pub struct ProviderRuntimePrompt {
     pub cancel_label: String,
     /// Suffix for the count of items not listed, with `{count}` replaced natively.
     pub more_label: String,
+    /// Warning shown under a typed program that another local account could replace.
+    pub shared_program_label: String,
 }
 
 /// One runtime value awaiting confirmation, as shown in Settings.
@@ -175,7 +178,8 @@ pub(crate) fn ingress_review_items(
         && stored_executable != Some(executable)
         && !receipts.vouches_for_path(DevicePathKind::Executable, executable)
     {
-        let item = device_path_review_item(family, DevicePathKind::Executable, executable);
+        let mut item = device_path_review_item(family, DevicePathKind::Executable, executable);
+        item.shared_program = program_is_shared_with_other_users(Path::new(executable));
         if !receipts.vouches_for_item(&configuration.instance_id, &item.digest) {
             items.push(item);
         }
@@ -247,6 +251,36 @@ pub(crate) fn require_runtime_approved_on_device(
     )
 }
 
+/// Whether another local account could replace the program at `path` or the folder holding it.
+///
+/// A program counts as shared when its owner is neither this user nor root, or when a group
+/// other than this user's primary group can write it. Group write by the user's own primary
+/// group is the normal result of user private groups and stays quiet.
+#[cfg(target_os = "linux")]
+pub(crate) fn program_is_shared_with_other_users(path: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    const GROUP_WRITABLE: u32 = 0o020;
+    const ROOT_USER: u32 = 0;
+    let user = rustix::process::geteuid().as_raw();
+    let group = rustix::process::getegid().as_raw();
+    let shared = |path: &Path| {
+        std::fs::metadata(path).is_ok_and(|metadata| {
+            (metadata.uid() != user && metadata.uid() != ROOT_USER)
+                || (metadata.mode() & GROUP_WRITABLE != 0 && metadata.gid() != group)
+        })
+    };
+    let Ok(resolved) = std::fs::canonicalize(path) else {
+        return false;
+    };
+    shared(&resolved) || resolved.parent().is_some_and(shared)
+}
+
+/// Ownership warnings rely on Unix accounts; other platforms report no shared programs.
+#[cfg(not(target_os = "linux"))]
+pub(crate) fn program_is_shared_with_other_users(_path: &Path) -> bool {
+    false
+}
+
 pub(crate) fn validate_runtime_prompt(prompt: &ProviderRuntimePrompt) -> ChatResult<()> {
     let fields = [
         ("title", prompt.title.as_str(), 160),
@@ -254,6 +288,11 @@ pub(crate) fn validate_runtime_prompt(prompt: &ProviderRuntimePrompt) -> ChatRes
         ("allowLabel", prompt.allow_label.as_str(), 80),
         ("cancelLabel", prompt.cancel_label.as_str(), 80),
         ("moreLabel", prompt.more_label.as_str(), 80),
+        (
+            "sharedProgramLabel",
+            prompt.shared_program_label.as_str(),
+            300,
+        ),
     ];
     for (field, value, limit) in fields {
         let text = value.trim();
@@ -287,12 +326,12 @@ pub(crate) fn runtime_dialog_message(
         String::new(),
         provider_label.chars().filter(|c| !c.is_control()).collect(),
     ];
-    lines.extend(
-        items
-            .iter()
-            .take(MAX_RUNTIME_REVIEW_DIALOG_ITEMS)
-            .map(|item| format!("\u{2022} {}", item.label)),
-    );
+    for item in items.iter().take(MAX_RUNTIME_REVIEW_DIALOG_ITEMS) {
+        lines.push(format!("\u{2022} {}", item.label));
+        if item.shared_program {
+            lines.push(format!("  {}", prompt.shared_program_label.trim()));
+        }
+    }
     let hidden = items.len().saturating_sub(MAX_RUNTIME_REVIEW_DIALOG_ITEMS);
     if hidden > 0 {
         lines.push(

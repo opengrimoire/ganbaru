@@ -582,6 +582,7 @@ export const chatSettings = {
     runtimeReviewAllow: "Permitir",
     runtimeReviewCancel: "Cancelar",
     runtimeReviewMore: "Y {count} más",
+    runtimeReviewSharedProgram: "Otra cuenta de esta computadora puede cambiar este programa. Permítelo solo si confías en esa cuenta.",
     runtimeReviewNotice: "Esta configuración está en pausa en este dispositivo hasta que la permitas:",
     runtimeReviewButton: "Revisar y permitir",
     operationFailed: "No se pudo actualizar la configuración del proveedor.",

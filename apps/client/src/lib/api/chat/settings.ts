@@ -108,6 +108,7 @@ function providerRuntimePrompt() {
     allowLabel: translate("settings.chat.setup.runtimeReviewAllow"),
     cancelLabel: translate("settings.chat.setup.runtimeReviewCancel"),
     moreLabel: translate("settings.chat.setup.runtimeReviewMore"),
+    sharedProgramLabel: translate("settings.chat.setup.runtimeReviewSharedProgram"),
   };
 }
 

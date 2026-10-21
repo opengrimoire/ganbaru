@@ -576,12 +576,15 @@ fn find_on_path(name: &str, environment: &BTreeMap<String, String>) -> Option<Pa
     let mut extensions = executable_extensions(name, environment);
     let mut seen = BTreeSet::new();
     extensions.retain(|extension| seen.insert(extension.clone()));
-    std::env::split_paths(path).find_map(|directory| {
-        extensions.iter().find_map(|extension| {
-            let candidate = directory.join(format!("{name}{extension}"));
-            (candidate.is_file() && is_executable(&candidate)).then_some(candidate)
+    crate::executable_search::path_search_directories(OsStr::new(path))
+        .into_iter()
+        .find_map(|directory| {
+            extensions.iter().find_map(|extension| {
+                let candidate = directory.join(format!("{name}{extension}"));
+                crate::executable_search::is_safe_executable_candidate(&candidate)
+                    .then_some(candidate)
+            })
         })
-    })
 }
 
 #[cfg(windows)]

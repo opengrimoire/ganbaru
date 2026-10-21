@@ -198,6 +198,7 @@ fn dialog_lists_bounded_items_and_summarizes_the_rest() {
         allow_label: "Allow".to_string(),
         cancel_label: "Cancel".to_string(),
         more_label: "{count} more".to_string(),
+        shared_program_label: "Other accounts can change this program.".to_string(),
     };
     validate_runtime_prompt(&prompt).unwrap();
     let message = runtime_dialog_message(&prompt, "Cursor\nlabel", &items);
@@ -217,6 +218,77 @@ fn runtime_prompts_need_distinct_bounded_labels() {
         allow_label: "OK".to_string(),
         cancel_label: "OK".to_string(),
         more_label: "{count} more".to_string(),
+        shared_program_label: "Other accounts can change this program.".to_string(),
     };
     assert!(validate_runtime_prompt(&prompt).is_err());
+}
+
+#[test]
+fn dialog_warns_under_programs_other_accounts_can_replace() {
+    let mut shared = device_path_review_item(
+        "cursor",
+        DevicePathKind::Executable,
+        "/home/linuxbrew/.linuxbrew/bin/cursor-agent",
+    );
+    shared.shared_program = true;
+    let own = device_path_review_item(
+        "cursor",
+        DevicePathKind::Executable,
+        "/home/user/bin/cursor-agent",
+    );
+    let prompt = ProviderRuntimePrompt {
+        title: "Allow settings".to_string(),
+        message: "Review".to_string(),
+        allow_label: "Allow".to_string(),
+        cancel_label: "Cancel".to_string(),
+        more_label: "{count} more".to_string(),
+        shared_program_label: "Other accounts can change this program.".to_string(),
+    };
+
+    let message = runtime_dialog_message(&prompt, "Cursor", &[shared.clone(), own]);
+
+    assert_eq!(message.matches("Other accounts can change").count(), 1);
+    let warning = message.find("Other accounts can change").unwrap();
+    assert!(message.find(&shared.label).unwrap() < warning);
+    assert!(message.find("/home/user/bin/cursor-agent").unwrap() > warning);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn programs_owned_by_this_user_or_root_are_not_reported_as_shared() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let directory = std::env::temp_dir().join(format!(
+        "ganbaru-shared-program-{}-{}",
+        std::process::id(),
+        std::thread::current().name().unwrap_or("test")
+    ));
+    let _ = std::fs::remove_dir_all(&directory);
+    std::fs::create_dir_all(&directory).unwrap();
+    std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o775)).unwrap();
+    let program = directory.join("provider");
+    std::fs::write(&program, "#!/bin/sh\nexit 0\n").unwrap();
+    std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o775)).unwrap();
+
+    assert!(!program_is_shared_with_other_users(&program));
+    assert!(!program_is_shared_with_other_users(Path::new("/bin/sh")));
+    assert!(!program_is_shared_with_other_users(
+        &directory.join("missing")
+    ));
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn typed_programs_carry_the_shared_flag_into_review_items() {
+    let mut typed = configuration(&[], &[], json!({}));
+    typed.executable = "/bin/sh".to_string();
+
+    let items = ingress_review_items(&typed, None, &RuntimeReceipts::default());
+
+    assert_eq!(items.len(), 1);
+    assert!(!items[0].shared_program);
+    assert_eq!(
+        items[0].digest,
+        device_path_review_item("cursor", DevicePathKind::Executable, "/bin/sh").digest
+    );
 }

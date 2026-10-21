@@ -461,12 +461,14 @@ fn find_on_path(name: &str, environment: &BTreeMap<String, String>) -> Option<Pa
         .find(|(key, _)| key.eq_ignore_ascii_case("PATH"))?
         .1
         .as_str();
-    std::env::split_paths(path).find_map(|directory| {
-        executable_names(name)
-            .into_iter()
-            .map(|candidate| directory.join(candidate))
-            .find(|candidate| candidate.is_file() && is_executable(candidate))
-    })
+    crate::executable_search::path_search_directories(std::ffi::OsStr::new(path))
+        .into_iter()
+        .find_map(|directory| {
+            executable_names(name)
+                .into_iter()
+                .map(|candidate| directory.join(candidate))
+                .find(|candidate| crate::executable_search::is_safe_executable_candidate(candidate))
+        })
 }
 
 fn executable_names(name: &str) -> Vec<String> {

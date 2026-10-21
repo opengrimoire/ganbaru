@@ -255,10 +255,10 @@ fn find_on_path(name: &str, environment: &BTreeMap<String, String>) -> Option<Pa
         .find(|(key, _)| key.eq_ignore_ascii_case("PATH"))?
         .1
         .clone();
-    for directory in std::env::split_paths(OsStr::new(&path)) {
+    for directory in crate::executable_search::path_search_directories(OsStr::new(&path)) {
         for extension in executable_extensions(name, environment) {
             let candidate = directory.join(format!("{name}{extension}"));
-            if candidate.is_file() && is_executable(&candidate) {
+            if crate::executable_search::is_safe_executable_candidate(&candidate) {
                 return Some(candidate);
             }
         }

@@ -20,8 +20,7 @@
   const soundscape = getSoundscapeStore();
   let root = $state<HTMLElement | null>(null);
   let menuOpen = $state(false);
-  const selected = $derived(soundscape.activePreset?.id === preset.id);
-  const playing = $derived(selected && soundscape.snapshot.status === "playing");
+  const playing = $derived(soundscape.activePreset?.id === preset.id && soundscape.snapshot.status === "playing");
   const playable = $derived(soundscape.presetIsPlayable(preset));
   const name = $derived(presetDisplayName(preset, t));
   const names = $derived(presetSoundNames(preset.sounds, soundscape.definitions, (definition) => soundDisplayName(definition, t)));
@@ -51,7 +50,7 @@
 </script>
 
 <div bind:this={root} class="relative min-w-0">
-  <button type="button" aria-pressed={selected} aria-label={playing ? t("music.soundscape.pause") : t("music.soundscape.playPreset", name)} title={tooltip} disabled={!playable || soundscape.saving} class={selected ? "flex min-h-28 w-full min-w-0 flex-col items-center justify-center gap-2 rounded-xl bg-primary/10 px-3 text-center hover:bg-primary/15 disabled:opacity-50" : "flex min-h-28 w-full min-w-0 flex-col items-center justify-center gap-2 rounded-xl bg-secondary/40 px-3 text-center hover:bg-secondary/70 disabled:opacity-50"} onclick={choose}>
+  <button type="button" aria-pressed={playing} aria-label={playing ? t("music.soundscape.pause") : t("music.soundscape.playPreset", name)} title={tooltip} disabled={!playable || soundscape.saving} class={playing ? "flex min-h-28 w-full min-w-0 flex-col items-center justify-center gap-2 rounded-xl bg-primary/10 px-3 text-center hover:bg-primary/15 disabled:opacity-50" : "flex min-h-28 w-full min-w-0 flex-col items-center justify-center gap-2 rounded-xl bg-secondary/40 px-3 text-center hover:bg-secondary/70 disabled:opacity-50"} onclick={choose}>
     <MusicSoundscapeGroupIcon icon={preset.icon} size={27} />
     <span class="max-w-full truncate text-xs font-medium">{name}</span>
   </button>

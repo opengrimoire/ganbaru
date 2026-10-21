@@ -82,9 +82,9 @@
         {#if soundscape.presets.length > 0}
           <div class="mt-3 flex flex-wrap gap-1.5">
             {#each soundscape.presets as preset (preset.id)}
-              {@const selected = preset.id === active?.id}
+              {@const selected = preset.id === active?.id && playing}
               {@const name = presetDisplayName(preset, t)}
-              <button type="button" aria-pressed={selected} aria-label={selected && playing ? t("music.soundscape.pause") : t("music.soundscape.playPreset", name)} disabled={!soundscape.presetIsPlayable(preset)} class={selected ? "inline-flex h-8 min-w-0 max-w-full items-center gap-1.5 rounded-floating-item bg-primary/10 px-2.5 text-panel-detail transition-colors hover:bg-accent/70 disabled:opacity-50" : "inline-flex h-8 min-w-0 max-w-full items-center gap-1.5 rounded-floating-item px-2.5 text-panel-detail transition-colors hover:bg-accent/70 disabled:opacity-50"} onclick={() => choosePreset(preset)}><MusicSoundscapeGroupIcon icon={preset.icon} size={14} /><span class="truncate">{name}</span></button>
+              <button type="button" aria-pressed={selected} aria-label={selected ? t("music.soundscape.pause") : t("music.soundscape.playPreset", name)} disabled={!soundscape.presetIsPlayable(preset)} class={selected ? "inline-flex h-8 min-w-0 max-w-full items-center gap-1.5 rounded-floating-item bg-primary/10 px-2.5 text-panel-detail transition-colors hover:bg-accent/70 disabled:opacity-50" : "inline-flex h-8 min-w-0 max-w-full items-center gap-1.5 rounded-floating-item px-2.5 text-panel-detail transition-colors hover:bg-accent/70 disabled:opacity-50"} onclick={() => choosePreset(preset)}><MusicSoundscapeGroupIcon icon={preset.icon} size={14} /><span class="truncate">{name}</span></button>
             {/each}
           </div>
         {/if}

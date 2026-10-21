@@ -1,5 +1,4 @@
 <script lang="ts">
-  import type { Snippet } from "svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { formatPresetLevelAdjustment, PRESET_LEVEL_ADJUSTMENT_RANGE } from "$lib/music/soundscape/presets";
   import MusicSoundscapeLevelSlider from "./MusicSoundscapeLevelSlider.svelte";
@@ -12,7 +11,6 @@
     adjustment,
     disabled = false,
     onchange,
-    trailing,
   }: {
     id: string;
     title: string;
@@ -21,8 +19,6 @@
     adjustment: number;
     disabled?: boolean;
     onchange: (adjustment: number) => void;
-    /** Control placed after the slider, such as play and pause. */
-    trailing?: Snippet;
   } = $props();
   const localization = getLocalization();
   const { t } = localization;
@@ -38,5 +34,4 @@
   <span class="shrink-0 text-panel-detail tabular-nums text-muted-foreground" aria-hidden="true">{format(PRESET_LEVEL_ADJUSTMENT_RANGE.min)}</span>
   <MusicSoundscapeLevelSlider {id} {label} value={adjustment} min={PRESET_LEVEL_ADJUSTMENT_RANGE.min} max={PRESET_LEVEL_ADJUSTMENT_RANGE.max} centered {disabled} valueText={t("music.soundscape.levelValue", adjustmentText)} {onchange} />
   <span class="shrink-0 text-panel-detail tabular-nums text-muted-foreground" aria-hidden="true">{format(PRESET_LEVEL_ADJUSTMENT_RANGE.max)}</span>
-  {@render trailing?.()}
 </div>

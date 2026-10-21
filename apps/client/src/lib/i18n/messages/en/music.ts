@@ -145,7 +145,7 @@ export const music = {
     level: "Soundscape level",
     levelHint: "Relative to your music volume",
     levelValue: (adjustment: string) => `${adjustment} relative to your music volume`,
-    noActivePreset: "Pick a preset to adjust its level",
+    noActivePreset: "Play a preset to adjust its level",
     makePreset: "Make preset",
     playPreset: (name: string) => `Play ${name} preset`,
     openBuilder: "Manage sounds",

@@ -268,6 +268,30 @@ fn managed_artifact_reads_binary_bytes_without_following_links() {
 }
 
 #[test]
+fn hard_linked_files_preview_and_promote_like_package_store_entries() {
+    let directory = TestDirectory::new();
+    let store = directory.0.join(".store");
+    fs::create_dir(&store).expect("store should be created");
+    fs::write(store.join("index.js"), "module.exports = 1;\n").expect("store file should write");
+    fs::create_dir(directory.0.join("node_modules")).expect("package folder should be created");
+    fs::hard_link(
+        store.join("index.js"),
+        directory.0.join("node_modules").join("index.js"),
+    )
+    .expect("hard link should be created");
+    let authorized = directory.authorized(RepositoryKind::None);
+
+    let preview = preview_workspace_file(&authorized, "node_modules/index.js")
+        .expect("hard-linked package files should preview");
+    assert_eq!(preview.text.as_deref(), Some("module.exports = 1;\n"));
+    assert_eq!(
+        read_managed_artifact_bytes(&directory.0, "node_modules/index.js")
+            .expect("hard-linked artifacts should read"),
+        b"module.exports = 1;\n"
+    );
+}
+
+#[test]
 fn save_requires_the_current_revision_and_preserves_file_permissions() {
     let directory = TestDirectory::new();
     let path = directory.0.join("sample.rs");

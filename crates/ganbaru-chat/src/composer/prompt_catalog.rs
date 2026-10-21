@@ -250,13 +250,23 @@ fn read_workspace_command_entries(
     };
     let mut entries = Vec::new();
     for (relative_root, nested) in relative_roots {
-        if let Ok(found) =
-            read_command_directory(&workspace.join(relative_root), "workspace", stale, *nested)
-        {
+        let Some(root) = workspace_contained_root(workspace, relative_root) else {
+            continue;
+        };
+        if let Ok(found) = read_command_directory(&root, "workspace", stale, *nested) {
             entries.extend(found);
         }
     }
     entries
+}
+
+/// Resolves a workspace-owned command root, refusing one that a symbolic link in the repository
+/// points outside the workspace. Repository content decides these paths, so it must not steer
+/// the catalog into other folders; user-home roots are the user's own and may link anywhere.
+fn workspace_contained_root(workspace: &Path, relative_root: &str) -> Option<PathBuf> {
+    let workspace = fs::canonicalize(workspace).ok()?;
+    let root = fs::canonicalize(workspace.join(relative_root)).ok()?;
+    root.starts_with(&workspace).then_some(root)
 }
 
 fn read_user_command_entries(
@@ -477,6 +487,30 @@ mod tests {
             .find(|entry| entry.value == "/release")
             .unwrap();
         assert_eq!(release.argument_hint.as_deref(), Some("[arguments]"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn workspace_command_roots_cannot_link_outside_the_workspace() {
+        let root = temporary_root("command-links");
+        let workspace = root.join("workspace");
+        let outside = root.join("outside");
+        let shared = workspace.join("shared-commands");
+        fs::create_dir_all(&outside).unwrap();
+        fs::create_dir_all(&shared).unwrap();
+        fs::create_dir_all(workspace.join(".cursor")).unwrap();
+        fs::create_dir_all(workspace.join(".opencode")).unwrap();
+        fs::write(outside.join("private.md"), "description: Outside\n").unwrap();
+        fs::write(shared.join("shared.md"), "description: Shared\n").unwrap();
+        std::os::unix::fs::symlink(&outside, workspace.join(".cursor/commands")).unwrap();
+        std::os::unix::fs::symlink("../shared-commands", workspace.join(".opencode/commands"))
+            .unwrap();
+
+        assert!(read_workspace_command_entries(&workspace, "cursor", false).is_empty());
+        let linked_inside = read_workspace_command_entries(&workspace, "opencode", false);
+        assert_eq!(linked_inside.len(), 1);
+        assert_eq!(linked_inside[0].value, "/shared");
         fs::remove_dir_all(root).unwrap();
     }
 }

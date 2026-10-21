@@ -570,31 +570,40 @@ fn deterministic_worktree_path(local_data_root: &Path, environment_id: &str) -> 
 }
 
 fn prepare_worktree_parent(app: &tauri::AppHandle) -> ChatResult<()> {
-    let root = worktree_root(app)?;
-    if let Err(error) = fs::create_dir_all(&root) {
-        return Err(io_error(error));
-    }
-    let root_metadata = fs::symlink_metadata(&root).map_err(io_error)?;
+    prepare_worktree_parent_at(&worktree_root(app)?)
+}
+
+/// Creates the folder that holds managed worktrees below `root`. Worktrees copy project source,
+/// so on Unix the folder is accessible only by the current user, and an existing folder loses
+/// group and other access.
+fn prepare_worktree_parent_at(root: &Path) -> ChatResult<()> {
+    ganbaru_atomic_files::create_private_directories(root).map_err(io_error)?;
+    let root_metadata = fs::symlink_metadata(root).map_err(io_error)?;
     if path_metadata_is_link_or_reparse(&root_metadata) || !root_metadata.is_dir() {
         return Err(worktree_ownership_error());
     }
     let parent = root.join(WORKTREE_DIRECTORY);
-    match fs::symlink_metadata(&parent) {
-        Ok(metadata) if path_metadata_is_link_or_reparse(&metadata) || !metadata.is_dir() => {
-            Err(worktree_ownership_error())
-        }
-        Ok(_) => Ok(()),
+    let metadata = match fs::symlink_metadata(&parent) {
+        Ok(metadata) => metadata,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            fs::create_dir(&parent).map_err(io_error)?;
-            let metadata = fs::symlink_metadata(&parent).map_err(io_error)?;
-            if path_metadata_is_link_or_reparse(&metadata) || !metadata.is_dir() {
-                Err(worktree_ownership_error())
-            } else {
-                Ok(())
-            }
+            ganbaru_atomic_files::create_private_directory(&parent).map_err(io_error)?;
+            fs::symlink_metadata(&parent).map_err(io_error)?
         }
-        Err(error) => Err(io_error(error)),
+        Err(error) => return Err(io_error(error)),
+    };
+    if path_metadata_is_link_or_reparse(&metadata) || !metadata.is_dir() {
+        return Err(worktree_ownership_error());
     }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = metadata.permissions().mode();
+        if mode & 0o077 != 0 {
+            fs::set_permissions(&parent, fs::Permissions::from_mode(mode & !0o077))
+                .map_err(io_error)?;
+        }
+    }
+    Ok(())
 }
 
 async fn verify_worktree_ownership(
@@ -927,6 +936,28 @@ mod tests {
                 .len(),
             24
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_worktree_parent_is_private_to_the_current_user() {
+        use std::os::unix::fs::PermissionsExt;
+        let directory = TestDirectory::new();
+        let root = directory.0.join("local-data");
+        prepare_worktree_parent_at(&root).expect("worktree parent should be prepared");
+        let parent = root.join(WORKTREE_DIRECTORY);
+        let mode = |path: &Path| fs::metadata(path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&root), 0o700);
+        assert_eq!(mode(&parent), 0o700);
+
+        fs::set_permissions(&parent, fs::Permissions::from_mode(0o755)).unwrap();
+        prepare_worktree_parent_at(&root).expect("worktree parent should be prepared again");
+        assert_eq!(mode(&parent), 0o700);
+
+        let linked_root = directory.0.join("linked-data");
+        fs::create_dir(&linked_root).unwrap();
+        std::os::unix::fs::symlink(&directory.0, linked_root.join(WORKTREE_DIRECTORY)).unwrap();
+        assert!(prepare_worktree_parent_at(&linked_root).is_err());
     }
 
     #[test]

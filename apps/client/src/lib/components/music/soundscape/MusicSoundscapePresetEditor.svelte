@@ -153,24 +153,27 @@
     <div class="text-xs">
       <MusicSoundscapeRelativeLevel id="soundscape-preset-level" title={t("music.soundscape.levelHint")} label={t("music.soundscape.preset.level")} adjustment={presetLevelAdjustment(level)} onchange={(value) => level = presetLevelFromAdjustment(value)} />
       <p id="soundscape-preset-layer-levels" class="mt-5 truncate">{t("music.soundscape.preset.layerLevels")}</p>
-      {#if mix.length > 0}
-        <ul transition:growThenFade={rowMotion} class="mt-1 flex flex-col" aria-labelledby="soundscape-preset-layer-levels">
-          {#each mix as entry (entry.definition.id)}
-            {@const soundName = soundDisplayName(entry.definition, t)}
-            {@const percent = Math.round(entry.level * 100)}
-            {@const percentText = formatNumber(localization.locale, percent / 100, { style: "percent" })}
-            <!-- Rows carry their own spacing so a closing row takes its gap with it. -->
-            <li transition:growThenFade={rowMotion} class="flex h-9 items-center gap-3">
-              <span class="flex w-28 shrink-0 items-center gap-1.5"><span class="shrink-0 text-muted-foreground"><MusicSoundscapeIcon icon={entry.definition.icon} size={14} /></span><span class="min-w-0 truncate">{soundName}</span></span>
-              <MusicSoundscapeLevelSlider id={`soundscape-preset-sound-${entry.definition.id}`} label={t("music.soundscape.preset.soundLevel", soundName)} value={percent} min={0} max={100} valueText={percentText} onchange={(value) => sounds = setPresetDraftSoundLevel(sounds, entry.definition.id, value / 100)} />
-              <!-- Sized by the widest overall level label so every slider ends where the overall one does. -->
-              <span class="grid shrink-0 text-right tabular-nums text-muted-foreground"><span class="invisible col-start-1 row-start-1" aria-hidden="true">{widestLevelLabel}</span><span class="col-start-1 row-start-1">{percentText}</span></span>
-            </li>
-          {/each}
-        </ul>
-      {:else}
-        <p transition:growThenFade={rowMotion} class="mt-2 text-muted-foreground">{t("music.soundscape.preset.chooseLayer")}</p>
-      {/if}
+      <!-- The list and its empty hint share one cell, so swapping them changes the height once instead of stacking both. -->
+      <div class="grid items-start">
+        {#if mix.length > 0}
+          <ul transition:growThenFade={rowMotion} class="col-start-1 row-start-1 mt-1 flex flex-col" aria-labelledby="soundscape-preset-layer-levels">
+            {#each mix as entry (entry.definition.id)}
+              {@const soundName = soundDisplayName(entry.definition, t)}
+              {@const percent = Math.round(entry.level * 100)}
+              {@const percentText = formatNumber(localization.locale, percent / 100, { style: "percent" })}
+              <!-- Rows carry their own spacing so a closing row takes its gap with it. -->
+              <li transition:growThenFade={rowMotion} class="flex h-9 items-center gap-3">
+                <span class="flex w-28 shrink-0 items-center gap-1.5"><span class="shrink-0 text-muted-foreground"><MusicSoundscapeIcon icon={entry.definition.icon} size={14} /></span><span class="min-w-0 truncate">{soundName}</span></span>
+                <MusicSoundscapeLevelSlider id={`soundscape-preset-sound-${entry.definition.id}`} label={t("music.soundscape.preset.soundLevel", soundName)} value={percent} min={0} max={100} valueText={percentText} onchange={(value) => sounds = setPresetDraftSoundLevel(sounds, entry.definition.id, value / 100)} />
+                <!-- Sized by the widest overall level label so every slider ends where the overall one does. -->
+                <span class="grid shrink-0 text-right tabular-nums text-muted-foreground"><span class="invisible col-start-1 row-start-1" aria-hidden="true">{widestLevelLabel}</span><span class="col-start-1 row-start-1">{percentText}</span></span>
+              </li>
+            {/each}
+          </ul>
+        {:else}
+          <p transition:growThenFade={rowMotion} class="col-start-1 row-start-1 mt-2 text-muted-foreground">{t("music.soundscape.preset.chooseLayer")}</p>
+        {/if}
+      </div>
     </div>
 
     <section aria-labelledby="soundscape-preset-sounds">

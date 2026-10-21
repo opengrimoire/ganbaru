@@ -128,3 +128,20 @@ fn shadow_home_links_shared_state_but_keeps_auth_private() {
             .is_symlink()
     );
 }
+
+#[cfg(unix)]
+#[test]
+fn shadow_home_folders_created_for_codex_are_owner_only() {
+    use std::os::unix::fs::PermissionsExt;
+    let shared = TestDirectory::new("private-shared");
+    let shadow_parent = TestDirectory::new("private-shadow");
+    let shadow = shadow_parent.path().join("effective");
+    let config = configuration(shared.path(), Some(&shadow));
+    let settings = CodexProviderSettings::parse(&config).unwrap();
+    let mut layout = resolve_codex_home_layout(&config, &settings).unwrap();
+
+    materialize_codex_shadow_home(&mut layout).unwrap();
+    let mode = |path: &Path| fs::metadata(path).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode(&shadow), 0o700);
+    assert_eq!(mode(&shared.path().join("sessions")), 0o700);
+}

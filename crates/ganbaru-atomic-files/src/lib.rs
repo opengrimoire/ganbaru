@@ -166,6 +166,44 @@ pub fn create_private_temporary_directory(parent: &Path, prefix: &str) -> io::Re
     ))
 }
 
+/// Creates `directory` and any missing ancestors, each accessible only by the current user.
+///
+/// On Unix every directory this call creates gets mode 0700; existing directories keep their
+/// permissions. On Windows new directories inherit the access of their parent, which under the
+/// user profile is already private.
+///
+/// # Errors
+///
+/// Returns an error when a directory cannot be created or an ancestor is not a directory.
+pub fn create_private_directories(directory: &Path) -> io::Result<()> {
+    let mut builder = fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+    builder.create(directory)
+}
+
+/// Reports whether `path` is owned by the effective user of this process.
+///
+/// On platforms without Unix ownership it always returns `true`; their per-user profile
+/// access control lists already keep other accounts out.
+///
+/// # Errors
+///
+/// Returns an error when the metadata of `path` cannot be read.
+pub fn is_owned_by_current_user(path: &Path) -> io::Result<bool> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let owner = fs::metadata(path)?.uid();
+        Ok(owner == rustix::process::geteuid().as_raw())
+    }
+    #[cfg(not(unix))]
+    {
+        fs::metadata(path).map(|_| true)
+    }
+}
+
 /// Fails when `path` is a symlink. A missing path passes.
 ///
 /// # Errors

@@ -154,6 +154,31 @@ mod unix {
     }
 
     #[test]
+    fn private_directories_are_owner_only_and_keep_existing_ancestors() {
+        let parent = test_directory("private-tree");
+        fs::set_permissions(&parent, fs::Permissions::from_mode(0o755)).unwrap();
+        let leaf = parent.join("home").join("sessions");
+        create_private_directories(&leaf).unwrap();
+        create_private_directories(&leaf).unwrap();
+        let mode = |path: &Path| fs::metadata(path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&parent.join("home")), 0o700);
+        assert_eq!(mode(&leaf), 0o700);
+        assert_eq!(mode(&parent), 0o755);
+        fs::remove_dir_all(parent).unwrap();
+    }
+
+    #[test]
+    fn ownership_matches_only_the_current_user() {
+        let directory = test_directory("ownership");
+        assert!(is_owned_by_current_user(&directory).unwrap());
+        if rustix::process::geteuid().as_raw() != 0 {
+            assert!(!is_owned_by_current_user(Path::new("/")).unwrap());
+        }
+        assert!(is_owned_by_current_user(&directory.join("missing")).is_err());
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
     fn owner_only_files_are_private_and_default_files_follow_the_umask() {
         let directory = test_directory("modes");
         let private = directory.join("vault.json");

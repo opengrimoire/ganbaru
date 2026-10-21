@@ -5,8 +5,8 @@
 //! is stored as an encoded version vector; a zero-length blob means it is not known yet because
 //! the previous operation's context was unknown when the operation was stored.
 
-use std::collections::HashMap;
 use std::collections::hash_map::Entry;
+use std::collections::{HashMap, VecDeque};
 
 use ganbaru_sync_contracts::{Digest32, Seq, SpaceId, VersionVector, WriterId, WriterPublicKey};
 use sqlx::{AssertSqlSafe, Row, SqliteConnection};
@@ -277,6 +277,48 @@ struct PageEntry {
     bytes: usize,
 }
 
+/// Pending operations of one writer a page loads at a time, so a page never reads the
+/// metadata of a whole log it will not send.
+const PAGE_LANE_CHUNK: i64 = 64;
+
+/// The loaded pending operations of one writer in sequence order.
+struct PageLane {
+    writer: WriterId,
+    entries: VecDeque<PageEntry>,
+    after: Seq,
+    exhausted: bool,
+}
+
+impl PageLane {
+    /// Loads the next chunk when every loaded entry was taken and more may remain.
+    async fn refill(&mut self, conn: &mut SqliteConnection, space: SpaceId) -> SyncResult<()> {
+        if !self.entries.is_empty() || self.exhausted {
+            return Ok(());
+        }
+        let rows = sqlx::query(
+            "SELECT rowid, seq, length(envelope) FROM sync_ops
+             WHERE space_id = ? AND writer_id = ? AND seq > ? ORDER BY seq LIMIT ?",
+        )
+        .bind(space.as_bytes().as_slice())
+        .bind(self.writer.as_bytes().as_slice())
+        .bind(seq_i64(self.after)?)
+        .bind(PAGE_LANE_CHUNK)
+        .fetch_all(&mut *conn)
+        .await?;
+        self.exhausted = rows.len() < PAGE_LANE_CHUNK as usize;
+        for row in &rows {
+            let entry = PageEntry {
+                rowid: row.try_get(0)?,
+                seq: stored_u64(row.try_get(1)?, "sequence")?,
+                bytes: usize::try_from(row.try_get::<i64, _>(2)?).unwrap_or(usize::MAX),
+            };
+            self.after = entry.seq;
+            self.entries.push_back(entry);
+        }
+        Ok(())
+    }
+}
+
 impl Engine {
     /// Highest stored sequence per writer, the vector a peer pulls from.
     pub async fn stored_vector(
@@ -309,51 +351,38 @@ impl Engine {
         max_bytes: usize,
     ) -> SyncResult<OpsPage> {
         ensure_space(conn, ctx.space).await?;
-        let mut lanes: Vec<(WriterId, Vec<PageEntry>)> = Vec::new();
+        let mut lanes = Vec::new();
         for writer in writers(conn, ctx.space).await? {
             let from = known.get(&writer.id);
             if writer.stored <= from {
                 continue;
             }
-            let rows = sqlx::query(
-                "SELECT rowid, seq, length(envelope) FROM sync_ops
-                 WHERE space_id = ? AND writer_id = ? AND seq > ? ORDER BY seq",
-            )
-            .bind(ctx.space.as_bytes().as_slice())
-            .bind(writer.id.as_bytes().as_slice())
-            .bind(seq_i64(from)?)
-            .fetch_all(&mut *conn)
-            .await?;
-            let entries = rows
-                .iter()
-                .map(|row| {
-                    Ok(PageEntry {
-                        rowid: row.try_get(0)?,
-                        seq: stored_u64(row.try_get(1)?, "sequence")?,
-                        bytes: usize::try_from(row.try_get::<i64, _>(2)?).unwrap_or(usize::MAX),
-                    })
-                })
-                .collect::<SyncResult<Vec<_>>>()?;
-            if !entries.is_empty() {
-                lanes.push((writer.id, entries));
+            let mut lane = PageLane {
+                writer: writer.id,
+                entries: VecDeque::new(),
+                after: from,
+                exhausted: false,
+            };
+            lane.refill(conn, ctx.space).await?;
+            if !lane.entries.is_empty() {
+                lanes.push(lane);
             }
         }
-        let mut cursors = vec![0usize; lanes.len()];
         let mut page = OpsPage::default();
         let mut total = 0usize;
         loop {
             let next = lanes
                 .iter()
                 .enumerate()
-                .filter_map(|(lane, (_, entries))| {
-                    entries.get(cursors[lane]).map(|entry| (entry.rowid, lane))
-                })
+                .filter_map(|(index, lane)| lane.entries.front().map(|entry| (entry.rowid, index)))
                 .min();
-            let Some((_, lane)) = next else {
+            let Some((_, index)) = next else {
                 break;
             };
-            let (writer, entries) = &lanes[lane];
-            let entry = &entries[cursors[lane]];
+            let lane = &mut lanes[index];
+            let Some(entry) = lane.entries.front() else {
+                break;
+            };
             if !page.ops.is_empty() && total.saturating_add(entry.bytes) > max_bytes {
                 page.more = true;
                 break;
@@ -362,13 +391,14 @@ impl Engine {
                 "SELECT envelope FROM sync_ops WHERE space_id = ? AND writer_id = ? AND seq = ?",
             )
             .bind(ctx.space.as_bytes().as_slice())
-            .bind(writer.as_bytes().as_slice())
+            .bind(lane.writer.as_bytes().as_slice())
             .bind(seq_i64(entry.seq)?)
             .fetch_one(&mut *conn)
             .await?;
             total = total.saturating_add(envelope.len());
             page.ops.push(envelope);
-            cursors[lane] += 1;
+            lane.entries.pop_front();
+            lane.refill(conn, ctx.space).await?;
         }
         Ok(page)
     }

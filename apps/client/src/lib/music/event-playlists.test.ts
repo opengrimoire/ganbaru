@@ -7,6 +7,7 @@ import {
   effectiveEventPlaylistId,
   effectiveEventSound,
   eventMusicPhases,
+  eventPlaysMusic,
   eventSoundPlays,
   restoreEventMusic,
   silenceEventMusic,
@@ -161,5 +162,19 @@ describe("event music toggle", () => {
     const restored = restoreEventMusic(silenced, ["focus"]);
     expect(effectiveEventPlaylistId(restored, projectSnapshot, "focus")).toBe("deep-work");
     expect(persistedMusicAssignmentDrafts(restored)).toEqual([]);
+  });
+});
+
+describe("event plays music", () => {
+  it("resolves overrides over the project snapshot in the listed phases", () => {
+    expect(eventPlaysMusic([], projectSnapshot, ["focus"], false)).toBe(true);
+    expect(eventPlaysMusic([], projectSnapshot, ["short-break", "long-break"], false)).toBe(false);
+    const paused = chooseEventPlaylist([], projectSnapshot, "focus", null);
+    expect(eventPlaysMusic(paused, projectSnapshot, eventMusicPhases(true), false)).toBe(false);
+  });
+
+  it("counts soundscapes only where they play", () => {
+    expect(eventPlaysMusic([], rainySnapshot, ["focus"], true)).toBe(true);
+    expect(eventPlaysMusic([], rainySnapshot, ["focus"], false)).toBe(false);
   });
 });

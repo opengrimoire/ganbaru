@@ -1185,6 +1185,13 @@
     saveController.save(data, scope);
   const handleEndEvent = (data: PanelSaveData, scope?: RecurringScope): Promise<void> =>
     saveController.end(data, scope);
+  const confirmMeetingMusic = (proceed: () => Promise<void>): void => {
+    requestConfirm(t("calendar.view.meetingMusicMessage"), proceed, {
+      title: t("calendar.view.meetingMusicTitle"),
+      yesLabel: t("calendar.view.saveWithMusic"),
+      noLabel: t("calendar.view.keepEditing"),
+    });
+  };
 
   function eventDeleteOutcomeLabel(outcome: CalendarDeleteOutcome): string {
     if (outcome === "archive") return t("calendar.view.eventArchived");
@@ -1510,6 +1517,7 @@
       calendarIdentityEmail={panelCalendarIdentityEmail}
       loadFullEvent={calendarStore.loadPanelEvent}
       onSave={handlePanelSave}
+      {confirmMeetingMusic}
       deletionOutcome={currentDeletePreview()?.deletion?.outcome}
       onDelete={render.mode === "edit" && !render.parked ? handleDelete : undefined}
       onEndEvent={render.mode === "edit" && !render.parked && render.endActiveEventAvailable

@@ -128,6 +128,25 @@ export function eventSoundPlays(choice: MusicSoundChoice): boolean {
 }
 
 /**
+ * Whether the event starts a playlist, or a soundscape where soundscapes play, in any listed phase.
+ *
+ * @param overrides - Event override drafts.
+ * @param snapshots - Project intent copied onto the event.
+ * @param phases - Phases the event runs.
+ * @param soundscapes - Whether this platform plays soundscapes.
+ * @returns True when the event plays something when it starts.
+ */
+export function eventPlaysMusic(
+  overrides: readonly MusicContextAssignmentDraft[],
+  snapshots: readonly MusicContextAssignmentDraft[],
+  phases: readonly MusicActivityPhase[],
+  soundscapes: boolean,
+): boolean {
+  return phases.some((phase) => effectiveEventPlaylistId(overrides, snapshots, phase) !== null
+    || (soundscapes && eventSoundPlays(effectiveEventSound(overrides, snapshots, phase))));
+}
+
+/**
  * Silences music and soundscape in every listed phase that currently plays them.
  *
  * @param overrides - Event override drafts.

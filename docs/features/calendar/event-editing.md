@@ -20,7 +20,7 @@ The [Calendar schema](../../data/schema/calendar.md) owns storage and limits. Th
 
 Clicking or dragging an empty time range creates a draft and opens the event panel. A new all-day event starts from a date selection. The draft may remain untitled.
 
-The panel groups time, calendar, project, focus, music, meeting, description, recurrence, and notification controls without requiring every group for a simple event. Save validates one coherent draft. Closing a dirty panel asks for discard confirmation. Recurring events use the scoped behavior in [Recurrence editing](recurrence-editing.md).
+The panel groups time, calendar, project, focus, music, meeting, description, recurrence, and notification controls without requiring every group for a simple event. Save validates one coherent draft. A save that leaves an event with both a meeting and automatic music or soundscape, where it did not have both before, asks for confirmation because others may hear the playback during the call. Closing a dirty panel asks for discard confirmation. Recurring events use the scoped behavior in [Recurrence editing](recurrence-editing.md).
 
 Save, drag saves, `End now`, and `Enable Focus` are native semantic commands: the Calendar change and its Focus consequences commit together in Rust. If a reply is lost, the panel shows an unresolved Save notice with Retry that resubmits the exact original request; a newer draft cannot take its place. Pending saves disable mutation controls, and a delayed confirmation never saves a different event that the user has since selected.
 

@@ -51,6 +51,8 @@
     musicAssignmentDraftsEqual,
     persistedMusicAssignmentDrafts,
   } from "$lib/music/assignment-draft";
+  import { eventMusicPhases, eventPlaysMusic } from "$lib/music/event-playlists";
+  import { hasMeetingState } from "$lib/calendar/meeting-state";
   import type { MusicContextAssignmentDraft } from "$lib/music/context-assignment";
   import type { MusicPlaylistSummary } from "$lib/music/library/contracts";
 
@@ -75,6 +77,7 @@
     BUILD_PLATFORM_PROFILE,
     "notifications.native-scheduling",
   );
+  const soundscapesAvailable = platformHasCapability(BUILD_PLATFORM_PROFILE, "music.soundscapes");
   const androidNotificationScheduling = BUILD_PLATFORM_PROFILE.platform === "android";
   const nativeIdleDetectionAvailable = platformHasCapability(
     BUILD_PLATFORM_PROFILE,
@@ -114,6 +117,7 @@
     calendarIdentityEmail,
     loadFullEvent,
     onSave,
+    confirmMeetingMusic,
     onDelete,
     onEndEvent,
     onClose,
@@ -152,7 +156,9 @@
      */
     loadFullEvent?: (id: string) => Promise<CalendarEvent | undefined>;
     onSave: (data: PanelSaveData, scope?: RecurringScope) => boolean | Promise<boolean>;
-    onDelete?: (id: string, scope?: RecurringScope) => void;
+    /** Asks before a save that gives a meeting automatic music; runs `proceed` on confirmation. */
+    confirmMeetingMusic?: (proceed: () => Promise<void>) => void;
+    onDelete?:(id: string, scope?: RecurringScope) => void;
     onEndEvent?: (data: PanelSaveData, scope?: RecurringScope) => void;
     onClose: () => void;
     onChange?: (data: Partial<CalendarEvent>) => void;
@@ -694,13 +700,45 @@
     return dt.toLocaleDateString(locale, { weekday: "short", month: "short", day: "numeric" });
   });
 
-  async function handleSave() {
-    if (!canRunEventPanelSave({
+  /** Whether the event starts music in its phases, from the given assignment drafts. */
+  function playsMusic(
+    overrides: readonly MusicContextAssignmentDraft[],
+    snapshots: readonly MusicContextAssignmentDraft[],
+  ): boolean {
+    return musicAssignmentsAvailable
+      && timedSectionsVisible
+      && eventPlaysMusic(overrides, snapshots, eventMusicPhases(session.pomodoroEnabled), soundscapesAvailable);
+  }
+
+  /** Whether this save turns the event into a meeting that starts music, which others may hear. */
+  function saveAddsMeetingMusic(): boolean {
+    if (!session.meetingEnabled || !playsMusic(musicOverrides, musicSnapshots)) return false;
+    if (mode === "create") return true;
+    const savedEvent = session.fullEvent ?? event;
+    const savedMeeting = !!savedEvent && hasMeetingState(savedEvent);
+    return !savedMeeting || !playsMusic(savedMusicOverrides, savedMusicSnapshots);
+  }
+
+  function canSave(): boolean {
+    return canRunEventPanelSave({
       parked,
       controlsDisabled,
       pomodoroReadOnlyInteractive,
       savePending: session.savePending,
-    })) return;
+    });
+  }
+
+  async function handleSave() {
+    if (!canSave()) return;
+    if (confirmMeetingMusic && saveAddsMeetingMusic()) {
+      confirmMeetingMusic(performSave);
+      return;
+    }
+    await performSave();
+  }
+
+  async function performSave() {
+    if (!canSave()) return;
     const hadSaveableTimeDraft = dateTime.hasSaveableTimeDraft;
     const committedTimeDraft = dateTime.commitSaveableTimeDrafts();
     if (!externalDirty && !musicAssignmentsDirty && mode !== "create" && (!hadSaveableTimeDraft || !committedTimeDraft)) return;

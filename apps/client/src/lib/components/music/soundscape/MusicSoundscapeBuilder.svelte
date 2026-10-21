@@ -7,7 +7,7 @@
   import Notice from "$lib/components/ui/Notice.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import type { MusicSoundscapeDefinition, MusicSoundscapeGroup, MusicSoundscapePreset } from "$lib/music/soundscape/contracts";
-  import { orderedGeneratedSounds } from "$lib/music/soundscape/presentation";
+  import { NEW_LAYER_ICON, orderedGeneratedSounds } from "$lib/music/soundscape/presentation";
   import { presetDisplayName, singleSoundPreset, soundDisplayName } from "$lib/music/soundscape/presets";
   import type { SoundscapeFilter } from "$lib/music/builder/view-state";
   import { getSoundscapeStore } from "$lib/stores/soundscape.svelte";
@@ -29,7 +29,7 @@
   let groupIconDraft = $state("lucide:cloud-rain");
   let pendingSound = $state<{ path: string; groupId: string | null } | null>(null);
   let soundNameDraft = $state("");
-  let soundIconDraft = $state("lucide:audio-lines");
+  let soundIconDraft = $state(NEW_LAYER_ICON);
   /** Preset being created (`preset: null`) or edited; the editor replaces the builder content while open. */
   let presetEditor = $state<{ preset: MusicSoundscapePreset | null } | null>(null);
   let pendingPresetDelete = $state<MusicSoundscapePreset | null>(null);
@@ -62,7 +62,7 @@
       if (!replace) {
         pendingSound = { path, groupId };
         soundNameDraft = (path.split(/[\\/]/).pop() ?? t("music.soundscape.localLoop")).replace(/\.[^.]+$/, "");
-        soundIconDraft = soundscape.groups.find((group) => group.id === groupId)?.icon ?? "lucide:audio-lines";
+        soundIconDraft = soundscape.groups.find((group) => group.id === groupId)?.icon ?? NEW_LAYER_ICON;
         return;
       }
       await soundscape.saveDefinition({

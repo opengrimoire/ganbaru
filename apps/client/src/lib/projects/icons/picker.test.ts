@@ -330,6 +330,29 @@ describe("icon picker helpers", () => {
     expect(placement.top + placement.height).toBeLessThanOrEqual(pickerBoundary.bottom - 8);
   });
 
+  it("opens the icon picker panel above when it does not fit below and there is more room above", () => {
+    const placement = iconPickerPanelPlacement({
+      triggerRect: pickerTrigger({ top: 540, bottom: 572 }),
+      boundaryRect: pickerBoundary,
+      preferredWidth: 360,
+      preferredHeight: 440,
+    });
+
+    expect(placement).toEqual({ left: 280, top: 96, width: 360, height: 440 });
+  });
+
+  it("caps an upward icon picker panel at the upper boundary", () => {
+    const placement = iconPickerPanelPlacement({
+      triggerRect: pickerTrigger({ top: 400, bottom: 432 }),
+      boundaryRect: pickerBoundary,
+      preferredWidth: 360,
+      preferredHeight: 440,
+    });
+
+    expect(placement.top).toBe(48);
+    expect(placement.height).toBe(348);
+  });
+
   it("keeps the icon picker panel inside the viewport width", () => {
     const placement = iconPickerPanelPlacement({
       triggerRect: pickerTrigger({ left: 840, right: 960, width: 120 }),

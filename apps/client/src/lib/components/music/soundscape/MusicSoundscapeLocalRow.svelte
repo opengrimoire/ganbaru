@@ -6,6 +6,7 @@
   import { revealLocalFile } from "$lib/api/music";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import type { MusicSoundscapeDefinition } from "$lib/music/soundscape/contracts";
+  import { NEW_LAYER_ICON } from "$lib/music/soundscape/presentation";
   import { singleSoundPreset } from "$lib/music/soundscape/presets";
   import { getSoundscapeStore } from "$lib/stores/soundscape.svelte";
   import { scrollEdgeFadeAction } from "$lib/utils/scroll-edge-fade";
@@ -23,7 +24,7 @@
   let menuOpen = $state(false);
   let editing = $state(false);
   let nameDraft = $state("");
-  let iconDraft = $state("lucide:audio-lines");
+  let iconDraft = $state(NEW_LAYER_ICON);
   const solo = $derived(singleSoundPreset(soundscape.presets, definition.id));
   const playing = $derived(solo !== null && solo.id === soundscape.activePreset?.id && soundscape.snapshot.status === "playing");
 

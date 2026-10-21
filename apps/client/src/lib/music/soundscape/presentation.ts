@@ -16,3 +16,6 @@ export const GENERATED_RAIN_ICONS: Readonly<Record<MusicGeneratedNoiseKind, stri
   pink: "lucide:cloud-rain",
   white: "lucide:cloud-rain-wind",
 };
+
+/** Icon a layer added from a file starts with until the listener picks another. */
+export const NEW_LAYER_ICON = "lucide:file-music";

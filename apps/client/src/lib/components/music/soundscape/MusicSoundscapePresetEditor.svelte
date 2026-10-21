@@ -6,6 +6,7 @@
   import IconPicker from "$lib/components/icon-picker/IconPicker.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
   import Switch from "$lib/components/ui/Switch.svelte";
+  import { formatNumber } from "$lib/i18n/formatters";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import {
     DEFAULT_SOUNDSCAPE_PRESET_LEVEL,
@@ -16,6 +17,8 @@
   } from "$lib/music/soundscape/contracts";
   import { orderedGeneratedSounds, SOUNDSCAPE_CHIP_CLASS } from "$lib/music/soundscape/presentation";
   import {
+    formatPresetLevelAdjustment,
+    PRESET_LEVEL_ADJUSTMENT_RANGE,
     presetDisplayName,
     presetLevelAdjustment,
     presetLevelFromAdjustment,
@@ -49,7 +52,8 @@
     onRemove?: (preset: MusicSoundscapePreset) => void;
   } = $props();
 
-  const { t } = getLocalization();
+  const localization = getLocalization();
+  const { t } = localization;
   const soundscape = getSoundscapeStore();
   const player = getMusicPlayer();
   // Drafts start from the preset once; later store refreshes must not overwrite what the person is choosing.
@@ -65,7 +69,8 @@
   }));
   let listening = $state(true);
   const layers = $derived(orderedLayers(soundscape.definitions));
-  const rowMotion = { duration: prefersReducedMotion() ? 0 : ROW_MOTION_MS, easing: cubicOut };
+  const widestLevelLabel = $derived(formatPresetLevelAdjustment(localization.locale, PRESET_LEVEL_ADJUSTMENT_RANGE.max));
+  const rowMotion ={ duration: prefersReducedMotion() ? 0 : ROW_MOTION_MS, easing: cubicOut };
 
   onMount(() => {
     const resumesMusic = player.isPlaying;
@@ -148,19 +153,24 @@
 
     <div class="text-xs">
       <MusicSoundscapeRelativeLevel id="soundscape-preset-level" title={t("music.soundscape.levelHint")} label={t("music.soundscape.preset.level")} adjustment={presetLevelAdjustment(level)} onchange={(value) => level = presetLevelFromAdjustment(value)} />
+      <p id="soundscape-preset-layer-levels" class="mt-5 truncate">{t("music.soundscape.preset.layerLevels")}</p>
       {#if mix.length > 0}
-        <ul transition:slide={rowMotion} class="mt-3 flex flex-col" aria-label={t("music.soundscape.preset.sounds")}>
+        <ul transition:slide={rowMotion} class="mt-1 flex flex-col" aria-labelledby="soundscape-preset-layer-levels">
           {#each mix as entry (entry.definition.id)}
             {@const soundName = soundDisplayName(entry.definition, t)}
             {@const percent = Math.round(entry.level * 100)}
+            {@const percentText = formatNumber(localization.locale, percent / 100, { style: "percent" })}
             <!-- Rows carry their own spacing so a closing row takes its gap with it. -->
-            <li transition:slide={rowMotion} class="flex h-9 items-center gap-2">
-              <span class="flex w-28 shrink-0 items-center gap-1.5 text-xs"><span class="shrink-0 text-muted-foreground"><MusicSoundscapeIcon icon={entry.definition.icon} size={14} /></span><span class="min-w-0 truncate">{soundName}</span></span>
-              <MusicSoundscapeLevelSlider id={`soundscape-preset-sound-${entry.definition.id}`} label={t("music.soundscape.preset.soundLevel", soundName)} value={percent} min={0} max={100} valueText={`${percent}%`} onchange={(value) => sounds = setPresetDraftSoundLevel(sounds, entry.definition.id, value / 100)} />
-              <span class="w-11 shrink-0 text-right text-xs tabular-nums text-muted-foreground">{percent}%</span>
+            <li transition:slide={rowMotion} class="flex h-9 items-center gap-3">
+              <span class="flex w-28 shrink-0 items-center gap-1.5"><span class="shrink-0 text-muted-foreground"><MusicSoundscapeIcon icon={entry.definition.icon} size={14} /></span><span class="min-w-0 truncate">{soundName}</span></span>
+              <MusicSoundscapeLevelSlider id={`soundscape-preset-sound-${entry.definition.id}`} label={t("music.soundscape.preset.soundLevel", soundName)} value={percent} min={0} max={100} valueText={percentText} onchange={(value) => sounds = setPresetDraftSoundLevel(sounds, entry.definition.id, value / 100)} />
+              <!-- Sized by the widest overall level label so every slider ends where the overall one does. -->
+              <span class="grid shrink-0 text-right tabular-nums text-muted-foreground"><span class="invisible col-start-1 row-start-1" aria-hidden="true">{widestLevelLabel}</span><span class="col-start-1 row-start-1">{percentText}</span></span>
             </li>
           {/each}
         </ul>
+      {:else}
+        <p transition:slide={rowMotion} class="mt-2 text-muted-foreground">{t("music.soundscape.preset.chooseLayer")}</p>
       {/if}
     </div>
 

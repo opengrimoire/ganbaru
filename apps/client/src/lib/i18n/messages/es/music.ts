@@ -161,6 +161,8 @@ export const music = {
       sounds: "Capas",
       level: "Nivel del paisaje sonoro",
       soundLevel: (name: string) => `Nivel de ${name}`,
+      layerLevels: "Nivel de cada capa en el paisaje sonoro",
+      chooseLayer: "Elige al menos una capa abajo.",
       limitReached: (max: number) => `Un paisaje sonoro puede tener hasta ${max} capas.`,
       listen: "Escuchar mientras eliges",
       includes: (sounds: string) => `Incluye ${sounds}`,

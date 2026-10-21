@@ -158,6 +158,8 @@ export const music = {
       sounds: "Layers",
       level: "Soundscape level",
       soundLevel: (name: string) => `${name} level`,
+      layerLevels: "Level of each layer in the soundscape",
+      chooseLayer: "Choose at least one layer below.",
       limitReached: (max: number) => `A soundscape can hold up to ${max} layers.`,
       listen: "Listen while choosing",
       includes: (sounds: string) => `Includes ${sounds}`,

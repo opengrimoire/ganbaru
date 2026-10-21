@@ -576,6 +576,84 @@ async fn completion_requests_review_from_the_recorded_turn_diff_not_the_completi
     );
 }
 
+#[tokio::test]
+async fn late_provider_events_cannot_reopen_or_rewrite_a_settled_run() {
+    use crate::chat::tests::repository::canonical_request;
+    use ganbaru_chat::repository::events::append_canonical_event;
+    use ganbaru_chat_contracts::events::{
+        RequestOpenedEvent, TurnAbortedEvent, TurnCompletedEvent,
+    };
+    let pool = crate::chat::revocation::tests::pool_with_folder_runs().await;
+    sqlx::raw_sql(
+        "UPDATE chat_agent_runs SET state = 'cancelled', settled_at = '2026-10-20T12:01:00.000Z'
+         WHERE id = 'run:working';
+         UPDATE chat_work_assignments SET state = 'cancelled', settled_at = '2026-10-20T12:01:00.000Z'
+         WHERE id = (SELECT assignment_id FROM chat_agent_runs WHERE id = 'run:working');",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    let late_events = [
+        CanonicalEvent::RequestOpened(RequestOpenedEvent {
+            request_id: ProviderRequestId::new("request-late").unwrap(),
+            kind: CanonicalRequestKind::CommandExecution,
+            title: "Approve".to_string(),
+            detail: None,
+            allowed_decisions: Vec::new(),
+            safe_payload: VersionedJson {
+                schema_version: 1,
+                value: serde_json::json!({}),
+            },
+            subject: None,
+            session_grants: Vec::new(),
+        }),
+        CanonicalEvent::TurnCompleted(TurnCompletedEvent {
+            state: ChatTurnState::Completed,
+            stop_reason: None,
+            usage: None,
+            changed_files: Vec::new(),
+        }),
+        CanonicalEvent::TurnAborted(TurnAbortedEvent {
+            state: ChatTurnState::Failed,
+            reason: "Provider exited".to_string(),
+            recoverable: false,
+        }),
+    ];
+    for (index, event) in late_events.into_iter().enumerate() {
+        append_canonical_event(
+            &pool,
+            canonical_request(&format!("event:late-{index}"), Some("turn:working"), event),
+        )
+        .await
+        .unwrap();
+    }
+
+    let states: (String, String, String) = sqlx::query_as(
+        "SELECT assignment.state, run.state, run.settled_at
+         FROM chat_work_assignments assignment
+         JOIN chat_agent_runs run ON run.assignment_id = assignment.id
+         WHERE run.id = 'run:working'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        states,
+        (
+            "cancelled".to_string(),
+            "cancelled".to_string(),
+            "2026-10-20T12:01:00.000Z".to_string()
+        )
+    );
+    let projected: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM chat_conversation_items WHERE id LIKE 'organizational-item:%'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(projected, 0, "a settled run projects no late messages");
+}
+
 #[test]
 fn mentions_with_control_characters_are_rejected_before_send() {
     let mention = |relative_path: &str| WorkspaceMentionReference {

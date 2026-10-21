@@ -11,6 +11,4 @@
   const active = $derived(soundscape.snapshot.status === "playing" ? soundscape.activePreset : null);
 </script>
 
-<div class="px-2 pt-1.5">
-  <MusicSoundscapeRelativeLevel id={`${idPrefix}-level`} title={active ? t("music.soundscape.levelHint") : t("music.soundscape.noActivePreset")} label={t("music.soundscape.level")} adjustment={active ? presetLevelAdjustment(active.level) : 0} disabled={!active} onchange={(value) => { if (active) void soundscape.setPresetLevel(active, presetLevelFromAdjustment(value)); }} />
-</div>
+<MusicSoundscapeRelativeLevel id={`${idPrefix}-level`} title={active ? t("music.soundscape.levelHint") : t("music.soundscape.noActivePreset")} label={t("music.soundscape.level")} adjustment={active ? presetLevelAdjustment(active.level) : 0} disabled={!active} onchange={(value) => { if (active) void soundscape.setPresetLevel(active, presetLevelFromAdjustment(value)); }} />

@@ -152,7 +152,7 @@
       <input data-dialog-autofocus class="field h-9 min-w-0 flex-1 px-3 text-xs" bind:value={name} aria-label={t("music.soundscape.preset.name")} placeholder={t("music.soundscape.preset.name")} maxlength={MAX_PRESET_NAME_CHARS} onkeydown={(event) => { if (event.key === "Enter") { event.preventDefault(); void save(); } }} />
     </div>
 
-    <div>
+    <div class="text-xs">
       <MusicSoundscapeRelativeLevel id="soundscape-preset-level" title={t("music.soundscape.levelHint")} label={t("music.soundscape.preset.level")} adjustment={presetLevelAdjustment(level)} onchange={(value) => level = presetLevelFromAdjustment(value)} />
       {#if mix.length > 0}
         <ul class="mt-3 flex flex-col gap-1" aria-label={t("music.soundscape.preset.sounds")}>

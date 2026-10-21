@@ -158,7 +158,7 @@
 
 <div class="h-full min-h-0 overflow-y-auto px-4 py-4" aria-busy={soundscape.loading || soundscape.saving} data-music-scrollable="true">
   <div class="@container flex max-w-2xl flex-col gap-7">
-    <div class="flex flex-col gap-1">
+    <div class="flex flex-col gap-1 text-xs">
       <MusicSoundscapeActiveLevel idPrefix="builder-soundscape" />
       {#if soundscape.error}
         <Notice class="text-xs" message={t("music.soundscape.genericError")} />

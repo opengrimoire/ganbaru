@@ -296,13 +296,13 @@
     aria-expanded={open}
   ><SlidersHorizontal size={14} strokeWidth={1.6} /></button>
   {#if open}
-    <div bind:this={panel} use:keepInViewport role="dialog" tabindex="-1" data-music-track-preferences-open data-app-shortcuts="ignore" aria-label={t("music.preferences.title")} class="surface-floating surface-floating-body absolute bottom-[calc(100%+0.5rem)] right-0 z-40 flex w-floating flex-col gap-1">
+    <div bind:this={panel} use:keepInViewport role="dialog" tabindex="-1" data-music-track-preferences-open data-app-shortcuts="ignore" aria-label={t("music.preferences.title")} class="surface-floating absolute bottom-[calc(100%+0.5rem)] right-0 z-40 flex w-floating flex-col gap-4 p-4">
       {#if loading}
         <Loading layout="fill" label={t("music.itemMenu.loading")} class="h-24" />
       {:else}
-        {#if error}<Notice class="px-2 text-panel-detail" message={error} />{/if}
-        <div class="flex items-center justify-between gap-2">
-          <span class="menu-label shrink-0">{t("music.preferences.applyTo")}</span>
+        {#if error}<Notice message={error} />{/if}
+        <div class="-mr-1.5 flex items-center justify-between gap-3">
+          <span class="shrink-0">{t("music.preferences.applyTo")}</span>
           <Select
             value={scopePlaylistId ?? ""}
             options={scopeOptions}
@@ -316,17 +316,17 @@
             class="w-44"
           />
         </div>
-        <div class="flex flex-col gap-1">
-          <div class="menu-label flex items-center justify-between gap-2">
+        <div class="flex flex-col gap-2">
+          <div class="flex items-center justify-between gap-2">
             <div bind:this={frequencyHeader} class="relative flex min-w-0 items-center gap-1.5">
               <span>{t("music.preferences.likelihood")}</span>
               {#if player.playbackMode !== "mix"}
                 <button type="button" data-music-frequency-warning-trigger class="group grid h-5 w-5 shrink-0 place-items-center rounded-full focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-ring" aria-label={frequencyInactiveText} onpointerenter={(event) => { void showFrequencyTooltip(event.currentTarget); }} onpointerleave={hideFrequencyTooltip} onfocus={(event) => { void showFrequencyTooltip(event.currentTarget); }} onblur={hideFrequencyTooltip}><span class="grid h-3.5 w-3.5 place-items-center rounded-full border border-muted-foreground/50 text-[0.55rem] leading-none font-bold text-muted-foreground group-hover:bg-secondary group-hover:text-foreground" aria-hidden="true">!</span></button>
               {/if}
             </div>
-            {#if targetMemberships.length > 0}<span class="font-normal">{currentWeight ? t(`music.builder.weight.${currentWeight}`) : t("music.preferences.mixed")}</span>{/if}
+            {#if targetMemberships.length > 0}<span class="text-muted-foreground">{currentWeight ? t(`music.builder.weight.${currentWeight}`) : t("music.preferences.mixed")}</span>{/if}
           </div>
-          <div class="grid grid-cols-5 gap-1" role="group" aria-label={t("music.preferences.likelihood")}>
+          <div class="flex items-center justify-between gap-1" role="group" aria-label={t("music.preferences.likelihood")}>
             {#each MUSIC_WEIGHT_ORDER as weight, index (weight)}
               {@const Die = diceIcons[index]}
               <button
@@ -338,17 +338,17 @@
                 aria-label={weightLabel(weight)}
                 data-app-tooltip={weightLabel(weight)}
                 aria-pressed={currentWeight === weight}
-                class={["choice disabled:cursor-not-allowed disabled:opacity-35", currentWeight === weight ? "bg-primary/10 text-primary" : "text-muted-foreground hover:bg-accent/70 hover:text-foreground"]}
-              ><Die size={18} strokeWidth={1.6} /></button>
+                class={["choice size-10 disabled:cursor-not-allowed disabled:opacity-35", currentWeight === weight ? "bg-primary/10 text-primary" : "text-muted-foreground hover:bg-accent hover:text-foreground"]}
+              ><Die size={22} strokeWidth={1.6} /></button>
             {/each}
           </div>
         </div>
 
-        <div class="flex flex-col gap-1">
-          <span class="menu-label">{t("music.preferences.snooze")}</span>
-          <div class="grid grid-cols-3 gap-1">
+        <div class="flex flex-col gap-2">
+          <span>{t("music.preferences.snooze")}</span>
+          <div class="grid grid-cols-3 gap-1.5">
             {#each snoozePresets as duration (duration)}
-              <button type="button" onclick={() => { void snooze(duration); }} aria-disabled={busy} aria-pressed={selectedSnooze === duration} class={["snooze-choice choice px-1", selectedSnooze === duration ? "bg-primary/10" : "hover:bg-accent/70"]}>{t(`music.preferences.${duration}`)}</button>
+              <button type="button" onclick={() => { void snooze(duration); }} aria-disabled={busy} aria-pressed={selectedSnooze === duration} class={["snooze-choice choice h-9 px-1", selectedSnooze === duration ? "bg-primary/15" : "bg-accent/45 hover:bg-accent"]}>{t(`music.preferences.${duration}`)}</button>
             {/each}
           </div>
         </div>
@@ -375,5 +375,5 @@
 {/if}
 
 <style>
-  .choice { display: inline-flex; min-height: var(--panel-row-height); align-items: center; justify-content: center; border-radius: var(--floating-item-radius); transition: background-color 150ms, color 150ms; }
+  .choice { display: inline-flex; align-items: center; justify-content: center; border-radius: var(--floating-item-radius); transition: background-color 150ms, color 150ms; }
 </style>

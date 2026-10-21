@@ -1,6 +1,7 @@
 <script lang="ts">
   import Ellipsis from "@lucide/svelte/icons/ellipsis";
   import type { Snippet } from "svelte";
+  import { getLocalization } from "$lib/i18n/translator.svelte";
   import { anchoredPopover } from "$lib/utils/anchored-popover";
   import { portal } from "$lib/utils/portal";
   import MusicSoundscapeIcon from "./MusicSoundscapeIcon.svelte";
@@ -19,7 +20,6 @@
     tooltip,
     disabled = false,
     onclick,
-    menuLabel,
     menu,
   }: {
     icon: string;
@@ -35,11 +35,12 @@
     tooltip?: string;
     disabled?: boolean;
     onclick: () => void;
-    menuLabel?: string;
     /** Menu items; each receives `close` to call before acting. */
     menu?: Snippet<[close: () => void]>;
   } = $props();
 
+  const { t } = getLocalization();
+  const menuLabel = $derived(t("music.builder.moreActions"));
   let menuButton = $state<HTMLButtonElement | null>(null);
   let menuOpen = $state(false);
 
@@ -62,12 +63,12 @@
 </script>
 
 <div class={["inline-flex h-8 min-w-0 max-w-full items-center rounded-floating-item transition-colors hover:bg-accent/70", active && "bg-primary/10", muted && "text-muted-foreground"]}>
-  <button type="button" aria-pressed={active} aria-label={ariaLabel} {title} data-app-tooltip={tooltip} {disabled} class={["inline-flex h-full min-w-0 items-center gap-2 pl-2 disabled:opacity-50", menu ? "pr-1" : "pr-2"]} {onclick}>
+  <button type="button" aria-pressed={active} aria-label={ariaLabel} {title} data-app-tooltip={tooltip} {disabled} class={["inline-flex h-full min-w-0 items-center gap-2 pl-2 disabled:opacity-50", !menu && "pr-2"]} {onclick}>
     <span class="shrink-0"><MusicSoundscapeIcon {icon} size={14} /></span>
     <span class="truncate">{label}</span>
   </button>
   {#if menu}
-    <button bind:this={menuButton} type="button" aria-label={menuLabel} aria-haspopup="menu" aria-expanded={menuOpen} class="grid h-full w-6 shrink-0 place-items-center text-muted-foreground hover:text-foreground" onclick={() => menuOpen = !menuOpen}><Ellipsis size={14} /></button>
+    <button bind:this={menuButton} type="button" aria-label={menuLabel} aria-haspopup="menu" aria-expanded={menuOpen} class="grid h-full shrink-0 place-items-center px-2 text-muted-foreground hover:text-foreground" onclick={() => menuOpen = !menuOpen}><Ellipsis size={14} /></button>
   {/if}
 </div>
 {#if menu && menuOpen}

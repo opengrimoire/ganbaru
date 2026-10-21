@@ -28,7 +28,7 @@
   }
 </script>
 
-<MusicSoundscapeChip icon={preset.icon} label={name} active={playing} ariaLabel={playing ? t("music.soundscape.pause") : t("music.soundscape.playPreset", name)} title={playable ? undefined : t("music.soundscape.needsRepair")} tooltip={playing ? t("music.soundscape.pauseHint") : undefined} disabled={!playable || soundscape.saving} onclick={choose} menuLabel={t("music.soundscape.preset.actions", name)}>
+<MusicSoundscapeChip icon={preset.icon} label={name} active={playing} ariaLabel={playing ? t("music.soundscape.pause") : t("music.soundscape.playPreset", name)} title={playable ? undefined : t("music.soundscape.needsRepair")} tooltip={playing ? t("music.soundscape.pauseHint") : undefined} disabled={!playable || soundscape.saving} onclick={choose}>
   {#snippet menu(close)}
     <button type="button" role="menuitem" class="menu-item" onclick={() => { close(); onEdit(preset); }}>{t("music.soundscape.preset.editTitle")}</button>
     <div class="menu-separator" role="separator"></div>

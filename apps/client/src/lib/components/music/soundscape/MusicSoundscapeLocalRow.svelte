@@ -93,7 +93,6 @@
     tooltip={playing ? t("music.soundscape.stopHint") : undefined}
     disabled={soundscape.saving}
     onclick={choose}
-    menuLabel={t("music.soundscape.soundActions", definition.name)}
   >
     {#snippet menu(close)}
       <button type="button" role="menuitem" class="menu-item" onclick={() => { close(); startEditing(); }}>{t("music.soundscape.editSound")}</button>

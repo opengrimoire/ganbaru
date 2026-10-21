@@ -20,8 +20,8 @@
   import Rows3 from "@lucide/svelte/icons/rows-3";
   import Search from "@lucide/svelte/icons/search";
   import Space from "@lucide/svelte/icons/space";
-  import Trash2 from "@lucide/svelte/icons/trash-2";
-  import WrapText from "@lucide/svelte/icons/wrap-text";
+  import Trash2 from "@lucide/svelte/icons/trash";
+  import WrapText from "@lucide/svelte/icons/text-wrap";
   import * as chatApi from "$lib/api/chat";
   import type {
     ChatChangedFileRead,

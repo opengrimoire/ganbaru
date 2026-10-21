@@ -11,7 +11,7 @@
   import Save from "@lucide/svelte/icons/save";
   import Search from "@lucide/svelte/icons/search";
   import MessageSquarePlus from "@lucide/svelte/icons/message-square-plus";
-  import TextSelect from "@lucide/svelte/icons/text-select";
+  import TextSelect from "@lucide/svelte/icons/square-dashed-text";
   import * as chatApi from "$lib/api/chat";
   import type {
     ChatWorkspaceChangeBatch,

@@ -28,7 +28,7 @@
   import { formatNumber } from "$lib/i18n/formatters";
   import { onMount } from "svelte";
   import { getWorkspacePaneFocus } from "$lib/workspace-tabs/pane-focus";
-  import Music from "@lucide/svelte/icons/music";
+  import Music from "@lucide/svelte/icons/eighth-notes";
   import Repeat from "@lucide/svelte/icons/repeat";
   import Video from "@lucide/svelte/icons/video";
   import MapPin from "@lucide/svelte/icons/map-pin";

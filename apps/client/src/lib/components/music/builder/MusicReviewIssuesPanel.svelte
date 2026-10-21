@@ -5,7 +5,7 @@
   import RefreshCw from "@lucide/svelte/icons/refresh-cw";
   import Info from "@lucide/svelte/icons/info";
   import TriangleAlert from "@lucide/svelte/icons/triangle-alert";
-  import Youtube from "@lucide/svelte/icons/youtube";
+  import SquarePlay from "@lucide/svelte/icons/square-play";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { groupMusicIssues, type MusicIssueGroup } from "$lib/music/library/issue-presentation";
   import type { MusicIssue, MusicItemListEntry, MusicSourceSummary } from "$lib/music/library/contracts";
@@ -109,7 +109,7 @@
       <div class="space-y-0.5">
         {#each [...groups.entries()] as [group, entries] (group)}
           <button type="button" onclick={() => onSelectGroup(group)} class="flex min-h-10 w-full items-center gap-2 rounded-lg px-2 text-left hover:bg-accent/55">
-            <span class="grid h-7 w-7 shrink-0 place-items-center text-muted-foreground">{#if group === "youtube-unavailable" || group === "embedding-blocked"}<Youtube size={14} />{:else if group === "refresh-incomplete"}<RefreshCw size={13} />{:else}<FolderSearch size={14} />{/if}</span>
+            <span class="grid h-7 w-7 shrink-0 place-items-center text-muted-foreground">{#if group === "youtube-unavailable" || group === "embedding-blocked"}<SquarePlay size={14} />{:else if group === "refresh-incomplete"}<RefreshCw size={13} />{:else}<FolderSearch size={14} />{/if}</span>
             <span class="min-w-0 flex-1 truncate text-[0.68rem] font-medium">{groupLabel(group)}</span>
             <span class="text-[0.6rem] tabular-nums text-muted-foreground">{entries.length}</span>
             <ChevronRight size={12} class="shrink-0 text-muted-foreground" />

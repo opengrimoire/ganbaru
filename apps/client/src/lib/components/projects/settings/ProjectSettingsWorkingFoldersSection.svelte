@@ -9,7 +9,7 @@
   import ShieldCheck from "@lucide/svelte/icons/shield-check";
   import ShieldOff from "@lucide/svelte/icons/shield-off";
   import Star from "@lucide/svelte/icons/star";
-  import Trash2 from "@lucide/svelte/icons/trash-2";
+  import Trash2 from "@lucide/svelte/icons/trash";
   import Unplug from "@lucide/svelte/icons/unplug";
   import WandSparkles from "@lucide/svelte/icons/wand-sparkles";
   import Notice from "$lib/components/ui/Notice.svelte";

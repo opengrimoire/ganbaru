@@ -10,7 +10,7 @@
   import PinOff from "@lucide/svelte/icons/pin-off";
   import Redo2 from "@lucide/svelte/icons/redo-2";
   import RotateCcw from "@lucide/svelte/icons/rotate-ccw";
-  import Trash2 from "@lucide/svelte/icons/trash-2";
+  import Trash2 from "@lucide/svelte/icons/trash";
   import Undo2 from "@lucide/svelte/icons/undo-2";
   import {
     createQuickNote,

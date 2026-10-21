@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onDestroy, tick } from "svelte";
-  import AlertCircle from "@lucide/svelte/icons/alert-circle";
+  import AlertCircle from "@lucide/svelte/icons/circle-alert";
   import FolderSearch from "@lucide/svelte/icons/folder-search";
   import ListMusic from "@lucide/svelte/icons/list-music";
   import MonitorPlay from "@lucide/svelte/icons/monitor-play";

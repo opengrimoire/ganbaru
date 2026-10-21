@@ -9,7 +9,7 @@
   import { getPreferences } from "$lib/stores/preferences.svelte";
   import { isThemeCalendarDark, type Theme } from "$lib/themes";
   import { getEventIndicatorState } from "./event-indicators";
-  import Music from "@lucide/svelte/icons/music";
+  import Music from "@lucide/svelte/icons/eighth-notes";
   import Repeat from "@lucide/svelte/icons/repeat";
   import Video from "@lucide/svelte/icons/video";
   import MapPin from "@lucide/svelte/icons/map-pin";

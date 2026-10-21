@@ -2,7 +2,7 @@
   import { onMount } from "svelte";
   import { slide } from "svelte/transition";
   import { cubicOut } from "svelte/easing";
-  import Music from "@lucide/svelte/icons/music";
+  import Music from "@lucide/svelte/icons/eighth-notes";
   import MusicPlaylistSelect from "$lib/components/music/MusicPlaylistSelect.svelte";
   import MusicSoundSelect from "$lib/components/music/soundscape/MusicSoundSelect.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";

@@ -3,7 +3,7 @@
   import Copy from "@lucide/svelte/icons/copy";
   import Pencil from "@lucide/svelte/icons/pencil";
   import Eye from "@lucide/svelte/icons/eye";
-  import Trash2 from "@lucide/svelte/icons/trash-2";
+  import Trash2 from "@lucide/svelte/icons/trash";
   import Download from "@lucide/svelte/icons/download";
   import LoaderCircle from "@lucide/svelte/icons/loader-circle";
   import Sun from "@lucide/svelte/icons/sun";

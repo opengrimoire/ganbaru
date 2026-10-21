@@ -14,7 +14,7 @@
   import Pill from "@lucide/svelte/icons/pill";
   import Repeat from "@lucide/svelte/icons/repeat";
   import ShoppingCart from "@lucide/svelte/icons/shopping-cart";
-  import Smile from "@lucide/svelte/icons/smile";
+  import Smile from "@lucide/svelte/icons/face-slightly-smiling";
   import { projectIconAssetUrl } from "$lib/api/project-icons";
   import { getEventColor } from "$lib/calendar/utils";
   import {

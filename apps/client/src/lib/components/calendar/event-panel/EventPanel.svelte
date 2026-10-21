@@ -56,13 +56,13 @@
   import type { MusicContextAssignmentDraft } from "$lib/music/context-assignment";
   import type { MusicPlaylistSummary } from "$lib/music/library/contracts";
 
-  import Trash2 from "@lucide/svelte/icons/trash-2";
+  import Trash2 from "@lucide/svelte/icons/trash";
   import Archive from "@lucide/svelte/icons/archive";
   import Scissors from "@lucide/svelte/icons/scissors";
   import Calendar1 from "@lucide/svelte/icons/calendar-1";
   import Clock4 from "@lucide/svelte/icons/clock-4";
   import Ban from "@lucide/svelte/icons/ban";
-  import Smile from "@lucide/svelte/icons/smile";
+  import Smile from "@lucide/svelte/icons/face-slightly-smiling";
   import Eye from "@lucide/svelte/icons/eye";
   import Lock from "@lucide/svelte/icons/lock";
   import X from "@lucide/svelte/icons/x";

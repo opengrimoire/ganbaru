@@ -16,7 +16,7 @@
   import Settings2 from "@lucide/svelte/icons/settings-2";
   import Sigma from "@lucide/svelte/icons/sigma";
   import TextWrap from "@lucide/svelte/icons/text-wrap";
-  import Trash2 from "@lucide/svelte/icons/trash-2";
+  import Trash2 from "@lucide/svelte/icons/trash";
   import CollectionMenu from "$lib/components/collections/CollectionMenu.svelte";
   import CollectionMenuItem from "$lib/components/collections/CollectionMenuItem.svelte";
   import CollectionMenuSelect from "$lib/components/collections/CollectionMenuSelect.svelte";

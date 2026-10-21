@@ -2,7 +2,7 @@
   import { onMount } from "svelte";
   import Upload from "@lucide/svelte/icons/upload";
   import Download from "@lucide/svelte/icons/download";
-  import Trash2 from "@lucide/svelte/icons/trash-2";
+  import Trash2 from "@lucide/svelte/icons/trash";
   import LoaderCircle from "@lucide/svelte/icons/loader-circle";
   import { invoke } from "@tauri-apps/api/core";
   import { getCalendars } from "$lib/stores/calendars.svelte";

@@ -10,7 +10,7 @@
   import Mail from "@lucide/svelte/icons/mail";
   import Paperclip from "@lucide/svelte/icons/paperclip";
   import Phone from "@lucide/svelte/icons/phone";
-  import Trash2 from "@lucide/svelte/icons/trash-2";
+  import Trash2 from "@lucide/svelte/icons/trash";
   import UserRound from "@lucide/svelte/icons/user-round";
   import X from "@lucide/svelte/icons/x";
   import Checkbox from "$lib/components/ui/Checkbox.svelte";

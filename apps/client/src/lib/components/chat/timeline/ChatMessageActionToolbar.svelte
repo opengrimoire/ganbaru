@@ -2,7 +2,7 @@
   import Check from "@lucide/svelte/icons/check";
   import Copy from "@lucide/svelte/icons/copy";
   import EllipsisVertical from "@lucide/svelte/icons/ellipsis-vertical";
-  import SmilePlus from "@lucide/svelte/icons/smile-plus";
+  import SmilePlus from "@lucide/svelte/icons/face-slightly-smiling-plus";
   import { onDestroy } from "svelte";
   import type IconPicker from "$lib/components/icon-picker/IconPicker.svelte";
   import type { ChatMessageActionTarget } from "$lib/chat/timeline/message-action-target";

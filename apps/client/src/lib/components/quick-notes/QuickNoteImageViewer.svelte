@@ -7,7 +7,7 @@
   import Download from "@lucide/svelte/icons/download";
   import ImageOff from "@lucide/svelte/icons/image-off";
   import LoaderCircle from "@lucide/svelte/icons/loader-circle";
-  import Trash2 from "@lucide/svelte/icons/trash-2";
+  import Trash2 from "@lucide/svelte/icons/trash";
   import X from "@lucide/svelte/icons/x";
   import ZoomIn from "@lucide/svelte/icons/zoom-in";
   import ZoomOut from "@lucide/svelte/icons/zoom-out";

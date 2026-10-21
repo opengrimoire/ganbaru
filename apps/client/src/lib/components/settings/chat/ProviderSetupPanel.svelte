@@ -6,7 +6,7 @@
   import FolderOpen from "@lucide/svelte/icons/folder-open";
   import Plus from "@lucide/svelte/icons/plus";
   import Save from "@lucide/svelte/icons/save";
-  import Trash2 from "@lucide/svelte/icons/trash-2";
+  import Trash2 from "@lucide/svelte/icons/trash";
   import * as chatApi from "$lib/api/chat";
   import type { JsonValue, ProviderInstanceConfig, ProviderSetupTestRead } from "$lib/chat/contracts";
   import { chatErrorMessage } from "$lib/chat/error-presentation";

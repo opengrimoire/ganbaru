@@ -5,7 +5,7 @@
   import RefreshCw from "@lucide/svelte/icons/refresh-cw";
   import Search from "@lucide/svelte/icons/search";
   import Star from "@lucide/svelte/icons/star";
-  import Trash2 from "@lucide/svelte/icons/trash-2";
+  import Trash2 from "@lucide/svelte/icons/trash";
   import type {
     JsonValue,
     ProviderFamilyMetadataRead,

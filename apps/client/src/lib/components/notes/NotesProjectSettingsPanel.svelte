@@ -1,9 +1,9 @@
 <script lang="ts">
   import { onDestroy } from "svelte";
   import Archive from "@lucide/svelte/icons/archive";
-  import History from "@lucide/svelte/icons/history";
+  import History from "@lucide/svelte/icons/rotate-ccw-clock";
   import TriangleAlert from "@lucide/svelte/icons/triangle-alert";
-  import Trash2 from "@lucide/svelte/icons/trash-2";
+  import Trash2 from "@lucide/svelte/icons/trash";
   import {
     getNotesHistoryRetentionImpact,
     pruneNotesProjectHistory,

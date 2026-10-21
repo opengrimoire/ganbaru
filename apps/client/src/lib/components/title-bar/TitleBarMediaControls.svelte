@@ -1,5 +1,5 @@
 <script lang="ts">
-  import Music from "@lucide/svelte/icons/music";
+  import Music from "@lucide/svelte/icons/eighth-notes";
   import StickyNote from "@lucide/svelte/icons/sticky-note";
   import PomodoroMenuContent from "$lib/components/pomodoro/PomodoroMenuContent.svelte";
   import PomodoroProgressRing from "$lib/components/pomodoro/PomodoroProgressRing.svelte";

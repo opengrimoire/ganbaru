@@ -184,7 +184,6 @@
           <div use:scrollEdgeFadeAction class="surface-floating-body min-h-0 overflow-y-auto">
             <PomodoroMenuSurface
               includeMusic={musicVisible}
-              touch
               onDismiss={onClosePomodoro}
               onOpenMusic={onOpenMusic}
             />

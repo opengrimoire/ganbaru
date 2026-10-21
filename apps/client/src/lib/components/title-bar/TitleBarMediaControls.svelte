@@ -170,7 +170,8 @@
         aria-haspopup="dialog"
         aria-expanded={musicPanelOpen}
       >
-        <Music size={TITLE_BAR_ICON_SIZE} strokeWidth={TITLE_BAR_ICON_STROKE_WIDTH} />      </button>
+        <Music size={TITLE_BAR_ICON_SIZE} strokeWidth={TITLE_BAR_ICON_STROKE_WIDTH} />
+      </button>
     {/if}
 
 <style>

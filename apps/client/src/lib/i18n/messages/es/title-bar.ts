@@ -72,8 +72,6 @@ export const titleBar = {
     volume: "Volumen",
     volumeLabel: "Volumen",
     volumeTooltip: (volume: string) => `Volumen: ${volume}`,
-    contextual: (phase: string, event: string) => `Banda sonora de ${phase.toLocaleLowerCase()} para ${event}`,
-    inspectAssignment: "Inspeccionar asignación de banda sonora",
     status: {
       playing: "Reproduciendo",
       paused: "Pausado",

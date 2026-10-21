@@ -524,7 +524,7 @@ async fn resolve_turn_target(
     }
 }
 
-async fn validate_organizational_authority(
+pub(super) async fn validate_organizational_authority(
     pool: &SqlitePool,
     binding: &AgentRunBinding,
     support: ProviderAuthoritySupport,

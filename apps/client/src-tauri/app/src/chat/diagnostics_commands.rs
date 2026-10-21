@@ -220,11 +220,20 @@ pub fn attach_opt_in_diagnostic<R: tauri::Runtime>(
     let preferences = read_active_device_scope(app)
         .map_err(device_state_error)?
         .diagnostics;
+    attach_diagnostic_with_preferences(&preferences, event)
+}
+
+/// Replaces any diagnostic on `event` with a redacted one when capture is enabled, and clears it
+/// otherwise, so nothing a provider adapter attached survives without the device's opt-in.
+fn attach_diagnostic_with_preferences(
+    preferences: &ChatDiagnosticPreferences,
+    event: &mut ganbaru_chat_contracts::events::CanonicalRuntimeEvent,
+) -> ChatResult<Option<ganbaru_chat_contracts::models::UtcTimestamp>> {
     if !preferences.capture_enabled {
         event.redacted_diagnostic = None;
         return Ok(None);
     }
-    validate_preferences(&preferences)?;
+    validate_preferences(preferences)?;
     let event_type = serde_json::to_value(&event.event)
         .ok()
         .and_then(|value| {
@@ -583,6 +592,54 @@ mod tests {
     use super::*;
 
     const SENTINEL_SECRET: &str = "ganbaru-chat-secret-sentinel-diagnostics-93c7";
+
+    #[test]
+    fn provider_diagnostics_are_kept_only_with_the_device_opt_in() {
+        use ganbaru_chat_contracts::events::{CanonicalEvent, TurnAbortedEvent};
+        let mut event = crate::chat::tests::repository::canonical_request(
+            "event:diagnostic",
+            Some("turn-1"),
+            CanonicalEvent::TurnAborted(TurnAbortedEvent {
+                state: ganbaru_chat_contracts::models::ChatTurnState::Failed,
+                reason: "stopped".to_string(),
+                recoverable: false,
+            }),
+        )
+        .runtime;
+        event.provider_reference = Some(VersionedJson {
+            schema_version: 1,
+            value: json!({ "method": "turn/started", "payload": SENTINEL_SECRET }),
+        });
+        let provider_attached = VersionedJson {
+            schema_version: 1,
+            value: json!({ "raw": SENTINEL_SECRET }),
+        };
+
+        event.redacted_diagnostic = Some(provider_attached.clone());
+        let disabled = ChatDiagnosticPreferences {
+            capture_enabled: false,
+            retention_days: 7,
+        };
+        assert_eq!(
+            attach_diagnostic_with_preferences(&disabled, &mut event).unwrap(),
+            None
+        );
+        assert_eq!(event.redacted_diagnostic, None);
+
+        event.redacted_diagnostic = Some(provider_attached);
+        let enabled = ChatDiagnosticPreferences {
+            capture_enabled: true,
+            retention_days: 7,
+        };
+        assert!(
+            attach_diagnostic_with_preferences(&enabled, &mut event)
+                .unwrap()
+                .is_some()
+        );
+        let diagnostic = serde_json::to_string(&event.redacted_diagnostic).unwrap();
+        assert!(diagnostic.contains("turn/started"));
+        assert!(!diagnostic.contains(SENTINEL_SECRET));
+    }
 
     #[test]
     fn maintenance_confirmations_and_retention_are_exact() {

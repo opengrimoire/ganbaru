@@ -654,6 +654,102 @@ async fn late_provider_events_cannot_reopen_or_rewrite_a_settled_run() {
     assert_eq!(projected, 0, "a settled run projects no late messages");
 }
 
+async fn working_run_binding(pool: &sqlx::SqlitePool) -> ganbaru_chat::agent_runs::AgentRunBinding {
+    let execution_environment_id: String = sqlx::query_scalar(
+        "SELECT execution_environment_id FROM chat_agent_runs WHERE id = 'run:working'",
+    )
+    .fetch_one(pool)
+    .await
+    .unwrap();
+    ganbaru_chat::agent_runs::AgentRunBinding {
+        run_id: ChatAgentRunId::new("run:working").unwrap(),
+        assignment_id: ChatWorkAssignmentId::new("assignment:folders").unwrap(),
+        project_id: "project-chat".to_string(),
+        teammate_policy_revision_id: ChatTeammatePolicyRevisionId::new("policy:folders").unwrap(),
+        authorization_revision_id: ChatAuthorizationRevisionId::new("authorization:working")
+            .unwrap(),
+        authorization_scope_digest: format!("{:064}", 0),
+        working_folder_id: Some("workspace-1".to_string()),
+        scratch_generation_id: None,
+        execution_environment_id: Some(execution_environment_id),
+        run_ordinal: 1,
+    }
+}
+
+#[tokio::test]
+async fn organizational_sends_require_the_exact_authorized_target_mode_and_enforcement() {
+    use super::coordinator::validate_organizational_authority;
+    let pool = crate::chat::revocation::tests::pool_with_folder_runs().await;
+    let binding = working_run_binding(&pool).await;
+    let full_support = ProviderAuthoritySupport {
+        isolated_conversation: true,
+        internal_host_tools: true,
+        deny_shell: true,
+        read_only_root: true,
+        writable_root: true,
+        confined_commands: true,
+        network_boundary: true,
+        classified_publish: true,
+    };
+    validate_organizational_authority(&pool, &binding, full_support, SafetyMode::AskForApproval)
+        .await
+        .expect("the authorized target, mode, and enforcement are accepted");
+
+    let other_folder = ganbaru_chat::agent_runs::AgentRunBinding {
+        working_folder_id: Some("workspace-2".to_string()),
+        ..binding.clone()
+    };
+    let other_digest = ganbaru_chat::agent_runs::AgentRunBinding {
+        authorization_scope_digest: format!("{:064}", 1),
+        ..binding.clone()
+    };
+    let rejected = [
+        (&binding, full_support, SafetyMode::FullAccess),
+        (&other_folder, full_support, SafetyMode::AskForApproval),
+        (&other_digest, full_support, SafetyMode::AskForApproval),
+        (
+            &binding,
+            ProviderAuthoritySupport {
+                confined_commands: false,
+                ..full_support
+            },
+            SafetyMode::AskForApproval,
+        ),
+        (
+            &binding,
+            ProviderAuthoritySupport {
+                internal_host_tools: false,
+                ..full_support
+            },
+            SafetyMode::AskForApproval,
+        ),
+    ];
+    for (candidate, support, mode) in rejected {
+        let error = validate_organizational_authority(&pool, candidate, support, mode)
+            .await
+            .expect_err("a send outside the authorization is refused");
+        assert_eq!(error.code, ChatErrorCode::Permission, "{}", error.message);
+    }
+
+    sqlx::query(
+        "UPDATE chat_assignment_authorization_revisions
+         SET decision_state = 'revoked', revoked_at = '2026-10-20T12:01:00.000Z'
+         WHERE id = 'authorization:working'",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    let error = validate_organizational_authority(
+        &pool,
+        &binding,
+        full_support,
+        SafetyMode::AskForApproval,
+    )
+    .await
+    .expect_err("a revoked authorization cannot start a send");
+    assert_eq!(error.code, ChatErrorCode::Permission);
+}
+
 #[test]
 fn mentions_with_control_characters_are_rejected_before_send() {
     let mention = |relative_path: &str| WorkspaceMentionReference {

@@ -5,7 +5,7 @@ Desktop and Android enforce selected applications through different operating-sy
 ## Shared safety rules
 
 - Only explicitly selected applications can be targets.
-- Selection records stable platform identity plus a user-facing label.
+- Selection records a platform identity plus a user-facing label: the package name on Android, and on desktop the application name, whose process names come from the installed application catalog at enforcement time rather than from the vault.
 - Protected applications are rejected at selection and enforcement time.
 - Stale, disabled, removed, mismatched, or unauthorized rules perform no destructive action.
 - Enforcement is rate-limited and explains how to change the responsible setting.
@@ -23,7 +23,7 @@ Residual risk: an edited vault configuration can still add a visible rule whose 
 
 Process or foreground checks run only while a relevant phase rule is active. Process observation, open-app counting, and close revalidation consider only processes whose real user ID is the signed-in user's; other accounts' processes on a shared machine are never counted or closed. Ending the phase stops checks immediately, and late observations are ignored.
 
-On platforms with a safe close adapter, enforcement binds the exact observation to the exact persisted rule. Immediately before a graceful close and before any stronger fallback, the backend revalidates process identity, start identity, active vault, fresh phase or limit state, target rule, and protected-app policy.
+Linux is the only desktop with a close adapter today; other desktops refuse close requests. On Linux, enforcement binds the exact observation (process ID, start time, executable, and names) to the exact persisted rule in the active vault. Immediately before a graceful close and before any stronger fallback, the backend revalidates process identity, start identity, active vault, fresh phase or limit state, target rule, and protected-app policy.
 
 A PID alone never authorizes termination because it can be reused. A process-name match alone is also insufficient. On Linux the protected check covers every observed name, the kernel-reported executable basename (which a process cannot rename), and 15-byte truncated `comm` names that prefix a protected name. On Linux the backend opens a pidfd for the PID before the first identity check and sends every signal through it, so a process that exits and has its PID reused after the check never receives the signal; kernels without `pidfd_open` signal the PID directly right after the same check.
 

@@ -6,13 +6,14 @@
   import Notice from "$lib/components/ui/Notice.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import type { MusicSoundscapeDefinition, MusicSoundscapePreset } from "$lib/music/soundscape/contracts";
-  import { NEW_LAYER_ICON, orderedGeneratedSounds } from "$lib/music/soundscape/presentation";
+  import { NEW_LAYER_ICON, orderedGeneratedSounds, SOUNDSCAPE_CHIP_CLASS } from "$lib/music/soundscape/presentation";
   import { presetDisplayName, singleSoundPreset, soundDisplayName } from "$lib/music/soundscape/presets";
   import type { SoundscapeFilter } from "$lib/music/builder/view-state";
   import { getSoundscapeStore } from "$lib/stores/soundscape.svelte";
   import { portal } from "$lib/utils/portal";
   import ConfirmDialog from "$lib/components/ui/ConfirmDialog.svelte";
   import MusicSoundscapeActiveLevel from "./MusicSoundscapeActiveLevel.svelte";
+  import MusicSoundscapeChip from "./MusicSoundscapeChip.svelte";
   import MusicSoundscapeIcon from "./MusicSoundscapeIcon.svelte";
   import MusicSoundscapeLocalRow from "./MusicSoundscapeLocalRow.svelte";
   import MusicSoundscapePresetEditor from "./MusicSoundscapePresetEditor.svelte";
@@ -131,14 +132,11 @@
         <div class="mb-2 flex h-8 items-center gap-2">
           <h2 id="soundscape-presets" class="min-w-0 flex-1 truncate text-xs font-semibold">{t("music.soundscape.choice.presets")}</h2>
         </div>
-        <div class="grid grid-cols-2 gap-2 @sm:grid-cols-3">
+        <div class="flex flex-wrap gap-1.5 text-xs">
           {#each soundscape.presets as preset (preset.id)}
             <MusicSoundscapePresetTile {preset} {onPlaybackStart} onEdit={(entry) => presetEditor = { preset: entry }} onRemove={(entry) => pendingPresetDelete = entry} />
           {/each}
-          <button type="button" disabled={!soundscape.persisted || soundscape.saving} class="flex min-h-28 min-w-0 flex-col items-center justify-center gap-2 rounded-xl px-3 text-center text-muted-foreground hover:bg-secondary/40 hover:text-foreground disabled:opacity-40" onclick={() => presetEditor = { preset: null }}>
-            <Plus size={22} strokeWidth={1.5} />
-            <span class="max-w-full truncate text-xs font-medium">{t("music.soundscape.preset.new")}</span>
-          </button>
+          <button type="button" disabled={!soundscape.persisted || soundscape.saving} class={[SOUNDSCAPE_CHIP_CLASS, "text-muted-foreground hover:text-foreground"]} onclick={() => presetEditor = { preset: null }}><Plus size={14} class="shrink-0" /><span class="truncate">{t("music.soundscape.preset.new")}</span></button>
         </div>
       </section>
     {/if}
@@ -157,23 +155,17 @@
             <div class="mt-2 flex justify-end gap-2"><button type="button" class="h-8 rounded-lg px-3 text-xs hover:bg-accent" onclick={() => pendingLayerPath = null}>{t("common.cancel")}</button><button type="submit" disabled={!soundNameDraft.trim() || soundscape.saving} class="h-8 rounded-lg bg-primary px-3 text-xs text-primary-foreground disabled:opacity-40">{t("music.soundscape.addLoop")}</button></div>
           </form>
         {/if}
-        <div class="grid grid-cols-2 gap-2 @sm:grid-cols-3">
+        <div class="flex flex-wrap gap-1.5 text-xs">
           {#each generated as definition (definition.id)}
             {@const playing = soundPlaying(definition)}
             {@const name = soundDisplayName(definition, t)}
-            <button type="button" aria-pressed={playing} aria-label={playing ? t("music.soundscape.pause") : t("music.soundscape.play", name)} title={singleSoundPreset(soundscape.presets, definition.id) ? undefined : t("music.soundscape.makePreset")} disabled={soundscape.saving} class={playing ? "flex min-h-28 min-w-0 flex-col items-center justify-center gap-2 rounded-xl bg-primary/10 px-3 text-center hover:bg-primary/15 disabled:opacity-50" : "flex min-h-28 min-w-0 flex-col items-center justify-center gap-2 rounded-xl bg-secondary/40 px-3 text-center hover:bg-secondary/70 disabled:opacity-50"} onclick={() => playSound(definition)}>
-              <MusicSoundscapeIcon icon={definition.icon} size={27} />
-              <span class="max-w-full truncate text-xs font-medium">{name}</span>
-            </button>
+            <MusicSoundscapeChip icon={definition.icon} label={name} active={playing} ariaLabel={playing ? t("music.soundscape.pause") : t("music.soundscape.play", name)} title={singleSoundPreset(soundscape.presets, definition.id) ? undefined : t("music.soundscape.makePreset")} disabled={soundscape.saving} onclick={() => playSound(definition)} />
           {/each}
           {#each local as definition (definition.id)}
             <MusicSoundscapeLocalRow {definition} onRepair={(entry) => { void addLoop(entry); }} onRemove={(entry) => pendingDelete = entry} {onPlaybackStart} />
           {/each}
           {#if !pendingLayerPath}
-            <button type="button" disabled={!soundscape.catalogReady} class="flex min-h-28 min-w-0 flex-col items-center justify-center gap-2 rounded-xl px-3 text-center text-muted-foreground hover:bg-secondary/40 hover:text-foreground disabled:opacity-40" onclick={() => { void addLoop(); }}>
-              <Plus size={22} strokeWidth={1.5} />
-              <span class="max-w-full truncate text-xs font-medium">{t("music.soundscape.addLoop")}</span>
-            </button>
+            <button type="button" disabled={!soundscape.catalogReady} class={[SOUNDSCAPE_CHIP_CLASS, "text-muted-foreground hover:text-foreground"]} onclick={() => { void addLoop(); }}><Plus size={14} class="shrink-0" /><span class="truncate">{t("music.soundscape.addLoop")}</span></button>
           {/if}
         </div>
       </section>

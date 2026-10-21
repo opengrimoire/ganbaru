@@ -392,3 +392,97 @@ fn attachment_reads_go_through_one_bounded_handle_without_links() {
         fs::remove_dir_all(&vault_root).unwrap();
     });
 }
+
+#[cfg(unix)]
+#[test]
+fn managed_attachment_writes_and_cleanup_never_follow_a_symlinked_directory() {
+    tauri::async_runtime::block_on(async {
+        let pool = pool_with_thread().await;
+        let base = std::env::temp_dir().join(format!(
+            "ganbaru-chat-attachment-directory-link-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let vault_root = base.join("vault");
+        let outside = base.join("outside");
+        fs::create_dir_all(&vault_root).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        let working_folder_id = ProjectWorkingFolderId::new("workspace-1").unwrap();
+        let now = UtcTimestamp::new(NOW).unwrap();
+        let source = vault_root.join("source.txt");
+        fs::write(&source, b"context").unwrap();
+        let imported = import_attachment(
+            &pool,
+            &vault_root,
+            &working_folder_id,
+            ChatAttachmentId::new("attachment-linked-directory").unwrap(),
+            &source,
+            ChatAttachmentKind::TextSnippet,
+            &now,
+        )
+        .await
+        .unwrap();
+        let managed = vault_root.join(&imported.managed_relative_path);
+        let file_name = managed.file_name().unwrap().to_owned();
+        let attachments_directory = managed.parent().unwrap().to_path_buf();
+        fs::remove_dir_all(&attachments_directory).unwrap();
+        fs::write(outside.join(&file_name), b"outside file").unwrap();
+        std::os::unix::fs::symlink(&outside, &attachments_directory).unwrap();
+
+        sqlx::query(
+            "INSERT INTO chat_cleanup_jobs
+                (id, cleanup_kind, exact_target, state, available_at, created_at, updated_at,
+                 working_folder_id)
+             VALUES ('cleanup-linked', 'attachment_file', ?, 'pending', ?, ?, ?, 'workspace-1')",
+        )
+        .bind(&imported.managed_relative_path)
+        .bind(NOW)
+        .bind(NOW)
+        .bind(NOW)
+        .execute(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            run_due_attachment_cleanup(&pool, &vault_root, &now)
+                .await
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            fs::read(outside.join(&file_name)).unwrap(),
+            b"outside file",
+            "cleanup must not delete through a symlinked directory"
+        );
+        let state: String =
+            sqlx::query_scalar("SELECT state FROM chat_cleanup_jobs WHERE id = 'cleanup-linked'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(state, "failed");
+
+        let other = vault_root.join("other.txt");
+        fs::write(&other, b"other context").unwrap();
+        assert!(
+            import_attachment(
+                &pool,
+                &vault_root,
+                &working_folder_id,
+                ChatAttachmentId::new("attachment-through-link").unwrap(),
+                &other,
+                ChatAttachmentKind::TextSnippet,
+                &now,
+            )
+            .await
+            .is_err()
+        );
+        assert_eq!(
+            fs::read_dir(&outside).unwrap().count(),
+            1,
+            "imports must not write through a symlinked directory"
+        );
+        fs::remove_dir_all(&base).unwrap();
+    });
+}

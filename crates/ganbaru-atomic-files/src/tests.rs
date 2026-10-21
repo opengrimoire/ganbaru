@@ -71,6 +71,20 @@ fn creates_missing_directories_within_the_root() {
 }
 
 #[test]
+fn removal_within_the_root_tolerates_missing_files_and_directories() {
+    let root = test_directory("remove");
+    let path = root.join("assets/chat/a.png");
+    write_file_atomically_within(&root, &path, b"image", FileAccess::Default).unwrap();
+    remove_file_within(&root, &path).unwrap();
+    assert!(fs::symlink_metadata(&path).is_err());
+    remove_file_within(&root, &path).unwrap();
+    remove_file_within(&root, &root.join("missing/dir/a.png")).unwrap();
+    let error = remove_file_within(&root, &std::env::temp_dir().join("a.png")).unwrap_err();
+    assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn reject_symlink_accepts_missing_and_regular_paths() {
     let directory = test_directory("reject");
     reject_symlink(&directory.join("missing")).unwrap();
@@ -271,6 +285,28 @@ mod unix {
         assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
         assert!(entry_names(&outside).is_empty());
         reject_symlink(&root.join("assets/profile")).unwrap_err();
+        fs::remove_dir_all(root).unwrap();
+        fs::remove_dir_all(outside).unwrap();
+    }
+
+    #[test]
+    fn removal_never_reaches_through_a_symlinked_directory() {
+        let root = test_directory("remove-link");
+        let outside = test_directory("remove-link-outside");
+        fs::write(outside.join("a.png"), b"keep").unwrap();
+        fs::create_dir_all(root.join("assets")).unwrap();
+        symlink(&outside, root.join("assets/chat")).unwrap();
+        let error = remove_file_within(&root, &root.join("assets/chat/a.png")).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+        assert_eq!(fs::read(outside.join("a.png")).unwrap(), b"keep");
+        require_directories_within(&root, &root.join("assets/chat")).unwrap_err();
+
+        fs::remove_file(root.join("assets/chat")).unwrap();
+        fs::create_dir(root.join("assets/chat")).unwrap();
+        symlink(outside.join("a.png"), root.join("assets/chat/a.png")).unwrap();
+        remove_file_within(&root, &root.join("assets/chat/a.png")).unwrap();
+        assert!(fs::symlink_metadata(root.join("assets/chat/a.png")).is_err());
+        assert_eq!(fs::read(outside.join("a.png")).unwrap(), b"keep");
         fs::remove_dir_all(root).unwrap();
         fs::remove_dir_all(outside).unwrap();
     }

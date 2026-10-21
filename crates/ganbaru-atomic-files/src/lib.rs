@@ -9,7 +9,7 @@
 //! Bounded reads open the file once and check its type and size through that handle.
 
 use ring::rand::{SecureRandom, SystemRandom};
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::path::{Component, Path, PathBuf};
@@ -105,24 +105,9 @@ pub fn write_file_atomically_within(
 /// Returns an error when `directory` is outside `root`, contains a non-normal component, or
 /// has an ancestor below `root` that is a symlink or not a directory.
 pub fn create_directories_within(root: &Path, directory: &Path) -> io::Result<()> {
-    let relative = directory.strip_prefix(root).map_err(|_| {
-        io::Error::new(
-            io::ErrorKind::InvalidInput,
-            format!("{} is outside {}", directory.display(), root.display()),
-        )
-    })?;
     let mut current = root.to_path_buf();
-    for component in relative.components() {
-        match component {
-            Component::Normal(name) => current.push(name),
-            Component::CurDir => continue,
-            _ => {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    format!("{} is not a plain relative path", relative.display()),
-                ));
-            }
-        }
+    for name in components_within(root, directory)? {
+        current.push(name);
         match fs::create_dir(&current) {
             Ok(()) => {}
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
@@ -132,6 +117,64 @@ pub fn create_directories_within(root: &Path, directory: &Path) -> io::Result<()
         }
     }
     Ok(())
+}
+
+/// Checks that every directory from `root` down to `directory` is a real directory, so a
+/// path below them cannot be redirected through a symlink. `root` itself may be a symlink.
+///
+/// # Errors
+///
+/// Returns an error when `directory` is outside `root`, contains a non-normal component, or
+/// has an ancestor below `root` that is missing, a symlink, or not a directory.
+pub fn require_directories_within(root: &Path, directory: &Path) -> io::Result<()> {
+    let mut current = root.to_path_buf();
+    for name in components_within(root, directory)? {
+        current.push(name);
+        require_real_directory(&current)?;
+    }
+    Ok(())
+}
+
+/// Removes the file at `path` below `root` without traversing a symlinked directory. A final
+/// symlink is removed itself, never its target. A missing file is not an error.
+///
+/// # Errors
+///
+/// Returns an error when `path` is outside `root`, a directory between them is a symlink or
+/// not a directory, or the removal fails for another reason.
+pub fn remove_file_within(root: &Path, path: &Path) -> io::Result<()> {
+    match require_directories_within(root, parent_directory(path)?) {
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        result => result?,
+    }
+    match fs::remove_file(path) {
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        result => result,
+    }
+}
+
+/// Normal components of `directory` relative to `root`.
+fn components_within<'a>(root: &Path, directory: &'a Path) -> io::Result<Vec<&'a OsStr>> {
+    let relative = directory.strip_prefix(root).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("{} is outside {}", directory.display(), root.display()),
+        )
+    })?;
+    let mut names = Vec::new();
+    for component in relative.components() {
+        match component {
+            Component::Normal(name) => names.push(name),
+            Component::CurDir => {}
+            _ => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("{} is not a plain relative path", relative.display()),
+                ));
+            }
+        }
+    }
+    Ok(names)
 }
 
 /// Creates a new directory in `parent` named `prefix` plus a random suffix.

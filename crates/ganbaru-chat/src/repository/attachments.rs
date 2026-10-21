@@ -1,7 +1,9 @@
 use crate::models::{
     ChatAttachmentId, ChatError, ChatErrorCode, ChatResult, ProjectWorkingFolderId, UtcTimestamp,
 };
-use ganbaru_atomic_files::{FinalSymlink, read_regular_file_capped};
+use ganbaru_atomic_files::{
+    FinalSymlink, create_directories_within, read_regular_file_capped, remove_file_within,
+};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use sqlx::{Row, SqlitePool};
@@ -141,7 +143,7 @@ async fn persist_attachment_bytes(
     );
     let destination = resolve_managed_path(vault_root, &relative_path)?;
     let parent = destination.parent().ok_or_else(invalid_path_error)?;
-    fs::create_dir_all(parent).map_err(io_error)?;
+    create_directories_within(vault_root, parent).map_err(io_error)?;
     write_restrictive(&destination, request.bytes)?;
     let inserted = sqlx::query(
         "INSERT INTO chat_attachments
@@ -162,7 +164,7 @@ async fn persist_attachment_bytes(
     .execute(pool)
     .await;
     if let Err(error) = inserted {
-        let _ = fs::remove_file(&destination);
+        let _ = remove_file_within(vault_root, &destination);
         return Err(persistence_error(error));
     }
     read_attachment(pool, &request.attachment_id)
@@ -312,13 +314,8 @@ pub async fn run_due_attachment_cleanup(
             completed += 1;
             continue;
         }
-        let result = resolve_managed_chat_path(vault_root, &relative_path).and_then(|path| {
-            match fs::remove_file(path) {
-                Ok(()) => Ok(()),
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-                Err(error) => Err(io_error(error)),
-            }
-        });
+        let result = resolve_managed_chat_path(vault_root, &relative_path)
+            .and_then(|path| remove_file_within(vault_root, &path).map_err(io_error));
         match result {
             Ok(()) => {
                 let mut transaction = pool.begin().await.map_err(persistence_error)?;

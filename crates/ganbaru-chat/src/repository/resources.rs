@@ -3,6 +3,9 @@ use crate::models::{
     UtcTimestamp,
 };
 use crate::repository::attachments;
+use ganbaru_atomic_files::{
+    FinalSymlink, create_directories_within, read_regular_file_capped, remove_file_within,
+};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use sqlx::{Row, SqlitePool};
@@ -180,7 +183,7 @@ pub async fn store_browser_artifact(
     );
     let destination = attachments::resolve_managed_chat_path(vault_root, &relative_path)?;
     let parent = destination.parent().ok_or_else(invalid_resource_error)?;
-    fs::create_dir_all(parent).map_err(io_error)?;
+    create_directories_within(vault_root, parent).map_err(io_error)?;
     let temporary = destination.with_extension(format!("{extension}.tmp"));
     let write_result = (|| -> std::io::Result<()> {
         let mut options = fs::OpenOptions::new();
@@ -196,7 +199,7 @@ pub async fn store_browser_artifact(
         fs::rename(&temporary, &destination)
     })();
     if write_result.is_err() {
-        let _ = fs::remove_file(&temporary);
+        let _ = remove_file_within(vault_root, &temporary);
         return Err(io_error(write_result.err()));
     }
     let sha256 = format!("{:x}", Sha256::digest(input.bytes));
@@ -267,11 +270,11 @@ pub async fn store_browser_artifact(
     .await;
     if let Err(error) = result {
         let _ = transaction.rollback().await;
-        let _ = fs::remove_file(&destination);
+        let _ = remove_file_within(vault_root, &destination);
         return Err(error);
     }
     if let Err(error) = transaction.commit().await {
-        let _ = fs::remove_file(&destination);
+        let _ = remove_file_within(vault_root, &destination);
         return Err(persistence_error(error));
     }
     Ok(ChatResourceRead {
@@ -329,14 +332,12 @@ fn read_browser_artifact_bytes(
         return Err(invalid_resource_error());
     }
     let path = attachments::resolve_managed_chat_path(vault_root, &resource.managed_relative_path)?;
-    let metadata = fs::symlink_metadata(&path).map_err(io_error)?;
-    if metadata.file_type().is_symlink()
-        || !metadata.is_file()
-        || metadata.len() != resource.read.byte_size
-    {
+    let bytes = read_regular_file_capped(&path, resource.read.byte_size, FinalSymlink::Refuse)
+        .map_err(|_| invalid_resource_error())?;
+    if bytes.len() as u64 != resource.read.byte_size {
         return Err(invalid_resource_error());
     }
-    fs::read(path).map_err(io_error)
+    Ok(bytes)
 }
 
 fn parse_stored_resource(row: sqlx::sqlite::SqliteRow) -> ChatResult<StoredChatResource> {

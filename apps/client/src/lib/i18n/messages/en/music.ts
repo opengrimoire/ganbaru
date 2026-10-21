@@ -41,6 +41,7 @@ export const music = {
   preferences: {
     title: "Mix and snooze",
     applyTo: "Apply to",
+    applyToHint: "These settings change only the current track, in every playlist or just the one you choose.",
     snooze: "Snooze",
     everywhere: "Everywhere",
     day: "1 day",

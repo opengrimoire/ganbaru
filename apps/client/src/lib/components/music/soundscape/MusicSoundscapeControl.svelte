@@ -77,7 +77,7 @@
   {#if open}
     <div bind:this={popover} tabindex="-1" class="soundscape-popover surface-floating absolute bottom-full z-40 mb-2 flex w-floating-lg max-h-[calc(100vh-1rem)] flex-col overflow-hidden" style={popoverLeft === null ? "visibility:hidden" : `--soundscape-popover-left:${popoverLeft}px`} role="dialog" aria-label={t("music.soundscape.controls")}>
       <div use:scrollEdgeFadeAction class="flex min-h-0 flex-1 flex-col overflow-y-auto p-2">
-        <div class="px-2 pt-2 pb-1"><MusicSoundscapeActiveLevel idPrefix="player-soundscape" /></div>
+        <div class="px-2 pt-2 pb-2.5"><MusicSoundscapeActiveLevel idPrefix="player-soundscape" /></div>
         {#if soundscape.error}<Notice class="px-2 py-1" message={t("music.soundscape.genericError")} />{/if}
         {#if soundscape.presets.length > 0}
           <div class="flex flex-wrap gap-1.5">

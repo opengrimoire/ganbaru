@@ -7,7 +7,7 @@
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import type { MusicSoundscapeDefinition, MusicSoundscapePreset } from "$lib/music/soundscape/contracts";
   import { NEW_LAYER_ICON, orderedGeneratedSounds, SOUNDSCAPE_CHIP_CLASS } from "$lib/music/soundscape/presentation";
-  import { presetDisplayName, singleSoundPreset, soundDisplayName } from "$lib/music/soundscape/presets";
+  import { presetDisplayName, soundDisplayName } from "$lib/music/soundscape/presets";
   import type { SoundscapeFilter } from "$lib/music/builder/view-state";
   import { getSoundscapeStore } from "$lib/stores/soundscape.svelte";
   import { portal } from "$lib/utils/portal";
@@ -105,16 +105,10 @@
     untrack(() => presetEditor = null);
   });
 
-  /** Whether a sound's one-sound preset is the active one and plays now. */
-  function soundPlaying(definition: MusicSoundscapeDefinition): boolean {
-    const solo = singleSoundPreset(soundscape.presets, definition.id);
-    return solo !== null && solo.id === soundscape.activePreset?.id && soundscape.snapshot.status === "playing";
-  }
-
-  /** Plays a sound as its one-sound preset, creating that preset the first time, or pauses it. */
-  function playSound(definition: MusicSoundscapeDefinition): void {
-    if (!soundPlaying(definition)) onPlaybackStart();
-    void soundscape.playSound(definition, soundDisplayName(definition, t));
+  /** Plays a layer on its own, or stops it when it already plays. */
+  function playLayer(definition: MusicSoundscapeDefinition): void {
+    if (soundscape.playingLayerId !== definition.id) onPlaybackStart();
+    void soundscape.playLayer(definition);
   }
 </script>
 
@@ -136,16 +130,26 @@
           {#each soundscape.presets as preset (preset.id)}
             <MusicSoundscapePresetTile {preset} {onPlaybackStart} onEdit={(entry) => presetEditor = { preset: entry }} onRemove={(entry) => pendingPresetDelete = entry} />
           {/each}
-          <button type="button" disabled={!soundscape.persisted || soundscape.saving} class={[SOUNDSCAPE_CHIP_CLASS, "text-muted-foreground hover:text-foreground"]} onclick={() => presetEditor = { preset: null }}><Plus size={14} class="shrink-0" /><span class="truncate">{t("music.soundscape.preset.new")}</span></button>
         </div>
+        <button type="button" disabled={!soundscape.persisted || soundscape.saving} class={[SOUNDSCAPE_CHIP_CLASS, "mt-1.5 text-xs text-muted-foreground hover:text-foreground"]} onclick={() => presetEditor = { preset: null }}><Plus size={14} class="shrink-0" /><span class="truncate">{t("music.soundscape.preset.new")}</span></button>
       </section>
     {/if}
 
     {#if showLayers}
       <section aria-labelledby="soundscape-layers">
         <div class="mb-2 flex h-8 items-center gap-2"><h2 id="soundscape-layers" class="min-w-0 flex-1 truncate text-xs font-semibold">{t("music.soundscape.layers")}</h2></div>
+        <div class="flex flex-wrap gap-1.5 text-xs">
+          {#each generated as definition (definition.id)}
+            {@const playing = soundscape.playingLayerId === definition.id}
+            {@const name = soundDisplayName(definition, t)}
+            <MusicSoundscapeChip icon={definition.icon} label={name} active={playing} ariaLabel={playing ? t("music.soundscape.stopLayer", name) : t("music.soundscape.play", name)} disabled={soundscape.saving} onclick={() => playLayer(definition)} />
+          {/each}
+          {#each local as definition (definition.id)}
+            <MusicSoundscapeLocalRow {definition} onRepair={(entry) => { void addLoop(entry); }} onRemove={(entry) => pendingDelete = entry} {onPlaybackStart} />
+          {/each}
+        </div>
         {#if pendingLayerPath}
-          <form class="mb-2 rounded-xl bg-secondary/35 p-3" onsubmit={(event) => { event.preventDefault(); void saveSound(); }}>
+          <form class="mt-1.5 rounded-xl bg-secondary/35 p-3" onsubmit={(event) => { event.preventDefault(); void saveSound(); }}>
             <div class="flex items-center gap-2">
               <IconPicker value={soundIconDraft} onChange={(value) => soundIconDraft = value} ariaLabel={t("music.soundscape.soundIcon")} showUpload={false} showRemove={false}>
                 {#snippet trigger({ open, toggle, panelId })}<button type="button" class="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-background text-foreground hover:bg-accent" aria-label={t("music.soundscape.soundIcon")} aria-haspopup="dialog" aria-expanded={open} aria-controls={panelId} onclick={toggle}><MusicSoundscapeIcon icon={soundIconDraft} /></button>{/snippet}
@@ -154,20 +158,9 @@
             </div>
             <div class="mt-2 flex justify-end gap-2"><button type="button" class="h-8 rounded-lg px-3 text-xs hover:bg-accent" onclick={() => pendingLayerPath = null}>{t("common.cancel")}</button><button type="submit" disabled={!soundNameDraft.trim() || soundscape.saving} class="h-8 rounded-lg bg-primary px-3 text-xs text-primary-foreground disabled:opacity-40">{t("music.soundscape.addLoop")}</button></div>
           </form>
+        {:else}
+          <button type="button" disabled={!soundscape.catalogReady} class={[SOUNDSCAPE_CHIP_CLASS, "mt-1.5 text-xs text-muted-foreground hover:text-foreground"]} onclick={() => { void addLoop(); }}><Plus size={14} class="shrink-0" /><span class="truncate">{t("music.soundscape.addLoop")}</span></button>
         {/if}
-        <div class="flex flex-wrap gap-1.5 text-xs">
-          {#each generated as definition (definition.id)}
-            {@const playing = soundPlaying(definition)}
-            {@const name = soundDisplayName(definition, t)}
-            <MusicSoundscapeChip icon={definition.icon} label={name} active={playing} ariaLabel={playing ? t("music.soundscape.pause") : t("music.soundscape.play", name)} title={singleSoundPreset(soundscape.presets, definition.id) ? undefined : t("music.soundscape.makePreset")} disabled={soundscape.saving} onclick={() => playSound(definition)} />
-          {/each}
-          {#each local as definition (definition.id)}
-            <MusicSoundscapeLocalRow {definition} onRepair={(entry) => { void addLoop(entry); }} onRemove={(entry) => pendingDelete = entry} {onPlaybackStart} />
-          {/each}
-          {#if !pendingLayerPath}
-            <button type="button" disabled={!soundscape.catalogReady} class={[SOUNDSCAPE_CHIP_CLASS, "text-muted-foreground hover:text-foreground"]} onclick={() => { void addLoop(); }}><Plus size={14} class="shrink-0" /><span class="truncate">{t("music.soundscape.addLoop")}</span></button>
-          {/if}
-        </div>
       </section>
     {/if}
   </div>

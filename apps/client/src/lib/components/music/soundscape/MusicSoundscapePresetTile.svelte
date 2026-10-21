@@ -16,7 +16,7 @@
   const localization = getLocalization();
   const { t } = localization;
   const soundscape = getSoundscapeStore();
-  const playing = $derived(soundscape.activePreset?.id === preset.id && soundscape.snapshot.status === "playing");
+  const playing = $derived(soundscape.playingPreset?.id === preset.id);
   const playable = $derived(soundscape.presetIsPlayable(preset));
   const name = $derived(presetDisplayName(preset, t));
   const names = $derived(presetSoundNames(preset.sounds, soundscape.definitions, (definition) => soundDisplayName(definition, t)));

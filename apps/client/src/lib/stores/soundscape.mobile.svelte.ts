@@ -25,6 +25,14 @@ class MobileSoundscapeStore {
     return null;
   }
 
+  get playingPreset(): MusicSoundscapePreset | null {
+    return null;
+  }
+
+  get playingLayerId(): string | null {
+    return null;
+  }
+
   presetIsPlayable(_preset: Pick<MusicSoundscapePreset, "sounds">): boolean {
     return false;
   }
@@ -54,7 +62,7 @@ class MobileSoundscapeStore {
   async makePresetFromSound(_definition: MusicSoundscapeDefinition, _name: string): Promise<MusicSoundscapePreset> {
     throw new Error(UNAVAILABLE);
   }
-  async playSound(_definition: MusicSoundscapeDefinition, _name: string): Promise<void> {}
+  async playLayer(_definition: MusicSoundscapeDefinition): Promise<void> {}
   async removePreset(_preset: MusicSoundscapePreset): Promise<void> {}
 }
 

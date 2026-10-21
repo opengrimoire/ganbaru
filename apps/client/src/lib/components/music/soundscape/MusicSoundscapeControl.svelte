@@ -21,7 +21,6 @@
   let popover = $state<HTMLElement | null>(null);
   let popoverLeft = $state<number | null>(null);
   let open = $state(false);
-  const active = $derived(soundscape.activePreset);
   const playing = $derived(soundscape.snapshot.status === "playing");
 
   onMount(() => {
@@ -88,7 +87,7 @@
 
   /** Plays a preset, or pauses it when it is the one already playing. */
   function choosePreset(preset: MusicSoundscapePreset): void {
-    if (preset.id === active?.id && playing) void soundscape.togglePlayback();
+    if (preset.id === soundscape.playingPreset?.id) void soundscape.togglePlayback();
     else void soundscape.playPreset(preset);
   }
 </script>
@@ -106,7 +105,7 @@
         {#if soundscape.presets.length > 0}
           <div class="flex flex-wrap gap-1.5">
             {#each soundscape.presets as preset (preset.id)}
-              {@const selected = preset.id === active?.id && playing}
+              {@const selected = preset.id === soundscape.playingPreset?.id}
               {@const name = presetDisplayName(preset, t)}
               <button type="button" aria-pressed={selected} aria-label={selected ? t("music.soundscape.pause") : t("music.soundscape.playPreset", name)} data-app-tooltip={selected ? t("music.soundscape.stopHint") : undefined} disabled={!soundscape.presetIsPlayable(preset)} class={[SOUNDSCAPE_CHIP_CLASS, selected && "bg-primary/10"]} onclick={() => choosePreset(preset)}><MusicSoundscapeIcon icon={preset.icon} size={14} /><span class="truncate">{name}</span></button>
             {/each}

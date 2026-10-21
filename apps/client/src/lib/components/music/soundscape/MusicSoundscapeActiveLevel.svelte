@@ -8,7 +8,7 @@
   let { idPrefix }: { idPrefix: string } = $props();
   const { t } = getLocalization();
   const soundscape = getSoundscapeStore();
-  const active = $derived(soundscape.snapshot.status === "playing" ? soundscape.activePreset : null);
+  const active = $derived(soundscape.playingPreset);
 </script>
 
 <MusicSoundscapeRelativeLevel id={`${idPrefix}-level`} title={active ? t("music.soundscape.levelHint") : t("music.soundscape.noActivePreset")} label={t("music.soundscape.level")} adjustment={active ? presetLevelAdjustment(active.level) : 0} disabled={!active} onchange={(value) => { if (active) void soundscape.setPresetLevel(active, presetLevelFromAdjustment(value)); }} />

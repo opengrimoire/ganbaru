@@ -111,6 +111,7 @@ export const music = {
       brown: "A deeper, low-frequency-heavy wash with a gentler texture.",
     },
     play: (name: string) => `Play ${name}`,
+    stopLayer: (name: string) => `Stop ${name}`,
     pause: "Pause soundscape",
     retry: "Retry",
     genericError: "Soundscape needs attention.",

@@ -14,7 +14,7 @@ Three generated layers are named for what they are: Brown noise, Pink noise, and
 
 Users can add their own local audio loops as layers with a chosen name and icon (using the same icon picker as playlists). Original files stay in place. A missing file can be repaired by choosing a new location on the current device, and editing a layer's name or icon never requires the file.
 
-Layers are managed only in the builder, in one list with generated layers first. Pressing a layer there plays it through its one-layer soundscape, creating that soundscape the first time, and pressing it again pauses it. Make soundscape creates the same one-layer soundscape without playing it.
+Layers are managed only in the builder, in one list with generated layers first. Pressing a layer there plays it on its own, outside every soundscape, and pressing it again stops it. A layer playing on its own replaces the playing soundscape, which stays chosen but silent; it is never saved, so it does not come back after a restart, and pausing it stops it. Layers and soundscapes are highlighted independently. Make soundscape creates a one-layer soundscape from a local layer without playing it.
 
 ## Mixing
 

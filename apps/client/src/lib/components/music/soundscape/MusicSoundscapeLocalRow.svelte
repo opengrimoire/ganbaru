@@ -24,7 +24,7 @@
   let nameDraft = $state("");
   let iconDraft = $state(NEW_LAYER_ICON);
   const solo = $derived(singleSoundPreset(soundscape.presets, definition.id));
-  const playing = $derived(solo !== null && solo.id === soundscape.activePreset?.id && soundscape.snapshot.status === "playing");
+  const playing = $derived(soundscape.playingLayerId === definition.id);
   const available = $derived(definition.availability === "available");
 
   onMount(() => {
@@ -42,7 +42,7 @@
       return;
     }
     if (!playing) onPlaybackStart();
-    void soundscape.playSound(definition, definition.name);
+    void soundscape.playLayer(definition);
   }
 
   function startEditing(): void {
@@ -88,8 +88,8 @@
     label={definition.name}
     active={playing}
     muted={!available}
-    ariaLabel={!available ? t("music.soundscape.repair") : playing ? t("music.soundscape.pause") : t("music.soundscape.play", definition.name)}
-    title={!available ? t("music.soundscape.needsRepair") : solo ? undefined : t("music.soundscape.makePreset")}
+    ariaLabel={!available ? t("music.soundscape.repair") : playing ? t("music.soundscape.stopLayer", definition.name) : t("music.soundscape.play", definition.name)}
+    title={available ? undefined : t("music.soundscape.needsRepair")}
     disabled={soundscape.saving}
     onclick={choose}
     menuLabel={t("music.soundscape.soundActions", definition.name)}

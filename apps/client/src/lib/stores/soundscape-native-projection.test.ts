@@ -180,21 +180,58 @@ describe("preset level relative to the Music volume", () => {
   });
 });
 
-describe("single sounds as one-sound presets", () => {
-  it("creates the one-sound preset at the default level the first time a sound plays and pauses it on the next press", async () => {
-    api.getMusicSoundscapePresets.mockResolvedValue([]);
-    const store = await loadedStore();
-    await store.playSound(rain, "Rain");
-    expect(api.upsertMusicSoundscapePreset).toHaveBeenCalledWith(expect.objectContaining({
-      name: "Rain", level: 1, sounds: [{ soundscapeId: "rain", level: 1 }], expectedVersion: null,
-    }));
-    expect(store.activePreset?.sounds).toEqual([{ soundscapeId: "rain", level: 1 }]);
-    expect(store.snapshot.status).toBe("playing");
-    await store.playSound(rain, "Rain");
-    expect(api.upsertMusicSoundscapePreset).toHaveBeenCalledOnce();
-    expect(api.pauseSoundscape).toHaveBeenCalledOnce();
+describe("layers on their own", () => {
+  async function storeWithSoundscapePlaying() {
+    api.getMusicSoundscapeState.mockResolvedValue({ ...state, automaticIntent: false });
+    api.getSoundscapeSnapshot.mockResolvedValue(playing);
+    return loadedStore();
+  }
+
+  it("plays a layer at the default levels without creating or choosing a soundscape, and stops it on the next press", async () => {
+    const store = await storeWithSoundscapePlaying();
+    await store.playLayer(rain);
+    expect(api.startSoundscape).toHaveBeenCalledWith(expect.objectContaining({ sourceId: "rain", level: 1, extraSources: [], presetLevel: 1 }));
+    expect(api.upsertMusicSoundscapePreset).not.toHaveBeenCalled();
+    expect(api.updateMusicSoundscapeState).toHaveBeenCalledWith(expect.objectContaining({ activePresetId: "calm", desiredPlaying: false }));
+    expect(store.playingLayerId).toBe("rain");
+    expect(store.playingPreset).toBeNull();
+    await store.playLayer(rain);
+    expect(api.stopSoundscape).toHaveBeenCalledOnce();
+    expect(api.pauseSoundscape).not.toHaveBeenCalled();
+    expect(store.playingLayerId).toBeNull();
   });
 
+  it("stops a playing layer instead of pausing it, so the chosen soundscape never resumes in its place", async () => {
+    const store = await storeWithSoundscapePlaying();
+    await store.playLayer(rain);
+    await store.togglePlayback();
+    expect(api.stopSoundscape).toHaveBeenCalledOnce();
+    expect(api.pauseSoundscape).not.toHaveBeenCalled();
+    expect(api.resumeSoundscape).not.toHaveBeenCalled();
+    expect(store.persisted?.desiredPlaying).toBe(false);
+  });
+
+  it("lets a soundscape replace a playing layer", async () => {
+    const store = await storeWithSoundscapePlaying();
+    await store.playLayer(rain);
+    await store.playPreset(calm);
+    expect(store.playingLayerId).toBeNull();
+    expect(store.playingPreset?.id).toBe("calm");
+  });
+
+  it("stops a playing layer when a preview begins and does not bring it back", async () => {
+    const store = await storeWithSoundscapePlaying();
+    await store.playLayer(rain);
+    await store.beginPreview();
+    await store.endPreview();
+    expect(api.stopSoundscape).toHaveBeenCalledOnce();
+    expect(api.startSoundscape).toHaveBeenCalledOnce();
+    expect(api.resumeSoundscape).not.toHaveBeenCalled();
+    expect(store.playingLayerId).toBeNull();
+  });
+});
+
+describe("one-layer soundscapes", () => {
   it("reuses an existing one-sound preset instead of creating another", async () => {
     const solo = preset("solo", [["rain", 1]], 1.4);
     api.getMusicSoundscapePresets.mockResolvedValue([solo]);

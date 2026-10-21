@@ -114,6 +114,7 @@ export const music = {
       brown: "Una capa más profunda, con mayor presencia de frecuencias bajas y textura suave.",
     },
     play: (name: string) => `Reproducir ${name}`,
+    stopLayer: (name: string) => `Detener ${name}`,
     pause: "Pausar paisaje sonoro",
     retry: "Reintentar",
     genericError: "Hay un problema con el paisaje sonoro.",

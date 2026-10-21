@@ -50,6 +50,24 @@ describe("getEventIndicatorState", () => {
     expect(state.iconCount).toBe(3);
   });
 
+  it("counts music beside repeat", () => {
+    const state = getEventIndicatorState(makeEvent({
+      recurrence: { frequency: "daily", interval: 1, end: { type: "never" } },
+      hasMusicPlaylist: true,
+    }));
+
+    expect(state.hasMusic).toBe(true);
+    expect(state.hasRepeat).toBe(true);
+    expect(state.iconCount).toBe(2);
+  });
+
+  it("shows music for a soundscape only where soundscapes play", () => {
+    const event = makeEvent({ hasSoundscape: true });
+
+    expect(getEventIndicatorState(event, true).hasMusic).toBe(true);
+    expect(getEventIndicatorState(event, false)).toMatchObject({ hasMusic: false, iconCount: 0 });
+  });
+
   it("exposes meeting indicators without counting repeat", () => {
     const state = getMeetingIndicatorState(makeEvent({
       recurrence: { frequency: "daily", interval: 1, end: { type: "never" } },

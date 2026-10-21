@@ -7,6 +7,9 @@ use chrono::{DateTime, SecondsFormat, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::{SqliteConnection, SqlitePool};
 
+use super::event_music::{
+    EVENT_MUSIC_SQL, EVENT_MUSIC_TEXT_COLUMNS, EventMusicAssignment, event_music_flags,
+};
 use super::export::ExportBudget;
 use super::{DbCalendarEventRow, DbOverrideRow, DbWindowAttendeeRow};
 use crate::recurrence::canonical::{
@@ -83,7 +86,8 @@ const EVENTS_SQL: &str = r#"
            NULL AS notifications, NULL AS exceptions, ce.repeat_until,
            ce.all_day, ce.location, ce.transparency, ce.status,
            CASE WHEN ce.url <> '' THEN 1 ELSE 0 END AS has_call_link,
-           ce.meeting_enabled, ce.local_rsvp_status, ce.created_at,
+           ce.meeting_enabled, 0 AS has_music_playlist, 0 AS has_soundscape,
+           ce.local_rsvp_status, ce.created_at,
            NULL AS rdate,
            pc.rhythm_kind, pc.rhythm_source, pc.preset_key,
            pcc.focus_duration_minutes AS count_focus_duration_minutes,
@@ -204,7 +208,7 @@ pub async fn read(
     purpose: WindowPurpose,
     include_total: bool,
 ) -> Result<WindowSource, String> {
-    let include_attendees = matches!(purpose, WindowPurpose::Render);
+    let render = matches!(purpose, WindowPurpose::Render);
     // SQLite treats offset-free labels as UTC, whereas canonical expansion
     // resolves them in their home zone. This prefilter must admit every possible
     // supported offset; native expansion then applies the exact viewport.
@@ -273,7 +277,7 @@ pub async fn read(
     {
         return Err("Calendar override identity is empty or exceeds 1024 bytes".into());
     }
-    let attendees = if !include_attendees {
+    let attendees = if !render {
         Vec::new()
     } else {
         budget
@@ -286,6 +290,23 @@ pub async fn read(
             )
             .await?
     };
+    if render {
+        let assignments: Vec<EventMusicAssignment> = budget
+            .read(connection, &ids, EVENT_MUSIC_SQL, EVENT_MUSIC_TEXT_COLUMNS)
+            .await?;
+        let mut by_event: BTreeMap<&str, Vec<&EventMusicAssignment>> = BTreeMap::new();
+        for row in &assignments {
+            by_event.entry(&row.owner_id).or_default().push(row);
+        }
+        for event in &mut events {
+            let Some(rows) = by_event.get(event.id.as_str()) else {
+                continue;
+            };
+            let flags = event_music_flags(rows.iter().copied(), event.rhythm_kind.is_some());
+            event.has_music_playlist = i64::from(flags.playlist);
+            event.has_soundscape = i64::from(flags.soundscape);
+        }
+    }
     let mut fields: BTreeMap<(String, String), Vec<String>> = BTreeMap::new();
     for (table, field, column) in [
         (

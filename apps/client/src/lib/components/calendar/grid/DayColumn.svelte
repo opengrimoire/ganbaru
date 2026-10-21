@@ -20,6 +20,7 @@
   import { CALENDAR_ZOOM_FRAME_EVENT, useCalendarZoom } from "$lib/stores/calendar-zoom.svelte";
   import { getPreferences } from "$lib/stores/preferences.svelte";
   import { onMount } from "svelte";
+  import Music from "@lucide/svelte/icons/music";
   import Repeat from "@lucide/svelte/icons/repeat";
   import Video from "@lucide/svelte/icons/video";
   import MapPin from "@lucide/svelte/icons/map-pin";
@@ -655,6 +656,9 @@
       <div class="min-w-0 flex-1 px-1 py-0.5" style="background-color: {dragBase.bg};">
         {#if dragIndicators.iconCount > 0}
           <div class="absolute right-1 flex items-center gap-0.5" style="top: 5px; color: {dragIconColor};">
+            {#if dragIndicators.hasMusic}
+              <Music size={9} class="shrink-0" />
+            {/if}
             {#if dragIndicators.hasRepeat}
               <Repeat size={9} class="shrink-0" />
             {/if}
@@ -672,7 +676,8 @@
         <div
           class="truncate font-medium"
           class:pr-5={dragIndicators.iconCount > 0 && dragIndicators.iconCount <= 2}
-          class:pr-8={dragIndicators.iconCount > 2}
+          class:pr-8={dragIndicators.iconCount === 3}
+          class:pr-11={dragIndicators.iconCount > 3}
         >
           {#if previewEvent.title}{previewEvent.title}{:else}{t("calendar.event.noTitle")}{/if}
         </div>

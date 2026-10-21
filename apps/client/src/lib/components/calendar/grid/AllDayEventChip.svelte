@@ -9,6 +9,7 @@
   import { getPreferences } from "$lib/stores/preferences.svelte";
   import { isThemeCalendarDark, type Theme } from "$lib/themes";
   import { getEventIndicatorState } from "./event-indicators";
+  import Music from "@lucide/svelte/icons/music";
   import Repeat from "@lucide/svelte/icons/repeat";
   import Video from "@lucide/svelte/icons/video";
   import MapPin from "@lucide/svelte/icons/map-pin";
@@ -110,6 +111,9 @@
 >
   {#if hasIcons}
     <span class="absolute right-1 top-0.75 z-10 flex items-center gap-0.5" style="color: {iconColor};">
+      {#if indicators.hasMusic}
+        <Music size={8} class="shrink-0" />
+      {/if}
       {#if indicators.hasRepeat}
         <Repeat size={8} class="shrink-0" />
       {/if}
@@ -127,7 +131,8 @@
   <span
     class="relative z-10 truncate"
     class:pr-5={indicators.iconCount > 0 && indicators.iconCount <= 2}
-    class:pr-8={indicators.iconCount > 2}
+    class:pr-8={indicators.iconCount === 3}
+    class:pr-11={indicators.iconCount > 3}
     style={isCancelled ? 'text-decoration: line-through;' : ''}
   >
     {eventTitle}

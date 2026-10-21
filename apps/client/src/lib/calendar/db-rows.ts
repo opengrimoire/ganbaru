@@ -49,6 +49,8 @@ export interface DbCalendarEvent {
   all_day: number;
   location: string;
   has_call_link?: number;
+  has_music_playlist?: number;
+  has_soundscape?: number;
   meeting_enabled: number;
   transparency: string;
   status: string;
@@ -273,6 +275,8 @@ export function mapRow(r: DbCalendarEvent, renderZone: string): CalendarEvent {
   if (r.location) slim.location = r.location;
   if (r.has_call_link === 1) slim.hasCallLink = true;
   if (r.meeting_enabled === 1) slim.meetingEnabled = true;
+  if (r.has_music_playlist === 1) slim.hasMusicPlaylist = true;
+  if (r.has_soundscape === 1) slim.hasSoundscape = true;
   if (r.transparency === "transparent") slim.transparency = "transparent";
   if (r.status !== "confirmed") slim.status = r.status as EventStatus;
   if (r.local_rsvp_status) slim.localParticipationStatus = r.local_rsvp_status as AttendeeStatus;

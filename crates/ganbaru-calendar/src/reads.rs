@@ -5,6 +5,7 @@ use ganbaru_db::impl_sqlite_from_row;
 use serde::Serialize;
 use sqlx::{AssertSqlSafe, SqlitePool};
 
+pub(crate) mod event_music;
 mod export;
 mod export_preservation;
 pub mod focus_context;
@@ -69,6 +70,8 @@ pub struct DbCalendarEventRow {
     pub(crate) location: String,
     pub(crate) has_call_link: i64,
     pub(crate) meeting_enabled: i64,
+    pub(crate) has_music_playlist: i64,
+    pub(crate) has_soundscape: i64,
     pub(crate) transparency: String,
     pub status: String,
     pub(crate) local_rsvp_status: Option<String>,
@@ -103,6 +106,8 @@ impl_sqlite_from_row!(DbCalendarEventRow {
     location,
     has_call_link,
     meeting_enabled,
+    has_music_playlist,
+    has_soundscape,
     transparency,
     status,
     local_rsvp_status,
@@ -387,7 +392,8 @@ const WINDOW_EVENTS_SQL: &str = r#"
            NULL AS notifications, NULL AS exceptions, ce.repeat_until,
            ce.all_day, ce.location, ce.transparency, ce.status,
            CASE WHEN ce.url <> '' THEN 1 ELSE 0 END AS has_call_link,
-           ce.meeting_enabled, ce.local_rsvp_status, ce.created_at,
+           ce.meeting_enabled, 0 AS has_music_playlist, 0 AS has_soundscape,
+           ce.local_rsvp_status, ce.created_at,
            NULL AS rdate,
            pc.rhythm_kind, pc.rhythm_source, pc.preset_key,
            pcc.focus_duration_minutes AS count_focus_duration_minutes,
@@ -431,7 +437,8 @@ const NOTIFICATION_SCHEDULER_EVENTS_SQL: &str = r#"
            NULL AS notifications, NULL AS exceptions, ce.repeat_until,
            ce.all_day, ce.location, ce.transparency, ce.status,
            CASE WHEN ce.url <> '' THEN 1 ELSE 0 END AS has_call_link,
-           ce.meeting_enabled, ce.local_rsvp_status, ce.created_at,
+           ce.meeting_enabled, 0 AS has_music_playlist, 0 AS has_soundscape,
+           ce.local_rsvp_status, ce.created_at,
            NULL AS rdate,
            pc.rhythm_kind, pc.rhythm_source, pc.preset_key,
            pcc.focus_duration_minutes AS count_focus_duration_minutes,

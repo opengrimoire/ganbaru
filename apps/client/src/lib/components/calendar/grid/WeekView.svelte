@@ -28,6 +28,7 @@
   import { formatNumber } from "$lib/i18n/formatters";
   import { onMount } from "svelte";
   import { getWorkspacePaneFocus } from "$lib/workspace-tabs/pane-focus";
+  import Music from "@lucide/svelte/icons/music";
   import Repeat from "@lucide/svelte/icons/repeat";
   import Video from "@lucide/svelte/icons/video";
   import MapPin from "@lucide/svelte/icons/map-pin";
@@ -633,6 +634,9 @@
           >
             {#if previewIndicators.iconCount > 0}
               <span class="absolute right-1 top-0.75 flex items-center gap-0.5" style="color: {previewIconColor};">
+                {#if previewIndicators.hasMusic}
+                  <Music size={8} class="shrink-0" />
+                {/if}
                 {#if previewIndicators.hasRepeat}
                   <Repeat size={8} class="shrink-0" />
                 {/if}
@@ -650,7 +654,8 @@
             <span
               class="truncate"
               class:pr-5={previewIndicators.iconCount > 0 && previewIndicators.iconCount <= 2}
-              class:pr-8={previewIndicators.iconCount > 2}
+              class:pr-8={previewIndicators.iconCount === 3}
+              class:pr-11={previewIndicators.iconCount > 3}
             >
               {#if preview.event.title}{preview.event.title}{:else}{t("calendar.event.noTitle")}{/if}
             </span>

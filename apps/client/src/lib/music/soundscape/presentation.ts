@@ -10,6 +10,11 @@ export function orderedGeneratedSounds(definitions: readonly MusicSoundscapeDefi
     .sort((left, right) => RAIN_NOISE_ORDER.indexOf(left.generatedKind ?? "brown") - RAIN_NOISE_ORDER.indexOf(right.generatedKind ?? "brown"));
 }
 
+/**
+ * Compact option for soundscapes and layers: icon at the left and only as wide as its name, in the surrounding text
+ * size. Pair it with `bg-primary/10` while the option is playing or picked.
+ */
+export const SOUNDSCAPE_CHIP_CLASS = "inline-flex h-8 min-w-0 max-w-full items-center gap-2 rounded-floating-item px-2 transition-colors hover:bg-accent/70 disabled:opacity-50";
 
 /** Icon a layer added from a file starts with until the listener picks another. */
 export const NEW_LAYER_ICON = "lucide:file-music";

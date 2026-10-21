@@ -156,7 +156,6 @@ export const music = {
       editTitle: "Edit soundscape",
       actions: (name: string) => `Actions for ${name}`,
       sounds: "Layers",
-      soundsHint: "Choose the layers that play together and how loud each one is. What was playing comes back when you leave.",
       level: "Soundscape level",
       soundLevel: (name: string) => `${name} level`,
       limitReached: (max: number) => `A soundscape can hold up to ${max} layers.`,

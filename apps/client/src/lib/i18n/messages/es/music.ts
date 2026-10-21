@@ -159,7 +159,6 @@ export const music = {
       editTitle: "Editar paisaje sonoro",
       actions: (name: string) => `Acciones de ${name}`,
       sounds: "Capas",
-      soundsHint: "Elige las capas que suenan juntas y qué tan fuerte suena cada una. Lo que sonaba vuelve al salir.",
       level: "Nivel del paisaje sonoro",
       soundLevel: (name: string) => `Nivel de ${name}`,
       limitReached: (max: number) => `Un paisaje sonoro puede tener hasta ${max} capas.`,

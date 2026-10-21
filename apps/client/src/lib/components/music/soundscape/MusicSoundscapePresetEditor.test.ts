@@ -59,8 +59,16 @@ const evening: MusicSoundscapePreset = {
 let component: ReturnType<typeof mount> | undefined;
 let target: HTMLDivElement;
 
+/** Stands in for the Web Animations API, which jsdom lacks, by finishing every transition right away. */
+function finishedAnimation(): Animation {
+  const animation = { onfinish: null, cancel: () => undefined, currentTime: 0, playState: "finished", effect: null } as unknown as Animation;
+  queueMicrotask(() => animation.onfinish?.(new Event("finish") as AnimationPlaybackEvent));
+  return animation;
+}
+
 beforeAll(() => {
   Element.prototype.scrollIntoView = () => undefined;
+  Element.prototype.animate = finishedAnimation;
 });
 
 afterEach(async () => {

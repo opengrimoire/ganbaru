@@ -1,6 +1,7 @@
 <script lang="ts">
-  import Check from "@lucide/svelte/icons/check";
   import { onMount } from "svelte";
+  import { cubicOut } from "svelte/easing";
+  import { slide } from "svelte/transition";
   import MusicBuilderDialog from "$lib/components/music/builder/MusicBuilderDialog.svelte";
   import IconPicker from "$lib/components/icon-picker/IconPicker.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
@@ -13,7 +14,7 @@
     type MusicSoundscapePreset,
     type MusicSoundscapePresetSound,
   } from "$lib/music/soundscape/contracts";
-  import { orderedGeneratedSounds } from "$lib/music/soundscape/presentation";
+  import { orderedGeneratedSounds, SOUNDSCAPE_CHIP_CLASS } from "$lib/music/soundscape/presentation";
   import {
     presetDisplayName,
     presetLevelAdjustment,
@@ -31,6 +32,8 @@
   const DEFAULT_PRESET_ICON = "lucide:layers";
   /** Mirrors the native preset name limit so the field never accepts a name the store rejects. */
   const MAX_PRESET_NAME_CHARS = 80;
+  /** How long layer rows and notices take to open or close, so the editor never jumps in height. */
+  const ROW_MOTION_MS = 180;
 
   /**
    * Creates or edits a soundscape preset by picking its sounds explicitly. While it is open, Music and the soundscape
@@ -62,6 +65,7 @@
   }));
   let listening = $state(true);
   const layers = $derived(orderedLayers(soundscape.definitions));
+  const rowMotion = { duration: prefersReducedMotion() ? 0 : ROW_MOTION_MS, easing: cubicOut };
 
   onMount(() => {
     const resumesMusic = player.isPlaying;
@@ -91,6 +95,10 @@
 
   function initialSounds(): MusicSoundscapePresetSound[] {
     return preset ? preset.sounds.map((sound) => ({ ...sound })) : [];
+  }
+
+  function prefersReducedMotion(): boolean {
+    return typeof window.matchMedia === "function" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
   }
 
   /** Layers in builder order: generated noise first, then local loops. */
@@ -126,7 +134,6 @@
 <MusicBuilderDialog
   title={preset ? t("music.soundscape.preset.editTitle") : t("music.soundscape.preset.new")}
   titleId="soundscape-preset-editor"
-  description={t("music.soundscape.preset.soundsHint")}
   size="large"
   dismissDisabled={soundscape.saving}
   onDismiss={() => onDone(null)}
@@ -142,11 +149,12 @@
     <div class="text-xs">
       <MusicSoundscapeRelativeLevel id="soundscape-preset-level" title={t("music.soundscape.levelHint")} label={t("music.soundscape.preset.level")} adjustment={presetLevelAdjustment(level)} onchange={(value) => level = presetLevelFromAdjustment(value)} />
       {#if mix.length > 0}
-        <ul class="mt-3 flex flex-col gap-1" aria-label={t("music.soundscape.preset.sounds")}>
+        <ul transition:slide={rowMotion} class="mt-3 flex flex-col" aria-label={t("music.soundscape.preset.sounds")}>
           {#each mix as entry (entry.definition.id)}
             {@const soundName = soundDisplayName(entry.definition, t)}
             {@const percent = Math.round(entry.level * 100)}
-            <li class="flex h-8 items-center gap-2">
+            <!-- Rows carry their own spacing so a closing row takes its gap with it. -->
+            <li transition:slide={rowMotion} class="flex h-9 items-center gap-2">
               <span class="flex w-28 shrink-0 items-center gap-1.5 text-xs"><span class="shrink-0 text-muted-foreground"><MusicSoundscapeIcon icon={entry.definition.icon} size={14} /></span><span class="min-w-0 truncate">{soundName}</span></span>
               <MusicSoundscapeLevelSlider id={`soundscape-preset-sound-${entry.definition.id}`} label={t("music.soundscape.preset.soundLevel", soundName)} value={percent} min={0} max={100} valueText={`${percent}%`} onchange={(value) => sounds = setPresetDraftSoundLevel(sounds, entry.definition.id, value / 100)} />
               <span class="w-11 shrink-0 text-right text-xs tabular-nums text-muted-foreground">{percent}%</span>
@@ -162,17 +170,13 @@
         <span class="min-w-0 truncate text-xs text-muted-foreground" aria-hidden="true">{t("music.soundscape.preset.listen")}</span>
         <Switch size="compact" checked={listening} ariaLabel={t("music.soundscape.preset.listen")} onChange={(value) => listening = value} />
       </div>
-      {#if atLimit}<Notice class="mt-2 text-xs" tone="warning" role="status" copy={false} message={t("music.soundscape.preset.limitReached", MAX_SOUNDSCAPE_LAYERS)} />{/if}
+      {#if atLimit}<div transition:slide={rowMotion}><Notice class="mt-2 text-xs" tone="warning" role="status" copy={false} message={t("music.soundscape.preset.limitReached", MAX_SOUNDSCAPE_LAYERS)} /></div>{/if}
 
-      <div class="mt-2 grid grid-cols-2 gap-2 @sm:grid-cols-3">
-          {#each layers as definition (definition.id)}
-            {@const picked = sounds.some((sound) => sound.soundscapeId === definition.id)}
-            <button type="button" aria-pressed={picked} disabled={!picked && atLimit} title={definition.availability === "available" ? undefined : t("music.soundscape.needsRepair")} class={`relative flex min-h-24 min-w-0 flex-col items-center justify-center gap-1.5 rounded-xl px-2 text-center ${picked ? "bg-primary/10 hover:bg-primary/15" : "bg-secondary/40 hover:bg-secondary/70 disabled:opacity-40"} ${definition.availability !== "available" ? "text-muted-foreground" : ""}`} onclick={() => sounds = togglePresetDraftSound(sounds, definition.id)}>
-              {#if picked}<span class="absolute top-2 right-2 grid h-4 w-4 place-items-center rounded-full bg-primary text-primary-foreground"><Check size={11} strokeWidth={2.5} /></span>{/if}
-              <MusicSoundscapeIcon icon={definition.icon} size={24} />
-              <span class="max-w-full truncate text-xs font-medium">{soundDisplayName(definition, t)}</span>
-            </button>
-          {/each}
+      <div class="mt-2 flex flex-wrap gap-1.5 text-xs">
+        {#each layers as definition (definition.id)}
+          {@const picked = sounds.some((sound) => sound.soundscapeId === definition.id)}
+          <button type="button" aria-pressed={picked} disabled={!picked && atLimit} title={definition.availability === "available" ? undefined : t("music.soundscape.needsRepair")} class={[SOUNDSCAPE_CHIP_CLASS, picked && "bg-primary/10", definition.availability !== "available" && "text-muted-foreground"]} onclick={() => sounds = togglePresetDraftSound(sounds, definition.id)}><MusicSoundscapeIcon icon={definition.icon} size={14} /><span class="truncate">{soundDisplayName(definition, t)}</span></button>
+        {/each}
       </div>
     </section>
   </div>

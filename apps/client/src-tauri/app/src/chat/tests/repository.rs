@@ -29,8 +29,8 @@ use ganbaru_chat::repository::resources::{
 use ganbaru_chat::repository::workspaces::{create_workspace, list_workspaces, rename_workspace};
 use ganbaru_chat_contracts::events::{
     CanonicalEvent, CanonicalRuntimeEvent, ChangedFileSummary, ContentDeltaEvent, DiffUpdatedEvent,
-    ItemLifecycleEvent, RequestOpenedEvent, SessionExitedEvent, ThreadRevertedEvent,
-    TurnAbortedEvent, TurnCompletedEvent, TurnStartedEvent, UserInputQuestion,
+    ItemLifecycleEvent, ProposedPlanDeltaEvent, RequestOpenedEvent, SessionExitedEvent,
+    ThreadRevertedEvent, TurnAbortedEvent, TurnCompletedEvent, TurnStartedEvent, UserInputQuestion,
     UserInputRequestedEvent,
 };
 use ganbaru_chat_contracts::models::{

@@ -250,3 +250,61 @@ async fn text_limit_warnings(pool: &sqlx::SqlitePool) -> i64 {
     .await
     .unwrap()
 }
+
+fn plan_event(event_id: &str, delta: &str) -> AppendCanonicalEventRequest {
+    let mut request = content_event(event_id, delta);
+    request.runtime.event = CanonicalEvent::ProposedPlanDelta(ProposedPlanDeltaEvent {
+        plan_id: "plan-1".to_string(),
+        delta: delta.to_string(),
+        content_index: 0,
+    });
+    request
+}
+
+#[test]
+fn ingestion_batches_and_caps_proposed_plan_deltas() {
+    tauri::async_runtime::block_on(async {
+        let pool = pool_with_thread().await;
+        let emitter = Arc::new(RecordingEmitter::default());
+        let mut ingestor = ChatEventIngestor::new(pool.clone(), emitter);
+        for index in 0..100 {
+            ingestor
+                .ingest(plan_event(&format!("event-plan-small-{index}"), "x"))
+                .await
+                .unwrap();
+        }
+        ingestor.flush().await.unwrap();
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM chat_events WHERE event_type = 'proposed_plan_delta'"
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+            1,
+            "adjacent plan deltas share one stored batch"
+        );
+        let chunk = "p".repeat(3 * 1024 * 1024);
+        for index in 0..3 {
+            ingestor
+                .ingest(plan_event(&format!("event-plan-{index}"), &chunk))
+                .await
+                .unwrap();
+        }
+        ingestor
+            .ingest(plan_event("event-plan-dropped", "must not be retained"))
+            .await
+            .unwrap();
+        ingestor.flush().await.unwrap();
+        let markdown: String =
+            sqlx::query_scalar("SELECT markdown FROM chat_plans WHERE id = 'plan-1'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert!(markdown.starts_with(&"x".repeat(100)));
+        assert!(markdown.ends_with("[Text truncated at the 8 MiB Chat message limit]\n"));
+        assert!(!markdown.contains("must not be retained"));
+        assert!(markdown.len() <= 8 * 1024 * 1024 + 64);
+        assert_eq!(text_limit_warnings(&pool).await, 1);
+    });
+}

@@ -80,7 +80,10 @@ impl ChatEventIngestor {
                 return self.append_and_notify(warning).await;
             }
         }
-        if matches!(request.runtime.event, CanonicalEvent::ContentDelta(_)) {
+        if matches!(
+            request.runtime.event,
+            CanonicalEvent::ContentDelta(_) | CanonicalEvent::ProposedPlanDelta(_)
+        ) {
             if let Some(pending) = self.pending_delta.as_mut() {
                 if merge_adjacent_delta(pending, &request) {
                     return Ok(());
@@ -136,20 +139,30 @@ impl ChatEventIngestor {
         true
     }
 
-    /// Caps streamed message, reasoning, and plan text per item and per turn.
+    /// Caps streamed message, reasoning, and plan text, including proposed plan deltas, per item
+    /// and per turn.
     ///
     /// The delta that crosses a cap keeps its fitting prefix and a visible notice; later text for
     /// that item, or for the whole turn, is not stored. The turn itself keeps running.
     fn bound_streamed_text(&mut self, request: &mut AppendCanonicalEventRequest) -> TextAdmission {
-        let CanonicalEvent::ContentDelta(delta) = &mut request.runtime.event else {
-            return TextAdmission::Keep;
+        let (item_key, text) = match &mut request.runtime.event {
+            CanonicalEvent::ContentDelta(delta)
+                if !matches!(
+                    delta.stream_kind,
+                    ContentStreamKind::CommandOutput | ContentStreamKind::FileChangeOutput
+                ) =>
+            {
+                (
+                    format!("{}\0{:?}", delta.item_id, delta.stream_kind),
+                    &mut delta.delta,
+                )
+            }
+            CanonicalEvent::ProposedPlanDelta(delta) => (
+                format!("{}\0{:?}", delta.plan_id, ContentStreamKind::PlanText),
+                &mut delta.delta,
+            ),
+            _ => return TextAdmission::Keep,
         };
-        if matches!(
-            delta.stream_kind,
-            ContentStreamKind::CommandOutput | ContentStreamKind::FileChangeOutput
-        ) {
-            return TextAdmission::Keep;
-        }
         let budget = self
             .text_budgets
             .entry(request.runtime.thread_id.as_str().to_string())
@@ -163,7 +176,6 @@ impl ChatEventIngestor {
         if budget.exhausted {
             return TextAdmission::Drop;
         }
-        let item_key = format!("{}\0{:?}", delta.item_id, delta.stream_kind);
         let item_retained = budget.items.get(&item_key).copied().unwrap_or(0);
         if item_retained >= MAX_STREAMED_ITEM_TEXT_BYTES {
             return TextAdmission::Drop;
@@ -177,7 +189,7 @@ impl ChatEventIngestor {
         let turn_remaining =
             MAX_TURN_STREAMED_TEXT_BYTES.saturating_sub(budget.retained + overhead);
         let item_remaining = MAX_STREAMED_ITEM_TEXT_BYTES - item_retained;
-        let length = delta.delta.len();
+        let length = text.len();
         if length <= turn_remaining && length <= item_remaining {
             budget.retained += overhead + length;
             budget.items.insert(item_key, item_retained + length);
@@ -189,7 +201,7 @@ impl ChatEventIngestor {
         } else {
             (item_remaining, ITEM_TEXT_TRUNCATION_NOTICE)
         };
-        delta.delta = format!("{}{notice}", truncate_utf8(&delta.delta, kept));
+        *text = format!("{}{notice}", truncate_utf8(text, kept));
         budget.retained = budget.retained.saturating_add(overhead + kept);
         budget.items.insert(item_key, MAX_STREAMED_ITEM_TEXT_BYTES);
         TextAdmission::Truncated
@@ -255,19 +267,28 @@ fn merge_adjacent_delta(
     {
         return false;
     }
-    let (CanonicalEvent::ContentDelta(pending_delta), CanonicalEvent::ContentDelta(next_delta)) =
-        (&mut pending.runtime.event, &next.runtime.event)
-    else {
-        return false;
+    let (pending_text, next_text) = match (&mut pending.runtime.event, &next.runtime.event) {
+        (CanonicalEvent::ContentDelta(pending_delta), CanonicalEvent::ContentDelta(next_delta))
+            if pending_delta.item_id == next_delta.item_id
+                && pending_delta.stream_kind == next_delta.stream_kind
+                && pending_delta.content_index == next_delta.content_index =>
+        {
+            (&mut pending_delta.delta, &next_delta.delta)
+        }
+        (
+            CanonicalEvent::ProposedPlanDelta(pending_delta),
+            CanonicalEvent::ProposedPlanDelta(next_delta),
+        ) if pending_delta.plan_id == next_delta.plan_id
+            && pending_delta.content_index == next_delta.content_index =>
+        {
+            (&mut pending_delta.delta, &next_delta.delta)
+        }
+        _ => return false,
     };
-    if pending_delta.item_id != next_delta.item_id
-        || pending_delta.stream_kind != next_delta.stream_kind
-        || pending_delta.content_index != next_delta.content_index
-        || pending_delta.delta.len() + next_delta.delta.len() > MAX_DELTA_BATCH_BYTES
-    {
+    if pending_text.len() + next_text.len() > MAX_DELTA_BATCH_BYTES {
         return false;
     }
-    pending_delta.delta.push_str(&next_delta.delta);
+    pending_text.push_str(next_text);
     pending.runtime.created_at = next.runtime.created_at.clone();
     pending.ingested_at = next.ingested_at.clone();
     true

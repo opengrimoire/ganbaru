@@ -27,7 +27,7 @@
 </script>
 
 <div class="flex items-baseline gap-2">
-  <p class={["min-w-0 flex-1 truncate text-xs", disabled ? "text-muted-foreground" : "font-semibold"]}>{title}</p>
+  <p class={["min-w-0 flex-1 truncate text-xs", disabled && "text-muted-foreground"]}>{title}</p>
   {#if !disabled}<span class="shrink-0 text-panel-detail tabular-nums text-muted-foreground">{adjustmentText}</span>{/if}
 </div>
 <div class="flex min-h-9 items-center gap-2">

@@ -1,6 +1,6 @@
 <script lang="ts">
   import AudioLines from "@lucide/svelte/icons/audio-lines";
-  import CloudRain from "@lucide/svelte/icons/cloud-rain";
+  import Layers from "@lucide/svelte/icons/layers";
   import LayoutGrid from "@lucide/svelte/icons/layout-grid";
   import ListMusic from "@lucide/svelte/icons/list-music";
   import Pencil from "@lucide/svelte/icons/pencil";
@@ -70,8 +70,8 @@
     <div class="shrink-0 p-2"><h2 class="px-1 text-[0.68rem] font-semibold text-muted-foreground">{t("music.builder.soundscapes")}</h2></div>
     <div class="min-h-0 flex-1 overflow-y-auto px-1.5 pb-2">
       <button type="button" class:active-row={soundscapeFilter === "all"} class="context-row" onclick={() => onSoundscapeFilter("all")}><span class="context-icon"><LayoutGrid size={14} /></span><span class="min-w-0 flex-1 truncate">{t("music.soundscape.all")}</span><span class="context-count">{soundscape.presets.length + soundscape.definitions.length}</span></button>
-      <button type="button" class:active-row={soundscapeFilter === "presets"} class="context-row" onclick={() => onSoundscapeFilter("presets")}><span class="context-icon"><CloudRain size={14} /></span><span class="min-w-0 flex-1 truncate">{t("music.soundscape.choice.presets")}</span><span class="context-count">{soundscape.presets.length}</span></button>
-      <button type="button" class:active-row={soundscapeFilter === "layers"} class="context-row" onclick={() => onSoundscapeFilter("layers")}><span class="context-icon"><AudioLines size={14} /></span><span class="min-w-0 flex-1 truncate">{t("music.soundscape.layers")}</span><span class="context-count">{soundscape.definitions.length}</span></button>
+      <button type="button" class:active-row={soundscapeFilter === "presets"} class="context-row" onclick={() => onSoundscapeFilter("presets")}><span class="context-icon"><AudioLines size={14} /></span><span class="min-w-0 flex-1 truncate">{t("music.soundscape.choice.presets")}</span><span class="context-count">{soundscape.presets.length}</span></button>
+      <button type="button" class:active-row={soundscapeFilter === "layers"} class="context-row" onclick={() => onSoundscapeFilter("layers")}><span class="context-icon"><Layers size={14} /></span><span class="min-w-0 flex-1 truncate">{t("music.soundscape.layers")}</span><span class="context-count">{soundscape.definitions.length}</span></button>
     </div>
   {/if}
 </div>

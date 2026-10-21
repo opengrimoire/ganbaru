@@ -11,7 +11,6 @@ import type {
 
 const api = vi.hoisted(() => ({
   getMusicSoundscapes: vi.fn(),
-  getMusicSoundscapeGroups: vi.fn(),
   getMusicSoundscapePresets: vi.fn(),
   getMusicSoundscapeState: vi.fn<() => Promise<MusicSoundscapeState>>(),
   getSoundscapeSnapshot: vi.fn<() => Promise<MusicSoundscapeSnapshot>>(),
@@ -36,7 +35,7 @@ const playing: MusicSoundscapeSnapshot = { ...idle, status: "playing", sourceId:
 function definition(id: string, overrides: Partial<MusicSoundscapeDefinition> = {}): MusicSoundscapeDefinition {
   return {
     id, sourceKind: "local-loop", generatedKind: null, availability: "available", localPath: `/${id}.ogg`,
-    bundledIdentity: null, name: id, icon: "lucide:audio-lines", groupId: null, createdAtMs: 1, updatedAtMs: 1, version: 1,
+    bundledIdentity: null, name: id, icon: "lucide:audio-lines", createdAtMs: 1, updatedAtMs: 1, version: 1,
     ...overrides,
   };
 }
@@ -57,7 +56,6 @@ beforeEach(() => {
   vi.resetModules();
   vi.clearAllMocks();
   api.getMusicSoundscapes.mockResolvedValue([noise, rain, fire]);
-  api.getMusicSoundscapeGroups.mockResolvedValue([]);
   api.getMusicSoundscapePresets.mockResolvedValue([calm]);
   api.getMusicSoundscapeState.mockResolvedValue(state);
   api.getSoundscapeSnapshot.mockResolvedValue(idle);
@@ -205,11 +203,11 @@ describe("single sounds as one-sound presets", () => {
     expect(api.upsertMusicSoundscapePreset).not.toHaveBeenCalled();
   });
 
-  it("gives a generated noise preset its rain icon", async () => {
+  it("gives a one-layer soundscape the layer's own icon", async () => {
     api.getMusicSoundscapePresets.mockResolvedValue([]);
     const store = await loadedStore();
-    const made = await store.makePresetFromSound(noise, "Windy rain");
-    expect(made.icon).toBe("lucide:cloud-rain-wind");
+    const made = await store.makePresetFromSound(noise, "White noise");
+    expect(made.icon).toBe(noise.icon);
   });
 });
 

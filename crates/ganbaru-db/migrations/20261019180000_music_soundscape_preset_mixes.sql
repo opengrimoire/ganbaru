@@ -11,15 +11,16 @@ ALTER TABLE music_soundscape_presets ADD COLUMN level REAL NOT NULL DEFAULT 0.5
 ALTER TABLE music_soundscape_preset_sounds ADD COLUMN level REAL NOT NULL DEFAULT 1.0
     CHECK (level >= 0.0 AND level <= 1.0);
 
--- Each generated rain sound starts as a one-sound preset so the soundscape controls are never empty.
-INSERT OR IGNORE INTO music_soundscape_presets (id, name, icon, created_at_ms, updated_at_ms, version)
-SELECT 'preset-' || sounds.id, seeds.name, seeds.icon,
+-- Each generated noise starts as a one-layer rain soundscape so the soundscape controls are never empty. The
+-- brightest texture sits lowest and the deepest sits above Music, so the three rains sound evenly loud.
+INSERT OR IGNORE INTO music_soundscape_presets (id, name, icon, level, created_at_ms, updated_at_ms, version)
+SELECT 'preset-' || sounds.id, seeds.name, seeds.icon, seeds.level,
        CAST(strftime('%s', 'now') AS INTEGER) * 1000, CAST(strftime('%s', 'now') AS INTEGER) * 1000, 1
 FROM music_soundscapes AS sounds
 JOIN (
-    SELECT 'generated-brown-noise' AS id, 'Soft rain' AS name, 'lucide:cloud-hail' AS icon
-    UNION ALL SELECT 'generated-pink-noise', 'Rain', 'lucide:cloud-rain'
-    UNION ALL SELECT 'generated-white-noise', 'Windy rain', 'lucide:cloud-rain-wind'
+    SELECT 'generated-brown-noise' AS id, 'Rain (soft)' AS name, 'lucide:cloud-hail' AS icon, 1.25 AS level
+    UNION ALL SELECT 'generated-pink-noise', 'Rain (moderate)', 'lucide:cloud-rain', 0.75
+    UNION ALL SELECT 'generated-white-noise', 'Rain (heavy)', 'lucide:cloud-rain-wind', 0.5
 ) AS seeds ON seeds.id = sounds.id;
 
 -- A sound some phase still names becomes its own preset under the same derived id.

@@ -21,14 +21,14 @@ const player = {
   playPlayback: vi.fn(async () => { player.isPlaying = true; }),
 };
 
-function sound(id: string, name: string, groupId: string | null = null): MusicSoundscapeDefinition {
+function sound(id: string, name: string): MusicSoundscapeDefinition {
   return {
     id, sourceKind: "local-loop", generatedKind: null, bundledIdentity: null, name, icon: "lucide:audio-lines",
-    groupId, availability: "available", localPath: `/sounds/${id}.ogg`, createdAtMs: 1, updatedAtMs: 1, version: 1,
+    availability: "available", localPath: `/sounds/${id}.ogg`, createdAtMs: 1, updatedAtMs: 1, version: 1,
   };
 }
 
-const baseDefinitions = [sound("rain", "Porch rain", "outside"), sound("cafe", "Café"), sound("fire", "Fireplace")];
+const baseDefinitions = [sound("rain", "Porch rain"), sound("cafe", "Café"), sound("fire", "Fireplace")];
 let definitions = baseDefinitions;
 let presets: MusicSoundscapePreset[] = [];
 
@@ -43,7 +43,6 @@ vi.mock("$lib/stores/soundscape.svelte", () => ({
     endPreview,
     definitions,
     presets,
-    groups: [{ id: "outside", name: "Outside", icon: "lucide:trees", createdAtMs: 1, updatedAtMs: 1, version: 1 }],
     persisted: { activePresetId: "other" },
     snapshot: { status: "playing" },
   }),
@@ -84,7 +83,7 @@ async function render(preset: MusicSoundscapePreset | null = null) {
 }
 
 function nameField(): HTMLInputElement {
-  return document.body.querySelector<HTMLInputElement>('input[aria-label="Preset name"]')!;
+  return document.body.querySelector<HTMLInputElement>('input[aria-label="Soundscape name"]')!;
 }
 
 function soundTile(name: string): HTMLButtonElement {
@@ -114,7 +113,7 @@ describe("Soundscape preset editor", () => {
     await render();
     expect([...document.body.querySelectorAll('button[aria-pressed="true"]')]).toHaveLength(0);
     expect(lastPreview()).toEqual({ sounds: [], level: DEFAULT_SOUNDSCAPE_PRESET_LEVEL });
-    expect(slider("Preset level").value).toBe("0");
+    expect(slider("Soundscape level").value).toBe("0");
   });
 
   it("previews picked sounds at full mix level and saves them in pick order", async () => {
@@ -140,7 +139,7 @@ describe("Soundscape preset editor", () => {
     expect(soundTile("Porch rain").getAttribute("aria-pressed")).toBe("true");
     expect(soundTile("Fireplace").getAttribute("aria-pressed")).toBe("false");
     expect(slider("Café level").value).toBe("60");
-    expect(slider("Preset level").value).toBe("-20");
+    expect(slider("Soundscape level").value).toBe("-20");
     expect(lastPreview()).toEqual({ sounds: evening.sounds, level: 0.8 });
     soundTile("Porch rain").click();
     await tick();
@@ -159,7 +158,7 @@ describe("Soundscape preset editor", () => {
 
   it("previews and saves the preset level and each sound's share of it", async () => {
     await render(evening);
-    slide("Preset level", 30);
+    slide("Soundscape level", 30);
     slide("Café level", 25);
     await tick();
     expect(lastPreview()).toEqual({ sounds: [{ soundscapeId: "rain", level: 1 }, { soundscapeId: "cafe", level: 0.25 }], level: 1.3 });
@@ -177,10 +176,13 @@ describe("Soundscape preset editor", () => {
     expect(slider("Fireplace level").value).toBe("100");
   });
 
-  it("groups sounds the way the builder does", async () => {
+  it("lists generated noise before local layers in one list", async () => {
+    const brown: MusicSoundscapeDefinition = { ...sound("generated-brown-noise", "Brown noise"), sourceKind: "generated-noise", generatedKind: "brown", localPath: null };
+    definitions = [...baseDefinitions, brown];
     await render();
-    const headings = [...document.body.querySelectorAll("h4")].map((heading) => heading.textContent);
-    expect(headings).toEqual(["Outside", "Other sounds"]);
+    const names = [...document.body.querySelectorAll<HTMLButtonElement>("button[aria-pressed]")].map((button) => button.textContent?.trim());
+    expect(names).toEqual(["Brown noise", "Porch rain", "Café", "Fireplace"]);
+    expect(document.body.querySelectorAll("h4")).toHaveLength(0);
   });
 
   it("silences the preview when listening is turned off and keeps the draft", async () => {
@@ -220,7 +222,7 @@ describe("Soundscape preset editor", () => {
     expect(document.body.querySelector('[role="status"]')).toBeNull();
     soundTile("Sound 15").click();
     await tick();
-    expect(document.body.querySelector('[role="status"]')?.textContent).toContain("up to 16 sounds");
+    expect(document.body.querySelector('[role="status"]')?.textContent).toContain("up to 16 layers");
     expect(soundTile("Sound 16").disabled).toBe(true);
   });
 

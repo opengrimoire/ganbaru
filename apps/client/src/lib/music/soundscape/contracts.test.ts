@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseMusicSoundscapeGroups, parseMusicSoundscapePresets, parseMusicSoundscapeSnapshot, parseMusicSoundscapes, parseMusicSoundscapeState } from "./contracts";
+import { parseMusicSoundscapePresets, parseMusicSoundscapeSnapshot, parseMusicSoundscapes, parseMusicSoundscapeState } from "./contracts";
 import { orderedGeneratedSounds } from "./presentation";
 
 describe("soundscape boundary contracts", () => {
@@ -11,7 +11,7 @@ describe("soundscape boundary contracts", () => {
       bundledIdentity: null,
       name: "Pink noise",
       icon: "lucide:audio-lines",
-      groupId: null,
+     
       availability: "available",
       localPath: null,
       createdAtMs: 1,
@@ -21,7 +21,7 @@ describe("soundscape boundary contracts", () => {
   });
 
   it("rejects unknown sources and malformed icons", () => {
-    const definition = { id: "x", sourceKind: "youtube", generatedKind: null, bundledIdentity: null, name: "X", icon: "lucide:audio-lines", groupId: null, availability: "available", localPath: null, createdAtMs: 1, updatedAtMs: 1, version: 1 };
+    const definition = { id: "x", sourceKind: "youtube", generatedKind: null, bundledIdentity: null, name: "X", icon: "lucide:audio-lines", availability: "available", localPath: null, createdAtMs: 1, updatedAtMs: 1, version: 1 };
     expect(() => parseMusicSoundscapes([definition])).toThrow("sourceKind");
     expect(() => parseMusicSoundscapes([{ ...definition, sourceKind: "local-loop", icon: "invalid" }])).toThrow("icon");
   });
@@ -39,13 +39,13 @@ describe("soundscape boundary contracts", () => {
   });
 
   it("accepts picker icons, rejects malformed icons, and keeps generated sounds in intensity order", () => {
-    const group = { id: "rain", name: "Rain", icon: "lucide:cloud-rain", createdAtMs: 1, updatedAtMs: 1, version: 1 };
-    expect(parseMusicSoundscapeGroups([group])[0].name).toBe("Rain");
-    expect(parseMusicSoundscapeGroups([{ ...group, icon: "emoji:🌧️" }])[0].icon).toBe("emoji:🌧️");
-    expect(() => parseMusicSoundscapeGroups([{ ...group, icon: "unknown" }])).toThrow("icon");
+    const preset = { id: "rain", name: "Rain", icon: "lucide:cloud-rain", level: 1, sounds: [], createdAtMs: 1, updatedAtMs: 1, version: 1 };
+    expect(parseMusicSoundscapePresets([preset])[0].icon).toBe("lucide:cloud-rain");
+    expect(parseMusicSoundscapePresets([{ ...preset, icon: "emoji:🌧️" }])[0].icon).toBe("emoji:🌧️");
+    expect(() => parseMusicSoundscapePresets([{ ...preset, icon: "unknown" }])).toThrow("icon");
     const definitions = ["white", "brown", "pink"].map((generatedKind) => ({
       id: generatedKind, sourceKind: "generated-noise", generatedKind, bundledIdentity: null,
-      name: generatedKind, icon: "lucide:audio-lines", groupId: null, availability: "available", localPath: null,
+      name: generatedKind, icon: "lucide:audio-lines", availability: "available", localPath: null,
       createdAtMs: 1, updatedAtMs: 1, version: 1,
     }));
     expect(orderedGeneratedSounds(parseMusicSoundscapes(definitions)).map((entry) => entry.generatedKind)).toEqual(["brown", "pink", "white"]);

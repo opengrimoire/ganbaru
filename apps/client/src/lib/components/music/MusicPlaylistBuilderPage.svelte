@@ -1140,7 +1140,7 @@
                 </div>
               {/if}
             {:else if destination.kind === "soundscapes"}
-              <button type="button" onclick={() => { if (contextViewState.soundscapeFilter === "generated" || contextViewState.soundscapeFilter === "presets") contextViewState.soundscapeFilter = "local"; soundscapeAddRequest += 1; }} class="toolbar-primary"><Plus size={13} />{t("music.soundscape.addLoop")}</button>
+              <button type="button" onclick={() => { if (contextViewState.soundscapeFilter === "presets") contextViewState.soundscapeFilter = "layers"; soundscapeAddRequest += 1; }} class="toolbar-primary"><Plus size={13} />{t("music.soundscape.addLoop")}</button>
             {/if}
           {/snippet}
         </MusicBuilderToolbar>
@@ -1282,7 +1282,7 @@
           onRemoveSnooze={(item) => removeItemSnoozes(item, null)}
         />
       {:else if destination.kind === "soundscapes"}
-        <MusicSoundscapeBuilder filter={contextViewState.soundscapeFilter} compact addRequest={soundscapeAddRequest} onPlaybackStart={takePlaybackOwnership} onGroupRemoved={() => contextViewState.soundscapeFilter = "local"} />
+        <MusicSoundscapeBuilder filter={contextViewState.soundscapeFilter} addRequest={soundscapeAddRequest} onPlaybackStart={takePlaybackOwnership} />
       {:else}
         <MusicBuilderOverview {destination} search={library.currentState.search} playlists={library.playlistSummaries} onNavigate={(next) => { void navigate(next); }} onPrimary={primaryAction} onImport={() => interchange.show("import")} onExport={() => interchange.show("export", destination.kind === "playlist" ? destination.playlistId : null)} compact />
       {/if}

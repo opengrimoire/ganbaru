@@ -225,21 +225,21 @@ fn fresh_vaults_seed_one_rain_preset_per_generated_sound() {
             vec![
                 (
                     "preset-generated-brown-noise".into(),
-                    "Soft rain".into(),
+                    "Rain (soft)".into(),
                     1.25,
                     "generated-brown-noise".into(),
                     1.0
                 ),
                 (
                     "preset-generated-pink-noise".into(),
-                    "Rain".into(),
+                    "Rain (moderate)".into(),
                     0.75,
                     "generated-pink-noise".into(),
                     1.0
                 ),
                 (
                     "preset-generated-white-noise".into(),
-                    "Windy rain".into(),
+                    "Rain (heavy)".into(),
                     0.5,
                     "generated-white-noise".into(),
                     1.0
@@ -253,6 +253,35 @@ fn fresh_vaults_seed_one_rain_preset_per_generated_sound() {
         .await
         .unwrap();
         assert_eq!(state, (None, 0));
+        let layers: Vec<(String, String)> =
+            sqlx::query_as("SELECT id, icon FROM music_soundscapes ORDER BY id")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            layers,
+            ["brown", "pink", "white"]
+                .map(|kind| (
+                    format!("generated-{kind}-noise"),
+                    "lucide:audio-lines".into()
+                ))
+                .to_vec()
+        );
+        let group_schema: i64 = sqlx::query_scalar(
+            "SELECT (SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'music_soundscape_groups')
+                + (SELECT COUNT(*) FROM pragma_table_info('music_soundscapes') WHERE name = 'group_id')",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(group_schema, 0);
+        let duplicate_generated = sqlx::query(
+            "INSERT INTO music_soundscapes (id, source_kind, generated_kind, name, availability, created_at_ms, updated_at_ms)
+             VALUES ('second-white', 'generated-noise', 'white', 'White noise', 'available', 1, 1)",
+        )
+        .execute(&pool)
+        .await;
+        assert!(duplicate_generated.is_err());
         for sql in [
             "UPDATE music_soundscape_presets SET level = 2.1",
             "UPDATE music_soundscape_preset_sounds SET level = 1.1",

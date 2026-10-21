@@ -10,12 +10,11 @@ import ProjectSettingsPlaylistRows from "./ProjectSettingsPlaylistRows.svelte";
 vi.mock("$lib/stores/soundscape.svelte", () => {
   const rain = {
     id: "rain", sourceKind: "local-loop", generatedKind: null, bundledIdentity: null, name: "Rain",
-    icon: "lucide:audio-lines", groupId: null, availability: "available", localPath: "/rain.ogg",
+    icon: "lucide:audio-lines", availability: "available", localPath: "/rain.ogg",
     createdAtMs: 1, updatedAtMs: 1, version: 1,
   };
   const store = {
     definitions: [rain],
-    groups: [],
     presets: [{ id: "evening", name: "Evening", icon: "lucide:moon", level: 0.5, sounds: [{ soundscapeId: "rain", level: 1 }], createdAtMs: 1, updatedAtMs: 1, version: 1 }],
     loading: false,
     ensureCatalog: async () => undefined,
@@ -139,7 +138,7 @@ describe("Project playlist rows", () => {
 
   it("flags a deleted soundscape preset so the phase can be repaired", async () => {
     await render(updateMusicAssignmentDraft([], "long-break", { soundscapeBehavior: "play-selected", soundscapePresetId: "deleted" }));
-    expect(target.querySelector('[aria-label="Long break soundscape"]')?.textContent).toContain("Selected preset is unavailable");
+    expect(target.querySelector('[aria-label="Long break soundscape"]')?.textContent).toContain("Selected soundscape is unavailable");
   });
 
   it("keeps an unavailable playlist explicit and lets the picker repair it", async () => {

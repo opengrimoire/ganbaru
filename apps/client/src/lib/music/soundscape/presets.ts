@@ -10,11 +10,11 @@ import {
   type MusicSoundscapePresetSound,
 } from "./contracts";
 
-/** Seeded one-sound rain presets keyed by id, with the English name they are stored under. */
+/** Seeded one-layer rain soundscapes keyed by id, with the English name they are stored under. */
 const SEEDED_RAIN_PRESETS: Readonly<Record<string, { kind: MusicGeneratedNoiseKind; storedName: string }>> = {
-  "preset-generated-brown-noise": { kind: "brown", storedName: "Soft rain" },
-  "preset-generated-pink-noise": { kind: "pink", storedName: "Rain" },
-  "preset-generated-white-noise": { kind: "white", storedName: "Windy rain" },
+  "preset-generated-brown-noise": { kind: "brown", storedName: "Rain (soft)" },
+  "preset-generated-pink-noise": { kind: "pink", storedName: "Rain (moderate)" },
+  "preset-generated-white-noise": { kind: "white", storedName: "Rain (heavy)" },
 };
 
 /** Level a sound joins a preset draft at: the full preset level. */
@@ -44,9 +44,9 @@ export function presetDisplayName(preset: Pick<MusicSoundscapePreset, "id" | "na
   return seeded && preset.name === seeded.storedName ? t(`music.soundscape.rainName.${seeded.kind}`) : preset.name;
 }
 
-/** Display name of a sound: generated sounds use their localized rain name. */
+/** Display name of a layer: generated noise uses its localized noise name. */
 export function soundDisplayName(definition: MusicSoundscapeDefinition, t: Translate): string {
-  return definition.generatedKind ? t(`music.soundscape.rainName.${definition.generatedKind}`) : definition.name;
+  return definition.generatedKind ? t(`music.soundscape.generatedName.${definition.generatedKind}`) : definition.name;
 }
 
 /** Add or remove one sound from a preset draft, keeping order and never growing past the layer limit. */

@@ -1,5 +1,4 @@
 <script lang="ts">
-  import Check from "@lucide/svelte/icons/check";
   import Ellipsis from "@lucide/svelte/icons/ellipsis";
   import { onMount } from "svelte";
   import IconPicker from "$lib/components/icon-picker/IconPicker.svelte";
@@ -9,7 +8,6 @@
   import { NEW_LAYER_ICON } from "$lib/music/soundscape/presentation";
   import { singleSoundPreset } from "$lib/music/soundscape/presets";
   import { getSoundscapeStore } from "$lib/stores/soundscape.svelte";
-  import { scrollEdgeFadeAction } from "$lib/utils/scroll-edge-fade";
   import MusicSoundscapeIcon from "./MusicSoundscapeIcon.svelte";
 
   let { definition, onRepair, onRemove, onPlaybackStart }: {
@@ -51,7 +49,6 @@
         bundledIdentity: definition.bundledIdentity,
         name,
         icon: iconDraft,
-        groupId: definition.groupId,
         localPath: definition.localPath,
         expectedVersion: definition.version,
         updatedAtMs: Date.now(),
@@ -59,27 +56,6 @@
       editing = false;
     } catch (error) {
       console.error("Could not edit soundscape sound", error);
-    }
-  }
-
-  async function moveToGroup(groupId: string | null): Promise<void> {
-    menuOpen = false;
-    if (definition.groupId === groupId) return;
-    try {
-      await soundscape.saveDefinition({
-        id: definition.id,
-        sourceKind: definition.sourceKind,
-        generatedKind: definition.generatedKind,
-        bundledIdentity: definition.bundledIdentity,
-        name: definition.name,
-        icon: definition.icon,
-        groupId,
-        localPath: definition.localPath,
-        expectedVersion: definition.version,
-        updatedAtMs: Date.now(),
-      });
-    } catch (error) {
-      console.error("Could not move soundscape sound", error);
     }
   }
 </script>
@@ -108,13 +84,6 @@
       <button type="button" class="menu-item" onclick={() => { menuOpen = false; nameDraft = definition.name; iconDraft = definition.icon; editing = true; }}>{t("music.soundscape.editSound")}</button>
       {#if !solo && definition.availability === "available"}<button type="button" class="menu-item" disabled={soundscape.saving} onclick={() => { menuOpen = false; void soundscape.makePresetFromSound(definition, definition.name).catch((error) => console.error("Could not make soundscape preset", error)); }}>{t("music.soundscape.makePreset")}</button>{/if}
       {#if definition.localPath}<button type="button" class="menu-item" onclick={() => { menuOpen = false; if (definition.localPath) void revealLocalFile(definition.localPath); }}>{t("music.soundscape.showFile")}</button>{/if}
-      {#if soundscape.groups.length > 0}
-        <p class="menu-label">{t("music.soundscape.moveToGroup")}</p>
-        <div use:scrollEdgeFadeAction class="max-h-32 overflow-y-auto" data-music-scrollable="true">
-          <button type="button" class="menu-item" aria-current={definition.groupId === null ? "true" : undefined} onclick={() => { void moveToGroup(null); }}><span class="min-w-0 flex-1 truncate">{t("music.soundscape.ungrouped")}</span>{#if definition.groupId === null}<Check size={14} />{/if}</button>
-          {#each soundscape.groups as group (group.id)}<button type="button" class="menu-item" aria-current={definition.groupId === group.id ? "true" : undefined} onclick={() => { void moveToGroup(group.id); }}><span class="min-w-0 flex-1 truncate">{group.name}</span>{#if definition.groupId === group.id}<Check size={14} />{/if}</button>{/each}
-        </div>
-      {/if}
       <div class="menu-separator" role="separator"></div>
       <button type="button" class="menu-item menu-item-destructive" onclick={() => { menuOpen = false; onRemove(definition); }}>{t("music.soundscape.remove")}</button>
     </div>

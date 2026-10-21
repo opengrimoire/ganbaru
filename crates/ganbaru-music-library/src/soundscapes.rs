@@ -15,7 +15,6 @@ type DefinitionRow = (
     Option<String>,
     String,
     String,
-    Option<String>,
     String,
     i64,
     i64,
@@ -32,7 +31,7 @@ pub async fn definitions(
     local_paths: &BTreeMap<String, String>,
 ) -> MusicLibraryResult<Vec<MusicSoundscapeDefinition>> {
     let rows = sqlx::query_as::<_, DefinitionRow>(
-        "SELECT id, source_kind, generated_kind, bundled_identity, name, icon, group_id,
+        "SELECT id, source_kind, generated_kind, bundled_identity, name, icon,
                 availability, created_at_ms, updated_at_ms, version
          FROM music_soundscapes
          ORDER BY CASE generated_kind
@@ -120,16 +119,15 @@ pub async fn upsert(
     let version = existing.as_ref().map(|row| row.1 + 1).unwrap_or(1);
     sqlx::query(
         "INSERT INTO music_soundscapes
-            (id, source_kind, generated_kind, bundled_identity, name, icon, group_id, availability,
+            (id, source_kind, generated_kind, bundled_identity, name, icon, availability,
              created_at_ms, updated_at_ms, version)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(id) DO UPDATE SET
             source_kind = excluded.source_kind,
             generated_kind = excluded.generated_kind,
             bundled_identity = excluded.bundled_identity,
             name = excluded.name,
             icon = excluded.icon,
-            group_id = excluded.group_id,
             availability = excluded.availability,
             updated_at_ms = excluded.updated_at_ms,
             version = excluded.version",
@@ -144,7 +142,6 @@ pub async fn upsert(
     .bind(&request.bundled_identity)
     .bind(request.name.trim())
     .bind(&request.icon)
-    .bind(&request.group_id)
     .bind(MusicSoundscapeAvailability::Available.as_ref())
     .bind(created_at_ms)
     .bind(request.updated_at_ms)
@@ -292,15 +289,6 @@ fn validate_write(request: &MusicSoundscapeWrite) -> MusicLibraryResult<()> {
         ));
     }
     super::validate_icon(&request.icon)?;
-    if let Some(group_id) = &request.group_id {
-        validate_id(group_id, "groupId")?;
-        if request.source_kind != MusicSoundscapeSourceKind::LocalLoop {
-            return Err(MusicLibraryError::validation(
-                "groupId",
-                "only local sounds can belong to a group",
-            ));
-        }
-    }
     if request.updated_at_ms <= 0 {
         return Err(MusicLibraryError::validation(
             "updatedAt",
@@ -417,14 +405,13 @@ fn decode_definition(row: DefinitionRow) -> MusicLibraryResult<MusicSoundscapeDe
         bundled_identity: row.3,
         name: row.4,
         icon: row.5,
-        group_id: row.6,
-        availability: MusicSoundscapeAvailability::try_from(row.7.as_str()).map_err(|message| {
+        availability: MusicSoundscapeAvailability::try_from(row.6.as_str()).map_err(|message| {
             MusicLibraryError::runtime("decode soundscape availability", message)
         })?,
         local_path: None,
-        created_at_ms: row.8,
-        updated_at_ms: row.9,
-        version: row.10,
+        created_at_ms: row.7,
+        updated_at_ms: row.8,
+        version: row.9,
     })
 }
 
@@ -544,7 +531,6 @@ mod tests {
                     bundled_identity: None,
                     name: "Rain".into(),
                     icon: "lucide:cloud-rain".into(),
-                    group_id: None,
                     local_path: Some(path.to_string_lossy().into_owned()),
                     expected_version: None,
                     updated_at_ms: 1_700_000_000_000,
@@ -579,7 +565,6 @@ mod tests {
                 bundled_identity: None,
                 name: saved.name.clone(),
                 icon: "unknown".into(),
-                group_id: None,
                 local_path: saved.local_path.clone(),
                 expected_version: Some(saved.version),
                 updated_at_ms: 1_700_000_000_001,
@@ -670,7 +655,6 @@ mod tests {
                     bundled_identity: None,
                     name: "Rain at night".into(),
                     icon: "emoji:🌧️".into(),
-                    group_id: None,
                     local_path: Some(path.to_string_lossy().into_owned()),
                     expected_version: Some(saved.version),
                     updated_at_ms: 1_700_000_000_004,
@@ -690,7 +674,6 @@ mod tests {
                     bundled_identity: None,
                     name: "Rain overnight".into(),
                     icon: renamed.icon.clone(),
-                    group_id: None,
                     local_path: None,
                     expected_version: Some(renamed.version),
                     updated_at_ms: 1_700_000_000_005,

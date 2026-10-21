@@ -1,13 +1,11 @@
 import {
   getMusicSoundscapes,
-  getMusicSoundscapeGroups,
   getMusicSoundscapePresets,
   getSoundscapeSnapshot,
   getMusicSoundscapeState,
   pauseSoundscape,
   recoverSoundscape,
   removeMusicSoundscape,
-  removeMusicSoundscapeGroup,
   removeMusicSoundscapePreset,
   resumeSoundscape,
   saveMusicSoundscapePresetLevel,
@@ -17,13 +15,10 @@ import {
   stopSoundscape,
   updateMusicSoundscapeState,
   upsertMusicSoundscape,
-  upsertMusicSoundscapeGroup,
   upsertMusicSoundscapePreset,
 } from "$lib/api/soundscape";
 import type {
   MusicSoundscapeDefinition,
-  MusicSoundscapeGroup,
-  MusicSoundscapeGroupWrite,
   MusicSoundscapePreset,
   MusicSoundscapePresetSound,
   MusicSoundscapePresetWrite,
@@ -38,7 +33,6 @@ import {
   MAX_SOUNDSCAPE_PRESET_LEVEL,
 } from "$lib/music/soundscape/contracts";
 import { DEFAULT_PRESET_SOUND_LEVEL, singleSoundPreset } from "$lib/music/soundscape/presets";
-import { GENERATED_RAIN_ICONS } from "$lib/music/soundscape/presentation";
 
 /** Delay before a dragged preset level is saved, so a slider gesture writes once. */
 const PRESET_LEVEL_SAVE_DELAY_MS = 180;
@@ -65,7 +59,6 @@ interface SoundscapePreview {
 
 class SoundscapeStore {
   definitions = $state<MusicSoundscapeDefinition[]>([]);
-  groups = $state<MusicSoundscapeGroup[]>([]);
   presets = $state<MusicSoundscapePreset[]>([]);
   persisted = $state<MusicSoundscapeState | null>(null);
   snapshot = $state<MusicSoundscapeSnapshot>(IDLE_SNAPSHOT);
@@ -96,17 +89,15 @@ class SoundscapeStore {
     this.loading = true;
     this.error = null;
     try {
-      const [definitions, persisted, groups, presets, snapshot] = await Promise.all([
+      const [definitions, persisted, presets, snapshot] = await Promise.all([
         getMusicSoundscapes(),
         getMusicSoundscapeState(),
-        getMusicSoundscapeGroups(),
         getMusicSoundscapePresets(),
         getSoundscapeSnapshot(),
       ]);
       if (generation !== this.generation) return;
       this.catalogReady = true;
       this.definitions = definitions;
-      this.groups = groups;
       this.presets = presets;
       this.persisted = persisted;
       this.snapshot = snapshot;
@@ -122,7 +113,7 @@ class SoundscapeStore {
   }
 
   /**
-   * Loads sounds, groups, and presets for pickers in windows that do not own playback.
+   * Loads layers and soundscapes for pickers in windows that do not own playback.
    * It never reads or restores playback state, so detached windows cannot start output.
    */
   async ensureCatalog(): Promise<void> {
@@ -130,15 +121,13 @@ class SoundscapeStore {
     const generation = this.generation;
     this.loading = true;
     try {
-      const [definitions, groups, presets] = await Promise.all([
+      const [definitions, presets] = await Promise.all([
         getMusicSoundscapes(),
-        getMusicSoundscapeGroups(),
         getMusicSoundscapePresets(),
       ]);
       if (generation !== this.generation) return;
       this.catalogReady = true;
       this.definitions = definitions;
-      this.groups = groups;
       this.presets = presets;
       this.catalogLoaded = true;
     } catch (error) {
@@ -387,7 +376,6 @@ class SoundscapeStore {
     this.preview = null;
     this.previewTarget = null;
     this.definitions = [];
-    this.groups = [];
     this.presets = [];
     this.catalogLoaded = false;
     this.catalogReady = false;
@@ -433,28 +421,6 @@ class SoundscapeStore {
     }
   }
 
-  async saveGroup(write: MusicSoundscapeGroupWrite): Promise<void> {
-    this.saving = true;
-    this.error = null;
-    try {
-      const saved = await upsertMusicSoundscapeGroup(write);
-      this.groups = [...this.groups.filter((entry) => entry.id !== saved.id), saved]
-        .sort((left, right) => left.name.localeCompare(right.name));
-    } catch (error) { this.error = message(error); throw error; }
-    finally { this.saving = false; }
-  }
-
-  async removeGroup(group: MusicSoundscapeGroup): Promise<void> {
-    this.saving = true;
-    this.error = null;
-    try {
-      await removeMusicSoundscapeGroup(group.id, group.version);
-      this.groups = this.groups.filter((entry) => entry.id !== group.id);
-      this.definitions = this.definitions.map((entry) => entry.groupId === group.id ? { ...entry, groupId: null } : entry);
-    } catch (error) { this.error = message(error); throw error; }
-    finally { this.saving = false; }
-  }
-
   /** Creates or updates a preset and returns the stored row. */
   async savePreset(write: MusicSoundscapePresetWrite): Promise<MusicSoundscapePreset> {
     this.saving = true;
@@ -479,7 +445,7 @@ class SoundscapeStore {
     return this.savePreset({
       id: crypto.randomUUID(),
       name,
-      icon: definition.generatedKind ? GENERATED_RAIN_ICONS[definition.generatedKind] : definition.icon,
+      icon: definition.icon,
       level: DEFAULT_SOUNDSCAPE_PRESET_LEVEL,
       sounds: [{ soundscapeId: definition.id, level: DEFAULT_PRESET_SOUND_LEVEL }],
       expectedVersion: null,

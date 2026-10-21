@@ -13,7 +13,6 @@ export interface MusicSoundscapeDefinition {
   bundledIdentity: string | null;
   name: string;
   icon: string;
-  groupId: string | null;
   availability: MusicSoundscapeAvailability;
   localPath: string | null;
   createdAtMs: number;
@@ -28,7 +27,6 @@ export interface MusicSoundscapeWrite {
   bundledIdentity: string | null;
   name: string;
   icon: string;
-  groupId: string | null;
   localPath: string | null;
   expectedVersion: number | null;
   updatedAtMs: number;
@@ -42,23 +40,6 @@ export interface MusicSoundscapeState {
   desiredPlaying: boolean;
   updatedAtMs: number;
   version: number;
-}
-
-export interface MusicSoundscapeGroup {
-  id: string;
-  name: string;
-  icon: string;
-  createdAtMs: number;
-  updatedAtMs: number;
-  version: number;
-}
-
-export interface MusicSoundscapeGroupWrite {
-  id: string;
-  name: string;
-  icon: string;
-  expectedVersion: number | null;
-  updatedAtMs: number;
 }
 
 /** Highest preset level: twice the Music volume setting before output clamps at full scale. */
@@ -154,28 +135,12 @@ export function parseMusicSoundscape(value: unknown, label = "soundscape"): Musi
     bundledIdentity: optionalText(row.bundledIdentity, `${label}.bundledIdentity`),
     name: text(row.name, `${label}.name`),
     icon: iconText(row.icon, `${label}.icon`),
-    groupId: optionalText(row.groupId, `${label}.groupId`),
     availability: enumeration(row.availability, availability, `${label}.availability`),
     localPath: optionalText(row.localPath, `${label}.localPath`),
     createdAtMs: integer(row.createdAtMs, `${label}.createdAtMs`),
     updatedAtMs: integer(row.updatedAtMs, `${label}.updatedAtMs`),
     version: integer(row.version, `${label}.version`),
   };
-}
-export function parseMusicSoundscapeGroup(value: unknown, label = "sound group"): MusicSoundscapeGroup {
-  const row = record(value, label);
-  return {
-    id: text(row.id, `${label}.id`),
-    name: text(row.name, `${label}.name`),
-    icon: iconText(row.icon, `${label}.icon`),
-    createdAtMs: integer(row.createdAtMs, `${label}.createdAtMs`),
-    updatedAtMs: integer(row.updatedAtMs, `${label}.updatedAtMs`),
-    version: integer(row.version, `${label}.version`),
-  };
-}
-export function parseMusicSoundscapeGroups(value: unknown): MusicSoundscapeGroup[] {
-  if (!Array.isArray(value)) throw new Error("sound groups must be an array");
-  return value.map((entry, index) => parseMusicSoundscapeGroup(entry, `sound groups[${index}]`));
 }
 export function parseMusicSoundscapes(value: unknown): MusicSoundscapeDefinition[] {
   if (!Array.isArray(value)) throw new Error("soundscapes must be an array");

@@ -27,7 +27,6 @@ mod rows;
 pub mod search;
 pub mod session;
 #[cfg(desktop)]
-pub mod soundscape_groups;
 #[cfg(desktop)]
 pub mod soundscape_presets;
 #[cfg(desktop)]

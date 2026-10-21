@@ -2,16 +2,12 @@ import { invoke } from "@tauri-apps/api/core";
 import { dbUrl } from "$lib/api/db";
 import {
   parseMusicSoundscape,
-  parseMusicSoundscapeGroup,
-  parseMusicSoundscapeGroups,
   parseMusicSoundscapePreset,
   parseMusicSoundscapePresets,
   parseMusicSoundscapes,
   parseMusicSoundscapeSnapshot,
   parseMusicSoundscapeState,
   type MusicSoundscapeDefinition,
-  type MusicSoundscapeGroup,
-  type MusicSoundscapeGroupWrite,
   type MusicSoundscapePreset,
   type MusicSoundscapePresetWrite,
   type MusicSoundscapeSnapshot,
@@ -22,9 +18,6 @@ import {
 } from "$lib/music/soundscape/contracts";
 
 export const getMusicSoundscapes = async (): Promise<MusicSoundscapeDefinition[]> => parseMusicSoundscapes(await invoke<unknown>("music_library_soundscapes", { dbUrl: dbUrl() }));
-export const getMusicSoundscapeGroups = async (): Promise<MusicSoundscapeGroup[]> => parseMusicSoundscapeGroups(await invoke<unknown>("music_library_soundscape_groups", { dbUrl: dbUrl() }));
-export const upsertMusicSoundscapeGroup = async (request: MusicSoundscapeGroupWrite): Promise<MusicSoundscapeGroup> => parseMusicSoundscapeGroup(await invoke<unknown>("music_library_upsert_soundscape_group", { dbUrl: dbUrl(), request }));
-export const removeMusicSoundscapeGroup = (groupId: string, expectedVersion: number): Promise<void> => invoke("music_library_remove_soundscape_group", { dbUrl: dbUrl(), groupId, expectedVersion });
 export const getMusicSoundscapePresets = async (): Promise<MusicSoundscapePreset[]> => parseMusicSoundscapePresets(await invoke<unknown>("music_library_soundscape_presets", { dbUrl: dbUrl() }));
 export const upsertMusicSoundscapePreset = async (request: MusicSoundscapePresetWrite): Promise<MusicSoundscapePreset> => parseMusicSoundscapePreset(await invoke<unknown>("music_library_upsert_soundscape_preset", { dbUrl: dbUrl(), request }));
 export const removeMusicSoundscapePreset = (presetId: string, expectedVersion: number): Promise<void> => invoke("music_library_remove_soundscape_preset", { dbUrl: dbUrl(), presetId, expectedVersion });

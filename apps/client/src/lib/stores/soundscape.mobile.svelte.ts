@@ -1,7 +1,5 @@
 import type {
   MusicSoundscapeDefinition,
-  MusicSoundscapeGroup,
-  MusicSoundscapeGroupWrite,
   MusicSoundscapePreset,
   MusicSoundscapePresetWrite,
   MusicSoundscapeSnapshot,
@@ -14,7 +12,6 @@ const UNAVAILABLE = "Soundscapes are unavailable on this platform.";
 
 class MobileSoundscapeStore {
   definitions = $state<MusicSoundscapeDefinition[]>([]);
-  groups = $state<MusicSoundscapeGroup[]>([]);
   presets = $state<MusicSoundscapePreset[]>([]);
   persisted = $state<MusicSoundscapeState | null>(null);
   snapshot = $state<MusicSoundscapeSnapshot>({ status: "idle", sourceId: null, errorCode: null });
@@ -51,8 +48,6 @@ class MobileSoundscapeStore {
   async switchVault(_nextVaultId: string | null): Promise<void> {}
   async saveDefinition(_write: MusicSoundscapeWrite): Promise<void> {}
   async removeDefinition(_definition: MusicSoundscapeDefinition): Promise<void> {}
-  async saveGroup(_write: MusicSoundscapeGroupWrite): Promise<void> {}
-  async removeGroup(_group: MusicSoundscapeGroup): Promise<void> {}
   async savePreset(_write: MusicSoundscapePresetWrite): Promise<MusicSoundscapePreset> {
     throw new Error(UNAVAILABLE);
   }

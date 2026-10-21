@@ -9,13 +9,14 @@ import {
   presetSoundNames,
   setPresetDraftSoundLevel,
   singleSoundPreset,
+  soundDisplayName,
   togglePresetDraftSound,
 } from "./presets";
 
 function sound(id: string, name: string): MusicSoundscapeDefinition {
   return {
     id, sourceKind: "local-loop", generatedKind: null, bundledIdentity: null, name, icon: "lucide:audio-lines",
-    groupId: null, availability: "available", localPath: `/sounds/${id}.ogg`, createdAtMs: 1, updatedAtMs: 1, version: 1,
+    availability: "available", localPath: `/sounds/${id}.ogg`, createdAtMs: 1, updatedAtMs: 1, version: 1,
   };
 }
 
@@ -85,8 +86,17 @@ describe("soundscape preset names", () => {
   const t = ((key: string) => `translated:${key}`) as Translate;
 
   it("localizes seeded rain presets until the listener renames them", () => {
-    expect(presetDisplayName({ id: "preset-generated-pink-noise", name: "Rain" }, t)).toBe("translated:music.soundscape.rainName.pink");
+    expect(presetDisplayName({ id: "preset-generated-pink-noise", name: "Rain (moderate)" }, t)).toBe("translated:music.soundscape.rainName.pink");
     expect(presetDisplayName({ id: "preset-generated-pink-noise", name: "Desk rain" }, t)).toBe("Desk rain");
-    expect(presetDisplayName({ id: "evening", name: "Rain" }, t)).toBe("Rain");
+    expect(presetDisplayName({ id: "evening", name: "Rain (moderate)" }, t)).toBe("Rain (moderate)");
+  });
+});
+
+describe("soundscape layer names", () => {
+  const t = ((key: string) => `translated:${key}`) as Translate;
+
+  it("names generated layers by their localized noise and local layers by their stored name", () => {
+    expect(soundDisplayName({ ...sound("generated-brown-noise", "Brown noise"), sourceKind: "generated-noise", generatedKind: "brown", localPath: null }, t)).toBe("translated:music.soundscape.generatedName.brown");
+    expect(soundDisplayName(sound("thunder", "Thunder"), t)).toBe("Thunder");
   });
 });

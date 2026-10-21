@@ -27,7 +27,6 @@
   import MusicSoundscapeIcon from "./MusicSoundscapeIcon.svelte";
   import MusicSoundscapeLevelSlider from "./MusicSoundscapeLevelSlider.svelte";
   import MusicSoundscapeRelativeLevel from "./MusicSoundscapeRelativeLevel.svelte";
-  import MusicSoundscapeSoundIcon from "./MusicSoundscapeSoundIcon.svelte";
 
   const DEFAULT_PRESET_ICON = "lucide:layers";
   /** Mirrors the native preset name limit so the field never accepts a name the store rejects. */
@@ -62,7 +61,7 @@
     return definition ? [{ definition, level: sound.level }] : [];
   }));
   let listening = $state(true);
-  const sections = $derived(soundSections(soundscape.definitions));
+  const layers = $derived(orderedLayers(soundscape.definitions));
 
   onMount(() => {
     const resumesMusic = player.isPlaying;
@@ -94,21 +93,9 @@
     return preset ? preset.sounds.map((sound) => ({ ...sound })) : [];
   }
 
-  function soundSections(definitions: readonly MusicSoundscapeDefinition[]): { key: string; title: string; icon: string | null; sounds: MusicSoundscapeDefinition[] }[] {
-    const local = definitions.filter((entry) => entry.sourceKind === "local-loop");
-    const grouped = soundscape.groups.map((group) => ({ key: group.id, title: group.name, icon: group.icon, sounds: local.filter((entry) => entry.groupId === group.id) }));
-    const ungrouped = local.filter((entry) => !entry.groupId || !soundscape.groups.some((group) => group.id === entry.groupId));
-    return [
-      { key: "generated", title: t("music.soundscape.generated"), icon: null, sounds: orderedGeneratedSounds(definitions) },
-      ...grouped,
-      { key: "ungrouped", title: t("music.soundscape.ungrouped"), icon: null, sounds: ungrouped },
-    ].filter((section) => section.sounds.length > 0);
-  }
-
-  /** Tile tooltip: the repair state when the file is missing, otherwise the real noise type of a generated sound. */
-  function soundHint(definition: MusicSoundscapeDefinition): string | undefined {
-    if (definition.availability !== "available") return t("music.soundscape.needsRepair");
-    return definition.generatedKind ? t(`music.soundscape.generatedName.${definition.generatedKind}`) : undefined;
+  /** Layers in builder order: generated noise first, then local loops. */
+  function orderedLayers(definitions: readonly MusicSoundscapeDefinition[]): MusicSoundscapeDefinition[] {
+    return [...orderedGeneratedSounds(definitions), ...definitions.filter((entry) => entry.sourceKind === "local-loop")];
   }
 
   /** Keeps the stored name of an unrenamed seeded preset so it stays localized in every language. */
@@ -160,7 +147,7 @@
             {@const soundName = soundDisplayName(entry.definition, t)}
             {@const percent = Math.round(entry.level * 100)}
             <li class="flex h-8 items-center gap-2">
-              <span class="flex w-28 shrink-0 items-center gap-1.5 text-xs"><span class="shrink-0 text-muted-foreground"><MusicSoundscapeSoundIcon definition={entry.definition} size={14} /></span><span class="min-w-0 truncate">{soundName}</span></span>
+              <span class="flex w-28 shrink-0 items-center gap-1.5 text-xs"><span class="shrink-0 text-muted-foreground"><MusicSoundscapeIcon icon={entry.definition.icon} size={14} /></span><span class="min-w-0 truncate">{soundName}</span></span>
               <MusicSoundscapeLevelSlider id={`soundscape-preset-sound-${entry.definition.id}`} label={t("music.soundscape.preset.soundLevel", soundName)} value={percent} min={0} max={100} valueText={`${percent}%`} onchange={(value) => sounds = setPresetDraftSoundLevel(sounds, entry.definition.id, value / 100)} />
               <span class="w-11 shrink-0 text-right text-xs tabular-nums text-muted-foreground">{percent}%</span>
             </li>
@@ -177,19 +164,16 @@
       </div>
       {#if atLimit}<Notice class="mt-2 text-xs" tone="warning" role="status" copy={false} message={t("music.soundscape.preset.limitReached", MAX_SOUNDSCAPE_LAYERS)} />{/if}
 
-      {#each sections as section (section.key)}
-        <div class="mt-4 mb-2 flex items-center gap-1.5 text-[0.68rem] font-medium text-muted-foreground">{#if section.icon}<MusicSoundscapeIcon icon={section.icon} size={13} />{/if}<h4 class="min-w-0 truncate">{section.title}</h4></div>
-        <div class="grid grid-cols-2 gap-2 @sm:grid-cols-3">
-          {#each section.sounds as definition (definition.id)}
+      <div class="mt-2 grid grid-cols-2 gap-2 @sm:grid-cols-3">
+          {#each layers as definition (definition.id)}
             {@const picked = sounds.some((sound) => sound.soundscapeId === definition.id)}
-            <button type="button" aria-pressed={picked} disabled={!picked && atLimit} title={soundHint(definition)} class={`relative flex min-h-24 min-w-0 flex-col items-center justify-center gap-1.5 rounded-xl px-2 text-center ${picked ? "bg-primary/10 hover:bg-primary/15" : "bg-secondary/40 hover:bg-secondary/70 disabled:opacity-40"} ${definition.availability !== "available" ? "text-muted-foreground" : ""}`} onclick={() => sounds = togglePresetDraftSound(sounds, definition.id)}>
+            <button type="button" aria-pressed={picked} disabled={!picked && atLimit} title={definition.availability === "available" ? undefined : t("music.soundscape.needsRepair")} class={`relative flex min-h-24 min-w-0 flex-col items-center justify-center gap-1.5 rounded-xl px-2 text-center ${picked ? "bg-primary/10 hover:bg-primary/15" : "bg-secondary/40 hover:bg-secondary/70 disabled:opacity-40"} ${definition.availability !== "available" ? "text-muted-foreground" : ""}`} onclick={() => sounds = togglePresetDraftSound(sounds, definition.id)}>
               {#if picked}<span class="absolute top-2 right-2 grid h-4 w-4 place-items-center rounded-full bg-primary text-primary-foreground"><Check size={11} strokeWidth={2.5} /></span>{/if}
-              <MusicSoundscapeSoundIcon {definition} size={24} />
+              <MusicSoundscapeIcon icon={definition.icon} size={24} />
               <span class="max-w-full truncate text-xs font-medium">{soundDisplayName(definition, t)}</span>
             </button>
           {/each}
-        </div>
-      {/each}
+      </div>
     </section>
   </div>
 

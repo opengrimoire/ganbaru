@@ -659,7 +659,6 @@ pub struct MusicSoundscapeDefinition {
     pub bundled_identity: Option<String>,
     pub name: String,
     pub icon: String,
-    pub group_id: Option<String>,
     pub availability: MusicSoundscapeAvailability,
     pub local_path: Option<String>,
     pub created_at_ms: i64,
@@ -677,31 +676,7 @@ pub struct MusicSoundscapeWrite {
     pub bundled_identity: Option<String>,
     pub name: String,
     pub icon: String,
-    pub group_id: Option<String>,
     pub local_path: Option<String>,
-    pub expected_version: Option<i64>,
-    pub updated_at_ms: i64,
-}
-
-#[cfg(desktop)]
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct MusicSoundscapeGroup {
-    pub id: String,
-    pub name: String,
-    pub icon: String,
-    pub created_at_ms: i64,
-    pub updated_at_ms: i64,
-    pub version: i64,
-}
-
-#[cfg(desktop)]
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct MusicSoundscapeGroupWrite {
-    pub id: String,
-    pub name: String,
-    pub icon: String,
     pub expected_version: Option<i64>,
     pub updated_at_ms: i64,
 }

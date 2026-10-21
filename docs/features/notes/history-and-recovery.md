@@ -16,7 +16,7 @@ Mutations to page details, placement, lifecycle, child links, or blocks record a
 
 Version history renders the selected snapshot without live editing controls and lists localized time and author. Users can copy blocks from a version or restore it.
 
-Copy creates fresh block IDs and valid paired child pages where needed. Restore saves the current page first when history is enabled, then replaces page details and body through one transaction. It does not move the page to an old parent, which prevents a content restore from unexpectedly changing current navigation and access.
+Copy creates fresh block IDs and valid paired child pages where needed. Restore saves the current page first when history is enabled, then replaces page details and body through one transaction. It does not move the page to an old parent, which prevents a content restore from unexpectedly changing current navigation and access. For the same reason, a child page link in the version brings back the page itself only when that page still belongs to the restored page, including from Trash; a page that has since moved elsewhere stays where it is, and the link restores as a new child page with the recorded title.
 
 Copying a database block from page history creates an independent copy of its currently available database graph. A page snapshot does not contain historical database source and row graphs. Page-history restore therefore refuses pages or snapshots with local database content and directs users to project versions, preventing block replacement from deleting canonical database data.
 

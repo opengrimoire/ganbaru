@@ -9,6 +9,7 @@ import {
   DEFAULT_CALENDAR_DIM_PAST_EVENTS,
   DEFAULT_CALENDAR_VIEW_MODE,
   DEFAULT_MUSIC_PAUSE_ON_POMODORO_PAUSE,
+  DEFAULT_MUSIC_PAUSE_SOUNDSCAPE_WITH_MUSIC,
   DEFAULT_PROFILE_DISPLAY_NAME,
   DEFAULT_PROFILE_IMAGE_PATH,
   DEFAULT_PROFILE_FULL_NAME,
@@ -206,6 +207,10 @@ describe("language preferences", () => {
 describe("music pomodoro preferences", () => {
   it("pauses music on pomodoro pause by default", () => {
     expect(DEFAULT_MUSIC_PAUSE_ON_POMODORO_PAUSE).toBe(true);
+  });
+
+  it("pauses the soundscape with music by default", () => {
+    expect(DEFAULT_MUSIC_PAUSE_SOUNDSCAPE_WITH_MUSIC).toBe(true);
   });
 });
 

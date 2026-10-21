@@ -211,6 +211,9 @@ export const general = {
     pauseOnFocusPause: "Pause if the focus session is paused",
     pauseOnFocusPauseDescription:
       "Pauses music while focus is paused, then resumes when focus continues",
+    soundscapeHeading: "Soundscape",
+    pauseSoundscapeWithMusic: "Pause if music is paused",
+    pauseSoundscapeWithMusicDescription: "Resumes with music, and can still be paused alone",
   },
   data: {
     backupHeading: "Backups",

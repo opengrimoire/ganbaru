@@ -78,8 +78,9 @@
 
   onMount(() => {
     const resumesMusic = player.isPlaying;
-    if (resumesMusic) void player.pausePlayback("system");
+    // The preview records the soundscape before pausing Music can pause it too.
     void soundscape.beginPreview();
+    if (resumesMusic) void player.pausePlayback("system");
     return () => {
       void soundscape.endPreview();
       if (resumesMusic && !player.isPlaying) void player.playPlayback("system");

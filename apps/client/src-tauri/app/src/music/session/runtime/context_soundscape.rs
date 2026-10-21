@@ -56,14 +56,7 @@ pub(super) async fn prepare(
     ) {
         // A phase that chooses nothing stops a preset an earlier phase or event started, so it
         // never carries over, and leaves a soundscape the listener started by hand.
-        let automatic_playing: bool = sqlx::query_scalar(
-            "SELECT automatic_intent = 1 AND desired_playing = 1
-             FROM music_soundscape_state WHERE singleton = 1",
-        )
-        .fetch_one(&mut *connection)
-        .await
-        .map_err(|error| MusicLibraryError::database("read accepted soundscape intent", error))?;
-        if !automatic_playing {
+        if !automatic_playing(connection).await? {
             return Ok(empty(false));
         }
     }
@@ -96,6 +89,55 @@ pub(super) async fn prepare(
         version: Some(version),
         missing: false,
     })
+}
+
+/// Whether a phase or event started the soundscape and nobody has paused or replaced it since.
+pub(super) async fn automatic_playing(
+    connection: &mut sqlx::SqliteConnection,
+) -> MusicLibraryResult<bool> {
+    sqlx::query_scalar(
+        "SELECT automatic_intent = 1 AND desired_playing = 1
+         FROM music_soundscape_state WHERE singleton = 1",
+    )
+    .fetch_one(connection)
+    .await
+    .map_err(|error| MusicLibraryError::database("read accepted soundscape intent", error))
+}
+
+/// Ends the soundscape a phase or event started once no Focus run or Calendar event is active,
+/// so it never carries over. A soundscape the listener chose stays. Returns the new version when
+/// one ended.
+#[cfg(desktop)]
+pub(super) async fn release_automatic(
+    connection: &mut sqlx::SqliteConnection,
+) -> MusicLibraryResult<Option<i64>> {
+    sqlx::query_scalar(
+        "UPDATE music_soundscape_state
+         SET desired_playing = 0, version = version + 1, updated_at_ms = MAX(updated_at_ms + 1, ?)
+         WHERE singleton = 1 AND automatic_intent = 1 AND desired_playing = 1 RETURNING version",
+    )
+    .bind(now_ms())
+    .fetch_optional(connection)
+    .await
+    .map_err(|error| MusicLibraryError::database("release automatic soundscape", error))
+}
+
+/// Whether the accepted soundscape state still has the version an effect was prepared for, so a
+/// later explicit choice supersedes the effect.
+fn accepted_version_is_current(pool: &SqlitePool, accepted_version: Option<i64>) -> bool {
+    match tauri::async_runtime::block_on(async {
+        sqlx::query_scalar::<_, i64>(
+            "SELECT version FROM music_soundscape_state WHERE singleton = 1",
+        )
+        .fetch_optional(pool)
+        .await
+    }) {
+        Ok(version) => version == accepted_version,
+        Err(error) => {
+            eprintln!("soundscape state authority: {error}");
+            false
+        }
+    }
 }
 
 /// The preset as one engine request over its sounds available on this device, in playback order.
@@ -215,6 +257,64 @@ impl Owner {
             })?
     }
 
+    /// Silences a soundscape released by [`release_automatic`], then projects the released version.
+    ///
+    /// The release is already committed. A later choice that replaced it, or an audio device that
+    /// does not answer, leaves the output to the listener and is logged instead of reported as a
+    /// soundtrack failure.
+    #[cfg(desktop)]
+    pub(super) async fn silence_released_soundscape(
+        &mut self,
+        version: i64,
+    ) -> MusicLibraryResult<()> {
+        if let Err(error) = self.silence_output(version).await {
+            eprintln!("released soundscape: {error}");
+        }
+        self.state.soundscape_version = Some(version);
+        self.publish(false)
+    }
+
+    #[cfg(desktop)]
+    async fn silence_output(&self, version: i64) -> MusicLibraryResult<()> {
+        let delivery_permit =
+            tokio::time::timeout(DELIVERY_TIMEOUT, DELIVERY_GATE.clone().acquire_owned())
+                .await
+                .map_err(|_| {
+                    MusicLibraryError::conflict("An earlier soundscape delivery is still draining")
+                })?
+                .map_err(|error| {
+                    MusicLibraryError::runtime("wait for soundscape delivery", error)
+                })?;
+        let app = self.app.clone();
+        let pool = self.pool.as_ref().expect("initialized music pool").clone();
+        let lifecycle = self.lifecycle.clone();
+        let revision = lifecycle.current().revision;
+        let worker = tauri::async_runtime::spawn_blocking(move || {
+            let _delivery_permit = delivery_permit;
+            crate::music::soundscape::apply_automatic(
+                &app,
+                None,
+                Box::new(move || {
+                    lifecycle.matches(revision, LifecycleIntent::Active)
+                        && accepted_version_is_current(&pool, Some(version))
+                }),
+            )
+            .map(|_| ())
+            .map_err(|error| {
+                MusicLibraryError::runtime("silence released soundscape", format!("{error:?}"))
+            })
+        });
+        match tokio::time::timeout(DELIVERY_TIMEOUT, worker).await {
+            Ok(result) => result.map_err(|error| {
+                MusicLibraryError::runtime("receive released soundscape", error)
+            })?,
+            Err(_) => Err(MusicLibraryError::runtime(
+                "silence released soundscape",
+                "native acknowledgement timed out; the retained worker must drain",
+            )),
+        }
+    }
+
     pub(super) async fn deliver_context_soundscape(
         &mut self,
         prepared: PreparedSoundscape,
@@ -275,20 +375,7 @@ impl Owner {
                     }) {
                         return false;
                     }
-                    // A later explicit background-layer choice supersedes the prepared effect.
-                    match tauri::async_runtime::block_on(async {
-                        sqlx::query_scalar::<_, i64>(
-                            "SELECT version FROM music_soundscape_state WHERE singleton = 1",
-                        )
-                        .fetch_optional(&pool)
-                        .await
-                    }) {
-                        Ok(version) => version == accepted_version,
-                        Err(error) => {
-                            eprintln!("soundscape state authority: {error}");
-                            false
-                        }
-                    }
+                    accepted_version_is_current(&pool, accepted_version)
                 }),
             )
             .map_err(|error| {

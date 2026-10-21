@@ -110,6 +110,54 @@ async fn native_music_background_pause_and_unchosen_phases_stop_automatic_output
     assert!(!manual.automatic_intent);
 }
 
+#[cfg(desktop)]
+#[tokio::test]
+async fn native_music_ended_activity_releases_only_an_automatic_soundscape_once() {
+    let pool = super::super::context::test_pool().await;
+    let mut connection = pool.acquire().await.unwrap();
+    assert_eq!(release_automatic(&mut connection).await.unwrap(), None);
+    let playing = prepare(
+        &mut connection,
+        &BTreeMap::new(),
+        "play-selected",
+        Some(WHITE_PRESET),
+    )
+    .await
+    .unwrap();
+    assert!(automatic_playing(&mut connection).await.unwrap());
+    let released = release_automatic(&mut connection).await.unwrap();
+    assert_eq!(released, playing.version.map(|version| version + 1));
+    assert!(!automatic_playing(&mut connection).await.unwrap());
+    assert_eq!(release_automatic(&mut connection).await.unwrap(), None);
+    drop(connection);
+    let after = ganbaru_music_library::soundscapes::state(&pool)
+        .await
+        .unwrap();
+    assert!(after.automatic_intent && !after.desired_playing);
+    assert_eq!(after.active_preset_id.as_deref(), Some(WHITE_PRESET));
+
+    let manual = ganbaru_music_library::soundscapes::update_state(
+        &pool,
+        ganbaru_music_library::MusicSoundscapeStateWrite {
+            active_preset_id: Some(WHITE_PRESET.into()),
+            desired_playing: true,
+            expected_version: after.version,
+            updated_at_ms: after.updated_at_ms + 1,
+        },
+    )
+    .await
+    .unwrap();
+    let mut connection = pool.acquire().await.unwrap();
+    assert!(!automatic_playing(&mut connection).await.unwrap());
+    assert_eq!(release_automatic(&mut connection).await.unwrap(), None);
+    drop(connection);
+    let kept = ganbaru_music_library::soundscapes::state(&pool)
+        .await
+        .unwrap();
+    assert_eq!(kept.version, manual.version);
+    assert!(kept.desired_playing);
+}
+
 #[tokio::test]
 async fn native_music_unchosen_phases_leave_a_hand_started_soundscape_playing() {
     let pool = super::super::context::test_pool().await;

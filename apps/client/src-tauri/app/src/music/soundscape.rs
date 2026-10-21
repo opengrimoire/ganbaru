@@ -379,6 +379,9 @@ struct EngineCore {
     /// Music volume setting, or zero while muted; silent until the Music session reports it.
     master: f64,
     glide: Option<VolumeGlide>,
+    /// Whether a Music pause paused the soundscape, so resuming Music resumes it too. Any other
+    /// playback choice clears it.
+    paused_by_music: bool,
 }
 
 impl EngineCore {
@@ -386,6 +389,7 @@ impl EngineCore {
         match command {
             EngineCommand::Automatic(request, guard) => {
                 check_output_guard(Some(&guard))?;
+                self.paused_by_music = false;
                 match request {
                     Some(request) => self.start(request, Some(&guard)),
                     None => Ok(self.pause()),
@@ -393,14 +397,27 @@ impl EngineCore {
             }
             EngineCommand::ResumeGuarded(guard) => {
                 check_output_guard(Some(&guard))?;
+                self.paused_by_music = false;
                 self.resume(Some(&guard))
             }
             EngineCommand::RecoverGuarded(guard) => {
+                // Output paused with Music waits for Music instead of restarting after an interruption.
+                if self.paused_by_music {
+                    return Ok(self.snapshot.clone());
+                }
                 check_output_guard(Some(&guard))?;
                 self.recover(Some(&guard))
             }
-            EngineCommand::Pause => Ok(self.pause()),
-            EngineCommand::Stop => Ok(self.stop()),
+            EngineCommand::PauseWithMusic => Ok(self.pause_with_music()),
+            EngineCommand::ResumeWithMusic(guard) => self.resume_with_music(guard),
+            EngineCommand::Pause => {
+                self.paused_by_music = false;
+                Ok(self.pause())
+            }
+            EngineCommand::Stop => {
+                self.paused_by_music = false;
+                Ok(self.stop())
+            }
             EngineCommand::SetPresetLevel(level) => self.set_preset_level(level),
             EngineCommand::SetMaster(master) => Ok(self.set_master(master)),
             EngineCommand::SetLevels(levels) => self.set_levels(levels),
@@ -561,6 +578,29 @@ impl EngineCore {
         self.recover(guard)
     }
 
+    /// Pauses playing output because Music paused; output that is already paused stays as it is.
+    fn pause_with_music(&mut self) -> SoundscapeSnapshot {
+        if self.snapshot.status != SoundscapeStatus::Playing {
+            return self.snapshot.clone();
+        }
+        let snapshot = self.pause();
+        self.paused_by_music = snapshot.status == SoundscapeStatus::Paused;
+        snapshot
+    }
+
+    /// Resumes output only when a Music pause paused it, never one the listener paused.
+    fn resume_with_music(
+        &mut self,
+        guard: OutputGuard,
+    ) -> Result<SoundscapeSnapshot, SoundscapeError> {
+        if !self.paused_by_music || self.snapshot.status != SoundscapeStatus::Paused {
+            return Ok(self.snapshot.clone());
+        }
+        check_output_guard(Some(&guard))?;
+        self.paused_by_music = false;
+        self.resume(Some(&guard))
+    }
+
     fn stop(&mut self) -> SoundscapeSnapshot {
         self.stop_output();
         self.last_request = None;
@@ -655,6 +695,10 @@ enum EngineCommand {
     SetMaster(f64),
     SetLevels(Vec<f64>),
     RecoverGuarded(OutputGuard),
+    /// Music paused; pushed by the Music session, which never waits for the reply.
+    PauseWithMusic,
+    /// Music resumed; pushed by the Music session, which never waits for the reply.
+    ResumeWithMusic(OutputGuard),
     Snapshot,
 }
 
@@ -838,6 +882,22 @@ pub(crate) fn stop_blocking(app: &tauri::AppHandle) -> Result<SoundscapeSnapshot
 pub(crate) fn set_master(app: &tauri::AppHandle, master: f64) {
     if let Some(state) = app.try_state::<SoundscapeEngineState>() {
         state.controller.notify(EngineCommand::SetMaster(master));
+    }
+}
+
+/// Pauses a playing soundscape because Music paused, and remembers that Music paused it.
+pub(crate) fn pause_with_music(app: &tauri::AppHandle) {
+    if let Some(state) = app.try_state::<SoundscapeEngineState>() {
+        state.controller.notify(EngineCommand::PauseWithMusic);
+    }
+}
+
+/// Resumes the soundscape because Music resumed, only when a Music pause paused it.
+pub(crate) fn resume_with_music(app: &tauri::AppHandle, guard: OutputGuard) {
+    if let Some(state) = app.try_state::<SoundscapeEngineState>() {
+        state
+            .controller
+            .notify(EngineCommand::ResumeWithMusic(guard));
     }
 }
 
@@ -1133,6 +1193,76 @@ mod tests {
         );
         assert_eq!(core.snapshot.status, SoundscapeStatus::Idle);
         assert!(core.output.is_none());
+    }
+
+    fn paused_by_music() -> EngineCore {
+        let mut core = EngineCore::default();
+        core.snapshot.status = SoundscapeStatus::Paused;
+        core.paused_by_music = true;
+        core
+    }
+
+    #[test]
+    fn output_paused_with_music_waits_for_music_instead_of_recovering() {
+        let mut core = paused_by_music();
+        let snapshot = core
+            .handle(EngineCommand::RecoverGuarded(Box::new(|| true)))
+            .unwrap();
+        assert_eq!(snapshot.status, SoundscapeStatus::Paused);
+        assert!(core.paused_by_music);
+    }
+
+    #[test]
+    fn resuming_music_leaves_output_the_listener_paused() {
+        let mut core = paused_by_music();
+        core.paused_by_music = false;
+        let snapshot = core
+            .handle(EngineCommand::ResumeWithMusic(Box::new(|| true)))
+            .unwrap();
+        assert_eq!(snapshot.status, SoundscapeStatus::Paused);
+
+        let mut idle = EngineCore::default();
+        assert_eq!(
+            idle.handle(EngineCommand::PauseWithMusic).unwrap().status,
+            SoundscapeStatus::Idle
+        );
+        assert!(!idle.paused_by_music);
+    }
+
+    #[test]
+    fn resuming_music_spends_the_music_pause_once() {
+        let mut core = paused_by_music();
+        // Without output the engine restarts the last request, and there is none here.
+        assert!(
+            core.handle(EngineCommand::ResumeWithMusic(Box::new(|| true)))
+                .is_err()
+        );
+        assert!(!core.paused_by_music);
+    }
+
+    #[test]
+    fn listener_choices_clear_the_music_pause_but_rejected_automation_does_not() {
+        let mut core = paused_by_music();
+        assert!(
+            core.handle(EngineCommand::Automatic(None, Box::new(|| false)))
+                .is_err()
+        );
+        assert!(core.paused_by_music);
+        assert!(
+            core.handle(EngineCommand::ResumeWithMusic(Box::new(|| false)))
+                .is_err()
+        );
+        assert!(core.paused_by_music);
+
+        for command in [EngineCommand::Pause, EngineCommand::Stop] {
+            let mut core = paused_by_music();
+            core.handle(command).unwrap();
+            assert!(!core.paused_by_music);
+        }
+        let mut core = paused_by_music();
+        core.handle(EngineCommand::Automatic(None, Box::new(|| true)))
+            .unwrap();
+        assert!(!core.paused_by_music);
     }
 
     fn mono_samples(kind: GeneratedNoiseKind, count: usize) -> Vec<f32> {

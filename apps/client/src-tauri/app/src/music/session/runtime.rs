@@ -1243,6 +1243,8 @@ impl Owner {
     ) -> MusicLibraryResult<()> {
         let queue_changed = next.queue_revision != self.state.queue_revision
             || next.session_id != self.state.session_id;
+        #[cfg(desktop)]
+        let prior_status = self.state.status;
         self.state = next;
         #[cfg(desktop)]
         if self
@@ -1319,6 +1321,8 @@ impl Owner {
                 break;
             }
         }
+        #[cfg(desktop)]
+        self.follow_music_with_soundscape(prior_status).await;
         self.publish(queue_changed)?;
         Ok(())
     }
@@ -1539,6 +1543,46 @@ impl Owner {
         if self.soundscape_master != Some(master) {
             self.soundscape_master = Some(master);
             crate::music::soundscape::set_master(&self.app, master);
+        }
+    }
+
+    /// Reads an on-by-default Music preference from the vault configuration.
+    async fn music_preference(&self, key: &'static str) -> MusicLibraryResult<bool> {
+        let app = self.app.clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            let raw = crate::vault::vault_read_config(app)
+                .map_err(|error| MusicLibraryError::runtime("read music preference", error))?;
+            let config: serde_json::Value = serde_json::from_str(&raw)
+                .map_err(|error| MusicLibraryError::runtime("decode music preference", error))?;
+            Ok(config
+                .get("preferences")
+                .and_then(|preferences| preferences.get(key))
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(true))
+        })
+        .await
+        .map_err(|error| MusicLibraryError::runtime("read music preference", error))?
+    }
+
+    /// Pauses the soundscape with Music when the listener wants that, and resumes one that a
+    /// Music pause paused. Music running out, failing, or stopping is not a pause.
+    ///
+    /// The Music state is already installed here, so an unreadable preference leaves the
+    /// soundscape alone instead of failing the Music change.
+    #[cfg(desktop)]
+    async fn follow_music_with_soundscape(&self, prior: SessionStatus) {
+        let playing = |status| matches!(status, SessionStatus::Playing | SessionStatus::Loading);
+        if playing(prior) && self.state.status == SessionStatus::Paused {
+            match self.music_preference("musicPauseSoundscapeWithMusic").await {
+                Ok(true) => crate::music::soundscape::pause_with_music(&self.app),
+                Ok(false) => {}
+                Err(error) => eprintln!("soundscape follows Music: {error}"),
+            }
+        } else if prior == SessionStatus::Paused && playing(self.state.status) {
+            // A vault change quiesces background output; nothing resumes until it is active again.
+            if let Ok(guard) = background_output_guard(&self.app) {
+                crate::music::soundscape::resume_with_music(&self.app, guard);
+            }
         }
     }
 

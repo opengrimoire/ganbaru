@@ -6,6 +6,8 @@
 
 Soundscapes are the only thing that plays, one at a time. A soundscape has no volume of its own: it plays at the Music volume setting times the soundscape level, so one volume control raises or lowers everything. This applies even while Music is paused or empty, and muting Music silences both. The soundscape control picks a soundscape and shows its level as a slider from -100% to +100% (a multiplier from 0 to 2, where 0% matches Music); output never exceeds full scale. Adjusting that slider saves into the soundscape, so the next time it plays it starts at the same level. Like Music, a soundscape never resumes on its own after an app launch or vault switch; the last soundscape stays selected until it is played again. New soundscapes start at 0%; the seeded rains start at -50% (Rain (heavy)), -25% (Rain (moderate)), and +25% (Rain (soft)). Simultaneous layers share the soundscape's output to avoid sudden loudness.
 
+The preference `Pause if music is paused` (on by default) links the soundscape to Music pauses in one direction. Any Music pause pauses a playing soundscape, and resuming Music resumes it only if that pause paused it; a soundscape the listener paused stays paused. Pausing or resuming the soundscape alone never affects Music. A soundscape paused with Music is not recovered as interrupted output. Queue end, errors, and stopping Music are not pauses.
+
 Keeping a single volume control and soundscape-only playback is deliberate: listeners never balance two absolute volumes or rebuild a layered selection by hand.
 
 ## Layers

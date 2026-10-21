@@ -215,6 +215,10 @@ export const general = {
     pauseOnFocusPause: "Pausar si se pausa la sesión de enfoque",
     pauseOnFocusPauseDescription:
       "Pausa la música mientras el enfoque está pausado y la reanuda cuando continúa",
+    soundscapeHeading: "Sonido ambiental",
+    pauseSoundscapeWithMusic: "Pausar si se pausa la música",
+    pauseSoundscapeWithMusicDescription:
+      "Se reanuda con la música y aún puede pausarse por separado",
   },
   data: {
     backupHeading: "Copias de seguridad",

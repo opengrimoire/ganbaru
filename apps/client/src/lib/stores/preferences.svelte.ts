@@ -9,6 +9,7 @@ import {
   DEFAULT_PROFILE_IMAGE_PATH,
   DEFAULT_PROFILE_USE_IMAGE,
   DEFAULT_MUSIC_PAUSE_ON_POMODORO_PAUSE,
+  DEFAULT_MUSIC_PAUSE_SOUNDSCAPE_WITH_MUSIC,
   DEFAULT_CALENDAR_TIME_FORMAT,
   DEFAULT_FOCUS_IDLE_PAUSE_ON_EVENT_CREATE,
   DEFAULT_FOCUS_IDLE_THRESHOLD_MINUTES,
@@ -102,6 +103,7 @@ const FOCUS_BREAK_EXTENSION_LIMIT_CONFIG_KEY =
 const FOCUS_PAUSE_NOTIFICATION_INTERVAL_MINUTES_CONFIG_KEY =
   "preferences.focusPauseNotificationIntervalMinutes";
 const MUSIC_PAUSE_ON_POMODORO_PAUSE_CONFIG_KEY = "preferences.musicPauseOnPomodoroPause";
+const MUSIC_PAUSE_SOUNDSCAPE_WITH_MUSIC_CONFIG_KEY = "preferences.musicPauseSoundscapeWithMusic";
 const QUICK_NOTES_DEFAULT_COLOR_CONFIG_KEY = "preferences.quickNotesDefaultColor";
 const NOTES_DEFAULT_OPEN_MODE_CONFIG_KEY = "preferences.notesDefaultOpenMode";
 const NOTES_SIDEBAR_ORDER_CONFIG_KEY = "preferences.notesSidebarOrder";
@@ -256,6 +258,12 @@ function loadSavedMusicPauseOnPomodoroPause(): boolean {
   return DEFAULT_MUSIC_PAUSE_ON_POMODORO_PAUSE;
 }
 
+function loadSavedMusicPauseSoundscapeWithMusic(): boolean {
+  const saved = getConfigKey<unknown>(MUSIC_PAUSE_SOUNDSCAPE_WITH_MUSIC_CONFIG_KEY, undefined);
+  if (typeof saved === "boolean") return saved;
+  return DEFAULT_MUSIC_PAUSE_SOUNDSCAPE_WITH_MUSIC;
+}
+
 function loadSavedQuickNotesDefaultColor(): EventColor {
   const saved = getConfigKey<unknown>(QUICK_NOTES_DEFAULT_COLOR_CONFIG_KEY, undefined);
   return isProfileColor(saved) ? saved : FALLBACK_COLOR_INDEX;
@@ -318,6 +326,7 @@ let focusPauseNotificationIntervalMinutes = $state<FocusPauseNotificationInterva
   loadSavedFocusPauseNotificationIntervalMinutes(),
 );
 let musicPauseOnPomodoroPause = $state<boolean>(loadSavedMusicPauseOnPomodoroPause());
+let musicPauseSoundscapeWithMusic = $state<boolean>(loadSavedMusicPauseSoundscapeWithMusic());
 let quickNotesDefaultColor = $state<EventColor>(loadSavedQuickNotesDefaultColor());
 let notesDefaultOpenMode = $state<NotesPageOpenMode>(loadSavedNotesDefaultOpenMode());
 let notesSidebarOrder = $state<SidebarSortOrder>(loadSavedSidebarOrder(NOTES_SIDEBAR_ORDER_CONFIG_KEY));
@@ -406,6 +415,7 @@ function reloadSavedPreferences(): void {
   focusBreakExtensionLimit = loadSavedFocusBreakExtensionLimit();
   focusPauseNotificationIntervalMinutes = loadSavedFocusPauseNotificationIntervalMinutes();
   musicPauseOnPomodoroPause = loadSavedMusicPauseOnPomodoroPause();
+  musicPauseSoundscapeWithMusic = loadSavedMusicPauseSoundscapeWithMusic();
   quickNotesDefaultColor = loadSavedQuickNotesDefaultColor();
   notesDefaultOpenMode = loadSavedNotesDefaultOpenMode();
   notesSidebarOrder = loadSavedSidebarOrder(NOTES_SIDEBAR_ORDER_CONFIG_KEY);
@@ -610,6 +620,11 @@ function setMusicPauseOnPomodoroPause(value: boolean): void {
   setConfigKey(MUSIC_PAUSE_ON_POMODORO_PAUSE_CONFIG_KEY, value);
 }
 
+function setMusicPauseSoundscapeWithMusic(value: boolean): void {
+  musicPauseSoundscapeWithMusic = value;
+  setConfigKey(MUSIC_PAUSE_SOUNDSCAPE_WITH_MUSIC_CONFIG_KEY, value);
+}
+
 function setQuickNotesDefaultColor(value: EventColor): void {
   if (!isProfileColor(value)) return;
   quickNotesDefaultColor = value;
@@ -772,6 +787,10 @@ export function getPreferences() {
     get musicPauseOnPomodoroPause(): boolean {
       return musicPauseOnPomodoroPause;
     },
+    /** Whether pausing Music pauses a playing soundscape, which then resumes with Music. */
+    get musicPauseSoundscapeWithMusic(): boolean {
+      return musicPauseSoundscapeWithMusic;
+    },
     /** Palette slot new untagged quick notes start with; existing notes keep theirs when it changes. */
     get quickNotesDefaultColor(): EventColor {
       return quickNotesDefaultColor;
@@ -845,6 +864,7 @@ export function getPreferences() {
     setFocusBreakExtensionLimit,
     setFocusPauseNotificationIntervalMinutes,
     setMusicPauseOnPomodoroPause,
+    setMusicPauseSoundscapeWithMusic,
     setQuickNotesDefaultColor,
     setNotesDefaultOpenMode,
     setNotesSidebarOrder,
@@ -904,6 +924,9 @@ export function getPreferences() {
     },
     resetMusicPauseOnPomodoroPause() {
       setMusicPauseOnPomodoroPause(DEFAULT_MUSIC_PAUSE_ON_POMODORO_PAUSE);
+    },
+    resetMusicPauseSoundscapeWithMusic() {
+      setMusicPauseSoundscapeWithMusic(DEFAULT_MUSIC_PAUSE_SOUNDSCAPE_WITH_MUSIC);
     },
     resetNotesDefaultOpenMode() {
       setNotesDefaultOpenMode(DEFAULT_NOTES_PAGE_OPEN_MODE);

@@ -103,6 +103,10 @@ impl Owner {
             {
                 self.focus_pause(false).await?;
             }
+            #[cfg(desktop)]
+            if effect.mode == FocusMode::Stopped {
+                self.release_run_soundscape().await?;
+            }
         } else if effect.mode != FocusMode::Running {
             let preference = self.pause_with_focus().await?;
             if !self.focus_effect_is_current(&effect).await? {
@@ -185,23 +189,28 @@ impl Owner {
         self.commit(next, transition, None, true).await
     }
 
+    /// Ends the soundscape a phase started as soon as its run ends. The Calendar poll ends it too
+    /// once nothing is active, but only after its interval.
+    #[cfg(desktop)]
+    async fn release_run_soundscape(&mut self) -> MusicLibraryResult<()> {
+        let _permit = self.write_permit().await?;
+        let mut connection = self
+            .pool
+            .as_ref()
+            .expect("initialized music pool")
+            .acquire()
+            .await
+            .map_err(|error| MusicLibraryError::database("release run soundscape", error))?;
+        let released = super::context_soundscape::release_automatic(&mut connection).await?;
+        drop(connection);
+        match released {
+            Some(version) => self.silence_released_soundscape(version).await,
+            None => Ok(()),
+        }
+    }
+
     async fn pause_with_focus(&self) -> MusicLibraryResult<bool> {
-        let app = self.app.clone();
-        tauri::async_runtime::spawn_blocking(move || {
-            let raw = crate::vault::vault_read_config(app).map_err(|error| {
-                MusicLibraryError::runtime("read focus music preference", error)
-            })?;
-            let config: serde_json::Value = serde_json::from_str(&raw).map_err(|error| {
-                MusicLibraryError::runtime("decode focus music preference", error)
-            })?;
-            Ok(config
-                .get("preferences")
-                .and_then(|preferences| preferences.get("musicPauseOnPomodoroPause"))
-                .and_then(serde_json::Value::as_bool)
-                .unwrap_or(true))
-        })
-        .await
-        .map_err(|error| MusicLibraryError::runtime("read focus music preference", error))?
+        self.music_preference("musicPauseOnPomodoroPause").await
     }
 
     pub(super) async fn apply_focus_assignment(

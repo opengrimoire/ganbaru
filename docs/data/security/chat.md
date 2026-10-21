@@ -137,7 +137,7 @@ Edits to repository metadata (`.git` at any depth) are never approved automatica
 
 ## Checkpoints and restore
 
-Checkpoint capture and restore verify folder and Git common-storage identity immediately before mutation, and validate dirty state, changed and untracked files, repository boundaries, and the expected checkpoint revision.
+Checkpoint capture and restore verify folder and Git common-storage identity immediately before mutation, and validate dirty state, changed and untracked files, repository boundaries, and the expected checkpoint revision. Stored checkpoint rows travel with the vault, so before a preview, restore, or review uses one, every object ID it names must be a full hexadecimal ID, its hidden ref must resolve to its commit, and that commit and its parent must carry its worktree and index trees; the restore preview and the restore therefore always describe the same trees.
 
 Checkpoint indexes, review object stores and patch spools, and source-control working directories live in the system temporary directory, each in a new directory with a random name that only the current user can access (mode 0700 on Unix; Windows uses the per-user temporary directory). Another local user can neither read the repository content they hold nor pre-create or redirect them.
 

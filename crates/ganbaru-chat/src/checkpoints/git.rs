@@ -29,6 +29,11 @@ const CHECKPOINT_IDENTITY_ENVIRONMENT: &[(&str, &str)] = &[
 ];
 const REF_PREFIX: &str = "refs/ganbaru/chat/";
 
+/// Verifies that a stored checkpoint belongs to the authorized repository and that every Git
+/// object it names is the one capture recorded: the hidden ref resolves to the checkpoint
+/// commit, the commit's tree is the worktree tree, and its parent's tree is the index tree. The
+/// stored row travels with the vault, so restore and its preview never pass a stored value to
+/// Git that this check has not tied to the local checkpoint commit.
 pub fn verify_checkpoint(
     authorized: &AuthorizedWorkingFolder,
     checkpoint: &StoredCheckpoint,
@@ -42,30 +47,47 @@ pub fn verify_checkpoint(
             true,
         ));
     }
-    let resolved = optional_git_text(
-        authorized.git_folder(),
-        &[
-            "rev-parse",
-            "-q",
-            "--verify",
-            &format!("{}^{{commit}}", checkpoint.hidden_ref_name),
-        ],
-    )?
-    .ok_or_else(|| {
-        ChatError::new(
-            ChatErrorCode::NotFound,
-            "Checkpoint Git ref is missing or changed",
-            true,
-        )
-    })?;
-    if resolved != checkpoint.git_object_id {
-        return Err(ChatError::new(
-            ChatErrorCode::NotFound,
-            "Checkpoint Git ref is missing or changed",
-            true,
-        ));
+    if ![
+        checkpoint.git_object_id.as_str(),
+        checkpoint.worktree_tree_oid.as_str(),
+        checkpoint.index_tree_oid.as_str(),
+    ]
+    .into_iter()
+    .chain(checkpoint.head_oid.as_deref())
+    .all(is_object_id)
+    {
+        return Err(changed_checkpoint_error());
+    }
+    let folder = authorized.git_folder();
+    let resolve =
+        |revision: String| optional_git_text(folder, &["rev-parse", "-q", "--verify", &revision]);
+    let resolved = resolve(format!("{}^{{commit}}", checkpoint.hidden_ref_name))?;
+    if resolved.as_deref() != Some(checkpoint.git_object_id.as_str()) {
+        return Err(changed_checkpoint_error());
+    }
+    let worktree_tree = resolve(format!("{}^{{tree}}", checkpoint.git_object_id))?;
+    let index_tree = resolve(format!("{}^1^{{tree}}", checkpoint.git_object_id))?;
+    if worktree_tree.as_deref() != Some(checkpoint.worktree_tree_oid.as_str())
+        || index_tree.as_deref() != Some(checkpoint.index_tree_oid.as_str())
+    {
+        return Err(changed_checkpoint_error());
     }
     Ok(())
+}
+
+fn changed_checkpoint_error() -> ChatError {
+    ChatError::new(
+        ChatErrorCode::NotFound,
+        "Checkpoint Git ref is missing or changed",
+        true,
+    )
+}
+
+/// Whether `value` is a full, non-null hexadecimal Git object ID (SHA-1 or SHA-256).
+fn is_object_id(value: &str) -> bool {
+    (40..=64).contains(&value.len())
+        && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+        && !value.bytes().all(|byte| byte == b'0')
 }
 
 pub fn delete_exact_ref(
@@ -73,11 +95,7 @@ pub fn delete_exact_ref(
     reference: &str,
     expected_oid: &str,
 ) -> ChatResult<()> {
-    if !is_valid_hidden_ref(reference)
-        || !(40..=64).contains(&expected_oid.len())
-        || !expected_oid.bytes().all(|byte| byte.is_ascii_hexdigit())
-        || expected_oid.bytes().all(|byte| byte == b'0')
-    {
+    if !is_valid_hidden_ref(reference) || !is_object_id(expected_oid) {
         return Err(ChatError::new(
             ChatErrorCode::Permission,
             "Checkpoint cleanup target is invalid",

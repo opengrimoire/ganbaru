@@ -317,6 +317,59 @@ fn ref_validation_rejects_identity_changes_missing_refs_and_wrong_cleanup_oids()
 }
 
 #[test]
+fn verification_binds_stored_trees_to_the_checkpoint_commit() {
+    let repository = TestRepository::new();
+    repository.write("tracked.txt", b"base\n");
+    repository.commit_all();
+    repository.write("tracked.txt", b"staged\n");
+    run_git(&repository.0, &["add", "tracked.txt"]);
+    repository.write("tracked.txt", b"worktree\n");
+    let captured = capture(&repository, "binding", None);
+    let checkpoint = stored(&captured, "identity", 0);
+    let authorized = repository.authorized("identity");
+    verify_checkpoint(&authorized, &checkpoint).expect("a captured checkpoint verifies");
+
+    let head_tree = run_git(&repository.0, &["rev-parse", "HEAD^{tree}"]);
+    let tampered = [
+        StoredCheckpoint {
+            worktree_tree_oid: head_tree.clone(),
+            ..checkpoint.clone()
+        },
+        StoredCheckpoint {
+            index_tree_oid: head_tree,
+            ..checkpoint.clone()
+        },
+        StoredCheckpoint {
+            worktree_tree_oid: checkpoint.index_tree_oid.clone(),
+            index_tree_oid: checkpoint.worktree_tree_oid.clone(),
+            ..checkpoint.clone()
+        },
+        StoredCheckpoint {
+            worktree_tree_oid: "--index-output=planted".to_string(),
+            ..checkpoint.clone()
+        },
+        StoredCheckpoint {
+            index_tree_oid: format!("{}^{{tree}}", checkpoint.git_object_id),
+            ..checkpoint.clone()
+        },
+        StoredCheckpoint {
+            head_oid: Some("HEAD".to_string()),
+            ..checkpoint.clone()
+        },
+        StoredCheckpoint {
+            git_object_id: checkpoint.git_object_id.to_uppercase(),
+            ..checkpoint.clone()
+        },
+    ];
+    for candidate in tampered {
+        let error = verify_checkpoint(&authorized, &candidate)
+            .expect_err("a stored object that capture did not record must fail");
+        assert_eq!(error.code, ChatErrorCode::NotFound);
+    }
+    assert!(!repository.0.join("planted").exists());
+}
+
+#[test]
 fn stale_restore_snapshot_aborts_without_changing_files() {
     let repository = TestRepository::new();
     repository.write("tracked.txt", b"base\n");

@@ -667,7 +667,6 @@ commands.allow = [
   "vault_pick_and_write_theme_json",
   "vault_pick_create",
   "vault_pick_open",
-  "vault_read_app_state",
   "vault_read_config",
   "vault_release_starter",
   "vault_restore_database_rollback",

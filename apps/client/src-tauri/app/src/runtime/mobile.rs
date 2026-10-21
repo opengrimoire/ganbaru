@@ -31,7 +31,6 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
         .manage(crate::sync::SyncSubscribers::default())
         .manage(notes::notion_api_import::NotionApiImportCancellations::default())
         .invoke_handler(tauri::generate_handler![
-            vault::vault_read_app_state,
             vault::vault_default_location,
             vault::vault_use_default,
             vault::vault_release_starter,

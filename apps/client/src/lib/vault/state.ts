@@ -2,11 +2,6 @@ import { invoke } from "@tauri-apps/api/core";
 import { translate, type Translate } from "$lib/i18n/translator.svelte";
 import { setActiveVaultIdentity } from "$lib/vault/active-vault";
 
-export interface VaultAppState {
-  activeVaultPath: string | null;
-  recentVaultPaths: string[];
-}
-
 export interface VaultInfo {
   path: string;
   configPath: string;
@@ -86,21 +81,6 @@ function readBoolean(value: unknown): boolean | null {
 
 function readNonNegativeInteger(value: unknown): number | null {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : null;
-}
-
-function readStringArray(value: unknown): string[] {
-  if (!Array.isArray(value)) return [];
-  return value.filter((item): item is string => typeof item === "string" && item.trim() !== "");
-}
-
-function parseVaultAppState(value: unknown): VaultAppState {
-  if (!isRecord(value)) {
-    return { activeVaultPath: null, recentVaultPaths: [] };
-  }
-  return {
-    activeVaultPath: readString(value.activeVaultPath),
-    recentVaultPaths: readStringArray(value.recentVaultPaths),
-  };
 }
 
 function parseVaultInfo(value: unknown): VaultInfo {
@@ -323,10 +303,6 @@ export function formatVaultError(
   }
 
   return fallbackForAction(action, t);
-}
-
-export async function readVaultAppState(): Promise<VaultAppState> {
-  return parseVaultAppState(await invoke<unknown>("vault_read_app_state"));
 }
 
 export async function getActiveVaultInfo(): Promise<VaultInfo | null> {

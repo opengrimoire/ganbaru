@@ -734,24 +734,6 @@ async fn create_and_select_vault(
     Ok(info)
 }
 
-/// Folder selection fields exposed to the WebView. Device-local Chat, music, and
-/// working-folder state stays native.
-#[derive(Clone, Debug, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct VaultAppStateSummary {
-    pub active_vault_path: Option<String>,
-    pub recent_vault_paths: Vec<String>,
-}
-
-#[tauri::command]
-pub fn vault_read_app_state(app: tauri::AppHandle) -> Result<VaultAppStateSummary, String> {
-    let state = read_app_state(&app)?;
-    Ok(VaultAppStateSummary {
-        active_vault_path: state.active_vault_path.clone(),
-        recent_vault_paths: state.recent_vault_paths.clone(),
-    })
-}
-
 #[tauri::command]
 pub fn vault_default_location(app: tauri::AppHandle) -> Result<VaultDefaultLocation, String> {
     default_location_from_path(default_vault_path(&app)?)

@@ -52,7 +52,7 @@ fn apply_linux_notification_hints(
 #[cfg(any(target_os = "linux", test))]
 const MAX_NOTIFICATION_ACTION_WAITS: usize = 16;
 /// How long a shown notification keeps listening for its action.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", test))]
 const NOTIFICATION_ACTION_WAIT: std::time::Duration = std::time::Duration::from_secs(120);
 const MAX_NOTIFICATION_SUMMARY_CHARS: usize = 160;
 const MAX_NOTIFICATION_BODY_CHARS: usize = 1_000;
@@ -78,6 +78,18 @@ fn reserve_action_wait(
     slot
 }
 
+/// Listens for an action until `wait` finishes or `NOTIFICATION_ACTION_WAIT` elapses, then frees
+/// the action wait slot.
+#[cfg(any(target_os = "linux", test))]
+async fn listen_for_action(
+    slot: tokio::sync::OwnedSemaphorePermit,
+    wait: impl std::future::Future<Output = ()>,
+) {
+    // An elapsed wait only stops listening; the notification server still owns the notification.
+    let _elapsed = tokio::time::timeout(NOTIFICATION_ACTION_WAIT, wait).await;
+    drop(slot);
+}
+
 /// Shows a notification off the calling thread and runs `on_action` for the action the user picks.
 ///
 /// On Linux each listening notification holds one of `MAX_NOTIFICATION_ACTION_WAITS` slots for at
@@ -98,7 +110,7 @@ where
                 return;
             }
         };
-        let Some(_action_slot) = action_slot else {
+        let Some(action_slot) = action_slot else {
             return;
         };
         let wait = handle.wait_for_action_async(|response| {
@@ -106,8 +118,7 @@ where
                 on_action(action);
             }
         });
-        // An elapsed wait only stops listening; the notification server still owns the notification.
-        let _elapsed = tokio::time::timeout(NOTIFICATION_ACTION_WAIT, wait).await;
+        listen_for_action(action_slot, wait).await;
     });
 
     #[cfg(not(target_os = "linux"))]
@@ -691,6 +702,27 @@ mod notification_bounds_tests {
         later.action("open", "Open");
         assert!(reserve_action_wait(&slots, &mut later).is_some());
         assert_eq!(later.actions.len(), 2);
+    }
+
+    #[test]
+    fn an_unanswered_notification_frees_its_action_slot_after_the_wait_limit() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .start_paused(true)
+            .build()
+            .expect("build paused runtime");
+        runtime.block_on(async {
+            let slots = std::sync::Arc::new(tokio::sync::Semaphore::new(1));
+            let mut notification = Notification::new();
+            notification.action("open", "Open");
+            let slot = reserve_action_wait(&slots, &mut notification).expect("slot should be free");
+            let started = tokio::time::Instant::now();
+
+            listen_for_action(slot, std::future::pending()).await;
+
+            assert_eq!(started.elapsed(), NOTIFICATION_ACTION_WAIT);
+            assert_eq!(slots.available_permits(), 1);
+        });
     }
 }
 

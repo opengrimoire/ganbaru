@@ -778,6 +778,45 @@ mod tests {
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
 
+    /// Returns the source of the first function named `name`, from its header line to its
+    /// closing brace at column zero.
+    fn function_source<'a>(source: &'a str, name: &str) -> &'a str {
+        let header = format!("fn {name}(");
+        let found = source
+            .find(&header)
+            .unwrap_or_else(|| panic!("{name} is defined"));
+        let start = source[..found].rfind('\n').map_or(0, |index| index + 1);
+        let end = source[start..]
+            .find("\n}\n")
+            .map_or(source.len(), |index| start + index + 3);
+        &source[start..end]
+    }
+
+    #[test]
+    fn music_file_commands_inspect_media_off_the_main_thread() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/music");
+        for (file, command) in [
+            ("media_server.rs", "music_register_media_file"),
+            ("media_server.rs", "music_register_embedded_artwork"),
+            ("player.rs", "media_player_probe"),
+        ] {
+            let source =
+                std::fs::read_to_string(root.join(file)).expect("read Music command source");
+            let function = function_source(&source, command);
+            assert!(
+                function
+                    .lines()
+                    .next()
+                    .is_some_and(|line| line.contains("async fn")),
+                "{command} must be async so Tauri does not run it on the main thread"
+            );
+            assert!(
+                function.contains("spawn_blocking("),
+                "{command} must move file and parser work to a blocking thread"
+            );
+        }
+    }
+
     #[test]
     fn youtube_host_keeps_its_token_from_youtube_and_targets_the_app_origin() {
         let host = youtube_host_html();

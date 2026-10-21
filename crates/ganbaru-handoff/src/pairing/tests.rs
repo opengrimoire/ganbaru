@@ -255,6 +255,66 @@ fn stored_coordinator_pins_must_use_the_lowercase_fingerprint_format() {
 }
 
 #[test]
+fn stored_peer_fingerprints_must_equal_the_recomputed_lowercase_digest() {
+    fn uppercase_stored_fingerprint(root: &Path, table: &str) {
+        let state_path = root.join(PAIRING_STATE_FILE);
+        let mut stored: serde_json::Value =
+            serde_json::from_slice(&fs::read(&state_path).expect("read state"))
+                .expect("decode state");
+        let peer = &mut stored[table]["device-phone"]["certificateFingerprint"];
+        let uppercase = peer
+            .as_str()
+            .expect("stored fingerprint")
+            .to_ascii_uppercase();
+        *peer = serde_json::Value::from(uppercase);
+        fs::write(
+            &state_path,
+            serde_json::to_vec(&stored).expect("encode state"),
+        )
+        .expect("write state");
+    }
+    fn restart_error(root: &Path) -> String {
+        PairingManager::default()
+            .initialize(root.to_path_buf(), "device-desktop".to_string())
+            .expect_err("reject a fingerprint that differs from the recomputed digest")
+    }
+
+    for table in ["linkedPeers", "revokedPeers"] {
+        let temporary = TestDirectory::new("peer-fingerprint-format");
+        let manager = PairingManager::default();
+        manager
+            .initialize(temporary.path().to_path_buf(), "device-desktop".to_string())
+            .expect("initialize");
+        let phone = create_identity("device-phone".to_string()).expect("phone identity");
+        let invitation = manager
+            .create_invitation(
+                "127.0.0.1:41000".parse().expect("endpoint"),
+                "vault-1".to_string(),
+                0,
+                crate::protocol::test_compatibility(),
+                100,
+            )
+            .expect("invitation");
+        manager
+            .enroll_peer(enrollment(&invitation, &phone), 101)
+            .expect("enroll phone");
+        if table == "revokedPeers" {
+            manager.unlink_device("device-phone").expect("unlink phone");
+        }
+        drop(manager);
+
+        uppercase_stored_fingerprint(temporary.path(), table);
+        let error = restart_error(temporary.path());
+        let expected = if table == "linkedPeers" {
+            "linked peer certificate fingerprint is inconsistent"
+        } else {
+            "revoked peer certificate fingerprint is inconsistent"
+        };
+        assert!(error.contains(expected), "{table}: {error}");
+    }
+}
+
+#[test]
 fn linked_client_accepts_only_its_existing_coordinator() {
     let phone_root = TestDirectory::new("coordinator-target-phone");
     let phone = PairingManager::default();

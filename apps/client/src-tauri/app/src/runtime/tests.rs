@@ -300,6 +300,32 @@ fn focus_overlay_commands_are_a_narrow_subset() {
 }
 
 #[test]
+fn no_capability_grants_the_updater_plugin_commands() {
+    for (name, source) in [
+        ("desktop", DESKTOP_CAPABILITY),
+        ("focus-overlays", FOCUS_OVERLAY_CAPABILITY),
+        ("android", ANDROID_CAPABILITY),
+    ] {
+        let capability = capability(source);
+        let identifiers = capability["permissions"]
+            .as_array()
+            .expect("capability lists permissions")
+            .iter()
+            .filter_map(|permission| {
+                permission
+                    .as_str()
+                    .or_else(|| permission["identifier"].as_str())
+            });
+        for identifier in identifiers {
+            assert!(
+                !identifier.starts_with("updater:"),
+                "{name} must reach updates only through the signed-file checks in updates_check and updates_install, not {identifier}"
+            );
+        }
+    }
+}
+
+#[test]
 fn desktop_capabilities_target_webviews_without_window_creation() {
     for (name, source) in [
         ("desktop", DESKTOP_CAPABILITY),

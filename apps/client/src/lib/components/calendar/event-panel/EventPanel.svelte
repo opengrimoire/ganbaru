@@ -215,6 +215,22 @@
     if (changed && musicAssignmentsAvailable) void adoptProjectMusicSnapshot(projectId);
   };
 
+  const handleProjectCreate = (projectId: string): void => {
+    const changed = session.projectId !== projectId;
+    session.handleProjectCreated(projectId);
+    if (changed && musicAssignmentsAvailable) void adoptProjectMusicSnapshot(projectId);
+  };
+
+  /** Gives a project created from this panel the color of its first saved event. */
+  function adoptCreatedProjectColor(saved: PanelSaveData): void {
+    const color = session.createdProjectColorForSave(saved);
+    const project = projects.projectById(saved.projectId);
+    if (color === null || !project) return;
+    void projects.setProjectColor(project, color).catch((error) => {
+      console.error("set created project color failed", error);
+    });
+  }
+
   let musicSnapshots = $state<MusicContextAssignmentDraft[]>(completeMusicAssignmentDrafts([]));
   let savedMusicSnapshots = $state<MusicContextAssignmentDraft[]>(completeMusicAssignmentDrafts([]));
   let musicOverrides = $state<MusicContextAssignmentDraft[]>(completeMusicAssignmentDrafts([]));
@@ -755,6 +771,7 @@
     session.savePending = true;
     try {
       if (await onSave(data, s)) {
+        adoptCreatedProjectColor(data);
         savedMusicSnapshots = completeMusicAssignmentDrafts(musicSnapshots);
         savedMusicOverrides = completeMusicAssignmentDrafts(musicOverrides);
       }
@@ -1118,6 +1135,7 @@
           disabled={controlsDisabled}
           {mobileLayout}
           onSelect={handleProjectSelect}
+          onCreate={handleProjectCreate}
         />
         {#if !controlsDisabled}
           <EventColorPicker

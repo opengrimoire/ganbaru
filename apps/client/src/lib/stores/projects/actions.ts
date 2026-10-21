@@ -445,6 +445,12 @@ export function createProjectStoreActions(context: ProjectStoreActionContext) {
     await updateProject(projectUpdatePayload(project, { status }));
   }
 
+  /** Sets the color new events in a project start with. */
+  async function setProjectColor(project: Project, color: EventColor): Promise<void> {
+    if (color === project.color) return;
+    await updateProject(projectUpdatePayload(project, { color }));
+  }
+
   function assertProjectIdentityEditable(project: Project): void {
     if (projectHasLockedSystemIdentity(project)) {
       throw new Error(`Built-in project ${project.id} keeps its name and group`);
@@ -1183,6 +1189,7 @@ export function createProjectStoreActions(context: ProjectStoreActionContext) {
     renameProject,
     moveProjectToGroup,
     setProjectStatus,
+    setProjectColor,
     addSection,
     updateSection,
     hideSection,

@@ -12,7 +12,7 @@ Project settings can define:
 - Project-local statuses, priorities, tags, and custom fields.
 - Working folders where the platform supports them.
 
-Creating a project or group asks only for its name and icon; Enter creates it. New projects default to no event name, the adaptive Pomodoro preset, global idle behavior, and no playlists, and start with a General section plus the default statuses and priorities. New groups default to the layers icon and new projects to the folder icon.
+Creating a project or group asks only for its name and icon; Enter creates it. Icons keep the automatic color at creation, and icon color is chosen later in project settings. A project created from the event panel's picker takes the event's color as its event color when that event is saved, unless the event uses the default color. New projects default to no event name, the adaptive Pomodoro preset, global idle behavior, and no playlists, and start with a General section plus the default statuses and priorities. New groups default to the layers icon and new projects to the folder icon.
 
 Playlist selectors list real Music playlists. Choosing a playlist plays it automatically during that phase; choosing None means silence. On platforms with soundscapes, each phase also chooses None (the default) or a soundscape, independently of its playlist. A missing or deleted playlist or soundscape remains an explicit unavailable assignment with a repair path. Track-level settings stay in Music playlist membership data; see [Music automation](../music/automation.md).
 

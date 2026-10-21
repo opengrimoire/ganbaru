@@ -104,4 +104,27 @@ describe("EventPanelSessionController", () => {
       end: "2026-07-13 01:00",
     }));
   });
+
+  it("keeps the chosen event color for a project created from the picker and offers it on save", () => {
+    const created = project({ color: undefined });
+    const { session } = controller(created);
+    session.initializeCreate({ color: 5 }, "2026-07-12 09:00", "2026-07-12 10:00", false);
+
+    session.handleProjectCreated(created.id);
+
+    expect(session.color).toBe(5);
+    expect(session.createdProjectColorForSave({ projectId: created.id, color: 5 })).toBe(5);
+    expect(session.createdProjectColorForSave({ projectId: created.id, color: undefined })).toBeNull();
+  });
+
+  it("applies an existing project's color and never offers to replace it", () => {
+    const existing = project({ color: 2 });
+    const { session } = controller(existing);
+    session.initializeCreate({ color: 5 }, "2026-07-12 09:00", "2026-07-12 10:00", false);
+
+    session.handleProjectSelect(existing.id);
+
+    expect(session.color).toBe(2);
+    expect(session.createdProjectColorForSave({ projectId: existing.id, color: 2 })).toBeNull();
+  });
 });

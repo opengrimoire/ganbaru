@@ -15,11 +15,14 @@
     disabled = false,
     mobileLayout = false,
     onSelect,
+    onCreate = undefined,
   }: {
     selectedProjectId?: string;
     disabled?: boolean;
     mobileLayout?: boolean;
     onSelect: (projectId: string | undefined) => void;
+    /** Receives a project created from the picker instead of `onSelect`. */
+    onCreate?: (projectId: string) => void;
   } = $props();
 
   const projects = useProjects();
@@ -163,8 +166,9 @@
     closeDropdown();
   }
 
-  async function handleProjectCreated(): Promise<void> {
-    onSelect(projects.selectedProjectId ?? undefined);
+  async function handleProjectCreated(projectId: string | null): Promise<void> {
+    if (projectId && onCreate) onCreate(projectId);
+    else onSelect(projectId ?? undefined);
     closeDropdown();
   }
 

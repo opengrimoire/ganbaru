@@ -115,6 +115,7 @@
     showEmoji = true,
     showUpload = true,
     showRemove = true,
+    showIconColor = true,
     nested = false,
     initiallyOpen = false,
     panelAlign = "end",
@@ -130,6 +131,8 @@
     showEmoji?: boolean;
     showUpload?: boolean;
     showRemove?: boolean;
+    /** Offer an icon color; without it, icons keep the automatic color and the saved default color is ignored. */
+    showIconColor?: boolean;
     /** Keep the panels inside the nearest floating root, so the menu or panel that hosts the picker treats them as its own. */
     nested?: boolean;
     initiallyOpen?: boolean;
@@ -405,6 +408,7 @@
       readProjectIconRecentValues(getConfigKey<unknown>(recentConfigKey, [])),
       customEmojiIds,
     );
+    if (!showIconColor) return;
     askIconColorEveryTime = readProjectIconAskEveryTime(
       getConfigKey<unknown>(askEveryTimeConfigKey, false),
     );
@@ -1270,6 +1274,7 @@
               bind:iconColorPanelOpen
               bind:skinTonePanelOpen
               {askIconColorEveryTime}
+              showColorControl={showIconColor}
               {iconCategory}
               {iconCategoryMenuOpen}
               {iconCategoryOverflowActive}

@@ -19,6 +19,7 @@ import {
   projectDefaultPomodoroConfig,
 } from "$lib/projects/default-pomodoro";
 import {
+  createdProjectColorForSave,
   projectAllDayDefaultForSelection,
   projectDefaultEventTitleForSelection,
   projectDurationDefaultForSelection,
@@ -77,6 +78,8 @@ export class EventPanelSessionController {
   endDate = $state("");
   color = $state<EventColor>();
   projectId = $state<string>();
+  /** Project created from this panel's picker; it takes the event color on save while it has none. */
+  createdProjectId = $state<string>();
   environmentId = $state<string>();
   playlistId = $state<string>();
   description = $state("");
@@ -220,6 +223,7 @@ export class EventPanelSessionController {
     this.assignTimes(event.start, event.end);
     this.color = event.color;
     this.projectId = event.projectId;
+    this.createdProjectId = undefined;
     this.environmentId = event.environmentId;
     this.playlistId = event.playlistId;
     this.recurrence = event.recurrence ? { ...event.recurrence } : undefined;
@@ -256,6 +260,7 @@ export class EventPanelSessionController {
     this.assignTimes(initialStart, initialEnd);
     this.color = createData.color;
     this.projectId = createData.projectId;
+    this.createdProjectId = undefined;
     this.environmentId = createData.environmentId;
     this.playlistId = createData.playlistId;
     this.description = createData.description ?? "";
@@ -329,6 +334,22 @@ export class EventPanelSessionController {
     this.assignTimes(start, end);
   }
 
+  /** Selects a project just created from the picker, keeping the event color the person already chose. */
+  handleProjectCreated(projectId: string): void {
+    this.createdProjectId = projectId;
+    this.handleProjectSelect(projectId);
+  }
+
+  /** The color to give the panel's created project after a save of `saved`, or null to leave it unchanged. */
+  createdProjectColorForSave(saved: { projectId?: string; color?: EventColor }): EventColor | null {
+    return createdProjectColorForSave({
+      createdProjectId: this.createdProjectId,
+      projectId: saved.projectId,
+      eventColor: saved.color,
+      projectColor: this.options.projects.projectById(saved.projectId)?.color,
+    });
+  }
+
   handleProjectSelect(nextProjectId: string | undefined): void {
     this.projectId = nextProjectId;
     const selectedProject = this.options.projects.projectById(nextProjectId);
@@ -342,7 +363,9 @@ export class EventPanelSessionController {
       currentTitle: this.title,
       defaultEventName: effectiveProjectDefaultEventName(selectedProject),
     });
-    this.color = selectedProject.color;
+    if (nextProjectId !== this.createdProjectId || selectedProject.color !== undefined) {
+      this.color = selectedProject.color;
+    }
     if (projectAllDayDefaultForSelection({
       mode: this.options.mode(),
       allDay: this.allDay,

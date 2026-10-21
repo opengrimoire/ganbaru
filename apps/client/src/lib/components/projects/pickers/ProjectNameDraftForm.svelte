@@ -7,6 +7,7 @@
 
   /**
    * A name field with its icon button, used to create a project or a group. Enter submits; there is no save button.
+   * Icons keep the automatic color here; icon color is a project settings choice.
    * The icon picker loads on first use and stays inside the hosting floating surface, so choosing an icon keeps the
    * surrounding picker open.
    */
@@ -75,7 +76,7 @@
 
 <form class={cn("flex gap-1", mobileLayout && "gap-2")} onsubmit={(event) => { event.preventDefault(); onSubmit(); }}>
   {#if Picker}
-    <Picker value={icon} onChange={(next) => { icon = next; }} ariaLabel={t("projects.settings.icon")} showRemove={false} nested panelAlign="start" initiallyOpen>
+    <Picker value={icon} onChange={(next) => { icon = next; }} ariaLabel={t("projects.settings.icon")} showRemove={false} showIconColor={false} nested panelAlign="start" initiallyOpen>
       {#snippet trigger({ open, toggle, panelId })}{@render iconButton(open, toggle, panelId)}{/snippet}
     </Picker>
   {:else}

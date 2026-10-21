@@ -22,7 +22,7 @@ The Pomodoro section shows status and the applicable actions: pause or resume, e
 
 The Music section shows the active title or an unloaded state and provides play or pause, previous, next, open Music, and inspect the current Calendar or project soundtrack assignment when one applies.
 
-Unavailable controls stay visible but disabled so menu positions remain predictable. Clicking the tray icon opens or focuses the main window, within platform focus-stealing rules.
+Unavailable controls stay visible but disabled so menu positions remain predictable. Titles and assignment labels from the webview are length-bounded before the tray keeps them, and a failed tray update never disables later ones. Clicking the tray icon opens or focuses the main window, within platform focus-stealing rules.
 
 ## Platform notes
 

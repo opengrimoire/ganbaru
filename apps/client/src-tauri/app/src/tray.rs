@@ -51,7 +51,6 @@ fn music_tray_state(update: MusicTrayUpdate) -> MusicTrayState {
         can_play_pause: update.can_play_pause,
         can_previous: update.can_previous,
         can_next: update.can_next,
-        context_label: bound(update.context_label),
     }
 }
 
@@ -75,7 +74,6 @@ struct MusicTrayState {
     can_play_pause: bool,
     can_previous: bool,
     can_next: bool,
-    context_label: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -99,7 +97,6 @@ pub struct MusicTrayUpdate {
     can_play_pause: bool,
     can_previous: bool,
     can_next: bool,
-    context_label: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -120,7 +117,6 @@ struct MenuShape {
     music_can_play_pause: bool,
     music_can_previous: bool,
     music_can_next: bool,
-    music_context_label: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -149,7 +145,6 @@ static TRAY_STATE: LazyLock<Mutex<TrayState>> = LazyLock::new(|| {
             can_play_pause: false,
             can_previous: false,
             can_next: false,
-            context_label: None,
         },
     })
 });
@@ -367,10 +362,7 @@ fn tray_tooltip(state: &TrayState) -> String {
         "No active session".to_string()
     };
     let music = music_status_text(&state.music);
-    match state.music.context_label.as_deref() {
-        Some(context) => format!("Ganbaru\n{pomodoro}\n{music}\n{context}"),
-        None => format!("Ganbaru\n{pomodoro}\n{music}"),
-    }
+    format!("Ganbaru\n{pomodoro}\n{music}")
 }
 
 fn menu_shape(state: &TrayState) -> MenuShape {
@@ -385,7 +377,6 @@ fn menu_shape(state: &TrayState) -> MenuShape {
         music_can_play_pause: state.music.can_play_pause,
         music_can_previous: state.music.can_previous,
         music_can_next: state.music.can_next,
-        music_context_label: state.music.context_label.clone(),
     }
 }
 
@@ -457,31 +448,14 @@ fn build_menu(app: &AppHandle, state: &TrayState) -> Result<Menu<tauri::Wry>, St
         .build(app)
         .map_err(|e| e.to_string())?;
 
-    let mut builder = MenuBuilder::new(app)
+    MenuBuilder::new(app)
         .item(&pomodoro_status)
         .item(&pause_resume_item)
         .item(&add_focus_time_item)
         .item(&skip_item)
         .item(&separator)
         .item(&music_status)
-        .item(&play_pause_item);
-    let context_item;
-    let inspect_item;
-    if let Some(context_label) = state.music.context_label.as_deref() {
-        context_item = MenuItemBuilder::with_id(
-            "music_context_status",
-            truncate_tray_menu_label(context_label, MUSIC_TRAY_STATUS_MAX_CHARS),
-        )
-        .enabled(false)
-        .build(app)
-        .map_err(|e| e.to_string())?;
-        inspect_item =
-            MenuItemBuilder::with_id("music_inspect_assignment", "Inspect soundtrack assignment")
-                .build(app)
-                .map_err(|e| e.to_string())?;
-        builder = builder.item(&context_item).item(&inspect_item);
-    }
-    builder
+        .item(&play_pause_item)
         .item(&previous_item)
         .item(&next_item)
         .item(&open_music_item)
@@ -596,9 +570,6 @@ pub fn setup_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
             }
             "music_open" => {
                 let _ = app.emit("tray-music-open", ());
-            }
-            "music_inspect_assignment" => {
-                let _ = app.emit("tray-music-inspect-assignment", ());
             }
             _ => {}
         })
@@ -776,10 +747,6 @@ pub(crate) fn publish_music_session(
             can_play_pause: session.current_source.is_some(),
             can_previous: session.can_previous,
             can_next: session.can_next,
-            context_label: session
-                .context
-                .as_ref()
-                .map(|context| context.event_title.clone()),
         },
     )
 }
@@ -807,7 +774,6 @@ mod tests {
                 can_play_pause: false,
                 can_previous: false,
                 can_next: false,
-                context_label: None,
             },
         }
     }
@@ -928,20 +894,16 @@ mod tests {
             can_play_pause: true,
             can_previous: false,
             can_next: false,
-            context_label: Some("c".repeat(100_000)),
         });
 
         assert_eq!(state.status, "idle");
-        for text in [state.title, state.context_label] {
-            assert!(text.unwrap().chars().count() <= MUSIC_TRAY_TEXT_MAX_CHARS);
-        }
+        assert!(state.title.unwrap().chars().count() <= MUSIC_TRAY_TEXT_MAX_CHARS);
         let playing = music_tray_state(MusicTrayUpdate {
             status: "playing".to_string(),
             title: Some("City of Tears".to_string()),
             can_play_pause: true,
             can_previous: true,
             can_next: true,
-            context_label: None,
         });
         assert_eq!(playing.status, "playing");
         assert_eq!(playing.title.as_deref(), Some("City of Tears"));
@@ -977,7 +939,6 @@ mod tests {
             can_play_pause: true,
             can_previous: true,
             can_next: true,
-            context_label: None,
         };
 
         let label = music_menu_status_text(&state);
@@ -999,26 +960,11 @@ mod tests {
             can_play_pause: true,
             can_previous: true,
             can_next: true,
-            context_label: None,
         };
 
         assert_eq!(
             music_status_text(&state),
             "Christopher Larkin - Hollow Knight (Original Soundtrack) - 09 City of Tears"
-        );
-    }
-
-    #[test]
-    fn contextual_music_is_visible_in_the_tooltip_and_menu_shape() {
-        let mut state = tray_state_with_pause_resume(true);
-        state.music.status = "playing".to_string();
-        state.music.title = Some("City of Tears".to_string());
-        state.music.context_label = Some("Focus soundtrack for Reading".to_string());
-
-        assert!(tray_tooltip(&state).contains("Focus soundtrack for Reading"));
-        assert_eq!(
-            menu_shape(&state).music_context_label.as_deref(),
-            Some("Focus soundtrack for Reading")
         );
     }
 }

@@ -25,7 +25,6 @@ export interface MusicExternalControlsContext {
   setRate(rate: number): Promise<void>;
   toggleShuffle(): void;
   handleWindowMessage(event: MessageEvent<unknown>): void;
-  inspectAssignment(): void;
 }
 
 export interface MusicExternalControls {

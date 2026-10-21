@@ -183,7 +183,6 @@ class MusicPlayerStore {
     setVolume: (volume) => this.setVolume(volume),
     setRate: (rate) => this.setRate(rate),
     toggleShuffle: () => this.toggleShuffle(),
-    inspectAssignment: () => this.inspectContextAssignment(),
     handleWindowMessage: this.youtubeAdapter.handleMessage,
   });
   get isBusy(): boolean {

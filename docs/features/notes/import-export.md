@@ -84,7 +84,7 @@ Callers can include or omit rebuildable indexes, history, templates, and local U
 
 ## Agent bridge export
 
-Agent bridge export creates deterministic readable Markdown for an explicitly selected Notes page and approved related context. It can include subpages, backlinks, database views, project tasks, and comments according to effective access.
+Agent bridge export creates deterministic readable Markdown for an explicitly selected Notes page and approved related context. It can include subpages, backlinks, database views, project tasks, and comments according to effective access. Backlinks follow the same visibility as the backlinks panel, so trashed or archived sources are left out.
 
 The output begins with a source-of-truth warning, does not create canonical export rows, and does not embed managed asset bytes. It never includes restricted page names, counts, backlinks, rows, comments, tasks, or derived facts merely because they share a project.
 

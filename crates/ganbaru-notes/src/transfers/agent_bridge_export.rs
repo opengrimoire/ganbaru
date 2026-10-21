@@ -1,4 +1,5 @@
 use crate::data_sources;
+use crate::links::backlinks::{self, VISIBLE_SOURCE_FILTER, VISIBLE_SOURCE_JOINS};
 use crate::models::{
     NoteAgentBridgeExportDiagnosticDto, NoteAgentBridgeExportDto, NoteAgentBridgeExportRequest,
     NoteAgentBridgeExportSaveDto, NoteDataSourceCsvExportRequest,
@@ -464,24 +465,26 @@ async fn load_backlinks(
     if page_ids.is_empty() {
         return Ok(Vec::new());
     }
+    backlinks::ensure_index_current(pool).await?;
     let sql = format!(
-        "SELECT backlink.target_id,
+        "SELECT idx.target_id,
                 target.title AS target_title,
-                backlink.source_page_id,
-                source.title AS source_page_title,
-                backlink.source_block_id,
-                backlink.source_comment_id,
-                backlink.reference_type,
-                backlink.snippet
-         FROM notes_backlink_index backlink
-         JOIN notes_pages target ON target.id = backlink.target_id
-         JOIN notes_pages source ON source.id = backlink.source_page_id
-         WHERE backlink.target_type = 'page'
-           AND backlink.target_id IN ({})
+                idx.source_page_id,
+                source_page.title AS source_page_title,
+                idx.source_block_id,
+                idx.source_comment_id,
+                idx.reference_type,
+                idx.snippet
+         FROM notes_backlink_index AS idx
+         JOIN notes_pages AS target ON target.id = idx.target_id
+         {VISIBLE_SOURCE_JOINS}
+         WHERE idx.target_type = 'page'
+           AND idx.target_id IN ({})
+           AND {VISIBLE_SOURCE_FILTER}
          ORDER BY lower(target.title) ASC,
-                  lower(source.title) ASC,
-                  backlink.reference_type ASC,
-                  backlink.id ASC",
+                  lower(source_page.title) ASC,
+                  idx.reference_type ASC,
+                  idx.id ASC",
         placeholders(page_ids.len())
     );
     let mut query = sqlx::query(AssertSqlSafe(sql.as_str()));

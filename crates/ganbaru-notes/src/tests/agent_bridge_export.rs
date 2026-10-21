@@ -325,3 +325,76 @@ fn agent_bridge_save_leaves_a_symlink_at_the_predictable_temporary_name_untouche
         assert_eq!(victim_contents.unwrap(), "keep");
     });
 }
+
+#[test]
+fn agent_bridge_backlinks_leave_out_trashed_sources_like_the_backlinks_panel() {
+    crate::test_block_on(async {
+        let pool = migrated_memory_pool().await;
+        create_page(&pool, PAGE_A, BLOCK_A).await;
+        create_page(&pool, PAGE_B, BLOCK_D).await;
+        writes::update_page(
+            &pool,
+            PAGE_B,
+            NotePageUpdate {
+                title: Some("Trashed source".to_string()),
+                parent: None,
+                properties: None,
+                icon: OptionalJsonValue::Unset,
+                cover: OptionalJsonValue::Unset,
+            },
+        )
+        .await
+        .unwrap();
+        writes::append_block_children(
+            &pool,
+            NoteAppendBlockChildren {
+                parent: page_parent(PAGE_B),
+                after: Some(BLOCK_D.to_string()),
+                children: vec![block(
+                    BLOCK_E,
+                    "paragraph",
+                    json!({
+                        "rich_text": [
+                            rich_text("Private mention of "),
+                            page_mention(PAGE_A, "Target")
+                        ],
+                        "color": "default"
+                    }),
+                )],
+            },
+        )
+        .await
+        .unwrap();
+        let request = NoteAgentBridgeExportRequest {
+            page_ids: vec![PAGE_A.to_string()],
+            project_ids: Vec::new(),
+            include_descendants: Some(false),
+            include_backlinks: Some(true),
+            include_database_views: Some(false),
+            include_task_context: Some(false),
+            include_page_comments: Some(false),
+            include_resolved_comments: Some(false),
+        };
+
+        let live = transfers::agent_bridge_export::export_bridge(&pool, request.clone())
+            .await
+            .unwrap();
+        assert_eq!(live.exported_backlink_count, 1);
+        assert!(live.markdown.contains("Trashed source"));
+
+        writes::trash_page(&pool, PAGE_B, true).await.unwrap();
+        let trashed = transfers::agent_bridge_export::export_bridge(&pool, request)
+            .await
+            .unwrap();
+
+        assert_eq!(trashed.exported_backlink_count, 0);
+        assert!(!trashed.markdown.contains("Trashed source"));
+        assert!(!trashed.markdown.contains("Private mention"));
+        assert!(
+            links::backlinks::list_backlinks(&pool, PAGE_A)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    });
+}

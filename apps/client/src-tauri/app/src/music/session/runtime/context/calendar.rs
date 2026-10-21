@@ -34,6 +34,11 @@ impl CalendarActivationState {
         true
     }
 
+    /// Moves the next read forward while keeping the current activation, so an unchanged event never restarts.
+    pub(in super::super) fn poll_now(&mut self) {
+        self.poll_at = Instant::now();
+    }
+
     pub(in super::super) fn retry(&mut self) {
         self.key = None;
         self.poll_at = Instant::now();

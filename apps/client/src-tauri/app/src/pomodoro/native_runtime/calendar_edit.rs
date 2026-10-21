@@ -660,6 +660,8 @@ impl Owner {
         self.next_boundary_ms = next_boundary;
         // The edit may create a current commitment; probe again until a heartbeat resolves it.
         self.calendar_commitment = true;
+        // Probe right away, while the Save input is still fresh enough to admit a current event.
+        self.next_activity_ms = 0;
         if let Err(error) = self.publish_committed(snapshot, now).await {
             self.record_failure(error);
         }

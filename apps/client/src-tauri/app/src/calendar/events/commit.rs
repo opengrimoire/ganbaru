@@ -9,5 +9,11 @@ pub(crate) async fn calendar_commit_edit(
     request: CommitRequest,
 ) -> Result<CommitReply, CommitFailure> {
     request.validate()?;
-    crate::pomodoro::native_runtime::commit_calendar_edit(&app, request).await
+    let reply = crate::pomodoro::native_runtime::commit_calendar_edit(&app, request).await?;
+    // An event that covers now should start its music without waiting for the Calendar poll.
+    #[cfg(desktop)]
+    if let Err(error) = crate::music::session::calendar_changed(&app) {
+        eprintln!("Calendar Save: {error}");
+    }
+    Ok(reply)
 }

@@ -74,6 +74,8 @@ enum Request {
     },
     Control(SessionIntent),
     Focus(ganbaru_pomodoro::CommittedFocusEffect),
+    #[cfg(desktop)]
+    CalendarChanged,
     #[cfg(target_os = "android")]
     BackendUnavailable {
         session_id: String,
@@ -371,6 +373,22 @@ pub(crate) fn reconcile_committed_focus(
             reply: None,
         })
         .map_err(|error| format!("enqueue committed Focus music: {error}"))
+}
+
+/// Reads Calendar context on the next observation tick instead of waiting for the poll interval.
+#[cfg(desktop)]
+pub(crate) fn calendar_changed(app: &tauri::AppHandle) -> Result<(), String> {
+    let runtime = app
+        .try_state::<MusicSessionState>()
+        .ok_or_else(|| "Music owner is not initialized".to_string())?;
+    runtime
+        .sender
+        .try_send(Message {
+            request: Request::CalendarChanged,
+            expected_vault: None,
+            reply: None,
+        })
+        .map_err(|error| format!("enqueue Calendar change for Music: {error}"))
 }
 
 /// Service loss is an interruption, never a synthetic manual command or failed-track advance.
@@ -755,6 +773,11 @@ impl Owner {
                 }
                 return Ok(self.state.projection(false, now_ms()));
             }
+            #[cfg(desktop)]
+            Request::CalendarChanged => {
+                self.calendar.poll_now();
+                return Ok(self.state.projection(false, now_ms()));
+            }
             request => request,
         };
         if let Request::ResumeVault { revision } = request {
@@ -936,6 +959,8 @@ impl Owner {
             | Request::Acknowledge { .. }
             | Request::ReadFrame { .. }
             | Request::Unsubscribe { .. } => (),
+            #[cfg(desktop)]
+            Request::CalendarChanged => (),
         }
         Ok(self.state.projection(include_queue, now_ms()))
     }

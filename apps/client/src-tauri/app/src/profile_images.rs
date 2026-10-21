@@ -1,4 +1,5 @@
 use base64::{Engine as _, engine::general_purpose};
+use ganbaru_atomic_files::{FinalSymlink, read_regular_file_capped};
 use ganbaru_notes::assets::image_metadata::{
     ManagedImageDimensionError, ManagedImageMetadata, ManagedImageMetadataError,
     parse_managed_image_metadata, validate_managed_image_dimensions,
@@ -6,7 +7,7 @@ use ganbaru_notes::assets::image_metadata::{
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::{
-    fs,
+    fs, io,
     path::{Component, Path, PathBuf},
 };
 #[cfg(desktop)]
@@ -116,17 +117,15 @@ fn validate_profile_image(bytes: &[u8]) -> Result<ManagedImageMetadata, String> 
     Ok(metadata)
 }
 
-fn read_file_capped(path: &Path) -> Result<Vec<u8>, String> {
-    let metadata = fs::metadata(path).map_err(|error| format!("inspect profile image: {error}"))?;
-    if !metadata.is_file() {
-        return Err("profile image path must be a file".to_string());
-    }
-    if metadata.len() > PROFILE_IMAGE_MAX_BYTES as u64 {
-        return Err(format!(
-            "profile image exceeds the {PROFILE_IMAGE_MAX_DISPLAY_MEGABYTES} MB limit"
-        ));
-    }
-    let bytes = fs::read(path).map_err(|error| format!("read profile image: {error}"))?;
+fn read_file_capped(path: &Path, final_symlink: FinalSymlink) -> Result<Vec<u8>, String> {
+    let bytes = read_regular_file_capped(path, PROFILE_IMAGE_MAX_BYTES as u64, final_symlink)
+        .map_err(|error| match error.kind() {
+            io::ErrorKind::FileTooLarge => {
+                format!("profile image exceeds the {PROFILE_IMAGE_MAX_DISPLAY_MEGABYTES} MB limit")
+            }
+            io::ErrorKind::InvalidInput => "profile image path must be a regular file".to_string(),
+            _ => format!("read profile image: {error}"),
+        })?;
     ensure_profile_image_size(&bytes)?;
     Ok(bytes)
 }
@@ -228,7 +227,7 @@ pub async fn profile_image_pick_file<R: Runtime>(
     let Some(path) = picked.map(dialog_path).transpose()? else {
         return Ok(None);
     };
-    let bytes = read_file_capped(&path)?;
+    let bytes = read_file_capped(&path, FinalSymlink::Follow)?;
     save_profile_image_bytes(&app, bytes).map(Some)
 }
 
@@ -246,7 +245,7 @@ pub fn profile_image_asset_data_url<R: Runtime>(
     relative_path: String,
 ) -> Result<String, String> {
     let path = profile_image_asset_path(&app, &relative_path)?;
-    let bytes = read_file_capped(&path)?;
+    let bytes = read_file_capped(&path, FinalSymlink::Refuse)?;
     let kind = validate_profile_image(&bytes)?.kind;
     Ok(format!(
         "data:{};base64,{}",
@@ -381,5 +380,43 @@ mod tests {
             "A".repeat(PROFILE_IMAGE_MAX_BYTES.div_ceil(3) * 4 + 1)
         );
         assert!(decode_profile_image_data_url(&oversized).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn vault_profile_image_reads_refuse_symlinks_and_oversized_files() {
+        let root = std::env::temp_dir().join(format!(
+            "ganbaru-profile-read-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let picture = root.join("picture.png");
+        fs::write(&picture, png(64, 64)).unwrap();
+        let link = root.join("linked.png");
+        std::os::unix::fs::symlink(&picture, &link).unwrap();
+        let oversized = root.join("oversized.png");
+        fs::File::create(&oversized)
+            .unwrap()
+            .set_len(PROFILE_IMAGE_MAX_BYTES as u64 + 1)
+            .unwrap();
+
+        assert_eq!(
+            read_file_capped(&link, FinalSymlink::Follow).unwrap(),
+            png(64, 64)
+        );
+        assert_eq!(
+            read_file_capped(&link, FinalSymlink::Refuse).unwrap_err(),
+            "profile image path must be a regular file"
+        );
+        assert!(
+            read_file_capped(&oversized, FinalSymlink::Refuse)
+                .unwrap_err()
+                .contains("MB limit")
+        );
+        fs::remove_dir_all(&root).unwrap();
     }
 }

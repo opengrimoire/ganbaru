@@ -1,4 +1,5 @@
 use base64::{Engine as _, engine::general_purpose};
+use ganbaru_atomic_files::{FinalSymlink, read_regular_file_capped};
 use ganbaru_notes::assets::image_metadata::{
     ManagedImageDimensionError, ManagedImageKind, ManagedImageMetadata, ManagedImageMetadataError,
     parse_managed_image_metadata, validate_managed_image_dimensions,
@@ -15,7 +16,7 @@ use sha2::{Digest, Sha256};
 use sqlx::SqlitePool;
 use std::{
     collections::{BTreeMap, HashSet},
-    fs,
+    fs, io,
     path::{Component, Path, PathBuf},
     sync::{LazyLock, Mutex, PoisonError},
 };
@@ -210,15 +211,15 @@ fn save_project_icon_bytes<R: Runtime>(
     Ok(ProjectIconAsset { relative_path })
 }
 
-fn read_file_capped(path: &Path) -> Result<Vec<u8>, String> {
-    let metadata = fs::metadata(path).map_err(|e| format!("inspect project icon image: {e}"))?;
-    if !metadata.is_file() {
-        return Err("project icon image path must be a file".to_string());
-    }
-    if metadata.len() > PROJECT_ICON_MAX_BYTES as u64 {
-        return Err(project_icon_size_limit_error());
-    }
-    let bytes = fs::read(path).map_err(|e| format!("read project icon image: {e}"))?;
+fn read_file_capped(path: &Path, final_symlink: FinalSymlink) -> Result<Vec<u8>, String> {
+    let bytes = read_regular_file_capped(path, PROJECT_ICON_MAX_BYTES as u64, final_symlink)
+        .map_err(|error| match error.kind() {
+            io::ErrorKind::FileTooLarge => project_icon_size_limit_error(),
+            io::ErrorKind::InvalidInput => {
+                "project icon image path must be a regular file".to_string()
+            }
+            _ => format!("read project icon image: {error}"),
+        })?;
     ensure_project_icon_size(&bytes)?;
     Ok(bytes)
 }
@@ -605,7 +606,7 @@ pub async fn projects_icon_pick_image_file<R: Runtime>(
     let Some(path) = picked.map(dialog_path).transpose()? else {
         return Ok(None);
     };
-    let bytes = read_file_capped(&path)?;
+    let bytes = read_file_capped(&path, FinalSymlink::Follow)?;
     save_project_icon_bytes(&app, bytes).map(Some)
 }
 
@@ -646,7 +647,7 @@ pub fn projects_icon_asset_data_url<R: Runtime>(
     relative_path: String,
 ) -> Result<String, String> {
     let path = asset_path_for_relative(&app, &relative_path)?;
-    let bytes = read_file_capped(&path)?;
+    let bytes = read_file_capped(&path, FinalSymlink::Refuse)?;
     project_icon_data_url(&bytes)
 }
 
@@ -1157,6 +1158,44 @@ mod tests {
             error,
             "project icon response MIME type does not match its image contents"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn vault_project_icon_reads_refuse_symlinks_and_oversized_files() {
+        let root = std::env::temp_dir().join(format!(
+            "ganbaru-project-icon-read-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let picture = root.join("picture.png");
+        fs::write(&picture, png(64, 64)).unwrap();
+        let link = root.join("linked.png");
+        std::os::unix::fs::symlink(&picture, &link).unwrap();
+        let oversized = root.join("oversized.png");
+        fs::File::create(&oversized)
+            .unwrap()
+            .set_len(PROJECT_ICON_MAX_BYTES as u64 + 1)
+            .unwrap();
+
+        assert_eq!(
+            read_file_capped(&link, FinalSymlink::Follow).unwrap(),
+            png(64, 64)
+        );
+        assert_eq!(
+            read_file_capped(&link, FinalSymlink::Refuse).unwrap_err(),
+            "project icon image path must be a regular file"
+        );
+        assert!(
+            read_file_capped(&oversized, FinalSymlink::Refuse)
+                .unwrap_err()
+                .contains("MB limit")
+        );
+        fs::remove_dir_all(&root).unwrap();
     }
 }
 

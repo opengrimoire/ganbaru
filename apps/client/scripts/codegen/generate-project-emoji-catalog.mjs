@@ -1,6 +1,7 @@
 import { readFile, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
+import { PIN_NEW_SOURCE_FLAG, fetchPinnedSource } from "./pinned-sources.mjs";
 
 const unicodeVersionFlag = "--unicode-version";
 const committedVersionPattern = /^export const PROJECT_EMOJI_CATALOG_VERSION = "([^"]+)";$/mu;
@@ -313,11 +314,9 @@ async function main() {
   const outputPath = path.resolve(scriptDir, "../../src/lib/projects/icons/emoji-catalog.generated.ts");
   const version = await resolveUnicodeVersion(process.argv.slice(2), outputPath);
   const sourceUrl = emojiTestUrl(version);
-  const response = await fetch(sourceUrl);
-  if (!response.ok) {
-    throw new Error(`Failed to download emoji data: ${response.status} ${response.statusText}`);
-  }
-  const text = await response.text();
+  const text = await fetchPinnedSource(sourceUrl, {
+    allowNewPin: process.argv.slice(2).includes(PIN_NEW_SOURCE_FLAG),
+  });
   const parsed = parseEmojiTest(text);
   if (parsed.version !== version) {
     throw new Error(`Requested Unicode emoji ${version} but the source declares ${parsed.version}`);

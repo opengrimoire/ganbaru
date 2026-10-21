@@ -57,6 +57,10 @@ SQLite CVEs are not RustSec advisories, so neither audit reports them; track the
 
 `tauri-plugin-updater` builds without its default `zip` feature. Released updater assets are a raw AppImage and Windows installers, so the plugin never needs to extract a zip or AppImage tarball, and the feature would only add an archive extraction path. Re-enable it only if the release feed starts shipping archived updater assets, and then only with a zip release free of extraction advisories.
 
+## Generated catalog sources
+
+Codegen scripts that download upstream data name an exact version and check the bytes against the SHA-256 recorded in `apps/client/scripts/codegen/pinned-sources.json`; the vscode-icons generator pins a Git commit instead. A changed digest for a pinned URL is refused. A new upstream version is recorded only when the maintainer passes `--pin-new-source`, and its generated diff is reviewed before commit.
+
 ## Review procedure
 
 For a new finding:

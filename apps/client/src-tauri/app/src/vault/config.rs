@@ -12,6 +12,9 @@ const MAX_CONFIG_PATCH_SEGMENT_BYTES: usize = 128;
 const MAX_CONFIG_PATCH_PATH_BYTES: usize = 1024;
 const MAX_CONFIG_PATCH_COUNT: usize = 256;
 const MAX_CONFIG_PATCH_BATCH_BYTES: usize = 1024 * 1024;
+/// Top-level branches that only native commands write, through their own validation and locks.
+/// The webview reaches them through those commands, never through generic patches.
+const NATIVE_OWNED_CONFIG_BRANCHES: &[&str] = &["chat"];
 
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -132,6 +135,9 @@ fn validate_config_patch_path(path: &[String]) -> Result<(), String> {
         })
     {
         return Err("vault config patch path is invalid".to_string());
+    }
+    if NATIVE_OWNED_CONFIG_BRANCHES.contains(&path[0].as_str()) {
+        return Err("vault config patch targets a native-owned branch".to_string());
     }
     Ok(())
 }
@@ -263,5 +269,42 @@ mod tests {
 
         assert_eq!(error, "vault config patch path is invalid");
         assert_eq!(root, serde_json::json!({}));
+    }
+
+    #[test]
+    fn config_patches_refuse_native_owned_branches_and_keep_webview_branches() {
+        let chat = serde_json::json!({ "schemaVersion": 1, "providers": [] });
+        let mut root = serde_json::json!({ "chat": chat.clone() });
+        for (path, remove) in [
+            (vec!["chat"], true),
+            (vec!["chat", "providers"], false),
+            (vec!["chat", "behavior", "sendKey"], false),
+        ] {
+            let error = apply_config_patch(
+                &mut root,
+                VaultConfigPatch {
+                    path: path.into_iter().map(str::to_owned).collect(),
+                    remove,
+                    value: serde_json::json!("replaced"),
+                },
+            )
+            .unwrap_err();
+            assert_eq!(error, "vault config patch targets a native-owned branch");
+        }
+        assert_eq!(root, serde_json::json!({ "chat": chat }));
+
+        apply_config_patch(
+            &mut root,
+            VaultConfigPatch {
+                path: vec!["chatSidebar".to_string(), "starredChannelIds".to_string()],
+                remove: false,
+                value: serde_json::json!(["channel"]),
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            root["chatSidebar"]["starredChannelIds"],
+            serde_json::json!(["channel"])
+        );
     }
 }

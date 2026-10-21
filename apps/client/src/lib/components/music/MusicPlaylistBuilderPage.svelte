@@ -134,8 +134,15 @@
   let sourceRenameNodeId = $state<string | null>(null);
   let sourceRenameSaving = $state(false);
   let sourceRenameError = $state<string | null>(null);
-  let localSourceNameOverride = $state(getConfigKey<string | null>("music.sources.localName", null));
-  let youtubeSourceNameOverride = $state(getConfigKey<string | null>("music.sources.youtubeName", null));
+  let localSourceNameOverride = $state(savedSourceName("music.sources.localName"));
+  let youtubeSourceNameOverride = $state(savedSourceName("music.sources.youtubeName"));
+
+  /** Read a saved source name, ignoring a value of any other type that a vault file may hold. */
+  function savedSourceName(key: string): string | null {
+    const saved = getConfigKey<unknown>(key, null);
+    return typeof saved === "string" ? saved : null;
+  }
+
   let repairItemId = $state<string | null>(null);
   let pendingRefreshPlan = $state<MusicSourceRefreshPlan | null>(null);
   let playlistSurface = $state<"create" | "edit" | "duplicate" | "delete" | null>(null);

@@ -38,7 +38,7 @@ Ownership transfer and read-only refresh share one bounded path:
 
 1. Fence new writes, drain current writes, isolate database access, and create a consistent SQLite snapshot.
 2. Archive the complete portable vault without live WAL or SHM files and stream it into device-local staging.
-3. Validate identities, generation, bounds, archive hash, paths, required files, migration history, and SQLite integrity.
+3. Validate identities, generation, bounds, archive size and hash, paths, required files, the current migration set and schema, and SQLite integrity. The hash is the sender's own digest, so it catches corruption, not tampering; authenticity comes from the pinned mutual TLS connection, and the content checks above apply whichever linked device sent it.
 4. For a transfer, commit the new generation; then atomically activate staging, reopen through normal startup, and acknowledge.
 5. Keep post-commit state until acknowledgement, so a restart retries the same activation instead of granting a second owner.
 

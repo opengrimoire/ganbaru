@@ -1,9 +1,6 @@
 use super::models::*;
 
 const PALETTE_SIZE: i64 = 32;
-const PROJECT_TEMPLATE_IDS: &[&str] = &[
-    "blank", "software", "course", "routine", "reading", "chores",
-];
 const MAX_PROJECT_EVENT_DURATION_MINUTES: i64 = 24 * 60;
 const MAX_PROJECT_POMODORO_FOCUS_MINUTES: i64 = 120;
 const MAX_PROJECT_POMODORO_SHORT_BREAK_MINUTES: i64 = 30;
@@ -94,7 +91,6 @@ pub(super) fn validate_project_create(project: &ProjectCreate) -> Result<(), Str
     require_non_empty(&project.id, "id")?;
     ganbaru_working_folders::validate_managed_folder_name(&project.id)?;
     require_non_empty(&project.group_id, "group_id")?;
-    validate_enum(&project.template_id, "template_id", PROJECT_TEMPLATE_IDS)?;
     require_non_empty(&project.name, "name")?;
     validate_project_icon(&project.icon)?;
     validate_color(project.color)?;

@@ -113,8 +113,6 @@ export type ProjectCustomFieldType = (typeof PROJECT_CUSTOM_FIELD_TYPES)[number]
 export type ProjectStatusCategory = "not_started" | "active" | "blocked" | "done";
 export const PROJECT_LIFECYCLE_STATUSES = ["active", "hidden", "archived"] as const;
 export type ProjectLifecycleStatus = (typeof PROJECT_LIFECYCLE_STATUSES)[number];
-export const PROJECT_TEMPLATE_IDS = ["blank", "software", "course", "routine", "reading", "chores"] as const;
-export type ProjectTemplateId = (typeof PROJECT_TEMPLATE_IDS)[number];
 
 export interface ProjectChatWorkingFolderOption {
   id: string;
@@ -170,119 +168,25 @@ export interface Project {
   updatedAt: string;
 }
 
-export const PROJECT_TEMPLATE_DEFAULTS = {
-  blank: {
-    icon: "lucide:folder",
-    color: null,
-    defaultEventName: null,
-    defaultEventTimeMode: "timed",
-    defaultEventDurationMinutes: null,
-    defaultPomodoroMode: "preset",
-    defaultPomodoroPresetKey: "adaptive",
-    defaultPomodoroFocusMinutes: null,
-    defaultPomodoroShortBreakMinutes: null,
-    defaultPomodoroLongBreakMinutes: null,
-    defaultPomodoroLongBreakAfterFocusCount: null,
-    defaultIdleSettingsSource: "global",
-    defaultIdlePauseEnabled: DEFAULT_FOCUS_IDLE_PAUSE_ON_EVENT_CREATE,
-    defaultIdleThresholdMinutes: DEFAULT_FOCUS_IDLE_THRESHOLD_MINUTES,
-  },
-  software: {
-    icon: "lucide:folder",
-    color: null,
-    defaultEventName: null,
-    defaultEventTimeMode: "timed",
-    defaultEventDurationMinutes: null,
-    defaultPomodoroMode: "preset",
-    defaultPomodoroPresetKey: "adaptive",
-    defaultPomodoroFocusMinutes: null,
-    defaultPomodoroShortBreakMinutes: null,
-    defaultPomodoroLongBreakMinutes: null,
-    defaultPomodoroLongBreakAfterFocusCount: null,
-    defaultIdleSettingsSource: "global",
-    defaultIdlePauseEnabled: DEFAULT_FOCUS_IDLE_PAUSE_ON_EVENT_CREATE,
-    defaultIdleThresholdMinutes: DEFAULT_FOCUS_IDLE_THRESHOLD_MINUTES,
-  },
-  course: {
-    icon: "lucide:graduation-cap",
-    color: null,
-    defaultEventName: null,
-    defaultEventTimeMode: "timed",
-    defaultEventDurationMinutes: null,
-    defaultPomodoroMode: "preset",
-    defaultPomodoroPresetKey: "adaptive",
-    defaultPomodoroFocusMinutes: null,
-    defaultPomodoroShortBreakMinutes: null,
-    defaultPomodoroLongBreakMinutes: null,
-    defaultPomodoroLongBreakAfterFocusCount: null,
-    defaultIdleSettingsSource: "global",
-    defaultIdlePauseEnabled: DEFAULT_FOCUS_IDLE_PAUSE_ON_EVENT_CREATE,
-    defaultIdleThresholdMinutes: DEFAULT_FOCUS_IDLE_THRESHOLD_MINUTES,
-  },
-  routine: {
-    icon: "lucide:repeat",
-    color: null,
-    defaultEventName: null,
-    defaultEventTimeMode: "timed",
-    defaultEventDurationMinutes: null,
-    defaultPomodoroMode: "preset",
-    defaultPomodoroPresetKey: "adaptive",
-    defaultPomodoroFocusMinutes: null,
-    defaultPomodoroShortBreakMinutes: null,
-    defaultPomodoroLongBreakMinutes: null,
-    defaultPomodoroLongBreakAfterFocusCount: null,
-    defaultIdleSettingsSource: "global",
-    defaultIdlePauseEnabled: DEFAULT_FOCUS_IDLE_PAUSE_ON_EVENT_CREATE,
-    defaultIdleThresholdMinutes: DEFAULT_FOCUS_IDLE_THRESHOLD_MINUTES,
-  },
-  reading: {
-    icon: "lucide:book-open",
-    color: null,
-    defaultEventName: null,
-    defaultEventTimeMode: "timed",
-    defaultEventDurationMinutes: null,
-    defaultPomodoroMode: "preset",
-    defaultPomodoroPresetKey: "adaptive",
-    defaultPomodoroFocusMinutes: null,
-    defaultPomodoroShortBreakMinutes: null,
-    defaultPomodoroLongBreakMinutes: null,
-    defaultPomodoroLongBreakAfterFocusCount: null,
-    defaultIdleSettingsSource: "global",
-    defaultIdlePauseEnabled: DEFAULT_FOCUS_IDLE_PAUSE_ON_EVENT_CREATE,
-    defaultIdleThresholdMinutes: DEFAULT_FOCUS_IDLE_THRESHOLD_MINUTES,
-  },
-  chores: {
-    icon: "lucide:shopping-cart",
-    color: null,
-    defaultEventName: null,
-    defaultEventTimeMode: "timed",
-    defaultEventDurationMinutes: null,
-    defaultPomodoroMode: "preset",
-    defaultPomodoroPresetKey: "adaptive",
-    defaultPomodoroFocusMinutes: null,
-    defaultPomodoroShortBreakMinutes: null,
-    defaultPomodoroLongBreakMinutes: null,
-    defaultPomodoroLongBreakAfterFocusCount: null,
-    defaultIdleSettingsSource: "global",
-    defaultIdlePauseEnabled: DEFAULT_FOCUS_IDLE_PAUSE_ON_EVENT_CREATE,
-    defaultIdleThresholdMinutes: DEFAULT_FOCUS_IDLE_THRESHOLD_MINUTES,
-  },
-} satisfies Record<ProjectTemplateId, {
-  icon: string;
-  color: EventColor | null;
-  defaultEventName: string | null;
-  defaultEventTimeMode: ProjectDefaultEventTimeMode;
-  defaultEventDurationMinutes: number | null;
-  defaultPomodoroMode: ProjectDefaultPomodoroMode;
-  defaultPomodoroPresetKey: PomodoroPresetKey | null;
-  defaultPomodoroFocusMinutes: number | null;
-  defaultPomodoroShortBreakMinutes: number | null;
-  defaultPomodoroLongBreakMinutes: number | null;
-  defaultPomodoroLongBreakAfterFocusCount: number | null;
-  defaultIdleSettingsSource: ProjectDefaultIdleSettingsSource;
-  defaultIdlePauseEnabled: boolean;
-  defaultIdleThresholdMinutes: FocusIdleThresholdMinutes;
-}>;
+export const DEFAULT_PROJECT_ICON = "lucide:folder";
+export const DEFAULT_PROJECT_GROUP_ICON = "lucide:layers";
+
+/** Settings every new project starts with; the person chooses only its name and icon at creation. */
+export const PROJECT_CREATE_DEFAULTS = {
+  color: null,
+  defaultEventName: null,
+  defaultEventTimeMode: "timed",
+  defaultEventDurationMinutes: null,
+  defaultPomodoroMode: "preset",
+  defaultPomodoroPresetKey: "adaptive",
+  defaultPomodoroFocusMinutes: null,
+  defaultPomodoroShortBreakMinutes: null,
+  defaultPomodoroLongBreakMinutes: null,
+  defaultPomodoroLongBreakAfterFocusCount: null,
+  defaultIdleSettingsSource: "global",
+  defaultIdlePauseEnabled: DEFAULT_FOCUS_IDLE_PAUSE_ON_EVENT_CREATE,
+  defaultIdleThresholdMinutes: DEFAULT_FOCUS_IDLE_THRESHOLD_MINUTES,
+} satisfies Omit<ProjectCreate, "id" | "groupId" | "name" | "icon" | "sortOrder">;
 
 export interface ProjectSection {
   id: string;
@@ -779,7 +683,6 @@ export interface ProjectGroupUpdate {
 export interface ProjectCreate {
   id: string;
   groupId: string;
-  templateId: ProjectTemplateId;
   name: string;
   icon: string;
   color: EventColor | null;

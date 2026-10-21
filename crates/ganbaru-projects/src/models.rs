@@ -829,7 +829,6 @@ pub struct ProjectGroupUpdate {
 pub struct ProjectCreate {
     pub(crate) id: String,
     pub(crate) group_id: String,
-    pub(crate) template_id: String,
     pub(crate) name: String,
     pub(crate) icon: String,
     pub(crate) color: Option<i64>,

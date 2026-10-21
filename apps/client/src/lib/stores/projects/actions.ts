@@ -87,8 +87,10 @@ import {
   taskListColumnsPreferenceValue,
 } from "$lib/projects/tasks/list-columns";
 import {
+  DEFAULT_PROJECT_GROUP_ICON,
+  DEFAULT_PROJECT_ICON,
+  PROJECT_CREATE_DEFAULTS,
   PROJECT_TAG_DEFAULT_COLOR,
-  PROJECT_TEMPLATE_DEFAULTS,
   type Project,
   type ProjectChecklistItem,
   type ProjectCreate,
@@ -113,7 +115,6 @@ import {
   type ProjectTaskEventLink,
   type ProjectTaskListColumn,
   type ProjectTaskType,
-  type ProjectTemplateId,
   type ProjectUpdate,
   type ProjectViewType,
 } from "$lib/projects/types";
@@ -302,14 +303,14 @@ export function createProjectStoreActions(context: ProjectStoreActionContext) {
     invalidateAssetUrl("project-icon", previousPath);
   }
 
-  async function addGroup(name: string): Promise<void> {
+  async function addGroup(name: string, icon: string = DEFAULT_PROJECT_GROUP_ICON): Promise<void> {
     const displayName = normalizeProjectName(name);
     if (!displayName) return;
     const id = crypto.randomUUID();
     await commitMutation(`group:${id}`, () => createProjectGroup({
       id,
       name: displayName,
-      icon: "lucide:folder",
+      icon,
       color: null,
       sortOrder: selectors.nextGroupSortOrder(),
     }));
@@ -385,30 +386,16 @@ export function createProjectStoreActions(context: ProjectStoreActionContext) {
   }
 
   /** Create a project and return its id, which the calling pane selects; an empty name creates nothing. */
-  async function addProject(groupId: string, name: string, templateId: ProjectTemplateId = "blank"): Promise<string | undefined> {
+  async function addProject(groupId: string, name: string, icon: string = DEFAULT_PROJECT_ICON): Promise<string | undefined> {
     const displayName = normalizeProjectName(name);
     if (!displayName) return;
-    const templateDefaults = PROJECT_TEMPLATE_DEFAULTS[templateId];
     const project: ProjectCreate = {
+      ...PROJECT_CREATE_DEFAULTS,
       id: crypto.randomUUID(),
       groupId,
-      templateId,
       name: displayName,
-      icon: templateDefaults.icon,
-      color: templateDefaults.color,
+      icon,
       sortOrder: selectors.nextProjectSortOrder(groupId),
-      defaultEventName: templateDefaults.defaultEventName,
-      defaultEventTimeMode: templateDefaults.defaultEventTimeMode,
-      defaultEventDurationMinutes: templateDefaults.defaultEventDurationMinutes,
-      defaultPomodoroMode: templateDefaults.defaultPomodoroMode,
-      defaultPomodoroPresetKey: templateDefaults.defaultPomodoroPresetKey,
-      defaultPomodoroFocusMinutes: templateDefaults.defaultPomodoroFocusMinutes,
-      defaultPomodoroShortBreakMinutes: templateDefaults.defaultPomodoroShortBreakMinutes,
-      defaultPomodoroLongBreakMinutes: templateDefaults.defaultPomodoroLongBreakMinutes,
-      defaultPomodoroLongBreakAfterFocusCount: templateDefaults.defaultPomodoroLongBreakAfterFocusCount,
-      defaultIdleSettingsSource: templateDefaults.defaultIdleSettingsSource,
-      defaultIdlePauseEnabled: templateDefaults.defaultIdlePauseEnabled,
-      defaultIdleThresholdMinutes: templateDefaults.defaultIdleThresholdMinutes,
     };
     await commitMutation(`project:${project.id}`, () => createProjectBackend(project));
     return project.id;

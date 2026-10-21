@@ -165,14 +165,6 @@ export const configuration = {
     health: "Salud",
     sleep: "Dormir",
   },
-  templates: {
-    blank: "En blanco",
-    software: "Software",
-    course: "Curso",
-    routine: "Rutina",
-    reading: "Lectura",
-    chores: "Tareas domésticas",
-  },
   priority: {
     low: "Baja",
     normal: "Normal",

@@ -10,10 +10,11 @@ import {
   PROJECT_MAX_DURATION_MINUTES,
   type ProjectDefaultEventTimeMode,
 } from "./duration";
-import type {
-  Project,
-  ProjectLifecycleStatus,
-  ProjectUpdate,
+import {
+  DEFAULT_PROJECT_ICON,
+  type Project,
+  type ProjectLifecycleStatus,
+  type ProjectUpdate,
 } from "$lib/projects/types";
 import {
   DEFAULT_FOCUS_IDLE_PAUSE_ON_EVENT_CREATE,
@@ -64,7 +65,7 @@ export function emptyProjectDraft(): ProjectDraft {
   return {
     groupId: "",
     name: "",
-    icon: "lucide:folder",
+    icon: DEFAULT_PROJECT_ICON,
     status: "active",
     color: undefined,
     defaultEventName: "",

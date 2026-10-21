@@ -12,7 +12,7 @@ Project settings can define:
 - Project-local statuses, priorities, tags, and custom fields.
 - Working folders where the platform supports them.
 
-New projects default to no event name, the adaptive Pomodoro preset, global idle behavior, and no playlists unless a template says otherwise.
+Creating a project or group asks only for its name and icon; Enter creates it. New projects default to no event name, the adaptive Pomodoro preset, global idle behavior, and no playlists, and start with a General section plus the default statuses and priorities. New groups default to the layers icon and new projects to the folder icon.
 
 Playlist selectors list real Music playlists. Choosing a playlist plays it automatically during that phase; choosing None means silence. On platforms with soundscapes, each phase also chooses None (the default) or a soundscape, independently of its playlist. A missing or deleted playlist or soundscape remains an explicit unavailable assignment with a repair path. Track-level settings stay in Music playlist membership data; see [Music automation](../music/automation.md).
 
@@ -36,9 +36,7 @@ Projects support text, number, select, multi-select, status, date, person, files
 
 ## Project templates
 
-Built-in templates (Blank, Software, Course, Routine, Reading, and Chores) initialize sections plus the default statuses and priorities. Applying a template produces independent canonical rows; there is no ongoing inheritance.
-
-Planned: user-defined templates that can also carry settings, tags, custom fields, and planning defaults, with the same no-inheritance rule.
+Planned: user-defined templates that carry sections, settings, tags, custom fields, and planning defaults. Applying a template produces independent canonical rows; there is no ongoing inheritance. There are no built-in templates, because differing only in starting sections did not justify a choice at creation.
 
 ## Scheduling tasks
 

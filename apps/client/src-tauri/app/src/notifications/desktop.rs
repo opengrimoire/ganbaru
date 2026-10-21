@@ -154,6 +154,10 @@ fn focus_main_window(app: tauri::AppHandle) {
     });
 }
 
+/// Whether the notification server may render body markup: the freedesktop servers notify-rust
+/// talks to on Linux and the BSDs. Windows shows text as given.
+const BODY_MARKUP: bool = cfg!(all(unix, not(target_os = "macos")));
+
 fn escape_notification_markup(value: &str) -> String {
     value
         .replace('&', "&amp;")
@@ -174,23 +178,46 @@ fn bounded_notification_text(value: &str, max_chars: usize) -> String {
     bounded
 }
 
+/// First line of `value`, bounded, or `fallback` when it is blank. Summaries are plain text in
+/// the notification specification, so they are not escaped.
 fn notification_summary(value: &str, fallback: &str) -> String {
     let summary = value.lines().next().unwrap_or("").trim();
     if summary.is_empty() {
         fallback.to_string()
     } else {
-        escape_notification_markup(&bounded_notification_text(
-            summary,
-            MAX_NOTIFICATION_SUMMARY_CHARS,
-        ))
+        bounded_notification_text(summary, MAX_NOTIFICATION_SUMMARY_CHARS)
     }
 }
 
+/// `value` bounded before it is escaped, so no entity is split, and escaped where the server
+/// may render body markup, so text never becomes a link, image, or style.
 fn notification_body(value: &str) -> String {
-    escape_notification_markup(&bounded_notification_text(
-        value,
-        MAX_NOTIFICATION_BODY_CHARS,
-    ))
+    let bounded = bounded_notification_text(value, MAX_NOTIFICATION_BODY_CHARS);
+    if BODY_MARKUP {
+        escape_notification_markup(&bounded)
+    } else {
+        bounded
+    }
+}
+
+/// Sets the summary and optional body of `notification`. Every notification sets its text here
+/// and nowhere else.
+fn set_notification_text(
+    notification: &mut Notification,
+    summary: &str,
+    fallback: &str,
+    body: Option<&str>,
+) {
+    notification.summary(&notification_summary(summary, fallback));
+    if let Some(body) = body {
+        notification.body(&notification_body(body));
+    }
+}
+
+fn notification_with_text(summary: &str, fallback: &str, body: Option<&str>) -> Notification {
+    let mut notification = Notification::new();
+    set_notification_text(&mut notification, summary, fallback, body);
+    notification
 }
 
 #[tauri::command]
@@ -211,11 +238,9 @@ pub fn show_event_notification(
     } else {
         "Open Ganbaru"
     };
-    let mut notification = Notification::new();
+    let mut notification = notification_with_text(&title, "Calendar event", Some(&body));
     notification
         .appname("Ganbaru")
-        .summary(&notification_summary(&title, "Calendar event"))
-        .body(&notification_body(&body))
         .action("open", action_label)
         .timeout(15_000);
     apply_linux_notification_hints(&mut notification, Some("calendar"), true, true);
@@ -246,11 +271,9 @@ pub fn show_notes_notification(
     if play_sound.unwrap_or(true) {
         app_sounds.play(AppSound::EventNotification);
     }
-    let mut notification = Notification::new();
+    let mut notification = notification_with_text(&title, "Note reminder", Some(&body));
     notification
         .appname("Ganbaru")
-        .summary(&notification_summary(&title, "Note reminder"))
-        .body(&notification_body(&body))
         .action("open", "Open note")
         .timeout(15_000);
     apply_linux_notification_hints(&mut notification, Some("reminder"), true, true);
@@ -282,11 +305,9 @@ pub fn show_project_task_notification(
     if play_sound.unwrap_or(true) {
         app_sounds.play(AppSound::EventNotification);
     }
-    let mut notification = Notification::new();
+    let mut notification = notification_with_text(&title, "Task reminder", Some(&body));
     notification
         .appname("Ganbaru")
-        .summary(&notification_summary(&title, "Task reminder"))
-        .body(&notification_body(&body))
         .action("open", "Open task")
         .timeout(15_000);
     apply_linux_notification_hints(&mut notification, Some("reminder"), true, true);
@@ -316,10 +337,8 @@ pub fn show_benchmark_notification(
     app_sounds: State<'_, AppSoundState>,
 ) {
     app_sounds.play(AppSound::EventNotification);
-    let mut notification = Notification::new();
+    let mut notification = notification_with_text(&title, "Benchmark finished", Some(&body));
     notification
-        .summary(&notification_summary(&title, "Benchmark finished"))
-        .body(&notification_body(&body))
         .action("show_summary", "Show summary")
         .timeout(10_000)
         .id(9002);
@@ -355,14 +374,13 @@ pub(crate) fn show_distractions_desktop_block_notification(
 ) {
     app_sounds.play(AppSound::EventNotification);
     let app_name = distraction_notification_name(&app_name, "The blocked app");
-    let body = escape_notification_markup(&format!(
+    let body = format!(
         "{app_name} was closed because it is blocked by your desktop rules. Change this in Settings > Distractions > Desktop apps (or click this notification)"
-    ));
-    let mut notification = Notification::new();
+    );
+    let summary = "App closed by Ganbaru";
+    let mut notification = notification_with_text(summary, summary, Some(&body));
     notification
         .appname("Ganbaru")
-        .summary("App closed by Ganbaru")
-        .body(&body)
         .action("default", "Open desktop apps")
         .timeout(10_000);
     apply_linux_notification_hints(&mut notification, Some("device"), true, true);
@@ -387,14 +405,13 @@ pub(crate) fn show_distractions_desktop_limit_notification(
     app_sounds.play(AppSound::EventNotification);
     let app_name = distraction_notification_name(&app_name, "The app");
     let limit_name = distraction_notification_name(&limit_name, "a usage limit");
-    let body = escape_notification_markup(&format!(
+    let body = format!(
         "{app_name} was closed because {limit_name} reached its limit. Change this in Settings > Distractions > Limits (or click this notification)"
-    ));
-    let mut notification = Notification::new();
+    );
+    let summary = "Usage limit reached";
+    let mut notification = notification_with_text(summary, summary, Some(&body));
     notification
         .appname("Ganbaru")
-        .summary("Usage limit reached")
-        .body(&body)
         .action("default", "Open limits")
         .timeout(10_000);
     apply_linux_notification_hints(&mut notification, Some("device"), true, true);
@@ -493,7 +510,8 @@ pub(crate) fn show_native_focus_alert(
             extend_label,
             remaining_ms,
         } => {
-            notification.summary(&title).id(9001);
+            set_notification_text(&mut notification, &title, "Focus", None);
+            notification.id(9001);
             #[cfg(target_os = "linux")]
             if let Some(label) = extend_label {
                 notification.action("add_time", &label);
@@ -508,7 +526,8 @@ pub(crate) fn show_native_focus_alert(
             resume_label,
             dismiss_label,
         } => {
-            notification.summary(&title).body(&body).id(9003);
+            set_notification_text(&mut notification, &title, "Focus", Some(&body));
+            notification.id(9003);
             #[cfg(target_os = "linux")]
             notification
                 .action("resume", &resume_label)
@@ -584,9 +603,23 @@ mod notification_bounds_tests {
             summary,
             format!(
                 "{}{NOTIFICATION_TRUNCATION_MARK}",
-                "&lt;".repeat(MAX_NOTIFICATION_SUMMARY_CHARS - 1)
+                "<".repeat(MAX_NOTIFICATION_SUMMARY_CHARS - 1)
             ),
-            "only the first line is kept and no entity is split"
+            "only the first line is kept, as plain text"
+        );
+        let markup = "<".repeat(MAX_NOTIFICATION_BODY_CHARS * 2);
+        let expected = format!(
+            "{}{NOTIFICATION_TRUNCATION_MARK}",
+            "<".repeat(MAX_NOTIFICATION_BODY_CHARS - 1)
+        );
+        assert_eq!(
+            notification_body(&markup),
+            if BODY_MARKUP {
+                escape_notification_markup(&expected)
+            } else {
+                expected
+            },
+            "the body is bounded before escaping, so no entity is split"
         );
         assert_eq!(
             notification_summary(" \n title", "Task reminder"),
@@ -596,7 +629,10 @@ mod notification_bounds_tests {
         let body = notification_body(&"\u{e9}".repeat(MAX_NOTIFICATION_BODY_CHARS + 1));
         assert_eq!(body.chars().count(), MAX_NOTIFICATION_BODY_CHARS);
         assert!(body.ends_with(NOTIFICATION_TRUNCATION_MARK));
-        assert_eq!(notification_body("a & b"), "a &amp; b");
+        assert_eq!(
+            notification_body("a & b"),
+            if BODY_MARKUP { "a &amp; b" } else { "a & b" }
+        );
         assert_eq!(
             distraction_notification_name(&"x".repeat(200), "The app")
                 .chars()
@@ -604,6 +640,34 @@ mod notification_bounds_tests {
             MAX_DISTRACTION_NAME_CHARS
         );
         assert_eq!(distraction_notification_name("\n", "The app"), "The app");
+    }
+
+    #[test]
+    fn every_notification_sets_its_text_through_the_escaping_builder() {
+        let notification = notification_with_text(
+            "R&D <b>review</b>\nsecond line",
+            "Focus",
+            Some("<a href=\"https://example.com\"><img src=\"x\"/></a> & more"),
+        );
+        assert_eq!(notification.summary, "R&D <b>review</b>");
+        if BODY_MARKUP {
+            assert_eq!(
+                notification.body,
+                "&lt;a href=\"https://example.com\"&gt;&lt;img src=\"x\"/&gt;&lt;/a&gt; &amp; more"
+            );
+        }
+
+        let source = include_str!("desktop.rs");
+        let production = source
+            .split_once("#[cfg(test)]")
+            .map_or(source, |(production, _)| production);
+        for setter in [".summary(", ".body("] {
+            assert_eq!(
+                production.matches(setter).count(),
+                1,
+                "{setter} is called only by set_notification_text"
+            );
+        }
     }
 
     #[test]

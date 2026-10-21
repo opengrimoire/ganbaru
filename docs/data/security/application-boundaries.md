@@ -72,7 +72,7 @@ iCalendar import bounds file size, component and property counts, nesting, text 
 
 Recurrence expansion has a hard occurrence guard and a requested date window. A malformed or unsupported rule returns a controlled result rather than consuming unbounded CPU or memory.
 
-Notification payloads and platform callbacks are untrusted. They identify a bounded application action and repeat authorization and current-state validation before mutation. Desktop notification text is bounded and markup-escaped, and only a fixed number of notifications listen for an action at once, each for a bounded time; beyond that limit notifications still show but without action buttons.
+Notification payloads and platform callbacks are untrusted. They identify a bounded application action and repeat authorization and current-state validation before mutation. Desktop notification text is bounded and set through one builder: summaries are plain text, as the freedesktop specification defines them, and bodies are markup-escaped on freedesktop servers, so vault or localized text never renders as links, images, or formatting. Only a fixed number of notifications listen for an action at once, each for a bounded time; beyond that limit notifications still show but without action buttons.
 
 ## Pomodoro overlays and enforcement
 

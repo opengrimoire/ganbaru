@@ -26,11 +26,11 @@
   const adjustmentText = $derived(format(adjustment));
 </script>
 
-<div class="flex items-baseline gap-2">
-  <p class={["min-w-0 flex-1 truncate text-xs", disabled && "text-muted-foreground"]}>{title}</p>
-  {#if !disabled}<span class="shrink-0 text-panel-detail tabular-nums text-muted-foreground">{adjustmentText}</span>{/if}
+<div class="flex items-baseline gap-2 text-panel-detail font-medium text-muted-foreground">
+  <p class="min-w-0 flex-1 truncate">{title}</p>
+  {#if !disabled}<span class="shrink-0 tabular-nums">{adjustmentText}</span>{/if}
 </div>
-<div class="flex min-h-9 items-center gap-2">
+<div class="flex min-h-(--panel-row-height) items-center gap-2">
   <span class="shrink-0 text-panel-detail tabular-nums text-muted-foreground" aria-hidden="true">{format(PRESET_LEVEL_ADJUSTMENT_RANGE.min)}</span>
   <MusicSoundscapeLevelSlider {id} {label} value={adjustment} min={PRESET_LEVEL_ADJUSTMENT_RANGE.min} max={PRESET_LEVEL_ADJUSTMENT_RANGE.max} centered {disabled} valueText={t("music.soundscape.levelValue", adjustmentText)} {onchange} />
   <span class="shrink-0 text-panel-detail tabular-nums text-muted-foreground" aria-hidden="true">{format(PRESET_LEVEL_ADJUSTMENT_RANGE.max)}</span>

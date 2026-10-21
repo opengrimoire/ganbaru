@@ -76,19 +76,19 @@
   </button>
   {#if open}
     <div bind:this={popover} tabindex="-1" class="soundscape-popover surface-floating absolute bottom-full z-40 mb-2 flex w-floating-lg max-h-[calc(100vh-1rem)] flex-col overflow-hidden" style={popoverLeft === null ? "visibility:hidden" : `--soundscape-popover-left:${popoverLeft}px`} role="dialog" aria-label={t("music.soundscape.controls")}>
-      <div use:scrollEdgeFadeAction class="min-h-0 flex-1 overflow-y-auto p-3">
+      <div use:scrollEdgeFadeAction class="surface-floating-body flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto">
         <MusicSoundscapeActiveLevel idPrefix="player-soundscape" />
-        {#if soundscape.error}<Notice class="mt-1 px-1 text-panel-detail" message={t("music.soundscape.genericError")} />{/if}
+        {#if soundscape.error}<Notice class="px-2 text-panel-detail" message={t("music.soundscape.genericError")} />{/if}
         {#if soundscape.presets.length > 0}
-          <div class="mt-3 flex flex-wrap gap-1.5">
+          <div class="flex flex-wrap gap-1">
             {#each soundscape.presets as preset (preset.id)}
               {@const selected = preset.id === active?.id && playing}
               {@const name = presetDisplayName(preset, t)}
-              <button type="button" aria-pressed={selected} aria-label={selected ? t("music.soundscape.pause") : t("music.soundscape.playPreset", name)} disabled={!soundscape.presetIsPlayable(preset)} class={selected ? "inline-flex h-8 min-w-0 max-w-full items-center gap-1.5 rounded-floating-item bg-primary/10 px-2.5 text-panel-detail transition-colors hover:bg-accent/70 disabled:opacity-50" : "inline-flex h-8 min-w-0 max-w-full items-center gap-1.5 rounded-floating-item px-2.5 text-panel-detail transition-colors hover:bg-accent/70 disabled:opacity-50"} onclick={() => choosePreset(preset)}><MusicSoundscapeGroupIcon icon={preset.icon} size={14} /><span class="truncate">{name}</span></button>
+              <button type="button" aria-pressed={selected} aria-label={selected ? t("music.soundscape.pause") : t("music.soundscape.playPreset", name)} disabled={!soundscape.presetIsPlayable(preset)} class={["inline-flex min-h-(--panel-row-height) min-w-0 max-w-full items-center gap-1.5 rounded-floating-item px-2 transition-colors hover:bg-accent/70 disabled:opacity-50", selected && "bg-primary/10"]} onclick={() => choosePreset(preset)}><MusicSoundscapeGroupIcon icon={preset.icon} size={14} /><span class="truncate">{name}</span></button>
             {/each}
           </div>
         {/if}
-        <button type="button" class="menu-item mt-3 justify-between text-muted-foreground hover:text-foreground" onclick={() => { open = false; onOpenSoundscapes(); }}><span>{t("music.soundscape.openBuilder")}</span><ChevronRight size={14} /></button>
+        <button type="button" class="menu-item justify-between text-muted-foreground hover:text-foreground" onclick={() => { open = false; onOpenSoundscapes(); }}><span>{t("music.soundscape.openBuilder")}</span><ChevronRight size={14} /></button>
       </div>
     </div>
   {/if}

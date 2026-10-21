@@ -113,7 +113,7 @@
 </script>
 
 {#if isActive}
-  <div class="menu-label">
+  <div class="menu-label tabular-nums">
     {pomodoro.phase !== "focus" && pomodoro.remainingSeconds === 0
       ? t("pomodoroNotification.breakCompleteTitle")
       : t("titleBar.pomodoro.left", pomodoro.formattedTime)}

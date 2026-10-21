@@ -308,7 +308,7 @@
         <div class="-mr-1.5 flex items-center justify-between gap-3">
           <div class="flex shrink-0 items-center gap-1.5">
             <span>{t("music.preferences.applyTo")}</span>
-            <button type="button" data-music-apply-to-hint class="hint-trigger group" aria-label={t("music.preferences.applyToHint")}>{@render hintBadge("i")}</button>
+            <button type="button" data-music-apply-to-hint class="hint-trigger group" aria-label={t("music.preferences.applyToHint")} data-app-tooltip={t("music.preferences.applyToHint")}>{@render hintBadge("i")}</button>
           </div>
           <Select
             value={scopePlaylistId ?? ""}

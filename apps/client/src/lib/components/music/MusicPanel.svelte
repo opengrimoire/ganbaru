@@ -1034,7 +1034,7 @@
               </div>
             {/if}
 
-            <div class="relative min-h-0 flex-1">
+            <div class="relative isolate min-h-0 flex-1">
               <div
                 bind:this={playlistScrollContainer}
                 use:playlistViewportAction

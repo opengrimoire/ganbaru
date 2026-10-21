@@ -399,3 +399,26 @@ fn preview_webviews_get_no_capability_even_on_the_app_dev_origin() {
     }
     assert!(checked >= 2, "desktop capabilities should be checked");
 }
+
+#[test]
+fn loopback_hosts_are_localhost_127_slash_8_and_ipv6_loopback_only() {
+    for value in [
+        "http://localhost:3000/",
+        "http://LocalHost/",
+        "http://127.0.0.2:8080/",
+        "http://127.255.255.254/",
+        "http://[::1]:5173/",
+    ] {
+        assert!(super::is_loopback(&url(value)), "{value}");
+    }
+    for value in [
+        "http://localhost.example.com/",
+        "http://app.localhost:3000/",
+        "http://128.0.0.1/",
+        "http://[::ffff:127.0.0.1]/",
+        "http://0.0.0.0:3000/",
+        "https://example.com/",
+    ] {
+        assert!(!super::is_loopback(&url(value)), "{value}");
+    }
+}

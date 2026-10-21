@@ -571,6 +571,7 @@ pub async fn chat_browser_open(
         app.state::<ChatBrowserManager>()
             .update(&request.tab_id, |read| {
                 read.current_url = url.to_string();
+                read.external_origin = !is_loopback(&url);
                 read.visible = true;
                 read.loading = true;
                 read.viewport_width = bounds.width.round() as u32;

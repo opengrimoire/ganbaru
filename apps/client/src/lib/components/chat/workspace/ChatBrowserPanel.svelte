@@ -17,6 +17,7 @@
   import X from "@lucide/svelte/icons/x";
   import * as chatApi from "$lib/api/chat";
   import type { BrowserTabBounds, BrowserTabRead } from "$lib/chat/contracts";
+  import { urlReach } from "$lib/chat/workspace/loopback";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { useChat } from "$lib/stores/chat.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
@@ -209,17 +210,13 @@
     return /^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed) ? trimmed : `http://${trimmed}`;
   }
 
+  /** Whether a navigation leaves loopback and needs confirmation. Unparsable text goes to Rust, which reports it. */
   function isExternal(value: string): boolean {
-    try {
-      const host = new URL(value).hostname;
-      return host !== "localhost" && host !== "127.0.0.1" && host !== "::1";
-    } catch {
-      return false;
-    }
+    return urlReach(value) === "external";
   }
 
   function externalOrigin(tab: BrowserTabRead | null): string | null {
-    return tab?.visible && isExternal(tab.currentUrl) ? originOf(tab.currentUrl) : null;
+    return tab?.visible && tab.externalOrigin ? originOf(tab.currentUrl) : null;
   }
 
   function originOf(value: string): string | null {

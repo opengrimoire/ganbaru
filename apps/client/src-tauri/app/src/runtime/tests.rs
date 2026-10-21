@@ -432,3 +432,11 @@ fn desktop_runtime_registers_the_app_navigation_guard() {
         "desktop runtime must keep app webviews on the app document"
     );
 }
+
+#[test]
+fn desktop_runtime_starts_the_chat_cleanup_service() {
+    assert!(
+        DESKTOP_RUNTIME.contains("chat::cleanup_service::start(app.handle());"),
+        "permanently deleted Chat files are removed only while the cleanup service runs"
+    );
+}

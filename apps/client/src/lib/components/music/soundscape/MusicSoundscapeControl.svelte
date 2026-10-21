@@ -107,7 +107,7 @@
             {#each soundscape.presets as preset (preset.id)}
               {@const selected = preset.id === soundscape.playingPreset?.id}
               {@const name = presetDisplayName(preset, t)}
-              <button type="button" aria-pressed={selected} aria-label={selected ? t("music.soundscape.pause") : t("music.soundscape.playPreset", name)} data-app-tooltip={selected ? t("music.soundscape.stopHint") : undefined} disabled={!soundscape.presetIsPlayable(preset)} class={[SOUNDSCAPE_CHIP_CLASS, selected && "bg-primary/10"]} onclick={() => choosePreset(preset)}><MusicSoundscapeIcon icon={preset.icon} size={14} /><span class="truncate">{name}</span></button>
+              <button type="button" aria-pressed={selected} aria-label={selected ? t("music.soundscape.pause") : t("music.soundscape.playPreset", name)} data-app-tooltip={selected ? t("music.soundscape.pauseHint") : undefined} disabled={!soundscape.presetIsPlayable(preset)} class={[SOUNDSCAPE_CHIP_CLASS, selected && "bg-primary/10"]} onclick={() => choosePreset(preset)}><MusicSoundscapeIcon icon={preset.icon} size={14} /><span class="truncate">{name}</span></button>
             {/each}
           </div>
         {/if}

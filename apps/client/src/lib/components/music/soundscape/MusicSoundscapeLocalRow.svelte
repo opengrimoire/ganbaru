@@ -90,6 +90,7 @@
     muted={!available}
     ariaLabel={!available ? t("music.soundscape.repair") : playing ? t("music.soundscape.stopLayer", definition.name) : t("music.soundscape.play", definition.name)}
     title={available ? undefined : t("music.soundscape.needsRepair")}
+    tooltip={playing ? t("music.soundscape.stopHint") : undefined}
     disabled={soundscape.saving}
     onclick={choose}
     menuLabel={t("music.soundscape.soundActions", definition.name)}

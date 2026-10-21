@@ -142,7 +142,7 @@
           {#each generated as definition (definition.id)}
             {@const playing = soundscape.playingLayerId === definition.id}
             {@const name = soundDisplayName(definition, t)}
-            <MusicSoundscapeChip icon={definition.icon} label={name} active={playing} ariaLabel={playing ? t("music.soundscape.stopLayer", name) : t("music.soundscape.play", name)} disabled={soundscape.saving} onclick={() => playLayer(definition)} />
+            <MusicSoundscapeChip icon={definition.icon} label={name} active={playing} ariaLabel={playing ? t("music.soundscape.stopLayer", name) : t("music.soundscape.play", name)} tooltip={playing ? t("music.soundscape.stopHint") : undefined} disabled={soundscape.saving} onclick={() => playLayer(definition)} />
           {/each}
           {#each local as definition (definition.id)}
             <MusicSoundscapeLocalRow {definition} onRepair={(entry) => { void addLoop(entry); }} onRemove={(entry) => pendingDelete = entry} {onPlaybackStart} />

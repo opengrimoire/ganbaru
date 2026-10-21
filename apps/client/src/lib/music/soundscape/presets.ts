@@ -66,15 +66,3 @@ export function setPresetDraftSoundLevel(sounds: readonly MusicSoundscapePresetS
 export function singleSoundPreset(presets: readonly MusicSoundscapePreset[], soundscapeId: string): MusicSoundscapePreset | null {
   return presets.find((preset) => preset.sounds.length === 1 && preset.sounds[0].soundscapeId === soundscapeId) ?? null;
 }
-
-/** Display names of a preset's sounds in preset order, skipping sounds that no longer exist. */
-export function presetSoundNames(
-  sounds: readonly MusicSoundscapePresetSound[],
-  definitions: readonly MusicSoundscapeDefinition[],
-  nameOf: (definition: MusicSoundscapeDefinition) => string,
-): string[] {
-  return sounds.flatMap((sound) => {
-    const definition = definitions.find((entry) => entry.id === sound.soundscapeId);
-    return definition ? [nameOf(definition)] : [];
-  });
-}

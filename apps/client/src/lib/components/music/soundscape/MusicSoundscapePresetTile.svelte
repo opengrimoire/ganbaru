@@ -1,8 +1,7 @@
 <script lang="ts">
-  import { formatList } from "$lib/i18n/formatters";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import type { MusicSoundscapePreset } from "$lib/music/soundscape/contracts";
-  import { presetDisplayName, presetSoundNames, soundDisplayName } from "$lib/music/soundscape/presets";
+  import { presetDisplayName } from "$lib/music/soundscape/presets";
   import { getSoundscapeStore } from "$lib/stores/soundscape.svelte";
   import MusicSoundscapeChip from "./MusicSoundscapeChip.svelte";
 
@@ -13,14 +12,11 @@
     onRemove: (preset: MusicSoundscapePreset) => void;
     onPlaybackStart: () => void;
   } = $props();
-  const localization = getLocalization();
-  const { t } = localization;
+  const { t } = getLocalization();
   const soundscape = getSoundscapeStore();
   const playing = $derived(soundscape.playingPreset?.id === preset.id);
   const playable = $derived(soundscape.presetIsPlayable(preset));
   const name = $derived(presetDisplayName(preset, t));
-  const names = $derived(presetSoundNames(preset.sounds, soundscape.definitions, (definition) => soundDisplayName(definition, t)));
-  const tooltip = $derived(playable && names.length > 0 ? t("music.soundscape.preset.includes", formatList(localization.locale, names)) : t("music.soundscape.needsRepair"));
 
   function choose(): void {
     if (playing) {
@@ -32,7 +28,7 @@
   }
 </script>
 
-<MusicSoundscapeChip icon={preset.icon} label={name} active={playing} ariaLabel={playing ? t("music.soundscape.pause") : t("music.soundscape.playPreset", name)} title={tooltip} disabled={!playable || soundscape.saving} onclick={choose} menuLabel={t("music.soundscape.preset.actions", name)}>
+<MusicSoundscapeChip icon={preset.icon} label={name} active={playing} ariaLabel={playing ? t("music.soundscape.pause") : t("music.soundscape.playPreset", name)} title={playable ? undefined : t("music.soundscape.needsRepair")} tooltip={playing ? t("music.soundscape.pauseHint") : undefined} disabled={!playable || soundscape.saving} onclick={choose} menuLabel={t("music.soundscape.preset.actions", name)}>
   {#snippet menu(close)}
     <button type="button" role="menuitem" class="menu-item" onclick={() => { close(); onEdit(preset); }}>{t("music.soundscape.preset.editTitle")}</button>
     <div class="menu-separator" role="separator"></div>

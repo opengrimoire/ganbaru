@@ -6,7 +6,6 @@ import {
   presetDisplayName,
   presetLevelAdjustment,
   presetLevelFromAdjustment,
-  presetSoundNames,
   setPresetDraftSoundLevel,
   singleSoundPreset,
   soundDisplayName,
@@ -45,11 +44,6 @@ describe("soundscape preset drafts", () => {
     expect(setPresetDraftSoundLevel(draft, "cafe", 0.25)).toEqual([{ soundscapeId: "rain", level: 1 }, { soundscapeId: "cafe", level: 0.25 }]);
     expect(setPresetDraftSoundLevel(draft, "rain", 1.4)[0].level).toBe(1);
     expect(setPresetDraftSoundLevel(draft, "rain", -0.2)[0].level).toBe(0);
-  });
-
-  it("names sounds in preset order and skips removed sounds", () => {
-    const definitions = [sound("cafe", "Café"), sound("rain", "Porch rain")];
-    expect(presetSoundNames(preset("p", "P", ["rain", "gone", "cafe"]).sounds, definitions, (entry) => entry.name)).toEqual(["Porch rain", "Café"]);
   });
 
   it("finds an existing one-sound preset and ignores mixes that contain the sound", () => {

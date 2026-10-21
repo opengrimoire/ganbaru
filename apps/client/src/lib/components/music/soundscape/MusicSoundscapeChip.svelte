@@ -16,6 +16,7 @@
     muted = false,
     ariaLabel,
     title,
+    tooltip,
     disabled = false,
     onclick,
     menuLabel,
@@ -28,7 +29,10 @@
     /** Whether the option needs attention, such as a layer whose file is missing. */
     muted?: boolean;
     ariaLabel: string;
+    /** Native title, which also shows on a disabled option. */
     title?: string;
+    /** App tooltip, such as how to pause or stop the option that plays. */
+    tooltip?: string;
     disabled?: boolean;
     onclick: () => void;
     menuLabel?: string;
@@ -58,7 +62,7 @@
 </script>
 
 <div class={["inline-flex h-8 min-w-0 max-w-full items-center rounded-floating-item transition-colors hover:bg-accent/70", active && "bg-primary/10", muted && "text-muted-foreground"]}>
-  <button type="button" aria-pressed={active} aria-label={ariaLabel} {title} {disabled} class={["inline-flex h-full min-w-0 items-center gap-2 pl-2 disabled:opacity-50", menu ? "pr-1" : "pr-2"]} {onclick}>
+  <button type="button" aria-pressed={active} aria-label={ariaLabel} {title} data-app-tooltip={tooltip} {disabled} class={["inline-flex h-full min-w-0 items-center gap-2 pl-2 disabled:opacity-50", menu ? "pr-1" : "pr-2"]} {onclick}>
     <span class="shrink-0"><MusicSoundscapeIcon {icon} size={14} /></span>
     <span class="truncate">{label}</span>
   </button>

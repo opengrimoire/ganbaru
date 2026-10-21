@@ -3,7 +3,6 @@
   import ChevronRight from "@lucide/svelte/icons/chevron-right";
   import { onMount, tick } from "svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
-  import { showElementTooltip } from "$lib/components/ui/tooltip";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import type { MusicSoundscapePreset } from "$lib/music/soundscape/contracts";
   import { presetDisplayName } from "$lib/music/soundscape/presets";
@@ -86,15 +85,10 @@
     void soundscape.togglePlayback();
   }
 
-  /** Plays a preset and points out how to stop it, or pauses it when it is the one already playing. */
-  async function choosePreset(preset: MusicSoundscapePreset, chip: HTMLElement): Promise<void> {
-    if (preset.id === active?.id && playing) {
-      await soundscape.togglePlayback();
-      return;
-    }
-    await soundscape.playPreset(preset);
-    await tick();
-    if (open && chip.isConnected && chip.getAttribute("aria-pressed") === "true" && (chip.matches(":hover") || chip === document.activeElement)) showElementTooltip(chip);
+  /** Plays a preset, or pauses it when it is the one already playing. */
+  function choosePreset(preset: MusicSoundscapePreset): void {
+    if (preset.id === active?.id && playing) void soundscape.togglePlayback();
+    else void soundscape.playPreset(preset);
   }
 </script>
 
@@ -113,7 +107,7 @@
             {#each soundscape.presets as preset (preset.id)}
               {@const selected = preset.id === active?.id && playing}
               {@const name = presetDisplayName(preset, t)}
-              <button type="button" aria-pressed={selected} aria-label={selected ? t("music.soundscape.pause") : t("music.soundscape.playPreset", name)} data-app-tooltip={selected ? t("music.soundscape.stopHint") : undefined} disabled={!soundscape.presetIsPlayable(preset)} class={["inline-flex h-8 min-w-0 max-w-full items-center gap-2 rounded-floating-item px-2 transition-colors hover:bg-accent/70 disabled:opacity-50", selected && "bg-primary/10"]} onclick={(event) => { void choosePreset(preset, event.currentTarget); }}><MusicSoundscapeGroupIcon icon={preset.icon} size={14} /><span class="truncate">{name}</span></button>
+              <button type="button" aria-pressed={selected} aria-label={selected ? t("music.soundscape.pause") : t("music.soundscape.playPreset", name)} data-app-tooltip={selected ? t("music.soundscape.stopHint") : undefined} disabled={!soundscape.presetIsPlayable(preset)} class={["inline-flex h-8 min-w-0 max-w-full items-center gap-2 rounded-floating-item px-2 transition-colors hover:bg-accent/70 disabled:opacity-50", selected && "bg-primary/10"]} onclick={() => choosePreset(preset)}><MusicSoundscapeGroupIcon icon={preset.icon} size={14} /><span class="truncate">{name}</span></button>
             {/each}
           </div>
         {/if}

@@ -7,7 +7,6 @@
     calculateTooltipPosition,
     deriveTooltipPalette,
     isPointInHorizontalScrollbar,
-    SHOW_TOOLTIP_EVENT,
     tooltipSurfaceColorFor,
     type TooltipPalette,
     type TooltipPaletteTokens,
@@ -136,6 +135,12 @@
     if (element.dataset.appTooltipDisabled === "true") return null;
     if (!document.documentElement.contains(element)) return null;
     return tooltipTextFor(element).length > 0 ? element : null;
+  }
+
+  /** The element that could carry a tooltip under a pointer, whether or not it has tooltip text right now. */
+  function findTooltipCandidate(target: EventTarget | null): HTMLElement | null {
+    if (!(target instanceof Element)) return null;
+    return target.closest<HTMLElement>(targetSelector);
   }
 
   function isKeyboardFocusIntent(): boolean {
@@ -472,17 +477,11 @@
       hideTooltip();
     };
 
-    const handleShowRequest = (event: Event) => {
-      const target = findTooltipTarget(event.target);
-      if (!target) return;
-      if (suppressedPointerTarget === target) suppressedPointerTarget = null;
-      showTooltipFor(target, 0);
-    };
-
     const handlePointerDown = (event: PointerEvent) => {
       const target = findTooltipTarget(event.target);
       if (target?.dataset.appTooltipKeepOnClick === "true") return;
-      suppressedPointerTarget = target;
+      // A tooltip the click itself reveals also waits until the pointer leaves and comes back.
+      suppressedPointerTarget = target ?? findTooltipCandidate(event.target);
       hideTooltip();
     };
 
@@ -508,7 +507,6 @@
     document.addEventListener("focusin", handleFocusIn, true);
     document.addEventListener("focusout", handleFocusOut, true);
     document.addEventListener("pointerdown", handlePointerDown, true);
-    document.addEventListener(SHOW_TOOLTIP_EVENT, handleShowRequest);
     window.addEventListener("resize", refreshPosition);
     window.addEventListener("scroll", hideTooltip, true);
     // On the window, because drag handlers there stop drags from reaching the document.
@@ -526,7 +524,6 @@
       document.removeEventListener("focusin", handleFocusIn, true);
       document.removeEventListener("focusout", handleFocusOut, true);
       document.removeEventListener("pointerdown", handlePointerDown, true);
-      document.removeEventListener(SHOW_TOOLTIP_EVENT, handleShowRequest);
       window.removeEventListener("resize", refreshPosition);
       window.removeEventListener("scroll", hideTooltip, true);
     };

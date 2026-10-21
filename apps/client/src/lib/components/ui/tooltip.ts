@@ -1,16 +1,5 @@
 export type TooltipPlacement = "top" | "bottom";
 
-/** Event that asks the tooltip host to show an element's tooltip at once instead of waiting for hover. */
-export const SHOW_TOOLTIP_EVENT = "app-tooltip-show";
-
-/**
- * Shows an element's own tooltip right away, for example after a click changes what the element does next. The
- * tooltip hides as usual when the pointer or focus leaves the element.
- */
-export function showElementTooltip(element: HTMLElement): void {
-  element.dispatchEvent(new CustomEvent(SHOW_TOOLTIP_EVENT, { bubbles: true }));
-}
-
 export interface TooltipRect {
   left: number;
   top: number;

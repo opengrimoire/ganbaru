@@ -356,6 +356,40 @@ describe("MusicPanel", () => {
     expect(underlyingKeydown).not.toHaveBeenCalled();
   });
 
+  it("opens the soundscape controls with S and sends the Spacebar key to the soundscape while they are open", async () => {
+    vi.stubGlobal("ResizeObserver", ResizeObserverStub);
+    target = document.createElement("div");
+    document.body.append(target);
+    const player = getMusicPlayer();
+    const togglePlay = vi.spyOn(player, "togglePlay").mockResolvedValue();
+    const { getSoundscapeStore } = await import("$lib/stores/soundscape.svelte");
+    const toggleSoundscape = vi.spyOn(getSoundscapeStore(), "togglePlayback").mockResolvedValue();
+    const { default: MusicPanel } = await import("./MusicPanel.svelte");
+    const press = async (init: KeyboardEventInit) => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, ...init }));
+      await tick();
+    };
+
+    component = mount(MusicPanel, { target, props: { onClose: vi.fn() } });
+    await tick();
+    const dialog = () => target?.querySelector("[role='dialog'][aria-label='Soundscape controls']");
+
+    await press({ key: " ", code: "Space" });
+    expect(togglePlay).toHaveBeenCalledTimes(1);
+
+    await press({ key: "s", code: "KeyS" });
+    await vi.waitFor(() => expect(dialog()).not.toBeNull());
+    await press({ key: " ", code: "Space" });
+    expect(toggleSoundscape).toHaveBeenCalledTimes(1);
+    expect(togglePlay).toHaveBeenCalledTimes(1);
+
+    await press({ key: "s", code: "KeyS" });
+    await vi.waitFor(() => expect(dialog()).toBeNull());
+    await press({ key: " ", code: "Space" });
+    expect(togglePlay).toHaveBeenCalledTimes(2);
+    expect(toggleSoundscape).toHaveBeenCalledTimes(1);
+  });
+
   it("lets the playlist chooser close with Escape without closing Music", async () => {
     vi.stubGlobal("ResizeObserver", ResizeObserverStub);
     target = document.createElement("div");

@@ -74,6 +74,7 @@
   let playlistScrollContainer = $state<HTMLElement | undefined>();
   let volumeMenuRoot = $state<HTMLElement | null>(null);
   let volumeMenuOpen = $state(false);
+  let soundscapeControl = $state<ReturnType<typeof MusicSoundscapeControl> | null>(null);
   const playlistVisible = $derived(player.playlistVisible);
   const playlistHasContent = $derived(player.queue.length > 0);
   /** First use opens the Builder only once a folder is connected or being prepared, never just to ask for one. */
@@ -517,7 +518,8 @@
     }
     if (event.code === "Space") {
       claimKeyboardShortcut(event);
-      void player.togglePlay();
+      if (soundscapeControl?.isOpen()) soundscapeControl.togglePlayback();
+      else void player.togglePlay();
       return;
     }
     const seekDigit = digitSeekShortcut(event);
@@ -566,7 +568,12 @@
       void player.adjustVolume(-volumeShortcutStep);
       return;
     }
-    if (event.key.toLowerCase() === "s" || event.key.toLowerCase() === "r") {
+    if (event.key.toLowerCase() === "s" && soundscapeControl) {
+      claimKeyboardShortcut(event);
+      soundscapeControl.toggleOpen();
+      return;
+    }
+    if (event.key.toLowerCase() === "r") {
       claimKeyboardShortcut(event);
       if (player.queue.length > 0) player.setPlaybackMode(player.playbackMode === "shuffle" ? "in-order" : "shuffle");
       return;
@@ -1183,7 +1190,7 @@
             </button>
           </div>
           {#if supportsSoundscapes}
-            <MusicSoundscapeControl onOpenSoundscapes={() => openPlaylistBuilder({ kind: "open-soundscapes" })} />
+            <MusicSoundscapeControl bind:this={soundscapeControl} onOpenSoundscapes={() => openPlaylistBuilder({ kind: "open-soundscapes" })} />
           {/if}
           <div
             bind:this={volumeMenuRoot}

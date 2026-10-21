@@ -7,6 +7,7 @@
     calculateTooltipPosition,
     deriveTooltipPalette,
     isPointInHorizontalScrollbar,
+    SHOW_TOOLTIP_EVENT,
     tooltipSurfaceColorFor,
     type TooltipPalette,
     type TooltipPaletteTokens,
@@ -305,6 +306,17 @@
     }, delayMs);
   }
 
+  /** Follows a tooltip text change on the element it is shown for, hiding it when the text goes away. */
+  function refreshAnchorText(element: HTMLElement): void {
+    const nextText = tooltipTextFor(element);
+    if (nextText.length === 0) {
+      hideTooltip();
+      return;
+    }
+    text = nextText;
+    void positionTooltip();
+  }
+
   function hideTooltip(): void {
     clearShowTimer();
     anchor = null;
@@ -383,6 +395,10 @@
           else removeMigratedTitle(record.target);
           continue;
         }
+        if (record.type === "attributes") {
+          if (record.target === anchor && anchorTextOverride === undefined) refreshAnchorText(anchor);
+          continue;
+        }
 
         for (const node of record.addedNodes) {
           if (node instanceof Element) migrateTitleAttributes(node);
@@ -392,7 +408,7 @@
 
     observer.observe(document.body, {
       attributes: true,
-      attributeFilter: ["title"],
+      attributeFilter: ["title", "data-app-tooltip"],
       childList: true,
       subtree: true,
     });
@@ -456,6 +472,13 @@
       hideTooltip();
     };
 
+    const handleShowRequest = (event: Event) => {
+      const target = findTooltipTarget(event.target);
+      if (!target) return;
+      if (suppressedPointerTarget === target) suppressedPointerTarget = null;
+      showTooltipFor(target, 0);
+    };
+
     const handlePointerDown = (event: PointerEvent) => {
       const target = findTooltipTarget(event.target);
       if (target?.dataset.appTooltipKeepOnClick === "true") return;
@@ -485,6 +508,7 @@
     document.addEventListener("focusin", handleFocusIn, true);
     document.addEventListener("focusout", handleFocusOut, true);
     document.addEventListener("pointerdown", handlePointerDown, true);
+    document.addEventListener(SHOW_TOOLTIP_EVENT, handleShowRequest);
     window.addEventListener("resize", refreshPosition);
     window.addEventListener("scroll", hideTooltip, true);
     // On the window, because drag handlers there stop drags from reaching the document.
@@ -502,6 +526,7 @@
       document.removeEventListener("focusin", handleFocusIn, true);
       document.removeEventListener("focusout", handleFocusOut, true);
       document.removeEventListener("pointerdown", handlePointerDown, true);
+      document.removeEventListener(SHOW_TOOLTIP_EVENT, handleShowRequest);
       window.removeEventListener("resize", refreshPosition);
       window.removeEventListener("scroll", hideTooltip, true);
     };

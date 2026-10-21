@@ -99,7 +99,7 @@ export const music = {
     all: "All",
     layers: "Layers",
     rainName: { brown: "Rain (soft)", pink: "Rain (moderate)", white: "Rain (heavy)" },
-    generatedName: { white: "White noise", pink: "Pink noise", brown: "Brown noise" },
+    generatedName: { white: "Noise (white)", pink: "Noise (pink)", brown: "Noise (brown)" },
     rename: "Rename",
     localLoop: "Local layer",
     addLoop: "Add layer",

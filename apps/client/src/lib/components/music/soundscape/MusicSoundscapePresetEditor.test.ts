@@ -189,7 +189,7 @@ describe("Soundscape preset editor", () => {
     definitions = [...baseDefinitions, brown];
     await render();
     const names = [...document.body.querySelectorAll<HTMLButtonElement>("button[aria-pressed]")].map((button) => button.textContent?.trim());
-    expect(names).toEqual(["Brown noise", "Porch rain", "Café", "Fireplace"]);
+    expect(names).toEqual(["Noise (brown)", "Porch rain", "Café", "Fireplace"]);
     expect(document.body.querySelectorAll("h4")).toHaveLength(0);
   });
 

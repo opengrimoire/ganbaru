@@ -10,7 +10,7 @@ Keeping a single volume control and soundscape-only playback is deliberate: list
 
 ## Layers
 
-Three generated layers are named for what they are: Brown noise, Pink noise, and White noise. The seeded rain soundscapes give them their rain character, from soft (brown) to heavy (white).
+Three generated layers are named for what they are: Noise (brown), Noise (pink), and Noise (white), so they stay together wherever layers are sorted by name. The seeded rain soundscapes give them their rain character, from soft (brown) to heavy (white).
 
 Users can add their own local audio loops as layers with a chosen name and icon (using the same icon picker as playlists). Original files stay in place. A missing file can be repaired by choosing a new location on the current device, and editing a layer's name or icon never requires the file.
 

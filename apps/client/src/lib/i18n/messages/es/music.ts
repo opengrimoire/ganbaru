@@ -102,7 +102,7 @@ export const music = {
     all: "Todo",
     layers: "Capas",
     rainName: { brown: "Lluvia (suave)", pink: "Lluvia (moderada)", white: "Lluvia (intensa)" },
-    generatedName: { white: "Ruido blanco", pink: "Ruido rosa", brown: "Ruido café" },
+    generatedName: { white: "Ruido (blanco)", pink: "Ruido (rosa)", brown: "Ruido (café)" },
     rename: "Cambiar nombre",
     localLoop: "Capa local",
     addLoop: "Agregar capa",

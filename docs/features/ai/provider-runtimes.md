@@ -16,7 +16,7 @@ Users may set any launch arguments, environment variables, and provider settings
 
 Native discovery owns provider readiness, model identities, and capability options, including cached catalogs. The frontend validates the catalog and never infers capabilities from model IDs or labels; distinct routing aliases stay selectable even when they share a display name.
 
-Discovery is lazy. App startup and vault preparation load cached Chat history and settings without launching provider processes; opening Chat or Chat settings starts automatic discovery once per vault, and explicit refresh is always available. A failed probe leaves local history usable, and late results never overwrite settings from another vault or a newer load.
+Discovery is lazy. App startup and vault preparation load cached Chat history and settings without launching provider processes; opening Chat or Chat settings starts automatic discovery once per vault, and explicit refresh is always available. Probes, catalog queries, and thread lifecycle calls outside a session run in a fresh empty directory that only the user can access, so project configuration in the folder the app was launched from never loads. A failed probe leaves local history usable, and late results never overwrite settings from another vault or a newer load.
 
 Rationale: provider probes spawn external processes, so they must not slow startup or block reading local history.
 

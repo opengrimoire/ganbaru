@@ -7,7 +7,7 @@ impl CodexProviderDriver {
         &self,
         context: &DriverOperationContext,
     ) -> ChatResult<ProbeSnapshot> {
-        let working_directory = canonical_current_directory()?;
+        let working_directory = crate::probe_directory::ProbeDirectory::create()?;
         let (mut connection, layout) =
             self.open_connection(&working_directory, ProjectConfigurationAccess::Restricted)?;
         let client = connection.client();

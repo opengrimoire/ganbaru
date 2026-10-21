@@ -271,7 +271,7 @@ impl ProviderDriver for CodexProviderDriver {
                 ChatError::validation("title", "A provider thread title is required")
             })?;
             self.execute_thread_request(
-                &canonical_current_directory()?,
+                &crate::probe_directory::ProbeDirectory::create()?,
                 ProjectConfigurationAccess::Restricted,
                 "thread/name/set",
                 json!({ "threadId": request.provider_thread_id.as_str(), "name": title }),
@@ -289,7 +289,7 @@ impl ProviderDriver for CodexProviderDriver {
     ) -> DriverFuture<'a, DriverOperationReceipt> {
         Box::pin(async move {
             self.execute_thread_request(
-                &canonical_current_directory()?,
+                &crate::probe_directory::ProbeDirectory::create()?,
                 ProjectConfigurationAccess::Restricted,
                 "thread/archive",
                 json!({ "threadId": request.provider_thread_id.as_str() }),
@@ -307,7 +307,7 @@ impl ProviderDriver for CodexProviderDriver {
     ) -> DriverFuture<'a, DriverOperationReceipt> {
         Box::pin(async move {
             self.execute_thread_request(
-                &canonical_current_directory()?,
+                &crate::probe_directory::ProbeDirectory::create()?,
                 ProjectConfigurationAccess::Restricted,
                 "thread/delete",
                 json!({ "threadId": request.provider_thread_id.as_str() }),
@@ -325,7 +325,7 @@ impl ProviderDriver for CodexProviderDriver {
     ) -> DriverFuture<'a, DriverOperationReceipt> {
         Box::pin(async move {
             self.execute_thread_request(
-                &canonical_current_directory()?,
+                &crate::probe_directory::ProbeDirectory::create()?,
                 ProjectConfigurationAccess::Restricted,
                 "thread/unsubscribe",
                 json!({ "threadId": request.provider_thread_id.as_str() }),

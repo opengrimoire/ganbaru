@@ -70,7 +70,7 @@ impl ProviderDriver for OpenCodeProviderDriver {
             if context.is_cancelled() {
                 return Err(cancelled_error());
             }
-            let workspace = canonical_current_directory()?;
+            let workspace = crate::probe_directory::ProbeDirectory::create()?;
             match self.catalog_snapshot(&workspace).await {
                 Ok(snapshot) => {
                     let negotiated_protocol_version = snapshot.version.clone();
@@ -118,7 +118,7 @@ impl ProviderDriver for OpenCodeProviderDriver {
             if context.is_cancelled() {
                 return Err(cancelled_error());
             }
-            let workspace = canonical_current_directory()?;
+            let workspace = crate::probe_directory::ProbeDirectory::create()?;
             let snapshot = self.catalog_snapshot(&workspace).await?;
             self.cached_commands = snapshot.commands.clone();
             let catalog = ProviderModelCatalog {

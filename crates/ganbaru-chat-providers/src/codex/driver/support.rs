@@ -215,23 +215,6 @@ pub(super) fn canonical_verified_workspace(
     })
 }
 
-pub(super) fn canonical_current_directory() -> ChatResult<PathBuf> {
-    let current = std::env::current_dir().map_err(|_| {
-        ChatError::new(
-            ChatErrorCode::ConfigurationInvalid,
-            "Codex probe working directory is unavailable",
-            true,
-        )
-    })?;
-    std::fs::canonicalize(current).map_err(|_| {
-        ChatError::new(
-            ChatErrorCode::ConfigurationInvalid,
-            "Codex probe working directory is unavailable",
-            true,
-        )
-    })
-}
-
 pub(super) fn verify_reported_home(layout: &CodexHomeLayout, reported: &Path) -> ChatResult<()> {
     let reported = std::fs::canonicalize(reported).map_err(|_| {
         ChatError::new(

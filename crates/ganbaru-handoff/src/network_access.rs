@@ -1,6 +1,7 @@
 //! Explicit Linux firewall access for the private-LAN handoff coordinator.
 
 use serde::{Deserialize, Serialize};
+use std::ffi::OsStr;
 use std::fs;
 use std::net::Ipv4Addr;
 use std::os::unix::fs::MetadataExt;
@@ -27,6 +28,11 @@ const PACKAGED_APP_PATH: &str = "/usr/bin/ganbaru";
 const PACKAGED_HELPER_PATH: &str = "/usr/lib/ganbaru/ganbaru-linking-firewall";
 const PRIVILEGED_HELPER_ARGUMENT: &str = "--manage-linking-firewall";
 const REVOKE_ALL_OPERATION: &str = "revoke-all";
+/// Fixed locations of the system commands the app and the helper run. Each must be a regular
+/// file only root can replace; see [`command_path`].
+const PKEXEC_PATHS: &[&str] = &["/usr/bin/pkexec"];
+const UFW_PATHS: &[&str] = &["/usr/sbin/ufw", "/usr/bin/ufw"];
+const FIREWALL_CMD_PATHS: &[&str] = &["/usr/bin/firewall-cmd", "/usr/sbin/firewall-cmd"];
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -194,7 +200,7 @@ pub fn grant(
         firewalls,
         network.as_deref(),
         |state| persist_state(config_dir, state),
-        |scope| apply_scope(scope, true),
+        |scopes| apply_scopes(scopes, true),
     )?;
     Ok(NetworkAccessStatus {
         state: NetworkAccessState::Granted,
@@ -204,25 +210,27 @@ pub fn grant(
 /// Applies the rules of `candidates` that `stored` does not hold yet and records `network` as
 /// allowed for every candidate.
 ///
-/// Capacity is checked before any rule changes. Each scope is persisted as pending before its
-/// rule is applied and moved to the granted scopes after, so a failure or crash between the two
-/// never leaves a root rule without a record that revoking can find. A candidate already in
-/// place only gains the network, with no firewall change.
+/// Capacity is checked before any rule changes. The missing scopes are persisted as pending,
+/// applied in one authorized call so the flow asks for the administrator password once, and
+/// moved to the granted scopes after, so a failure or crash between the two never leaves a root
+/// rule without a record that revoking can find. A candidate already in place only gains the
+/// network, with no firewall change.
 fn grant_scopes(
     stored: &mut StoredNetworkAccess,
     candidates: Vec<AuthorizedScope>,
     network: Option<&str>,
     mut persist: impl FnMut(&StoredNetworkAccess) -> Result<(), String>,
-    mut apply: impl FnMut(&AuthorizedScope) -> Result<(), String>,
+    apply: impl FnOnce(&[AuthorizedScope]) -> Result<(), String>,
 ) -> Result<(), String> {
     let (present, missing): (Vec<AuthorizedScope>, Vec<AuthorizedScope>) = candidates
         .into_iter()
         .partition(|candidate| stored.scopes.iter().any(|saved| &saved.rule == candidate));
-    let new_records = missing
+    let new_records: Vec<AuthorizedScope> = missing
         .iter()
         .filter(|candidate| !stored.pending.contains(candidate))
-        .count();
-    if stored.scopes.len() + stored.pending.len() + new_records > MAX_AUTHORIZED_SCOPES {
+        .cloned()
+        .collect();
+    if stored.scopes.len() + stored.pending.len() + new_records.len() > MAX_AUTHORIZED_SCOPES {
         return Err("too many saved Linux network access scopes".to_string());
     }
     let mut confirmed = false;
@@ -236,22 +244,24 @@ fn grant_scopes(
     if confirmed {
         persist(stored)?;
     }
+    if missing.is_empty() {
+        return Ok(());
+    }
+    if !new_records.is_empty() {
+        stored.pending.extend(new_records);
+        persist(stored)?;
+    }
+    apply(&missing)?;
+    stored.pending.retain(|pending| !missing.contains(pending));
     for candidate in missing {
-        if !stored.pending.contains(&candidate) {
-            stored.pending.push(candidate.clone());
-            persist(stored)?;
-        }
-        apply(&candidate)?;
-        stored.pending.retain(|pending| pending != &candidate);
         let mut granted = GrantedScope {
             rule: candidate,
             networks: Vec::new(),
         };
         allow_network(&mut granted, network);
         stored.scopes.push(granted);
-        persist(stored)?;
     }
-    Ok(())
+    persist(stored)
 }
 
 /// Records `network` as allowed for `scope`, dropping the oldest network at the limit.
@@ -272,7 +282,7 @@ fn allow_network(scope: &mut GrantedScope, network: Option<&str>) -> bool {
 
 pub fn revoke(config_dir: &Path) -> Result<NetworkAccessStatus, String> {
     let mut stored = read_state(config_dir)?;
-    let result = revoke_scopes(&mut stored, |scope| apply_scope(scope, false));
+    let result = revoke_scopes(&mut stored, |scopes| apply_scopes(scopes, false));
     persist_state(config_dir, &stored)?;
     result?;
     Ok(NetworkAccessStatus {
@@ -280,23 +290,26 @@ pub fn revoke(config_dir: &Path) -> Result<NetworkAccessStatus, String> {
     })
 }
 
-/// Removes the rules of every granted and pending scope, keeping the scopes whose removal
-/// failed so a later revoke can retry them. Returns the first failure.
+/// Removes the rules of every granted and pending scope in one authorized call. A failed call
+/// keeps every scope so a later revoke retries them; removing a rule that is already gone
+/// succeeds, so the retry is safe.
 fn revoke_scopes(
     stored: &mut StoredNetworkAccess,
-    mut remove: impl FnMut(&AuthorizedScope) -> Result<(), String>,
+    remove: impl FnOnce(&[AuthorizedScope]) -> Result<(), String>,
 ) -> Result<(), String> {
-    let mut first_error = None;
-    let mut keep = |scope: &AuthorizedScope| match remove(scope) {
-        Ok(()) => false,
-        Err(error) => {
-            first_error.get_or_insert(error);
-            true
-        }
-    };
-    stored.scopes.retain(|saved| keep(&saved.rule));
-    stored.pending.retain(|scope| keep(scope));
-    first_error.map_or(Ok(()), Err)
+    let scopes: Vec<AuthorizedScope> = stored
+        .scopes
+        .iter()
+        .map(|saved| saved.rule.clone())
+        .chain(stored.pending.iter().cloned())
+        .collect();
+    if scopes.is_empty() {
+        return Ok(());
+    }
+    remove(&scopes)?;
+    stored.scopes.clear();
+    stored.pending.clear();
+    Ok(())
 }
 
 /// The identity of the network reached through `interface`: the hardware address of its
@@ -486,13 +499,13 @@ fn is_ufw_enabled() -> bool {
 }
 
 fn is_firewalld_running() -> bool {
-    command_path(&["/usr/bin/firewall-cmd", "/usr/sbin/firewall-cmd"])
+    command_path(FIREWALL_CMD_PATHS)
         .and_then(|path| Command::new(path).arg("--state").output().ok())
         .is_some_and(|output| output.status.success() && output.stdout == b"running\n")
 }
 
 fn firewalld_zone(interface: &str) -> Option<String> {
-    let path = command_path(&["/usr/bin/firewall-cmd", "/usr/sbin/firewall-cmd"])?;
+    let path = command_path(FIREWALL_CMD_PATHS)?;
     let output = Command::new(&path)
         .arg(format!("--get-zone-of-interface={interface}"))
         .output()
@@ -515,26 +528,48 @@ fn is_valid_zone(value: &str) -> bool {
 }
 
 fn can_request_authorization(scopes: &[AuthorizedScope]) -> bool {
-    let pkexec = command_path(&["/usr/bin/pkexec", "/usr/local/bin/pkexec"]);
-    pkexec.is_some()
+    command_path(PKEXEC_PATHS).is_some()
         && scopes.iter().all(|scope| match scope.firewall {
-            FirewallKind::Ufw => command_path(&["/usr/sbin/ufw", "/usr/bin/ufw"]).is_some(),
+            FirewallKind::Ufw => command_path(UFW_PATHS).is_some(),
             FirewallKind::Firewalld => {
-                command_path(&["/usr/bin/firewall-cmd", "/usr/sbin/firewall-cmd"]).is_some()
-                    && scope.zone.is_some()
+                command_path(FIREWALL_CMD_PATHS).is_some() && scope.zone.is_some()
             }
         })
 }
 
-fn apply_scope(scope: &AuthorizedScope, grant: bool) -> Result<(), String> {
-    validate_authorized_scope(scope)?;
-    if let Some(helper) = trusted_packaged_helper() {
-        return apply_with_packaged_helper(&helper, scope, grant);
+/// Adds or removes the rules of `scopes`. The packaged app hands them all to the helper in one
+/// authorized call; other builds apply each through the firewall command.
+fn apply_scopes(scopes: &[AuthorizedScope], grant: bool) -> Result<(), String> {
+    for scope in scopes {
+        validate_authorized_scope(scope)?;
     }
-    match scope.firewall {
+    if let Some(helper) = trusted_packaged_helper() {
+        return apply_with_packaged_helper(&helper, scopes, grant);
+    }
+    apply_each(scopes, grant, |scope| match scope.firewall {
         FirewallKind::Ufw => apply_ufw(scope, grant),
         FirewallKind::Firewalld => apply_firewalld(scope, grant),
+    })
+}
+
+/// Applies each scope in order. A grant stops at the first failure, since its scopes stay
+/// pending; a revoke attempts every scope so one failure leaves no other rule in place. Returns
+/// the first failure.
+fn apply_each(
+    scopes: &[AuthorizedScope],
+    grant: bool,
+    mut apply: impl FnMut(&AuthorizedScope) -> Result<(), String>,
+) -> Result<(), String> {
+    let mut first_error = None;
+    for scope in scopes {
+        if let Err(error) = apply(scope) {
+            if grant {
+                return Err(error);
+            }
+            first_error.get_or_insert(error);
+        }
     }
+    first_error.map_or(Ok(()), Err)
 }
 
 /// Returns the packaged helper when this process is the packaged app and the helper is a
@@ -562,34 +597,53 @@ fn root_controlled(metadata: &fs::Metadata) -> bool {
 
 fn apply_with_packaged_helper(
     helper: &Path,
-    scope: &AuthorizedScope,
+    scopes: &[AuthorizedScope],
     grant: bool,
 ) -> Result<(), String> {
-    if scope.port != COORDINATOR_PORT {
-        return Err(
-            "the packaged Linux network helper supports only the production coordinator port"
-                .to_string(),
-        );
-    }
-    let pkexec = required_command(&["/usr/bin/pkexec", "/usr/local/bin/pkexec"], "pkexec")?;
+    let arguments = privileged_helper_arguments(scopes, grant)?;
+    let pkexec = required_command(PKEXEC_PATHS, "pkexec")?;
     let mut command = Command::new(pkexec);
-    command
-        .arg(helper)
-        .arg(PRIVILEGED_HELPER_ARGUMENT)
-        .arg(if grant { "grant" } else { "revoke" })
-        .arg(match scope.firewall {
-            FirewallKind::Ufw => "ufw",
-            FirewallKind::Firewalld => "firewalld",
-        })
-        .arg(&scope.interface)
-        .arg(scope.local_address.to_string())
-        .arg(&scope.source_network)
-        .arg(scope.zone.as_deref().unwrap_or("-"));
+    command.arg(helper).args(arguments);
     run_authorized(
         command,
         "update the Ganbaru phone connection rule",
         &[11, 12],
     )
+}
+
+/// The helper arguments that apply every scope in one invocation, so the polkit policy asks for
+/// the administrator password once per flow.
+fn privileged_helper_arguments(
+    scopes: &[AuthorizedScope],
+    grant: bool,
+) -> Result<Vec<String>, String> {
+    if scopes.is_empty() || scopes.len() > MAX_AUTHORIZED_SCOPES {
+        return Err("the Linux network helper request has an invalid scope count".to_string());
+    }
+    let mut arguments = vec![
+        PRIVILEGED_HELPER_ARGUMENT.to_string(),
+        if grant { "grant" } else { "revoke" }.to_string(),
+    ];
+    for scope in scopes {
+        if scope.port != COORDINATOR_PORT {
+            return Err(
+                "the packaged Linux network helper supports only the production coordinator port"
+                    .to_string(),
+            );
+        }
+        arguments.extend([
+            match scope.firewall {
+                FirewallKind::Ufw => "ufw",
+                FirewallKind::Firewalld => "firewalld",
+            }
+            .to_string(),
+            scope.interface.clone(),
+            scope.local_address.to_string(),
+            scope.source_network.clone(),
+            scope.zone.clone().unwrap_or_else(|| "-".to_string()),
+        ]);
+    }
+    Ok(arguments)
 }
 
 /// Runs the root firewall helper request in the process arguments, if there is one.
@@ -598,28 +652,43 @@ fn apply_with_packaged_helper(
 /// root-owned helper with `--manage-linking-firewall` as its first argument. All remaining
 /// values are parsed and validated again before a fixed firewall executable is invoked.
 pub fn run_privileged_helper_if_requested() -> Option<Result<(), String>> {
-    let mut arguments = std::env::args().skip(1);
-    if arguments.next().as_deref() != Some(PRIVILEGED_HELPER_ARGUMENT) {
+    let mut arguments = std::env::args_os().skip(1);
+    if arguments.next().as_deref() != Some(OsStr::new(PRIVILEGED_HELPER_ARGUMENT)) {
         return None;
     }
     Some(
-        parse_privileged_helper_request(&mut arguments).and_then(|request| {
-            if !effective_user_is_root() {
-                return Err("the Linux network helper requires administrator access".to_string());
-            }
-            match request {
-                HelperRequest::Apply { scope, grant } => apply_scope_privileged(&scope, grant),
-                HelperRequest::RevokeAll => revoke_all_privileged(),
-            }
-        }),
+        arguments
+            .map(|argument| {
+                argument.into_string().map_err(|_| {
+                    "the Linux network helper received an argument that is not UTF-8".to_string()
+                })
+            })
+            .collect::<Result<Vec<String>, String>>()
+            .and_then(|arguments| parse_privileged_helper_request(&mut arguments.into_iter()))
+            .and_then(|request| {
+                if !effective_user_is_root() {
+                    return Err(
+                        "the Linux network helper requires administrator access".to_string()
+                    );
+                }
+                match request {
+                    HelperRequest::Apply { scopes, grant } => {
+                        apply_each(&scopes, grant, |scope| apply_scope_privileged(scope, grant))
+                    }
+                    HelperRequest::RevokeAll => revoke_all_privileged(),
+                }
+            }),
     )
 }
 
 /// An operation of the privileged helper.
 #[derive(Debug, PartialEq, Eq)]
 enum HelperRequest {
-    /// Adds or removes the rule of one scope.
-    Apply { scope: AuthorizedScope, grant: bool },
+    /// Adds or removes the rules of one flow's scopes.
+    Apply {
+        scopes: Vec<AuthorizedScope>,
+        grant: bool,
+    },
     /// Removes every production coordinator rule the app added, found by its shape in the
     /// firewall rather than in per-user state. Package removal runs it as root.
     RevokeAll,
@@ -639,15 +708,26 @@ fn parse_privileged_helper_request(
         }
         _ => return Err("the Linux network helper operation is invalid".to_string()),
     };
-    parse_privileged_helper_scope(arguments).map(|scope| HelperRequest::Apply { scope, grant })
+    let mut scopes = Vec::new();
+    while let Some(firewall) = arguments.next() {
+        if scopes.len() == MAX_AUTHORIZED_SCOPES {
+            return Err("the Linux network helper received too many scopes".to_string());
+        }
+        scopes.push(parse_privileged_helper_scope(&firewall, arguments)?);
+    }
+    if scopes.is_empty() {
+        return Err("the Linux network helper scope is missing".to_string());
+    }
+    Ok(HelperRequest::Apply { scopes, grant })
 }
 
 fn parse_privileged_helper_scope(
+    firewall: &str,
     arguments: &mut impl Iterator<Item = String>,
 ) -> Result<AuthorizedScope, String> {
-    let firewall = match arguments.next().as_deref() {
-        Some("ufw") => FirewallKind::Ufw,
-        Some("firewalld") => FirewallKind::Firewalld,
+    let firewall = match firewall {
+        "ufw" => FirewallKind::Ufw,
+        "firewalld" => FirewallKind::Firewalld,
         _ => return Err("the Linux network helper firewall is invalid".to_string()),
     };
     let interface = arguments
@@ -669,9 +749,6 @@ fn parse_privileged_helper_scope(
         "-" => None,
         value => Some(value.to_string()),
     };
-    if arguments.next().is_some() {
-        return Err("the Linux network helper received unexpected arguments".to_string());
-    }
     let scope = AuthorizedScope {
         firewall,
         interface,
@@ -701,7 +778,7 @@ fn apply_scope_privileged(scope: &AuthorizedScope, grant: bool) -> Result<(), St
     validate_authorized_scope(scope)?;
     match scope.firewall {
         FirewallKind::Ufw => {
-            let ufw = required_command(&["/usr/sbin/ufw", "/usr/bin/ufw"], "UFW")?;
+            let ufw = required_command(UFW_PATHS, "UFW")?;
             let mut command = Command::new(ufw);
             command.args(ufw_arguments(scope, grant));
             run_authorized(command, "update UFW", &[])
@@ -720,7 +797,7 @@ fn revoke_all_privileged() -> Result<(), String> {
             first_error.get_or_insert(error);
         }
     };
-    if let Some(ufw) = command_path(&["/usr/sbin/ufw", "/usr/bin/ufw"]) {
+    if let Some(ufw) = command_path(UFW_PATHS) {
         let mut command = Command::new(ufw);
         command.args(["show", "added"]);
         match command_stdout(command, "list UFW rules") {
@@ -747,10 +824,7 @@ fn revoke_all_privileged() -> Result<(), String> {
 
 /// The app's rules in every runtime and permanent firewalld zone, once each.
 fn firewalld_app_rules() -> Result<Vec<AuthorizedScope>, String> {
-    let firewall_cmd = required_command(
-        &["/usr/bin/firewall-cmd", "/usr/sbin/firewall-cmd"],
-        "firewalld",
-    )?;
+    let firewall_cmd = required_command(FIREWALL_CMD_PATHS, "firewalld")?;
     let firewalld = |permanent: bool, arguments: &[String]| {
         let mut command = Command::new(&firewall_cmd);
         if permanent {
@@ -919,8 +993,8 @@ fn validate_rule_addresses(
 }
 
 fn apply_ufw(scope: &AuthorizedScope, grant: bool) -> Result<(), String> {
-    let pkexec = required_command(&["/usr/bin/pkexec", "/usr/local/bin/pkexec"], "pkexec")?;
-    let ufw = required_command(&["/usr/sbin/ufw", "/usr/bin/ufw"], "UFW")?;
+    let pkexec = required_command(PKEXEC_PATHS, "pkexec")?;
+    let ufw = required_command(UFW_PATHS, "UFW")?;
     let mut command = Command::new(pkexec);
     command.arg(ufw).args(ufw_arguments(scope, grant));
     run_authorized(command, "update UFW", &[])
@@ -951,7 +1025,7 @@ fn ufw_arguments(scope: &AuthorizedScope, grant: bool) -> Vec<String> {
 }
 
 fn apply_firewalld(scope: &AuthorizedScope, grant: bool) -> Result<(), String> {
-    let pkexec = required_command(&["/usr/bin/pkexec", "/usr/local/bin/pkexec"], "pkexec")?;
+    let pkexec = required_command(PKEXEC_PATHS, "pkexec")?;
     apply_firewalld_commands(scope, grant, |firewall_cmd| {
         let mut command = Command::new(&pkexec);
         command.arg(firewall_cmd);
@@ -968,10 +1042,7 @@ fn apply_firewalld_commands(
     grant: bool,
     mut command_for: impl FnMut(&Path) -> Command,
 ) -> Result<(), String> {
-    let firewall_cmd = required_command(
-        &["/usr/bin/firewall-cmd", "/usr/sbin/firewall-cmd"],
-        "firewalld",
-    )?;
+    let firewall_cmd = required_command(FIREWALL_CMD_PATHS, "firewalld")?;
     let zone = scope
         .zone
         .as_deref()
@@ -1039,8 +1110,16 @@ fn required_command(paths: &[&str], label: &str) -> Result<PathBuf, String> {
     command_path(paths).ok_or_else(|| format!("{label} is unavailable"))
 }
 
+/// The first of `paths` that resolves to a regular file in a folder, both only root can
+/// replace, so neither the app nor the root helper runs a binary another account planted.
 fn command_path(paths: &[&str]) -> Option<PathBuf> {
-    paths.iter().map(PathBuf::from).find(|path| path.is_file())
+    paths.iter().find_map(|path| {
+        let resolved = Path::new(path).canonicalize().ok()?;
+        let metadata = resolved.symlink_metadata().ok()?;
+        let folder = resolved.parent()?.symlink_metadata().ok()?;
+        (metadata.is_file() && root_controlled(&metadata) && root_controlled(&folder))
+            .then(|| PathBuf::from(path))
+    })
 }
 
 fn state_path(config_dir: &Path) -> PathBuf {
@@ -1236,8 +1315,8 @@ bad/interface 0001A8C0 00000000 0001 0 0 600 00FFFFFF 0 0 0\n";
             vec![numbered_scope(31), numbered_scope(32)],
             None,
             |_| Ok(()),
-            |scope| {
-                applied.push(scope.clone());
+            |scopes| {
+                applied.extend_from_slice(scopes);
                 Ok(())
             },
         );
@@ -1250,8 +1329,8 @@ bad/interface 0001A8C0 00000000 0001 0 0 600 00FFFFFF 0 0 0\n";
             vec![numbered_scope(30), numbered_scope(31)],
             None,
             |_| Ok(()),
-            |scope| {
-                applied.push(scope.clone());
+            |scopes| {
+                applied.extend_from_slice(scopes);
                 Ok(())
             },
         );
@@ -1262,9 +1341,10 @@ bad/interface 0001A8C0 00000000 0001 0 0 600 00FFFFFF 0 0 0\n";
     }
 
     #[test]
-    fn a_rule_is_recorded_before_it_is_applied_and_a_failed_one_stays_revocable() {
+    fn one_flow_applies_its_scopes_in_one_call_and_a_failed_call_stays_revocable() {
         let mut stored = empty_state();
         let mut persisted: Vec<(usize, usize)> = Vec::new();
+        let mut calls = Vec::new();
         let result = grant_scopes(
             &mut stored,
             vec![numbered_scope(1), numbered_scope(2)],
@@ -1273,32 +1353,59 @@ bad/interface 0001A8C0 00000000 0001 0 0 600 00FFFFFF 0 0 0\n";
                 persisted.push((state.scopes.len(), state.pending.len()));
                 Ok(())
             },
-            |scope| {
-                if scope == &numbered_scope(2) {
-                    Err("firewalld failed after the runtime rule".to_string())
-                } else {
-                    Ok(())
-                }
+            |scopes| {
+                calls.push(scopes.to_vec());
+                Err("firewalld failed after the runtime rule".to_string())
             },
         );
         assert!(result.is_err());
-        assert_eq!(persisted, vec![(0, 1), (1, 0), (1, 1)]);
-        assert_eq!(stored.scopes, vec![granted(1, &[HOME])]);
-        assert_eq!(stored.pending, vec![numbered_scope(2)]);
+        assert_eq!(calls, vec![vec![numbered_scope(1), numbered_scope(2)]]);
+        assert_eq!(persisted, vec![(0, 2)]);
+        assert!(stored.scopes.is_empty());
+        assert_eq!(stored.pending, vec![numbered_scope(1), numbered_scope(2)]);
 
-        let mut removed = Vec::new();
-        let revoked = revoke_scopes(&mut stored, |scope| {
-            removed.push(scope.clone());
-            if scope == &numbered_scope(1) {
-                Err("authorization was cancelled".to_string())
-            } else {
+        let granted_again = grant_scopes(
+            &mut stored,
+            vec![numbered_scope(1), numbered_scope(2), numbered_scope(3)],
+            Some(HOME),
+            |state| {
+                persisted.push((state.scopes.len(), state.pending.len()));
                 Ok(())
-            }
+            },
+            |scopes| {
+                calls.push(scopes.to_vec());
+                Ok(())
+            },
+        );
+        assert!(granted_again.is_ok());
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[1].len(), 3);
+        assert_eq!(persisted[1..], [(0, 3), (3, 0)]);
+        assert_eq!(rules(&stored).len(), 3);
+
+        stored.pending = vec![numbered_scope(4)];
+        let mut removals = Vec::new();
+        let revoked = revoke_scopes(&mut stored, |scopes| {
+            removals.push(scopes.to_vec());
+            Err("authorization was cancelled".to_string())
         });
         assert!(revoked.is_err());
-        assert_eq!(removed, vec![numbered_scope(1), numbered_scope(2)]);
-        assert_eq!(rules(&stored), vec![numbered_scope(1)]);
-        assert!(stored.pending.is_empty());
+        assert_eq!(rules(&stored).len(), 3);
+        assert_eq!(stored.pending, vec![numbered_scope(4)]);
+
+        let revoked = revoke_scopes(&mut stored, |scopes| {
+            removals.push(scopes.to_vec());
+            Ok(())
+        });
+        assert!(revoked.is_ok());
+        assert_eq!(removals.len(), 2);
+        assert_eq!(
+            removals[1],
+            [1, 2, 3, 4].map(numbered_scope).to_vec(),
+            "one call removes every granted and pending rule"
+        );
+        assert!(stored.scopes.is_empty() && stored.pending.is_empty());
+        assert!(revoke_scopes(&mut stored, |_| panic!("nothing to remove")).is_ok());
     }
 
     #[test]
@@ -1484,14 +1591,15 @@ tailscale0 00004064 00000000 0001 0 0 0 0000C0FF 0 0 0\n";
         ]
         .into_iter()
         .map(str::to_string);
-        let Ok(HelperRequest::Apply { scope, grant }) =
+        let Ok(HelperRequest::Apply { scopes, grant }) =
             parse_privileged_helper_request(&mut arguments)
         else {
             panic!("valid helper scope");
         };
         assert!(grant);
-        assert_eq!(scope.firewall, FirewallKind::Ufw);
-        assert_eq!(scope.local_address, Ipv4Addr::new(192, 168, 1, 66));
+        assert_eq!(scopes.len(), 1);
+        assert_eq!(scopes[0].firewall, FirewallKind::Ufw);
+        assert_eq!(scopes[0].local_address, Ipv4Addr::new(192, 168, 1, 66));
 
         let mut broad = ["grant", "ufw", "wlp2s0", "192.168.1.66", "0.0.0.0/0", "-"]
             .into_iter()
@@ -1516,6 +1624,95 @@ tailscale0 00004064 00000000 0001 0 0 0 0000C0FF 0 0 0\n";
         };
         assert_eq!(revoke_all(&["revoke-all"]), Ok(HelperRequest::RevokeAll));
         assert!(revoke_all(&["revoke-all", "ufw"]).is_err());
+        assert!(revoke_all(&["grant"]).is_err());
+    }
+
+    #[test]
+    fn one_helper_invocation_carries_every_scope_of_a_flow() {
+        let firewalld = AuthorizedScope {
+            firewall: FirewallKind::Firewalld,
+            zone: Some("home".to_string()),
+            ..numbered_scope(1)
+        };
+        let scopes = vec![numbered_scope(1), firewalld, numbered_scope(2)];
+        for grant in [true, false] {
+            let arguments = privileged_helper_arguments(&scopes, grant).expect("arguments");
+            assert_eq!(arguments[0], PRIVILEGED_HELPER_ARGUMENT);
+            let request = parse_privileged_helper_request(&mut arguments.into_iter().skip(1));
+            assert_eq!(
+                request,
+                Ok(HelperRequest::Apply {
+                    scopes: scopes.clone(),
+                    grant
+                })
+            );
+        }
+
+        let most: Vec<AuthorizedScope> = (0..MAX_AUTHORIZED_SCOPES)
+            .map(|index| numbered_scope(index as u8))
+            .collect();
+        let arguments = privileged_helper_arguments(&most, false).expect("bounded arguments");
+        let mut too_many: Vec<String> = arguments.into_iter().skip(1).collect();
+        too_many.extend(too_many[1..6].to_vec());
+        assert!(parse_privileged_helper_request(&mut too_many.into_iter()).is_err());
+        assert!(privileged_helper_arguments(&[], true).is_err());
+        assert!(privileged_helper_arguments(&[most.clone(), most].concat(), true).is_err());
+        let development = AuthorizedScope {
+            port: DEVELOPMENT_COORDINATOR_PORT,
+            ..numbered_scope(1)
+        };
+        assert!(privileged_helper_arguments(&[development], true).is_err());
+
+        let mut truncated = privileged_helper_arguments(&scopes, true).expect("arguments");
+        truncated.pop();
+        assert!(parse_privileged_helper_request(&mut truncated.into_iter().skip(1)).is_err());
+    }
+
+    #[test]
+    fn a_grant_stops_at_its_first_failure_while_a_revoke_attempts_every_scope() {
+        let scopes = [1, 2, 3].map(numbered_scope);
+        let fail_second = |attempted: &mut Vec<AuthorizedScope>, scope: &AuthorizedScope| {
+            attempted.push(scope.clone());
+            if scope == &numbered_scope(2) {
+                Err(format!("failed {}", scope.source_network))
+            } else {
+                Ok(())
+            }
+        };
+        let mut attempted = Vec::new();
+        let granted = apply_each(&scopes, true, |scope| fail_second(&mut attempted, scope));
+        assert_eq!(granted, Err("failed 192.168.2.0/24".to_string()));
+        assert_eq!(attempted, scopes[..2]);
+
+        let mut attempted = Vec::new();
+        let revoked = apply_each(&scopes, false, |scope| fail_second(&mut attempted, scope));
+        assert_eq!(revoked, Err("failed 192.168.2.0/24".to_string()));
+        assert_eq!(attempted, scopes);
+    }
+
+    #[test]
+    fn system_commands_resolve_only_to_files_root_controls() {
+        use std::os::unix::fs::PermissionsExt;
+
+        assert!(
+            PKEXEC_PATHS
+                .iter()
+                .all(|path| !path.starts_with("/usr/local/"))
+        );
+        assert_eq!(
+            command_path(&["/nonexistent/pkexec", "/usr/bin/env"]),
+            Some(PathBuf::from("/usr/bin/env"))
+        );
+
+        let folder = std::env::temp_dir().join(format!("ganbaru-command-{}", std::process::id()));
+        fs::create_dir_all(&folder).unwrap();
+        let planted = folder.join("pkexec");
+        fs::write(&planted, b"#!/bin/sh\n").unwrap();
+        fs::set_permissions(&planted, fs::Permissions::from_mode(0o755)).unwrap();
+        if planted.symlink_metadata().unwrap().uid() != 0 {
+            assert_eq!(command_path(&[planted.to_str().unwrap()]), None);
+        }
+        fs::remove_dir_all(&folder).unwrap();
     }
 
     #[test]

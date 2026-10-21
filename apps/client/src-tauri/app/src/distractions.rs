@@ -91,8 +91,8 @@ use limits::is_valid_local_date;
 
 #[cfg(all(desktop, test))]
 use state_files::{
-    clear_enforcement_state_files, extension_status_from_file_contents, validate_limit_state,
-    validate_state, write_text_file_atomically,
+    clear_enforcement_state_files, extension_status_at, extension_status_from_file_contents,
+    validate_limit_state, validate_state, write_text_file_atomically,
 };
 
 #[cfg(all(desktop, test))]

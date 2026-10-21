@@ -20,8 +20,8 @@ use crate::vault::handoff::protocol::{
 };
 use crate::vault::handoff::{coordinator, protocol, suggested_device_label};
 pub(crate) use admission::LanAdmission;
+use client_verifier::PinnedClientVerifier;
 use limits::{ConnectionLimits, PendingPermit};
-use rustls::RootCertStore;
 use rustls::pki_types::CertificateDer;
 use std::fs;
 use std::net::{IpAddr, SocketAddr};
@@ -32,6 +32,7 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio_rustls::TlsAcceptor;
 
 pub(super) mod admission;
+mod client_verifier;
 pub(super) mod limits;
 
 const UPLOAD_REQUEST_WAIT: Duration = Duration::from_secs(10);
@@ -973,23 +974,16 @@ async fn serve_upload(
     .await
 }
 
+/// Coordinator TLS: version 1.3 only, and client certificates checked against the exact pinned
+/// certificates of linked and revoked devices, so a revoked device still reaches its stale-link
+/// cleanup while an unknown certificate never completes the handshake.
 fn server_config(
     identity: TlsIdentity,
     client_certificates: Vec<CertificateDer<'static>>,
 ) -> Result<rustls::ServerConfig, String> {
-    let builder = rustls::ServerConfig::builder();
+    let builder = rustls::ServerConfig::builder_with_protocol_versions(&[&rustls::version::TLS13]);
     let config = if !client_certificates.is_empty() {
-        let mut roots = RootCertStore::empty();
-        for certificate in client_certificates {
-            roots
-                .add(certificate)
-                .map_err(|error| format!("trust linked device certificate: {error}"))?;
-        }
-        let verifier = rustls::server::WebPkiClientVerifier::builder(Arc::new(roots))
-            .allow_unauthenticated()
-            .build()
-            .map_err(|error| format!("configure linked device verifier: {error}"))?;
-        builder.with_client_cert_verifier(verifier)
+        builder.with_client_cert_verifier(Arc::new(PinnedClientVerifier::new(&client_certificates)))
     } else {
         builder.with_no_client_auth()
     }

@@ -1333,3 +1333,31 @@ fn handoff_staging_is_private_even_when_it_already_exists() {
         .mode();
     assert_eq!(mode & 0o777, 0o700);
 }
+
+#[test]
+fn device_certificate_subject_names_the_device() {
+    let root = TestDirectory::new("certificate-subject");
+    let manager = PairingManager::default();
+    manager
+        .initialize(
+            root.path().to_path_buf(),
+            "device-subject-check".to_string(),
+        )
+        .expect("initialize device");
+    let (device_id, identity) = manager.identity().expect("device identity");
+    let certificate = identity.certificate.as_ref();
+
+    assert_eq!(device_id, "device-subject-check");
+    assert!(
+        certificate
+            .windows(device_id.len())
+            .any(|window| window == device_id.as_bytes()),
+        "certificate subject should carry the device ID"
+    );
+    assert!(
+        !certificate
+            .windows(b"rcgen self signed cert".len())
+            .any(|window| window == b"rcgen self signed cert"),
+        "certificate should not keep the generator's default subject"
+    );
+}

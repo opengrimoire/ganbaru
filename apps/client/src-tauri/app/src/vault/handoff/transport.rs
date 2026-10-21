@@ -758,7 +758,7 @@ async fn connect_pinned(
 ) -> Result<tokio_rustls::client::TlsStream<TcpStream>, String> {
     authorize_endpoint(endpoint)?;
     let verifier = Arc::new(PinnedServerVerifier::new(fingerprint.to_string()));
-    let builder = rustls::ClientConfig::builder()
+    let builder = rustls::ClientConfig::builder_with_protocol_versions(&[&rustls::version::TLS13])
         .dangerous()
         .with_custom_certificate_verifier(verifier);
     let config = match identity {

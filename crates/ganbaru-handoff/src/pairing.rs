@@ -23,7 +23,7 @@ use super::protocol::{
     validate_identifier,
 };
 use base64::Engine;
-use rcgen::{CertificateParams, KeyPair};
+use rcgen::{CertificateParams, DnType, KeyPair};
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -40,6 +40,10 @@ const INVITATION_LIFETIME_MS: i64 = 3 * 60 * 1_000;
 const MAX_CERTIFICATE_BYTES: usize = 16 * 1024;
 const MAX_LINKED_PEERS: usize = 32;
 const MAX_REVOKED_PEERS: usize = 64;
+/// Most device certificates the coordinator pins at once, linked and revoked together. Every
+/// TLS server configuration and handshake check scales with this set.
+const MAX_PINNED_DEVICE_CERTIFICATES: usize = 128;
+const _: () = assert!(MAX_LINKED_PEERS + MAX_REVOKED_PEERS <= MAX_PINNED_DEVICE_CERTIFICATES);
 const ENROLLMENT_CODE_DOMAIN: &[u8] = b"ganbaru-enrollment-code-v1";
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -903,8 +907,12 @@ fn ensure_enrollment_target(
 fn create_identity(device_id: String) -> Result<StoredIdentity, String> {
     let signing_key =
         KeyPair::generate().map_err(|error| format!("generate device key: {error}"))?;
-    let certificate = CertificateParams::new(vec!["ganbaru-device.local".to_string()])
-        .map_err(|error| format!("configure device certificate: {error}"))?
+    let mut params = CertificateParams::new(vec!["ganbaru-device.local".to_string()])
+        .map_err(|error| format!("configure device certificate: {error}"))?;
+    params
+        .distinguished_name
+        .push(DnType::CommonName, device_id.as_str());
+    let certificate = params
         .self_signed(&signing_key)
         .map_err(|error| format!("generate device certificate: {error}"))?;
     Ok(StoredIdentity {

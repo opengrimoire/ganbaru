@@ -848,6 +848,33 @@ async fn invalid_device_identity_cannot_download_bundle() {
 }
 
 #[tokio::test]
+async fn coordinator_refuses_tls_1_2_even_from_a_linked_device() {
+    let pair = LocalPair::start().await;
+    pair.enroll().await;
+    let (_, identity) = pair.phone.identity().expect("phone identity");
+    let config = rustls::ClientConfig::builder_with_protocol_versions(&[&rustls::version::TLS12])
+        .dangerous()
+        .with_custom_certificate_verifier(Arc::new(PinnedServerVerifier::new(
+            pair.invitation.coordinator_fingerprint.clone(),
+        )))
+        .with_client_auth_cert(vec![identity.certificate], identity.private_key.clone_key())
+        .expect("configure TLS 1.2 client");
+    let socket = TcpStream::connect(&pair.invitation.endpoint)
+        .await
+        .expect("connect to coordinator");
+    let server_name = ServerName::try_from("ganbaru-coordinator.local").expect("server name");
+
+    let handshake = tokio::time::timeout(
+        TLS_HANDSHAKE_TIMEOUT,
+        TlsConnector::from(Arc::new(config)).connect(server_name, socket),
+    )
+    .await
+    .expect("handshake finishes");
+
+    assert!(handshake.is_err(), "TLS 1.2 handshake must be refused");
+}
+
+#[tokio::test]
 async fn non_lan_dial_targets_are_refused_before_connecting() {
     for endpoint in [
         "203.0.113.5:443",

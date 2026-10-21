@@ -110,13 +110,9 @@ class SoundscapeStore {
       this.presets = presets;
       this.persisted = persisted;
       this.snapshot = snapshot;
+      // Like Music, a soundscape the listener started stays chosen but silent after a launch or vault switch.
       if (persisted.desiredPlaying && !persisted.automaticIntent && snapshot.status !== "playing") {
-        const preset = this.activePreset;
-        if (preset && this.presetIsPlayable(preset)) await this.startMix(preset, null);
-        else {
-          this.error = "The selected preset is unavailable.";
-          await this.persistState(persisted.activePresetId, false);
-        }
+        await this.persistState(persisted.activePresetId, false);
       }
     } catch (error) {
       if (generation === this.generation) this.error = message(error);

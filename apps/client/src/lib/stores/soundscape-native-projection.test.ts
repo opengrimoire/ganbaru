@@ -104,20 +104,14 @@ describe("native soundscape playback projection", () => {
     expect(api.startSoundscape).not.toHaveBeenCalled();
   });
 
-  it("restores a manual preset that should be playing at its saved level", async () => {
-    api.getMusicSoundscapeState.mockResolvedValue({ ...state, automaticIntent: false });
-    await loadedStore();
-    expect(api.startSoundscape).toHaveBeenCalledWith(expect.objectContaining({ sourceId: "noise", presetLevel: 0.8 }));
-    expect(api.updateMusicSoundscapeState).not.toHaveBeenCalled();
-  });
-
-  it("reports a saved preset that can no longer play and saves it as not playing", async () => {
-    api.getMusicSoundscapePresets.mockResolvedValue([preset("calm", [["fire", 1]])]);
+  it("keeps a manual preset chosen but silent after a launch and saves it as not playing", async () => {
     api.getMusicSoundscapeState.mockResolvedValue({ ...state, automaticIntent: false });
     const store = await loadedStore();
-    expect(store.error).toBe("The selected preset is unavailable.");
     expect(api.startSoundscape).not.toHaveBeenCalled();
     expect(api.updateMusicSoundscapeState).toHaveBeenCalledWith(expect.objectContaining({ activePresetId: "calm", desiredPlaying: false }));
+    expect(store.activePreset?.id).toBe("calm");
+    expect(store.persisted?.desiredPlaying).toBe(false);
+    expect(store.error).toBeNull();
   });
 
   it("drops an old native read after a vault switch and leaves output shutdown with the native owner", async () => {

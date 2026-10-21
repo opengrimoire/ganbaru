@@ -17,6 +17,47 @@ pub const PUBLIC_KEY_TEXT_LENGTH: usize = 43;
 const CONTACT_ID_PREFIX: &str = "person:";
 const CONTACT_ID_DIGEST_CHARS: usize = 32;
 
+/// Ed25519 y coordinates of the points whose order divides 8, little endian with the sign bit
+/// clear: 0, 1, the two order-8 values, `p - 1`, and the non-canonical `p` and `p + 1`, which
+/// verifiers decode as 0 and 1.
+const SMALL_ORDER_Y_COORDINATES: [[u8; PUBLIC_KEY_BYTES]; 7] = [
+    [0; 32],
+    [
+        1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0,
+    ],
+    [
+        0x26, 0xe8, 0x95, 0x8f, 0xc2, 0xb2, 0x27, 0xb0, 0x45, 0xc3, 0xf4, 0x89, 0xf2, 0xef, 0x98,
+        0xf0, 0xd5, 0xdf, 0xac, 0x05, 0xd3, 0xc6, 0x33, 0x39, 0xb1, 0x38, 0x02, 0x88, 0x6d, 0x53,
+        0xfc, 0x05,
+    ],
+    [
+        0xc7, 0x17, 0x6a, 0x70, 0x3d, 0x4d, 0xd8, 0x4f, 0xba, 0x3c, 0x0b, 0x76, 0x0d, 0x10, 0x67,
+        0x0f, 0x2a, 0x20, 0x53, 0xfa, 0x2c, 0x39, 0xcc, 0xc6, 0x4e, 0xc7, 0xfd, 0x77, 0x92, 0xac,
+        0x03, 0x7a,
+    ],
+    field_prime_plus(-1),
+    field_prime_plus(0),
+    field_prime_plus(1),
+];
+
+/// `2^255 - 19 + offset` in little endian, for offsets that only change the lowest byte.
+const fn field_prime_plus(offset: i8) -> [u8; PUBLIC_KEY_BYTES] {
+    let mut bytes = [0xff; PUBLIC_KEY_BYTES];
+    bytes[0] = 0xed_u8.wrapping_add_signed(offset);
+    bytes[PUBLIC_KEY_BYTES - 1] = 0x7f;
+    bytes
+}
+
+/// Whether key bytes encode an Ed25519 point of order dividing 8, in any sign or non-canonical
+/// form. Anyone can forge signatures that verify under such a key, so it never names a person
+/// or a writer.
+pub fn is_small_order_public_key(bytes: &[u8; PUBLIC_KEY_BYTES]) -> bool {
+    let mut y = *bytes;
+    y[PUBLIC_KEY_BYTES - 1] &= 0x7f;
+    SMALL_ORDER_Y_COORDINATES.contains(&y)
+}
+
 /// Signature or key material that cannot be used.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SignatureError {
@@ -42,16 +83,20 @@ impl std::error::Error for SignatureError {}
 pub struct PersonPublicKey([u8; PUBLIC_KEY_BYTES]);
 
 impl PersonPublicKey {
-    /// Wraps raw key bytes without verifying that they describe a valid curve point.
+    /// Wraps raw key bytes without verifying that they describe a valid curve point. Invalid and
+    /// small-order keys fail at verification.
     pub fn from_bytes(bytes: [u8; PUBLIC_KEY_BYTES]) -> Self {
         Self(bytes)
     }
 
-    /// Parses a raw key from a slice.
+    /// Parses a raw key from a slice, refusing small-order keys.
     pub fn from_slice(bytes: &[u8]) -> Result<Self, SignatureError> {
-        <[u8; PUBLIC_KEY_BYTES]>::try_from(bytes)
-            .map(Self)
-            .map_err(|_| SignatureError::InvalidKey)
+        let bytes =
+            <[u8; PUBLIC_KEY_BYTES]>::try_from(bytes).map_err(|_| SignatureError::InvalidKey)?;
+        if is_small_order_public_key(&bytes) {
+            return Err(SignatureError::InvalidKey);
+        }
+        Ok(Self(bytes))
     }
 
     /// Parses the base64url text form.
@@ -150,12 +195,15 @@ impl fmt::Debug for PersonKeyPair {
     }
 }
 
-/// Verifies an Ed25519 signature over a payload.
+/// Verifies an Ed25519 signature over a payload. A small-order key never verifies.
 pub fn verify(
     public_key: &PersonPublicKey,
     payload: &[u8],
     signature: &[u8],
 ) -> Result<(), SignatureError> {
+    if is_small_order_public_key(public_key.as_bytes()) {
+        return Err(SignatureError::InvalidKey);
+    }
     if signature.len() != SIGNATURE_BYTES {
         return Err(SignatureError::Invalid);
     }

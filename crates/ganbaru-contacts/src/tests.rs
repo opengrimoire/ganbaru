@@ -276,3 +276,89 @@ fn cards_with_bidi_or_invisible_name_characters_are_refused_even_when_signed() {
         assert_eq!(decode_card(&signed.bytes).unwrap().card.display_name, name);
     }
 }
+
+/// Every encoding of a point whose order divides 8: the seven y coordinates with either sign bit.
+fn small_order_encodings() -> Vec<[u8; 32]> {
+    let mut prime = [0xffu8; 32];
+    prime[0] = 0xed;
+    prime[31] = 0x7f;
+    let order_eight = [
+        "26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc05",
+        "c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac037a",
+    ]
+    .map(|hex| {
+        let mut bytes = [0u8; 32];
+        for (index, byte) in bytes.iter_mut().enumerate() {
+            *byte = u8::from_str_radix(&hex[index * 2..index * 2 + 2], 16).expect("hex");
+        }
+        bytes
+    });
+    let mut y_values = vec![[0u8; 32], {
+        let mut one = [0u8; 32];
+        one[0] = 1;
+        one
+    }];
+    y_values.extend(order_eight);
+    for low_byte in [0xec, 0xed, 0xee] {
+        let mut value = prime;
+        value[0] = low_byte;
+        y_values.push(value);
+    }
+    y_values
+        .into_iter()
+        .flat_map(|y| {
+            let mut negative = y;
+            negative[31] |= 0x80;
+            [y, negative]
+        })
+        .collect()
+}
+
+/// A message among the first 256 for which ring alone accepts the all-identity forgery under `key`.
+fn message_ring_alone_accepts(key: &[u8; 32]) -> Option<[u8; 4]> {
+    use ring::signature::{ED25519, UnparsedPublicKey};
+    let mut forgery = [0u8; 64];
+    forgery[0] = 1;
+    (0u32..256).map(u32::to_le_bytes).find(|message| {
+        UnparsedPublicKey::new(&ED25519, key)
+            .verify(message, &forgery)
+            .is_ok()
+    })
+}
+
+#[test]
+fn small_order_keys_are_refused_although_ring_accepts_forgeries_under_them() {
+    let mut forgery = [0u8; 64];
+    forgery[0] = 1;
+    for encoding in small_order_encodings() {
+        let message = message_ring_alone_accepts(&encoding)
+            .unwrap_or_else(|| panic!("{encoding:02x?} should admit a forgery"));
+        assert!(crate::is_small_order_public_key(&encoding));
+        assert_eq!(
+            verify(&PersonPublicKey::from_bytes(encoding), &message, &forgery),
+            Err(SignatureError::InvalidKey)
+        );
+        assert_eq!(
+            PersonPublicKey::from_slice(&encoding),
+            Err(SignatureError::InvalidKey)
+        );
+        let text = PersonPublicKey::from_bytes(encoding).to_text();
+        assert_eq!(
+            PersonPublicKey::from_text(&text),
+            Err(SignatureError::InvalidKey)
+        );
+    }
+
+    let genuine = PersonKeyPair::from_seed(&[4u8; 32]).expect("genuine key");
+    let public_key = genuine.public_key();
+    assert!(!crate::is_small_order_public_key(public_key.as_bytes()));
+    assert_eq!(
+        PersonPublicKey::from_text(&public_key.to_text()),
+        Ok(public_key)
+    );
+    assert_eq!(
+        verify(&public_key, b"payload", &genuine.sign(b"payload")),
+        Ok(())
+    );
+    assert!(message_ring_alone_accepts(public_key.as_bytes()).is_none());
+}

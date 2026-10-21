@@ -112,3 +112,15 @@ fn unknown_versions_and_predecessor_flags_are_rejected() {
         Err(CertificateError::Codec(_))
     ));
 }
+
+#[test]
+fn small_order_writer_keys_never_verify_an_operation() {
+    let mut identity = [0u8; 32];
+    identity[0] = 1;
+    let mut forgery = [0u8; 64];
+    forgery[0] = 1;
+
+    assert!(crate::WriterPublicKey::from_slice(&identity).is_err());
+    assert!(!crate::WriterPublicKey::from_bytes(identity).verify_operation(b"operation", &forgery));
+    assert!(crate::WriterPublicKey::from_slice(writer_key().public_key().as_bytes()).is_ok());
+}

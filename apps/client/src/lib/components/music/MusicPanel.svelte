@@ -5,7 +5,6 @@
   import ListMusic from "@lucide/svelte/icons/list-music";
   import MonitorPlay from "@lucide/svelte/icons/monitor-play";
   import LoaderCircle from "@lucide/svelte/icons/loader-circle";
-  import CalendarClock from "@lucide/svelte/icons/calendar-clock";
   import Pause from "@lucide/svelte/icons/pause";
   import Play from "@lucide/svelte/icons/play";
   import SkipBack from "@lucide/svelte/icons/skip-back";
@@ -926,18 +925,6 @@
         <button type="button" class="notice-action-text" onclick={() => player.inspectContextAssignment()}>{t("music.assignment.context.inspect")}</button>
       {/snippet}
     </Notice>
-  {:else if visibleContext}
-    <div class="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1.5 border-y border-border/55 bg-primary/6 px-3 py-2 text-[0.68rem]" role="status">
-      <CalendarClock size={14} class="shrink-0 text-primary" />
-      <div class="min-w-40 flex-1 leading-relaxed">
-        <p class="font-semibold text-foreground">{contextSummary}</p>
-        <p class="text-muted-foreground">{t(`music.assignment.context.state.${visibleContext.state}`)}</p>
-      </div>
-      {#if visibleContext.state === "prepared"}
-        <button type="button" onclick={() => { void player.playPlayback(); }} class="rounded-md bg-primary px-2.5 py-1 font-semibold text-primary-foreground hover:bg-primary/90">{t("music.assignment.context.preparedPlay")}</button>
-      {/if}
-      <button type="button" onclick={() => player.inspectContextAssignment()} class="rounded-md px-2.5 py-1 font-semibold text-primary hover:bg-primary/10">{t("music.assignment.context.inspect")}</button>
-    </div>
   {/if}
 
   <div

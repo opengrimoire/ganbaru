@@ -40,9 +40,9 @@ export const music = {
   },
   preferences: {
     title: "Mix and snooze",
-    applyTo: "Apply to",
+    applyTo: "This track in",
     snooze: "Snooze",
-    everywhere: "Everywhere",
+    everywhere: "All playlists",
     day: "1 day",
     week: "1 week",
     month: "1 month",

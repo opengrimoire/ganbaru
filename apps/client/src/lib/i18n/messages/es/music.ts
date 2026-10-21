@@ -43,9 +43,9 @@ export const music = {
   },
   preferences: {
     title: "Mix y pausa",
-    applyTo: "Aplicar a",
+    applyTo: "Esta pista en",
     snooze: "Posponer",
-    everywhere: "En todas",
+    everywhere: "Todas las playlists",
     day: "1 día",
     week: "1 semana",
     month: "1 mes",

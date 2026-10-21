@@ -804,4 +804,43 @@ mod tests {
             .expect("clear");
         assert!(!access.is_granted(&scope).expect("read"));
     }
+
+    #[test]
+    fn layout_and_preview_discovery_authorize_the_thread_before_reading() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/chat");
+        for (file, command, first_read) in [
+            (
+                "terminal_commands.rs",
+                "chat_read_terminal_layout",
+                "sqlx::query(",
+            ),
+            (
+                "terminal_commands.rs",
+                "chat_save_terminal_panel_layout",
+                "pool.begin()",
+            ),
+            (
+                "preview.rs",
+                "chat_browser_discover_servers",
+                "registry.snapshot(",
+            ),
+        ] {
+            let source = std::fs::read_to_string(root.join(file)).expect("read Chat source");
+            let start = source
+                .find(&format!("pub async fn {command}("))
+                .unwrap_or_else(|| panic!("{command} is defined"));
+            let end = start + source[start..].find("\n}\n").expect("command ends");
+            let body = &source[start..end];
+            let authorized = body
+                .find("authorize_thread_workspace(")
+                .unwrap_or_else(|| panic!("{command} authorizes the thread"));
+            let read = body
+                .find(first_read)
+                .unwrap_or_else(|| panic!("{command} reads {first_read}"));
+            assert!(
+                authorized < read,
+                "{command} must authorize the thread before {first_read}"
+            );
+        }
+    }
 }

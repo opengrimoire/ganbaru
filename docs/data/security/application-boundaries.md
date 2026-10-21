@@ -36,7 +36,7 @@ User cancellation is an ordinary typed outcome, not a path or permission error.
 
 ## Vault and configuration
 
-Vault selection validates the marker, schema version, directory relationship, permissions, and database availability before changing the active pointer. The application never treats an unrelated non-empty folder as a new vault and never silently deletes a damaged configured vault.
+Vault selection checks the folder before changing the active pointer: an absolute existing directory, no symlinked fixed entries, and a Ganbaru marker with the supported schema version and a valid id. A folder without a marker becomes a new vault only when it is empty. These checks run before anything is written into the folder; the database opens after selection, and a failure there is reported without deleting or recreating the vault.
 
 A vault database is untrusted input. Read-write opens (selection, import, and startup), restore and handoff validation, and the guarded sync open first compare its `sqlite_schema` with the catalog an empty database gets from the same applied migrations, and reject any extra, missing, or changed table, index, trigger, or view, including FTS5 shadow tables and a migration history that is not a table. Restore runs this check before the SQLite integrity check, so integrity checking never reaches virtual tables the file reshaped. Every connection disables `trusted_schema`, enables `cell_size_check`, and runs in SQLite defensive mode. Read-only opens skip the catalog comparison because a replica may read a newer schema; they rely on query-only access and those connection settings.
 

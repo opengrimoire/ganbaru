@@ -520,12 +520,23 @@ fn ensure_vault_skeleton(path: &Path) -> Result<(), String> {
     }
 }
 
+/// Validates an existing vault folder before it may become active, then completes its skeleton.
+///
+/// The folder, its fixed entries, and its marker are checked first, so a folder with a foreign,
+/// malformed, or unsupported marker is refused before anything is written into it. The database
+/// is not opened here: it opens after selection, and a failure there is reported without
+/// deleting or recreating it.
+fn validate_vault_candidate(path: &Path) -> Result<VaultInfo, String> {
+    let info = vault_info_from_path(path)?;
+    ensure_vault_skeleton(Path::new(&info.path))?;
+    Ok(info)
+}
+
 fn initialize_vault(path: &Path) -> Result<VaultInfo, String> {
     let path = canonical_vault_path(path.to_path_buf())?;
     reject_symlinked_vault_entries(&path)?;
     if manifest_path(&path).exists() {
-        ensure_vault_skeleton(&path)?;
-        return vault_info_from_path(&path);
+        return validate_vault_candidate(&path);
     }
     if !folder_is_empty(&path)? {
         return Err("selected folder is not empty and is not a Ganbaru folder".to_string());
@@ -785,8 +796,7 @@ pub async fn vault_pick_open(app: tauri::AppHandle) -> Result<Option<VaultInfo>,
     else {
         return Ok(None);
     };
-    let info = vault_info_from_path(&path)?;
-    ensure_vault_skeleton(&PathBuf::from(&info.path))?;
+    let info = validate_vault_candidate(&path)?;
     select_vault(&app, &info).await?;
     Ok(Some(info))
 }
@@ -843,8 +853,7 @@ fn pick_mobile_vault(app: &tauri::AppHandle) -> Result<Option<VaultInfo>, String
     }
 
     let result = (|| {
-        let imported = vault_info_from_path(&staging)?;
-        ensure_vault_skeleton(Path::new(&imported.path))?;
+        validate_vault_candidate(&staging)?;
         fs::rename(&staging, &target)
             .map_err(|error| format!("activate imported Ganbaru folder: {error}"))?;
         let info = vault_info_from_path(&target)?;
@@ -1289,6 +1298,66 @@ mod tests {
             err,
             "selected folder is not empty and is not a Ganbaru folder"
         );
+        let _ = fs::remove_dir_all(&path);
+    }
+
+    #[test]
+    fn folders_with_a_foreign_or_unsupported_marker_are_refused_before_any_write() {
+        let markers = [
+            (
+                serde_json::json!({
+                    "app": "another-app",
+                    "schemaVersion": VAULT_SCHEMA_VERSION,
+                    "vaultId": "vault",
+                    "displayName": "Vault",
+                    "createdAt": "2026-10-20T00:00:00Z",
+                }),
+                "selected folder is not a Ganbaru folder".to_string(),
+            ),
+            (
+                serde_json::json!({
+                    "app": VAULT_APP_MARKER,
+                    "schemaVersion": VAULT_SCHEMA_VERSION + 1,
+                    "vaultId": "vault",
+                    "displayName": "Vault",
+                    "createdAt": "2026-10-20T00:00:00Z",
+                }),
+                format!(
+                    "unsupported Ganbaru folder schema version {}",
+                    VAULT_SCHEMA_VERSION + 1
+                ),
+            ),
+        ];
+        for (marker, expected) in markers {
+            let path = unique_path("foreign-marker");
+            fs::create_dir_all(&path).expect("create folder");
+            fs::write(path.join(VAULT_MANIFEST_FILE), marker.to_string()).expect("seed marker");
+
+            assert_eq!(initialize_vault(&path).unwrap_err(), expected);
+            assert_eq!(validate_vault_candidate(&path).unwrap_err(), expected);
+
+            let entries = fs::read_dir(&path)
+                .expect("read folder")
+                .map(|entry| entry.expect("folder entry").file_name())
+                .collect::<Vec<_>>();
+            assert_eq!(entries, [std::ffi::OsString::from(VAULT_MANIFEST_FILE)]);
+            let _ = fs::remove_dir_all(&path);
+        }
+    }
+
+    #[test]
+    fn validating_an_existing_vault_completes_its_skeleton() {
+        let path = unique_path("existing-vault");
+        fs::create_dir_all(&path).expect("create vault folder");
+        let created = initialize_vault(&path).expect("initialize vault");
+        fs::remove_dir_all(path.join("assets")).expect("remove assets");
+        fs::remove_file(path.join(CONFIG_FILE)).expect("remove config");
+
+        let opened = validate_vault_candidate(&path).expect("validate vault");
+
+        assert_eq!(opened.vault_id, created.vault_id);
+        assert!(path.join("assets").is_dir());
+        assert!(path.join(CONFIG_FILE).is_file());
         let _ = fs::remove_dir_all(&path);
     }
 

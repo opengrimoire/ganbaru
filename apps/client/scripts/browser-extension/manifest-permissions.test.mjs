@@ -37,6 +37,10 @@ describe("Chromium extension manifest", () => {
     expect(manifest.content_scripts).toBeUndefined();
   });
 
+  it("requires a browser with session storage, so tab URLs never fall back to disk", () => {
+    expect(Number(manifest.minimum_chrome_version)).toBeGreaterThanOrEqual(102);
+  });
+
   it("requests only the permissions its blocking paths use", () => {
     expect([...manifest.permissions].sort()).toEqual(ALLOWED_PERMISSIONS);
     expect(manifest.optional_permissions).toBeUndefined();

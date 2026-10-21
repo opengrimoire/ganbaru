@@ -198,7 +198,7 @@
         <span class="min-w-0 flex-1 truncate text-sm font-medium text-foreground" dir="auto">{parsed.displayName}</span>
       </div>
       <span class="contacts-field-label">{t("contacts.addContact.verificationLabel")}</span>
-      <p class="font-mono text-[1.1rem] font-semibold tracking-[0.2em] text-foreground tabular-nums" aria-live="polite">{parsed.verificationCode}</p>
+      <p class="font-mono text-[1.1rem] font-semibold tracking-[0.2em] wrap-break-word text-foreground tabular-nums" aria-live="polite">{parsed.verificationCode}</p>
       <p class="text-panel-detail text-muted-foreground">{t("contacts.addContact.verificationDescription")}</p>
     </div>
   {/if}

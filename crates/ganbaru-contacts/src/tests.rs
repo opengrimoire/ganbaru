@@ -180,6 +180,25 @@ fn verification_code_is_crockford_groups_and_stable() {
 }
 
 #[test]
+fn contact_codes_carry_80_bits_while_live_codes_keep_60() {
+    let key = PersonKeyPair::from_seed(&[5u8; 32]).expect("key");
+    let contact_code = key.public_key().verification_code();
+    let groups: Vec<&str> = contact_code.split('-').collect();
+
+    assert_eq!(groups.len(), 4);
+    assert!(groups.iter().all(|group| group.len() == 4));
+    assert_eq!(
+        contact_code.len() - 3,
+        16,
+        "16 base32 characters are 80 bits"
+    );
+    let digest: [u8; 32] =
+        <sha2::Sha256 as sha2::Digest>::digest(key.public_key().as_bytes()).into();
+    assert!(contact_code.starts_with(&verification_code(&digest)));
+    assert_eq!(verification_code(&digest).len(), 14);
+}
+
+#[test]
 fn request_and_status_payloads_bind_their_inputs() {
     let nonce = [1u8; 16];
     let first = request_signature_payload(&nonce, "request-a");

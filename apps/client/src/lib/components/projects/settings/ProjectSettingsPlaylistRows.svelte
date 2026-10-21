@@ -65,11 +65,6 @@
 
 <div class="phase-music">
   <div class={showSounds ? "phase-music-grid with-sounds" : "phase-music-grid"}>
-    {#if showSounds}
-      <span class="phase-music-spacer" aria-hidden="true"></span>
-      <span class="truncate text-panel-detail text-muted-foreground">{t("projects.settings.playlistColumn")}</span>
-      <span class="truncate text-panel-detail text-muted-foreground">{t("projects.settings.soundColumn")}</span>
-    {/if}
     {#each phaseAssignments as assignment (assignment.phase)}
       <span class="phase-music-label min-w-0 truncate text-[0.866667rem] text-foreground">{showSounds ? phaseNames[assignment.phase] : playlistLabels[assignment.phase]}</span>
       <MusicPlaylistSelect
@@ -111,7 +106,6 @@
 
   @container (width < 32rem) {
     .phase-music-grid.with-sounds { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-    .with-sounds .phase-music-spacer { display: none; }
     .with-sounds .phase-music-label { grid-column: 1 / -1; margin-top: 0.25rem; }
   }
 

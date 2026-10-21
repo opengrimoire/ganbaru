@@ -4,7 +4,6 @@
   import Check from "@lucide/svelte/icons/check";
   import ChevronDown from "@lucide/svelte/icons/chevron-down";
   import Search from "@lucide/svelte/icons/search";
-  import VolumeX from "@lucide/svelte/icons/volume-x";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { presetDisplayName } from "$lib/music/soundscape/presets";
   import { soundChoicesEqual, type MusicSoundChoice } from "$lib/music/sound-choice";
@@ -16,6 +15,7 @@
   import { portal } from "$lib/utils/portal";
   import { scrollEdgeFadeAction } from "$lib/utils/scroll-edge-fade";
   import { pickSelectPopoverGeometry, type SelectPopoverGeometry } from "$lib/utils/select-popover-position";
+  import AudioLinesXIcon from "./AudioLinesXIcon.svelte";
   import MusicSoundscapeIcon from "./MusicSoundscapeIcon.svelte";
 
   let {
@@ -195,12 +195,12 @@
   >
     {#if missing}<AlertTriangle size={14} class="shrink-0 text-warning" />
     {:else if selectedPreset}<span class="grid size-3.5 shrink-0 place-items-center text-muted-foreground"><MusicSoundscapeIcon icon={selectedPreset.icon} size={14} /></span>
-    {:else}<VolumeX size={14} strokeWidth={1.5} class="shrink-0 text-muted-foreground" />{/if}
+    {:else}<AudioLinesXIcon size={14} strokeWidth={1.5} class="shrink-0 text-muted-foreground" />{/if}
     <span class="min-w-0 flex-1 truncate">
       {#if loading}<Loading layout="inline" label={t("music.soundscape.title")} />
       {:else if missing}{t("music.soundscape.choice.missing")}
       {:else if selectedPreset}{presetDisplayName(selectedPreset, t)}
-      {:else}{t("music.soundscape.choice.silence")}{/if}
+      {:else}{t("common.none")}{/if}
     </span>
     <ChevronDown size={13} strokeWidth={2} class={cn("shrink-0 text-muted-foreground transition-transform", open && "rotate-180")} />
   </button>
@@ -229,8 +229,8 @@
       <div role="listbox" aria-label={label}>
         {#if !query}
           <button type="button" role="option" aria-selected={silent} onclick={() => choose({ kind: "keep" })} class="menu-item">
-            <VolumeX size={15} strokeWidth={1.75} />
-            <span class="min-w-0 flex-1 truncate font-medium">{t("music.soundscape.choice.silence")}</span>
+            <AudioLinesXIcon size={15} strokeWidth={1.75} />
+            <span class="min-w-0 flex-1 truncate font-medium">{t("common.none")}</span>
             {#if silent}<Check size={14} />{/if}
           </button>
         {/if}

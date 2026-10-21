@@ -144,7 +144,6 @@ export const music = {
     playPreset: (name: string) => `Reproducir el sonido ambiental ${name}`,
     openBuilder: "Administrar sonidos ambientales",
     choice: {
-      silence: "Silencio",
       presets: "Sonidos ambientales",
       missing: "El sonido ambiental seleccionado no está disponible",
       search: "Buscar sonidos ambientales",

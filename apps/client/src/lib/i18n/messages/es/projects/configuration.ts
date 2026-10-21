@@ -84,8 +84,6 @@ export const configuration = {
     focusPlaylist: "Playlist de enfoque",
     shortBreakPlaylist: "Playlist de descanso corto",
     longBreakPlaylist: "Playlist de descanso largo",
-    playlistColumn: "Playlist",
-    soundColumn: "Sonido ambiental",
     focusSound: "Sonido ambiental de enfoque",
     shortBreakSound: "Sonido ambiental de descanso corto",
     longBreakSound: "Sonido ambiental de descanso largo",

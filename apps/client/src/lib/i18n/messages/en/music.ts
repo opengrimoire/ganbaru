@@ -141,7 +141,6 @@ export const music = {
     playPreset: (name: string) => `Play ${name} soundscape`,
     openBuilder: "Manage soundscapes",
     choice: {
-      silence: "Silence",
       presets: "Soundscapes",
       missing: "Selected soundscape is unavailable",
       search: "Search soundscapes",

@@ -222,6 +222,13 @@ for (const key of ["csp", "devCsp"]) {
     failures.push(`Android ${key} must deny every frame source because YouTube runs in a separate native WebView`);
   }
 }
+const androidDevCsp = androidConfig.app?.security?.devCsp ?? {};
+for (const directive of ["default-src", "script-src", "style-src", "font-src", "connect-src"]) {
+  const sources = String(androidDevCsp[directive] ?? "").split(/\s+/u);
+  if (sources.some((source) => source.endsWith(":*"))) {
+    failures.push(`Android devCsp ${directive} must name the dev server ports instead of any port`);
+  }
+}
 for (const forbidden of ["addJavascriptInterface", "addDocumentStartJavaScript", "evaluateJavascript"]) {
   rejectText(youTubeHostViews, forbidden, "native YouTube host WebView", failures);
 }

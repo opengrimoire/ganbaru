@@ -446,7 +446,7 @@ pub async fn run_cli_operation(
         .map_err(|error| cli_run_error(executable, error))?;
     drop(isolated);
     if !output.status.success() {
-        let detail = String::from_utf8_lossy(&output.stderr);
+        let detail = crate::git::diagnostic_text(&output.stderr);
         let normalized = detail.to_ascii_lowercase();
         let code = if normalized.contains("auth")
             || normalized.contains("login")
@@ -456,13 +456,12 @@ pub async fn run_cli_operation(
         } else {
             ChatErrorCode::DriverUnavailable
         };
-        let message = detail.trim();
         return Err(ChatError::new(
             code,
-            if message.is_empty() {
+            if detail.is_empty() {
                 "Source-control command failed".to_string()
             } else {
-                message.chars().take(2_000).collect()
+                detail
             },
             true,
         ));

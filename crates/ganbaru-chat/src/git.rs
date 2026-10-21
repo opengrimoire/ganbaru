@@ -30,6 +30,8 @@ impl<'a> GitFolder<'a> {
 
 const MAX_GIT_OUTPUT_BYTES: usize = 8 * 1024 * 1024;
 const MAX_REVIEW_OUTPUT_BYTES: usize = 64 * 1024 * 1024;
+/// Longest git or hosted CLI error text returned to the webview, in characters.
+pub(crate) const MAX_DIAGNOSTIC_CHARS: usize = 2_048;
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -716,7 +718,7 @@ async fn run_bounded_with_storage(
     })
     .await?;
     if !output.status.success() {
-        let detail = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let detail = diagnostic_text(&output.stderr);
         return Err(ChatError {
             code: ChatErrorCode::Conflict,
             message: "Git operation failed safely".to_string(),
@@ -729,6 +731,52 @@ async fn run_bounded_with_storage(
         stdout: output.stdout,
         stdout_bytes: output.stdout_bytes,
     })
+}
+
+/// Turns tool error output into text safe to show: control and bidirectional formatting
+/// characters are removed (line breaks and tabs stay), credentials in `scheme://user@host`
+/// URLs are dropped, and the result is capped at [`MAX_DIAGNOSTIC_CHARS`] with a visible marker.
+pub(crate) fn diagnostic_text(raw: &[u8]) -> String {
+    let lossy = String::from_utf8_lossy(raw);
+    let visible: String = lossy
+        .chars()
+        .filter(|character| {
+            matches!(character, '\n' | '\t')
+                || !(character.is_control()
+                    || matches!(character, '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}'))
+        })
+        .collect();
+    let redacted = without_url_userinfo(visible.trim());
+    let mut characters = redacted.chars();
+    let mut text: String = characters.by_ref().take(MAX_DIAGNOSTIC_CHARS).collect();
+    if characters.next().is_some() {
+        text.push_str(" [truncated]");
+    }
+    text
+}
+
+/// Removes the `user[:password]@` part after every `://` in `text`.
+fn without_url_userinfo(text: &str) -> String {
+    let mut output = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(index) = rest.find("://") {
+        let (before, after_scheme) = rest.split_at(index + 3);
+        output.push_str(before);
+        let authority_end = after_scheme
+            .find(|character: char| {
+                matches!(character, '/' | '?' | '#') || character.is_whitespace()
+            })
+            .unwrap_or(after_scheme.len());
+        let authority = &after_scheme[..authority_end];
+        output.push_str(
+            authority
+                .rsplit_once('@')
+                .map_or(authority, |(_, host)| host),
+        );
+        rest = &after_scheme[authority_end..];
+    }
+    output.push_str(rest);
+    output
 }
 
 fn storage_environment(storage: GitStorage<'_>) -> ChatResult<Vec<(String, OsString)>> {
@@ -906,6 +954,27 @@ mod tests {
         fn path(&self) -> &Path {
             &self.0
         }
+    }
+
+    #[test]
+    fn diagnostic_text_strips_controls_and_credentials_and_marks_truncation() {
+        let raw = "fatal: \u{1b}[31mremote\u{1b}[0m https://user:token@example.com/org/repo.git\r\n\u{202e}gnirts\ttab\u{7}";
+        assert_eq!(
+            super::diagnostic_text(raw.as_bytes()),
+            "fatal: [31mremote[0m https://example.com/org/repo.git\ngnirts\ttab"
+        );
+        assert_eq!(
+            super::diagnostic_text(b"see ssh://git@host:22/x and git@github.com:org/repo"),
+            "see ssh://host:22/x and git@github.com:org/repo"
+        );
+
+        let at_limit = "y".repeat(super::MAX_DIAGNOSTIC_CHARS);
+        assert_eq!(super::diagnostic_text(at_limit.as_bytes()), at_limit);
+        let over_limit = "x".repeat(super::MAX_DIAGNOSTIC_CHARS + 1);
+        assert_eq!(
+            super::diagnostic_text(over_limit.as_bytes()),
+            format!("{} [truncated]", "x".repeat(super::MAX_DIAGNOSTIC_CHARS))
+        );
     }
 
     impl Drop for TestDirectory {

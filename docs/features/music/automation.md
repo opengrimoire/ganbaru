@@ -11,11 +11,11 @@ Assignments are defined independently for focus, short break, long break, and th
 - Prepare a selected playlist without starting it.
 - Pause music.
 - Keep the current music.
-- Select one soundscape preset, pause, keep, or inherit the soundscape independently where supported.
+- Select one soundscape, pause, keep, or inherit the soundscape independently where supported.
 
 Assignments store playlist and soundscape intent only. Start, end, skip, rate, volume, weighting, and enabled state remain playlist-membership behavior.
 
-The Project settings UI exposes a playlist and, where soundscapes are supported, a soundscape for Focus, Short break, and Long break under Event defaults. A chosen playlist plays automatically and an empty choice means silence; each phase boundary starts a fresh track, avoiding the previous one when alternatives exist. The soundscape choice is Silence (the default) or a preset, so a phase can play music without a soundscape or a soundscape without music. The Calendar event panel uses the same choices for event overrides: one Playlist and one Soundscape row without Pomodoro, or a playlist and soundscape per phase with Pomodoro. Each choice shows the effective value and resolves separately; choosing the project's value again clears that part of the override, and Silence over a project preset is stored as keeping the current soundscape. The section toggle stores an explicit pause, which stops any soundscape. The section toggle silences both music and the soundscape or restores the project choices. The broader assignment record supports the full behavior list above. Configuring soundscapes inside playlists is planned.
+The Project settings UI exposes a playlist and, where soundscapes are supported, a soundscape for Focus, Short break, and Long break under Event defaults. A chosen playlist plays automatically and an empty choice means silence; each phase boundary starts a fresh track, avoiding the previous one when alternatives exist. The soundscape choice is Silence (the default) or a soundscape, so a phase can play music without a soundscape or a soundscape without music. The Calendar event panel uses the same choices for event overrides: one Playlist and one Soundscape row without Pomodoro, or a playlist and soundscape per phase with Pomodoro. Each choice shows the effective value and resolves separately; choosing the project's value again clears that part of the override, and Silence over a project soundscape is stored as keeping the current soundscape. The section toggle stores an explicit pause, which stops any soundscape. The section toggle silences both music and the soundscape or restores the project choices. The broader assignment record supports the full behavior list above. Configuring soundscapes inside playlists is planned.
 
 ## Ownership and precedence
 
@@ -26,7 +26,7 @@ Assignment sources:
 - **Event override:** an explicit event-specific choice, always distinguishable from inherited intent.
 - **Work environment:** planned.
 
-Precedence is event override, then a future work-environment assignment, then the event's project snapshot. This holds even for assignments that only select a soundscape. Missing or deleted playlists and presets produce an explicit unavailable result instead of silently selecting something else.
+Precedence is event override, then a future work-environment assignment, then the event's project snapshot. This holds even for assignments that only select a soundscape. Missing or deleted playlists and soundscapes produce an explicit unavailable result instead of silently selecting something else.
 
 ## Calendar activation (desktop)
 
@@ -48,7 +48,7 @@ Manual actions always win until the next accepted activation. Music keeps a sepa
 
 ## Soundscapes
 
-Desktop soundscapes run independently of playlist media, and each phase resolves them separately, so music can continue while the sound changes or vice versa. Automation replaces what is playing with the available sounds of one specified preset; it never silently mixes them into the listener's current preset. A phase or event that chooses no preset stops a soundscape an earlier phase or event started, so a preset never carries over; a soundscape started by hand keeps playing until a phase picks a preset or a stored pause stops it. Keep-current rows behave as choosing nothing. Manual changes during a phase stay temporary and never rewrite project or event assignments. Platforms without the engine omit these actions. See [Soundscapes](soundscapes.md).
+Desktop soundscapes run independently of playlist media, and each phase resolves them separately, so music can continue while the sound changes or vice versa. Automation replaces what is playing with the available layers of one specified soundscape; it never silently mixes them into the listener's current soundscape. A phase or event that chooses no soundscape stops one an earlier phase or event started, so a soundscape never carries over; a soundscape started by hand keeps playing until a phase picks one or a stored pause stops it. Keep-current rows behave as choosing nothing. Manual changes during a phase stay temporary and never rewrite project or event assignments. Platforms without the engine omit these actions. See [Soundscapes](soundscapes.md).
 
 ## Planned integrations
 

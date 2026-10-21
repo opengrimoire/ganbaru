@@ -272,7 +272,7 @@ export const music = {
     emptyPlaylistsTitle: "Crea una playlist para un momento de tu día",
     emptyPlaylistsDescription: "Una playlist puede mezclar música local y videos de YouTube sin copiar tus archivos.",
     emptySoundscapesTitle: "Los paisajes sonoros son el siguiente paso",
-    emptySoundscapesDescription: "El ruido generado y los sonidos locales estarán junto a tus playlists.",
+    emptySoundscapesDescription: "Los paisajes sonoros y sus capas estarán junto a tus playlists.",
     retryLoad: "Reintentar carga",
     staleData: "Mostrando los últimos resultados disponibles mientras se actualiza la biblioteca.",
     filterSource: "Fuente",

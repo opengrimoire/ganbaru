@@ -8,7 +8,7 @@ A media item represents stable content identity. Locations and source collection
 
 ## Local sources on desktop
 
-Users select a folder and the app scans supported audio and video files without moving them. Scans are bounded, deterministic, cancellable, do not follow symbolic links, and a newer scan safely supersedes an older one.
+Users select a folder and the app scans supported audio and video files without moving them. Scans read folders in bounded batches, are deterministic and cancellable, skip symbolic links inside the folder, and stop with an error past two million files and folders without marking unseen media missing; a newer scan safely supersedes an older one.
 
 The library stores a stable root plus relative location and file metadata to detect moved, missing, changed, or ambiguous media. Refresh preserves user-authored title, artist, album, artwork, review, snooze, and playlist choices when identity can still be established. Missing files stay visible with a repair path, and relinking previews its effect and never silently binds ambiguous matches. A relink scan can be cancelled while it runs and stops with an error past two million files and folders, so picking a whole disk by mistake ends instead of running unbounded.
 

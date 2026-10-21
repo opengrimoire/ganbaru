@@ -311,6 +311,7 @@
             disabled={memberships.length === 0}
             appearance="quiet"
             textSize="collection"
+            textWeight="normal"
             popoverAlign="end"
             inline
             class="w-44"

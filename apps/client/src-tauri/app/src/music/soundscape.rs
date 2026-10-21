@@ -19,6 +19,8 @@ const OUTPUT_CHANNELS: u16 = 2;
 const RAMP_MILLIS: u64 = 40;
 const RAMP_STEPS: u64 = 8;
 const NOISE_AMPLITUDE: f32 = 0.22;
+/// How long a freshly started soundscape takes to rise from silence, so choosing one does not start abruptly.
+const START_FADE: Duration = Duration::from_millis(2_500);
 /// Longest a command waits for the engine worker before reporting the engine unavailable.
 const ENGINE_REPLY_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -303,10 +305,12 @@ impl ActiveOutput {
             let player = Player::connect_new(sink.mixer());
             player.set_volume(0.0);
             match (layer.generated_kind, layer.local_path.as_deref()) {
-                (Some(kind), None) => {
-                    player.append(NoiseSource::new(kind, seed_from_id(&layer.source_id)))
+                (Some(kind), None) => player.append(
+                    NoiseSource::new(kind, seed_from_id(&layer.source_id)).fade_in(START_FADE),
+                ),
+                (None, Some(path)) => {
+                    player.append(StreamingLoopSource::open(path)?.fade_in(START_FADE))
                 }
-                (None, Some(path)) => player.append(StreamingLoopSource::open(path)?),
                 _ => {
                     return Err(SoundscapeError::validation(
                         "Choose a generated noise or local loop source.",

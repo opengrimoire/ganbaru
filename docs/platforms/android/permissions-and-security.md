@@ -60,7 +60,7 @@ Services, receivers, providers, and activities are non-exported unless an operat
 
 ## Secrets
 
-Android currently does not run local provider processes. Future sync or remote execution credentials require a native credential boundary and must not be stored in the vault or frontend configuration.
+Android currently does not run local provider processes. The device linking TLS key, the person key, and sync writer keys are stored today as plain files in application-private storage, outside the vault and the frontend configuration. Android cloud backup and device transfer exclude every application data domain, so these files leave the device only through root access or a compromised operating system. Wrapping them with an Android Keystore key is planned and is the target boundary for every Android credential, including future remote execution credentials (see [network and privacy](../../data/security/network-and-privacy.md)).
 
 ## Failure behavior
 

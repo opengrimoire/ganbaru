@@ -1,13 +1,12 @@
 import { describe, expect, it } from "vitest";
 import type { Translate } from "$lib/i18n/translator.svelte";
-import { MAX_SOUNDSCAPE_LAYERS, type MusicSoundscapeDefinition, type MusicSoundscapePreset } from "./contracts";
+import { MAX_SOUNDSCAPE_LAYERS, type MusicSoundscapeDefinition } from "./contracts";
 import {
   formatPresetLevelAdjustment,
   presetDisplayName,
   presetLevelAdjustment,
   presetLevelFromAdjustment,
   setPresetDraftSoundLevel,
-  singleSoundPreset,
   soundDisplayName,
   togglePresetDraftSound,
 } from "./presets";
@@ -17,10 +16,6 @@ function sound(id: string, name: string): MusicSoundscapeDefinition {
     id, sourceKind: "local-loop", generatedKind: null, bundledIdentity: null, name, icon: "lucide:audio-lines",
     availability: "available", localPath: `/sounds/${id}.ogg`, createdAtMs: 1, updatedAtMs: 1, version: 1,
   };
-}
-
-function preset(id: string, name: string, soundIds: string[]): MusicSoundscapePreset {
-  return { id, name, icon: "lucide:cloud", level: 0.5, sounds: soundIds.map((soundscapeId) => ({ soundscapeId, level: 1 })), createdAtMs: 1, updatedAtMs: 1, version: 1 };
 }
 
 const ids = (sounds: readonly { soundscapeId: string }[]) => sounds.map((entry) => entry.soundscapeId);
@@ -44,12 +39,6 @@ describe("soundscape preset drafts", () => {
     expect(setPresetDraftSoundLevel(draft, "cafe", 0.25)).toEqual([{ soundscapeId: "rain", level: 1 }, { soundscapeId: "cafe", level: 0.25 }]);
     expect(setPresetDraftSoundLevel(draft, "rain", 1.4)[0].level).toBe(1);
     expect(setPresetDraftSoundLevel(draft, "rain", -0.2)[0].level).toBe(0);
-  });
-
-  it("finds an existing one-sound preset and ignores mixes that contain the sound", () => {
-    const presets = [preset("mix", "Mix", ["rain", "cafe"]), preset("solo", "Solo", ["rain"])];
-    expect(singleSoundPreset(presets, "rain")?.id).toBe("solo");
-    expect(singleSoundPreset(presets, "cafe")).toBeNull();
   });
 });
 

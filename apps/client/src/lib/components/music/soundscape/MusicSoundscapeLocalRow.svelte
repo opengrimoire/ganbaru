@@ -5,16 +5,17 @@
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import type { MusicSoundscapeDefinition } from "$lib/music/soundscape/contracts";
   import { NEW_LAYER_ICON } from "$lib/music/soundscape/presentation";
-  import { singleSoundPreset } from "$lib/music/soundscape/presets";
   import { getSoundscapeStore } from "$lib/stores/soundscape.svelte";
   import MusicSoundscapeChip from "./MusicSoundscapeChip.svelte";
   import MusicSoundscapeIcon from "./MusicSoundscapeIcon.svelte";
 
   /** Builder option for a local layer; editing its name and icon takes a full row of the option list. */
-  let { definition, onRepair, onRemove, onPlaybackStart }: {
+  let { definition, onRepair, onRemove, onMakePreset, onPlaybackStart }: {
     definition: MusicSoundscapeDefinition;
     onRepair: (definition: MusicSoundscapeDefinition) => void;
     onRemove: (definition: MusicSoundscapeDefinition) => void;
+    /** Opens a new soundscape that starts with this layer. */
+    onMakePreset: (definition: MusicSoundscapeDefinition) => void;
     onPlaybackStart: () => void;
   } = $props();
   const { t } = getLocalization();
@@ -23,7 +24,6 @@
   let editing = $state(false);
   let nameDraft = $state("");
   let iconDraft = $state(NEW_LAYER_ICON);
-  const solo = $derived(singleSoundPreset(soundscape.presets, definition.id));
   const playing = $derived(soundscape.playingLayerId === definition.id);
   const available = $derived(definition.availability === "available");
 
@@ -96,7 +96,7 @@
   >
     {#snippet menu(close)}
       <button type="button" role="menuitem" class="menu-item" onclick={() => { close(); startEditing(); }}>{t("music.soundscape.editSound")}</button>
-      {#if !solo && available}<button type="button" role="menuitem" class="menu-item" disabled={soundscape.saving} onclick={() => { close(); void soundscape.makePresetFromSound(definition, definition.name).catch((error) => console.error("Could not make soundscape preset", error)); }}>{t("music.soundscape.makePreset")}</button>{/if}
+      {#if available}<button type="button" role="menuitem" class="menu-item" onclick={() => { close(); onMakePreset(definition); }}>{t("music.soundscape.makePreset")}</button>{/if}
       {#if definition.localPath}<button type="button" role="menuitem" class="menu-item" onclick={() => { close(); if (definition.localPath) void revealLocalFile(definition.localPath); }}>{t("music.soundscape.showFile")}</button>{/if}
       <div class="menu-separator" role="separator"></div>
       <button type="button" role="menuitem" class="menu-item menu-item-destructive" onclick={() => { close(); onRemove(definition); }}>{t("music.soundscape.remove")}</button>

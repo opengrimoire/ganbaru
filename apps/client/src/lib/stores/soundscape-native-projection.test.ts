@@ -23,6 +23,7 @@ const api = vi.hoisted(() => ({
   setSoundscapePresetLevel: vi.fn(),
   saveMusicSoundscapePresetLevel: vi.fn(),
   upsertMusicSoundscapePreset: vi.fn(),
+  removeMusicSoundscapePreset: vi.fn(),
 }));
 vi.mock("$lib/api/soundscape", () => api);
 
@@ -229,22 +230,29 @@ describe("layers on their own", () => {
     expect(api.resumeSoundscape).not.toHaveBeenCalled();
     expect(store.playingLayerId).toBeNull();
   });
-});
 
-describe("one-layer soundscapes", () => {
-  it("reuses an existing one-sound preset instead of creating another", async () => {
-    const solo = preset("solo", [["rain", 1]], 1.4);
-    api.getMusicSoundscapePresets.mockResolvedValue([solo]);
-    const store = await loadedStore();
-    await expect(store.makePresetFromSound(rain, "Rain")).resolves.toEqual(solo);
-    expect(api.upsertMusicSoundscapePreset).not.toHaveBeenCalled();
+  it("keeps showing the stopping layer until output is silent and never shows the chosen soundscape meanwhile", async () => {
+    const store = await storeWithSoundscapePlaying();
+    await store.playLayer(rain);
+    let finish: ((snapshot: MusicSoundscapeSnapshot) => void) | undefined;
+    api.stopSoundscape.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+    const stopping = store.playLayer(rain);
+    await vi.waitFor(() => expect(finish).toBeDefined());
+    expect(store.playingLayerId).toBe("rain");
+    expect(store.playingPreset).toBeNull();
+    finish?.(idle);
+    await stopping;
+    expect(store.playingLayerId).toBeNull();
+    expect(store.playingPreset).toBeNull();
   });
 
-  it("gives a one-layer soundscape the layer's own icon", async () => {
-    api.getMusicSoundscapePresets.mockResolvedValue([]);
-    const store = await loadedStore();
-    const made = await store.makePresetFromSound(noise, "White noise");
-    expect(made.icon).toBe(noise.icon);
+  it("keeps a layer playing when the chosen soundscape is removed", async () => {
+    const store = await storeWithSoundscapePlaying();
+    await store.playLayer(rain);
+    await store.removePreset(calm);
+    expect(api.stopSoundscape).not.toHaveBeenCalled();
+    expect(store.playingLayerId).toBe("rain");
+    expect(store.playingPreset).toBeNull();
   });
 });
 
@@ -269,6 +277,31 @@ describe("isolated preset preview", () => {
     expect(api.updateMusicSoundscapeState).not.toHaveBeenCalled();
     expect(store.persisted).toBe(saved);
     expect(store.previewing).toBe(false);
+  });
+
+  it("shows no soundscape or layer as playing while the draft plays", async () => {
+    const store = await playingStore();
+    expect(store.playingPreset?.id).toBe("calm");
+    await store.beginPreview();
+    await store.previewMix(rainOnly);
+    expect(store.playingPreset).toBeNull();
+    expect(store.playingLayerId).toBeNull();
+    await store.endPreview();
+    expect(store.playingPreset?.id).toBe("calm");
+  });
+
+  it("shows the saved soundscape again only once its output is back", async () => {
+    const store = await playingStore();
+    await store.beginPreview();
+    await store.previewMix(rainOnly);
+    let finish: ((snapshot: MusicSoundscapeSnapshot) => void) | undefined;
+    api.startSoundscape.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+    const ending = store.endPreview();
+    await vi.waitFor(() => expect(finish).toBeDefined());
+    expect(store.playingPreset).toBeNull();
+    finish?.(playing);
+    await ending;
+    expect(store.playingPreset?.id).toBe("calm");
   });
 
   it("adjusts levels of the same sounds without restarting the preview", async () => {

@@ -61,8 +61,3 @@ export function setPresetDraftSoundLevel(sounds: readonly MusicSoundscapePresetS
   const next = Math.min(1, Math.max(0, level));
   return sounds.map((sound) => sound.soundscapeId === id ? { ...sound, level: next } : sound);
 }
-
-/** Preset made of exactly one sound at full share, if the listener already has one. */
-export function singleSoundPreset(presets: readonly MusicSoundscapePreset[], soundscapeId: string): MusicSoundscapePreset | null {
-  return presets.find((preset) => preset.sounds.length === 1 && preset.sounds[0].soundscapeId === soundscapeId) ?? null;
-}

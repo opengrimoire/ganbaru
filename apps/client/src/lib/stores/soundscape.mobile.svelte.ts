@@ -59,9 +59,6 @@ class MobileSoundscapeStore {
   async savePreset(_write: MusicSoundscapePresetWrite): Promise<MusicSoundscapePreset> {
     throw new Error(UNAVAILABLE);
   }
-  async makePresetFromSound(_definition: MusicSoundscapeDefinition, _name: string): Promise<MusicSoundscapePreset> {
-    throw new Error(UNAVAILABLE);
-  }
   async playLayer(_definition: MusicSoundscapeDefinition): Promise<void> {}
   async removePreset(_preset: MusicSoundscapePreset): Promise<void> {}
 }

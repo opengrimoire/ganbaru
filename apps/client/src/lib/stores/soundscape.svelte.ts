@@ -32,7 +32,7 @@ import {
   MAX_SOUNDSCAPE_LAYERS,
   MAX_SOUNDSCAPE_PRESET_LEVEL,
 } from "$lib/music/soundscape/contracts";
-import { DEFAULT_PRESET_SOUND_LEVEL, singleSoundPreset } from "$lib/music/soundscape/presets";
+import { DEFAULT_PRESET_SOUND_LEVEL } from "$lib/music/soundscape/presets";
 
 /** Delay before a dragged preset level is saved, so a slider gesture writes once. */
 const PRESET_LEVEL_SAVE_DELAY_MS = 180;
@@ -46,6 +46,9 @@ interface MixLayer {
   definition: MusicSoundscapeDefinition;
   level: number;
 }
+
+/** What the output holds: the chosen preset, or a layer playing on its own outside every preset. */
+type OutputSource = { kind: "preset"; presetId: string } | { kind: "layer"; layerId: string };
 
 /** Output state an isolated preview needs to hand playback back unchanged. */
 interface SoundscapePreview {
@@ -77,8 +80,11 @@ class SoundscapeStore {
   private preview = $state<SoundscapePreview | null>(null);
   private previewTarget: SoundscapeMix | null = null;
   private previewQueue: Promise<void> = Promise.resolve();
-  /** Layer playing on its own, outside every soundscape. It is never saved and stops instead of pausing. */
-  private soloLayerId = $state<string | null>(null);
+  /**
+   * What the output holds, written together with each snapshot it describes so the two never disagree. A layer
+   * playing on its own belongs to no soundscape: it is never saved and stops instead of pausing.
+   */
+  private source = $state<OutputSource | null>(null);
 
   /** Preset the soundscape plays or last played. */
   get activePreset(): MusicSoundscapePreset | null {
@@ -86,14 +92,22 @@ class SoundscapeStore {
     return id ? this.presets.find((preset) => preset.id === id) ?? null : null;
   }
 
-  /** Preset playing now; null while output is silent or a layer plays on its own. */
+  /** Preset playing now; null while output is silent, a layer plays on its own, or an isolated preview plays. */
   get playingPreset(): MusicSoundscapePreset | null {
-    return this.soloLayerId === null && this.snapshot.status === "playing" ? this.activePreset : null;
+    if (this.preview || this.snapshot.status !== "playing" || this.source?.kind !== "preset") return null;
+    const id = this.source.presetId;
+    return this.presets.find((preset) => preset.id === id) ?? null;
   }
 
-  /** Layer playing on its own now, if any. */
+  /** Layer playing on its own now, if any; never a layer of a soundscape or of a preview. */
   get playingLayerId(): string | null {
-    return this.snapshot.status === "playing" ? this.soloLayerId : null;
+    if (this.preview || this.snapshot.status !== "playing" || this.source?.kind !== "layer") return null;
+    return this.source.layerId;
+  }
+
+  /** Whether a layer on its own holds the output, playing or still starting. */
+  private get layerHoldsOutput(): boolean {
+    return this.source?.kind === "layer" && this.snapshot.status !== "idle";
   }
 
   async initialize(): Promise<void> {
@@ -113,6 +127,7 @@ class SoundscapeStore {
       this.presets = presets;
       this.persisted = persisted;
       this.snapshot = snapshot;
+      this.source = presetSource(persisted.activePresetId);
       // Like Music, a soundscape the listener started stays chosen but silent after a launch or vault switch.
       if (persisted.desiredPlaying && !persisted.automaticIntent && snapshot.status !== "playing") {
         await this.persistState(persisted.activePresetId, false);
@@ -159,10 +174,10 @@ class SoundscapeStore {
       ]);
       if (generation !== this.generation || this.playbackPending
         || (this.persisted && this.persisted.version > persisted.version)) return;
-      // A soundscape started elsewhere, such as by phase automation, replaces a layer playing on its own.
-      if (persisted.desiredPlaying) this.soloLayerId = null;
       this.persisted = persisted;
       this.snapshot = snapshot;
+      // A soundscape started elsewhere, such as by phase automation, replaces a layer playing on its own.
+      if (persisted.desiredPlaying || this.source?.kind !== "layer") this.source = presetSource(persisted.activePresetId);
     } catch (error) {
       if (generation === this.generation) this.error = message(error);
     }
@@ -180,20 +195,23 @@ class SoundscapeStore {
       this.error = "This preset needs to be repaired before it can play.";
       return;
     }
-    await this.startMix(preset, preset.id);
+    await this.startMix(preset, { kind: "preset", presetId: preset.id });
   }
 
   /** Pauses, resumes, or starts the active preset, or stops a layer playing on its own. */
   async togglePlayback(): Promise<void> {
     if (this.playbackPending) return;
-    if (this.soloLayerId !== null) await this.stop();
+    if (this.layerHoldsOutput) await this.stop();
     else if (this.snapshot.status === "playing") await this.pause();
     else if (this.snapshot.status === "paused") await this.resume();
     else if (this.activePreset) await this.playPreset(this.activePreset);
   }
 
-  /** Starts a mix; with a preset id the selection is saved as playing, without one only output changes. */
-  private async startMix(mix: SoundscapeMix, persistPresetId: string | null): Promise<void> {
+  /**
+   * Starts a mix for `source`: a preset is saved as the listener's playing choice, a layer on its own is not, and
+   * `null` changes the output of the current source in place.
+   */
+  private async startMix(mix: SoundscapeMix, source: OutputSource | null): Promise<void> {
     const request = this.startRequest(mix);
     if (!request) return;
     this.playbackPending = true;
@@ -201,11 +219,10 @@ class SoundscapeStore {
     let started = false;
     try {
       this.snapshot = await startSoundscape(request);
+      if (source) this.source = source;
       started = true;
-      if (persistPresetId) {
-        this.soloLayerId = null;
-        await this.persistState(persistPresetId, true);
-      }
+      if (source?.kind === "preset") await this.persistState(source.presetId, true);
+      else if (source?.kind === "layer" && this.persisted?.desiredPlaying) await this.persistState(this.persisted.activePresetId, false);
     } catch (error) {
       this.error = message(error);
       try { this.snapshot = started ? await stopSoundscape() : await getSoundscapeSnapshot(); }
@@ -246,7 +263,7 @@ class SoundscapeStore {
     const next = Math.min(MAX_SOUNDSCAPE_PRESET_LEVEL, Math.max(0, level));
     this.presets = this.presets.map((entry) => entry.id === preset.id ? { ...entry, level: next } : entry);
     this.scheduleLevelSave(preset.id, next);
-    const live = !this.preview && preset.id === this.persisted?.activePresetId
+    const live = !this.preview && this.source?.kind === "preset" && this.source.presetId === preset.id
       && (this.snapshot.status === "playing" || this.snapshot.status === "paused");
     if (!live) return;
     const generation = ++this.levelGeneration;
@@ -288,11 +305,12 @@ class SoundscapeStore {
     return this.enqueuePreview(async () => {
       if (this.preview) return;
       // A layer playing on its own is never saved, so the preview stops it instead of bringing it back.
-      const soloLayer = this.soloLayerId !== null && this.snapshot.status !== "idle";
-      this.soloLayerId = null;
-      this.preview = { resumes: !soloLayer && this.snapshot.status === "playing", replacedOutput: false, playing: null };
-      if (soloLayer) this.snapshot = await stopSoundscape();
-      else if (this.preview.resumes) this.snapshot = await pauseSoundscape();
+      const layer = this.layerHoldsOutput;
+      this.preview = { resumes: !layer && this.snapshot.status === "playing", replacedOutput: false, playing: null };
+      if (layer) {
+        this.snapshot = await stopSoundscape();
+        this.source = presetSource(this.persisted?.activePresetId ?? null);
+      } else if (this.preview.resumes) this.snapshot = await pauseSoundscape();
       await this.applyPreviewTarget();
     });
   }
@@ -341,14 +359,18 @@ class SoundscapeStore {
     return this.enqueuePreview(async () => {
       const preview = this.preview;
       if (!preview) return;
-      this.preview = null;
       this.previewTarget = null;
-      if (!preview.replacedOutput) {
-        if (preview.resumes) this.snapshot = await resumeSoundscape();
-        return;
+      // The preview ends together with the snapshot that replaces it, so the draft never shows as the saved preset.
+      try {
+        if (!preview.replacedOutput) {
+          if (preview.resumes) this.snapshot = await resumeSoundscape();
+          return;
+        }
+        const request = preview.resumes && this.activePreset ? this.startRequest(this.activePreset) : null;
+        this.snapshot = request ? await startSoundscape(request) : await stopSoundscape();
+      } finally {
+        this.preview = null;
       }
-      const request = preview.resumes && this.activePreset ? this.startRequest(this.activePreset) : null;
-      this.snapshot = request ? await startSoundscape(request) : await stopSoundscape();
     });
   }
 
@@ -363,7 +385,7 @@ class SoundscapeStore {
 
   async pause(): Promise<void> {
     if (this.playbackPending) return;
-    if (this.soloLayerId !== null) {
+    if (this.layerHoldsOutput) {
       await this.stop();
       return;
     }
@@ -385,8 +407,11 @@ class SoundscapeStore {
   async stop(): Promise<void> {
     if (this.playbackPending) return;
     this.playbackPending = true;
-    this.soloLayerId = null;
-    try { this.snapshot = await stopSoundscape(); await this.persistState(this.persisted?.activePresetId ?? null, false); }
+    try {
+      this.snapshot = await stopSoundscape();
+      this.source = presetSource(this.persisted?.activePresetId ?? null);
+      await this.persistState(this.persisted?.activePresetId ?? null, false);
+    }
     catch (error) { this.error = message(error); }
     finally { this.playbackPending = false; }
   }
@@ -403,7 +428,7 @@ class SoundscapeStore {
     this.snapshot = IDLE_SNAPSHOT;
     this.preview = null;
     this.previewTarget = null;
-    this.soloLayerId = null;
+    this.source = null;
     this.definitions = [];
     this.presets = [];
     this.catalogLoaded = false;
@@ -433,8 +458,8 @@ class SoundscapeStore {
     try {
       const active = this.activePreset;
       const running = this.snapshot.status === "playing" || this.snapshot.status === "paused";
-      if (this.soloLayerId !== null) {
-        if (this.soloLayerId === definition.id) await this.stop();
+      if (this.source?.kind === "layer") {
+        if (this.source.layerId === definition.id && this.layerHoldsOutput) await this.stop();
       } else if (active && running && active.sounds.some((sound) => sound.soundscapeId === definition.id)) {
         const remaining = { ...active, sounds: active.sounds.filter((sound) => sound.soundscapeId !== definition.id) };
         if (this.snapshot.status === "playing" && this.presetIsPlayable(remaining)) await this.startMix(remaining, null);
@@ -467,24 +492,6 @@ class SoundscapeStore {
   }
 
   /**
-   * Returns the one-sound preset for a sound, creating it at the default preset level when the listener has none.
-   * The name and icon come from the sound so the preset reads the same in every picker.
-   */
-  async makePresetFromSound(definition: MusicSoundscapeDefinition, name: string): Promise<MusicSoundscapePreset> {
-    const existing = singleSoundPreset(this.presets, definition.id);
-    if (existing) return existing;
-    return this.savePreset({
-      id: crypto.randomUUID(),
-      name,
-      icon: definition.icon,
-      level: DEFAULT_SOUNDSCAPE_PRESET_LEVEL,
-      sounds: [{ soundscapeId: definition.id, level: DEFAULT_PRESET_SOUND_LEVEL }],
-      expectedVersion: null,
-      updatedAtMs: Date.now(),
-    });
-  }
-
-  /**
    * Plays one layer on its own at the default levels, or stops it when it already plays. It replaces any playing
    * soundscape without creating, choosing, or resuming one; the last soundscape stays chosen but silent.
    */
@@ -498,21 +505,23 @@ class SoundscapeStore {
       this.error = "This layer needs to be repaired before it can play.";
       return;
     }
-    await this.startMix({ sounds: [{ soundscapeId: definition.id, level: DEFAULT_PRESET_SOUND_LEVEL }], level: DEFAULT_SOUNDSCAPE_PRESET_LEVEL }, null);
-    if (this.snapshot.status !== "playing") return;
-    this.soloLayerId = definition.id;
-    if (this.persisted?.desiredPlaying) await this.persistState(this.persisted.activePresetId, false);
+    const mix = { sounds: [{ soundscapeId: definition.id, level: DEFAULT_PRESET_SOUND_LEVEL }], level: DEFAULT_SOUNDSCAPE_PRESET_LEVEL };
+    await this.startMix(mix, { kind: "layer", layerId: definition.id });
   }
 
-  /** Removes a preset; removing the active one silences output and clears the choice first. */
+  /**
+   * Removes a preset; removing the active one silences its output and clears the choice first. A layer playing on
+   * its own keeps playing.
+   */
   async removePreset(preset: MusicSoundscapePreset): Promise<void> {
     this.saving = true;
     this.error = null;
     try {
-      if (preset.id === this.persisted?.activePresetId) {
+      if (this.source?.kind === "preset" && this.source.presetId === preset.id) {
         if (this.snapshot.status !== "idle") this.snapshot = await stopSoundscape();
-        await this.persistState(null, false);
+        this.source = null;
       }
+      if (preset.id === this.persisted?.activePresetId) await this.persistState(null, false);
       const pending = this.levelSaveTimers.get(preset.id);
       if (pending !== undefined) { window.clearTimeout(pending); this.levelSaveTimers.delete(preset.id); }
       await removeMusicSoundscapePreset(preset.id, this.presets.find((entry) => entry.id === preset.id)?.version ?? preset.version);
@@ -549,6 +558,10 @@ class SoundscapeStore {
     });
     await this.stateWriteQueue;
   }
+}
+
+function presetSource(presetId: string | null): OutputSource | null {
+  return presetId ? { kind: "preset", presetId } : null;
 }
 
 function sortPresets(presets: MusicSoundscapePreset[]): MusicSoundscapePreset[] {

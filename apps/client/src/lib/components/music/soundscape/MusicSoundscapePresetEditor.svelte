@@ -43,10 +43,13 @@
    */
   let {
     preset = null,
+    layer = undefined,
     onDone,
     onRemove,
   }: {
     preset?: MusicSoundscapePreset | null;
+    /** Layer a new soundscape starts with, named and drawn after it; ignored when editing. */
+    layer?: MusicSoundscapeDefinition;
     onDone: (preset: MusicSoundscapePreset | null) => void;
     onRemove?: (preset: MusicSoundscapePreset) => void;
   } = $props();
@@ -86,11 +89,12 @@
   });
 
   function initialName(): string {
-    return preset ? presetDisplayName(preset, t) : "";
+    if (preset) return presetDisplayName(preset, t);
+    return layer ? soundDisplayName(layer, t) : "";
   }
 
   function initialIcon(): string {
-    return preset?.icon ?? DEFAULT_PRESET_ICON;
+    return preset?.icon ?? layer?.icon ?? DEFAULT_PRESET_ICON;
   }
 
   function initialLevel(): number {
@@ -98,7 +102,8 @@
   }
 
   function initialSounds(): MusicSoundscapePresetSound[] {
-    return preset ? preset.sounds.map((sound) => ({ ...sound })) : [];
+    if (preset) return preset.sounds.map((sound) => ({ ...sound }));
+    return layer ? togglePresetDraftSound([], layer.id) : [];
   }
 
   function prefersReducedMotion(): boolean {

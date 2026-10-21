@@ -2,7 +2,7 @@
 
 import { mount, tick, unmount } from "svelte";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import type { MusicSoundscapeDefinition, MusicSoundscapePreset, MusicSoundscapePresetWrite } from "$lib/music/soundscape/contracts";
+import { DEFAULT_SOUNDSCAPE_PRESET_LEVEL, type MusicSoundscapeDefinition, type MusicSoundscapePreset, type MusicSoundscapePresetWrite } from "$lib/music/soundscape/contracts";
 import type { SoundscapeMix } from "$lib/stores/soundscape.svelte";
 import MusicSoundscapePresetEditor from "./MusicSoundscapePresetEditor.svelte";
 
@@ -113,8 +113,8 @@ describe("Soundscape preset editor", () => {
   it("starts a new preset empty at the default level instead of copying what is playing", async () => {
     await render();
     expect([...document.body.querySelectorAll('button[aria-pressed="true"]')]).toHaveLength(0);
-    expect(lastPreview()).toEqual({ sounds: [], level: 0.5 });
-    expect(slider("Preset level").value).toBe("-50");
+    expect(lastPreview()).toEqual({ sounds: [], level: DEFAULT_SOUNDSCAPE_PRESET_LEVEL });
+    expect(slider("Preset level").value).toBe("0");
   });
 
   it("previews picked sounds at full mix level and saves them in pick order", async () => {
@@ -125,12 +125,12 @@ describe("Soundscape preset editor", () => {
     soundTile("Porch rain").click();
     await tick();
     expect(soundTile("Café").getAttribute("aria-pressed")).toBe("true");
-    expect(lastPreview()).toEqual({ sounds: [{ soundscapeId: "cafe", level: 1 }, { soundscapeId: "rain", level: 1 }], level: 0.5 });
+    expect(lastPreview()).toEqual({ sounds: [{ soundscapeId: "cafe", level: 1 }, { soundscapeId: "rain", level: 1 }], level: DEFAULT_SOUNDSCAPE_PRESET_LEVEL });
     expect(playPreset).not.toHaveBeenCalled();
     saveButton().click();
     await vi.waitFor(() => expect(onDone).toHaveBeenCalled());
     expect(savePreset).toHaveBeenCalledWith(expect.objectContaining({
-      name: "Deep focus", level: 0.5, sounds: [{ soundscapeId: "cafe", level: 1 }, { soundscapeId: "rain", level: 1 }], expectedVersion: null,
+      name: "Deep focus", level: DEFAULT_SOUNDSCAPE_PRESET_LEVEL, sounds: [{ soundscapeId: "cafe", level: 1 }, { soundscapeId: "rain", level: 1 }], expectedVersion: null,
     }));
   });
 

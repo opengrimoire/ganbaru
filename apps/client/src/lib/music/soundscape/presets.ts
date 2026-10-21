@@ -1,3 +1,5 @@
+import { formatNumber } from "$lib/i18n/formatters";
+import type { AppLocale } from "$lib/i18n/locales";
 import type { Translate } from "$lib/i18n/translator.svelte";
 import {
   MAX_SOUNDSCAPE_LAYERS,
@@ -17,6 +19,14 @@ const SEEDED_RAIN_PRESETS: Readonly<Record<string, { kind: MusicGeneratedNoiseKi
 
 /** Level a sound joins a preset draft at: the full preset level. */
 export const DEFAULT_PRESET_SOUND_LEVEL = 1;
+
+/** Ends of the preset level slider, in percent of the Music volume setting. */
+export const PRESET_LEVEL_ADJUSTMENT_RANGE = { min: -100, max: 100 } as const;
+
+/** Signed, localized percent for a preset level slider position, such as +25% or -50%. */
+export function formatPresetLevelAdjustment(locale: AppLocale, adjustment: number): string {
+  return formatNumber(locale, adjustment / 100, { style: "percent", signDisplay: "exceptZero", maximumFractionDigits: 0 });
+}
 
 /** Slider position from -100 to +100 for a preset level, where 0 matches the Music volume setting. */
 export function presetLevelAdjustment(level: number): number {

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { Translate } from "$lib/i18n/translator.svelte";
 import { MAX_SOUNDSCAPE_LAYERS, type MusicSoundscapeDefinition, type MusicSoundscapePreset } from "./contracts";
 import {
+  formatPresetLevelAdjustment,
   presetDisplayName,
   presetLevelAdjustment,
   presetLevelFromAdjustment,
@@ -70,6 +71,13 @@ describe("soundscape preset levels", () => {
   it("clamps slider positions outside the supported range", () => {
     expect(presetLevelFromAdjustment(-150)).toBe(0);
     expect(presetLevelFromAdjustment(140)).toBe(2);
+  });
+
+  it("formats slider positions as signed percents in the reader's locale", () => {
+    expect(formatPresetLevelAdjustment("en", 25)).toBe("+25%");
+    expect(formatPresetLevelAdjustment("en", -100)).toBe("-100%");
+    expect(formatPresetLevelAdjustment("en", 0)).toBe("0%");
+    expect(formatPresetLevelAdjustment("es", 25)).toBe("+25\u00a0%");
   });
 });
 

@@ -26,6 +26,7 @@
   import { getSoundscapeStore } from "$lib/stores/soundscape.svelte";
   import MusicSoundscapeGroupIcon from "./MusicSoundscapeGroupIcon.svelte";
   import MusicSoundscapeLevelSlider from "./MusicSoundscapeLevelSlider.svelte";
+  import MusicSoundscapeRelativeLevel from "./MusicSoundscapeRelativeLevel.svelte";
   import MusicSoundscapeSoundIcon from "./MusicSoundscapeSoundIcon.svelte";
 
   const DEFAULT_PRESET_ICON = "lucide:layers";
@@ -56,8 +57,6 @@
   let level = $state(initialLevel());
   const atLimit = $derived(sounds.length >= MAX_SOUNDSCAPE_LAYERS);
   const canSave = $derived(name.trim().length > 0 && sounds.length > 0 && !soundscape.saving);
-  const adjustment = $derived(presetLevelAdjustment(level));
-  const adjustmentText = $derived(`${adjustment > 0 ? "+" : ""}${adjustment}%`);
   const mix = $derived(sounds.flatMap((sound) => {
     const definition = soundscape.definitions.find((entry) => entry.id === sound.soundscapeId);
     return definition ? [{ definition, level: sound.level }] : [];
@@ -154,12 +153,7 @@
     </div>
 
     <div>
-      <div class="flex h-8 items-center gap-2">
-        <span class="w-28 shrink-0 truncate text-xs font-semibold">{t("music.soundscape.preset.level")}</span>
-        <MusicSoundscapeLevelSlider id="soundscape-preset-level" label={t("music.soundscape.preset.level")} value={adjustment} min={-100} max={100} centered valueText={t("music.soundscape.levelValue", adjustmentText)} describedBy="soundscape-preset-level-hint" onchange={(value) => level = presetLevelFromAdjustment(value)} />
-        <span class="w-11 shrink-0 text-right text-xs tabular-nums text-muted-foreground">{adjustmentText}</span>
-      </div>
-      <p id="soundscape-preset-level-hint" class="text-xs text-muted-foreground">{t("music.soundscape.levelHint")}</p>
+      <MusicSoundscapeRelativeLevel id="soundscape-preset-level" title={t("music.soundscape.levelHint")} label={t("music.soundscape.preset.level")} adjustment={presetLevelAdjustment(level)} onchange={(value) => level = presetLevelFromAdjustment(value)} />
       {#if mix.length > 0}
         <ul class="mt-3 flex flex-col gap-1" aria-label={t("music.soundscape.preset.sounds")}>
           {#each mix as entry (entry.definition.id)}

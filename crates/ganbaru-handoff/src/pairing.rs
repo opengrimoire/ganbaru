@@ -251,8 +251,13 @@ impl PairingManager {
         let state_path = app_config_dir.join(PAIRING_STATE_FILE);
         recover_private_state(&state_path)?;
         let staging_root = app_config_dir.join(STAGING_DIRECTORY);
-        fs::create_dir_all(&staging_root)
+        // Staging holds whole-vault archives, so an existing directory with wider permissions
+        // is tightened too. A file system that refuses the change still allows handoff.
+        ganbaru_atomic_files::create_private_directories(&staging_root)
             .map_err(|error| format!("create handoff staging directory: {error}"))?;
+        if let Err(error) = ganbaru_atomic_files::restrict_to_owner(&staging_root) {
+            eprintln!("could not make the handoff staging directory private: {error}");
+        }
 
         let state = if state_path.exists() {
             let mut state = read_state(&state_path)?;

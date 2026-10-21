@@ -1855,6 +1855,7 @@ dependencies = [
 name = "ganbaru-db"
 version = "0.1.5"
 dependencies = [
+ "ganbaru-atomic-files",
  "libsqlite3-sys",
  "sqlx",
  "tokio",
@@ -1880,6 +1881,7 @@ version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
  "chrono",
+ "ganbaru-atomic-files",
  "ganbaru-contacts",
  "ganbaru-sync-contracts",
  "qrcode",

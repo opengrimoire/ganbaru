@@ -505,11 +505,7 @@ fn ensure_vault_skeleton(path: &Path) -> Result<(), String> {
     if !config_path(path).exists() {
         write_text_file_atomically(&config_path(path), "{}\n", FileAccess::OwnerOnly)?;
     }
-    match fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(database_path(path))
-    {
+    match ganbaru_atomic_files::create_private_file(&database_path(path)) {
         Ok(_) => Ok(()),
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
         Err(e) => Err(format!("create ganbaru.sqlite: {e}")),
@@ -720,7 +716,8 @@ async fn create_and_select_vault(
     let creation_transition = transition.clone();
     let info = tauri::async_runtime::spawn_blocking(move || {
         let _transition = creation_transition;
-        fs::create_dir_all(&path).map_err(|e| format!("create Ganbaru folder: {e}"))?;
+        ganbaru_atomic_files::create_private_directories(&path)
+            .map_err(|e| format!("create Ganbaru folder: {e}"))?;
         initialize_vault(&path)
     })
     .await
@@ -1210,6 +1207,15 @@ mod tests {
         assert!(path.join("notes").join("daily").is_dir());
         assert!(path.join("diary").join("morning").is_dir());
         assert!(path.join(".yjs").is_dir());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = fs::metadata(path.join(APP_SQLITE_FILE))
+                .unwrap()
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o777, 0o600);
+        }
 
         let _ = fs::remove_dir_all(&path);
     }

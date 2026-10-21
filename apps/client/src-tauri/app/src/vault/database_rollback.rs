@@ -335,7 +335,8 @@ fn create_rollback(
         return Ok(None);
     }
     let root = rollback_root(vault);
-    fs::create_dir_all(&root).map_err(|error| format!("create database rollbacks: {error}"))?;
+    ganbaru_atomic_files::create_private_directories(&root)
+        .map_err(|error| format!("create database rollbacks: {error}"))?;
     let mut created = at;
     if let Some(newest) = list_rollbacks(vault)?.first() {
         let after_newest = parse_rollback_id(&newest.id)? + TimeDelta::milliseconds(1);
@@ -343,7 +344,7 @@ fn create_rollback(
     }
     let directory = loop {
         let candidate = root.join(rollback_id(created));
-        match fs::create_dir(&candidate) {
+        match ganbaru_atomic_files::create_private_directory(&candidate) {
             Ok(()) => break candidate,
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
                 created += TimeDelta::milliseconds(1);
@@ -602,6 +603,12 @@ mod tests {
         }
         let id = move_database_to_rollback(&vault, at(1)).unwrap().unwrap();
         let rollback = rollback_root(&vault).join(&id);
+        #[cfg(unix)]
+        for directory in [rollback_root(&vault), rollback.clone()] {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = fs::metadata(&directory).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o700, "{}", directory.display());
+        }
         for suffix in DATABASE_FILE_SUFFIXES {
             assert!(!database_file(&vault, suffix).exists(), "{suffix}");
             assert_eq!(

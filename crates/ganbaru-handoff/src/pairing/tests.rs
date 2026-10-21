@@ -1314,3 +1314,22 @@ fn stored_identity_keeps_the_private_key_out_of_debug_output() {
     let serialized = serde_json::to_value(&identity).expect("serialize identity");
     assert_eq!(serialized["privateKey"], "pkcs8-private-key-b64");
 }
+
+#[cfg(unix)]
+#[test]
+fn handoff_staging_is_private_even_when_it_already_exists() {
+    use std::os::unix::fs::PermissionsExt;
+    let temporary = TestDirectory::new("private-staging");
+    let staging = temporary.path().join(STAGING_DIRECTORY);
+    std::fs::create_dir_all(&staging).expect("existing staging");
+    std::fs::set_permissions(&staging, std::fs::Permissions::from_mode(0o755))
+        .expect("widen staging");
+    PairingManager::default()
+        .initialize(temporary.path().to_path_buf(), "device-desktop".to_string())
+        .expect("initialize");
+    let mode = std::fs::metadata(&staging)
+        .expect("staging metadata")
+        .permissions()
+        .mode();
+    assert_eq!(mode & 0o777, 0o700);
+}

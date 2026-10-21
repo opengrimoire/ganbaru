@@ -179,6 +179,43 @@ mod unix {
     }
 
     #[test]
+    fn single_private_directories_and_files_are_new_and_owner_only() {
+        let parent = test_directory("private-single");
+        let directory = parent.join("staging");
+        create_private_directory(&directory).unwrap();
+        let error = create_private_directory(&directory).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
+        let file = directory.join("ganbaru.sqlite");
+        create_private_file(&file).unwrap();
+        let error = create_private_file(&file).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
+        let mode = |path: &Path| fs::metadata(path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&directory), 0o700);
+        assert_eq!(mode(&file), 0o600);
+        fs::remove_dir_all(parent).unwrap();
+    }
+
+    #[test]
+    fn restricting_to_the_owner_clears_only_group_and_other_bits() {
+        let directory = test_directory("restrict");
+        let file = directory.join("ganbaru.sqlite-wal");
+        fs::write(&file, b"").unwrap();
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o664)).unwrap();
+        fs::set_permissions(&directory, fs::Permissions::from_mode(0o755)).unwrap();
+        restrict_to_owner(&file).unwrap();
+        restrict_to_owner(&directory).unwrap();
+        let mode = |path: &Path| fs::metadata(path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&file), 0o600);
+        assert_eq!(mode(&directory), 0o700);
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o400)).unwrap();
+        restrict_to_owner(&file).unwrap();
+        assert_eq!(mode(&file), 0o400);
+        let error = restrict_to_owner(&directory.join("missing")).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::NotFound);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
     fn owner_only_files_are_private_and_default_files_follow_the_umask() {
         let directory = test_directory("modes");
         let private = directory.join("vault.json");

@@ -183,6 +183,57 @@ pub fn create_private_directories(directory: &Path) -> io::Result<()> {
     builder.create(directory)
 }
 
+/// Creates the single directory `directory`, accessible only by the current user.
+///
+/// Unlike [`create_private_directories`] this refuses an existing entry, so the caller
+/// knows the directory and its permissions are its own.
+///
+/// # Errors
+///
+/// Returns an error when `directory` already exists or cannot be created.
+pub fn create_private_directory(directory: &Path) -> io::Result<()> {
+    let mut builder = fs::DirBuilder::new();
+    #[cfg(unix)]
+    std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+    builder.create(directory)
+}
+
+/// Creates the new file `path`, readable and writable only by the current user on Unix.
+///
+/// # Errors
+///
+/// Returns an error when `path` already exists, a symlink included, or cannot be created.
+pub fn create_private_file(path: &Path) -> io::Result<File> {
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    options.open(path)
+}
+
+/// Removes group and other permissions from an existing file or directory on Unix, leaving
+/// the owner's bits as they are. Other platforms keep their access control lists.
+///
+/// # Errors
+///
+/// Returns an error when the metadata cannot be read or the file system refuses the change,
+/// as FAT and exFAT mounts and files owned by another user do.
+pub fn restrict_to_owner(path: &Path) -> io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = fs::metadata(path)?.permissions().mode();
+        if mode & 0o077 != 0 {
+            fs::set_permissions(path, fs::Permissions::from_mode(mode & !0o077))?;
+        }
+        Ok(())
+    }
+    #[cfg(not(unix))]
+    {
+        fs::metadata(path).map(|_| ())
+    }
+}
+
 /// Reports whether `path` is owned by the effective user of this process.
 ///
 /// On platforms without Unix ownership it always returns `true`; their per-user profile

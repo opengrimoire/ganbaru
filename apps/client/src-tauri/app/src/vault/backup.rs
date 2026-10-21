@@ -437,7 +437,7 @@ fn extract_backup_archive_within(
     if expected_vault_id.is_some_and(|expected| expected != vault_id) {
         return Err(DIFFERENT_VAULT_ERROR.to_string());
     }
-    fs::create_dir(destination)
+    ganbaru_atomic_files::create_private_directory(destination)
         .map_err(|error| format!("create restore staging folder: {error}"))?;
     let mut total_bytes = 0_u64;
     let mut buffer = vec![0_u8; COPY_BUFFER_BYTES];
@@ -1790,6 +1790,12 @@ mod tests {
         drop(archive);
 
         extract_backup_archive(&archive_path, &staging, None).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = fs::metadata(&staging).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o700, "restore staging is private");
+        }
         validate_restored_vault(&staging).await.unwrap();
         replace_vault(&staging, &target, &rollback).unwrap();
 

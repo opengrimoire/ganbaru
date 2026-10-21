@@ -9,7 +9,7 @@ use super::protocol::{
 };
 use crate::vault::ownership::VaultOwnershipManager;
 use crate::vault::quiescence::SourceQuiescence;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fs;
 use std::time::{Duration, Instant};
 use tauri::{Manager, Runtime};
@@ -166,21 +166,23 @@ pub(crate) const OWNERSHIP_GRANT_LIMIT: &str =
 /// Recent ownership grants to linked devices, kept in memory for the sliding-window limit.
 #[derive(Debug, Default)]
 struct OwnershipGrantWindow {
-    grants: std::collections::VecDeque<Instant>,
+    grants: VecDeque<Instant>,
+}
+
+/// Drops events that left the sliding window ending at `now`.
+fn forget_expired(events: &mut VecDeque<Instant>, now: Instant, window: Duration) {
+    while events
+        .front()
+        .is_some_and(|event| now.saturating_duration_since(*event) >= window)
+    {
+        events.pop_front();
+    }
 }
 
 impl OwnershipGrantWindow {
-    fn forget_expired(&mut self, now: Instant) {
-        while self.grants.front().is_some_and(|granted| {
-            now.saturating_duration_since(*granted) >= OWNERSHIP_GRANT_WINDOW
-        }) {
-            self.grants.pop_front();
-        }
-    }
-
     /// Refuses another grant while the window already holds the maximum.
     fn check(&mut self, now: Instant) -> Result<(), String> {
-        self.forget_expired(now);
+        forget_expired(&mut self.grants, now, OWNERSHIP_GRANT_WINDOW);
         if self.grants.len() >= MAX_OWNERSHIP_GRANTS_PER_WINDOW {
             return Err(OWNERSHIP_GRANT_LIMIT.to_string());
         }
@@ -188,8 +190,42 @@ impl OwnershipGrantWindow {
     }
 
     fn record(&mut self, now: Instant) {
-        self.forget_expired(now);
+        forget_expired(&mut self.grants, now, OWNERSHIP_GRANT_WINDOW);
         self.grants.push_back(now);
+    }
+}
+
+/// Span of the sliding window that bounds how often one linked device makes a vault snapshot.
+const BUNDLE_PREPARATION_WINDOW: Duration = Duration::from_secs(60 * 60);
+/// Most vault snapshots one linked device can start within [`BUNDLE_PREPARATION_WINDOW`]. Each
+/// one pauses writers and builds a full archive, here or on the owning device. Manual refreshes,
+/// reconnect refreshes, and device switches stay far below it; a device that keeps requesting and
+/// cancelling bundles does not.
+const MAX_BUNDLE_PREPARATIONS_PER_PEER: usize = 30;
+/// Error returned when one device requested too many snapshots; the frontend maps it to
+/// localized guidance.
+pub(crate) const BUNDLE_PREPARATION_LIMIT: &str =
+    "this device requested the vault too often; wait before refreshing or switching again";
+
+/// Recent vault snapshots started for each linked device, kept in memory for the per-device limit.
+#[derive(Debug, Default)]
+struct BundlePreparationWindows {
+    peers: BTreeMap<String, VecDeque<Instant>>,
+}
+
+impl BundlePreparationWindows {
+    /// Records a snapshot for the device, or refuses it while that device's window is full.
+    fn admit(&mut self, device_id: &str, now: Instant) -> Result<(), String> {
+        self.peers.retain(|_, events| {
+            forget_expired(events, now, BUNDLE_PREPARATION_WINDOW);
+            !events.is_empty()
+        });
+        let events = self.peers.entry(device_id.to_string()).or_default();
+        if events.len() >= MAX_BUNDLE_PREPARATIONS_PER_PEER {
+            return Err(BUNDLE_PREPARATION_LIMIT.to_string());
+        }
+        events.push_back(now);
+        Ok(())
     }
 }
 
@@ -202,6 +238,7 @@ struct CoordinatorState<R: Runtime> {
     waiting_refresh_targets: BTreeSet<String>,
     relay_refresh_generation: Option<u64>,
     ownership_grants: OwnershipGrantWindow,
+    bundle_preparations: BundlePreparationWindows,
 }
 
 const PEER_RECONNECT_GAP: Duration = Duration::from_secs(75);
@@ -246,6 +283,7 @@ pub(crate) async fn run<R: Runtime>(
         waiting_refresh_targets: BTreeSet::new(),
         relay_refresh_generation: None,
         ownership_grants: OwnershipGrantWindow::default(),
+        bundle_preparations: BundlePreparationWindows::default(),
     };
     while let Some(request) = receiver.recv().await {
         if matches!(request.operation, CoordinatorOperation::Shutdown) {
@@ -451,11 +489,7 @@ impl<R: Runtime> CoordinatorState<R> {
                     "the non-owner cannot publish authoritative Distractions state".to_string(),
                 );
             }
-            let pool = crate::db::connect_sqlite(
-                self.app.clone(),
-                format!("sqlite:{}", crate::vault::APP_SQLITE_FILE),
-            )
-            .await?;
+            let pool = crate::db::connect_vault(&self.app).await?;
             crate::distractions::linked::drain_local_spool(
                 &self.app,
                 &pool,
@@ -464,7 +498,8 @@ impl<R: Runtime> CoordinatorState<R> {
             )
             .await?;
             let acknowledged_sample_ids =
-                crate::distractions::linked::import_linked_samples(&pool, &samples).await?;
+                crate::distractions::linked::import_linked_samples(&pool, &device_id, &samples)
+                    .await?;
             let combined_samples =
                 crate::distractions::linked::aggregate_owner_samples(&pool).await?;
             return Ok(CoordinatorResponse::DistractionsAcknowledged {
@@ -640,6 +675,32 @@ mod tests {
         let almost = start + OWNERSHIP_GRANT_WINDOW - Duration::from_millis(1);
         assert!(window.check(almost).is_err());
         window.check(start + OWNERSHIP_GRANT_WINDOW).unwrap();
+    }
+
+    #[test]
+    fn bundle_preparations_are_limited_per_device_and_sliding_window() {
+        let start = Instant::now();
+        let mut windows = BundlePreparationWindows::default();
+        for _ in 0..MAX_BUNDLE_PREPARATIONS_PER_PEER {
+            windows.admit("phone-a", start).unwrap();
+        }
+        assert_eq!(
+            windows.admit("phone-a", start).unwrap_err(),
+            BUNDLE_PREPARATION_LIMIT
+        );
+        // Another linked device keeps its own budget.
+        windows.admit("phone-b", start).unwrap();
+        let almost = start + BUNDLE_PREPARATION_WINDOW - Duration::from_millis(1);
+        assert!(windows.admit("phone-a", almost).is_err());
+        windows
+            .admit("phone-a", start + BUNDLE_PREPARATION_WINDOW)
+            .unwrap();
+        // Refused requests do not extend the window.
+        assert_eq!(
+            windows.peers["phone-a"].len(),
+            1,
+            "only the admitted snapshot after expiry is kept"
+        );
     }
 
     #[test]

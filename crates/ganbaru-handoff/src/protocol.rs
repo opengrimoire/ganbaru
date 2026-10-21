@@ -94,13 +94,38 @@ pub fn ensure_compatible(
     Ok(())
 }
 
+/// A pairing invitation secret. It serializes as the plain string, and `Debug` never prints it.
+#[derive(Clone, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(transparent)]
+pub struct InvitationSecret(String);
+
+impl From<String> for InvitationSecret {
+    fn from(value: String) -> Self {
+        Self(value)
+    }
+}
+
+impl std::ops::Deref for InvitationSecret {
+    type Target = str;
+
+    fn deref(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Debug for InvitationSecret {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("InvitationSecret([REDACTED])")
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PairingInvitation {
     pub protocol_version: u16,
     pub compatibility: HandoffCompatibility,
     pub invitation_id: String,
-    pub secret: String,
+    pub secret: InvitationSecret,
     pub endpoint: String,
     pub coordinator_fingerprint: String,
     pub coordinator_device_id: String,
@@ -115,7 +140,7 @@ impl PairingInvitation {
         self.compatibility.validate()?;
         validate_identifier("invitation id", &self.invitation_id)?;
         validate_identifier("invitation secret", &self.secret)?;
-        validate_identifier("coordinator fingerprint", &self.coordinator_fingerprint)?;
+        validate_certificate_fingerprint("coordinator fingerprint", &self.coordinator_fingerprint)?;
         validate_identifier("coordinator device id", &self.coordinator_device_id)?;
         validate_identifier("vault id", &self.vault_id)?;
         let endpoint = self
@@ -188,7 +213,7 @@ pub enum ControlMessage {
     Enroll {
         protocol_version: u16,
         invitation_id: String,
-        secret: String,
+        secret: InvitationSecret,
         vault_id: String,
         device_id: String,
         device_label: String,
@@ -689,7 +714,7 @@ impl ControlMessage {
                     requester_public_key,
                     ganbaru_contacts::PUBLIC_KEY_TEXT_LENGTH,
                 )?;
-                if (unix_time_ms() - *issued_at_ms).abs() > STATUS_REPLAY_WINDOW_MS {
+                if unix_time_ms().abs_diff(*issued_at_ms) > STATUS_REPLAY_WINDOW_MS.unsigned_abs() {
                     return Err("contact request status is outside the replay window".to_string());
                 }
                 validate_base64url_text(
@@ -1124,7 +1149,7 @@ fn decode_pairing_qr_payload(payload: &[u8], now_ms: i64) -> Result<PairingInvit
             database_schema_sha256,
         },
         invitation_id,
-        secret,
+        secret: secret.into(),
         endpoint,
         coordinator_fingerprint,
         coordinator_device_id,
@@ -1241,6 +1266,26 @@ pub fn validate_device_label(field: &str, label: &str) -> Result<(), String> {
         .map_err(|error| format!("{field} is invalid: {error}"))
 }
 
+/// Accepts only the form certificate fingerprints are produced in: the SHA-256 of the DER
+/// certificate as 64 lowercase hex characters. Every stored, scanned, or received fingerprint
+/// passes this check so pins can be compared exactly.
+pub fn validate_certificate_fingerprint(label: &str, value: &str) -> Result<(), String> {
+    if value.len() != 64
+        || !value
+            .bytes()
+            .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
+    {
+        return Err(format!("{label} is invalid"));
+    }
+    Ok(())
+}
+
+/// The 32-byte digest of a fingerprint that passes [`validate_certificate_fingerprint`].
+pub fn decode_certificate_fingerprint(value: &str) -> Option<[u8; 32]> {
+    validate_certificate_fingerprint("certificate fingerprint", value).ok()?;
+    decode_qr_digest(value, "certificate fingerprint").ok()
+}
+
 pub fn validate_identifier(label: &str, value: &str) -> Result<(), String> {
     if value.is_empty()
         || value.len() > MAX_IDENTIFIER_BYTES
@@ -1298,7 +1343,9 @@ mod tests {
             protocol_version: PROTOCOL_VERSION,
             compatibility: test_compatibility(),
             invitation_id: "invite-abcdefghijklmnopqrstuv".to_string(),
-            secret: "abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG".to_string(),
+            secret: "abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG"
+                .to_string()
+                .into(),
             endpoint: "192.168.1.20:43821".to_string(),
             coordinator_fingerprint: "b".repeat(64),
             coordinator_device_id: "device-abcdefghijklmnopqrstuv".to_string(),
@@ -1309,11 +1356,38 @@ mod tests {
     }
 
     #[test]
+    fn invitation_secrets_serialize_plainly_and_stay_out_of_debug_output() {
+        let invitation = qr_invitation();
+        let secret = invitation.secret.to_string();
+        let enroll = ControlMessage::Enroll {
+            protocol_version: PROTOCOL_VERSION,
+            invitation_id: invitation.invitation_id.clone(),
+            secret: invitation.secret.clone(),
+            vault_id: invitation.vault_id.clone(),
+            device_id: "device-phone".to_string(),
+            device_label: "Phone".to_string(),
+            device_kind: DeviceKind::Phone,
+            device_certificate: "certificate".to_string(),
+        };
+        for output in [format!("{invitation:?}"), format!("{enroll:?}")] {
+            assert!(!output.contains(&secret), "{output}");
+            assert!(output.contains("[REDACTED]"), "{output}");
+        }
+        let serialized = serde_json::to_value(&enroll).expect("serialize enrollment");
+        assert_eq!(serialized["secret"], secret.as_str());
+        let decoded: ControlMessage =
+            serde_json::from_value(serialized).expect("decode enrollment");
+        assert_eq!(decoded, enroll);
+    }
+
+    #[test]
     fn enrollment_messages_reject_control_and_bidi_labels() {
         let enroll = |label: &str| ControlMessage::Enroll {
             protocol_version: PROTOCOL_VERSION,
             invitation_id: "invite-abcdefghijklmnopqrstuv".to_string(),
-            secret: "abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG".to_string(),
+            secret: "abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG"
+                .to_string()
+                .into(),
             vault_id: "vault-abcdefghijklmnopqrstuv".to_string(),
             device_id: "device-phone".to_string(),
             device_label: label.to_string(),
@@ -1366,6 +1440,35 @@ mod tests {
         );
     }
 
+    #[test]
+    fn certificate_fingerprints_require_exactly_64_lowercase_hex_characters() {
+        let lowercase = "0123456789abcdef".repeat(4);
+        assert!(validate_certificate_fingerprint("fingerprint", &lowercase).is_ok());
+        let digest = decode_certificate_fingerprint(&lowercase).expect("lowercase digest");
+        assert_eq!(encode_qr_digest(digest), lowercase);
+        for invalid in [
+            lowercase.to_ascii_uppercase(),
+            format!("+{}", &lowercase[1..]),
+            format!("{} ", &lowercase[1..]),
+            lowercase[1..].to_string(),
+            format!("{lowercase}0"),
+            "g".repeat(64),
+        ] {
+            assert!(
+                validate_certificate_fingerprint("fingerprint", &invalid).is_err(),
+                "{invalid}"
+            );
+            assert!(
+                decode_certificate_fingerprint(&invalid).is_none(),
+                "{invalid}"
+            );
+            let invitation = PairingInvitation {
+                coordinator_fingerprint: invalid.clone(),
+                ..qr_invitation()
+            };
+            assert!(invitation.validate(0).is_err(), "{invalid}");
+        }
+    }
     #[test]
     fn invitations_with_non_lan_endpoints_fail_validation() {
         for endpoint in [
@@ -1561,5 +1664,33 @@ mod tests {
         assert!(error.contains("compatibility mismatch"));
         assert!(error.contains("test"));
         assert!(error.contains("newer"));
+    }
+
+    #[test]
+    fn contact_status_replay_window_holds_at_every_timestamp_extreme() {
+        let status = |issued_at_ms: i64| ControlMessage::ContactRequestStatus {
+            protocol_version: PROTOCOL_VERSION,
+            request_id: "request-abcdefghijklmnopqrstuv".to_string(),
+            requester_public_key: "a".repeat(ganbaru_contacts::PUBLIC_KEY_TEXT_LENGTH),
+            issued_at_ms,
+            signature: "s".repeat(SIGNATURE_TEXT_LENGTH),
+        };
+        let now = unix_time_ms();
+
+        status(now).validate().expect("current status poll");
+        status(now - STATUS_REPLAY_WINDOW_MS / 2)
+            .validate()
+            .expect("status poll inside the window");
+        for issued_at_ms in [
+            i64::MIN,
+            i64::MIN + 1,
+            i64::MAX,
+            0,
+            now - 2 * STATUS_REPLAY_WINDOW_MS,
+            now + 2 * STATUS_REPLAY_WINDOW_MS,
+        ] {
+            let error = status(issued_at_ms).validate().unwrap_err();
+            assert!(error.contains("replay window"), "{issued_at_ms}: {error}");
+        }
     }
 }

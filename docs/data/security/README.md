@@ -28,7 +28,7 @@ The active vault is user-owned durable storage and may come from another device,
 
 ## Status
 
-Local LAN device linking and single-writer whole-vault handoff are implemented in source: pinned certificates, mutual TLS, single-use invitations, and no relay or account. Received bundles are allow-listed to the vault layout, and repository and provider configuration inside received project folders stays inert until this device trusts its digest. Concurrent operation sync, the end-to-end encrypted relay, and its key lifecycle remain planned. Both are specified in [Synchronization](../sync.md).
+Local LAN device linking and single-writer whole-vault handoff are implemented in source: pinned certificates, mutual TLS, single-use invitations, and no relay or account. Received bundles are allow-listed to the vault layout. Before anything is written, a received bundle or restored backup must hold a database and a valid vault marker (the expected vault for handoff), and its declared entry sizes are summed against the restore limit and enforced while extracting. Repository and provider configuration inside received project folders stays inert until this device trusts its digest. Concurrent operation sync, the end-to-end encrypted relay, and its key lifecycle remain planned. Both are specified in [Synchronization](../sync.md).
 
 Remote synchronization, hosted BYOK chat, an external MCP service, and the `ganbaru` CLI are not implemented. Their security requirements are normative design constraints, not claims about current traffic or capability. Documents must label current behavior and planned requirements separately.
 
@@ -39,7 +39,7 @@ Across domains:
 - Deny unknown, stale, oversized, malformed, or unsupported input.
 - Validate before mutation and again at the privileged boundary.
 - Bound reads, writes, decompression, parsing, process output, queues, and worker counts.
-- Remove secrets and unnecessary absolute paths from persisted errors and diagnostics.
+- Remove secrets and unnecessary absolute paths from persisted errors and diagnostics. Types that hold tokens, passwords, pairing secrets, or private keys implement `Debug` with the value redacted, so a log or panic message never prints it.
 - Use explicit allowlists for native commands, URL schemes, origins, file types, and tool methods.
 - Preserve user-authored data when a safe repair or export path exists.
 - Make cleanup retryable when immediate deletion is unsafe.

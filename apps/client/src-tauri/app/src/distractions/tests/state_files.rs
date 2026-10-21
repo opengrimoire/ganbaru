@@ -301,3 +301,42 @@ fn previous_app_session_extension_status_is_disconnected() {
         Some("connection is from an older app session")
     );
 }
+
+#[test]
+fn an_oversized_extension_status_file_reads_as_disconnected_without_being_read_whole() {
+    let dir = std::env::temp_dir().join(format!(
+        "ganbaru-extension-status-bound-{}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("distractions-extension-status.json");
+    let checked_at = DateTime::parse_from_rfc3339("2026-05-26T00:01:00.000Z")
+        .unwrap()
+        .with_timezone(&Utc);
+    let record = r#"{"lastSeenAt":"2026-05-26T00:00:05.000Z","lastMessageType":"get_state"}"#;
+
+    std::fs::write(&path, record).unwrap();
+    assert!(
+        extension_status_at(&path, checked_at, None)
+            .unwrap()
+            .connected
+    );
+
+    let mut oversized = record.as_bytes().to_vec();
+    oversized.resize(2 * 1024 * 1024, b' ');
+    std::fs::write(&path, oversized).unwrap();
+    let status = extension_status_at(&path, checked_at, None).unwrap();
+    assert!(!status.connected);
+    assert_eq!(
+        status.reason.as_deref(),
+        Some("connection status file is invalid")
+    );
+
+    std::fs::remove_file(&path).unwrap();
+    let status = extension_status_at(&path, checked_at, None).unwrap();
+    assert_eq!(
+        status.reason.as_deref(),
+        Some("no extension connection has been recorded")
+    );
+    std::fs::remove_dir(dir).unwrap();
+}

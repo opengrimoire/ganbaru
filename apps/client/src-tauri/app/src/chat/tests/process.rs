@@ -247,6 +247,10 @@ fn process_is_running(process_id: i32) -> bool {
 }
 
 #[cfg(not(target_os = "linux"))]
+#[allow(
+    unsafe_code,
+    reason = "Retained unsafe boundary; see docs/data/security/unsafe-rust.md."
+)]
 fn process_is_running(process_id: i32) -> bool {
     if process_id <= 0 {
         return false;

@@ -125,6 +125,7 @@ fn mobile_runtime_excludes_desktop_only_commands() {
         "updates::",
         "benchmark::",
         "vault::vault_pick_create",
+        "vault::handoff::handoff_respond_enrollment",
         "notes::notes_pick_",
         "notes::working_markdown::",
         "notes::notes_import_notion_export_folder",
@@ -299,6 +300,32 @@ fn focus_overlay_commands_are_a_narrow_subset() {
 }
 
 #[test]
+fn no_capability_grants_the_updater_plugin_commands() {
+    for (name, source) in [
+        ("desktop", DESKTOP_CAPABILITY),
+        ("focus-overlays", FOCUS_OVERLAY_CAPABILITY),
+        ("android", ANDROID_CAPABILITY),
+    ] {
+        let capability = capability(source);
+        let identifiers = capability["permissions"]
+            .as_array()
+            .expect("capability lists permissions")
+            .iter()
+            .filter_map(|permission| {
+                permission
+                    .as_str()
+                    .or_else(|| permission["identifier"].as_str())
+            });
+        for identifier in identifiers {
+            assert!(
+                !identifier.starts_with("updater:"),
+                "{name} must reach updates only through the signed-file checks in updates_check and updates_install, not {identifier}"
+            );
+        }
+    }
+}
+
+#[test]
 fn desktop_capabilities_target_webviews_without_window_creation() {
     for (name, source) in [
         ("desktop", DESKTOP_CAPABILITY),
@@ -347,4 +374,69 @@ fn desktop_capabilities_target_webviews_without_window_creation() {
 
     let android = capability(ANDROID_CAPABILITY);
     assert!(capability_string_permissions(&android).contains(&"app-commands"));
+}
+
+const TAURI_CONFIG: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../tauri.conf.json"));
+
+/// Returns the sources of one directive in the production or development CSP.
+fn csp_sources<'a>(config: &'a serde_json::Value, policy: &str, directive: &str) -> Vec<&'a str> {
+    config["app"]["security"][policy][directive]
+        .as_str()
+        .unwrap_or_else(|| panic!("{policy} sets {directive}"))
+        .split_whitespace()
+        .collect()
+}
+
+#[test]
+fn app_csp_runs_only_bundled_scripts_and_frames_only_known_hosts() {
+    let config: serde_json::Value =
+        serde_json::from_str(TAURI_CONFIG).expect("tauri.conf.json is valid JSON");
+    assert_eq!(csp_sources(&config, "csp", "script-src"), ["'self'"]);
+    for policy in ["csp", "devCsp"] {
+        for directive in ["object-src", "base-uri", "form-action", "frame-ancestors"] {
+            assert_eq!(
+                csp_sources(&config, policy, directive),
+                ["'none'"],
+                "{policy} {directive}"
+            );
+        }
+        assert_eq!(
+            csp_sources(&config, policy, "frame-src"),
+            ["http://127.0.0.1:*", "https://www.youtube-nocookie.com"],
+            "{policy} frames only the loopback Music host and YouTube previews"
+        );
+        for directive in [
+            "script-src",
+            "img-src",
+            "media-src",
+            "frame-src",
+            "connect-src",
+        ] {
+            for source in csp_sources(&config, policy, directive) {
+                assert!(
+                    source != "http://localhost:*"
+                        && source != "*"
+                        && !source.starts_with("https://www.youtube.com")
+                        && !source.contains("ytimg"),
+                    "{policy} {directive} must not allow {source}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn desktop_runtime_registers_the_app_navigation_guard() {
+    assert!(
+        DESKTOP_RUNTIME.contains(".plugin(navigation_guard::init())"),
+        "desktop runtime must keep app webviews on the app document"
+    );
+}
+
+#[test]
+fn desktop_runtime_starts_the_chat_cleanup_service() {
+    assert!(
+        DESKTOP_RUNTIME.contains("chat::cleanup_service::start(app.handle());"),
+        "permanently deleted Chat files are removed only while the cleanup service runs"
+    );
 }

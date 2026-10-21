@@ -3,7 +3,7 @@
 use ganbaru_mobile_media::{MobileMediaExt, MobileMediaTreeTrack};
 use ganbaru_music_library::{
     MusicCollectionKind, MusicLibraryError, MusicLibraryResult, MusicLocalRefreshRequest,
-    MusicRefreshJobProgress, MusicRefreshJobState,
+    MusicRefreshJobProgress, MusicRefreshJobState, bounded_item_description,
 };
 use sha2::{Digest, Sha256};
 use sqlx::{FromRow, SqlitePool};
@@ -283,9 +283,9 @@ async fn persist_track(
     .bind(&item_id)
     .bind(format!("local:{item_id}"))
     .bind(media_kind)
-    .bind(track.title.trim())
-    .bind(track.artist.trim())
-    .bind(track.album.trim())
+    .bind(bounded_item_description(track.title.trim()))
+    .bind(bounded_item_description(track.artist.trim()))
+    .bind(bounded_item_description(track.album.trim()))
     .bind(track.track_number)
     .bind(artwork_identity)
     .bind(track.duration_ms)

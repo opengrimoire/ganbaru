@@ -52,6 +52,8 @@ export interface NotesNotionApiImportRequest {
   keep_external_file_references?: boolean | null;
   page_size?: number | null;
   project_id?: string | null;
+  /** Client-chosen ID that `cancelNotesNotionApiImport` uses to stop this import. */
+  import_id?: string | null;
 }
 
 export type NotesNotionApiImportDiagnosticSeverity = "info" | "warning" | "error";

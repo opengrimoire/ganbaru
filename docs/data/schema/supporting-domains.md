@@ -24,11 +24,11 @@ The active theme ID is portable configuration. Applying it to a webview is runti
 
 Music separates canonical library identity from physical source location and playback state.
 
-- Library items carry playable identity and metadata. Local roots and locations describe user-selected folders or document trees without making an absolute path canonical.
+- Library items carry playable identity and metadata. Local roots and locations describe user-selected folders or document trees without making an absolute path canonical. Original title, artist, and album text is capped at 500 characters in the schema; writers truncate longer source text.
 - Source collections (local collections, YouTube playlists, and other discovery sources) keep refresh generation and failure state. Refresh and relink use staged generations so a failed scan leaves the previous library usable.
 - User playlists and ordered memberships are independent of source collections; removing or refreshing a source never silently destroys a playlist.
 - Related families cover skip ranges, item signals, snoozes, statistics, recent selections, refresh issues, context assignments, soundscapes, and soundscape presets.
-- A context assignment that plays a soundscape names exactly one preset; other soundscape behaviors name none. Preset references are not foreign keys, so a removed preset stays an explicit unavailable reference. Preset sound membership cascades when a sound is removed, and an emptied preset is kept.
+- A context assignment that plays a soundscape names exactly one preset; other soundscape behaviors name none. Preset references are not foreign keys, so a removed preset stays an explicit unavailable reference. Preset sound membership cascades when a sound is removed, and an emptied preset is kept. A local sound's file path is device-local app state keyed by vault and sound, never a vault row.
 
 Music bytes stay in the user's library and are never copied into the vault because an item was indexed. Relative identities and platform document handles are revalidated before playback.
 

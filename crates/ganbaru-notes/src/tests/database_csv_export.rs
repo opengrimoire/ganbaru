@@ -179,3 +179,64 @@ async fn csv_export_pool() -> SqlitePool {
     .unwrap();
     pool
 }
+
+#[test]
+fn spreadsheet_csv_export_neutralizes_formula_text_and_keeps_numbers() {
+    crate::test_block_on(async {
+        let pool = csv_export_pool().await;
+        data_sources::csv_import::import_csv(
+            &pool,
+            DATA_SOURCE_A,
+            NoteDataSourceCsvImportRequest {
+                csv: concat!(
+                    "Name,Details,Estimate,Done\n",
+                    "\"=HYPERLINK(\"\"https://example.com\"\")\",-12.5,-4,no\n",
+                    "@SUM(A1),+1 555 0100,2,no\n",
+                    "-cmd,=1+1,1.5,no\n",
+                )
+                .to_string(),
+                has_header: Some(true),
+                dry_run: Some(false),
+            },
+        )
+        .await
+        .unwrap();
+        let request = || NoteDataSourceCsvExportRequest {
+            database_id: None,
+            view_id: None,
+            scope: Some("all".to_string()),
+        };
+
+        let spreadsheet =
+            data_sources::csv_export::export_spreadsheet_csv(&pool, DATA_SOURCE_A, request())
+                .await
+                .unwrap();
+        let exact = data_sources::csv_export::export_csv(&pool, DATA_SOURCE_A, request())
+            .await
+            .unwrap();
+
+        let rows = |csv: &str| {
+            csv.lines()
+                .skip(1)
+                .take(3)
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            rows(&spreadsheet.csv),
+            [
+                "'-cmd,'=1+1,false,1.5,",
+                "\"'=HYPERLINK(\"\"https://example.com\"\")\",-12.5,false,-4,",
+                "'@SUM(A1),'+1 555 0100,false,2,",
+            ]
+        );
+        assert_eq!(
+            rows(&exact.csv),
+            [
+                "-cmd,=1+1,false,1.5,",
+                "\"=HYPERLINK(\"\"https://example.com\"\")\",-12.5,false,-4,",
+                "@SUM(A1),+1 555 0100,false,2,",
+            ]
+        );
+    });
+}

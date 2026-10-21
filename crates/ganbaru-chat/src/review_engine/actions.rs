@@ -106,7 +106,11 @@ async fn apply_exact_file_action(
         .before_oid
         .as_deref()
         .ok_or_else(|| ChatError::unsupported("This review source cannot be changed"))?;
-    let current = file.read.relative_path.as_str();
+    let mut owned = vec![file.read.relative_path.clone()];
+    owned.extend(file.read.previous_relative_path.clone());
+    let owned = folder_paths(folder, &owned).await?;
+    let current = owned[0].as_str();
+    let previous = owned.get(1).map(String::as_str);
     match operation {
         ReviewAction::Stage => {
             let paths = action_paths(snapshot, Some(&file.read.file_id));
@@ -132,7 +136,7 @@ async fn apply_exact_file_action(
                     None,
                 )
                 .await?;
-            } else if let Some(previous) = file.read.previous_relative_path.as_deref() {
+            } else if let Some(previous) = previous {
                 git::review_action_output(
                     folder,
                     &["restore", "--staged", "--source", before, "--", previous],
@@ -160,7 +164,7 @@ async fn apply_exact_file_action(
                     "Open Unstaged changes before discarding this file",
                 ));
             }
-            if let Some(previous) = file.read.previous_relative_path.as_deref() {
+            if let Some(previous) = previous {
                 git::review_action_output(
                     folder,
                     &["restore", "--worktree", "--source", before, "--", previous],
@@ -231,6 +235,7 @@ async fn discard_owned_files(
     clean_paths.sort();
     clean_paths.dedup();
     restore_owned_paths(folder, before, false, &restore_paths).await?;
+    let clean_paths = folder_paths(folder, &clean_paths).await?;
     for chunk in bounded_path_chunks(&clean_paths) {
         let mut arguments = vec!["clean", "-f", "--"];
         arguments.extend(chunk.iter().map(String::as_str));
@@ -248,7 +253,7 @@ async fn restore_owned_paths(
     if paths.is_empty() {
         return Ok(());
     }
-    let pathspec = pathspec_bytes(paths)?;
+    let pathspec = pathspec_bytes(folder, paths).await?;
     let mut arguments = vec!["restore"];
     if staged {
         arguments.push("--staged");
@@ -266,7 +271,7 @@ async fn restore_owned_paths(
 }
 
 async fn stage_owned_paths(folder: GitFolder<'_>, paths: &[String]) -> ChatResult<()> {
-    let pathspec = pathspec_bytes(paths)?;
+    let pathspec = pathspec_bytes(folder, paths).await?;
     git::review_action_output(
         folder,
         &["add", "-A", "--pathspec-from-file=-", "--pathspec-file-nul"],
@@ -276,14 +281,26 @@ async fn stage_owned_paths(folder: GitFolder<'_>, paths: &[String]) -> ChatResul
     Ok(())
 }
 
-fn pathspec_bytes(paths: &[String]) -> ChatResult<Vec<u8>> {
+/// NUL-separated pathspecs relative to the working folder for repository-relative `paths`.
+async fn pathspec_bytes(folder: GitFolder<'_>, paths: &[String]) -> ChatResult<Vec<u8>> {
     let mut pathspec = Vec::new();
-    for path in paths {
-        validate_path(path)?;
+    for path in folder_paths(folder, paths).await? {
         pathspec.extend_from_slice(path.as_bytes());
         pathspec.push(0);
     }
     Ok(pathspec)
+}
+
+/// Validates repository-relative review paths and rewrites them relative to the working
+/// folder, where Git resolves pathspecs.
+pub(super) async fn folder_paths(
+    folder: GitFolder<'_>,
+    paths: &[String],
+) -> ChatResult<Vec<String>> {
+    for path in paths {
+        validate_path(path)?;
+    }
+    git::folder_pathspecs(folder, paths).await
 }
 
 fn bounded_path_chunks(paths: &[String]) -> Vec<&[String]> {
@@ -343,11 +360,17 @@ async fn action_patch(
         Some(&context),
     );
     arguments.extend([before, after]);
-    if let Some(file) = file {
-        arguments.extend(["--", &file.read.relative_path]);
-        if let Some(previous) = file.read.previous_relative_path.as_deref() {
-            arguments.push(previous);
+    let owned = match file {
+        Some(file) => {
+            let mut owned = vec![file.read.relative_path.clone()];
+            owned.extend(file.read.previous_relative_path.clone());
+            folder_paths(folder, &owned).await?
         }
+        None => Vec::new(),
+    };
+    if !owned.is_empty() {
+        arguments.push("--");
+        arguments.extend(owned.iter().map(String::as_str));
     }
     let patch = String::from_utf8(
         review_output(folder, &arguments, None, snapshot.object_store.as_deref()).await?,
@@ -413,6 +436,7 @@ pub fn require_action_allowed(
                 || file.read.flags.pure_rename
                 || file.read.flags.untracked
                 || file.read.flags.symlink
+                || file.read.flags.too_large
         })
     {
         return Err(ChatError::unsupported(

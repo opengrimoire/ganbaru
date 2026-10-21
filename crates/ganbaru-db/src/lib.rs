@@ -163,6 +163,9 @@ impl DatabasePoolRegistry {
     }
 
     async fn open(&self, path: &Path, access: DatabaseAccessMode) -> Result<SqlitePool, String> {
+        if access != DatabaseAccessMode::ReadOnly {
+            restrict_database_files(path, access == DatabaseAccessMode::ReadWrite);
+        }
         let mut options = hardened_options(
             SqliteConnectOptions::new()
                 .filename(path)
@@ -451,6 +454,40 @@ async fn reference_catalog(version: i64) -> Result<Arc<SchemaCatalog>, String> {
     let catalog = Arc::new(built?);
     catalogs.insert(version, catalog.clone());
     Ok(catalog)
+}
+
+/// Suffixes of the files SQLite keeps beside a database, which it creates with the
+/// database file's permissions.
+const DATABASE_FILE_SUFFIXES: [&str; 4] = ["", "-wal", "-shm", "-journal"];
+
+/// Keeps a writable vault database and its journal files private to the current user.
+///
+/// A missing database is created owner-only so its journal files inherit that mode, and an
+/// existing one loses group and other access. A vault on a file system without Unix
+/// permissions, such as a FAT or exFAT drive, refuses the change; the vault still opens there
+/// because its location is the user's choice, and the refusal is reported on standard error.
+fn restrict_database_files(path: &Path, create: bool) {
+    if create {
+        match ganbaru_atomic_files::create_private_file(path) {
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            // The connection reports any other creation failure with its open error.
+            Err(_) => return,
+        }
+    }
+    for suffix in DATABASE_FILE_SUFFIXES {
+        let mut file = path.as_os_str().to_owned();
+        file.push(suffix);
+        let file = PathBuf::from(file);
+        match ganbaru_atomic_files::restrict_to_owner(&file) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => eprintln!(
+                "could not make '{}' private to the current user: {error}",
+                file.display()
+            ),
+        }
+    }
 }
 
 /// Connection settings that limit what SQL stored in an untrusted schema can do: schema

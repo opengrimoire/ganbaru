@@ -1,8 +1,8 @@
 use super::block_comments::update_block_comment_thread_pages;
 use super::block_tree::{load_block_row_tx, load_blocks_by_ids, normalize_selection_root_ids};
 use super::parents::{
-    ParentTarget, parent_target_from_block_row, refresh_parent_has_children, resolve_block_parent,
-    touch_page, validate_block_for_parent,
+    ParentTarget, block_subtree_height, ensure_block_nesting_fits, parent_target_from_block_row,
+    refresh_parent_has_children, resolve_block_parent, touch_page, validate_block_for_parent,
 };
 use super::sort::{next_sort_orders, sort_order_before, sort_orders_before};
 use crate::models::{NoteBlockDto, NoteMoveBlock, NoteMoveBlocks, NotePaginatedBlockList};
@@ -56,6 +56,8 @@ pub(super) async fn move_block_tx(
     let current_payload: Value = serde_json::from_str(&current.payload)
         .map_err(|e| format!("parse moved block payload: {e}"))?;
     validate_block_for_parent(&new_parent, &current.block_type, &current_payload)?;
+    let height = block_subtree_height(tx, block_id).await?;
+    ensure_block_nesting_fits(tx, &new_parent, height).await?;
     ensure_not_moving_into_self(tx, block_id, &new_parent).await?;
     ensure_not_moving_into_subtree_page(tx, block_id, &new_parent.page_id).await?;
     if request.after.is_some() && request.before.is_some() {
@@ -182,6 +184,8 @@ pub async fn move_blocks(
         let payload: Value = serde_json::from_str(&row.payload)
             .map_err(|e| format!("parse moved block payload: {e}"))?;
         validate_block_for_parent(&new_parent, &row.block_type, &payload)?;
+        let height = block_subtree_height(&mut tx, &row.id).await?;
+        ensure_block_nesting_fits(&mut tx, &new_parent, height).await?;
         ensure_not_moving_into_self(&mut tx, &row.id, &new_parent).await?;
         ensure_not_moving_into_subtree_page(&mut tx, &row.id, &new_parent.page_id).await?;
     }

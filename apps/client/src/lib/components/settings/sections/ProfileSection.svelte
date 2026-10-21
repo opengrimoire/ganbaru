@@ -29,6 +29,7 @@
   import { getNotes } from "$lib/stores/notes.svelte";
   import { getPreferences } from "$lib/stores/preferences.svelte";
   import { cn } from "$lib/utils";
+  import { flushConfig } from "$lib/vault/config";
   import { moveTextInputCaretToPointer } from "$lib/utils/text-input-caret";
 
   let {
@@ -184,7 +185,11 @@
     preferences.setProfileUseImage(draftUseImage);
     draftImageCrop = { ...preferences.profileImageCrop };
     pendingImagePath = null;
-    if (previous && previous !== draftImagePath) await deleteProfileImageFile(previous);
+    if (previous && previous !== draftImagePath) {
+      // Rust refuses to delete the image the saved config names, so the new path must land first.
+      await flushConfig();
+      await deleteProfileImageFile(previous);
+    }
   }
 
   function reportImageError(error: unknown): void {

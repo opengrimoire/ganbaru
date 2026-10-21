@@ -40,6 +40,11 @@ use common::{
     reply_thread_id, serialization_error, validate_message_request,
 };
 #[cfg(desktop)]
+pub(crate) use common::{
+    effective_runtime_approval, native_assignment_safety_mode, parse_approval_policy,
+    parse_runtime_approval_policy, runtime_approval_rank, teammate_runtime_approval,
+};
+#[cfg(desktop)]
 use common::{
     json_object, map_teammate_write_error, validate_display_name, validate_policy,
     validate_profile_text, validate_teammate_role,

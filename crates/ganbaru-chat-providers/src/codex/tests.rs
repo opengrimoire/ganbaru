@@ -9,10 +9,12 @@ use super::organizational::*;
 use super::protocol::*;
 use super::session::{
     CodexApprovalResponse, PendingCodexRequest, PendingCodexRequestKind, PendingCodexRequests,
-    resolve_codex_approval, resolve_codex_user_input,
+    approval_display, provider_request_id, resolve_codex_approval, resolve_codex_user_input,
 };
 use super::transport::{CodexInboundMessage, CodexRpcConnection, CodexRpcFailure};
-use crate::events::{CanonicalEvent, CanonicalRuntimeEvent};
+use crate::events::{
+    ApprovalSubjectKind, CanonicalEvent, CanonicalRuntimeEvent, SessionPermissionGrant,
+};
 use crate::models::*;
 use crate::{
     DriverCancellation, DriverFuture, DriverOperationContext, ProviderDriver, ProviderEventSink,

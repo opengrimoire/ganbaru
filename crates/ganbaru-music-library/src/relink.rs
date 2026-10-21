@@ -8,10 +8,20 @@ use super::local_refresh::{RelinkArtworkCache, RelinkMediaEvidence, inspect_for_
 use super::*;
 
 const MAX_RELINK_DECISIONS: usize = 10_000;
+/// Files and folders a relink scan visits before it stops with an error. Far above any music library, it keeps a mistaken pick such as a whole disk from running unbounded.
+const MAX_RELINK_SCAN_ENTRIES: usize = 2_000_000;
 
 pub async fn create_plan(
     pool: &SqlitePool,
     request: MusicRelinkPlanRequest,
+) -> MusicLibraryResult<MusicRelinkPlanSummary> {
+    create_plan_with_scan_limit(pool, request, MAX_RELINK_SCAN_ENTRIES).await
+}
+
+pub(crate) async fn create_plan_with_scan_limit(
+    pool: &SqlitePool,
+    request: MusicRelinkPlanRequest,
+    scan_limit: usize,
 ) -> MusicLibraryResult<MusicRelinkPlanSummary> {
     validate_plan_request(&request)?;
     let replacement = Path::new(&request.replacement_folder_path);
@@ -45,7 +55,7 @@ pub async fn create_plan(
     .await
     .map_err(|error| map_plan_conflict("create relink plan", error))?;
 
-    let result = scan_plan(pool, &request, replacement).await;
+    let result = scan_plan(pool, &request, replacement, scan_limit).await;
     if let Err(error) = &result {
         let _ = sqlx::query("DELETE FROM music_relink_plans WHERE id = ?")
             .bind(&request.plan_id)
@@ -56,19 +66,34 @@ pub async fn create_plan(
     result
 }
 
-async fn scan_plan(
+pub(crate) async fn scan_plan(
     pool: &SqlitePool,
     request: &MusicRelinkPlanRequest,
     replacement: &Path,
+    scan_limit: usize,
 ) -> MusicLibraryResult<MusicRelinkPlanSummary> {
     let mut directories = VecDeque::from([PathBuf::new()]);
     let mut artwork_cache = RelinkArtworkCache::new();
+    let mut visited_entries = 0_usize;
     while let Some(relative_directory) = directories.pop_front() {
+        if !plan_is_planning(pool, &request.plan_id).await? {
+            return plan_summary(pool, &request.plan_id).await;
+        }
         let directory = replacement.join(&relative_directory);
         let mut entries = fs::read_dir(&directory)
             .map_err(|error| MusicLibraryError::runtime("scan relink folder", error))?
+            .take(scan_limit.saturating_sub(visited_entries).saturating_add(1))
             .collect::<Result<Vec<_>, _>>()
             .map_err(|error| MusicLibraryError::runtime("read relink folder", error))?;
+        visited_entries = visited_entries.saturating_add(entries.len());
+        if visited_entries > scan_limit {
+            return Err(MusicLibraryError::validation(
+                "replacementFolderPath",
+                format!(
+                    "contains more than {scan_limit} files and folders; choose the folder that holds this library"
+                ),
+            ));
+        }
         entries.sort_by_key(|entry| entry.file_name());
         for entry in entries {
             let file_type = entry
@@ -84,6 +109,9 @@ async fn scan_plan(
             }
             if !file_type.is_file() || !crate::media::is_supported_media_path(&entry.path()) {
                 continue;
+            }
+            if !plan_is_planning(pool, &request.plan_id).await? {
+                return plan_summary(pool, &request.plan_id).await;
             }
             let evidence = inspect_for_relink(replacement, &relative_path, &mut artwork_cache)
                 .map_err(|message| MusicLibraryError::runtime("inspect relink media", message))?;
@@ -293,6 +321,17 @@ async fn finalize_plan(
     .await
     .map_err(|error| MusicLibraryError::database("complete relink plan", error))?;
     plan_summary(pool, &request.plan_id).await
+}
+
+/// Whether the plan is still being built, so a scan stops once the plan is cancelled.
+async fn plan_is_planning(pool: &SqlitePool, plan_id: &str) -> MusicLibraryResult<bool> {
+    sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM music_relink_plans WHERE id = ? AND state = 'planning')",
+    )
+    .bind(plan_id)
+    .fetch_one(pool)
+    .await
+    .map_err(|error| MusicLibraryError::database("check relink plan state", error))
 }
 
 pub(crate) async fn plan_summary(

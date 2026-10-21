@@ -124,6 +124,9 @@ pub struct NoteNotionApiImportRequest {
     pub keep_external_file_references: Option<bool>,
     pub page_size: Option<i64>,
     pub project_id: Option<String>,
+    /// Client-chosen ID that addresses this import when stopping it.
+    #[serde(default)]
+    pub import_id: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]

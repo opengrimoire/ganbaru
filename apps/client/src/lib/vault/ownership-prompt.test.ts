@@ -44,6 +44,7 @@ function status(
     replicaReady: true,
     pendingTransfer: false,
     canInvite: false,
+    untouchedStarterVault: false,
   };
 }
 

@@ -335,7 +335,8 @@ fn create_rollback(
         return Ok(None);
     }
     let root = rollback_root(vault);
-    fs::create_dir_all(&root).map_err(|error| format!("create database rollbacks: {error}"))?;
+    ganbaru_atomic_files::create_private_directories(&root)
+        .map_err(|error| format!("create database rollbacks: {error}"))?;
     let mut created = at;
     if let Some(newest) = list_rollbacks(vault)?.first() {
         let after_newest = parse_rollback_id(&newest.id)? + TimeDelta::milliseconds(1);
@@ -343,7 +344,7 @@ fn create_rollback(
     }
     let directory = loop {
         let candidate = root.join(rollback_id(created));
-        match fs::create_dir(&candidate) {
+        match ganbaru_atomic_files::create_private_directory(&candidate) {
             Ok(()) => break candidate,
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
                 created += TimeDelta::milliseconds(1);
@@ -502,7 +503,12 @@ pub async fn vault_restore_database_rollback(
     let transition = super::quiescence::reserve_vault_transition()?;
     let writable_vault = active_writable_vault_path(&app)?;
     validate_rollback(writable_vault.as_ref(), &id).await?;
-    let quiescence = super::quiescence::begin_reserved_quiescence(&app, transition).await?;
+    let quiescence = super::quiescence::begin_reserved_quiescence(
+        &app,
+        transition,
+        super::quiescence::RunningTerminals::Block,
+    )
+    .await?;
     let restored = restore_rollback(writable_vault.as_ref(), &id, super::now_utc()).await;
     let resumed = tauri::async_runtime::spawn_blocking(move || quiescence.finish())
         .await
@@ -597,6 +603,12 @@ mod tests {
         }
         let id = move_database_to_rollback(&vault, at(1)).unwrap().unwrap();
         let rollback = rollback_root(&vault).join(&id);
+        #[cfg(unix)]
+        for directory in [rollback_root(&vault), rollback.clone()] {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = fs::metadata(&directory).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o700, "{}", directory.display());
+        }
         for suffix in DATABASE_FILE_SUFFIXES {
             assert!(!database_file(&vault, suffix).exists(), "{suffix}");
             assert_eq!(

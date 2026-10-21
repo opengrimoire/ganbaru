@@ -2,7 +2,7 @@ use serde::Deserialize;
 use sqlx::{Row, Sqlite, Transaction};
 use tauri::{AppHandle, Runtime};
 
-use crate::db::connect_sqlite;
+use crate::db::connect_benchmark_database;
 use ganbaru_music_library::fixtures::{DenseMusicFixtureSummary, seed_dense_music_fixture};
 
 #[derive(Deserialize)]
@@ -82,12 +82,11 @@ struct BenchmarkPomodoroPauseSeed {
 #[tauri::command]
 pub async fn benchmark_seed_pomodoro_history<R: Runtime>(
     app: AppHandle<R>,
-    db_url: String,
     payload: BenchmarkPomodoroHistoryPayload,
 ) -> Result<(), String> {
     validate_payload(&payload)?;
 
-    let pool = connect_sqlite(app, db_url).await?;
+    let pool = connect_benchmark_database(app).await?;
     let mut tx = pool.begin().await.map_err(|e| format!("begin: {e}"))?;
 
     for config in &payload.configs {
@@ -104,9 +103,8 @@ pub async fn benchmark_seed_pomodoro_history<R: Runtime>(
 #[tauri::command]
 pub async fn benchmark_seed_dense_music_library<R: Runtime>(
     app: AppHandle<R>,
-    db_url: String,
 ) -> Result<DenseMusicFixtureSummary, String> {
-    let pool = connect_sqlite(app, db_url).await?;
+    let pool = connect_benchmark_database(app).await?;
     seed_dense_music_fixture(&pool)
         .await
         .map_err(|error| error.to_string())

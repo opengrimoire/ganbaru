@@ -110,6 +110,8 @@ export const navigationAndSearch = {
   notionApiImportKeepExternalFilesDescription: "Keep supported remote file URLs as references",
   notionApiImportSubmit: "Import",
   notionApiImportImporting: "Importing",
+  notionApiImportStop: "Stop import",
+  notionApiImportStopping: "Stopping",
   notionApiImportFailed: (message: string) => `Could not import from Notion API: ${message}`,
   notionApiImportComplete: (pages: number, blocks: number, comments: number) =>
     `Imported ${pages} ${pages === 1 ? "note" : "notes"}, ${blocks} ${blocks === 1 ? "block" : "blocks"}, and ${comments} ${comments === 1 ? "comment" : "comments"}`,

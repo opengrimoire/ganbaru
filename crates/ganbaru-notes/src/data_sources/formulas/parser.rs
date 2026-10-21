@@ -3,6 +3,9 @@ use std::collections::HashSet;
 pub const MAX_FORMULA_EXPRESSION_CHARS: usize = 2_000;
 const MAX_AST_NODES: usize = 256;
 const MAX_FUNCTION_ARGS: usize = 16;
+/// Deepest nesting of parentheses, unary operators, and call arguments the
+/// recursive descent parser enters before refusing an expression.
+const MAX_PARSE_DEPTH: usize = 64;
 
 #[derive(Clone, Debug)]
 pub enum FormulaExpr {
@@ -105,6 +108,7 @@ struct FormulaParser {
     chars: Vec<char>,
     pos: usize,
     node_count: usize,
+    depth: usize,
 }
 
 impl FormulaParser {
@@ -113,6 +117,7 @@ impl FormulaParser {
             chars: expression.chars().collect(),
             pos: 0,
             node_count: 0,
+            depth: 0,
         }
     }
 
@@ -215,11 +220,11 @@ impl FormulaParser {
 
     fn parse_unary(&mut self) -> Result<FormulaExpr, String> {
         if self.match_token("-") {
-            let expr = self.parse_unary()?;
+            let expr = self.nested(Self::parse_unary)?;
             return self.unary(UnaryOp::Negate, expr);
         }
         if self.match_token("!") || self.match_keyword("not") {
-            let expr = self.parse_unary()?;
+            let expr = self.nested(Self::parse_unary)?;
             return self.unary(UnaryOp::Not, expr);
         }
         self.parse_primary()
@@ -228,7 +233,7 @@ impl FormulaParser {
     fn parse_primary(&mut self) -> Result<FormulaExpr, String> {
         self.skip_whitespace();
         if self.match_token("(") {
-            let expr = self.parse_expression()?;
+            let expr = self.nested(Self::parse_expression)?;
             if !self.match_token(")") {
                 return Err("formula.expression has an unclosed parenthesis".to_string());
             }
@@ -263,7 +268,7 @@ impl FormulaParser {
                 if args.len() >= MAX_FUNCTION_ARGS {
                     return Err("formula function has too many arguments".to_string());
                 }
-                args.push(self.parse_expression()?);
+                args.push(self.nested(Self::parse_expression)?);
                 if !self.match_token(",") {
                     break;
                 }
@@ -359,6 +364,21 @@ impl FormulaParser {
         })
     }
 
+    /// Runs one nested production, refusing it once `MAX_PARSE_DEPTH` levels
+    /// are open so hostile input cannot exhaust the thread stack.
+    fn nested(
+        &mut self,
+        parse: fn(&mut Self) -> Result<FormulaExpr, String>,
+    ) -> Result<FormulaExpr, String> {
+        if self.depth >= MAX_PARSE_DEPTH {
+            return Err("formula expression is nested too deeply".to_string());
+        }
+        self.depth += 1;
+        let result = parse(self);
+        self.depth -= 1;
+        result
+    }
+
     fn expr(&mut self, expr: FormulaExpr) -> Result<FormulaExpr, String> {
         self.node_count += 1;
         if self.node_count > MAX_AST_NODES {
@@ -428,4 +448,60 @@ fn is_identifier_start(value: char) -> bool {
 
 fn is_identifier_part(value: char) -> bool {
     value.is_ascii_alphanumeric() || value == '_'
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn nested_parentheses(depth: usize) -> String {
+        format!("{}1{}", "(".repeat(depth), ")".repeat(depth))
+    }
+
+    #[test]
+    fn nesting_at_the_depth_limit_parses_and_one_more_level_is_refused() {
+        assert!(parse_formula_expression(&nested_parentheses(MAX_PARSE_DEPTH)).is_ok());
+        assert_eq!(
+            parse_formula_expression(&nested_parentheses(MAX_PARSE_DEPTH + 1)).unwrap_err(),
+            "formula expression is nested too deeply"
+        );
+        let calls = format!(
+            "{}1{}",
+            "abs(".repeat(MAX_PARSE_DEPTH + 1),
+            ")".repeat(MAX_PARSE_DEPTH + 1)
+        );
+        assert_eq!(
+            parse_formula_expression(&calls).unwrap_err(),
+            "formula expression is nested too deeply"
+        );
+    }
+
+    #[test]
+    fn hostile_unary_and_parenthesis_chains_at_the_length_limit_fail_without_recursing() {
+        let half = MAX_FORMULA_EXPRESSION_CHARS / 2;
+        for expression in [
+            format!("{}1", "-".repeat(MAX_FORMULA_EXPRESSION_CHARS - 1)),
+            format!("{}true", "!".repeat(MAX_FORMULA_EXPRESSION_CHARS - 4)),
+            format!(
+                "{}true",
+                "not ".repeat((MAX_FORMULA_EXPRESSION_CHARS - 4) / 4)
+            ),
+            nested_parentheses(half - 1),
+        ] {
+            assert!(expression.chars().count() <= MAX_FORMULA_EXPRESSION_CHARS);
+            assert_eq!(
+                parse_formula_expression(&expression).unwrap_err(),
+                "formula expression is nested too deeply"
+            );
+        }
+    }
+
+    #[test]
+    fn ordinary_nested_formulas_still_parse() {
+        let expression =
+            r#"if(prop("Done"), -(prop("Estimate") * 2), not (prop("Late") or false))"#;
+        let parsed = parse_formula_expression(expression).unwrap();
+        let dependencies = formula_dependencies(&parsed).unwrap();
+        assert_eq!(dependencies.len(), 3);
+    }
 }

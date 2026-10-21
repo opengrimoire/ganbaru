@@ -1,7 +1,9 @@
 //! Project-owned working folders and device-local binding authorization.
 
+mod external_open;
 pub mod files;
 pub mod mutation;
+pub use external_open::*;
 pub use ganbaru_chat_contracts::protected_paths;
 #[cfg(test)]
 mod trust_tests;
@@ -20,7 +22,6 @@ use ganbaru_working_folders::{
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::ffi::OsStr;
 use std::fs::{self, OpenOptions};
 use std::path::{Component, Path, PathBuf};
 
@@ -703,6 +704,10 @@ pub fn filesystem_identity(path: &Path, domain: &[u8]) -> ChatResult<String> {
 }
 
 #[cfg(windows)]
+#[allow(
+    unsafe_code,
+    reason = "Retained unsafe boundary; see docs/data/security/unsafe-rust.md."
+)]
 pub fn filesystem_identity(path: &Path, domain: &[u8]) -> ChatResult<String> {
     use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
     use std::os::windows::io::AsRawHandle;
@@ -812,62 +817,4 @@ fn path_validation_error() -> ChatError {
         "relativePath",
         "Workspace paths must be normalized relative paths",
     )
-}
-
-pub fn open_authorized_workspace(authorized: &AuthorizedWorkingFolder) -> ChatResult<()> {
-    open_authorized_path(authorized, &authorized.canonical_path)
-}
-
-pub fn open_authorized_path(authorized: &AuthorizedWorkingFolder, path: &Path) -> ChatResult<()> {
-    if !path.starts_with(&authorized.canonical_path) {
-        return Err(ChatError::new(
-            ChatErrorCode::Permission,
-            "Workspace path resolves outside the bound folder",
-            false,
-        ));
-    }
-    spawn_file_manager(path).map_err(|_| {
-        ChatError::new(
-            ChatErrorCode::Internal,
-            "The project working-folder path could not be opened",
-            true,
-        )
-    })
-}
-
-#[cfg(target_os = "linux")]
-fn spawn_file_manager(path: &Path) -> std::io::Result<()> {
-    spawn_file_manager_command("xdg-open", [path.as_os_str()])
-}
-
-#[cfg(target_os = "macos")]
-fn spawn_file_manager(path: &Path) -> std::io::Result<()> {
-    spawn_file_manager_command("open", [path.as_os_str()])
-}
-
-#[cfg(windows)]
-fn spawn_file_manager(path: &Path) -> std::io::Result<()> {
-    spawn_file_manager_command("explorer.exe", [path.as_os_str()])
-}
-
-#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
-fn spawn_file_manager(_path: &Path) -> std::io::Result<()> {
-    Err(std::io::Error::new(
-        std::io::ErrorKind::Unsupported,
-        "platform is unsupported",
-    ))
-}
-
-fn spawn_file_manager_command<I, S>(program: &str, arguments: I) -> std::io::Result<()>
-where
-    I: IntoIterator<Item = S>,
-    S: AsRef<OsStr>,
-{
-    std::process::Command::new(program)
-        .args(arguments)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .map(|_| ())
 }

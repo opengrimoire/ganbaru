@@ -92,7 +92,7 @@ pub(super) fn validate_group_update(group: &ProjectGroupUpdate) -> Result<(), St
 
 pub(super) fn validate_project_create(project: &ProjectCreate) -> Result<(), String> {
     require_non_empty(&project.id, "id")?;
-    validate_project_path_segment(&project.id)?;
+    ganbaru_working_folders::validate_managed_folder_name(&project.id)?;
     require_non_empty(&project.group_id, "group_id")?;
     validate_enum(&project.template_id, "template_id", PROJECT_TEMPLATE_IDS)?;
     require_non_empty(&project.name, "name")?;
@@ -116,23 +116,6 @@ pub(super) fn validate_project_create(project: &ProjectCreate) -> Result<(), Str
         &project.default_idle_settings_source,
         project.default_idle_threshold_minutes,
     )?;
-    Ok(())
-}
-
-fn validate_project_path_segment(value: &str) -> Result<(), String> {
-    if value == "."
-        || value == ".."
-        || value.len() > 240
-        || value.chars().any(|character| {
-            character.is_control()
-                || matches!(
-                    character,
-                    '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|'
-                )
-        })
-    {
-        return Err("id cannot be used as a project folder name".to_string());
-    }
     Ok(())
 }
 

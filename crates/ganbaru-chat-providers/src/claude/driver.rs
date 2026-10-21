@@ -120,7 +120,7 @@ impl ClaudeProviderDriver {
         &self,
         context: &DriverOperationContext,
     ) -> ChatResult<ClaudeProbeSnapshot> {
-        let workspace = canonical_current_directory()?;
+        let workspace = crate::probe_directory::ProbeDirectory::create()?;
         let session_uuid = new_uuid(&self.configuration.instance_id);
         let (mut connection, _, version) = self
             .open_connection(

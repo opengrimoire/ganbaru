@@ -411,9 +411,20 @@ impl Owner {
                 .extend(prior.apply(SessionIntent::Stop, now_ms()).listening);
         }
         #[cfg(desktop)]
+        let soundscape_paths = {
+            let app = self.app.clone();
+            let vault_id = self.vault_id.clone().unwrap_or_default();
+            tauri::async_runtime::spawn_blocking(move || {
+                crate::music::soundscape_paths::paths(&app, &vault_id)
+            })
+            .await
+            .map_err(|error| MusicLibraryError::runtime("read soundscape paths", error))?
+            .map_err(|error| MusicLibraryError::runtime("read soundscape paths", error))?
+        };
+        #[cfg(desktop)]
         let soundscape = super::context_soundscape::prepare(
             &mut transaction,
-            &self.device_id,
+            &soundscape_paths,
             &soundscape_behavior,
             soundscape_preset_id.as_deref(),
         )

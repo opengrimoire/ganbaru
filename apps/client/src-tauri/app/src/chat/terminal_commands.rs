@@ -1,8 +1,8 @@
 //! Authorized commands for runtime terminals.
 
 use super::terminal::{
-    ChatTerminalCloseResult, ChatTerminalCreateInput, ChatTerminalRead, ChatTerminalRegistry,
-    ChatTerminalSnapshotRead, default_shell_label,
+    ChatTerminalCloseResult, ChatTerminalCreateInput, ChatTerminalId, ChatTerminalOutputChunk,
+    ChatTerminalRead, ChatTerminalRegistry, ChatTerminalSnapshotRead, default_shell_label,
 };
 use super::terminal_access::{ChatTerminalAccess, TerminalStartScope, reservation_mismatch_error};
 use super::workspace::commands::authorize_working_folder;
@@ -18,6 +18,7 @@ use sqlx::{Row, SqlitePool};
 use std::future::Future;
 use std::path::Path;
 use tauri::Manager;
+use tauri::ipc::Channel;
 use tauri_plugin_dialog::{
     DialogExt, MessageDialogButtons, MessageDialogKind, MessageDialogResult,
 };
@@ -25,7 +26,7 @@ use tauri_plugin_dialog::{
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateChatTerminalRequest {
-    pub terminal_id: String,
+    pub terminal_id: ChatTerminalId,
     pub thread_id: ChatThreadId,
     pub working_folder_id: ProjectWorkingFolderId,
     pub columns: u16,
@@ -47,7 +48,7 @@ pub struct TerminalStartPrompt {
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChatTerminalInputRequest {
-    pub terminal_id: String,
+    pub terminal_id: ChatTerminalId,
     pub thread_id: ChatThreadId,
     pub working_folder_id: ProjectWorkingFolderId,
     pub text: String,
@@ -56,7 +57,7 @@ pub struct ChatTerminalInputRequest {
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChatTerminalResizeRequest {
-    pub terminal_id: String,
+    pub terminal_id: ChatTerminalId,
     pub thread_id: ChatThreadId,
     pub working_folder_id: ProjectWorkingFolderId,
     pub columns: u16,
@@ -100,8 +101,10 @@ pub async fn chat_read_terminal_layout(
     app: tauri::AppHandle,
     db_url: String,
     thread_id: ChatThreadId,
+    working_folder_id: ProjectWorkingFolderId,
 ) -> ChatResult<ChatTerminalLayoutRead> {
-    let pool = chat_pool(app, db_url).await?;
+    let pool = chat_pool(app.clone(), db_url).await?;
+    authorize_thread_workspace(&app, &pool, &thread_id, &working_folder_id).await?;
     let row = sqlx::query(
         "SELECT layout_schema_version, layout_data, updated_at
          FROM chat_terminal_layouts WHERE thread_id = ?",
@@ -151,10 +154,12 @@ pub async fn chat_save_terminal_panel_layout(
     app: tauri::AppHandle,
     db_url: String,
     thread_id: ChatThreadId,
+    working_folder_id: ProjectWorkingFolderId,
     panel: ChatTerminalPanelLayout,
 ) -> ChatResult<ChatTerminalLayoutRead> {
     validate_terminal_layout_groups(std::slice::from_ref(&panel))?;
-    let pool = chat_pool(app, db_url).await?;
+    let pool = chat_pool(app.clone(), db_url).await?;
+    authorize_thread_workspace(&app, &pool, &thread_id, &working_folder_id).await?;
     let mut transaction = pool.begin().await.map_err(persistence_error)?;
     let existing: Option<String> =
         sqlx::query_scalar("SELECT layout_data FROM chat_terminal_layouts WHERE thread_id = ?")
@@ -243,6 +248,10 @@ pub async fn chat_terminal_create(
     let pool = chat_pool(app.clone(), db_url).await?;
     let scope =
         authorize_thread_scope(&app, &pool, &request.thread_id, &request.working_folder_id).await?;
+    let folder =
+        ganbaru_chat::repository::workspaces::read_workspace(&pool, &request.working_folder_id)
+            .await?;
+    validate_terminal_start(scope.thread_archived, folder.archived_at.is_some())?;
     let shell = default_shell_label();
     let path = scope.authorized.canonical_path.clone();
     ensure_start_grant(
@@ -255,9 +264,10 @@ pub async fn chat_terminal_create(
     app.state::<ChatTerminalRegistry>().create(
         app.clone(),
         ChatTerminalCreateInput {
-            terminal_id: request.terminal_id,
+            terminal_id: request.terminal_id.into_inner(),
             thread_id: request.thread_id,
             working_folder_id: request.working_folder_id,
+            environment_id: scope.environment_id,
             workspace_path: authorized.canonical_path,
             columns: request.columns,
             rows: request.rows,
@@ -269,15 +279,56 @@ pub async fn chat_terminal_create(
 pub async fn chat_terminal_snapshot(
     app: tauri::AppHandle,
     db_url: String,
-    terminal_id: String,
+    terminal_id: ChatTerminalId,
     thread_id: ChatThreadId,
     working_folder_id: ProjectWorkingFolderId,
 ) -> ChatResult<ChatTerminalSnapshotRead> {
     let pool = chat_pool(app.clone(), db_url).await?;
     authorize_thread_workspace(&app, &pool, &thread_id, &working_folder_id).await?;
     let registry = app.state::<ChatTerminalRegistry>();
-    registry.require_scope(&terminal_id, &thread_id, &working_folder_id)?;
-    registry.snapshot(&terminal_id)
+    registry.require_scope(terminal_id.as_str(), &thread_id, &working_folder_id)?;
+    registry.snapshot(terminal_id.as_str())
+}
+
+/// Subscribes the calling view to live output through its own channel and returns the replay to render first.
+#[tauri::command]
+pub async fn chat_terminal_attach(
+    app: tauri::AppHandle,
+    db_url: String,
+    terminal_id: ChatTerminalId,
+    thread_id: ChatThreadId,
+    working_folder_id: ProjectWorkingFolderId,
+    subscription_id: String,
+    channel: Channel<ChatTerminalOutputChunk>,
+) -> ChatResult<ChatTerminalSnapshotRead> {
+    let pool = chat_pool(app.clone(), db_url).await?;
+    authorize_thread_workspace(&app, &pool, &thread_id, &working_folder_id).await?;
+    let registry = app.state::<ChatTerminalRegistry>();
+    registry.require_scope(terminal_id.as_str(), &thread_id, &working_folder_id)?;
+    registry.attach(terminal_id.as_str(), subscription_id, Box::new(channel))
+}
+
+/// Flow control for an existing subscription. The random subscription ID, issued to the attached view, is the
+/// capability, so these frequent calls skip the database authorization that attaching already passed.
+#[tauri::command]
+pub fn chat_terminal_acknowledge(
+    app: tauri::AppHandle,
+    terminal_id: ChatTerminalId,
+    subscription_id: String,
+    bytes: u64,
+) -> ChatResult<()> {
+    app.state::<ChatTerminalRegistry>()
+        .acknowledge(terminal_id.as_str(), &subscription_id, bytes)
+}
+
+#[tauri::command]
+pub fn chat_terminal_detach(
+    app: tauri::AppHandle,
+    terminal_id: ChatTerminalId,
+    subscription_id: String,
+) -> ChatResult<()> {
+    app.state::<ChatTerminalRegistry>()
+        .detach(terminal_id.as_str(), &subscription_id)
 }
 
 #[tauri::command]
@@ -290,11 +341,11 @@ pub async fn chat_terminal_input(
     authorize_thread_workspace(&app, &pool, &request.thread_id, &request.working_folder_id).await?;
     let registry = app.state::<ChatTerminalRegistry>();
     registry.require_scope(
-        &request.terminal_id,
+        request.terminal_id.as_str(),
         &request.thread_id,
         &request.working_folder_id,
     )?;
-    registry.input(&request.terminal_id, &request.text)
+    registry.input(request.terminal_id.as_str(), &request.text)
 }
 
 #[tauri::command]
@@ -307,18 +358,18 @@ pub async fn chat_terminal_resize(
     authorize_thread_workspace(&app, &pool, &request.thread_id, &request.working_folder_id).await?;
     let registry = app.state::<ChatTerminalRegistry>();
     registry.require_scope(
-        &request.terminal_id,
+        request.terminal_id.as_str(),
         &request.thread_id,
         &request.working_folder_id,
     )?;
-    registry.resize(&request.terminal_id, request.columns, request.rows)
+    registry.resize(request.terminal_id.as_str(), request.columns, request.rows)
 }
 
 #[tauri::command]
 pub async fn chat_terminal_close(
     app: tauri::AppHandle,
     db_url: String,
-    terminal_id: String,
+    terminal_id: ChatTerminalId,
     thread_id: ChatThreadId,
     working_folder_id: ProjectWorkingFolderId,
     confirmed: bool,
@@ -326,8 +377,8 @@ pub async fn chat_terminal_close(
     let pool = chat_pool(app.clone(), db_url).await?;
     authorize_thread_workspace(&app, &pool, &thread_id, &working_folder_id).await?;
     let registry = app.state::<ChatTerminalRegistry>();
-    registry.require_scope(&terminal_id, &thread_id, &working_folder_id)?;
-    registry.close(&terminal_id, confirmed)
+    registry.require_scope(terminal_id.as_str(), &thread_id, &working_folder_id)?;
+    registry.close(terminal_id.as_str(), confirmed)
 }
 
 /// Binds an unsaved draft thread to its working folder so it may open terminals.
@@ -363,6 +414,7 @@ pub async fn chat_reserve_draft_thread(
 struct ThreadTerminalScope {
     vault_id: String,
     environment_id: Option<String>,
+    thread_archived: bool,
     authorized: AuthorizedWorkingFolder,
 }
 
@@ -444,7 +496,8 @@ async fn ask_terminal_start(
     })
 }
 
-async fn authorize_thread_workspace(
+/// Authorizes a persisted or reserved thread in its working folder for terminal access on this device.
+pub(crate) async fn authorize_thread_workspace(
     app: &tauri::AppHandle,
     pool: &SqlitePool,
     thread_id: &ChatThreadId,
@@ -481,6 +534,9 @@ async fn authorize_thread_scope(
         WorkingFolderAuthorizationOperation::TerminalStart,
     )
     .await?;
+    let thread_archived = stored_scope
+        .as_ref()
+        .is_some_and(|(_, state, _)| state == "archived");
     let environment_id = stored_scope.and_then(|(_, _, environment_id)| environment_id);
     let authorized = super::execution_environment::resolve_environment_workspace(
         app,
@@ -492,6 +548,7 @@ async fn authorize_thread_scope(
     Ok(ThreadTerminalScope {
         vault_id,
         environment_id,
+        thread_archived,
         authorized,
     })
 }
@@ -545,6 +602,23 @@ fn validate_terminal_thread_scope(
     Ok(())
 }
 
+/// Refuses a new shell in an archived thread or working folder. Terminals that
+/// already run there stay listable, usable, and closable.
+fn validate_terminal_start(thread_archived: bool, folder_archived: bool) -> ChatResult<()> {
+    let message = if folder_archived {
+        "Unarchive the working folder to start a terminal in it"
+    } else if thread_archived {
+        "Unarchive the Chat thread to start a terminal in it"
+    } else {
+        return Ok(());
+    };
+    Err(ChatError::new(
+        ChatErrorCode::InvalidStateTransition,
+        message,
+        true,
+    ))
+}
+
 fn thread_not_found_error() -> ChatError {
     ChatError::new(ChatErrorCode::NotFound, "Chat thread was not found", true)
 }
@@ -593,6 +667,33 @@ mod tests {
     }
 
     #[test]
+    fn terminal_commands_accept_only_canonical_uuid_terminal_ids() {
+        let request = |terminal_id: &str| {
+            serde_json::from_value::<ChatTerminalInputRequest>(json!({
+                "terminalId": terminal_id,
+                "threadId": "thread",
+                "workingFolderId": "folder",
+                "text": "ls\r",
+            }))
+        };
+        let valid = request("0f8fad5b-d9cb-469f-a165-70867728950e").expect("UUID is accepted");
+        assert_eq!(
+            valid.terminal_id.as_str(),
+            "0f8fad5b-d9cb-469f-a165-70867728950e"
+        );
+        for invalid in [
+            "",
+            "terminal:test",
+            "0F8FAD5B-D9CB-469F-A165-70867728950E",
+            "{0f8fad5b-d9cb-469f-a165-70867728950e}",
+            "0f8fad5bd9cb469fa16570867728950e",
+            "0f8fad5b-d9cb-469f-a165-70867728950e\n",
+            "0f8fad5b-d9cb-469f-a165_70867728950e",
+        ] {
+            assert!(request(invalid).is_err(), "{invalid:?} is rejected");
+        }
+    }
+    #[test]
     fn terminal_create_rejects_unknown_thread_without_reservation() {
         let folder = workspace("workspace:test");
         let unknown = validate_terminal_thread_scope(None, None, &folder)
@@ -633,6 +734,26 @@ mod tests {
         )
         .expect_err("cross-workspace threads must not authorize terminals");
         assert_eq!(mismatched.code, ChatErrorCode::Permission);
+    }
+
+    #[test]
+    fn archived_threads_keep_running_terminals_and_archived_scopes_start_none() {
+        let folder = workspace("workspace:test");
+        assert!(
+            validate_terminal_thread_scope(
+                Some(&stored("workspace:test", "archived")),
+                None,
+                &folder
+            )
+            .is_ok(),
+            "surviving terminals of an archived thread stay reachable"
+        );
+        assert!(validate_terminal_start(false, false).is_ok());
+        for (thread_archived, folder_archived) in [(true, false), (false, true), (true, true)] {
+            let refused = validate_terminal_start(thread_archived, folder_archived)
+                .expect_err("archived scopes must not start terminals");
+            assert_eq!(refused.code, ChatErrorCode::InvalidStateTransition);
+        }
     }
 
     #[test]
@@ -682,5 +803,44 @@ mod tests {
             .clear_folder(&workspace("workspace:test"))
             .expect("clear");
         assert!(!access.is_granted(&scope).expect("read"));
+    }
+
+    #[test]
+    fn layout_and_preview_discovery_authorize_the_thread_before_reading() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/chat");
+        for (file, command, first_read) in [
+            (
+                "terminal_commands.rs",
+                "chat_read_terminal_layout",
+                "sqlx::query(",
+            ),
+            (
+                "terminal_commands.rs",
+                "chat_save_terminal_panel_layout",
+                "pool.begin()",
+            ),
+            (
+                "preview.rs",
+                "chat_browser_discover_servers",
+                "registry.snapshot(",
+            ),
+        ] {
+            let source = std::fs::read_to_string(root.join(file)).expect("read Chat source");
+            let start = source
+                .find(&format!("pub async fn {command}("))
+                .unwrap_or_else(|| panic!("{command} is defined"));
+            let end = start + source[start..].find("\n}\n").expect("command ends");
+            let body = &source[start..end];
+            let authorized = body
+                .find("authorize_thread_workspace(")
+                .unwrap_or_else(|| panic!("{command} authorizes the thread"));
+            let read = body
+                .find(first_read)
+                .unwrap_or_else(|| panic!("{command} reads {first_read}"));
+            assert!(
+                authorized < read,
+                "{command} must authorize the thread before {first_read}"
+            );
+        }
     }
 }

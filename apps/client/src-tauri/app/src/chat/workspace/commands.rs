@@ -10,6 +10,7 @@ use super::{
     remove_active_device_binding, store_active_device_binding, trust_decision_required_error,
     trust_record, validate_external_folder_outside_vault, workspace_read,
 };
+use crate::chat::revocation::ActiveRunSelector;
 use crate::db;
 use crate::projects::working_folders::{
     WorkingFolderDeviceScope, read_active_working_folder_scope, update_active_working_folder_scope,
@@ -227,7 +228,7 @@ pub async fn projects_list_working_folders(
     let workspaces = repository::list_workspaces(&pool).await?;
     let mut reconciled = Vec::with_capacity(workspaces.len());
     for workspace in workspaces {
-        ensure_managed_working_folder_binding(&app, &workspace)?;
+        bind_managed_folder_for_listing(&app, &workspace);
         reconciled.push(reconcile_working_folder_binding(&app, &pool, workspace).await?);
     }
     let scope = read_active_working_folder_scope(&app).map_err(device_state_error)?;
@@ -249,7 +250,7 @@ pub async fn projects_list_working_folders_cached(
         if workspace.kind == WorkingFolderKind::Managed
             && !scope.bindings.contains_key(&workspace.id)
         {
-            ensure_managed_working_folder_binding(&app, workspace)?;
+            bind_managed_folder_for_listing(&app, workspace);
             scope = read_active_working_folder_scope(&app).map_err(device_state_error)?;
         }
     }
@@ -257,6 +258,17 @@ pub async fn projects_list_working_folders_cached(
         .into_iter()
         .map(|workspace| workspace_read(workspace, &scope))
         .collect()
+}
+
+/// Binds a managed folder while listing. A folder that cannot be bound stays unbound and is
+/// listed with that state, so one unusable row never hides the others.
+fn bind_managed_folder_for_listing(app: &tauri::AppHandle, workspace: &ProjectWorkingFolder) {
+    if let Err(error) = ensure_managed_working_folder_binding(app, workspace) {
+        eprintln!(
+            "Managed working folder {} was left unbound: {}",
+            workspace.id, error.message
+        );
+    }
 }
 
 pub(crate) async fn reconcile_working_folder_binding_for_id(
@@ -549,6 +561,13 @@ pub async fn projects_unbind_working_folder(
     app.state::<crate::chat::terminal_access::ChatTerminalAccess>()
         .clear_folder(&working_folder_id)?;
     remove_active_device_binding(&app, &working_folder_id)?;
+    crate::chat::revocation::revoke_and_stop_active_runs(
+        &app,
+        &pool,
+        ActiveRunSelector::WorkingFolder(&working_folder_id),
+        "The working folder was unbound",
+    )
+    .await?;
     read_workspace(&app, workspace)
 }
 
@@ -686,8 +705,17 @@ async fn set_workspace_archived(
     )
     .await?;
     if archived {
+        app.state::<crate::chat::terminal::ChatTerminalRegistry>()
+            .shutdown_workspace(&working_folder_id)?;
         app.state::<crate::chat::terminal_access::ChatTerminalAccess>()
             .clear_folder(&working_folder_id)?;
+        crate::chat::revocation::revoke_and_stop_active_runs(
+            &app,
+            &pool,
+            ActiveRunSelector::WorkingFolder(&working_folder_id),
+            "The working folder was archived",
+        )
+        .await?;
     }
     read_workspace(&app, workspace)
 }
@@ -758,7 +786,15 @@ async fn bind_workspace(
     } else {
         workspace
     };
-    store_active_device_binding(app, &workspace.id, binding)?;
+    if store_active_device_binding(app, &workspace.id, binding)? {
+        crate::chat::revocation::revoke_and_stop_active_runs(
+            app,
+            pool,
+            ActiveRunSelector::WorkingFolder(&workspace.id),
+            "The working folder was moved to another directory",
+        )
+        .await?;
+    }
     read_workspace(app, workspace)
 }
 
@@ -1254,5 +1290,22 @@ mod tests {
         );
         assert_eq!(answer(MessageDialogResult::Cancel), TrustAnswer::Cancel);
         assert_eq!(answer(MessageDialogResult::Ok), TrustAnswer::Cancel);
+    }
+
+    #[test]
+    fn archiving_a_working_folder_stops_its_terminals() {
+        let source = include_str!("commands.rs");
+        let start = source
+            .find("async fn set_workspace_archived(")
+            .expect("archive command exists");
+        let end = start + source[start..].find("\n}\n").expect("archive command ends");
+        let archived_branch = &source[start..end];
+        let archived_branch = &archived_branch[archived_branch
+            .find("if archived {")
+            .expect("archive has an archived branch")..];
+        assert!(
+            archived_branch.contains(".shutdown_workspace(&working_folder_id)?;"),
+            "archiving a folder must stop the terminals started in it"
+        );
     }
 }

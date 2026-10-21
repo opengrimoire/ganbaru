@@ -30,6 +30,8 @@ impl<'a> GitFolder<'a> {
 
 const MAX_GIT_OUTPUT_BYTES: usize = 8 * 1024 * 1024;
 const MAX_REVIEW_OUTPUT_BYTES: usize = 64 * 1024 * 1024;
+/// Longest git or hosted CLI error text returned to the webview, in characters.
+pub(crate) const MAX_DIAGNOSTIC_CHARS: usize = 2_048;
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -112,24 +114,42 @@ pub async fn status(folder: GitFolder<'_>) -> ChatResult<GitStatusRead> {
     parse_status(&output.stdout)
 }
 
-pub async fn diff(
-    folder: GitFolder<'_>,
-    staged: bool,
-    relative_path: Option<&str>,
-) -> ChatResult<String> {
-    let mut arguments = vec!["diff", "--no-ext-diff", "--no-color"];
-    if staged {
-        arguments.push("--cached");
+/// Rewrites repository-relative paths, as status and diffs report them, into pathspecs
+/// relative to the working folder, where Git resolves them.
+///
+/// A working folder below the repository root reaches paths outside it through `..`, as the
+/// user's own `git` does from that folder.
+pub async fn folder_pathspecs(folder: GitFolder<'_>, paths: &[String]) -> ChatResult<Vec<String>> {
+    let output = run(folder, &["rev-parse", "--show-prefix"], GitCall::Internal).await?;
+    let prefix = String::from_utf8(output.stdout)
+        .map_err(|_| git_protocol_error("Git folder prefix is not valid UTF-8"))?;
+    let prefix = prefix.strip_suffix('\n').unwrap_or(&prefix);
+    Ok(paths
+        .iter()
+        .map(|path| pathspec_below_prefix(prefix, path))
+        .collect())
+}
+
+/// The pathspec for repository-relative `path` from the folder at `prefix`, which is empty
+/// at the repository root and otherwise ends with `/`.
+fn pathspec_below_prefix(prefix: &str, path: &str) -> String {
+    if prefix.is_empty() {
+        return path.to_string();
     }
-    if let Some(path) = relative_path {
-        arguments.extend(["--", path]);
+    if let Some(inside) = path.strip_prefix(prefix)
+        && !inside.is_empty()
+    {
+        return inside.to_string();
     }
-    let output = run(folder, &arguments, GitCall::Internal).await?;
-    String::from_utf8(output.stdout)
-        .map_err(|_| git_protocol_error("Git diff output is not valid UTF-8"))
+    let depth = prefix
+        .split('/')
+        .filter(|component| !component.is_empty())
+        .count();
+    format!("{}{path}", "../".repeat(depth))
 }
 
 pub async fn stage(folder: GitFolder<'_>, paths: &[String]) -> ChatResult<()> {
+    let paths = folder_pathspecs(folder, paths).await?;
     let mut arguments = vec!["add", "--"];
     arguments.extend(paths.iter().map(String::as_str));
     run(folder, &arguments, GitCall::User).await.map(|_| ())
@@ -162,6 +182,7 @@ pub async fn unstage(folder: GitFolder<'_>, paths: &[String]) -> ChatResult<()> 
         .trim()
         .to_string(),
     };
+    let paths = folder_pathspecs(folder, paths).await?;
     let source_argument = format!("--source={source}");
     let mut arguments = vec!["restore", "--staged", source_argument.as_str(), "--"];
     arguments.extend(paths.iter().map(String::as_str));
@@ -439,6 +460,8 @@ pub async fn discard_paths(
     tracked_paths: &[String],
     untracked_paths: &[String],
 ) -> ChatResult<()> {
+    let tracked_paths = folder_pathspecs(folder, tracked_paths).await?;
+    let untracked_paths = folder_pathspecs(folder, untracked_paths).await?;
     if !tracked_paths.is_empty() {
         let mut arguments = vec!["restore", "--worktree", "--"];
         arguments.extend(tracked_paths.iter().map(String::as_str));
@@ -716,7 +739,7 @@ async fn run_bounded_with_storage(
     })
     .await?;
     if !output.status.success() {
-        let detail = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let detail = diagnostic_text(&output.stderr);
         return Err(ChatError {
             code: ChatErrorCode::Conflict,
             message: "Git operation failed safely".to_string(),
@@ -729,6 +752,52 @@ async fn run_bounded_with_storage(
         stdout: output.stdout,
         stdout_bytes: output.stdout_bytes,
     })
+}
+
+/// Turns tool error output into text safe to show: control and bidirectional formatting
+/// characters are removed (line breaks and tabs stay), credentials in `scheme://user@host`
+/// URLs are dropped, and the result is capped at [`MAX_DIAGNOSTIC_CHARS`] with a visible marker.
+pub(crate) fn diagnostic_text(raw: &[u8]) -> String {
+    let lossy = String::from_utf8_lossy(raw);
+    let visible: String = lossy
+        .chars()
+        .filter(|character| {
+            matches!(character, '\n' | '\t')
+                || !(character.is_control()
+                    || matches!(character, '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}'))
+        })
+        .collect();
+    let redacted = without_url_userinfo(visible.trim());
+    let mut characters = redacted.chars();
+    let mut text: String = characters.by_ref().take(MAX_DIAGNOSTIC_CHARS).collect();
+    if characters.next().is_some() {
+        text.push_str(" [truncated]");
+    }
+    text
+}
+
+/// Removes the `user[:password]@` part after every `://` in `text`.
+fn without_url_userinfo(text: &str) -> String {
+    let mut output = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(index) = rest.find("://") {
+        let (before, after_scheme) = rest.split_at(index + 3);
+        output.push_str(before);
+        let authority_end = after_scheme
+            .find(|character: char| {
+                matches!(character, '/' | '?' | '#') || character.is_whitespace()
+            })
+            .unwrap_or(after_scheme.len());
+        let authority = &after_scheme[..authority_end];
+        output.push_str(
+            authority
+                .rsplit_once('@')
+                .map_or(authority, |(_, host)| host),
+        );
+        rest = &after_scheme[authority_end..];
+    }
+    output.push_str(rest);
+    output
 }
 
 fn storage_environment(storage: GitStorage<'_>) -> ChatResult<Vec<(String, OsString)>> {
@@ -880,8 +949,8 @@ fn git_protocol_error(message: &str) -> ChatError {
 #[cfg(test)]
 mod tests {
     use super::{
-        GitCall, GitFolder, discard_paths, fetch, initialize, parse_status, pull, push, run,
-        validate_branch_name,
+        GitCall, GitFolder, discard_paths, fetch, initialize, parse_status, pathspec_below_prefix,
+        pull, push, run, stage, status, unstage, validate_branch_name,
     };
     use std::fs;
     use std::path::{Path, PathBuf};
@@ -906,6 +975,27 @@ mod tests {
         fn path(&self) -> &Path {
             &self.0
         }
+    }
+
+    #[test]
+    fn diagnostic_text_strips_controls_and_credentials_and_marks_truncation() {
+        let raw = "fatal: \u{1b}[31mremote\u{1b}[0m https://user:token@example.com/org/repo.git\r\n\u{202e}gnirts\ttab\u{7}";
+        assert_eq!(
+            super::diagnostic_text(raw.as_bytes()),
+            "fatal: [31mremote[0m https://example.com/org/repo.git\ngnirts\ttab"
+        );
+        assert_eq!(
+            super::diagnostic_text(b"see ssh://git@host:22/x and git@github.com:org/repo"),
+            "see ssh://host:22/x and git@github.com:org/repo"
+        );
+
+        let at_limit = "y".repeat(super::MAX_DIAGNOSTIC_CHARS);
+        assert_eq!(super::diagnostic_text(at_limit.as_bytes()), at_limit);
+        let over_limit = "x".repeat(super::MAX_DIAGNOSTIC_CHARS + 1);
+        assert_eq!(
+            super::diagnostic_text(over_limit.as_bytes()),
+            format!("{} [truncated]", "x".repeat(super::MAX_DIAGNOSTIC_CHARS))
+        );
     }
 
     impl Drop for TestDirectory {
@@ -987,6 +1077,115 @@ mod tests {
             "base\n"
         );
         assert!(!root.join("untracked.txt").exists());
+    }
+
+    #[test]
+    fn repository_paths_become_pathspecs_relative_to_the_folder() {
+        assert_eq!(pathspec_below_prefix("", "sub/a.txt"), "sub/a.txt");
+        assert_eq!(pathspec_below_prefix("sub/", "sub/a.txt"), "a.txt");
+        assert_eq!(pathspec_below_prefix("sub/", "sub/sub/a.txt"), "sub/a.txt");
+        assert_eq!(pathspec_below_prefix("sub/", "sub"), "../sub");
+        assert_eq!(pathspec_below_prefix("sub/", "subway.txt"), "../subway.txt");
+        assert_eq!(pathspec_below_prefix("a/b/", "a/c.txt"), "../../a/c.txt");
+    }
+
+    #[tokio::test]
+    async fn folder_below_the_repository_root_acts_on_the_paths_status_reports() {
+        let directory = TestDirectory::new();
+        let root = directory.path();
+        let repository = GitFolder::untrusted(root);
+        initialize(repository, Some("main"))
+            .await
+            .expect("repository should initialize");
+        for (key, value) in [
+            ("user.name", "Ganbaru test"),
+            ("user.email", "test@example.invalid"),
+            ("commit.gpgsign", "false"),
+        ] {
+            run(repository, &["config", key, value], GitCall::User)
+                .await
+                .expect("test identity should configure");
+        }
+        fs::create_dir_all(root.join("sub/sub")).expect("nested folders should create");
+        fs::create_dir_all(root.join("other")).expect("sibling folder should create");
+        fs::write(root.join("sub/tracked.txt"), "base\n").expect("tracked file should write");
+        run(repository, &["add", "--", "sub/tracked.txt"], GitCall::User)
+            .await
+            .expect("tracked file should stage");
+        run(
+            repository,
+            &["commit", "-m", "test: add fixture"],
+            GitCall::User,
+        )
+        .await
+        .expect("fixture should commit");
+
+        let sub = root.join("sub");
+        let folder = GitFolder::untrusted(&sub);
+        fs::write(root.join("sub/a.txt"), "discard me\n").expect("untracked file should write");
+        fs::write(root.join("sub/sub/a.txt"), "keep me\n").expect("nested file should write");
+        fs::write(root.join("sub/tracked.txt"), "changed\n").expect("tracked file should change");
+        fs::write(root.join("other/o.txt"), "outside\n").expect("sibling file should write");
+        let reported = status(folder)
+            .await
+            .expect("status should read")
+            .files
+            .into_iter()
+            .map(|file| file.relative_path)
+            .collect::<Vec<_>>();
+        for path in [
+            "sub/a.txt",
+            "sub/sub/a.txt",
+            "sub/tracked.txt",
+            "other/o.txt",
+        ] {
+            assert!(reported.iter().any(|reported| reported == path), "{path}");
+        }
+
+        discard_paths(
+            folder,
+            &["sub/tracked.txt".to_string()],
+            &["sub/a.txt".to_string()],
+        )
+        .await
+        .expect("selected changes should discard");
+        assert!(!root.join("sub/a.txt").exists());
+        assert_eq!(
+            fs::read_to_string(root.join("sub/sub/a.txt")).expect("nested file should read"),
+            "keep me\n"
+        );
+        assert_eq!(
+            fs::read_to_string(root.join("sub/tracked.txt")).expect("tracked file should read"),
+            "base\n"
+        );
+
+        stage(
+            folder,
+            &["sub/sub/a.txt".to_string(), "other/o.txt".to_string()],
+        )
+        .await
+        .expect("paths should stage");
+        let staged = status(folder)
+            .await
+            .expect("status should read")
+            .files
+            .into_iter()
+            .filter(|file| file.index_status == "A")
+            .map(|file| file.relative_path)
+            .collect::<Vec<_>>();
+        assert_eq!(staged, ["other/o.txt", "sub/sub/a.txt"]);
+        unstage(folder, &["other/o.txt".to_string()])
+            .await
+            .expect("path should unstage");
+        let staged = status(folder)
+            .await
+            .expect("status should read")
+            .files
+            .into_iter()
+            .filter(|file| file.index_status == "A")
+            .map(|file| file.relative_path)
+            .collect::<Vec<_>>();
+        assert_eq!(staged, ["sub/sub/a.txt"]);
     }
 
     #[test]

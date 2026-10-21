@@ -125,7 +125,7 @@ async fn check(
 fn record(last_committed_seq: u64, reserved_through: u64) -> WriterRecord {
     WriterRecord {
         schema_version: 1,
-        writer_id: "00".repeat(32),
+        writer_id: "00".repeat(16),
         certificate: String::new(),
         reserved_through,
         last_committed_seq,
@@ -194,6 +194,46 @@ fn reservations_grow_in_blocks() {
     assert_eq!(reserve(1), RESERVATION_BLOCK);
     assert_eq!(reserve(RESERVATION_BLOCK), RESERVATION_BLOCK);
     assert_eq!(reserve(RESERVATION_BLOCK + 1), 2 * RESERVATION_BLOCK);
+}
+
+#[test]
+fn records_naming_a_non_canonical_writer_id_are_refused() {
+    let directory = TestDirectory::new("record-ids");
+    let files = directory.files();
+    let keys = directory.keys();
+    std::fs::create_dir_all(&files.directory).expect("create sync directory");
+    let outside = directory.path().join("outside.key");
+    std::fs::write(&outside, b"not a writer key").expect("write outside file");
+    let canonical = "ab".repeat(16);
+    let cases = [
+        ("../outside".to_string(), Vec::new()),
+        ("AB".repeat(16), Vec::new()),
+        (canonical.clone(), vec!["../../outside".to_string()]),
+        (canonical.clone(), vec!["ab".repeat(15)]),
+    ];
+    for (writer_id, retired_keys) in cases {
+        let mut stored = record(0, 0);
+        stored.writer_id = writer_id.clone();
+        stored.retired_keys = retired_keys.clone();
+        std::fs::write(
+            files.record_path(),
+            serde_json::to_vec(&stored).expect("encode record"),
+        )
+        .expect("write record");
+        let error = read_stored_writer(&files, &keys)
+            .err()
+            .unwrap_or_else(|| panic!("{writer_id} with {retired_keys:?} was accepted"));
+        assert_eq!(error, "sync writer record names an invalid writer id");
+    }
+    let mut stored = record(0, 0);
+    stored.writer_id = canonical;
+    std::fs::write(
+        files.record_path(),
+        serde_json::to_vec(&stored).expect("encode record"),
+    )
+    .expect("write record");
+    assert!(read_record(&files.record_path()).expect("read").is_some());
+    assert!(outside.exists());
 }
 
 #[test]
@@ -352,6 +392,37 @@ fn carried_operations_reach_the_replacement_once() {
         );
         drop(conn);
         drop(replacement);
+        registry.close_all().await.expect("close pools");
+    });
+}
+
+#[test]
+fn oversized_carry_bundles_are_refused_before_reading() {
+    block_on(async {
+        let directory = TestDirectory::new("carry-oversized");
+        let registry = DatabasePoolRegistry::default();
+        let engine = Engine::vault();
+        let files = directory.files();
+        let pool = create_vault(&registry, &directory.path().join("vault.sqlite")).await;
+        let mut conn = acquire(&pool).await;
+        let ctx = context(&mut conn, DEVICE_ID).await;
+        std::fs::create_dir_all(&files.directory).expect("create sync directory");
+        let bundle = std::fs::File::create(files.carry_path()).expect("create bundle");
+        bundle
+            .set_len(ganbaru_sync::local::MAX_BUNDLE_BYTES as u64 + 1)
+            .expect("size bundle");
+        drop(bundle);
+
+        let error = carry_forward::import_pending(&engine, &mut conn, &ctx, &files, NOW_MS)
+            .await
+            .expect_err("an oversized bundle is refused");
+        assert_eq!(
+            error,
+            "carry-forward bundle is not a file within the size limit"
+        );
+        assert!(files.carry_path().exists());
+        drop(conn);
+        drop(pool);
         registry.close_all().await.expect("close pools");
     });
 }

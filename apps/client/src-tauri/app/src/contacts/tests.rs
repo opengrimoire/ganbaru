@@ -3,6 +3,7 @@ use super::requests::{
     self, CARD_REVOKED_CODE, INVALID_REQUEST_CODE, MAX_PENDING_RECEIVED, PeerReply, StatusOutcome,
 };
 use super::store::{self, ContactState, RequestDirection, RequestState, TrustGrant};
+use crate::vault::handoff::protocol::{ContactRequestOutcome, ControlMessage};
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use ganbaru_contacts::{
@@ -676,6 +677,113 @@ async fn expired_requests_stop_being_pending() {
     store::expire_stale_requests(&pool, later).await.unwrap();
 
     let row = store::request_by_id(&pool, "contact-one")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(row.state, "expired");
+}
+
+async fn insert_sent_request(pool: &SqlitePool, recipient: &Person, request_id: &str) {
+    let card = recipient.card();
+    let now = store::now();
+    store::insert_request(
+        pool,
+        store::NewRequest {
+            id: request_id,
+            direction: RequestDirection::Sent,
+            public_key: &recipient.key.public_key().to_text(),
+            display_name: recipient.name,
+            color: 7,
+            card: &card.text(),
+            card_digest: &store::encode_hex(&card.digest),
+            endpoint_hint: "127.0.0.1:43821",
+            coordinator_fingerprint: &store::encode_hex(&[9u8; 32]),
+            invite_trust: TrustKind::UntilRevoked,
+            message_trust: TrustKind::UntilRevoked,
+            expires_at: now + chrono::Duration::days(requests::REQUEST_TTL_DAYS),
+        },
+        now,
+    )
+    .await
+    .unwrap();
+}
+
+fn accepted_by(recipient: &Person) -> Result<ControlMessage, String> {
+    Ok(ControlMessage::ContactRequestState {
+        state: ContactRequestOutcome::Accepted,
+        recipient_card: Some(recipient.card().text()),
+    })
+}
+
+#[tokio::test]
+async fn an_accepted_poll_does_not_reopen_a_request_cancelled_while_in_flight() {
+    let pool = migrated_memory_pool().await;
+    let recipient = Person::new("Recipient");
+    insert_sent_request(&pool, &recipient, "contact-one").await;
+    let in_flight = store::request_by_id(&pool, "contact-one")
+        .await
+        .unwrap()
+        .unwrap();
+    requests::close_request(
+        &pool,
+        "contact-one",
+        in_flight.revision,
+        RequestDirection::Sent,
+        RequestState::Expired,
+    )
+    .await
+    .unwrap();
+
+    let resolved =
+        requests::apply_status_response(&pool, &in_flight, accepted_by(&recipient), store::now())
+            .await
+            .unwrap();
+
+    assert!(resolved);
+    let row = store::request_by_id(&pool, "contact-one")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(row.state, "expired");
+    let key = recipient.key.public_key().to_text();
+    assert!(store::contact_by_key(&pool, &key).await.unwrap().is_none());
+}
+
+#[tokio::test]
+async fn an_accepted_poll_never_clears_a_block() {
+    let pool = migrated_memory_pool().await;
+    let recipient = Person::new("Recipient");
+    let key = recipient.key.public_key().to_text();
+    insert_sent_request(&pool, &recipient, "contact-one").await;
+    let in_flight = store::request_by_id(&pool, "contact-one")
+        .await
+        .unwrap()
+        .unwrap();
+    requests::block_person(&pool, &key, store::now())
+        .await
+        .unwrap();
+
+    requests::apply_status_response(&pool, &in_flight, accepted_by(&recipient), store::now())
+        .await
+        .unwrap();
+    let blocked = store::contact_by_key(&pool, &key).await.unwrap().unwrap();
+    assert_eq!(blocked.state, "blocked");
+    assert_eq!(blocked.invite_trust, "not_allowed");
+
+    insert_sent_request(&pool, &recipient, "contact-two").await;
+    let pending = store::request_by_id(&pool, "contact-two")
+        .await
+        .unwrap()
+        .unwrap();
+    let resolved =
+        requests::apply_status_response(&pool, &pending, accepted_by(&recipient), store::now())
+            .await
+            .unwrap();
+    assert!(resolved);
+    let blocked = store::contact_by_key(&pool, &key).await.unwrap().unwrap();
+    assert_eq!(blocked.state, "blocked");
+    assert!(blocked.blocked_at.is_some());
+    let row = store::request_by_id(&pool, "contact-two")
         .await
         .unwrap()
         .unwrap();

@@ -87,6 +87,10 @@ jobs:
       - name: write release updater config
         run: node apps/client/scripts/release/write-tauri-release-config.mjs
 
+      - name: build Linux firewall helper
+        if: matrix.runner == 'ubuntu-22.04'
+        run: cargo build --release --locked -p ganbaru-linking-firewall
+
       - name: build release bundle
         run: pnpm --dir apps/client tauri build --config src-tauri/tauri.release.conf.json -- --locked
 
@@ -119,6 +123,9 @@ jobs:
       CARGO_TERM_COLOR: always
       ANDROID_BUILD_TOOLS_VERSION: "35.0.0"
       ANDROID_NDK_VERSION: "30.0.15729638"
+      # Published SHA-256 of the command line tools archive (developer.android.com/studio).
+      ANDROID_COMMAND_LINE_TOOLS_URL: https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip
+      ANDROID_COMMAND_LINE_TOOLS_SHA256: 2d2d50857e4eb553af5a6dc3ad507a17adf43d115264b1afc116f95c92e5e258
       GANBARU_ANDROID_UNSIGNED_RELEASE: "true"
     steps:
       - name: checkout
@@ -157,7 +164,8 @@ jobs:
           command_line_tools="$ANDROID_HOME/cmdline-tools/latest/bin"
           if [ ! -x "$command_line_tools/sdkmanager" ]; then
             mkdir -p "$ANDROID_HOME/cmdline-tools"
-            curl -fsSL https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip -o "$RUNNER_TEMP/android-commandline-tools.zip"
+            curl -fsSL "$ANDROID_COMMAND_LINE_TOOLS_URL" -o "$RUNNER_TEMP/android-commandline-tools.zip"
+            echo "$ANDROID_COMMAND_LINE_TOOLS_SHA256  $RUNNER_TEMP/android-commandline-tools.zip" | sha256sum -c -
             unzip -q "$RUNNER_TEMP/android-commandline-tools.zip" -d "$ANDROID_HOME/cmdline-tools"
             mv "$ANDROID_HOME/cmdline-tools/cmdline-tools" "$ANDROID_HOME/cmdline-tools/latest"
             set +o pipefail
@@ -219,6 +227,9 @@ jobs:
       contents: read
     env:
       ANDROID_BUILD_TOOLS_VERSION: "35.0.0"
+      # Published SHA-256 of the command line tools archive (developer.android.com/studio).
+      ANDROID_COMMAND_LINE_TOOLS_URL: https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip
+      ANDROID_COMMAND_LINE_TOOLS_SHA256: 2d2d50857e4eb553af5a6dc3ad507a17adf43d115264b1afc116f95c92e5e258
     steps:
       - name: checkout
         # actions/checkout v6
@@ -232,10 +243,10 @@ jobs:
         with:
           node-version: "24"
 
-      - name: install Java 21
+      - name: install Java 21 and RPM signing tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y openjdk-21-jdk
+          sudo apt-get install -y openjdk-21-jdk rpm
           echo "JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64" >> "$GITHUB_ENV"
           echo "/usr/lib/jvm/java-21-openjdk-amd64/bin" >> "$GITHUB_PATH"
 
@@ -244,7 +255,8 @@ jobs:
           export ANDROID_HOME="$RUNNER_TEMP/android-sdk"
           command_line_tools="$ANDROID_HOME/cmdline-tools/latest/bin"
           mkdir -p "$ANDROID_HOME/cmdline-tools"
-          curl -fsSL https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip -o "$RUNNER_TEMP/android-commandline-tools.zip"
+          curl -fsSL "$ANDROID_COMMAND_LINE_TOOLS_URL" -o "$RUNNER_TEMP/android-commandline-tools.zip"
+          echo "$ANDROID_COMMAND_LINE_TOOLS_SHA256  $RUNNER_TEMP/android-commandline-tools.zip" | sha256sum -c -
           unzip -q "$RUNNER_TEMP/android-commandline-tools.zip" -d "$ANDROID_HOME/cmdline-tools"
           mv "$ANDROID_HOME/cmdline-tools/cmdline-tools" "$ANDROID_HOME/cmdline-tools/latest"
           set +o pipefail
@@ -294,6 +306,41 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: node apps/client/scripts/release/sign-tauri-release-assets.mjs
+
+      # RPMs carry their own signature so dnf and zypper can require it with gpgcheck=1. Package
+      # publication verifies the checksum signature, so assets changed on the draft release after
+      # signing are never indexed or pushed to the AUR.
+      - name: sign RPM packages and checksums
+        env:
+          GPG_PRIVATE_KEY: ${{ secrets.GANBARU_PACKAGE_REPO_GPG_PRIVATE_KEY }}
+          GPG_PASSPHRASE: ${{ secrets.GANBARU_PACKAGE_REPO_GPG_PASSPHRASE }}
+          GANBARU_PACKAGE_REPO_PUBLIC_KEY: ${{ vars.GANBARU_PACKAGE_REPO_PUBLIC_KEY }}
+        run: |
+          if [ -z "$GPG_PRIVATE_KEY" ]; then
+            echo "GANBARU_PACKAGE_REPO_GPG_PRIVATE_KEY must be set"
+            exit 1
+          fi
+
+          export GNUPGHOME="$RUNNER_TEMP/checksum-gnupg"
+          mkdir -p "$GNUPGHOME"
+          chmod 700 "$GNUPGHOME"
+          printf '%s' "$GPG_PRIVATE_KEY" | gpg --batch --import
+          key_id="$(gpg --batch --list-secret-keys --with-colons | awk -F: '/^fpr:/ { print $10; exit }')"
+          if [ -z "$key_id" ]; then
+            echo "Package repo signing key import did not produce a secret key"
+            exit 1
+          fi
+          passphrase_file="$RUNNER_TEMP/checksum-gpg-passphrase"
+          printf '%s' "$GPG_PASSPHRASE" > "$passphrase_file"
+          chmod 600 "$passphrase_file"
+
+          GANBARU_PACKAGE_REPO_GPG_KEY_ID="$key_id" \
+            GANBARU_PACKAGE_REPO_GPG_PASSPHRASE_FILE="$passphrase_file" \
+            node apps/client/scripts/release/sign-rpm-release-assets.mjs
+          node apps/client/scripts/release/release-checksums.mjs write dist/release-assets
+          gpg --batch --yes --pinentry-mode loopback --passphrase-file "$passphrase_file" --local-user "$key_id" \
+            --detach-sign --armor -o dist/release-assets/SHA256SUMS.asc dist/release-assets/SHA256SUMS
+          rm -rf "$passphrase_file" "$GNUPGHOME"
 
       - name: upload signed assets
         # actions/upload-artifact v7.0.1
@@ -367,11 +414,6 @@ jobs:
           GANBARU_RELEASE_NOTES_PATH: dist/generated-release-notes.md
         run: node apps/client/scripts/release/write-tauri-latest-json.mjs
 
-      - name: write checksums
-        run: |
-          cd dist/release-assets
-          find . -maxdepth 1 -type f ! -name SHA256SUMS -printf '%P\0' | sort -z | xargs -0 sha256sum > SHA256SUMS
-
       - name: create or update draft release
         env:
           RELEASE_TAG_NAME: ${{ steps.release.outputs.tag_name }}
@@ -394,10 +436,12 @@ jobs:
     runs-on: ubuntu-22.04
     timeout-minutes: 30
     environment: release
+    concurrency:
+      group: package-repo
+      cancel-in-progress: false
     permissions:
       contents: write
     env:
-      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       GANBARU_PACKAGE_REPO_PUBLIC_KEY: ${{ vars.GANBARU_PACKAGE_REPO_PUBLIC_KEY }}
       RELEASE_TAG_NAME: ${{ github.event.release.tag_name }}
     steps:
@@ -419,9 +463,14 @@ jobs:
           sudo apt-get install -y apt-utils createrepo-c dpkg-dev gnupg
 
       - name: download release packages
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           mkdir -p dist/release-assets
-          gh release download "$RELEASE_TAG_NAME" --pattern "*.deb" --pattern "*.rpm" --dir dist/release-assets
+          gh release download "$RELEASE_TAG_NAME" --pattern "*.deb" --pattern "*.rpm" --pattern "SHA256SUMS" --pattern "SHA256SUMS.asc" --dir dist/release-assets
+
+      - name: verify release packages
+        run: node apps/client/scripts/release/release-checksums.mjs verify dist/release-assets
 
       - name: import package repo signing key
         env:
@@ -459,16 +508,24 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           rm -rf dist/pages
-          git remote set-url origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
-          if git ls-remote --exit-code --heads origin gh-pages >/dev/null 2>&1; then
-            git fetch origin gh-pages:refs/remotes/origin/gh-pages
+          # The token reaches git only through per-command configuration, never a remote URL in .git/config.
+          auth_header="$(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 -w0)"
+          echo "::add-mask::$auth_header"
+          git_with_token() {
+            GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0="http.https://github.com/.extraheader" \
+              GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $auth_header" git "$@"
+          }
+          if git_with_token ls-remote --exit-code --heads origin gh-pages >/dev/null 2>&1; then
+            git_with_token fetch origin gh-pages:refs/remotes/origin/gh-pages
             git worktree add -B gh-pages dist/pages origin/gh-pages
           else
             mkdir -p dist/pages
             git -C dist/pages init
             git -C dist/pages checkout --orphan gh-pages
           fi
-          git -C dist/pages remote set-url origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" || git -C dist/pages remote add origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          if ! git -C dist/pages remote get-url origin >/dev/null 2>&1; then
+            git -C dist/pages remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          fi
           git -C dist/pages config user.name "github-actions[bot]"
           git -C dist/pages config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
@@ -478,6 +535,8 @@ jobs:
         run: node apps/client/scripts/release/build-package-repo.mjs
 
       - name: push package repo
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           git -C dist/pages add .nojekyll packages
           if git -C dist/pages diff --cached --quiet; then
@@ -485,7 +544,14 @@ jobs:
             exit 0
           fi
           git -C dist/pages commit -m "chore: update package repository for $RELEASE_TAG_NAME"
-          git -C dist/pages push origin HEAD:gh-pages
+          # The token reaches git only through per-command configuration, never a remote URL in .git/config.
+          auth_header="$(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 -w0)"
+          echo "::add-mask::$auth_header"
+          git_with_token() {
+            GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0="http.https://github.com/.extraheader" \
+              GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $auth_header" git "$@"
+          }
+          git_with_token -C dist/pages push origin HEAD:gh-pages
 
   publish-aur:
     if: github.event_name == 'release' && startsWith(github.event.release.tag_name, 'app-v')
@@ -499,6 +565,7 @@ jobs:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       RELEASE_TAG_NAME: ${{ github.event.release.tag_name }}
       GANBARU_RELEASE_REPOSITORY: ${{ github.repository }}
+      GANBARU_PACKAGE_REPO_PUBLIC_KEY: ${{ vars.GANBARU_PACKAGE_REPO_PUBLIC_KEY }}
     steps:
       - name: checkout
         # actions/checkout v6
@@ -515,7 +582,10 @@ jobs:
       - name: download Debian release package
         run: |
           mkdir -p dist/release-assets
-          gh release download "$RELEASE_TAG_NAME" --pattern "*.deb" --dir dist/release-assets
+          gh release download "$RELEASE_TAG_NAME" --pattern "*.deb" --pattern "SHA256SUMS" --pattern "SHA256SUMS.asc" --dir dist/release-assets
+
+      - name: verify Debian release package
+        run: node apps/client/scripts/release/release-checksums.mjs verify dist/release-assets
 
       - name: configure AUR SSH
         env:
@@ -548,7 +618,7 @@ jobs:
       - name: push AUR package
         run: |
           export GIT_SSH_COMMAND="ssh -i $HOME/.ssh/ganbaru-aur-publish -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes"
-          git -C dist/aur/ganbaru-bin add PKGBUILD .SRCINFO .gitignore
+          git -C dist/aur/ganbaru-bin add PKGBUILD .SRCINFO .gitignore ganbaru-bin.install
           if git -C dist/aur/ganbaru-bin diff --cached --quiet; then
             echo "AUR package is unchanged"
             exit 0

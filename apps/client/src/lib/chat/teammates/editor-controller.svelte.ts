@@ -9,7 +9,6 @@ import type {
   ChatAiTeammateRead,
   ChatChannelRead,
   ChatFolderCapability,
-  ChatRuntimeApprovalPolicy,
   ChatTeammatePolicyInput,
   ChatTeammateAccessRead,
   ChatTeammateChannelAccessInput,
@@ -86,7 +85,6 @@ export function createTeammateEditorController(options: TeammateEditorOptions) {
   let effort = $state<string | null>(null);
   let speed = $state<string | null>(null);
   let providerOptions = $state<VersionedJson>({ schemaVersion: 1, value: {} });
-  let teammateDefaultRuntimeApproval = $state<ChatRuntimeApprovalPolicy>("ask");
   let profileExpectedRevision = $state(0);
   let profileAvatar = $state<VersionedJson>({ schemaVersion: 1, value: { kind: "initials" } });
   let accessRevision = $state(0);
@@ -145,7 +143,6 @@ export function createTeammateEditorController(options: TeammateEditorOptions) {
     speed,
   }));
   const currentAccessSnapshot = $derived(JSON.stringify({
-    teammateDefaultRuntimeApproval,
     channels: teammateAccessDraftSnapshot(accessDraft),
   }));
   const currentDraftSnapshot = $derived(JSON.stringify({
@@ -213,7 +210,6 @@ export function createTeammateEditorController(options: TeammateEditorOptions) {
         speed,
         providerOptions: copyVersionedJson(providerOptions),
       },
-      teammateDefaultRuntimeApproval,
       channels: copyChannelAccessInputs(accessDraft),
     };
   }
@@ -245,7 +241,6 @@ export function createTeammateEditorController(options: TeammateEditorOptions) {
           policy?.providerOptions ?? { schemaVersion: 1, value: {} },
         ),
       },
-      teammateDefaultRuntimeApproval: access.teammateDefaultRuntimeApproval,
       channels: access.channels
         .filter((channel) => channel.removedAt === null)
         .map((channel) => ({
@@ -283,7 +278,6 @@ export function createTeammateEditorController(options: TeammateEditorOptions) {
     effort = copy.profile.effort;
     speed = copy.profile.speed;
     providerOptions = copy.profile.providerOptions;
-    teammateDefaultRuntimeApproval = copy.teammateDefaultRuntimeApproval;
     accessDraft = copy.channels;
   }
 
@@ -300,7 +294,6 @@ export function createTeammateEditorController(options: TeammateEditorOptions) {
 
   function accessSnapshotForDraft(draft: ChatTeammateStudioDraft): string {
     return JSON.stringify({
-      teammateDefaultRuntimeApproval: draft.teammateDefaultRuntimeApproval,
       channels: teammateAccessDraftSnapshot(draft.channels),
     });
   }
@@ -361,7 +354,6 @@ export function createTeammateEditorController(options: TeammateEditorOptions) {
     effort = summary.effort;
     speed = summary.speed;
     providerOptions = { schemaVersion: 1, value: {} };
-    teammateDefaultRuntimeApproval = "ask";
     profileExpectedRevision = 0;
     profileAvatar = { schemaVersion: 1, value: { kind: "initials" } };
     accessRevision = 0;
@@ -433,7 +425,6 @@ export function createTeammateEditorController(options: TeammateEditorOptions) {
       accessRevision = access.accessRevision;
       profileExpectedRevision = teammate.participant.revision;
       profileAvatar = copyVersionedJson(teammate.participant.avatar);
-      teammateDefaultRuntimeApproval = durableDraft.teammateDefaultRuntimeApproval;
       accessDraft = copyChannelAccessInputs(durableDraft.channels);
       const initialChannelId = options.initialChannelId();
       options.setExpandedAccessChannel(initialChannelId);
@@ -644,7 +635,6 @@ export function createTeammateEditorController(options: TeammateEditorOptions) {
     return {
       teammateId,
       expectedAccessRevision: accessRevision,
-      teammateDefaultRuntimeApproval: draft.teammateDefaultRuntimeApproval,
       channels: copyChannelAccessInputs(draft.channels),
       teammateProfile: includeProfile ? {
         teammateId,
@@ -808,7 +798,6 @@ export function createTeammateEditorController(options: TeammateEditorOptions) {
     get modelId() { return modelId; },
     get providerManagedModel() { return providerManagedModel; },
     get modelOptions() { return modelOptions; },
-    get teammateDefaultRuntimeApproval() { return teammateDefaultRuntimeApproval; },
     get accessDraft() { return accessDraft; },
     set accessDraft(value: typeof accessDraft) { accessDraft = value; },
     get accessConfirmationImpact() { return accessConfirmationImpact; },

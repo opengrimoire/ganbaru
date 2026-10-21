@@ -1,3 +1,8 @@
+#![allow(
+    unsafe_code,
+    reason = "Retained unsafe boundary; see docs/data/security/unsafe-rust.md."
+)]
+
 use super::*;
 use std::ptr::NonNull;
 
@@ -608,7 +613,8 @@ pub(in crate::workspace::files) fn delete_workspace_file_atomically(
     let parent =
         secure_workspace_parent(root, relative_path).map_err(|_| workspace_file_write_error())?;
     let mut current = open_regular_file_at(&parent).map_err(|_| workspace_file_write_error())?;
-    let (current_revision, _) = revision_and_permissions(&mut current, relative_path)?;
+    let (current_revision, _) =
+        revision_and_permissions(&mut current, relative_path, MAX_PREVIEW_BYTES)?;
     if current_revision != expected_revision {
         return Err(stale_workspace_file_error());
     }
@@ -616,18 +622,10 @@ pub(in crate::workspace::files) fn delete_workspace_file_atomically(
         .metadata()
         .map_err(|_| workspace_file_write_error())?;
     let identity = (metadata.dev(), metadata.ino());
-    let generation = WORKSPACE_FILE_WRITE_GENERATION.fetch_add(1, Ordering::Relaxed);
-    let nonce = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    let backup_name = CString::new(format!(
-        ".ganbaru.{}.{}.{}.backup",
-        std::process::id(),
-        generation,
-        nonce,
-    ))
-    .map_err(|_| workspace_file_write_error())?;
+    let backup_name = private_artifact_name("backup")
+        .ok()
+        .and_then(|name| CString::new(name).ok())
+        .ok_or_else(workspace_file_write_error)?;
     rename_noreplace_at(&parent, &parent.file_name, &backup_name)
         .map_err(|_| workspace_file_write_error())?;
     let verification = (|| {
@@ -642,7 +640,8 @@ pub(in crate::workspace::files) fn delete_workspace_file_atomically(
         {
             return Err(stale_workspace_file_error());
         }
-        let (revision, _) = revision_and_permissions(&mut displaced, relative_path)?;
+        let (revision, _) =
+            revision_and_permissions(&mut displaced, relative_path, MAX_PREVIEW_BYTES)?;
         if revision != expected_revision {
             return Err(stale_workspace_file_error());
         }
@@ -662,11 +661,12 @@ pub(in crate::workspace::files) fn write_workspace_text_atomically(
     relative_path: &str,
     contents: &str,
     expected_revision: &str,
+    max_bytes: u64,
 ) -> ChatResult<()> {
     let parent =
         secure_workspace_parent(root, relative_path).map_err(|_| workspace_file_write_error())?;
     let mut current = open_regular_file_at(&parent).map_err(|_| workspace_file_write_error())?;
-    let (current_revision, _) = revision_and_permissions(&mut current, relative_path)?;
+    let (current_revision, _) = revision_and_permissions(&mut current, relative_path, max_bytes)?;
     if current_revision != expected_revision {
         return Err(stale_workspace_file_error());
     }
@@ -675,18 +675,10 @@ pub(in crate::workspace::files) fn write_workspace_text_atomically(
         .map_err(|_| workspace_file_write_error())?;
     let current_identity = (current_metadata.dev(), current_metadata.ino());
 
-    let generation = WORKSPACE_FILE_WRITE_GENERATION.fetch_add(1, Ordering::Relaxed);
-    let nonce = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    let temporary_name = CString::new(format!(
-        ".ganbaru.{}.{}.{}.tmp",
-        std::process::id(),
-        generation,
-        nonce,
-    ))
-    .map_err(|_| workspace_file_write_error())?;
+    let temporary_name = private_artifact_name("tmp")
+        .ok()
+        .and_then(|name| CString::new(name).ok())
+        .ok_or_else(workspace_file_write_error)?;
     let mut replacement =
         create_file_at(&parent, &temporary_name, 0o600).map_err(|error| match error {
             CreateFileAtError::Create(_) => workspace_file_write_error(),
@@ -726,7 +718,8 @@ pub(in crate::workspace::files) fn write_workspace_text_atomically(
         if (installed_metadata.dev(), installed_metadata.ino()) != replacement_identity {
             return Ok(false);
         }
-        let (installed_revision, _) = revision_and_permissions(&mut installed, relative_path)?;
+        let (installed_revision, _) =
+            revision_and_permissions(&mut installed, relative_path, max_bytes)?;
         Ok(installed_revision == replacement_revision)
     })()
     .unwrap_or(false);
@@ -744,7 +737,7 @@ pub(in crate::workspace::files) fn write_workspace_text_atomically(
             return Err(stale_workspace_file_error());
         }
         let (displaced_revision, displaced_permissions) =
-            revision_and_permissions(&mut displaced, relative_path)?;
+            revision_and_permissions(&mut displaced, relative_path, max_bytes)?;
         if displaced_revision != expected_revision {
             return Err(stale_workspace_file_error());
         }

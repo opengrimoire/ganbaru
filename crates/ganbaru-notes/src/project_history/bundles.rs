@@ -6,6 +6,11 @@ use std::io::{Read, Write};
 
 const HISTORY_BUNDLE_CHUNK_BYTES: usize = 8 * 1024 * 1024;
 const MAX_HISTORY_BUNDLE_BYTES: usize = 256 * 1024 * 1024;
+/// Decoded row bytes one project version may load. Far above any real project graph, it stops
+/// a stored manifest from expanding many small compressed bundles into unbounded memory.
+pub(super) const MAX_HISTORY_VERSION_ROW_BYTES: usize = 1024 * 1024 * 1024;
+pub(super) const HISTORY_VERSION_READ_LIMIT_ERROR: &str =
+    "Notes project history version exceeds the 1 GB read limit";
 
 #[derive(Deserialize, Serialize)]
 struct ChunkedBundleDescriptor {
@@ -138,6 +143,16 @@ pub(super) async fn load_bundle_tx(
     tx: &mut Transaction<'_, Sqlite>,
     hash: &str,
 ) -> Result<Vec<u8>, String> {
+    load_bundle_within_tx(tx, hash, MAX_HISTORY_BUNDLE_BYTES).await
+}
+
+/// Loads a bundle whose declared size fits `max_bytes`, checked before any decoding, so a
+/// caller reading many bundles can hold them to one shared budget.
+pub(super) async fn load_bundle_within_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    hash: &str,
+    max_bytes: usize,
+) -> Result<Vec<u8>, String> {
     let row: Option<(String, Vec<u8>, i64)> = sqlx::query_as(
         "SELECT encoding, payload, uncompressed_bytes
          FROM notes_history_bundles
@@ -153,6 +168,9 @@ pub(super) async fn load_bundle_tx(
         .map_err(|_| "Notes history bundle size is invalid".to_string())?;
     if expected_size > MAX_HISTORY_BUNDLE_BYTES {
         return Err("Notes history bundle exceeds the 256 MB safety limit".to_string());
+    }
+    if expected_size > max_bytes {
+        return Err(HISTORY_VERSION_READ_LIMIT_ERROR.to_string());
     }
     let raw = match encoding.as_str() {
         "raw-json-v1" | "raw-bytes-v1" => payload,

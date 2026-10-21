@@ -15,7 +15,6 @@ use std::ffi::OsStr;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Output;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 const MAX_GIT_OUTPUT_BYTES: usize = 16 * 1024 * 1024;
 /// Fixed identity for checkpoint commits so their object IDs depend only on
@@ -29,8 +28,12 @@ const CHECKPOINT_IDENTITY_ENVIRONMENT: &[(&str, &str)] = &[
     ("GIT_COMMITTER_DATE", "2000-01-01T00:00:00Z"),
 ];
 const REF_PREFIX: &str = "refs/ganbaru/chat/";
-static TEMPORARY_INDEX_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
+/// Verifies that a stored checkpoint belongs to the authorized repository and that every Git
+/// object it names is the one capture recorded: the hidden ref resolves to the checkpoint
+/// commit, the commit's tree is the worktree tree, and its parent's tree is the index tree. The
+/// stored row travels with the vault, so restore and its preview never pass a stored value to
+/// Git that this check has not tied to the local checkpoint commit.
 pub fn verify_checkpoint(
     authorized: &AuthorizedWorkingFolder,
     checkpoint: &StoredCheckpoint,
@@ -44,30 +47,47 @@ pub fn verify_checkpoint(
             true,
         ));
     }
-    let resolved = optional_git_text(
-        authorized.git_folder(),
-        &[
-            "rev-parse",
-            "-q",
-            "--verify",
-            &format!("{}^{{commit}}", checkpoint.hidden_ref_name),
-        ],
-    )?
-    .ok_or_else(|| {
-        ChatError::new(
-            ChatErrorCode::NotFound,
-            "Checkpoint Git ref is missing or changed",
-            true,
-        )
-    })?;
-    if resolved != checkpoint.git_object_id {
-        return Err(ChatError::new(
-            ChatErrorCode::NotFound,
-            "Checkpoint Git ref is missing or changed",
-            true,
-        ));
+    if ![
+        checkpoint.git_object_id.as_str(),
+        checkpoint.worktree_tree_oid.as_str(),
+        checkpoint.index_tree_oid.as_str(),
+    ]
+    .into_iter()
+    .chain(checkpoint.head_oid.as_deref())
+    .all(is_object_id)
+    {
+        return Err(changed_checkpoint_error());
+    }
+    let folder = authorized.git_folder();
+    let resolve =
+        |revision: String| optional_git_text(folder, &["rev-parse", "-q", "--verify", &revision]);
+    let resolved = resolve(format!("{}^{{commit}}", checkpoint.hidden_ref_name))?;
+    if resolved.as_deref() != Some(checkpoint.git_object_id.as_str()) {
+        return Err(changed_checkpoint_error());
+    }
+    let worktree_tree = resolve(format!("{}^{{tree}}", checkpoint.git_object_id))?;
+    let index_tree = resolve(format!("{}^1^{{tree}}", checkpoint.git_object_id))?;
+    if worktree_tree.as_deref() != Some(checkpoint.worktree_tree_oid.as_str())
+        || index_tree.as_deref() != Some(checkpoint.index_tree_oid.as_str())
+    {
+        return Err(changed_checkpoint_error());
     }
     Ok(())
+}
+
+fn changed_checkpoint_error() -> ChatError {
+    ChatError::new(
+        ChatErrorCode::NotFound,
+        "Checkpoint Git ref is missing or changed",
+        true,
+    )
+}
+
+/// Whether `value` is a full, non-null hexadecimal Git object ID (SHA-1 or SHA-256).
+fn is_object_id(value: &str) -> bool {
+    (40..=64).contains(&value.len())
+        && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+        && !value.bytes().all(|byte| byte == b'0')
 }
 
 pub fn delete_exact_ref(
@@ -75,11 +95,7 @@ pub fn delete_exact_ref(
     reference: &str,
     expected_oid: &str,
 ) -> ChatResult<()> {
-    if !is_valid_hidden_ref(reference)
-        || !(40..=64).contains(&expected_oid.len())
-        || !expected_oid.bytes().all(|byte| byte.is_ascii_hexdigit())
-        || expected_oid.bytes().all(|byte| byte == b'0')
-    {
+    if !is_valid_hidden_ref(reference) || !is_object_id(expected_oid) {
         return Err(ChatError::new(
             ChatErrorCode::Permission,
             "Checkpoint cleanup target is invalid",
@@ -482,33 +498,25 @@ fn git_output_with_input_codes(
     })
 }
 
-/// Index file inside a new private directory, so another local user cannot
-/// pre-create or replace it in the shared temporary directory.
-struct TemporaryIndex {
+/// Index file inside a new private, randomly named directory, so another local
+/// user cannot guess, pre-create, or read it in the shared temporary directory.
+pub(super) struct TemporaryIndex {
     directory: PathBuf,
     path: PathBuf,
 }
 
 impl TemporaryIndex {
-    fn new() -> ChatResult<Self> {
-        let sequence = TEMPORARY_INDEX_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-        let directory = std::env::temp_dir().join(format!(
-            "ganbaru-chat-index-{}-{sequence}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|duration| duration.as_nanos())
-                .unwrap_or_default()
-        ));
-        let mut builder = fs::DirBuilder::new();
-        #[cfg(unix)]
-        std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
-        builder.create(&directory).map_err(checkpoint_error)?;
+    pub(super) fn new() -> ChatResult<Self> {
+        let directory = ganbaru_atomic_files::create_private_temporary_directory(
+            &std::env::temp_dir(),
+            "ganbaru-chat-index-",
+        )
+        .map_err(checkpoint_error)?;
         let path = directory.join("index");
         Ok(Self { directory, path })
     }
 
-    fn path(&self) -> &Path {
+    pub(super) fn path(&self) -> &Path {
         &self.path
     }
 }

@@ -1760,6 +1760,7 @@ version = "0.1.0"
 dependencies = [
  "libc",
  "ring",
+ "rustix",
 ]
 
 [[package]]
@@ -1786,6 +1787,8 @@ name = "ganbaru-chat"
 version = "0.1.5"
 dependencies = [
  "chrono",
+ "dunce",
+ "ganbaru-atomic-files",
  "ganbaru-chat-contracts",
  "ganbaru-chat-providers",
  "ganbaru-db",
@@ -1816,6 +1819,7 @@ dependencies = [
  "agent-client-protocol",
  "base64 0.22.1",
  "chrono",
+ "ganbaru-atomic-files",
  "ganbaru-chat-contracts",
  "libc",
  "reqwest",
@@ -1851,6 +1855,7 @@ dependencies = [
 name = "ganbaru-db"
 version = "0.1.5"
 dependencies = [
+ "ganbaru-atomic-files",
  "libsqlite3-sys",
  "sqlx",
  "tokio",
@@ -1876,6 +1881,7 @@ version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
  "chrono",
+ "ganbaru-atomic-files",
  "ganbaru-contacts",
  "ganbaru-sync-contracts",
  "qrcode",
@@ -1891,6 +1897,13 @@ dependencies = [
 [[package]]
 name = "ganbaru-image-metadata"
 version = "0.1.0"
+
+[[package]]
+name = "ganbaru-linking-firewall"
+version = "0.1.0"
+dependencies = [
+ "ganbaru-handoff",
+]
 
 [[package]]
 name = "ganbaru-mobile-distractions"
@@ -2016,6 +2029,7 @@ dependencies = [
  "chrono",
  "ganbaru-db",
  "ganbaru-music",
+ "ganbaru-working-folders",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -2114,6 +2128,8 @@ dependencies = [
  "ganbaru-themes",
  "ganbaru-working-folders",
  "gtk",
+ "hyper",
+ "hyper-util",
  "jiff",
  "keyring",
  "libc",
@@ -2128,6 +2144,7 @@ dependencies = [
  "reqwest",
  "rmcp",
  "rodio",
+ "rustix",
  "rustls",
  "serde",
  "serde_json",
@@ -2166,6 +2183,7 @@ name = "ganbaru-working-folders"
 version = "0.1.5"
 dependencies = [
  "chrono",
+ "ganbaru-atomic-files",
  "serde",
  "serde_json",
 ]
@@ -4789,9 +4807,9 @@ checksum = "f87165f0995f63a9fbeea62b64d10b4d9d8e78ec6d7d51fb2125fda7bb36788f"
 
 [[package]]
 name = "rustls-webpki"
-version = "0.103.15"
+version = "0.103.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f3c3cf1d8b1e7d4927e2d154c3fcb02979afb9939629c62cd9048d4f07b60ac2"
+checksum = "4443b1b6d39d7c663139942cc4558262562d2c84123bb6282ef177009ca8b281"
 dependencies = [
  "ring",
  "rustls-pki-types",
@@ -7161,9 +7179,9 @@ dependencies = [
 
 [[package]]
 name = "webpki-root-certs"
-version = "1.0.7"
+version = "1.0.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f31141ce3fc3e300ae89b78c0dd67f9708061d1d2eda54b8209346fd6be9a92c"
+checksum = "58ec80e73fd8baf57bf0d9615554c75348bda990d6d5bbeab964dd068319fecb"
 dependencies = [
  "rustls-pki-types",
 ]

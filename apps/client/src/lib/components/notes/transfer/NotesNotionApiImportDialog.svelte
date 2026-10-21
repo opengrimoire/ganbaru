@@ -14,6 +14,7 @@
 
   let {
     onImport,
+    onStop,
     onCancel,
     embedded = false,
     description = null,
@@ -27,7 +28,10 @@
       includeUsers: boolean;
       keepExternalFileReferences: boolean;
       projectId: string | null;
+      importId: string;
     }) => Promise<NotesNotionApiImportResult>;
+    /** Stops the running import; closing the dialog lets it finish in the background. */
+    onStop: (importId: string) => Promise<boolean>;
     onCancel: () => void;
     embedded?: boolean;
     description?: string | null;
@@ -43,6 +47,8 @@
   let includeUsers = $state(true);
   let keepExternalFileReferences = $state(false);
   let importing = $state(false);
+  let activeImportId = $state<string | null>(null);
+  let stopping = $state(false);
   let error = $state<string | null>(null);
   let result = $state<NotesNotionApiImportResult | null>(null);
   let tokenInputEl = $state<HTMLInputElement | null>(null);
@@ -132,11 +138,14 @@
 
   async function submit(): Promise<void> {
     if (!canImport) return;
+    const importId = crypto.randomUUID();
     importing = true;
+    activeImportId = importId;
     error = null;
     result = null;
     try {
       result = await onImport({
+        importId,
         integrationToken,
         sourceWorkspaceId: sourceWorkspaceId.trim() || null,
         pageIds,
@@ -151,6 +160,20 @@
       error = caught instanceof Error ? caught.message : String(caught);
     } finally {
       importing = false;
+      activeImportId = null;
+      stopping = false;
+    }
+  }
+
+  async function stopImport(): Promise<void> {
+    const importId = activeImportId;
+    if (!importId || stopping) return;
+    stopping = true;
+    try {
+      await onStop(importId);
+    } catch (caught) {
+      stopping = false;
+      error = caught instanceof Error ? caught.message : String(caught);
     }
   }
 
@@ -354,6 +377,18 @@
       >
         {t("common.close")}
       </button>
+      {#if importing}
+        <button
+          class="rounded-md border border-border bg-card px-3 py-1.5 text-[0.866667rem] font-medium text-foreground hover:bg-accent disabled:pointer-events-none disabled:opacity-45"
+          type="button"
+          disabled={stopping}
+          onclick={() => {
+            void stopImport();
+          }}
+        >
+          {stopping ? t("notes.notionApiImportStopping") : t("notes.notionApiImportStop")}
+        </button>
+      {/if}
       <button
         class="rounded-md bg-primary px-3 py-1.5 text-[0.866667rem] font-medium text-primary-foreground hover:bg-primary/90 disabled:pointer-events-none disabled:opacity-45"
         type="button"

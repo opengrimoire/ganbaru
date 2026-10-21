@@ -15,8 +15,6 @@ use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 #[cfg(desktop)]
 use std::path::{Path, PathBuf};
-#[cfg(all(desktop, target_os = "linux"))]
-use std::process::Stdio;
 #[cfg(desktop)]
 use std::sync::atomic::{AtomicU64, Ordering};
 #[cfg(desktop)]
@@ -78,8 +76,9 @@ use rules::desktop_rule_matchers;
 use rules::{
     app_name_key, foreground_expectation_matches, foreground_status_from_parts,
     foreground_status_match_names, is_protected_desktop_app_candidate,
-    is_protected_desktop_app_name, normalize_app_candidate_name, normalize_process_match_name,
-    normalize_process_match_names, unavailable_foreground_desktop_app_status,
+    is_protected_desktop_app_name, is_protected_observed_process_name,
+    normalize_app_candidate_name, normalize_process_match_name, normalize_process_match_names,
+    trusted_process_match_names, unavailable_foreground_desktop_app_status,
     validate_foreground_status_is_closeable,
 };
 #[cfg(desktop)]
@@ -92,8 +91,8 @@ use limits::is_valid_local_date;
 
 #[cfg(all(desktop, test))]
 use state_files::{
-    clear_enforcement_state_files, extension_status_from_file_contents, validate_limit_state,
-    validate_state, write_text_file_atomically,
+    clear_enforcement_state_files, extension_status_at, extension_status_from_file_contents,
+    validate_limit_state, validate_state, write_text_file_atomically,
 };
 
 #[cfg(all(desktop, test))]
@@ -104,6 +103,9 @@ use catalog::process_name_from_exec;
 
 #[cfg(all(desktop, test))]
 use authorization::{configured_close_authorization, read_bounded_authorization_config};
+
+#[cfg(all(desktop, test))]
+use catalog::DesktopCatalogIndex;
 
 #[cfg(all(desktop, test, target_os = "linux"))]
 use process_control::{
@@ -120,7 +122,7 @@ const LIMIT_STATE_FILE: &str = "distractions-limit-state.json";
 #[cfg(desktop)]
 const VAULT_CONFIG_FILE: &str = "config.json";
 #[cfg(desktop)]
-const MAX_AUTHORIZATION_CONFIG_BYTES: u64 = 1024 * 1024;
+const MAX_AUTHORIZATION_CONFIG_BYTES: u64 = vault::MAX_VAULT_CONFIG_BYTES;
 #[cfg(desktop)]
 const LIMIT_STATE_STALE_SECONDS: i64 = 20;
 #[cfg(desktop)]

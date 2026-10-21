@@ -216,12 +216,8 @@ pub(in crate::workspace::files) fn delete_workspace_file_atomically(
     if workspace_file_revision(relative_path, &current) != expected_revision {
         return Err(stale_workspace_file_error());
     }
-    let generation = WORKSPACE_FILE_WRITE_GENERATION.fetch_add(1, Ordering::Relaxed);
-    let backup = target.with_extension(format!(
-        "ganbaru.{}.{}.backup",
-        std::process::id(),
-        generation
-    ));
+    let backup = target
+        .with_file_name(private_artifact_name("backup").map_err(|_| workspace_file_write_error())?);
     fs::rename(&target, &backup).map_err(|_| workspace_file_write_error())?;
     let displaced_matches = fs::symlink_metadata(&backup)
         .ok()
@@ -243,6 +239,7 @@ pub(in crate::workspace::files) fn write_workspace_text_atomically(
     relative_path: &str,
     contents: &str,
     expected_revision: &str,
+    _max_bytes: u64,
 ) -> ChatResult<()> {
     if workspace_path_contains_symlink(root, relative_path)? {
         return Err(ChatError::new(
@@ -268,16 +265,9 @@ pub(in crate::workspace::files) fn write_workspace_text_atomically(
         ));
     }
     let parent = path.parent().ok_or_else(workspace_file_write_error)?;
-    let file_name = path
-        .file_name()
-        .ok_or_else(workspace_file_write_error)?
-        .to_string_lossy();
-    let generation = WORKSPACE_FILE_WRITE_GENERATION.fetch_add(1, Ordering::Relaxed);
-    let temporary = parent.join(format!(
-        ".{file_name}.ganbaru.{}.{}.tmp",
-        std::process::id(),
-        generation
-    ));
+    path.file_name().ok_or_else(workspace_file_write_error)?;
+    let temporary =
+        parent.join(private_artifact_name("tmp").map_err(|_| workspace_file_write_error())?);
     let mut file = OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -308,12 +298,8 @@ fn replace_workspace_file(
     relative_path: &str,
     expected_revision: &str,
 ) -> ChatResult<()> {
-    let generation = WORKSPACE_FILE_WRITE_GENERATION.fetch_add(1, Ordering::Relaxed);
-    let backup = target.with_extension(format!(
-        "ganbaru.{}.{}.backup",
-        std::process::id(),
-        generation
-    ));
+    let backup = target
+        .with_file_name(private_artifact_name("backup").map_err(|_| workspace_file_write_error())?);
     fs::rename(target, &backup).map_err(|_| workspace_file_write_error())?;
     if fs::rename(temporary, target).is_err() {
         return if fs::rename(&backup, target).is_ok() {

@@ -1,7 +1,8 @@
 use crate::chat::ingestion::{ChatChangeEmitter, ChatEventIngestor};
 use crate::chat::workspace::CreateProjectWorkingFolderRequest;
 use ganbaru_chat::repository::attachments::{
-    ChatAttachmentKind, import_attachment, run_due_attachment_cleanup,
+    ChatAttachmentKind, import_attachment, read_managed_attachment_bytes,
+    run_due_attachment_cleanup,
 };
 use ganbaru_chat::repository::drafts::{
     ChatDraftBase, ChatDraftWrite, delete_draft, read_draft, save_draft,
@@ -28,8 +29,8 @@ use ganbaru_chat::repository::resources::{
 use ganbaru_chat::repository::workspaces::{create_workspace, list_workspaces, rename_workspace};
 use ganbaru_chat_contracts::events::{
     CanonicalEvent, CanonicalRuntimeEvent, ChangedFileSummary, ContentDeltaEvent, DiffUpdatedEvent,
-    ItemLifecycleEvent, RequestOpenedEvent, SessionExitedEvent, ThreadRevertedEvent,
-    TurnAbortedEvent, TurnCompletedEvent, TurnStartedEvent, UserInputQuestion,
+    ItemLifecycleEvent, ProposedPlanDeltaEvent, RequestOpenedEvent, SessionExitedEvent,
+    ThreadRevertedEvent, TurnAbortedEvent, TurnCompletedEvent, TurnStartedEvent, UserInputQuestion,
     UserInputRequestedEvent,
 };
 use ganbaru_chat_contracts::models::{
@@ -148,7 +149,7 @@ fn content_event(event_id: &str, delta: &str) -> AppendCanonicalEventRequest {
     }
 }
 
-fn canonical_request(
+pub(crate) fn canonical_request(
     event_id: &str,
     turn_id: Option<&str>,
     event: CanonicalEvent,

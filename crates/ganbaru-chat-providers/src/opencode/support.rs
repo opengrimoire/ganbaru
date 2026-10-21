@@ -86,19 +86,6 @@ pub fn canonical_workspace(workspace: &VerifiedWorkspaceContext) -> ChatResult<P
     })
 }
 
-pub fn canonical_current_directory() -> ChatResult<PathBuf> {
-    std::env::current_dir()
-        .ok()
-        .and_then(|path| std::fs::canonicalize(path).ok())
-        .ok_or_else(|| {
-            ChatError::new(
-                ChatErrorCode::ConfigurationInvalid,
-                "OpenCode probe directory is unavailable",
-                true,
-            )
-        })
-}
-
 pub fn same_directory(provider_directory: &str, workspace: &Path) -> bool {
     let provider_path = PathBuf::from(provider_directory);
     if provider_path == workspace {

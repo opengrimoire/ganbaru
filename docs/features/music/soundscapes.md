@@ -22,7 +22,7 @@ A preset is a named, icon-tagged mix of up to 16 sounds. Each sound has a level 
 
 ## Storage
 
-The vault stores sound definitions, groups and membership, presets with their level and ordered sounds with levels, and the active preset with whether it should play. Local file locations are device-specific. Removing a group moves its sounds to Other sounds. Removing a sound never deletes its file and removes it from every preset. A preset left without sounds stays, so phases that use it report it as unavailable instead of silently changing meaning; removing a preset leaves those phases unavailable until another preset is chosen.
+The vault stores sound definitions, groups and membership, presets with their level and ordered sounds with levels, and the active preset with whether it should play. Local file locations stay in device-local app state, never in the vault, so a copied vault shows another device's local sounds as missing until a file is chosen here. Removing a group moves its sounds to Other sounds. Removing a sound never deletes its file and removes it from every preset. A preset left without sounds stays, so phases that use it report it as unavailable instead of silently changing meaning; removing a preset leaves those phases unavailable until another preset is chosen.
 
 ## Automation
 

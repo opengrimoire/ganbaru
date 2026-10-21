@@ -12,7 +12,7 @@
   import PersonAvatar from "$lib/components/contacts/PersonAvatar.svelte";
   import ConfirmDialog from "$lib/components/ui/ConfirmDialog.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
-  import { formatRelativeDays } from "$lib/i18n/formatters";
+  import { formatRelativeDays, isolateText } from "$lib/i18n/formatters";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { formatContactTrustDetail, contactsMutationErrorKey } from "$lib/contacts/presentation";
   import { daysUntil, trustKindForDuration } from "$lib/contacts/trust";
@@ -187,7 +187,7 @@
   {@const target = removeTarget}
   <ConfirmDialog
     title={t("contacts.list.removeTitle")}
-    message={t("contacts.list.removeMessage", target.displayName)}
+    message={t("contacts.list.removeMessage", isolateText(target.displayName))}
     confirmLabel={t("contacts.list.remove")}
     cancelLabel={t("contacts.invite.cancel")}
     onConfirm={() => { removeTarget = null; void run(() => contacts.remove(row(target))); }}
@@ -199,7 +199,7 @@
   {@const target = blockTarget}
   <ConfirmDialog
     title={t("contacts.list.blockTitle")}
-    message={t("contacts.list.blockMessage", target.displayName)}
+    message={t("contacts.list.blockMessage", isolateText(target.displayName))}
     confirmLabel={t("contacts.list.block")}
     cancelLabel={t("contacts.invite.cancel")}
     onConfirm={() => { blockTarget = null; void run(() => contacts.block(target.publicKey)); }}

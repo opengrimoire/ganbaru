@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { parseIcs } from "./parser";
+import { wallClockToUtcIso } from "$lib/calendar/utils";
 
 const HEADER = [
 	"BEGIN:VCALENDAR",
@@ -81,6 +82,19 @@ describe("parseIcs", () => {
 			const nested = Array.from({ length: 33 }, (_, index) => `BEGIN:X-NEST-${index}`);
 			const closing = Array.from({ length: 33 }, (_, index) => `END:X-NEST-${32 - index}`);
 			const result = parseIcs([HEADER, ...nested, ...closing, FOOTER].join("\r\n"));
+
+			expect(result.events).toHaveLength(0);
+			expect(result.warnings[0]).toContain("component nesting limit");
+		});
+
+		it("rejects nesting hidden behind lone carriage returns inside property values", () => {
+			const depth = 40;
+			const nested = Array.from(
+				{ length: depth },
+				(_, index) => `BEGIN:X-NEST-${index}\nX-PAD:a\rEND:X-NEST-${index}`,
+			);
+			const closing = Array.from({ length: depth }, (_, index) => `END:X-NEST-${depth - 1 - index}`);
+			const result = parseIcs([HEADER, ...nested, ...closing, FOOTER].join("\n"));
 
 			expect(result.events).toHaveLength(0);
 			expect(result.warnings[0]).toContain("component nesting limit");
@@ -457,6 +471,36 @@ describe("parseIcs", () => {
 			expect(overrides).toHaveLength(1);
 			expect(overrides![0].title).toBe("Override");
 			expect(overrides![0].recurrenceId).toBe("2026-06-03T14:00:00Z");
+		});
+
+		it("gives an instance without a positive range the series duration", () => {
+			const master = vevent(
+				"UID:no-end@example.com",
+				"DTSTAMP:20260101T000000Z",
+				"DTSTART:20260601T140000Z",
+				"DTEND:20260601T150000Z",
+				"RRULE:FREQ=DAILY;COUNT=5",
+				"SUMMARY:Master",
+			);
+			const zone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+			for (const instanceEnd of [[], ["DTEND:20260603T153000Z"]]) {
+				const result = parseIcs(wrap(
+					master,
+					vevent(
+						"UID:no-end@example.com",
+						"DTSTAMP:20260101T000000Z",
+						"DTSTART:20260603T160000Z",
+						...instanceEnd,
+						"RECURRENCE-ID:20260603T140000Z",
+						"SUMMARY:Moved",
+					),
+				));
+				const override = result.events[0].overrides![0];
+
+				expect(wallClockToUtcIso(override.start!, zone)).toBe("2026-06-03T16:00:00Z");
+				expect(wallClockToUtcIso(override.end!, zone)).toBe("2026-06-03T17:00:00Z");
+				expect(result.warnings.some((warning) => warning.includes("series duration"))).toBe(true);
+			}
 		});
 
 		it("marks cancelled single recurrence components as cancelled overrides", () => {
@@ -959,6 +1003,30 @@ describe("parseIcs", () => {
 			const event = components.find((component) => component.componentType === "vevent");
 			expect(timezone?.components[0].componentType).toBe("daylight");
 			expect(event?.components[0].componentType).toBe("valarm");
+		});
+
+		it("stores each preserved jCal without children so nested trees are not duplicated", () => {
+			const ics = wrap(
+				vevent(
+					"UID:flat@example.com",
+					"DTSTAMP:20260101T000000Z",
+					"DTSTART:20260601T140000Z",
+					"DTEND:20260601T150000Z",
+					"SUMMARY:Flat",
+					"BEGIN:VALARM",
+					"ACTION:DISPLAY",
+					"TRIGGER:-PT10M",
+					"END:VALARM",
+				),
+			);
+			const object = parseIcs(ics).preservation?.objects[0];
+			const event = object?.components.find((component) => component.componentType === "vevent");
+
+			expect((object?.rawJcal as unknown[])[2]).toEqual([]);
+			expect((event?.rawJcal as unknown[])[2]).toEqual([]);
+			expect(JSON.stringify(event?.rawJcal)).toContain("flat@example.com");
+			expect(event?.components[0].componentType).toBe("valarm");
+			expect(JSON.stringify(event?.components[0].rawJcal)).toContain("-PT10M");
 		});
 	});
 

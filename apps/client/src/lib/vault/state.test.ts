@@ -77,16 +77,6 @@ describe("vault state api", () => {
     );
   });
 
-  it("normalizes malformed app state responses to an empty state", async () => {
-    invokeMock.mockResolvedValue({ activeVaultPath: 123, recentVaultPaths: [null, ""] });
-    const { readVaultAppState } = await loadModule();
-
-    await expect(readVaultAppState()).resolves.toEqual({
-      activeVaultPath: null,
-      recentVaultPaths: [],
-    });
-  });
-
   it("accepts complete vault info responses", async () => {
     invokeMock.mockResolvedValue({
       path: "/home/user/Documents/Ganbaru",

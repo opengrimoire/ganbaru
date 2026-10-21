@@ -247,6 +247,7 @@
     Boolean(error)
       && renderItems.length === 0
       && !selectedReviewFile?.flags.binary
+      && !selectedReviewFile?.flags.tooLarge
       && selectedPatch?.state !== "oversized_hunk"
       && selectedPatch?.state !== "unavailable"
       && !(selectedReviewFile && loadingPatchIds.includes(selectedReviewFile.fileId))
@@ -815,6 +816,8 @@
             onResolveComment={(comment, resolved) => void setCommentResolved(comment, resolved)}
             onViewport={(next) => { viewport = next; }}
           />
+        {:else if selectedReviewFile?.flags.tooLarge}
+          <div class="review-notice"><AlertTriangle size={22} /><p>{t("chat.review.tooLargeFile")}</p></div>
         {:else if selectedReviewFile?.flags.binary}
           <div class="review-notice"><FileDiff size={22} /><p>{t("chat.inspector.binary")}</p></div>
         {:else if selectedPatch?.state === "oversized_hunk"}

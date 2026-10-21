@@ -13,6 +13,7 @@ members = [
   "crates/ganbaru-distractions",
   "crates/ganbaru-handoff",
   "crates/ganbaru-image-metadata",
+  "crates/ganbaru-linking-firewall",
   "crates/ganbaru-mobile-documents",
   "crates/ganbaru-mobile-distractions",
   "crates/ganbaru-mobile-media",
@@ -39,6 +40,10 @@ rust-version = "1.98"
 authors = ["Ganbaru"]
 license = "AGPL-3.0-only"
 
+[workspace.lints.rust]
+# Unsafe code is allowed only in modules listed in docs/data/security/unsafe-rust.md.
+unsafe_code = "deny"
+
 [workspace.lints.clippy]
 # Nested guards and let-chains are both valid; choose by readability and scope.
 collapsible_if = "allow"
@@ -51,6 +56,7 @@ base64 = "0.22.1"
 block2 = "0.6.2"
 cairo-rs = { version = "0.18.5", features = ["png"] }
 chrono = { version = "0.4", default-features = false, features = ["std", "serde"] }
+dunce = "1.0.5"
 flate2 = "1.1.9"
 ganbaru-atomic-files = { path = "crates/ganbaru-atomic-files" }
 ganbaru-calendar = { path = "crates/ganbaru-calendar" }
@@ -80,6 +86,8 @@ ganbaru-sync-replica = { path = "crates/ganbaru-sync-replica" }
 ganbaru-themes = { path = "crates/ganbaru-themes" }
 ganbaru-working-folders = { path = "crates/ganbaru-working-folders" }
 gtk = "0.18"
+hyper = { version = "1.10.1", default-features = false, features = ["http1", "server"] }
+hyper-util = { version = "0.1.20", default-features = false, features = ["service", "tokio"] }
 jiff = { version = "0.2.37", default-features = false, features = [
   "std",
   "tz-system",
@@ -139,6 +147,7 @@ rodio = { version = "0.22.2", default-features = false, features = [
   "symphonia-wav",
   "symphonia-pcm",
 ] }
+rustix = { version = "1.1.4", default-features = false, features = ["std", "process"] }
 rustls = { version = "0.23.45", default-features = false, features = ["ring"] }
 qrcode = { version = "0.14.1", default-features = false }
 quircs = "0.10.3"
@@ -166,7 +175,6 @@ windows = { version = "0.61", features = [
   "Media",
   "Win32_Foundation",
   "Win32_Security",
-  "Win32_Security_Cryptography",
   "Win32_Storage_FileSystem",
   "Win32_System_Diagnostics_ToolHelp",
   "Win32_System_Com",

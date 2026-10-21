@@ -3,6 +3,7 @@
 mod policy;
 
 use super::authorization::configured_close_authorization;
+use super::catalog::{DesktopCatalogIndex, desktop_catalog_index};
 use super::*;
 use ganbaru_distractions::accounting;
 use std::sync::{Arc, Mutex};
@@ -410,8 +411,9 @@ impl Owner {
             let config = limits_read::config_at(&root_path.join(VAULT_CONFIG_FILE))?;
             let limits = limits::parse_config(&config)?;
             let phase = read_fresh_runtime_state(&state_path(&app)?, now_utc());
-            let phase_rules = policy::phase_rules(&config, phase.as_ref())?;
-            let usage_rules = policy::usage_rules(&limits);
+            let catalog = desktop_catalog_index();
+            let phase_rules = policy::phase_rules(&config, phase.as_ref(), &catalog)?;
+            let usage_rules = policy::usage_rules(&limits, &catalog);
             let monotonic = Instant::now();
             let wall_ms = now_epoch_ms();
             let foreground = if usage_rules.is_empty() {
@@ -635,11 +637,7 @@ impl Owner {
                     .state::<vault::ownership::VaultOwnershipManager>()
                     .acquire_managed_write(&context.vault_id)?;
                 context.validate_binding(&self.app)?;
-                let pool = crate::db::connect_sqlite(
-                    self.app.clone(),
-                    format!("sqlite:{}", vault::APP_SQLITE_FILE),
-                )
-                .await?;
+                let pool = crate::db::connect_vault(&self.app).await?;
                 context.validate_binding(&self.app)?;
                 let event =
                     usage::normalize_desktop_block_event(DistractionsDesktopBlockEventInput {

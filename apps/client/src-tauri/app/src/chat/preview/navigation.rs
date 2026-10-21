@@ -50,6 +50,8 @@ pub(super) fn is_app_protocol_host(url: &reqwest::Url) -> bool {
         })
 }
 
+/// Reports a URL whose host is the exact name `localhost`, an IPv4 address in `127.0.0.0/8`,
+/// or `::1`. The browser panel applies the same rule before asking to confirm a navigation.
 pub(super) fn is_loopback(url: &reqwest::Url) -> bool {
     url.host_str().is_some_and(|host| {
         host.eq_ignore_ascii_case("localhost")
@@ -180,6 +182,12 @@ pub(super) fn js_string(value: &str, field: &str) -> ChatResult<String> {
         .map_err(|_| ChatError::validation(field, "Browser interaction value is invalid"))
 }
 
+/// Label prefix shared by every Chat preview child webview.
+pub(crate) const PREVIEW_LABEL_PREFIX: &str = "chat-preview-";
+
 pub(super) fn preview_label(tab_id: &str) -> String {
-    format!("chat-preview-{:x}", Sha256::digest(tab_id.as_bytes()))
+    format!(
+        "{PREVIEW_LABEL_PREFIX}{:x}",
+        Sha256::digest(tab_id.as_bytes())
+    )
 }

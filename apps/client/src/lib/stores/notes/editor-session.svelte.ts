@@ -2084,6 +2084,7 @@ export function createNotesEditorStore(
     deleteFolder: foldersController.deleteFolder,
     importHtmlPage: transferActions.importHtmlPage,
     importNotionApi: transferActions.importNotionApi,
+    stopNotionApiImport: transferActions.stopNotionApiImport,
     importNotionExportFolder: transferActions.importNotionExportFolder,
     exportHtmlArchive: transferActions.exportHtmlArchive,
     exportJsonGraph: transferActions.exportJsonGraph,

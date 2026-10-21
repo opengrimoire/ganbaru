@@ -16,6 +16,10 @@ use super::{
     MusicLibraryError, MusicLibraryResult, MusicLocalRefreshRequest, MusicRefreshJobProgress,
 };
 
+/// Files and folders one refresh may discover before it stops, so a root chosen at a whole disk by
+/// mistake ends with an error instead of staging millions of rows in the vault database.
+const MAX_REFRESH_SCAN_ENTRIES: usize = 2_000_000;
+
 pub async fn prepare(
     pool: &SqlitePool,
     request: &MusicLocalRefreshRequest,
@@ -42,10 +46,18 @@ pub async fn run_prepared(
     pool: &SqlitePool,
     request: MusicLocalRefreshRequest,
 ) -> MusicLibraryResult<MusicRefreshJobProgress> {
+    run_prepared_with_scan_limit(pool, request, MAX_REFRESH_SCAN_ENTRIES).await
+}
+
+pub(crate) async fn run_prepared_with_scan_limit(
+    pool: &SqlitePool,
+    request: MusicLocalRefreshRequest,
+    scan_limit: usize,
+) -> MusicLibraryResult<MusicRefreshJobProgress> {
     persistence::mark_running(pool, &request.job_id).await?;
     let root = PathBuf::from(&request.folder_path);
     let progress = persistence::load_progress(pool, &request.job_id).await?;
-    let result = run_current(pool, &request, &root, progress.generation).await;
+    let result = run_current(pool, &request, &root, progress.generation, scan_limit).await;
     if let Err(error) = result {
         persistence::finish_incomplete(pool, &request, &error.message).await?;
     }
@@ -57,8 +69,9 @@ async fn run_current(
     request: &MusicLocalRefreshRequest,
     root: &Path,
     generation: i64,
+    scan_limit: usize,
 ) -> MusicLibraryResult<()> {
-    discover(pool, request, root).await?;
+    discover(pool, request, root, scan_limit).await?;
     if !persistence::is_current(pool, &request.job_id).await? {
         return Ok(());
     }
@@ -73,7 +86,9 @@ async fn discover(
     pool: &SqlitePool,
     request: &MusicLocalRefreshRequest,
     root: &Path,
+    scan_limit: usize,
 ) -> MusicLibraryResult<()> {
+    let mut visited_entries = 0_usize;
     while let Some(directory) = persistence::next_pending_directory(pool, &request.job_id).await? {
         if !persistence::is_current(pool, &request.job_id).await? {
             return Ok(());
@@ -83,6 +98,15 @@ async fn discover(
         loop {
             let entries = traversal::next_discovery_batch(root, &mut reader)
                 .map_err(|message| MusicLibraryError::runtime("discover local music", message))?;
+            visited_entries = visited_entries.saturating_add(entries.len());
+            if visited_entries > scan_limit {
+                return Err(MusicLibraryError::validation(
+                    "folderPath",
+                    format!(
+                        "contains more than {scan_limit} files and folders; choose the folder that holds this library"
+                    ),
+                ));
+            }
             let complete = entries.len() < traversal::DISCOVERY_BATCH_SIZE;
             persistence::save_discovery_batch(
                 pool,

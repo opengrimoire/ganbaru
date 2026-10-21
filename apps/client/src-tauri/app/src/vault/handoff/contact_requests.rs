@@ -10,6 +10,11 @@ use tokio::sync::{Semaphore, mpsc, oneshot};
 pub(crate) const CONTACT_QUEUE_CAPACITY: usize = 16;
 /// Contact messages handled at the same time.
 const MAX_CONCURRENT_CONTACT_MESSAGES: usize = 4;
+/// Shortest time before a contact request is answered, whatever its outcome. A blocked requester
+/// gets the same reply as a stored request without its database write, so without this floor the
+/// faster reply would reveal the block.
+pub(crate) const MIN_CONTACT_REQUEST_RESPONSE: std::time::Duration =
+    std::time::Duration::from_millis(250);
 
 /// An unauthenticated contact message addressed to the person owning this vault.
 #[derive(Debug)]

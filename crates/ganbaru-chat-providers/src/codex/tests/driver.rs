@@ -555,3 +555,27 @@ fn provider_path_falls_back_to_the_standard_pnpm_user_directory() {
     assert_eq!(resolved.executable, executable);
     assert!(resolved.prefix_arguments.is_empty());
 }
+
+#[cfg(unix)]
+#[test]
+fn provider_path_skips_programs_in_folders_any_user_can_write() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = TestDirectory::new("provider-path-shared");
+    let shared = root.path().join("shared");
+    let private = root.path().join("private");
+    for directory in [&shared, &private] {
+        fs::create_dir_all(directory).unwrap();
+        let executable = directory.join("codex");
+        fs::write(&executable, "#!/bin/sh\nexit 0\n").unwrap();
+        fs::set_permissions(&executable, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    fs::set_permissions(&shared, fs::Permissions::from_mode(0o1777)).unwrap();
+    let path = format!("relative::{}:{}", shared.display(), private.display());
+    let environment = BTreeMap::from([("PATH".to_string(), path)]);
+
+    let resolved = resolve_codex_executable("codex", &environment).unwrap();
+
+    assert_eq!(resolved.executable, private.join("codex"));
+    fs::set_permissions(&shared, fs::Permissions::from_mode(0o755)).unwrap();
+}

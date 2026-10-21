@@ -32,6 +32,13 @@
     </queries>
 
     <application>
+        <activity
+            android:name="org.opengrimoire.ganbaru.mobile.notifications.CalendarNotificationRouteActivity"
+            android:excludeFromRecents="true"
+            android:exported="false"
+            android:noHistory="true"
+            android:taskAffinity=""
+            android:theme="@android:style/Theme.NoDisplay" />
         <provider
             android:name=".NativeFocusAuthorityProvider"
             android:authorities="${applicationId}.ganbaru.focus.authority"

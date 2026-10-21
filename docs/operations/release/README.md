@@ -59,7 +59,7 @@ Check whether release notes, migrations, generated artifacts, signing expectatio
 7. Wait for the release workflow to create and populate the draft GitHub Release.
 8. Download and smoke-test the desktop installers and signed Android APK.
 9. On Android, verify that production and `.dev` identities coexist and that the installed production build restarts offline.
-10. Inspect generated release notes, `SHA256SUMS`, signatures, and `latest.json`.
+10. Inspect generated release notes, `SHA256SUMS` and `SHA256SUMS.asc`, signatures, and `latest.json`. Do not edit or replace assets on the draft after the signing job; publication jobs reject any asset that no longer matches the signed `SHA256SUMS`.
 11. Publish the draft GitHub Release.
 12. Verify the package-repository and AUR publication jobs.
 13. Verify the GitHub Pages apt and RPM metadata and the released AUR version.
@@ -79,5 +79,7 @@ Use concise pull request titles because they become release entries. Labels cont
 ## After publication
 
 Publishing triggers the package repository and AUR jobs. The signed draft artifacts exist before publication, but apt, RPM, and AUR channels must not update from an unpublished draft.
+
+The `package repo refresh` workflow asks for `release` environment approval on the first day of each month. Approve it so the apt `Release` signature stays within its `Valid-Until` window. Without a release or an approved refresh for 90 days, apt reports the repository as expired.
 
 Distribution details and recovery boundaries are in [Distribution](distribution.md).

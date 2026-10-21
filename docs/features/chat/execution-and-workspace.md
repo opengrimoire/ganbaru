@@ -28,6 +28,10 @@ Review presents file changes, diffs, checkpoints, and source-control status. The
 
 When a checkpoint pair is unavailable, review falls back to the provider-reported turn and then to the working tree. Only a typed not-found reason selects a fallback; permission and storage errors stay errors.
 
+A changed file too large to review is listed with a notice instead of a diff, and it can still be staged, unstaged, or discarded as a whole.
+
+A working folder may be a subdirectory of its repository. Review and source control then list paths from the repository root, and staging, unstaging, discarding, and diffs act on exactly the listed file, as the user's own `git` would from that folder.
+
 ## Terminal
 
 Terminals are bound to one authorized execution target and thread. The frontend receives a narrow stream and input boundary, not a generic process API. Closing a terminal view does not necessarily stop its process, and lifecycle and stop controls stay truthful. Output is bounded, untrusted text; escape sequences cannot become application commands or links without validation.
@@ -39,6 +43,8 @@ The first terminal for a working folder and execution environment in each app la
 Previews use isolated app-owned webviews with narrowly scoped capture controls. Each working folder keeps its own preview logins, site storage, and cache on the device, separate from the app and from other folders; they are deleted when the folder is unbound and can be cleared from Chat permission settings. A preview cannot browse local files, inherit app capabilities, or become general desktop capture. Screenshots and recordings become managed artifacts under `assets/chat/browser-artifacts/` only through an authorized capture action.
 
 The model can use loopback previews such as a local development server. A thread remembers the local addresses the user opened; when a page or the model moves to a different local port, the Browser panel asks once with an Allow button and the thread remembers the answer. If the run's sandbox has no network access, the Browser panel also asks once per session before the model may use preview tools. To let it work on an external site, for example one the user is logged into, the user allows that site once from the Browser panel; the choice is remembered for that site in that thread and can be revoked from the panel or from Chat permission settings.
+
+When a previewed page asks for the camera, microphone, location, notifications, clipboard, or another capability, the Browser panel names the site and asks; the answer is remembered for that site in that thread. Page dialogs (`alert`, `confirm`, `prompt`, and leave-page confirmations) appear in the Browser panel too. Dialogs a page opens while the model is clicking, typing, or scrolling are dismissed and reported to the model.
 
 ## Workspace observation
 

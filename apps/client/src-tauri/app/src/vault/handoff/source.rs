@@ -68,7 +68,7 @@ async fn upload(app: &tauri::AppHandle, purpose: BundlePurpose) -> Result<(), St
         )
         .await?
     };
-    let (source_device_id, _) = pairing.identity()?;
+    let source_device_id = pairing.device_id()?;
     super::transport::upload_bundle(
         &pairing,
         transfer.metadata.clone(),
@@ -220,12 +220,8 @@ async fn prepare_local_state_for_snapshot(app: &tauri::AppHandle) -> Result<(), 
 #[cfg(desktop)]
 async fn prepare_local_state_for_snapshot(app: &tauri::AppHandle) -> Result<(), String> {
     let vault_id = crate::vault::active_vault_id(app)?;
-    let (device_id, _) = app.state::<PairingManager>().identity()?;
-    let pool = crate::db::connect_sqlite(
-        app.clone(),
-        format!("sqlite:{}", crate::vault::APP_SQLITE_FILE),
-    )
-    .await?;
+    let device_id = app.state::<PairingManager>().device_id()?;
+    let pool = crate::db::connect_vault(app).await?;
     crate::distractions::linked::drain_local_spool(app, &pool, &vault_id, &device_id)
         .await
         .map(|_| ())

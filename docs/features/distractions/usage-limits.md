@@ -32,6 +32,7 @@ Usage is evidence, so it must never be double-counted or invented:
 - Applying a linked snapshot and acknowledging the pending samples it includes happen in one transaction; failure retains both for retry.
 - Intervals use monotonic elapsed time and split at actual local midnights, including daylight-saving changes. Long gaps and clock discontinuities produce no inferred usage.
 - A full device-local spool or journal fails explicitly and stops capturing new usage rather than dropping or clamping it.
+- Linked usage is bound to the authenticated sender: a batch whose samples name another device is rejected whole. Samples dated more than one day past the receiver's UTC date, or before the retention window, are acknowledged but not counted, so a wrong clock or forged date cannot displace real days.
 
 ## Browser counting
 
@@ -59,6 +60,6 @@ Each budget shows used and available time with a stacked, labeled source breakdo
 
 ## History and privacy
 
-Usage history is local structured data. It supports totals and configuration guidance without becoming an activity diary, and retention keeps current budgets and useful trends while bounding storage.
+Usage history is local structured data. It supports totals and configuration guidance without becoming an activity diary. Retention keeps 400 days, far beyond the weekly budget window, so yearly trends survive while storage stays bounded; older samples are pruned when linked usage is imported.
 
 Status: real desktop lifecycle and Android background and process-restart acceptance are pending.

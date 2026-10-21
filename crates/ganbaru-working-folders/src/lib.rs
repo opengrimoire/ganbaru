@@ -1,6 +1,13 @@
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 use std::{collections::BTreeMap, fmt};
 
+mod managed_folder;
+
+pub use managed_folder::{
+    MANAGED_PROJECTS_DIRECTORY, managed_project_relative_path, resolve_managed_project_folder,
+    validate_managed_folder_name,
+};
+
 const MAX_IDENTIFIER_BYTES: usize = 1_024;
 
 /// Stable identifier for a project working folder.

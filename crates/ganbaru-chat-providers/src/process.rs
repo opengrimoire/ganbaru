@@ -1,8 +1,13 @@
 //! Shell-free provider process spawning and bounded diagnostics.
 
+#![allow(
+    unsafe_code,
+    reason = "Retained unsafe boundary; see docs/data/security/unsafe-rust.md."
+)]
+
 use crate::models::{ChatError, ChatErrorCode, ChatResult};
 use std::collections::{BTreeMap, VecDeque};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{
     Arc, Mutex,
     atomic::{AtomicBool, Ordering},
@@ -324,6 +329,42 @@ impl ProcessTree {
         }
     }
 
+    /// Claims the tree of a child spawned from a command prepared with
+    /// `configure_process_tree`. On failure the child is killed.
+    fn claim_tokio(child: &mut Child) -> ChatResult<Self> {
+        #[cfg(unix)]
+        {
+            let process_group_id = child
+                .id()
+                .and_then(|id| libc::pid_t::try_from(id).ok())
+                .filter(|id| *id > 1)
+                .ok_or_else(|| {
+                    let _ = child.start_kill();
+                    process_state_error()
+                })?;
+            Ok(Self { process_group_id })
+        }
+        #[cfg(windows)]
+        {
+            let (Some(raw_handle), Some(process_id)) = (child.raw_handle(), child.id()) else {
+                let _ = child.start_kill();
+                return Err(process_state_error());
+            };
+            match claim_windows_job(raw_handle, process_id, false) {
+                Ok(process_job) => Ok(Self { process_job }),
+                Err(error) => {
+                    let _ = child.start_kill();
+                    Err(spawn_error(error))
+                }
+            }
+        }
+        #[cfg(not(any(unix, windows)))]
+        {
+            let _ = child;
+            Ok(Self {})
+        }
+    }
+
     /// Forcefully stops every process in the tree. Already stopped trees are
     /// not an error.
     pub fn terminate(&self) {
@@ -342,6 +383,103 @@ impl ProcessTree {
             }
         }
     }
+}
+
+/// One short-lived provider probe, such as a version or account query.
+pub struct BoundedCommand<'a> {
+    pub executable: &'a Path,
+    pub arguments: &'a [&'a str],
+    pub working_directory: &'a Path,
+    pub environment: &'a BTreeMap<String, String>,
+    /// Largest stdout or stderr the probe may write; more stops the process tree.
+    pub output_limit_bytes: usize,
+    pub timeout: Duration,
+}
+
+/// Complete output of a probe that finished within its limits.
+#[derive(Debug)]
+pub struct BoundedCommandOutput {
+    pub stdout: Vec<u8>,
+    pub stderr: Vec<u8>,
+    pub successful: bool,
+}
+
+/// Why a probe produced no usable output.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BoundedCommandFailure {
+    /// The executable could not be started or its output could not be read.
+    Unavailable,
+    TimedOut,
+    Oversized,
+}
+
+/// Runs a probe with a null stdin and a clean environment, reading each output
+/// stream only up to its limit. A probe that writes more or runs past its
+/// timeout has its whole process tree stopped, so a hostile or broken
+/// executable cannot make the app buffer unbounded output.
+pub async fn run_bounded_command(
+    command: BoundedCommand<'_>,
+) -> Result<BoundedCommandOutput, BoundedCommandFailure> {
+    let mut process = Command::new(command.executable);
+    process
+        .args(command.arguments)
+        .current_dir(command.working_directory)
+        .env_clear()
+        .envs(command.environment)
+        .kill_on_drop(true)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    configure_process_tree(&mut process);
+    let mut child = process
+        .spawn()
+        .map_err(|_| BoundedCommandFailure::Unavailable)?;
+    let tree =
+        ProcessTree::claim_tokio(&mut child).map_err(|_| BoundedCommandFailure::Unavailable)?;
+    let limit = command.output_limit_bytes;
+    let result = tokio::time::timeout(command.timeout, async {
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or(BoundedCommandFailure::Unavailable)?;
+        let stderr = child
+            .stderr
+            .take()
+            .ok_or(BoundedCommandFailure::Unavailable)?;
+        let (stdout, stderr) =
+            tokio::try_join!(read_capped(stdout, limit), read_capped(stderr, limit))?;
+        let status = child
+            .wait()
+            .await
+            .map_err(|_| BoundedCommandFailure::Unavailable)?;
+        Ok(BoundedCommandOutput {
+            stdout,
+            stderr,
+            successful: status.success(),
+        })
+    })
+    .await
+    .unwrap_or(Err(BoundedCommandFailure::TimedOut));
+    if result.is_err() {
+        tree.terminate();
+    }
+    result
+}
+
+async fn read_capped(
+    reader: impl tokio::io::AsyncRead + Unpin,
+    limit: usize,
+) -> Result<Vec<u8>, BoundedCommandFailure> {
+    let mut output = Vec::new();
+    reader
+        .take(u64::try_from(limit).unwrap_or(u64::MAX).saturating_add(1))
+        .read_to_end(&mut output)
+        .await
+        .map_err(|_| BoundedCommandFailure::Unavailable)?;
+    if output.len() > limit {
+        return Err(BoundedCommandFailure::Oversized);
+    }
+    Ok(output)
 }
 
 /// Prepares a standard-library command so its descendants form one process
@@ -549,7 +687,10 @@ fn claim_windows_job(
 
 #[cfg(all(test, unix))]
 mod tests {
-    use super::signal_process_group;
+    use super::{BoundedCommand, BoundedCommandFailure, run_bounded_command, signal_process_group};
+    use std::collections::BTreeMap;
+    use std::path::Path;
+    use std::time::Duration;
 
     #[test]
     fn process_group_signaling_rejects_broad_targets() {
@@ -567,6 +708,102 @@ mod tests {
                 signal_process_group(1, signal).expect_err("unapproved signals must be rejected");
             assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
         }
+    }
+
+    fn shell_probe<'a>(
+        script: &'a [&'a str],
+        environment: &'a BTreeMap<String, String>,
+        output_limit_bytes: usize,
+        timeout: Duration,
+    ) -> BoundedCommand<'a> {
+        BoundedCommand {
+            executable: Path::new("/bin/sh"),
+            arguments: script,
+            working_directory: Path::new("/"),
+            environment,
+            output_limit_bytes,
+            timeout,
+        }
+    }
+
+    #[tokio::test]
+    async fn bounded_probes_return_complete_output_and_exit_status() {
+        let environment = BTreeMap::from([("PROBE_VALUE".to_string(), "visible".to_string())]);
+        let output = run_bounded_command(shell_probe(
+            &["-c", "printf \"$PROBE_VALUE\"; printf warning >&2; exit 3"],
+            &environment,
+            64,
+            Duration::from_secs(10),
+        ))
+        .await
+        .expect("probe within limits");
+        assert_eq!(output.stdout, b"visible");
+        assert_eq!(output.stderr, b"warning");
+        assert!(!output.successful);
+
+        let exact = run_bounded_command(shell_probe(
+            &["-c", "printf 12345678"],
+            &environment,
+            8,
+            Duration::from_secs(10),
+        ))
+        .await
+        .expect("output exactly at the limit");
+        assert_eq!(exact.stdout, b"12345678");
+    }
+
+    #[tokio::test]
+    async fn bounded_probes_stop_endless_output_on_either_stream() {
+        let environment = BTreeMap::new();
+        for script in ["yes", "yes >&2"] {
+            let started = std::time::Instant::now();
+            let failure = run_bounded_command(shell_probe(
+                &["-c", script],
+                &environment,
+                16 * 1024,
+                Duration::from_secs(30),
+            ))
+            .await
+            .expect_err("endless output must be rejected");
+            assert_eq!(failure, BoundedCommandFailure::Oversized);
+            assert!(started.elapsed() < Duration::from_secs(10));
+        }
+    }
+
+    #[tokio::test]
+    async fn bounded_probes_stop_the_whole_tree_after_the_timeout() {
+        let environment = BTreeMap::new();
+        let marker =
+            std::env::temp_dir().join(format!("ganbaru-bounded-probe-{}", std::process::id()));
+        let _ = std::fs::remove_file(&marker);
+        let script = format!("(sleep 2; touch '{}') & sleep 30", marker.display());
+        let failure = run_bounded_command(shell_probe(
+            &["-c", &script],
+            &environment,
+            64,
+            Duration::from_millis(300),
+        ))
+        .await
+        .expect_err("a hung probe must time out");
+        assert_eq!(failure, BoundedCommandFailure::TimedOut);
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        assert!(!marker.exists(), "a descendant outlived the stopped probe");
+    }
+
+    #[tokio::test]
+    async fn bounded_probes_report_missing_executables_as_unavailable() {
+        let environment = BTreeMap::new();
+        let failure = run_bounded_command(BoundedCommand {
+            executable: Path::new("/nonexistent/ganbaru-probe"),
+            arguments: &[],
+            working_directory: Path::new("/"),
+            environment: &environment,
+            output_limit_bytes: 64,
+            timeout: Duration::from_secs(5),
+        })
+        .await
+        .expect_err("missing executable");
+        assert_eq!(failure, BoundedCommandFailure::Unavailable);
     }
 }
 

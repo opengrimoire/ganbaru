@@ -740,3 +740,34 @@ fn resume_not_found_classifier_requires_session_specific_evidence() {
         "Session transport disconnected"
     ));
 }
+
+#[test]
+fn separate_sessions_never_share_event_or_fallback_item_ids() {
+    let mut event_ids = std::collections::BTreeSet::new();
+    let mut item_ids = std::collections::BTreeSet::new();
+    for session in ["session-a", "session-b"] {
+        let normalizer = ClaudeEventNormalizer::new(
+            ProviderInstanceId::new("claude-instance-1".to_string()).unwrap(),
+            ChatThreadId::new("thread-1".to_string()).unwrap(),
+            ProviderSessionId::new(session.to_string()).unwrap(),
+        );
+        let mut state = route_state();
+        state.active_chat_turn_id = Some(ChatTurnId::new("turn-1".to_string()).unwrap());
+        let mut session_items = std::collections::BTreeSet::new();
+        for line in include_str!("fixtures/compatibility.jsonl").lines() {
+            let value: Value = serde_json::from_str(line).unwrap();
+            if value.get("type").and_then(Value::as_str) == Some("control_request") {
+                continue;
+            }
+            for event in normalizer.normalize_message(&mut state, value).unwrap() {
+                assert!(event_ids.insert(event.event_id.as_str().to_string()));
+                if let CanonicalEvent::ContentDelta(delta) = &event.event {
+                    session_items.insert(delta.item_id.clone());
+                }
+            }
+        }
+        assert!(!session_items.is_empty());
+        assert!(session_items.iter().all(|item| !item_ids.contains(item)));
+        item_ids.extend(session_items);
+    }
+}

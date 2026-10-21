@@ -2,12 +2,13 @@
 
 use ganbaru_contacts::PersonKeyPair;
 use ganbaru_sync_contracts::bounds::{MAX_DEPENDENCIES, MAX_WRITERS_PER_DEVICE};
+use ganbaru_sync_contracts::hlc::CLOCK_WARNING_AHEAD_MS;
 use ganbaru_sync_contracts::{
     Content, Envelope, Field, GroupMask, RevokeReason, VersionVector, WriterId,
 };
 
 use super::block_on;
-use super::replica::{Identity, Replica, VAULT_ID, converge, device_id, person};
+use super::replica::{Identity, Replica, START_MS, VAULT_ID, converge, device_id, pair, person};
 use crate::error::failpoints;
 use crate::manifest::vault::quick_notes::{NOTES_TABLE, note_group};
 use crate::{
@@ -1178,5 +1179,53 @@ fn store_refuses_geneses_past_the_writers_of_one_device() {
         )
         .await;
         assert_eq!(a.receive(&other_device).await, vec![STORED]);
+    });
+}
+
+#[test]
+fn merged_versions_with_far_ahead_clocks_name_their_writer_until_local_time_catches_up() {
+    block_on(async {
+        let mut replicas = replicas(2).await;
+        replicas[0].now_ms = START_MS + CLOCK_WARNING_AHEAD_MS + 60 * 60_000;
+        seed_note(&mut replicas[0]).await;
+        replicas[0].seal().await.unwrap();
+        let writer = replicas[0].writer();
+        let (b, a) = pair(&mut replicas, 1, 0);
+        let known = b.stored_vector().await;
+        let ops = a.ops_since(&known).await;
+        b.receive(&ops).await;
+        let reports = b.apply_all().await.unwrap();
+        assert!(reports.iter().any(|report| {
+            report
+                .clock_warnings
+                .iter()
+                .any(|warning| warning.writer == writer)
+        }));
+
+        let warnings = b
+            .engine
+            .far_ahead_writers(&mut b.conn, &b.ctx, b.now_ms)
+            .await
+            .unwrap();
+        assert_eq!(
+            warnings
+                .iter()
+                .map(|warning| warning.writer)
+                .collect::<Vec<_>>(),
+            vec![writer]
+        );
+        let edge = warnings[0].clock.physical_ms() - CLOCK_WARNING_AHEAD_MS;
+        let still_ahead = b
+            .engine
+            .far_ahead_writers(&mut b.conn, &b.ctx, edge - 1)
+            .await
+            .unwrap();
+        assert_eq!(still_ahead, warnings);
+        let caught_up = b
+            .engine
+            .far_ahead_writers(&mut b.conn, &b.ctx, edge)
+            .await
+            .unwrap();
+        assert!(caught_up.is_empty());
     });
 }

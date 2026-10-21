@@ -5,10 +5,10 @@ use super::{
     NoteAgentBridgeExportRequest, NoteAgentBridgeExportSaveDto, NoteDataSourceCsvExportRequest,
     NoteDataSourceCsvExportSaveDto, NoteHtmlArchiveSaveDto, NoteHtmlExportRequest,
     NoteJsonGraphExportRequest, NoteJsonGraphExportSaveDto, NoteNotionExportImportDto,
-    NoteNotionExportImportRequest,
+    NoteNotionExportImportRequest, on_dialog_thread,
 };
 use crate::vault;
-use ganbaru_notes::{data_sources::csv_export, transfers};
+use ganbaru_notes::{blocking::run_blocking, data_sources::csv_export, transfers};
 use sqlx::SqlitePool;
 use std::path::PathBuf;
 use tauri::{AppHandle, Manager, Runtime};
@@ -23,20 +23,21 @@ struct SaveTarget<'a> {
 }
 
 /// Ask for a destination file; `None` means the user canceled the dialog.
-fn pick_save_path<R: Runtime>(
+async fn pick_save_path<R: Runtime>(
     app: &AppHandle<R>,
     target: SaveTarget<'_>,
 ) -> Result<Option<PathBuf>, String> {
-    app.dialog()
+    let dialog = app
+        .dialog()
         .file()
         .set_title(target.title)
         .set_file_name(target.file_name)
-        .add_filter(target.filter_name, &[target.extension])
-        .blocking_save_file()
+        .add_filter(target.filter_name, &[target.extension]);
+    on_dialog_thread(move || dialog.blocking_save_file())
+        .await?
         .map(dialog_path)
         .transpose()
 }
-
 fn dialog_path(path: FilePath) -> Result<PathBuf, String> {
     path.into_path()
         .map_err(|error| format!("selected path is not a local file: {error}"))
@@ -55,11 +56,8 @@ pub(super) async fn pick_and_import_notion_export<R: Runtime>(
     pool: &SqlitePool,
     request: NoteNotionExportImportRequest,
 ) -> Result<Option<NoteNotionExportImportDto>, String> {
-    let selection = app
-        .dialog()
-        .file()
-        .set_title("Import Notion export folder")
-        .blocking_pick_folder();
+    let dialog = app.dialog().file().set_title("Import Notion export folder");
+    let selection = on_dialog_thread(move || dialog.blocking_pick_folder()).await?;
     let Some(export_root) = picked_folder(selection)? else {
         return Ok(None);
     };
@@ -89,10 +87,10 @@ pub(super) async fn pick_and_write_bridge<R: Runtime>(
         filter_name: "Markdown",
         extension: "md",
     };
-    let Some(path) = pick_save_path(app, target)? else {
+    let Some(path) = pick_save_path(app, target).await? else {
         return Ok(NoteAgentBridgeExportSaveDto::canceled());
     };
-    transfers::agent_bridge_export::write_bridge(&path, export)
+    run_blocking(move || transfers::agent_bridge_export::write_bridge(&path, export)).await
 }
 
 /// Export one data source as CSV and write it to a user-selected file.
@@ -102,17 +100,17 @@ pub(super) async fn pick_and_write_csv<R: Runtime>(
     data_source_id: &str,
     request: NoteDataSourceCsvExportRequest,
 ) -> Result<NoteDataSourceCsvExportSaveDto, String> {
-    let export = csv_export::export_csv(pool, data_source_id, request).await?;
+    let export = csv_export::export_spreadsheet_csv(pool, data_source_id, request).await?;
     let target = SaveTarget {
         title: "Export Notes database CSV",
         file_name: &export.file_name,
         filter_name: "CSV",
         extension: "csv",
     };
-    let Some(path) = pick_save_path(app, target)? else {
+    let Some(path) = pick_save_path(app, target).await? else {
         return Ok(NoteDataSourceCsvExportSaveDto::canceled());
     };
-    csv_export::write_csv(&path, export)
+    run_blocking(move || csv_export::write_csv(&path, export)).await
 }
 
 /// Export the Notes JSON graph and write it to a user-selected file.
@@ -128,10 +126,10 @@ pub(super) async fn pick_and_write_graph<R: Runtime>(
         filter_name: "JSON graph",
         extension: "json",
     };
-    let Some(path) = pick_save_path(app, target)? else {
+    let Some(path) = pick_save_path(app, target).await? else {
         return Ok(NoteJsonGraphExportSaveDto::canceled());
     };
-    transfers::json_graph_export::write_graph(&path, export)
+    run_blocking(move || transfers::json_graph_export::write_graph(&path, export)).await
 }
 
 /// Export the HTML archive and write it, with referenced vault assets, to a user-selected file.
@@ -147,11 +145,14 @@ pub(super) async fn pick_and_write_archive<R: Runtime>(
         filter_name: "Zip archive",
         extension: "zip",
     };
-    let Some(path) = pick_save_path(app, target)? else {
+    let Some(path) = pick_save_path(app, target).await? else {
         return Ok(NoteHtmlArchiveSaveDto::canceled());
     };
-    let asset_root = vault::active_vault_path(app)?.join("assets");
-    transfers::html_export::archive::write_archive(&asset_root, &path, &mut archive)
+    let vault_root = vault::active_vault_path(app)?;
+    run_blocking(move || {
+        transfers::html_export::archive::write_archive(&vault_root, &path, &mut archive)
+    })
+    .await
 }
 
 #[cfg(test)]

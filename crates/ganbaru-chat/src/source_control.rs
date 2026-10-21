@@ -15,13 +15,13 @@ mod bitbucket;
 mod cli;
 mod parsing;
 
+#[cfg(test)]
+use bitbucket::{append_bounded_response, parse_bitbucket_change_request, percent_encode_segment};
 use bitbucket::{
     bitbucket_authenticated_request, bitbucket_create_change_request,
     bitbucket_credential_reference, bitbucket_list_change_requests, credential_error,
     probe_bitbucket,
 };
-#[cfg(test)]
-use bitbucket::{parse_bitbucket_change_request, percent_encode_segment};
 #[cfg(test)]
 use cli::hosted_cli_command;
 use cli::{
@@ -89,19 +89,40 @@ pub struct CreateHostedChangeRequest {
     pub draft: bool,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct BitbucketCredential {
     username: String,
     token: String,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+impl std::fmt::Debug for BitbucketCredential {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("BitbucketCredential")
+            .field("username", &self.username)
+            .field("token", &"[REDACTED]")
+            .finish()
+    }
+}
+
+#[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ConfigureBitbucketCredential {
     pub repository_slug: String,
     pub username: String,
     pub token: String,
+}
+
+impl std::fmt::Debug for ConfigureBitbucketCredential {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ConfigureBitbucketCredential")
+            .field("repository_slug", &self.repository_slug)
+            .field("username", &self.username)
+            .field("token", &"[REDACTED]")
+            .finish()
+    }
 }
 
 pub async fn discover_source_control(
@@ -179,6 +200,7 @@ pub async fn list_hosted_change_requests(
 ) -> ChatResult<Vec<HostedChangeRequestRead>> {
     validate_text(&repository_slug, "repositorySlug", 2_048)?;
     let limit = limit.clamp(1, MAX_CHANGE_REQUESTS);
+    require_folder_repository(folder, provider_kind, &repository_slug).await?;
     if provider_kind == HostedSourceControlKind::Bitbucket {
         return bitbucket_list_change_requests(&repository_slug, limit, credential_store).await;
     }
@@ -204,6 +226,7 @@ pub async fn create_hosted_change_request(
             "Change request body is invalid",
         ));
     }
+    require_folder_repository(folder, request.provider_kind, &request.repository_slug).await?;
     if request.provider_kind == HostedSourceControlKind::Bitbucket {
         return bitbucket_create_change_request(&request, credential_store).await;
     }
@@ -274,6 +297,41 @@ pub async fn checkout_hosted_change_request(
     )
     .await?;
     git::status(folder).await
+}
+
+/// Requires the requested repository to be one the folder's own remotes
+/// point at, so stored credentials and signed-in CLIs act only on the
+/// repository the authorized folder belongs to.
+async fn require_folder_repository(
+    folder: GitFolder<'_>,
+    provider_kind: HostedSourceControlKind,
+    repository_slug: &str,
+) -> ChatResult<()> {
+    let remotes = git::remotes(folder).await?;
+    if remote_urls_include_repository(
+        remotes
+            .iter()
+            .filter_map(|remote| remote.fetch_url.as_deref()),
+        provider_kind,
+        repository_slug,
+    ) {
+        return Ok(());
+    }
+    Err(ChatError::validation(
+        "repositorySlug",
+        "The repository is not a remote of this folder",
+    ))
+}
+
+fn remote_urls_include_repository<'a>(
+    mut urls: impl Iterator<Item = &'a str>,
+    provider_kind: HostedSourceControlKind,
+    repository_slug: &str,
+) -> bool {
+    urls.any(|url| {
+        detect_remote(url)
+            .is_some_and(|(kind, slug)| kind == provider_kind && slug == repository_slug)
+    })
 }
 
 /// Resolves Azure coordinates from the folder's own remotes, so `az` never

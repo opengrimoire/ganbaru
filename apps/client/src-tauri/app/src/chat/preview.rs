@@ -25,6 +25,8 @@ mod capture;
 pub mod data_store;
 pub mod model_access;
 mod navigation;
+mod page_hook;
+mod page_requests;
 mod persistence;
 mod repository;
 mod webview;
@@ -32,12 +34,13 @@ mod webview;
 use artifacts::{persist_browser_artifact, persist_browser_artifact_with_pool};
 use capture::{capture_browser_png, capture_recording_frames, recording_archive};
 pub(crate) use model_access::{mcp_model_tab, mcp_require_tab_access, mcp_status_reads};
+pub(crate) use navigation::PREVIEW_LABEL_PREFIX;
 #[cfg(test)]
 use navigation::navigation_allowed;
 use navigation::{
     is_loopback, js_string, loopback_urls, validate_bounds, validate_navigation, validate_tab_id,
 };
-use repository::{persist_tab, require_thread};
+use repository::{foreign_tab_error, persist_tab, require_tab_owner, require_thread};
 pub(crate) use webview::evaluate_script;
 use webview::{
     create_child_browser_webview, navigate_existing, owned_tab, resize_existing, run_script,
@@ -137,6 +140,8 @@ pub struct ChatBrowserManager {
     tabs: Arc<Mutex<HashMap<String, RuntimeBrowserTab>>>,
     recording: Arc<Mutex<Option<ActiveRecording>>>,
     pending_approvals: Arc<Mutex<HashMap<ChatThreadId, approvals::PendingPreviewApproval>>>,
+    /// Page permission requests and dialogs waiting for the user, and remembered answers.
+    page_requests: Arc<Mutex<page_requests::PageRequestState>>,
     data_sweeps: data_store::PreviewDataSweeps,
     /// One lock per thread so model captures run one at a time and the quota check cannot race the insert.
     model_captures: Arc<Mutex<HashMap<ChatThreadId, Arc<tokio::sync::Mutex<()>>>>>,
@@ -236,6 +241,7 @@ impl ChatBrowserManager {
         if let Ok(mut pending) = self.pending_approvals.lock() {
             pending.remove(thread_id);
         }
+        self.forget_thread_page_requests(app, thread_id);
         let labels = if let Ok(mut tabs) = self.tabs.lock() {
             let ids = tabs
                 .iter()
@@ -260,6 +266,7 @@ impl ChatBrowserManager {
         app: &tauri::AppHandle<R>,
         matches: impl Fn(&ProjectWorkingFolderId) -> bool,
     ) {
+        self.forget_page_permissions();
         let labels = self
             .tabs
             .lock()
@@ -284,6 +291,7 @@ impl ChatBrowserManager {
         if let Ok(mut pending) = self.pending_approvals.lock() {
             pending.clear();
         }
+        self.forget_all_page_requests(app);
         let labels = if let Ok(mut tabs) = self.tabs.lock() {
             std::mem::take(&mut *tabs)
                 .into_values()
@@ -402,21 +410,35 @@ pub(crate) async fn mcp_screenshot_browser(
         .model_capture_lock(thread_id)?;
     let _capture = capture_lock.lock().await;
     let bytes = capture_browser_png(app, &tab).await?;
-    persist_browser_artifact_with_pool(
-        pool,
-        vault_root,
-        &tab,
-        BrowserArtifactPayload {
-            kind: ChatResourceKind::BrowserScreenshot,
-            display_name: "Browser screenshot",
-            mime_type: "image/png",
-            duration_milliseconds: None,
-            frame_count: Some(1),
-            bytes: &bytes,
-            model_quota: true,
-        },
-    )
+    // The store runs as its own task so a cancelled tool call cannot stop it between the
+    // artifact file and its resource row.
+    let pool = pool.clone();
+    let vault_root = vault_root.to_path_buf();
+    tauri::async_runtime::spawn(async move {
+        persist_browser_artifact_with_pool(
+            &pool,
+            &vault_root,
+            &tab,
+            BrowserArtifactPayload {
+                kind: ChatResourceKind::BrowserScreenshot,
+                display_name: "Browser screenshot",
+                mime_type: "image/png",
+                duration_milliseconds: None,
+                frame_count: Some(1),
+                bytes: &bytes,
+                model_quota: true,
+            },
+        )
+        .await
+    })
     .await
+    .map_err(|_| {
+        ChatError::new(
+            ChatErrorCode::Internal,
+            "Browser screenshot could not be stored",
+            true,
+        )
+    })?
 }
 
 #[tauri::command]
@@ -476,6 +498,16 @@ pub async fn chat_browser_discover_servers(
     let working_folder_id = repository::thread_working_folder(&pool, &thread_id).await?;
     let registry = app.state::<super::terminal::ChatTerminalRegistry>();
     let terminals = registry.list(&thread_id, &working_folder_id)?;
+    if terminals.is_empty() {
+        return Ok(Vec::new());
+    }
+    super::terminal_commands::authorize_thread_workspace(
+        &app,
+        &pool,
+        &thread_id,
+        &working_folder_id,
+    )
+    .await?;
     let mut candidates = HashMap::<String, String>::new();
     for terminal in terminals {
         let snapshot = registry.snapshot(&terminal.id)?;
@@ -525,14 +557,11 @@ pub async fn chat_browser_open(
     validate_tab_id(&request.tab_id)?;
     let pool = chat_pool(&app, db_url).await?;
     require_thread(&pool, &request.thread_id).await?;
+    require_tab_owner(&pool, &request.tab_id, &request.thread_id).await?;
     approvals::grant_loopback_origin(&app, &request.thread_id, &url)?;
     if let Ok(existing) = app.state::<ChatBrowserManager>().read(&request.tab_id) {
         if existing.read.thread_id != request.thread_id {
-            return Err(ChatError::new(
-                ChatErrorCode::Permission,
-                "Browser preview tab belongs to another thread",
-                true,
-            ));
+            return Err(foreign_tab_error());
         }
         navigate_existing(&app, &existing, url.clone())?;
         resize_existing(&app, &existing, &bounds)?;
@@ -542,6 +571,7 @@ pub async fn chat_browser_open(
         app.state::<ChatBrowserManager>()
             .update(&request.tab_id, |read| {
                 read.current_url = url.to_string();
+                read.external_origin = !is_loopback(&url);
                 read.visible = true;
                 read.loading = true;
                 read.viewport_width = bounds.width.round() as u32;
@@ -659,13 +689,25 @@ pub(crate) async fn chat_browser_snapshot(
     thread_id: ChatThreadId,
     tab_id: String,
 ) -> ChatResult<String> {
-    evaluate_script(
-        &app,
-        &thread_id,
-        &tab_id,
-        "JSON.stringify({url:location.href,title:document.title,text:(document.body?.innerText??'').slice(0,1000000),html:(document.documentElement?.outerHTML??'').slice(0,1000000)})",
+    let result = evaluate_script(&app, &thread_id, &tab_id, &page_hook::snapshot_script()?).await?;
+    page_hook::snapshot_result(result)
+}
+
+/// Reports whether `selector` currently matches an element in the tab's page.
+pub(crate) async fn browser_selector_matches(
+    app: &tauri::AppHandle,
+    thread_id: &ChatThreadId,
+    tab_id: &str,
+    selector: &str,
+) -> ChatResult<bool> {
+    let result = evaluate_script(
+        app,
+        thread_id,
+        tab_id,
+        &page_hook::matches_script(selector)?,
     )
-    .await
+    .await?;
+    Ok(page_hook::selector_match(&result)? == page_hook::SelectorMatch::Matched)
 }
 
 #[tauri::command]
@@ -804,14 +846,15 @@ pub(crate) async fn chat_browser_click(
     thread_id: ChatThreadId,
     tab_id: String,
     selector: String,
-) -> ChatResult<()> {
+) -> ChatResult<page_requests::ModelActionDialogs> {
     let selector = js_string(&selector, "selector")?;
-    run_script(
+    run_model_action(
         &app,
         &thread_id,
         &tab_id,
         &format!("document.querySelector({selector})?.click()"),
     )
+    .await
 }
 
 pub(crate) async fn chat_browser_type(
@@ -820,10 +863,10 @@ pub(crate) async fn chat_browser_type(
     tab_id: String,
     selector: String,
     text: String,
-) -> ChatResult<()> {
+) -> ChatResult<page_requests::ModelActionDialogs> {
     let selector = js_string(&selector, "selector")?;
     let text = js_string(&text, "text")?;
-    run_script(
+    run_model_action(
         &app,
         &thread_id,
         &tab_id,
@@ -831,6 +874,7 @@ pub(crate) async fn chat_browser_type(
             "(()=>{{const e=document.querySelector({selector});if(e){{e.focus();e.value={text};e.dispatchEvent(new Event('input',{{bubbles:true}}));}}}})()"
         ),
     )
+    .await
 }
 
 pub(crate) async fn chat_browser_press(
@@ -838,9 +882,9 @@ pub(crate) async fn chat_browser_press(
     thread_id: ChatThreadId,
     tab_id: String,
     key: String,
-) -> ChatResult<()> {
+) -> ChatResult<page_requests::ModelActionDialogs> {
     let key = js_string(&key, "key")?;
-    run_script(
+    run_model_action(
         &app,
         &thread_id,
         &tab_id,
@@ -848,6 +892,7 @@ pub(crate) async fn chat_browser_press(
             "document.activeElement?.dispatchEvent(new KeyboardEvent('keydown',{{key:{key},bubbles:true}}))"
         ),
     )
+    .await
 }
 
 pub(crate) async fn chat_browser_scroll(
@@ -856,14 +901,31 @@ pub(crate) async fn chat_browser_scroll(
     tab_id: String,
     x: f64,
     y: f64,
-) -> ChatResult<()> {
+) -> ChatResult<page_requests::ModelActionDialogs> {
     if !x.is_finite() || !y.is_finite() || x.abs() > 1_000_000.0 || y.abs() > 1_000_000.0 {
         return Err(ChatError::validation(
             "scroll",
             "Browser scroll distance is invalid",
         ));
     }
-    run_script(&app, &thread_id, &tab_id, &format!("scrollBy({x},{y})"))
+    run_model_action(&app, &thread_id, &tab_id, &format!("scrollBy({x},{y})")).await
+}
+
+/// Runs a model tool action on a tab and waits for it, dismissing the dialogs the page
+/// raises meanwhile so they neither stall the action nor reach the user. The dismissed
+/// dialogs are returned for the model.
+async fn run_model_action(
+    app: &tauri::AppHandle,
+    thread_id: &ChatThreadId,
+    tab_id: &str,
+    script: &str,
+) -> ChatResult<page_requests::ModelActionDialogs> {
+    owned_tab(app, thread_id, tab_id)?;
+    let window = app
+        .state::<ChatBrowserManager>()
+        .begin_model_action(app, tab_id);
+    evaluate_script(app, thread_id, tab_id, &format!("void({script})")).await?;
+    Ok(window.finish())
 }
 
 #[tauri::command]
@@ -885,6 +947,8 @@ pub async fn chat_browser_close(
         }
         app.state::<ChatBrowserManager>()
             .cancel_recording(|recording| recording.tab_id == tab_id);
+        app.state::<ChatBrowserManager>()
+            .refuse_tab_page_requests(&app, &tab_id);
         if let Some(webview) = app.get_webview(&tab.webview_label) {
             webview.close().map_err(|_| browser_unavailable_error())?;
         }

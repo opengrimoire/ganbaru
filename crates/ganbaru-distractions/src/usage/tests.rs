@@ -250,3 +250,19 @@ fn usage_sample_batch_rolls_back_when_a_late_insert_fails() {
         assert_eq!(count, 0);
     });
 }
+
+#[test]
+fn usage_date_window_keeps_retention_and_one_day_of_zone_lead() {
+    let today = chrono::NaiveDate::from_ymd_opt(2026, 10, 20).unwrap();
+    let window = usage_date_window(today);
+
+    assert_eq!(window.earliest, "2025-09-15");
+    assert_eq!(window.latest, "2026-10-21");
+    assert!(window.contains("2026-10-20"));
+    assert!(window.contains("2026-10-21"));
+    assert!(window.contains("2025-09-15"));
+    assert!(!window.contains("2026-10-22"));
+    assert!(!window.contains("2025-09-14"));
+    assert!(!window.contains("9999-12-31"));
+    assert!(!window.contains("2026-10-20T00"));
+}

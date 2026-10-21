@@ -209,6 +209,7 @@ fn run_delayed_relaunch_helper_if_needed() -> bool {
 }
 
 pub fn run(context: tauri::Context<tauri::Wry>) {
+    crate::chat::terminal::capture_launch_environment();
     crate::install_default_tls_crypto_provider();
 
     if run_delayed_relaunch_helper_if_needed() {
@@ -222,15 +223,18 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
         }))
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_opener::init())
+        .plugin(navigation_guard::init())
         .manage(db::DatabaseState::default())
         .manage(updates::PendingUpdate::default())
         .manage(vault::ownership::VaultOwnershipManager::default())
         .manage(vault::handoff::pairing::PairingManager::default())
         .manage(vault::handoff::CoordinatorLifecycle::default())
+        .manage(vault::handoff::enrollment_approval::EnrollmentApprovals::default())
         .manage(vault::handoff::receiver::ReceiverLifecycle::default())
         .manage(vault::handoff::source::SourceLifecycle::default())
         .manage(crate::sync::SyncRuntime::default())
         .manage(crate::sync::SyncSubscribers::default())
+        .manage(notes::notion_api_import::NotionApiImportCancellations::default())
         .manage(sound_effects::AppSoundState::default())
         .manage(pomodoro::overlay::PomodoroOverlayState::default())
         .manage(music::player::MediaPlayerState::default())
@@ -310,7 +314,10 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
             chat::terminal_commands::chat_list_terminals,
             chat::terminal_commands::chat_read_terminal_layout,
             chat::terminal_commands::chat_save_terminal_panel_layout,
+            chat::terminal_commands::chat_terminal_acknowledge,
+            chat::terminal_commands::chat_terminal_attach,
             chat::terminal_commands::chat_terminal_create,
+            chat::terminal_commands::chat_terminal_detach,
             chat::terminal_commands::chat_terminal_snapshot,
             chat::terminal_commands::chat_terminal_input,
             chat::terminal_commands::chat_terminal_resize,
@@ -579,6 +586,7 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
             benchmark::clear_benchmark_state,
             benchmark::prepare_benchmark_db,
             benchmark::teardown_benchmark_db,
+            benchmark::select_database_target,
             benchmark::seed::benchmark_seed_pomodoro_history,
             benchmark::seed::benchmark_seed_dense_music_library,
             restart_app,
@@ -591,10 +599,9 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
             startup_elapsed_ms,
             reveal_main_window,
             crate::app_windows::app_window_open_tab,
-            vault::vault_read_app_state,
-            vault::vault_device_id,
             vault::vault_default_location,
             vault::vault_use_default,
+            vault::vault_release_starter,
             vault::vault_active_info,
             vault::database_rollback::vault_database_rollbacks,
             vault::database_rollback::vault_restore_database_rollback,
@@ -607,10 +614,12 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
             vault::handoff::handoff_revoke_network_access,
             vault::handoff::handoff_decode_pairing_qr,
             vault::handoff::handoff_enroll,
+            vault::handoff::handoff_enrollment_code,
             vault::handoff::handoff_suggested_device_label,
             vault::handoff::handoff_pairing_status,
             vault::handoff::handoff_unlink,
             vault::handoff::handoff_recover_local_copy,
+            vault::handoff::handoff_respond_enrollment,
             vault::handoff::handoff_request_owner_bundle,
             vault::handoff::receiver::handoff_receive_desktop_bundle,
             vault::handoff::receiver::handoff_cancel_receive,
@@ -730,6 +739,7 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
             notes::notes_resolve_unresolved_link,
             notes::notes_import_html_page,
             notes::notes_import_notion_api,
+            notes::notes_cancel_notion_api_import,
             notes::notes_import_notion_export_folder,
             notes::notes_pick_and_write_html_archive,
             notes::notes_pick_and_write_json_graph,
@@ -922,6 +932,9 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
             themes::themes_reset_to_seed,
         ])
         .setup(|app| {
+            if let Err(error) = vault::secure_app_config_dir(app.handle()) {
+                eprintln!("app config directory permissions are unchanged: {error}");
+            }
             vault::ownership::initialize(app.handle())?;
             vault::handoff::initialize(app.handle());
             crate::sync::setup(app.handle());
@@ -931,6 +944,7 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
             clear_distractions_enforcement_state_best_effort(app.handle(), "during startup");
             schedule_main_window_reveal_fallback(app.handle());
             chat::revocation::start_startup_recovery(app.handle());
+            chat::cleanup_service::start(app.handle());
             music::setup_youtube_host(app.handle())?;
             music::session::setup(app.handle());
             distractions::runtime::setup(app.handle());

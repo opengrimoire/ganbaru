@@ -352,6 +352,35 @@ async fn require_updated(
     })
 }
 
+/// Seconds after which a cleanup job still marked running is treated as
+/// abandoned by an interrupted run. Each job deletes one Git ref or one file,
+/// so a live run never holds a job this long.
+pub const STALE_RUNNING_CLEANUP_SECONDS: i64 = 15 * 60;
+
+/// Returns cleanup jobs of `cleanup_kind` that an interrupted run left in the
+/// running state to the failed state, so the next run retries them and
+/// diagnostics count them as failed.
+pub async fn release_stale_cleanup_jobs(
+    pool: &SqlitePool,
+    cleanup_kind: &str,
+    now: &UtcTimestamp,
+) -> ChatResult<u64> {
+    let released = sqlx::query(
+        "UPDATE chat_cleanup_jobs
+         SET state = 'failed', last_error_code = 'interrupted', updated_at = ?
+         WHERE cleanup_kind = ? AND state = 'running'
+           AND unixepoch(updated_at) <= unixepoch(?) - ?",
+    )
+    .bind(now.as_str())
+    .bind(cleanup_kind)
+    .bind(now.as_str())
+    .bind(STALE_RUNNING_CLEANUP_SECONDS)
+    .execute(pool)
+    .await
+    .map_err(persistence_error)?;
+    Ok(released.rows_affected())
+}
+
 fn i64_value(value: u64) -> i64 {
     i64::try_from(value).unwrap_or(i64::MAX)
 }

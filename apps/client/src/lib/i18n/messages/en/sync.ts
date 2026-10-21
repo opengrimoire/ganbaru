@@ -33,6 +33,9 @@ export const sync = {
   pauseFailed: "The sync setting could not be changed",
   errorDetail: (message: string) => `Last error: ${message}`,
   writerLimit: "This device created more sync identities than a device may have, so the coordinator refuses its new changes. They stay on this device.",
+  clockAhead: (device: string) =>
+    `The clock on ${device} is ahead of this device. Its edits win conflicting changes until the clocks agree, so check its date and time.`,
+  clockAheadOwn: "Some edits from this device were made while its clock was ahead. They win conflicting changes until that time passes.",
   recovery: {
     heading: "Recently deleted with unsaved edits",
     description: "These notes were deleted on one device while another device was still editing them.",

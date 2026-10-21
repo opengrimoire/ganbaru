@@ -202,11 +202,11 @@ export function resolveFontFamilyStack(id: FontFamilyId | undefined | null): str
 
 export type ProfileDisplayNameValidation =
   | { ok: true; value: string }
-  | { ok: false; reason: "too_long" | "control_characters" };
+  | { ok: false; reason: "too_long" | "disallowed_characters" };
 
 export type ProfileFullNameValidation =
   | { ok: true; value: string }
-  | { ok: false; reason: "too_long" | "control_characters" };
+  | { ok: false; reason: "too_long" | "disallowed_characters" };
 
 /** Returns true when a profile image points to one managed raster asset. */
 export function isProfileImagePath(value: unknown): value is string {
@@ -223,6 +223,14 @@ export function randomProfileColor(random: () => number = Math.random): EventCol
   return Math.min(PALETTE_SIZE - 1, Math.max(0, Math.floor(random() * PALETTE_SIZE)));
 }
 
+/**
+ * Control characters, the Arabic letter mark, directional marks, embeddings, overrides and
+ * isolates, and invisible separators. Contact cards refuse names that hold them, so a name
+ * accepted here can always be shared. Zero-width joiner and non-joiner stay valid because emoji
+ * sequences and Persian and Indic scripts need them.
+ */
+const DISALLOWED_DISPLAY_CHARACTER = /[\p{Cc}\u{061C}\u{200B}\u{200E}\u{200F}\u{202A}-\u{202E}\u{2060}\u{2066}-\u{2069}\u{FEFF}]/u;
+
 function normalizeProfileTextField(
   value: string,
   maxCharacters: number,
@@ -231,11 +239,8 @@ function normalizeProfileTextField(
   if ([...trimmed].length > maxCharacters) {
     return { ok: false, reason: "too_long" };
   }
-  if ([...trimmed].some((character) => {
-    const codePoint = character.codePointAt(0);
-    return codePoint !== undefined && codePoint < 32;
-  })) {
-    return { ok: false, reason: "control_characters" };
+  if (DISALLOWED_DISPLAY_CHARACTER.test(trimmed)) {
+    return { ok: false, reason: "disallowed_characters" };
   }
   return { ok: true, value: trimmed };
 }

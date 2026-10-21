@@ -844,4 +844,60 @@ mod tests {
         assert_eq!(replacements, expected);
         std::fs::remove_dir_all(directory).unwrap();
     }
+
+    #[cfg(unix)]
+    #[test]
+    fn installed_provider_search_skips_programs_other_users_can_replace() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = std::env::temp_dir().join(format!(
+            "ganbaru-provider-discovery-shared-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let private = root.join("private");
+        let shared = root.join("shared");
+        std::fs::create_dir_all(&private).unwrap();
+        std::fs::create_dir_all(&shared).unwrap();
+        let set_mode = |path: &std::path::Path, mode: u32| {
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
+        };
+        set_mode(&private, 0o775);
+        for (directory, name, mode) in [
+            (&private, "group-provider", 0o775),
+            (&private, "world-provider", 0o777),
+            (&shared, "group-provider", 0o755),
+        ] {
+            let executable = directory.join(name);
+            std::fs::write(&executable, "#!/bin/sh\nexit 0\n").unwrap();
+            set_mode(&executable, mode);
+        }
+        set_mode(&shared, 0o1777);
+        let mut metadata = ProviderDriverRegistry.list_metadata().remove(0);
+        metadata.default_executable_candidates =
+            vec!["world-provider".to_string(), "group-provider".to_string()];
+        let path = std::env::join_paths([
+            std::path::PathBuf::from("relative"),
+            std::path::PathBuf::new(),
+            shared.clone(),
+            private.clone(),
+        ])
+        .unwrap();
+        let directories = ganbaru_chat_providers::executable_search::path_search_directories(&path);
+
+        let found = installed_provider_executables(&metadata, &directories);
+
+        assert_eq!(directories, vec![shared.clone(), private.clone()]);
+        assert_eq!(
+            found,
+            vec![
+                private
+                    .join("group-provider")
+                    .to_string_lossy()
+                    .into_owned()
+            ]
+        );
+        set_mode(&shared, 0o755);
+        std::fs::remove_dir_all(root).unwrap();
+    }
 }

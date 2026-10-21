@@ -98,19 +98,6 @@ pub(crate) fn encode_hex(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
-/// Decodes a 64-character lowercase or uppercase hex digest.
-pub(crate) fn decode_hex_digest(text: &str) -> Option<[u8; 32]> {
-    if text.len() != 64 {
-        return None;
-    }
-    let mut digest = [0u8; 32];
-    for (index, chunk) in text.as_bytes().chunks(2).enumerate() {
-        let pair = std::str::from_utf8(chunk).ok()?;
-        digest[index] = u8::from_str_radix(pair, 16).ok()?;
-    }
-    Some(digest)
-}
-
 /// A trust decision together with the expiry it implies when granted now.
 #[derive(Clone, Debug)]
 pub(crate) struct TrustGrant {
@@ -292,20 +279,21 @@ pub(crate) struct NewContact<'a> {
     pub color: u8,
 }
 
-/// Creates or reactivates an active contact with the given trust grants.
+/// Creates or updates an active contact with the given trust grants. A blocked contact is left
+/// unchanged, because only an explicit unblock may clear a block. Returns whether a row was written.
 pub(crate) async fn upsert_active_contact<'e, E>(
     executor: E,
     contact: NewContact<'_>,
     invite: &TrustGrant,
     message: &TrustGrant,
     now: DateTime<Utc>,
-) -> Result<(), String>
+) -> Result<bool, String>
 where
     E: Executor<'e, Database = Sqlite>,
 {
     let time = format_time(now);
     let id = crate::vault::handoff::pairing::random_token("contact")?;
-    sqlx::query(
+    let result = sqlx::query(
         "INSERT INTO contacts (
             id, public_key, display_name, color, state, invite_trust, invite_trust_expires_at,
             message_trust, message_trust_expires_at, accepted_at, blocked_at, created_at, updated_at
@@ -319,8 +307,8 @@ where
             message_trust = excluded.message_trust,
             message_trust_expires_at = excluded.message_trust_expires_at,
             accepted_at = excluded.accepted_at,
-            blocked_at = NULL,
-            updated_at = excluded.updated_at",
+            updated_at = excluded.updated_at
+         WHERE contacts.state <> 'blocked'",
     )
     .bind(id)
     .bind(contact.public_key)
@@ -336,7 +324,7 @@ where
     .execute(executor)
     .await
     .map_err(|error| db_error("store contact", error))?;
-    Ok(())
+    Ok(result.rows_affected() == 1)
 }
 
 /// Creates or converts a contact row into a blocked one with no trust.

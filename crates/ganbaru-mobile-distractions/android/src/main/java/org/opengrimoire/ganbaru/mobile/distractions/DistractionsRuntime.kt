@@ -569,18 +569,15 @@ internal class DistractionsEngine(private val context: Context) {
       ).apply { description = rules.copy.channelDescription },
     )
     val target = if (decision.reason == "usage_limit") "limits" else "mobile"
-    val launchIntent = context.packageManager.getLaunchIntentForPackage(context.packageName)?.apply {
-      flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+    val routeIntent = Intent(context, DistractionsNotificationRouteActivity::class.java).apply {
       putExtra(DISTRACTIONS_NOTIFICATION_ACTION_KEY, target)
     }
-    val contentIntent = launchIntent?.let {
-      PendingIntent.getActivity(
-        context,
-        BLOCK_NOTIFICATION_BASE_ID + packageName.hashCode(),
-        it,
-        PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
-      )
-    }
+    val contentIntent = PendingIntent.getActivity(
+      context,
+      BLOCK_NOTIFICATION_BASE_ID + packageName.hashCode(),
+      routeIntent,
+      PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+    )
     val body = if (decision.reason == "usage_limit") {
       rules.copy.limitMessage
     } else {

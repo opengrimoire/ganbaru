@@ -130,6 +130,7 @@ export class MusicSourcesController {
   relinkPlan = $state<MusicRelinkPlanSummary | null>(null);
   relinkEntries = $state<MusicRelinkPlanEntry[]>([]);
   private relinkFolderPath: string | null = null;
+  private planningRelinkId: string | null = null;
   itemRepairPreview = $state<MusicItemRepairPreview | null>(null);
   itemRepairApplied = $state<{ locationId: string; rootId: string } | null>(null);
   detectedDefaultFolder = $state<MediaFolderSelection | null>(null);
@@ -619,13 +620,24 @@ export class MusicSourcesController {
     await this.load();
   }
 
+  /**
+   * Scans the replacement folder into a relink plan. A plan cancelled while it scans resolves in the `cancelled` state and is not opened for review.
+   */
   async planRelink(rootId: string, replacementFolderPath: string): Promise<MusicRelinkPlanSummary> {
-    const plan = await this.api.createRelink({
-      planId: this.id(),
-      rootId,
-      replacementFolderPath,
-      createdAtMs: this.now(),
-    });
+    const planId = this.id();
+    this.planningRelinkId = planId;
+    let plan: MusicRelinkPlanSummary;
+    try {
+      plan = await this.api.createRelink({
+        planId,
+        rootId,
+        replacementFolderPath,
+        createdAtMs: this.now(),
+      });
+    } finally {
+      if (this.planningRelinkId === planId) this.planningRelinkId = null;
+    }
+    if (plan.state !== "ready") return plan;
     const entries = await this.api.relinkEntries(plan.id, 0, 500);
     this.relinkPlan = plan;
     this.relinkEntries = entries.entries;
@@ -656,9 +668,17 @@ export class MusicSourcesController {
     });
   }
 
+  /** Whether a relink plan is ready for review or still scanning, so closing the relink surface should cancel it. */
+  get relinkCancellable(): boolean {
+    return this.relinkPlan?.state === "ready" || this.planningRelinkId !== null;
+  }
+
+  /** Cancels the relink plan under review, or stops the scan of a plan that is still being built. */
   async cancelRelink(): Promise<void> {
-    if (!this.relinkPlan) return;
-    await this.api.cancelRelink(this.relinkPlan.id, this.now());
+    const planId = this.relinkPlan?.id ?? this.planningRelinkId;
+    if (!planId) return;
+    this.planningRelinkId = null;
+    await this.api.cancelRelink(planId, this.now());
     this.relinkPlan = null;
     this.relinkEntries = [];
     this.relinkFolderPath = null;

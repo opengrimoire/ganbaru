@@ -127,7 +127,7 @@
       {#each selectedTeammates as teammate (teammate.participant.id)}
         <span class="inline-flex max-w-full items-center gap-1 rounded-full border border-border py-0.5 pr-1 pl-0.5 text-panel-detail">
           <ChatParticipantAvatar participant={teammate.participant} {teammate} size={CHIP_AVATAR_SIZE} />
-          <span class="min-w-0 truncate">{teammate.participant.displayName}</span>
+          <span class="min-w-0 truncate" dir="auto">{teammate.participant.displayName}</span>
           <button type="button" class="grid size-4 place-items-center rounded-full text-muted-foreground hover:bg-accent hover:text-foreground" aria-label={t("contacts.picker.remove", teammate.participant.displayName)} onclick={() => setSelected(teammate.participant.id, false)}><X size={11} /></button>
         </span>
       {/each}
@@ -158,7 +158,7 @@
         <label class="menu-item cursor-pointer gap-2.5">
           <Checkbox checked={selectedIds.has(teammate.participant.id)} onChange={(checked) => setSelected(teammate.participant.id, checked)} />
           <ChatParticipantAvatar participant={teammate.participant} {teammate} size={AVATAR_SIZE} />
-          <span class="min-w-0 flex-1 truncate">{teammate.participant.displayName}</span>
+          <span class="min-w-0 flex-1 truncate" dir="auto">{teammate.participant.displayName}</span>
           <span class="max-w-[45%] truncate text-panel-detail text-muted-foreground">{teammateDetail(teammate)}</span>
         </label>
       {/each}

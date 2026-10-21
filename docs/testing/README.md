@@ -25,7 +25,7 @@ Test count and coverage percentage are not quality targets. Coverage follows pro
 
 ## Validation layers
 
-- **Frontend tests:** Vitest tests next to source, using Node by default and jsdom only for real DOM behavior.
+- **Frontend tests:** Vitest tests next to source, using Node by default and jsdom only for real DOM behavior. Release and validation scripts under `apps/client/scripts/` keep their `.test.mjs` files beside them in the same suite.
 - **Rust tests:** domain, persistence, provider, platform, migration, transaction, recovery, and command-boundary tests in the owning crate.
 - **Static checks:** Svelte Check, TypeScript, Rust formatting, Clippy, provider protocol snapshots, and Tailwind diagnostics.
 - **Production bundle contracts:** real Vite builds that verify route closures, source-module ceilings, platform composition, and forbidden eager imports.
@@ -39,7 +39,7 @@ Always use the workspace flag for root scripts.
 
 | Command | Purpose |
 | --- | --- |
-| `pnpm -w run check` | Rust formatting and Clippy, then the workflow signing-isolation check, provider protocol snapshots, Svelte Check, and TypeScript |
+| `pnpm -w run check` | Rust formatting and Clippy, then the workflow signing-isolation and unsafe inventory checks, provider protocol snapshots, Svelte Check, and TypeScript |
 | `pnpm -w run test` | Rust tests, then normal frontend tests in sequential shards |
 | `pnpm -w run test:benchmark-contracts` | Explicit benchmark fixture and harness contracts, excluded from normal validation |
 | `pnpm -w run editor-check` | Tailwind editor-style diagnostics |
@@ -95,6 +95,7 @@ The engine's desktop performance budgets (capture overhead per write, seal of 10
 Use the native messaging binary only for binary-local tests:
 
 ```sh
+cargo test -p ganbaru-linking-firewall --bin ganbaru-linking-firewall -j 4 test_name -- --test-threads=4
 cargo test -p ganbaru-native-messaging --bin ganbaru-native-messaging -j 4 test_name -- --test-threads=4
 ```
 

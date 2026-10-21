@@ -5,6 +5,8 @@
 //! results match the user's terminal. Command-bearing keys whose value comes
 //! from local or worktree configuration (including files those include) are
 //! replaced by the user's own value from another scope, or by a neutral value.
+//! Populated submodules get the same treatment, since the Git processes that
+//! inspect them read their own repository configuration.
 
 use crate::models::{ChatError, ChatErrorCode};
 use ganbaru_chat_providers::process::{ProcessTree, configure_std_process_tree};
@@ -20,6 +22,7 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 mod digest;
+mod submodules;
 
 pub use digest::{
     FolderConfigDigest, FolderConfiguration, MAX_TRUST_DIGEST_FILE_BYTES,
@@ -150,7 +153,8 @@ impl GitPolicy {
 
 /// Reads the effective configuration and settles a trusted policy against
 /// the folder's current digest. Returns the policy to run with and the
-/// listing its hardening needs.
+/// listing its hardening needs, which for an untrusted run also carries the
+/// repository entries of populated submodules.
 fn resolve_policy(
     root: &Path,
     policy: GitPolicy,
@@ -158,17 +162,41 @@ fn resolve_policy(
     deadline: Duration,
     cancel: Option<&Arc<AtomicBool>>,
 ) -> Result<(GitPolicy, Vec<GitConfigEntry>), GitRunError> {
-    let entries = read_effective_config(root, policy, environment, deadline, cancel)?;
-    let GitFolderTrust::Trusted(expected) = policy.trust else {
-        return Ok((policy, entries));
-    };
-    match digest::git_configuration(root, &entries, deadline, cancel) {
-        Ok(current) if current.digest == expected => Ok((policy, entries)),
-        Ok(_) | Err(GitRunError::Configuration | GitRunError::OutputTooLarge) => {
-            Ok((policy.untrusted(), entries))
+    let started = Instant::now();
+    let mut entries = read_effective_config(root, policy, environment, deadline, cancel)?;
+    let submodules = submodules::populated_submodules(
+        root,
+        policy,
+        &entries,
+        environment,
+        deadline.saturating_sub(started.elapsed()),
+        cancel,
+    )?;
+    let policy = match policy.trust {
+        GitFolderTrust::Untrusted => policy,
+        GitFolderTrust::Trusted(expected) => {
+            match digest::git_configuration(
+                root,
+                &entries,
+                &submodules,
+                deadline.saturating_sub(started.elapsed()),
+                cancel,
+            ) {
+                Ok(current) if current.digest == expected => return Ok((policy, entries)),
+                Ok(_) | Err(GitRunError::Configuration | GitRunError::OutputTooLarge) => {
+                    policy.untrusted()
+                }
+                Err(error) => return Err(error),
+            }
         }
-        Err(error) => Err(error),
-    }
+    };
+    entries.extend(
+        submodules
+            .into_iter()
+            .flat_map(|submodule| submodule.entries)
+            .filter(|entry| entry.scope.is_repository()),
+    );
+    Ok((policy, entries))
 }
 
 /// Scope reported by `git config --list --show-scope`.
@@ -418,26 +446,19 @@ pub fn empty_hooks_directory() -> &'static Path {
     })
 }
 
+/// Creates the empty hooks directory with an unpredictable name. When creation fails,
+/// a path inside a missing directory also runs no hooks.
 #[cfg(not(unix))]
 fn create_private_empty_directory() -> PathBuf {
     let base = std::env::temp_dir();
-    for attempt in 0_u32..64 {
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|duration| duration.as_nanos())
-            .unwrap_or_default();
-        let path = base.join(format!(
-            "ganbaru-git-no-hooks-{}-{nanos}-{attempt}",
-            std::process::id()
-        ));
-        if std::fs::create_dir(&path).is_ok() {
-            return path;
-        }
-    }
-    base.join(format!(
-        "ganbaru-git-no-hooks-{}-missing",
-        std::process::id()
-    ))
+    ganbaru_atomic_files::create_private_temporary_directory(&base, "ganbaru-git-no-hooks-")
+        .unwrap_or_else(|_| {
+            base.join(format!(
+                "ganbaru-git-no-hooks-{}-missing",
+                std::process::id()
+            ))
+            .join("hooks")
+        })
 }
 
 /// Computes the overrides for `policy` from the effective configuration.
@@ -758,7 +779,7 @@ pub fn run_blocking(run: GitRun<'_>) -> Result<GitRunOutput, GitRunError> {
     execute(
         command,
         run.input,
-        run.stdout,
+        StdoutSink::Target(run.stdout),
         remaining,
         run.cancel.as_ref(),
     )
@@ -900,7 +921,7 @@ pub async fn run_program(
         execute(
             command,
             None,
-            GitStdout::Memory(maximum_output_bytes),
+            StdoutSink::Target(GitStdout::Memory(maximum_output_bytes)),
             deadline,
             Some(&cancel),
         )
@@ -962,7 +983,7 @@ fn read_effective_config(
     let output = execute(
         command,
         None,
-        GitStdout::Memory(MAX_CONFIG_LISTING_BYTES),
+        StdoutSink::Target(GitStdout::Memory(MAX_CONFIG_LISTING_BYTES)),
         deadline.min(GIT_CONFIG_READ_DEADLINE),
         cancel,
     )
@@ -984,26 +1005,36 @@ enum StdoutResult {
     File(u64),
 }
 
+/// Where [`execute`] sends standard output.
+enum StdoutSink<'a> {
+    Target(GitStdout<'a>),
+    /// Keeps only the gitlink records of `ls-files --stage -z`, failing past
+    /// this many kept bytes.
+    Gitlinks(usize),
+}
+
 fn execute(
     mut command: Command,
     input: Option<&[u8]>,
-    stdout_target: GitStdout<'_>,
+    stdout_target: StdoutSink<'_>,
     deadline: Duration,
     cancel: Option<&Arc<AtomicBool>>,
 ) -> Result<GitRunOutput, GitRunError> {
     let started = Instant::now();
     let stdout_file = match &stdout_target {
-        GitStdout::File(path, _) => Some(
+        StdoutSink::Target(GitStdout::File(path, _)) => Some(
             std::fs::OpenOptions::new()
                 .create_new(true)
                 .write(true)
                 .open(path)
                 .map_err(|_| GitRunError::Unavailable)?,
         ),
-        GitStdout::Memory(_) => None,
+        StdoutSink::Target(GitStdout::Memory(_)) | StdoutSink::Gitlinks(_) => None,
     };
+    let gitlinks_only = matches!(stdout_target, StdoutSink::Gitlinks(_));
     let stdout_limit = match stdout_target {
-        GitStdout::Memory(limit) | GitStdout::File(_, limit) => limit,
+        StdoutSink::Target(GitStdout::Memory(limit) | GitStdout::File(_, limit))
+        | StdoutSink::Gitlinks(limit) => limit,
     };
     command
         .stdin(if input.is_some() {
@@ -1042,6 +1073,10 @@ fn execute(
             let result = match stdout_file {
                 Some(file) => {
                     copy_bounded(stdout, file, stdout_limit, &overflow).map(StdoutResult::File)
+                }
+                None if gitlinks_only => {
+                    submodules::read_gitlink_records(stdout, stdout_limit, &overflow)
+                        .map(StdoutResult::Memory)
                 }
                 None => read_bounded(stdout, stdout_limit, &overflow).map(StdoutResult::Memory),
             };

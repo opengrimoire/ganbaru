@@ -386,7 +386,7 @@ impl ClaudeEventNormalizer {
         let sequence = self.next_event_id.fetch_add(1, Ordering::Relaxed);
         Ok(CanonicalRuntimeEvent {
             schema_version: CANONICAL_EVENT_SCHEMA_VERSION,
-            event_id: ChatEventId::new(format!("claude-event-{sequence}"))
+            event_id: ChatEventId::new(format!("{}:event:{sequence}", self.session_id.as_str()))
                 .map_err(|_| protocol_error("event ID"))?,
             provider_family_id: ProviderFamilyId::new("claude")
                 .map_err(|_| protocol_error("provider family"))?,
@@ -412,7 +412,8 @@ impl ClaudeEventNormalizer {
 
     pub(super) fn fallback_item_id(&self, prefix: &str) -> String {
         format!(
-            "claude-{prefix}-{}",
+            "{}:{prefix}:{}",
+            self.session_id.as_str(),
             self.next_item_id.fetch_add(1, Ordering::Relaxed)
         )
     }

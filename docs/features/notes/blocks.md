@@ -1,6 +1,6 @@
 # Notes blocks
 
-Blocks are ordered children of a page or another compatible block. Their canonical type, payload, rich text, parent, order, and Trash state live in SQLite. Internal structural children such as table rows, columns, and tab labels are stored as blocks but rendered through their parent surface.
+Blocks are ordered children of a page or another compatible block. Their canonical type, payload, rich text, parent, order, and Trash state live in SQLite. Internal structural children such as table rows, columns, and tab labels are stored as blocks but rendered through their parent surface. A page holds at most 64 levels of nested blocks, counting its top-level blocks as level 1; inserts, moves, pastes, and imports that would go deeper are refused with an error rather than flattened, and a Markdown or HTML file over the limit is skipped with a note during folder import.
 
 ## Catalog
 
@@ -49,7 +49,7 @@ A table owns table-row children whose cells are rich-text arrays; the parent sto
 
 Media and file blocks use explicit source objects. New remote references require HTTPS and a type compatible with the block. Supported YouTube links can be stored for video blocks but are opened explicitly rather than embedded. Local attachments become managed assets with content-derived identity and reference ownership. Imported provider-hosted or upload references remain placeholders and are never fetched silently; replacing one is an explicit user action.
 
-Bookmark, link-preview, and embed blocks store the original safe URL and a local caption. Cards derive from URL parts only. No remote page metadata is fetched automatically, which preserves privacy and avoids hidden network access.
+Bookmark, link-preview, and embed blocks store the original safe URL and a local caption. Bookmarks accept web, email, telephone, and application links such as `obsidian://`, and reject only `javascript:`, `data:`, `vbscript:`, and `file:`. Embeds and link previews describe loadable content, so they accept only `http` and `https`, plus the scheme-less and `host:port` drafts saved while the user types. Cards derive from URL parts only. No remote page metadata is fetched automatically, which preserves privacy and avoids hidden network access.
 
 ## Synced blocks
 

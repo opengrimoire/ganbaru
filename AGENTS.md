@@ -94,14 +94,14 @@ apps/
       permissions/: app command permission sets granted by capabilities
       gen/android/: generated Android project and native platform integration
       gen/schemas/: generated Tauri schema files
-      package-repo/: generated package repository public key staging (ignored)
+      release-keys/: committed Tauri updater and package repository public keys
       packaging/: Linux package lifecycle scripts (deb/, rpm/), desktop entry template, and polkit policy (linux/)
       icons/, build.rs, tauri.conf.json, tauri.dev.conf.json, tauri.android.conf.json, Cargo.toml
 crates/
   ganbaru-db/: Tauri-free SQLite pool registry, connection configuration, migrations, and schema tests
     migrations/: embedded SQLx SQLite migrations
   ganbaru-civil-time/: Tauri-free conversion between instants and zoned wall times, with explicit gap and fold rules
-  ganbaru-atomic-files/: Tauri-free atomic file replacement through exclusive random temporary files and symlink-refusing managed folder creation
+  ganbaru-atomic-files/: Tauri-free atomic file replacement through exclusive random temporary files and symlink-refusing managed folder creation, and bounded regular-file reads
   ganbaru-image-metadata/: Tauri-free bounded image header parsing, type detection, and dimension limits shared by Notes and Quick notes
   ganbaru-pomodoro/: Tauri-free Focus persistence, validation, recovery, activity admission, transactional execution, and adaptive policy
   ganbaru-quick-notes/: Tauri-free Quick notes persistence, search, lifecycle and trash retention, ordering, tags, images, and conflict resolution
@@ -123,6 +123,7 @@ crates/
   ganbaru-sync-replica/: Tauri-free replica sync with guarded vault access, installation writer keys and record, carry-forward, recovery offers, and the LAN hub and client exchange of operations and Quick note images
   ganbaru-themes/: Tauri-free user theme persistence, seed resets, upgrade dismissals, and row validation
   ganbaru-native-messaging/: ganbaru-native-messaging browser host binary
+  ganbaru-linking-firewall/: root-run Linux helper binary for the device linking firewall rules, installed under /usr/lib/ganbaru/ and named by the PolicyKit policy
   ganbaru-mobile-*/: Android plugins for documents, the distraction blocker, media, and notifications
 extensions/chromium/: Chromium extension (manifest v3); chromium-dev/ is a generated, ignored dev copy
 Cargo.toml, rust-toolchain.toml, rustfmt.toml, turbo.json, pnpm-workspace.yaml, package.json: workspace configuration and root scripts
@@ -200,14 +201,14 @@ Read `docs/testing/README.md` when changing tests, validation scripts, task orde
 
 **Commands (always use `-w` for root scripts):**
 
-- `pnpm -w run check`: Rust formatting and clippy, then the workflow signing-isolation check, provider protocol snapshot checks, and Svelte and TypeScript checks through Turbo.
+- `pnpm -w run check`: Rust formatting and clippy, then the workflow signing-isolation and unsafe inventory checks, provider protocol snapshot checks, and Svelte and TypeScript checks through Turbo.
 - `pnpm --dir apps/client run check`: client-only Svelte and TypeScript checks.
 - `pnpm -w run editor-check`: editor diagnostics, including Tailwind canonical class checks.
 - `pnpm -w run test`: Rust tests followed by sequential Vitest shards.
 - `pnpm --dir apps/client exec vitest run path/to/file.test.ts --maxWorkers=1`: focused frontend test file.
 - `cargo test -p ganbaru-chat --lib -j 4 test_name -- --test-threads=4`: focused core crate test (substitute `ganbaru-notes`, `ganbaru-atomic-files`, `ganbaru-db`, `ganbaru-civil-time`, `ganbaru-distractions`, `ganbaru-chat-contracts`, `ganbaru-chat-providers`, `ganbaru-pomodoro`, `ganbaru-quick-notes`, `ganbaru-music`, `ganbaru-music-library`, `ganbaru-music-player`, `ganbaru-projects`, `ganbaru-calendar`, `ganbaru-working-folders`, `ganbaru-contacts`, `ganbaru-handoff`, `ganbaru-sync-contracts`, `ganbaru-sync`, `ganbaru-sync-replica`, or `ganbaru-themes`).
 - `cargo test -p ganbaru-tauri-app --lib -j 4 test_name -- --test-threads=4`: focused Tauri composition or command-adapter test.
-- `cargo test -p ganbaru-native-messaging --bin ganbaru-native-messaging -j 4 test_name -- --test-threads=4`: focused native messaging host test.
+- `cargo test -p ganbaru-native-messaging --bin ganbaru-native-messaging -j 4 test_name -- --test-threads=4`: focused native messaging host test. Use `-p ganbaru-linking-firewall --bin ganbaru-linking-firewall` for the firewall helper.
 - `cargo check -p ganbaru --bin ganbaru -j 4`: focused desktop composition check.
 - `cargo fmt --check` and `cargo clippy --workspace -j 4 -- -D warnings`: Rust formatting and linting only.
 - `pnpm -w run audit:deps`, `audit:rust`, `audit`: npm and RustSec audits. Run for dependency or lockfile changes, before PRs and releases, and when investigating security alerts. Reviewed Rust ignores live in `.cargo/audit.toml` and must be documented in `docs/data/security/dependency-audits.md`.

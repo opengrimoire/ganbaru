@@ -2,7 +2,7 @@
 
 This file records reviewed Rust advisory exceptions and allowed warnings. Lockfiles and current command output are authoritative; an old date or prior clean result is not evidence for the current lockfile.
 
-As of 2026-10-17, `pnpm -w run audit:deps` reports no known npm vulnerabilities, and `pnpm -w run audit:rust` exits successfully with the two configured ignores and ten allowed warnings listed below.
+As of 2026-10-20, `pnpm -w run audit:deps` reports no known npm vulnerabilities, and `pnpm -w run audit:rust` exits successfully with the two configured ignores and ten allowed warnings listed below.
 
 A successful Rust audit exit does not mean warning-free. The cargo-audit output policy allows warnings, so maintainers must review new unsound, unmaintained, and yanked findings separately.
 
@@ -56,6 +56,10 @@ SQLite CVEs are not RustSec advisories, so neither audit reports them; track the
 ## Updater archive extraction
 
 `tauri-plugin-updater` builds without its default `zip` feature. Released updater assets are a raw AppImage and Windows installers, so the plugin never needs to extract a zip or AppImage tarball, and the feature would only add an archive extraction path. Re-enable it only if the release feed starts shipping archived updater assets, and then only with a zip release free of extraction advisories.
+
+## Generated catalog sources
+
+Codegen scripts that download upstream data name an exact version and check the bytes against the SHA-256 recorded in `apps/client/scripts/codegen/pinned-sources.json`; the vscode-icons generator pins a Git commit instead. A changed digest for a pinned URL is refused. A new upstream version is recorded only when the maintainer passes `--pin-new-source`, and its generated diff is reviewed before commit.
 
 ## Review procedure
 

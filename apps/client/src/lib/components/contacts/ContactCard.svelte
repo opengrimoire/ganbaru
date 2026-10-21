@@ -222,7 +222,7 @@
       <p class="text-[0.8rem] text-muted-foreground">{detail.message}</p>
     {/if}
     {#if ready && card}
-      <p class="text-[0.8rem] text-muted-foreground">{t("contacts.card.verificationLabel")} <span class="font-mono font-semibold tracking-[0.2em] text-foreground tabular-nums">{card.verificationCode}</span></p>
+      <p class="text-[0.8rem] wrap-break-word text-muted-foreground">{t("contacts.card.verificationLabel")} <span class="font-mono font-semibold tracking-[0.2em] text-foreground tabular-nums">{card.verificationCode}</span></p>
     {/if}
     <div class="flex flex-wrap items-center gap-1.5">
       <button type="button" class={cn("contacts-card-action", actionsBlocked && "contacts-card-action-blocked")} aria-disabled={!actionsAvailable || undefined} onclick={() => { if (actionsAvailable) void copyCode(); }}>{#if confirmed === "copy"}<Check size={ACTION_ICON_SIZE} />{:else}<Copy size={ACTION_ICON_SIZE} />{/if}{t("contacts.card.copyCode")}</button>

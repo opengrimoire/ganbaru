@@ -58,6 +58,8 @@ axum = { workspace = true }
 ganbaru-chat = { workspace = true, features = ["native-runtime"] }
 ganbaru-chat-providers = { workspace = true }
 ganbaru-music-player = { workspace = true }
+hyper = { workspace = true }
+hyper-util = { workspace = true }
 keyring = { workspace = true }
 notify = { workspace = true }
 notify-rust = { workspace = true }
@@ -83,6 +85,7 @@ tauri-plugin-fs = { workspace = true }
 [target.'cfg(target_os = "linux")'.dependencies]
 cairo-rs = { workspace = true }
 gtk = { workspace = true }
+rustix = { workspace = true }
 webkit2gtk = { workspace = true }
 wayland-client = { workspace = true }
 wayland-protocols-wlr = { workspace = true }

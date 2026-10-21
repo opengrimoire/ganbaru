@@ -116,6 +116,56 @@ fn complete_refresh_catalogs_large_file_sets_with_bounded_staging() {
 }
 
 #[test]
+fn refresh_over_the_entry_limit_stops_without_marking_locations_missing() {
+    crate::test_support::block_on(async {
+        let pool = migrated_pool().await;
+        seed_root(&pool).await;
+        let root = temporary_root("crowded");
+        fs::write(root.join("kept.mp3"), b"kept content").unwrap();
+        let initial = request("crowded-initial", &root, 1_700_000_000_000);
+        prepare(&pool, &initial).await.unwrap();
+        run_prepared(&pool, initial).await.unwrap();
+        for index in 0..4 {
+            let folder = root.join(format!("folder-{index}"));
+            fs::create_dir_all(&folder).unwrap();
+            fs::write(folder.join("track.mp3"), [index]).unwrap();
+        }
+
+        let crowded = request("crowded-job", &root, 1_700_000_100_000);
+        prepare(&pool, &crowded).await.unwrap();
+        let stopped = run_prepared_with_scan_limit(&pool, crowded, 5)
+            .await
+            .unwrap();
+        assert_ne!(stopped.state, super::super::MusicRefreshJobState::Completed);
+        assert!(!stopped.absence_determined);
+        assert!(
+            stopped
+                .status_message
+                .contains("more than 5 files and folders")
+        );
+        let availability: String = sqlx::query_scalar(
+            "SELECT availability FROM music_local_locations WHERE relative_path = 'kept.mp3'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(availability, "available");
+
+        let roomy = request("roomy-job", &root, 1_700_000_200_000);
+        prepare(&pool, &roomy).await.unwrap();
+        let completed = run_prepared_with_scan_limit(&pool, roomy, 16)
+            .await
+            .unwrap();
+        assert_eq!(
+            completed.state,
+            super::super::MusicRefreshJobState::Completed
+        );
+        assert_eq!(completed.discovered_count, 5);
+        fs::remove_dir_all(root).unwrap();
+    });
+}
+
+#[test]
 fn only_a_complete_current_generation_marks_absent_locations_missing() {
     crate::test_support::block_on(async {
         let pool = migrated_pool().await;

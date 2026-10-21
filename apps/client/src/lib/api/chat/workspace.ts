@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { Channel, invoke } from "@tauri-apps/api/core";
 import { ensureDbUrl } from "$lib/api/db";
 import { withWorkingFolderTrust } from "$lib/api/working-folder-trust";
 import { translate } from "$lib/i18n/translator.svelte";
@@ -265,17 +265,83 @@ export async function allowPreviewModelOrigin(threadId: ChatThreadId, tabId: str
 /** Event emitted when a Chat thread gets a new pending browser preview approval. */
 export const CHAT_BROWSER_APPROVAL_EVENT = "chat://browser-approval";
 
-/** An approval the coding agent is waiting on in the Browser panel. */
+/** Page capabilities a preview page can ask the user for. */
+export const PREVIEW_PAGE_PERMISSIONS = [
+  "camera",
+  "microphone",
+  "cameraAndMicrophone",
+  "screenCapture",
+  "location",
+  "notifications",
+  "clipboard",
+  "pointerLock",
+  "protectedMedia",
+  "storageAccess",
+  "sensors",
+  "fileAccess",
+  "localFonts",
+  "midi",
+  "windowManagement",
+] as const;
+
+/** A page capability a preview page can ask the user for. */
+export type PreviewPagePermission = (typeof PREVIEW_PAGE_PERMISSIONS)[number];
+
+/** Page dialogs a preview page can open. */
+export const PREVIEW_PAGE_DIALOG_KINDS = ["alert", "confirm", "prompt", "beforeUnload"] as const;
+
+/** A page dialog a preview page can open. */
+export type PreviewPageDialogKind = (typeof PREVIEW_PAGE_DIALOG_KINDS)[number];
+
+/** An approval the coding agent or a preview page is waiting on in the Browser panel. */
 export type PreviewApproval =
   | { kind: "navigation"; origin: string }
-  | { kind: "network" };
+  | { kind: "network" }
+  | { kind: "permission"; requestId: number; origin: string; permission: PreviewPagePermission }
+  | {
+    kind: "dialog";
+    requestId: number;
+    origin: string;
+    dialogKind: PreviewPageDialogKind;
+    message: string;
+    defaultText: string;
+  };
 
-function parsePreviewApproval(value: unknown): PreviewApproval | null {
+function isOneOf<T extends string>(values: readonly T[], value: unknown): value is T {
+  return typeof value === "string" && (values as readonly string[]).includes(value);
+}
+
+function isRequestId(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
+}
+
+/**
+ * Validates the pending approval the backend returns.
+ *
+ * @param value Untrusted command result.
+ * @returns The approval, or `null` when nothing is waiting.
+ * @throws When the result is not a known approval shape.
+ */
+export function parsePreviewApproval(value: unknown): PreviewApproval | null {
   if (value === null) return null;
   if (typeof value !== "object") throw new Error("Invalid browser approval");
-  const { kind, origin } = value as Record<string, unknown>;
+  const { kind, origin, requestId, permission, dialogKind, message, defaultText } =
+    value as Record<string, unknown>;
   if (kind === "network") return { kind };
-  if (kind === "navigation" && typeof origin === "string") return { kind, origin };
+  if (typeof origin !== "string") throw new Error("Invalid browser approval");
+  if (kind === "navigation") return { kind, origin };
+  if (kind === "permission" && isRequestId(requestId) && isOneOf(PREVIEW_PAGE_PERMISSIONS, permission)) {
+    return { kind, requestId, origin, permission };
+  }
+  if (
+    kind === "dialog"
+    && isRequestId(requestId)
+    && isOneOf(PREVIEW_PAGE_DIALOG_KINDS, dialogKind)
+    && typeof message === "string"
+    && typeof defaultText === "string"
+  ) {
+    return { kind, requestId, origin, dialogKind, message, defaultText };
+  }
   throw new Error("Invalid browser approval");
 }
 
@@ -287,10 +353,22 @@ export async function readPendingBrowserApproval(threadId: ChatThreadId): Promis
 /**
  * Allows or dismisses a thread's pending approval. Allowing a navigation opens it and returns
  * the updated tab.
+ *
+ * @param threadId Thread whose Browser panel shows the approval.
+ * @param allow Allow the request, or accept the page dialog.
+ * @param page The page request being answered and, for an accepted prompt, its text.
  */
-export async function resolveBrowserApproval(threadId: ChatThreadId, allow: boolean): Promise<BrowserTabRead | null> {
+export async function resolveBrowserApproval(
+  threadId: ChatThreadId,
+  allow: boolean,
+  page?: { requestId: number; text?: string },
+): Promise<BrowserTabRead | null> {
   const value = await invoke<unknown>("chat_browser_resolve_approval", {
-    dbUrl: await ensureDbUrl(), threadId, allow,
+    dbUrl: await ensureDbUrl(),
+    threadId,
+    allow,
+    requestId: page?.requestId ?? null,
+    text: page?.text ?? null,
   });
   return value === null ? null : parseBrowserTabRead(value);
 }
@@ -539,18 +617,22 @@ export async function discardGitPaths(
   })));
 }
 
-export async function readChatTerminalLayout(threadId: ChatThreadId): Promise<ChatTerminalLayoutRead> {
+export async function readChatTerminalLayout(
+  threadId: ChatThreadId,
+  workingFolderId: ProjectWorkingFolderId,
+): Promise<ChatTerminalLayoutRead> {
   return parseChatTerminalLayout(await invoke<unknown>("chat_read_terminal_layout", {
-    dbUrl: await ensureDbUrl(), threadId,
+    dbUrl: await ensureDbUrl(), threadId, workingFolderId,
   }));
 }
 
 export async function saveChatTerminalPanelLayout(
   threadId: ChatThreadId,
+  workingFolderId: ProjectWorkingFolderId,
   panel: ChatTerminalPanelLayout,
 ): Promise<ChatTerminalLayoutRead> {
   return parseChatTerminalLayout(await invoke<unknown>("chat_save_terminal_panel_layout", {
-    dbUrl: await ensureDbUrl(), threadId, panel,
+    dbUrl: await ensureDbUrl(), threadId, workingFolderId, panel,
   }));
 }
 
@@ -621,12 +703,33 @@ export async function recreateProjectWorkingFolderFile(request: {
   }));
 }
 
+/**
+ * Opens a workspace file with the system default handler. Documents open directly; a type that
+ * could run as a program asks in a native dialog first, and declining rejects with a `cancelled`
+ * Chat error.
+ */
 export async function openProjectWorkingFolderFile(
   workingFolderId: ProjectWorkingFolderId,
   relativePath: string,
   executionEnvironmentId: string | null = null,
 ): Promise<void> {
-  await invoke("projects_open_working_folder_file", { dbUrl: await ensureDbUrl(), workingFolderId, relativePath, executionEnvironmentId });
+  await invoke("projects_open_working_folder_file", {
+    dbUrl: await ensureDbUrl(),
+    workingFolderId,
+    relativePath,
+    executionEnvironmentId,
+    prompt: externalOpenPrompt(),
+  });
+}
+
+/** Localized text for the native open confirmation; Rust appends the file path. */
+function externalOpenPrompt() {
+  return {
+    title: translate("chat.inspector.openExternallyTitle"),
+    message: translate("chat.inspector.openExternallyMessage"),
+    allowLabel: translate("chat.inspector.openExternallyAllow"),
+    cancelLabel: translate("chat.inspector.openExternallyCancel"),
+  };
 }
 
 export async function listChatTerminals(
@@ -693,6 +796,51 @@ export async function readChatTerminalSnapshot(
     threadId,
     workingFolderId,
   }));
+}
+
+/**
+ * Subscribes one terminal view to live output and returns the scrollback snapshot taken at attach time.
+ *
+ * Live chunks arrive only on `channel` and stop once the view holds a full window of unacknowledged
+ * bytes, so the view must acknowledge what it writes.
+ *
+ * @param subscriptionId - Random identifier for this view, used to acknowledge and detach.
+ * @param channel - Receives live output chunks for this view only.
+ * @returns The terminal state and scrollback at the moment the subscription began.
+ */
+export async function attachChatTerminal(
+  terminalId: string,
+  threadId: ChatThreadId,
+  workingFolderId: ProjectWorkingFolderId,
+  subscriptionId: string,
+  channel: Channel<unknown>,
+): Promise<ChatTerminalSnapshotRead> {
+  return parseChatTerminalSnapshot(await invoke<unknown>("chat_terminal_attach", {
+    dbUrl: await ensureDbUrl(),
+    terminalId,
+    threadId,
+    workingFolderId,
+    subscriptionId,
+    channel,
+  }));
+}
+
+/**
+ * Returns delivery credit for live output bytes the view has finished writing.
+ *
+ * @param bytes - Decoded output bytes received on the subscription since the last acknowledgement.
+ */
+export async function acknowledgeChatTerminalOutput(
+  terminalId: string,
+  subscriptionId: string,
+  bytes: number,
+): Promise<void> {
+  await invoke("chat_terminal_acknowledge", { terminalId, subscriptionId, bytes });
+}
+
+/** Ends one view's live output subscription; detaching from a closed terminal succeeds. */
+export async function detachChatTerminal(terminalId: string, subscriptionId: string): Promise<void> {
+  await invoke("chat_terminal_detach", { terminalId, subscriptionId });
 }
 
 export async function writeChatTerminal(

@@ -64,6 +64,8 @@ impl ShortcutRestoreCleanup {
 #[cfg(target_os = "linux")]
 const SHORTCUT_RESTORE_FILE: &str = "gnome-shortcuts-restore.json";
 #[cfg(target_os = "linux")]
+const SHORTCUT_RESTORE_UNUSABLE_FILE: &str = "gnome-shortcuts-restore.unusable.json";
+#[cfg(target_os = "linux")]
 const SHORTCUT_RESTORE_MAX_BYTES: u64 = 256 * 1024;
 #[cfg(target_os = "linux")]
 pub(super) const SHORTCUT_RESTORE_VALUE_MAX_BYTES: usize = 2048;
@@ -210,29 +212,75 @@ fn read_saved_shortcuts_file(path: &Path) -> Result<SavedShortcuts, String> {
     serde_json::from_str(&json).map_err(|e| e.to_string())
 }
 
+/// Reads the pending restore file left by an unfinished overlay session.
+///
+/// Returns `Ok(None)` when no file exists. A file that cannot be read,
+/// parsed, or validated is moved aside so the original shortcut values it may
+/// hold stay recoverable by hand, and the error is returned.
 #[cfg(target_os = "linux")]
-pub(super) fn read_saved_shortcuts_file_or_clear(path: &Path) -> Result<SavedShortcuts, String> {
-    match read_saved_shortcuts_file(path) {
-        Ok(saved) => Ok(saved),
+pub(super) fn load_pending_restore(
+    path: &Path,
+    known_keys: &HashMap<String, HashSet<String>>,
+) -> Result<Option<SavedShortcuts>, String> {
+    if !path.exists() {
+        return Ok(None);
+    }
+    let saved = read_saved_shortcuts_file(path)
+        .and_then(|saved| validate_saved_shortcuts(&saved, known_keys).map(|()| saved));
+    match saved {
+        Ok(saved) => Ok(Some(saved)),
         Err(err) => {
-            clear_shortcut_restore(path);
+            set_restore_file_aside(path, &err);
             Err(err)
         }
     }
 }
 
+/// Path that keeps the most recent unusable restore file for manual recovery.
 #[cfg(target_os = "linux")]
-pub(super) fn validate_saved_shortcuts_or_clear(
-    path: &Path,
-    saved: SavedShortcuts,
-    known_keys: &HashMap<String, HashSet<String>>,
-) -> Result<SavedShortcuts, String> {
-    match validate_saved_shortcuts(&saved, known_keys) {
-        Ok(()) => Ok(saved),
+pub(super) fn unusable_restore_path(path: &Path) -> PathBuf {
+    path.with_file_name(SHORTCUT_RESTORE_UNUSABLE_FILE)
+}
+
+#[cfg(target_os = "linux")]
+fn set_restore_file_aside(path: &Path, reason: &str) {
+    let aside = unusable_restore_path(path);
+    match std::fs::rename(path, &aside) {
+        Ok(()) => eprintln!(
+            "GNOME shortcut restore file could not be used ({reason}); kept it at {}",
+            aside.display()
+        ),
         Err(err) => {
-            clear_shortcut_restore(path);
-            Err(err)
+            eprintln!("GNOME shortcut restore file could not be used ({reason}) or moved: {err}")
         }
+    }
+}
+
+/// Combines originals recorded by an unfinished session with a fresh capture.
+///
+/// Recorded originals win, because the live values for those keys may already
+/// be the disabled placeholders. Keys captured now but missing from the record
+/// are added so they are restored too.
+#[cfg(target_os = "linux")]
+pub(super) fn merge_pending_originals(
+    pending: SavedShortcuts,
+    captured: SavedShortcuts,
+) -> SavedShortcuts {
+    let mut disabled = pending.disabled;
+    let recorded = disabled
+        .iter()
+        .map(|(schema, key, _)| (schema.clone(), key.clone()))
+        .collect::<HashSet<_>>();
+    disabled.extend(
+        captured
+            .disabled
+            .into_iter()
+            .filter(|(schema, key, _)| !recorded.contains(&(schema.clone(), key.clone()))),
+    );
+    SavedShortcuts {
+        overlay_key: pending.overlay_key,
+        dock_hotkeys: pending.dock_hotkeys,
+        disabled,
     }
 }
 
@@ -283,11 +331,20 @@ impl SavedShortcuts {
         }
     }
 
+    /// Records the user's shortcuts and disables them for the overlay.
+    ///
+    /// A restore file left by an unfinished session holds the real originals,
+    /// so it is reused instead of being overwritten by a capture of the
+    /// already disabled values.
     fn save_and_disable(app: &tauri::AppHandle) -> Result<Self, String> {
-        let saved = Self::capture();
         let known_keys = current_shortcut_schema_keys()?;
-        validate_saved_shortcuts(&saved, &known_keys)?;
         let path = shortcut_restore_path(app)?;
+        let captured = Self::capture();
+        let saved = match load_pending_restore(&path, &known_keys) {
+            Ok(Some(pending)) => merge_pending_originals(pending, captured),
+            Ok(None) | Err(_) => captured,
+        };
+        validate_saved_shortcuts(&saved, &known_keys)?;
         persist_shortcut_restore(&path, &saved)?;
         saved.disable();
         Ok(saved)
@@ -362,9 +419,10 @@ pub fn restore_stale_shortcuts(app: &tauri::AppHandle) -> Result<(), String> {
     if !path.exists() {
         return Ok(());
     }
-    let saved = read_saved_shortcuts_file_or_clear(&path)?;
     let known_keys = current_shortcut_schema_keys()?;
-    let saved = validate_saved_shortcuts_or_clear(&path, saved, &known_keys)?;
+    let Some(saved) = load_pending_restore(&path, &known_keys)? else {
+        return Ok(());
+    };
     restore_shortcuts(&saved);
     clear_shortcut_restore(&path);
     Ok(())

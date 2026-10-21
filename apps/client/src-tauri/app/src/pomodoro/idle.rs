@@ -1,5 +1,10 @@
 //! Desktop idle and webcam activity probes used for Focus admission and idle warnings.
 
+#![allow(
+    unsafe_code,
+    reason = "Retained unsafe boundary; see docs/data/security/unsafe-rust.md."
+)]
+
 use serde::{Deserialize, Serialize};
 
 #[cfg(any(target_os = "linux", target_os = "windows", target_os = "macos"))]

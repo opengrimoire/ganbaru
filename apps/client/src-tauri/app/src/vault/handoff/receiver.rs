@@ -60,6 +60,21 @@ impl ReceiveMode {
     }
 }
 
+/// Error returned when bootstrap would replace a vault that is not the untouched starter.
+const BOOTSTRAP_REFUSED: &str =
+    "only an untouched Android starter vault can become a replica without a backup";
+
+/// Bootstrap skips the portable backup, so it is admitted only on Android while the native
+/// starter record names the active vault. Every other first link uses the ownership path,
+/// which preserves the replaced vault.
+fn admit_bootstrap(mobile: bool, untouched_starter: bool) -> Result<(), String> {
+    if mobile && untouched_starter {
+        Ok(())
+    } else {
+        Err(BOOTSTRAP_REFUSED.to_string())
+    }
+}
+
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ReceiveOutcome {
@@ -175,8 +190,11 @@ async fn receive(
     if matches!(mode, ReceiveMode::Refresh) && !pairing.replica_ready()? {
         return Err("the linked vault must be activated before it can refresh".to_string());
     }
-    if matches!(mode, ReceiveMode::Bootstrap) && pairing.replica_ready()? {
-        return Err("the linked vault is already active on this device".to_string());
+    if matches!(mode, ReceiveMode::Bootstrap) {
+        admit_bootstrap(cfg!(mobile), crate::vault::untouched_starter_vault(app)?)?;
+        if pairing.replica_ready()? {
+            return Err("the linked vault is already active on this device".to_string());
+        }
     }
 
     let purpose = mode.purpose();
@@ -231,7 +249,7 @@ async fn receive(
         preserve_local_copy,
     )
     .await?;
-    let (device_id, _) = pairing.identity()?;
+    let device_id = pairing.device_id()?;
     let pending = PendingAcknowledgement {
         vault_id: metadata.vault_id.clone(),
         device_id,
@@ -284,7 +302,7 @@ async fn resume_committed_ownership(
         !pairing.replica_ready()?,
     )
     .await?;
-    let (device_id, _) = pairing.identity()?;
+    let device_id = pairing.device_id()?;
     let pending = PendingAcknowledgement {
         vault_id: vault_id.to_string(),
         device_id,
@@ -550,6 +568,15 @@ mod tests {
         assert_eq!(ReceiveMode::Refresh.purpose(), BundlePurpose::Refresh);
         assert_eq!(ReceiveMode::Bootstrap.purpose(), BundlePurpose::Refresh);
         assert_eq!(super::super::protocol::PROTOCOL_VERSION, 6);
+    }
+
+    #[test]
+    fn bootstrap_is_admitted_only_over_an_untouched_android_starter_vault() {
+        let refused = Err(BOOTSTRAP_REFUSED.to_string());
+        assert_eq!(admit_bootstrap(false, false), refused);
+        assert_eq!(admit_bootstrap(false, true), refused);
+        assert_eq!(admit_bootstrap(true, false), refused);
+        assert_eq!(admit_bootstrap(true, true), Ok(()));
     }
 
     #[test]

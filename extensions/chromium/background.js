@@ -1,4 +1,5 @@
 import { HOST_NAME } from "./host-config.js";
+import { decisionUrl, hostFromUrl, isSupportedPageUrl } from "./page-url.js";
 
 const STATUS_STORAGE_KEY = "status";
 const BLOCKED_PAGE_STORAGE_PREFIX = "blockedPage:";
@@ -29,22 +30,10 @@ function sendNativeMessage(message) {
   });
 }
 
-function isSupportedPageUrl(url) {
-  return typeof url === "string" && (url.startsWith("http://") || url.startsWith("https://"));
-}
-
 function delay(ms) {
   return new Promise((resolve) => {
     setTimeout(resolve, ms);
   });
-}
-
-function hostFromUrl(url) {
-  try {
-    return new URL(url).hostname.toLowerCase();
-  } catch {
-    return null;
-  }
 }
 
 function isActiveEnforcementPhase(status) {
@@ -57,7 +46,7 @@ function isActiveEnforcementPhase(status) {
 }
 
 function activeUsageStore() {
-  return chrome.storage.session ?? chrome.storage.local;
+  return chrome.storage.session;
 }
 
 async function readActiveUsage() {
@@ -204,7 +193,7 @@ async function refreshActiveUsage({ forceFlush = false } = {}) {
 }
 
 function blockedPageStore() {
-  return chrome.storage.session ?? chrome.storage.local;
+  return chrome.storage.session;
 }
 
 async function storeBlockedPageState(originalUrl, decision) {
@@ -253,7 +242,7 @@ async function refreshBlockedPage(blockedPageId) {
 
   const decision = await sendNativeMessage({
     type: "decide_url",
-    url: originalUrl,
+    url: decisionUrl(originalUrl),
     host,
     logEvent: false,
   });
@@ -332,7 +321,7 @@ async function decideAndRedirect(tabId, url) {
   const lastRedirectAtMs = recentRedirects.get(redirectKey);
   if (typeof lastRedirectAtMs === "number" && Date.now() - lastRedirectAtMs < 3000) return;
 
-  const decision = await sendNativeMessage({ type: "decide_url", url, host });
+  const decision = await sendNativeMessage({ type: "decide_url", url: decisionUrl(url), host });
   await updateStatus({
     ...decision,
     lastBlockedHost: decision?.blocked ? host : null,

@@ -17,4 +17,5 @@ workspace = true
 sqlx = { workspace = true }
 # Sets the floor for the SQLite library that sqlx bundles.
 libsqlite3-sys = { workspace = true }
+ganbaru-atomic-files = { workspace = true }
 tokio = { workspace = true }

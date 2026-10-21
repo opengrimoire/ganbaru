@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
 use crate::artwork::{extract_embedded_artwork, find_track_artwork};
+use crate::validation::bounded_item_description;
 
 use super::super::MusicMediaKind;
 use super::metadata::{LocalTags, read_container_duration_ms, read_tags};
@@ -269,7 +270,7 @@ fn fallback_title(path: &Path) -> String {
     path.file_stem()
         .and_then(|value| value.to_str())
         .filter(|value| !value.is_empty())
-        .unwrap_or("Untitled media")
+        .map_or("Untitled media", bounded_item_description)
         .to_string()
 }
 

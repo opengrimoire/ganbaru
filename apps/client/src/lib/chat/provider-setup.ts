@@ -4,6 +4,7 @@ import type {
   ProviderInstanceId,
   VersionedJson,
 } from "./contracts";
+import { isLoopbackHostname } from "./workspace/loopback";
 
 export type ProviderEnvironmentValueType = "text" | "secret" | "inherit";
 
@@ -228,8 +229,7 @@ function parseHttpOrigin(value: string): { secure: boolean; loopback: boolean } 
     ) {
       return null;
     }
-    const hostname = url.hostname.toLowerCase();
-    const loopback = hostname === "localhost" || hostname === "[::1]" || /^127(?:\.\d{1,3}){3}$/.test(hostname);
+    const loopback = isLoopbackHostname(url.hostname);
     return { secure: url.protocol === "https:", loopback };
   } catch {
     return null;

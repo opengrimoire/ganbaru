@@ -514,7 +514,10 @@ fn notes_validation_rejects_bad_ids_and_payloads() {
             "bookmark",
             &json!({ "caption": [], "url": "bad\u{0008}url" }),
         ),
-        Err("bookmark.url must not contain control characters".to_string())
+        Err(
+            "bookmark.url must not contain control characters or a javascript, data, vbscript, or file scheme"
+                .to_string()
+        )
     );
     assert_eq!(
         validation::validate_block_payload("equation", &json!({ "expression": 42 })),
@@ -526,7 +529,7 @@ fn notes_validation_rejects_bad_ids_and_payloads() {
     );
     assert_eq!(
         validation::validate_block_payload("embed", &json!({ "url": "bad\u{0008}url" })),
-        Err("embed.url must not contain control characters".to_string())
+        Err("embed.url must be an http or https URL without control characters".to_string())
     );
     assert_eq!(
         validation::validate_block_payload("link_preview", &json!({ "url": 42 })),
@@ -534,7 +537,7 @@ fn notes_validation_rejects_bad_ids_and_payloads() {
     );
     assert_eq!(
         validation::validate_block_payload("link_preview", &json!({ "url": "bad\u{0008}url" }),),
-        Err("link_preview.url must not contain control characters".to_string())
+        Err("link_preview.url must be an http or https URL without control characters".to_string())
     );
     assert!(
         validation::validate_block_payload("synced_block", &synced_block_payload_original())
@@ -804,4 +807,112 @@ fn notes_validation_accepts_readable_app_object_mention_ids() {
             "{live_state}"
         );
     }
+}
+
+#[test]
+fn web_reference_blocks_reject_script_and_local_data_schemes() {
+    for url in [
+        "javascript:alert(1)",
+        " JavaScript:alert(1)",
+        "data:text/html,<script>alert(1)</script>",
+        "vbscript:msgbox(1)",
+        "file:///etc/passwd",
+        "javascript:1",
+    ] {
+        for block_type in ["bookmark", "embed", "link_preview"] {
+            let payload = if block_type == "bookmark" {
+                json!({ "caption": [], "url": url })
+            } else {
+                json!({ "url": url })
+            };
+            assert!(
+                validation::validate_block_payload(block_type, &payload).is_err(),
+                "{block_type} accepted {url}"
+            );
+        }
+    }
+}
+
+#[test]
+fn bookmarks_keep_email_phone_app_links_and_drafts() {
+    for url in [
+        "",
+        "https://example.com",
+        "mailto:me@example.com",
+        "tel:+15550100",
+        "obsidian://open?vault=Work",
+        "zotero://select/items/1",
+        "javascript",
+        "example.com/a:b",
+    ] {
+        assert!(
+            validation::validate_block_payload("bookmark", &json!({ "caption": [], "url": url }))
+                .is_ok(),
+            "bookmark rejected {url}"
+        );
+    }
+}
+
+#[test]
+fn embeds_and_link_previews_keep_web_urls_and_typing_drafts_only() {
+    for block_type in ["embed", "link_preview"] {
+        for url in [
+            "",
+            "https://example.com/video",
+            "HTTP://example.com",
+            "http:",
+            "example.com/watch",
+            "localhost:3000",
+            "www.example.com:8080/path",
+        ] {
+            assert!(
+                validation::validate_block_payload(block_type, &json!({ "url": url })).is_ok(),
+                "{block_type} rejected {url}"
+            );
+        }
+        for url in [
+            "mailto:me@example.com",
+            "obsidian://open",
+            "ftp://example.com",
+        ] {
+            assert!(
+                validation::validate_block_payload(block_type, &json!({ "url": url })).is_err(),
+                "{block_type} accepted {url}"
+            );
+        }
+    }
+}
+
+#[test]
+fn exported_web_references_link_only_explicit_safe_schemes() {
+    assert!(validation::is_exportable_web_reference_url(
+        "bookmark",
+        "tel:+15550100"
+    ));
+    assert!(validation::is_exportable_web_reference_url(
+        "bookmark",
+        "obsidian://open"
+    ));
+    assert!(validation::is_exportable_web_reference_url(
+        "embed",
+        "https://example.com"
+    ));
+    assert!(!validation::is_exportable_web_reference_url(
+        "embed",
+        "mailto:me@example.com"
+    ));
+    assert!(!validation::is_exportable_web_reference_url(
+        "bookmark",
+        "java\tscript:alert(1)"
+    ));
+    assert!(!validation::is_exportable_web_reference_url(
+        "bookmark",
+        "../notes.md"
+    ));
+    assert!(!validation::is_exportable_web_reference_url("bookmark", ""));
+    assert_eq!(
+        validation::uri_scheme(" Java\nScript:x").as_deref(),
+        Some("javascript")
+    );
+    assert_eq!(validation::uri_scheme("example.com/a:b"), None);
 }

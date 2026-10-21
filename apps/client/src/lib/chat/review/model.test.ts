@@ -23,6 +23,7 @@ const file: ChatReviewFileRead = {
     pureRename: false,
     untracked: false,
     symlink: false,
+    tooLarge: false,
     providerReported: false,
     gitObserved: true,
     readOnly: false,

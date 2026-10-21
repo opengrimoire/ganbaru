@@ -72,6 +72,9 @@ pub struct RuntimeReviewItem {
     pub label: String,
     /// Whether the value is known to widen permissions or redirect provider traffic.
     pub widens_permissions: bool,
+    /// Whether another local account could replace the program this item names; the app sets it
+    /// for typed executable paths so the confirmation can warn about it.
+    pub shared_program: bool,
 }
 
 struct FamilyAllowlist {
@@ -261,6 +264,7 @@ fn review_item(
         digest: format!("{:x}", hasher.finalize()),
         label: bounded_label(&label),
         widens_permissions,
+        shared_program: false,
     }
 }
 

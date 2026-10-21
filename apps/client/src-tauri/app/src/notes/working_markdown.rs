@@ -1,9 +1,12 @@
 //! Authorized Chat-facing integration for working-folder Markdown files.
 
 use crate::chat::workspace::commands::authorize_working_folder;
+use crate::chat::workspace::files::{
+    ProjectWorkingFolderFilePreview, preview_workspace_file_within, save_workspace_file_within,
+};
 use crate::chat::workspace::{
     AuthorizedWorkingFolder, WorkingFolderAuthorizationOperation,
-    ensure_managed_working_folder_binding, open_authorized_path,
+    ensure_managed_working_folder_binding, open_authorized_document,
 };
 use crate::db::connect_sqlite;
 use ganbaru_chat::repository::workspaces;
@@ -11,7 +14,8 @@ use ganbaru_chat_contracts::models::{
     ChatError, ChatErrorCode, ChatResult, ProjectWorkingFolderId,
 };
 use ganbaru_notes::working_markdown::{
-    self, WorkingMarkdownError, WorkingMarkdownFile, WorkingMarkdownNode, WorkingMarkdownNodeKind,
+    self, MAX_MARKDOWN_FILE_BYTES, WorkingMarkdownError, WorkingMarkdownNode,
+    WorkingMarkdownNodeKind,
 };
 use serde::Serialize;
 use tauri::Runtime;
@@ -97,8 +101,11 @@ pub async fn notes_list_working_markdown<R: Runtime>(
                 continue;
             }
         };
-        let scan = working_markdown::scan_markdown(&authorized.canonical_path)
-            .map_err(working_markdown_error)?;
+        let root = authorized.canonical_path.clone();
+        let scan = on_notes_worker(move || {
+            working_markdown::scan_markdown(&root).map_err(working_markdown_error)
+        })
+        .await?;
         if scan.nodes.is_empty() {
             continue;
         }
@@ -129,6 +136,8 @@ pub async fn notes_read_working_markdown<R: Runtime>(
     working_folder_id: ProjectWorkingFolderId,
     relative_path: String,
 ) -> ChatResult<NotesWorkingMarkdownFileRead> {
+    let relative_path =
+        working_markdown::validate_markdown_path(&relative_path).map_err(working_markdown_error)?;
     let authorized = require_folder(
         &app,
         db_url,
@@ -136,9 +145,11 @@ pub async fn notes_read_working_markdown<R: Runtime>(
         WorkingFolderAuthorizationOperation::FileRead,
     )
     .await?;
-    let file = working_markdown::read_markdown(&authorized.canonical_path, &relative_path)
-        .map_err(working_markdown_error)?;
-    Ok(markdown_file_dto(working_folder_id, file))
+    let preview = on_notes_worker(move || {
+        preview_workspace_file_within(&authorized, &relative_path, MAX_MARKDOWN_FILE_BYTES)
+    })
+    .await?;
+    markdown_file_dto(working_folder_id, preview)
 }
 
 #[tauri::command]
@@ -150,6 +161,11 @@ pub async fn notes_save_working_markdown<R: Runtime>(
     content: String,
     expected_revision: String,
 ) -> ChatResult<NotesWorkingMarkdownFileRead> {
+    let relative_path =
+        working_markdown::validate_markdown_path(&relative_path).map_err(working_markdown_error)?;
+    if content.len() as u64 > MAX_MARKDOWN_FILE_BYTES {
+        return Err(working_markdown_error(WorkingMarkdownError::TooLarge));
+    }
     let authorized = require_folder(
         &app,
         db_url,
@@ -157,14 +173,17 @@ pub async fn notes_save_working_markdown<R: Runtime>(
         WorkingFolderAuthorizationOperation::FileWrite,
     )
     .await?;
-    let file = working_markdown::save_markdown(
-        &authorized.canonical_path,
-        &relative_path,
-        &content,
-        &expected_revision,
-    )
-    .map_err(working_markdown_error)?;
-    Ok(markdown_file_dto(working_folder_id, file))
+    let saved = on_notes_worker(move || {
+        save_workspace_file_within(
+            &authorized,
+            &relative_path,
+            &content,
+            &expected_revision,
+            MAX_MARKDOWN_FILE_BYTES,
+        )
+    })
+    .await?;
+    markdown_file_dto(working_folder_id, saved)
 }
 
 #[tauri::command]
@@ -181,9 +200,30 @@ pub async fn notes_open_working_markdown<R: Runtime>(
         WorkingFolderAuthorizationOperation::FileRead,
     )
     .await?;
-    let path = working_markdown::resolve_markdown_file(&authorized.canonical_path, &relative_path)
-        .map_err(working_markdown_error)?;
-    open_authorized_path(&authorized, &path)
+    let root = authorized.canonical_path.clone();
+    let path = on_notes_worker(move || {
+        working_markdown::resolve_markdown_file(&root, &relative_path)
+            .map_err(working_markdown_error)
+    })
+    .await?;
+    open_authorized_document(&authorized, &path)
+}
+
+/// Runs one working-Markdown filesystem operation on a Notes file worker.
+async fn on_notes_worker<T, F>(work: F) -> ChatResult<T>
+where
+    T: Send + 'static,
+    F: FnOnce() -> ChatResult<T> + Send + 'static,
+{
+    ganbaru_notes::blocking::run_blocking(move || Ok(work()))
+        .await
+        .map_err(|_| {
+            ChatError::new(
+                ChatErrorCode::Internal,
+                "The Markdown file worker stopped unexpectedly",
+                true,
+            )
+        })?
 }
 
 async fn require_folder<R: Runtime>(
@@ -218,17 +258,25 @@ fn markdown_node_dto(node: WorkingMarkdownNode) -> NotesWorkingMarkdownNode {
     }
 }
 
+/// Projects a bounded workspace preview as editable Markdown, refusing files
+/// over the Markdown limit and files that are not UTF-8 text.
 fn markdown_file_dto(
     working_folder_id: ProjectWorkingFolderId,
-    file: WorkingMarkdownFile,
-) -> NotesWorkingMarkdownFileRead {
-    NotesWorkingMarkdownFileRead {
-        working_folder_id,
-        relative_path: file.relative_path,
-        content: file.content,
-        revision: file.revision,
-        byte_size: file.byte_size,
+    preview: ProjectWorkingFolderFilePreview,
+) -> ChatResult<NotesWorkingMarkdownFileRead> {
+    if preview.oversized {
+        return Err(working_markdown_error(WorkingMarkdownError::TooLarge));
     }
+    let (Some(content), Some(revision)) = (preview.text, preview.content_revision) else {
+        return Err(working_markdown_error(WorkingMarkdownError::InvalidUtf8));
+    };
+    Ok(NotesWorkingMarkdownFileRead {
+        working_folder_id,
+        relative_path: preview.relative_path,
+        content,
+        revision,
+        byte_size: preview.byte_size,
+    })
 }
 
 fn validate_project_id(project_id: &str) -> ChatResult<()> {
@@ -273,11 +321,6 @@ fn working_markdown_error(error: WorkingMarkdownError) -> ChatError {
         WorkingMarkdownError::Io => ChatError::new(
             ChatErrorCode::Permission,
             "The Markdown file or directory could not be accessed",
-            true,
-        ),
-        WorkingMarkdownError::StaleRevision => ChatError::new(
-            ChatErrorCode::StaleRevision,
-            "The Markdown file changed outside Ganbaru",
             true,
         ),
     }

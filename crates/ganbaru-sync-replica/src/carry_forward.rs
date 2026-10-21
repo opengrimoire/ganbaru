@@ -11,7 +11,11 @@ use ganbaru_sync::local::{
 };
 use ganbaru_sync::{CarryReport, Engine, SpaceContext};
 use sqlx::SqliteConnection;
+use std::io::Read as _;
 use std::path::Path;
+
+/// Error for a carry bundle that is not a regular file within the bundle limit.
+const BUNDLE_TOO_LARGE: &str = "carry-forward bundle is not a file within the size limit";
 
 /// Exports the operations of `current` that `replacement` lacks into the carry bundle of the
 /// vault, after any bundle an interrupted replacement left. Returns how many operations the
@@ -109,12 +113,28 @@ pub async fn import_pending(
 }
 
 /// Reads the carry bundle of the vault. A bundle of another space cannot apply and is an error.
+/// The size is checked on the opened file before reading, and the read stops one byte past the
+/// limit, so an oversized or growing file is refused without loading it.
 fn read_bundle(files: &SyncFiles, ctx: &SpaceContext) -> Result<Option<Vec<Vec<u8>>>, String> {
-    let bytes = match std::fs::read(files.carry_path()) {
-        Ok(bytes) => bytes,
+    let file = match std::fs::File::open(files.carry_path()) {
+        Ok(file) => file,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(format!("read carry-forward bundle: {error}")),
     };
+    let limit = MAX_BUNDLE_BYTES as u64;
+    let metadata = file
+        .metadata()
+        .map_err(|error| format!("read carry-forward bundle: {error}"))?;
+    if !metadata.is_file() || metadata.len() > limit {
+        return Err(BUNDLE_TOO_LARGE.to_string());
+    }
+    let mut bytes = Vec::new();
+    file.take(limit + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| format!("read carry-forward bundle: {error}"))?;
+    if bytes.len() as u64 > limit {
+        return Err(BUNDLE_TOO_LARGE.to_string());
+    }
     let (space, ops) =
         decode_bundle(&bytes).map_err(|error| format!("decode carry-forward bundle: {error}"))?;
     if space != ctx.space {

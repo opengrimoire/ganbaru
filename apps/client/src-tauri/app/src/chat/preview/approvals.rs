@@ -26,14 +26,32 @@ pub(crate) enum PendingPreviewApproval {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum PreviewApprovalRead {
-    Navigation { origin: String },
+    Navigation {
+        origin: String,
+    },
     Network,
+    /// A page asked for a capability. The user's answer is remembered per thread and origin.
+    #[serde(rename_all = "camelCase")]
+    Permission {
+        request_id: u64,
+        origin: String,
+        permission: page_requests::PagePermission,
+    },
+    /// A page opened `alert`, `confirm`, `prompt`, or a leave-page confirmation.
+    #[serde(rename_all = "camelCase")]
+    Dialog {
+        request_id: u64,
+        origin: String,
+        dialog_kind: page_requests::PageDialogKind,
+        message: String,
+        default_text: String,
+    },
 }
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct PreviewApprovalNotice<'a> {
-    thread_id: &'a ChatThreadId,
+pub(super) struct PreviewApprovalNotice<'a> {
+    pub(super) thread_id: &'a ChatThreadId,
 }
 
 /// Outcome of checking a model navigation against the thread's loopback allowlist.
@@ -132,14 +150,17 @@ pub(super) fn grant_loopback_origin(
     outcome
 }
 
-/// Reads the thread's pending approval, if any.
+/// Reads the thread's oldest pending page request, or else its pending approval.
 #[tauri::command]
 pub async fn chat_browser_pending_approval(
     app: tauri::AppHandle,
     thread_id: ChatThreadId,
 ) -> ChatResult<Option<PreviewApprovalRead>> {
-    Ok(app
-        .state::<ChatBrowserManager>()
+    let manager = app.state::<ChatBrowserManager>();
+    if let Some(request) = manager.pending_page_request(&thread_id)? {
+        return Ok(Some(request));
+    }
+    Ok(manager
         .pending_approvals
         .lock()
         .map_err(|_| browser_state_error())?
@@ -147,15 +168,23 @@ pub async fn chat_browser_pending_approval(
         .and_then(approval_read))
 }
 
-/// Allows or dismisses the thread's pending approval. Allowing a navigation remembers its
-/// loopback origin for the thread and opens the held URL in the tab that asked for it.
+/// Answers a page request when `request_id` is given, otherwise allows or dismisses the
+/// thread's pending approval. Allowing a navigation remembers its loopback origin for the
+/// thread and opens the held URL in the tab that asked for it. `text` is what an accepted
+/// `prompt` dialog returns to the page.
 #[tauri::command]
 pub async fn chat_browser_resolve_approval(
     app: tauri::AppHandle,
     db_url: String,
     thread_id: ChatThreadId,
     allow: bool,
+    request_id: Option<u64>,
+    text: Option<String>,
 ) -> ChatResult<Option<BrowserTabRead>> {
+    if let Some(request_id) = request_id {
+        page_requests::resolve_page_request(&app, &thread_id, request_id, allow, text)?;
+        return Ok(None);
+    }
     let Some(approval) = app
         .state::<ChatBrowserManager>()
         .take_approval(&thread_id)?

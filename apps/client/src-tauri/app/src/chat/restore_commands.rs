@@ -147,8 +147,7 @@ pub async fn chat_preview_checkpoint_restore(
     .map_err(persistence_error)?;
     let capabilities = app
         .state::<ChatRuntimeRegistry>()
-        .owner(request.thread_id)?
-        .snapshot()?
+        .snapshot(&request.thread_id)?
         .capabilities;
     let staged_changes = current.index_tree_oid != target.index_tree_oid;
     let mut warnings = Vec::new();

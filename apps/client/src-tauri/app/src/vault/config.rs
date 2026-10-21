@@ -1,11 +1,10 @@
 //! Serialized, bounded mutations of portable vault configuration.
 
 use super::{
-    CONFIG_LOCK, FileAccess, active_vault_path, active_writable_vault_path, config_path,
-    write_text_file_atomically,
+    CONFIG_LOCK, FileAccess, MAX_VAULT_CONFIG_BYTES, active_vault_path, active_writable_vault_path,
+    config_path, write_text_file_atomically,
 };
-use std::fs;
-use std::io::Read;
+use std::path::Path;
 use tauri::Runtime;
 
 const MAX_CONFIG_PATCH_DEPTH: usize = 16;
@@ -13,6 +12,9 @@ const MAX_CONFIG_PATCH_SEGMENT_BYTES: usize = 128;
 const MAX_CONFIG_PATCH_PATH_BYTES: usize = 1024;
 const MAX_CONFIG_PATCH_COUNT: usize = 256;
 const MAX_CONFIG_PATCH_BATCH_BYTES: usize = 1024 * 1024;
+/// Top-level branches that only native commands write, through their own validation and locks.
+/// The webview reaches them through those commands, never through generic patches.
+const NATIVE_OWNED_CONFIG_BRANCHES: &[&str] = &["chat"];
 
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -28,38 +30,41 @@ pub struct VaultConfigPatch {
 /// the file is missing so the frontend can treat a reset config as defaults.
 #[tauri::command]
 pub fn vault_read_config(app: tauri::AppHandle) -> Result<String, String> {
-    let _guard = CONFIG_LOCK
-        .lock()
-        .map_err(|_| "vault config lock is unavailable".to_string())?;
-    let path = config_path(&active_vault_path(&app)?);
-    if !path.exists() {
-        return Ok("{}".to_string());
-    }
-    fs::read_to_string(&path).map_err(|e| e.to_string())
+    read_active_config_bounded(&app)
 }
 
-/// Read native runtime preferences with a limit that also covers concurrent growth.
+/// Read the active vault's `config.json` within [`MAX_VAULT_CONFIG_BYTES`], or `"{}"` when it
+/// is missing.
 pub(crate) fn read_active_config_bounded<R: Runtime>(
     app: &tauri::AppHandle<R>,
-    max_bytes: usize,
 ) -> Result<String, String> {
     let _guard = CONFIG_LOCK
         .lock()
         .map_err(|_| "vault config lock is unavailable".to_owned())?;
     let path = config_path(&active_vault_path(app)?);
-    let file = match fs::File::open(path) {
-        Ok(file) => file,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok("{}".into()),
-        Err(error) => return Err(format!("Open runtime preferences: {error}")),
+    Ok(read_config_file(&path)?.unwrap_or_else(|| "{}".to_owned()))
+}
+
+/// Reads `config.json` at `path` within [`MAX_VAULT_CONFIG_BYTES`], or `None` when it is
+/// missing. The caller holds [`CONFIG_LOCK`].
+fn read_config_file(path: &Path) -> Result<Option<String>, String> {
+    let bytes = match ganbaru_atomic_files::read_regular_file_capped(
+        path,
+        MAX_VAULT_CONFIG_BYTES,
+        ganbaru_atomic_files::FinalSymlink::Refuse,
+    ) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) if error.kind() == std::io::ErrorKind::FileTooLarge => {
+            return Err(format!(
+                "vault config exceeds {MAX_VAULT_CONFIG_BYTES} bytes"
+            ));
+        }
+        Err(error) => return Err(format!("read vault config: {error}")),
     };
-    let mut bytes = Vec::new();
-    file.take(max_bytes.saturating_add(1) as u64)
-        .read_to_end(&mut bytes)
-        .map_err(|error| format!("Read runtime preferences: {error}"))?;
-    if bytes.len() > max_bytes {
-        return Err("Runtime preferences exceed the native read limit".into());
-    }
-    String::from_utf8(bytes).map_err(|error| format!("Runtime preferences are not UTF-8: {error}"))
+    String::from_utf8(bytes)
+        .map(Some)
+        .map_err(|error| format!("vault config is not UTF-8: {error}"))
 }
 
 pub(crate) fn mutate_active_vault_config<R: Runtime, T, E>(
@@ -72,11 +77,9 @@ pub(crate) fn mutate_active_vault_config<R: Runtime, T, E>(
         .lock()
         .map_err(|_| map_storage_error("vault config lock is unavailable".to_string()))?;
     let path = config_path(&writable_root);
-    let raw = if path.exists() {
-        fs::read_to_string(&path).map_err(|error| map_storage_error(error.to_string()))?
-    } else {
-        "{}".to_string()
-    };
+    let raw = read_config_file(&path)
+        .map_err(&map_storage_error)?
+        .unwrap_or_else(|| "{}".to_owned());
     let mut root = serde_json::from_str::<serde_json::Value>(&raw)
         .map_err(|error| map_storage_error(format!("config payload is not valid JSON: {error}")))?;
     if !root.is_object() {
@@ -92,6 +95,11 @@ pub(crate) fn mutate_active_vault_config<R: Runtime, T, E>(
         .map_err(|error| map_storage_error(format!("config Chat branch is invalid: {error}")))?;
     let serialized = serde_json::to_string_pretty(&root)
         .map_err(|error| map_storage_error(error.to_string()))?;
+    if serialized.len() as u64 > MAX_VAULT_CONFIG_BYTES {
+        return Err(map_storage_error(format!(
+            "vault config would exceed {MAX_VAULT_CONFIG_BYTES} bytes"
+        )));
+    }
     let write = || write_text_file_atomically(&path, &serialized, FileAccess::OwnerOnly);
     #[cfg(desktop)]
     let write_result = if previous_distractions.as_ref() != root.get("distractions") {
@@ -127,6 +135,9 @@ fn validate_config_patch_path(path: &[String]) -> Result<(), String> {
         })
     {
         return Err("vault config patch path is invalid".to_string());
+    }
+    if NATIVE_OWNED_CONFIG_BRANCHES.contains(&path[0].as_str()) {
+        return Err("vault config patch targets a native-owned branch".to_string());
     }
     Ok(())
 }
@@ -198,6 +209,27 @@ mod tests {
     use super::*;
 
     #[test]
+    fn config_reads_accept_the_limit_and_refuse_one_byte_more() {
+        let directory = super::super::tests::unique_path("bounded-config");
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("config.json");
+        assert_eq!(read_config_file(&path).unwrap(), None);
+
+        let limit = usize::try_from(MAX_VAULT_CONFIG_BYTES).unwrap();
+        let mut contents = vec![b' '; limit - 2];
+        contents.splice(0..0, *b"{");
+        contents.push(b'}');
+        std::fs::write(&path, &contents).unwrap();
+        assert_eq!(read_config_file(&path).unwrap().unwrap().len(), limit);
+
+        contents.push(b' ');
+        std::fs::write(&path, &contents).unwrap();
+        let error = read_config_file(&path).unwrap_err();
+        assert!(error.contains("exceeds"), "{error}");
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
     fn config_patches_preserve_unrelated_branches() {
         let chat = serde_json::json!({
             "schemaVersion": 1,
@@ -237,5 +269,42 @@ mod tests {
 
         assert_eq!(error, "vault config patch path is invalid");
         assert_eq!(root, serde_json::json!({}));
+    }
+
+    #[test]
+    fn config_patches_refuse_native_owned_branches_and_keep_webview_branches() {
+        let chat = serde_json::json!({ "schemaVersion": 1, "providers": [] });
+        let mut root = serde_json::json!({ "chat": chat.clone() });
+        for (path, remove) in [
+            (vec!["chat"], true),
+            (vec!["chat", "providers"], false),
+            (vec!["chat", "behavior", "sendKey"], false),
+        ] {
+            let error = apply_config_patch(
+                &mut root,
+                VaultConfigPatch {
+                    path: path.into_iter().map(str::to_owned).collect(),
+                    remove,
+                    value: serde_json::json!("replaced"),
+                },
+            )
+            .unwrap_err();
+            assert_eq!(error, "vault config patch targets a native-owned branch");
+        }
+        assert_eq!(root, serde_json::json!({ "chat": chat }));
+
+        apply_config_patch(
+            &mut root,
+            VaultConfigPatch {
+                path: vec!["chatSidebar".to_string(), "starredChannelIds".to_string()],
+                remove: false,
+                value: serde_json::json!(["channel"]),
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            root["chatSidebar"]["starredChannelIds"],
+            serde_json::json!(["channel"])
+        );
     }
 }

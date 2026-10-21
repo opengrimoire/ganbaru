@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   DEFAULT_DISTRACTIONS_CONFIG,
+  DISTRACTIONS_PROTECTED_DESKTOP_PROCESS_NAMES,
   evaluateDistractionsUrl,
   isProtectedDistractionsDesktopAppName,
   normalizeDistractionsAppName,
@@ -14,6 +15,7 @@ import {
   type DistractionsHostRule,
   type DistractionsUsageLimit,
 } from "./rules";
+import nativeRulesSource from "../../../../../crates/ganbaru-distractions/src/rules.rs?raw";
 
 function appRule(name: string, enabled = true): DistractionsAppRule {
   return { name, enabled, matchNames: [name] };
@@ -572,5 +574,15 @@ describe("evaluateDistractionsUrl", () => {
     }));
     expect(decision.blocked).toBe(false);
     expect(decision.matchedRule).toBe("whitelist: reddit.com");
+  });
+});
+
+describe("protected desktop process names", () => {
+  it("match the native protected list exactly", () => {
+    const nativeList = /PROTECTED_DESKTOP_PROCESS_NAMES: &\[&str\] = &\[([^\]]*)\]/.exec(nativeRulesSource)?.[1];
+    expect(nativeList).toBeDefined();
+    const nativeNames = [...(nativeList ?? "").matchAll(/"([^"]+)"/g)].map((match) => match[1]);
+    expect([...DISTRACTIONS_PROTECTED_DESKTOP_PROCESS_NAMES].sort()).toEqual(nativeNames.sort());
+    expect(nativeNames).toContain("tmux");
   });
 });

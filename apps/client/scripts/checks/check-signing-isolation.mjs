@@ -45,6 +45,24 @@ const REJECTED_FIXTURE = `jobs:
         run: node sign.mjs
 `;
 
+/** Fixture with a download that is never checksum-verified, which the download check must reject. */
+const UNVERIFIED_DOWNLOAD_FIXTURE = `jobs:
+  build:
+    steps:
+      - name: tools
+        run: |
+          curl -fsSL https://example.com/tools.zip -o tools.zip
+          unzip tools.zip
+`;
+
+/** Fixture that stores a token in a remote URL, which the credential URL check must reject. */
+const CREDENTIAL_URL_FIXTURE = `jobs:
+  publish:
+    steps:
+      - name: remote
+        run: git remote set-url origin "https://x-access-token:\${GITHUB_TOKEN}@github.com/\${GITHUB_REPOSITORY}.git"
+`;
+
 /** Count leading spaces. */
 function indentation(line) {
   return line.length - line.trimStart().length;
@@ -137,21 +155,87 @@ export function signingIsolationViolations(text) {
   return violations;
 }
 
+/**
+ * Lists downloads that are not checked against a pinned SHA-256 by the very next command.
+ *
+ * @param {string} text Workflow source.
+ * @returns {string[]} Human readable violations.
+ */
+export function unverifiedDownloadViolations(text) {
+  const violations = [];
+  for (const [job, lines] of workflowJobs(text)) {
+    const commands = runCommands(lines);
+    commands.forEach((command, index) => {
+      const downloads = /^(?:curl|wget)\b/u.test(command) && /\s(?:-o|-O|--output)\b/u.test(command);
+      if (downloads && !/\bsha256sum -c\b/u.test(commands[index + 1] ?? "")) {
+        violations.push(`${job}: download is not followed by sha256sum -c: ${command}`);
+      }
+    });
+  }
+  return violations;
+}
+
+/**
+ * Lists commands that put credentials in an HTTP URL, where git persists them in `.git/config` for later steps.
+ *
+ * @param {string} text Workflow source.
+ * @returns {string[]} Human readable violations.
+ */
+export function credentialUrlViolations(text) {
+  const violations = [];
+  for (const [job, lines] of workflowJobs(text)) {
+    for (const command of runCommands(lines)) {
+      if (/https?:\/\/[^\s"'/@]+@/u.test(command)) {
+        violations.push(`${job}: URL carries credentials: ${command}`);
+      }
+    }
+  }
+  return violations;
+}
+
 if (!signingIsolationViolations(REJECTED_FIXTURE).length) {
   throw new Error("Signing isolation check accepted its rejected fixture");
+}
+if (!unverifiedDownloadViolations(UNVERIFIED_DOWNLOAD_FIXTURE).length) {
+  throw new Error("Download check accepted its unverified fixture");
+}
+if (!credentialUrlViolations(CREDENTIAL_URL_FIXTURE).length) {
+  throw new Error("Credential URL check accepted its rejected fixture");
 }
 
 const workflowPaths = readdirSync(path.join(REPO_ROOT, WORKFLOW_DIR))
   .filter((name) => /\.ya?ml$/u.test(name))
   .sort()
   .map((name) => `${WORKFLOW_DIR}/${name}`);
-const failures = workflowPaths.flatMap((relativePath) =>
-  signingIsolationViolations(readFileSync(path.join(REPO_ROOT, relativePath), "utf8"))
-    .map((violation) => `${relativePath}: ${violation}`),
-);
-if (failures.length) {
-  console.error("Signing secrets must stay in jobs that do not install or run workspace code:");
+const workflows = workflowPaths.map((relativePath) => ({
+  relativePath,
+  text: readFileSync(path.join(REPO_ROOT, relativePath), "utf8"),
+}));
+
+/** Prints each violation under a heading and reports whether any were found. */
+function reportViolations(heading, check) {
+  const failures = workflows.flatMap(({ relativePath, text }) =>
+    check(text).map((violation) => `${relativePath}: ${violation}`),
+  );
+  if (!failures.length) return false;
+  console.error(heading);
   for (const failure of failures) console.error(`  ${failure}`);
-  process.exit(1);
+  return true;
 }
-console.log(`Signing jobs in ${workflowPaths.length} workflows are isolated from workspace code.`);
+
+const signingFailed = reportViolations(
+  "Signing secrets must stay in jobs that do not install or run workspace code:",
+  signingIsolationViolations,
+);
+const downloadFailed = reportViolations(
+  "Downloaded tools must be verified against a pinned SHA-256 before use:",
+  unverifiedDownloadViolations,
+);
+const credentialFailed = reportViolations(
+  "Workflow tokens must be passed per command, never stored in a remote URL:",
+  credentialUrlViolations,
+);
+if (signingFailed || downloadFailed || credentialFailed) process.exit(1);
+console.log(
+  `${workflowPaths.length} workflows keep signing isolated, verify every download, and keep credentials out of URLs.`,
+);

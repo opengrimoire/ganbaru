@@ -17,10 +17,7 @@ pub(crate) async fn read_interaction_state(
     thread_id: ChatThreadId,
 ) -> ChatResult<ChatInteractionStateRead> {
     let pool = chat_pool(app.clone(), db_url).await?;
-    let owner = app
-        .state::<ChatRuntimeRegistry>()
-        .owner(thread_id.clone())?;
-    let snapshot = owner.snapshot()?;
+    let snapshot = app.state::<ChatRuntimeRegistry>().snapshot(&thread_id)?;
     Ok(ChatInteractionStateRead {
         session_id: snapshot.session_id.map(|value| value.into_inner()),
         session_state: snapshot.session_state,

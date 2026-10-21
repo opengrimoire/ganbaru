@@ -734,3 +734,107 @@ fn database_filter_reconciliation_and_group_counts_preserve_query_meaning_and_ra
         ));
     });
 }
+
+#[test]
+fn database_windows_filter_sort_and_group_properties_named_with_json_path_characters() {
+    crate::test_block_on(async {
+        let pool = migrated_memory_pool().await;
+        create_page(&pool, PAGE_A, BLOCK_A).await;
+        databases::create_database(
+            &pool,
+            NoteDatabaseCreate {
+                id: DATABASE_A.to_string(),
+                data_source_id: DATA_SOURCE_A.to_string(),
+                view_id: DATABASE_VIEW_A.to_string(),
+                title: "Quoted".to_string(),
+                parent: Some(page_parent(PAGE_A)),
+                after_block_id: Some(BLOCK_A.to_string()),
+                replace_block_id: None,
+                icon: None,
+                cover: None,
+            },
+        )
+        .await
+        .unwrap();
+        let amount = r#"Amount "net" \ .x"#;
+        let done = r#"Done "flag""#;
+        let due = "Due.at[0]";
+        let tags = r#"Tags \"x\""#;
+        data_sources::schema::update_data_source_schema(&pool, DATA_SOURCE_A, None, None, NoteDataSourceSchemaUpdate {
+            properties: json!({
+                "Name": { "id": "title", "name": "Name", "type": "title", "title": {} },
+                amount: { "id": "amount", "name": amount, "type": "number", "number": { "format": "number" } },
+                done: { "id": "done", "name": done, "type": "checkbox", "checkbox": {} },
+                due: { "id": "due", "name": due, "type": "date", "date": {} },
+                tags: { "id": "tags", "name": tags, "type": "multi_select", "multi_select": { "options": [{ "id": "tag", "name": "Tag", "color": "blue" }] } }
+            }),
+        }).await.unwrap();
+        for (index, (title, value, checked, tagged)) in [
+            ("Alpha", 2, false, true),
+            ("Beta", 10, false, true),
+            ("Gamma", 20, false, false),
+            ("Delta", 30, true, true),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let row_tags = if tagged {
+                json!([{ "id": "tag", "name": "Tag", "color": "blue" }])
+            } else {
+                json!([])
+            };
+            sqlx::query("INSERT INTO notes_pages (id, parent_type, parent_data_source_id, title, properties) VALUES (?, 'data_source_id', ?, ?, ?)")
+                .bind(format!("60000000-0000-4000-8000-{index:012}"))
+                .bind(DATA_SOURCE_A).bind(title).bind(json!({
+                    "Name": { "id": "title", "type": "title", "title": [{ "type": "text", "plain_text": title, "text": { "content": title, "link": null } }] },
+                    amount: { "id": "amount", "type": "number", "number": value },
+                    done: { "id": "done", "type": "checkbox", "checkbox": checked },
+                    due: { "id": "due", "type": "date", "date": { "start": format!("2026-10-0{}", index + 1), "end": null, "time_zone": null } },
+                    tags: { "id": "tags", "type": "multi_select", "multi_select": row_tags }
+                }).to_string()).execute(&pool).await.unwrap();
+        }
+        let update = serde_json::from_value(json!({
+            "filter": [
+                { "property_id": "amount", "condition": "greater_than", "value": 5 },
+                { "property_id": "done", "condition": "unchecked", "value": null },
+                { "property_id": "due", "condition": "after", "value": "2026-10-01" }
+            ],
+            "sorts": [{ "property_id": "amount", "direction": "descending" }],
+            "configuration": { "property_order": [], "hidden_property_ids": [], "column_widths": {}, "row_open_mode": "full_page", "group_property_id": "tags" }
+        }))
+        .unwrap();
+        data_sources::layouts::table::update_data_source_table_view(
+            &pool,
+            DATA_SOURCE_A,
+            None,
+            None,
+            update,
+        )
+        .await
+        .unwrap();
+        let dto = data_sources::layouts::table::data_source_table_view_window(
+            &pool,
+            DATA_SOURCE_A,
+            None,
+            None,
+            NoteDataSourceViewWindowRequest::default(),
+        )
+        .await
+        .unwrap();
+        let dto = serde_json::to_value(dto).unwrap();
+        let titles = dto["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|row| {
+                row["properties"]["Name"]["title"][0]["plain_text"]
+                    .as_str()
+                    .unwrap()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(titles, vec!["Gamma", "Beta"]);
+        assert_eq!(dto["total_row_count"], 2);
+        assert_eq!(dto["group_counts"]["tag"], 1);
+        assert_eq!(dto["group_counts"]["__empty__"], 1);
+    });
+}

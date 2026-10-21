@@ -1,7 +1,10 @@
 //! The replication manifest: table classifications, field groups, and merge kinds.
 //!
-//! A manifest version fixes table ids, group ids, column membership, and value rules. Ids are
-//! never reused; tightening a rule bumps the version and keeps the old rule for old operations.
+//! A manifest version fixes table ids, group ids, column membership, and value rules, and ids are
+//! never reused. Operations of every version up to the current one validate against the current
+//! manifest, so a new version may only add tables and groups or loosen rules; tightening a rule
+//! needs per-version validation first. A conformance test records each version's manifest, so a
+//! change without a version bump fails.
 
 use ganbaru_sync_contracts::{GroupId, GroupMask, TableId};
 

@@ -86,7 +86,7 @@ A relation targets one data source. Values are also normalized into link rows fo
 
 Rollups compute from current related rows and may use a rebuildable cache; they are never stored as row values. Unsupported combinations and computed-property cycles are rejected.
 
-Formulas are bounded expressions evaluated by a checked Rust engine (literals, property reads, arithmetic, comparison, boolean logic, conditionals, text and numeric helpers). They never use JavaScript evaluation. Unknown properties, cycles, type errors, and runtime failures produce typed errors, and results are read-only.
+Formulas are bounded expressions evaluated by a checked Rust engine (literals, property reads, arithmetic, comparison, boolean logic, conditionals, text and numeric helpers). They never use JavaScript evaluation. Unknown properties, cycles, type errors, and runtime failures produce typed errors, and results are read-only. Parsing refuses expressions nested more than 64 levels deep (parentheses, unary operators, or call arguments) so hostile formulas cannot exhaust the stack.
 
 ## Templates and buttons
 

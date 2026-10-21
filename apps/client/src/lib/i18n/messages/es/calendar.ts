@@ -289,6 +289,10 @@ export const calendar = {
     deleteFailed: (message: string) => `Error al eliminar o deshacer: ${message}`,
     previewFailed: "No se pudo previsualizar este cambio",
     historyUnavailable: "No se pudo cargar la línea de tiempo de Focus. Prueba con un intervalo más corto del calendario o reintenta.",
+    eventsUnreadable: (count: number) =>
+      count === 1
+        ? "No se pudo mostrar 1 evento en este intervalo porque su repetición guardada no se pudo expandir."
+        : `No se pudieron mostrar ${count} eventos en este intervalo porque su repetición guardada no se pudo expandir.`,
     saved: "Guardado",
     unknownSaveError: "Error desconocido al guardar",
     saveFailed: (message: string) => `No se pudo guardar: ${message}`,

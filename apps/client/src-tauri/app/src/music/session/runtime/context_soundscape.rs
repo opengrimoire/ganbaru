@@ -9,7 +9,7 @@ use std::time::Instant;
 
 const DELIVERY_TIMEOUT: Duration = Duration::from_secs(8);
 const MAX_SOUND_SOURCE_ID_BYTES: i64 = 200;
-const MAX_SOUND_PATH_BYTES: i64 = 16_384;
+const MAX_SOUND_PATH_BYTES: usize = 16_384;
 static DELIVERY_GATE: LazyLock<Arc<tokio::sync::Semaphore>> =
     LazyLock::new(|| Arc::new(tokio::sync::Semaphore::new(1)));
 
@@ -18,7 +18,7 @@ struct AcceptedPresetSound {
     soundscape_id: String,
     level: f64,
     generated_kind: Option<String>,
-    absolute_path: Option<String>,
+    source_kind: String,
 }
 
 pub(super) struct PreparedSoundscape {
@@ -31,7 +31,7 @@ pub(super) struct PreparedSoundscape {
 /// the sounds still available on this device and reports missing only when none remain.
 pub(super) async fn prepare(
     connection: &mut sqlx::SqliteConnection,
-    device_id: &str,
+    local_paths: &BTreeMap<String, String>,
     behavior: &str,
     preset_id: Option<&str>,
 ) -> MusicLibraryResult<PreparedSoundscape> {
@@ -53,7 +53,7 @@ pub(super) async fn prepare(
         let Some(preset_id) = preset_id else {
             return Ok(empty(true));
         };
-        let Some(request) = read_preset(connection, device_id, preset_id).await? else {
+        let Some(request) = read_preset(connection, local_paths, preset_id).await? else {
             return Ok(empty(true));
         };
         Some((preset_id, request))
@@ -83,7 +83,7 @@ pub(super) async fn prepare(
 /// The preset as one engine request over its sounds available on this device, in playback order.
 async fn read_preset(
     connection: &mut sqlx::SqliteConnection,
-    device_id: &str,
+    local_paths: &BTreeMap<String, String>,
     preset_id: &str,
 ) -> MusicLibraryResult<Option<SoundscapeStartRequest>> {
     let preset_level: Option<f64> =
@@ -97,26 +97,24 @@ async fn read_preset(
     let Some(preset_level) = preset_level else {
         return Ok(None);
     };
+    // A preset holds at most MAX_SOUNDSCAPE_LAYERS sounds, so the limit never hides a playable one.
     let sounds: Vec<AcceptedPresetSound> = sqlx::query_as(
-        "SELECT ps.soundscape_id, ps.level, s.generated_kind, l.absolute_path
+        "SELECT ps.soundscape_id, ps.level, s.generated_kind, s.source_kind
          FROM music_soundscape_preset_sounds ps
          JOIN music_soundscapes s ON s.id = ps.soundscape_id
-         LEFT JOIN music_soundscape_locations l ON l.soundscape_id = s.id AND l.device_id = ?
          WHERE ps.preset_id = ? AND length(CAST(s.id AS BLOB)) <= ?
-           AND (l.absolute_path IS NULL OR length(CAST(l.absolute_path AS BLOB)) <= ?)
-           AND CASE WHEN s.source_kind = 'local-loop' THEN l.availability ELSE s.availability END = 'available'
+           AND (s.source_kind = 'local-loop' OR s.availability = 'available')
          ORDER BY ps.position LIMIT ?",
     )
-    .bind(device_id)
     .bind(preset_id)
     .bind(MAX_SOUND_SOURCE_ID_BYTES)
-    .bind(MAX_SOUND_PATH_BYTES)
     .bind(MAX_SOUNDSCAPE_LAYERS as i64)
     .fetch_all(&mut *connection)
     .await
     .map_err(|error| MusicLibraryError::database("read accepted soundscape sounds", error))?;
     let mut layers = sounds
         .into_iter()
+        .filter_map(|sound| with_local_path(sound, local_paths))
         .map(layer)
         .collect::<MusicLibraryResult<Vec<_>>>()?
         .into_iter();
@@ -133,7 +131,23 @@ async fn read_preset(
     }))
 }
 
-fn layer(sound: AcceptedPresetSound) -> MusicLibraryResult<SoundscapeLayer> {
+/// Pairs a sound with the file it plays on this device. A local loop with no file recorded here,
+/// an oversized path, or a file that is gone is skipped, like any other unavailable sound.
+fn with_local_path(
+    sound: AcceptedPresetSound,
+    local_paths: &BTreeMap<String, String>,
+) -> Option<(AcceptedPresetSound, Option<String>)> {
+    if sound.source_kind != "local-loop" {
+        return Some((sound, None));
+    }
+    let path = local_paths.get(&sound.soundscape_id)?;
+    (path.len() <= MAX_SOUND_PATH_BYTES && std::path::Path::new(path).is_file())
+        .then(|| (sound, Some(path.clone())))
+}
+
+fn layer(
+    (sound, local_path): (AcceptedPresetSound, Option<String>),
+) -> MusicLibraryResult<SoundscapeLayer> {
     let generated_kind = match sound.generated_kind.as_deref() {
         Some("white") => Some(GeneratedNoiseKind::White),
         Some("pink") => Some(GeneratedNoiseKind::Pink),
@@ -149,7 +163,7 @@ fn layer(sound: AcceptedPresetSound) -> MusicLibraryResult<SoundscapeLayer> {
     Ok(SoundscapeLayer {
         source_id: sound.soundscape_id,
         generated_kind,
-        local_path: sound.absolute_path,
+        local_path,
         level: sound.level,
     })
 }

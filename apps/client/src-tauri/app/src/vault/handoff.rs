@@ -4,14 +4,16 @@
 pub(crate) mod contact_requests;
 #[cfg(desktop)]
 pub(crate) mod coordinator;
+#[cfg(desktop)]
+pub(crate) mod enrollment_approval;
+#[cfg(desktop)]
+mod key_store;
 pub(crate) mod receiver;
 pub(crate) mod source;
 pub(crate) mod transport;
 
 #[cfg(target_os = "linux")]
 use ganbaru_handoff::network_access;
-#[cfg(target_os = "linux")]
-pub(crate) use ganbaru_handoff::network_access::run_privileged_helper_if_requested;
 pub(crate) use ganbaru_handoff::{pairing, protocol};
 
 use pairing::PairingManager;
@@ -89,6 +91,10 @@ pub(crate) struct PairingStatus {
     replica_ready: bool,
     pending_transfer: bool,
     can_invite: bool,
+    untouched_starter_vault: bool,
+    /// A device waiting for this coordinator to approve its enrollment.
+    #[cfg(desktop)]
+    pending_enrollment: Option<enrollment_approval::PendingEnrollmentView>,
     #[cfg(target_os = "linux")]
     network_access: network_access::NetworkAccessStatus,
 }
@@ -122,17 +128,21 @@ impl CoordinatorLifecycle {
             .map_err(|error| format!("read vault handoff endpoint: {error}"))?;
         let (shutdown, receiver) = tokio::sync::oneshot::channel();
         let (requests, request_receiver) = tokio::sync::mpsc::channel(8);
-        let hub = crate::sync::sync_hub(&app);
         let (contacts, contact_receiver) = contact_requests::channel();
+        let services = transport::CoordinatorServices {
+            coordinator: Some(requests.clone()),
+            contacts: Some(contacts),
+            hub: Some(crate::sync::sync_hub(&app)),
+            approvals: app
+                .state::<enrollment_approval::EnrollmentApprovals>()
+                .inner()
+                .clone(),
+            admission: lan_admission(&app, endpoint)?,
+        };
         tauri::async_runtime::spawn(contact_requests::run(app.clone(), contact_receiver));
         tauri::async_runtime::spawn(coordinator::run(app, manager.clone(), request_receiver));
         tauri::async_runtime::spawn(transport::serve_with_coordinator(
-            listener,
-            manager,
-            Some(requests.clone()),
-            Some(contacts),
-            Some(hub),
-            receiver,
+            listener, manager, services, receiver,
         ));
         let mut runtime = self
             .runtime
@@ -206,6 +216,8 @@ fn initialize_linking<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<(), Strin
         .map_err(|error| format!("find app config directory: {error}"))?;
     let device_id = super::ensure_device_id(app)?;
     let pairing = app.state::<PairingManager>();
+    #[cfg(desktop)]
+    pairing.set_identity_key_store(std::sync::Arc::new(key_store::KeyringIdentityKeyStore))?;
     pairing.initialize(config_dir, device_id)?;
     if let Some(coordinator) = pairing.coordinator_pin()? {
         app.state::<super::ownership::VaultOwnershipManager>()
@@ -296,12 +308,62 @@ pub(crate) fn start_desktop(app: &tauri::AppHandle) -> Result<(), String> {
         receiver::start_reconnect_refresh(app.clone());
         return Ok(());
     }
+    tauri::async_runtime::block_on(start_desktop_when_reachable(app))
+}
+
+/// Whether the desktop coordinator listens before the user asks for it. Linked devices, a
+/// transfer in flight, and contact cards handed out for this person are the only callers that
+/// can expect it; otherwise it starts when linking or Contacts first need it.
+#[cfg(desktop)]
+fn coordinator_needed_at_launch(
+    linked_peers: bool,
+    pending_transfer: bool,
+    person_identity: bool,
+) -> bool {
+    linked_peers || pending_transfer || person_identity
+}
+
+/// Starts the coordinator when linked devices, a transfer, or a contact card may already be
+/// trying to reach it. Runs at launch and after another vault becomes active.
+#[cfg(desktop)]
+pub(crate) async fn start_desktop_when_reachable<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> Result<(), String> {
+    let manager = app.state::<PairingManager>().inner().clone();
+    if manager.coordinator_pin()?.is_some() {
+        return Ok(());
+    }
+    let needed = coordinator_needed_at_launch(
+        !manager.linked_peers()?.is_empty(),
+        manager.has_pending_transfer()?,
+        crate::contacts::person_identity_exists(app).await,
+    );
+    if needed {
+        ensure_desktop_coordinator(app).await?;
+    }
+    Ok(())
+}
+
+/// Starts the coordinator on the private LAN address unless it already runs, and returns its
+/// endpoint. A device linked to another coordinator never coordinates, so it gets `None`.
+#[cfg(desktop)]
+pub(crate) async fn ensure_desktop_coordinator<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> Result<Option<SocketAddr>, String> {
+    let manager = app.state::<PairingManager>().inner().clone();
+    if manager.coordinator_pin()?.is_some() {
+        return Ok(None);
+    }
+    let lifecycle = app.state::<CoordinatorLifecycle>();
+    if let Some(endpoint) = lifecycle.endpoint()? {
+        return Ok(Some(endpoint));
+    }
     let address = discover_private_lan_address()?;
     let port = coordinator_port(&app.config().identifier);
-    let manager = app.state::<PairingManager>().inner().clone();
-    let lifecycle = app.state::<CoordinatorLifecycle>();
-    tauri::async_runtime::block_on(lifecycle.start_on(app.clone(), manager, address, port))?;
-    Ok(())
+    lifecycle
+        .start_on(app.clone(), manager, address, port)
+        .await
+        .map(Some)
 }
 
 #[cfg(desktop)]
@@ -310,21 +372,13 @@ pub(crate) async fn handoff_create_pairing_invitation<R: Runtime>(
     app: tauri::AppHandle<R>,
 ) -> Result<PairingInvitationView, String> {
     let manager = app.state::<PairingManager>().inner().clone();
-    if manager.coordinator_pin()?.is_some() {
+    let Some(endpoint) = ensure_desktop_coordinator(&app).await? else {
         return Err("a linked client device cannot coordinate additional devices".to_string());
-    }
-    let lifecycle = app.state::<CoordinatorLifecycle>();
-    let endpoint = match lifecycle.endpoint()? {
-        Some(endpoint) => endpoint,
-        None => {
-            let address = discover_private_lan_address()?;
-            let port = coordinator_port(&app.config().identifier);
-            lifecycle
-                .start_on(app.clone(), manager.clone(), address, port)
-                .await?
-        }
     };
     let ownership = super::ownership::active_status(&app)?;
+    // A device waiting with the replaced invitation can no longer be approved.
+    app.state::<enrollment_approval::EnrollmentApprovals>()
+        .cancel();
     let invitation = manager.create_invitation(
         endpoint,
         ownership.vault_id,
@@ -352,6 +406,37 @@ pub(crate) async fn handoff_create_pairing_invitation<R: Runtime>(
             endpoint.port(),
         ),
     })
+}
+
+/// Admission for a coordinator listening on `endpoint`: on Linux, LAN peers are served only on
+/// networks where the user confirmed the firewall rules for its address.
+#[cfg(target_os = "linux")]
+fn lan_admission<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    endpoint: SocketAddr,
+) -> Result<transport::LanAdmission, String> {
+    let IpAddr::V4(address) = endpoint.ip() else {
+        return Ok(transport::LanAdmission::default());
+    };
+    let config_dir = app
+        .path()
+        .app_config_dir()
+        .map_err(|error| format!("find app config directory: {error}"))?;
+    Ok(transport::LanAdmission::linux_firewall(
+        config_dir,
+        address,
+        endpoint.port(),
+    ))
+}
+
+/// Admission for a coordinator listening on `endpoint`. Only Linux keeps per-network firewall
+/// rules, so other desktops serve every LAN peer.
+#[cfg(all(desktop, not(target_os = "linux")))]
+fn lan_admission<R: Runtime>(
+    _app: &tauri::AppHandle<R>,
+    _endpoint: SocketAddr,
+) -> Result<transport::LanAdmission, String> {
+    Ok(transport::LanAdmission::default())
 }
 
 #[cfg(target_os = "linux")]
@@ -431,6 +516,35 @@ pub(crate) async fn handoff_enroll(
     Ok(())
 }
 
+/// Code this device shows while it enrolls with the invitation. The coordinator shows the same
+/// code only for a request signed with this device's certificate.
+#[tauri::command]
+pub(crate) fn handoff_enrollment_code(
+    app: tauri::AppHandle,
+    invitation: String,
+) -> Result<String, String> {
+    let invitation = decode_invitation(&invitation, protocol::unix_time_ms())?;
+    let certificate = app.state::<PairingManager>().certificate()?;
+    Ok(pairing::enrollment_code(&invitation, certificate.as_ref()))
+}
+
+/// Answers the enrollment waiting on this coordinator.
+#[cfg(desktop)]
+#[tauri::command]
+pub(crate) fn handoff_respond_enrollment(
+    app: tauri::AppHandle,
+    request_id: String,
+    approve: bool,
+) -> Result<(), String> {
+    let decision = if approve {
+        enrollment_approval::EnrollmentDecision::Approved
+    } else {
+        enrollment_approval::EnrollmentDecision::Declined
+    };
+    app.state::<enrollment_approval::EnrollmentApprovals>()
+        .decide(&request_id, decision)
+}
+
 #[tauri::command]
 pub(crate) fn handoff_suggested_device_label() -> String {
     suggested_device_label()
@@ -478,7 +592,7 @@ pub(crate) fn handoff_pairing_status<R: Runtime>(
     app: tauri::AppHandle<R>,
 ) -> Result<PairingStatus, String> {
     let manager = app.state::<PairingManager>();
-    let (device_id, _) = manager.identity()?;
+    let device_id = manager.device_id()?;
     let coordinator = manager.coordinator_pin()?;
     let vault_id = status_vault_id(coordinator.as_ref(), || super::active_vault_id(&app).ok());
     let peers = match vault_id.as_deref() {
@@ -556,6 +670,11 @@ pub(crate) fn handoff_pairing_status<R: Runtime>(
         replica_ready: manager.replica_ready()? || !peers.is_empty(),
         pending_transfer: manager.has_pending_transfer()?,
         can_invite: cfg!(desktop) && coordinator.is_none(),
+        untouched_starter_vault: super::untouched_starter_vault(&app)?,
+        #[cfg(desktop)]
+        pending_enrollment: app
+            .state::<enrollment_approval::EnrollmentApprovals>()
+            .pending()?,
         #[cfg(target_os = "linux")]
         network_access,
     })
@@ -740,6 +859,14 @@ mod tests {
             Some("vault-local")
         );
         assert_eq!(status_vault_id(None, || None), None);
+    }
+
+    #[test]
+    fn an_unlinked_desktop_without_a_person_identity_does_not_listen_at_launch() {
+        assert!(!coordinator_needed_at_launch(false, false, false));
+        assert!(coordinator_needed_at_launch(true, false, false));
+        assert!(coordinator_needed_at_launch(false, true, false));
+        assert!(coordinator_needed_at_launch(false, false, true));
     }
 
     #[test]

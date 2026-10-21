@@ -61,6 +61,10 @@ COUNT limits the rule set before exceptions are subtracted, including when the o
 
 One request shares a work budget across every template and override lookup: at most 10,000 emitted occurrences and a fixed candidate-date allowance. Exhausting it is an explicit error that asks for a narrower window, never a silently truncated result. Imports and reads also bound input events and recurrence data before expansion. Invalid data returns a controlled error; it must not hang, allocate without bound, or generate occurrences outside the window to satisfy a malformed count.
 
+Calendar window reads isolate each event: a template that cannot be decoded or expanded is left out with a per-event diagnostic, and the other events still render. Within a window, each template also has its own candidate allowance (about 270 years of daily candidates), so one costly rule cannot consume the whole shared budget. A window with enough costly templates can still exhaust the shared budget; the remaining templates then report diagnostics instead of failing the read. The Calendar view shows a notice with the count and copyable details. Single-series lookups and scoped edit plans keep only the shared budget.
+
+Imports reject an override whose recurrence identity or times canonical expansion cannot decode, or whose range ends before it starts (or at its start for timed instances). The iCalendar parser gives a timed instance without a positive range (no DTEND, or a DTEND before DTSTART) the series duration and reports a warning. Stored overrides are not rejected at decode time, so an event with bad override data stays editable and deletable.
+
 ## Scoped edit partitions
 
 Scoped edits (`Following`, `All` with protected history) split one series into a historical side and an edited side. Partition membership uses original recurrence dates, even when an override moves the displayed occurrence. Both sides must reload through canonical expansion to reproduce exactly the original occurrences, with no overlap.

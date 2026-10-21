@@ -235,3 +235,80 @@ fn markdown_export_is_deterministic_and_reports_unsupported_blocks() {
         }));
     });
 }
+
+#[test]
+fn markdown_export_links_only_safe_web_references_and_escapes_labels() {
+    crate::test_block_on(async {
+        let pool = migrated_memory_pool().await;
+        create_page(&pool, PAGE_A, BLOCK_A).await;
+        writes::append_block_children(
+            &pool,
+            NoteAppendBlockChildren {
+                parent: page_parent(PAGE_A),
+                after: Some(BLOCK_A.to_string()),
+                children: vec![
+                    block(
+                        BLOCK_B,
+                        "bookmark",
+                        bookmark_payload(
+                            "obsidian://open?vault=Work",
+                            "<img src=x onerror=alert(1)>]",
+                        ),
+                    ),
+                    block(
+                        BLOCK_C,
+                        "bookmark",
+                        bookmark_payload("https://example.com", "Safe"),
+                    ),
+                    block(BLOCK_G, "embed", embed_payload("https://example.com/a b)c")),
+                ],
+            },
+        )
+        .await
+        .unwrap();
+        sqlx::query("UPDATE notes_blocks SET payload = ? WHERE id = ?")
+            .bind(bookmark_payload("javascript:alert(1)", "Hostile").to_string())
+            .bind(BLOCK_C)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let export = serde_json::to_value(
+            transfers::markdown_export::export_page(
+                &pool,
+                NoteMarkdownExportRequest {
+                    page_id: PAGE_A.to_string(),
+                    include_page_title: None,
+                    include_comments: None,
+                    include_resolved_comments: None,
+                },
+            )
+            .await
+            .unwrap(),
+        )
+        .unwrap();
+        let markdown = export["markdown"].as_str().unwrap();
+
+        assert!(
+            markdown.contains("[\\<img src=x onerror=alert(1)\\>\\]](obsidian://open?vault=Work)")
+        );
+        assert!(
+            markdown
+                .match_indices('<')
+                .all(|(index, _)| markdown[..index].ends_with('\\'))
+        );
+        assert!(!markdown.contains("javascript:"));
+        assert!(markdown.contains("Hostile"));
+        assert!(markdown.contains("(https://example.com/a%20b%29c)"));
+        assert!(
+            export["diagnostics"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|diagnostic| {
+                    diagnostic["code"] == "markdown_export_external_reference_not_linked"
+                        && diagnostic["block_id"] == BLOCK_C
+                })
+        );
+    });
+}

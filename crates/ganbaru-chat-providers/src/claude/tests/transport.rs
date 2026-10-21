@@ -521,7 +521,11 @@ fn healthy_probe_exposes_the_native_model_catalog() {
         let pair = Arc::new(Mutex::new(Some(native_fixture_connection(
             home.path().to_path_buf(),
         ))));
-        driver.set_connection_factory(Arc::new(move |_| {
+        let probe_directory = Arc::new(Mutex::new(None));
+        let observed_directory = Arc::clone(&probe_directory);
+        driver.set_connection_factory(Arc::new(move |working_directory| {
+            let entries = std::fs::read_dir(working_directory).unwrap().count();
+            *observed_directory.lock().unwrap() = Some((working_directory.to_path_buf(), entries));
             pair.lock().unwrap().take().ok_or_else(|| {
                 ChatError::new(
                     ChatErrorCode::Conflict,
@@ -539,6 +543,10 @@ fn healthy_probe_exposes_the_native_model_catalog() {
         assert_eq!(catalog.models.len(), 1);
         assert_eq!(catalog.models[0].id.as_str(), "claude-sonnet-4-5");
         assert_eq!(catalog.models[0].display_name, "Claude Sonnet 4.5");
+        let (working_directory, entries) = probe_directory.lock().unwrap().take().unwrap();
+        assert_ne!(working_directory, std::env::current_dir().unwrap());
+        assert_eq!(entries, 0);
+        assert!(!working_directory.exists());
     });
 }
 

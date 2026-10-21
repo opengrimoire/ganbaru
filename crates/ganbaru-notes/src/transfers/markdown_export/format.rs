@@ -163,12 +163,13 @@ pub(crate) fn parse_json_array(raw: &str) -> Option<Vec<Value>> {
         .and_then(|value| value.as_array().cloned())
 }
 
+/// Escapes Markdown inline syntax, including `<` and `>` so text never becomes raw HTML or an autolink.
 pub(crate) fn escape_inline(text: &str) -> String {
     let mut escaped = String::with_capacity(text.len());
     for character in text.chars() {
         if matches!(
             character,
-            '\\' | '*' | '_' | '[' | ']' | '(' | ')' | '#' | '+' | '-' | '!' | '|'
+            '\\' | '*' | '_' | '[' | ']' | '(' | ')' | '#' | '+' | '-' | '!' | '|' | '<' | '>'
         ) {
             escaped.push('\\');
         }
@@ -177,12 +178,34 @@ pub(crate) fn escape_inline(text: &str) -> String {
     escaped
 }
 
+/// Escapes plain text for use inside a Markdown link label, keeping the label closed and free of raw HTML.
 pub(crate) fn escape_link_label(text: &str) -> String {
-    text.replace('[', "\\[").replace(']', "\\]")
+    let mut escaped = String::with_capacity(text.len());
+    for character in text.chars() {
+        if matches!(character, '\\' | '[' | ']' | '<' | '>') {
+            escaped.push('\\');
+        }
+        escaped.push(character);
+    }
+    escaped
 }
 
+/// Percent-encodes the characters that would end or reshape an inline Markdown link destination.
 pub(crate) fn escape_url(url: &str) -> String {
-    url.trim().replace(')', "%29")
+    let mut escaped = String::with_capacity(url.len());
+    for character in url.trim().chars() {
+        if matches!(character, ' ' | '<' | '>' | '(' | ')' | '\\' | '"' | '`')
+            || character.is_control()
+        {
+            let mut buffer = [0; 4];
+            for byte in character.encode_utf8(&mut buffer).bytes() {
+                escaped.push_str(&format!("%{byte:02X}"));
+            }
+        } else {
+            escaped.push(character);
+        }
+    }
+    escaped
 }
 
 pub(crate) fn escape_dollar_math(expression: &str) -> String {

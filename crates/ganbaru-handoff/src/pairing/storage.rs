@@ -3,7 +3,8 @@
 use super::{
     MAX_LINKED_PEERS, MAX_REVOKED_PEERS, PAIRING_STATE_SCHEMA_VERSION, PairingManagerInner,
     PairingStateFile, PendingAcknowledgement, StoredIncomingTransfer, StoredOutgoingTransfer,
-    certificate_fingerprint, decode_certificate, decode_identity, initialized_state, random_token,
+    certificate_fingerprint, decode_certificate, decode_private_key, initialized_state,
+    random_token,
 };
 use crate::protocol::{self, BundlePurpose, validate_device_label, validate_identifier};
 use std::fs;
@@ -118,7 +119,10 @@ pub(super) fn validate_state(
         return Err("pairing identity belongs to a different device".to_string());
     }
     validate_identifier("device id", &state.identity.device_id)?;
-    decode_identity(&state.identity)?;
+    decode_certificate(&state.identity.certificate)?;
+    if let Some(private_key) = state.identity.private_key.as_deref() {
+        decode_private_key(private_key)?;
+    }
     if state.linked_peers.len() > MAX_LINKED_PEERS {
         return Err("too many linked devices are stored".to_string());
     }
@@ -131,7 +135,6 @@ pub(super) fn validate_state(
     if state.coordinator.is_some() && state.revoked_by_coordinator {
         return Err("a linked coordinator cannot also be recorded as revoked".to_string());
     }
-    let mut peer_vault_id: Option<&str> = None;
     let mut certificate_fingerprints = std::collections::BTreeSet::new();
     for (device_id, peer) in &state.linked_peers {
         if device_id != &peer.device_id {
@@ -143,10 +146,6 @@ pub(super) fn validate_state(
         validate_identifier("peer device id", &peer.device_id)?;
         validate_identifier("peer vault id", &peer.vault_id)?;
         validate_device_label("linked device label", &peer.device_label)?;
-        if peer_vault_id.is_some_and(|vault_id| vault_id != peer.vault_id) {
-            return Err("linked devices belong to different vaults".to_string());
-        }
-        peer_vault_id = Some(&peer.vault_id);
         let certificate = decode_certificate(&peer.certificate)?;
         if certificate_fingerprint(certificate.as_ref()) != peer.certificate_fingerprint {
             return Err("linked peer certificate fingerprint is inconsistent".to_string());
@@ -179,9 +178,10 @@ pub(super) fn validate_state(
             .endpoint
             .parse::<std::net::SocketAddr>()
             .map_err(|_| "coordinator endpoint is invalid".to_string())?;
-        if coordinator.certificate_fingerprint.len() != 64 {
-            return Err("coordinator certificate fingerprint is invalid".to_string());
-        }
+        protocol::validate_certificate_fingerprint(
+            "coordinator certificate fingerprint",
+            &coordinator.certificate_fingerprint,
+        )?;
         if let Some(label) = coordinator.device_label.as_deref() {
             validate_device_label("coordinator device label", label)?;
         }

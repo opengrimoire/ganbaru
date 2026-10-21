@@ -176,6 +176,8 @@ pub struct ObservedDesktopProcess {
     pub process_name: String,
     pub match_names: Vec<String>,
     pub process_identity: String,
+    /// Basename of the kernel-reported executable, which the process cannot rename.
+    pub executable_name: Option<String>,
 }
 
 #[derive(Clone, Debug)]

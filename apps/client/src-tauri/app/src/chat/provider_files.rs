@@ -459,7 +459,8 @@ fn write_text_file_atomically(path: &Path, contents: &str, create_parent: bool) 
                 "The folder for this provider file does not exist",
             ));
         }
-        fs::create_dir_all(parent).map_err(|_| provider_file_error())?;
+        ganbaru_atomic_files::create_private_directories(parent)
+            .map_err(|_| provider_file_error())?;
     }
     reject_symbolic_path(path)?;
     let file_name = path
@@ -722,6 +723,15 @@ mod tests {
             .remove(0);
         write_text_file_atomically(&home_spec.path, "", home_spec.create_parent).unwrap();
         assert!(home_spec.path.exists());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = fs::metadata(root.path().join("new-home"))
+                .unwrap()
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o777, 0o700);
+        }
     }
 
     #[cfg(unix)]

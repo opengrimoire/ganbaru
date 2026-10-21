@@ -190,47 +190,48 @@ pub(crate) fn bounded_scratch_size(
     })
 }
 
+/// Removes a scratch generation and reports the bytes its regular files held.
+///
+/// A provider process can still be running inside the generation, so removal goes through
+/// `fs::remove_dir_all`, which walks relative to open directory handles and removes links
+/// without following them. The byte count is informational and never directs a deletion.
 pub(crate) fn remove_managed_scratch_generation(root: &Path) -> ChatResult<u64> {
     ensure_plain_directory(root)?;
+    let bytes = regular_file_bytes(root);
+    fs::remove_dir_all(root).map_err(io_error)?;
+    Ok(bytes)
+}
+
+/// Bounds the entries visited while reporting removed bytes, far above a realistic scratch tree.
+const MAX_REMOVED_BYTES_ENTRIES: u64 = 1_000_000;
+
+fn regular_file_bytes(root: &Path) -> u64 {
     let mut pending = vec![root.to_path_buf()];
-    let mut directories = Vec::new();
-    let mut files = Vec::new();
+    let mut entries_seen = 0_u64;
     let mut bytes = 0_u64;
     while let Some(directory) = pending.pop() {
-        directories.push(directory.clone());
-        for entry in fs::read_dir(&directory).map_err(io_error)? {
-            let entry = entry.map_err(io_error)?;
-            let path = entry.path();
-            let metadata = fs::symlink_metadata(&path).map_err(io_error)?;
+        let Ok(entries) = fs::read_dir(&directory) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            entries_seen = entries_seen.saturating_add(1);
+            if entries_seen > MAX_REMOVED_BYTES_ENTRIES {
+                return bytes;
+            }
+            let Ok(metadata) = fs::symlink_metadata(entry.path()) else {
+                continue;
+            };
             if metadata.file_type().is_symlink() || metadata_is_reparse_point(&metadata) {
-                return Err(scratch_unavailable_error());
+                continue;
             }
             if metadata.is_dir() {
-                pending.push(path);
+                pending.push(entry.path());
             } else if metadata.is_file() {
                 bytes = bytes.saturating_add(metadata.len());
-                files.push(path);
-            } else {
-                return Err(scratch_unavailable_error());
             }
         }
     }
-    for file in files {
-        let metadata = fs::symlink_metadata(&file).map_err(io_error)?;
-        if !metadata.is_file()
-            || metadata.file_type().is_symlink()
-            || metadata_is_reparse_point(&metadata)
-        {
-            return Err(scratch_unavailable_error());
-        }
-        fs::remove_file(file).map_err(io_error)?;
-    }
-    directories.sort_by_key(|path| std::cmp::Reverse(path.components().count()));
-    for directory in directories {
-        ensure_plain_directory(&directory)?;
-        fs::remove_dir(directory).map_err(io_error)?;
-    }
-    Ok(bytes)
+    bytes
 }
 
 pub(crate) async fn require_reusable_generation(
@@ -909,5 +910,34 @@ mod tests {
         assert_eq!(hex_digest("vault/../../outside", 24).len(), 24);
         assert_eq!(hex_digest("generation\\outside", 32).len(), 32);
         assert!(!hex_digest("generation\\outside", 32).contains('/'));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn scratch_removal_unlinks_links_without_touching_their_targets() {
+        let base = std::env::temp_dir().join(format!(
+            "ganbaru-scratch-removal-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let outside = base.join("outside");
+        let generation = base.join("generation");
+        fs::create_dir_all(outside.join("nested")).unwrap();
+        fs::write(outside.join("nested/victim"), b"keep").unwrap();
+        fs::create_dir_all(generation.join("work")).unwrap();
+        fs::write(generation.join("work/output"), b"12345").unwrap();
+        std::os::unix::fs::symlink(&outside, generation.join("work/link-to-outside")).unwrap();
+        std::os::unix::fs::symlink(outside.join("nested/victim"), generation.join("victim"))
+            .unwrap();
+
+        let removed = remove_managed_scratch_generation(&generation).unwrap();
+
+        assert_eq!(removed, 5);
+        assert!(!generation.exists());
+        assert_eq!(fs::read(outside.join("nested/victim")).unwrap(), b"keep");
+        fs::remove_dir_all(&base).unwrap();
     }
 }

@@ -184,3 +184,45 @@ fn read_write_pools_run_the_hook_and_a_plain_read_only_pool_refuses_guarded_reus
         std::fs::remove_dir_all(directory).unwrap();
     });
 }
+
+#[cfg(unix)]
+#[test]
+fn writable_pools_keep_the_database_and_its_journal_files_owner_only() {
+    use std::os::unix::fs::PermissionsExt;
+    let mode = |path: &Path| std::fs::metadata(path).unwrap().permissions().mode() & 0o777;
+    let sidecar = |path: &Path, suffix: &str| {
+        let mut file = path.as_os_str().to_owned();
+        file.push(suffix);
+        PathBuf::from(file)
+    };
+    block_on(async {
+        let directory = registry_test_directory("private-files");
+        let path = directory.join("ganbaru.sqlite");
+        let registry = DatabasePoolRegistry::default();
+        let pool = registry.connect_path(&path).await.unwrap();
+        insert(&pool, "notes_link_facts_state").await.unwrap();
+        assert_eq!(mode(&path), 0o600);
+        assert_eq!(mode(&sidecar(&path, "-wal")), 0o600);
+        assert_eq!(mode(&sidecar(&path, "-shm")), 0o600);
+        registry.close_all().await.unwrap();
+
+        let shared = std::fs::Permissions::from_mode(0o644);
+        std::fs::set_permissions(&path, shared.clone()).unwrap();
+        let journal = sidecar(&path, "-journal");
+        std::fs::write(&journal, b"").unwrap();
+        std::fs::set_permissions(&journal, shared.clone()).unwrap();
+        registry.connect_path_read_only(&path).await.unwrap();
+        assert_eq!(mode(&path), 0o644);
+        registry.close_all().await.unwrap();
+        std::fs::remove_file(&journal).unwrap();
+
+        registry.connect_path_guarded(&path).await.unwrap();
+        assert_eq!(mode(&path), 0o600);
+        registry.close_all().await.unwrap();
+        std::fs::set_permissions(&path, shared).unwrap();
+        registry.connect_path(&path).await.unwrap();
+        assert_eq!(mode(&path), 0o600);
+        registry.close_all().await.unwrap();
+        std::fs::remove_dir_all(directory).unwrap();
+    });
+}

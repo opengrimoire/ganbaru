@@ -68,6 +68,49 @@ pub struct VaultAppState {
     pub chat: crate::chat::device_state::ChatDeviceState,
     #[serde(default)]
     pub music_path_grants: crate::music::path_authority::MusicPathGrantState,
+    /// Local soundscape file paths by vault ID and sound ID; the vault keeps only the identities.
+    #[serde(default)]
+    pub music_soundscape_paths: BTreeMap<String, BTreeMap<String, String>>,
+    /// Android starter vault this installation created and the user has not entered yet. Only
+    /// native code sets it, and selecting any other vault or entering the app clears it.
+    #[serde(default)]
+    pub starter_vault_id: Option<String>,
+}
+
+/// Whether the active vault is the untouched starter vault, which a first link may replace
+/// without a portable backup.
+fn is_untouched_starter(state: &VaultAppState, active_vault_id: &str) -> bool {
+    state.starter_vault_id.as_deref() == Some(active_vault_id)
+}
+
+/// Forgets the starter vault once another vault is selected, so the record never returns.
+fn forget_starter_unless(state: &mut VaultAppState, selected_vault_id: &str) {
+    state
+        .starter_vault_id
+        .take_if(|starter| starter != selected_vault_id);
+}
+
+/// Whether the active vault is the untouched Android starter vault. Desktop never has one.
+pub(crate) fn untouched_starter_vault<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> Result<bool, String> {
+    if !cfg!(mobile) {
+        return Ok(false);
+    }
+    let state = read_app_state(app)?;
+    if state.starter_vault_id.is_none() {
+        return Ok(false);
+    }
+    Ok(is_untouched_starter(&state, &active_vault_id(app)?))
+}
+
+/// Records that the user entered the app with the starter vault, which makes it user data.
+#[tauri::command]
+pub fn vault_release_starter(app: tauri::AppHandle) -> Result<(), String> {
+    update_app_state(&app, |state| {
+        state.starter_vault_id = None;
+        Ok(())
+    })
 }
 
 fn required_nullable<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
@@ -76,11 +119,6 @@ where
     T: serde::Deserialize<'de>,
 {
     <Option<T> as serde::Deserialize>::deserialize(deserializer)
-}
-
-#[tauri::command]
-pub(crate) fn vault_device_id<R: Runtime>(app: tauri::AppHandle<R>) -> Result<String, String> {
-    ensure_device_id(&app)
 }
 
 pub(crate) fn ensure_device_id<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<String, String> {
@@ -220,6 +258,40 @@ fn write_app_state_json(path: &Path, json: &str) -> Result<(), String> {
     write_text_file_atomically(path, json, FileAccess::OwnerOnly)
 }
 
+/// Keeps the app config directory, which holds device identity, usage spools, and runtime
+/// snapshots, accessible only by the current user.
+#[cfg(desktop)]
+pub(crate) fn secure_app_config_dir<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<(), String> {
+    let path = app.path().app_config_dir().map_err(|e| e.to_string())?;
+    make_directory_private(&path)
+}
+
+/// Creates `path` with owner-only access, or removes group and other access from an existing
+/// directory on Unix. A symlinked directory is left as the user arranged it. On Windows the
+/// per-user profile already limits access.
+#[cfg(any(desktop, test))]
+fn make_directory_private(path: &Path) -> Result<(), String> {
+    let mut builder = fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+    builder
+        .create(path)
+        .map_err(|e| format!("create app config dir: {e}"))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let metadata =
+            fs::symlink_metadata(path).map_err(|e| format!("inspect app config dir: {e}"))?;
+        let mode = metadata.permissions().mode();
+        if metadata.is_dir() && mode & 0o077 != 0 {
+            fs::set_permissions(path, fs::Permissions::from_mode(mode & !0o077))
+                .map_err(|e| format!("restrict app config dir: {e}"))?;
+        }
+    }
+    Ok(())
+}
+
 pub(crate) fn read_app_state<R: Runtime>(
     app: &tauri::AppHandle<R>,
 ) -> Result<Arc<VaultAppState>, String> {
@@ -333,12 +405,27 @@ fn database_path(path: &Path) -> PathBuf {
     path.join(APP_SQLITE_FILE)
 }
 
+/// Largest `vault.json` accepted from an archive or a vault folder. The marker holds a few
+/// short fields.
+const MAX_VAULT_MANIFEST_BYTES: u64 = 64 * 1024;
+
+/// Largest `config.json` any reader accepts. Writes that would exceed it are refused, so a
+/// configuration the app saved always reads back.
+pub(crate) const MAX_VAULT_CONFIG_BYTES: u64 = 4 * 1024 * 1024;
+
 fn read_vault_manifest(path: &Path) -> Result<VaultManifest, String> {
-    let manifest_path = manifest_path(path);
-    let contents = fs::read_to_string(&manifest_path)
-        .map_err(|e| format!("read Ganbaru folder marker: {e}"))?;
-    let manifest: VaultManifest =
-        serde_json::from_str(&contents).map_err(|e| format!("parse Ganbaru folder marker: {e}"))?;
+    let contents = ganbaru_atomic_files::read_regular_file_capped(
+        &manifest_path(path),
+        MAX_VAULT_MANIFEST_BYTES,
+        ganbaru_atomic_files::FinalSymlink::Refuse,
+    )
+    .map_err(|e| format!("read Ganbaru folder marker: {e}"))?;
+    parse_vault_manifest(&contents)
+}
+
+fn parse_vault_manifest(contents: &[u8]) -> Result<VaultManifest, String> {
+    let manifest: VaultManifest = serde_json::from_slice(contents)
+        .map_err(|e| format!("parse Ganbaru folder marker: {e}"))?;
     if manifest.app != VAULT_APP_MARKER {
         return Err("selected folder is not a Ganbaru folder".to_string());
     }
@@ -348,6 +435,9 @@ fn read_vault_manifest(path: &Path) -> Result<VaultManifest, String> {
             manifest.schema_version
         ));
     }
+    // The identity names key store accounts and key files, so it keeps to the wire identifier
+    // alphabet before anything uses it.
+    ganbaru_handoff::protocol::validate_identifier("Ganbaru folder id", &manifest.vault_id)?;
     Ok(manifest)
 }
 
@@ -423,23 +513,30 @@ fn ensure_vault_skeleton(path: &Path) -> Result<(), String> {
     if !config_path(path).exists() {
         write_text_file_atomically(&config_path(path), "{}\n", FileAccess::OwnerOnly)?;
     }
-    match fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(database_path(path))
-    {
+    match ganbaru_atomic_files::create_private_file(&database_path(path)) {
         Ok(_) => Ok(()),
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
         Err(e) => Err(format!("create ganbaru.sqlite: {e}")),
     }
 }
 
+/// Validates an existing vault folder before it may become active, then completes its skeleton.
+///
+/// The folder, its fixed entries, and its marker are checked first, so a folder with a foreign,
+/// malformed, or unsupported marker is refused before anything is written into it. The database
+/// is not opened here: it opens after selection, and a failure there is reported without
+/// deleting or recreating it.
+fn validate_vault_candidate(path: &Path) -> Result<VaultInfo, String> {
+    let info = vault_info_from_path(path)?;
+    ensure_vault_skeleton(Path::new(&info.path))?;
+    Ok(info)
+}
+
 fn initialize_vault(path: &Path) -> Result<VaultInfo, String> {
     let path = canonical_vault_path(path.to_path_buf())?;
     reject_symlinked_vault_entries(&path)?;
     if manifest_path(&path).exists() {
-        ensure_vault_skeleton(&path)?;
-        return vault_info_from_path(&path);
+        return validate_vault_candidate(&path);
     }
     if !folder_is_empty(&path)? {
         return Err("selected folder is not empty and is not a Ganbaru folder".to_string());
@@ -471,7 +568,12 @@ async fn select_reserved_vault<R: Runtime>(
     info: &VaultInfo,
     transition: quiescence::VaultTransition,
 ) -> Result<(), String> {
-    let quiescence = quiescence::begin_reserved_quiescence(app, transition).await?;
+    let quiescence = quiescence::begin_reserved_quiescence(
+        app,
+        transition,
+        quiescence::RunningTerminals::Continue,
+    )
+    .await?;
     let selection_app = app.clone();
     let info = info.clone();
     tauri::async_runtime::spawn_blocking(move || {
@@ -496,6 +598,7 @@ fn select_quiesced_vault<R: Runtime>(
             .retain(|path| path != &info.path && !path.trim().is_empty());
         state.recent_vault_paths.insert(0, info.path.clone());
         state.recent_vault_paths.truncate(MAX_RECENT_VAULTS);
+        forget_starter_unless(state, &info.vault_id);
         if let Some(mut known) = recent_vault_ids(&state.recent_vault_paths) {
             known.insert(info.vault_id.clone());
             retain_vault_scopes(state, &known);
@@ -531,6 +634,9 @@ fn retain_vault_scopes(state: &mut VaultAppState, known_vault_ids: &BTreeSet<Str
         .music_root_bindings
         .retain(|vault_id, _| known_vault_ids.contains(vault_id));
     state
+        .music_soundscape_paths
+        .retain(|vault_id, _| known_vault_ids.contains(vault_id));
+    state
         .project_working_folders
         .vaults
         .retain(|vault_id, _| known_vault_ids.contains(vault_id));
@@ -551,6 +657,18 @@ pub(crate) fn resume_native_runtimes<R: Runtime>(app: &tauri::AppHandle<R>) -> R
     #[cfg(target_os = "ios")]
     let distractions = Ok(());
     let sync = crate::sync::resume_after_vault_handoff(app);
+    #[cfg(desktop)]
+    app.state::<crate::chat::terminal::ChatTerminalRegistry>()
+        .resume_creation();
+    #[cfg(desktop)]
+    {
+        let app = app.clone();
+        tauri::async_runtime::spawn(async move {
+            if let Err(error) = crate::vault::handoff::start_desktop_when_reachable(&app).await {
+                eprintln!("vault handoff coordinator is unavailable: {error}");
+            }
+        });
+    }
     focus.and(music).and(distractions).and(sync)
 }
 
@@ -617,31 +735,14 @@ async fn create_and_select_vault(
     let creation_transition = transition.clone();
     let info = tauri::async_runtime::spawn_blocking(move || {
         let _transition = creation_transition;
-        fs::create_dir_all(&path).map_err(|e| format!("create Ganbaru folder: {e}"))?;
+        ganbaru_atomic_files::create_private_directories(&path)
+            .map_err(|e| format!("create Ganbaru folder: {e}"))?;
         initialize_vault(&path)
     })
     .await
     .map_err(|error| format!("vault creation worker failed: {error}"))??;
     select_reserved_vault(app, &info, transition).await?;
     Ok(info)
-}
-
-/// Folder selection fields exposed to the WebView. Device-local Chat, music, and
-/// working-folder state stays native.
-#[derive(Clone, Debug, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct VaultAppStateSummary {
-    pub active_vault_path: Option<String>,
-    pub recent_vault_paths: Vec<String>,
-}
-
-#[tauri::command]
-pub fn vault_read_app_state(app: tauri::AppHandle) -> Result<VaultAppStateSummary, String> {
-    let state = read_app_state(&app)?;
-    Ok(VaultAppStateSummary {
-        active_vault_path: state.active_vault_path.clone(),
-        recent_vault_paths: state.recent_vault_paths.clone(),
-    })
 }
 
 #[tauri::command]
@@ -652,7 +753,15 @@ pub fn vault_default_location(app: tauri::AppHandle) -> Result<VaultDefaultLocat
 #[tauri::command]
 pub async fn vault_use_default(app: tauri::AppHandle) -> Result<VaultInfo, String> {
     let path = default_vault_path(&app)?;
-    create_and_select_vault(&app, path).await
+    let creates_vault = !manifest_path(&path).exists();
+    let info = create_and_select_vault(&app, path).await?;
+    if cfg!(mobile) && creates_vault {
+        update_app_state(&app, |state| {
+            state.starter_vault_id = Some(info.vault_id.clone());
+            Ok(())
+        })?;
+    }
+    Ok(info)
 }
 
 #[tauri::command]
@@ -687,8 +796,7 @@ pub async fn vault_pick_open(app: tauri::AppHandle) -> Result<Option<VaultInfo>,
     else {
         return Ok(None);
     };
-    let info = vault_info_from_path(&path)?;
-    ensure_vault_skeleton(&PathBuf::from(&info.path))?;
+    let info = validate_vault_candidate(&path)?;
     select_vault(&app, &info).await?;
     Ok(Some(info))
 }
@@ -745,8 +853,7 @@ fn pick_mobile_vault(app: &tauri::AppHandle) -> Result<Option<VaultInfo>, String
     }
 
     let result = (|| {
-        let imported = vault_info_from_path(&staging)?;
-        ensure_vault_skeleton(Path::new(&imported.path))?;
+        validate_vault_candidate(&staging)?;
         fs::rename(&staging, &target)
             .map_err(|error| format!("activate imported Ganbaru folder: {error}"))?;
         let info = vault_info_from_path(&target)?;
@@ -961,6 +1068,27 @@ mod tests {
         path
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn app_config_directory_is_created_and_kept_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = unique_path("private-config");
+        let created = root.join("created");
+        make_directory_private(&created).unwrap();
+        let mode = fs::metadata(&created).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o700);
+
+        let shared = root.join("shared");
+        fs::create_dir_all(&shared).unwrap();
+        fs::set_permissions(&shared, fs::Permissions::from_mode(0o755)).unwrap();
+        make_directory_private(&shared).unwrap();
+        let mode = fs::metadata(&shared).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o700);
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
     #[test]
     fn write_text_file_atomically_rejects_relative_paths() {
         let err = write_text_file_atomically(
@@ -1014,6 +1142,20 @@ mod tests {
         assert!(metadata.file_type().is_file());
         fs::remove_dir_all(vault).unwrap();
         fs::remove_file(sentinel).unwrap();
+    }
+
+    #[test]
+    fn an_oversized_vault_marker_is_refused_before_parsing() {
+        let vault = unique_path("oversized-marker");
+        fs::create_dir_all(&vault).unwrap();
+        initialize_vault(&vault).unwrap();
+        let mut contents = fs::read(manifest_path(&vault)).unwrap();
+        let limit = usize::try_from(MAX_VAULT_MANIFEST_BYTES).unwrap();
+        contents.resize(limit + 1, b' ');
+        fs::write(manifest_path(&vault), contents).unwrap();
+        let error = vault_info_from_path(&vault).unwrap_err();
+        assert!(error.contains("read Ganbaru folder marker"), "{error}");
+        let _ = fs::remove_dir_all(vault);
     }
 
     #[cfg(unix)]
@@ -1078,6 +1220,15 @@ mod tests {
         assert!(path.join("notes").join("daily").is_dir());
         assert!(path.join("diary").join("morning").is_dir());
         assert!(path.join(".yjs").is_dir());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = fs::metadata(path.join(APP_SQLITE_FILE))
+                .unwrap()
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o777, 0o600);
+        }
 
         let _ = fs::remove_dir_all(&path);
     }
@@ -1101,6 +1252,41 @@ mod tests {
     }
 
     #[test]
+    fn vault_markers_refuse_ids_that_could_name_other_key_files_or_accounts() {
+        let marker = |vault_id: &str| {
+            serde_json::json!({
+                "app": VAULT_APP_MARKER,
+                "schemaVersion": VAULT_SCHEMA_VERSION,
+                "vaultId": vault_id,
+                "displayName": "Vault",
+                "createdAt": "2026-10-20T00:00:00Z",
+            })
+            .to_string()
+        };
+        let generated = new_vault_id();
+        assert_eq!(
+            parse_vault_manifest(marker(&generated).as_bytes())
+                .unwrap()
+                .vault_id,
+            generated
+        );
+        for vault_id in [
+            "",
+            "../other",
+            "a/b",
+            "a\\b",
+            "vault:other",
+            "vault\nid",
+            &"v".repeat(161),
+        ] {
+            assert!(
+                parse_vault_manifest(marker(vault_id).as_bytes()).is_err(),
+                "{vault_id:?}"
+            );
+        }
+    }
+
+    #[test]
     fn initialize_vault_rejects_non_empty_non_vault_folders() {
         let path = unique_path("non-empty");
         fs::create_dir_all(&path).expect("create vault folder");
@@ -1112,6 +1298,66 @@ mod tests {
             err,
             "selected folder is not empty and is not a Ganbaru folder"
         );
+        let _ = fs::remove_dir_all(&path);
+    }
+
+    #[test]
+    fn folders_with_a_foreign_or_unsupported_marker_are_refused_before_any_write() {
+        let markers = [
+            (
+                serde_json::json!({
+                    "app": "another-app",
+                    "schemaVersion": VAULT_SCHEMA_VERSION,
+                    "vaultId": "vault",
+                    "displayName": "Vault",
+                    "createdAt": "2026-10-20T00:00:00Z",
+                }),
+                "selected folder is not a Ganbaru folder".to_string(),
+            ),
+            (
+                serde_json::json!({
+                    "app": VAULT_APP_MARKER,
+                    "schemaVersion": VAULT_SCHEMA_VERSION + 1,
+                    "vaultId": "vault",
+                    "displayName": "Vault",
+                    "createdAt": "2026-10-20T00:00:00Z",
+                }),
+                format!(
+                    "unsupported Ganbaru folder schema version {}",
+                    VAULT_SCHEMA_VERSION + 1
+                ),
+            ),
+        ];
+        for (marker, expected) in markers {
+            let path = unique_path("foreign-marker");
+            fs::create_dir_all(&path).expect("create folder");
+            fs::write(path.join(VAULT_MANIFEST_FILE), marker.to_string()).expect("seed marker");
+
+            assert_eq!(initialize_vault(&path).unwrap_err(), expected);
+            assert_eq!(validate_vault_candidate(&path).unwrap_err(), expected);
+
+            let entries = fs::read_dir(&path)
+                .expect("read folder")
+                .map(|entry| entry.expect("folder entry").file_name())
+                .collect::<Vec<_>>();
+            assert_eq!(entries, [std::ffi::OsString::from(VAULT_MANIFEST_FILE)]);
+            let _ = fs::remove_dir_all(&path);
+        }
+    }
+
+    #[test]
+    fn validating_an_existing_vault_completes_its_skeleton() {
+        let path = unique_path("existing-vault");
+        fs::create_dir_all(&path).expect("create vault folder");
+        let created = initialize_vault(&path).expect("initialize vault");
+        fs::remove_dir_all(path.join("assets")).expect("remove assets");
+        fs::remove_file(path.join(CONFIG_FILE)).expect("remove config");
+
+        let opened = validate_vault_candidate(&path).expect("validate vault");
+
+        assert_eq!(opened.vault_id, created.vault_id);
+        assert!(path.join("assets").is_dir());
+        assert!(path.join(CONFIG_FILE).is_file());
         let _ = fs::remove_dir_all(&path);
     }
 
@@ -1155,6 +1401,9 @@ mod tests {
                 .music_root_bindings
                 .insert(vault_id.to_string(), BTreeMap::new());
             state
+                .music_soundscape_paths
+                .insert(vault_id.to_string(), BTreeMap::new());
+            state
                 .project_working_folders
                 .vaults
                 .insert(vault_id.to_string(), BTreeMap::new());
@@ -1169,6 +1418,10 @@ mod tests {
         let live = ["vault-live"];
         assert_eq!(
             state.music_root_bindings.keys().collect::<Vec<_>>(),
+            live.iter().collect::<Vec<_>>()
+        );
+        assert_eq!(
+            state.music_soundscape_paths.keys().collect::<Vec<_>>(),
             live.iter().collect::<Vec<_>>()
         );
         assert_eq!(
@@ -1204,6 +1457,8 @@ mod tests {
             project_working_folders: Default::default(),
             chat: Default::default(),
             music_path_grants: Default::default(),
+            music_soundscape_paths: Default::default(),
+            starter_vault_id: None,
         };
 
         write_app_state_to_path(&path, &state).expect("write app state");
@@ -1214,6 +1469,24 @@ mod tests {
         assert_eq!(saved.recent_vault_paths, state.recent_vault_paths);
         assert_eq!(saved.music_root_bindings, state.music_root_bindings);
         let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn starter_record_names_one_vault_and_never_returns_after_another_is_selected() {
+        let mut state = VaultAppState::default();
+        assert!(!is_untouched_starter(&state, "vault-starter"));
+
+        state.starter_vault_id = Some("vault-starter".to_string());
+        assert!(is_untouched_starter(&state, "vault-starter"));
+        assert!(!is_untouched_starter(&state, "vault-imported"));
+
+        forget_starter_unless(&mut state, "vault-starter");
+        assert!(is_untouched_starter(&state, "vault-starter"));
+
+        forget_starter_unless(&mut state, "vault-imported");
+        assert_eq!(state.starter_vault_id, None);
+        forget_starter_unless(&mut state, "vault-starter");
+        assert!(!is_untouched_starter(&state, "vault-starter"));
     }
 
     #[test]

@@ -11,10 +11,7 @@ use std::io::{Read, Seek, SeekFrom, Write};
 #[cfg(windows)]
 use std::path::PathBuf;
 use std::path::{Component, Path};
-use std::sync::{
-    Mutex,
-    atomic::{AtomicU64, Ordering},
-};
+use std::sync::Mutex;
 #[cfg(windows)]
 use windows::Win32::Storage::FileSystem::{
     FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
@@ -43,7 +40,10 @@ const MAX_DIRECTORY_ENTRIES: usize = 5_000;
 const MAX_PREVIEW_BYTES: u64 = 1024 * 1024;
 const MAX_PROMOTED_ARTIFACT_BYTES: u64 = 50 * 1024 * 1024;
 const MAX_RELATIVE_PATH_BYTES: usize = 4_096;
-static WORKSPACE_FILE_WRITE_GENERATION: AtomicU64 = AtomicU64::new(0);
+/// Random bytes in the name of each Ganbaru-owned temporary, backup, or recovery entry.
+const ARTIFACT_TOKEN_BYTES: usize = 32;
+/// Kinds of Ganbaru-owned entries created beside a workspace file during a save or delete.
+const ARTIFACT_KINDS: [&str; 3] = ["tmp", "backup", "recovery"];
 static WORKSPACE_FILE_WRITE_LOCK: Mutex<()> = Mutex::new(());
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -178,6 +178,20 @@ pub fn preview_workspace_file(
     authorized: &AuthorizedWorkingFolder,
     relative_path: &str,
 ) -> ChatResult<ProjectWorkingFolderFilePreview> {
+    preview_workspace_file_within(authorized, relative_path, MAX_PREVIEW_BYTES)
+}
+
+/// Previews one workspace file whose text may be at most `max_bytes`.
+///
+/// Every path component is opened relative to the previous directory handle
+/// without following symbolic links or reparse points, so a component swapped
+/// during the read cannot redirect it outside the working folder. A larger
+/// file is reported as oversized without reading its contents.
+pub fn preview_workspace_file_within(
+    authorized: &AuthorizedWorkingFolder,
+    relative_path: &str,
+    max_bytes: u64,
+) -> ChatResult<ProjectWorkingFolderFilePreview> {
     validate_required_relative_path(relative_path)?;
     if safety_excluded(relative_path) {
         return Err(ChatError::new(
@@ -200,7 +214,7 @@ pub fn preview_workspace_file(
         .and_then(|value| value.to_str())
         .ok_or_else(|| ChatError::validation("relativePath", "Workspace filename is unsupported"))?
         .to_string();
-    if metadata.len() > MAX_PREVIEW_BYTES {
+    if metadata.len() > max_bytes {
         return Ok(ProjectWorkingFolderFilePreview {
             relative_path: relative_path.to_string(),
             display_name,
@@ -215,7 +229,7 @@ pub fn preview_workspace_file(
     let modified = metadata.modified().ok();
     let mut bytes = Vec::with_capacity(usize::try_from(metadata.len()).unwrap_or_default());
     (&mut file)
-        .take(MAX_PREVIEW_BYTES + 1)
+        .take(max_bytes + 1)
         .read_to_end(&mut bytes)
         .map_err(file_error)?;
     let after = file.metadata().map_err(file_error)?;
@@ -262,6 +276,28 @@ pub fn save_workspace_file(
     contents: &str,
     expected_revision: &str,
 ) -> ChatResult<ProjectWorkingFolderFilePreview> {
+    save_workspace_file_within(
+        authorized,
+        relative_path,
+        contents,
+        expected_revision,
+        MAX_PREVIEW_BYTES,
+    )
+}
+
+/// Replaces one workspace text file of at most `max_bytes` when its content
+/// revision still matches.
+///
+/// The replacement is written to a new temporary file in the parent directory
+/// handle and exchanged with the target, and both the displaced and installed
+/// files are verified before the temporary name is removed.
+pub fn save_workspace_file_within(
+    authorized: &AuthorizedWorkingFolder,
+    relative_path: &str,
+    contents: &str,
+    expected_revision: &str,
+    max_bytes: u64,
+) -> ChatResult<ProjectWorkingFolderFilePreview> {
     validate_required_relative_path(relative_path)?;
     if safety_excluded(relative_path) {
         return Err(ChatError::new(
@@ -270,16 +306,19 @@ pub fn save_workspace_file(
             false,
         ));
     }
-    if contents.len() as u64 > MAX_PREVIEW_BYTES || contents.contains('\0') {
+    if contents.len() as u64 > max_bytes || contents.contains('\0') {
         return Err(ChatError::validation(
             "contents",
-            "Workspace files must be UTF-8 text no larger than 1 MiB",
+            format!(
+                "Workspace files must be UTF-8 text no larger than {} MiB",
+                max_bytes / (1024 * 1024)
+            ),
         ));
     }
     let _guard = WORKSPACE_FILE_WRITE_LOCK
         .lock()
         .map_err(|_| workspace_file_write_error())?;
-    let current = preview_workspace_file(authorized, relative_path)?;
+    let current = preview_workspace_file_within(authorized, relative_path, max_bytes)?;
     let current_revision = current.content_revision.as_deref().ok_or_else(|| {
         ChatError::validation("relativePath", "Workspace file is not editable text")
     })?;
@@ -295,8 +334,9 @@ pub fn save_workspace_file(
         relative_path,
         contents,
         expected_revision,
+        max_bytes,
     )?;
-    preview_workspace_file(authorized, relative_path)
+    preview_workspace_file_within(authorized, relative_path, max_bytes)
 }
 
 /// Deletes one bounded regular text file when its content revision still matches.
@@ -537,28 +577,40 @@ fn safety_excluded(relative_path: &str) -> bool {
 }
 
 fn ganbaru_internal_artifact_segment(segment: &str) -> bool {
-    for prefix in [".ganbaru.backup.", ".ganbaru.recovery."] {
-        if let Some(token) = segment.strip_prefix(prefix) {
-            return token.len() == 64 && token.bytes().all(|byte| byte.is_ascii_hexdigit());
-        }
-    }
+    let Some(rest) = segment.strip_prefix(".ganbaru.") else {
+        return false;
+    };
+    let Some((kind, token)) = rest.split_once('.') else {
+        return false;
+    };
+    ARTIFACT_KINDS.contains(&kind)
+        && token.len() == ARTIFACT_TOKEN_BYTES * 2
+        && token
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
 
-    let Some((_, suffix)) = segment.rsplit_once(".ganbaru.") else {
-        return false;
-    };
-    let mut parts = suffix.split('.').collect::<Vec<_>>();
-    let Some(extension) = parts.pop() else {
-        return false;
-    };
-    let shape_matches = match extension {
-        "tmp" | "backup" => matches!(parts.len(), 2 | 3),
-        "recovery" => parts.len() == 3,
-        _ => false,
-    };
-    shape_matches
-        && parts
-            .iter()
-            .all(|part| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit()))
+/// Builds the name of a Ganbaru-owned entry beside a workspace file from caller-supplied random
+/// bytes. The token keeps the name unpredictable, so another process sharing the folder cannot
+/// claim it in advance to block or redirect a save.
+fn private_artifact_name_with(
+    kind: &str,
+    fill_random: impl FnOnce(&mut [u8]) -> std::io::Result<()>,
+) -> std::io::Result<String> {
+    debug_assert!(ARTIFACT_KINDS.contains(&kind));
+    let mut random = [0_u8; ARTIFACT_TOKEN_BYTES];
+    fill_random(&mut random)?;
+    let token = random
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    Ok(format!(".ganbaru.{kind}.{token}"))
+}
+
+/// Builds the name of a Ganbaru-owned entry beside a workspace file from the system random source.
+#[cfg(not(windows))]
+fn private_artifact_name(kind: &str) -> std::io::Result<String> {
+    private_artifact_name_with(kind, ganbaru_atomic_files::fill_random)
 }
 
 fn common_ignored(relative_path: &str) -> bool {

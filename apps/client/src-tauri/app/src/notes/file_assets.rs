@@ -26,7 +26,8 @@ pub async fn notes_pick_file_asset<R: Runtime>(
     if let Some(directory) = app.path().document_dir().ok().filter(|path| path.is_dir()) {
         picker = picker.set_directory(directory);
     }
-    let Some(path) = picker.blocking_pick_file().map(dialog_path).transpose()? else {
+    let picked = super::on_dialog_thread(move || picker.blocking_pick_file()).await?;
+    let Some(path) = picked.map(dialog_path).transpose()? else {
         return Ok(None);
     };
     let pool = connect_sqlite(app.clone(), db_url).await?;

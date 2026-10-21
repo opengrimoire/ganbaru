@@ -94,6 +94,9 @@ export const vaultHandoff = {
   networkAccessConfirmTitle: "Allow phone connection?",
   networkAccessConfirmMessage:
     "Your Linux firewall protects your computer from unwanted connections. Ganbaru needs its permission to link your phone with this computer over your local network. Linux will ask for your password, which Ganbaru never sees or stores.",
+  networkAccessNetworkConfirmMessage:
+    "You allowed phone connections on another network that uses the same addresses as this one. Allow them on this network too? Linux will not ask for your password.",
+  networkAccessNetworkConfirmation: "Linked devices cannot connect until you allow this network",
   networkAccessRevokeTitle: "Remove local network access?",
   networkAccessRevokeMessage:
     "Your Linux firewall currently allows linked devices to connect to Ganbaru on this local network. Linux will ask for your password to remove that permission. Ganbaru never sees or stores your password.",
@@ -129,6 +132,20 @@ export const vaultHandoff = {
   copyCode: "Copy pairing code",
   codeCopied: "Pairing code copied",
   copyCodeFailed: "The pairing code could not be copied.",
+  enrollmentApprovalTitle: "Approve this device?",
+  enrollmentApprovalInstructions:
+    "Approve only if the device shows this same code. If it does not, decline: someone else may have your pairing code.",
+  enrollmentCode: "Confirmation code",
+  enrollmentApprove: "Approve",
+  enrollmentDecline: "Decline",
+  enrollmentWaitingTitle: "Confirm on the other computer",
+  enrollmentWaiting: "The other computer shows a code. It approves this device when its code matches this one.",
+  enrollmentDeclined: "The other computer declined this device. Get a new pairing code there and try again.",
+  enrollmentUnanswered:
+    "The other computer did not approve this device in time. Keep its pairing code open, then try again.",
+  enrollmentBusy: "Another device is waiting for approval on the other computer. Wait until it is answered, then try again.",
+  enrollmentReplaced: "The other computer created a new pairing code. Use the new code to try again.",
+  enrollmentGone: "That device stopped waiting for approval.",
   qrDialogTitle: "Connect another device",
   qrInstructions:
     "To connect a phone, scan this QR code in Settings > Data. To connect another computer, copy the pairing code and enter it in Settings > Data.",
@@ -169,6 +186,7 @@ export const vaultHandoff = {
   sameNetwork: "Keep both apps open on the same local network.",
   failed: (details: string) => `The linked-device action failed: ${details}`,
   blockerChat: "Finish or stop active Chat work before moving the vault.",
+  blockerTerminal: "Close running Chat terminals before moving the vault.",
   blockerFocus: "Finish or stop the active Pomodoro session before moving the vault.",
   blockerTransfer: "Finish or retry the current vault transfer first.",
   incompatibleVersions:
@@ -181,6 +199,12 @@ export const vaultHandoff = {
     "The coordinating computer has another vault open. Open the linked vault there, then retry.",
   ownershipChurnLimit:
     "Editing moved between devices too many times in the last hour. Wait a while, then switch devices again.",
+  bundleRequestLimit:
+    "This device asked for the vault too many times in the last hour. Wait a while, then refresh or switch devices again.",
+  deviceKeyMissing:
+    "This device's linking key is missing from the system keyring. Unlink this device, then link it again.",
+  deviceKeyUnavailable:
+    "This device's linking key could not be read from the system keyring. Unlock the keyring or sign in again, then retry.",
   linkingDisabled:
     "Device linking is off on this device because its saved linking data could not be read. Your vault still works here; restart the app, and if this persists, link the device again.",
   coordinatorBusy:

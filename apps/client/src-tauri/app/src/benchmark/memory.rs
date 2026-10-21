@@ -1,5 +1,10 @@
 //! Process memory sampling for the benchmark harness.
 
+#![allow(
+    unsafe_code,
+    reason = "Retained unsafe boundary; see docs/data/security/unsafe-rust.md."
+)]
+
 static PLATFORM_LABEL: std::sync::OnceLock<String> = std::sync::OnceLock::new();
 
 #[derive(serde::Serialize, Clone)]

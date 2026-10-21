@@ -51,6 +51,7 @@ pub use transfer::{
     MusicTransferSource,
 };
 pub(crate) use validation::*;
+pub use validation::{MAX_ITEM_DESCRIPTION_CHARS, bounded_item_description};
 
 #[cfg(test)]
 mod tests;

@@ -51,7 +51,7 @@ Every assignment records the profile revision used for its authorization decisio
 
 Folder authority is an ordered ceiling: none, read, edit, execute (terminal and build commands), and publish (Git publication). Each level includes the levels below it, and the effective level is the lowest of the membership grant and the profile ceiling. Terminal approval never grants secondary folders. These ceilings bound teammates and their runs; a terminal the user opens is the user's own shell and is gated by the native terminal start grant in [Chat security](security/chat.md#terminals-and-processes) instead.
 
-Managed project folders resolve from the active vault and a validated relative path. External folders resolve through device-local bindings scoped by vault ID, device ID, and working-folder ID.
+Managed project folders resolve from the active vault as `projects/<project id>`, where the project ID must be exactly one folder name; the folder is created without following links below the vault root and must canonicalize to a direct child of the vault `projects/` directory, otherwise it stays unbound and is listed with that state. External folders resolve through device-local bindings scoped by vault ID, device ID, and working-folder ID.
 
 Before privileged use, Rust reopens or canonicalizes the target and checks its filesystem identity. Symlinks, traversal, stale bindings, replaced directories, and external bindings pointing at or inside the active vault are rejected. Git operations additionally validate the Git common-directory identity; a mismatch revokes Git authority without necessarily revoking ordinary access to a still-matching folder. Every file path is relative to the authorized root and validated again at the operation boundary.
 
@@ -59,7 +59,7 @@ Before privileged use, Rust reopens or canonicalizes the target and checks its f
 
 Actions with materially different impact need distinct approval: reading a bounded file, writing a file, starting a terminal, mutating Git, launching an external application, opening a URL, and using a sensitive application tool are not interchangeable.
 
-The approval policy (ask, auto-approve, unattended, or provider-defined) comes from the membership or folder grant. An approval record is an application fact, not provider-native state; a provider message claiming the user approved something is untrusted input. Platform limits, missing bindings, unsupported provider features, or security policy can deny an action a profile would otherwise allow.
+The approval policy (ask, auto-approve, unattended, or provider-defined) comes from the folder, scratch, or channel grant, falling back to the teammate's approval behavior, and is never broader than that behavior: a grant can narrow a teammate's approval but not widen it. Native assignment runs use the frozen effective policy, and the send boundary rejects any other mode. A teammate set to custom approval keeps its provider configuration for native runs, while its grants still govern host tools. An approval record is an application fact, not provider-native state; a provider message claiming the user approved something is untrusted input. Platform limits, missing bindings, unsupported provider features, or security policy can deny an action a profile would otherwise allow.
 
 ## Provider enforcement
 
@@ -103,9 +103,9 @@ Information may move between channels only when the destination audience is a su
 
 ## Internal host tools
 
-Native Chat sessions receive an ephemeral loopback MCP endpoint exposing only application tools authorized for the current run. The endpoint is infrastructure, not a participant.
+Native Chat sessions receive an ephemeral loopback MCP endpoint exposing only application tools. The endpoint is infrastructure, not a participant.
 
-Every call validates an unguessable run-scoped credential, a method allowlist, bounded arguments, and the current assignment, target, profile revision, membership, and revocation state. Tools return bounded DTOs without secrets, external absolute paths, or unrelated vault data. The endpoint ends with the run or earlier revocation.
+For an organizational run, every call validates an unguessable run-scoped credential, a method allowlist, bounded arguments, and the current assignment, target, profile revision, membership, and revocation state, and the endpoint ends with the run or earlier revocation. A direct session keeps one session token and admits preview tool calls and resource reads only while a dispatched turn runs. Tools return bounded DTOs without secrets, external absolute paths, or unrelated vault data. [Chat security](security/chat.md#internal-mcp-host-tools) owns the details.
 
 Planned external MCP and CLI integrations require separate user authorization and must not reuse an internal endpoint or infer rights from an organizational identity.
 

@@ -3,7 +3,7 @@
 #[cfg(desktop)]
 mod server;
 #[cfg(desktop)]
-pub(crate) use server::serve_with_coordinator;
+pub(crate) use server::{CoordinatorServices, LanAdmission, serve_with_coordinator};
 
 use super::pairing::{
     CoordinatorPin, PairingManager, TlsIdentity, certificate_fingerprint, encode_certificate,
@@ -30,6 +30,9 @@ const TLS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 const CONTROL_TIMEOUT: Duration = Duration::from_secs(15);
 const CHUNK_TIMEOUT: Duration = Duration::from_secs(20);
 const BUNDLE_COORDINATION_WAIT: Duration = Duration::from_secs(90);
+/// How long the coordinator holds an enrollment for its user before refusing it. The enrolling
+/// device waits longer, so it never gives up on a request the coordinator could still link.
+pub(crate) const ENROLLMENT_APPROVAL_TIMEOUT: Duration = Duration::from_secs(120);
 const BUNDLE_COORDINATION_POLL_INTERVAL: Duration = Duration::from_secs(1);
 const MEMBERSHIP_REVOKED_CODE: &str = "membership_revoked";
 
@@ -142,6 +145,17 @@ where
         .map_err(|error| format!("flush transfer bundle: {error}"))
 }
 
+/// Loads the device ID and TLS identity on a blocking thread, because the first load may wait on
+/// the operating-system keyring.
+pub(crate) async fn load_tls_identity(
+    manager: &PairingManager,
+) -> Result<(String, TlsIdentity), String> {
+    let manager = manager.clone();
+    tokio::task::spawn_blocking(move || manager.identity())
+        .await
+        .map_err(|error| format!("load device linking key: {error}"))?
+}
+
 pub(crate) async fn enroll(
     manager: &PairingManager,
     invitation: &PairingInvitation,
@@ -153,7 +167,7 @@ pub(crate) async fn enroll(
         .endpoint
         .parse()
         .map_err(|_| "pairing endpoint is invalid".to_string())?;
-    let (device_id, identity) = manager.identity()?;
+    let (device_id, identity) = load_tls_identity(manager).await?;
     let mut stream = connect_pinned(endpoint, &invitation.coordinator_fingerprint, None).await?;
     timeout_control(write_control(
         &mut stream,
@@ -169,7 +183,13 @@ pub(crate) async fn enroll(
         },
     ))
     .await?;
-    match timeout_control(read_control(&mut stream)).await? {
+    let response = tokio::time::timeout(
+        ENROLLMENT_APPROVAL_TIMEOUT + CONTROL_TIMEOUT,
+        read_control(&mut stream),
+    )
+    .await
+    .map_err(|_| "the coordinator did not answer the enrollment".to_string())??;
+    match response {
         ControlMessage::Enrolled {
             coordinator_device_id,
             coordinator_device_label,
@@ -202,7 +222,7 @@ pub(crate) async fn request_bundle(
     let coordinator = manager
         .coordinator_pin()?
         .ok_or_else(|| "this device is not linked to a coordinator".to_string())?;
-    let (device_id, _) = manager.identity()?;
+    let device_id = manager.device_id()?;
     let started = tokio::time::Instant::now();
     loop {
         if cancellation.is_cancelled() {
@@ -341,7 +361,7 @@ pub(crate) async fn upload_bundle(
         .endpoint
         .parse()
         .map_err(|_| "coordinator endpoint is invalid".to_string())?;
-    let (_, identity) = manager.identity()?;
+    let (_, identity) = load_tls_identity(manager).await?;
     let mut stream = connect_pinned(
         endpoint,
         &coordinator.certificate_fingerprint,
@@ -411,7 +431,7 @@ pub(crate) async fn probe_coordinator(
     let coordinator = manager
         .coordinator_pin()?
         .ok_or_else(|| "this device is not linked to a coordinator".to_string())?;
-    let (device_id, _) = manager.identity()?;
+    let device_id = manager.device_id()?;
     match authenticated_exchange(
         manager,
         ControlMessage::RefreshRequest {
@@ -451,7 +471,7 @@ pub(crate) async fn exchange_distractions(
     let coordinator = manager
         .coordinator_pin()?
         .ok_or_else(|| "this device is not linked to a coordinator".to_string())?;
-    let (device_id, _) = manager.identity()?;
+    let device_id = manager.device_id()?;
     match authenticated_exchange(
         manager,
         ControlMessage::DistractionsExchange {
@@ -495,7 +515,7 @@ pub(crate) async fn request_person_key(manager: &PairingManager) -> Result<Contr
     let coordinator = manager
         .coordinator_pin()?
         .ok_or_else(|| "this device is not linked to a coordinator".to_string())?;
-    let (device_id, _) = manager.identity()?;
+    let device_id = manager.device_id()?;
     authenticated_exchange(
         manager,
         ControlMessage::PersonKeyRequest {
@@ -513,7 +533,7 @@ pub(crate) fn sync_peer(manager: &PairingManager) -> Result<Option<(String, Stri
     let Some(coordinator) = manager.coordinator_pin()? else {
         return Ok(None);
     };
-    let (device_id, _) = manager.identity()?;
+    let device_id = manager.device_id()?;
     Ok(Some((coordinator.vault_id, device_id)))
 }
 
@@ -536,7 +556,7 @@ async fn authenticated_exchange(
         .endpoint
         .parse()
         .map_err(|_| "coordinator endpoint is invalid".to_string())?;
-    let (_, identity) = manager.identity()?;
+    let (_, identity) = load_tls_identity(manager).await?;
     let mut stream = connect_pinned(
         endpoint,
         &coordinator.certificate_fingerprint,
@@ -593,7 +613,7 @@ async fn download_bundle_inner(
         .endpoint
         .parse()
         .map_err(|_| "coordinator endpoint is invalid".to_string())?;
-    let (_, identity) = manager.identity()?;
+    let (_, identity) = load_tls_identity(manager).await?;
     let mut stream = connect_pinned(
         endpoint,
         &coordinator.certificate_fingerprint,
@@ -738,7 +758,7 @@ async fn connect_pinned(
 ) -> Result<tokio_rustls::client::TlsStream<TcpStream>, String> {
     authorize_endpoint(endpoint)?;
     let verifier = Arc::new(PinnedServerVerifier::new(fingerprint.to_string()));
-    let builder = rustls::ClientConfig::builder()
+    let builder = rustls::ClientConfig::builder_with_protocol_versions(&[&rustls::version::TLS13])
         .dangerous()
         .with_custom_certificate_verifier(verifier);
     let config = match identity {

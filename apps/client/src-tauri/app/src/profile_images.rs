@@ -1,4 +1,5 @@
 use base64::{Engine as _, engine::general_purpose};
+use ganbaru_atomic_files::{FinalSymlink, read_regular_file_capped};
 use ganbaru_notes::assets::image_metadata::{
     ManagedImageDimensionError, ManagedImageMetadata, ManagedImageMetadataError,
     parse_managed_image_metadata, validate_managed_image_dimensions,
@@ -6,7 +7,7 @@ use ganbaru_notes::assets::image_metadata::{
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::{
-    fs,
+    fs, io,
     path::{Component, Path, PathBuf},
 };
 #[cfg(desktop)]
@@ -15,12 +16,16 @@ use tauri::{AppHandle, Runtime};
 #[cfg(desktop)]
 use tauri_plugin_dialog::{DialogExt, FilePath};
 
+#[cfg(desktop)]
+use crate::native_dialogs::on_dialog_thread;
 use crate::vault;
 
 const PROFILE_IMAGE_MAX_DISPLAY_MEGABYTES: usize = 3;
 const PROFILE_IMAGE_MAX_BYTES: usize = PROFILE_IMAGE_MAX_DISPLAY_MEGABYTES * 1024 * 1024;
 const PROFILE_IMAGE_DIR: &str = "profile";
 const PROFILE_IMAGE_ALLOWED_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "webp"];
+const PROFILE_CONFIG_KEY: &str = "profile";
+const PROFILE_IMAGE_PATH_CONFIG_KEY: &str = "imagePath";
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -112,17 +117,15 @@ fn validate_profile_image(bytes: &[u8]) -> Result<ManagedImageMetadata, String> 
     Ok(metadata)
 }
 
-fn read_file_capped(path: &Path) -> Result<Vec<u8>, String> {
-    let metadata = fs::metadata(path).map_err(|error| format!("inspect profile image: {error}"))?;
-    if !metadata.is_file() {
-        return Err("profile image path must be a file".to_string());
-    }
-    if metadata.len() > PROFILE_IMAGE_MAX_BYTES as u64 {
-        return Err(format!(
-            "profile image exceeds the {PROFILE_IMAGE_MAX_DISPLAY_MEGABYTES} MB limit"
-        ));
-    }
-    let bytes = fs::read(path).map_err(|error| format!("read profile image: {error}"))?;
+fn read_file_capped(path: &Path, final_symlink: FinalSymlink) -> Result<Vec<u8>, String> {
+    let bytes = read_regular_file_capped(path, PROFILE_IMAGE_MAX_BYTES as u64, final_symlink)
+        .map_err(|error| match error.kind() {
+            io::ErrorKind::FileTooLarge => {
+                format!("profile image exceeds the {PROFILE_IMAGE_MAX_DISPLAY_MEGABYTES} MB limit")
+            }
+            io::ErrorKind::InvalidInput => "profile image path must be a regular file".to_string(),
+            _ => format!("read profile image: {error}"),
+        })?;
     ensure_profile_image_size(&bytes)?;
     Ok(bytes)
 }
@@ -220,10 +223,11 @@ pub async fn profile_image_pick_file<R: Runtime>(
     if let Some(directory) = profile_image_start_directory(&app) {
         picker = picker.set_directory(directory);
     }
-    let Some(path) = picker.blocking_pick_file().map(dialog_path).transpose()? else {
+    let picked = on_dialog_thread(move || picker.blocking_pick_file()).await?;
+    let Some(path) = picked.map(dialog_path).transpose()? else {
         return Ok(None);
     };
-    let bytes = read_file_capped(&path)?;
+    let bytes = read_file_capped(&path, FinalSymlink::Follow)?;
     save_profile_image_bytes(&app, bytes).map(Some)
 }
 
@@ -241,7 +245,7 @@ pub fn profile_image_asset_data_url<R: Runtime>(
     relative_path: String,
 ) -> Result<String, String> {
     let path = profile_image_asset_path(&app, &relative_path)?;
-    let bytes = read_file_capped(&path)?;
+    let bytes = read_file_capped(&path, FinalSymlink::Refuse)?;
     let kind = validate_profile_image(&bytes)?.kind;
     Ok(format!(
         "data:{};base64,{}",
@@ -250,12 +254,33 @@ pub fn profile_image_asset_data_url<R: Runtime>(
     ))
 }
 
+/// Whether a vault configuration document names the profile image file `file_name` as the
+/// saved picture. Names compare without case because Windows and macOS volumes usually
+/// resolve them that way.
+fn is_configured_profile_image(config: &str, file_name: &str) -> Result<bool, String> {
+    let value: serde_json::Value = serde_json::from_str(config)
+        .map_err(|error| format!("parse vault configuration: {error}"))?;
+    let configured = value
+        .get(PROFILE_CONFIG_KEY)
+        .and_then(|profile| profile.get(PROFILE_IMAGE_PATH_CONFIG_KEY))
+        .and_then(serde_json::Value::as_str)
+        .and_then(|path| validate_profile_image_relative_path(path).ok());
+    Ok(configured.is_some_and(|configured| configured.eq_ignore_ascii_case(file_name)))
+}
+
+/// Deletes a replaced or discarded profile image. The image the vault configuration still
+/// names is refused, so the webview can delete only pictures the profile no longer uses.
 #[tauri::command]
 pub fn profile_image_delete_file<R: Runtime>(
     app: AppHandle<R>,
     relative_path: String,
 ) -> Result<(), String> {
     let _write_permit = vault::active_writable_vault_path(&app)?;
+    let file_name = validate_profile_image_relative_path(&relative_path)?;
+    let config = vault::read_active_config_bounded(&app)?;
+    if is_configured_profile_image(&config, file_name)? {
+        return Err("the saved profile image cannot be deleted".to_string());
+    }
     let path = profile_image_asset_path(&app, &relative_path)?;
     if path.exists() {
         fs::remove_file(path).map_err(|error| format!("delete profile image: {error}"))?;
@@ -312,6 +337,27 @@ mod tests {
     }
 
     #[test]
+    fn saved_profile_image_is_recognized_from_the_vault_configuration() {
+        let config = r#"{"profile":{"imagePath":" profile/Saved.png "}}"#;
+        assert!(is_configured_profile_image(config, "Saved.png").unwrap());
+        assert!(is_configured_profile_image(config, "saved.PNG").unwrap());
+        assert!(!is_configured_profile_image(config, "replaced.png").unwrap());
+
+        for config in [
+            "{}",
+            r#"{"profile":{}}"#,
+            r#"{"profile":{"imagePath":null}}"#,
+            r#"{"profile":{"imagePath":"../Saved.png"}}"#,
+        ] {
+            assert!(
+                !is_configured_profile_image(config, "Saved.png").unwrap(),
+                "{config}"
+            );
+        }
+        assert!(is_configured_profile_image("not json", "Saved.png").is_err());
+    }
+
+    #[test]
     fn profile_image_data_url_accepts_validated_content() {
         let bytes = png(64, 64);
         let data_url = format!(
@@ -334,5 +380,43 @@ mod tests {
             "A".repeat(PROFILE_IMAGE_MAX_BYTES.div_ceil(3) * 4 + 1)
         );
         assert!(decode_profile_image_data_url(&oversized).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn vault_profile_image_reads_refuse_symlinks_and_oversized_files() {
+        let root = std::env::temp_dir().join(format!(
+            "ganbaru-profile-read-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let picture = root.join("picture.png");
+        fs::write(&picture, png(64, 64)).unwrap();
+        let link = root.join("linked.png");
+        std::os::unix::fs::symlink(&picture, &link).unwrap();
+        let oversized = root.join("oversized.png");
+        fs::File::create(&oversized)
+            .unwrap()
+            .set_len(PROFILE_IMAGE_MAX_BYTES as u64 + 1)
+            .unwrap();
+
+        assert_eq!(
+            read_file_capped(&link, FinalSymlink::Follow).unwrap(),
+            png(64, 64)
+        );
+        assert_eq!(
+            read_file_capped(&link, FinalSymlink::Refuse).unwrap_err(),
+            "profile image path must be a regular file"
+        );
+        assert!(
+            read_file_capped(&oversized, FinalSymlink::Refuse)
+                .unwrap_err()
+                .contains("MB limit")
+        );
+        fs::remove_dir_all(&root).unwrap();
     }
 }

@@ -1,6 +1,7 @@
 //! Patch paging, spooling, and temporary Git object storage.
 
 use super::super::models::{ChatError, ChatErrorCode, ChatResult};
+use super::actions::folder_paths;
 use super::contracts::{ReviewDiffSource, ReviewFilePatchRead, ReviewHunkRead, ReviewPatchState};
 use super::material::deterministic_diff_arguments;
 use super::patch_parser::{parse_hunk_header, parse_patch};
@@ -12,12 +13,10 @@ use std::fs;
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 const MAX_PATCH_HUNKS_PER_RESPONSE: usize = 2_048;
 const MAX_PATCH_SPOOL_BYTES: usize = 512 * 1024 * 1024;
 const MAX_REVIEW_OBJECT_BYTES: u64 = 512 * 1024 * 1024;
-static REVIEW_TEMPORARY_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone)]
 pub struct ParsedHunk {
@@ -57,7 +56,7 @@ pub struct ReviewObjectStore {
     pub alternate_objects: PathBuf,
 }
 
-struct ReviewTemporaryFile {
+pub(super) struct ReviewTemporaryFile {
     root: PathBuf,
     path: PathBuf,
 }
@@ -82,6 +81,15 @@ pub async fn read_patch_page(
             hunks: Vec::new(),
             continuation_cursor: None,
             state: ReviewPatchState::Binary,
+        });
+    }
+    if file.read.flags.too_large {
+        return Ok(ReviewFilePatchRead {
+            file_id: file_id.to_string(),
+            patch: None,
+            hunks: Vec::new(),
+            continuation_cursor: None,
+            state: ReviewPatchState::Unavailable,
         });
     }
     if matches!(&snapshot.source, ReviewDiffSource::ProviderTurn { .. })
@@ -124,10 +132,11 @@ async fn load_patch_index(
         let context = format!("--unified={}", snapshot.context_lines);
         let mut arguments =
             deterministic_diff_arguments(snapshot.ignore_whitespace, Some(&context));
-        arguments.extend([before, after, "--", &file.read.relative_path]);
-        if let Some(previous) = file.read.previous_relative_path.as_deref() {
-            arguments.push(previous);
-        }
+        let mut owned = vec![file.read.relative_path.clone()];
+        owned.extend(file.read.previous_relative_path.clone());
+        let owned = folder_paths(snapshot.git_folder(), &owned).await?;
+        arguments.extend([before, after, "--"]);
+        arguments.extend(owned.iter().map(String::as_str));
         let spool = Arc::new(ReviewTemporaryFile::new("patch")?);
         git::review_output_to_file_in_storage(
             snapshot.git_folder(),
@@ -516,11 +525,7 @@ impl ReviewObjectStore {
                 } else if metadata.is_file() {
                     total = total.saturating_add(metadata.len());
                     if total > MAX_REVIEW_OBJECT_BYTES {
-                        return Err(ChatError::new(
-                            ChatErrorCode::Protocol,
-                            "Review snapshot exceeds the supported temporary storage limit",
-                            true,
-                        ));
+                        return Err(review_storage_limit_error());
                     }
                 }
             }
@@ -536,7 +541,7 @@ impl Drop for ReviewObjectStore {
 }
 
 impl ReviewTemporaryFile {
-    fn new(kind: &str) -> ChatResult<Self> {
+    pub(super) fn new(kind: &str) -> ChatResult<Self> {
         let root = create_review_temporary_directory(kind)?;
         Ok(Self {
             path: root.join("content"),
@@ -544,7 +549,7 @@ impl ReviewTemporaryFile {
         })
     }
 
-    fn path(&self) -> &Path {
+    pub(super) fn path(&self) -> &Path {
         &self.path
     }
 }
@@ -555,18 +560,21 @@ impl Drop for ReviewTemporaryFile {
     }
 }
 
+/// Creates a private, randomly named directory for review objects, indexes, and spools,
+/// which hold repository content that other local users must not read.
 fn create_review_temporary_directory(kind: &str) -> ChatResult<PathBuf> {
-    for _ in 0..32 {
-        let sequence = REVIEW_TEMPORARY_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-        let path = std::env::temp_dir().join(format!(
-            "ganbaru-chat-review-{kind}-{}-{sequence}",
-            std::process::id()
-        ));
-        match fs::create_dir(&path) {
-            Ok(()) => return Ok(path),
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
-            Err(_) => return Err(review_error("Create review temporary directory")),
-        }
-    }
-    Err(review_error("Allocate review temporary directory"))
+    ganbaru_atomic_files::create_private_temporary_directory(
+        &std::env::temp_dir(),
+        &format!("ganbaru-chat-review-{kind}-"),
+    )
+    .map_err(|_| review_error("Create review temporary directory"))
+}
+
+/// Refuses a review whose captured material would exceed temporary storage.
+pub(super) fn review_storage_limit_error() -> ChatError {
+    ChatError::new(
+        ChatErrorCode::Protocol,
+        "Review snapshot exceeds the supported temporary storage limit",
+        true,
+    )
 }

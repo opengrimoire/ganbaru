@@ -4,13 +4,18 @@
 
 <script lang="ts">
   import { onMount, untrack } from "svelte";
+  import { Channel } from "@tauri-apps/api/core";
   import { listen } from "@tauri-apps/api/event";
   import * as chatApi from "$lib/api/chat";
-  import type { ChatTerminalRead } from "$lib/chat/contracts";
+  import type { ChatTerminalOutputChunk, ChatTerminalRead } from "$lib/chat/contracts";
   import { parseChatTerminal, parseChatTerminalOutput } from "$lib/chat/validation";
   import {
     applyTerminalOutput,
+    TerminalOutputAcknowledger,
+    terminalOutputByteLength,
     terminalErrorMessage,
+    terminalLinkTarget,
+    sanitizeTerminalPaste,
     terminalPasteNeedsConfirmation,
   } from "$lib/chat/workspace/terminal-model";
   import { getLocalization } from "$lib/i18n/translator.svelte";
@@ -41,6 +46,22 @@
   let refitTerminal: (() => void) | null = null;
   let outputState = { generation: 0, lastSequence: 0 };
   let error = $state<string | null>(null);
+  const subscriptionId = crypto.randomUUID();
+  const outputAcknowledger = new TerminalOutputAcknowledger();
+  const outputChannel = new Channel<unknown>();
+  /** Live chunks held while a snapshot is loading; null once live chunks apply directly. */
+  let pendingLiveOutput: ChatTerminalOutputChunk[] | null = [];
+  let detached = false;
+  outputChannel.onmessage = (message) => {
+    try {
+      const chunk = parseChatTerminalOutput(message);
+      if (chunk.terminalId !== terminalIdentity.id) return;
+      if (pendingLiveOutput) pendingLiveOutput.push(chunk);
+      else applyLiveChunk(chunk);
+    } catch (reason: unknown) {
+      error = terminalMessage(reason);
+    }
+  };
   const resizeOwnerId = Symbol("terminal-resize-owner");
   const TERMINAL_FONT_FAMILY = '"SF Mono", "SFMono-Regular", "JetBrains Mono", "Cascadia Code", Consolas, "Liberation Mono", Menlo, monospace';
   const TERMINAL_BASE_FONT_SIZE = 13;
@@ -58,10 +79,12 @@
     void Promise.all([
       import("@xterm/xterm"),
       import("@xterm/addon-fit"),
-      chatApi.readChatTerminalSnapshot(
+      chatApi.attachChatTerminal(
         terminalIdentity.id,
         terminalIdentity.threadId,
         terminalIdentity.workingFolderId,
+        subscriptionId,
+        outputChannel,
       ),
     ]).then(async ([xtermModule, fitModule, snapshot]) => {
       if (disposed || !host) return;
@@ -79,6 +102,19 @@
         letterSpacing: 0,
         lineHeight: 1.1,
         theme: terminalTheme(terminalHost),
+        linkHandler: {
+          allowNonHttpProtocols: false,
+          activate: (_event, uri) => {
+            const target = terminalLinkTarget(uri);
+            if (!target) return;
+            void chatApi.openChatExternalUrl(target).catch((reason: unknown) => { error = terminalMessage(reason); });
+          },
+          hover: (_event, uri) => {
+            const target = terminalLinkTarget(uri);
+            if (target) terminalHost.title = target;
+          },
+          leave: () => terminalHost.removeAttribute("title"),
+        },
       });
       const themeObserver = new MutationObserver(() => {
         terminal.options.theme = terminalTheme(terminalHost);
@@ -91,6 +127,7 @@
       xterm = terminal;
       outputState = { generation: snapshot.terminal.generation, lastSequence: 0 };
       for (const chunk of snapshot.scrollback) applyChunk(chunk);
+      flushLiveOutput();
       terminal.onData((data) => {
         if (terminal.options.disableStdin) return;
         claimResize();
@@ -140,19 +177,6 @@
       resizeObserver.observe(host);
       resizeTerminal();
 
-      const unlistenOutput = await listen<unknown>("chat://terminal-output", (event) => {
-        try {
-          const chunk = parseChatTerminalOutput(event.payload);
-          if (chunk.terminalId === terminalIdentity.id) applyChunk(chunk);
-        } catch (reason: unknown) {
-          error = terminalMessage(reason);
-        }
-      });
-      if (disposed) {
-        unlistenOutput();
-        return;
-      }
-      disposers.push(unlistenOutput);
       const unlistenState = await listen<unknown>("chat://terminal-state", (event) => {
         try {
           const state = parseChatTerminal(event.payload);
@@ -169,6 +193,10 @@
     }).catch((reason: unknown) => { error = terminalMessage(reason); });
     return () => {
       disposed = true;
+      detached = true;
+      outputChannel.onmessage = () => undefined;
+      void chatApi.detachChatTerminal(terminalIdentity.id, subscriptionId)
+        .catch((reason: unknown) => { console.warn("Chat terminal detach failed", reason); });
       releaseResize();
       if (resizeTimer !== null) window.clearTimeout(resizeTimer);
       resizeObserver?.disconnect();
@@ -191,39 +219,70 @@
     };
   }
 
-  function applyChunk(chunk: import("$lib/chat/contracts").ChatTerminalOutputChunk): void {
+  /** Writes a chunk in sequence; `onHandled` runs once xterm has parsed it, or immediately when it is skipped. */
+  function applyChunk(chunk: ChatTerminalOutputChunk, onHandled?: () => void): void {
     if (!xterm) return;
     const decision = applyTerminalOutput(outputState, chunk);
     if (decision.kind === "accept") {
       outputState = decision.state;
-      xterm.write(decision.bytes);
-    } else if (decision.kind === "gap") {
+      xterm.write(decision.bytes, onHandled);
+      return;
+    }
+    onHandled?.();
+    if (decision.kind === "gap") {
       void replay().catch((reason: unknown) => { error = terminalMessage(reason); });
     }
   }
 
-  async function replay(): Promise<void> {
-    const snapshot = await chatApi.readChatTerminalSnapshot(
-      terminalIdentity.id,
-      terminalIdentity.threadId,
-      terminalIdentity.workingFolderId,
-    );
-    xterm?.reset();
-    outputState = { generation: snapshot.terminal.generation, lastSequence: 0 };
-    for (const chunk of snapshot.scrollback) applyChunk(chunk);
-    notifyState(snapshot.terminal);
+  /** Applies a live chunk and returns its delivery credit after xterm handles it. */
+  function applyLiveChunk(chunk: ChatTerminalOutputChunk): void {
+    const bytes = terminalOutputByteLength(chunk);
+    applyChunk(chunk, () => acknowledgeOutput(bytes));
   }
 
+  function acknowledgeOutput(bytes: number): void {
+    const released = outputAcknowledger.record(bytes);
+    if (released === 0 || detached) return;
+    void chatApi.acknowledgeChatTerminalOutput(terminalIdentity.id, subscriptionId, released)
+      .catch((reason: unknown) => { error = terminalMessage(reason); });
+  }
+
+  function flushLiveOutput(): void {
+    const queued = pendingLiveOutput ?? [];
+    pendingLiveOutput = null;
+    for (const chunk of queued) applyLiveChunk(chunk);
+  }
+
+  /** Rebuilds the view from scrollback after a sequence gap, holding live chunks until the snapshot is written. */
+  async function replay(): Promise<void> {
+    if (pendingLiveOutput) return;
+    pendingLiveOutput = [];
+    try {
+      const snapshot = await chatApi.readChatTerminalSnapshot(
+        terminalIdentity.id,
+        terminalIdentity.threadId,
+        terminalIdentity.workingFolderId,
+      );
+      xterm?.reset();
+      outputState = { generation: snapshot.terminal.generation, lastSequence: 0 };
+      for (const chunk of snapshot.scrollback) applyChunk(chunk);
+      notifyState(snapshot.terminal);
+    } finally {
+      flushLiveOutput();
+    }
+  }
+
+  /** Runs in the capture phase because xterm stops propagation of paste events on its textarea. */
   function handlePaste(event: ClipboardEvent): void {
-    const text = event.clipboardData?.getData("text/plain") ?? "";
-    if (!text || !terminalPasteNeedsConfirmation(
+    event.preventDefault();
+    event.stopPropagation();
+    const { text } = sanitizeTerminalPaste(event.clipboardData?.getData("text/plain") ?? "");
+    if (!text) return;
+    if (terminalPasteNeedsConfirmation(
       text,
       chat.settings?.configuration.behavior.confirmMultilineTerminalPaste ?? true,
-    )) return;
-    event.preventDefault();
-    if (window.confirm(t("chat.inspector.confirmMultilinePaste") + "\n\n" + text)) {
-      xterm?.paste(text);
-    }
+    ) && !window.confirm(t("chat.inspector.confirmMultilinePaste") + "\n\n" + text)) return;
+    xterm?.paste(text);
   }
 
   function terminalMessage(reason: unknown): string {
@@ -247,7 +306,7 @@
 
 <div class="terminal-view" data-terminal-capture>
   {#if error}<Notice class="border-b border-border p-2 text-xs" message={error} />{/if}
-  <div class="terminal-host" bind:this={host} onpaste={handlePaste}></div>
+  <div class="terminal-host" bind:this={host} onpastecapture={handlePaste}></div>
 </div>
 
 <style>

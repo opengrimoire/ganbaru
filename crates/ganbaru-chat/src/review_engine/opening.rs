@@ -9,7 +9,9 @@ use super::super::workspace::{AuthorizedWorkingFolder, WorkingFolderAuthorizatio
 use super::ReviewWorkspaceAuthorizer;
 use super::authorization::authorize_review_request;
 use super::contracts::*;
-use super::material::{enrich_working_tree_files, git_files, working_tree_material};
+use super::material::{
+    add_too_large_files, enrich_working_tree_files, git_files, working_tree_material,
+};
 use super::registry::{
     ChatReviewRegistry, ReviewFileInternal, ReviewSnapshot, file_id, review_revision, snapshot_id,
     snapshot_read,
@@ -63,6 +65,12 @@ pub async fn open_review(
                 )
                 .await?;
                 enrich_working_tree_files(&mut files, &material.status, &request.source);
+                add_too_large_files(
+                    &mut files,
+                    &material.status,
+                    &request.source,
+                    &material.too_large_paths,
+                );
                 (
                     Some(material.before_oid),
                     Some(material.after_oid),
@@ -576,6 +584,7 @@ pub fn file_contract(
             pure_rename,
             untracked,
             symlink: false,
+            too_large: false,
             provider_reported: read_only && matches!(source, ReviewDiffSource::ProviderTurn { .. }),
             git_observed: !matches!(source, ReviewDiffSource::ProviderTurn { .. }),
             read_only,

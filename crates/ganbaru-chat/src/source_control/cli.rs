@@ -2,8 +2,6 @@ use super::parsing::*;
 use super::*;
 use crate::git::hardened::{self, GitChildEnvironment, GitFolderTrust, GitPolicy, GitRunError};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 pub fn provider_executable(kind: HostedSourceControlKind) -> ChatResult<&'static str> {
     match kind {
@@ -448,7 +446,7 @@ pub async fn run_cli_operation(
         .map_err(|error| cli_run_error(executable, error))?;
     drop(isolated);
     if !output.status.success() {
-        let detail = String::from_utf8_lossy(&output.stderr);
+        let detail = crate::git::diagnostic_text(&output.stderr);
         let normalized = detail.to_ascii_lowercase();
         let code = if normalized.contains("auth")
             || normalized.contains("login")
@@ -458,13 +456,12 @@ pub async fn run_cli_operation(
         } else {
             ChatErrorCode::DriverUnavailable
         };
-        let message = detail.trim();
         return Err(ChatError::new(
             code,
-            if message.is_empty() {
+            if detail.is_empty() {
                 "Source-control command failed".to_string()
             } else {
-                message.chars().take(2_000).collect()
+                detail
             },
             true,
         ));
@@ -505,22 +502,11 @@ pub(super) struct EmptyWorkingDirectory(pub(super) PathBuf);
 
 impl EmptyWorkingDirectory {
     pub(super) fn create() -> ChatResult<Self> {
-        static SEQUENCE: AtomicU64 = AtomicU64::new(0);
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_or(0, |elapsed| elapsed.as_nanos());
-        let path = std::env::temp_dir().join(format!(
-            "ganbaru-source-control-{}-{}-{nanos}",
-            std::process::id(),
-            SEQUENCE.fetch_add(1, Ordering::Relaxed)
-        ));
-        let mut builder = std::fs::DirBuilder::new();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::DirBuilderExt;
-            builder.mode(0o700);
-        }
-        builder.create(&path).map_err(|_| {
+        let path = ganbaru_atomic_files::create_private_temporary_directory(
+            &std::env::temp_dir(),
+            "ganbaru-source-control-",
+        )
+        .map_err(|_| {
             ChatError::new(
                 ChatErrorCode::DriverUnavailable,
                 "Source-control command could not be started",

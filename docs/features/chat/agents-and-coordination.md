@@ -23,7 +23,7 @@ Effective authority is the intersection of these ceilings, resolved by [Chat acc
 
 Ordinary messages never invoke every visible agent. Work starts through an explicit mention or, in the future, a typed assignment, a documented workflow, or a user-approved scheduled action. Mentions distinguish reference from invocation: naming an agent in prose is not enough, and an actionable invocation is visible before execution begins.
 
-An invocation creates a work assignment in a reply thread, linked to its triggering message and any previous assignment. Assignments move through queued, working, waiting for an answer, waiting for approval, ready for review, completed, failed, or cancelled. A settled assignment run (completed, failed, or cancelled) ignores later provider events, so a late or replayed event cannot reopen it or change how it ended.
+An invocation creates a work assignment in a reply thread, linked to its triggering message and any previous assignment. Assignments move through queued, working, waiting for an answer, waiting for approval, ready for review, completed, failed, or cancelled. A settled assignment run (completed, failed, or cancelled) ignores later provider events, so a late or replayed event cannot reopen it or change how it ended. A reply in an assignment thread continues with that thread's latest teammate without a new mention, so review feedback reaches the agent that did the work; this requires the teammate to still participate in the channel, and removing it stops implicit continuation. Only the local owner posts today; when other people can post, a reply continues an assignment only within its author's own authority (planned).
 
 ## Resolution before work starts
 

@@ -605,6 +605,35 @@ fn restart_rehomes_review_replies_into_one_ordered_follow_up_assignment() {
 }
 
 #[test]
+fn unmentioned_replies_continue_only_with_a_teammate_that_still_participates() {
+    tauri::async_runtime::block_on(async {
+        let pool = migrated_pool().await;
+        seed_review_assignment_with_stranded_replies(&pool).await;
+        let conversation_id = ChatConversationId::new("conversation:review").unwrap();
+        let reply_thread_id = ChatReplyThreadId::new("reply-thread:review").unwrap();
+
+        let invocation =
+            resolve_invoked_teammate(&pool, &conversation_id, Some(&reply_thread_id), &[])
+                .await
+                .unwrap()
+                .expect("a reply in an assignment thread continues with its teammate");
+        assert_eq!(invocation.teammate_id.as_str(), "participant:review-agent");
+
+        sqlx::query(
+            "UPDATE chat_conversation_memberships SET removed_at = '2026-08-04T17:03:00.000Z'
+             WHERE participant_id = 'participant:review-agent'",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let error = resolve_invoked_teammate(&pool, &conversation_id, Some(&reply_thread_id), &[])
+            .await
+            .expect_err("a removed teammate is not re-invoked by an unmentioned reply");
+        assert_eq!(error.code, ChatErrorCode::Conflict);
+    });
+}
+
+#[test]
 fn plain_at_text_is_valid_but_does_not_invoke_a_teammate() {
     tauri::async_runtime::block_on(async {
         let pool = migrated_pool().await;

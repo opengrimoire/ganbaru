@@ -247,4 +247,40 @@ describe("Soundscape preset editor", () => {
     expect(onDone).toHaveBeenCalledWith(null);
     expect(savePreset).not.toHaveBeenCalled();
   });
+
+  it("asks before discarding changes and keeps the draft when editing continues", async () => {
+    const onDone = await render(evening);
+    soundTile("Fireplace").click();
+    await tick();
+    nameField().dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+    await tick();
+    expect(onDone).not.toHaveBeenCalled();
+    confirmButton("Keep editing").click();
+    await tick();
+    expect(document.body.querySelector(".confirm-dialog")).toBeNull();
+    expect(soundTile("Fireplace").getAttribute("aria-pressed")).toBe("true");
+    cancelButton().click();
+    await tick();
+    confirmButton("Discard").click();
+    expect(onDone).toHaveBeenCalledWith(null);
+    expect(savePreset).not.toHaveBeenCalled();
+  });
+
+  it("closes without asking once every change is undone", async () => {
+    const onDone = await render(evening);
+    soundTile("Fireplace").click();
+    soundTile("Fireplace").click();
+    await tick();
+    cancelButton().click();
+    expect(onDone).toHaveBeenCalledWith(null);
+  });
+
 });
+
+function cancelButton(): HTMLButtonElement {
+  return [...document.body.querySelectorAll<HTMLButtonElement>("footer button")].find((button) => button.textContent?.trim() === "Cancel")!;
+}
+
+function confirmButton(label: string): HTMLButtonElement {
+  return [...document.body.querySelectorAll<HTMLButtonElement>(".confirm-dialog button")].find((button) => button.textContent?.includes(label))!;
+}

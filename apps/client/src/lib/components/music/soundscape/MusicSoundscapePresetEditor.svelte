@@ -2,6 +2,7 @@
   import { onMount } from "svelte";
   import MusicBuilderDialog from "$lib/components/music/builder/MusicBuilderDialog.svelte";
   import IconPicker from "$lib/components/icon-picker/IconPicker.svelte";
+  import ConfirmDialog from "$lib/components/ui/ConfirmDialog.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
   import Switch from "$lib/components/ui/Switch.svelte";
   import { formatNumber } from "$lib/i18n/formatters";
@@ -27,6 +28,7 @@
   import { getMusicPlayer } from "$lib/stores/music-player.svelte";
   import { getSoundscapeStore } from "$lib/stores/soundscape.svelte";
   import { growThenFade } from "$lib/utils/grow-then-fade";
+  import { portal } from "$lib/utils/portal";
   import MusicSoundscapeIcon from "./MusicSoundscapeIcon.svelte";
   import MusicSoundscapeLevelSlider from "./MusicSoundscapeLevelSlider.svelte";
   import MusicSoundscapeRelativeLevel from "./MusicSoundscapeRelativeLevel.svelte";
@@ -43,13 +45,10 @@
    */
   let {
     preset = null,
-    layer = undefined,
     onDone,
     onRemove,
   }: {
     preset?: MusicSoundscapePreset | null;
-    /** Layer a new soundscape starts with, named and drawn after it; ignored when editing. */
-    layer?: MusicSoundscapeDefinition;
     onDone: (preset: MusicSoundscapePreset | null) => void;
     onRemove?: (preset: MusicSoundscapePreset) => void;
   } = $props();
@@ -63,6 +62,9 @@
   let icon = $state(initialIcon());
   let sounds = $state<MusicSoundscapePresetSound[]>(initialSounds());
   let level = $state(initialLevel());
+  const initialDraft = draftSignature(initialName(), initialIcon(), initialLevel(), initialSounds());
+  const dirty = $derived(draftSignature(name, icon, level, sounds) !== initialDraft);
+  let confirmingDiscard = $state(false);
   const atLimit = $derived(sounds.length >= MAX_SOUNDSCAPE_LAYERS);
   const canSave = $derived(name.trim().length > 0 && sounds.length > 0 && !soundscape.saving);
   const mix = $derived(sounds.flatMap((sound) => {
@@ -89,12 +91,11 @@
   });
 
   function initialName(): string {
-    if (preset) return presetDisplayName(preset, t);
-    return layer ? soundDisplayName(layer, t) : "";
+    return preset ? presetDisplayName(preset, t) : "";
   }
 
   function initialIcon(): string {
-    return preset?.icon ?? layer?.icon ?? DEFAULT_PRESET_ICON;
+    return preset?.icon ?? DEFAULT_PRESET_ICON;
   }
 
   function initialLevel(): number {
@@ -102,8 +103,18 @@
   }
 
   function initialSounds(): MusicSoundscapePresetSound[] {
-    if (preset) return preset.sounds.map((sound) => ({ ...sound }));
-    return layer ? togglePresetDraftSound([], layer.id) : [];
+    return preset ? preset.sounds.map((sound) => ({ ...sound })) : [];
+  }
+
+  /** Comparable form of a draft, so returning every field to where it started counts as unchanged. */
+  function draftSignature(draftName: string, draftIcon: string, draftLevel: number, draftSounds: readonly MusicSoundscapePresetSound[]): string {
+    return JSON.stringify([draftName.trim(), draftIcon, draftLevel, draftSounds.map((sound) => [sound.soundscapeId, sound.level])]);
+  }
+
+  /** Leaves without saving, asking first when the draft has changes. */
+  function requestClose(): void {
+    if (dirty) confirmingDiscard = true;
+    else onDone(null);
   }
 
   function prefersReducedMotion(): boolean {
@@ -145,7 +156,7 @@
   titleId="soundscape-preset-editor"
   size="large"
   dismissDisabled={soundscape.saving}
-  onDismiss={() => onDone(null)}
+  onDismiss={requestClose}
 >
   <div class="@container flex flex-col gap-5">
     <div class="flex items-center gap-2">
@@ -199,8 +210,14 @@
   </div>
 
   {#snippet footer()}
-    <button type="button" onclick={() => onDone(null)} disabled={soundscape.saving} class="min-h-10 rounded-md border border-border bg-card px-3.5 py-2 text-sm font-medium hover:bg-accent disabled:opacity-50">{t("common.cancel")}</button>
+    <button type="button" onclick={requestClose} disabled={soundscape.saving} class="min-h-10 rounded-md border border-border bg-card px-3.5 py-2 text-sm font-medium hover:bg-accent disabled:opacity-50">{t("common.cancel")}</button>
     <button type="button" data-preset-save onclick={() => { void save(); }} disabled={!canSave} class="min-h-10 rounded-md border border-border bg-primary px-3.5 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50">{t("music.soundscape.preset.save")}</button>
     {#if preset && onRemove}<button type="button" onclick={() => onRemove(preset)} disabled={soundscape.saving} class="ml-auto min-h-10 rounded-md px-3.5 py-2 text-sm font-medium text-destructive hover:bg-accent disabled:opacity-50">{t("music.soundscape.preset.remove")}</button>{/if}
   {/snippet}
 </MusicBuilderDialog>
+{#if confirmingDiscard}
+  <!-- Portaled after the editor modal so the confirmation stacks above it. -->
+  <div use:portal>
+    <ConfirmDialog title={t("calendar.view.discardUnsavedTitle")} message={t("calendar.view.changesLost")} confirmLabel={t("calendar.view.discard")} cancelLabel={t("calendar.view.keepEditing")} onConfirm={() => { confirmingDiscard = false; onDone(null); }} onCancel={() => confirmingDiscard = false} />
+  </div>
+{/if}

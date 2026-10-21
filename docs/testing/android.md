@@ -75,6 +75,7 @@ The native owner holds the queue and decoder; the WebView is only a projection.
 - A hidden browser source resumes paused after its host lease expires; only explicit Play restarts it.
 - During slow loads or a blocked document provider, pause, seek, stop, change items, switch vaults, change Focus phase, and destroy the service. The newest intent wins, old callbacks are ignored, a stopped decoder never reloads, and resolver work stays bounded.
 - After service loss, the selected track and position are retained and explicit Play resumes the same track.
+- Another app calling `stopService` on the playback service leaves playback running. Removing the task while paused still stops the service, and removing it while playing keeps playback in the foreground.
 - A vault handoff waits for playback to actually stop or reports a timeout; the old vault's canceled playback never resumes.
 - Desktop audio, soundscapes, path reveal, and loopback media capabilities are absent.
 

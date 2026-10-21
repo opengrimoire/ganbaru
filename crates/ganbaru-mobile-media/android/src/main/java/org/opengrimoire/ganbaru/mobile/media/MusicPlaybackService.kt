@@ -261,6 +261,13 @@ class MusicPlaybackService : MediaSessionService() {
     return if (controllerInfo.packageName == packageName || controllerInfo.isTrusted) session else null
   }
 
+  override fun onTaskRemoved(rootIntent: Intent?) {
+    // Media3 stops the service here unless it is in the foreground and playing. The keep-alive
+    // binding would otherwise hold a stopped service, so it is released for that case first.
+    if (!isPlaybackOngoing() || mediaSession?.player?.isPlaying != true) NativeMusicSession.releaseBinding()
+    super.onTaskRemoved(rootIntent)
+  }
+
   override fun onDestroy() {
     main.removeCallbacks(observer)
     destroyed = true

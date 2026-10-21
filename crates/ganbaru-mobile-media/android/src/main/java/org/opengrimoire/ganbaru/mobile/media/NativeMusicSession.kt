@@ -1,9 +1,12 @@
 package org.opengrimoire.ganbaru.mobile.media
 
+import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.content.ServiceConnection
 import android.net.Uri
 import android.os.Handler
+import android.os.IBinder
 import android.os.Looper
 import android.provider.DocumentsContract
 import android.util.Log
@@ -56,13 +59,38 @@ object NativeMusicSession {
     catch (error: Exception) { effects.failedStart(); throw error }
   }
 
+  /** Holds the keep-alive binding for as long as the created service runs. */
   fun created(owner: MusicPlaybackService) {
     effects.created(owner)
+    if (!bindingFor(owner.applicationContext).hold()) {
+      Log.w("GanbaruMusic", "Android Music service binding was refused; another app could stop playback")
+    }
+  }
+
+  /** Releases the keep-alive binding before the service stops itself, for example on task removal. */
+  fun releaseBinding() {
+    serviceBinding?.release()
   }
 
   fun destroyed(owner: MusicPlaybackService) {
+    releaseBinding()
     effects.destroyed(owner)
   }
+
+  private val serviceConnection = object : ServiceConnection {
+    override fun onServiceConnected(name: ComponentName?, service: IBinder?) {}
+    override fun onServiceDisconnected(name: ComponentName?) {}
+    override fun onNullBinding(name: ComponentName?) {}
+  }
+  @Volatile private var serviceBinding: NativeMusicServiceBinding? = null
+
+  private fun bindingFor(application: Context): NativeMusicServiceBinding =
+    serviceBinding ?: synchronized(this) {
+      serviceBinding ?: NativeMusicServiceBinding(
+        { application.bindService(Intent(application, MusicPlaybackService::class.java), serviceConnection, Context.BIND_AUTO_CREATE) },
+        { application.unbindService(serviceConnection) },
+      ).also { serviceBinding = it }
+    }
 
   /** Called through a retained JavaVM/global class reference, without an Activity. */
   @JvmStatic

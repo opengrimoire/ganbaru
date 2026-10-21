@@ -32,7 +32,7 @@ Scripts, styles, event attributes, unsafe URLs, SVG, iframes, and unapproved emb
 
 Notion API import uses a user-provided integration token for the current request only. The token is never stored in SQLite, configuration, page payloads, comments, or diagnostics.
 
-The current adapter targets public Notion API version `2026-03-11`. It can import selected pages, recursively paginated block children, data-source schemas and rows, unresolved comments, and optional users.
+The current adapter targets public Notion API version `2026-03-11`. It can import selected pages, recursively paginated block children, data-source schemas and rows, unresolved comments, and optional users. Pages and data sources are chosen by ID or by Notion link; every object ID, typed or returned by Notion, must be a 32-digit hex UUID and is sent in canonical form, so no input can change the API path or query.
 
 Responses stream into strict byte limits before JSON parsing, require JSON media types, bound pagination and object counts, detect repeated cursors, cap retry waits, and cancel when the operation is dropped. Remote response bodies never appear in errors.
 

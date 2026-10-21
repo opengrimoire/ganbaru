@@ -65,6 +65,37 @@ impl NotionApiError {
     }
 }
 
+/// Canonical lowercase hyphenated form of a Notion object ID, or `None` unless the value is
+/// exactly 32 hex digits with optional hyphens. Every ID placed in an API path or query goes
+/// through this, so response or input text cannot add path segments or query parameters.
+pub(crate) fn canonical_notion_id(value: &str) -> Option<String> {
+    let compact = value
+        .chars()
+        .filter(|character| *character != '-')
+        .collect::<String>();
+    if compact.len() != 32
+        || !compact
+            .chars()
+            .all(|character| character.is_ascii_hexdigit())
+    {
+        return None;
+    }
+    let compact = compact.to_ascii_lowercase();
+    Some(format!(
+        "{}-{}-{}-{}-{}",
+        &compact[..8],
+        &compact[8..12],
+        &compact[12..16],
+        &compact[16..20],
+        &compact[20..]
+    ))
+}
+
+fn api_path_id(value: &str) -> Result<String, NotionApiError> {
+    canonical_notion_id(value)
+        .ok_or_else(|| NotionApiError::request("Notion object ID is not a valid UUID"))
+}
+
 impl NotionApiClient {
     pub(crate) fn new(
         token: String,
@@ -131,6 +162,7 @@ impl NotionApiClient {
     }
 
     pub(crate) async fn retrieve_page(&mut self, page_id: &str) -> Result<Value, NotionApiError> {
+        let page_id = api_path_id(page_id)?;
         self.send_json(Method::GET, &format!("/pages/{page_id}"), None, None)
             .await
     }
@@ -139,6 +171,7 @@ impl NotionApiClient {
         &mut self,
         data_source_id: &str,
     ) -> Result<Value, NotionApiError> {
+        let data_source_id = api_path_id(data_source_id)?;
         self.send_json(
             Method::GET,
             &format!("/data_sources/{data_source_id}"),
@@ -153,6 +186,7 @@ impl NotionApiClient {
         block_id: &str,
         max_results: usize,
     ) -> Result<Vec<Value>, NotionApiError> {
+        let block_id = api_path_id(block_id)?;
         self.paginated_get(
             &format!("/blocks/{block_id}/children"),
             "block children",
@@ -167,11 +201,12 @@ impl NotionApiClient {
         &mut self,
         block_id: &str,
     ) -> Result<Vec<Value>, NotionApiError> {
+        let block_id = api_path_id(block_id)?;
         self.paginated_get(
             "/comments",
             "comments",
             Some("comment"),
-            &[("block_id", block_id)],
+            &[("block_id", &block_id)],
             MAX_PAGINATED_OBJECTS,
         )
         .await
@@ -186,6 +221,7 @@ impl NotionApiClient {
         &mut self,
         data_source_id: &str,
     ) -> Result<Vec<Value>, NotionApiError> {
+        let data_source_id = api_path_id(data_source_id)?;
         let mut results = Vec::new();
         let mut start_cursor: Option<String> = None;
         let mut pagination = PaginationGuard::new(MAX_PAGINATED_OBJECTS);
@@ -609,6 +645,9 @@ mod tests {
     use std::net::TcpListener;
     use std::sync::mpsc;
 
+    const PAGE_ID: &str = "0a1b2c3d-4e5f-4a6b-8c7d-8e9f0a1b2c3d";
+    const DATA_SOURCE_ID: &str = "1a1b2c3d-4e5f-4a6b-8c7d-8e9f0a1b2c3d";
+
     fn test_client(base_url: Url, page_size: i64) -> NotionApiClient {
         NotionApiClient::for_test(
             base_url,
@@ -628,7 +667,7 @@ mod tests {
         }]);
         let mut client = test_client(base_url, 100);
 
-        let error = sqlx::__rt::test_block_on(client.retrieve_page("page-id"))
+        let error = sqlx::__rt::test_block_on(client.retrieve_page(PAGE_ID))
             .expect_err("oversized success response must fail");
 
         assert!(error.message.contains("success response exceeded"));
@@ -647,7 +686,7 @@ mod tests {
         }]);
         let mut client = test_client(base_url, 100);
 
-        let error = sqlx::__rt::test_block_on(client.retrieve_page("page-id"))
+        let error = sqlx::__rt::test_block_on(client.retrieve_page(PAGE_ID))
             .expect_err("oversized error response must fail");
 
         assert!(error.message.contains("error response exceeded"));
@@ -666,7 +705,7 @@ mod tests {
         }]);
         let mut client = test_client(base_url, 100);
 
-        let error = sqlx::__rt::test_block_on(client.retrieve_page("page-id"))
+        let error = sqlx::__rt::test_block_on(client.retrieve_page(PAGE_ID))
             .expect_err("non-JSON response must fail");
 
         assert!(error.message.contains("unsupported content type"));
@@ -695,7 +734,7 @@ mod tests {
         ]);
         let mut client = test_client(base_url, 2);
 
-        let rows = sqlx::__rt::test_block_on(client.query_data_source("data-source-id")).unwrap();
+        let rows = sqlx::__rt::test_block_on(client.query_data_source(DATA_SOURCE_ID)).unwrap();
 
         assert_eq!(
             rows.iter()
@@ -710,6 +749,43 @@ mod tests {
     }
 
     #[test]
+    fn api_paths_and_queries_carry_only_canonical_notion_ids() {
+        let empty = || {
+            ScriptedResponse::json(
+                "200 OK",
+                json!({ "results": [], "has_more": false, "next_cursor": null }),
+            )
+        };
+        let (base_url, requests, server) = start_scripted_server(vec![empty(), empty()]);
+        let mut client = test_client(base_url, 100);
+
+        sqlx::__rt::test_block_on(
+            client.list_block_children("0A1B2C3D4E5F4A6B8C7D8E9F0A1B2C3D", 10),
+        )
+        .unwrap();
+        sqlx::__rt::test_block_on(client.list_comments("0a1b2c3d4e5f4a6b8c7d8e9f0a1b2c3d"))
+            .unwrap();
+        for hostile in [
+            "../users",
+            "page-id",
+            "0a1b2c3d4e5f4a6b8c7d8e9f0a1b2c3d&page_size=1",
+        ] {
+            let error = sqlx::__rt::test_block_on(client.retrieve_page(hostile)).unwrap_err();
+            assert!(error.message.contains("not a valid UUID"), "{hostile}");
+            assert!(sqlx::__rt::test_block_on(client.list_comments(hostile)).is_err());
+            assert!(sqlx::__rt::test_block_on(client.retrieve_data_source(hostile)).is_err());
+            assert!(sqlx::__rt::test_block_on(client.query_data_source(hostile)).is_err());
+        }
+
+        server.join().unwrap();
+        let requests = requests.try_iter().collect::<Vec<_>>();
+        assert_eq!(requests.len(), 2);
+        assert!(requests[0].contains(&format!("/v1/blocks/{PAGE_ID}/children?")));
+        assert!(requests[1].contains(&format!("block_id={PAGE_ID}")));
+        assert_eq!(client.stats().request_count, 2);
+    }
+
+    #[test]
     fn block_pagination_stops_at_the_remaining_import_limit() {
         let (base_url, requests, server) = start_scripted_server(vec![ScriptedResponse::json(
             "200 OK",
@@ -721,7 +797,7 @@ mod tests {
         )]);
         let mut client = test_client(base_url, 100);
 
-        let error = sqlx::__rt::test_block_on(client.list_block_children("page-id", 1))
+        let error = sqlx::__rt::test_block_on(client.list_block_children(PAGE_ID, 1))
             .expect_err("pagination must stop when the remaining block capacity is full");
 
         assert!(error.message.contains("exceeded 1 objects"));
@@ -766,7 +842,7 @@ mod tests {
 
         let result = sqlx::__rt::test_block_on(sqlx::__rt::timeout(
             Duration::from_millis(500),
-            client.retrieve_page("page-id"),
+            client.retrieve_page(PAGE_ID),
         ));
 
         assert!(result.is_err());
@@ -789,7 +865,7 @@ mod tests {
         let (base_url, requests, server) = start_scripted_server(vec![page("a"), page("b")]);
         let mut client = NotionApiClient::for_test(base_url, 1, NotionImportCancellation::new(), 2);
 
-        let error = sqlx::__rt::test_block_on(client.list_block_children("page-id", 100))
+        let error = sqlx::__rt::test_block_on(client.list_block_children(PAGE_ID, 100))
             .expect_err("the third request exceeds the budget");
 
         assert!(error.message.contains("limit of 2 API requests"));
@@ -821,7 +897,7 @@ mod tests {
         let mut client = NotionApiClient::for_test(base_url, 100, cancellation, 10);
 
         let started = Instant::now();
-        let error = sqlx::__rt::test_block_on(client.retrieve_page("page-id"))
+        let error = sqlx::__rt::test_block_on(client.retrieve_page(PAGE_ID))
             .expect_err("cancel must end the retry wait");
 
         assert!(started.elapsed() < Duration::from_secs(5));

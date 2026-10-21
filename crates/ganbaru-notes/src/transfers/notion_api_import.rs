@@ -7,7 +7,7 @@ pub mod writer;
 
 pub use self::cancellation::NotionImportCancellation;
 use self::cancellation::NotionImportStop;
-use self::client::{MAX_IMPORT_REQUESTS, NotionApiClient, NotionApiError};
+use self::client::{MAX_IMPORT_REQUESTS, NotionApiClient, NotionApiError, canonical_notion_id};
 use self::convert::{
     FetchedNotionBlock, NotionConvertOptions, NotionConvertStats, convert_data_source,
     convert_data_source_row, convert_page,
@@ -30,6 +30,8 @@ use std::pin::Pin;
 
 const DEFAULT_PAGE_SIZE: i64 = 100;
 const MAX_SOURCE_IDS: usize = 50;
+/// Longest pasted page or data source reference, an ID or a Notion link.
+const MAX_SOURCE_ID_INPUT_CHARS: usize = 2_048;
 const MAX_IMPORTED_BLOCKS: usize = 5_000;
 /// Blocks one import may fetch across every page and row. Data source rows stay in memory until
 /// their source is written, so this bounds memory as well as time.
@@ -539,17 +541,42 @@ fn validated_source_ids(values: Vec<String>, field: &str) -> Result<Vec<String>,
         if trimmed.is_empty() {
             continue;
         }
-        if trimmed.len() > 200
-            || trimmed.contains('/')
-            || trimmed.chars().any(|character| character.is_control())
-        {
-            return Err(format!("{field} contains an invalid Notion object ID"));
-        }
-        if seen.insert(trimmed.to_string()) {
-            ids.push(trimmed.to_string());
+        let id = source_id_from_input(trimmed)
+            .ok_or_else(|| format!("{field} contains an invalid Notion object ID"))?;
+        if seen.insert(id.clone()) {
+            ids.push(id);
         }
     }
     Ok(ids)
+}
+
+/// Canonical Notion ID from a pasted reference: a bare ID, or a Notion link whose last path
+/// segment is the ID or ends with `-` and the 32-digit ID, as in `Page-Title-<id>`.
+fn source_id_from_input(value: &str) -> Option<String> {
+    if value.chars().count() > MAX_SOURCE_ID_INPUT_CHARS
+        || value.chars().any(|character| character.is_control())
+    {
+        return None;
+    }
+    if let Some(id) = canonical_notion_id(value) {
+        return Some(id);
+    }
+    let without_suffix = value.split(['?', '#']).next().unwrap_or_default();
+    let segment = without_suffix
+        .trim_end_matches('/')
+        .rsplit('/')
+        .next()
+        .unwrap_or_default();
+    if let Some(id) = canonical_notion_id(segment) {
+        return Some(id);
+    }
+    let split = segment.len().checked_sub(32)?;
+    let (title, id) = (segment.get(..split)?, segment.get(split..)?);
+    if title.ends_with('-') {
+        canonical_notion_id(id)
+    } else {
+        None
+    }
 }
 
 fn trimmed_non_empty(value: &str) -> Option<String> {
@@ -575,6 +602,10 @@ mod tests {
     use crate::models::NoteParent;
     use reqwest::Url;
     use serde_json::json;
+
+    const PAGE_1: &str = "0a1b2c3d-4e5f-4a6b-8c7d-8e9f0a1b2c3d";
+    const PAGE_2: &str = "1a1b2c3d-4e5f-4a6b-8c7d-8e9f0a1b2c3d";
+    const BLOCK_1: &str = "2a1b2c3d-4e5f-4a6b-8c7d-8e9f0a1b2c3d";
 
     async fn migrated_memory_pool() -> SqlitePool {
         let pool = sqlx::sqlite::SqlitePoolOptions::new()
@@ -642,15 +673,15 @@ mod tests {
         sqlx::__rt::test_block_on(async {
             let pool = migrated_memory_pool().await;
             let (base_url, requests, server) = start_scripted_server(vec![
-                notion_page("page-1", "First import"),
-                paragraph_children("block-1", "kept paragraph"),
+                notion_page(PAGE_1, "First import"),
+                paragraph_children(BLOCK_1, "kept paragraph"),
             ]);
             let client =
                 NotionApiClient::for_test(base_url, 100, NotionImportCancellation::new(), 2);
 
             let summary = run_import(
                 &pool,
-                &prepared_page_import(&["page-1", "page-2"], false),
+                &prepared_page_import(&[PAGE_1, PAGE_2], false),
                 client,
             )
             .await
@@ -667,7 +698,7 @@ mod tests {
                 .find(|diagnostic| diagnostic["code"] == "import_limit_reached")
                 .expect("the stop is reported");
             assert_eq!(diagnostic["severity"], "warning");
-            assert_eq!(diagnostic["source_object_id"], "page-2");
+            assert_eq!(diagnostic["source_object_id"], PAGE_2);
             let results = crate::search::search(&pool, "kept paragraph", Some(10), false)
                 .await
                 .unwrap();
@@ -686,7 +717,7 @@ mod tests {
             let base_url = Url::parse("http://127.0.0.1:9/v1/").unwrap();
             let client = NotionApiClient::for_test(base_url, 100, cancellation, 10);
 
-            let summary = run_import(&pool, &prepared_page_import(&["page-1"], false), client)
+            let summary = run_import(&pool, &prepared_page_import(&[PAGE_1], false), client)
                 .await
                 .expect("a canceled import returns a summary");
 
@@ -694,7 +725,7 @@ mod tests {
             assert_eq!(summary["imported_page_count"], 0);
             assert_eq!(summary["request_count"], 0);
             assert_eq!(summary["diagnostics"][0]["code"], "import_canceled");
-            assert_eq!(summary["diagnostics"][0]["source_object_id"], "page-1");
+            assert_eq!(summary["diagnostics"][0]["source_object_id"], PAGE_1);
         });
     }
 
@@ -709,14 +740,14 @@ mod tests {
                 )
             };
             let (base_url, _, server) = start_scripted_server(vec![
-                notion_page("page-1", "Partial import"),
+                notion_page(PAGE_1, "Partial import"),
                 no_comments(),
-                paragraph_children("block-1", "partial paragraph"),
+                paragraph_children(BLOCK_1, "partial paragraph"),
             ]);
             let client =
                 NotionApiClient::for_test(base_url, 100, NotionImportCancellation::new(), 3);
 
-            let summary = run_import(&pool, &prepared_page_import(&["page-1"], true), client)
+            let summary = run_import(&pool, &prepared_page_import(&[PAGE_1], true), client)
                 .await
                 .expect("a budget stop returns a summary");
 
@@ -736,6 +767,42 @@ mod tests {
             assert_eq!(page_count, 0);
             server.join().unwrap();
         });
+    }
+
+    #[test]
+    fn source_ids_accept_ids_and_notion_links_in_canonical_form() {
+        let ids = validated_source_ids(
+            vec![
+                " 0A1B2C3D4E5F4A6B8C7D8E9F0A1B2C3D ".to_string(),
+                PAGE_1.to_string(),
+                "https://www.notion.so/team/Weekly-plan-1a1b2c3d4e5f4a6b8c7d8e9f0a1b2c3d?pvs=4"
+                    .to_string(),
+                format!("https://www.notion.so/{BLOCK_1}#section"),
+            ],
+            "page_ids",
+        )
+        .unwrap();
+
+        assert_eq!(ids, vec![PAGE_1, PAGE_2, BLOCK_1]);
+    }
+
+    #[test]
+    fn source_ids_refuse_values_that_could_change_the_api_path_or_query() {
+        for value in [
+            "page-1",
+            "../users",
+            "0a1b2c3d4e5f4a6b8c7d8e9f0a1b2c3d/../../users",
+            "0a1b2c3d4e5f4a6b8c7d8e9f0a1b2c3d&filter=x",
+            "0a1b2c3d4e5f4a6b8c7d8e9f0a1b2c3",
+            "0a1b2c3d4e5f4a6b8c7d8e9f0a1b2c3dd",
+            "Weekly0a1b2c3d4e5f4a6b8c7d8e9f0a1b2c3d",
+            "0a1b2c3d4e5f4a6b8c7d8e9f0a1b2c3g",
+        ] {
+            assert!(
+                validated_source_ids(vec![value.to_string()], "page_ids").is_err(),
+                "{value}"
+            );
+        }
     }
 
     #[test]

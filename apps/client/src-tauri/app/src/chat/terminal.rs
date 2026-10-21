@@ -1095,6 +1095,15 @@ fn apply_terminal_environment(command: &mut CommandBuilder) {
 /// Builds the default shell command for a terminal in the workspace with the user's launch environment,
 /// advertising the emulator's capabilities.
 fn shell_command(workspace_path: &Path) -> CommandBuilder {
+    #[cfg(windows)]
+    let mut command = match absolute_windows_shell(
+        std::env::var_os("ComSpec").as_deref(),
+        std::env::var_os("SystemRoot").as_deref(),
+    ) {
+        Some(shell) => CommandBuilder::new(shell),
+        None => CommandBuilder::new_default_prog(),
+    };
+    #[cfg(not(windows))]
     let mut command = CommandBuilder::new_default_prog();
     command.cwd(workspace_path);
     apply_terminal_environment(&mut command);
@@ -1102,6 +1111,21 @@ fn shell_command(workspace_path: &Path) -> CommandBuilder {
         command.env(key, value);
     }
     command
+}
+
+/// Resolves the Windows shell by absolute path, because `CreateProcessW` completes a bare application name from
+/// the app's current directory. Uses `ComSpec` when it names an absolute path, otherwise `cmd.exe` in the system
+/// directory under `SystemRoot`.
+#[cfg(any(windows, test))]
+fn absolute_windows_shell(comspec: Option<&OsStr>, system_root: Option<&OsStr>) -> Option<PathBuf> {
+    comspec
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
+        .or_else(|| {
+            system_root
+                .map(|root| PathBuf::from(root).join("System32").join("cmd.exe"))
+                .filter(|path| path.is_absolute())
+        })
 }
 
 pub(crate) fn default_shell_label() -> String {
@@ -1552,6 +1576,32 @@ mod tests {
         assert_eq!(command.get_env("COLORTERM"), Some("truecolor".as_ref()));
         #[cfg(not(windows))]
         assert_eq!(command.get_env("TERM"), Some("xterm-256color".as_ref()));
+        #[cfg(windows)]
+        assert!(Path::new(&command.get_argv()[0]).is_absolute());
+    }
+
+    #[test]
+    fn windows_shells_resolve_by_absolute_path_and_never_by_a_bare_name() {
+        let root = std::env::temp_dir();
+        let custom = root.join("shells").join("custom.exe");
+        let system_shell = root.join("System32").join("cmd.exe");
+        assert_eq!(
+            absolute_windows_shell(Some(custom.as_os_str()), Some(root.as_os_str())),
+            Some(custom)
+        );
+        assert_eq!(
+            absolute_windows_shell(Some(OsStr::new("cmd.exe")), Some(root.as_os_str())),
+            Some(system_shell.clone())
+        );
+        assert_eq!(
+            absolute_windows_shell(None, Some(root.as_os_str())),
+            Some(system_shell)
+        );
+        assert_eq!(
+            absolute_windows_shell(Some(OsStr::new("cmd.exe")), Some(OsStr::new("Windows"))),
+            None
+        );
+        assert_eq!(absolute_windows_shell(None, None), None);
     }
 
     fn environment(pairs: &[(&str, &str)]) -> Vec<(OsString, OsString)> {

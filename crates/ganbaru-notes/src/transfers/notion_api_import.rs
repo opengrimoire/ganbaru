@@ -57,7 +57,7 @@ pub async fn import_from_api(
         prepared.page_size,
         cancellation.clone(),
     )?;
-    run_import(pool, &prepared, client).await
+    run_import(pool, &prepared, ImportRun::new(client)).await
 }
 
 /// Validates a client-chosen import ID used to address cancellation.
@@ -77,9 +77,8 @@ pub fn validate_import_id(value: &str) -> Result<&str, String> {
 async fn run_import(
     pool: &SqlitePool,
     prepared: &PreparedNotionImport,
-    client: NotionApiClient,
+    mut run: ImportRun,
 ) -> Result<NoteNotionApiImportDto, String> {
-    let mut run = ImportRun::new(client);
     if prepared.include_users {
         run.list_users().await;
     }
@@ -92,7 +91,7 @@ async fn run_import(
             }
             return Err(error);
         };
-        let diagnostic = stop_diagnostic(stop, run.current_source.take());
+        let diagnostic = stop_diagnostic(stop, run.max_blocks, run.current_source.take());
         run.diagnostics.push(diagnostic);
     }
     rebuild_indexes_after_import(pool).await?;
@@ -101,6 +100,7 @@ async fn run_import(
 
 fn stop_diagnostic(
     stop: NotionImportStop,
+    max_blocks: usize,
     source_id: Option<String>,
 ) -> NoteNotionApiImportDiagnosticDto {
     let (code, reason) = match stop {
@@ -113,7 +113,7 @@ fn stop_diagnostic(
         ),
         NotionImportStop::BlockLimit => (
             "import_limit_reached",
-            format!("Notion import stopped after {MAX_TOTAL_IMPORTED_BLOCKS} blocks."),
+            format!("Notion import stopped after {max_blocks} blocks."),
         ),
     };
     NoteNotionApiImportDiagnosticDto::new(
@@ -138,6 +138,8 @@ struct ImportRun {
     imported_comment_count: i64,
     fetched_block_count: usize,
     fetched_comment_count: usize,
+    max_blocks: usize,
+    max_comments: usize,
     comment_limit_reported: bool,
     stop: Option<NotionImportStop>,
     current_source: Option<String>,
@@ -156,10 +158,20 @@ impl ImportRun {
             imported_comment_count: 0,
             fetched_block_count: 0,
             fetched_comment_count: 0,
+            max_blocks: MAX_TOTAL_IMPORTED_BLOCKS,
+            max_comments: MAX_TOTAL_IMPORTED_COMMENTS,
             comment_limit_reported: false,
             stop: None,
             current_source: None,
         }
+    }
+
+    /// Lowers the aggregate block and comment budgets so tests can reach them.
+    #[cfg(test)]
+    fn with_limits(mut self, max_blocks: usize, max_comments: usize) -> Self {
+        self.max_blocks = max_blocks;
+        self.max_comments = max_comments;
+        self
     }
 
     fn stop_reason(&self) -> Option<NotionImportStop> {
@@ -348,10 +360,11 @@ impl ImportRun {
                 .await
                 .map_err(|e| api_error("list Notion block children", block_id, e))?;
             self.fetched_block_count += children.len();
-            if self.fetched_block_count > MAX_TOTAL_IMPORTED_BLOCKS {
+            if self.fetched_block_count > self.max_blocks {
                 self.stop.get_or_insert(NotionImportStop::BlockLimit);
                 return Err(format!(
-                    "Notion import reached the limit of {MAX_TOTAL_IMPORTED_BLOCKS} blocks"
+                    "Notion import reached the limit of {} blocks",
+                    self.max_blocks
                 ));
             }
             let mut fetched = Vec::with_capacity(children.len());
@@ -386,13 +399,13 @@ impl ImportRun {
     }
 
     async fn append_comments(&mut self, block_id: &str, comments: &mut Vec<Value>) {
-        if self.fetched_comment_count >= MAX_TOTAL_IMPORTED_COMMENTS {
+        if self.fetched_comment_count >= self.max_comments {
             self.report_comment_limit();
             return;
         }
         match self.client.list_comments(block_id).await {
             Ok(values) => {
-                let room = MAX_TOTAL_IMPORTED_COMMENTS - self.fetched_comment_count;
+                let room = self.max_comments - self.fetched_comment_count;
                 if values.len() > room {
                     self.report_comment_limit();
                 }
@@ -426,7 +439,8 @@ impl ImportRun {
             "warning",
             None::<String>,
             format!(
-                "Notion import collected {MAX_TOTAL_IMPORTED_COMMENTS} comments; later comments were skipped. Import fewer sources at once to keep them."
+                "Notion import collected {} comments; later comments were skipped. Import fewer sources at once to keep them.",
+                self.max_comments
             ),
         ));
     }
@@ -606,6 +620,8 @@ mod tests {
     const PAGE_1: &str = "0a1b2c3d-4e5f-4a6b-8c7d-8e9f0a1b2c3d";
     const PAGE_2: &str = "1a1b2c3d-4e5f-4a6b-8c7d-8e9f0a1b2c3d";
     const BLOCK_1: &str = "2a1b2c3d-4e5f-4a6b-8c7d-8e9f0a1b2c3d";
+    const BLOCK_2: &str = "3a1b2c3d-4e5f-4a6b-8c7d-8e9f0a1b2c3d";
+    const BLOCK_3: &str = "4a1b2c3d-4e5f-4a6b-8c7d-8e9f0a1b2c3d";
 
     async fn migrated_memory_pool() -> SqlitePool {
         let pool = sqlx::sqlite::SqlitePoolOptions::new()
@@ -652,20 +668,54 @@ mod tests {
     }
 
     fn paragraph_children(id: &str, text: &str) -> ScriptedResponse {
-        ScriptedResponse::json(
-            "200 OK",
-            json!({
-                "results": [{
+        paragraphs_children(&[(id, text)])
+    }
+
+    fn paragraphs_children(paragraphs: &[(&str, &str)]) -> ScriptedResponse {
+        let results = paragraphs
+            .iter()
+            .map(|(id, text)| {
+                json!({
                     "object": "block",
                     "id": id,
                     "type": "paragraph",
                     "has_children": false,
                     "paragraph": { "rich_text": [{ "type": "text", "plain_text": text, "text": { "content": text } }] }
-                }],
-                "has_more": false,
-                "next_cursor": null
-            }),
+                })
+            })
+            .collect::<Vec<_>>();
+        ScriptedResponse::json(
+            "200 OK",
+            json!({ "results": results, "has_more": false, "next_cursor": null }),
         )
+    }
+
+    fn comments_on(parent: Value, comments: &[(&str, &str)]) -> ScriptedResponse {
+        let results = comments
+            .iter()
+            .map(|(id, text)| {
+                json!({
+                    "object": "comment",
+                    "id": id,
+                    "discussion_id": format!("discussion-{id}"),
+                    "parent": parent,
+                    "rich_text": [{ "type": "text", "plain_text": text, "text": { "content": text } }]
+                })
+            })
+            .collect::<Vec<_>>();
+        ScriptedResponse::json(
+            "200 OK",
+            json!({ "results": results, "has_more": false, "next_cursor": null }),
+        )
+    }
+
+    fn diagnostic_codes(summary: &Value) -> Vec<&str> {
+        summary["diagnostics"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|diagnostic| diagnostic["code"].as_str().unwrap())
+            .collect()
     }
 
     #[test]
@@ -682,7 +732,7 @@ mod tests {
             let summary = run_import(
                 &pool,
                 &prepared_page_import(&[PAGE_1, PAGE_2], false),
-                client,
+                ImportRun::new(client),
             )
             .await
             .expect("a budget stop returns a summary");
@@ -717,9 +767,13 @@ mod tests {
             let base_url = Url::parse("http://127.0.0.1:9/v1/").unwrap();
             let client = NotionApiClient::for_test(base_url, 100, cancellation, 10);
 
-            let summary = run_import(&pool, &prepared_page_import(&[PAGE_1], false), client)
-                .await
-                .expect("a canceled import returns a summary");
+            let summary = run_import(
+                &pool,
+                &prepared_page_import(&[PAGE_1], false),
+                ImportRun::new(client),
+            )
+            .await
+            .expect("a canceled import returns a summary");
 
             let summary = serde_json::to_value(summary).unwrap();
             assert_eq!(summary["imported_page_count"], 0);
@@ -747,9 +801,13 @@ mod tests {
             let client =
                 NotionApiClient::for_test(base_url, 100, NotionImportCancellation::new(), 3);
 
-            let summary = run_import(&pool, &prepared_page_import(&[PAGE_1], true), client)
-                .await
-                .expect("a budget stop returns a summary");
+            let summary = run_import(
+                &pool,
+                &prepared_page_import(&[PAGE_1], true),
+                ImportRun::new(client),
+            )
+            .await
+            .expect("a budget stop returns a summary");
 
             let summary = serde_json::to_value(summary).unwrap();
             assert_eq!(summary["imported_page_count"], 0);
@@ -766,6 +824,105 @@ mod tests {
                 .unwrap();
             assert_eq!(page_count, 0);
             server.join().unwrap();
+        });
+    }
+
+    #[test]
+    fn block_budget_stop_keeps_finished_pages_and_skips_the_source_that_crossed_it() {
+        sqlx::__rt::test_block_on(async {
+            let pool = migrated_memory_pool().await;
+            let (base_url, requests, server) = start_scripted_server(vec![
+                notion_page(PAGE_1, "Within budget"),
+                paragraph_children(BLOCK_1, "kept paragraph"),
+                notion_page(PAGE_2, "Over budget"),
+                paragraphs_children(&[(BLOCK_2, "first extra"), (BLOCK_3, "second extra")]),
+            ]);
+            let client =
+                NotionApiClient::for_test(base_url, 100, NotionImportCancellation::new(), 100);
+
+            let summary = run_import(
+                &pool,
+                &prepared_page_import(&[PAGE_1, PAGE_2], false),
+                ImportRun::new(client).with_limits(2, 100),
+            )
+            .await
+            .expect("a block budget stop returns a summary");
+
+            let summary = serde_json::to_value(summary).unwrap();
+            assert_eq!(summary["imported_page_count"], 1);
+            assert_eq!(summary["imported_block_count"], 1);
+            assert_eq!(diagnostic_codes(&summary), vec!["import_limit_reached"]);
+            let diagnostic = &summary["diagnostics"][0];
+            assert_eq!(diagnostic["source_object_id"], PAGE_2);
+            assert!(
+                diagnostic["message"]
+                    .as_str()
+                    .unwrap()
+                    .contains("stopped after 2 blocks")
+            );
+            let page_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM notes_pages")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+            assert_eq!(page_count, 1);
+            server.join().unwrap();
+            assert_eq!(requests.try_iter().count(), 4);
+        });
+    }
+
+    #[test]
+    fn comments_past_the_import_budget_are_skipped_without_requests_and_reported_once() {
+        sqlx::__rt::test_block_on(async {
+            let pool = migrated_memory_pool().await;
+            let (base_url, requests, server) = start_scripted_server(vec![
+                notion_page(PAGE_1, "Discussed page"),
+                comments_on(
+                    json!({ "type": "page_id", "page_id": PAGE_1 }),
+                    &[("comment-page", "page comment")],
+                ),
+                paragraphs_children(&[(BLOCK_1, "first"), (BLOCK_2, "second")]),
+                comments_on(
+                    json!({ "type": "block_id", "block_id": BLOCK_1 }),
+                    &[
+                        ("comment-kept", "kept block comment"),
+                        ("comment-over", "comment over the budget"),
+                    ],
+                ),
+            ]);
+            let client =
+                NotionApiClient::for_test(base_url, 100, NotionImportCancellation::new(), 100);
+
+            let summary = run_import(
+                &pool,
+                &prepared_page_import(&[PAGE_1], true),
+                ImportRun::new(client).with_limits(100, 2),
+            )
+            .await
+            .expect("a comment budget only warns");
+
+            let summary = serde_json::to_value(summary).unwrap();
+            assert_eq!(summary["imported_page_count"], 1);
+            assert_eq!(summary["imported_comment_count"], 2);
+            assert_eq!(diagnostic_codes(&summary), vec!["comments_limit_reached"]);
+            server.join().unwrap();
+            assert_eq!(
+                requests.try_iter().count(),
+                4,
+                "the second block's comments are never requested"
+            );
+            let source_ids: Vec<Option<String>> = sqlx::query_scalar(
+                "SELECT source_object_id FROM notes_comments ORDER BY source_object_id",
+            )
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+            assert_eq!(
+                source_ids,
+                vec![
+                    Some("comment-kept".to_string()),
+                    Some("comment-page".to_string())
+                ]
+            );
         });
     }
 

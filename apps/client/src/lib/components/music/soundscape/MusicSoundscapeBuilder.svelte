@@ -14,7 +14,7 @@
   import { portal } from "$lib/utils/portal";
   import ConfirmDialog from "$lib/components/ui/ConfirmDialog.svelte";
   import MusicSoundscapeActiveLevel from "./MusicSoundscapeActiveLevel.svelte";
-  import MusicSoundscapeGroupIcon from "./MusicSoundscapeGroupIcon.svelte";
+  import MusicSoundscapeIcon from "./MusicSoundscapeIcon.svelte";
   import MusicSoundscapeLocalRow from "./MusicSoundscapeLocalRow.svelte";
   import MusicSoundscapePresetEditor from "./MusicSoundscapePresetEditor.svelte";
   import MusicSoundscapePresetTile from "./MusicSoundscapePresetTile.svelte";
@@ -210,7 +210,7 @@
           <form class="rounded-xl bg-secondary/35 p-3" onsubmit={(event) => { event.preventDefault(); void saveSound(); }}>
             <div class="flex items-center gap-2">
               <IconPicker value={soundIconDraft} onChange={(value) => soundIconDraft = value} ariaLabel={t("music.soundscape.soundIcon")} showUpload={false} showRemove={false}>
-                {#snippet trigger({ open, toggle, panelId })}<button type="button" class="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-background text-foreground hover:bg-accent" aria-label={t("music.soundscape.soundIcon")} aria-haspopup="dialog" aria-expanded={open} aria-controls={panelId} onclick={toggle}><MusicSoundscapeGroupIcon icon={soundIconDraft} /></button>{/snippet}
+                {#snippet trigger({ open, toggle, panelId })}<button type="button" class="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-background text-foreground hover:bg-accent" aria-label={t("music.soundscape.soundIcon")} aria-haspopup="dialog" aria-expanded={open} aria-controls={panelId} onclick={toggle}><MusicSoundscapeIcon icon={soundIconDraft} /></button>{/snippet}
               </IconPicker>
               <input class="field h-9 min-w-0 flex-1 px-3 text-xs" bind:value={soundNameDraft} aria-label={t("music.soundscape.name")} placeholder={t("music.soundscape.name")} maxlength="200" />
             </div>
@@ -222,7 +222,7 @@
           <form class="rounded-xl bg-secondary/35 p-3" onsubmit={(event) => { event.preventDefault(); void saveGroup(); }}>
             <div class="flex items-center gap-2">
               <IconPicker value={groupIconDraft} onChange={(value) => groupIconDraft = value} ariaLabel={t("music.soundscape.groupIconLabel")} showUpload={false} showRemove={false}>
-                {#snippet trigger({ open, toggle, panelId })}<button type="button" class="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-background text-foreground hover:bg-accent" aria-label={t("music.soundscape.groupIconLabel")} aria-haspopup="dialog" aria-expanded={open} aria-controls={panelId} onclick={toggle}><MusicSoundscapeGroupIcon icon={groupIconDraft} /></button>{/snippet}
+                {#snippet trigger({ open, toggle, panelId })}<button type="button" class="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-background text-foreground hover:bg-accent" aria-label={t("music.soundscape.groupIconLabel")} aria-haspopup="dialog" aria-expanded={open} aria-controls={panelId} onclick={toggle}><MusicSoundscapeIcon icon={groupIconDraft} /></button>{/snippet}
               </IconPicker>
               <input class="field h-9 min-w-0 flex-1 px-3 text-xs" bind:value={groupNameDraft} aria-label={t("music.soundscape.groupName")} placeholder={t("music.soundscape.groupName")} maxlength="80" />
             </div>
@@ -236,7 +236,7 @@
               <form class="rounded-xl bg-secondary/35 p-3" onsubmit={(event) => { event.preventDefault(); void saveGroup(); }}>
                 <div class="flex items-center gap-2">
                   <IconPicker value={groupIconDraft} onChange={(value) => groupIconDraft = value} ariaLabel={t("music.soundscape.groupIconLabel")} showUpload={false} showRemove={false}>
-                    {#snippet trigger({ open, toggle, panelId })}<button type="button" class="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-background text-foreground hover:bg-accent" aria-label={t("music.soundscape.groupIconLabel")} aria-haspopup="dialog" aria-expanded={open} aria-controls={panelId} onclick={toggle}><MusicSoundscapeGroupIcon icon={groupIconDraft} /></button>{/snippet}
+                    {#snippet trigger({ open, toggle, panelId })}<button type="button" class="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-background text-foreground hover:bg-accent" aria-label={t("music.soundscape.groupIconLabel")} aria-haspopup="dialog" aria-expanded={open} aria-controls={panelId} onclick={toggle}><MusicSoundscapeIcon icon={groupIconDraft} /></button>{/snippet}
                   </IconPicker>
                   <input class="field h-9 min-w-0 flex-1 px-3 text-xs" bind:value={groupNameDraft} aria-label={t("music.soundscape.groupName")} maxlength="80" />
                 </div>
@@ -244,7 +244,7 @@
               </form>
             {:else}
               {@const sounds = local.filter((entry) => entry.groupId === group.id)}
-              <div class="mb-1 flex h-8 items-center gap-1.5 text-muted-foreground"><MusicSoundscapeGroupIcon icon={group.icon} size={13} /><h3 class="min-w-0 flex-1 truncate text-[0.68rem] font-medium">{group.name}</h3><button type="button" class="grid h-7 w-7 shrink-0 place-items-center rounded-lg hover:bg-accent hover:text-foreground" aria-label={t("music.soundscape.addToGroup", group.name)} onclick={() => { void addLoop(group.id); }}><Plus size={14} /></button><button type="button" class="grid h-7 w-7 shrink-0 place-items-center rounded-lg hover:bg-accent hover:text-foreground" aria-label={t("music.soundscape.editGroup")} onclick={() => editGroup(group)}><Pencil size={13} /></button></div>
+              <div class="mb-1 flex h-8 items-center gap-1.5 text-muted-foreground"><MusicSoundscapeIcon icon={group.icon} size={13} /><h3 class="min-w-0 flex-1 truncate text-[0.68rem] font-medium">{group.name}</h3><button type="button" class="grid h-7 w-7 shrink-0 place-items-center rounded-lg hover:bg-accent hover:text-foreground" aria-label={t("music.soundscape.addToGroup", group.name)} onclick={() => { void addLoop(group.id); }}><Plus size={14} /></button><button type="button" class="grid h-7 w-7 shrink-0 place-items-center rounded-lg hover:bg-accent hover:text-foreground" aria-label={t("music.soundscape.editGroup")} onclick={() => editGroup(group)}><Pencil size={13} /></button></div>
               <div class="grid grid-cols-2 gap-2 @sm:grid-cols-3">
                 {#each sounds as definition (definition.id)}
                   <MusicSoundscapeLocalRow {definition} onRepair={(entry) => { void addLoop(entry.groupId, entry); }} onRemove={(entry) => pendingDelete = entry} {onPlaybackStart} />

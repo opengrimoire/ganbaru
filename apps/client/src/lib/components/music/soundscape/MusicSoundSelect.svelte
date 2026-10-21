@@ -16,7 +16,7 @@
   import { portal } from "$lib/utils/portal";
   import { scrollEdgeFadeAction } from "$lib/utils/scroll-edge-fade";
   import { pickSelectPopoverGeometry, type SelectPopoverGeometry } from "$lib/utils/select-popover-position";
-  import MusicSoundscapeGroupIcon from "./MusicSoundscapeGroupIcon.svelte";
+  import MusicSoundscapeIcon from "./MusicSoundscapeIcon.svelte";
 
   let {
     value,
@@ -194,7 +194,7 @@
     )}
   >
     {#if missing}<AlertTriangle size={14} class="shrink-0 text-warning" />
-    {:else if selectedPreset}<span class="grid size-3.5 shrink-0 place-items-center text-muted-foreground"><MusicSoundscapeGroupIcon icon={selectedPreset.icon} size={14} /></span>
+    {:else if selectedPreset}<span class="grid size-3.5 shrink-0 place-items-center text-muted-foreground"><MusicSoundscapeIcon icon={selectedPreset.icon} size={14} /></span>
     {:else}<VolumeX size={14} strokeWidth={1.5} class="shrink-0 text-muted-foreground" />{/if}
     <span class="min-w-0 flex-1 truncate">
       {#if loading}<Loading layout="inline" label={t("music.soundscape.title")} />
@@ -240,7 +240,7 @@
             {@const selected = soundChoicesEqual(choice, value)}
             {@const playable = soundscape.presetIsPlayable(preset)}
             <button type="button" role="option" aria-selected={selected} disabled={!playable && !selected} onclick={() => choose(choice)} class="menu-item">
-              <span class="grid size-4 shrink-0 place-items-center"><MusicSoundscapeGroupIcon icon={preset.icon} size={15} /></span>
+              <span class="grid size-4 shrink-0 place-items-center"><MusicSoundscapeIcon icon={preset.icon} size={15} /></span>
               <span class="min-w-0 flex-1 truncate font-medium">{presetDisplayName(preset, t)}</span>
               {#if selected}<Check size={14} />{/if}
               {#if !playable}<span class="shrink-0 text-panel-detail text-muted-foreground">{t("music.soundscape.needsRepair")}</span>{/if}

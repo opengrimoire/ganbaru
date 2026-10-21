@@ -19,3 +19,14 @@ export const GENERATED_RAIN_ICONS: Readonly<Record<MusicGeneratedNoiseKind, stri
 
 /** Icon a layer added from a file starts with until the listener picks another. */
 export const NEW_LAYER_ICON = "lucide:file-music";
+
+/** Stroke soundscape icons use at their reference size, matching the app's compact icon stroke. */
+const ICON_STROKE_WIDTH = 1.5;
+/** Largest icon size that keeps the full stroke; larger tile icons thin out so their lines render as thin as list icons. */
+const ICON_STROKE_REFERENCE_SIZE = 16;
+
+/** Return the nominal stroke width for a soundscape icon so large tile icons do not look heavier than small ones. */
+export function soundscapeIconStrokeWidth(size: number): number {
+  if (!Number.isFinite(size) || size <= ICON_STROKE_REFERENCE_SIZE) return ICON_STROKE_WIDTH;
+  return ICON_STROKE_WIDTH * ICON_STROKE_REFERENCE_SIZE / size;
+}

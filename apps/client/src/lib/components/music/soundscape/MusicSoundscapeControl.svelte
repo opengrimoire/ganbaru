@@ -9,7 +9,7 @@
   import { centeredSoundscapePanelLeft } from "$lib/music/soundscape/popover-position";
   import { getSoundscapeStore } from "$lib/stores/soundscape.svelte";
   import { scrollEdgeFadeAction } from "$lib/utils/scroll-edge-fade";
-  import MusicSoundscapeGroupIcon from "./MusicSoundscapeGroupIcon.svelte";
+  import MusicSoundscapeIcon from "./MusicSoundscapeIcon.svelte";
   import MusicSoundscapeActiveLevel from "./MusicSoundscapeActiveLevel.svelte";
 
   let { onOpenSoundscapes }: { onOpenSoundscapes: () => void } = $props();
@@ -107,7 +107,7 @@
             {#each soundscape.presets as preset (preset.id)}
               {@const selected = preset.id === active?.id && playing}
               {@const name = presetDisplayName(preset, t)}
-              <button type="button" aria-pressed={selected} aria-label={selected ? t("music.soundscape.pause") : t("music.soundscape.playPreset", name)} data-app-tooltip={selected ? t("music.soundscape.stopHint") : undefined} disabled={!soundscape.presetIsPlayable(preset)} class={["inline-flex h-8 min-w-0 max-w-full items-center gap-2 rounded-floating-item px-2 transition-colors hover:bg-accent/70 disabled:opacity-50", selected && "bg-primary/10"]} onclick={() => choosePreset(preset)}><MusicSoundscapeGroupIcon icon={preset.icon} size={14} /><span class="truncate">{name}</span></button>
+              <button type="button" aria-pressed={selected} aria-label={selected ? t("music.soundscape.pause") : t("music.soundscape.playPreset", name)} data-app-tooltip={selected ? t("music.soundscape.stopHint") : undefined} disabled={!soundscape.presetIsPlayable(preset)} class={["inline-flex h-8 min-w-0 max-w-full items-center gap-2 rounded-floating-item px-2 transition-colors hover:bg-accent/70 disabled:opacity-50", selected && "bg-primary/10"]} onclick={() => choosePreset(preset)}><MusicSoundscapeIcon icon={preset.icon} size={14} /><span class="truncate">{name}</span></button>
             {/each}
           </div>
         {/if}

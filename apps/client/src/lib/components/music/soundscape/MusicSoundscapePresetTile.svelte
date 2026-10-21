@@ -6,7 +6,7 @@
   import type { MusicSoundscapePreset } from "$lib/music/soundscape/contracts";
   import { presetDisplayName, presetSoundNames, soundDisplayName } from "$lib/music/soundscape/presets";
   import { getSoundscapeStore } from "$lib/stores/soundscape.svelte";
-  import MusicSoundscapeGroupIcon from "./MusicSoundscapeGroupIcon.svelte";
+  import MusicSoundscapeIcon from "./MusicSoundscapeIcon.svelte";
 
   /** Builder tile for one preset: the tile plays or pauses it, the menu edits or removes it. */
   let { preset, onEdit, onRemove, onPlaybackStart }: {
@@ -51,7 +51,7 @@
 
 <div bind:this={root} class="relative min-w-0">
   <button type="button" aria-pressed={playing} aria-label={playing ? t("music.soundscape.pause") : t("music.soundscape.playPreset", name)} title={tooltip} disabled={!playable || soundscape.saving} class={playing ? "flex min-h-28 w-full min-w-0 flex-col items-center justify-center gap-2 rounded-xl bg-primary/10 px-3 text-center hover:bg-primary/15 disabled:opacity-50" : "flex min-h-28 w-full min-w-0 flex-col items-center justify-center gap-2 rounded-xl bg-secondary/40 px-3 text-center hover:bg-secondary/70 disabled:opacity-50"} onclick={choose}>
-    <MusicSoundscapeGroupIcon icon={preset.icon} size={27} />
+    <MusicSoundscapeIcon icon={preset.icon} size={27} />
     <span class="max-w-full truncate text-xs font-medium">{name}</span>
   </button>
   <button type="button" aria-label={t("music.soundscape.preset.actions", name)} aria-expanded={menuOpen} class="absolute top-1 right-1 z-10 grid h-7 w-7 place-items-center rounded-lg text-muted-foreground hover:bg-accent hover:text-foreground" onclick={() => menuOpen = !menuOpen}><Ellipsis size={16} /></button>

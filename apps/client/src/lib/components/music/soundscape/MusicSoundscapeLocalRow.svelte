@@ -10,7 +10,7 @@
   import { singleSoundPreset } from "$lib/music/soundscape/presets";
   import { getSoundscapeStore } from "$lib/stores/soundscape.svelte";
   import { scrollEdgeFadeAction } from "$lib/utils/scroll-edge-fade";
-  import MusicSoundscapeGroupIcon from "./MusicSoundscapeGroupIcon.svelte";
+  import MusicSoundscapeIcon from "./MusicSoundscapeIcon.svelte";
 
   let { definition, onRepair, onRemove, onPlaybackStart }: {
     definition: MusicSoundscapeDefinition;
@@ -89,7 +89,7 @@
     <form class="flex min-h-28 flex-col gap-2 rounded-xl bg-secondary/40 p-2" onsubmit={(event) => { event.preventDefault(); void saveDetails(); }}>
       <div class="flex items-center gap-1.5">
         <IconPicker value={iconDraft} onChange={(value) => iconDraft = value} ariaLabel={t("music.soundscape.soundIcon")} showUpload={false} showRemove={false}>
-          {#snippet trigger({ open, toggle, panelId })}<button type="button" class="grid h-8 w-8 shrink-0 place-items-center rounded-md bg-background text-foreground hover:bg-accent" aria-label={t("music.soundscape.soundIcon")} aria-haspopup="dialog" aria-expanded={open} aria-controls={panelId} onclick={toggle}><MusicSoundscapeGroupIcon icon={iconDraft} size={16} /></button>{/snippet}
+          {#snippet trigger({ open, toggle, panelId })}<button type="button" class="grid h-8 w-8 shrink-0 place-items-center rounded-md bg-background text-foreground hover:bg-accent" aria-label={t("music.soundscape.soundIcon")} aria-haspopup="dialog" aria-expanded={open} aria-controls={panelId} onclick={toggle}><MusicSoundscapeIcon icon={iconDraft} size={16} /></button>{/snippet}
         </IconPicker>
         <input class="field h-8 min-w-0 flex-1 px-2 text-xs" bind:value={nameDraft} aria-label={t("music.soundscape.name")} maxlength="200" />
       </div>
@@ -97,7 +97,7 @@
     </form>
   {:else}
     <button type="button" aria-pressed={playing} aria-label={definition.availability !== "available" ? t("music.soundscape.repair") : playing ? t("music.soundscape.pause") : t("music.soundscape.play", definition.name)} title={definition.availability === "available" && !solo ? t("music.soundscape.makePreset") : undefined} disabled={soundscape.saving} class={playing ? "flex min-h-28 w-full min-w-0 flex-col items-center justify-center gap-2 rounded-xl bg-primary/10 px-2 text-center hover:bg-primary/15 disabled:opacity-50" : "flex min-h-28 w-full min-w-0 flex-col items-center justify-center gap-2 rounded-xl bg-secondary/40 px-2 text-center hover:bg-secondary/70 disabled:opacity-50"} onclick={() => { if (definition.availability !== "available") { onRepair(definition); return; } if (!playing) onPlaybackStart(); void soundscape.playSound(definition, definition.name); }}>
-      <MusicSoundscapeGroupIcon icon={definition.icon} size={27} />
+      <MusicSoundscapeIcon icon={definition.icon} size={27} />
       <span class="max-w-full truncate text-xs font-medium">{definition.name}</span>
       {#if definition.availability !== "available"}<span class="text-[0.68rem] text-muted-foreground">{t("music.soundscape.needsRepair")}</span>{/if}
     </button>

@@ -24,7 +24,7 @@
   } from "$lib/music/soundscape/presets";
   import { getMusicPlayer } from "$lib/stores/music-player.svelte";
   import { getSoundscapeStore } from "$lib/stores/soundscape.svelte";
-  import MusicSoundscapeGroupIcon from "./MusicSoundscapeGroupIcon.svelte";
+  import MusicSoundscapeIcon from "./MusicSoundscapeIcon.svelte";
   import MusicSoundscapeLevelSlider from "./MusicSoundscapeLevelSlider.svelte";
   import MusicSoundscapeRelativeLevel from "./MusicSoundscapeRelativeLevel.svelte";
   import MusicSoundscapeSoundIcon from "./MusicSoundscapeSoundIcon.svelte";
@@ -147,7 +147,7 @@
   <div class="@container flex flex-col gap-5">
     <div class="flex items-center gap-2">
       <IconPicker value={icon} onChange={(value) => icon = value} ariaLabel={t("music.soundscape.preset.icon")} showUpload={false} showRemove={false}>
-        {#snippet trigger({ open, toggle, panelId })}<button type="button" class="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-secondary/40 text-foreground hover:bg-accent" aria-label={t("music.soundscape.preset.icon")} aria-haspopup="dialog" aria-expanded={open} aria-controls={panelId} onclick={toggle}><MusicSoundscapeGroupIcon {icon} /></button>{/snippet}
+        {#snippet trigger({ open, toggle, panelId })}<button type="button" class="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-secondary/40 text-foreground hover:bg-accent" aria-label={t("music.soundscape.preset.icon")} aria-haspopup="dialog" aria-expanded={open} aria-controls={panelId} onclick={toggle}><MusicSoundscapeIcon {icon} /></button>{/snippet}
       </IconPicker>
       <input data-dialog-autofocus class="field h-9 min-w-0 flex-1 px-3 text-xs" bind:value={name} aria-label={t("music.soundscape.preset.name")} placeholder={t("music.soundscape.preset.name")} maxlength={MAX_PRESET_NAME_CHARS} onkeydown={(event) => { if (event.key === "Enter") { event.preventDefault(); void save(); } }} />
     </div>
@@ -178,7 +178,7 @@
       {#if atLimit}<Notice class="mt-2 text-xs" tone="warning" role="status" copy={false} message={t("music.soundscape.preset.limitReached", MAX_SOUNDSCAPE_LAYERS)} />{/if}
 
       {#each sections as section (section.key)}
-        <div class="mt-4 mb-2 flex items-center gap-1.5 text-[0.68rem] font-medium text-muted-foreground">{#if section.icon}<MusicSoundscapeGroupIcon icon={section.icon} size={13} />{/if}<h4 class="min-w-0 truncate">{section.title}</h4></div>
+        <div class="mt-4 mb-2 flex items-center gap-1.5 text-[0.68rem] font-medium text-muted-foreground">{#if section.icon}<MusicSoundscapeIcon icon={section.icon} size={13} />{/if}<h4 class="min-w-0 truncate">{section.title}</h4></div>
         <div class="grid grid-cols-2 gap-2 @sm:grid-cols-3">
           {#each section.sounds as definition (definition.id)}
             {@const picked = sounds.some((sound) => sound.soundscapeId === definition.id)}

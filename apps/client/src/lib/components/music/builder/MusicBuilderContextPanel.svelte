@@ -15,7 +15,7 @@
   import MusicPlaylistIcon from "./MusicPlaylistIcon.svelte";
 
   import type { SoundscapeFilter } from "$lib/music/builder/view-state";
-  import MusicSoundscapeGroupIcon from "$lib/components/music/soundscape/MusicSoundscapeGroupIcon.svelte";
+  import MusicSoundscapeIcon from "$lib/components/music/soundscape/MusicSoundscapeIcon.svelte";
 
   let {
     destination,
@@ -75,7 +75,7 @@
       <button type="button" class:active-row={soundscapeFilter === "generated"} class="context-row" onclick={() => onSoundscapeFilter("generated")}><span class="context-icon"><CloudRain size={14} /></span><span class="min-w-0 flex-1 truncate">{t("music.soundscape.generated")}</span><span class="context-count">{soundscape.definitions.filter((entry) => entry.sourceKind === "generated-noise").length}</span></button>
       <button type="button" class:active-row={soundscapeFilter === "local"} class="context-row" onclick={() => onSoundscapeFilter("local")}><span class="context-icon"><ListMusic size={14} /></span><span class="min-w-0 flex-1 truncate">{t("music.soundscape.localLoops")}</span><span class="context-count">{soundscape.definitions.filter((entry) => entry.sourceKind === "local-loop").length}</span></button>
       {#each soundscape.groups as group (group.id)}
-        <button type="button" class:active-row={soundscapeFilter === `group:${group.id}`} class="context-row pl-5" onclick={() => onSoundscapeFilter(`group:${group.id}`)}><span class="context-icon"><MusicSoundscapeGroupIcon icon={group.icon} size={14} /></span><span class="min-w-0 flex-1 truncate">{group.name}</span><span class="context-count">{soundscape.definitions.filter((entry) => entry.groupId === group.id).length}</span></button>
+        <button type="button" class:active-row={soundscapeFilter === `group:${group.id}`} class="context-row pl-5" onclick={() => onSoundscapeFilter(`group:${group.id}`)}><span class="context-icon"><MusicSoundscapeIcon icon={group.icon} size={14} /></span><span class="min-w-0 flex-1 truncate">{group.name}</span><span class="context-count">{soundscape.definitions.filter((entry) => entry.groupId === group.id).length}</span></button>
       {/each}
     </div>
   {/if}

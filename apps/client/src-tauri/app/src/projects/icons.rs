@@ -326,11 +326,19 @@ fn is_public_project_icon_ip(address: IpAddr) -> bool {
     }
 }
 
+/// Parses a project icon URL for one request hop. An `http` URL, typed or redirected to, is
+/// upgraded to `https`, so a plain-text request is never sent and a server that only speaks
+/// HTTP fails at the TLS handshake.
 #[cfg(desktop)]
 fn validate_project_icon_network_url(url: &str) -> Result<Url, String> {
-    let parsed = Url::parse(url).map_err(|_| "project icon URL is invalid".to_string())?;
-    if !matches!(parsed.scheme(), "http" | "https") {
-        return Err("project icon URL must use http or https".to_string());
+    let mut parsed = Url::parse(url).map_err(|_| "project icon URL is invalid".to_string())?;
+    if parsed.scheme() == "http" {
+        parsed
+            .set_scheme("https")
+            .map_err(|()| "project icon URL is invalid".to_string())?;
+    }
+    if parsed.scheme() != "https" {
+        return Err("project icon URL must use https".to_string());
     }
     if !parsed.username().is_empty() || parsed.password().is_some() {
         return Err("project icon URL cannot contain credentials".to_string());
@@ -459,6 +467,7 @@ impl ProjectIconHttpTransport for ReqwestProjectIconHttpTransport {
             let client = reqwest::Client::builder()
                 .timeout(timeout)
                 .redirect(Policy::none())
+                .https_only(true)
                 .no_proxy()
                 .dns_resolver(PublicProjectIconDnsResolver)
                 .build()
@@ -1014,6 +1023,56 @@ mod tests {
         assert_eq!(transport.request_count(), 1);
     }
 
+    #[test]
+    fn project_icon_requests_use_https_for_typed_and_redirected_urls() {
+        let expected = png(100, 50);
+        let transport = FakeProjectIconHttpTransport::new(vec![
+            Ok(ProjectIconHttpHop::Redirect(
+                "http://cdn.example.net/icon.png".to_string(),
+            )),
+            Ok(ProjectIconHttpHop::Image {
+                bytes: expected.clone(),
+                content_type: Some("image/png".to_string()),
+            }),
+        ]);
+        let actual = tauri::async_runtime::block_on(download_project_icon_url_with_transport(
+            &transport,
+            "http://example.com/icon.png",
+        ))
+        .unwrap();
+        assert_eq!(actual, expected);
+        assert_eq!(
+            *transport.requested_urls.lock().unwrap(),
+            [
+                "https://example.com/icon.png",
+                "https://cdn.example.net/icon.png"
+            ]
+        );
+    }
+
+    #[test]
+    fn project_icon_downgrade_redirect_to_the_same_url_stops_as_a_loop() {
+        let transport = FakeProjectIconHttpTransport::new(vec![Ok(ProjectIconHttpHop::Redirect(
+            "http://example.com/icon.png".to_string(),
+        ))]);
+        let error = tauri::async_runtime::block_on(download_project_icon_url_with_transport(
+            &transport,
+            "https://example.com/icon.png",
+        ))
+        .unwrap_err();
+        assert_eq!(error, "project icon redirect loop detected");
+        assert_eq!(transport.request_count(), 1);
+    }
+
+    #[test]
+    fn project_icon_urls_refuse_schemes_other_than_https() {
+        for url in ["ftp://example.com/icon.png", "file:///tmp/icon.png"] {
+            assert_eq!(
+                validate_project_icon_network_url(url).unwrap_err(),
+                "project icon URL must use https"
+            );
+        }
+    }
     #[test]
     fn project_icon_redirect_count_stays_at_the_existing_limit() {
         let transport = FakeProjectIconHttpTransport::new(

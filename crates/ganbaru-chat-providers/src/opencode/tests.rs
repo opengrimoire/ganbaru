@@ -10,7 +10,7 @@ use super::normalizer::*;
 use super::permissions::*;
 use super::protocol::*;
 use super::support::{capabilities, capability_kinds, prompt, provider_command};
-use crate::events::{CanonicalEvent, CanonicalRuntimeEvent};
+use crate::events::{CanonicalEvent, CanonicalRuntimeEvent, SessionPermissionGrant};
 use crate::models::*;
 use serde::Deserialize;
 use serde_json::json;
@@ -858,6 +858,13 @@ fn event_fixture_normalizes_core_activity_and_deduplicates_replay() {
             .collect::<Vec<_>>(),
         ["once", "always", "reject"]
     );
+    assert_eq!(
+        approval.session_grants,
+        [SessionPermissionGrant::AllowRule {
+            tool_name: "edit".to_string(),
+            rule_content: Some("src/**".to_string()),
+        }]
+    );
     let serialized_events = serde_json::to_string(&events).unwrap();
     assert!(!serialized_events.contains("must-redact"));
     assert!(!serialized_events.contains("authorization"));
@@ -876,6 +883,69 @@ fn event_fixture_normalizes_core_activity_and_deduplicates_replay() {
             .unwrap()
             .is_empty()
     );
+}
+
+#[test]
+fn permission_session_option_is_withheld_when_its_grants_cannot_be_listed() {
+    let normalizer = OpenCodeEventNormalizer::new(
+        ProviderInstanceId::new("opencode-instance").unwrap(),
+        ChatThreadId::new("thread-fixture").unwrap(),
+        ProviderSessionId::new("local-session-fixture").unwrap(),
+    );
+    let mut state = OpenCodeRouteState::new(
+        "ses_fixture".to_string(),
+        TurnModeSnapshot {
+            safety_mode: SafetyMode::AskForApproval,
+            interaction_mode: InteractionMode::Build,
+        },
+    );
+    state.active_turn_id = Some(ChatTurnId::new("turn-fixture").unwrap());
+    let too_many = (0..33)
+        .map(|index| format!("dir{index}/**"))
+        .collect::<Vec<_>>();
+    for (index, always) in [
+        json!(too_many),
+        json!(["x".repeat(4097)]),
+        json!(["src/**", 7]),
+        json!([]),
+        json!(null),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let events = normalizer
+            .normalize(
+                &mut state,
+                json!({
+                    "type": "permission.asked",
+                    "properties": {
+                        "id": format!("perm_withheld_{index}"),
+                        "sessionID": "ses_fixture",
+                        "permission": "bash",
+                        "patterns": ["git status"],
+                        "always": always,
+                    }
+                }),
+            )
+            .unwrap();
+        let request = events
+            .iter()
+            .find_map(|event| match &event.event {
+                CanonicalEvent::RequestOpened(request) => Some(request),
+                _ => None,
+            })
+            .unwrap();
+        assert!(request.session_grants.is_empty(), "case {index}");
+        assert_eq!(
+            request
+                .allowed_decisions
+                .iter()
+                .map(|decision| decision.id.as_str())
+                .collect::<Vec<_>>(),
+            ["once", "reject"],
+            "case {index}"
+        );
+    }
 }
 
 #[test]

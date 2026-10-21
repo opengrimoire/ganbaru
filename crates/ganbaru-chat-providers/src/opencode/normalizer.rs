@@ -21,6 +21,10 @@ const MAX_TEXT_BYTES: usize = 2 * 1024 * 1024;
 const MAX_SAFE_COLLECTION_ITEMS: usize = 256;
 const MAX_QUESTIONS: usize = 16;
 const MAX_OPTIONS: usize = 64;
+/// Patterns one "always" permission reply may approve while the prompt still lists each of them.
+const MAX_SESSION_GRANT_PATTERNS: usize = 32;
+/// Longest "always" pattern the prompt shows as a session grant.
+const MAX_SESSION_GRANT_PATTERN_BYTES: usize = 4096;
 
 #[derive(Clone, Debug)]
 pub struct OpenCodeRouteState {

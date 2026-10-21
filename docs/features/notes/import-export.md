@@ -68,7 +68,7 @@ Markdown cannot represent every page, database, layout, color, asset, upload, or
 
 HTML export produces a readable static archive with page files, shared styling, a manifest, optional subpages, optional managed assets, comments, and database view manifests.
 
-Local Notes links target included exported pages. Assets are copied only when requested and available. Database views export readable row data and settings rather than pretending to be a complete interactive database runtime.
+Local Notes links target included exported pages. Assets are copied only when requested and available, and only from a regular file in a managed Notes asset folder reached without symlinks whose bytes still match the recorded size and digest; any other asset is left out with a warning. Database views export readable row data and settings rather than pretending to be a complete interactive database runtime.
 
 ## CSV database export
 

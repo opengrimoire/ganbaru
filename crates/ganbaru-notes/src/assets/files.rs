@@ -15,7 +15,7 @@ use crate::assets::{
 use crate::blocking::run_blocking;
 
 const NOTES_FILE_MAX_DISPLAY_MEGABYTES: usize = 50;
-const NOTES_FILE_MAX_BYTES: usize = NOTES_FILE_MAX_DISPLAY_MEGABYTES * 1024 * 1024;
+pub(crate) const NOTES_FILE_MAX_BYTES: usize = NOTES_FILE_MAX_DISPLAY_MEGABYTES * 1024 * 1024;
 const NOTES_FILE_PREVIEW_MAX_DISPLAY_MEGABYTES: i64 = 25;
 const NOTES_FILE_PREVIEW_MAX_BYTES: i64 = NOTES_FILE_PREVIEW_MAX_DISPLAY_MEGABYTES * 1024 * 1024;
 const NOTES_FILE_DIR: &str = "notes/files";
@@ -197,7 +197,7 @@ fn write_binary_file_atomically(
     .map_err(|e| format!("save notes file: {e}"))
 }
 
-fn hex_hash(bytes: &[u8]) -> String {
+pub(crate) fn hex_hash(bytes: &[u8]) -> String {
     let digest = Sha256::digest(bytes);
     let mut output = String::with_capacity(digest.len() * 2);
     for byte in digest {

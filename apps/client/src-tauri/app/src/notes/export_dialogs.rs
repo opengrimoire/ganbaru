@@ -148,9 +148,9 @@ pub(super) async fn pick_and_write_archive<R: Runtime>(
     let Some(path) = pick_save_path(app, target).await? else {
         return Ok(NoteHtmlArchiveSaveDto::canceled());
     };
-    let asset_root = vault::active_vault_path(app)?.join("assets");
+    let vault_root = vault::active_vault_path(app)?;
     run_blocking(move || {
-        transfers::html_export::archive::write_archive(&asset_root, &path, &mut archive)
+        transfers::html_export::archive::write_archive(&vault_root, &path, &mut archive)
     })
     .await
 }

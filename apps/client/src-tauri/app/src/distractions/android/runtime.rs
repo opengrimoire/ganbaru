@@ -22,7 +22,7 @@ use tauri::{Manager, Runtime};
 const REFRESH_INTERVAL: Duration = Duration::from_secs(5);
 const MAX_VIEW_AGE: Duration = Duration::from_secs(10);
 const DRAIN_WAIT: Duration = Duration::from_secs(5);
-const MAX_CONFIG_BYTES: u64 = 1024 * 1024;
+const MAX_CONFIG_BYTES: u64 = crate::vault::MAX_VAULT_CONFIG_BYTES;
 
 struct Frame {
     generation: u64,

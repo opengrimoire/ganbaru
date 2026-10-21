@@ -405,14 +405,22 @@ fn database_path(path: &Path) -> PathBuf {
     path.join(APP_SQLITE_FILE)
 }
 
-/// Largest `vault.json` accepted from an archive. The marker holds a few short fields.
+/// Largest `vault.json` accepted from an archive or a vault folder. The marker holds a few
+/// short fields.
 const MAX_VAULT_MANIFEST_BYTES: u64 = 64 * 1024;
 
+/// Largest `config.json` any reader accepts. Writes that would exceed it are refused, so a
+/// configuration the app saved always reads back.
+pub(crate) const MAX_VAULT_CONFIG_BYTES: u64 = 4 * 1024 * 1024;
+
 fn read_vault_manifest(path: &Path) -> Result<VaultManifest, String> {
-    let manifest_path = manifest_path(path);
-    let contents = fs::read_to_string(&manifest_path)
-        .map_err(|e| format!("read Ganbaru folder marker: {e}"))?;
-    parse_vault_manifest(contents.as_bytes())
+    let contents = ganbaru_atomic_files::read_regular_file_capped(
+        &manifest_path(path),
+        MAX_VAULT_MANIFEST_BYTES,
+        ganbaru_atomic_files::FinalSymlink::Refuse,
+    )
+    .map_err(|e| format!("read Ganbaru folder marker: {e}"))?;
+    parse_vault_manifest(&contents)
 }
 
 fn parse_vault_manifest(contents: &[u8]) -> Result<VaultManifest, String> {
@@ -1143,6 +1151,20 @@ mod tests {
         assert!(metadata.file_type().is_file());
         fs::remove_dir_all(vault).unwrap();
         fs::remove_file(sentinel).unwrap();
+    }
+
+    #[test]
+    fn an_oversized_vault_marker_is_refused_before_parsing() {
+        let vault = unique_path("oversized-marker");
+        fs::create_dir_all(&vault).unwrap();
+        initialize_vault(&vault).unwrap();
+        let mut contents = fs::read(manifest_path(&vault)).unwrap();
+        let limit = usize::try_from(MAX_VAULT_MANIFEST_BYTES).unwrap();
+        contents.resize(limit + 1, b' ');
+        fs::write(manifest_path(&vault), contents).unwrap();
+        let error = vault_info_from_path(&vault).unwrap_err();
+        assert!(error.contains("read Ganbaru folder marker"), "{error}");
+        let _ = fs::remove_dir_all(vault);
     }
 
     #[cfg(unix)]

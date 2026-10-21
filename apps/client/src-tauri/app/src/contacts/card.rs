@@ -12,7 +12,6 @@ use ganbaru_contacts::{
 use sqlx::SqlitePool;
 use tauri::{AppHandle, Manager, Runtime};
 
-const MAX_CONFIG_BYTES: usize = 4 * 1024 * 1024;
 const PROFILE_KEY: &str = "profile";
 const DISPLAY_NAME_KEY: &str = "displayName";
 const COLOR_KEY: &str = "color";
@@ -42,7 +41,7 @@ impl DeliveryHint {
 
 /// Reads the profile display name and color from the active vault configuration.
 pub(crate) fn read_profile<R: Runtime>(app: &AppHandle<R>) -> Result<CardProfile, ContactsError> {
-    let raw = crate::vault::read_active_config_bounded(app, MAX_CONFIG_BYTES)?;
+    let raw = crate::vault::read_active_config_bounded(app)?;
     let value: serde_json::Value = serde_json::from_str(&raw)
         .map_err(|error| ContactsError::Failed(format!("parse vault configuration: {error}")))?;
     let profile = value.get(PROFILE_KEY);

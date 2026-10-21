@@ -122,7 +122,7 @@ const LIMIT_STATE_FILE: &str = "distractions-limit-state.json";
 #[cfg(desktop)]
 const VAULT_CONFIG_FILE: &str = "config.json";
 #[cfg(desktop)]
-const MAX_AUTHORIZATION_CONFIG_BYTES: u64 = 1024 * 1024;
+const MAX_AUTHORIZATION_CONFIG_BYTES: u64 = vault::MAX_VAULT_CONFIG_BYTES;
 #[cfg(desktop)]
 const LIMIT_STATE_STALE_SECONDS: i64 = 20;
 #[cfg(desktop)]

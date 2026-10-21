@@ -25,7 +25,6 @@ const PROFILE_IMAGE_DIR: &str = "profile";
 const PROFILE_IMAGE_ALLOWED_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "webp"];
 const PROFILE_CONFIG_KEY: &str = "profile";
 const PROFILE_IMAGE_PATH_CONFIG_KEY: &str = "imagePath";
-const MAX_CONFIG_BYTES: usize = 4 * 1024 * 1024;
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -279,7 +278,7 @@ pub fn profile_image_delete_file<R: Runtime>(
 ) -> Result<(), String> {
     let _write_permit = vault::active_writable_vault_path(&app)?;
     let file_name = validate_profile_image_relative_path(&relative_path)?;
-    let config = vault::read_active_config_bounded(&app, MAX_CONFIG_BYTES)?;
+    let config = vault::read_active_config_bounded(&app)?;
     if is_configured_profile_image(&config, file_name)? {
         return Err("the saved profile image cannot be deleted".to_string());
     }

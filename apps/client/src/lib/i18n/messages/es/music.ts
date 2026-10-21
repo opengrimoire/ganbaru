@@ -141,7 +141,6 @@ export const music = {
     levelHint: "Relativo al volumen de tu música",
     levelValue: (adjustment: string) => `${adjustment} respecto al volumen de tu música`,
     noActivePreset: "Reproduce un paisaje sonoro para ajustar su nivel",
-    makePreset: "Crear paisaje sonoro",
     playPreset: (name: string) => `Reproducir el paisaje sonoro ${name}`,
     openBuilder: "Administrar paisajes sonoros",
     choice: {

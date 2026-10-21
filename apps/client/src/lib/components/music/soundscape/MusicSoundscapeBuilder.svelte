@@ -25,8 +25,8 @@
   let pendingLayerPath = $state<string | null>(null);
   let soundNameDraft = $state("");
   let soundIconDraft = $state(NEW_LAYER_ICON);
-  /** Preset being created (`preset: null`, optionally starting from one layer) or edited. */
-  let presetEditor = $state<{ preset: MusicSoundscapePreset | null; layer?: MusicSoundscapeDefinition } | null>(null);
+  /** Preset being created (`preset: null`) or edited; the editor replaces the builder content while open. */
+  let presetEditor = $state<{ preset: MusicSoundscapePreset | null } | null>(null);
   let pendingPresetDelete = $state<MusicSoundscapePreset | null>(null);
   let {
     filter = "all",
@@ -145,7 +145,7 @@
             <MusicSoundscapeChip icon={definition.icon} label={name} active={playing} ariaLabel={playing ? t("music.soundscape.stopLayer", name) : t("music.soundscape.play", name)} tooltip={playing ? t("music.soundscape.stopHint") : undefined} disabled={soundscape.saving} onclick={() => playLayer(definition)} />
           {/each}
           {#each local as definition (definition.id)}
-            <MusicSoundscapeLocalRow {definition} onRepair={(entry) => { void addLoop(entry); }} onRemove={(entry) => pendingDelete = entry} onMakePreset={(entry) => presetEditor = { preset: null, layer: entry }} {onPlaybackStart} />
+            <MusicSoundscapeLocalRow {definition} onRepair={(entry) => { void addLoop(entry); }} onRemove={(entry) => pendingDelete = entry} {onPlaybackStart} />
           {/each}
         </div>
         {#if pendingLayerPath}
@@ -171,7 +171,7 @@
 {/if}
 {#if presetEditor}
   {#key presetEditor}
-    <MusicSoundscapePresetEditor preset={presetEditor.preset} layer={presetEditor.layer} onDone={() => presetEditor = null} onRemove={(entry) => pendingPresetDelete = entry} />
+    <MusicSoundscapePresetEditor preset={presetEditor.preset} onDone={() => presetEditor = null} onRemove={(entry) => pendingPresetDelete = entry} />
   {/key}
 {/if}
 {#if pendingPresetDelete}

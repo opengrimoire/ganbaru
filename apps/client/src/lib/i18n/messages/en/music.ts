@@ -138,7 +138,6 @@ export const music = {
     levelHint: "Relative to your music volume",
     levelValue: (adjustment: string) => `${adjustment} relative to your music volume`,
     noActivePreset: "Play a soundscape to adjust its level",
-    makePreset: "Make soundscape",
     playPreset: (name: string) => `Play ${name} soundscape`,
     openBuilder: "Manage soundscapes",
     choice: {

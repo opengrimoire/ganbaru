@@ -14,7 +14,7 @@ Project settings can define:
 
 New projects default to no event name, the adaptive Pomodoro preset, global idle behavior, and no playlists unless a template says otherwise.
 
-Playlist selectors list real Music playlists. Choosing a playlist plays it automatically during that phase; choosing None means silence. On platforms with soundscapes, each phase also chooses Don't change, Silence, or a soundscape preset, independently of its playlist. A missing or deleted playlist or preset remains an explicit unavailable assignment with a repair path. Track-level settings stay in Music playlist membership data; see [Music automation](../music/automation.md).
+Playlist selectors list real Music playlists. Choosing a playlist plays it automatically during that phase; choosing None means silence. On platforms with soundscapes, each phase also chooses Silence (the default) or a soundscape preset, independently of its playlist. A missing or deleted playlist or preset remains an explicit unavailable assignment with a repair path. Track-level settings stay in Music playlist membership data; see [Music automation](../music/automation.md).
 
 Work-environment and anti-distraction defaults are planned and must not appear as functional selectors until their storage and runtime behavior exist.
 

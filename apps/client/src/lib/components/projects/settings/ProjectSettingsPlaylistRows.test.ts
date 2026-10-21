@@ -117,16 +117,24 @@ describe("Project playlist rows", () => {
     expect(next.slice(1).every((assignment) => assignment.soundscapeBehavior === "inherit")).toBe(true);
   });
 
-  it("chooses a soundscape preset or silence per phase without touching music", async () => {
+  it("chooses a soundscape preset per phase without touching music", async () => {
     const onChange = await render(updateMusicAssignmentDraft([], "short-break", { behavior: "pause-music" }));
-    expect(target.querySelector('[aria-label="Short break soundscape"]')?.textContent).toContain("Don't change");
+    expect(target.querySelector('[aria-label="Short break soundscape"]')?.textContent).toContain("Silence");
     await choose("Short break soundscape", "Evening");
     expect(onChange.mock.calls[0][0][1]).toMatchObject({
       behavior: "pause-music", soundscapeBehavior: "play-selected", soundscapePresetId: "evening",
     });
     await choose("Focus soundscape", "Silence");
-    expect(onChange.mock.calls[1][0][0]).toMatchObject({ behavior: "inherit", soundscapeBehavior: "pause-soundscape", soundscapePresetId: null });
-    expect(persistedMusicAssignmentDrafts(onChange.mock.calls[1][0]).map((assignment) => assignment.phase)).toEqual(["focus", "short-break"]);
+    expect(onChange).toHaveBeenCalledTimes(1);
+  });
+
+  it("stores Silence as no preset so the phase only stops an automatic soundscape", async () => {
+    const onChange = await render(updateMusicAssignmentDraft([], "short-break", {
+      behavior: "pause-music", soundscapeBehavior: "play-selected", soundscapePresetId: "evening",
+    }));
+    await choose("Short break soundscape", "Silence");
+    expect(onChange.mock.calls[0][0][1]).toMatchObject({ behavior: "pause-music", soundscapeBehavior: "inherit", soundscapePresetId: null });
+    expect(persistedMusicAssignmentDrafts(onChange.mock.calls[0][0]).map((assignment) => assignment.phase)).toEqual(["short-break"]);
   });
 
   it("flags a deleted soundscape preset so the phase can be repaired", async () => {

@@ -235,7 +235,19 @@ impl Owner {
                     self.state.owner,
                     SessionOwner::CalendarEvent | SessionOwner::Pomodoro
                 );
-            if action.is_some() || clear_context {
+            #[cfg(desktop)]
+            let soundscape = super::context_soundscape::prepare(
+                &mut transaction,
+                &BTreeMap::new(),
+                ganbaru_music::assignments::MusicSoundscapeBehavior::Inherit.as_ref(),
+                None,
+            )
+            .await?;
+            #[cfg(desktop)]
+            let soundscape_acts = soundscape.acts();
+            #[cfg(mobile)]
+            let soundscape_acts = false;
+            if action.is_some() || clear_context || soundscape_acts {
                 let mut next = self.state.clone();
                 let transition = if clear_context {
                     next.context = None;
@@ -273,6 +285,11 @@ impl Owner {
                     MusicLibraryError::database("accept absent soundtrack retry", error)
                 })?;
                 self.install(next, transition).await?;
+            }
+            #[cfg(desktop)]
+            if soundscape_acts {
+                self.finish_context_soundscape(soundscape, activation, permit)
+                    .await?;
             }
             return Ok(true);
         };
@@ -461,6 +478,21 @@ impl Owner {
             .map_err(|error| MusicLibraryError::database("commit accepted soundtrack", error))?;
         self.install(next, transition).await?;
         #[cfg(desktop)]
+        self.finish_context_soundscape(soundscape, activation, permit)
+            .await?;
+        #[cfg(mobile)]
+        drop(permit);
+        Ok(true)
+    }
+
+    /// Deliver a committed soundscape effect, then project the accepted soundscape version.
+    #[cfg(desktop)]
+    async fn finish_context_soundscape(
+        &mut self,
+        soundscape: super::context_soundscape::PreparedSoundscape,
+        activation: ContextActivation,
+        permit: crate::vault::ownership::ManagedVaultWritePermit,
+    ) -> MusicLibraryResult<()> {
         if let Err(error) = self
             .deliver_context_soundscape(soundscape, activation, permit)
             .await
@@ -470,20 +502,15 @@ impl Owner {
             ));
             self.publish(false)?;
         }
-        #[cfg(desktop)]
-        {
-            let version: i64 = sqlx::query_scalar(
-                "SELECT version FROM music_soundscape_state WHERE singleton = 1",
-            )
-            .fetch_one(self.pool.as_ref().expect("initialized music pool"))
-            .await
-            .map_err(|error| MusicLibraryError::database("project accepted soundscape", error))?;
-            self.state.soundscape_version = Some(version);
-            self.publish(false)?;
-        }
-        #[cfg(mobile)]
-        drop(permit);
-        Ok(true)
+        let version: i64 =
+            sqlx::query_scalar("SELECT version FROM music_soundscape_state WHERE singleton = 1")
+                .fetch_one(self.pool.as_ref().expect("initialized music pool"))
+                .await
+                .map_err(|error| {
+                    MusicLibraryError::database("project accepted soundscape", error)
+                })?;
+        self.state.soundscape_version = Some(version);
+        self.publish(false)
     }
 }
 

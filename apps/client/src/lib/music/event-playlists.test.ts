@@ -111,7 +111,7 @@ describe("event soundscape choices", () => {
     expect(effectiveEventSound(chosen, rainySnapshot, "long-break")).toEqual({ kind: "preset", presetId: "rain" });
   });
 
-  it("stores Don't change over a project preset as keeping the current soundscape", () => {
+  it("stores Silence over a project preset as keeping the current soundscape", () => {
     const kept = chooseEventSound([], rainySnapshot, "focus", { kind: "keep" });
     expect(kept[0]).toMatchObject({ soundscapeBehavior: "keep-current-soundscape", soundscapePresetId: null });
     expect(effectiveEventSound(kept, rainySnapshot, "focus")).toEqual({ kind: "keep" });

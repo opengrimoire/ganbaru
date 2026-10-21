@@ -25,7 +25,7 @@ async fn native_music_background_assignment_and_selection_roll_back_with_the_sou
     assert!(!prepared.missing);
     let request = prepared.action.as_ref().unwrap().as_ref().unwrap();
     assert_eq!(request.source_id, "generated-brown-noise");
-    assert_eq!(request.preset_level, 0.5);
+    assert_eq!(request.preset_level, 1.25);
     assert!(
         sqlx::query_scalar::<_, bool>("SELECT automatic_intent FROM music_soundscape_state")
             .fetch_one(&mut *transaction)
@@ -49,7 +49,8 @@ async fn native_music_background_assignment_and_selection_roll_back_with_the_sou
 }
 
 #[tokio::test]
-async fn native_music_background_pause_preserves_selection_and_keep_does_not_mutate_state() {
+async fn native_music_background_pause_and_unchosen_phases_stop_automatic_output_and_keep_selection()
+ {
     let pool = super::super::context::test_pool().await;
     let mut transaction = pool.begin().await.unwrap();
     let playing = prepare(
@@ -60,7 +61,7 @@ async fn native_music_background_pause_preserves_selection_and_keep_does_not_mut
     )
     .await
     .unwrap();
-    let kept = prepare(
+    let unchosen = prepare(
         &mut transaction,
         &BTreeMap::new(),
         "keep-current-soundscape",
@@ -68,12 +69,17 @@ async fn native_music_background_pause_preserves_selection_and_keep_does_not_mut
     )
     .await
     .unwrap();
-    assert!(kept.action.is_none());
+    assert!(matches!(unchosen.action, Some(None)));
+    assert_eq!(unchosen.version, playing.version.map(|version| version + 1));
+    let already_quiet = prepare(&mut transaction, &BTreeMap::new(), "inherit", None)
+        .await
+        .unwrap();
+    assert!(already_quiet.action.is_none());
     let paused = prepare(&mut transaction, &BTreeMap::new(), "pause-soundscape", None)
         .await
         .unwrap();
     assert!(matches!(paused.action, Some(None)));
-    assert_eq!(paused.version, playing.version.map(|version| version + 1));
+    assert_eq!(paused.version, playing.version.map(|version| version + 2));
     transaction.commit().await.unwrap();
     assert!(
         sqlx::query_scalar::<_, bool>("SELECT automatic_intent FROM music_soundscape_state")
@@ -102,6 +108,38 @@ async fn native_music_background_pause_preserves_selection_and_keep_does_not_mut
     .await
     .unwrap();
     assert!(!manual.automatic_intent);
+}
+
+#[tokio::test]
+async fn native_music_unchosen_phases_leave_a_hand_started_soundscape_playing() {
+    let pool = super::super::context::test_pool().await;
+    let persisted = ganbaru_music_library::soundscapes::state(&pool)
+        .await
+        .unwrap();
+    let manual = ganbaru_music_library::soundscapes::update_state(
+        &pool,
+        ganbaru_music_library::MusicSoundscapeStateWrite {
+            active_preset_id: Some(WHITE_PRESET.into()),
+            desired_playing: true,
+            expected_version: persisted.version,
+            updated_at_ms: persisted.updated_at_ms + 1,
+        },
+    )
+    .await
+    .unwrap();
+    let mut transaction = pool.begin().await.unwrap();
+    for behavior in ["inherit", "keep-current-soundscape"] {
+        let kept = prepare(&mut transaction, &BTreeMap::new(), behavior, None)
+            .await
+            .unwrap();
+        assert!(kept.action.is_none());
+    }
+    transaction.commit().await.unwrap();
+    let after = ganbaru_music_library::soundscapes::state(&pool)
+        .await
+        .unwrap();
+    assert_eq!(after.version, manual.version);
+    assert!(after.desired_playing && !after.automatic_intent);
 }
 
 #[tokio::test]

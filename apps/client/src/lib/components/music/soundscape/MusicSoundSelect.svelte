@@ -3,7 +3,6 @@
   import AlertTriangle from "@lucide/svelte/icons/triangle-alert";
   import Check from "@lucide/svelte/icons/check";
   import ChevronDown from "@lucide/svelte/icons/chevron-down";
-  import Minus from "@lucide/svelte/icons/minus";
   import Search from "@lucide/svelte/icons/search";
   import VolumeX from "@lucide/svelte/icons/volume-x";
   import { getLocalization } from "$lib/i18n/translator.svelte";
@@ -54,6 +53,8 @@
   const loading = $derived(soundscape.loading && soundscape.definitions.length === 0);
   const selectedPreset = $derived(value.kind === "preset" ? soundscape.presets.find((entry) => entry.id === value.presetId) ?? null : null);
   const missing = $derived(!loading && value.kind === "preset" && (!selectedPreset || !soundscape.presetIsPlayable(selectedPreset)));
+  /** Silence means no preset, so it also covers a stored pause and picking it stores no preset. */
+  const silent = $derived(value.kind !== "preset");
   const query = $derived(search.trim().toLocaleLowerCase());
   const presets = $derived(soundscape.presets.filter((preset) => matches(presetDisplayName(preset, t))));
 
@@ -194,14 +195,12 @@
   >
     {#if missing}<AlertTriangle size={14} class="shrink-0 text-warning" />
     {:else if selectedPreset}<span class="grid size-3.5 shrink-0 place-items-center text-muted-foreground"><MusicSoundscapeGroupIcon icon={selectedPreset.icon} size={14} /></span>
-    {:else if value.kind === "silence"}<VolumeX size={14} strokeWidth={1.5} class="shrink-0 text-muted-foreground" />
-    {:else}<Minus size={14} strokeWidth={1.5} class="shrink-0 text-muted-foreground" />{/if}
+    {:else}<VolumeX size={14} strokeWidth={1.5} class="shrink-0 text-muted-foreground" />{/if}
     <span class="min-w-0 flex-1 truncate">
       {#if loading}<Loading layout="inline" label={t("music.soundscape.title")} />
       {:else if missing}{t("music.soundscape.choice.missing")}
       {:else if selectedPreset}{presetDisplayName(selectedPreset, t)}
-      {:else if value.kind === "silence"}{t("music.soundscape.choice.silence")}
-      {:else}{t("music.soundscape.choice.keep")}{/if}
+      {:else}{t("music.soundscape.choice.silence")}{/if}
     </span>
     <ChevronDown size={13} strokeWidth={2} class={cn("shrink-0 text-muted-foreground transition-transform", open && "rotate-180")} />
   </button>
@@ -229,15 +228,10 @@
     <div use:scrollEdgeFadeAction class="surface-floating-body min-h-0 flex-1 overflow-y-auto overscroll-contain" data-music-scrollable="true">
       <div role="listbox" aria-label={label}>
         {#if !query}
-          <button type="button" role="option" aria-selected={value.kind === "keep"} onclick={() => choose({ kind: "keep" })} class="menu-item">
-            <Minus size={15} strokeWidth={1.75} />
-            <span class="min-w-0 flex-1 truncate font-medium">{t("music.soundscape.choice.keep")}</span>
-            {#if value.kind === "keep"}<Check size={14} />{/if}
-          </button>
-          <button type="button" role="option" aria-selected={value.kind === "silence"} onclick={() => choose({ kind: "silence" })} class="menu-item">
+          <button type="button" role="option" aria-selected={silent} onclick={() => choose({ kind: "keep" })} class="menu-item">
             <VolumeX size={15} strokeWidth={1.75} />
             <span class="min-w-0 flex-1 truncate font-medium">{t("music.soundscape.choice.silence")}</span>
-            {#if value.kind === "silence"}<Check size={14} />{/if}
+            {#if silent}<Check size={14} />{/if}
           </button>
         {/if}
         {#if presets.length > 0}

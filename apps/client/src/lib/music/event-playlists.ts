@@ -98,7 +98,7 @@ export function chooseEventPlaylist(
 
 /**
  * Applies a soundscape choice for one phase without touching its music. A choice equal to
- * the project snapshot clears the soundscape override; "Don't change" over a project preset is stored
+ * the project snapshot clears the soundscape override; Silence over a project preset is stored
  * as keeping the current soundscape so the project preset does not apply.
  *
  * @param overrides - Event override drafts.

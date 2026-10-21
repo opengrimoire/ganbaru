@@ -27,6 +27,13 @@ pub(super) struct PreparedSoundscape {
     pub missing: bool,
 }
 
+impl PreparedSoundscape {
+    /// Whether the soundscape effect changed state that must be committed and delivered.
+    pub(super) fn acts(&self) -> bool {
+        self.action.is_some()
+    }
+}
+
 /// Read only the selected preset, with SQL size predicates before path allocation. A preset plays
 /// the sounds still available on this device and reports missing only when none remain.
 pub(super) async fn prepare(
@@ -47,7 +54,18 @@ pub(super) async fn prepare(
         behavior,
         MusicSoundscapeBehavior::Inherit | MusicSoundscapeBehavior::KeepCurrentSoundscape
     ) {
-        return Ok(empty(false));
+        // A phase that chooses nothing stops a preset an earlier phase or event started, so it
+        // never carries over, and leaves a soundscape the listener started by hand.
+        let automatic_playing: bool = sqlx::query_scalar(
+            "SELECT automatic_intent = 1 AND desired_playing = 1
+             FROM music_soundscape_state WHERE singleton = 1",
+        )
+        .fetch_one(&mut *connection)
+        .await
+        .map_err(|error| MusicLibraryError::database("read accepted soundscape intent", error))?;
+        if !automatic_playing {
+            return Ok(empty(false));
+        }
     }
     let request = if behavior == MusicSoundscapeBehavior::PlaySelected {
         let Some(preset_id) = preset_id else {

@@ -1,6 +1,10 @@
 import type { MusicContextAssignmentDraft, MusicSoundscapeBehavior } from "./context-assignment";
 
-/** Soundscape choice for one Focus phase, as shown in the phase pickers. A single sound plays through its one-sound preset. */
+/**
+ * Soundscape choice for one Focus phase. A single sound plays through its one-sound preset. The pickers show `keep` as
+ * Silence: natively it stops only a soundscape an earlier phase or event started. `silence` is a stored pause, written by
+ * the event section toggle, that stops any soundscape.
+ */
 export type MusicSoundChoice =
   | { kind: "keep" }
   | { kind: "silence" }
@@ -20,7 +24,7 @@ export function soundChoiceFromAssignment(assignment: MusicSoundChoiceFields): M
 /**
  * Converts a choice into assignment fields that satisfy the native rule: play-selected names exactly one preset, and other behaviors name none.
  *
- * @param keepBehavior - Behavior used for "Don't change". Layers above a stored preset need `keep-current-soundscape` so the lower layer does not apply.
+ * @param keepBehavior - Behavior used for Silence. Layers above a stored preset need `keep-current-soundscape` so the lower layer does not apply.
  */
 export function soundChoiceFields(
   choice: MusicSoundChoice,
@@ -38,9 +42,4 @@ export function soundChoicesEqual(left: MusicSoundChoice, right: MusicSoundChoic
   if (left.kind !== right.kind) return false;
   if (left.kind === "preset" && right.kind === "preset") return left.presetId === right.presetId;
   return true;
-}
-
-/** Reports whether a choice changes the soundscape when its phase starts. */
-export function soundChoiceIsActive(choice: MusicSoundChoice): boolean {
-  return choice.kind !== "keep";
 }

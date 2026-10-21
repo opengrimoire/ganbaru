@@ -1,6 +1,6 @@
 import { NativeFocusClient, reportIdleOverlayVisible, type FocusControlScope } from "$lib/api/focus";
 import { BUILD_PLATFORM_PROFILE } from "$lib/platform";
-import { focusDisplayElapsedSeconds, focusDisplayRemainingSeconds, focusNeedsVisualClock, focusSegmentForRail, type FocusIntent, type FocusProjection } from "$lib/pomodoro/native-focus";
+import { focusDisplayElapsedSeconds, focusDisplayRemainingSeconds, focusNeedsVisualClock, focusSegmentForRail, focusSnapshotAgeMs, type FocusIntent, type FocusProjection } from "$lib/pomodoro/native-focus";
 import { DEFAULT_POMODORO_CONFIG, type PomodoroConfig } from "$lib/pomodoro/rhythm";
 import type { PersistedSegment } from "$lib/calendar/types";
 
@@ -26,8 +26,9 @@ function recordFailure(error: unknown): void {
 function acceptProjection(next: FocusProjection): void {
   const previous = projection;
   projection = next;
-  receivedAt = performance.now();
-  visualNow = receivedAt;
+  // Counters run from native observation, not receipt, so re-delivered cached snapshots never move them back.
+  visualNow = performance.now();
+  receivedAt = visualNow - focusSnapshotAgeMs(next.snapshot, Date.now());
   connectionError = next.error;
   if (previous?.vaultGeneration !== next.vaultGeneration) segments = [];
   const snapshot = next.snapshot;

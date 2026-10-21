@@ -126,6 +126,20 @@ export function focusProjectionIsCurrent(previous: FocusProjection | null, next:
     || (next.snapshot.revision === previous.snapshot.revision && next.snapshot.observedAtMs >= previous.snapshot.observedAtMs);
 }
 
+/**
+ * Measure how long ago native execution observed this snapshot.
+ *
+ * Visual counters start from this age instead of from receipt, so a cached snapshot delivered late shows the
+ * same time as a fresh one.
+ *
+ * @param snapshot The accepted native snapshot, or null before the first projection.
+ * @param wallNowMs The current wall clock, shared with native execution.
+ * @returns Milliseconds since observation, never negative.
+ */
+export function focusSnapshotAgeMs(snapshot: FocusSnapshot | null | undefined, wallNowMs: number): number {
+  return snapshot ? Math.max(0, wallNowMs - snapshot.observedAtMs) : 0;
+}
+
 /** Interpolate the remaining time for display without passing the accepted event end. */
 export function focusDisplayRemainingSeconds(snapshot: FocusSnapshot, visualElapsedMs: number): number {
   const elapsed = Math.max(0, visualElapsedMs);

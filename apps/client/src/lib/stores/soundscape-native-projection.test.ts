@@ -194,7 +194,7 @@ describe("single sounds as one-sound presets", () => {
     const store = await loadedStore();
     await store.playSound(rain, "Rain");
     expect(api.upsertMusicSoundscapePreset).toHaveBeenCalledWith(expect.objectContaining({
-      name: "Rain", level: 0.5, sounds: [{ soundscapeId: "rain", level: 1 }], expectedVersion: null,
+      name: "Rain", level: 1, sounds: [{ soundscapeId: "rain", level: 1 }], expectedVersion: null,
     }));
     expect(store.activePreset?.sounds).toEqual([{ soundscapeId: "rain", level: 1 }]);
     expect(store.snapshot.status).toBe("playing");

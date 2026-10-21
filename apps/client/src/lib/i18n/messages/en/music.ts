@@ -154,10 +154,9 @@ export const music = {
       silence: "Silence",
       presets: "Presets",
       missing: "Selected preset is unavailable",
-      search: "Search presets",
+      search: "Search soundscapes",
       noMatches: "No presets match this search.",
       noPresets: "No presets yet. Make one from a sound in the soundscape builder.",
-      presetCount: (count: number) => `${count} ${count === 1 ? "sound" : "sounds"}`,
     },
     preset: {
       name: "Preset name",

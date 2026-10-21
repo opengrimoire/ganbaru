@@ -143,11 +143,6 @@
         {#if error}
           <Notice class="col-span-full px-1 text-[0.65rem]" message={error} {onRetry} />
         {/if}
-        {#if phaseColumns}
-          <span class="music-spacer" aria-hidden="true"></span>
-          <span class="truncate text-[0.733333rem] text-muted-foreground">{t("calendar.eventPanel.musicPlaylist")}</span>
-          <span class="truncate text-[0.733333rem] text-muted-foreground">{t("calendar.eventPanel.musicSound")}</span>
-        {/if}
         {#each rows as row (row.phase)}
           <span class="music-label truncate text-[0.8rem] text-foreground">{row.label}</span>
           <MusicPlaylistSelect
@@ -203,7 +198,6 @@
 
   @container (width < 24rem) {
     .music-grid.phase-columns { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-    .phase-columns .music-spacer { display: none; }
     .phase-columns .music-label { grid-column: 1 / -1; margin-top: 0.25rem; }
   }
 </style>

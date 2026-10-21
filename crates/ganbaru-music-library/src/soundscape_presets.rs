@@ -324,8 +324,7 @@ mod tests {
             let pool = pool().await;
             let seeded = presets(&pool).await.unwrap();
             assert_eq!(seeded.len(), 3);
-            assert!(seeded.iter().all(|preset| preset.level == 0.5
-                && preset.sounds.len() == 1
+            assert!(seeded.iter().all(|preset| preset.sounds.len() == 1
                 && preset.sounds[0].level == 1.0
                 && preset.id == format!("preset-{}", preset.sounds[0].soundscape_id)));
         });

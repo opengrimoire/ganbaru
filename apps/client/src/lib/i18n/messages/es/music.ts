@@ -157,10 +157,9 @@ export const music = {
       silence: "Silencio",
       presets: "Preajustes",
       missing: "El preajuste seleccionado no está disponible",
-      search: "Buscar preajustes",
+      search: "Buscar paisajes sonoros",
       noMatches: "Ningún preajuste coincide con esta búsqueda.",
       noPresets: "Aún no hay preajustes. Crea uno desde un sonido en el editor de paisajes sonoros.",
-      presetCount: (count: number) => `${count} ${count === 1 ? "sonido" : "sonidos"}`,
     },
     preset: {
       name: "Nombre del preajuste",

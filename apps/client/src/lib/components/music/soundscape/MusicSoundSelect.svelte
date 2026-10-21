@@ -241,7 +241,6 @@
           </button>
         {/if}
         {#if presets.length > 0}
-          <p class="px-3 pt-2 pb-1 text-panel-detail text-muted-foreground">{t("music.soundscape.choice.presets")}</p>
           {#each presets as preset (preset.id)}
             {@const choice = presetChoice(preset.id)}
             {@const selected = soundChoicesEqual(choice, value)}
@@ -250,7 +249,7 @@
               <span class="grid size-4 shrink-0 place-items-center"><MusicSoundscapeGroupIcon icon={preset.icon} size={15} /></span>
               <span class="min-w-0 flex-1 truncate font-medium">{presetDisplayName(preset, t)}</span>
               {#if selected}<Check size={14} />{/if}
-              <span class="shrink-0 text-panel-detail text-muted-foreground">{playable ? t("music.soundscape.choice.presetCount", preset.sounds.length) : t("music.soundscape.needsRepair")}</span>
+              {#if !playable}<span class="shrink-0 text-panel-detail text-muted-foreground">{t("music.soundscape.needsRepair")}</span>{/if}
             </button>
           {/each}
         {:else if query}

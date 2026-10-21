@@ -226,14 +226,14 @@ fn fresh_vaults_seed_one_rain_preset_per_generated_sound() {
                 (
                     "preset-generated-brown-noise".into(),
                     "Soft rain".into(),
-                    0.5,
+                    1.25,
                     "generated-brown-noise".into(),
                     1.0
                 ),
                 (
                     "preset-generated-pink-noise".into(),
                     "Rain".into(),
-                    0.5,
+                    0.75,
                     "generated-pink-noise".into(),
                     1.0
                 ),

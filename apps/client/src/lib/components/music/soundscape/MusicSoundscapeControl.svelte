@@ -80,12 +80,11 @@
         <MusicSoundscapeActiveLevel idPrefix="player-soundscape" />
         {#if soundscape.error}<Notice class="mt-1 px-1 text-panel-detail" message={t("music.soundscape.genericError")} />{/if}
         {#if soundscape.presets.length > 0}
-          <div class="mt-3 flex min-h-7 items-center px-1"><span class="min-w-0 flex-1 truncate text-panel-detail text-muted-foreground">{t("music.soundscape.choice.presets")}</span></div>
-          <div class="flex flex-wrap gap-1.5">
+          <div class="mt-3 flex flex-wrap gap-1.5">
             {#each soundscape.presets as preset (preset.id)}
               {@const selected = preset.id === active?.id}
               {@const name = presetDisplayName(preset, t)}
-              <button type="button" aria-pressed={selected} aria-label={selected && playing ? t("music.soundscape.pause") : t("music.soundscape.playPreset", name)} disabled={soundscape.playbackPending || !soundscape.presetIsPlayable(preset)} class={selected ? "inline-flex h-8 min-w-0 max-w-full items-center gap-1.5 rounded-floating-item bg-primary/10 px-2.5 text-panel-detail transition-colors hover:bg-accent/70 disabled:opacity-50" : "inline-flex h-8 min-w-0 max-w-full items-center gap-1.5 rounded-floating-item bg-secondary/40 px-2.5 text-panel-detail transition-colors hover:bg-accent/70 disabled:opacity-50"} onclick={() => choosePreset(preset)}><MusicSoundscapeGroupIcon icon={preset.icon} size={14} /><span class="truncate">{name}</span></button>
+              <button type="button" aria-pressed={selected} aria-label={selected && playing ? t("music.soundscape.pause") : t("music.soundscape.playPreset", name)} disabled={!soundscape.presetIsPlayable(preset)} class={selected ? "inline-flex h-8 min-w-0 max-w-full items-center gap-1.5 rounded-floating-item bg-primary/10 px-2.5 text-panel-detail transition-colors hover:bg-accent/70 disabled:opacity-50" : "inline-flex h-8 min-w-0 max-w-full items-center gap-1.5 rounded-floating-item px-2.5 text-panel-detail transition-colors hover:bg-accent/70 disabled:opacity-50"} onclick={() => choosePreset(preset)}><MusicSoundscapeGroupIcon icon={preset.icon} size={14} /><span class="truncate">{name}</span></button>
             {/each}
           </div>
         {/if}

@@ -63,8 +63,8 @@ export interface MusicSoundscapeGroupWrite {
 
 /** Highest preset level: twice the Music volume setting before output clamps at full scale. */
 export const MAX_SOUNDSCAPE_PRESET_LEVEL = 2;
-/** Level of a new preset: half the Music volume setting, so soundscapes sit under Music by default. */
-export const DEFAULT_SOUNDSCAPE_PRESET_LEVEL = 0.5;
+/** Level of a new preset: the Music volume setting itself, shown as 0%. */
+export const DEFAULT_SOUNDSCAPE_PRESET_LEVEL = 1;
 
 /** One sound in a preset mix with its share of the preset level, from 0 (silent) to 1 (full). */
 export interface MusicSoundscapePresetSound {

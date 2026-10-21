@@ -88,7 +88,7 @@
             {/each}
           </div>
         {/if}
-        <button type="button" class="menu-item mt-3 justify-between text-muted-foreground hover:text-foreground" onclick={() => { open = false; onOpenSoundscapes(); }}><span>{t("music.soundscape.openBuilder")}</span><ChevronRight size={14} /></button>
+        <button type="button" class="menu-item mt-3 justify-between" onclick={() => { open = false; onOpenSoundscapes(); }}><span>{t("music.soundscape.openBuilder")}</span><ChevronRight size={14} /></button>
       </div>
     </div>
   {/if}

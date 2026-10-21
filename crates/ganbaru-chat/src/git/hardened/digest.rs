@@ -2,11 +2,12 @@
 //!
 //! The Git digest covers what can make Git run a program: command-bearing
 //! keys from local or worktree configuration (including files those include)
-//! and the files of the repository hooks directory. Ordinary keys such as
-//! remotes, branches, and identity are left out, so pushing a new branch or
-//! adding a remote never asks again. `.gitattributes` is left out as well: it
-//! only selects drivers that configuration defines, and a branch checkout that
-//! touches it must not ask again.
+//! and the files of the repository hooks directory, for the folder and each
+//! populated submodule. Ordinary keys such as remotes, branches, and identity
+//! are left out, so pushing a new branch or adding a remote never asks again.
+//! `.gitattributes` is left out as well: it only selects drivers that
+//! configuration defines, and a branch checkout that touches it must not ask
+//! again.
 //!
 //! The provider digest covers project provider configuration that can run
 //! commands: Claude project settings, project MCP servers, and the skills,
@@ -14,9 +15,10 @@
 //! Instructions such as `CLAUDE.md` are left out. Entries are digested per
 //! file so a worktree can be checked against the folder decision.
 
+use super::submodules::{Submodule, populated_submodules};
 use super::{
     GIT_CONFIG_READ_DEADLINE, GitConfigEntry, GitConfigScope, GitFolderTrust, GitPolicy,
-    GitRunError, GitStdout, base_command, classify_key, empty_hooks_directory, execute,
+    GitRunError, GitStdout, StdoutSink, base_command, classify_key, empty_hooks_directory, execute,
     hardening_for, read_effective_config,
 };
 use sha2::{Digest, Sha256};
@@ -104,7 +106,9 @@ pub struct FolderConfiguration {
 pub fn folder_configuration_blocking(root: &Path) -> Result<FolderConfiguration, GitRunError> {
     let policy = GitPolicy::internal(GitFolderTrust::Untrusted);
     let entries = read_effective_config(root, policy, &[], GIT_CONFIG_READ_DEADLINE, None)?;
-    let git = git_configuration(root, &entries, GIT_CONFIG_READ_DEADLINE, None)?;
+    let submodules =
+        populated_submodules(root, policy, &entries, &[], GIT_CONFIG_READ_DEADLINE, None)?;
+    let git = git_configuration(root, &entries, &submodules, GIT_CONFIG_READ_DEADLINE, None)?;
     let provider = provider_configuration(root)?;
     Ok(FolderConfiguration {
         git: git.digest,
@@ -126,15 +130,43 @@ pub(super) struct DigestOutcome {
     pub is_empty: bool,
 }
 
-/// Digests the repository programs and hooks of `root` from a listing taken
-/// with the environment of the coming run.
+/// Digests the repository programs and hooks of `root` and of its populated
+/// submodules from listings taken with the environment of the coming run.
 pub(super) fn git_configuration(
     root: &Path,
     entries: &[GitConfigEntry],
+    submodules: &[Submodule],
     deadline: Duration,
     cancel: Option<&Arc<AtomicBool>>,
 ) -> Result<DigestOutcome, GitRunError> {
     let mut hasher = DigestWriter::new(GIT_DIGEST_DOMAIN);
+    let mut is_empty = hash_repository(&mut hasher, root, entries, deadline, cancel)?;
+    for submodule in submodules {
+        hasher.field(b"submodule");
+        hasher.field(&submodule.relative);
+        is_empty &= hash_repository(
+            &mut hasher,
+            &submodule.root,
+            &submodule.entries,
+            deadline,
+            cancel,
+        )?;
+    }
+    Ok(DigestOutcome {
+        digest: hasher.finish(),
+        is_empty,
+    })
+}
+
+/// Adds the programs and hooks of one repository to `hasher`. Returns true
+/// when it defines none.
+fn hash_repository(
+    hasher: &mut DigestWriter,
+    root: &Path,
+    entries: &[GitConfigEntry],
+    deadline: Duration,
+    cancel: Option<&Arc<AtomicBool>>,
+) -> Result<bool, GitRunError> {
     let mut is_empty = true;
     for entry in entries
         .iter()
@@ -152,13 +184,10 @@ pub(super) fn git_configuration(
     let locations = repository_locations(root, deadline, cancel)?;
     if let Some(hooks) = hooks_directory(root, entries, locations.as_ref()) {
         hasher.field(b"hooks");
-        let files = hash_directory(&mut hasher, &hooks)?;
+        let files = hash_directory(hasher, &hooks)?;
         is_empty &= files == 0;
     }
-    Ok(DigestOutcome {
-        digest: hasher.finish(),
-        is_empty,
-    })
+    Ok(is_empty)
 }
 
 fn provider_configuration(root: &Path) -> Result<DigestOutcome, GitRunError> {
@@ -256,14 +285,14 @@ fn portable_path(path: &Path) -> String {
         .join("/")
 }
 
-struct RepositoryLocations {
-    common_directory: PathBuf,
-    top_level: PathBuf,
+pub(super) struct RepositoryLocations {
+    pub common_directory: PathBuf,
+    pub top_level: PathBuf,
 }
 
 /// Locates the common Git directory and the top level of the working tree.
 /// Returns `None` outside a repository.
-fn repository_locations(
+pub(super) fn repository_locations(
     root: &Path,
     deadline: Duration,
     cancel: Option<&Arc<AtomicBool>>,
@@ -281,7 +310,7 @@ fn repository_locations(
     let output = execute(
         command,
         None,
-        GitStdout::Memory(MAX_LOCATION_OUTPUT_BYTES),
+        StdoutSink::Target(GitStdout::Memory(MAX_LOCATION_OUTPUT_BYTES)),
         deadline.min(GIT_CONFIG_READ_DEADLINE),
         cancel,
     )?;

@@ -578,6 +578,110 @@ fn internal_runs_do_not_execute_repository_programs() {
 
 #[cfg(unix)]
 #[test]
+fn untrusted_runs_do_not_execute_programs_from_submodule_configuration() {
+    let repository = TestRepository::new();
+    let marker = repository.marker();
+    let inner = repository.base().join("inner");
+    fs::create_dir_all(&inner).expect("inner directory should be created");
+    let inner_git = |arguments: &[&str]| {
+        let status = Command::new("git")
+            .arg("-C")
+            .arg(&inner)
+            .args(arguments)
+            .env("GIT_CONFIG_GLOBAL", &repository.global)
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .status()
+            .expect("git should start");
+        assert!(status.success(), "git {arguments:?} should succeed");
+    };
+    inner_git(&["init", "--quiet"]);
+    fs::write(inner.join(".gitattributes"), "*.txt filter=evil\n")
+        .expect("attributes should write");
+    fs::write(inner.join("file.txt"), "content\n").expect("file should write");
+    inner_git(&["add", "-A"]);
+    inner_git(&["commit", "-q", "-m", "test: inner"]);
+    repository.git(&[
+        "-c",
+        "protocol.file.allow=always",
+        "submodule",
+        "add",
+        "--quiet",
+        &inner.to_string_lossy(),
+        "sub",
+    ]);
+    repository.git(&["commit", "-q", "-m", "test: submodule"]);
+    let before = repository.configuration();
+
+    let filter = repository.write_script(
+        "../tools/filter",
+        &format!("echo ran >> '{}'\ncat", marker.display()),
+    );
+    repository.git(&[
+        "-C",
+        "sub",
+        "config",
+        "filter.evil.clean",
+        &filter.to_string_lossy(),
+    ]);
+    repository.git(&["-C", "sub", "config", "filter.evil.required", "true"]);
+    let after = repository.configuration();
+    assert_ne!(before.git, after.git, "trust must cover submodule programs");
+    assert!(!after.git_is_empty);
+    fs::write(repository.root.join("sub/file.txt"), "CONTENT\n").expect("file should write");
+
+    for policy in [INTERNAL_UNTRUSTED, USER_UNTRUSTED] {
+        let output = repository
+            .run(policy, &["status", "--porcelain"], None, TEST_DEADLINE)
+            .expect("status should run");
+        assert!(
+            output.status.success(),
+            "status failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(output.stdout, b" M sub\n");
+    }
+    let stale = repository
+        .run(
+            GitPolicy::internal(GitFolderTrust::Trusted(before.git)),
+            &["status", "--porcelain"],
+            None,
+            TEST_DEADLINE,
+        )
+        .expect("status should run");
+    assert!(stale.status.success());
+    assert!(!marker.exists(), "a submodule program ran");
+
+    repository.git(&["status", "--porcelain"]);
+    assert!(
+        marker.exists(),
+        "the fixture should run submodule programs outside Ganbaru"
+    );
+}
+
+#[test]
+fn gitlink_records_survive_any_read_boundary() {
+    struct Chunked<'a>(&'a [u8]);
+    impl std::io::Read for Chunked<'_> {
+        fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+            let length = self.0.len().min(buffer.len()).min(3);
+            buffer[..length].copy_from_slice(&self.0[..length]);
+            self.0 = &self.0[length..];
+            Ok(length)
+        }
+    }
+    let listing = b"100644 aaaa 0\tfile\x00160000 bbbb 0\tsub\x00100755 cccc 0\t160000 x\0\
+                    16000 dddd 0\tshort\x00160000 eeee 1\tdeep/sub";
+    let overflow = std::sync::atomic::AtomicBool::new(false);
+    let kept = super::submodules::read_gitlink_records(Chunked(listing), 1024, &overflow).unwrap();
+    assert_eq!(kept, b"160000 bbbb 0\tsub\x00160000 eeee 1\tdeep/sub");
+    assert!(!overflow.load(std::sync::atomic::Ordering::Relaxed));
+
+    super::submodules::read_gitlink_records(Chunked(listing), 8, &overflow).unwrap();
+    assert!(overflow.load(std::sync::atomic::Ordering::Relaxed));
+}
+
+#[cfg(unix)]
+#[test]
 fn internal_runs_keep_the_users_global_configuration() {
     let repository = TestRepository::new();
     let excludes = repository.base().join("excludes");
@@ -837,7 +941,7 @@ fn digest_ignores_ordinary_keys_and_command_scope_entries() {
         Some("/tmp/monitor"),
     ));
     let digest = |entries: &[GitConfigEntry]| {
-        super::digest::git_configuration(&repository.root, entries, TEST_DEADLINE, None)
+        super::digest::git_configuration(&repository.root, entries, &[], TEST_DEADLINE, None)
             .expect("digest should compute")
             .digest
     };

@@ -714,7 +714,7 @@ impl ControlMessage {
                     requester_public_key,
                     ganbaru_contacts::PUBLIC_KEY_TEXT_LENGTH,
                 )?;
-                if (unix_time_ms() - *issued_at_ms).abs() > STATUS_REPLAY_WINDOW_MS {
+                if unix_time_ms().abs_diff(*issued_at_ms) > STATUS_REPLAY_WINDOW_MS.unsigned_abs() {
                     return Err("contact request status is outside the replay window".to_string());
                 }
                 validate_base64url_text(
@@ -1664,5 +1664,33 @@ mod tests {
         assert!(error.contains("compatibility mismatch"));
         assert!(error.contains("test"));
         assert!(error.contains("newer"));
+    }
+
+    #[test]
+    fn contact_status_replay_window_holds_at_every_timestamp_extreme() {
+        let status = |issued_at_ms: i64| ControlMessage::ContactRequestStatus {
+            protocol_version: PROTOCOL_VERSION,
+            request_id: "request-abcdefghijklmnopqrstuv".to_string(),
+            requester_public_key: "a".repeat(ganbaru_contacts::PUBLIC_KEY_TEXT_LENGTH),
+            issued_at_ms,
+            signature: "s".repeat(SIGNATURE_TEXT_LENGTH),
+        };
+        let now = unix_time_ms();
+
+        status(now).validate().expect("current status poll");
+        status(now - STATUS_REPLAY_WINDOW_MS / 2)
+            .validate()
+            .expect("status poll inside the window");
+        for issued_at_ms in [
+            i64::MIN,
+            i64::MIN + 1,
+            i64::MAX,
+            0,
+            now - 2 * STATUS_REPLAY_WINDOW_MS,
+            now + 2 * STATUS_REPLAY_WINDOW_MS,
+        ] {
+            let error = status(issued_at_ms).validate().unwrap_err();
+            assert!(error.contains("replay window"), "{issued_at_ms}: {error}");
+        }
     }
 }

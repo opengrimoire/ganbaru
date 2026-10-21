@@ -397,6 +397,37 @@ fn carried_operations_reach_the_replacement_once() {
 }
 
 #[test]
+fn oversized_carry_bundles_are_refused_before_reading() {
+    block_on(async {
+        let directory = TestDirectory::new("carry-oversized");
+        let registry = DatabasePoolRegistry::default();
+        let engine = Engine::vault();
+        let files = directory.files();
+        let pool = create_vault(&registry, &directory.path().join("vault.sqlite")).await;
+        let mut conn = acquire(&pool).await;
+        let ctx = context(&mut conn, DEVICE_ID).await;
+        std::fs::create_dir_all(&files.directory).expect("create sync directory");
+        let bundle = std::fs::File::create(files.carry_path()).expect("create bundle");
+        bundle
+            .set_len(ganbaru_sync::local::MAX_BUNDLE_BYTES as u64 + 1)
+            .expect("size bundle");
+        drop(bundle);
+
+        let error = carry_forward::import_pending(&engine, &mut conn, &ctx, &files, NOW_MS)
+            .await
+            .expect_err("an oversized bundle is refused");
+        assert_eq!(
+            error,
+            "carry-forward bundle is not a file within the size limit"
+        );
+        assert!(files.carry_path().exists());
+        drop(conn);
+        drop(pool);
+        registry.close_all().await.expect("close pools");
+    });
+}
+
+#[test]
 fn guarded_connections_refuse_local_tables_and_signal_commits() {
     block_on(async {
         let directory = TestDirectory::new("guarded");

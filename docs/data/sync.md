@@ -121,7 +121,7 @@ Whole-vault refresh, ownership transfer, and backup restore never lose operation
 
 - The source seals pending captures under the write fence before preparing a snapshot. Snapshots carry the full operation log and engine state; the copy drops pending captures, which stay in the source and seal there.
 - Before activation replaces the vault, the receiver seals its own captures under the same fence and exports every operation it stores that the staged database lacks into a bounded device-local bundle. Captures that cannot be sealed refuse the replacement with an error that names unsynced Quick notes changes. It also copies the verified Quick note image files the staged vault lacks, so images not yet uploaded survive with the operations that reference them.
-- The sync service imports the bundle into the new database before its writer check, then deletes it. Import skips operations already stored, so a crash between replacement and import loses nothing.
+- The sync service imports the bundle into the new database before its writer check, then deletes it. A bundle that is not a regular file within the bundle limit is refused before it is read. Import skips operations already stored, so a crash between replacement and import loses nothing.
 - After a backup restore, the writer check creates a successor writer, and captures in the restored database seal under it.
 
 ### Conflicts, recovery, and controls

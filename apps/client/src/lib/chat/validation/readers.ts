@@ -49,9 +49,7 @@ export function readJsonValue(value: unknown, label: string): JsonValue {
     if (typeof entry === "number" && Number.isFinite(entry)) return entry;
     if (Array.isArray(entry)) return entry.map((item, index) => visit(item, `${path}[${index}]`, depth + 1));
     if (typeof entry === "object") {
-      const result: { [key: string]: JsonValue } = {};
-      for (const [key, item] of Object.entries(entry)) result[key] = visit(item, `${path}.${key}`, depth + 1);
-      return result;
+      return Object.fromEntries(Object.entries(entry).map(([key, item]) => [key, visit(item, `${path}.${key}`, depth + 1)]));
     }
     throw new Error(`${path} is not valid JSON`);
   };

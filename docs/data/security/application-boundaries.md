@@ -64,7 +64,7 @@ Notes rich content, formulas, imports, transfer manifests, comments, and asset r
 
 Compressed history is validated before parsing: encoding, declared and actual decompressed size, content digest, and JSON shape, with per-chunk and reconstructed-size limits for chunked history. Restore applies canonical writes transactionally and rebuilds disposable indexes after success.
 
-Markdown and HTML renderers sanitize or avoid active content. Export is not a route for executing embedded scripts or resolving arbitrary local paths.
+Markdown and HTML renderers sanitize or avoid active content. Export is not a route for executing embedded scripts or resolving arbitrary local paths. Chat Markdown escapes raw HTML before sanitization, and the sanitizer allows no `data-*` attribute except the renderer's own link marker. Readers of untrusted JSON keep keys such as `__proto__` as data and never change an object's prototype.
 
 ## Calendar and import parsers
 

@@ -23,7 +23,7 @@ pub use identity::{
     SignatureError, is_small_order_public_key, nonces_match, random_bytes, verify,
 };
 pub use request::{
-    CARD_NONCE_BYTES, decode_nonce, encode_nonce, request_signature_payload,
-    status_signature_payload,
+    CARD_NONCE_BYTES, REQUEST_SIGNATURE_DOMAIN, STATUS_SIGNATURE_DOMAIN, decode_nonce,
+    encode_nonce, request_signature_payload, status_signature_payload,
 };
 pub use trust::TrustKind;

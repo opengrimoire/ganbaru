@@ -12,7 +12,8 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use sha2::{Digest, Sha256};
 use std::fmt;
 
-/// Leading bytes of every binary card.
+/// Leading bytes of every binary card. They are also the domain of the card signature, so a
+/// card never verifies as any other message the person key signs.
 pub const CARD_MAGIC: &[u8; 4] = b"GBC\x01";
 /// Prefix of the pasteable text form.
 pub const CARD_TEXT_PREFIX: &str = "GANB-";

@@ -124,3 +124,51 @@ fn small_order_writer_keys_never_verify_an_operation() {
     assert!(!crate::WriterPublicKey::from_bytes(identity).verify_operation(b"operation", &forgery));
     assert!(crate::WriterPublicKey::from_slice(writer_key().public_key().as_bytes()).is_ok());
 }
+
+#[test]
+fn every_person_key_signature_domain_is_distinct_and_prefix_free() {
+    let person = person();
+    let card = ganbaru_contacts::sign_card(
+        &ganbaru_contacts::ContactCard {
+            public_key: person.public_key(),
+            display_name: "Ana".to_string(),
+            color: 1,
+            nonce: [2u8; 16],
+            endpoint_hint: "192.168.1.20:43821".to_string(),
+            coordinator_fingerprint: None,
+            issued_at_ms: GOLDEN_CREATED_AT_MS,
+        },
+        &person,
+    )
+    .expect("sign card");
+    let certificate_domain = domain_message(CERTIFICATE_DOMAIN, b"");
+    let signed_messages: [(&[u8], Vec<u8>); 4] = [
+        (ganbaru_contacts::CARD_MAGIC, card.bytes.clone()),
+        (
+            ganbaru_contacts::REQUEST_SIGNATURE_DOMAIN,
+            ganbaru_contacts::request_signature_payload(&[3u8; 16], "request-1"),
+        ),
+        (
+            ganbaru_contacts::STATUS_SIGNATURE_DOMAIN,
+            ganbaru_contacts::status_signature_payload("request-1", GOLDEN_CREATED_AT_MS),
+        ),
+        (
+            &certificate_domain,
+            domain_message(CERTIFICATE_DOMAIN, writer_key().public_key().as_bytes()),
+        ),
+    ];
+
+    for (domain, message) in &signed_messages {
+        assert!(message.starts_with(domain), "{domain:?}");
+    }
+    for (left, (left_domain, _)) in signed_messages.iter().enumerate() {
+        for (right, (right_domain, _)) in signed_messages.iter().enumerate() {
+            if left != right {
+                assert!(
+                    !right_domain.starts_with(left_domain),
+                    "{left_domain:?} is a prefix of {right_domain:?}"
+                );
+            }
+        }
+    }
+}

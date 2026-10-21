@@ -737,7 +737,7 @@ mod tests {
     }
 
     #[test]
-    fn archived_threads_and_folders_keep_running_terminals_but_start_no_new_ones() {
+    fn archived_threads_keep_running_terminals_and_archived_scopes_start_none() {
         let folder = workspace("workspace:test");
         assert!(
             validate_terminal_thread_scope(

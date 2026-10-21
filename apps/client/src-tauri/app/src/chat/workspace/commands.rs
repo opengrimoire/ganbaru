@@ -1291,4 +1291,21 @@ mod tests {
         assert_eq!(answer(MessageDialogResult::Cancel), TrustAnswer::Cancel);
         assert_eq!(answer(MessageDialogResult::Ok), TrustAnswer::Cancel);
     }
+
+    #[test]
+    fn archiving_a_working_folder_stops_its_terminals() {
+        let source = include_str!("commands.rs");
+        let start = source
+            .find("async fn set_workspace_archived(")
+            .expect("archive command exists");
+        let end = start + source[start..].find("\n}\n").expect("archive command ends");
+        let archived_branch = &source[start..end];
+        let archived_branch = &archived_branch[archived_branch
+            .find("if archived {")
+            .expect("archive has an archived branch")..];
+        assert!(
+            archived_branch.contains(".shutdown_workspace(&working_folder_id)?;"),
+            "archiving a folder must stop the terminals started in it"
+        );
+    }
 }

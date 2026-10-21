@@ -1252,10 +1252,19 @@ mod tests {
     }
 
     fn session_in(id: &str, environment_id: Option<&str>, running: bool) -> Arc<TerminalSession> {
+        session_at(id, "workspace:test", environment_id, running)
+    }
+
+    fn session_at(
+        id: &str,
+        working_folder_id: &str,
+        environment_id: Option<&str>,
+        running: bool,
+    ) -> Arc<TerminalSession> {
         Arc::new(TerminalSession {
             id: id.to_string(),
             thread_id: ChatThreadId::new("thread:test").expect("thread ID should be valid"),
-            working_folder_id: ProjectWorkingFolderId::new("workspace:test")
+            working_folder_id: ProjectWorkingFolderId::new(working_folder_id)
                 .expect("workspace ID should be valid"),
             environment_id: environment_id.map(str::to_string),
             state: Mutex::new(TerminalState {
@@ -1361,6 +1370,46 @@ mod tests {
                     .running
             );
         }
+    }
+
+    #[test]
+    fn shutting_down_a_folder_stops_only_the_terminals_started_in_it() {
+        let registry = ChatTerminalRegistry::default();
+        let sessions = [
+            session_at("terminal:root", "workspace:archived", None, true),
+            session_at(
+                "terminal:worktree",
+                "workspace:archived",
+                Some("environment:archived"),
+                true,
+            ),
+            session_at("terminal:other", "workspace:other", None, true),
+        ];
+        {
+            let mut registered = registry.sessions.lock().expect("registry should lock");
+            for session in &sessions {
+                registered.insert(session.id.clone(), Arc::clone(session));
+            }
+        }
+
+        registry
+            .shutdown_workspace(
+                &ProjectWorkingFolderId::new("workspace:archived")
+                    .expect("workspace ID should be valid"),
+            )
+            .expect("shutdown should work");
+
+        for (index, id) in ["terminal:root", "terminal:worktree"].iter().enumerate() {
+            assert!(registry.snapshot(id).is_err());
+            assert!(!sessions[index].read().expect("session should read").running);
+        }
+        assert!(
+            registry
+                .snapshot("terminal:other")
+                .expect("terminal should remain")
+                .terminal
+                .running
+        );
     }
 
     struct RecordingSink {

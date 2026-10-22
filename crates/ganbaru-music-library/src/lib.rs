@@ -15,6 +15,7 @@ mod interchange;
 pub mod item_repair;
 #[cfg(desktop)]
 pub mod local_refresh;
+pub mod local_scan;
 #[cfg(desktop)]
 pub mod media;
 mod models;

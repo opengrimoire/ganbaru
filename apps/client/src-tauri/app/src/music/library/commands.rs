@@ -432,7 +432,7 @@ pub async fn music_library_save_advanced_membership(
     app: tauri::AppHandle,
     db_url: String,
     request: MusicAdvancedMembershipWrite,
-) -> MusicLibraryResult<MusicWriteReceipt> {
+) -> MusicLibraryResult<MusicAdvancedMembershipReceipt> {
     let pool = connect_sqlite(app, db_url)
         .await
         .map_err(connection_error)?;

@@ -57,7 +57,7 @@ const listItem = (): MusicItemListEntry => ({
 describe("MusicReviewController", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    api.upsertMusicMemberships.mockResolvedValue([{ id: "membership", version: 1 }]);
+    api.upsertMusicMemberships.mockResolvedValue([{ id: "native-membership", version: 1 }]);
     api.removeMusicMemberships.mockResolvedValue(undefined);
     api.setMusicReviewState.mockResolvedValue({ id: "item", version: 2 });
   });
@@ -78,7 +78,7 @@ describe("MusicReviewController", () => {
     await library.undoLast();
     expect(inspector.detail.memberships).toHaveLength(0);
     expect(summary.totalCount).toBe(0);
-    expect(api.removeMusicMemberships).toHaveBeenCalledWith({ membershipIds: ["membership"] });
+    expect(api.removeMusicMemberships).toHaveBeenCalledWith({ membershipIds: ["native-membership"] });
   });
 
   it("serializes a rapid checked then unchecked intent for one playlist", async () => {
@@ -96,7 +96,7 @@ describe("MusicReviewController", () => {
     expect(inspector.detail.memberships).toHaveLength(0);
     expect(summary.totalCount).toBe(0);
     expect(api.upsertMusicMemberships).toHaveBeenCalledOnce();
-    expect(api.removeMusicMemberships).toHaveBeenCalledOnce();
+    expect(api.removeMusicMemberships).toHaveBeenCalledExactlyOnceWith({ membershipIds: ["native-membership"] });
   });
 
   it("keeps the requested next tree item selected while refreshing review state", async () => {

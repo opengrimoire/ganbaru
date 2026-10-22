@@ -481,7 +481,7 @@ export const music = {
     playlistReorderPickedUp: (name: string) => `${name} picked up. Use the arrow keys to move it, then press Space to place it.`,
     playlistReorderCancelled: "Playlist reorder cancelled.",
     playlistReorderFailed: "The playlist order could not be saved. Your previous order was restored.",
-    deletePlaylistWarning: (name: string) => `Deleting ${name} removes its memberships and repairs every current assignment in the same transaction.`,
+    deletePlaylistWarning: (name: string) => `Deleting ${name} removes its memberships. Phase assignments move to the replacement; project and event assignments fall back to no playlist.`,
     projectAssignments: "Project assignments",
     eventAssignments: "Event assignments",
     contextAssignments: "Phase assignments",

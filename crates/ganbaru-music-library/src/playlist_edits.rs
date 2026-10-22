@@ -20,8 +20,8 @@ pub async fn bulk_edit_memberships(
         .fetch_one(&mut *transaction)
         .await
         .map_err(|error| MusicLibraryError::database("load next playlist position", error))?;
-        for (item_index, item_id) in request.item_ids.iter().enumerate() {
-            let membership_id = format!("{}:{}:{}", request.action_id, item_index, playlist_id);
+        for item_id in &request.item_ids {
+            let membership_id = super::identity::membership_id(playlist_id, item_id);
             let result = sqlx::query(
                 "INSERT INTO music_playlist_memberships
                     (id, playlist_id, item_id, position, weight, enabled,
@@ -69,12 +69,13 @@ pub async fn bulk_edit_memberships(
                 let result = sqlx::query(
                     "UPDATE music_playlist_memberships
                      SET weight = ?, updated_at_ms = ?, version = version + 1
-                     WHERE playlist_id = ? AND item_id = ?",
+                     WHERE playlist_id = ? AND item_id = ? AND weight IS NOT ?",
                 )
                 .bind(weight.as_ref())
                 .bind(request.updated_at_ms)
                 .bind(playlist_id)
                 .bind(item_id)
+                .bind(weight.as_ref())
                 .execute(&mut *transaction)
                 .await
                 .map_err(|error| {
@@ -289,8 +290,8 @@ pub async fn apply_review_selection(
         .fetch_one(&mut *transaction)
         .await
         .map_err(|error| MusicLibraryError::database("load review playlist position", error))?;
-        for (item_index, item) in request.items.iter().enumerate() {
-            let membership_id = format!("{}:{}:{}", request.action_id, item_index, playlist_id);
+        for item in &request.items {
+            let membership_id = super::identity::membership_id(playlist_id, &item.item_id);
             let result = sqlx::query(
                 "INSERT INTO music_playlist_memberships
                     (id, playlist_id, item_id, position, weight, enabled,

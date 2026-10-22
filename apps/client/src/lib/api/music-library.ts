@@ -27,6 +27,7 @@ import {
   parseSourceRemovalImpact,
   parseWriteReceipt,
   parseYouTubeSnapshotResult,
+  parseAdvancedMembershipReceipt,
   type LocalRootBinding,
   type MusicBulkMembershipWrite,
   type MusicBulkMembershipEdit,
@@ -34,6 +35,7 @@ import {
   type MusicBulkReviewWrite,
   type MusicBulkSnoozeWrite,
   type MusicAdvancedMembershipWrite,
+  type MusicAdvancedMembershipReceipt,
   type MusicCollectionWrite,
   type MusicInspectorDetail,
   type MusicInterchangeImportResult,
@@ -256,8 +258,8 @@ export const bulkSnoozeMusicItems = (request: MusicBulkSnoozeWrite): Promise<Mus
     if (typeof value !== "object" || value === null || !("changedCount" in value) || typeof value.changedCount !== "number") throw new Error("bulk snooze result must contain changedCount");
     return { changedCount: value.changedCount };
   });
-export const saveMusicAdvancedMembership = (request: MusicAdvancedMembershipWrite): Promise<MusicWriteReceipt> =>
-  call("music_library_save_advanced_membership", databaseArgs({ request }), parseWriteReceipt);
+export const saveMusicAdvancedMembership = (request: MusicAdvancedMembershipWrite): Promise<MusicAdvancedMembershipReceipt> =>
+  call("music_library_save_advanced_membership", databaseArgs({ request }), parseAdvancedMembershipReceipt);
 export const removeMusicMemberships = (request: MusicMembershipRemove): Promise<void> =>
   call("music_library_remove_memberships", databaseArgs({ request }), parseVoid);
 export const removeMusicSnooze = (snoozeId: string): Promise<void> =>

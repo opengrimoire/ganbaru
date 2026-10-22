@@ -97,38 +97,38 @@ fn validate_relative_path(value: &str) -> MusicLibraryResult<()> {
     Ok(())
 }
 
+/// Validates a collection save and returns its derived identity key.
 pub(crate) fn validate_collection_write(
     collection: &MusicCollectionWrite,
-) -> MusicLibraryResult<()> {
-    validate_id(&collection.id, "id")?;
-    validate_id(&collection.identity_key, "identityKey")?;
+) -> MusicLibraryResult<String> {
     validate_name(&collection.name)?;
     validate_timestamp(collection.updated_at_ms, "updatedAt")?;
-    match collection.kind {
-        MusicCollectionKind::LocalRoot
-            if collection.local_root_id.is_none() || collection.youtube_playlist_id.is_some() =>
-        {
-            Err(MusicLibraryError::validation(
-                "localRootId",
-                "a local collection requires only a logical root id",
-            ))
+    match (
+        collection.kind,
+        &collection.local_root_id,
+        &collection.youtube_playlist_id,
+    ) {
+        (MusicCollectionKind::LocalRoot, Some(root_id), None) => {
+            validate_id(root_id, "localRootId")?;
+            Ok(crate::identity::local_root_identity_key(root_id))
         }
-        MusicCollectionKind::YouTubePlaylist
-            if collection.youtube_playlist_id.is_none() || collection.local_root_id.is_some() =>
-        {
-            Err(MusicLibraryError::validation(
-                "youtubePlaylistId",
-                "a YouTube collection requires only a playlist id",
-            ))
+        (MusicCollectionKind::LocalRoot, _, _) => Err(MusicLibraryError::validation(
+            "localRootId",
+            "a local collection requires only a logical root id",
+        )),
+        (MusicCollectionKind::YouTubePlaylist, None, Some(playlist_id)) => {
+            validate_id(playlist_id, "youtubePlaylistId")?;
+            Ok(crate::identity::youtube_playlist_identity_key(playlist_id))
         }
-        _ => Ok(()),
+        (MusicCollectionKind::YouTubePlaylist, _, _) => Err(MusicLibraryError::validation(
+            "youtubePlaylistId",
+            "a YouTube collection requires only a playlist id",
+        )),
     }
 }
 
 pub(crate) fn validate_local_root_create(root: &MusicLocalRootCreate) -> MusicLibraryResult<()> {
     validate_id(&root.root_id, "rootId")?;
-    validate_id(&root.collection_id, "collectionId")?;
-    validate_id(&root.identity_key, "identityKey")?;
     validate_name(&root.name)?;
     validate_timestamp(root.created_at_ms, "createdAt")
 }
@@ -137,7 +137,6 @@ pub(crate) fn validate_local_root_create(root: &MusicLocalRootCreate) -> MusicLi
 pub(crate) fn validate_item_repair_apply(request: &MusicItemRepairApply) -> MusicLibraryResult<()> {
     validate_id(&request.item_id, "itemId")?;
     validate_id(&request.root_id, "rootId")?;
-    validate_id(&request.location_id, "locationId")?;
     validate_name(&request.root_name)?;
     validate_id(
         &request.expected_strong_fingerprint,
@@ -211,7 +210,6 @@ fn validate_unique_intended_uses(uses: &[MusicIntendedUse]) -> MusicLibraryResul
 pub(crate) fn validate_membership_write(
     membership: &MusicMembershipWrite,
 ) -> MusicLibraryResult<()> {
-    validate_id(&membership.id, "id")?;
     validate_id(&membership.playlist_id, "playlistId")?;
     validate_id(&membership.item_id, "itemId")?;
     validate_timestamp(membership.updated_at_ms, "updatedAt")?;
@@ -634,26 +632,17 @@ pub(crate) fn validate_advanced_membership_write(
 ) -> MusicLibraryResult<()> {
     validate_membership_write(&request.membership)?;
     let mut previous_end = None;
-    let mut ids = HashSet::new();
-    for (index, range) in request.skip_ranges.iter().enumerate() {
-        validate_id(&range.id, "skipRanges.id")?;
-        if range.membership_id != request.membership.id {
-            return Err(MusicLibraryError::validation(
-                "skipRanges.membershipId",
-                "must match membership.id",
-            ));
-        }
-        if !ids.insert(&range.id) || range.start_ms < 0 || range.end_ms <= range.start_ms {
+    for range in &request.skip_ranges {
+        if range.start_ms < 0 || range.end_ms <= range.start_ms {
             return Err(MusicLibraryError::validation(
                 "skipRanges",
-                "must contain unique ranges with endMs greater than startMs",
+                "must contain ranges with endMs greater than a non-negative startMs",
             ));
         }
-        if range.sort_order != index as i64 || previous_end.is_some_and(|end| range.start_ms < end)
-        {
+        if previous_end.is_some_and(|end| range.start_ms < end) {
             return Err(MusicLibraryError::validation(
                 "skipRanges",
-                "must be ordered, contiguous in sort order, and non-overlapping",
+                "must be ordered and non-overlapping",
             ));
         }
         previous_end = Some(range.end_ms);

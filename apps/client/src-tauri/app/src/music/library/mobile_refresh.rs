@@ -3,7 +3,8 @@
 use ganbaru_mobile_media::{MobileMediaExt, MobileMediaTreeTrack};
 use ganbaru_music_library::{
     MusicCollectionKind, MusicLibraryError, MusicLibraryResult, MusicLocalRefreshRequest,
-    MusicRefreshJobProgress, MusicRefreshJobState, bounded_item_description, identity,
+    MusicRefreshJobProgress, MusicRefreshJobState, bounded_item_description,
+    local_scan::{self, LocalScanOutcome, LocalScanValues},
 };
 use sqlx::{FromRow, SqlitePool};
 
@@ -162,30 +163,9 @@ pub(super) async fn start(
     .await
     .map_err(|error| MusicLibraryError::database("record Android music refresh", error))?;
 
-    if !tree.truncated {
-        sqlx::query(
-            "UPDATE music_local_locations SET availability = 'missing', updated_at_ms = ?
-             WHERE root_id = ?",
-        )
-        .bind(request.requested_at_ms)
-        .bind(&request.root_id)
-        .execute(&mut *transaction)
-        .await
-        .map_err(|error| {
-            MusicLibraryError::database("mark stale Android music locations", error)
-        })?;
-        sqlx::query(
-            "UPDATE music_source_collection_items SET missing_from_latest_snapshot = 1
-             WHERE collection_id = ?",
-        )
-        .bind(&request.collection_id)
-        .execute(&mut *transaction)
-        .await
-        .map_err(|error| MusicLibraryError::database("mark stale Android music items", error))?;
-    }
-
+    let mut written = false;
     for (position, track) in tree.tracks.iter().enumerate() {
-        persist_track(
+        let outcome = persist_track(
             &mut transaction,
             &request,
             generation,
@@ -193,34 +173,29 @@ pub(super) async fn start(
             track,
         )
         .await?;
+        written |= outcome == LocalScanOutcome::Written;
     }
-
-    sqlx::query(
-        "UPDATE music_library_items
-         SET availability = CASE
-           WHEN EXISTS (
-             SELECT 1 FROM music_local_locations AS location
-             WHERE location.item_id = music_library_items.id AND location.availability = 'available'
-           ) THEN 'available' ELSE 'missing' END,
-           updated_at_ms = ?
-         WHERE source_kind = 'local-file'",
-    )
-    .bind(request.requested_at_ms)
-    .execute(&mut *transaction)
-    .await
-    .map_err(|error| MusicLibraryError::database("reconcile Android music availability", error))?;
+    if !tree.truncated {
+        local_scan::mark_unseen(
+            &mut transaction,
+            &request.collection_id,
+            &request.root_id,
+            generation,
+        )
+        .await?;
+    }
+    local_scan::reconcile_item_availability(&mut transaction, &request.root_id).await?;
 
     sqlx::query(
         "UPDATE music_source_collections
          SET refresh_state = ?, previous_successful_refresh_at_ms = last_successful_refresh_at_ms,
              last_successful_refresh_at_ms = ?, last_refresh_error_code = NULL,
-             snapshot_generation = ?, updated_at_ms = ?, version = version + 1
+             snapshot_generation = ?, version = version + 1
          WHERE id = ?",
     )
     .bind(source_state)
     .bind(request.requested_at_ms)
     .bind(generation)
-    .bind(request.requested_at_ms)
     .bind(&request.collection_id)
     .execute(&mut *transaction)
     .await
@@ -230,7 +205,9 @@ pub(super) async fn start(
         .commit()
         .await
         .map_err(|error| MusicLibraryError::database("commit Android music refresh", error))?;
-    ganbaru_music_library::search::rebuild(pool, request.requested_at_ms).await?;
+    if written {
+        ganbaru_music_library::search::rebuild(pool, request.requested_at_ms).await?;
+    }
     progress(pool, &request.job_id).await
 }
 
@@ -240,10 +217,8 @@ async fn persist_track(
     generation: i64,
     position: i64,
     track: &MobileMediaTreeTrack,
-) -> MusicLibraryResult<()> {
+) -> MusicLibraryResult<LocalScanOutcome> {
     validate_relative_path(&track.relative_path)?;
-    let item_id = identity::local_item_id(&request.root_id, &track.relative_path);
-    let location_id = identity::location_id(&request.root_id, &track.relative_path);
     let media_kind = match track.media_kind.as_str() {
         "audio" => "audio",
         "video" => "video",
@@ -262,88 +237,39 @@ async fn persist_track(
             .as_ref()
             .map(|_| format!("sidecar:{}", track.relative_path))
     };
-    sqlx::query(
-        "INSERT INTO music_library_items
-            (id, identity_key, source_kind, media_kind, original_title, original_artist,
-             original_album, original_track_number, original_artwork_identity, duration_ms,
-             availability, discovered_at_ms, updated_at_ms)
-         VALUES (?, ?, 'local-file', ?, ?, ?, ?, ?, ?, ?, 'available', ?, ?)
-         ON CONFLICT(id) DO UPDATE SET
-            media_kind = excluded.media_kind,
-            original_title = excluded.original_title,
-            original_artist = excluded.original_artist,
-            original_album = excluded.original_album,
-            original_track_number = excluded.original_track_number,
-            original_artwork_identity = excluded.original_artwork_identity,
-            duration_ms = excluded.duration_ms,
-            availability = 'available', updated_at_ms = excluded.updated_at_ms,
-            version = music_library_items.version + 1",
-    )
-    .bind(&item_id)
-    .bind(format!("local:{item_id}"))
-    .bind(media_kind)
-    .bind(bounded_item_description(track.title.trim()))
-    .bind(bounded_item_description(track.artist.trim()))
-    .bind(bounded_item_description(track.album.trim()))
-    .bind(track.track_number)
-    .bind(artwork_identity)
-    .bind(track.duration_ms)
-    .bind(request.requested_at_ms)
-    .bind(request.requested_at_ms)
-    .execute(&mut **transaction)
-    .await
-    .map_err(|error| MusicLibraryError::database("save Android music item", error))?;
-
     let lightweight_fingerprint = format!(
         "saf:{}:{}",
         track.file_size_bytes.unwrap_or_default(),
         track.modified_at_ms.unwrap_or_default(),
     );
-    sqlx::query(
-        "INSERT INTO music_local_locations
-            (id, item_id, root_id, relative_path, file_size_bytes, modified_at_ms,
-             lightweight_fingerprint, availability, last_seen_generation, first_seen_at_ms, updated_at_ms)
-         VALUES (?, ?, ?, ?, ?, ?, ?, 'available', ?, ?, ?)
-         ON CONFLICT(root_id, relative_path) DO UPDATE SET
-            item_id = excluded.item_id, file_size_bytes = excluded.file_size_bytes,
-            modified_at_ms = excluded.modified_at_ms,
-            lightweight_fingerprint = excluded.lightweight_fingerprint,
-            availability = 'available', last_seen_generation = excluded.last_seen_generation,
-            updated_at_ms = excluded.updated_at_ms",
+    let title = bounded_item_description(track.title.trim());
+    let artist = bounded_item_description(track.artist.trim());
+    let album = bounded_item_description(track.album.trim());
+    let values = LocalScanValues {
+        relative_path: &track.relative_path,
+        media_kind,
+        title,
+        artist,
+        album,
+        track_number: track.track_number,
+        duration_ms: track.duration_ms,
+        artwork_identity: artwork_identity.as_deref(),
+        file_size_bytes: track.file_size_bytes,
+        modified_at_ms: track.modified_at_ms,
+        lightweight_fingerprint: &lightweight_fingerprint,
+        strong_fingerprint: None,
+    };
+    local_scan::persist_scanned_file(
+        transaction,
+        &request.collection_id,
+        &request.root_id,
+        &values,
+        Some(position),
+        generation,
+        request.requested_at_ms,
+        request.requested_at_ms,
     )
-    .bind(location_id)
-    .bind(&item_id)
-    .bind(&request.root_id)
-    .bind(&track.relative_path)
-    .bind(track.file_size_bytes)
-    .bind(track.modified_at_ms)
-    .bind(lightweight_fingerprint)
-    .bind(generation)
-    .bind(request.requested_at_ms)
-    .bind(request.requested_at_ms)
-    .execute(&mut **transaction)
     .await
-    .map_err(|error| MusicLibraryError::database("save Android music location", error))?;
-
-    sqlx::query(
-        "INSERT INTO music_source_collection_items
-            (collection_id, item_id, source_position, first_discovered_at_ms,
-             last_seen_generation, missing_from_latest_snapshot)
-         VALUES (?, ?, ?, ?, ?, 0)
-         ON CONFLICT(collection_id, item_id) DO UPDATE SET
-            source_position = excluded.source_position,
-            last_seen_generation = excluded.last_seen_generation,
-            missing_from_latest_snapshot = 0",
-    )
-    .bind(&request.collection_id)
-    .bind(&item_id)
-    .bind(position)
-    .bind(request.requested_at_ms)
-    .bind(generation)
-    .execute(&mut **transaction)
-    .await
-    .map_err(|error| MusicLibraryError::database("link Android music item", error))?;
-    Ok(())
 }
 
 pub(super) async fn progress(

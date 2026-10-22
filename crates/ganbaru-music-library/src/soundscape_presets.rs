@@ -86,14 +86,15 @@ pub async fn upsert(
             ));
         }
     }
-    let existing = sqlx::query_as::<_, (i64, i64)>(
-        "SELECT created_at_ms, version FROM music_soundscape_presets WHERE id = ?",
-    )
-    .bind(&request.id)
-    .fetch_optional(&mut *transaction)
-    .await
-    .map_err(|error| MusicLibraryError::database("load soundscape preset version", error))?;
-    if let Some((_, version)) = existing {
+    let existing =
+        sqlx::query_scalar::<_, i64>("SELECT version FROM music_soundscape_presets WHERE id = ?")
+            .bind(&request.id)
+            .fetch_optional(&mut *transaction)
+            .await
+            .map_err(|error| {
+                MusicLibraryError::database("load soundscape preset version", error)
+            })?;
+    if let Some(version) = existing {
         if request.expected_version != Some(version) {
             return Err(MusicLibraryError::conflict(
                 "the soundscape preset changed before this update",
@@ -105,60 +106,170 @@ pub async fn upsert(
             &request.id,
         ));
     }
-    let created_at_ms = existing.map(|row| row.0).unwrap_or(request.updated_at_ms);
-    let version = existing.map(|row| row.1 + 1).unwrap_or(1);
     let name = request.name.trim().to_owned();
-    sqlx::query(
-        "INSERT INTO music_soundscape_presets (id, name, icon, level, created_at_ms, updated_at_ms, version)
-         VALUES (?, ?, ?, ?, ?, ?, ?)
-         ON CONFLICT(id) DO UPDATE SET name = excluded.name, icon = excluded.icon, level = excluded.level,
-           updated_at_ms = excluded.updated_at_ms, version = excluded.version",
-    )
-    .bind(&request.id)
-    .bind(&name)
-    .bind(&request.icon)
-    .bind(request.level)
-    .bind(created_at_ms)
-    .bind(request.updated_at_ms)
-    .bind(version)
-    .execute(&mut *transaction)
-    .await
-    .map_err(|error| MusicLibraryError::database("save soundscape preset", error))?;
-    sqlx::query("DELETE FROM music_soundscape_preset_sounds WHERE preset_id = ?")
+    let changed = if existing.is_some() {
+        let fields_changed = sqlx::query(
+            "UPDATE music_soundscape_presets
+             SET name = ?, icon = ?, level = ?
+             WHERE id = ? AND (name, icon, level) IS NOT (?, ?, ?)",
+        )
+        .bind(&name)
+        .bind(&request.icon)
+        .bind(request.level)
         .bind(&request.id)
+        .bind(&name)
+        .bind(&request.icon)
+        .bind(request.level)
         .execute(&mut *transaction)
         .await
-        .map_err(|error| MusicLibraryError::database("replace soundscape preset sounds", error))?;
-    for (position, sound) in request.sounds.iter().enumerate() {
+        .map_err(|error| MusicLibraryError::database("save soundscape preset", error))?
+        .rows_affected()
+            > 0;
+        let sounds_changed =
+            replace_preset_sounds(&mut transaction, &request.id, &request.sounds).await?;
+        fields_changed || sounds_changed
+    } else {
         sqlx::query(
-            "INSERT INTO music_soundscape_preset_sounds (preset_id, position, soundscape_id, level)
-             VALUES (?, ?, ?, ?)",
+            "INSERT INTO music_soundscape_presets (id, name, icon, level, created_at_ms, updated_at_ms, version)
+             VALUES (?, ?, ?, ?, ?, ?, 1)",
         )
         .bind(&request.id)
-        .bind(position as i64)
-        .bind(&sound.soundscape_id)
-        .bind(sound.level)
+        .bind(&name)
+        .bind(&request.icon)
+        .bind(request.level)
+        .bind(request.updated_at_ms)
+        .bind(request.updated_at_ms)
         .execute(&mut *transaction)
         .await
-        .map_err(|error| MusicLibraryError::database("save soundscape preset sound", error))?;
+        .map_err(|error| MusicLibraryError::database("save soundscape preset", error))?;
+        replace_preset_sounds(&mut transaction, &request.id, &request.sounds).await?;
+        false
+    };
+    if changed {
+        sqlx::query(
+            "UPDATE music_soundscape_presets
+             SET updated_at_ms = ?, version = version + 1
+             WHERE id = ?",
+        )
+        .bind(request.updated_at_ms)
+        .bind(&request.id)
+        .execute(&mut *transaction)
+        .await
+        .map_err(|error| MusicLibraryError::database("advance soundscape preset version", error))?;
     }
     super::writes::commit(transaction, "commit soundscape preset update").await?;
-    Ok(MusicSoundscapePreset {
-        id: request.id,
-        name,
-        icon: request.icon,
-        level: request.level,
-        sounds: request.sounds,
-        created_at_ms,
-        updated_at_ms: request.updated_at_ms,
-        version,
-    })
+    preset(pool, &request.id).await
+}
+
+/// Diffs a preset's ordered sounds against the stored rows and returns whether any row changed.
+///
+/// Rows are matched by sound, so a kept sound keeps its row. Moved rows pass through positions past every
+/// final and stored position first, which keeps both the position key and the one-row-per-sound rule
+/// satisfied while the order changes.
+async fn replace_preset_sounds(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    preset_id: &str,
+    sounds: &[MusicSoundscapePresetSound],
+) -> MusicLibraryResult<bool> {
+    let stored = sqlx::query_as::<_, (String, i64, f64)>(
+        "SELECT soundscape_id, position, level FROM music_soundscape_preset_sounds WHERE preset_id = ?",
+    )
+    .bind(preset_id)
+    .fetch_all(&mut **transaction)
+    .await
+    .map_err(|error| MusicLibraryError::database("load soundscape preset sounds", error))?;
+    let wanted = sounds
+        .iter()
+        .enumerate()
+        .map(|(position, sound)| (sound.soundscape_id.as_str(), (position as i64, sound.level)))
+        .collect::<HashMap<_, _>>();
+    let stored_by_sound = stored
+        .iter()
+        .map(|(soundscape_id, position, level)| (soundscape_id.as_str(), (*position, *level)))
+        .collect::<HashMap<_, _>>();
+    let mut changed = false;
+    for (soundscape_id, _) in stored_by_sound
+        .iter()
+        .filter(|(soundscape_id, _)| !wanted.contains_key(*soundscape_id))
+    {
+        sqlx::query(
+            "DELETE FROM music_soundscape_preset_sounds WHERE preset_id = ? AND soundscape_id = ?",
+        )
+        .bind(preset_id)
+        .bind(soundscape_id)
+        .execute(&mut **transaction)
+        .await
+        .map_err(|error| MusicLibraryError::database("remove soundscape preset sound", error))?;
+        changed = true;
+    }
+    let parking_offset = stored
+        .iter()
+        .map(|(_, position, _)| position + 1)
+        .chain(std::iter::once(sounds.len() as i64))
+        .max()
+        .unwrap_or(0);
+    let moved = sounds
+        .iter()
+        .enumerate()
+        .filter(|(position, sound)| {
+            stored_by_sound
+                .get(sound.soundscape_id.as_str())
+                .is_some_and(|(stored_position, _)| *stored_position != *position as i64)
+        })
+        .collect::<Vec<_>>();
+    for (position, sound) in &moved {
+        sqlx::query(
+            "UPDATE music_soundscape_preset_sounds SET position = ?
+             WHERE preset_id = ? AND soundscape_id = ?",
+        )
+        .bind(parking_offset + *position as i64)
+        .bind(preset_id)
+        .bind(&sound.soundscape_id)
+        .execute(&mut **transaction)
+        .await
+        .map_err(|error| MusicLibraryError::database("move soundscape preset sound", error))?;
+    }
+    for (position, sound) in sounds.iter().enumerate() {
+        let Some((stored_position, stored_level)) =
+            stored_by_sound.get(sound.soundscape_id.as_str())
+        else {
+            sqlx::query(
+                "INSERT INTO music_soundscape_preset_sounds (preset_id, position, soundscape_id, level)
+                 VALUES (?, ?, ?, ?)",
+            )
+            .bind(preset_id)
+            .bind(position as i64)
+            .bind(&sound.soundscape_id)
+            .bind(sound.level)
+            .execute(&mut **transaction)
+            .await
+            .map_err(|error| MusicLibraryError::database("save soundscape preset sound", error))?;
+            changed = true;
+            continue;
+        };
+        if *stored_position == position as i64 && *stored_level == sound.level {
+            continue;
+        }
+        sqlx::query(
+            "UPDATE music_soundscape_preset_sounds SET position = ?, level = ?
+             WHERE preset_id = ? AND soundscape_id = ?",
+        )
+        .bind(position as i64)
+        .bind(sound.level)
+        .bind(preset_id)
+        .bind(&sound.soundscape_id)
+        .execute(&mut **transaction)
+        .await
+        .map_err(|error| MusicLibraryError::database("save soundscape preset sound", error))?;
+        changed = true;
+    }
+    Ok(changed)
 }
 
 /// Saves only a preset's level, the setting the soundscape controls adjust while it plays.
 ///
-/// The latest level wins without a version check, so a slider never conflicts with itself; the version still
-/// advances so a concurrent full edit notices the change.
+/// The latest level wins without a version check, so a slider never conflicts with itself; a changed level
+/// still advances the version so a concurrent full edit notices it, and an unchanged level writes nothing.
 pub async fn set_level(
     pool: &SqlitePool,
     preset_id: &str,
@@ -173,20 +284,18 @@ pub async fn set_level(
             "must be positive",
         ));
     }
-    let result = sqlx::query(
+    sqlx::query(
         "UPDATE music_soundscape_presets
          SET level = ?, updated_at_ms = MAX(updated_at_ms + 1, ?), version = version + 1
-         WHERE id = ?",
+         WHERE id = ? AND level IS NOT ?",
     )
     .bind(level)
     .bind(updated_at_ms)
     .bind(preset_id)
+    .bind(level)
     .execute(pool)
     .await
     .map_err(|error| MusicLibraryError::database("save soundscape preset level", error))?;
-    if result.rows_affected() == 0 {
-        return Err(MusicLibraryError::not_found("soundscape preset", preset_id));
-    }
     preset(pool, preset_id).await
 }
 
@@ -379,6 +488,38 @@ mod tests {
             assert!(remove(&pool, "desk", 1).await.is_err());
             remove(&pool, "desk", 2).await.unwrap();
             assert!(custom_presets(&pool).await.is_empty());
+        });
+    }
+
+    #[test]
+    fn unchanged_presets_and_levels_write_nothing_and_reorders_keep_one_row_per_sound() {
+        crate::test_support::block_on(async {
+            let pool = pool().await;
+            let entries = [
+                ("generated-brown-noise", 0.25),
+                ("generated-white-noise", 1.0),
+                ("generated-pink-noise", 0.5),
+            ];
+            let created = upsert(&pool, write("desk", &entries, None)).await.unwrap();
+            let mut again = write("desk", &entries, Some(1));
+            again.updated_at_ms += 100;
+            assert_eq!(upsert(&pool, again).await.unwrap(), created);
+            assert_eq!(
+                set_level(&pool, "desk", created.level, 1_700_000_000_500)
+                    .await
+                    .unwrap(),
+                created
+            );
+
+            let reordered = [
+                ("generated-pink-noise", 0.5),
+                ("generated-brown-noise", 0.25),
+            ];
+            let updated = upsert(&pool, write("desk", &reordered, Some(1)))
+                .await
+                .unwrap();
+            assert_eq!(updated.version, 2);
+            assert_eq!(updated.sounds, sounds(&reordered));
         });
     }
 

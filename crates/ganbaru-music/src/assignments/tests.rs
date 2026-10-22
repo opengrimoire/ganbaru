@@ -95,6 +95,55 @@ fn context_assignments_replace_all_phases_atomically_and_increment_versions() {
 }
 
 #[test]
+fn context_assignments_keep_unchanged_phases_and_change_only_edited_ones() {
+    block_on(async {
+        let pool = pool().await;
+        let set = |focus: MusicAssignmentBehavior, updated_at_ms: i64| MusicContextAssignmentSet {
+            owner_kind: MusicAssignmentOwnerKind::ProjectDefault,
+            owner_id: "project-1".to_string(),
+            assignments: vec![
+                draft(MusicActivityPhase::Focus, focus),
+                draft(
+                    MusicActivityPhase::ShortBreak,
+                    MusicAssignmentBehavior::PauseMusic,
+                ),
+            ],
+            updated_at_ms,
+        };
+        let initial = super::replace_assignments(
+            &pool,
+            set(
+                MusicAssignmentBehavior::PlayAutomatically,
+                1_700_000_000_000,
+            ),
+        )
+        .await
+        .unwrap();
+
+        let unchanged = super::replace_assignments(
+            &pool,
+            set(
+                MusicAssignmentBehavior::PlayAutomatically,
+                1_700_000_000_100,
+            ),
+        )
+        .await
+        .unwrap();
+        assert_eq!(unchanged, initial);
+
+        let edited = super::replace_assignments(
+            &pool,
+            set(MusicAssignmentBehavior::PrepareSilently, 1_700_000_000_200),
+        )
+        .await
+        .unwrap();
+        assert_eq!(edited[0].version, 2);
+        assert_eq!(edited[0].updated_at_ms, 1_700_000_000_200);
+        assert_eq!(edited[1], initial[1]);
+    });
+}
+
+#[test]
 fn context_assignments_enforce_owner_provenance_and_unique_phases() {
     block_on(async {
         let pool = pool().await;

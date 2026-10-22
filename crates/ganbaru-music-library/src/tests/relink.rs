@@ -222,6 +222,16 @@ fn relink_plan_classifies_and_applies_reorganized_partial_roots() {
                 ("item-missing".to_string(), "missing.mp3".to_string()),
             ]
         );
+        let relinked_location: String = sqlx::query_scalar(
+            "SELECT id FROM music_local_locations WHERE item_id = 'item-likely'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            relinked_location,
+            crate::identity::location_id("root-1", "moved/likely.mp3")
+        );
         let membership_count: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM music_playlist_memberships WHERE item_id = 'item-likely'",
         )

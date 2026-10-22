@@ -25,6 +25,9 @@ The active theme ID is portable configuration. Applying it to a webview is runti
 Music separates canonical library identity from physical source location and playback state.
 
 - Library items carry playable identity and metadata. Local roots and locations describe user-selected folders or document trees without making an absolute path canonical. Original title, artist, and album text is capped at 500 characters in the schema; writers truncate longer source text.
+- Rows whose identity follows from content (local and imported items, locations, YouTube items, source collections, memberships, and skip ranges) take keys derived in Rust from that content, never from client-supplied ids; writes return the keys in their receipts. A location whose path changes through normalization or relink is removed and added under its new key rather than renamed.
+- Writers diff child rows instead of deleting and reinserting them, and skip writes whose values are unchanged. Device observations (location size, modification time, availability, and seen generation; item availability; collection refresh state) update without touching a row's `updated_at_ms`.
+- Built-in playlists exist from the baseline migration; reads never recreate them.
 - Source collections (local collections, YouTube playlists, and other discovery sources) keep refresh generation and failure state. Refresh and relink use staged generations so a failed scan leaves the previous library usable.
 - User playlists and ordered memberships are independent of source collections; removing or refreshing a source never silently destroys a playlist.
 - Related families cover skip ranges, item signals, snoozes, statistics, recent selections, refresh issues, context assignments, soundscapes, and soundscape presets.

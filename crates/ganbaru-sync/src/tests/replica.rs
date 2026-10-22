@@ -65,7 +65,8 @@ pub(super) async fn connection_from(bytes: &[u8]) -> SqliteConnection {
 pub(super) struct SealSnapshot {
     /// Retained value hashes of each captured row, by table, row key, and group.
     retained: BTreeMap<(i64, String, i64), BTreeSet<Vec<u8>>>,
-    /// Forced group mask of each captured row.
+    /// Forced group mask of each captured row, with every group set for a derived-key row
+    /// inserted again, which seals whole unless every group is unchanged.
     forced: BTreeMap<(i64, String), i64>,
     /// Stored operations by writer id and sequence.
     ops: BTreeSet<(Vec<u8>, i64)>,
@@ -568,11 +569,19 @@ impl Replica {
                 .or_default()
                 .insert(hash);
         }
-        let forced: Vec<(i64, String, i64)> =
-            sqlx::query_as("SELECT table_id, row_key, forced_mask FROM sync_capture")
+        let captures: Vec<(i64, String, i64, bool)> =
+            sqlx::query_as("SELECT table_id, row_key, forced_mask, created FROM sync_capture")
                 .fetch_all(&mut self.conn)
                 .await
                 .unwrap();
+        let forced = captures.into_iter().map(|(table, key, mask, created)| {
+            let derived_key = self
+                .engine
+                .manifest()
+                .table(TableId(u16::try_from(table).unwrap()))
+                .is_some_and(|spec| spec.derived_key.is_some());
+            (table, key, if created && derived_key { -1 } else { mask })
+        });
         let ops: Vec<(Vec<u8>, i64)> = sqlx::query_as("SELECT writer_id, seq FROM sync_ops")
             .fetch_all(&mut self.conn)
             .await
@@ -580,7 +589,6 @@ impl Replica {
         SealSnapshot {
             retained,
             forced: forced
-                .into_iter()
                 .map(|(table, key, mask)| ((table, key), mask))
                 .collect(),
             ops: ops.into_iter().collect(),

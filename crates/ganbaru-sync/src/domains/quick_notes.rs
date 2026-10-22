@@ -1,6 +1,6 @@
 //! Quick notes adapter: the canonical text run and image list codecs, the plain text projection,
-//! and lifecycle priorities. The app normalizes and projects bodies with these functions, so
-//! local writes and merged values agree byte for byte.
+//! lifecycle priorities, and image asset references. The app normalizes and projects bodies with
+//! these functions, so local writes and merged values agree byte for byte.
 
 use std::fmt;
 
@@ -8,8 +8,9 @@ use ganbaru_sync_contracts::codec::{Reader, Writer};
 use ganbaru_sync_contracts::{Field, GroupId, TableId, Value};
 
 use crate::adapter::{AdapterError, DomainAdapter, Presentation};
+use crate::assets::AssetRef;
 use crate::manifest::vault::quick_notes::{
-    ADAPTER, IMAGES_OWNED, NOTES_TABLE, RUNS_OWNED, note_group,
+    ADAPTER, IMAGES_CLASS, IMAGES_OWNED, NOTES_TABLE, RUNS_OWNED, note_group,
 };
 
 /// Text runs in one body.
@@ -177,7 +178,7 @@ pub const MAX_IMAGE_PIXELS: u64 = 64_000_000;
 pub const IMAGE_CONTENT_TYPES: [&str; 4] = ["image/png", "image/jpeg", "image/webp", "image/gif"];
 const SHA256_BYTES: usize = 32;
 /// Characters of the lowercase hex SHA-256 naming an image file.
-pub const SHA256_HEX_CHARS: usize = SHA256_BYTES * 2;
+pub const SHA256_HEX_CHARS: usize = crate::assets::SHA256_HEX_CHARS;
 /// Characters of the longest content type in [`IMAGE_CONTENT_TYPES`].
 pub const MAX_CONTENT_TYPE_CHARS: usize = {
     let mut longest = 0;
@@ -545,6 +546,37 @@ impl DomainAdapter for QuickNotesAdapter {
             }
             _ => Err(AdapterError("owned table")),
         }
+    }
+
+    fn asset_groups(&self, table: TableId) -> &'static [GroupId] {
+        if table == NOTES_TABLE {
+            &[note_group::IMAGES]
+        } else {
+            &[]
+        }
+    }
+
+    fn asset_refs(
+        &self,
+        table: TableId,
+        group: GroupId,
+        value: &Value,
+    ) -> Result<Vec<AssetRef>, AdapterError> {
+        if table != NOTES_TABLE || group != note_group::IMAGES {
+            return Ok(Vec::new());
+        }
+        decode_images(images_blob(value)?)?
+            .into_iter()
+            .map(|image| {
+                AssetRef::new(
+                    &IMAGES_CLASS,
+                    image.sha256,
+                    image.content_type,
+                    image.byte_size,
+                )
+                .map_err(|_| AdapterError("quick note image reference"))
+            })
+            .collect()
     }
 
     fn owned_samples(&self, table: TableId, owned: &str) -> Vec<Vec<Vec<Field>>> {

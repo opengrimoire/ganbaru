@@ -1,9 +1,12 @@
 //! Domain adapters: composite value codecs, intrinsic validation, derived projections, coupled
-//! priorities, and recovery presentation for tables whose manifest names an adapter.
+//! priorities, asset references, and recovery presentation for tables whose manifest names an
+//! adapter.
 
 use std::fmt;
 
 use ganbaru_sync_contracts::{Field, GroupId, TableId, Value};
+
+use crate::assets::AssetRef;
 
 /// A value the adapter refuses.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -63,6 +66,25 @@ pub trait DomainAdapter: Send + Sync {
     fn owned_samples(&self, table: TableId, owned: &str) -> Vec<Vec<Vec<Field>>> {
         let _ = (table, owned);
         Vec::new()
+    }
+
+    /// Groups of a table whose values may reference managed assets, read by
+    /// [`crate::Engine::referenced_assets`].
+    fn asset_groups(&self, table: TableId) -> &'static [GroupId] {
+        let _ = table;
+        &[]
+    }
+
+    /// Assets a group value references, each in a class of the table's domain. Called for the
+    /// groups [`DomainAdapter::asset_groups`] names, with live and retained values.
+    fn asset_refs(
+        &self,
+        table: TableId,
+        group: GroupId,
+        value: &Value,
+    ) -> Result<Vec<AssetRef>, AdapterError> {
+        let _ = (table, group, value);
+        Ok(Vec::new())
     }
 
     /// Derived column values to set when the group materializes.

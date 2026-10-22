@@ -19,6 +19,7 @@ use ganbaru_sync_contracts::{SignedCertificate, SpaceId, WriterId, WriterKeyPair
 use sqlx::SqliteConnection;
 
 pub mod adapter;
+pub mod assets;
 pub mod codec;
 pub mod devices;
 pub mod domains;
@@ -119,7 +120,8 @@ pub struct Engine {
 impl Engine {
     /// An engine for a manifest, its domain adapters, and its hooks. Refuses a manifest that
     /// fails [`Manifest::validate`], names an unregistered adapter, leaves a registered adapter
-    /// unnamed, or a hook of a table the manifest does not replicate.
+    /// unnamed, an adapter asset group the table lacks or whose domain declares no asset class,
+    /// or a hook of a table the manifest does not replicate.
     pub fn with(manifest: &'static Manifest, adapters: Adapters, hooks: Hooks) -> SyncResult<Self> {
         manifest.validate().map_err(SyncError::InvalidManifest)?;
         if let Some(table) = hooks
@@ -138,6 +140,26 @@ impl Engine {
                 return Err(SyncError::InvalidManifest(format!(
                     "adapter {name} is not registered"
                 )));
+            }
+        }
+        for domain in manifest.domains {
+            for table in domain.tables {
+                let Some(adapter) = table.adapter.and_then(|name| adapters.get(name)) else {
+                    continue;
+                };
+                let groups = adapter.asset_groups(table.id);
+                if groups.iter().any(|group| table.group(*group).is_none()) {
+                    return Err(SyncError::InvalidManifest(format!(
+                        "adapter of {} names an unknown asset group",
+                        table.name
+                    )));
+                }
+                if !groups.is_empty() && domain.assets.is_empty() {
+                    return Err(SyncError::InvalidManifest(format!(
+                        "{} has asset groups but {} declares no asset class",
+                        table.name, domain.name
+                    )));
+                }
             }
         }
         for name in adapters.names() {

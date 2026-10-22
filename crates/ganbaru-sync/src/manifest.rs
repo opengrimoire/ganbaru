@@ -17,6 +17,8 @@ use ganbaru_sync_contracts::bounds::{
 };
 use ganbaru_sync_contracts::{GroupId, GroupMask, TableId};
 
+use crate::assets::AssetClass;
+
 pub mod order;
 pub mod summary;
 pub mod vault;
@@ -150,6 +152,8 @@ pub struct DomainManifest {
     /// Whether a linked replica may write the domain's replicated tables. Otherwise guards keep
     /// them owner-only on replicas while the engine still applies remote changes to them.
     pub replica_writable: bool,
+    /// Managed asset classes whose files the domain's values reference.
+    pub assets: &'static [AssetClass],
 }
 
 /// Largest timestamp text in bytes.
@@ -857,7 +861,8 @@ impl Manifest {
     }
 
     /// Checks the facts the engine relies on: table ids are nonzero, unique, and inside their
-    /// domain's range; domain names are unique and ranges disjoint; every `Local` column
+    /// domain's range; domain names are unique and ranges disjoint; asset class names are unique
+    /// relative paths within the asset byte limit; every `Local` column
     /// declares a SQL literal; references, owned tables, derived keys, trees, edges, and
     /// publication are well formed; and tables follow the dependency order of their references.
     /// Adapter and hook registration is checked by the engine.
@@ -867,6 +872,26 @@ impl Manifest {
             let range = domain.table_ids;
             if range.first == 0 || range.first > range.last {
                 let _ = writeln!(problems, "{}: invalid table id range", domain.name);
+            }
+            for (position, class) in domain.assets.iter().enumerate() {
+                if let Some(problem) = class.problem() {
+                    let _ = writeln!(
+                        problems,
+                        "{}: asset class {}: {problem}",
+                        domain.name, class.name
+                    );
+                }
+                let repeated = domain.assets[position + 1..]
+                    .iter()
+                    .chain(
+                        self.domains[index + 1..]
+                            .iter()
+                            .flat_map(|other| other.assets),
+                    )
+                    .any(|other| other.name == class.name);
+                if repeated {
+                    let _ = writeln!(problems, "{}: asset class named twice", class.name);
+                }
             }
             for other in &self.domains[index + 1..] {
                 if other.name == domain.name {
@@ -1055,6 +1080,25 @@ impl Manifest {
                 spec.name == table || spec.owned_children().any(|(_, owned)| owned.table == table)
             })
         })
+    }
+
+    /// Registered asset class by name with the domain that declares it.
+    pub fn asset_class(
+        &self,
+        name: &str,
+    ) -> Option<(&'static DomainManifest, &'static AssetClass)> {
+        self.domains.iter().copied().find_map(|domain| {
+            domain
+                .assets
+                .iter()
+                .find(|class| class.name == name)
+                .map(|class| (domain, class))
+        })
+    }
+
+    /// Every registered asset class in domain order.
+    pub fn asset_classes(&self) -> impl Iterator<Item = &'static AssetClass> {
+        self.domains.iter().flat_map(|domain| domain.assets)
     }
 
     /// Names of the domains a linked replica may write, in domain order.

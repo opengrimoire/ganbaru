@@ -21,7 +21,7 @@ use crate::apply::{Constrained, MAX_BYTES_PER_APPLY, MAX_OPS_PER_APPLY, finish_s
 use crate::error::{SyncResult, corrupt, failpoint};
 use crate::hooks::ChangeNotice;
 use crate::log::{self, WriterState, clamp_ms, seq_i64};
-use crate::manifest::{MergeKind, TableSpec};
+use crate::manifest::{GroupSpec, MergeKind, TableSpec};
 use crate::materialize::Materialized;
 use crate::merge::{self, Batch, RowState, mask_param, table_param};
 use crate::visibility::{RowRef, Visibility};
@@ -875,6 +875,40 @@ pub(crate) async fn read_domain(
         values.push(GroupValue::new(table.id, group.id, value));
     }
     Ok(DomainRow::Present(values))
+}
+
+/// Reads one group value of a domain row as an operation would carry it, or `None` when the
+/// row is absent or its value is invalid.
+pub(crate) async fn read_group_value(
+    engine: &Engine,
+    conn: &mut SqliteConnection,
+    table: &TableSpec,
+    group: &GroupSpec,
+    key: &str,
+) -> SyncResult<Option<Value>> {
+    let columns: Vec<&str> = group.columns().iter().map(|column| column.name).collect();
+    let Some(fields) = sql::read_columns(conn, table.name, table.key_column, key, &columns).await?
+    else {
+        return Ok(None);
+    };
+    let Some(mut group_fields) = fields.into_iter().collect::<Option<Vec<Field>>>() else {
+        return Ok(None);
+    };
+    for owned in group.owned_tables() {
+        let Some(rows) = sql::read_owned(conn, owned, key).await? else {
+            return Ok(None);
+        };
+        match codec::encode_table(engine, table, owned, rows) {
+            Ok(bytes) => group_fields.push(Field::Blob(bytes)),
+            Err(_) => return Ok(None),
+        }
+    }
+    let Ok(value) = Value::new(group_fields) else {
+        return Ok(None);
+    };
+    Ok(validate::group_value(engine, table, group, &value)
+        .is_ok()
+        .then_some(value))
 }
 
 /// One row of `sync_capture`.

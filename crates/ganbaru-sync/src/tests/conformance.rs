@@ -11,6 +11,7 @@ use super::fixture::{
     MEMBERSHIPS, TEST_MANIFEST, fixture_pool, membership_group, test_engine,
 };
 use super::{block_on, migrated_pool};
+use crate::assets::{AssetClass, MAX_ASSET_BYTES};
 use crate::codec::{OwnedRow, decode_table, encode_table};
 use crate::domains::vault_adapters;
 use crate::manifest::order::{Dependency, DependencyKind};
@@ -1355,6 +1356,7 @@ fn validation_refuses_overlapping_ranges_misplaced_ids_and_bad_literals() {
         local: &[],
         engine: &[],
         replica_writable: false,
+        assets: &[],
     };
     const MISPLACED: DomainManifest = DomainManifest {
         table_ids: TableIdRange {
@@ -1397,6 +1399,39 @@ fn validation_refuses_overlapping_ranges_misplaced_ids_and_bad_literals() {
     assert!(empty.contains("invalid table id range"), "{empty}");
     let literal = validation_error(&[&BAD_LITERAL]);
     assert!(literal.contains("not a SQL literal"), "{literal}");
+}
+
+#[test]
+fn validation_refuses_repeated_unsafe_and_oversized_asset_classes() {
+    const REPEATED: DomainManifest = DomainManifest {
+        assets: &[quick_notes::IMAGES_CLASS],
+        ..FIXTURE_DOMAIN
+    };
+    let repeated = validation_error(&[&quick_notes::DOMAIN, &REPEATED]);
+    assert!(
+        repeated.contains("quick-notes/images: asset class named twice"),
+        "{repeated}"
+    );
+    const UNSAFE: DomainManifest = DomainManifest {
+        assets: &[
+            AssetClass {
+                name: "../outside",
+                max_bytes: 1,
+            },
+            AssetClass {
+                name: "huge",
+                max_bytes: MAX_ASSET_BYTES + 1,
+            },
+        ],
+        ..FIXTURE_DOMAIN
+    };
+    let unsafe_classes = validation_error(&[&UNSAFE]);
+    for problem in [
+        "asset class ../outside: class name is not a relative path",
+        "asset class huge: class byte bound is outside",
+    ] {
+        assert!(unsafe_classes.contains(problem), "{unsafe_classes}");
+    }
 }
 
 #[test]

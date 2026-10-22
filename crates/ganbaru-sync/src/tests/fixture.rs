@@ -16,6 +16,7 @@ use sqlx::{AssertSqlSafe, SqliteConnection, SqlitePool};
 
 use super::{execute, migrated_pool};
 use crate::adapter::{AdapterError, Adapters, DomainAdapter, Presentation};
+use crate::assets::AssetClass;
 use crate::domains::vault_adapters;
 use crate::hooks::{ChangeSink, HookFuture, MaterializeHook};
 use crate::manifest::vault::{VAULT_MANIFEST_VERSION, quick_notes};
@@ -1205,6 +1206,10 @@ pub(super) const FIXTURE_DOMAIN: DomainManifest = DomainManifest {
     }],
     engine: &[],
     replica_writable: true,
+    assets: &[AssetClass {
+        name: "fixture/files",
+        max_bytes: 1024 * 1024,
+    }],
 };
 
 /// The vault domains followed by the fixture domain.

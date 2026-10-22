@@ -2188,3 +2188,57 @@ fn derived_key_pending_placeholders_are_refused_at_startup_and_rekeyed_once() {
         }
     });
 }
+
+fn image_row(note: &str, position: u32, digest: char, content_type: &str, size: u32) -> String {
+    format!(
+        "INSERT INTO quick_note_images
+             (note_id, sort_order, sha256, content_type, byte_size, width, height)
+         VALUES ('{note}', {position}, '{}', '{content_type}', {size}, 1, 1);",
+        digest.to_string().repeat(64)
+    )
+}
+
+#[test]
+fn referenced_assets_cover_live_rows_and_retained_versions() {
+    block_on(async {
+        let mut replica = Replica::new(0, 1).await;
+        replica
+            .exec(&format!(
+                "INSERT INTO quick_notes (id, order_key) VALUES ('note-1', 'a0'), ('note-2', 'a1');
+                 {}{}",
+                image_row("note-1", 0, 'a', "image/png", 10),
+                image_row("note-1", 1, 'b', "image/jpeg", 20),
+            ))
+            .await;
+        replica.seal().await.unwrap();
+        // The sealed list keeps referencing the removed image while its version is stored.
+        replica
+            .exec(&format!(
+                "DELETE FROM quick_note_images WHERE note_id = 'note-1' AND sort_order = 0;
+                 UPDATE quick_note_images SET sort_order = 0 WHERE note_id = 'note-1';
+                 {}{}",
+                image_row("note-2", 0, 'c', "image/webp", 30),
+                image_row("note-2", 1, 'b', "image/jpeg", 20),
+            ))
+            .await;
+
+        let referenced = replica
+            .engine
+            .referenced_assets(&mut replica.conn)
+            .await
+            .unwrap();
+        let names = referenced
+            .iter()
+            .map(|asset| (asset.class().name, asset.file_name(), asset.byte_size()))
+            .collect::<Vec<_>>();
+        let digest = |character: char| character.to_string().repeat(64);
+        assert_eq!(
+            names,
+            [
+                ("quick-notes/images", format!("{}.png", digest('a')), 10),
+                ("quick-notes/images", format!("{}.jpg", digest('b')), 20),
+                ("quick-notes/images", format!("{}.webp", digest('c')), 30),
+            ]
+        );
+    });
+}

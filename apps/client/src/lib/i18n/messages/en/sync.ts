@@ -1,6 +1,6 @@
 export const sync = {
   heading: "Sync",
-  description: "Quick notes sync between your linked devices when both are on the same network.",
+  description: (features: string) => `${features} sync between your linked devices when both are on the same network.`,
   state: {
     off: "Off",
     idle: "Up to date",
@@ -26,7 +26,7 @@ export const sync = {
   heldInvalid: (count: number) =>
     `${count} ${count === 1 ? "change was" : "changes were"} rejected because ${count === 1 ? "it was" : "they were"} invalid`,
   conflicts: (count: number) =>
-    `${count} ${count === 1 ? "note was" : "notes were"} edited on two devices. Open ${count === 1 ? "it" : "them"} in Quick notes to choose what to keep.`,
+    `${count} ${count === 1 ? "item was" : "items were"} edited on two devices. Open ${count === 1 ? "it" : "them"} to choose what to keep.`,
   syncNow: "Sync now",
   syncNowFailed: "Sync could not start",
   pause: "Pause sync",
@@ -38,15 +38,17 @@ export const sync = {
   clockAheadOwn: "Some edits from this device were made while its clock was ahead. They win conflicting changes until that time passes.",
   recovery: {
     heading: "Recently deleted with unsaved edits",
-    description: "These notes were deleted on one device while another device was still editing them.",
+    description: "These were deleted on one device while another device was still editing them.",
     restore: "Restore",
     discard: "Discard",
-    restored: "Note restored",
+    restored: "Restored",
     discarded: "Edits discarded",
-    failed: "The note could not be restored",
+    failed: "This could not be restored",
     discardFailed: "The edits could not be discarded",
-    loadFailed: "Deleted notes could not be loaded",
-    untitled: "Untitled note",
+    loadFailed: "Deleted items could not be loaded",
+    untitled: "Untitled",
+    descendants: (count: number) =>
+      `Restoring also brings back ${count} ${count === 1 ? "item" : "items"} deleted with it`,
     editedBy: (device: string, time: string) => `Edited on ${device}, ${time}`,
     thisDevice: "this device",
     otherDevice: "another device",

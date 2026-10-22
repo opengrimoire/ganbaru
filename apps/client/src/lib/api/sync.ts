@@ -26,7 +26,8 @@ export interface SyncHeldCounts {
   invalid: number;
 }
 
-export interface SyncConflictCount {
+/** A count for one replicated table, by name. */
+export interface SyncTableCount {
   table: string;
   count: number;
 }
@@ -45,8 +46,10 @@ export interface SyncStatusView {
   /** Stored operations waiting to be applied. */
   waiting: number;
   held: SyncHeldCounts;
-  conflicts: SyncConflictCount[];
-  recoveryCount: number;
+  /** Rows with open conflicts, per table. */
+  conflicts: SyncTableCount[];
+  /** Recovery offers, per table of their root row. */
+  recovery: SyncTableCount[];
   /** Devices whose edits carry clocks far ahead of this device, so they win concurrent edits. */
   clockAheadDevices: SyncDeviceRef[];
 }
@@ -64,6 +67,8 @@ export interface SyncRecoveryEntry {
   rowKey: string;
   title: string;
   preview: string;
+  /** Deleted descendants that restoring the row brings back with it. */
+  descendants: number;
   /** Device of the newest unseen edit. */
   device: SyncDeviceRef;
   editedAtMs: number;
@@ -85,7 +90,7 @@ export const OFF_SYNC_STATUS: SyncStatusView = {
   waiting: 0,
   held: { newerFormat: 0, newerManifest: 0, invalid: 0 },
   conflicts: [],
-  recoveryCount: 0,
+  recovery: [],
   clockAheadDevices: [],
 };
 
@@ -98,7 +103,7 @@ function readHeld(value: unknown, label: string): SyncHeldCounts {
   };
 }
 
-function readConflictCount(value: unknown, label: string): SyncConflictCount {
+function readTableCount(value: unknown, label: string): SyncTableCount {
   const row = readRecord(value, label);
   return {
     table: readString(row.table, `${label}.table`),
@@ -121,8 +126,8 @@ export function mapSyncStatus(value: unknown): SyncStatusView {
     pendingLocalChanges: readNonNegativeSafeInteger(row.pendingLocalChanges, "sync status.pendingLocalChanges"),
     waiting: readNonNegativeSafeInteger(row.waiting, "sync status.waiting"),
     held: readHeld(row.held, "sync status.held"),
-    conflicts: readArray(row.conflicts, "sync status.conflicts", readConflictCount),
-    recoveryCount: readNonNegativeSafeInteger(row.recoveryCount, "sync status.recoveryCount"),
+    conflicts: readArray(row.conflicts, "sync status.conflicts", readTableCount),
+    recovery: readArray(row.recovery, "sync status.recovery", readTableCount),
     clockAheadDevices: readArray(row.clockAheadDevices, "sync status.clockAheadDevices", mapSyncDeviceRef),
   };
 }
@@ -144,6 +149,7 @@ function readRecoveryEntry(value: unknown, label: string): SyncRecoveryEntry {
     rowKey: readString(row.rowKey, `${label}.rowKey`),
     title: readString(row.title, `${label}.title`),
     preview: readString(row.preview, `${label}.preview`),
+    descendants: readNonNegativeSafeInteger(row.descendants, `${label}.descendants`),
     device: mapSyncDeviceRef(row.device, `${label}.device`),
     editedAtMs: readNonNegativeSafeInteger(row.editedAtMs, `${label}.editedAtMs`),
   };

@@ -33,6 +33,13 @@ export const quickNotes = {
     deleteConfirmTitle: (name: string) => `¿Eliminar la etiqueta ${name}?`,
     deleteConfirmMessage: "Las notas conservan su contenido y pierden esta etiqueta",
   },
+  sync: {
+    conflicts: (count: number) =>
+      `${count} ${count === 1 ? "nota se editó" : "notas se editaron"} en dos dispositivos. ${count === 1 ? "Ábrela" : "Ábrelas"} en Notas rápidas para elegir qué conservar.`,
+    untitled: "Nota sin título",
+    restored: "Nota restaurada",
+    restoreFailed: "No se pudo restaurar la nota",
+  },
   conflict: {
     badge: "Conflicto",
     cardHint: "Esta nota se editó en dos dispositivos. Ábrela para elegir qué conservar.",

@@ -7,7 +7,7 @@
   } from "$lib/api/sync";
   import Notice from "$lib/components/ui/Notice.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
-  import { publishQuickNotesChanged, touchesQuickNotes } from "$lib/quick-notes/window-sync";
+  import { syncPresentations } from "$lib/sync/presentations";
   import { formatSyncTime, syncDeviceName } from "$lib/sync/status";
 
   let {
@@ -69,13 +69,13 @@
     try {
       if (restore) await restoreSyncRecovery(target);
       else await discardSyncRecovery(target);
-      if (restore && touchesQuickNotes([entry.table])) publishQuickNotesChanged();
-      message = restore ? t("sync.recovery.restored") : t("sync.recovery.discarded");
+      if (restore) syncPresentations.notifyChanged([entry.table]);
+      message = restore ? syncPresentations.recoveryRestored(t, entry.table) : t("sync.recovery.discarded");
       await load();
     } catch (cause: unknown) {
       console.warn("sync recovery action failed", cause);
       failed = true;
-      message = restore ? t("sync.recovery.failed") : t("sync.recovery.discardFailed");
+      message = restore ? syncPresentations.recoveryRestoreFailed(t, entry.table) : t("sync.recovery.discardFailed");
       await load();
     } finally {
       busyKey = null;
@@ -96,8 +96,11 @@
   {#each entries as entry (entryKey(entry))}
     <div class="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-2 px-1">
       <div class="min-w-0 flex-1 basis-48">
-        <div class="truncate text-[0.866667rem] font-medium text-foreground">{entry.title || t("sync.recovery.untitled")}</div>
+        <div class="truncate text-[0.866667rem] font-medium text-foreground">{entry.title || syncPresentations.recoveryUntitled(t, entry.table)}</div>
         {#if entry.preview}<div class="truncate text-[0.8rem] text-muted-foreground">{entry.preview}</div>{/if}
+        {#if entry.descendants > 0}
+          <div class="text-[0.75rem] text-muted-foreground">{t("sync.recovery.descendants", entry.descendants)}</div>
+        {/if}
         <div class="text-[0.75rem] text-muted-foreground">
           {t(
             "sync.recovery.editedBy",

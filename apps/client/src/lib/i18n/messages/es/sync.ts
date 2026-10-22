@@ -3,7 +3,8 @@ import type { MessageShape } from "../types";
 
 export const sync = {
   heading: "Sincronización",
-  description: "Las notas rápidas se sincronizan entre tus dispositivos vinculados cuando ambos están en la misma red.",
+  description: (features: string) =>
+    `Se sincroniza entre tus dispositivos vinculados cuando ambos están en la misma red: ${features}.`,
   state: {
     off: "Desactivada",
     idle: "Al día",
@@ -31,7 +32,7 @@ export const sync = {
   heldInvalid: (count: number) =>
     `${count} ${count === 1 ? "cambio se rechazó por no ser válido" : "cambios se rechazaron por no ser válidos"}`,
   conflicts: (count: number) =>
-    `${count} ${count === 1 ? "nota se editó" : "notas se editaron"} en dos dispositivos. ${count === 1 ? "Ábrela" : "Ábrelas"} en Notas rápidas para elegir qué conservar.`,
+    `${count} ${count === 1 ? "elemento se editó" : "elementos se editaron"} en dos dispositivos. ${count === 1 ? "Ábrelo" : "Ábrelos"} para elegir qué conservar.`,
   syncNow: "Sincronizar ahora",
   syncNowFailed: "No se pudo iniciar la sincronización",
   pause: "Pausar sincronización",
@@ -42,17 +43,21 @@ export const sync = {
     `El reloj de ${device} va adelantado respecto a este dispositivo. Sus ediciones ganan los cambios en conflicto hasta que los relojes coincidan, así que revisa su fecha y hora.`,
   clockAheadOwn: "Algunas ediciones de este dispositivo se hicieron con su reloj adelantado. Ganan los cambios en conflicto hasta que pase esa hora.",
   recovery: {
-    heading: "Eliminadas recientemente con ediciones sin guardar",
-    description: "Estas notas se eliminaron en un dispositivo mientras otro aún las editaba.",
+    heading: "Eliminado recientemente con ediciones sin guardar",
+    description: "Esto se eliminó en un dispositivo mientras otro aún lo editaba.",
     restore: "Restaurar",
     discard: "Descartar",
-    restored: "Nota restaurada",
+    restored: "Restaurado",
     discarded: "Ediciones descartadas",
-    failed: "No se pudo restaurar la nota",
+    failed: "No se pudo restaurar",
     discardFailed: "No se pudieron descartar las ediciones",
-    loadFailed: "No se pudieron cargar las notas eliminadas",
-    untitled: "Nota sin título",
-    editedBy: (device: string, time: string) => `Editada en ${device}, ${time}`,
+    loadFailed: "No se pudieron cargar los elementos eliminados",
+    untitled: "Sin título",
+    descendants: (count: number) =>
+      count === 1
+        ? "Al restaurarlo también se recupera 1 elemento eliminado con él"
+        : `Al restaurarlo también se recuperan ${count} elementos eliminados con él`,
+    editedBy: (device: string, time: string) => `Se editó en ${device}, ${time}`,
     thisDevice: "este dispositivo",
     otherDevice: "otro dispositivo",
   },

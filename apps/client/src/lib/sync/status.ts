@@ -1,7 +1,8 @@
 import type { SyncDeviceRef, SyncRole, SyncState, SyncStatusView } from "$lib/api/sync";
 import type { AppLocale } from "$lib/i18n/locales";
-import { formatDateTime, formatRelativeMinutes } from "$lib/i18n/formatters";
+import { formatDateTime, formatList, formatRelativeMinutes } from "$lib/i18n/formatters";
 import type { Translate } from "$lib/i18n/translator.svelte";
+import type { SyncPresentationRegistry } from "./presentation-registry";
 
 const MINUTE_MS = 60_000;
 const RELATIVE_LIMIT_MINUTES = 60;
@@ -47,9 +48,28 @@ export function syncHeldLines(t: Translate, status: SyncStatusView): string[] {
   return lines;
 }
 
-/** Counts rows with open conflicts across all synced tables. */
-export function syncConflictTotal(status: SyncStatusView): number {
-  return status.conflicts.reduce((total, entry) => total + entry.count, 0);
+/** Explains what syncs, listing the features of the registered domains. */
+export function syncDescription(t: Translate, locale: AppLocale, presentations: SyncPresentationRegistry): string {
+  return t("sync.description", formatList(locale, presentations.labels(t), { type: "conjunction" }));
+}
+
+/**
+ * Describes open conflicts, one line per table with conflicted rows, in the words of the domain
+ * that owns the table.
+ */
+export function syncConflictLines(
+  t: Translate,
+  presentations: SyncPresentationRegistry,
+  status: SyncStatusView,
+): string[] {
+  return status.conflicts
+    .filter((entry) => entry.count > 0)
+    .map((entry) => presentations.conflictLine(t, entry.table, entry.count));
+}
+
+/** Counts recovery offers across all synced tables. */
+export function syncRecoveryTotal(status: SyncStatusView): number {
+  return status.recovery.reduce((total, entry) => total + entry.count, 0);
 }
 
 /** Whether a manual sync request can start an exchange. */

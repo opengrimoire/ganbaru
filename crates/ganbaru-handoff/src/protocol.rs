@@ -1202,7 +1202,6 @@ fn take_qr_bytes<'a>(
     Ok(value)
 }
 
-#[cfg(desktop)]
 fn decode_qr_digest(value: &str, label: &str) -> Result<[u8; 32], String> {
     validate_sha256(value).map_err(|_| format!("{label} is invalid"))?;
     let mut digest = [0_u8; 32];

@@ -818,7 +818,15 @@
 
     </fieldset>
     {#if presentation === "settings" && status.linked}
-      <SyncSection {buttonClass} mobileLayout={platform === "android"} />
+      <SyncSection
+        {buttonClass}
+        mobileLayout={platform === "android"}
+        onAllowNetworkAccess={desktopNetworkAccessSetting
+          && !controlsBusy
+          && (networkAccess?.state === "authorizationRequired" || networkAccess?.state === "networkConfirmationRequired")
+          ? () => setNetworkAccess(true)
+          : undefined}
+      />
     {/if}
   {:else if error}
     {#if presentation === "onboarding"}

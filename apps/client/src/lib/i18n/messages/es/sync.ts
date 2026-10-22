@@ -42,6 +42,19 @@ export const sync = {
   clockAhead: (device: string) =>
     `El reloj de ${device} va adelantado respecto a este dispositivo. Sus ediciones ganan los cambios en conflicto hasta que los relojes coincidan, así que revisa su fecha y hora.`,
   clockAheadOwn: "Algunas ediciones de este dispositivo se hicieron con su reloj adelantado. Ganan los cambios en conflicto hasta que pase esa hora.",
+  connection: {
+    lan: (address: string) => `Conectado por la red local en ${address}`,
+    overlay: (address: string) => `Conectado por la red superpuesta en ${address}`,
+  },
+  degraded: {
+    backgroundRestricted: "Android restringe Ganbaru en segundo plano, así que la sincronización espera hasta que abras la app.",
+    standbyRestricted: "Android rara vez deja que Ganbaru funcione en segundo plano, así que la sincronización puede retrasarse.",
+    localNetworkDenied: "Este dispositivo no tiene permiso para llegar a tus otros dispositivos en la red local. Permite el acceso a la red local para Ganbaru en los ajustes del sistema.",
+    firewallHub: "El cortafuegos impide que tus otros dispositivos lleguen a este.",
+    firewallClient: "No se encontró tu dispositivo principal en la red. Puede que un cortafuegos de este dispositivo lo esté bloqueando.",
+    openBatterySettings: "Abrir ajustes de batería",
+    allowNetworkAccess: "Permitir acceso a la red",
+  },
   recovery: {
     heading: "Eliminado recientemente con ediciones sin guardar",
     description: "Esto se eliminó en un dispositivo mientras otro aún lo editaba.",

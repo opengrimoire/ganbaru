@@ -1,9 +1,11 @@
 //! The sync status the frontend shows, and the subscription channels that carry it. Channels
 //! work in every shell, including Android, which keeps the global event module out of its bundle.
 
+use ganbaru_handoff::dial::{DialAddressClass, validate_dial_endpoint};
 use ganbaru_sync::{ClockWarning, DeviceNames, DeviceRef, SyncStatus};
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
+use std::net::SocketAddr;
 use std::sync::{Mutex, MutexGuard};
 use tauri::ipc::Channel;
 use tauri::{AppHandle, Manager, Runtime};
@@ -78,6 +80,76 @@ pub(crate) enum SyncErrorCode {
     WriterLimit,
 }
 
+/// The kind of network a linked device reached its coordinator over.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum SyncConnectionNetwork {
+    /// A private, link-local, or on-link address of the local network.
+    Lan,
+    /// The shared address space of overlay networks such as Tailscale.
+    Overlay,
+}
+
+/// How this linked device reached its coordinator.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SyncConnectionView {
+    pub network: SyncConnectionNetwork,
+    /// The coordinator endpoint, as `address:port`.
+    pub address: String,
+}
+
+impl SyncConnectionView {
+    /// The connection through `endpoint`, or `None` for an endpoint no dial would reach.
+    pub(crate) fn reached(endpoint: SocketAddr) -> Option<Self> {
+        let network = match validate_dial_endpoint(endpoint).ok()? {
+            DialAddressClass::Overlay => SyncConnectionNetwork::Overlay,
+            DialAddressClass::PrivateLan
+            | DialAddressClass::GlobalIpv6
+            | DialAddressClass::Loopback => SyncConnectionNetwork::Lan,
+        };
+        Some(Self {
+            network,
+            address: endpoint.to_string(),
+        })
+    }
+}
+
+/// Why this device may sync late or not at all, each with a recovery action the interface
+/// offers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) enum SyncDegradedReason {
+    /// Android restricts the app's background work.
+    #[cfg_attr(not(target_os = "android"), allow(dead_code))]
+    BackgroundRestricted,
+    /// Android placed the app in the restricted standby bucket.
+    #[cfg_attr(not(target_os = "android"), allow(dead_code))]
+    StandbyRestricted,
+    /// The system refused connections to the local network.
+    LocalNetworkDenied,
+    /// A firewall blocks peers or discovery until the user allows the local network.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    FirewallAuthorizationRequired,
+}
+
+/// The degraded reasons of one pass, without repeats and in a fixed order.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct DegradedReasons(BTreeSet<SyncDegradedReason>);
+
+impl DegradedReasons {
+    /// Adds `reason` when `present` holds.
+    pub(crate) fn note(&mut self, reason: SyncDegradedReason, present: bool) {
+        if present {
+            self.0.insert(reason);
+        }
+    }
+
+    pub(crate) fn into_vec(self) -> Vec<SyncDegradedReason> {
+        self.0.into_iter().collect()
+    }
+}
+
 /// The sync status of the active vault.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -98,6 +170,11 @@ pub(crate) struct SyncStatusView {
     /// Devices whose merged edits carry clocks far ahead of this device, so they win
     /// concurrent edits until the clocks agree.
     pub clock_ahead_devices: Vec<DeviceRef>,
+    /// How a linked device last reached its coordinator in this app run. It stays after a
+    /// failed dial, so the interface pairs it with `state`.
+    pub connection: Option<SyncConnectionView>,
+    /// Why connectivity is degraded, in a fixed order.
+    pub degraded: Vec<SyncDegradedReason>,
 }
 
 impl SyncStatusView {
@@ -292,6 +369,37 @@ mod tests {
 
         view.set_clock_ahead(&status, &[], &devices);
         assert!(view.clock_ahead_devices.is_empty());
+    }
+
+    #[test]
+    fn connection_and_degraded_reasons_reach_the_frontend_in_its_wire_names() {
+        let mut reasons = DegradedReasons::default();
+        reasons.note(SyncDegradedReason::FirewallAuthorizationRequired, true);
+        reasons.note(SyncDegradedReason::StandbyRestricted, false);
+        reasons.note(SyncDegradedReason::LocalNetworkDenied, true);
+        reasons.note(SyncDegradedReason::BackgroundRestricted, true);
+        reasons.note(SyncDegradedReason::LocalNetworkDenied, true);
+        let view = SyncStatusView {
+            connection: SyncConnectionView::reached("100.64.0.7:43821".parse().expect("endpoint")),
+            degraded: reasons.into_vec(),
+            ..SyncStatusView::default()
+        };
+        let wire = serde_json::to_value(&view).expect("serialize status");
+        assert_eq!(
+            wire["connection"],
+            serde_json::json!({ "network": "overlay", "address": "100.64.0.7:43821" })
+        );
+        assert_eq!(
+            wire["degraded"],
+            serde_json::json!([
+                "backgroundRestricted",
+                "localNetworkDenied",
+                "firewallAuthorizationRequired"
+            ])
+        );
+        let empty = serde_json::to_value(SyncStatusView::default()).expect("serialize status");
+        assert_eq!(empty["connection"], serde_json::Value::Null);
+        assert_eq!(empty["degraded"], serde_json::json!([]));
     }
 
     #[test]

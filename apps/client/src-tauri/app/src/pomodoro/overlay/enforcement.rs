@@ -338,7 +338,7 @@ pub(crate) fn start_overlay_enforcement(
             Ok(shortcut_guard) => guard.push_guard(shortcut_guard),
             Err(err) => eprintln!("failed to start Windows overlay shortcut guard: {err}"),
         }
-        return guard;
+        guard
     }
 
     #[cfg(target_os = "macos")]
@@ -352,7 +352,7 @@ pub(crate) fn start_overlay_enforcement(
             Ok(power_guard) => guard.push_guard(power_guard),
             Err(err) => eprintln!("failed to start macOS overlay power guard: {err}"),
         }
-        return guard;
+        guard
     }
 
     #[cfg(not(any(target_os = "windows", target_os = "macos")))]

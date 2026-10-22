@@ -47,6 +47,7 @@ impl LanAdmission {
 
     /// Admits LAN peers while `decide` returns true. `decide` may block; it runs off the async
     /// runtime.
+    #[cfg_attr(not(any(target_os = "linux", test)), allow(dead_code))]
     pub(crate) fn deciding(decide: impl Fn() -> bool + Send + Sync + 'static) -> Self {
         Self(Some(Arc::new(Gate {
             decide: Arc::new(decide),

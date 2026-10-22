@@ -8,6 +8,8 @@ use super::credentials::{
 #[cfg(test)]
 use super::device_state::ChatProviderDeviceState;
 use super::device_state::{read_active_device_scope, update_active_device_scope};
+#[cfg(all(test, unix))]
+use super::settings::installed_provider_executables;
 pub(crate) use super::settings::read_provider;
 use super::settings::{
     ProviderRuntimePrompt, ProviderRuntimeReviewRead, RuntimeReceipts, approval_digests,
@@ -26,8 +28,8 @@ use super::settings::{
 };
 #[cfg(test)]
 use super::settings::{
-    default_provider_configuration, installed_provider_executables,
-    provider_family_is_discoverable, should_discover_default_provider,
+    default_provider_configuration, provider_family_is_discoverable,
+    should_discover_default_provider,
 };
 use crate::vault;
 use ganbaru_chat_contracts::config::{

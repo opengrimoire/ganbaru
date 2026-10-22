@@ -15,8 +15,10 @@ use ganbaru_chat_contracts::models::{
     ProviderImplementationStatus, ProviderInstanceConfig, ProviderInstanceId, ProviderModelCatalog,
     ProviderProbeResult, VersionedJson,
 };
+#[cfg(not(windows))]
+use ganbaru_chat_providers::executable_search::PLATFORM_EXECUTABLE_DIRECTORIES;
 use ganbaru_chat_providers::executable_search::{
-    PLATFORM_EXECUTABLE_DIRECTORIES, is_safe_executable_candidate, path_search_directories,
+    is_safe_executable_candidate, path_search_directories,
 };
 use ganbaru_chat_providers::{ProviderDriverFactory, ProviderDriverRegistry};
 use std::collections::{BTreeMap, BTreeSet};

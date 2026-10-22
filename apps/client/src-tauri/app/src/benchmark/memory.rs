@@ -306,9 +306,9 @@ pub(crate) fn memory_report() -> MemoryReport {
                 let exe = String::from_utf16_lossy(&entry.szExeFile[..end]);
                 process_entries.push((entry.th32ProcessID, entry.th32ParentProcessID, exe));
 
+                entry.dwSize = size_of::<PROCESSENTRY32W>() as u32;
                 // SAFETY: The snapshot handle is still open and `entry` remains a
                 // valid output buffer for the next process entry.
-                entry.dwSize = size_of::<PROCESSENTRY32W>() as u32;
                 match unsafe { Process32NextW(*snapshot, &mut entry) } {
                     Ok(()) => {}
                     Err(error) if error.code() == HRESULT::from_win32(ERROR_NO_MORE_FILES.0) => {
@@ -343,9 +343,9 @@ pub(crate) fn memory_report() -> MemoryReport {
             // SAFETY: The process ID comes from the current process or the Windows
             // process snapshot. No pointers are passed, handle inheritance is
             // disabled, and Windows returns a fresh owning handle on success.
-            if let Ok(handle) =
-                unsafe { OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, false, pid) }
-            {
+            let opened =
+                unsafe { OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, false, pid) };
+            if let Ok(handle) = opened {
                 // SAFETY: `OpenProcess` returned a fresh owning handle above.
                 // Ownership is transferred exactly once and released on drop.
                 let handle = unsafe { Owned::new(handle) };

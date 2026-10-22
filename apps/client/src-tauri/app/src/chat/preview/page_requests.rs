@@ -57,8 +57,11 @@ pub enum PagePermission {
     Location,
     Notifications,
     Clipboard,
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     PointerLock,
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     ProtectedMedia,
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     StorageAccess,
     Sensors,
     FileAccess,
@@ -83,6 +86,7 @@ pub(super) enum PermissionRequestKind {
     /// A permission the Browser panel can name.
     Named(PagePermission),
     /// Media device labels, answered from the origin's camera and microphone answers.
+    #[cfg_attr(not(any(target_os = "linux", test)), allow(dead_code))]
     DeviceInfo,
     /// Left to the engine because it is not sensitive, such as WebView2 autoplay.
     #[cfg_attr(not(any(windows, test)), allow(dead_code))]

@@ -557,7 +557,12 @@ pub(crate) fn show_native_focus_alert(
     ) {
         return Err("Native Focus alert context changed before publication".into());
     }
+    #[cfg(target_os = "linux")]
     let handle = notification
+        .show()
+        .map_err(|error| format!("Show native Focus alert: {error}"))?;
+    #[cfg(not(target_os = "linux"))]
+    notification
         .show()
         .map_err(|error| format!("Show native Focus alert: {error}"))?;
     #[cfg(target_os = "linux")]
@@ -594,8 +599,6 @@ pub(crate) fn show_native_focus_alert(
             handle.close_async().await;
         }
     });
-    #[cfg(not(target_os = "linux"))]
-    let _ = handle;
     Ok(())
 }
 

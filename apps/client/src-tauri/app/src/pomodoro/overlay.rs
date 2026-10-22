@@ -966,11 +966,10 @@ fn reconcile_overlay_windows(
                 background_color,
                 true,
             )
-            .map_err(|err| {
+            .inspect_err(|_| {
                 for label in created_labels {
                     destroy_existing_window(app, &label);
                 }
-                err
             })?;
         }
     }

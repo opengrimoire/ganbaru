@@ -39,16 +39,25 @@ pub struct Dependency {
 }
 
 impl Manifest {
-    /// The dependencies the manifest declares itself: one per reference column.
+    /// The dependencies the manifest declares itself: one per reference column and one per
+    /// owned reference.
     pub fn reference_dependencies(&self) -> Vec<Dependency> {
         self.tables
             .iter()
             .flat_map(|table| {
-                table.references().map(|(_, _, reference)| Dependency {
+                let columns = table.references().map(|(_, _, reference)| Dependency {
                     from: table.id,
                     to: reference.table,
                     kind: DependencyKind::Reference,
-                })
+                });
+                let owned = table
+                    .owned_references()
+                    .map(|(_, _, _, reference)| Dependency {
+                        from: table.id,
+                        to: reference.table,
+                        kind: DependencyKind::Owned,
+                    });
+                columns.chain(owned)
             })
             .collect::<BTreeSet<_>>()
             .into_iter()

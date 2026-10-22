@@ -304,6 +304,9 @@ fn boundary_values(ty: ColumnType) -> Vec<String> {
         ColumnType::Text { max_chars } => {
             vec![quote(""), quote(&"é".repeat(max_chars)), quote("  ")]
         }
+        ColumnType::OptionalText { max_chars } => {
+            vec!["NULL".to_string(), quote(&"é".repeat(max_chars))]
+        }
         ColumnType::TrimmedText {
             min_chars,
             max_chars,

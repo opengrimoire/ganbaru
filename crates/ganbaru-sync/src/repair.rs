@@ -214,10 +214,15 @@ pub(crate) async fn referrers(
         .tables
         .iter()
         .flat_map(|table| {
-            table
+            let columns = table
                 .references()
                 .filter(|(_, _, reference)| reference.table == target)
-                .map(move |(group, field, _)| (table.id, group.id, field))
+                .map(move |(group, field, _)| (table.id, group.id, field));
+            let owned = table
+                .owned_references()
+                .filter(|(_, _, _, reference)| reference.table == target)
+                .map(move |(group, field, _, _)| (table.id, group.id, field));
+            columns.chain(owned)
         })
         .collect();
     let caused: Vec<(i64, String)> = sqlx::query_as(

@@ -16,8 +16,9 @@ use crate::manifest::vault::quick_notes;
 use crate::manifest::vault::{VAULT_DOMAINS, VAULT_MANIFEST};
 use crate::manifest::{
     Classification, Collation, ColumnSpec, ColumnType, DerivedKey, DomainManifest, GroupSpec,
-    GroupStorage, LocalColumn, Manifest, MergeKind, OnDelete, ReferenceColumn, Resolution,
-    SYNC_KEY_COLUMN, SYNC_TABLES, TableIdRange, TableSpec, is_sql_literal,
+    GroupStorage, LocalColumn, Manifest, MergeKind, OnDelete, OwnedCodec, OwnedOrder, OwnedTable,
+    ReferenceColumn, Resolution, SYNC_KEY_COLUMN, SYNC_TABLES, TableIdRange, TableSpec,
+    is_sql_literal,
 };
 use crate::{Adapters, Engine, Hooks, SyncError, triggers};
 
@@ -172,6 +173,7 @@ async fn assert_columns_partitioned(manifest: &Manifest, pool: &SqlitePool) {
         );
         declared.extend(table.local_columns.iter().map(|column| column.name));
         declared.extend(table.derived_columns);
+        declared.extend(table.hook_columns);
         let not_null: Vec<String> =
             sqlx::query_scalar("SELECT name FROM pragma_table_info(?) WHERE \"notnull\" = 1")
                 .bind(table.name)
@@ -217,8 +219,7 @@ async fn assert_columns_partitioned(manifest: &Manifest, pool: &SqlitePool) {
 
         for (group, owned) in table.owned_children() {
             let child_columns = table_columns(&pool, owned.table).await;
-            let mut declared = vec![owned.parent_column, owned.order_column];
-            declared.extend(owned.columns);
+            let declared = owned.written_columns();
             let unique = declared.iter().copied().collect::<BTreeSet<_>>();
             assert_eq!(
                 unique.len(),
@@ -242,7 +243,9 @@ async fn assert_columns_partitioned(manifest: &Manifest, pool: &SqlitePool) {
                 .collect::<BTreeSet<_>>();
             assert_eq!(
                 child_key,
-                BTreeSet::from([owned.parent_column, owned.order_column]),
+                std::iter::once(owned.parent_column)
+                    .chain(owned.order.order_columns())
+                    .collect::<BTreeSet<_>>(),
                 "{} key",
                 owned.table
             );
@@ -484,20 +487,76 @@ async fn assert_foreign_keys(manifest: &Manifest, pool: &SqlitePool) {
             .collect::<BTreeSet<_>>();
         assert_eq!(actual, expected, "{} foreign keys", table.name);
 
-        for (_, owned) in table.owned_children() {
-            let (child, parent_column) = (owned.table, owned.parent_column);
-            let child_keys = foreign_keys(&pool, child).await;
-            assert_eq!(
-                child_keys,
-                [(
-                    parent_column.to_string(),
-                    table.name.to_string(),
-                    table.key_column.to_string(),
-                    "CASCADE".to_string(),
-                )],
-                "{child} foreign keys"
-            );
+        for group in table.groups {
+            for owned in group.owned_tables() {
+                assert_owned_foreign_keys(manifest, &pool, table, owned, None).await;
+                for nested in owned.nested {
+                    assert_owned_foreign_keys(manifest, &pool, table, nested, Some(owned)).await;
+                }
+            }
         }
+    }
+}
+
+/// An owned table cascades from its owner row, or from its parent owned row through the parent
+/// ordinal, and from each reference target. Only its own nested tables reference it.
+async fn assert_owned_foreign_keys(
+    manifest: &Manifest,
+    pool: &SqlitePool,
+    table: &TableSpec,
+    owned: &OwnedTable,
+    parent: Option<&OwnedTable>,
+) {
+    let cascade = |column: &str, target: &str, to: &str| {
+        (
+            column.to_string(),
+            target.to_string(),
+            to.to_string(),
+            "CASCADE".to_string(),
+        )
+    };
+    let mut expected = BTreeSet::new();
+    match (parent, owned.order) {
+        (Some(parent), OwnedOrder::Nested { parent_ordinal, .. }) => {
+            let OwnedOrder::Ordinal(ordinal) = parent.order else {
+                panic!("{}: the parent of a nested table is ordinal", owned.table);
+            };
+            expected.insert(cascade(
+                owned.parent_column,
+                parent.table,
+                parent.parent_column,
+            ));
+            expected.insert(cascade(parent_ordinal, parent.table, ordinal));
+        }
+        (None, _) => {
+            expected.insert(cascade(owned.parent_column, table.name, table.key_column));
+        }
+        (Some(_), _) => panic!("{}: a nested table orders by Nested", owned.table),
+    }
+    for reference in owned.references {
+        let target = manifest.table(reference.table).unwrap();
+        expected.insert(cascade(reference.column, target.name, target.key_column));
+    }
+    let actual = foreign_keys(pool, owned.table)
+        .await
+        .into_iter()
+        .collect::<BTreeSet<_>>();
+    assert_eq!(actual, expected, "{} foreign keys", owned.table);
+
+    for (other, kind) in schema_tables(pool).await {
+        if kind != "table" || other == owned.table {
+            continue;
+        }
+        let nested_here = owned.nested.iter().any(|nested| nested.table == other);
+        let referenced = foreign_keys(pool, &other)
+            .await
+            .into_iter()
+            .any(|(_, target, _, _)| target == owned.table);
+        assert!(
+            nested_here || !referenced,
+            "{other} references owned table {}",
+            owned.table
+        );
     }
 }
 
@@ -823,10 +882,13 @@ fn assert_well_formed(manifest: &Manifest) {
                         group.name
                     );
                 }
-                GroupStorage::Owned(_) => {
+                GroupStorage::Owned { tables, .. } => {
                     assert!(
-                        table.adapter.is_some(),
-                        "{}: owned storage needs an adapter",
+                        table.adapter.is_some()
+                            || tables
+                                .iter()
+                                .all(|owned| owned.codec == OwnedCodec::Generic),
+                        "{}: a custom owned codec needs an adapter",
                         table.name
                     );
                 }

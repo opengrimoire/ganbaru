@@ -2,10 +2,14 @@
 
 use ganbaru_sync_contracts::{GroupId, TableId};
 
+use crate::domains::quick_notes::{
+    MAX_BODY_CHARS, MAX_CONTENT_TYPE_CHARS, MAX_IMAGE_BYTES, MAX_IMAGE_DIMENSION, MAX_IMAGES,
+    MAX_RUNS, SHA256_HEX_CHARS,
+};
 use crate::manifest::{
     Collation, ColumnSpec, ColumnType, DomainManifest, DomainTrigger, GroupSpec, GroupStorage,
-    LocalColumn, MergeKind, OnDelete, OwnedTable, Resolution, TableIdRange, TableSpec,
-    TriggerPolicy, group_id,
+    LocalColumn, MergeKind, OnDelete, OwnedCodec, OwnedOrder, OwnedTable, Resolution, TableIdRange,
+    TableSpec, TriggerPolicy, group_id,
 };
 
 /// Domain name for Quick notes.
@@ -18,6 +22,10 @@ pub const ADAPTER: &str = "quick_notes";
 pub const TAGS_TABLE: TableId = TableId(1);
 /// `quick_notes`.
 pub const NOTES_TABLE: TableId = TableId(2);
+/// Owned text runs of a note body.
+pub const RUNS_OWNED: &str = "quick_note_text_runs";
+/// Owned image references of a note.
+pub const IMAGES_OWNED: &str = "quick_note_images";
 
 /// Tag field groups.
 pub mod tag_group {
@@ -114,6 +122,25 @@ const COLOR: &[ColumnSpec] = &[ColumnSpec {
     ty: ColumnType::Integer { min: 0, max: 31 },
 }];
 
+/// A style flag of a text run.
+const fn flag(name: &'static str) -> ColumnSpec {
+    ColumnSpec {
+        name,
+        ty: ColumnType::Flag,
+    }
+}
+
+/// An image measure in `1..=max`.
+const fn positive(name: &'static str, max: u32) -> ColumnSpec {
+    ColumnSpec {
+        name,
+        ty: ColumnType::Integer {
+            min: 1,
+            max: max as i64,
+        },
+    }
+}
+
 const TAG_GROUPS: [GroupSpec; 5] = [
     plain(
         tag_group::CREATED,
@@ -159,12 +186,30 @@ const NOTE_GROUPS: [GroupSpec; 9] = [
         note_group::BODY,
         "body",
         MergeKind::Register,
-        GroupStorage::Owned(OwnedTable {
-            table: "quick_note_text_runs",
-            parent_column: "note_id",
-            order_column: "sort_order",
-            columns: &["content", "bold", "italic", "underline"],
-        }),
+        GroupStorage::Owned {
+            columns: &[],
+            tables: &[OwnedTable {
+                table: RUNS_OWNED,
+                parent_column: "note_id",
+                order: OwnedOrder::Ordinal("sort_order"),
+                columns: &[
+                    ColumnSpec {
+                        name: "content",
+                        ty: ColumnType::Text {
+                            max_chars: MAX_BODY_CHARS,
+                        },
+                    },
+                    flag("bold"),
+                    flag("italic"),
+                    flag("underline"),
+                ],
+                references: &[],
+                unique: &[],
+                max_rows: MAX_RUNS,
+                codec: OwnedCodec::Custom,
+                nested: &[],
+            }],
+        },
         true,
     ),
     content(
@@ -213,12 +258,36 @@ const NOTE_GROUPS: [GroupSpec; 9] = [
         note_group::IMAGES,
         "images",
         MergeKind::Register,
-        GroupStorage::Owned(OwnedTable {
-            table: "quick_note_images",
-            parent_column: "note_id",
-            order_column: "sort_order",
-            columns: &["sha256", "content_type", "byte_size", "width", "height"],
-        }),
+        GroupStorage::Owned {
+            columns: &[],
+            tables: &[OwnedTable {
+                table: IMAGES_OWNED,
+                parent_column: "note_id",
+                order: OwnedOrder::Ordinal("sort_order"),
+                columns: &[
+                    ColumnSpec {
+                        name: "sha256",
+                        ty: ColumnType::Text {
+                            max_chars: SHA256_HEX_CHARS,
+                        },
+                    },
+                    ColumnSpec {
+                        name: "content_type",
+                        ty: ColumnType::Text {
+                            max_chars: MAX_CONTENT_TYPE_CHARS,
+                        },
+                    },
+                    positive("byte_size", MAX_IMAGE_BYTES),
+                    positive("width", MAX_IMAGE_DIMENSION),
+                    positive("height", MAX_IMAGE_DIMENSION),
+                ],
+                references: &[],
+                unique: &[],
+                max_rows: MAX_IMAGES,
+                codec: OwnedCodec::Custom,
+                nested: &[],
+            }],
+        },
         true,
     ),
 ];
@@ -231,6 +300,7 @@ pub const TAGS: TableSpec = TableSpec {
     groups: &TAG_GROUPS,
     local_columns: &[],
     derived_columns: &[],
+    hook_columns: &[],
     revision_column: None,
     resolutions: &[Resolution::DuplicateRepair {
         columns: &["name"],
@@ -258,6 +328,7 @@ pub const NOTES: TableSpec = TableSpec {
         materialize: "1",
     }],
     derived_columns: &["body_plain_text"],
+    hook_columns: &[],
     revision_column: Some("revision"),
     resolutions: &[Resolution::WithinGroup {
         columns: &["pinned", "archived", "trashed_at"],

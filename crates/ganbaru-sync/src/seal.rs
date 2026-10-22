@@ -19,11 +19,13 @@ use sqlx::{AssertSqlSafe, Connection, Row, SqliteConnection};
 
 use crate::apply::{Constrained, MAX_BYTES_PER_APPLY, MAX_OPS_PER_APPLY, finish_sealed};
 use crate::error::{SyncResult, corrupt, failpoint};
+use crate::hooks::ChangeNotice;
 use crate::log::{self, WriterState, clamp_ms, seq_i64};
-use crate::manifest::{GroupStorage, MergeKind, TableSpec};
+use crate::manifest::{MergeKind, TableSpec};
+use crate::materialize::Materialized;
 use crate::merge::{self, Batch, RowState, mask_param, table_param};
 use crate::visibility::{RowRef, Visibility};
-use crate::{Engine, LocalWriter, SpaceContext, SyncError, sql, validate};
+use crate::{Engine, LocalWriter, SpaceContext, SyncError, codec, sql, validate};
 
 /// A captured local row that could not be sealed. Its capture is kept.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -49,11 +51,19 @@ pub struct SealReport {
     pub invalid_rows: Vec<InvalidRow>,
     /// Domain tables the call changed while materializing merges and repairs.
     pub changed_tables: Vec<&'static str>,
+    /// Changes the registered hooks reported while materializing.
+    pub notices: Vec<ChangeNotice>,
     /// Captures remain beyond the transaction budget, so the caller seals again.
     pub more: bool,
 }
 
 impl SealReport {
+    /// Records what the materialization of the call changed.
+    pub(crate) fn record(&mut self, materialized: Materialized) {
+        self.changed_tables = materialized.tables;
+        self.notices = materialized.notices;
+    }
+
     pub(crate) fn absorb(&mut self, other: Self) {
         self.more |= other.more;
         self.sealed_ops += other.sealed_ops;
@@ -63,6 +73,11 @@ impl SealReport {
         for table in other.changed_tables {
             if !self.changed_tables.contains(&table) {
                 self.changed_tables.push(table);
+            }
+        }
+        for notice in other.notices {
+            if !self.notices.contains(&notice) {
+                self.notices.push(notice);
             }
         }
     }
@@ -829,36 +844,27 @@ pub(crate) async fn read_domain(
     let mut offset = 0;
     let mut values = Vec::with_capacity(table.groups.len());
     for group in table.groups {
-        let group_fields: Vec<Field> = match group.storage {
-            // A present derived-key row exists.
-            GroupStorage::Columns(_) if table.is_exists_group(group.id) => {
-                vec![Field::Integer(1)]
-            }
-            GroupStorage::Columns(group_columns) => {
-                let slice = &fields[offset..offset + group_columns.len()];
-                offset += group_columns.len();
-                match slice.iter().cloned().collect::<Option<Vec<Field>>>() {
-                    Some(fields) => fields,
-                    None => return Ok(DomainRow::Invalid("unreadable column")),
-                }
-            }
-            GroupStorage::Owned(owned) => {
-                let rows = sql::read_owned(conn, &owned, key).await?;
-                let Some(rows) = rows
-                    .into_iter()
-                    .map(|row| row.into_iter().collect::<Option<Vec<Field>>>())
-                    .collect::<Option<Vec<_>>>()
-                else {
+        // A present derived-key row exists.
+        let group_fields: Vec<Field> = if table.is_exists_group(group.id) {
+            vec![Field::Integer(1)]
+        } else {
+            let count = group.columns().len();
+            let slice = &fields[offset..offset + count];
+            offset += count;
+            let Some(mut group_fields) = slice.iter().cloned().collect::<Option<Vec<Field>>>()
+            else {
+                return Ok(DomainRow::Invalid("unreadable column"));
+            };
+            for owned in group.owned_tables() {
+                let Some(rows) = sql::read_owned(conn, owned, key).await? else {
                     return Ok(DomainRow::Invalid("unreadable owned row"));
                 };
-                let Some(adapter) = engine.adapter(table) else {
-                    return Ok(DomainRow::Invalid("owned group without adapter"));
-                };
-                match adapter.encode_owned(table.id, group.id, rows) {
-                    Ok(value) => value.into_fields(),
-                    Err(error) => return Ok(DomainRow::Invalid(error.0)),
+                match codec::encode_table(engine, table, owned, rows) {
+                    Ok(bytes) => group_fields.push(Field::Blob(bytes)),
+                    Err(reason) => return Ok(DomainRow::Invalid(reason)),
                 }
             }
+            group_fields
         };
         let Ok(value) = Value::new(group_fields) else {
             return Ok(DomainRow::Invalid("value bounds"));
@@ -1032,9 +1038,9 @@ pub(crate) async fn captured_in(
     Ok(found)
 }
 
-/// Rows a change depends on: the rows its reference columns name, and the cause and redirect
-/// target of a tombstone. Sealing a change without the create of such a row would materialize
-/// the reference as null or hide the row.
+/// Rows a change depends on: the rows its reference columns and owned rows name, and the cause
+/// and redirect target of a tombstone. Sealing a change without the create of such a row would
+/// materialize the reference as null, leave the owned row out, or hide the row.
 pub(crate) fn change_dependencies(engine: &Engine, change: &Change) -> Vec<RowRef> {
     let Some(table) = engine.manifest().table(change.table) else {
         return Vec::new();
@@ -1044,6 +1050,14 @@ pub(crate) fn change_dependencies(engine: &Engine, change: &Change) -> Vec<RowRe
         let value = change.groups.iter().find(|value| value.group == group.id);
         if let Some(Field::Text(key)) = value.and_then(|value| value.value.fields().get(field)) {
             rows.push((reference.table, key.clone()));
+        }
+    }
+    for value in &change.groups {
+        // A sealed value was validated, so its owned blobs decode.
+        if let Some(group) = table.group(value.group)
+            && let Ok(targets) = codec::owned_targets(group, &value.value)
+        {
+            rows.extend(targets.into_iter().map(|(_, target, key)| (target, key)));
         }
     }
     if let Some(cause) = &change.cause {
@@ -1639,7 +1653,7 @@ impl Engine {
                 .seal_capture_batch(self, &mut tx, ctx, &mut batch, writer, now_ms)
                 .await?;
         }
-        report.changed_tables = finish_sealed(
+        let materialized = finish_sealed(
             self,
             &mut tx,
             ctx,
@@ -1650,6 +1664,7 @@ impl Engine {
             &mut report,
         )
         .await?;
+        report.record(materialized);
         failpoint!("seal.before_commit");
         sql::set_applying(&mut tx, false).await?;
         tx.commit().await?;
@@ -1725,7 +1740,7 @@ impl Engine {
                 &mut report,
             )
             .await?;
-        report.changed_tables = finish_sealed(
+        let materialized = finish_sealed(
             self,
             &mut tx,
             ctx,
@@ -1736,6 +1751,7 @@ impl Engine {
             &mut report,
         )
         .await?;
+        report.record(materialized);
         failpoint!("seal.before_commit");
         sql::set_applying(&mut tx, false).await?;
         tx.commit().await?;

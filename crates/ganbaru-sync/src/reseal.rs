@@ -407,7 +407,7 @@ impl Engine {
             .seal_captures(self, &mut tx, ctx, &mut batch, writer, now_ms)
             .await?;
         report.seal.absorb(captured);
-        report.seal.changed_tables = finish_sealed(
+        let materialized = finish_sealed(
             self,
             &mut tx,
             ctx,
@@ -418,6 +418,7 @@ impl Engine {
             &mut report.seal,
         )
         .await?;
+        report.seal.record(materialized);
         failpoint!("reseal.before_commit");
         sql::set_applying(&mut tx, false).await?;
         tx.commit().await?;

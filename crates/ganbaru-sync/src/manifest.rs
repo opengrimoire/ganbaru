@@ -11,6 +11,10 @@
 
 use std::fmt::Write as _;
 
+use ganbaru_sync_contracts::bounds::{
+    MAX_BLOB_FIELD_BYTES, MAX_FIELDS_PER_VALUE, MAX_ORDER_KEY_BYTES, MAX_ROW_KEY_BYTES,
+    MAX_TEXT_FIELD_BYTES,
+};
 use ganbaru_sync_contracts::{GroupId, GroupMask, TableId};
 
 pub mod order;
@@ -163,6 +167,11 @@ pub enum ColumnType {
         /// Character limit.
         max_chars: usize,
     },
+    /// Null or a [`ColumnType::Text`] value.
+    OptionalText {
+        /// Character limit.
+        max_chars: usize,
+    },
     /// Text whose space-trimmed form has `min_chars..=max_chars` characters.
     TrimmedText {
         /// Lower character bound after trimming.
@@ -199,7 +208,7 @@ impl ColumnType {
     /// `None` when the column cannot hold it. It starts with U+007F, which user text avoids.
     pub fn placeholder(self, n: u64) -> Option<String> {
         let (min, max) = match self {
-            Self::Text { max_chars } => (0, max_chars),
+            Self::Text { max_chars } | Self::OptionalText { max_chars } => (0, max_chars),
             Self::TrimmedText {
                 min_chars,
                 max_chars,
@@ -209,6 +218,32 @@ impl ColumnType {
         let digits = n.to_string();
         let chars = (1 + digits.len()).max(min);
         (chars <= max).then(|| format!("\u{7f}{digits:0>width$}", width = chars - 1))
+    }
+
+    /// Largest encoded size of one field of this type inside a value: a tag byte, then an
+    /// integer or a length-prefixed UTF-8 text.
+    pub const fn max_field_bytes(self) -> usize {
+        const TAG: usize = 1;
+        const INTEGER: usize = 8;
+        const LENGTH: usize = 4;
+        const MAX_UTF8_BYTES_PER_CHAR: usize = 4;
+        let text_bytes = match self {
+            Self::Integer { .. } | Self::Flag => return TAG + INTEGER,
+            Self::Text { max_chars }
+            | Self::OptionalText { max_chars }
+            | Self::TrimmedText { max_chars, .. } => {
+                let bytes = max_chars.saturating_mul(MAX_UTF8_BYTES_PER_CHAR);
+                if bytes < MAX_TEXT_FIELD_BYTES {
+                    bytes
+                } else {
+                    MAX_TEXT_FIELD_BYTES
+                }
+            }
+            Self::Timestamp | Self::OptionalTimestamp => MAX_TIMESTAMP_BYTES,
+            Self::OrderKey => MAX_ORDER_KEY_BYTES,
+            Self::OptionalRowKey => MAX_ROW_KEY_BYTES,
+        };
+        TAG + LENGTH + text_bytes
     }
 }
 
@@ -226,21 +261,137 @@ pub struct ColumnSpec {
 pub enum GroupStorage {
     /// Columns of the replicated row, in value field order.
     Columns(&'static [ColumnSpec]),
-    /// Rows of an owned child table, encoded by the table's domain adapter as one blob.
-    Owned(OwnedTable),
+    /// Columns of the replicated row, possibly none, followed by owned child tables. The value
+    /// holds the column fields in order, then one blob field per owned table.
+    Owned {
+        /// Columns of the replicated row.
+        columns: &'static [ColumnSpec],
+        /// Owned child tables.
+        tables: &'static [OwnedTable],
+    },
 }
 
-/// An owned child table whose rows, in order, form one group value of their parent row.
+/// An owned child table whose rows, in order, form one blob field of a group value of their
+/// owner row.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct OwnedTable {
     /// Child table.
     pub table: &'static str,
-    /// Child column holding the parent row key.
+    /// Child column holding the owner row key.
     pub parent_column: &'static str,
-    /// Child column holding the zero-based position within the parent, rewritten on replace.
-    pub order_column: &'static str,
-    /// Child columns passed to the domain adapter, in field order.
-    pub columns: &'static [&'static str],
+    /// How rows are keyed and ordered within their owner.
+    pub order: OwnedOrder,
+    /// Child data columns in field order. Key columns of [`OwnedOrder::Key`] are among them;
+    /// ordinal columns are not.
+    pub columns: &'static [ColumnSpec],
+    /// Columns holding a row key of a replicated table. A row whose target is missing, deleted,
+    /// removed, or hidden is not materialized but stays in the group value.
+    pub references: &'static [OwnedReference],
+    /// Data columns with a table-wide unique index. Rows of one owner never repeat a value of
+    /// them, and materialize writes them unchanged.
+    pub unique: &'static [&'static str],
+    /// Largest number of rows per owner row, or per parent row of a nested table.
+    pub max_rows: usize,
+    /// How the rows encode into the blob.
+    pub codec: OwnedCodec,
+    /// Nested owned tables whose rows belong to one row of this table. Their blobs are written
+    /// inside each row of this table.
+    pub nested: &'static [OwnedTable],
+}
+
+/// How the rows of an owned table are keyed and ordered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OwnedOrder {
+    /// Primary key `(parent, ordinal)`, with the zero-based position written from 0 on every
+    /// replace.
+    Ordinal(&'static str),
+    /// A nested table: primary key `(parent, parent_ordinal, ordinal)` and a foreign key from
+    /// `(parent, parent_ordinal)` to the parent owned row with `ON DELETE CASCADE`.
+    Nested {
+        /// Column holding the ordinal of the parent owned row.
+        parent_ordinal: &'static str,
+        /// Column holding the zero-based position within the parent owned row.
+        ordinal: &'static str,
+    },
+    /// Primary key `(parent, columns...)` over data columns, with rows in ascending key order.
+    /// Only a custom codec keys rows this way.
+    Key(&'static [&'static str]),
+}
+
+impl OwnedOrder {
+    /// Columns the table orders rows by, after the parent column.
+    pub fn order_columns(self) -> Vec<&'static str> {
+        match self {
+            Self::Ordinal(ordinal) => vec![ordinal],
+            Self::Nested {
+                parent_ordinal,
+                ordinal,
+            } => vec![parent_ordinal, ordinal],
+            Self::Key(columns) => columns.to_vec(),
+        }
+    }
+
+    /// Ordinal columns the engine writes besides the data columns.
+    pub fn ordinal_columns(self) -> Vec<&'static str> {
+        match self {
+            Self::Key(_) => Vec::new(),
+            order => order.order_columns(),
+        }
+    }
+}
+
+/// How an owned table's rows encode into a blob.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OwnedCodec {
+    /// The engine's codec in [`crate::codec`]: a row count, then each row as a value of its
+    /// columns followed by its nested tables.
+    Generic,
+    /// The table's domain adapter encodes the rows.
+    Custom,
+}
+
+/// A column of an owned table holding a row key of a replicated table, with a domain foreign
+/// key `ON DELETE CASCADE`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OwnedReference {
+    /// Column of the owned table.
+    pub column: &'static str,
+    /// Referenced table.
+    pub table: TableId,
+}
+
+impl OwnedTable {
+    /// Every column the engine writes: the parent column, ordinal columns, then data columns.
+    pub fn written_columns(&self) -> Vec<&'static str> {
+        std::iter::once(self.parent_column)
+            .chain(self.order.ordinal_columns())
+            .chain(self.columns.iter().map(|column| column.name))
+            .collect()
+    }
+
+    /// Largest blob the generic codec writes for this table, nested tables included.
+    pub fn max_encoded_bytes(&self) -> usize {
+        const COUNT: usize = 2;
+        const FIELD_COUNT: usize = 1;
+        let row = self.columns.iter().fold(FIELD_COUNT, |bytes, column| {
+            bytes.saturating_add(column.ty.max_field_bytes())
+        });
+        let row = self.nested.iter().fold(row, |bytes, nested| {
+            bytes.saturating_add(nested.max_encoded_bytes())
+        });
+        COUNT.saturating_add(self.max_rows.saturating_mul(row))
+    }
+
+    /// Field index of a reference column among the data columns.
+    pub fn reference_fields(&self) -> impl Iterator<Item = (usize, OwnedReference)> + 'static {
+        let columns = self.columns;
+        self.references.iter().filter_map(move |reference| {
+            columns
+                .iter()
+                .position(|column| column.name == reference.column)
+                .map(|field| (field, *reference))
+        })
+    }
 }
 
 /// How concurrent versions of a group merge.
@@ -285,8 +436,8 @@ impl OnDelete {
     }
 }
 
-/// A column of a `Register` or `Immutable` group holding a row key of a replicated table,
-/// resolved like a [`MergeKind::Reference`] group when materialized.
+/// A column of a `Register`, `Immutable`, or `Coupled` group holding a row key of a replicated
+/// table, resolved like a [`MergeKind::Reference`] group when materialized.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ReferenceColumn {
     /// Column of the group.
@@ -308,8 +459,8 @@ pub struct GroupSpec {
     pub kind: MergeKind,
     /// Value location.
     pub storage: GroupStorage,
-    /// Reference columns of a `Register` or `Immutable` group; a [`MergeKind::Reference`]
-    /// group declares its single reference in its kind instead.
+    /// Reference columns of a `Register`, `Immutable`, or `Coupled` group; a
+    /// [`MergeKind::Reference`] group declares its single reference in its kind instead.
     pub references: &'static [ReferenceColumn],
     /// Whether concurrent differing versions are shown to the user as a conflict.
     pub surfaced: bool,
@@ -320,12 +471,45 @@ pub struct GroupSpec {
 }
 
 impl GroupSpec {
-    /// Columns of the replicated row that hold this group; empty for owned storage.
+    /// Columns of the replicated row that hold this group.
     pub const fn columns(&self) -> &'static [ColumnSpec] {
         match self.storage {
-            GroupStorage::Columns(columns) => columns,
-            GroupStorage::Owned(_) => &[],
+            GroupStorage::Columns(columns) | GroupStorage::Owned { columns, .. } => columns,
         }
+    }
+
+    /// Owned child tables of the group, whose blobs follow the column fields.
+    pub const fn owned_tables(&self) -> &'static [OwnedTable] {
+        match self.storage {
+            GroupStorage::Columns(_) => &[],
+            GroupStorage::Owned { tables, .. } => tables,
+        }
+    }
+
+    /// Number of fields in the group value.
+    pub const fn field_count(&self) -> usize {
+        self.columns().len() + self.owned_tables().len()
+    }
+
+    /// Every owned reference of the group: the index of the owned table's blob field, the
+    /// owned table, and the reference, nested tables included.
+    pub fn owned_references(
+        &self,
+    ) -> impl Iterator<Item = (usize, &'static OwnedTable, OwnedReference)> + 'static {
+        let first = self.columns().len();
+        self.owned_tables()
+            .iter()
+            .enumerate()
+            .flat_map(move |(index, owned)| {
+                std::iter::once(owned)
+                    .chain(owned.nested.iter())
+                    .flat_map(move |table| {
+                        table
+                            .references
+                            .iter()
+                            .map(move |reference| (first + index, table, *reference))
+                    })
+            })
     }
 
     /// The group as a single-member mask.
@@ -423,6 +607,10 @@ pub struct TableSpec {
     pub local_columns: &'static [LocalColumn],
     /// Columns derived from group values by the domain adapter.
     pub derived_columns: &'static [&'static str],
+    /// Columns a [`crate::hooks::MaterializeHook`] and domain code maintain from other rows,
+    /// outside every group. They are never captured, have defaults and no foreign keys, and are
+    /// left out of values and the summary, so materialize inserts rows with their defaults.
+    pub hook_columns: &'static [&'static str],
     /// Local revision column bumped once per materialized row change.
     pub revision_column: Option<&'static str>,
     /// Declared resolutions for UNIQUE constraints and multi-column CHECKs.
@@ -578,11 +766,37 @@ impl TableSpec {
         self.local_columns.iter().find(|column| column.name == name)
     }
 
-    /// Owned child storage with its group.
-    pub fn owned_children(&self) -> impl Iterator<Item = (&'static GroupSpec, OwnedTable)> {
-        self.groups.iter().filter_map(|group| match group.storage {
-            GroupStorage::Owned(owned) => Some((group, owned)),
-            GroupStorage::Columns(_) => None,
+    /// Every owned child table with its group, each followed by its nested tables.
+    pub fn owned_children(
+        &self,
+    ) -> impl Iterator<Item = (&'static GroupSpec, &'static OwnedTable)> + 'static {
+        let groups = self.groups;
+        groups.iter().flat_map(|group| {
+            group.owned_tables().iter().flat_map(move |owned| {
+                std::iter::once(owned)
+                    .chain(owned.nested.iter())
+                    .map(move |table| (group, table))
+            })
+        })
+    }
+
+    /// Every owned reference of the table with its group, the index of the owned table's blob
+    /// field in the group value, the owned table holding it, and the reference.
+    pub fn owned_references(
+        &self,
+    ) -> impl Iterator<
+        Item = (
+            &'static GroupSpec,
+            usize,
+            &'static OwnedTable,
+            OwnedReference,
+        ),
+    > + 'static {
+        let groups = self.groups;
+        groups.iter().flat_map(|group| {
+            group
+                .owned_references()
+                .map(move |(field, owned, reference)| (group, field, owned, reference))
         })
     }
 }
@@ -644,9 +858,9 @@ impl Manifest {
 
     /// Checks the facts the engine relies on: table ids are nonzero, unique, and inside their
     /// domain's range; domain names are unique and ranges disjoint; every `Local` column
-    /// declares a SQL literal; references, derived keys, trees, edges, and publication are well
-    /// formed; and tables follow the dependency order of their references. Adapter
-    /// registration is checked by the engine.
+    /// declares a SQL literal; references, owned tables, derived keys, trees, edges, and
+    /// publication are well formed; and tables follow the dependency order of their references.
+    /// Adapter and hook registration is checked by the engine.
     pub fn validate(&self) -> Result<(), String> {
         let mut problems = String::new();
         for (index, domain) in self.domains.iter().enumerate() {
@@ -693,14 +907,29 @@ impl Manifest {
                 let _ = writeln!(problems, "{}: duplicate table id", table.name);
             }
             for group in table.groups {
-                for problem in reference_problems(group) {
+                for problem in reference_problems(group)
+                    .into_iter()
+                    .chain(owned_group_problems(group))
+                {
                     let _ = writeln!(problems, "{}.{}: {problem}", table.name, group.name);
+                }
+                let custom = group
+                    .owned_tables()
+                    .iter()
+                    .any(|owned| owned.codec == OwnedCodec::Custom);
+                if (custom || group.kind == MergeKind::Coupled) && table.adapter.is_none() {
+                    let _ = writeln!(
+                        problems,
+                        "{}.{}: a custom owned codec or coupled group needs an adapter",
+                        table.name, group.name
+                    );
                 }
             }
             for problem in derived_key_problems(table)
                 .into_iter()
                 .chain(tree_problems(table))
                 .chain(acyclic_problems(table))
+                .chain(self.acyclic_cascade_problems(table))
                 .chain(self.publication_problems(table))
             {
                 let _ = writeln!(problems, "{}: {problem}", table.name);
@@ -775,6 +1004,47 @@ impl Manifest {
                 ));
             }
         }
+        problems
+    }
+
+    /// Why an acyclic edge table cannot keep its edges: an endpoint table reaches the edge table
+    /// through cascading references, so deleting an edge could cascade into the rows it joins
+    /// while cycle detection reads them.
+    fn acyclic_cascade_problems(&self, table: &TableSpec) -> Vec<String> {
+        let Some(acyclic) = table.acyclic else {
+            return Vec::new();
+        };
+        let endpoints = table
+            .references()
+            .filter(|(_, _, reference)| {
+                reference.column == acyclic.from_column || reference.column == acyclic.to_column
+            })
+            .map(|(_, _, reference)| reference.table)
+            .collect::<Vec<_>>();
+        let mut problems = Vec::new();
+        for endpoint in endpoints {
+            let mut seen = vec![endpoint];
+            let mut pending = vec![endpoint];
+            while let Some(current) = pending.pop() {
+                let Some(spec) = self.table(current) else {
+                    continue;
+                };
+                for (_, _, reference) in spec.references() {
+                    if reference.on_delete == OnDelete::Cascade && !seen.contains(&reference.table)
+                    {
+                        seen.push(reference.table);
+                        pending.push(reference.table);
+                    }
+                }
+            }
+            if seen.contains(&table.id) {
+                let name = self.table(endpoint).map_or("an endpoint", |spec| spec.name);
+                problems.push(format!(
+                    "endpoint table {name} reaches the edge table through cascading references"
+                ));
+            }
+        }
+        problems.dedup();
         problems
     }
 
@@ -873,11 +1143,12 @@ fn reference_problems(group: &GroupSpec) -> Vec<String> {
                 problems.push("a reference group declares no reference columns".to_string());
             }
         }
-        MergeKind::Register | MergeKind::Immutable => {}
-        MergeKind::Coupled | MergeKind::Max | MergeKind::Position => {
+        MergeKind::Register | MergeKind::Immutable | MergeKind::Coupled => {}
+        MergeKind::Max | MergeKind::Position => {
             if !group.references.is_empty() {
                 problems.push(
-                    "only register and immutable groups declare reference columns".to_string(),
+                    "only register, immutable, and coupled groups declare reference columns"
+                        .to_string(),
                 );
             }
         }
@@ -905,6 +1176,119 @@ fn reference_problems(group: &GroupSpec) -> Vec<String> {
                 "{} is an immutable reference that does not cascade",
                 reference.column
             ));
+        }
+    }
+    problems
+}
+
+/// Why a group's owned tables are malformed. Owned tables belong to immutable, register, and
+/// coupled groups, and the value keeps within the field and blob bounds.
+fn owned_group_problems(group: &GroupSpec) -> Vec<String> {
+    let GroupStorage::Owned { tables, .. } = group.storage else {
+        return Vec::new();
+    };
+    let mut problems = Vec::new();
+    if !matches!(
+        group.kind,
+        MergeKind::Immutable | MergeKind::Register | MergeKind::Coupled
+    ) {
+        problems.push("only immutable, register, and coupled groups own tables".to_string());
+    }
+    if tables.is_empty() {
+        problems.push("an owned group names no owned table".to_string());
+    }
+    if group.field_count() > MAX_FIELDS_PER_VALUE {
+        problems.push("the group value has too many fields".to_string());
+    }
+    for owned in tables {
+        for problem in owned_table_problems(owned, false) {
+            problems.push(format!("{}: {problem}", owned.table));
+        }
+    }
+    problems
+}
+
+/// Why an owned table is malformed. Nesting is one level deep under the generic codec, a
+/// custom codec has no references or nested tables, columns are distinct, and the rows the
+/// generic codec writes fit one blob field.
+fn owned_table_problems(owned: &OwnedTable, nested: bool) -> Vec<String> {
+    let mut problems = Vec::new();
+    if owned.columns.is_empty() {
+        problems.push("no data columns".to_string());
+    }
+    if owned.max_rows == 0 || owned.max_rows > usize::from(u16::MAX) {
+        problems.push("max_rows is outside 1..=65535".to_string());
+    }
+    match (owned.order, nested, owned.codec) {
+        (OwnedOrder::Ordinal(_), false, _) | (OwnedOrder::Nested { .. }, true, _) => {}
+        (OwnedOrder::Key(columns), false, OwnedCodec::Custom) => {
+            if columns.is_empty() {
+                problems.push("a key order names no column".to_string());
+            }
+            for column in columns {
+                if !owned.columns.iter().any(|spec| spec.name == *column) {
+                    problems.push(format!("key column {column} is not a data column"));
+                }
+            }
+        }
+        _ => problems.push("the order does not fit the table's nesting and codec".to_string()),
+    }
+    let written = owned.written_columns();
+    if written
+        .iter()
+        .enumerate()
+        .any(|(index, column)| written[..index].contains(column))
+    {
+        problems.push("a column is named twice".to_string());
+    }
+    for column in owned.unique {
+        if !owned.columns.iter().any(|spec| spec.name == *column) {
+            problems.push(format!("unique column {column} is not a data column"));
+        }
+    }
+    for (index, reference) in owned.references.iter().enumerate() {
+        match owned
+            .columns
+            .iter()
+            .find(|column| column.name == reference.column)
+        {
+            Some(column) if column.ty == ColumnType::OptionalRowKey => {}
+            _ => problems.push(format!(
+                "{} is not an optional row key data column",
+                reference.column
+            )),
+        }
+        if owned.references[..index]
+            .iter()
+            .any(|other| other.column == reference.column)
+        {
+            problems.push(format!("{} is declared twice", reference.column));
+        }
+    }
+    match owned.codec {
+        OwnedCodec::Custom => {
+            if !owned.references.is_empty() || !owned.nested.is_empty() {
+                problems.push("a custom codec has no references or nested tables".to_string());
+            }
+        }
+        OwnedCodec::Generic => {
+            if owned.columns.len() > MAX_FIELDS_PER_VALUE {
+                problems.push("a row has too many fields for one value".to_string());
+            }
+            if !nested && owned.max_encoded_bytes() > MAX_BLOB_FIELD_BYTES {
+                problems.push("the largest encoding exceeds the blob field bound".to_string());
+            }
+        }
+    }
+    if nested && !owned.nested.is_empty() {
+        problems.push("nested tables do not nest further".to_string());
+    }
+    if nested && owned.codec != OwnedCodec::Generic {
+        problems.push("nested tables use the generic codec".to_string());
+    }
+    for child in owned.nested {
+        for problem in owned_table_problems(child, true) {
+            problems.push(format!("{}: {problem}", child.table));
         }
     }
     problems

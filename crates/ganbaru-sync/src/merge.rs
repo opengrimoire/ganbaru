@@ -15,6 +15,7 @@ use sqlx::sqlite::SqliteRow;
 use sqlx::{Row, SqliteConnection};
 
 use crate::Engine;
+use crate::codec;
 use crate::error::{SyncResult, corrupt};
 use crate::log::{self, ContextCache, seq_i64, stored_u64};
 use crate::manifest::{GroupSpec, MergeKind, TableSpec};
@@ -358,7 +359,7 @@ async fn upsert_versions(
 }
 
 /// Replaces the reference targets of the versions a change wrote: one row per reference column
-/// holding a row key.
+/// holding a row key, and one per distinct key the owned rows of a blob field reference.
 async fn replace_version_refs(
     conn: &mut SqliteConnection,
     change: &Change,
@@ -367,7 +368,9 @@ async fn replace_version_refs(
 ) -> SyncResult<()> {
     let referencing = upserts
         .iter()
-        .filter(|(_, spec)| spec.reference_columns().next().is_some())
+        .filter(|(_, spec)| {
+            spec.reference_columns().next().is_some() || spec.owned_references().next().is_some()
+        })
         .collect::<Vec<_>>();
     if referencing.is_empty() {
         return Ok(());
@@ -386,17 +389,19 @@ async fn replace_version_refs(
     }
     query.execute(&mut *conn).await?;
 
-    let targets = referencing
-        .iter()
-        .flat_map(|(group, spec)| {
-            spec.reference_columns().filter_map(|(field, _)| {
-                match group.value.fields().get(field) {
-                    Some(Field::Text(target)) => Some((group.group, field, target.as_str())),
-                    _ => None,
-                }
-            })
-        })
-        .collect::<Vec<_>>();
+    let mut targets = BTreeSet::new();
+    for (group, spec) in &referencing {
+        for (field, _) in spec.reference_columns() {
+            if let Some(Field::Text(target)) = group.value.fields().get(field) {
+                targets.insert((group.group, field, target.clone()));
+            }
+        }
+        let owned = codec::owned_targets(spec, &group.value)
+            .map_err(|error| corrupt(format!("stored owned value: {error}")))?;
+        for (field, _, target) in owned {
+            targets.insert((group.group, field, target));
+        }
+    }
     if targets.is_empty() {
         return Ok(());
     }

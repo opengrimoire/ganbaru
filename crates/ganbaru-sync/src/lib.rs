@@ -19,6 +19,7 @@ use ganbaru_sync_contracts::{SignedCertificate, SpaceId, WriterId, WriterKeyPair
 use sqlx::SqliteConnection;
 
 pub mod adapter;
+pub mod codec;
 pub mod devices;
 pub mod domains;
 pub mod error;
@@ -65,7 +66,7 @@ pub use status::{HeldCounts, HeldOp, SyncStatus, WriterSummary};
 pub use store::{HoldReason, StoreOutcome, StoreRefusal};
 
 use domains::vault_adapters;
-pub use hooks::Hooks;
+pub use hooks::{ChangeNotice, ChangeSink, HookError, HookFuture, Hooks, MaterializeHook};
 use manifest::Manifest;
 use manifest::vault::VAULT_MANIFEST;
 
@@ -107,20 +108,29 @@ impl LocalWriter<'_> {
     }
 }
 
-/// The sync engine: a manifest and the domain adapters it names.
+/// The sync engine: a manifest, the domain adapters it names, and the hooks the app registers.
 #[derive(Debug)]
 pub struct Engine {
     manifest: &'static Manifest,
     adapters: Adapters,
+    hooks: Hooks,
 }
 
 impl Engine {
     /// An engine for a manifest, its domain adapters, and its hooks. Refuses a manifest that
-    /// fails [`Manifest::validate`], names an unregistered adapter, or leaves a registered
-    /// adapter unnamed.
+    /// fails [`Manifest::validate`], names an unregistered adapter, leaves a registered adapter
+    /// unnamed, or a hook of a table the manifest does not replicate.
     pub fn with(manifest: &'static Manifest, adapters: Adapters, hooks: Hooks) -> SyncResult<Self> {
-        let Hooks {} = hooks;
         manifest.validate().map_err(SyncError::InvalidManifest)?;
+        if let Some(table) = hooks
+            .tables()
+            .find(|table| manifest.table(*table).is_none())
+        {
+            return Err(SyncError::InvalidManifest(format!(
+                "a hook is registered for unknown table {}",
+                table.0
+            )));
+        }
         for table in manifest.tables {
             if let Some(name) = table.adapter
                 && adapters.get(name).is_none()
@@ -141,7 +151,11 @@ impl Engine {
                 )));
             }
         }
-        Ok(Self { manifest, adapters })
+        Ok(Self {
+            manifest,
+            adapters,
+            hooks,
+        })
     }
 
     /// The engine for the vault manifest with its built-in adapters.

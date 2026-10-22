@@ -33,23 +33,37 @@ pub trait DomainAdapter: Send + Sync {
     /// Name the manifest refers to.
     fn name(&self) -> &'static str;
 
-    /// Encodes owned child rows, each given as fields in [`crate::manifest::OwnedTable`] column
-    /// order, into the group value. The encoding must not normalize: a non-canonical list must
-    /// fail [`DomainAdapter::validate`] instead of changing on the way through.
+    /// Encodes the rows of a custom codec owned table, each given as fields in
+    /// [`crate::manifest::OwnedTable`] column order, into its blob field. The encoding must not
+    /// normalize: a list it cannot carry unchanged is refused, so every accepted blob decodes to
+    /// the rows it came from and encodes back to the same bytes.
     fn encode_owned(
         &self,
         table: TableId,
-        group: GroupId,
+        owned: &str,
         rows: Vec<Vec<Field>>,
-    ) -> Result<Value, AdapterError>;
+    ) -> Result<Vec<u8>, AdapterError> {
+        let _ = (table, owned, rows);
+        Err(AdapterError("owned table"))
+    }
 
-    /// Decodes a group value into owned child rows in order.
+    /// Decodes the blob field of a custom codec owned table into its rows in order.
     fn decode_owned(
         &self,
         table: TableId,
-        group: GroupId,
-        value: &Value,
-    ) -> Result<Vec<Vec<Field>>, AdapterError>;
+        owned: &str,
+        bytes: &[u8],
+    ) -> Result<Vec<Vec<Field>>, AdapterError> {
+        let _ = (table, owned, bytes);
+        Err(AdapterError("owned table"))
+    }
+
+    /// Row lists of a custom codec owned table that the codec round-trip conformance encodes,
+    /// stores, reads back, and decodes. They should reach the codec's bounds.
+    fn owned_samples(&self, table: TableId, owned: &str) -> Vec<Vec<Vec<Field>>> {
+        let _ = (table, owned);
+        Vec::new()
+    }
 
     /// Derived column values to set when the group materializes.
     fn derived(

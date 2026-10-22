@@ -3,9 +3,8 @@
 use ganbaru_mobile_media::{MobileMediaExt, MobileMediaTreeTrack};
 use ganbaru_music_library::{
     MusicCollectionKind, MusicLibraryError, MusicLibraryResult, MusicLocalRefreshRequest,
-    MusicRefreshJobProgress, MusicRefreshJobState, bounded_item_description,
+    MusicRefreshJobProgress, MusicRefreshJobState, bounded_item_description, identity,
 };
-use sha2::{Digest, Sha256};
 use sqlx::{FromRow, SqlitePool};
 
 const MAX_MEDIA_FILES: u32 = 5_000;
@@ -243,8 +242,8 @@ async fn persist_track(
     track: &MobileMediaTreeTrack,
 ) -> MusicLibraryResult<()> {
     validate_relative_path(&track.relative_path)?;
-    let item_id = stable_id("item", &[&request.root_id, &track.relative_path]);
-    let location_id = stable_id("location", &[&request.root_id, &track.relative_path]);
+    let item_id = identity::local_item_id(&request.root_id, &track.relative_path);
+    let location_id = identity::location_id(&request.root_id, &track.relative_path);
     let media_kind = match track.media_kind.as_str() {
         "audio" => "audio",
         "video" => "video",
@@ -421,14 +420,4 @@ fn validate_relative_path(path: &str) -> MusicLibraryResult<()> {
         ));
     }
     Ok(())
-}
-
-fn stable_id(kind: &str, values: &[&str]) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(kind.as_bytes());
-    for value in values {
-        hasher.update([0]);
-        hasher.update(value.as_bytes());
-    }
-    format!("music-{kind}-{:x}", hasher.finalize())
 }

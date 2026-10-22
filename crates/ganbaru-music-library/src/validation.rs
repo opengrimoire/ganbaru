@@ -6,7 +6,8 @@ use std::path::{Component, Path};
 
 pub(crate) const MAX_BULK_MEMBERSHIPS: usize = 500;
 pub(crate) const MAX_REVIEW_SELECTION_ITEMS: usize = 20_000;
-const MAX_ID_BYTES: usize = 200;
+/// Longest Music row key, matching the sync engine row key bound.
+pub(crate) const MAX_ID_BYTES: usize = 128;
 const MAX_NAME_CHARS: usize = 200;
 const MAX_ICON_CHARS: usize = 500;
 const MAX_REASON_CHARS: usize = 500;

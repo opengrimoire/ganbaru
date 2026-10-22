@@ -1,4 +1,4 @@
-use sha2::{Digest, Sha256};
+use crate::identity::{stable_id, youtube_item_id};
 use sqlx::{Sqlite, SqlitePool, Transaction};
 use std::collections::{HashMap, HashSet};
 
@@ -541,10 +541,6 @@ fn validate_time(value: i64, field: &str) -> MusicLibraryResult<()> {
     Ok(())
 }
 
-fn youtube_item_id(video_id: &str) -> String {
-    format!("music-youtube-{video_id}")
-}
-
 async fn canonical_youtube_item_id(
     transaction: &mut Transaction<'_, Sqlite>,
     video_id: &str,
@@ -573,16 +569,6 @@ fn failure_message(state: MusicYouTubeResolutionState) -> &'static str {
             "The YouTube source did not complete. The last successful snapshot was preserved."
         }
     }
-}
-
-fn stable_id(kind: &str, values: &[&str]) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(kind.as_bytes());
-    for value in values {
-        hasher.update([0]);
-        hasher.update(value.as_bytes());
-    }
-    format!("music-{kind}-{:x}", hasher.finalize())
 }
 
 #[cfg(test)]

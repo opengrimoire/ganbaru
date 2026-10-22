@@ -1,4 +1,4 @@
-use sha2::{Digest, Sha256};
+use crate::identity::stable_id;
 use sqlx::{Row, SqlitePool, Transaction};
 use std::collections::{HashSet, VecDeque};
 use std::fs;
@@ -731,16 +731,6 @@ fn normalize_relative(root: &Path, path: &Path) -> MusicLibraryResult<String> {
         })
         .collect::<MusicLibraryResult<Vec<_>>>()
         .map(|components| components.join("/"))
-}
-
-fn stable_id(kind: &str, values: &[&str]) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(kind.as_bytes());
-    for value in values {
-        hasher.update([0]);
-        hasher.update(value.as_bytes());
-    }
-    format!("music-{kind}-{:x}", hasher.finalize())
 }
 
 fn map_plan_conflict(context: &str, error: sqlx::Error) -> MusicLibraryError {

@@ -2,8 +2,9 @@ use sqlx::{Row, Sqlite, SqlitePool, Transaction};
 use std::path::Path;
 
 use super::super::*;
-use super::helpers::{map_conflict, new_item_id, now_ms, stable_id, validate_request};
+use super::helpers::{map_conflict, new_item_id, now_ms, validate_request};
 use super::traversal::LocalMediaEvidence;
+use crate::identity::{location_id, stable_id};
 
 #[derive(Debug, sqlx::FromRow)]
 struct RefreshJobRow {
@@ -792,7 +793,7 @@ async fn upsert_location(
     strong_hash: Option<&str>,
     ambiguous: bool,
 ) -> MusicLibraryResult<()> {
-    let location_id = stable_id("location", &[&request.root_id, &media.relative_path]);
+    let location_id = location_id(&request.root_id, &media.relative_path);
     sqlx::query(
         "INSERT INTO music_local_locations
             (id, item_id, root_id, relative_path, file_size_bytes, modified_at_ms,

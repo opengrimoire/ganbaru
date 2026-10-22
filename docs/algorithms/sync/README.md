@@ -69,7 +69,8 @@ When two rows end up with equal keys, which concurrent placement can cause, the 
 
 - A table may hold deletes for domain Undo. Domain code holds a local delete in the transaction that deletes the row, for at most 10 seconds; sealing leaves the delete local until the lease ends.
 - Undo inside the lease checks that the hold still exists, then inserts the row again with its key. The capture becomes an ordinary write, so no tombstone is ever sealed and no recovery entry appears. Undo after the lease refuses, because the delete may already be sealed and published keys are never reused.
-- A held delete seals early whenever a remote operation or a merge would write its row, so merge state and the domain table never disagree about the row. Quiescing before a handoff or backup and revoking the local writer also end every hold.
+- Published rows the delete removes through `ON DELETE CASCADE`, at any depth and in derived-key tables too, share the lease. Undo checks the hold of the rows it deleted and inserts them again with their children, so no tombstone or existence removal is sealed for any of them; expiry seals the whole set, with the children's tombstones naming their cause. Restoring the parent without its children seals the children's deletes at once, because materializing the parent would otherwise bring them back.
+- A held delete seals early whenever a remote operation or a merge would write its row or a row cascading with it, so merge state and the domain table never disagree. Quiescing before a handoff or backup and revoking the local writer also end every hold.
 
 ## References
 

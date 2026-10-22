@@ -8,7 +8,7 @@
 | --- | --- |
 | `sync_spaces` | The vault's replication spaces. One personal space per vault, whose id derives from the vault id. |
 | `sync_apply_state` | A singleton `applying` flag that suppresses capture while the engine materializes remote changes. |
-| `sync_capture` | Local changes not yet sealed: one row per changed domain row with its changed group mask, groups forced by a conflict resolution, created and deleted flags, and `held_until_ms`, the end of a [deletion hold](../../algorithms/sync/README.md#deletion-holds) that keeps a delete unsealed. |
+| `sync_capture` | Local changes not yet sealed: one row per changed domain row with its changed group mask, groups forced by a conflict resolution, created and deleted flags, and `held_until_ms`, the end of a [deletion hold](../../algorithms/sync/README.md#deletion-holds) that keeps a delete, and the deletes it cascaded to, unsealed. |
 | `sync_seeded_tables` | Replicated tables whose existing rows capture seeding has captured. The baseline records the tables that replicated from the start. |
 | `sync_writers` | Every known writer of a space: public key, device, certificate, state (`active`, `retired`, `revoked`, `forked`), revocation cutoff, stored and applied sequences, and the head hash and clock of its chain. |
 | `sync_ops` | Every stored operation as its exact signed envelope, with its full causal context and state (`waiting`, `applied`, `held` with a reason). |

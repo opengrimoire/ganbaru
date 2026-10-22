@@ -342,6 +342,110 @@ describe("refreshConfigKeysFromDisk", () => {
   });
 });
 
+describe("changedConfigKeys", () => {
+  it("names only the keys whose values differ, member by member inside shared objects", async () => {
+    const { changedConfigKeys } = await loadModule();
+    const previous = {
+      profile: { displayName: "Ana", image: { path: "profile/a.png", byteSize: 10 } },
+      notes: { favorites: ["a"] },
+      theme: { activeId: "light" },
+      removed: { inner: 1 },
+    };
+    const next = {
+      profile: { displayName: "Ana", image: { path: "profile/b.png", byteSize: 10 } },
+      notes: { favorites: ["a", "b"] },
+      theme: { activeId: "light" },
+      added: true,
+    };
+
+    expect(changedConfigKeys(previous, next).sort()).toEqual(
+      ["added", "notes.favorites", "profile.image.path", "removed"].sort(),
+    );
+  });
+
+  it("compares a value that changes between an object and another shape whole", async () => {
+    const { changedConfigKeys } = await loadModule();
+
+    expect(changedConfigKeys({ a: { b: 1 } }, { a: [1] })).toEqual(["a"]);
+    expect(changedConfigKeys({ a: null }, { a: { b: 1 } })).toEqual(["a"]);
+    expect(changedConfigKeys({ a: { b: [1, 2] } }, { a: { b: [1, 2] } })).toEqual([]);
+  });
+});
+
+describe("refreshConfigFromSync", () => {
+  it("copies replicated changes into the cache and tells subscribers which keys changed", async () => {
+    setReadResponse(JSON.stringify({ profile: { displayName: "Ana" }, preferences: { language: "en" } }));
+    const { ensureConfigLoaded, getConfigKey, onConfigChangedElsewhere, refreshConfigFromSync } = await loadModule();
+    await ensureConfigLoaded();
+    const listener = vi.fn();
+    onConfigChangedElsewhere(listener);
+    setReadResponse(JSON.stringify({ profile: { displayName: "Bea" }, preferences: { language: "en" } }));
+
+    await refreshConfigFromSync();
+
+    expect(getConfigKey("profile.displayName", "")).toBe("Bea");
+    expect(listener).toHaveBeenCalledWith(new Set(["profile.displayName"]));
+  });
+
+  it("keeps keys this window is still writing and stays quiet when nothing else changed", async () => {
+    vi.useFakeTimers();
+    setReadResponse(JSON.stringify({ profile: { displayName: "Ana" } }));
+    const { ensureConfigLoaded, getConfigKey, onConfigChangedElsewhere, refreshConfigFromSync, setConfigKey } = await loadModule();
+    await ensureConfigLoaded();
+    const listener = vi.fn();
+    onConfigChangedElsewhere(listener);
+    setConfigKey("profile.displayName", "Local");
+    setReadResponse(JSON.stringify({ profile: { displayName: "Remote" } }));
+
+    await refreshConfigFromSync();
+
+    expect(getConfigKey("profile.displayName", "")).toBe("Local");
+    expect(listener).not.toHaveBeenCalled();
+    expect(invokeMock.mock.calls.some(([cmd]) => cmd === "vault_patch_config")).toBe(false);
+  });
+});
+
+describe("startConfigWindowSync", () => {
+  it("refreshes from the view only when sync applied preference rows", async () => {
+    let onApplied: ((tables: string[]) => void) | undefined;
+    vi.doMock("$lib/api/sync", () => ({
+      listenSyncApplied: (listener: (tables: string[]) => void) => {
+        onApplied = listener;
+        return Promise.resolve(() => undefined);
+      },
+    }));
+    vi.doMock("$lib/windows/vault-change-channel", () => ({
+      createVaultChangeChannel: () => ({
+        publish: () => undefined,
+        listen: () => Promise.resolve(() => undefined),
+      }),
+    }));
+    setReadResponse(JSON.stringify({ theme: { quickToggleDarkId: "a" } }));
+    const { ensureConfigLoaded, getConfigKey, onConfigChangedElsewhere, startConfigWindowSync, PREFERENCES_SYNC_TABLE } =
+      await loadModule();
+    try {
+      await ensureConfigLoaded();
+      const listener = vi.fn();
+      onConfigChangedElsewhere(listener);
+      startConfigWindowSync();
+      startConfigWindowSync();
+      setReadResponse(JSON.stringify({ theme: { quickToggleDarkId: "b" } }));
+
+      onApplied?.(["quick_notes"]);
+      await Promise.resolve();
+      expect(invokeMock.mock.calls.filter(([cmd]) => cmd === "vault_read_config")).toHaveLength(1);
+      onApplied?.([PREFERENCES_SYNC_TABLE]);
+      await vi.waitFor(() => expect(listener).toHaveBeenCalledWith(new Set(["theme.quickToggleDarkId"])));
+
+      expect(getConfigKey("theme.quickToggleDarkId", "")).toBe("b");
+      expect(invokeMock.mock.calls.filter(([cmd]) => cmd === "vault_read_config")).toHaveLength(2);
+    } finally {
+      vi.doUnmock("$lib/api/sync");
+      vi.doUnmock("$lib/windows/vault-change-channel");
+    }
+  });
+});
+
 describe("configKeyChanged", () => {
   it("matches the key itself and its parent or child branches only", async () => {
     const { configKeyChanged } = await loadModule();

@@ -4,6 +4,7 @@ import { mount, tick, unmount } from "svelte";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { ensureConfigLoaded, flushConfig, startConfigWindowSync } from "./lib/vault/config";
+import { startProfileImageFileSync } from "./lib/stores/profile-image-files.svelte";
 import { getActiveVaultInfo } from "./lib/vault/state";
 import {
   getLocalization,
@@ -153,6 +154,7 @@ const appPromise = (async () => {
           const appRuntimeReady = preferenceReady.then(async () => {
             await ensureConfigLoaded();
             startConfigWindowSync();
+            startProfileImageFileSync();
             await initializeLocalizationFromConfig();
             await applyPreVaultLanguagePreference();
             await hydrateUserThemes();
@@ -247,6 +249,7 @@ const appPromise = (async () => {
     }
     await ensureConfigLoaded();
     startConfigWindowSync();
+    startProfileImageFileSync();
     await initializeLocalizationFromConfig();
     await applyPreVaultLanguagePreference();
     benchmarkResumePending = await hasFreshBenchmarkResumeState();

@@ -1082,7 +1082,8 @@ fn privileged_helper_arguments(
 ///
 /// The `ganbaru-linking-firewall` binary calls it. The package policy authorizes only that
 /// root-owned helper with `--manage-linking-firewall` as its first argument. All remaining
-/// values are parsed and validated again before a fixed firewall executable is invoked.
+/// values are parsed and validated again before a fixed firewall executable is invoked, and a
+/// grant's global IPv6 source must be an on-link prefix of this host.
 pub fn run_privileged_helper_if_requested() -> Option<Result<(), String>> {
     let mut arguments = std::env::args_os().skip(1);
     if arguments.next().as_deref() != Some(OsStr::new(PRIVILEGED_HELPER_ARGUMENT)) {
@@ -1105,6 +1106,9 @@ pub fn run_privileged_helper_if_requested() -> Option<Result<(), String>> {
                 }
                 match request {
                     HelperRequest::Apply { scopes, grant } => {
+                        if grant {
+                            validate_privileged_grant(&scopes)?;
+                        }
                         apply_each(&scopes, grant, |scope| apply_scope_privileged(scope, grant))
                     }
                     HelperRequest::RevokeAll => revoke_all_privileged(),
@@ -1435,6 +1439,73 @@ fn validate_rule(
         }
     }
     Ok(())
+}
+
+/// Whether `source` is a global IPv6 prefix, which only an on-link network of this host may
+/// open.
+fn is_global_ipv6_source(source: &NetworkPrefix) -> bool {
+    source.address.is_ipv6()
+        && reportable_address(source.address) == Ok(DialAddressClass::GlobalIpv6)
+}
+
+/// Checks that every global IPv6 source among `scopes` lies inside one of `own_prefixes`, the
+/// on-link prefixes of this host's global IPv6 addresses. Other sources are left to
+/// [`validate_rule`].
+fn validate_own_global_sources(
+    scopes: &[AuthorizedScope],
+    own_prefixes: &[NetworkPrefix],
+) -> Result<(), String> {
+    let foreign = scopes.iter().any(|scope| {
+        is_global_ipv6_source(&scope.source)
+            && !own_prefixes
+                .iter()
+                .any(|prefix| prefix.covers(&scope.source))
+    });
+    if foreign {
+        return Err("the Linux network source is not a network of this device".to_string());
+    }
+    Ok(())
+}
+
+/// The on-link prefixes of the global IPv6 addresses in `/proc/net/if_inet6` contents:
+/// address, interface index, prefix length, scope, flags, and interface name per row. Each
+/// address contributes its policy block, the same prefix a rule built from it opens at most.
+fn parse_own_global_ipv6_prefixes(contents: &str) -> Vec<NetworkPrefix> {
+    contents
+        .lines()
+        .filter_map(|line| {
+            let fields = line.split_whitespace().collect::<Vec<_>>();
+            if fields.len() < 6 || fields[0].len() != 32 {
+                return None;
+            }
+            let address = IpAddr::V6(Ipv6Addr::from(u128::from_str_radix(fields[0], 16).ok()?));
+            (reportable_address(address) == Ok(DialAddressClass::GlobalIpv6))
+                .then(|| lan_block(address))
+                .flatten()
+        })
+        .collect()
+}
+
+/// The on-link prefixes of this host's global IPv6 addresses, read by the helper itself so a
+/// caller cannot widen them. A system without IPv6 has none.
+fn own_global_ipv6_prefixes() -> Result<Vec<NetworkPrefix>, String> {
+    match fs::read_to_string("/proc/net/if_inet6") {
+        Ok(contents) => Ok(parse_own_global_ipv6_prefixes(&contents)),
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(Vec::new()),
+        Err(error) => Err(format!("read Linux IPv6 addresses: {error}")),
+    }
+}
+
+/// Refuses a grant whose global IPv6 source is not an on-link prefix of this host. Revokes
+/// are not checked, so a rule for a prefix the host has since lost can still be removed.
+fn validate_privileged_grant(scopes: &[AuthorizedScope]) -> Result<(), String> {
+    if !scopes
+        .iter()
+        .any(|scope| is_global_ipv6_source(&scope.source))
+    {
+        return Ok(());
+    }
+    validate_own_global_sources(scopes, &own_global_ipv6_prefixes()?)
 }
 
 fn apply_ufw(scope: &AuthorizedScope, grant: bool) -> Result<(), String> {
@@ -1856,6 +1927,70 @@ fd123456000000000000000000000000 40 00000000000000000000000000000000 00 00000000
         assert_eq!(
             connected_prefix(&routes, "wlp6s0", GLOBAL.parse().unwrap()),
             Some(64)
+        );
+    }
+
+    #[test]
+    fn own_global_prefixes_are_the_blocks_of_global_interface_addresses() {
+        let interfaces = "\
+2806101e000e89704a89e7fffecf5d55 03 40 00 00   wlp6s0
+fe80000000000000a2b3c4fffed5e6f7 03 40 20 80   wlp6s0
+00000000000000000000000000000001 01 80 10 80       lo
+fd123456000000000000000000000001 05 40 00 80      wg0
+2a0012340000abcd0000000000000001 06 30 00 80     eth1
+2a00123400000001 06 40 00 80     eth2
+";
+        assert_eq!(
+            parse_own_global_ipv6_prefixes(interfaces),
+            vec![
+                prefix("2806:101e:e:8970::/64"),
+                prefix("2a00:1234:0:abcd::/64")
+            ],
+            "link-local, loopback, unique local, and malformed rows add no prefix, and a wider \
+             interface prefix still yields its /64"
+        );
+        assert!(parse_own_global_ipv6_prefixes("").is_empty());
+    }
+
+    #[test]
+    fn grants_open_a_global_ipv6_source_only_inside_an_own_prefix() {
+        let own = [prefix("2806:101e:e:8970::/64")];
+        let global = tcp("wlp6s0", "2806:101e:e:8970::/64", "2806:101e:e:8970::/64");
+        let foreign = tcp("wlp6s0", "2a00:1234:0:1::/64", "2a00:1234:0:1::/64");
+        let narrower = tcp(
+            "wlp6s0",
+            "2806:101e:e:8970:4a89::/80",
+            "2806:101e:e:8970:4a89::/80",
+        );
+        let private = [
+            tcp("wlp2s0", "192.168.1.0/24", "192.168.1.0/24"),
+            tcp("wg0", "fd12:3456::/64", "fd00::/8"),
+            udp("wlp6s0", "ff02::fb", "fe80::/10"),
+        ];
+
+        assert_eq!(
+            validate_own_global_sources(std::slice::from_ref(&global), &own),
+            Ok(())
+        );
+        assert_eq!(validate_own_global_sources(&[narrower], &own), Ok(()));
+        assert!(
+            validate_own_global_sources(&[global.clone(), foreign.clone()], &own).is_err(),
+            "one foreign global source refuses the whole grant"
+        );
+        assert!(validate_own_global_sources(&[foreign], &own).is_err());
+        assert!(
+            validate_own_global_sources(&[global], &[]).is_err(),
+            "a host without global addresses opens no global source"
+        );
+        assert_eq!(
+            validate_own_global_sources(&private, &[]),
+            Ok(()),
+            "private, unique local, and link-local sources are not checked against own prefixes"
+        );
+        assert_eq!(
+            validate_privileged_grant(&private),
+            Ok(()),
+            "a grant without global sources does not read the interfaces"
         );
     }
 

@@ -77,24 +77,33 @@ internal class CoordinatorBrowser(context: Context) {
 
   /**
    * Resolves one service. The listener API is deprecated from Android 14 but remains available,
-   * and it is the only resolver on the earlier releases this app supports.
+   * and it is the only resolver on the earlier releases this app supports. A cancelled resolve,
+   * such as one that timed out, is stopped from Android 14; earlier releases cannot stop it, so
+   * its late callback is ignored.
    */
   @Suppress("DEPRECATION")
   private suspend fun resolve(manager: NsdManager, service: NsdServiceInfo): NsdServiceInfo? =
     suspendCancellableCoroutine { continuation ->
-      manager.resolveService(
-        service,
-        object : NsdManager.ResolveListener {
-          override fun onResolveFailed(serviceInfo: NsdServiceInfo, errorCode: Int) {
-            Log.w(TAG, "Coordinator service did not resolve: $errorCode")
-            if (continuation.isActive) continuation.resume(null)
-          }
+      val listener = object : NsdManager.ResolveListener {
+        override fun onResolveFailed(serviceInfo: NsdServiceInfo, errorCode: Int) {
+          Log.w(TAG, "Coordinator service did not resolve: $errorCode")
+          if (continuation.isActive) continuation.resume(null)
+        }
 
-          override fun onServiceResolved(serviceInfo: NsdServiceInfo) {
-            if (continuation.isActive) continuation.resume(serviceInfo)
+        override fun onServiceResolved(serviceInfo: NsdServiceInfo) {
+          if (continuation.isActive) continuation.resume(serviceInfo)
+        }
+      }
+      continuation.invokeOnCancellation {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+          try {
+            manager.stopServiceResolution(listener)
+          } catch (error: IllegalArgumentException) {
+            Log.w(TAG, "Coordinator resolution was not running", error)
           }
-        },
-      )
+        }
+      }
+      manager.resolveService(service, listener)
     }
 
   @Suppress("DEPRECATION")

@@ -36,6 +36,8 @@ pub(crate) mod database_rollback;
 pub(crate) mod handoff;
 pub(crate) mod ownership;
 pub(crate) mod preferences;
+#[cfg(any(mobile, test))]
+pub(crate) mod process_managers;
 pub(crate) mod quiescence;
 pub(crate) mod runtime_lifecycle;
 pub(crate) mod vault_lock;

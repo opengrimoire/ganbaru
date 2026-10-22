@@ -9,6 +9,8 @@ use crate::vault::WritableVaultPath;
 use crate::vault::handoff::pairing::PairingManager;
 use crate::vault::handoff::transport::CoordinatorDialReport;
 use crate::vault::ownership::VaultOwnershipManager;
+#[cfg(any(mobile, test))]
+use crate::vault::process_managers::ProcessManagers;
 use ganbaru_contacts::{PersonKeyPair, PersonPublicKey};
 use ganbaru_sync::manifest::vault::VAULT_MANIFEST;
 use ganbaru_sync::{ChangeNotice, Engine, Hooks};
@@ -275,18 +277,28 @@ struct HeadlessParts {
 
 #[cfg(any(mobile, test))]
 impl HeadlessHost {
-    /// Loads pairing and ownership state from `config_dir` as app startup does. A vault
-    /// handoff this device started is left to the app, which reconciles it at startup, so the
-    /// host refuses to open while one is recorded.
+    /// Opens a host on the managers this process shares with the app runtime.
+    #[cfg(mobile)]
     pub(crate) fn open(config_dir: &Path) -> Result<Self, String> {
+        Self::open_with(
+            config_dir,
+            crate::vault::process_managers::process_managers(),
+        )
+    }
+
+    /// Opens a host on `managers`, loading their state from `config_dir` as app startup does
+    /// unless the process already loaded it. A vault handoff this device started is left to
+    /// the app, which reconciles it at startup, so the host refuses to open while one is
+    /// recorded.
+    pub(crate) fn open_with(config_dir: &Path, managers: &ProcessManagers) -> Result<Self, String> {
         let device_id = crate::vault::ensure_device_id_in(config_dir)?;
-        let pairing = PairingManager::default();
-        pairing.initialize(config_dir.to_path_buf(), device_id)?;
+        managers.load_pairing(config_dir, device_id)?;
+        let pairing = managers.pairing().clone();
         if pairing.outgoing_transfer()?.is_some() {
             return Err("a vault handoff is in progress; the app finishes it".to_string());
         }
-        let ownership = VaultOwnershipManager::default();
-        ownership.initialize_in(config_dir)?;
+        managers.load_ownership(config_dir)?;
+        let ownership = managers.ownership().clone();
         if let Some(coordinator) = pairing.coordinator_pin()? {
             ownership.register_remote_owner_if_missing(
                 &coordinator.vault_id,

@@ -581,11 +581,19 @@ pub async fn set_metadata_overrides(
     request: MusicMetadataOverrideWrite,
 ) -> MusicLibraryResult<MusicWriteReceipt> {
     validate_metadata_override_write(&request)?;
-    let artwork = request
-        .artwork_override
-        .as_deref()
-        .map(|reference| crate::managed_artwork::stored_artwork(vault_root, reference))
-        .transpose()?;
+    let artwork = match request.artwork_override.clone() {
+        // Reading and describing up to 10 MiB of artwork blocks, so it leaves the async worker.
+        Some(reference) => {
+            let vault_root = vault_root.to_path_buf();
+            let artwork = tokio::task::spawn_blocking(move || {
+                crate::managed_artwork::stored_artwork(&vault_root, &reference)
+            })
+            .await
+            .map_err(|error| MusicLibraryError::runtime("read stored music artwork", error))??;
+            Some(artwork)
+        }
+        None => None,
+    };
     let mut transaction = pool
         .begin()
         .await

@@ -12,6 +12,8 @@ pub(crate) mod receiver;
 pub(crate) mod source;
 pub(crate) mod transport;
 
+#[cfg(desktop)]
+use ganbaru_handoff::dial::reportable_address;
 #[cfg(target_os = "linux")]
 use ganbaru_handoff::network_access;
 pub(crate) use ganbaru_handoff::{pairing, protocol};
@@ -117,9 +119,9 @@ impl CoordinatorLifecycle {
                 return Ok(runtime.endpoint);
             }
         }
-        if !is_lan_address(address) {
-            return Err("vault handoff coordinator requires a private LAN address".to_string());
-        }
+        reportable_address(address).map_err(|error| {
+            format!("vault handoff coordinator cannot listen on {address}: {error}")
+        })?;
         let listener = TcpListener::bind(SocketAddr::new(address, port))
             .await
             .map_err(|error| format!("bind vault handoff coordinator: {error}"))?;
@@ -344,8 +346,8 @@ pub(crate) async fn start_desktop_when_reachable<R: Runtime>(
     Ok(())
 }
 
-/// Starts the coordinator on the private LAN address unless it already runs, and returns its
-/// endpoint. A device linked to another coordinator never coordinates, so it gets `None`.
+/// Starts the coordinator on the routed local network address unless it already runs, and
+/// returns its endpoint. A device linked to another coordinator never coordinates, so it gets `None`.
 #[cfg(desktop)]
 pub(crate) async fn ensure_desktop_coordinator<R: Runtime>(
     app: &tauri::AppHandle<R>,
@@ -809,36 +811,15 @@ fn discover_private_lan_address() -> Result<IpAddr, String> {
         .local_addr()
         .map_err(|error| format!("read LAN address: {error}"))?
         .ip();
-    if !is_lan_address(address) || address.is_loopback() {
-        return Err("no private LAN address is currently available".to_string());
+    if reportable_address(address).is_err() {
+        return Err("no local network address is currently available".to_string());
     }
     Ok(address)
-}
-
-#[cfg(desktop)]
-fn is_lan_address(address: IpAddr) -> bool {
-    match address {
-        IpAddr::V4(address) => {
-            address.is_private() || address.is_link_local() || address.is_loopback()
-        }
-        IpAddr::V6(address) => {
-            address.is_loopback()
-                || address.is_unicast_link_local()
-                || (address.segments()[0] & 0xfe00) == 0xfc00
-        }
-    }
 }
 
 #[cfg(all(test, desktop))]
 mod tests {
     use super::*;
-
-    #[test]
-    fn coordinator_rejects_public_bind_addresses() {
-        assert!(!is_lan_address("8.8.8.8".parse().expect("address")));
-        assert!(is_lan_address("192.168.10.4".parse().expect("address")));
-        assert!(is_lan_address("fd00::1".parse().expect("address")));
-    }
 
     #[test]
     fn pairing_status_follows_the_pinned_coordinator_before_the_active_vault() {

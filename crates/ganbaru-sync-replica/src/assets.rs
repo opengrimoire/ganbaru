@@ -291,11 +291,17 @@ pub(crate) async fn partition_held(
     .await
 }
 
-/// The memory key of an asset: its class name and digest.
-type MemoryKey = (&'static str, String);
+/// The memory key of an asset: its whole reference, so references that share a digest but
+/// disagree on content type or size are remembered apart.
+type MemoryKey = (&'static str, String, String, u32);
 
 fn memory_key(asset: &AssetRef) -> MemoryKey {
-    (asset.class().name, asset.sha256().to_string())
+    (
+        asset.class().name,
+        asset.sha256().to_string(),
+        asset.content_type().to_string(),
+        asset.byte_size(),
+    )
 }
 
 /// Assets remembered until a deadline.

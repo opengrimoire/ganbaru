@@ -205,7 +205,10 @@ impl AssetRef {
 
 impl Engine {
     /// Every asset that a live row, an open conflict, or a recovery offer references, once per
-    /// class and digest, ordered by class name and digest.
+    /// distinct reference, ordered by class name, digest, content type, and size.
+    ///
+    /// References that share a digest but disagree on content type or size are all kept, so
+    /// one row's wrong description never hides another row's file from a transfer.
     ///
     /// Live rows whose stored values are invalid are skipped, as sealing skips them.
     pub async fn referenced_assets(
@@ -226,7 +229,13 @@ impl Engine {
                     values.extend(retained_group_values(self, conn, table.id, group.id).await?);
                     for value in values {
                         for asset in self.asset_refs(domain, table, group.id, &value)? {
-                            found.insert((asset.class.name, asset.sha256.clone()), asset);
+                            let key = (
+                                asset.class.name,
+                                asset.sha256.clone(),
+                                asset.content_type.clone(),
+                                asset.byte_size,
+                            );
+                            found.insert(key, asset);
                         }
                     }
                 }

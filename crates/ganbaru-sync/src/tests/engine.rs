@@ -2337,6 +2337,43 @@ fn referenced_assets_cover_live_rows_and_retained_versions() {
 }
 
 #[test]
+fn referenced_assets_keep_references_that_disagree_on_one_digest() {
+    block_on(async {
+        let mut replica = Replica::new(0, 1).await;
+        // Whichever row is read last must not hide the other description of the digest.
+        replica
+            .exec(&format!(
+                "INSERT INTO quick_notes (id, order_key) VALUES ('note-1', 'a0'), ('note-2', 'a1'),
+                     ('note-3', 'a2');
+                 {}{}{}",
+                image_row("note-1", 0, 'a', "image/png", 10),
+                image_row("note-2", 0, 'a', "image/png", 11),
+                image_row("note-3", 0, 'a', "image/jpeg", 10),
+            ))
+            .await;
+
+        let referenced = replica
+            .engine
+            .referenced_assets(&mut replica.conn)
+            .await
+            .unwrap();
+        let names = referenced
+            .iter()
+            .map(|asset| (asset.file_name(), asset.byte_size()))
+            .collect::<Vec<_>>();
+        let digest = "a".repeat(64);
+        assert_eq!(
+            names,
+            [
+                (format!("{digest}.jpg"), 10),
+                (format!("{digest}.png"), 10),
+                (format!("{digest}.png"), 11),
+            ]
+        );
+    });
+}
+
+#[test]
 fn asset_tables_name_the_rows_that_hold_a_class() {
     let engine = crate::Engine::vault();
     assert_eq!(

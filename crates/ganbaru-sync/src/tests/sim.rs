@@ -15,7 +15,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use ganbaru_sync_contracts::{Field, RevokeReason, WriterId};
 
 use super::block_on;
-use super::fixture::{MEMOS_TABLE, NODE_MAX_DEPTH, edge_key, membership_key, memo_tag_key};
+use super::fixture::{
+    BOARD_CARDS, BOARD_CHECKS, MAX_BOARD_STAGE, MAX_LIST_ENTRIES, MEMOS_TABLE, NODE_MAX_DEPTH,
+    edge_key, membership_key, memo_tag_key,
+};
 use super::replica::{Replica, START_MS, quoted, rank};
 use crate::error::failpoints;
 use crate::hold::{self, MAX_HOLD_MS};
@@ -415,7 +418,13 @@ impl Sim {
         let note = self.rng.pick(&notes).map(|id| quoted(id));
         let tag = self.rng.pick(&tags).map(|id| quoted(id));
         let touch = format!("updated_at = {now}, revision = revision + 1");
-        let kind = self.rng.below(41);
+        let kind = self.rng.below(45);
+        if kind >= 43 {
+            return self.edit_lists(index, now).await;
+        }
+        if kind >= 41 {
+            return self.edit_boards(index, now).await;
+        }
         if kind >= 39 {
             return self.edit_memos(index).await;
         }
@@ -746,6 +755,174 @@ impl Sim {
                 self.replicas[index].try_exec(&sql).await;
             }
         }
+    }
+
+    /// SQL that replaces a list's entries with new ones, each with a fresh id and usually a
+    /// membership the replica holds.
+    fn entries_sql(&mut self, index: usize, list: &str, members: &[String]) -> String {
+        let mut sql = format!(
+            "DELETE FROM fixture_list_entries WHERE list_id = {};",
+            quoted(list)
+        );
+        for ordinal in 0..self.rng.below(MAX_LIST_ENTRIES + 1) {
+            let id = self.next_id("entry", index);
+            let note = if self.rng.chance(50) {
+                quoted(&self.words())
+            } else {
+                "NULL".into()
+            };
+            let member = match self.rng.pick(members) {
+                Some(key) if self.rng.chance(60) => quoted(key),
+                _ => "NULL".into(),
+            };
+            sql.push_str(&format!(
+                "INSERT INTO fixture_list_entries (list_id, ordinal, entry_id, body, note, member_key)
+                 VALUES ({}, {ordinal}, {}, {}, {note}, {member});",
+                quoted(list),
+                quoted(&id),
+                quoted(&self.words())
+            ));
+        }
+        sql
+    }
+
+    /// One local edit of fixture lists: create a list with entries, retitle it, reverse its
+    /// entries keeping their ids, replace its entries, or delete it. Removing a membership that
+    /// an entry names removes the entry here and hides it on replicas that still hold the
+    /// list's older value.
+    async fn edit_lists(&mut self, index: usize, now: String) {
+        let lists = ids(
+            &mut self.replicas[index],
+            "SELECT id FROM fixture_lists ORDER BY id",
+        )
+        .await;
+        let members = ids(
+            &mut self.replicas[index],
+            "SELECT sync_key FROM fixture_memberships ORDER BY sync_key",
+        )
+        .await;
+        let list = self.rng.pick(&lists).cloned();
+        let sql = match (self.rng.below(5), list) {
+            (1, Some(list)) => format!(
+                "UPDATE fixture_lists SET title = {} WHERE id = {}",
+                quoted(&self.words()),
+                quoted(&list)
+            ),
+            (2, Some(list)) => {
+                let list = quoted(&list);
+                format!(
+                    "UPDATE fixture_list_entries SET ordinal = -1 - ordinal WHERE list_id = {list};
+                     UPDATE fixture_list_entries SET ordinal = ordinal +
+                         (SELECT count(*) FROM fixture_list_entries WHERE list_id = {list})
+                     WHERE list_id = {list};"
+                )
+            }
+            (3, Some(list)) => self.entries_sql(index, &list, &members),
+            (4, Some(list)) => format!("DELETE FROM fixture_lists WHERE id = {}", quoted(&list)),
+            _ => {
+                let id = self.next_id("list", index);
+                let entries = self.entries_sql(index, &id, &members);
+                format!(
+                    "INSERT INTO fixture_lists (id, created_at, title) VALUES ({}, {now}, {});
+                     {entries}",
+                    quoted(&id),
+                    quoted(&self.words())
+                )
+            }
+        };
+        self.replicas[index].try_exec(&sql).await;
+    }
+
+    /// SQL that replaces a board's cards and their checks with new ones, each with a fresh id;
+    /// a card may name an item the replica holds.
+    fn cards_sql(&mut self, index: usize, board: &str, items: &[String]) -> String {
+        let mut sql = format!(
+            "DELETE FROM fixture_board_cards WHERE board_id = {};",
+            quoted(board)
+        );
+        for ordinal in 0..self.rng.below(BOARD_CARDS.max_rows + 1) {
+            let id = self.next_id("card", index);
+            let item = match self.rng.pick(items) {
+                Some(item) if self.rng.chance(50) => quoted(item),
+                _ => "NULL".into(),
+            };
+            sql.push_str(&format!(
+                "INSERT INTO fixture_board_cards (board_id, ordinal, card_id, title, item_id)
+                 VALUES ({}, {ordinal}, {}, {}, {item});",
+                quoted(board),
+                quoted(&id),
+                quoted(&self.words())
+            ));
+            for check in 0..self.rng.below(BOARD_CHECKS.max_rows + 1) {
+                let id = self.next_id("check", index);
+                sql.push_str(&format!(
+                    "INSERT INTO fixture_board_checks (board_id, card_ordinal, ordinal, check_id, done)
+                     VALUES ({}, {ordinal}, {check}, {}, {});",
+                    quoted(board),
+                    quoted(&id),
+                    u8::from(self.rng.chance(50))
+                ));
+            }
+        }
+        sql
+    }
+
+    /// One local edit of fixture boards, whose owner, stage, and cards merge as one coupled
+    /// value with the later stage winning: create a board with cards, advance its stage, change
+    /// its owner, replace its cards, toggle a check, or delete it.
+    async fn edit_boards(&mut self, index: usize, now: String) {
+        let boards = ids(
+            &mut self.replicas[index],
+            "SELECT id FROM fixture_boards ORDER BY id",
+        )
+        .await;
+        let items = ids(
+            &mut self.replicas[index],
+            "SELECT id FROM fixture_items ORDER BY id",
+        )
+        .await;
+        let checks = ids(
+            &mut self.replicas[index],
+            "SELECT check_id FROM fixture_board_checks ORDER BY check_id",
+        )
+        .await;
+        let board = self.rng.pick(&boards).cloned();
+        let sql = match (self.rng.below(6), board) {
+            (1, Some(board)) => format!(
+                "UPDATE fixture_boards SET stage = min(stage + 1, {MAX_BOARD_STAGE})
+                 WHERE id = {}",
+                quoted(&board)
+            ),
+            (2, Some(board)) => format!(
+                "UPDATE fixture_boards SET owner_id = {} WHERE id = {}",
+                self.rng
+                    .pick(&items)
+                    .map_or_else(|| "NULL".into(), |item| quoted(item)),
+                quoted(&board)
+            ),
+            (3, Some(board)) => self.cards_sql(index, &board, &items),
+            (4, Some(_)) => {
+                let Some(check) = self.rng.pick(&checks) else {
+                    return;
+                };
+                format!(
+                    "UPDATE fixture_board_checks SET done = 1 - done WHERE check_id = {}",
+                    quoted(check)
+                )
+            }
+            (5, Some(board)) => format!("DELETE FROM fixture_boards WHERE id = {}", quoted(&board)),
+            _ => {
+                let id = self.next_id("board", index);
+                let cards = self.cards_sql(index, &id, &items);
+                format!(
+                    "INSERT INTO fixture_boards (id, created_at, owner_id, stage)
+                     VALUES ({}, {now}, NULL, 0);
+                     {cards}",
+                    quoted(&id)
+                )
+            }
+        };
+        self.replicas[index].try_exec(&sql).await;
     }
 
     /// One local edit of fixture links and their ends: create an end whose label may collide,

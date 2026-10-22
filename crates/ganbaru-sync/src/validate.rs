@@ -8,9 +8,8 @@ use ganbaru_sync_contracts::bounds::{MAX_ROW_KEY_BYTES, MAX_TEXT_FIELD_BYTES};
 use ganbaru_sync_contracts::{Change, ChangeAction, Field, OrderKey, RowKey, Value};
 
 use crate::Engine;
-use crate::manifest::{
-    ColumnType, GroupSpec, GroupStorage, MAX_TIMESTAMP_BYTES, MergeKind, TableSpec,
-};
+use crate::codec::{decode_table, owned_blob};
+use crate::manifest::{ColumnType, GroupSpec, MAX_TIMESTAMP_BYTES, MergeKind, TableSpec};
 
 /// Why a value or change breaks the manifest.
 pub(crate) type Invalid = &'static str;
@@ -22,6 +21,11 @@ fn is_text_without_nul(field: &Field) -> Option<&str> {
     }
 }
 
+fn is_text_within(field: &Field, max_chars: usize) -> bool {
+    is_text_without_nul(field)
+        .is_some_and(|text| text.len() <= MAX_TEXT_FIELD_BYTES && text.chars().count() <= max_chars)
+}
+
 fn is_timestamp(field: &Field) -> bool {
     is_text_without_nul(field)
         .is_some_and(|text| !text.trim_matches(' ').is_empty() && text.len() <= MAX_TIMESTAMP_BYTES)
@@ -30,9 +34,10 @@ fn is_timestamp(field: &Field) -> bool {
 /// Whether a field satisfies a column rule.
 pub(crate) fn column_value(ty: ColumnType, field: &Field) -> bool {
     match ty {
-        ColumnType::Text { max_chars } => is_text_without_nul(field).is_some_and(|text| {
-            text.len() <= MAX_TEXT_FIELD_BYTES && text.chars().count() <= max_chars
-        }),
+        ColumnType::Text { max_chars } => is_text_within(field, max_chars),
+        ColumnType::OptionalText { max_chars } => {
+            *field == Field::Null || is_text_within(field, max_chars)
+        }
         ColumnType::TrimmedText {
             min_chars,
             max_chars,
@@ -72,22 +77,17 @@ pub(crate) fn group_value(
             _ => Err("existence value"),
         };
     }
-    match group.storage {
-        GroupStorage::Columns(columns) => {
-            if value.fields().len() != columns.len() {
-                return Err("group field count");
-            }
-            for (column, field) in columns.iter().zip(value.fields()) {
-                if !column_value(column.ty, field) {
-                    return Err("column value");
-                }
-            }
+    if value.fields().len() != group.field_count() {
+        return Err("group field count");
+    }
+    let columns = group.columns();
+    for (column, field) in columns.iter().zip(value.fields()) {
+        if !column_value(column.ty, field) {
+            return Err("column value");
         }
-        GroupStorage::Owned(_) => {
-            if !matches!(value.fields(), [Field::Blob(_)]) {
-                return Err("owned group value");
-            }
-        }
+    }
+    for (index, owned) in group.owned_tables().iter().enumerate() {
+        decode_table(engine, table, owned, owned_blob(group, value, index)?)?;
     }
     if let Some(adapter) = engine.adapter(table) {
         adapter

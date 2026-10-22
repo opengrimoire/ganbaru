@@ -15,7 +15,9 @@ use sqlx::sqlite::SqliteRow;
 use sqlx::{Connection, Row, SqliteConnection};
 
 use crate::error::{SyncError, SyncResult, corrupt, failpoint};
+use crate::hooks::ChangeNotice;
 use crate::log::{self, seq_i64, stored_u64};
+use crate::materialize::Materialized;
 use crate::merge::{self, Batch};
 use crate::seal::{self, SealReport, SealSlot};
 use crate::visibility::{RowRef, Visibility};
@@ -57,6 +59,8 @@ pub struct ApplyReport {
     pub held: usize,
     /// Domain tables the call changed.
     pub changed_tables: Vec<&'static str>,
+    /// Changes the registered hooks reported.
+    pub notices: Vec<ChangeNotice>,
     /// Writers with clocks far ahead of local time.
     pub clock_warnings: Vec<ClockWarning>,
     /// The local writer must be re-sealed before a revocation of it can apply.
@@ -643,7 +647,7 @@ async fn seal_for_finish(
 }
 
 /// Seals repairs for hidden duplicates, detached tree rows, and cascades, refreshes row flags,
-/// and materializes every dirty row. Returns the domain tables it changed.
+/// and materializes every dirty row, running the registered hooks. Returns what it changed.
 ///
 /// A materialization never overwrites a local edit that is not sealed: captured rows it would
 /// write, or cascade to, are sealed first and the merge is planned again. Captures of dirty
@@ -660,9 +664,9 @@ pub(crate) async fn finish(
     constrained: Constrained,
     now_ms: u64,
     report: &mut SealReport,
-) -> SyncResult<Option<Vec<&'static str>>> {
+) -> SyncResult<Option<Materialized>> {
     if batch.dirty.is_empty() {
-        return Ok(Some(Vec::new()));
+        return Ok(Some(Materialized::default()));
     }
     // Captured rows already sealed once. A capture that stays is an invalid row, which the
     // merge overwrites as it would without the capture. Captures only shrink inside the
@@ -732,7 +736,7 @@ pub(crate) async fn finish_sealed(
     constrained: Constrained,
     now_ms: u64,
     report: &mut SealReport,
-) -> SyncResult<Vec<&'static str>> {
+) -> SyncResult<Materialized> {
     match finish(engine, conn, ctx, batch, slot, constrained, now_ms, report).await? {
         Some(changed) => Ok(changed),
         None => Err(match slot.local_id() {
@@ -853,7 +857,8 @@ impl Engine {
                 ..ApplyReport::default()
             });
         };
-        report.changed_tables = changed;
+        report.changed_tables = changed.tables;
+        report.notices = changed.notices;
         report.local_writer_frozen |= slot.frozen();
         if !sealed.is_empty() {
             report.seal = Some(sealed);

@@ -79,9 +79,21 @@ When two rows end up with equal keys, which concurrent placement can cause, the 
 - Tables are listed in dependency order: a table needing another table's rows (a reference, an owned child's foreign key, or a trigger visible to the applier that reads it) comes after it, unless both lie in one strongly connected component, which is listed contiguously. Foreign keys are deferred while the engine applies, so a reference cycle materializes within its component in one batch. Owned and applier-visible dependencies read rows statement by statement, so they never lie on a cycle.
 - Deleting a materialized row rematerializes the rows in every table whose references named it, because the foreign key action clears or cascades them at once.
 
+## Owned tables
+
+- An owned table holds child rows whose ordered list is the value of one immutable, register, or coupled group of the owner. A domain may keep its own codec for the list; otherwise the generic codec encodes each row's declared typed columns in order. Real numbers never travel in replicated columns.
+- Owned rows are keyed by owner and ordinal, and materialize writes ordinals from zero without gaps, rewriting a stored list whose ordinals have gaps. A nested owned table keys its rows by owner, parent row ordinal, and its own ordinal, and its rows travel inside their parent row's value, so they follow the parent row when the list reorders.
+- An id column of an owned row is a unique data column, reinserted unchanged. Uniqueness is validated within one owner's value only, so domain code must mint fresh ids: two owners holding the same id cannot both materialize.
+- An owned row may name rows of other tables. While a target is missing, deleted, or hidden, materialize skips the row with its nested rows and numbers the rest from zero; the row stays in the group value and returns with its target. Domain code that deletes such a target locally numbers the remaining owned rows from zero again, as materialize writes them.
+- Foreign keys into an owned table come only from its owner, its own rows, or its nested tables.
+
+## Materialize hooks
+
+A domain may register a hook for a replicated table. It runs in the engine transaction after materialization with the keys of every changed row of that table, deleted rows included, and a change sink whose notices apply and seal reports return so the app can refresh. Hooks maintain hook columns and derived tables. A hook column is never captured, has no foreign key, is nullable or has a default, and is excluded from codecs and summaries; domain code keeps it current for local edits.
+
 ## Unique values
 
-Live rows whose winning values collide on a declared unique column set form a class. Only the lowest key is materialized; the others are hidden, and references to them resolve to the kept row. Hiding is a pure function of replicated state, so every replica shows the same rows regardless of arrival order. A replica that can seal also writes repair tombstones for hidden rows that redirect to the kept row; concurrent repairs from several replicas are harmless. While materialization swaps unique values between rows, a value moves aside under a placeholder so the index never fails mid-batch.
+A unique column set equal to the non-empty inputs of a derived key needs no resolution, because the row key already makes those values unique. Live rows whose winning values collide on any other declared unique column set form a class. Only the lowest key is materialized; the others are hidden, and references to them resolve to the kept row. Hiding is a pure function of replicated state, so every replica shows the same rows regardless of arrival order. A replica that can seal also writes repair tombstones for hidden rows that redirect to the kept row; concurrent repairs from several replicas are harmless. While materialization swaps unique values between rows, a value moves aside under a placeholder so the index never fails mid-batch.
 
 ## Conflicts
 

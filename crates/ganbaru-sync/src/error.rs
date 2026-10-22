@@ -32,6 +32,13 @@ pub enum SyncError {
     /// A replicated row of the named table still holds a `pending:` placeholder key, which a
     /// domain must replace with its final key before the transaction that inserted it commits.
     PendingKey(&'static str),
+    /// A materialize hook of the named table failed.
+    Hook {
+        /// Table of the hook.
+        table: &'static str,
+        /// What the hook reported.
+        error: crate::hooks::HookError,
+    },
     /// A test failpoint aborted the transaction.
     #[cfg(test)]
     Failpoint(&'static str),
@@ -63,6 +70,9 @@ impl fmt::Display for SyncError {
                 formatter,
                 "a replicated row of {table} still holds a pending placeholder key"
             ),
+            Self::Hook { table, error } => {
+                write!(formatter, "materialize hook of {table}: {error}")
+            }
             #[cfg(test)]
             Self::Failpoint(name) => write!(formatter, "failpoint {name}"),
         }
@@ -75,6 +85,7 @@ impl std::error::Error for SyncError {
             Self::Database(error) => Some(error),
             Self::Reservation(error) => Some(error),
             Self::Seal(error) => Some(error),
+            Self::Hook { error, .. } => Some(error.as_ref()),
             _ => None,
         }
     }

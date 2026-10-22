@@ -621,7 +621,7 @@ impl Engine {
                 &mut report,
             )
             .await?;
-        report.changed_tables = finish_sealed(
+        let materialized = finish_sealed(
             self,
             &mut tx,
             ctx,
@@ -632,6 +632,7 @@ impl Engine {
             &mut report,
         )
         .await?;
+        report.record(materialized);
         failpoint!("recovery.before_commit");
         sql::set_applying(&mut tx, false).await?;
         tx.commit().await?;

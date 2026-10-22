@@ -8,9 +8,11 @@
 //!   `deleted`. Owned child rows mark their parent's group.
 //! - A reference column change to null is not captured when the old target no longer exists:
 //!   that change is the foreign key action of a deletion, which the target's tombstone already
-//!   expresses.
+//!   expresses. Likewise, an owned row deleted because its referenced row or its parent owned
+//!   row was deleted is not captured.
 //! - Value guards enforce the manifest value rules on every write, so every locally valid row
-//!   seals into a valid operation.
+//!   seals into a valid operation. Generic codec owned tables have guards of their own; a custom
+//!   codec's adapter refuses rows it cannot encode when the group seals.
 //! - Row keys never change, and immutable groups change only while the engine applies. A
 //!   `sync_key` that starts with the `pending:` placeholder prefix may change once to a valid
 //!   key, which captures the row as inserted under its final key.
@@ -34,8 +36,8 @@ use ganbaru_sync_contracts::bounds::{
 };
 
 use crate::manifest::{
-    ColumnSpec, ColumnType, GroupSpec, GroupStorage, MAX_TIMESTAMP_BYTES, Manifest, MergeKind,
-    TableSpec,
+    ColumnSpec, ColumnType, GroupSpec, MAX_TIMESTAMP_BYTES, Manifest, MergeKind, OwnedCodec,
+    OwnedOrder, OwnedTable, TableSpec,
 };
 use crate::publication;
 
@@ -76,17 +78,27 @@ pub fn render(manifest: &Manifest) -> Vec<TriggerSql> {
         triggers.push(update_capture(manifest, table));
         triggers.push(delete_capture(manifest, table));
         let published = publication::condition_in(manifest, table, OWNER_ALIAS);
-        for (group, owned) in table.owned_children() {
+        for group in table.groups {
             let bit = mask_literal(group.mask().0);
-            for event in [Event::Insert, Event::Update, Event::Delete] {
-                triggers.push(owned_capture(
-                    table,
-                    owned.table,
-                    owned.parent_column,
-                    &bit,
-                    event,
-                    published.as_deref(),
-                ));
+            for owned in group.owned_tables() {
+                let children = std::iter::once((owned, None))
+                    .chain(owned.nested.iter().map(|nested| (nested, Some(owned))));
+                for (child, parent_row) in children {
+                    if child.codec == OwnedCodec::Generic {
+                        triggers.push(owned_value_guard(child, Event::Insert));
+                        triggers.push(owned_value_guard(child, Event::Update));
+                    }
+                    let capture = OwnedCapture {
+                        parent: table,
+                        owned: child,
+                        parent_row,
+                        bit: &bit,
+                        published: published.as_deref(),
+                    };
+                    for event in [Event::Insert, Event::Update, Event::Delete] {
+                        triggers.push(owned_capture(manifest, &capture, event));
+                    }
+                }
             }
         }
     }
@@ -180,14 +192,21 @@ fn order_key_rule(expr: &str) -> String {
     )
 }
 
+fn text_within_rule(expr: &str, max_chars: usize) -> String {
+    format!(
+        "{} AND length({expr}) <= {max_chars} AND {} <= {MAX_TEXT_FIELD_BYTES}",
+        text_rule(expr),
+        byte_length(expr)
+    )
+}
+
 /// SQL that is 1 exactly when `expr` satisfies the column type's value rule.
 pub(crate) fn value_rule(expr: &str, ty: ColumnType) -> String {
     match ty {
-        ColumnType::Text { max_chars } => format!(
-            "{} AND length({expr}) <= {max_chars} AND {} <= {MAX_TEXT_FIELD_BYTES}",
-            text_rule(expr),
-            byte_length(expr)
-        ),
+        ColumnType::Text { max_chars } => text_within_rule(expr, max_chars),
+        ColumnType::OptionalText { max_chars } => {
+            format!("{expr} IS NULL OR ({})", text_within_rule(expr, max_chars))
+        }
         ColumnType::TrimmedText {
             min_chars,
             max_chars,
@@ -209,23 +228,37 @@ pub(crate) fn value_rule(expr: &str, ty: ColumnType) -> String {
     }
 }
 
-fn group_columns(table: &TableSpec) -> impl Iterator<Item = &'static ColumnSpec> {
+fn group_columns(table: &TableSpec) -> impl Iterator<Item = &'static ColumnSpec> + Clone {
     table.groups.iter().flat_map(|group| group.columns())
 }
 
 /// Rejects writes whose key or group values break the manifest value rules.
 fn value_guard(table: &TableSpec, event: Event) -> TriggerSql {
-    let name = format!("sync_values_{}_{}", table.name, event.suffix());
-    let mut rules = Vec::new();
-    if event == Event::Insert {
-        rules.push(row_key_rule(&format!("NEW.{}", table.key_column)));
-    }
+    let key = (event == Event::Insert).then(|| row_key_rule(&format!("NEW.{}", table.key_column)));
+    column_guard(table.name, key, group_columns(table), event)
+}
+
+/// Rejects writes whose data columns of a generic codec owned table break their value rules.
+fn owned_value_guard(owned: &OwnedTable, event: Event) -> TriggerSql {
+    column_guard(owned.table, None, owned.columns.iter(), event)
+}
+
+fn column_guard<'a>(
+    table: &str,
+    key: Option<String>,
+    columns: impl Iterator<Item = &'a ColumnSpec> + Clone,
+    event: Event,
+) -> TriggerSql {
+    let name = format!("sync_values_{table}_{}", event.suffix());
+    let mut rules = Vec::from_iter(key);
     rules.extend(
-        group_columns(table).map(|column| value_rule(&format!("NEW.{}", column.name), column.ty)),
+        columns
+            .clone()
+            .map(|column| value_rule(&format!("NEW.{}", column.name), column.ty)),
     );
     let keyword = match event {
         Event::Update => {
-            let columns = group_columns(table)
+            let columns = columns
                 .map(|column| column.name)
                 .collect::<Vec<_>>()
                 .join(", ");
@@ -238,7 +271,7 @@ fn value_guard(table: &TableSpec, event: Event) -> TriggerSql {
         .map(|rule| format!("({rule})"))
         .collect::<Vec<_>>()
         .join("\n    AND ");
-    let mut sql = header(&name, "BEFORE", &keyword, table.name);
+    let mut sql = header(&name, "BEFORE", &keyword, table);
     let _ = write!(
         sql,
         "WHEN ({condition}) IS NOT 1\n{}",
@@ -432,17 +465,10 @@ fn update_capture(manifest: &Manifest, table: &TableSpec) -> TriggerSql {
         .groups
         .iter()
         .filter(|group| group.kind != MergeKind::Immutable)
-        .filter_map(|group| match group.storage {
-            // The existence group has no column; seals write it from the capture.
-            GroupStorage::Columns([]) => None,
-            GroupStorage::Columns(_) => Some(group_term(
-                manifest,
-                table,
-                group,
-                &mask_literal(group.mask().0),
-            )),
-            GroupStorage::Owned(_) => None,
-        })
+        // The existence group has no column, and seals write it from the capture. Owned
+        // tables capture their own changes.
+        .filter(|group| !group.columns().is_empty())
+        .map(|group| group_term(manifest, table, group, &mask_literal(group.mask().0)))
         .collect::<Vec<_>>()
         .join("\n            | ");
     let terms = if terms.is_empty() {
@@ -522,19 +548,62 @@ fn owner_published(parent: &TableSpec, parent_key: &str, published: &str) -> Str
     )
 }
 
+/// An owned table whose changes capture the group of its owning row.
+struct OwnedCapture<'a> {
+    /// Replicated table owning the rows.
+    parent: &'a TableSpec,
+    /// Owned table.
+    owned: &'a OwnedTable,
+    /// Owned table holding the parent rows of a nested table.
+    parent_row: Option<&'a OwnedTable>,
+    /// Mask bit of the group.
+    bit: &'a str,
+    /// Publication condition of the owning row over [`OWNER_ALIAS`].
+    published: Option<&'a str>,
+}
+
+/// Conditions under which a deleted owned row is a foreign key action rather than an edit of
+/// the group: its referenced row was deleted, or its parent owned row was. The deletion that
+/// caused it is captured on its own, and a row whose target is gone stays in the group value.
+fn owned_delete_conditions(manifest: &Manifest, capture: &OwnedCapture<'_>) -> String {
+    let mut conditions = String::new();
+    for reference in capture.owned.references {
+        let target = manifest
+            .table(reference.table)
+            .unwrap_or_else(|| panic!("{} references an unknown table", capture.owned.table));
+        let _ = write!(
+            conditions,
+            "\n    AND NOT (OLD.{column} IS NOT NULL AND NOT EXISTS (SELECT 1 FROM {target_table} WHERE {target_key} = OLD.{column}))",
+            column = reference.column,
+            target_table = target.name,
+            target_key = target.key_column,
+        );
+    }
+    if let (Some(parent_row), OwnedOrder::Nested { parent_ordinal, .. }) =
+        (capture.parent_row, capture.owned.order)
+        && let OwnedOrder::Ordinal(ordinal) = parent_row.order
+    {
+        let _ = write!(
+            conditions,
+            "\n    AND EXISTS (SELECT 1 FROM {table} WHERE {owner} = OLD.{column} AND {ordinal} = OLD.{parent_ordinal})",
+            table = parent_row.table,
+            owner = parent_row.parent_column,
+            column = capture.owned.parent_column,
+        );
+    }
+    conditions
+}
+
 /// Captures the owning row of a changed owned row. While the owning row is a draft, nothing
 /// is captured; the capture that publishes it carries every group.
-fn owned_capture(
-    parent: &TableSpec,
-    child: &str,
-    parent_column: &str,
-    bit: &str,
-    event: Event,
-    published: Option<&str>,
-) -> TriggerSql {
+fn owned_capture(manifest: &Manifest, capture: &OwnedCapture<'_>, event: Event) -> TriggerSql {
+    let child = capture.owned.table;
+    let parent_column = capture.owned.parent_column;
+    let bit = capture.bit;
+    let parent = capture.parent;
     let name = format!("sync_capture_{child}_{}", event.suffix());
     let id = parent.id.0;
-    let body = match (event, published) {
+    let body = match (event, capture.published) {
         (Event::Insert | Event::Delete, None) => {
             let row = if event == Event::Insert { "NEW" } else { "OLD" };
             format!(
@@ -557,7 +626,12 @@ fn owned_capture(
             owner_published(parent, "parent.key", published)
         ),
     };
+    let conditions = if event == Event::Delete {
+        owned_delete_conditions(manifest, capture)
+    } else {
+        String::new()
+    };
     let mut sql = header(&name, "AFTER", event.keyword(), child);
-    let _ = write!(sql, "WHEN {NOT_APPLYING}\nBEGIN\n{body}\nEND");
+    let _ = write!(sql, "WHEN {NOT_APPLYING}{conditions}\nBEGIN\n{body}\nEND");
     TriggerSql { name, sql }
 }

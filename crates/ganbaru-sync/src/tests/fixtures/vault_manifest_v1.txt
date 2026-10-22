@@ -9,11 +9,13 @@ table 1 quick_note_tags replicated key id redirects
 table 2 quick_notes replicated key id
   group 0 immutable created_at:timestamp
   group 1 register surfaced recoverable title:text(..=200)
-  group 2 register surfaced recoverable owned quick_note_text_runs parent note_id order sort_order columns content,bold,italic,underline
+  group 2 register surfaced recoverable
+    owned quick_note_text_runs parent note_id ordinal sort_order rows 4096 codec custom content:text(..=65536) bold:flag italic:flag underline:flag
   group 3 register recoverable color:integer(0..=31)
   group 4 reference 1 set_null recoverable tag_id:optional_row_key
   group 5 coupled recoverable pinned:flag archived:flag trashed_at:optional_timestamp
   group 6 position order_key:order_key
   group 7 max updated_at:timestamp
-  group 8 register surfaced recoverable owned quick_note_images parent note_id order sort_order columns sha256,content_type,byte_size,width,height
+  group 8 register surfaced recoverable
+    owned quick_note_images parent note_id ordinal sort_order rows 24 codec custom sha256:text(..=64) content_type:text(..=10) byte_size:integer(1..=26214400) width:integer(1..=16384) height:integer(1..=16384)
   check pinned,archived,trashed_at within 5

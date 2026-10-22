@@ -325,7 +325,7 @@ async fn diff(
     }
     for (group, owned, rows) in &present.owned {
         let stored = sql::read_owned(conn, owned, key).await?;
-        if stored.as_ref() != Some(rows) {
+        if stored.as_ref() != Some(rows) || !sql::owned_numbered(conn, owned, key).await? {
             update.owned.push((*owned, rows.clone()));
             update.bump |= group.bumps_revision;
         }

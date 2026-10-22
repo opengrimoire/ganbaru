@@ -169,6 +169,48 @@ async fn select_owned(
         .collect()
 }
 
+/// Whether an owner's owned rows, and its nested rows under each parent row, number their
+/// ordinals from zero without gaps, as [`replace_owned`] writes them. A deletion that cascades
+/// to owned rows leaves gaps.
+pub(crate) async fn owned_numbered(
+    conn: &mut SqliteConnection,
+    owned: &OwnedTable,
+    parent: &str,
+) -> Result<bool, sqlx::Error> {
+    for table in std::iter::once(owned).chain(owned.nested) {
+        let (group, ordinal) = match table.order {
+            OwnedOrder::Ordinal(ordinal) => (None, ordinal),
+            OwnedOrder::Nested {
+                parent_ordinal,
+                ordinal,
+            } => (Some(parent_ordinal), ordinal),
+            OwnedOrder::Key(_) => continue,
+        };
+        let same_group = group.map_or_else(String::new, |column| {
+            format!(" AND other.{column} = row.{column}", column = ident(column))
+        });
+        let sql = format!(
+            "SELECT count(*) FROM {table} AS row
+             WHERE row.{parent_column} = ? AND row.{ordinal} <> (
+                 SELECT count(*) FROM {table} AS other
+                 WHERE other.{parent_column} = row.{parent_column}{same_group}
+                     AND other.{ordinal} < row.{ordinal}
+             )",
+            table = ident(table.table),
+            parent_column = ident(table.parent_column),
+            ordinal = ident(ordinal),
+        );
+        let misnumbered: i64 = sqlx::query_scalar(AssertSqlSafe(sql.as_str()))
+            .bind(parent)
+            .fetch_one(&mut *conn)
+            .await?;
+        if misnumbered > 0 {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
 /// Replaces the owned rows of an owner and their nested rows, numbering ordinals from zero:
 /// nested rows are deleted first and inserted last.
 pub(crate) async fn replace_owned(

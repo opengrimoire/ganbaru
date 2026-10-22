@@ -110,7 +110,7 @@
         <Notice message={t("sync.errorDetail", status.lastError)} />
       {/if}
       {#each clockAhead as line (line)}<Notice message={line} />{/each}
-      {#each conflictLines as line (line)}<div class="text-foreground">{line}</div>{/each}
+      {#each conflictLines as entry (entry.table)}<div class="text-foreground">{entry.line}</div>{/each}
     </div>
 
     {#if held.length > 0}

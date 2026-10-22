@@ -59,10 +59,12 @@ describe("sync status presentation", () => {
       { table: "notes", count: 2 },
       { table: "note_tags", count: 0 },
       { table: "events", count: 1 },
+      { table: "tasks", count: 1 },
     ];
     expect(syncConflictLines(t, presentations, status({ conflicts }))).toEqual([
-      "2 notes in conflict",
-      t("sync.conflicts", 1),
+      { table: "notes", line: "2 notes in conflict" },
+      { table: "events", line: t("sync.conflicts", 1) },
+      { table: "tasks", line: t("sync.conflicts", 1) },
     ]);
     expect(syncConflictLines(t, presentations, status({}))).toEqual([]);
   });

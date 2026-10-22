@@ -53,6 +53,12 @@ export function syncDescription(t: Translate, locale: AppLocale, presentations: 
   return t("sync.description", formatList(locale, presentations.labels(t), { type: "conjunction" }));
 }
 
+/** A conflict line of one replicated table. */
+export interface SyncConflictLine {
+  table: string;
+  line: string;
+}
+
 /**
  * Describes open conflicts, one line per table with conflicted rows, in the words of the domain
  * that owns the table.
@@ -61,10 +67,10 @@ export function syncConflictLines(
   t: Translate,
   presentations: SyncPresentationRegistry,
   status: SyncStatusView,
-): string[] {
+): SyncConflictLine[] {
   return status.conflicts
     .filter((entry) => entry.count > 0)
-    .map((entry) => presentations.conflictLine(t, entry.table, entry.count));
+    .map((entry) => ({ table: entry.table, line: presentations.conflictLine(t, entry.table, entry.count) }));
 }
 
 /** Counts recovery offers across all synced tables. */

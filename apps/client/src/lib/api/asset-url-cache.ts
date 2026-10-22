@@ -8,6 +8,7 @@ const ASSET_URL_CACHE_MAX_ENCODED_BYTES = 16 * 1024 * 1024;
 const CACHE_KEY_SEPARATOR = "\u0000";
 
 export type AssetUrlKind =
+  | "music-artwork"
   | "notes-page-icon"
   | "notes-page-cover"
   | "notes-file"

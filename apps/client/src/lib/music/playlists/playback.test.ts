@@ -35,7 +35,7 @@ describe("saved playlist playback policy", () => {
         membershipId: "override",
         itemId: "override",
         orderKey: "a1",
-        artworkOverride: "/custom/artwork.png",
+        artworkOverride: `music/artwork/${"a".repeat(64)}.png`,
       }),
     ], [{ rootId: "root", folderPath: "/music", status: "available" }], context);
 
@@ -43,7 +43,7 @@ describe("saved playlist playback policy", () => {
       path: "/music/album/track.flac",
       artworkPath: "/music/album/cover.jpg",
     });
-    expect(projection.sources[1]).toMatchObject({ artworkPath: "/custom/artwork.png" });
+    expect(projection.sources[1]).toMatchObject({ artworkPath: `music/artwork/${"a".repeat(64)}.png` });
   });
 
   it("allows explicit play to bypass Snooze without bypassing disabled state", () => {

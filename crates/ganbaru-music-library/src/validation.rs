@@ -605,7 +605,6 @@ pub(crate) fn validate_metadata_override_write(
         ("titleOverride", &request.title_override, 500_usize),
         ("artistOverride", &request.artist_override, 500_usize),
         ("albumOverride", &request.album_override, 500_usize),
-        ("artworkOverride", &request.artwork_override, 2_048_usize),
     ] {
         if let Some(value) = value {
             if value.trim().is_empty() || value.len() > maximum {
@@ -615,6 +614,10 @@ pub(crate) fn validate_metadata_override_write(
                 ));
             }
         }
+    }
+    if let Some(reference) = &request.artwork_override {
+        crate::managed_artwork::parse_artwork_reference(reference)
+            .map_err(|error| MusicLibraryError::validation("artworkOverride", error.to_string()))?;
     }
     validate_timestamp(request.updated_at_ms, "updatedAt")
 }

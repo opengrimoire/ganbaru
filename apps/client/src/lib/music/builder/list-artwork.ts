@@ -1,8 +1,10 @@
 import type { LocalRootBinding, MusicItemListEntry } from "$lib/music/library/contracts";
 import { sidecarArtworkRelativePath } from "$lib/music/artwork-identity";
 import { resolveLocalMusicPath } from "$lib/music/platform-paths";
+import { isManagedMusicArtworkReference } from "$lib/music/managed-artwork";
 
 export type MusicListArtworkSource =
+  | { kind: "asset"; reference: string }
   | { kind: "file"; path: string }
   | { kind: "embedded"; path: string; identity: string };
 
@@ -11,7 +13,9 @@ export function musicListArtworkSource(
   item: MusicItemListEntry,
   bindings: readonly LocalRootBinding[],
 ): MusicListArtworkSource | null {
-  if (item.artworkOverride) return { kind: "file", path: item.artworkOverride };
+  if (isManagedMusicArtworkReference(item.artworkOverride)) {
+    return { kind: "asset", reference: item.artworkOverride };
+  }
   if (item.sourceKind !== "local-file" || !item.localRootId) return null;
   const root = bindings.find((binding) => binding.rootId === item.localRootId)?.folderPath;
   if (!root) return null;

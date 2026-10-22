@@ -619,3 +619,85 @@ fn music_sync_shape_rejects_missing_keys_bad_ranges_and_extra_skips() {
         assert_eq!(total, 5);
     });
 }
+
+#[test]
+fn artwork_asset_migration_clears_device_path_overrides() {
+    super::block_on(async {
+        const BEFORE_ARTWORK_ASSETS: i64 = 20261022142807;
+        let pool = memory_pool_migrated_through(BEFORE_ARTWORK_ASSETS).await;
+        sqlx::raw_sql(
+            "INSERT INTO music_library_items
+                (id, identity_key, source_kind, availability, review_state, discovered_at_ms,
+                 updated_at_ms, title_override, artwork_override)
+             VALUES ('item-1', 'local:1', 'local-file', 'available', 'reviewed', 1, 1, 'Kept',
+                     '/home/user/cover.png'),
+                    ('item-2', 'local:2', 'local-file', 'available', 'reviewed', 1, 1, NULL, NULL);",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        run_migrations(&pool).await.unwrap();
+
+        type OverrideRow = (String, Option<String>, Option<String>, Option<i64>);
+        let rows: Vec<OverrideRow> = sqlx::query_as(
+            "SELECT id, title_override, artwork_override, artwork_override_byte_size
+             FROM music_library_items ORDER BY id",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            rows,
+            vec![
+                ("item-1".to_string(), Some("Kept".to_string()), None, None),
+                ("item-2".to_string(), None, None, None),
+            ]
+        );
+    });
+}
+
+#[test]
+fn artwork_overrides_require_a_managed_reference_with_its_size() {
+    super::block_on(async {
+        let pool = migrated_memory_pool().await;
+        sqlx::raw_sql(
+            "INSERT INTO music_library_items
+                (id, identity_key, source_kind, availability, review_state, discovered_at_ms, updated_at_ms)
+             VALUES ('item-1', 'local:1', 'local-file', 'available', 'reviewed', 1, 1);",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let reference = format!("music/artwork/{}.png", "a".repeat(64));
+
+        for (artwork, size) in [
+            (Some("/home/user/cover.png"), Some(10)),
+            (Some(reference.as_str()), None),
+            (None, Some(10)),
+            (Some(reference.as_str()), Some(0)),
+            (Some(reference.as_str()), Some(10_485_761)),
+        ] {
+            let result = sqlx::query(
+                "UPDATE music_library_items
+                 SET artwork_override = ?, artwork_override_byte_size = ? WHERE id = 'item-1'",
+            )
+            .bind(artwork)
+            .bind(size)
+            .execute(&pool)
+            .await;
+            assert!(result.is_err(), "{artwork:?} {size:?}");
+        }
+        for (artwork, size) in [(Some(reference.as_str()), Some(10_485_760)), (None, None)] {
+            sqlx::query(
+                "UPDATE music_library_items
+                 SET artwork_override = ?, artwork_override_byte_size = ? WHERE id = 'item-1'",
+            )
+            .bind(artwork)
+            .bind(size)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+    });
+}

@@ -2,7 +2,7 @@
   import Music2 from "@lucide/svelte/icons/eighth-note";
   import SquarePlay from "@lucide/svelte/icons/square-play";
   import type { LocalRootBinding, MusicItemListEntry } from "$lib/music/library/contracts";
-  import { musicArtworkDataUrl, musicEmbeddedArtworkDataUrl, musicYouTubeThumbnailDataUrl } from "$lib/music/library/artwork-cache";
+  import { musicArtworkAssetDataUrl, musicArtworkDataUrl, musicEmbeddedArtworkDataUrl, musicYouTubeThumbnailDataUrl } from "$lib/music/library/artwork-cache";
   import { musicListArtworkSource } from "$lib/music/builder/list-artwork";
   import { youtubeVideoIdFromIdentity } from "$lib/music/sources";
 
@@ -29,9 +29,11 @@
     const request = ++requestVersion;
     currentUrl = null;
     const load = source
-      ? source.kind === "file"
-        ? musicArtworkDataUrl(source.path)
-        : musicEmbeddedArtworkDataUrl(source.path, source.identity)
+      ? source.kind === "asset"
+        ? musicArtworkAssetDataUrl(source.reference)
+        : source.kind === "file"
+          ? musicArtworkDataUrl(source.path)
+          : musicEmbeddedArtworkDataUrl(source.path, source.identity)
       : youtubeVideoId
         ? musicYouTubeThumbnailDataUrl(youtubeVideoId)
         : null;

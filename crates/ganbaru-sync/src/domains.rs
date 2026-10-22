@@ -2,6 +2,7 @@
 
 use crate::adapter::Adapters;
 
+pub mod music;
 pub mod quick_notes;
 
 /// The adapters the vault manifest names, one line per domain.

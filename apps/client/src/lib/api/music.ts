@@ -46,8 +46,22 @@ export async function pickSoundscapeFile(): Promise<string | null> {
   return invoke("music_pick_soundscape_file");
 }
 
+/**
+ * Lets the user pick an image, copies it into the active vault as managed artwork, and returns
+ * the managed reference an artwork override stores, or `null` when canceled.
+ */
 export async function pickArtworkFile(): Promise<string | null> {
   return invoke("music_pick_artwork_file");
+}
+
+/** Reads managed artwork of the active vault, by its reference, as a data URL. */
+export async function loadMusicArtworkAssetDataUrl(reference: string): Promise<string> {
+  return invoke("music_artwork_asset_data_url", { reference });
+}
+
+/** Hosts managed artwork of the active vault for one playback lifecycle. */
+export async function registerMusicArtworkAsset(reference: string, generation: number): Promise<string> {
+  return invoke("music_register_artwork_asset", { reference, generation });
 }
 
 export async function pickAndReadMusicInterchangeFile(): Promise<string | null> {

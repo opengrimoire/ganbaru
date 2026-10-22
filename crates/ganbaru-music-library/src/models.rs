@@ -370,7 +370,6 @@ pub struct MusicYouTubeVideoWrite {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MusicYouTubePlaylistSnapshotWrite {
-    pub collection_id: String,
     pub playlist_id: String,
     pub name: String,
     pub video_ids: Vec<String>,
@@ -390,7 +389,6 @@ pub struct MusicYouTubePlaylistVideoWrite {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MusicYouTubeSourceFailureWrite {
-    pub collection_id: String,
     pub playlist_id: String,
     pub name: String,
     pub resolution_state: MusicYouTubeResolutionState,
@@ -434,8 +432,6 @@ pub struct MusicRefreshJobProgress {
 #[serde(rename_all = "camelCase")]
 pub struct MusicLocalRootCreate {
     pub root_id: String,
-    pub collection_id: String,
-    pub identity_key: String,
     pub name: String,
     pub created_at_ms: i64,
 }
@@ -464,7 +460,6 @@ pub struct MusicItemRepairPreview {
 pub struct MusicItemRepairApply {
     pub item_id: String,
     pub root_id: String,
-    pub location_id: String,
     pub root_name: String,
     pub folder_path: String,
     pub relative_path: String,
@@ -473,12 +468,12 @@ pub struct MusicItemRepairApply {
     pub applied_at: i64,
 }
 
+/// Source collection save. The row key and identity key derive from the kind and its root or
+/// playlist id.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MusicCollectionWrite {
-    pub id: String,
     pub kind: MusicCollectionKind,
-    pub identity_key: String,
     pub name: String,
     pub local_root_id: Option<String>,
     pub youtube_playlist_id: Option<String>,
@@ -531,7 +526,6 @@ pub struct MusicPlaylistsReorder {
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MusicMembershipWrite {
-    pub id: String,
     pub playlist_id: String,
     pub item_id: String,
     pub position: i64,
@@ -885,6 +879,21 @@ pub struct MusicMembershipSkipRange {
 #[serde(rename_all = "camelCase")]
 pub struct MusicAdvancedMembershipWrite {
     pub membership: MusicMembershipWrite,
+    /// Ranges in playback order; each range's sort order is its index.
+    pub skip_ranges: Vec<MusicMembershipSkipRangeWrite>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MusicMembershipSkipRangeWrite {
+    pub start_ms: i64,
+    pub end_ms: i64,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MusicAdvancedMembershipReceipt {
+    pub membership: MusicWriteReceipt,
     pub skip_ranges: Vec<MusicMembershipSkipRange>,
 }
 

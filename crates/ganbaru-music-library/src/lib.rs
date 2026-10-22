@@ -9,11 +9,13 @@ pub mod artwork;
 mod defaults;
 #[cfg(desktop)]
 pub mod fixtures;
+pub mod identity;
 mod interchange;
 #[cfg(desktop)]
 pub mod item_repair;
 #[cfg(desktop)]
 pub mod local_refresh;
+pub mod local_scan;
 #[cfg(desktop)]
 pub mod media;
 mod models;
@@ -26,7 +28,6 @@ pub mod relink;
 mod rows;
 pub mod search;
 pub mod session;
-#[cfg(desktop)]
 #[cfg(desktop)]
 pub mod soundscape_presets;
 #[cfg(desktop)]

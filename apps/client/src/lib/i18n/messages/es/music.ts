@@ -484,7 +484,7 @@ export const music = {
     playlistReorderPickedUp: (name: string) => `${name} seleccionada. Usa las flechas para moverla y pulsa Espacio para colocarla.`,
     playlistReorderCancelled: "Se canceló el reordenamiento de listas.",
     playlistReorderFailed: "No se pudo guardar el orden de las listas. Se restauró el orden anterior.",
-    deletePlaylistWarning: (name: string) => `Eliminar ${name} quita sus membresías y repara cada asignación actual en la misma transacción.`,
+    deletePlaylistWarning: (name: string) => `Eliminar ${name} quita sus membresías. Las asignaciones de fase pasan al reemplazo; las de proyectos y eventos quedan sin lista.`,
     projectAssignments: "Asignaciones de proyectos",
     eventAssignments: "Asignaciones de eventos",
     contextAssignments: "Asignaciones de fase",

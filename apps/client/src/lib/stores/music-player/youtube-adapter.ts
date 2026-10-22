@@ -103,10 +103,6 @@ export function createMusicYouTubeAdapter(
   let optimisticPauseUntilMs = 0;
   let lastMetadataSignature = "";
 
-  function playlistCollectionId(playlistId: string): string {
-    return `music-youtube-playlist-${playlistId}`;
-  }
-
   function reportPersistenceError(operation: string, error: unknown): void {
     console.error(`Unable to ${operation}.`, error);
   }
@@ -123,7 +119,6 @@ export function createMusicYouTubeAdapter(
     errorCode: string,
   ): void {
     void reportYouTubeFailure({
-      collectionId: playlistCollectionId(resolving.playlistId),
       playlistId: resolving.playlistId,
       name: resolving.playlistId,
       resolutionState,
@@ -304,7 +299,6 @@ export function createMusicYouTubeAdapter(
     ) return;
     try {
       await persistYouTubePlaylist({
-        collectionId: playlistCollectionId(message.playlistId),
         playlistId: message.playlistId,
         name: state.currentSource?.title || message.playlistId,
         videoIds: message.videoIds,

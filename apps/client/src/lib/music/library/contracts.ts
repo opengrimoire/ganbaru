@@ -78,8 +78,8 @@ export interface MusicMetadataOverrideWrite {
   expectedVersion: number;
   updatedAtMs: number;
 }
+/** Membership save matched by playlist and item; Rust derives the key of a new membership. */
 export interface MusicMembershipWrite {
-  id: string;
   playlistId: string;
   itemId: string;
   position: number;
@@ -168,7 +168,10 @@ export interface MusicBulkSnoozeWrite {
 }
 export interface MusicMembershipRemove { membershipIds: string[] }
 export interface MusicMembershipSkipRange { id: string; membershipId: string; startMs: number; endMs: number; sortOrder: number }
-export interface MusicAdvancedMembershipWrite { membership: MusicMembershipWrite; skipRanges: MusicMembershipSkipRange[] }
+/** One skip range in an advanced membership save; its sort order is its index. */
+export interface MusicMembershipSkipRangeWrite { startMs: number; endMs: number }
+export interface MusicAdvancedMembershipWrite { membership: MusicMembershipWrite; skipRanges: MusicMembershipSkipRangeWrite[] }
+export interface MusicAdvancedMembershipReceipt { membership: MusicWriteReceipt; skipRanges: MusicMembershipSkipRange[] }
 export interface MusicSnoozeWrite {
   id: string;
   itemId: string;
@@ -181,19 +184,17 @@ export interface MusicSnoozeWrite {
 }
 export interface MusicInterchangeImportResult { playlistCount: number; itemCount: number; membershipCount: number; assignmentCount: number }
 export interface MusicItemSignalsWrite { itemIds: string[]; signals: MusicItemSignal[]; updatedAtMs: number }
+/** Source collection save; Rust derives the collection key from the kind and its root or playlist id. */
 export interface MusicCollectionWrite {
-  id: string;
   kind: MusicCollectionKind;
-  identityKey: string;
   name: string;
   localRootId: string | null;
   youtubePlaylistId: string | null;
   updatedAtMs: number;
 }
+/** Local root creation; the receipt id is the derived source collection key. */
 export interface MusicLocalRootCreate {
   rootId: string;
-  collectionId: string;
-  identityKey: string;
   name: string;
   createdAtMs: number;
 }
@@ -214,7 +215,6 @@ export interface MusicItemRepairPreview {
 export interface MusicItemRepairApply {
   itemId: string;
   rootId: string;
-  locationId: string;
   rootName: string;
   folderPath: string;
   relativePath: string;
@@ -368,7 +368,6 @@ export interface MusicYouTubeVideoWrite {
   resolvedAtMs: number;
 }
 export interface MusicYouTubePlaylistSnapshotWrite {
-  collectionId: string;
   playlistId: string;
   name: string;
   videoIds: string[];
@@ -381,7 +380,6 @@ export interface MusicYouTubePlaylistVideoWrite {
   channel: string;
 }
 export interface MusicYouTubeSourceFailureWrite {
-  collectionId: string;
   playlistId: string;
   name: string;
   resolutionState: MusicYouTubeResolutionState;
@@ -429,6 +427,7 @@ export interface MusicLocalLocation {
   updatedAtMs: number;
 }
 export interface MusicPlaylistMembership extends Omit<MusicMembershipWrite, "expectedVersion"> {
+  id: string;
   createdAtMs: number;
   version: number;
 }
@@ -597,6 +596,10 @@ function enumeration<const T extends readonly string[]>(value: unknown, values: 
 
 export function parseWriteReceipt(value: unknown, label = "music write receipt"): MusicWriteReceipt {
   const row = object(value, label); return { id: string(row.id, `${label}.id`), version: number(row.version, `${label}.version`) };
+}
+export function parseAdvancedMembershipReceipt(value: unknown, label = "advanced membership receipt"): MusicAdvancedMembershipReceipt {
+  const row = object(value, label);
+  return { membership: parseWriteReceipt(row.membership, `${label}.membership`), skipRanges: array(row.skipRanges, parseMembershipSkipRange, `${label}.skipRanges`) };
 }
 export function parseMusicCount(value: unknown, label = "music count"): number {
   return number(value, label);

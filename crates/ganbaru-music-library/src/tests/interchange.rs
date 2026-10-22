@@ -247,3 +247,65 @@ fn interchange_import_truncates_item_descriptions_that_the_schema_caps() {
         }
     });
 }
+
+#[test]
+fn interchange_replace_keeps_derived_rows_and_removes_absent_memberships() {
+    crate::test_support::block_on(async {
+        let pool = super::pool().await;
+        super::super::interchange::import(&pool, request(MusicImportPlaylistConflict::ImportCopy))
+            .await
+            .unwrap();
+        let item_id = crate::identity::import_item_id("local:fingerprint-1");
+        let membership_id = crate::identity::membership_id("playlist-1", &item_id);
+        let first: (String, i64, i64) = sqlx::query_as(
+            "SELECT id, version, updated_at_ms FROM music_playlist_memberships WHERE item_id = ?",
+        )
+        .bind(&item_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(first.0, membership_id);
+        let location: String =
+            sqlx::query_scalar("SELECT id FROM music_local_locations WHERE item_id = ?")
+                .bind(&item_id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            location,
+            crate::identity::location_id("root-1", "Album/Quiet rain.flac")
+        );
+
+        let mut replace = request(MusicImportPlaylistConflict::ReplaceExisting);
+        replace.imported_at += 1;
+        let mut added = replace.document.playlists[0].memberships[0].clone();
+        added.item = item("local:fingerprint-2");
+        added.item.locations[0].relative_path = "Album/Second.flac".to_string();
+        added.position = 1;
+        replace.document.playlists[0].memberships.push(added);
+        super::super::interchange::import(&pool, replace.clone())
+            .await
+            .unwrap();
+        let kept: (String, i64, i64) = sqlx::query_as(
+            "SELECT id, version, updated_at_ms FROM music_playlist_memberships WHERE item_id = ?",
+        )
+        .bind(&item_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(kept, first);
+
+        replace.imported_at += 1;
+        replace.document.playlists[0].memberships.truncate(1);
+        super::super::interchange::import(&pool, replace)
+            .await
+            .unwrap();
+        let remaining: Vec<String> = sqlx::query_scalar(
+            "SELECT id FROM music_playlist_memberships WHERE playlist_id = 'playlist-1'",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(remaining, vec![membership_id]);
+    });
+}

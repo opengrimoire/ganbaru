@@ -19,6 +19,8 @@ export class MusicReviewController {
   createError = $state<string | null>(null);
   membershipBusy = $state<Set<string>>(new Set());
   membershipErrors = $state<Record<string, string>>({});
+  /** Native membership keys for optimistic rows, which keep their client key until the inspector reloads. */
+  private readonly persistedMembershipIds = new Map<string, string>();
 
   constructor(
     private readonly library: MusicLibraryController,
@@ -26,6 +28,10 @@ export class MusicReviewController {
     private readonly now: () => number = Date.now,
     private readonly id: () => string = () => crypto.randomUUID(),
   ) {}
+
+  private persistedMembershipId(id: string): string {
+    return this.persistedMembershipIds.get(id) ?? id;
+  }
 
   membershipFor(playlistId: string): MusicPlaylistMembership | null {
     return this.inspector.detail?.memberships.find((membership) => membership.playlistId === playlistId) ?? null;
@@ -52,7 +58,7 @@ export class MusicReviewController {
             detail.memberships = [...detail.memberships, existing];
             this.changePlaylistCounts(playlist, 1);
           },
-          persist: () => removeMusicMemberships({ membershipIds: [existing.id] }),
+          persist: () => removeMusicMemberships({ membershipIds: [this.persistedMembershipId(existing.id)] }),
           undo: async () => {
             await upsertMusicMemberships({ memberships: [write] });
             if (detail.memberships.some((membership) => membership.id === existing.id)) return;
@@ -74,14 +80,21 @@ export class MusicReviewController {
           label: `Add ${playlist.name}`,
           apply: () => { detail.memberships = [...detail.memberships, membership]; this.changePlaylistCounts(playlist, 1); },
           rollback: () => { detail.memberships = detail.memberships.filter((entry) => entry.id !== membership.id); this.changePlaylistCounts(playlist, -1); },
-          persist: () => upsertMusicMemberships({ memberships: [write] }),
+          persist: async () => {
+            const persisted = await upsertMusicMemberships({ memberships: [write] });
+            const receipt = persisted[0];
+            if (receipt && receipt.id !== membership.id) this.persistedMembershipIds.set(membership.id, receipt.id);
+            return persisted;
+          },
           undo: async () => {
-            await removeMusicMemberships({ membershipIds: [membership.id] });
+            await removeMusicMemberships({ membershipIds: [this.persistedMembershipId(membership.id)] });
             detail.memberships = detail.memberships.filter((entry) => entry.id !== membership.id);
             this.changePlaylistCounts(playlist, -1);
           },
         });
-        membership.version = receipts[0]?.version ?? membership.version;
+        const receipt = receipts[0];
+        const entry = detail.memberships.find((candidate) => candidate.id === membership.id);
+        if (receipt && entry) entry.version = receipt.version;
       }
     } catch (error) {
       this.recordMembershipError(playlist.id, error);
@@ -136,7 +149,7 @@ export class MusicReviewController {
         label: "Clear playlist memberships",
         apply: () => { changeAllCounts(-1); detail.memberships = []; },
         rollback: () => { detail.memberships = before; changeAllCounts(1); },
-        persist: () => removeMusicMemberships({ membershipIds: before.map((membership) => membership.id) }),
+        persist: () => removeMusicMemberships({ membershipIds: before.map((membership) => this.persistedMembershipId(membership.id)) }),
         undo: async () => {
           await upsertMusicMemberships({ memberships: before.map((membership) => ({ ...membership, expectedVersion: null })) });
           detail.memberships = before;

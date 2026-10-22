@@ -137,6 +137,12 @@ impl StagedFile {
         &self.target
     }
 
+    /// The temporary file holding the staged bytes, which a caller may read back to check them
+    /// before committing.
+    pub fn staged_path(&self) -> &Path {
+        &self.temporary
+    }
+
     /// Bytes written so far.
     pub fn written(&self) -> u64 {
         self.written

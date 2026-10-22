@@ -1,4 +1,9 @@
-//! Serialized, bounded mutations of portable vault configuration.
+//! The frontend's configuration commands and the vault's `config.json`.
+//!
+//! `config.json` holds only the `distractions` and `chat` branches, which native features
+//! own. The frontend reads and patches one composed object; [`super::preferences`] routes each
+//! patch to the store its registry path names and composes the preferences with these
+//! branches on read.
 
 use super::{
     CONFIG_LOCK, FileAccess, MAX_VAULT_CONFIG_BYTES, active_vault_path, active_writable_vault_path,
@@ -26,11 +31,21 @@ pub struct VaultConfigPatch {
     pub value: serde_json::Value,
 }
 
-/// Read the active vault's `config.json` as a string. Returns `"{}"` if
-/// the file is missing so the frontend can treat a reset config as defaults.
+/// Read the active vault's effective preference view with the `distractions` and `chat`
+/// branches of `config.json`, as one JSON object. Missing stores read as defaults.
 #[tauri::command]
-pub fn vault_read_config(app: tauri::AppHandle) -> Result<String, String> {
-    read_active_config_bounded(&app)
+pub async fn vault_read_config(app: tauri::AppHandle) -> Result<String, String> {
+    let view = super::preferences::effective_view(&app).await?;
+    let config_app = app.clone();
+    let raw = tauri::async_runtime::spawn_blocking(move || read_active_config_bounded(&config_app))
+        .await
+        .map_err(|error| format!("vault configuration worker failed: {error}"))??;
+    let config = serde_json::from_str::<serde_json::Value>(&raw)
+        .map_err(|error| format!("vault config is not valid JSON: {error}"))?;
+    serde_json::to_string(&super::preferences::compose_with_vault_config(
+        &view, &config,
+    ))
+    .map_err(|error| format!("encode vault configuration: {error}"))
 }
 
 /// Read the active vault's `config.json` within [`MAX_VAULT_CONFIG_BYTES`], or `"{}"` when it
@@ -89,7 +104,6 @@ pub(crate) fn mutate_active_vault_config<R: Runtime, T, E>(
     }
     #[cfg(not(target_os = "ios"))]
     let previous_distractions = root.get("distractions").cloned();
-    let previous_preferences = root.get("preferences").cloned();
     let result = mutate(&mut root)?;
     ganbaru_chat_contracts::config::parse_chat_config_branch(&root)
         .map_err(|error| map_storage_error(format!("config Chat branch is invalid: {error}")))?;
@@ -116,14 +130,10 @@ pub(crate) fn mutate_active_vault_config<R: Runtime, T, E>(
     #[cfg(target_os = "ios")]
     let write_result = write();
     write_result.map_err(map_storage_error)?;
-    // Native Focus reads only the preferences branch, so other patches leave it current.
-    if previous_preferences.as_ref() != root.get("preferences") {
-        crate::pomodoro::invalidate_calendar(app);
-    }
     Ok(result)
 }
 
-fn validate_config_patch_path(path: &[String]) -> Result<(), String> {
+pub(super) fn validate_config_patch_path(path: &[String]) -> Result<(), String> {
     let total_bytes = path.iter().map(String::len).sum::<usize>();
     if path.is_empty()
         || path.len() > MAX_CONFIG_PATCH_DEPTH
@@ -142,7 +152,10 @@ fn validate_config_patch_path(path: &[String]) -> Result<(), String> {
     Ok(())
 }
 
-fn apply_config_patch(root: &mut serde_json::Value, patch: VaultConfigPatch) -> Result<(), String> {
+pub(super) fn apply_config_patch(
+    root: &mut serde_json::Value,
+    patch: VaultConfigPatch,
+) -> Result<(), String> {
     validate_config_patch_path(&patch.path)?;
     let mut current = root
         .as_object_mut()
@@ -170,8 +183,9 @@ fn apply_config_patch(root: &mut serde_json::Value, patch: VaultConfigPatch) -> 
     Ok(())
 }
 
-/// Applies bounded key-level mutations without replacing unrelated config
-/// branches that another feature may have updated since the frontend loaded.
+/// Applies bounded key-level mutations to the stores their registered paths name, without
+/// replacing unrelated values that another feature or device may have updated since the
+/// frontend loaded.
 #[tauri::command]
 pub async fn vault_patch_config(
     app: tauri::AppHandle,
@@ -188,20 +202,7 @@ pub async fn vault_patch_config(
     {
         return Err("vault config patch batch is too large".to_string());
     }
-    tauri::async_runtime::spawn_blocking(move || {
-        mutate_active_vault_config(
-            &app,
-            |root| {
-                for patch in patches {
-                    apply_config_patch(root, patch)?;
-                }
-                Ok(())
-            },
-            |error| error,
-        )
-    })
-    .await
-    .map_err(|error| format!("vault configuration worker failed: {error}"))?
+    super::preferences::apply_patches(&app, patches).await
 }
 
 #[cfg(test)]
@@ -237,21 +238,21 @@ mod tests {
         });
         let mut root = serde_json::json!({
             "chat": chat.clone(),
-            "theme": { "activeId": "light" }
+            "distractions": { "enabled": false }
         });
 
         apply_config_patch(
             &mut root,
             VaultConfigPatch {
-                path: vec!["theme".to_string(), "activeId".to_string()],
+                path: vec!["distractions".to_string(), "enabled".to_string()],
                 remove: false,
-                value: serde_json::json!("dark"),
+                value: serde_json::json!(true),
             },
         )
         .unwrap();
 
         assert_eq!(root["chat"], chat);
-        assert_eq!(root["theme"]["activeId"], "dark");
+        assert_eq!(root["distractions"]["enabled"], true);
     }
 
     #[test]
@@ -296,15 +297,12 @@ mod tests {
         apply_config_patch(
             &mut root,
             VaultConfigPatch {
-                path: vec!["chatSidebar".to_string(), "starredChannelIds".to_string()],
+                path: vec!["distractions".to_string(), "rules".to_string()],
                 remove: false,
-                value: serde_json::json!(["channel"]),
+                value: serde_json::json!([]),
             },
         )
         .unwrap();
-        assert_eq!(
-            root["chatSidebar"]["starredChannelIds"],
-            serde_json::json!(["channel"])
-        );
+        assert_eq!(root["distractions"]["rules"], serde_json::json!([]));
     }
 }

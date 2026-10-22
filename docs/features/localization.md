@@ -4,7 +4,7 @@
 
 ## Language preference
 
-The preference is `system`, `en`, or `es`, stored in active-vault `config.json` as `preferences.language` and edited in Appearance settings. `system` resolves from the operating system or browser language list: exact supported matches first, then the base language (`es-MX` resolves to `es`), then English. Invalid stored values are normalized and written back as `system` so a bad config does not fail every boot.
+The preference is `system`, `en`, or `es`, stored as the portable vault preference `preferences.language` and edited in Appearance settings. `system` resolves from the operating system or browser language list: exact supported matches first, then the base language (`es-MX` resolves to `es`), then English. An invalid stored value reads as `system` so a bad value does not fail every boot. Normalization happens only at read, so linked devices never race to write the same correction.
 
 ## Language selectors
 
@@ -16,7 +16,7 @@ Selectors are designed for someone looking for their language even when they can
 
 ## Before a vault exists
 
-The first-run data-folder screen has a compact searchable language selector. Because no `config.json` exists yet, the choice is applied without persisting and kept as a temporary setup preference. After the user creates or imports a folder, it is copied into `preferences.language` and cleared. Boot checks this temporary value before mounting so neither screen paints in the wrong language during the handoff. Adding the selector or an error message must not shift the main setup content.
+The first-run data-folder screen has a compact searchable language selector. Because no vault exists yet, the choice is applied without persisting and kept as a temporary setup preference. After the user creates or imports a folder, it is copied into `preferences.language` and cleared. Boot checks this temporary value before mounting so neither screen paints in the wrong language during the handoff. Adding the selector or an error message must not shift the main setup content.
 
 ## Runtime behavior
 

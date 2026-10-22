@@ -76,7 +76,7 @@ Source: `crates/ganbaru-sync-contracts/`, `crates/ganbaru-sync/`, `crates/ganbar
 - The owner opens the vault read-write. A linked replica that is not in recovery and has no active transfer opens it guarded: a writable connection whose connection-scoped temporary triggers abort every write to an unconverted table or to a replicated table of a domain replicas cannot write, with the normal read-only error, while replica-writable, derived, local, and engine tables stay writable. Guards skip writes made while the engine applies remote changes. Guards never enter the vault file. Any other replica opens read-only.
 - A guarded open validates the migration set first. A replica whose schema differs falls back to read-only until both devices run the same app version.
 - Ownership status reports `linkedReplica` and the `replicaWritableDomains` taken from the domain manifests, so the UI can explain that Quick notes stay editable while the rest of the vault is read-only on that device.
-- `config.json` and the distraction usage spool keep their owner-only rules.
+- The `distractions` and `chat` branches of `config.json` and the distraction usage spool keep their owner-only rules. Portable preferences in `vault_preferences` are owner-only until the preferences domain replicates; device preferences never travel.
 
 ### Capture and sealing
 
@@ -173,14 +173,14 @@ Every persisted field needs an explicit replication classification before it can
 | Domain | Portable data | Device-local data |
 | --- | --- | --- |
 | Notes, Projects, Calendar, Quick notes | Content, relationships, templates, archive, Trash, retained history, favorites | Recents, current selection, navigation, viewport layout |
-| Preferences | Profile, themes, language, time format, rhythm defaults | Font scale, layout, shortcuts, notification delivery, explicit presentation overrides |
+| Preferences | Profile, themes, quick-toggle theme pair, language, time format, rhythm defaults, favorites, sidebar orders | Active theme, font family and scale, Calendar view mode, title bar, Notes notification delivery, update check time, recents, selection, and collapsed sidebar state |
 | Distraction blocker | Rule definitions and device-attributed history | Permissions, application bindings, enforcement state |
 | Music | Library identities, playlists, assignments, portable preferences | Source bindings, media bytes, current playback, volume, routing |
 | Chat | Organizational content, portable review history, origin-attributed drafts | Execution processes, credentials, provider homes, terminals, native trust, paths, caches |
 | Managed assets | Immutable content and metadata | Transfer staging, local availability, caches |
 | Focus | Committed history, explicit controller ownership history | Live presence, local activity sources, native alarms and effects |
 
-Unsent Chat drafts keep their origin and can be explicitly continued on another device. Shared preferences move from `config.json` into SQLite so a preference change and its outbound record commit atomically. Remove `config.json` and the unused `.yjs` vault directory only after their consumers migrate.
+Unsent Chat drafts keep their origin and can be explicitly continued on another device. Portable preferences live in the vault table `vault_preferences` so a preference change and its outbound record can commit atomically, and device preferences live in a per-vault file in the app config directory. `config.json` remains for distraction rules and Chat settings. Remove `config.json` and the unused `.yjs` vault directory only after their consumers migrate.
 
 ### Transactional operation boundary
 

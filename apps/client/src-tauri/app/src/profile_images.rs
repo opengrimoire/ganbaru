@@ -257,28 +257,26 @@ pub fn profile_image_asset_data_url<R: Runtime>(
 /// Whether a vault configuration document names the profile image file `file_name` as the
 /// saved picture. Names compare without case because Windows and macOS volumes usually
 /// resolve them that way.
-fn is_configured_profile_image(config: &str, file_name: &str) -> Result<bool, String> {
-    let value: serde_json::Value = serde_json::from_str(config)
-        .map_err(|error| format!("parse vault configuration: {error}"))?;
-    let configured = value
+fn is_configured_profile_image(view: &serde_json::Value, file_name: &str) -> bool {
+    let configured = view
         .get(PROFILE_CONFIG_KEY)
         .and_then(|profile| profile.get(PROFILE_IMAGE_PATH_CONFIG_KEY))
         .and_then(serde_json::Value::as_str)
         .and_then(|path| validate_profile_image_relative_path(path).ok());
-    Ok(configured.is_some_and(|configured| configured.eq_ignore_ascii_case(file_name)))
+    configured.is_some_and(|configured| configured.eq_ignore_ascii_case(file_name))
 }
 
-/// Deletes a replaced or discarded profile image. The image the vault configuration still
-/// names is refused, so the webview can delete only pictures the profile no longer uses.
+/// Deletes a replaced or discarded profile image. The image the vault preferences still name is
+/// refused, so the webview can delete only pictures the profile no longer uses.
 #[tauri::command]
-pub fn profile_image_delete_file<R: Runtime>(
+pub async fn profile_image_delete_file<R: Runtime>(
     app: AppHandle<R>,
     relative_path: String,
 ) -> Result<(), String> {
     let _write_permit = vault::active_writable_vault_path(&app)?;
     let file_name = validate_profile_image_relative_path(&relative_path)?;
-    let config = vault::read_active_config_bounded(&app)?;
-    if is_configured_profile_image(&config, file_name)? {
+    let view = vault::preferences::effective_view(&app).await?;
+    if is_configured_profile_image(&view, file_name) {
         return Err("the saved profile image cannot be deleted".to_string());
     }
     let path = profile_image_asset_path(&app, &relative_path)?;
@@ -337,24 +335,20 @@ mod tests {
     }
 
     #[test]
-    fn saved_profile_image_is_recognized_from_the_vault_configuration() {
-        let config = r#"{"profile":{"imagePath":" profile/Saved.png "}}"#;
-        assert!(is_configured_profile_image(config, "Saved.png").unwrap());
-        assert!(is_configured_profile_image(config, "saved.PNG").unwrap());
-        assert!(!is_configured_profile_image(config, "replaced.png").unwrap());
+    fn saved_profile_image_is_recognized_from_the_vault_preferences() {
+        let view = serde_json::json!({ "profile": { "imagePath": " profile/Saved.png " } });
+        assert!(is_configured_profile_image(&view, "Saved.png"));
+        assert!(is_configured_profile_image(&view, "saved.PNG"));
+        assert!(!is_configured_profile_image(&view, "replaced.png"));
 
-        for config in [
-            "{}",
-            r#"{"profile":{}}"#,
-            r#"{"profile":{"imagePath":null}}"#,
-            r#"{"profile":{"imagePath":"../Saved.png"}}"#,
+        for view in [
+            serde_json::json!({}),
+            serde_json::json!({ "profile": {} }),
+            serde_json::json!({ "profile": { "imagePath": null } }),
+            serde_json::json!({ "profile": { "imagePath": "../Saved.png" } }),
         ] {
-            assert!(
-                !is_configured_profile_image(config, "Saved.png").unwrap(),
-                "{config}"
-            );
+            assert!(!is_configured_profile_image(&view, "Saved.png"), "{view}");
         }
-        assert!(is_configured_profile_image("not json", "Saved.png").is_err());
     }
 
     #[test]

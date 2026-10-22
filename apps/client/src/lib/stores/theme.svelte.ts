@@ -110,10 +110,19 @@ function combinedRegistry(): Readonly<Record<ThemeId, Theme>> {
   return { ...BUILTIN_THEME_REGISTRY, ...customThemes };
 }
 
+const DARK_COLOR_SCHEME_QUERY = "(prefers-color-scheme: dark)";
+
+/**
+ * The device's active theme, or, when this device has none saved, the
+ * quick-toggle theme matching the system color scheme. The fallback is not
+ * written, so a device keeps following the shared quick-toggle pair until the
+ * user picks a theme on it.
+ */
 function loadActiveIdFromConfig(): ThemeId {
   const saved = getConfigKey<string | undefined>(ACTIVE_KEY, undefined);
   if (saved && getThemeById(saved, combinedRegistry())) return saved;
-  return DEFAULT_THEME_ID;
+  if (typeof window === "undefined" || typeof window.matchMedia !== "function") return DEFAULT_THEME_ID;
+  return window.matchMedia(DARK_COLOR_SCHEME_QUERY).matches ? quickToggleDarkId : quickToggleLightId;
 }
 
 function validThemeId(id: ThemeId, fallback: ThemeId): ThemeId {
@@ -253,7 +262,6 @@ export async function hydrateUserThemes(): Promise<void> {
     const prev = dismissals[row.theme_id] ?? 0;
     if (row.engine_version > prev) dismissals[row.theme_id] = row.engine_version;
   }
-  activeId = loadActiveIdFromConfig();
   quickToggleLightId = loadQuickToggleIdFromConfig(
     QUICK_TOGGLE_LIGHT_KEY,
     lightTheme.id,
@@ -262,6 +270,7 @@ export async function hydrateUserThemes(): Promise<void> {
     QUICK_TOGGLE_DARK_KEY,
     darkTheme.id,
   );
+  activeId = loadActiveIdFromConfig();
   hydrated = true;
   applyThemeToDom();
   initThemeSync();

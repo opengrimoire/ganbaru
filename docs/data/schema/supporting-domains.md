@@ -18,7 +18,7 @@ Windows sync through canonical writes and invalidation, and replicated changes f
 
 Themes and token values live in SQLite so custom themes can be validated, selected, repaired, imported, and exported as structured data. Built-in themes have stable identities, and a custom theme never mutates a built-in row. Import validates format, token keys, value types, size, and identity before writing. Token rules are owned by [Themes](../../features/themes/README.md).
 
-The active theme ID is portable configuration. Applying it to a webview is runtime projection. A missing or invalid selected theme falls back safely without deleting the user's row, so it can still be repaired or exported.
+The active theme ID is a device preference, and the quick-toggle light and dark pair is a portable preference. A device without a saved active theme uses the quick-toggle theme matching the system color scheme. Applying it to a webview is runtime projection. A missing or invalid selected theme falls back safely without deleting the user's row, so it can still be repaired or exported.
 
 ## Music
 
@@ -58,7 +58,7 @@ Linked-device accounting follows [Sync](../sync.md#distraction-usage-exception).
 
 ## Profile and managed icons
 
-Profile metadata is portable configuration. Profile and project-icon bytes use bounded feature-owned asset paths, and rows store managed relative identity, never an absolute or hardcoded vault path. Replacing an image stages validated bytes, updates the relationship atomically, and removes the old asset only after rechecking references.
+Profile metadata is a set of portable preferences in `vault_preferences`, which stores one canonical JSON value per registered key, or per child of a keyed map such as a sidebar order per project, with bounded key and value sizes. Profile and project-icon bytes use bounded feature-owned asset paths, and rows store managed relative identity, never an absolute or hardcoded vault path. Replacing an image stages validated bytes, updates the relationship atomically, and removes the old asset only after rechecking references.
 
 ## Contacts
 

@@ -24,6 +24,7 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
     let app = builder
         .manage(db::DatabaseState::default())
         .manage(vault::ownership::VaultOwnershipManager::default())
+        .manage(vault::preferences::PreferencesState::default())
         .manage(vault::handoff::pairing::PairingManager::default())
         .manage(vault::handoff::receiver::ReceiverLifecycle::default())
         .manage(vault::handoff::source::SourceLifecycle::default())

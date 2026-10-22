@@ -84,12 +84,13 @@ function applyDocumentLocale(locale: AppLocale, direction: LocaleDirection): voi
   root.dir = direction;
 }
 
+/**
+ * Applies the saved language preference. An unsupported saved value reads as
+ * its normalized preference without being written back, so linked devices
+ * never race to correct the same portable value.
+ */
 export async function initializeLocalizationFromConfig(): Promise<boolean> {
-  const stored = getConfigKey<unknown>(LANGUAGE_CONFIG_KEY, undefined);
-  const parsed = parseLanguagePreference(stored);
-  if (stored !== undefined && stored !== parsed) {
-    setConfigKey(LANGUAGE_CONFIG_KEY, parsed);
-  }
+  const parsed = parseLanguagePreference(getConfigKey<unknown>(LANGUAGE_CONFIG_KEY, undefined));
   return await setLanguagePreference(parsed, { persist: false });
 }
 

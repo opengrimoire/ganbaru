@@ -281,7 +281,7 @@ pub async fn contacts_local_card<R: Runtime>(
     ensure_card_endpoint(&app).await;
     let pool = contacts_pool(&app).await?;
     let identity = identity::ensure_identity(&app, &pool).await?;
-    card::local_card_view(&app, &identity)
+    card::local_card_view(&app, &identity).await
 }
 
 #[tauri::command]
@@ -293,7 +293,7 @@ pub async fn contacts_regenerate_card<R: Runtime>(
     let pool = contacts_pool(&app).await?;
     let identity = identity::ensure_identity(&app, &pool).await?;
     let identity = card::rotate_card(&pool, identity).await?;
-    card::local_card_view(&app, &identity)
+    card::local_card_view(&app, &identity).await
 }
 
 #[tauri::command]

@@ -333,7 +333,7 @@ pub(crate) async fn request_state_for_coordinator<R: Runtime>(
         },
         StatusOutcome::Accepted => {
             identity.key = super::identity::person_key_matching(app, &identity.public_key).await?;
-            match sign_local_card(app, &identity) {
+            match sign_local_card(app, &identity).await {
                 Ok(card) => PeerReply::State {
                     state: ContactRequestOutcome::Accepted,
                     recipient_card: Some(card.text()),
@@ -379,7 +379,7 @@ pub(crate) async fn send_request<R: Runtime>(
         ));
     }
     let key = identity.signing_key()?;
-    let own_card = sign_local_card(app, identity)?;
+    let own_card = sign_local_card(app, identity).await?;
     let request_id = random_token("contact")?;
     let signature = key.sign(&request_signature_payload(
         &recipient.card.nonce,

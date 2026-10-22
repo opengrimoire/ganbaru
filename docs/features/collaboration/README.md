@@ -43,7 +43,7 @@ Each permission has a duration: until revoked, for a fixed period, or once. A on
 
 Blocking a person removes them as a contact, rejects everything they send, and hides them from pickers. A blocked person receives no signal that they were blocked. Unblocking restores nothing automatically; a new contact request is required.
 
-Contacts are the person's own social graph and belong to the portable vault, so they follow the person across their linked devices.
+Contacts are the person's own social graph and belong to the portable vault, so they follow the person across their linked devices. Contacts, pending requests, and card regeneration can be changed on any linked device and reach the others automatically; a block made on any device wins over an accept made at the same time on another.
 
 ## Invitations
 

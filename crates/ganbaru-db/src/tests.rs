@@ -13,6 +13,7 @@ mod projects;
 mod query_plans;
 mod quick_notes;
 mod schema_catalog;
+mod sync;
 
 fn block_on<F: std::future::Future>(future: F) -> F::Output {
     tokio::runtime::Builder::new_current_thread()

@@ -1,7 +1,10 @@
+#[cfg(unix)]
 use super::diff::file_diff;
+#[cfg(unix)]
+use super::diff_files;
 use super::git::{TemporaryIndex, capture_git, repository_fingerprint};
 use super::{
-    CapturedCheckpoint, StoredCheckpoint, current_git_snapshot, delete_exact_ref, diff_files,
+    CapturedCheckpoint, StoredCheckpoint, current_git_snapshot, delete_exact_ref,
     restore_git_snapshot, verify_checkpoint,
 };
 use crate::git::GitFolder;
@@ -10,6 +13,7 @@ use crate::models::{
     ChatCheckpointId, ChatErrorCode, ChatThreadId, ProjectWorkingFolderId, RepositoryKind,
 };
 use crate::workspace::AuthorizedWorkingFolder;
+#[cfg(unix)]
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};

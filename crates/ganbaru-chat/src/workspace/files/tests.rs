@@ -537,6 +537,7 @@ fn bounded_previews_and_saves_refuse_a_symlinked_parent() {
     );
 }
 
+#[cfg(unix)]
 #[test]
 fn descriptor_relative_file_open_does_not_follow_a_replaced_parent_path() {
     let directory = TestDirectory::new();

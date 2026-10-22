@@ -1,6 +1,8 @@
+#[cfg(unix)]
+use super::empty_hooks_directory;
 use super::{
     FolderConfigDigest, GitConfigEntry, GitConfigScope, GitFolderTrust, GitHardening,
-    GitInheritedEnvironment, GitPolicy, GitRun, GitRunError, GitStdout, empty_hooks_directory,
+    GitInheritedEnvironment, GitPolicy, GitRun, GitRunError, GitStdout,
     folder_configuration_blocking, hardening_for, parse_config_listing,
     provider_configuration_entries_blocking, run_blocking,
 };

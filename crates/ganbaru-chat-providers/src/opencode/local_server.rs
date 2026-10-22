@@ -122,7 +122,7 @@ impl OwnedOpenCodeServer {
         result
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     pub fn process_id(&self) -> Option<u32> {
         self.process.process_id()
     }

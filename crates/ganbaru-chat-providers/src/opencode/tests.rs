@@ -752,6 +752,7 @@ fn internal_mcp_not_registered_for_unauthenticated_external_server() {
     assert!(registers_internal_mcp(&local.connection, Some(&generated)));
 }
 
+#[cfg(unix)]
 const UNAUTHORIZED_RESPONSE: &str = "HTTP/1.1 401 Unauthorized\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}";
 
 #[cfg(unix)]

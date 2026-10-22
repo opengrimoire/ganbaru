@@ -23,7 +23,7 @@ use crate::db::DatabaseState;
 use crate::vault::handoff::pairing::PairingManager;
 use ganbaru_db::{DatabaseAccessMode, DatabasePoolRegistry};
 use ganbaru_handoff::protocol::SyncRefusalCode;
-use ganbaru_sync::{Engine, SealReport, SpaceContext, SyncError, WriterState, local};
+use ganbaru_sync::{Engine, SealReport, SpaceContext, SyncError, WriterState, hold, local};
 use ganbaru_sync_contracts::VersionVector;
 use ganbaru_sync_contracts::op::RevokeReason;
 use ganbaru_sync_replica::now_ms;
@@ -50,6 +50,8 @@ const RETRY_DELAYS: [Duration; 4] = [
 const STOP_TIMEOUT: Duration = Duration::from_secs(10);
 /// Bound on apply rounds in one pass; each round is one bounded transaction.
 const MAX_APPLY_ROUNDS: usize = 10_000;
+/// Bound on seal rounds in one pass; each round is one bounded transaction.
+const MAX_SEAL_ROUNDS: usize = 10_000;
 /// Fork recoveries one pass may run before it reports an error.
 const MAX_FORK_RECOVERIES: usize = 3;
 /// Directory under the app config directory that holds writer records and carry bundles.
@@ -267,14 +269,16 @@ impl Signals {
         }
     }
 
-    /// Long polls the hub until it holds operations this replica lacks, a local commit, or a
-    /// request. A wait the hub answers without news is repeated.
-    async fn online(&self, wait: &OnlineWait) -> Wake {
+    /// Long polls the hub until it holds operations this replica lacks, a local commit, a
+    /// request, or `hold` elapses. A wait the hub answers without news is repeated.
+    async fn online(&self, wait: &OnlineWait, hold: Option<Duration>) -> Wake {
+        let hold_expiry = hold.map(|delay| tokio::time::Instant::now() + delay);
         loop {
             let result = tokio::select! {
                 () = self.stop.notified() => return Wake::Stop,
                 () = self.commits.notified() => return Wake::Commit,
                 () = self.now.notified() => return Wake::Pass,
+                () = sleep_until(hold_expiry) => return Wake::Pass,
                 result = super::client::wait(&wait.transport, &wait.ids, &wait.known) => result,
             };
             match result {
@@ -289,23 +293,32 @@ impl Signals {
     }
 }
 
+/// Sleeps until `deadline`, or forever without one.
+async fn sleep_until(deadline: Option<tokio::time::Instant>) {
+    match deadline {
+        Some(deadline) => tokio::time::sleep_until(deadline).await,
+        None => std::future::pending().await,
+    }
+}
+
 async fn run<R: Runtime>(app: AppHandle<R>, signals: Signals) {
     let mut state = ServiceState::default();
     let mut failures = 0usize;
     loop {
         let next = state.pass(&app).await;
+        let hold = state.until_hold_expiry();
         let wake = match next {
             Next::Idle => {
                 failures = 0;
-                signals.idle(FALLBACK_INTERVAL).await
+                signals.idle(capped(FALLBACK_INTERVAL, hold)).await
             }
             Next::Retry => {
                 failures += 1;
-                signals.idle(retry_delay(failures)).await
+                signals.idle(capped(retry_delay(failures), hold)).await
             }
             Next::Online(wait) => {
                 failures = 0;
-                signals.online(&wait).await
+                signals.online(&wait, hold).await
             }
             Next::Continue => {
                 failures = 0;
@@ -329,6 +342,11 @@ async fn run<R: Runtime>(app: AppHandle<R>, signals: Signals) {
             }
         }
     }
+}
+
+/// `delay`, shortened to `limit` when one is given.
+fn capped(delay: Duration, limit: Option<Duration>) -> Duration {
+    limit.map_or(delay, |limit| delay.min(limit))
 }
 
 fn retry_delay(failures: usize) -> Duration {
@@ -355,8 +373,11 @@ struct ServiceState {
     vault_id: Option<String>,
     started: bool,
     writer: Option<ActiveWriter>,
-    /// Captures a seal left in place, which only a new local change can make sealable.
+    /// Captures a seal left in place, which only a new local change or an expired delete hold
+    /// can make sealable.
     stalled_captures: Option<u64>,
+    /// When the earliest delete hold expires, in Unix milliseconds; a pass runs then.
+    hold_expiry: Option<u64>,
     /// The stored vector at the last apply; apply runs again only after the log grows.
     applied_at: Option<VersionVector>,
     /// Which images the hub holds or lacks, so passes do not ask again.
@@ -372,6 +393,14 @@ struct AssetPeer {
 }
 
 impl ServiceState {
+    /// Time left until the earliest delete hold expires. A hold that already expired was
+    /// offered to the pass's seal, so it waits for the usual schedule instead of spinning.
+    fn until_hold_expiry(&self) -> Option<Duration> {
+        let expiry = self.hold_expiry?;
+        let now = now_ms().ok()?;
+        (expiry > now).then(|| Duration::from_millis(expiry - now))
+    }
+
     async fn pass<R: Runtime>(&mut self, app: &AppHandle<R>) -> Next {
         let mut view = SyncStatusView {
             last_exchange_at_ms: self.view.last_exchange_at_ms,
@@ -445,6 +474,7 @@ impl ServiceState {
         session
             .seal_pending(&mut self.writer, &mut self.stalled_captures)
             .await?;
+        self.hold_expiry = session.next_hold_expiry().await?;
         view.state = SyncState::Idle;
         if !session.ensure_writer(&mut self.writer).await? {
             view.state = SyncState::WaitingForIdentity;
@@ -797,6 +827,13 @@ async fn seal_quiesced_with<R: Runtime>(
     };
     let mut writer = None;
     session.start(&mut writer).await?;
+    // Nothing can undo a delete once the vault leaves this device, so held deletes seal now.
+    {
+        let mut conn = acquire(&session.pool).await?;
+        hold::expire_holds(&mut conn)
+            .await
+            .map_err(|error| format!("end sync delete holds: {error}"))?;
+    }
     session.seal_pending(&mut writer, &mut None).await
 }
 
@@ -848,9 +885,9 @@ impl<'a, R: Runtime> Session<'a, R> {
         }))
     }
 
-    /// Start order: clear a stale apply flag, import a carry bundle a failed replacement left,
-    /// check the writer, and apply what the import could not apply before local captures were
-    /// sealed.
+    /// Start order: clear a stale apply flag, seed captures of tables that start to replicate,
+    /// import a carry bundle a failed replacement left, check the writer, and apply what the
+    /// import could not apply before local captures were sealed.
     async fn start(&self, writer: &mut Option<ActiveWriter>) -> Result<(), String> {
         let imported = {
             let mut conn = acquire(&self.pool).await?;
@@ -861,6 +898,10 @@ impl<'a, R: Runtime> Session<'a, R> {
                 .init_space(&mut conn, &self.files.vault_id, now_ms()?)
                 .await
                 .map_err(|error| format!("initialize sync space: {error}"))?;
+            self.engine
+                .seed_captures(&mut conn, now_ms()?)
+                .await
+                .map_err(|error| format!("seed sync captures: {error}"))?;
             carry_forward::import_pending(
                 &self.engine,
                 &mut conn,
@@ -879,15 +920,18 @@ impl<'a, R: Runtime> Session<'a, R> {
         Ok(())
     }
 
-    /// Seals pending captures. A seal that leaves captures in place is not repeated until the
-    /// number of captures changes.
+    /// Seals pending captures in bounded transactions until none is ready. A seal that leaves
+    /// captures in place is not repeated until the number of captures changes or a delete
+    /// hold expires.
     async fn seal_pending(
         &self,
         writer: &mut Option<ActiveWriter>,
         stalled: &mut Option<u64>,
     ) -> Result<(), String> {
         let pending = self.pending_captures().await?;
-        if pending == 0 || *stalled == Some(pending) {
+        let now = now_ms()?;
+        let hold_expired = self.next_hold_expiry().await?.is_some_and(|at| at <= now);
+        if pending == 0 || (*stalled == Some(pending) && !hold_expired) {
             if pending == 0 {
                 *stalled = None;
             }
@@ -896,16 +940,28 @@ impl<'a, R: Runtime> Session<'a, R> {
         if !self.ensure_writer(writer).await? {
             return Ok(());
         }
-        let report = self.seal(writer).await?;
+        let mut invalid = 0;
+        for _ in 0..MAX_SEAL_ROUNDS {
+            let report = self.seal(writer).await?;
+            invalid = report.invalid_rows.len();
+            if !report.more {
+                break;
+            }
+        }
         let remaining = self.pending_captures().await?;
         *stalled = (remaining > 0).then_some(remaining);
-        if !report.invalid_rows.is_empty() {
-            eprintln!(
-                "sync: {} local rows cannot be sealed",
-                report.invalid_rows.len()
-            );
+        if invalid > 0 {
+            eprintln!("sync: {invalid} local rows cannot be sealed");
         }
         Ok(())
+    }
+
+    /// When the earliest delete hold expires, so a pass can seal it then.
+    async fn next_hold_expiry(&self) -> Result<Option<u64>, String> {
+        let mut conn = acquire(&self.pool).await?;
+        hold::next_hold_expiry(&mut conn)
+            .await
+            .map_err(|error| format!("read sync delete holds: {error}"))
     }
 
     async fn pending_captures(&self) -> Result<u64, String> {

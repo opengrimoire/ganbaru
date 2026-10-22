@@ -12,6 +12,7 @@ Themes define Ganbaru's application shell, Calendar surfaces, event palette, and
 | Stable 32-slot event palette | Implemented |
 | Live preview, token isolation, contrast warnings, and responsive editor | Implemented |
 | Font family and scale preferences | Implemented |
+| Replication of user themes between linked devices, with conflict choice | Implemented |
 
 ## Principles
 
@@ -60,13 +61,17 @@ User themes and their seed snapshots are normalized SQLite records. Built-in lig
 
 The quick-toggle light and dark choices are portable preferences that follow the vault. The active theme ID, font family, and font scale are device preferences, so switching to dark mode on one device never repaints another. Theme content never lives in preferences. Platform bootstraps load configuration and hydrate user themes before mounting the app shell.
 
-A user theme keeps a seed snapshot for `Reset all to seed`. Duplicating creates a new independent seed, and import uses the imported content as its seed. Seeds are not exported.
+A user theme keeps a seed snapshot for `Reset all to seed`. The seed is fixed when the theme is created: duplicating creates a new independent seed, import uses the imported content as its seed, and saving, rebaking, or resetting never changes it. Seeds are not exported.
+
+## Linked devices
+
+User themes replicate between linked devices; built-in themes never do. User theme IDs are random UUIDs, so themes created on different devices never collide. Name and icon edits resolve to the latest edit. A theme's content (tokens, event palette, blend canvas, Calendar defaults, and engine version) merges as one unit: when two devices save the same theme concurrently, both versions are kept, the list marks the theme, and its editor shows each version with its device and time so the person picks one, which applies on every device. To keep both, duplicate the theme before picking. A theme deleted on one device while another edited it becomes a recovery entry in the sync settings, and restoring it creates a new theme from the latest edit, which is also its seed. A dismissed engine upgrade stays dismissed on every device. When a linked device deletes the active theme, the device falls back as it does at startup. An open editor keeps its buffer while synced changes arrive and reloads the theme when the session ends. See [Sync](../../data/sync.md).
 
 ## Import and export
 
 Export is deterministic, versioned JSON (`schemaVersion: 1`) with identity, snapshots, sources, isolation, event palette, Calendar defaults, blend canvas, and engine version, without device-local selection preferences.
 
-Import validates the whole object before registering it and never partially applies rows. Missing required values, invalid colors, malformed slots, or an unsupported schema version fail with a list of all problems. Unknown token keys are dropped so a stale token name does not block an otherwise valid theme. An ID that already exists, built-in or user, is rejected. Themes from an older engine paint from their snapshots and are offered a rebake.
+Import validates the whole object before registering it and never partially applies rows. Missing required values, invalid colors, malformed slots, or an unsupported schema version fail with a list of all problems. Unknown token keys are dropped so a stale token name does not block an otherwise valid theme. An imported theme always gets a fresh ID, and a display name that is already taken gets a numeric suffix, so importing the same file twice keeps both copies. Themes from an older engine paint from their snapshots and are offered a rebake.
 
 ## Typography and density
 

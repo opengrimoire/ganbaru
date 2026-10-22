@@ -1,6 +1,6 @@
 # Device linking and synchronization
 
-**Status: Partial.** The vault runs in mixed mode. Quick notes replicate concurrently between linked devices as signed operations through the coordinator desktop, with conflicts and recovery entries; this is implemented in source. Every other domain keeps single-writer whole-vault handoff: secure LAN pairing, one administration desktop, explicit write ownership, read-only refresh, and combined distraction usage accounting. Physical multi-device acceptance is pending for both. Concurrent replication of the remaining domains, Notes text and tree merging, anchored authority with LAN peer exchange, operation encryption, and delivery beyond the LAN are planned.
+**Status: Partial.** The vault runs in mixed mode. Quick notes, portable preferences, and user themes replicate concurrently between linked devices as signed operations through the coordinator desktop, with conflicts and recovery entries; this is implemented in source. Every other domain keeps single-writer whole-vault handoff: secure LAN pairing, one administration desktop, explicit write ownership, read-only refresh, and combined distraction usage accounting. Physical multi-device acceptance is pending for both. Concurrent replication of the remaining domains, Notes text and tree merging, anchored authority with LAN peer exchange, operation encryption, and delivery beyond the LAN are planned.
 
 This contract links one person's devices; multi-person sharing is later work. The phone must provide full offline access to portable Notes, Projects, Calendar, and other synchronized content. Focus execution has its own controller and evidence rules in [Focus authority](../algorithms/pomodoro/focus-authority.md).
 
@@ -66,7 +66,7 @@ Whole-vault handoff itself is deliberately not the concurrent synchronization sy
 
 ## Implemented concurrent replication
 
-Source: `crates/ganbaru-sync-contracts/`, `crates/ganbaru-sync/`, `crates/ganbaru-sync-replica/`, and `apps/client/src-tauri/app/src/sync/`. **Status: Implemented** in source for Quick notes and their tags; physical multi-device acceptance is pending. User-facing behavior is owned by [Quick notes](../features/quick-notes.md), and the network surface and key storage by [Network and privacy](security/network-and-privacy.md).
+Source: `crates/ganbaru-sync-contracts/`, `crates/ganbaru-sync/`, `crates/ganbaru-sync-replica/`, and `apps/client/src-tauri/app/src/sync/`. **Status: Implemented** in source for Quick notes and their tags, portable preferences, and user themes; physical multi-device acceptance is pending. User-facing behavior is owned by [Quick notes](../features/quick-notes.md) and [Themes](../features/themes/README.md), and the network surface and key storage by [Network and privacy](security/network-and-privacy.md).
 
 ### Mixed mode
 
@@ -76,7 +76,7 @@ Source: `crates/ganbaru-sync-contracts/`, `crates/ganbaru-sync/`, `crates/ganbar
 - Replicated tables travel as operations and are writable on every linked device when their domain allows replica writes. Unconverted tables stay owner-only and travel through whole-vault handoff. Local tables and local columns hold device state: they never travel as operations, snapshot copies empty or reset them, and a replacement restores them from the receiver's live database.
 - The owner opens the vault read-write. A linked replica that is not in recovery and has no active transfer opens it guarded: a writable connection whose connection-scoped temporary triggers abort every write to an unconverted table or to a replicated table of a domain replicas cannot write, with the normal read-only error, while replica-writable, derived, local, and engine tables stay writable. Guards skip writes made while the engine applies remote changes. Guards never enter the vault file. Any other replica opens read-only.
 - A guarded open validates the migration set first. A replica whose schema differs falls back to read-only until both devices run the same app version.
-- Ownership status reports `linkedReplica` and the `replicaWritableDomains` taken from the domain manifests, so the UI can explain that Quick notes stay editable while the rest of the vault is read-only on that device.
+- Ownership status reports `linkedReplica` and the `replicaWritableDomains` taken from the domain manifests, so the UI can explain that replicated domains stay editable while the rest of the vault is read-only on that device.
 - The `distractions` and `chat` branches of `config.json` and the distraction usage spool keep their owner-only rules. Portable preferences in `vault_preferences` are owner-only until the preferences domain replicates; device preferences never travel.
 
 ### Capture and sealing
@@ -138,7 +138,7 @@ Whole-vault refresh, ownership transfer, and backup restore never lose operation
 - Surfaced groups (Quick note title, body, and images) keep concurrent versions as a conflict with a resolution. Other groups resolve silently and deterministically. A deletion concurrent with edits keeps those edits as a recovery entry that can be restored as a new row or discarded. The entry is rooted at the topmost deleted row, carries its cascade descendants, and counts them.
 - A row removed under a derived key is never offered for recovery: its replacement stays live in the merged state, so adding the same key again is the recovery path.
 - Resolutions, restores, and discards are ordinary writes, so they replicate and converge like any edit. A restore runs the domain restorer in one transaction and closes the entry in a second, so a failed restore leaves the entry open.
-- Presentation is keyed by replicated table name. Status reports conflicted rows and recovery entries per table, the app registers one restorer for every table that can root an entry and refuses restore and discard for any other, and the frontend registry gives each domain its conflict line, recovery labels, and changed notice, with neutral sync copy for anything a domain does not provide. Quick notes is the first registered domain.
+- Presentation is keyed by replicated table name. Status reports conflicted rows and recovery entries per table, the app registers one restorer for every table that can root an entry and refuses restore and discard for any other, and the frontend registry gives each domain its conflict line, recovery labels, and changed notice, with neutral sync copy for anything a domain does not provide. Quick notes and themes register conflict and recovery copy; preferences use neutral copy.
 - The Quick notes trash purge is a deletion like any other, so an edit made elsewhere to a purged note becomes a recovery entry.
 - Data settings show the sync state, role, last exchange, pending and waiting changes, held operations with reasons, conflict counts, and recovery entries, with Sync now and Pause. Pause is device-local, stops exchanges, and keeps sealing.
 
@@ -186,7 +186,7 @@ Every persisted field needs an explicit replication classification before it can
 | Managed assets | Immutable content and metadata | Transfer staging, local availability, caches |
 | Focus | Committed history, explicit controller ownership history | Live presence, local activity sources, native alarms and effects |
 
-Unsent Chat drafts keep their origin and can be explicitly continued on another device. Portable preferences live in the vault table `vault_preferences` so a preference change and its outbound record can commit atomically; each key replicates on its own, concurrent edits of one key resolve without a visible conflict, and the profile picture travels as a managed asset named by the `profile.image` value. Device preferences live in a per-vault file in the app config directory. `config.json` remains for distraction rules and Chat settings. Remove `config.json` and the unused `.yjs` vault directory only after their consumers migrate.
+Unsent Chat drafts keep their origin and can be explicitly continued on another device. Portable preferences live in the vault table `vault_preferences` so a preference change and its outbound record can commit atomically; each key replicates on its own, concurrent edits of one key resolve without a visible conflict, and the profile picture travels as a managed asset named by the `profile.image` value. User themes replicate one row per theme: the seed is fixed at creation, name and icon resolve to the latest edit, the editor's content merges as one unit and surfaces concurrent saves as a conflict, and a dismissed engine upgrade keeps the highest version. Device preferences live in a per-vault file in the app config directory. `config.json` remains for distraction rules and Chat settings. Remove `config.json` and the unused `.yjs` vault directory only after their consumers migrate.
 
 ### Transactional operation boundary
 
@@ -250,6 +250,7 @@ Android uses WorkManager for deferred sync and a visible, user-enabled connected
 | Local whole-vault handoff | Partial | Physical multi-device acceptance |
 | Concurrent replication of Quick notes | Implemented | Physical multi-device acceptance |
 | Concurrent replication of portable preferences and the profile picture | Implemented | Physical multi-device acceptance |
+| Concurrent replication of user themes | Implemented | Physical multi-device acceptance |
 | Concurrent replication of other domains | Planned | Contacts, Projects, distraction rules and usage counters, Calendar, Focus history, Music library, Chat organizational content, Notes text and tree merging, managed assets, and retiring whole-vault handoff |
 | Concurrent secure local linking | Planned | Anchored authority with admin keys and late changes, LAN peer exchange, operation encryption, key lifecycle, typed bootstrap, and compaction |
 | Delivery beyond the LAN and Android sync | Planned | Encrypted relay or always-on anchor, native background runtime, encrypted backup, measurements, and physical acceptance |

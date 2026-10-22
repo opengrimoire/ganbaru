@@ -931,12 +931,13 @@ fn implied_unique(table: &TableSpec) -> Option<BTreeSet<(String, String)>> {
     })
 }
 
+/// Columns of a unique index, each with its collation.
+type UniqueSet = BTreeSet<(String, String)>;
+
 /// The unique column sets and multi-column CHECKs key-derived columns imply: a column holding
 /// a prefix followed by the row key collides only when the key does, and its CHECK reads the
 /// column and the key.
-fn key_derived_implications(
-    table: &TableSpec,
-) -> (Vec<BTreeSet<(String, String)>>, Vec<BTreeSet<String>>) {
+fn key_derived_implications(table: &TableSpec) -> (Vec<UniqueSet>, Vec<BTreeSet<String>>) {
     table
         .key_derived_columns
         .iter()

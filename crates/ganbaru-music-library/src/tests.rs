@@ -686,12 +686,32 @@ fn deletion_requires_current_impact_and_repairs_assignments_atomically() {
         .await
         .unwrap();
         transaction.commit().await.unwrap();
+        sqlx::query("INSERT INTO project_groups (id, name) VALUES ('group-1', 'Group')")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO projects (id, group_id, name, focus_playlist_id)
+             VALUES ('project-1', 'group-1', 'Project', 'playlist-1')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO calendar_events (id, title, start_time, end_time, playlist_id)
+             VALUES ('event-2', 'Plain', '2026-07-16T09:00:00Z',
+                 '2026-07-16T10:00:00Z', 'playlist-1')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
 
         let impact = super::writes::playlist_delete_impact(&pool, "playlist-1")
             .await
             .unwrap();
         assert_eq!(impact.membership_count, 1);
-        assert_eq!(impact.calendar_assignment_count, 0);
+        assert_eq!(impact.project_focus_assignment_count, 1);
+        assert_eq!(impact.calendar_assignment_count, 1);
         assert_eq!(impact.context_assignment_count, 1);
         let mut stale_impact = impact.clone();
         stale_impact.context_assignment_count = 0;
@@ -719,12 +739,24 @@ fn deletion_requires_current_impact_and_repairs_assignments_atomically() {
         )
         .await
         .unwrap();
-        let event_playlist: Option<String> =
-            sqlx::query_scalar("SELECT playlist_id FROM calendar_events WHERE id = 'event-1'")
+        let event_playlists: Vec<Option<String>> =
+            sqlx::query_scalar("SELECT playlist_id FROM calendar_events ORDER BY id")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            event_playlists,
+            vec![
+                Some("playlist-1".to_string()),
+                Some("playlist-1".to_string())
+            ]
+        );
+        let project_playlist: Option<String> =
+            sqlx::query_scalar("SELECT focus_playlist_id FROM projects WHERE id = 'project-1'")
                 .fetch_one(&pool)
                 .await
                 .unwrap();
-        assert_eq!(event_playlist.as_deref(), Some("playlist-1"));
+        assert_eq!(project_playlist.as_deref(), Some("playlist-1"));
         let context_assignment: Option<String> = sqlx::query_scalar(
             "SELECT playlist_id FROM music_context_assignments
              WHERE owner_kind = 'event-override' AND owner_id = 'event-1' AND phase = 'focus'",

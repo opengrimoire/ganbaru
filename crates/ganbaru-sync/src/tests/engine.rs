@@ -2242,3 +2242,17 @@ fn referenced_assets_cover_live_rows_and_retained_versions() {
         );
     });
 }
+
+#[test]
+fn asset_tables_name_the_rows_that_hold_a_class() {
+    let engine = crate::Engine::vault();
+    assert_eq!(
+        engine.asset_tables(&crate::manifest::vault::quick_notes::IMAGES_CLASS),
+        ["quick_note_images"]
+    );
+    let unregistered = crate::assets::AssetClass {
+        name: "unregistered",
+        max_bytes: 1,
+    };
+    assert!(engine.asset_tables(&unregistered).is_empty());
+}

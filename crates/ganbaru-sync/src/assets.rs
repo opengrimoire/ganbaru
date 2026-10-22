@@ -235,6 +235,35 @@ impl Engine {
         Ok(found.into_values().collect())
     }
 
+    /// Tables whose rows hold the asset references of the domain that declares `class`, so a
+    /// caller can name the tables an arriving file affects. Empty for an unregistered class.
+    pub fn asset_tables(&self, class: &AssetClass) -> Vec<&'static str> {
+        let mut tables = Vec::new();
+        for domain in self.manifest().domains {
+            if !domain.assets.contains(class) {
+                continue;
+            }
+            for table in domain.tables {
+                let Some(adapter) = self.adapter(table) else {
+                    continue;
+                };
+                for group in adapter
+                    .asset_groups(table.id)
+                    .iter()
+                    .filter_map(|id| table.group(*id))
+                {
+                    match group.owned_tables() {
+                        [] => tables.push(table.name),
+                        owned => tables.extend(owned.iter().map(|owned| owned.table)),
+                    }
+                }
+            }
+        }
+        tables.sort_unstable();
+        tables.dedup();
+        tables
+    }
+
     /// References of one group value, checked against the domain's classes.
     fn asset_refs(
         &self,

@@ -10,6 +10,7 @@ use super::wire::{
 };
 use ganbaru_handoff::protocol::{
     ControlMessage, SYNC_ASSET_CHUNK_BYTES, SyncAsset, SyncRefusal, SyncRefusalCode,
+    validate_coordinator_endpoints, validate_discovery_key,
 };
 use ganbaru_quick_notes::images::{QuickNoteImageError, ReferencedImage};
 use ganbaru_sync::{Engine, SpaceContext, StoreOutcome, StoreRefusal, local};
@@ -45,6 +46,17 @@ pub type OpenHubVault = Arc<
         + Send
         + Sync,
 >;
+
+/// How linked devices reach the coordinator: the listener endpoints it reports now and the
+/// vault's discovery key.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HubContact {
+    pub endpoints: Vec<String>,
+    pub discovery_key: String,
+}
+
+/// Reports the coordinator's contact for the vault with the given ID.
+pub type HubContactSource = Arc<dyn Fn(&str) -> Result<HubContact, String> + Send + Sync>;
 
 /// A failed hub request, answered as a protocol error.
 #[derive(Debug, PartialEq, Eq)]
@@ -90,6 +102,8 @@ pub struct SyncHub {
     waits: Arc<Mutex<HashMap<String, u64>>>,
     /// The image each peer is uploading; a peer uploads one at a time.
     uploads: Arc<Mutex<HashMap<String, PendingUpload>>>,
+    /// The contact every sync state carries; without it the hub answers no state.
+    contact: Option<HubContactSource>,
 }
 
 /// The received prefix of an upload.
@@ -115,7 +129,28 @@ impl SyncHub {
             changes,
             waits: Arc::default(),
             uploads: Arc::default(),
+            contact: None,
         }
+    }
+
+    /// Sets where the hub reads the coordinator contact that each sync state reports.
+    pub fn with_contact(mut self, contact: HubContactSource) -> Self {
+        self.contact = Some(contact);
+        self
+    }
+
+    /// The coordinator contact for `vault_id`, checked against the wire bounds so a bad source
+    /// fails this request instead of the frame.
+    fn contact(&self, vault_id: &str) -> Result<HubContact, HubError> {
+        let source = self
+            .contact
+            .as_ref()
+            .ok_or_else(|| HubError::unavailable("the coordinator cannot report its contact"))?;
+        let contact = source(vault_id).map_err(HubError::unavailable)?;
+        validate_coordinator_endpoints(&contact.endpoints)
+            .and_then(|()| validate_discovery_key(&contact.discovery_key))
+            .map_err(|error| HubError::failed(format!("coordinator contact: {error}")))?;
+        Ok(contact)
     }
 
     /// Answers one sync request of a peer whose identity the listener verified.
@@ -187,7 +222,8 @@ impl SyncHub {
                     }
                     None => None,
                 };
-                hub.state(probe).await
+                let contact = self.contact(&vault_id)?;
+                hub.state(probe, contact).await
             }
             ControlMessage::SyncPush { ops, .. } => {
                 let ops = ops_from_wire(&ops).map_err(invalid)?;
@@ -205,7 +241,8 @@ impl SyncHub {
             }
             ControlMessage::SyncWait { known, .. } => {
                 let known = vector_from_wire(&known).map_err(invalid)?;
-                self.wait(&hub, &device_id, &known).await
+                let contact = self.contact(&vault_id)?;
+                self.wait(&hub, &device_id, &known, contact).await
             }
             ControlMessage::SyncHashes {
                 writer,
@@ -230,6 +267,7 @@ impl SyncHub {
         hub: &HubSession,
         device_id: &str,
         known: &VersionVector,
+        contact: HubContact,
     ) -> Result<ControlMessage, HubError> {
         let token = {
             let mut waits = self
@@ -253,11 +291,11 @@ impl SyncHub {
                 .get(device_id)
                 != Some(&token);
             if superseded || !known.dominates(&stored) {
-                break Ok(hub.state_message(&stored, None));
+                break Ok(hub.state_message(&stored, None, contact));
             }
             match tokio::time::timeout_at(deadline, changes.changed()).await {
                 Ok(Ok(())) => {}
-                Ok(Err(_)) | Err(_) => break Ok(hub.state_message(&stored, None)),
+                Ok(Err(_)) | Err(_) => break Ok(hub.state_message(&stored, None, contact)),
             }
         };
         if let Ok(mut waits) = self.waits.lock()
@@ -429,16 +467,27 @@ impl HubSession {
             .map_err(|error| HubError::failed(format!("read sync log: {error}")))
     }
 
-    fn state_message(&self, stored: &VersionVector, probe_hash: Option<String>) -> ControlMessage {
+    fn state_message(
+        &self,
+        stored: &VersionVector,
+        probe_hash: Option<String>,
+        contact: HubContact,
+    ) -> ControlMessage {
         ControlMessage::SyncState {
             manifest_version: self.engine.manifest().version,
             stored: vector_to_wire(stored),
             probe_hash,
+            coordinator_endpoints: contact.endpoints,
+            discovery_key: contact.discovery_key,
         }
     }
 
     /// The hub's stored vector and its hash at the probed operation, when it holds it.
-    async fn state(&self, probe: Option<(WriterId, u64)>) -> Result<ControlMessage, HubError> {
+    async fn state(
+        &self,
+        probe: Option<(WriterId, u64)>,
+        contact: HubContact,
+    ) -> Result<ControlMessage, HubError> {
         let stored = self.stored().await?;
         let probe_hash = match probe {
             Some((writer, seq)) => {
@@ -453,7 +502,7 @@ impl HubSession {
             }
             None => None,
         };
-        Ok(self.state_message(&stored, probe_hash))
+        Ok(self.state_message(&stored, probe_hash, contact))
     }
 
     /// Stores pushed operations up to the first refusal. A genesis of a writer the hub does not

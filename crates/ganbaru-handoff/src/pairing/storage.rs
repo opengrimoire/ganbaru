@@ -4,7 +4,7 @@ use super::{
     MAX_LINKED_PEERS, MAX_REVOKED_PEERS, PAIRING_STATE_SCHEMA_VERSION, PairingManagerInner,
     PairingStateFile, PendingAcknowledgement, StoredIncomingTransfer, StoredOutgoingTransfer,
     certificate_fingerprint, decode_certificate, decode_private_key, initialized_state,
-    random_token,
+    random_token, validate_pinned_endpoint,
 };
 use crate::protocol::{self, BundlePurpose, validate_device_label, validate_identifier};
 use std::fs;
@@ -185,6 +185,20 @@ pub(super) fn validate_state(
         if let Some(label) = coordinator.device_label.as_deref() {
             validate_device_label("coordinator device label", label)?;
         }
+        if let Some(endpoint) = coordinator.last_endpoint.as_deref() {
+            validate_pinned_endpoint("last coordinator endpoint", endpoint)?;
+        }
+        protocol::validate_coordinator_endpoints(&coordinator.reported_endpoints)?;
+        if let Some(key) = coordinator.discovery_key.as_deref() {
+            protocol::validate_discovery_key(key)?;
+        }
+    }
+    if state.discovery_keys.len() > MAX_LINKED_PEERS {
+        return Err("too many discovery keys are stored".to_string());
+    }
+    for (vault_id, key) in &state.discovery_keys {
+        validate_identifier("discovery key vault id", vault_id)?;
+        protocol::validate_discovery_key(key)?;
     }
     if let Some(pending) = state.pending_acknowledgement.as_ref() {
         validate_pending_acknowledgement(pending, expected_device_id)?;

@@ -5,6 +5,7 @@
 
 use super::is_base64url;
 use serde::{Deserialize, Serialize};
+use std::net::SocketAddr;
 
 /// Raw operation bytes in one push or pull page. Its base64url form plus JSON framing stays
 /// below the control frame limit, and a single operation of the largest size always fits.
@@ -22,6 +23,10 @@ const MAX_OPERATION_TEXT_BYTES: usize =
 const WRITER_TEXT_LENGTH: usize = 32;
 /// Hex text of an operation hash.
 const HASH_TEXT_LENGTH: usize = 64;
+/// Listener endpoints a coordinator reports in one sync state, and a linked device keeps.
+pub const MAX_COORDINATOR_ENDPOINTS: usize = 8;
+/// Bytes of a vault discovery key.
+pub const DISCOVERY_KEY_BYTES: usize = 32;
 
 /// One version vector entry: the highest sequence of a writer.
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
@@ -127,6 +132,39 @@ pub(super) fn validate_hash_range(from_seq: u64, limit: u32) -> Result<(), Strin
     validate_seq(from_seq)?;
     if limit == 0 || limit > MAX_SYNC_HASHES {
         return Err("sync hash range is invalid".to_string());
+    }
+    Ok(())
+}
+
+/// Checks the endpoints a coordinator reports: a bounded list of socket addresses that each
+/// may be dialed on a LAN and may name a device to other hosts.
+pub fn validate_coordinator_endpoints(endpoints: &[String]) -> Result<(), String> {
+    if endpoints.len() > MAX_COORDINATOR_ENDPOINTS {
+        return Err("coordinator endpoint list is too large".to_string());
+    }
+    endpoints
+        .iter()
+        .try_for_each(|endpoint| validate_coordinator_endpoint(endpoint).map(|_| ()))
+}
+
+/// Parses one reported coordinator endpoint and applies the dial and reporting policy.
+pub fn validate_coordinator_endpoint(endpoint: &str) -> Result<SocketAddr, String> {
+    let address = endpoint
+        .parse::<SocketAddr>()
+        .map_err(|_| "coordinator endpoint is invalid".to_string())?;
+    crate::dial::validate_dial_endpoint(address)
+        .and_then(|_| crate::dial::reportable_address(address.ip()))
+        .map_err(|error| format!("coordinator endpoint is refused: {error}"))?;
+    Ok(address)
+}
+
+/// Checks that a discovery key is the unpadded base64url form of exactly
+/// [`DISCOVERY_KEY_BYTES`] bytes.
+pub fn validate_discovery_key(key: &str) -> Result<(), String> {
+    let decoded = base64::Engine::decode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, key)
+        .map_err(|_| "discovery key is invalid".to_string())?;
+    if decoded.len() != DISCOVERY_KEY_BYTES {
+        return Err("discovery key is invalid".to_string());
     }
     Ok(())
 }

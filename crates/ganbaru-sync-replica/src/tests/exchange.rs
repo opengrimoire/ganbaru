@@ -8,7 +8,7 @@ use crate::assets::{
 use crate::client::{
     ClientSession, Exchange, Exchanged, MAX_EXCHANGE_BYTES, PeerIds, SyncTransport, wait,
 };
-use crate::hub::{HubVault, OpenHubVault, SyncHub};
+use crate::hub::{HubContact, HubContactSource, HubVault, OpenHubVault, SyncHub};
 use crate::recovery::{RecoveryAction, RecoveryChoice};
 use crate::wire::{asset_to_wire, bytes_to_wire};
 use crate::writer::{ActiveWriter, SuccessorPlan, create_writer};
@@ -263,11 +263,11 @@ fn phone_ids() -> PeerIds {
     }
 }
 
-/// A hub serving the replica's vault, with the change signal its service would bump.
-fn hub(replica: &Replica) -> (DirectTransport, watch::Sender<u64>) {
+/// Opens the replica's vault as the vault a hub serves.
+fn open_hub(replica: &Replica) -> OpenHubVault {
     let pool = replica.pool.clone();
     let images = Arc::clone(&replica.images);
-    let open: OpenHubVault = Arc::new(move || {
+    Arc::new(move || {
         let pool = pool.clone();
         let images = Arc::clone(&images);
         Box::pin(async move {
@@ -278,12 +278,36 @@ fn hub(replica: &Replica) -> (DirectTransport, watch::Sender<u64>) {
                 images,
             }))
         })
-    });
+    })
+}
+
+/// A hub serving the replica's vault, with the change signal its service would bump.
+fn hub(replica: &Replica) -> (DirectTransport, watch::Sender<u64>) {
     let changes = watch::Sender::new(0);
-    (
-        DirectTransport(SyncHub::new(open, changes.clone())),
-        changes,
-    )
+    let hub = SyncHub::new(open_hub(replica), changes.clone())
+        .with_contact(contact_source(test_contact()));
+    (DirectTransport(hub), changes)
+}
+
+/// The contact a test hub reports.
+fn test_contact() -> HubContact {
+    HubContact {
+        endpoints: vec![
+            "192.168.1.20:43821".to_string(),
+            "[fd00::20]:43821".to_string(),
+        ],
+        discovery_key: bytes_to_wire(&[7; ganbaru_handoff::protocol::DISCOVERY_KEY_BYTES]),
+    }
+}
+
+fn contact_source(contact: HubContact) -> HubContactSource {
+    Arc::new(move |vault_id| {
+        if vault_id == VAULT_ID {
+            Ok(contact.clone())
+        } else {
+            Err("no linked device uses this vault".to_string())
+        }
+    })
 }
 
 fn done(exchange: Exchange) -> Exchanged {
@@ -416,6 +440,62 @@ fn wait_returns_once_the_hub_stores_new_operations() {
         assert_eq!(answer, hub_replica.stored().await);
         hub_replica.close().await;
         phone.close().await;
+    });
+}
+
+#[test]
+fn sync_states_carry_the_coordinator_contact_from_its_source() {
+    block_on(async {
+        let mut hub_replica = Replica::new("hub-contact", HUB_DEVICE).await;
+        hub_replica.seal_note("note-hub").await;
+        let (transport, _changes) = hub(&hub_replica);
+        let hello = ControlMessage::SyncHello {
+            protocol_version: PROTOCOL_VERSION,
+            vault_id: VAULT_ID.to_string(),
+            device_id: PHONE_DEVICE.to_string(),
+            manifest_version: Engine::vault().manifest().version,
+            stored: Vec::new(),
+            probe: None,
+        };
+        let wait = ControlMessage::SyncWait {
+            protocol_version: PROTOCOL_VERSION,
+            vault_id: VAULT_ID.to_string(),
+            device_id: PHONE_DEVICE.to_string(),
+            known: Vec::new(),
+        };
+        let expected = test_contact();
+        for request in [hello.clone(), wait] {
+            match transport.request(request).await.expect("sync state") {
+                ControlMessage::SyncState {
+                    coordinator_endpoints,
+                    discovery_key,
+                    ..
+                } => {
+                    assert_eq!(coordinator_endpoints, expected.endpoints);
+                    assert_eq!(discovery_key, expected.discovery_key);
+                }
+                other => panic!("expected a sync state, got {other:?}"),
+            }
+        }
+
+        let silent = SyncHub::new(open_hub(&hub_replica), watch::Sender::new(0));
+        assert_eq!(
+            error_code(silent.respond(hello.clone()).await),
+            "sync_unavailable",
+            "a hub without a contact source answers no state"
+        );
+        let public = SyncHub::new(open_hub(&hub_replica), watch::Sender::new(0)).with_contact(
+            contact_source(HubContact {
+                endpoints: vec!["203.0.113.5:43821".to_string()],
+                ..test_contact()
+            }),
+        );
+        assert_eq!(
+            error_code(public.respond(hello).await),
+            "sync_failed",
+            "a contact outside the wire bounds fails the request, not the frame"
+        );
+        hub_replica.close().await;
     });
 }
 

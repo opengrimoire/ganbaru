@@ -123,7 +123,9 @@ impl CoordinatorLifecycle {
         let services = transport::CoordinatorServices {
             coordinator: Some(requests.clone()),
             contacts: Some(contacts),
-            hub: Some(crate::sync::sync_hub(&app)),
+            hub: Some(
+                crate::sync::sync_hub(&app).with_contact(hub_contact_source(manager.clone(), port)),
+            ),
             approvals: app
                 .state::<enrollment_approval::EnrollmentApprovals>()
                 .inner()
@@ -410,6 +412,21 @@ fn lan_admission<R: Runtime>(
     Ok(transport::LanAdmission::linux_firewall(config_dir, port))
 }
 
+/// What the sync hub of a coordinator listening on `port` reports to linked devices: its current
+/// listener endpoints, refreshed at most every few seconds, and the vault's discovery key.
+#[cfg(desktop)]
+fn hub_contact_source(manager: PairingManager, port: u16) -> crate::sync::hub::HubContactSource {
+    let endpoints = std::sync::Arc::new(local_addresses::ReportedEndpointCache::default());
+    std::sync::Arc::new(move |vault_id: &str| {
+        Ok(crate::sync::hub::HubContact {
+            endpoints: endpoints.get_or_refresh(std::time::Instant::now(), || {
+                local_addresses::reported_endpoints(port)
+            }),
+            discovery_key: manager.discovery_key(vault_id)?,
+        })
+    })
+}
+
 /// Admission for a coordinator listening on `port`. Only Linux keeps per-network firewall rules,
 /// so other desktops serve every LAN peer.
 #[cfg(all(desktop, not(target_os = "linux")))]
@@ -639,7 +656,7 @@ pub(crate) fn handoff_pairing_status<R: Runtime>(
         }),
         coordinator_endpoint: coordinator
             .as_ref()
-            .map(|coordinator| coordinator.endpoint.clone()),
+            .map(|coordinator| coordinator.current_endpoint().to_string()),
         vault_id,
         can_write: ownership.as_ref().map(|status| status.can_write),
         recovery_required: ownership
@@ -800,6 +817,9 @@ mod tests {
             vault_id: "vault-coordinated".to_string(),
             generation: 3,
             certificate_fingerprint: "fingerprint".to_string(),
+            last_endpoint: None,
+            reported_endpoints: Vec::new(),
+            discovery_key: None,
         };
         assert_eq!(
             status_vault_id(Some(&coordinator), || Some("vault-local".to_string())).as_deref(),

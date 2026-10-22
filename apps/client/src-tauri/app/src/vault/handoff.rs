@@ -415,13 +415,10 @@ fn lan_admission<R: Runtime>(
 /// What the sync hub of a coordinator listening on `port` reports to linked devices: its current
 /// listener endpoints, refreshed at most every few seconds, and the vault's discovery key.
 #[cfg(desktop)]
-fn hub_contact_source(
-    manager: PairingManager,
-    port: u16,
-) -> ganbaru_sync_replica::hub::HubContactSource {
+fn hub_contact_source(manager: PairingManager, port: u16) -> crate::sync::hub::HubContactSource {
     let endpoints = std::sync::Arc::new(local_addresses::ReportedEndpointCache::default());
     std::sync::Arc::new(move |vault_id: &str| {
-        Ok(ganbaru_sync_replica::hub::HubContact {
+        Ok(crate::sync::hub::HubContact {
             endpoints: endpoints.get_or_refresh(std::time::Instant::now(), || {
                 local_addresses::reported_endpoints(port)
             }),

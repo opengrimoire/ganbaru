@@ -299,7 +299,6 @@ fn start<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
 
 /// What a headless pass did.
 #[cfg(any(mobile, test))]
-#[cfg_attr(mobile, allow(dead_code))]
 pub(crate) struct HeadlessPass {
     /// The status after the pass.
     pub(crate) status: SyncStatusView,
@@ -313,7 +312,6 @@ pub(crate) struct HeadlessPass {
 /// exchanges with the hub, applies, and moves managed assets, then returns without waiting for
 /// the hub. When the app service of this process is running, it runs the pass instead.
 #[cfg(mobile)]
-#[allow(dead_code)]
 pub(crate) async fn headless_pass(config_dir: PathBuf) -> Result<HeadlessPass, String> {
     let open = async move { blocking(move || HeadlessHost::open(&config_dir)).await };
     headless_pass_with(open, &LIVE_RUNTIME, &PASS_GATE, DELEGATED_PASS_TIMEOUT).await

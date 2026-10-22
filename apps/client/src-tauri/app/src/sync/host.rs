@@ -200,6 +200,8 @@ impl<R: Runtime> SyncHost for AppHandle<R> {
 
     fn emit_status(&self, view: &SyncStatusView) {
         emit_status(self, view);
+        #[cfg(target_os = "android")]
+        super::headless::configure_background(self, view);
     }
 
     fn emit_applied(&self, tables: Vec<String>) {

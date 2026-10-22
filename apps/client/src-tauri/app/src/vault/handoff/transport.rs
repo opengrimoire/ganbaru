@@ -885,7 +885,13 @@ async fn remembered_discovered_endpoints(coordinator: &CoordinatorPin) -> Vec<So
     super::discovery::remembered_endpoints(coordinator).await
 }
 
-#[cfg(not(desktop))]
+/// Endpoints of `coordinator` among the records the running background sync pass was given.
+#[cfg(target_os = "android")]
+async fn remembered_discovered_endpoints(coordinator: &CoordinatorPin) -> Vec<SocketAddr> {
+    crate::sync::headless::provided_endpoints(coordinator)
+}
+
+#[cfg(all(not(desktop), not(target_os = "android")))]
 async fn remembered_discovered_endpoints(_coordinator: &CoordinatorPin) -> Vec<SocketAddr> {
     Vec::new()
 }

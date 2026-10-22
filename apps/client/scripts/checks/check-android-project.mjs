@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { workManagerForegroundServiceFailures } from "../bundle-contracts/android-work-manager.mjs";
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const clientDir = path.resolve(scriptDir, "..", "..");
@@ -86,6 +87,13 @@ const [
   mobileDistractionsPlugin,
   webViewPermissionPolicy,
   wrapperJar,
+  mobileSyncBuild,
+  mobileSyncManifest,
+  mobileSyncPluginRoot,
+  mobileSyncPlugin,
+  mobileSyncWorker,
+  mobileSyncNative,
+  clientCargo,
 ] =
   await Promise.all([
     readAndroidFile("build.gradle.kts"),
@@ -132,6 +140,19 @@ const [
     ),
     readAndroidFile("app/src/main/java/org/opengrimoire/ganbaru/WebViewPermissionPolicy.kt"),
     readAndroidBytes("gradle/wrapper/gradle-wrapper.jar"),
+    readClientFile("../../crates/ganbaru-mobile-sync/android/build.gradle.kts"),
+    readClientFile("../../crates/ganbaru-mobile-sync/android/src/main/AndroidManifest.xml"),
+    readClientFile("../../crates/ganbaru-mobile-sync/src/lib.rs"),
+    readClientFile(
+      "../../crates/ganbaru-mobile-sync/android/src/main/java/org/opengrimoire/ganbaru/mobile/sync/MobileSyncPlugin.kt",
+    ),
+    readClientFile(
+      "../../crates/ganbaru-mobile-sync/android/src/main/java/org/opengrimoire/ganbaru/mobile/sync/SyncWorker.kt",
+    ),
+    readClientFile(
+      "../../crates/ganbaru-mobile-sync/android/src/main/java/org/opengrimoire/ganbaru/mobile/sync/SyncNative.kt",
+    ),
+    readClientFile("src-tauri/Cargo.toml"),
   ]);
 
 const failures = [];
@@ -313,6 +334,7 @@ for (const [source, label] of [
   [mobileDocumentsBuild, "mobile documents Kotlin compiler"],
   [mobileMediaBuild, "mobile media Kotlin compiler"],
   [mobileNotificationsBuild, "mobile notifications Kotlin compiler"],
+  [mobileSyncBuild, "mobile sync Kotlin compiler"],
 ]) {
   requireText(source, "import org.jetbrains.kotlin.gradle.dsl.JvmTarget", label, failures);
   requireText(source, "jvmTarget = JvmTarget.JVM_17", label, failures);
@@ -365,6 +387,46 @@ rejectText(manifest, "LEANBACK_LAUNCHER", "manifest", failures);
 rejectText(manifest, "android.software.leanback", "manifest", failures);
 if (countText(manifest, "<uses-permission ") !== 2) {
   failures.push("manifest must declare exactly the INTERNET and CAMERA permissions");
+}
+failures.push(
+  ...(await workManagerForegroundServiceFailures(manifest, path.join(androidDir, "app", "build"))),
+);
+
+requireText(
+  mobileSyncManifest,
+  '<uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />',
+  "mobile sync manifest",
+  failures,
+);
+if (countText(mobileSyncManifest, "<uses-permission ") !== 1) {
+  failures.push("mobile sync manifest must declare only the ACCESS_NETWORK_STATE permission");
+}
+for (const forbidden of ["<service", "FOREGROUND_SERVICE", 'android:exported="true"']) {
+  rejectText(mobileSyncManifest, forbidden, "mobile sync manifest", failures);
+}
+requireText(mobileSyncBuild, 'implementation("androidx.work:work-runtime:2.12.0")', "mobile sync build", failures);
+for (const forbidden of ["setForeground", "ForegroundInfo", "getForegroundInfo"]) {
+  rejectText(mobileSyncPlugin, forbidden, "mobile sync plugin", failures);
+  rejectText(mobileSyncWorker, forbidden, "mobile sync worker", failures);
+}
+requireText(mobileSyncPluginRoot, 'const PLUGIN_NAME: &str = "ganbaru-mobile-sync";', "mobile sync plugin identifier", failures);
+const nativeLibrary = /^\[lib\]\s*\nname\s*=\s*"([^"]+)"/mu.exec(clientCargo)?.[1];
+if (nativeLibrary === undefined) {
+  failures.push("client Cargo manifest must name its library");
+} else {
+  requireText(
+    mobileSyncNative,
+    `const val NATIVE_LIBRARY = "${nativeLibrary}"`,
+    "mobile sync native library name",
+    failures,
+  );
+}
+// Background sync scheduling takes the app config directory, so only the Rust sync service may reach it.
+for (const permission of androidCapabilityConfig.permissions) {
+  const identifier = typeof permission === "string" ? permission : permission.identifier;
+  if (identifier.startsWith("ganbaru-mobile-sync:")) {
+    failures.push(`Android capability must keep background sync commands native-only: ${identifier}`);
+  }
 }
 
 const launcherIconSha256 = createHash("sha256").update(launcherIcon).digest("hex");

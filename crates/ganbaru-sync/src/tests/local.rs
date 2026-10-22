@@ -5,10 +5,11 @@ use super::replica::{COORDINATOR_INDEX, Replica, VAULT_ID, connection_from, devi
 use super::{block_on, migrated_pool};
 use crate::local::{
     self, LocalWriterHead, decode_bundle, encode_bundle, has_pending_captures,
-    prepare_snapshot_copy, replacement_vector, space_context,
+    prepare_snapshot_copy, replacement_vector, restore_local_state, space_context,
 };
 use crate::log::WriterState;
 use ganbaru_sync_contracts::VersionVector;
+use sqlx::{Connection, SqliteConnection};
 
 async fn add_note(replica: &mut Replica, id: &str, title: &str) {
     replica
@@ -317,4 +318,227 @@ fn bundles_refuse_truncated_or_foreign_input() {
             .is_empty()
     );
     let _ = local::MAX_BUNDLE_BYTES;
+}
+
+/// A file path under the system temporary directory with a space, `%`, and `#` in its name, so
+/// a restore proves the attached URI keeps them part of the file name.
+fn temporary_database(name: &str) -> std::path::PathBuf {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    std::env::temp_dir().join(format!(
+        "ganbaru live %23 #{name} {}-{nanos}.sqlite",
+        std::process::id()
+    ))
+}
+
+#[test]
+fn restore_copies_device_state_onto_carried_rows_and_drops_orphans() {
+    block_on(async {
+        let mut hub = Replica::new(0, 7).await;
+        let mut device = Replica::new(1, 7).await;
+        add_note(&mut hub, "note-shared", "Shared").await;
+        hub.exec(
+            "INSERT INTO fixture_items (id, created_at, label, label_edits)
+                 VALUES ('item-gone', '2027-01-01T00:00:00.000Z', 'Gone', 0)",
+        )
+        .await;
+        hub.seal().await.unwrap();
+        device.pull(&mut hub).await;
+
+        // Device state: a mark on an item only the carried operations create, a mark on an
+        // item the hub deletes, label edits counted twice, and a raised note revision.
+        device
+            .exec(
+                "INSERT INTO fixture_items (id, created_at, label, label_edits)
+                     VALUES ('item-carried', '2027-01-01T00:00:00.000Z', 'One', 0);
+                 UPDATE fixture_items SET label = 'Two' WHERE id = 'item-carried';
+                 UPDATE fixture_items SET label = 'Three' WHERE id = 'item-carried';",
+            )
+            .await;
+        device.seal().await.unwrap();
+        device
+            .exec(
+                "UPDATE fixture_item_marks SET mark = 5 WHERE item_id = 'item-carried';
+                 INSERT INTO fixture_item_marks (item_id, mark) VALUES ('item-gone', 3);
+                 UPDATE quick_notes SET revision = 7 WHERE id = 'note-shared';",
+            )
+            .await;
+        assert!(!has_pending_captures(&mut device.conn).await.unwrap());
+        hub.exec("DELETE FROM fixture_items WHERE id = 'item-gone'")
+            .await;
+        hub.exec("UPDATE quick_notes SET title = 'Edited' WHERE id = 'note-shared'")
+            .await;
+        hub.seal().await.unwrap();
+
+        let mut staged = connection_from(&hub.snapshot().await).await;
+        let manifest = device.engine.manifest();
+        prepare_snapshot_copy(&mut staged, manifest).await.unwrap();
+        let vector = replacement_vector(&mut staged, device.ctx.space)
+            .await
+            .unwrap();
+        let ops = device
+            .engine
+            .carry_forward_ops(&mut device.conn, &device.ctx, &vector)
+            .await
+            .unwrap();
+        let report = device
+            .engine
+            .import_carried(&mut staged, &device.ctx, VAULT_ID, &ops, device.now_ms)
+            .await
+            .unwrap();
+        assert_eq!(report.refused, 0);
+
+        let live = temporary_database("restore");
+        std::fs::write(&live, device.snapshot().await).unwrap();
+        let first = restore_local_state(&mut staged, manifest, &live)
+            .await
+            .unwrap();
+        assert_eq!(first.local_rows, 2);
+        assert_eq!(first.repaired, 1);
+        // A retry after a failure later in the replacement restores the same rows again.
+        let second = restore_local_state(&mut staged, manifest, &live)
+            .await
+            .unwrap();
+        std::fs::remove_file(&live).unwrap();
+        assert_eq!(second.local_rows, 2);
+
+        let marks: Vec<(String, i64)> =
+            sqlx::query_as("SELECT item_id, mark FROM fixture_item_marks ORDER BY item_id")
+                .fetch_all(&mut staged)
+                .await
+                .unwrap();
+        assert_eq!(marks, [("item-carried".to_owned(), 5)]);
+        let item: (String, i64) = sqlx::query_as(
+            "SELECT label, label_edits FROM fixture_items WHERE id = 'item-carried'",
+        )
+        .fetch_one(&mut staged)
+        .await
+        .unwrap();
+        assert_eq!(item, ("Three".to_owned(), 2));
+        // The revision is one past the larger value after each restore.
+        let note: (String, i64) =
+            sqlx::query_as("SELECT title, revision FROM quick_notes WHERE id = 'note-shared'")
+                .fetch_one(&mut staged)
+                .await
+                .unwrap();
+        assert_eq!(note, ("Edited".to_owned(), 9));
+        assert!(!has_pending_captures(&mut staged).await.unwrap());
+        let violations: i64 = sqlx::query_scalar("SELECT count(*) FROM pragma_foreign_key_check")
+            .fetch_one(&mut staged)
+            .await
+            .unwrap();
+        assert_eq!(violations, 0);
+        let schemas: Vec<String> = sqlx::query_scalar("SELECT name FROM pragma_database_list")
+            .fetch_all(&mut staged)
+            .await
+            .unwrap();
+        assert_eq!(schemas, ["main"]);
+        let applying: i64 =
+            sqlx::query_scalar("SELECT applying FROM sync_apply_state WHERE singleton = 1")
+                .fetch_one(&mut staged)
+                .await
+                .unwrap();
+        assert_eq!(applying, 0);
+    });
+}
+
+#[test]
+fn restore_detaches_and_changes_nothing_when_the_live_database_is_missing() {
+    block_on(async {
+        let mut replica = Replica::new(0, 8).await;
+        let missing = temporary_database("missing");
+        let manifest = replica.engine.manifest();
+        assert!(
+            restore_local_state(&mut replica.conn, manifest, &missing)
+                .await
+                .is_err()
+        );
+        assert!(!missing.exists());
+        assert_eq!(
+            replica
+                .count("SELECT count(*) FROM pragma_database_list")
+                .await,
+            1
+        );
+        replica.check_invariants().await;
+    });
+}
+
+#[test]
+fn repair_follows_each_declared_delete_action() {
+    block_on(async {
+        let mut conn = SqliteConnection::connect("sqlite::memory:").await.unwrap();
+        sqlx::raw_sql(
+            "PRAGMA foreign_keys = OFF;
+             CREATE TABLE parents (id TEXT PRIMARY KEY);
+             CREATE TABLE cascaded (
+                 id TEXT PRIMARY KEY,
+                 parent_id TEXT REFERENCES parents ON DELETE CASCADE
+             );
+             CREATE TABLE nested (
+                 id TEXT PRIMARY KEY,
+                 cascaded_id TEXT NOT NULL REFERENCES cascaded(id) ON DELETE CASCADE
+             ) WITHOUT ROWID;
+             CREATE TABLE nulled (
+                 id TEXT PRIMARY KEY,
+                 parent_id TEXT REFERENCES parents(id) ON DELETE SET NULL
+             ) WITHOUT ROWID;
+             INSERT INTO parents VALUES ('kept');
+             INSERT INTO cascaded VALUES ('a', 'kept'), ('b', 'gone'), ('c', NULL);
+             INSERT INTO nested VALUES ('a1', 'a'), ('b1', 'b'), ('x1', 'missing');
+             INSERT INTO nulled VALUES ('n1', 'kept'), ('n2', 'gone');
+             PRAGMA foreign_keys = ON;",
+        )
+        .execute(&mut conn)
+        .await
+        .unwrap();
+
+        // `b` and `x1` are dangling and `n2` is nulled; `b1` goes with `b` by the cascade.
+        assert_eq!(local::repair_foreign_keys(&mut conn).await.unwrap(), 3);
+        let cascaded: Vec<String> = sqlx::query_scalar("SELECT id FROM cascaded ORDER BY id")
+            .fetch_all(&mut conn)
+            .await
+            .unwrap();
+        assert_eq!(cascaded, ["a", "c"]);
+        let nested: Vec<String> = sqlx::query_scalar("SELECT id FROM nested ORDER BY id")
+            .fetch_all(&mut conn)
+            .await
+            .unwrap();
+        assert_eq!(nested, ["a1"]);
+        let nulled: Vec<(String, Option<String>)> =
+            sqlx::query_as("SELECT id, parent_id FROM nulled ORDER BY id")
+                .fetch_all(&mut conn)
+                .await
+                .unwrap();
+        assert_eq!(
+            nulled,
+            [
+                ("n1".to_owned(), Some("kept".to_owned())),
+                ("n2".to_owned(), None)
+            ]
+        );
+
+        sqlx::raw_sql(
+            "PRAGMA foreign_keys = OFF;
+             CREATE TABLE restricted (
+                 id TEXT PRIMARY KEY,
+                 parent_id TEXT REFERENCES parents(id) ON DELETE RESTRICT
+             );
+             INSERT INTO restricted VALUES ('r1', 'gone');
+             PRAGMA foreign_keys = ON;",
+        )
+        .execute(&mut conn)
+        .await
+        .unwrap();
+        let refused = local::repair_foreign_keys(&mut conn).await.unwrap_err();
+        assert!(refused.to_string().contains("RESTRICT"), "{refused}");
+    });
+}
+
+#[test]
+fn read_only_uris_keep_reserved_characters_in_the_file_name() {
+    let uri = local::read_only_uri(std::path::Path::new("/data/a b%c?d#e/\u{fc}.sqlite")).unwrap();
+    assert_eq!(uri, "file:/data/a%20b%25c%3Fd%23e/%C3%BC.sqlite?mode=ro");
 }

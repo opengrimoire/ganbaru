@@ -988,9 +988,8 @@ async fn prepare_snapshot_copy(snapshot: &Path) -> Result<(), String> {
     result.and(closed)
 }
 
-/// Exports local sync operations the staged replacement lacks, so the next service start
-/// imports them into the replacement, and copies the Quick note images only this device holds.
-/// Only a replacement of the same vault carries anything.
+/// Carries this device's sync operations and device state into the staged replacement of the
+/// same vault. A replacement by another vault carries nothing.
 async fn carry_forward_local_changes<R: Runtime>(
     app: &tauri::AppHandle<R>,
     staging: &Path,
@@ -1001,22 +1000,95 @@ async fn carry_forward_local_changes<R: Runtime>(
         return Ok(());
     }
     let files = crate::sync::sync_files(app, expected_vault_id)?;
-    crate::sync::export_for_replacement(
-        app,
-        &database_path(target),
-        &database_path(staging),
+    let coordinator = crate::sync::coordinator_device_id(app, expected_vault_id)?;
+    carry_into_replacement(
+        &ganbaru_sync::Engine::vault(),
+        staging,
+        target,
         &files,
+        &coordinator,
+        crate::sync::now_ms()?,
+    )
+    .await
+}
+
+/// Runs inside snapshot quiescence, before the staged folder is renamed over `target`: stores
+/// and applies the operations of `target` that the staged database lacks, deletes the carry
+/// bundle, copies the `Local` rows and columns of `target` into the staged database, and copies
+/// the Quick note images only this device holds. `target` stays the vault until the rename, so
+/// a failure at any step keeps it whole and a retry repeats the steps harmlessly.
+async fn carry_into_replacement(
+    engine: &ganbaru_sync::Engine,
+    staging: &Path,
+    target: &Path,
+    files: &ganbaru_sync_replica::writer::SyncFiles,
+    coordinator_device_id: &str,
+    now_ms: u64,
+) -> Result<(), String> {
+    use ganbaru_sync_replica::carry_forward;
+    let (current, replacement) = (database_path(target), database_path(staging));
+    carry_forward::carry_into_replacement(
+        engine,
+        &current,
+        &replacement,
+        files,
+        coordinator_device_id,
+        now_ms,
     )
     .await
     .map_err(|error| format!("keep local Quick notes changes: {error}"))?;
+    failpoints::check("replace.before_restore")?;
+    carry_forward::restore_into_replacement(engine, &current, &replacement)
+        .await
+        .map_err(|error| format!("keep device state: {error}"))?;
     let (current, replacement) = (target.to_path_buf(), staging.to_path_buf());
     tauri::async_runtime::spawn_blocking(move || {
         ganbaru_quick_notes::images::carry_images(&current, &replacement)
     })
     .await
     .map_err(|error| format!("keep local Quick note images: {error}"))?
-    .map(|_| ())
-    .map_err(|error| format!("keep local Quick note images: {error}"))
+    .map_err(|error| format!("keep local Quick note images: {error}"))?;
+    failpoints::check("replace.before_rename")
+}
+
+/// Failpoints on the replacement sequence. Tests arm one on their own thread; outside tests
+/// every check passes.
+mod failpoints {
+    #[cfg(test)]
+    thread_local! {
+        static ARMED: std::cell::Cell<Option<&'static str>> = const { std::cell::Cell::new(None) };
+    }
+
+    /// Arms `name` on this thread until it is cleared or another failpoint is armed.
+    #[cfg(test)]
+    pub(super) fn arm(name: &'static str) {
+        ARMED.set(Some(name));
+    }
+
+    /// Clears the armed failpoint of this thread.
+    #[cfg(test)]
+    pub(super) fn clear() {
+        ARMED.set(None);
+    }
+
+    /// Fails when `name` is armed on this thread.
+    pub(super) fn check(name: &'static str) -> Result<(), String> {
+        if armed(name) {
+            Err(format!("failpoint {name}"))
+        } else {
+            Ok(())
+        }
+    }
+
+    #[cfg(test)]
+    fn armed(name: &'static str) -> bool {
+        ARMED.get() == Some(name)
+    }
+
+    #[cfg(not(test))]
+    const fn armed(_name: &'static str) -> bool {
+        false
+    }
 }
 
 fn preserved_handoff_path(parent: &Path, target: &Path, transfer_id: &str) -> PathBuf {
@@ -2165,6 +2237,9 @@ mod tests {
         fs::remove_dir_all(parent).unwrap();
     }
 }
+
+#[cfg(test)]
+mod carry_tests;
 
 #[cfg(test)]
 mod retention_tests {

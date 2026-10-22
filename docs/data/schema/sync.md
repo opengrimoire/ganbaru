@@ -27,7 +27,7 @@
 - **Retained state.** Versions of a tombstoned row stay as retained state for recovery. Only a tombstoned row can carry the recovery flag, and only a live row can carry a conflict mask.
 - **Redirects point down.** A tombstone redirect is always a lower row key than the tombstoned row, so redirect chains terminate.
 - **Published keys are permanent.** A key present in `sync_rows` cannot be inserted again locally when its domain row is gone, which prevents resurrection and key reuse.
-- **Device-local state stays outside.** Writer keys, the writer record with its sequence reservation, pause state, and carry-forward bundles live in the app config directory, never in the vault database, because the vault database is copied whole to other devices.
+- **Device-local state stays outside.** Writer keys, the writer record with its sequence reservation, pause state, and carry-forward bundles live in the app config directory, never in the vault database, because the vault database is copied whole to other devices. The exception is device state that must change atomically with vault data: it lives in local tables and columns, which snapshot copies empty or reset and a replacement restores from the receiver's live database.
 
 ## Replicated domain tables
 

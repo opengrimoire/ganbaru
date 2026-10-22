@@ -1,18 +1,23 @@
-//! Golden vectors freeze the version 1 encodings. Changing any byte breaks every stored log, so
-//! a mismatch means the format changed by accident. Set `GANBARU_SYNC_BLESS_VECTORS=1` only when
-//! introducing a new format version deliberately.
+//! Golden vectors freeze the version 1 and 2 encodings. Changing any byte breaks every stored
+//! log, so a mismatch means the format changed by accident. Set `GANBARU_SYNC_BLESS_VECTORS=1`
+//! only when introducing a new format version deliberately.
 
-use super::fixtures::{golden_chain, writer_key};
+use super::fixtures::{golden_cause, golden_chain, writer_key};
 use crate::codec::{CodecError, Reader, Writer};
 use crate::ids::hex;
-use crate::op::{ENVELOPE_OVERHEAD, OPERATION_MAGIC};
+use crate::op::{
+    BASE_FORMAT_VERSION, CAUSE_FORMAT_VERSION, ENVELOPE_OVERHEAD, FORMAT_VERSION, OPERATION_MAGIC,
+};
 use crate::signing::WriterPublicKey;
 use crate::{
-    Content, Envelope, Field, OperationError, OperationKind, PayloadError, SignedCertificate, Value,
+    Cause, ChangeAction, Content, Envelope, Field, GroupId, GroupValue, OperationError,
+    OperationKind, PayloadError, SignedCertificate, Value,
 };
 use std::path::PathBuf;
 
 const VECTOR_NAMES: [&str; 3] = ["genesis", "changes", "revoke"];
+/// The version 2 vector: a tombstone naming its cause.
+const CAUSE_VECTOR: &str = "changes-cause";
 const BLESS_VARIABLE: &str = "GANBARU_SYNC_BLESS_VECTORS";
 
 fn vector_path(name: &str) -> PathBuf {
@@ -173,7 +178,7 @@ fn signed_envelope(format_version: u8, kind: u8, header: &[u8], body: &[u8]) -> 
 #[test]
 fn newer_formats_and_unknown_kinds_verify_but_are_held() {
     let public_key: WriterPublicKey = writer_key().public_key();
-    let newer = signed_envelope(2, 0, b"future header", b"future body");
+    let newer = signed_envelope(FORMAT_VERSION + 1, 0, b"future header", b"future body");
     let envelope = Envelope::decode(&newer).unwrap();
     assert!(envelope.verify(&public_key));
     assert_eq!(envelope.operation(), Err(PayloadError::NewerFormat));
@@ -183,6 +188,94 @@ fn newer_formats_and_unknown_kinds_verify_but_are_held() {
     assert!(envelope.verify(&public_key));
     assert_eq!(envelope.operation(), Err(PayloadError::UnknownKind));
     assert_eq!(newer.len(), ENVELOPE_OVERHEAD + 13 + 11);
+}
+
+#[test]
+fn a_cause_tombstone_seals_at_version_2_and_reencodes_byte_identically() {
+    let (operation, bytes) = golden_cause();
+    let actual = hex(&bytes);
+    if std::env::var_os(BLESS_VARIABLE).is_some() {
+        std::fs::write(vector_path(CAUSE_VECTOR), format!("{actual}\n")).unwrap();
+    } else {
+        assert_eq!(
+            actual,
+            expected_vector(CAUSE_VECTOR),
+            "golden vector {CAUSE_VECTOR} changed; actual bytes:\n{actual}"
+        );
+    }
+    let envelope = Envelope::decode(&bytes).unwrap();
+    assert_eq!(envelope.format_version, CAUSE_FORMAT_VERSION);
+    assert!(envelope.verify(&writer_key().public_key()));
+    let decoded = envelope.operation().unwrap();
+    assert_eq!(decoded, operation);
+    assert_eq!(
+        decoded.seal(&writer_key()).unwrap().bytes(),
+        bytes.as_slice()
+    );
+
+    for (_, bytes) in golden_chain() {
+        assert_eq!(
+            Envelope::decode(&bytes).unwrap().format_version,
+            BASE_FORMAT_VERSION
+        );
+    }
+}
+
+#[test]
+fn the_cause_successor_is_rejected_in_a_version_1_envelope() {
+    let (_, bytes) = golden_cause();
+    let envelope = Envelope::decode(&bytes).unwrap();
+    let downgraded = signed_envelope(BASE_FORMAT_VERSION, 0, envelope.header, envelope.body);
+    let downgraded = Envelope::decode(&downgraded).unwrap();
+    assert!(downgraded.verify(&writer_key().public_key()));
+    assert_eq!(
+        downgraded.operation(),
+        Err(PayloadError::Invalid(OperationError::Codec(
+            CodecError::Malformed("tombstone successor")
+        )))
+    );
+}
+
+#[test]
+fn version_2_readers_accept_version_1_successors_in_either_format() {
+    let chain = golden_chain();
+    let envelope = Envelope::decode(&chain[1].1).unwrap();
+    let upgraded = signed_envelope(CAUSE_FORMAT_VERSION, 0, envelope.header, envelope.body);
+    let upgraded = Envelope::decode(&upgraded).unwrap().operation().unwrap();
+    assert_eq!(upgraded.content, chain[1].0.content);
+}
+
+#[test]
+fn a_tombstone_names_one_successor_other_than_itself() {
+    let (operation, _) = golden_cause();
+    let Content::Changes(changes) = &operation.content else {
+        panic!("cause vector is a changes operation");
+    };
+    let child = changes[1].clone();
+    let cause = child.cause.clone().unwrap();
+    let mut both = child.clone();
+    both.replaced_by = Some(cause.row.clone());
+    let mut itself = child.clone();
+    itself.cause = Some(Cause {
+        table: child.table,
+        row: child.row.clone(),
+    });
+    let mut on_write = changes[0].clone();
+    on_write.action = ChangeAction::Write;
+    on_write.groups = vec![GroupValue::new(
+        on_write.table,
+        GroupId::new(0).unwrap(),
+        Value::new(vec![Field::Integer(1)]).unwrap(),
+    )];
+    on_write.cause = Some(cause);
+    for change in [both, itself, on_write] {
+        let mut invalid = operation.clone();
+        invalid.content = Content::Changes(vec![change]);
+        assert!(matches!(
+            invalid.validate(),
+            Err(OperationError::Codec(CodecError::Malformed(_)))
+        ));
+    }
 }
 
 #[test]

@@ -289,6 +289,7 @@ pub(crate) fn repair_changes(engine: &Engine, hidden: &Hidden) -> SyncResult<Vec
                 action: ChangeAction::Tombstone,
                 groups: Vec::new(),
                 replaced_by,
+                cause: None,
             });
         }
     }

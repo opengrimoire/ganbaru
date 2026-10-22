@@ -249,14 +249,17 @@ pub(crate) async fn apply_change(
     };
     if change.action == ChangeAction::Tombstone {
         sqlx::query(
-            "INSERT INTO sync_tombstones (table_id, row_key, writer_id, seq, replaced_by)
-             VALUES (?, ?, ?, ?, ?) ON CONFLICT DO NOTHING",
+            "INSERT INTO sync_tombstones
+                (table_id, row_key, writer_id, seq, replaced_by, cause_table, cause_row)
+             VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING",
         )
         .bind(table_param(change.table))
         .bind(key)
         .bind(writer.as_bytes().as_slice())
         .bind(seq_i64(seq)?)
         .bind(change.replaced_by.as_ref().map(|target| target.as_str()))
+        .bind(change.cause.as_ref().map(|cause| table_param(cause.table)))
+        .bind(change.cause.as_ref().map(|cause| cause.row.as_str()))
         .execute(&mut *conn)
         .await?;
         sqlx::query(

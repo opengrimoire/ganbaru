@@ -71,9 +71,10 @@ impl SealReport {
 pub(crate) fn change_size(change: &Change) -> (usize, usize) {
     let mut header = 2 + 1 + change.row.as_str().len() + 1 + 8 + 32 * change.groups.len();
     if change.action == ChangeAction::Tombstone {
-        header += match &change.replaced_by {
-            Some(target) => 1 + 1 + target.as_str().len(),
-            None => 1,
+        header += match (&change.replaced_by, &change.cause) {
+            (Some(target), _) => 1 + 1 + target.as_str().len(),
+            (None, Some(cause)) => 1 + 2 + 1 + cause.row.as_str().len(),
+            (None, None) => 1,
         };
     }
     let body = change
@@ -778,6 +779,7 @@ fn tombstone(table: &TableSpec, key: &RowKey, replaced_by: Option<&str>) -> Chan
         action: ChangeAction::Tombstone,
         groups: Vec::new(),
         replaced_by: target,
+        cause: None,
     }
 }
 
@@ -794,6 +796,7 @@ fn existence_write(table: &TableSpec, key: &RowKey, exists: GroupId, present: bo
                 .expect("an existence value fits the bounds"),
         )],
         replaced_by: None,
+        cause: None,
     }
 }
 
@@ -879,6 +882,7 @@ async fn plan_captures(
                 action: ChangeAction::Create,
                 groups,
                 replaced_by: None,
+                cause: None,
             }),
             // An absent live row without a local delete is hidden by the merge; its repair is
             // sealed by the engine, not from the capture.
@@ -898,6 +902,7 @@ async fn plan_captures(
                     action: ChangeAction::Write,
                     groups,
                     replaced_by: None,
+                    cause: None,
                 })
             }
             (Some(RowState::Live), DomainRow::Present(groups)) => {
@@ -916,6 +921,7 @@ async fn plan_captures(
                     action: ChangeAction::Write,
                     groups,
                     replaced_by: None,
+                    cause: None,
                 })
             }
         };

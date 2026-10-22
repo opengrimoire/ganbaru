@@ -1,4 +1,4 @@
-use super::fixtures::{XorShift, fully_verifies, golden_chain, writer_key};
+use super::fixtures::{XorShift, fully_verifies, golden_cause, golden_chain, writer_key};
 use crate::{Envelope, SignedCertificate, VersionVector};
 
 const MUTATIONS_PER_VECTOR: usize = 3_000;
@@ -42,7 +42,7 @@ fn mutate(bytes: &[u8], random: &mut XorShift) -> Vec<u8> {
 fn mutated_operations_never_panic_and_never_verify() {
     let public_key = writer_key().public_key();
     let mut random = XorShift::new(0x5eed_0001);
-    for (_, bytes) in golden_chain() {
+    for (_, bytes) in golden_chain().into_iter().chain([golden_cause()]) {
         assert!(fully_verifies(&bytes, &public_key));
         let mut checked = 0;
         while checked < MUTATIONS_PER_VECTOR {
@@ -63,7 +63,7 @@ fn mutated_operations_never_panic_and_never_verify() {
 #[test]
 fn every_single_bit_flip_of_every_vector_fails_verification() {
     let public_key = writer_key().public_key();
-    for (_, bytes) in golden_chain() {
+    for (_, bytes) in golden_chain().into_iter().chain([golden_cause()]) {
         for index in 0..bytes.len() {
             for bit in 0..8 {
                 let mut mutated = bytes.clone();

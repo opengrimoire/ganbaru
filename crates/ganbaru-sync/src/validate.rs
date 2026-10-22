@@ -132,6 +132,11 @@ pub(crate) fn change(engine: &Engine, change: &Change) -> Result<(), Invalid> {
                     return Err("tombstone redirect");
                 }
             }
+            if let Some(cause) = &change.cause {
+                if engine.manifest().table(cause.table).is_none() {
+                    return Err("tombstone cause");
+                }
+            }
         }
     }
     for value in &change.groups {

@@ -179,6 +179,7 @@ impl Engine {
             action: ChangeAction::Tombstone,
             groups: Vec::new(),
             replaced_by: None,
+            cause: None,
         };
         sealer
             .seal_changes(

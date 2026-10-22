@@ -1350,7 +1350,7 @@ fn manifests_are_well_formed() {
             .iter()
             .map(|table| table.full_mask().0)
             .collect::<Vec<_>>(),
-        [31, 511]
+        [31, 511, 7]
     );
 }
 
@@ -1690,7 +1690,10 @@ fn engine_construction_checks_adapters_both_ways() {
 /// Recorded manifests by version. Operations of every version up to the current one validate
 /// against the current manifest, so a recorded manifest never changes; a new version may only
 /// add tables and groups or loosen rules, and it records its own snapshot here.
-const RECORDED_MANIFESTS: &[(u16, &str)] = &[(1, include_str!("fixtures/vault_manifest_v1.txt"))];
+const RECORDED_MANIFESTS: &[(u16, &str)] = &[
+    (1, include_str!("fixtures/vault_manifest_v1.txt")),
+    (2, include_str!("fixtures/vault_manifest_v2.txt")),
+];
 
 #[test]
 fn vault_manifest_changes_only_with_a_version_bump() {

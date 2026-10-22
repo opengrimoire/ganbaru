@@ -7,6 +7,7 @@ mod guards;
 mod holds;
 mod local;
 mod owned;
+mod preferences;
 mod publication;
 mod replica;
 mod sim;

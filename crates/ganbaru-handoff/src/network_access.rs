@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 use std::ffi::OsStr;
 use std::fs;
-use std::net::Ipv4Addr;
+use std::net::{IpAddr, Ipv4Addr};
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -136,10 +136,14 @@ pub fn status(config_dir: &Path, local_address: Ipv4Addr, port: u16) -> NetworkA
     }
 }
 
-/// Whether the coordinator listening on `local_address` and `port` may accept LAN peers now.
-/// It refuses them only where [`status`] asks the user to confirm the current network, so a
-/// refusal always comes with an action that lifts it.
-pub fn admits_lan_peers(config_dir: &Path, local_address: Ipv4Addr, port: u16) -> bool {
+/// Whether the coordinator may accept LAN peers that reach it on `local_address` and `port`
+/// now. It refuses them only where [`status`] asks the user to confirm the current network, so
+/// a refusal always comes with an action that lifts it. Firewall scopes are IPv4 only, so an
+/// IPv6 local address has no allowed networks to confirm and admits.
+pub fn admits_lan_peers(config_dir: &Path, local_address: IpAddr, port: u16) -> bool {
+    let IpAddr::V4(local_address) = local_address else {
+        return true;
+    };
     status(config_dir, local_address, port).state != NetworkAccessState::NetworkConfirmationRequired
 }
 

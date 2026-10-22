@@ -85,7 +85,8 @@ fn truncate_at_char_boundary(value: &str, max_bytes: usize) -> String {
 }
 
 /// Resolves the endpoint other people can use: the coordinator pin on linked devices, the
-/// running coordinator on desktop, or nothing when requests cannot be received right now.
+/// running coordinator's port on the preferred local address on desktop, or nothing when
+/// requests cannot be received right now.
 pub(crate) fn resolve_delivery_hint<R: Runtime>(app: &AppHandle<R>) -> DeliveryHint {
     let manager = app.state::<PairingManager>();
     if let Ok(Some(pin)) = manager.coordinator_pin() {
@@ -95,7 +96,7 @@ pub(crate) fn resolve_delivery_hint<R: Runtime>(app: &AppHandle<R>) -> DeliveryH
     {
         use crate::vault::handoff::pairing::certificate_fingerprint;
         let lifecycle = app.state::<crate::vault::handoff::CoordinatorLifecycle>();
-        if let Ok(Some(endpoint)) = lifecycle.endpoint()
+        if let Ok(Some(endpoint)) = lifecycle.reportable_endpoint()
             && let Ok(certificate) = manager.certificate()
         {
             let fingerprint = certificate_fingerprint(certificate.as_ref());

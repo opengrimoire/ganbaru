@@ -101,7 +101,7 @@ impl LocalPair {
             .expect("create invitation");
         let (shutdown, receiver) = tokio::sync::oneshot::channel();
         tokio::spawn(server::serve_with_limits(
-            listener,
+            listener.into(),
             limits,
             LoopbackPolicy::Allow,
             desktop.clone(),
@@ -182,7 +182,7 @@ impl LocalPair {
         let (shutdown, receiver) = tokio::sync::oneshot::channel();
         let approvals = EnrollmentApprovals::default();
         tokio::spawn(serve_with_coordinator(
-            listener,
+            listener.into(),
             desktop.clone(),
             CoordinatorServices {
                 coordinator: Some(requests),
@@ -373,7 +373,7 @@ async fn peers_outside_the_address_policy_are_closed_before_the_tls_handshake() 
     let limits = server::limits::ConnectionLimits::new(1, 1, 64);
     let (shutdown, receiver) = tokio::sync::oneshot::channel();
     tokio::spawn(server::serve_with_limits(
-        listener,
+        listener.into(),
         limits.clone(),
         LoopbackPolicy::Reject,
         desktop,
@@ -403,7 +403,7 @@ async fn an_unconfirmed_network_reaches_neither_enrollment_nor_the_handshake() {
         None,
         server::limits::ConnectionLimits::default(),
         EnrollmentApprovals::default(),
-        LanAdmission::deciding(|| false),
+        LanAdmission::deciding(|_| false),
     )
     .await;
     let error = tokio::time::timeout(
@@ -417,6 +417,62 @@ async fn an_unconfirmed_network_reaches_neither_enrollment_nor_the_handshake() {
     assert!(!error.is_empty());
     assert!(pair.approvals.pending().expect("pending").is_none());
     assert!(pair.desktop.linked_peers().expect("peers").is_empty());
+}
+
+#[tokio::test]
+async fn the_wildcard_listener_asks_admission_about_the_address_each_peer_reached() {
+    let root = TestDirectory::new("wildcard-admission");
+    let desktop = PairingManager::default();
+    desktop
+        .initialize(root.path().to_path_buf(), "device-desktop".to_string())
+        .expect("initialize desktop");
+    let listener = server::CoordinatorListener::bind(0).expect("bind wildcard listener");
+    let port = listener.port().expect("listener port");
+    let reached = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let admission = LanAdmission::deciding({
+        let reached = reached.clone();
+        move |local| {
+            reached.lock().expect("reached addresses").push(local);
+            false
+        }
+    });
+    let (shutdown, receiver) = tokio::sync::oneshot::channel();
+    tokio::spawn(server::serve_with_limits(
+        listener,
+        server::limits::ConnectionLimits::default(),
+        LoopbackPolicy::Allow,
+        desktop,
+        CoordinatorServices {
+            admission,
+            ..CoordinatorServices::default()
+        },
+        receiver,
+    ));
+
+    let mut targets = vec![IpAddr::from([127, 0, 0, 1])];
+    if std::net::TcpListener::bind((Ipv6Addr::LOCALHOST, 0)).is_ok() {
+        targets.push(IpAddr::V6(Ipv6Addr::LOCALHOST));
+    }
+    for target in &targets {
+        let mut stream = TcpStream::connect(SocketAddr::new(*target, port))
+            .await
+            .expect("connect");
+        let mut byte = [0_u8; 1];
+        let read = tokio::time::timeout(Duration::from_secs(5), stream.read(&mut byte)).await;
+        assert!(
+            matches!(read, Ok(Ok(0) | Err(_))),
+            "a refused network closes {target} before the handshake"
+        );
+    }
+    let reached = reached.lock().expect("reached addresses").clone();
+    assert_eq!(
+        reached,
+        targets
+            .iter()
+            .map(|target| SocketAddr::new(*target, port))
+            .collect::<Vec<_>>()
+    );
+    let _ = shutdown.send(());
 }
 
 #[tokio::test]

@@ -3,7 +3,9 @@
 #[cfg(desktop)]
 mod server;
 #[cfg(desktop)]
-pub(crate) use server::{CoordinatorServices, LanAdmission, serve_with_coordinator};
+pub(crate) use server::{
+    CoordinatorListener, CoordinatorServices, LanAdmission, serve_with_coordinator,
+};
 
 use super::pairing::{
     CoordinatorPin, PairingManager, TlsIdentity, certificate_fingerprint, encode_certificate,

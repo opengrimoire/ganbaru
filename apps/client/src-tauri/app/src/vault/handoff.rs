@@ -8,12 +8,12 @@ pub(crate) mod coordinator;
 pub(crate) mod enrollment_approval;
 #[cfg(desktop)]
 mod key_store;
+#[cfg(desktop)]
+mod local_addresses;
 pub(crate) mod receiver;
 pub(crate) mod source;
 pub(crate) mod transport;
 
-#[cfg(desktop)]
-use ganbaru_handoff::dial::reportable_address;
 #[cfg(target_os = "linux")]
 use ganbaru_handoff::network_access;
 pub(crate) use ganbaru_handoff::{pairing, protocol};
@@ -25,12 +25,10 @@ use protocol::{HandoffCompatibility, decode_invitation, encode_invitation};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 #[cfg(desktop)]
-use std::net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket};
+use std::net::SocketAddr;
 #[cfg(desktop)]
 use std::sync::Mutex;
 use tauri::{Manager, Runtime};
-#[cfg(desktop)]
-use tokio::net::TcpListener;
 
 pub(crate) use protocol::sha256_file;
 
@@ -50,7 +48,7 @@ pub(crate) struct CoordinatorLifecycle {
 
 #[cfg(desktop)]
 struct CoordinatorRuntime {
-    endpoint: SocketAddr,
+    port: u16,
     shutdown: tokio::sync::oneshot::Sender<()>,
     requests: coordinator::CoordinatorSender,
 }
@@ -103,31 +101,22 @@ pub(crate) struct PairingStatus {
 
 #[cfg(desktop)]
 impl CoordinatorLifecycle {
+    /// Starts the coordinator on every local address at `port` unless it already runs, and
+    /// returns the port it listens on.
     async fn start_on<R: Runtime>(
         &self,
         app: tauri::AppHandle<R>,
         manager: PairingManager,
-        address: IpAddr,
         port: u16,
-    ) -> Result<SocketAddr, String> {
-        {
-            let runtime = self
-                .runtime
-                .lock()
-                .map_err(|_| "coordinator lifecycle lock is unavailable".to_string())?;
-            if let Some(runtime) = runtime.as_ref() {
-                return Ok(runtime.endpoint);
-            }
+    ) -> Result<u16, String> {
+        if let Some(port) = self.port()? {
+            return Ok(port);
         }
-        reportable_address(address).map_err(|error| {
-            format!("vault handoff coordinator cannot listen on {address}: {error}")
-        })?;
-        let listener = TcpListener::bind(SocketAddr::new(address, port))
-            .await
+        let listener = transport::CoordinatorListener::bind(port)
             .map_err(|error| format!("bind vault handoff coordinator: {error}"))?;
-        let endpoint = listener
-            .local_addr()
-            .map_err(|error| format!("read vault handoff endpoint: {error}"))?;
+        let port = listener
+            .port()
+            .map_err(|error| format!("read vault handoff port: {error}"))?;
         let (shutdown, receiver) = tokio::sync::oneshot::channel();
         let (requests, request_receiver) = tokio::sync::mpsc::channel(8);
         let (contacts, contact_receiver) = contact_requests::channel();
@@ -139,7 +128,7 @@ impl CoordinatorLifecycle {
                 .state::<enrollment_approval::EnrollmentApprovals>()
                 .inner()
                 .clone(),
-            admission: lan_admission(&app, endpoint)?,
+            admission: lan_admission(&app, port)?,
         };
         tauri::async_runtime::spawn(contact_requests::run(app.clone(), contact_receiver));
         tauri::async_runtime::spawn(coordinator::run(app, manager.clone(), request_receiver));
@@ -152,14 +141,14 @@ impl CoordinatorLifecycle {
             .map_err(|_| "coordinator lifecycle lock is unavailable".to_string())?;
         if runtime.is_some() {
             let _ = shutdown.send(());
-            return Ok(runtime.as_ref().expect("checked runtime").endpoint);
+            return Ok(runtime.as_ref().expect("checked runtime").port);
         }
         *runtime = Some(CoordinatorRuntime {
-            endpoint,
+            port,
             shutdown,
             requests,
         });
-        Ok(endpoint)
+        Ok(port)
     }
 
     pub(crate) fn stop(&self) {
@@ -175,12 +164,24 @@ impl CoordinatorLifecycle {
         }
     }
 
-    pub(crate) fn endpoint(&self) -> Result<Option<SocketAddr>, String> {
+    /// The port the running coordinator listens on, or `None` when it is stopped.
+    pub(crate) fn port(&self) -> Result<Option<u16>, String> {
         let runtime = self
             .runtime
             .lock()
             .map_err(|_| "coordinator lifecycle lock is unavailable".to_string())?;
-        Ok(runtime.as_ref().map(|runtime| runtime.endpoint))
+        Ok(runtime.as_ref().map(|runtime| runtime.port))
+    }
+
+    /// The endpoint other devices should dial while the coordinator runs: its port on the
+    /// preferred local address. `None` when it is stopped or no reportable address exists.
+    pub(crate) fn reportable_endpoint(&self) -> Result<Option<SocketAddr>, String> {
+        let Some(port) = self.port()? else {
+            return Ok(None);
+        };
+        Ok(local_addresses::preferred_invitation_address()
+            .ok()
+            .map(|address| SocketAddr::new(address, port)))
     }
 
     pub(crate) fn request_sender(&self) -> Result<coordinator::CoordinatorSender, String> {
@@ -346,24 +347,19 @@ pub(crate) async fn start_desktop_when_reachable<R: Runtime>(
     Ok(())
 }
 
-/// Starts the coordinator on the routed local network address unless it already runs, and
-/// returns its endpoint. A device linked to another coordinator never coordinates, so it gets `None`.
+/// Starts the coordinator on every local address unless it already runs, and returns the port it
+/// listens on. A device linked to another coordinator never coordinates, so it gets `None`.
 #[cfg(desktop)]
 pub(crate) async fn ensure_desktop_coordinator<R: Runtime>(
     app: &tauri::AppHandle<R>,
-) -> Result<Option<SocketAddr>, String> {
+) -> Result<Option<u16>, String> {
     let manager = app.state::<PairingManager>().inner().clone();
     if manager.coordinator_pin()?.is_some() {
         return Ok(None);
     }
-    let lifecycle = app.state::<CoordinatorLifecycle>();
-    if let Some(endpoint) = lifecycle.endpoint()? {
-        return Ok(Some(endpoint));
-    }
-    let address = discover_private_lan_address()?;
     let port = coordinator_port(&app.config().identifier);
-    lifecycle
-        .start_on(app.clone(), manager, address, port)
+    app.state::<CoordinatorLifecycle>()
+        .start_on(app.clone(), manager, port)
         .await
         .map(Some)
 }
@@ -374,9 +370,10 @@ pub(crate) async fn handoff_create_pairing_invitation<R: Runtime>(
     app: tauri::AppHandle<R>,
 ) -> Result<PairingInvitationView, String> {
     let manager = app.state::<PairingManager>().inner().clone();
-    let Some(endpoint) = ensure_desktop_coordinator(&app).await? else {
+    let Some(port) = ensure_desktop_coordinator(&app).await? else {
         return Err("a linked client device cannot coordinate additional devices".to_string());
     };
+    let endpoint = SocketAddr::new(local_addresses::preferred_invitation_address()?, port);
     let ownership = super::ownership::active_status(&app)?;
     // A device waiting with the replaced invitation can no longer be approved.
     app.state::<enrollment_approval::EnrollmentApprovals>()
@@ -395,48 +392,30 @@ pub(crate) async fn handoff_create_pairing_invitation<R: Runtime>(
         endpoint: endpoint.to_string(),
         expires_at_ms: invitation.expires_at_ms,
         #[cfg(target_os = "linux")]
-        network_access: network_access::status(
-            &app.path()
-                .app_config_dir()
-                .map_err(|error| format!("find app config directory: {error}"))?,
-            match endpoint.ip() {
-                IpAddr::V4(address) => address,
-                IpAddr::V6(_) => {
-                    return Err("Linux firewall access requires an IPv4 LAN address".to_string());
-                }
-            },
-            endpoint.port(),
-        ),
+        network_access: network_access_status_at(&app, endpoint)?,
     })
 }
 
-/// Admission for a coordinator listening on `endpoint`: on Linux, LAN peers are served only on
-/// networks where the user confirmed the firewall rules for its address.
+/// Admission for a coordinator listening on `port`: on Linux, LAN peers are served only on
+/// networks where the user confirmed the firewall rules for the address they reached.
 #[cfg(target_os = "linux")]
 fn lan_admission<R: Runtime>(
     app: &tauri::AppHandle<R>,
-    endpoint: SocketAddr,
+    port: u16,
 ) -> Result<transport::LanAdmission, String> {
-    let IpAddr::V4(address) = endpoint.ip() else {
-        return Ok(transport::LanAdmission::default());
-    };
     let config_dir = app
         .path()
         .app_config_dir()
         .map_err(|error| format!("find app config directory: {error}"))?;
-    Ok(transport::LanAdmission::linux_firewall(
-        config_dir,
-        address,
-        endpoint.port(),
-    ))
+    Ok(transport::LanAdmission::linux_firewall(config_dir, port))
 }
 
-/// Admission for a coordinator listening on `endpoint`. Only Linux keeps per-network firewall
-/// rules, so other desktops serve every LAN peer.
+/// Admission for a coordinator listening on `port`. Only Linux keeps per-network firewall rules,
+/// so other desktops serve every LAN peer.
 #[cfg(all(desktop, not(target_os = "linux")))]
 fn lan_admission<R: Runtime>(
     _app: &tauri::AppHandle<R>,
-    _endpoint: SocketAddr,
+    _port: u16,
 ) -> Result<transport::LanAdmission, String> {
     Ok(transport::LanAdmission::default())
 }
@@ -446,18 +425,16 @@ fn lan_admission<R: Runtime>(
 pub(crate) async fn handoff_grant_network_access<R: Runtime>(
     app: tauri::AppHandle<R>,
 ) -> Result<network_access::NetworkAccessStatus, String> {
-    let endpoint = app
+    let port = app
         .state::<CoordinatorLifecycle>()
-        .endpoint()?
+        .port()?
         .ok_or_else(|| "vault handoff coordinator is not running".to_string())?;
-    let IpAddr::V4(address) = endpoint.ip() else {
-        return Err("Linux firewall access requires an IPv4 LAN address".to_string());
-    };
+    let address = local_addresses::preferred_ipv4_address()
+        .ok_or_else(|| "Linux firewall access requires an IPv4 LAN address".to_string())?;
     let config_dir = app
         .path()
         .app_config_dir()
         .map_err(|error| format!("find app config directory: {error}"))?;
-    let port = endpoint.port();
     tauri::async_runtime::spawn_blocking(move || network_access::grant(&config_dir, address, port))
         .await
         .map_err(|error| format!("authorize Linux network access: {error}"))?
@@ -697,11 +674,21 @@ fn status_vault_id(
 fn desktop_network_access_status<R: Runtime>(
     app: &tauri::AppHandle<R>,
 ) -> Result<network_access::NetworkAccessStatus, String> {
-    let Some(endpoint) = app.state::<CoordinatorLifecycle>().endpoint()? else {
+    match app.state::<CoordinatorLifecycle>().reportable_endpoint()? {
+        Some(endpoint) => network_access_status_at(app, endpoint),
+        None => Ok(network_access::not_required()),
+    }
+}
+
+/// Firewall status for peers dialing `endpoint`. Firewall scopes are IPv4 only, so an IPv6
+/// endpoint has no rule to confirm.
+#[cfg(target_os = "linux")]
+fn network_access_status_at<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    endpoint: SocketAddr,
+) -> Result<network_access::NetworkAccessStatus, String> {
+    let std::net::IpAddr::V4(address) = endpoint.ip() else {
         return Ok(network_access::not_required());
-    };
-    let IpAddr::V4(address) = endpoint.ip() else {
-        return Err("Linux firewall access requires an IPv4 LAN address".to_string());
     };
     let config_dir = app
         .path()
@@ -798,23 +785,6 @@ pub(crate) async fn handoff_request_owner_bundle<R: Runtime>(
         }
         _ => Err("coordinator returned an invalid upload request result".to_string()),
     }
-}
-
-#[cfg(desktop)]
-fn discover_private_lan_address() -> Result<IpAddr, String> {
-    let socket = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0))
-        .map_err(|error| format!("inspect LAN address: {error}"))?;
-    socket
-        .connect((Ipv4Addr::new(192, 0, 2, 1), 9))
-        .map_err(|error| format!("select LAN route: {error}"))?;
-    let address = socket
-        .local_addr()
-        .map_err(|error| format!("read LAN address: {error}"))?
-        .ip();
-    if reportable_address(address).is_err() {
-        return Err("no local network address is currently available".to_string());
-    }
-    Ok(address)
 }
 
 #[cfg(all(test, desktop))]

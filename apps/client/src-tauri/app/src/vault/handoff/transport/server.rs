@@ -23,18 +23,20 @@ pub(crate) use admission::LanAdmission;
 use client_verifier::PinnedClientVerifier;
 use ganbaru_handoff::dial::{LoopbackPolicy, admit_inbound_peer};
 use limits::{ConnectionLimits, PendingPermit};
+pub(crate) use listener::CoordinatorListener;
 use rustls::pki_types::CertificateDer;
 use std::fs;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::{TcpListener, TcpStream};
+use tokio::net::TcpStream;
 use tokio_rustls::TlsAcceptor;
 
 pub(super) mod admission;
 mod client_verifier;
 pub(super) mod limits;
+mod listener;
 
 const UPLOAD_REQUEST_WAIT: Duration = Duration::from_secs(10);
 const UPLOAD_REQUEST_POLL_INTERVAL: Duration = Duration::from_millis(200);
@@ -84,12 +86,12 @@ pub(crate) struct CoordinatorServices {
     pub contacts: Option<ContactSender>,
     pub hub: Option<SyncHub>,
     pub approvals: EnrollmentApprovals,
-    /// Whether the current network may reach the listener at all.
+    /// Whether the network behind each local address may reach the listener at all.
     pub admission: LanAdmission,
 }
 
 pub(crate) async fn serve_with_coordinator(
-    listener: TcpListener,
+    listener: CoordinatorListener,
     manager: PairingManager,
     services: CoordinatorServices,
     shutdown: tokio::sync::oneshot::Receiver<()>,
@@ -107,7 +109,7 @@ pub(crate) async fn serve_with_coordinator(
 
 /// Serves `listener` until shutdown. `loopback` decides whether loopback peers are admitted.
 pub(super) async fn serve_with_limits(
-    listener: TcpListener,
+    listener: CoordinatorListener,
     limits: ConnectionLimits,
     loopback: LoopbackPolicy,
     manager: PairingManager,
@@ -119,12 +121,12 @@ pub(super) async fn serve_with_limits(
         || listener.accept(),
         shutdown,
         |socket, source: SocketAddr| {
-            if !admits_peer_address(&socket, source.ip(), loopback) {
+            let Some(local) = admitted_local_address(&socket, source.ip(), loopback) else {
                 // Refused before the pending budget so a host outside the local networks never
                 // costs a slot, a task, or a read.
                 drop(socket);
                 return;
-            }
+            };
             let Some(permit) = limits.admit(source.ip()) else {
                 // Closing at once keeps a flood from holding descriptors or handshakes.
                 drop(socket);
@@ -137,7 +139,7 @@ pub(super) async fn serve_with_limits(
                 limits: limits.clone(),
             };
             tokio::spawn(async move {
-                if !connection.features.admission.admits().await {
+                if !connection.features.admission.admits(local).await {
                     return;
                 }
                 if let Err(error) =
@@ -151,13 +153,18 @@ pub(super) async fn serve_with_limits(
     .await;
 }
 
-/// Whether the shared address policy admits a peer at `source` on the accepted socket's own
-/// address. A socket whose local address cannot be read is refused, so this gate never fails
+/// The accepted socket's own address when the shared address policy admits a peer at `source`
+/// on it. A socket whose local address cannot be read is refused, so this gate never fails
 /// open.
-fn admits_peer_address(socket: &TcpStream, source: IpAddr, loopback: LoopbackPolicy) -> bool {
+fn admitted_local_address(
+    socket: &TcpStream,
+    source: IpAddr,
+    loopback: LoopbackPolicy,
+) -> Option<SocketAddr> {
     socket
         .local_addr()
-        .is_ok_and(|local| admit_inbound_peer(source, local.ip(), loopback).is_ok())
+        .ok()
+        .filter(|local| admit_inbound_peer(source, local.ip(), loopback).is_ok())
 }
 
 /// Accepts until shutdown. Accept errors such as descriptor or buffer exhaustion and aborted

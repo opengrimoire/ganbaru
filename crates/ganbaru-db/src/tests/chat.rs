@@ -4,12 +4,14 @@ use sqlx::{AssertSqlSafe, Row};
 const NOW: &str = "2026-07-20T12:00:00Z";
 
 async fn insert_project(pool: &sqlx::SqlitePool) {
-    sqlx::query("INSERT INTO project_groups (id, name) VALUES ('group-1', 'Engineering')")
-        .execute(pool)
-        .await
-        .unwrap();
     sqlx::query(
-        "INSERT INTO projects (id, group_id, name) VALUES ('project-1', 'group-1', 'Ganbaru')",
+        "INSERT INTO project_groups (id, name, order_key) VALUES ('group-1', 'Engineering', 'a0')",
+    )
+    .execute(pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO projects (id, group_id, name, order_key) VALUES ('project-1', 'group-1', 'Ganbaru', 'a0')",
     )
     .execute(pool)
     .await

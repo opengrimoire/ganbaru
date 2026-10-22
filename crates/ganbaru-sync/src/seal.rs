@@ -785,7 +785,12 @@ fn tombstone(table: &TableSpec, key: &RowKey, replaced_by: Option<&str>) -> Chan
 }
 
 /// A write of a derived-key row's existence register, which stands in for its tombstone.
-fn existence_write(table: &TableSpec, key: &RowKey, exists: GroupId, present: bool) -> Change {
+pub(crate) fn existence_write(
+    table: &TableSpec,
+    key: &RowKey,
+    exists: GroupId,
+    present: bool,
+) -> Change {
     Change {
         table: table.id,
         row: key.clone(),

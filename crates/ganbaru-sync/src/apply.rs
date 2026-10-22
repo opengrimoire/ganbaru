@@ -507,7 +507,7 @@ pub(crate) async fn finish(
     }
     let mut repaired = false;
     let mut visibility = loop {
-        let duplicates = repair::duplicates(engine, conn, batch).await?;
+        let duplicates = repair::duplicates(engine, conn, &mut batch.dirty).await?;
         let mut visibility = Visibility::with_duplicates(duplicates);
         repair::expand_references(engine, conn, batch, &mut visibility).await?;
         let repairs = repair::repair_changes(engine, conn, &mut visibility, &batch.dirty).await?;
@@ -524,7 +524,7 @@ pub(crate) async fn finish(
             )
             .await?;
     };
-    let merged = merge::refresh_flags(engine, conn, batch).await?;
+    let merged = merge::refresh_flags(engine, conn, batch, &mut visibility).await?;
     let changed = materialize::materialize(engine, conn, batch, &mut visibility, merged).await?;
     batch.dirty.clear();
     Ok(changed)

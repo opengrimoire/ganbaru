@@ -143,12 +143,11 @@ async fn classes(
 pub(crate) async fn duplicates(
     engine: &Engine,
     conn: &mut SqliteConnection,
-    batch: &mut Batch,
+    dirty: &mut BTreeSet<RowRef>,
 ) -> SyncResult<Duplicates> {
     let mut hidden = Duplicates::new();
     for table in engine.manifest().tables {
-        let dirty: Vec<String> = batch
-            .dirty
+        let keys: Vec<String> = dirty
             .iter()
             .filter(|(table_id, _)| *table_id == table.id)
             .map(|(_, key)| key.clone())
@@ -162,7 +161,7 @@ pub(crate) async fn duplicates(
                 .flat_map(|(class, members)| members.iter().map(move |key| (key.as_str(), class)))
                 .collect();
             let mut affected: BTreeSet<&Vec<u8>> = BTreeSet::new();
-            for key in &dirty {
+            for key in &keys {
                 if let Some(class) = class_of.get(key.as_str()) {
                     affected.insert(class);
                 }
@@ -177,7 +176,7 @@ pub(crate) async fn duplicates(
             }
             for class in affected {
                 for key in &classes[class] {
-                    batch.dirty.insert((table.id, key.clone()));
+                    dirty.insert((table.id, key.clone()));
                 }
             }
             for members in classes.values().filter(|members| members.len() > 1) {
@@ -200,8 +199,8 @@ pub(crate) async fn duplicates(
 }
 
 /// Rows whose references in any retained version name a row, directly or through a tombstone
-/// redirecting to it.
-async fn referrers(
+/// redirecting to it, and rows whose tombstones name it as their cause.
+pub(crate) async fn referrers(
     engine: &Engine,
     conn: &mut SqliteConnection,
     target: TableId,
@@ -218,7 +217,22 @@ async fn referrers(
                 .map(move |(group, field, _)| (table.id, group.id, field))
         })
         .collect();
-    let mut found = BTreeSet::new();
+    let caused: Vec<(i64, String)> = sqlx::query_as(
+        "SELECT DISTINCT table_id, row_key FROM sync_tombstones
+         WHERE cause_table = ? AND cause_row = ?",
+    )
+    .bind(table_param(target))
+    .bind(key)
+    .fetch_all(&mut *conn)
+    .await?;
+    let mut found = caused
+        .into_iter()
+        .map(|(table_id, row_key)| {
+            u16::try_from(table_id)
+                .map(|table| (TableId(table), row_key))
+                .map_err(|_| corrupt("table id out of range"))
+        })
+        .collect::<SyncResult<BTreeSet<RowRef>>>()?;
     if specs.is_empty() {
         return Ok(found);
     }
@@ -260,9 +274,10 @@ async fn referrers(
     Ok(found)
 }
 
-/// Whether a published row's domain presence disagrees with its visibility, so materializing
-/// it inserts or deletes it.
-async fn visibility_changes(
+/// Whether the marking continues through a published referrer: it is hidden, so the recovery
+/// state of the rows below it may follow a changed root, or it is shown but missing from the
+/// domain, so materializing it inserts it.
+async fn continues_through(
     engine: &Engine,
     conn: &mut SqliteConnection,
     visibility: &mut Visibility,
@@ -271,17 +286,20 @@ async fn visibility_changes(
     if merge::row_state(conn, *table, key).await?.is_none() {
         return Ok(false);
     }
+    if visibility.hidden(engine, conn, *table, key).await? {
+        return Ok(true);
+    }
     let spec = engine
         .manifest()
         .table(*table)
         .ok_or_else(|| corrupt("dirty row of an unknown table"))?;
-    let present = materialize::domain_exists(conn, spec, key).await?;
-    Ok(visibility.hidden(engine, conn, *table, key).await? == present)
+    Ok(!materialize::domain_exists(conn, spec, key).await?)
 }
 
 /// Marks dirty every row whose reference may resolve differently because a referenced row, or
-/// a row redirecting to it, is dirty. The marking continues through referrers that become
-/// hidden or shown, so a cascade reaches every descendant.
+/// a row redirecting to it, is dirty, and every row whose tombstone names a dirty row as its
+/// cause. The marking continues through referrers that are hidden or become shown, so a
+/// cascade reaches every descendant.
 pub(crate) async fn expand_references(
     engine: &Engine,
     conn: &mut SqliteConnection,
@@ -294,7 +312,7 @@ pub(crate) async fn expand_references(
         for referrer in referrers(engine, conn, table, &key).await? {
             batch.dirty.insert(referrer.clone());
             if seen.insert(referrer.clone())
-                && visibility_changes(engine, conn, visibility, &referrer).await?
+                && continues_through(engine, conn, visibility, &referrer).await?
             {
                 pending.push(referrer);
             }

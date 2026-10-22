@@ -55,7 +55,7 @@ pub use devices::{DeviceNames, DeviceRef};
 pub use error::{SyncError, SyncResult};
 pub use local::{CarryReport, LocalRestoreReport, LocalWriterHead};
 pub use log::{OpsPage, WriterState};
-pub use recovery::RecoveryEntry;
+pub use recovery::{RecoveryDescendant, RecoveryEntry};
 pub use reseal::ResealReport;
 pub use seal::{InvalidRow, SealReport};
 pub use status::{HeldCounts, HeldOp, SyncStatus, WriterSummary};

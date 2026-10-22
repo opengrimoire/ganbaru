@@ -973,7 +973,9 @@ fn restoring_a_recovered_note_keeps_its_images() {
             note_group::IMAGES,
             Value::new(vec![Field::Blob(encoded)]).unwrap(),
         )];
-        let id = restore_recovered(&pool, &values).await.unwrap();
+        let mut conn = pool.acquire().await.unwrap();
+        let id = restore_recovered(&mut conn, &values).await.unwrap();
+        drop(conn);
         let restored = load_note_from_pool(&pool, &id).await.unwrap();
         assert_eq!(restored.images, [image(4), image(5)]);
     });

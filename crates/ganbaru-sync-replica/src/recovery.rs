@@ -12,8 +12,7 @@ use ganbaru_sync::manifest::TableSpec;
 use ganbaru_sync::{Engine, RecoveryDescendant, SpaceContext};
 use ganbaru_sync_contracts::{GroupId, TableId, Value};
 use serde::Deserialize;
-use sqlx::pool::PoolConnection;
-use sqlx::{Sqlite, SqlitePool};
+use sqlx::{SqliteConnection, SqlitePool};
 
 /// What to do with a recovery offer.
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
@@ -44,11 +43,12 @@ pub struct RecoveredRow {
 }
 
 /// Future of a restore: the id of the new root row, or why it could not be created.
-pub type RestoreFuture = Pin<Box<dyn Future<Output = Result<String, String>> + Send>>;
+pub type RestoreFuture<'c> = Pin<Box<dyn Future<Output = Result<String, String>> + Send + 'c>>;
 
 /// Creates new rows from a recovered root and its descendants through the owning domain's
-/// persistence, in one transaction of its own.
-pub type Restorer = fn(SqlitePool, RecoveredRow) -> RestoreFuture;
+/// persistence, on a connection that is already inside the closing transaction. The restore
+/// commits only together with the deletions that close the offer.
+pub type Restorer = for<'c> fn(&'c mut SqliteConnection, RecoveredRow) -> RestoreFuture<'c>;
 
 /// Restorers keyed by table name. A table without a restorer accepts no recovery choice.
 #[derive(Default)]
@@ -101,9 +101,9 @@ impl RecoveryRestorers {
 }
 
 /// Restores or discards a recovery offer, then closes it with deletions that cover every
-/// retained version. Restoring runs the table's registered restorer first, in its own
-/// transaction, and closing follows in a second one, so a failed restore leaves the offer
-/// open. Returns the id of the restored row.
+/// retained version. Reading the offer, restoring through the table's registered restorer, and
+/// closing share one transaction, so a failed restore or close leaves the offer open and no
+/// restored row behind. Returns the id of the restored row.
 pub async fn close(
     engine: &Engine,
     pool: &SqlitePool,
@@ -115,20 +115,24 @@ pub async fn close(
 ) -> Result<Option<String>, String> {
     let (table, row_key) = (choice.table, choice.row_key.as_str());
     let restorer = restorers.restorer(table)?;
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|error| format!("begin recovery close: {error}"))?;
     let restored = match choice.action {
         RecoveryAction::Discard => None,
         RecoveryAction::Restore => {
-            let row = recovered(engine, pool, table, row_key).await?;
-            Some(restorer(pool.clone(), row).await?)
+            let row = recovered(engine, &mut tx, table, row_key).await?;
+            Some(restorer(&mut tx, row).await?)
         }
     };
-    let report = {
-        let mut conn = acquire(pool).await?;
-        engine
-            .close_recovery(&mut conn, ctx, table, row_key, &mut writer.local(), now_ms)
-            .await
-            .map_err(|error| format!("close recovery offer: {error}"))?
-    };
+    let report = engine
+        .close_recovery(&mut tx, ctx, table, row_key, &mut writer.local(), now_ms)
+        .await
+        .map_err(|error| format!("close recovery offer: {error}"))?;
+    tx.commit()
+        .await
+        .map_err(|error| format!("commit recovery close: {error}"))?;
     if let Some(seq) = report.last_seq {
         writer.committed(seq)?;
     }
@@ -138,19 +142,18 @@ pub async fn close(
 /// Retained values of an offered row and its descendants.
 async fn recovered(
     engine: &Engine,
-    pool: &SqlitePool,
+    conn: &mut SqliteConnection,
     table: TableId,
     row_key: &str,
 ) -> Result<RecoveredRow, String> {
-    let mut conn = acquire(pool).await?;
     let closed = || "the recovery offer is closed".to_string();
     let values = engine
-        .recovery_values(&mut conn, table, row_key)
+        .recovery_values(conn, table, row_key)
         .await
         .map_err(|error| format!("read recovered values: {error}"))?
         .ok_or_else(closed)?;
     let descendants = engine
-        .recovery_descendants(&mut conn, table, row_key)
+        .recovery_descendants(conn, table, row_key)
         .await
         .map_err(|error| format!("read recovered descendants: {error}"))?
         .ok_or_else(closed)?;
@@ -160,19 +163,13 @@ async fn recovered(
     })
 }
 
-async fn acquire(pool: &SqlitePool) -> Result<PoolConnection<Sqlite>, String> {
-    pool.acquire()
-        .await
-        .map_err(|error| format!("acquire sync connection: {error}"))
-}
-
 #[cfg(test)]
 mod tests {
     use ganbaru_sync::manifest::vault::quick_notes::{NOTES, NOTES_TABLE, TAGS};
 
     use super::*;
 
-    fn refuse(_: SqlitePool, _: RecoveredRow) -> RestoreFuture {
+    fn refuse(_: &mut SqliteConnection, _: RecoveredRow) -> RestoreFuture<'_> {
         Box::pin(async { Err("refused".to_string()) })
     }
 

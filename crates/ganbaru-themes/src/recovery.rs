@@ -4,9 +4,9 @@ use ganbaru_sync::domains::themes::{ThemeContent, ThemeToken};
 use ganbaru_sync::manifest::vault::themes::group;
 use ganbaru_sync_contracts::{Field, GroupId, Value};
 use ring::rand::{SecureRandom, SystemRandom};
-use sqlx::SqlitePool;
+use sqlx::SqliteConnection;
 
-use super::{ThemePaletteWrite, ThemeTokenWrite, UserThemeWrite, insert};
+use super::{ThemePaletteWrite, ThemeTokenWrite, UserThemeWrite, insert_on};
 
 /// A random version 4 UUID, the form the frontend gives new user themes.
 fn new_theme_id() -> Result<String, String> {
@@ -51,9 +51,11 @@ fn palette_writes(palette: &[String]) -> Vec<ThemePaletteWrite> {
 
 /// Creates a new theme from the retained values of a deleted theme offered for recovery and
 /// returns its id. The recovered content also becomes the new theme's seed, as it does for an
-/// imported theme, so the restored theme starts with a seed of its own.
+/// imported theme, so the restored theme starts with a seed of its own. Inside an open
+/// transaction on `conn` the insert joins it as a savepoint, so the caller decides when it
+/// commits.
 pub async fn restore_recovered(
-    pool: &SqlitePool,
+    conn: &mut SqliteConnection,
     values: &[(GroupId, Value)],
 ) -> Result<String, String> {
     let mut display_name = None;
@@ -91,6 +93,6 @@ pub async fn restore_recovered(
         seed_palette: palette_writes(&content.palette),
         palette,
     };
-    insert(pool, &write).await?;
+    insert_on(conn, &write).await?;
     Ok(write.id)
 }

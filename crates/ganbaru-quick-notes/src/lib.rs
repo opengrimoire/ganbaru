@@ -11,7 +11,7 @@ use ganbaru_sync::manifest::vault::quick_notes::{NOTES_TABLE, note_group};
 use ganbaru_sync_contracts::{Field, GroupId, OrderKey, Value};
 use ring::rand::{SecureRandom, SystemRandom};
 use serde::{Deserialize, Serialize};
-use sqlx::{FromRow, QueryBuilder, Sqlite, SqlitePool, Transaction};
+use sqlx::{Connection, FromRow, QueryBuilder, Sqlite, SqliteConnection, SqlitePool, Transaction};
 
 mod conflicts;
 pub mod images;
@@ -763,9 +763,10 @@ fn new_note_id() -> Result<String, String> {
 }
 
 /// Creates an active, unpinned note from the retained values of a deleted note offered for
-/// recovery, first in its group. Returns the new note id.
+/// recovery, first in its group. Inside an open transaction on `conn` the insert joins it as a
+/// savepoint, so the caller decides when it commits. Returns the new note id.
 pub async fn restore_recovered(
-    pool: &SqlitePool,
+    conn: &mut SqliteConnection,
     values: &[(GroupId, Value)],
 ) -> Result<String, String> {
     let mut note = QuickNoteWrite {
@@ -787,7 +788,7 @@ pub async fn restore_recovered(
             _ => {}
         }
     }
-    let mut tx = pool
+    let mut tx = conn
         .begin()
         .await
         .map_err(|error| format!("begin quick note restore: {error}"))?;

@@ -32,3 +32,4 @@ keyring = { workspace = true }
 
 [dev-dependencies]
 ganbaru-quick-notes = { workspace = true }
+ganbaru-themes = { workspace = true }

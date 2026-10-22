@@ -20,7 +20,7 @@ use crate::adapter::{AdapterError, Adapters, DomainAdapter, Presentation};
 use crate::assets::AssetClass;
 use crate::domains::{vault_adapters, vault_hooks};
 use crate::hooks::{ChangeSink, HookFuture, MaterializeHook};
-use crate::manifest::vault::{VAULT_MANIFEST_VERSION, preferences, quick_notes};
+use crate::manifest::vault::{VAULT_MANIFEST_VERSION, preferences, quick_notes, themes};
 use crate::manifest::{
     AcyclicSpec, Collation, ColumnSpec, ColumnType, DerivedKey, DeviceTable, DomainManifest,
     DomainTrigger, GroupSpec, GroupStorage, KeyDerivedColumn, LocalColumn, Manifest, MergeKind,
@@ -1227,8 +1227,12 @@ pub(super) const FIXTURE_DOMAIN: DomainManifest = DomainManifest {
 };
 
 /// The vault domains followed by the fixture domain.
-pub(super) const TEST_DOMAINS: &[&DomainManifest] =
-    &[&quick_notes::DOMAIN, &preferences::DOMAIN, &FIXTURE_DOMAIN];
+pub(super) const TEST_DOMAINS: &[&DomainManifest] = &[
+    &quick_notes::DOMAIN,
+    &preferences::DOMAIN,
+    &themes::DOMAIN,
+    &FIXTURE_DOMAIN,
+];
 
 /// The manifest of [`TEST_DOMAINS`].
 pub(super) static TEST_MANIFEST: LazyLock<Manifest> =

@@ -7,12 +7,14 @@ use crate::manifest::vault::preferences::PREFERENCES_TABLE;
 pub mod music;
 pub mod preferences;
 pub mod quick_notes;
+pub mod themes;
 
 /// The adapters the vault manifest names, one line per domain.
 pub fn vault_adapters() -> Adapters {
     Adapters::new()
         .with(Box::new(quick_notes::QuickNotesAdapter))
         .with(Box::new(preferences::PreferencesAdapter))
+        .with(Box::new(themes::ThemesAdapter))
 }
 
 /// The hooks of the vault manifest's tables, one line per hooked table.

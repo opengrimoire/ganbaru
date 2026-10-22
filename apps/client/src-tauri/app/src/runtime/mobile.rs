@@ -16,7 +16,8 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
         .plugin(ganbaru_mobile_documents::init())
         .plugin(ganbaru_mobile_distractions::init())
         .plugin(ganbaru_mobile_media::init())
-        .plugin(ganbaru_mobile_notifications::init());
+        .plugin(ganbaru_mobile_notifications::init())
+        .plugin(ganbaru_mobile_sync::init());
     #[cfg(target_os = "ios")]
     let builder = builder
         .plugin(tauri_plugin_dialog::init())
@@ -444,6 +445,8 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
             vault::handoff::initialize(app.handle());
             #[cfg(target_os = "android")]
             vault::backup::recover_interrupted_restore_for_app(app.handle())?;
+            #[cfg(target_os = "android")]
+            crate::sync::headless::configure_background_at_start(app.handle());
             crate::sync::setup(app.handle());
             music::setup_youtube_host(app.handle())?;
             music::session::setup(app.handle());

@@ -6,6 +6,8 @@
 
 pub(crate) mod commands;
 pub(crate) mod devices;
+#[cfg(any(target_os = "android", test))]
+pub(crate) mod headless;
 mod host;
 mod recovery;
 mod service;

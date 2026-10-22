@@ -124,7 +124,7 @@ crates/
   ganbaru-themes/: Tauri-free user theme persistence, seed resets, upgrade dismissals, and row validation
   ganbaru-native-messaging/: ganbaru-native-messaging browser host binary
   ganbaru-linking-firewall/: root-run Linux helper binary for the device linking firewall rules, installed under /usr/lib/ganbaru/ and named by the PolicyKit policy
-  ganbaru-mobile-*/: Android plugins for documents, the distraction blocker, media, and notifications
+  ganbaru-mobile-*/: Android plugins for documents, the distraction blocker, media, notifications, and background sync
 extensions/chromium/: Chromium extension (manifest v3); chromium-dev/ is a generated, ignored dev copy
 Cargo.toml, rust-toolchain.toml, rustfmt.toml, turbo.json, pnpm-workspace.yaml, package.json: workspace configuration and root scripts
 ```

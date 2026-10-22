@@ -1742,6 +1742,7 @@ dependencies = [
  "ganbaru-mobile-documents",
  "ganbaru-mobile-media",
  "ganbaru-mobile-notifications",
+ "ganbaru-mobile-sync",
  "ganbaru-tauri-app",
  "serde_json",
  "tauri",
@@ -1943,6 +1944,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "ganbaru-mobile-sync"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "tauri",
+ "tauri-plugin",
+]
+
+[[package]]
 name = "ganbaru-music"
 version = "0.1.0"
 dependencies = [
@@ -2123,6 +2133,7 @@ dependencies = [
  "ganbaru-mobile-documents",
  "ganbaru-mobile-media",
  "ganbaru-mobile-notifications",
+ "ganbaru-mobile-sync",
  "ganbaru-music",
  "ganbaru-music-library",
  "ganbaru-music-player",

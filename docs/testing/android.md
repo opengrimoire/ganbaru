@@ -102,6 +102,16 @@ Runtime cases without the WebView are in [Distraction blocker runtime acceptance
 - Pairing and later authenticated reconnects work on a private LAN without internet access.
 - Run the complete [local vault handoff acceptance](vault-handoff.md).
 
+## Background sync
+
+- A change made on the phone reaches the coordinator after the app leaves the foreground, on Android 12 or newer and on Android 10 (no expedited work there).
+- With the app swiped away, the periodic pass exchanges within about 15 minutes on Wi-Fi, and no pass runs on cellular alone.
+- Joining a Wi-Fi network or changing addresses while the process runs triggers a pass; after a reboot, the periodic pass resumes without opening the app.
+- When the coordinator moved to another address while the phone was closed, a background pass finds it through discovery and exchanges.
+- Unlinking cancels both background jobs; force-stop stops them until the app opens again.
+- Background restriction and the restricted standby bucket are reported as degraded connectivity.
+- The installed APK's merged manifest declares no WorkManager foreground service, and no foreground service notification ever appears for sync.
+
 ## Security and artifact checks
 
 - No broad storage, package, overlay, capture, contact, microphone, or location permission. Camera access is limited to user-initiated QR pairing.

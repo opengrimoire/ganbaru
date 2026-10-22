@@ -13,6 +13,7 @@ Android requests access in context, only after the user enables a feature that n
 | Accessibility Service | Observe selected package transitions and perform Home for matching rules | No selected-app blocking; usage counting may remain if Usage Access is granted. |
 | Document tree and file grants | Import, restore, selected Music tree, and managed files | Only the selected action fails; no broad storage fallback is requested. |
 | Camera runtime permission | Scan a desktop pairing QR code while the user is on the linking screen | Linking remains available later from Data settings; no image or video is stored. |
+| Network state (`ACCESS_NETWORK_STATE`, normal permission) | Background sync network constraints and default network change triggers | Granted at install; there is no denial path. |
 
 ## Special-access disclosure
 
@@ -57,6 +58,8 @@ Release builds restrict Tauri's generated document-start scripts to the `tauri.l
 ## Native component exposure
 
 Services, receivers, providers, and activities are non-exported unless an operating-system integration requires exposure. Internal broadcasts use an app-signature permission. The Music playback service stays exported for system media controllers, which reach the media session only when they are the app or a trusted controller. The app holds a binding to the running service, so another app cannot stop playback with `stopService`; the binding is released when task removal stops a paused service the app started. Notification taps reach the app through non-exported route activities that record the tap target before opening the launcher, and the exported launcher ignores routing extras, so other apps cannot steer navigation. Document picker results are validated before they are read: only `content` URIs served by another app are opened, never file paths or the app's own providers. The provider chooser for text imports stays available.
+
+Background sync runs as WorkManager work and never as a foreground service: the app manifest removes WorkManager's foreground service, and a bundle contract fails if a merged manifest still declares it. WorkManager merges its own wake lock, boot completed, and foreground service permissions and its job components; the only exported ones are the job service, guarded by the system's job binding permission, and the diagnostics receiver, guarded by the dump permission. The worker reaches Rust through one JNI entry that takes the app config directory (at most 4 KiB) and optional discovery records (at most 16 KiB and 16 records, each with at most 8 addresses), validates them before use, reports panics as a failed pass, and keeps no JNI references after it returns. The plugin's commands are native-only; the mobile capability grants none of them.
 
 ## Secrets
 

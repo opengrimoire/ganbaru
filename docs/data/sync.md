@@ -217,6 +217,8 @@ Whole-block replacement is not a collaborative text protocol, and current Notes 
 
 Both enrolling devices show a verification code, and the existing device confirms before releasing vault keys. Direct connections use TLS 1.3 with pinned device identity, operations are signed, records and asset chunks use XChaCha20-Poly1305, and resource-key distribution uses HPKE with X25519 and HKDF-SHA256. Secrets live in native credential storage or Android Keystore wrapping. [HPKE](https://www.rfc-editor.org/rfc/rfc9180.html) alone does not provide authorization, replay protection, or downgrade protection, so the protocol composition needs review before transport is enabled.
 
+Mutual TLS with pinned device certificates is the confidentiality boundary for direct links over any allowed private or overlay range, and it is the only protection operations have today. Record encryption, when it lands, gates only intermediaries that store records, such as the relay or an anchor, never a direct link.
+
 Enrollment and revocation follow the anchor-sequenced authorization log in [Topology and authority](#topology-and-authority). A separate owner recovery identity and recovery kit receive resource-key envelopes. Revocation rotates affected keys and rejects new operations from the removed device; it cannot erase copies that device already holds.
 
 ### Contacts and contact requests
@@ -253,6 +255,7 @@ Android background sync uses WorkManager only and never a foreground service; th
 | Concurrent replication of Quick notes | Implemented | Physical multi-device acceptance |
 | Concurrent replication of portable preferences and the profile picture | Implemented | Physical multi-device acceptance |
 | Concurrent replication of user themes | Implemented | Physical multi-device acceptance |
+| Connectivity: address refresh, DNS-SD discovery, overlay networks, firewall scopes, and Android background sync | Implemented | Physical multi-device acceptance, including the first Android build of the background sync module |
 | Concurrent replication of other domains | Planned | Contacts, Projects, distraction rules and usage counters, Calendar, Focus history, Music library, Chat organizational content, Notes text and tree merging, managed assets, and retiring whole-vault handoff |
 | Concurrent secure local linking | Planned | Anchored authority with admin keys and late changes, LAN peer exchange, operation encryption, key lifecycle, typed bootstrap, and compaction |
 | Delivery beyond the LAN | Planned | Encrypted relay or always-on anchor, encrypted backup, measurements, and physical acceptance |

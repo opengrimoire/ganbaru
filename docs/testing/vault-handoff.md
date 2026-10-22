@@ -28,6 +28,20 @@
 - On Android, canceling the backup picker preserves the active vault. Restoring revokes old playback and notification surfaces before replacement.
 - A corrupt or incomplete archive is rejected before the active vault changes, and a later valid restore proceeds.
 
+## Connectivity cases
+
+Run with a Linux coordinator behind UFW or firewalld, a linked Windows desktop, and a linked phone; the coordinator and the phone also run Tailscale for the overlay case.
+
+- A new DHCP address in the same subnet: linked devices reconnect within one retry interval through the reported endpoints, with no new firewall prompt.
+- The coordinator moves to another subnet while the phone is closed: the phone's remembered endpoints fail, discovery finds the coordinator within about 5 seconds, and status shows the new address.
+- The coordinator on Wi-Fi and Ethernet at once: both addresses are reported, and linked devices keep using the last one that answered.
+- Devices on different networks that share a Tailscale network sync over `100.x` addresses, and status says overlay network.
+- A fresh firewall grant asks for the administrator password once and covers TCP and UDP on IPv4 and IPv6; the phone connects over unique local IPv6 where the network offers it.
+- Another device takes the coordinator's old address: the stale endpoint fails the pinned handshake, the dial moves on, and no error is shown.
+- A non-member device browsing `_ganbaru._tcp` over two hours sees two unrelated instance names and a random host name.
+- Windows Defender's program rule admits both listener sockets and DNS-SD, and the responder shares UDP 5353 with Avahi and the Windows mDNS service.
+- Removing the installed package removes every TCP and UDP rule the app added, on IPv4 and IPv6.
+
 ## Automated durability coverage
 
 Ownership tests inject failures before file replacement and during directory sync after replacement, for registration, outgoing commit, and incoming activation. Uncertain persistence never restores write authority, and restart reloads the committed generation. Quiescence tests cover concurrent operation rejection, fence release before reactivation, cancellation cleanup, and stalled-writer timeouts. These are filesystem-boundary tests, not proof of power-loss durability on every platform.

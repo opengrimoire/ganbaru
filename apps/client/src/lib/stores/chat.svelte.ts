@@ -854,11 +854,15 @@ export class ChatStore {
     this.channelNavigationController.closeArchive();
   }
 
-  async saveProvider(configuration: ProviderInstanceConfig): Promise<ProviderInstanceRead> {
+  async saveProvider(configuration: ProviderInstanceConfig): Promise<ProviderInstanceRead | null> {
     return this.configurationController.saveProvider(configuration);
   }
 
-  async testProvider(configuration: ProviderInstanceConfig): Promise<ProviderSetupTestRead> {
+  async confirmProviderRuntime(instanceId: ProviderInstanceId): Promise<ProviderInstanceRead | null> {
+    return this.configurationController.confirmProviderRuntime(instanceId);
+  }
+
+  async testProvider(configuration: ProviderInstanceConfig): Promise<ProviderSetupTestRead | null> {
     return this.configurationController.testProvider(configuration);
   }
 

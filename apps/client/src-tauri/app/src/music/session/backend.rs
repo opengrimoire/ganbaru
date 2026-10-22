@@ -88,6 +88,7 @@ pub(super) async fn apply(
     {
         let app = app.clone();
         tauri::async_runtime::spawn_blocking(move || {
+            authorize_local_source(&app, &effect)?;
             crate::music::player::apply_session_effect(
                 app.state::<crate::music::player::MediaPlayerState>()
                     .inner(),
@@ -111,6 +112,33 @@ pub(super) async fn apply(
         let _ = effect;
         Err("Native Music sessions are not supported on iOS".into())
     }
+}
+
+/// Refuses a local file that no grant or root binding on this device covers. Every native
+/// load passes here, so a webview queue, a restored checkpoint, or an automatic Focus context
+/// cannot open a path the user never chose. A refusal skips the source like a missing file.
+#[cfg(desktop)]
+fn authorize_local_source(app: &tauri::AppHandle, effect: &SessionEffect) -> Result<(), Failure> {
+    let Some(path) = local_file_to_authorize(effect) else {
+        return Ok(());
+    };
+    crate::music::path_authority::authorize(
+        app,
+        path,
+        crate::music::path_authority::MusicPathKind::File,
+    )
+    .map(|_| ())
+    .map_err(|error| Failure::Source(error.message().to_string()))
+}
+
+/// The local file a native effect would open. A local load without a path yields an empty
+/// path, which no grant covers, rather than skipping the check.
+#[cfg(any(desktop, test))]
+fn local_file_to_authorize(effect: &SessionEffect) -> Option<&str> {
+    let SessionEffect::Load { source, .. } = effect else {
+        return None;
+    };
+    (source.kind == SourceKind::LocalFile).then(|| source.path.as_deref().unwrap_or_default())
 }
 
 pub(super) fn effect_generation(effect: &SessionEffect) -> u64 {
@@ -239,5 +267,71 @@ mod tests {
             assert!(!failure.is_source_failure(), "{code}");
             assert_eq!(failure.to_string(), format!("context for {code}"));
         }
+    }
+
+    fn load(kind: SourceKind, path: Option<&str>) -> SessionEffect {
+        SessionEffect::Load {
+            session_id: "session".to_string(),
+            generation: 3,
+            source: Box::new(SessionSource {
+                kind,
+                identity: "source".to_string(),
+                original_input: String::new(),
+                title: "Track".to_string(),
+                artist: None,
+                album: None,
+                path: path.map(str::to_string),
+                artwork_path: None,
+                video_id: None,
+                playlist_id: None,
+                start_ms: None,
+                end_ms: None,
+            }),
+            backend: SessionBackend::NativeAudio,
+            position_ms: 0,
+            autoplay: true,
+            volume: 1.0,
+            muted: false,
+            rate: 1.0,
+        }
+    }
+
+    #[test]
+    fn every_local_file_load_is_checked_against_the_music_grants() {
+        assert_eq!(
+            local_file_to_authorize(&load(SourceKind::LocalFile, Some("/music/a.flac"))),
+            Some("/music/a.flac")
+        );
+        assert_eq!(
+            local_file_to_authorize(&load(SourceKind::LocalFile, None)),
+            Some(""),
+            "a local load without a path still goes through the grant check"
+        );
+        assert_eq!(
+            local_file_to_authorize(&load(SourceKind::YoutubeVideo, Some("/music/a.flac"))),
+            None
+        );
+        assert_eq!(
+            local_file_to_authorize(&SessionEffect::Play { generation: 3 }),
+            None
+        );
+    }
+
+    #[test]
+    fn native_desktop_effects_are_authorized_before_the_player_applies_them() {
+        let source = include_str!("backend.rs");
+        let start = source
+            .find("pub(super) async fn apply(")
+            .expect("apply exists");
+        let end = start + source[start..].find("\n}\n").expect("apply ends");
+        let desktop = &source[start..end];
+        let desktop = &desktop[desktop.find("#[cfg(desktop)]").expect("desktop branch")..];
+        let check = desktop
+            .find("authorize_local_source(&app, &effect)?;")
+            .expect("the desktop branch authorizes local sources");
+        let player = desktop
+            .find("apply_session_effect(")
+            .expect("the desktop branch applies the effect");
+        assert!(check < player);
     }
 }

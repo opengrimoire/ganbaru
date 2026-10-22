@@ -28,6 +28,38 @@ internal class AttachSessionArgs {
   lateinit var channel: Channel
 }
 
+@InvokeArg
+internal open class YouTubeInstanceArgs {
+  lateinit var instance: String
+}
+
+@InvokeArg
+internal open class YouTubeBoundsArgs : YouTubeInstanceArgs() {
+  var x: Double = 0.0
+  var y: Double = 0.0
+  var width: Double = 1.0
+  var height: Double = 1.0
+  var scale: Double = 1.0
+  var visible: Boolean = false
+
+  fun bounds() = YouTubeHostBounds(x, y, width, height, scale)
+}
+
+@InvokeArg
+internal class YouTubeOpenArgs : YouTubeBoundsArgs() {
+  lateinit var url: String
+  lateinit var origin: String
+  lateinit var path: String
+  lateinit var html: String
+  lateinit var contentSecurityPolicy: String
+  lateinit var channel: Channel
+}
+
+@InvokeArg
+internal class YouTubePostArgs : YouTubeInstanceArgs() {
+  lateinit var message: String
+}
+
 private val supportedAudioExtensions = setOf(
   "aac", "aif", "aiff", "alac", "flac", "m4a", "mp3", "ogg", "opus", "wav", "wma",
 )
@@ -91,6 +123,53 @@ class MobileMediaPlugin(private val activity: Activity) : Plugin(activity) {
       NativeMusicSession.attach(activity.applicationContext, invoke.parseArgs(AttachSessionArgs::class.java).channel)
       invoke.resolve()
     } catch (error: Exception) { invoke.reject("Attach native music session: ${error.message}") }
+  }
+
+  private val youtubeHosts = YouTubeHostViews(activity)
+
+  @Command
+  fun youtubeOpen(invoke: Invoke) {
+    val args = invoke.parseArgs(YouTubeOpenArgs::class.java)
+    onUiThread(invoke, "Open YouTube host") {
+      youtubeHosts.open(
+        args.instance,
+        YouTubeHostPage(args.url, args.origin, args.path, args.html, args.contentSecurityPolicy),
+        args.bounds(),
+        args.visible,
+        args.channel,
+      )
+    }
+  }
+
+  @Command
+  fun youtubeBounds(invoke: Invoke) {
+    val args = invoke.parseArgs(YouTubeBoundsArgs::class.java)
+    onUiThread(invoke, "Move YouTube host") { youtubeHosts.setBounds(args.instance, args.bounds(), args.visible) }
+  }
+
+  @Command
+  fun youtubePost(invoke: Invoke) {
+    val args = invoke.parseArgs(YouTubePostArgs::class.java)
+    onUiThread(invoke, "Message YouTube host") { youtubeHosts.post(args.instance, args.message) }
+  }
+
+  @Command
+  fun youtubeClose(invoke: Invoke) {
+    val args = invoke.parseArgs(YouTubeInstanceArgs::class.java)
+    onUiThread(invoke, "Close YouTube host") { youtubeHosts.close(args.instance) }
+  }
+
+  override fun onDestroy() {
+    activity.runOnUiThread { youtubeHosts.closeAll() }
+  }
+
+  private fun onUiThread(invoke: Invoke, action: String, block: () -> Unit) {
+    activity.runOnUiThread {
+      try {
+        block()
+        invoke.resolve()
+      } catch (error: Exception) { invoke.reject("$action: ${error.message}") }
+    }
   }
 
   private var pendingTreePick: PendingTreePick? = null

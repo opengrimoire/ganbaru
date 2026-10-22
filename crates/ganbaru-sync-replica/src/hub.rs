@@ -1,10 +1,17 @@
 //! The hub side of sync. The coordinator stores what linked devices push, serves what they pull,
 //! and answers long polls when its log grows. Its own service applies what the hub stores.
 
-use super::wire::{
-    hash_to_wire, ops_from_wire, ops_to_wire, vector_from_wire, vector_to_wire, writer_from_wire,
+use super::assets::{
+    ASSET_UNAVAILABLE, INVALID_ASSET, ImageStore, blocking, describe_store_error, partition_held,
 };
-use ganbaru_handoff::protocol::{ControlMessage, SyncRefusal, SyncRefusalCode};
+use super::wire::{
+    asset_from_wire, bytes_from_wire, bytes_to_wire, hash_to_wire, ops_from_wire, ops_to_wire,
+    vector_from_wire, vector_to_wire, writer_from_wire,
+};
+use ganbaru_handoff::protocol::{
+    ControlMessage, SYNC_ASSET_CHUNK_BYTES, SyncAsset, SyncRefusal, SyncRefusalCode,
+};
+use ganbaru_quick_notes::images::{QuickNoteImageError, ReferencedImage};
 use ganbaru_sync::{Engine, SpaceContext, StoreOutcome, StoreRefusal, local};
 use ganbaru_sync_contracts::{Envelope, Seq, VersionVector, WriterId};
 use sqlx::SqlitePool;
@@ -12,17 +19,24 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::sync::watch;
 
 /// How long a wait is held before the hub answers with its unchanged state. It stays below the
 /// control timeout of the transport.
 pub const WAIT_TIMEOUT: Duration = Duration::from_secs(12);
+/// How long a pending upload survives without a new chunk. A peer that disconnected mid-upload
+/// restarts from the beginning, and its received bytes do not stay in memory.
+const UPLOAD_IDLE_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 
 /// The vault database the hub serves.
 pub struct HubVault {
     pub pool: SqlitePool,
     pub vault_id: String,
+    /// Device id of the coordinator whose writers may revoke: the hub's own device.
+    pub device_id: String,
+    /// The vault's Quick note image files.
+    pub images: Arc<dyn ImageStore>,
 }
 
 /// Opens the vault the hub serves, or `None` while it cannot replicate.
@@ -74,6 +88,24 @@ pub struct SyncHub {
     changes: watch::Sender<u64>,
     /// The current wait of each peer; a newer wait ends the older one.
     waits: Arc<Mutex<HashMap<String, u64>>>,
+    /// The image each peer is uploading; a peer uploads one at a time.
+    uploads: Arc<Mutex<HashMap<String, PendingUpload>>>,
+}
+
+/// The received prefix of an upload.
+struct PendingUpload {
+    sha256: String,
+    bytes: Vec<u8>,
+    /// When the last chunk arrived.
+    touched: Instant,
+}
+
+/// Where an upload chunk leaves the peer's pending upload.
+enum UploadStep {
+    /// Bytes received so far, where the next chunk starts.
+    Partial(u32),
+    /// Every byte arrived and awaits verification.
+    Complete(Vec<u8>),
 }
 
 impl SyncHub {
@@ -82,6 +114,7 @@ impl SyncHub {
             open,
             changes,
             waits: Arc::default(),
+            uploads: Arc::default(),
         }
     }
 
@@ -116,7 +149,7 @@ impl SyncHub {
         }
         let ctx = {
             let mut conn = acquire(&vault.pool).await?;
-            local::space_context(&mut conn, &vault_id)
+            local::space_context(&mut conn, &vault_id, &vault.device_id)
                 .await
                 .map_err(|error| HubError::failed(format!("read sync space: {error}")))?
         };
@@ -125,12 +158,28 @@ impl SyncHub {
                 "the hub vault has no person identity",
             ));
         };
+        let images = vault.images;
         let hub = HubSession {
             engine: Engine::vault(),
             pool: vault.pool,
             ctx,
         };
         match request {
+            ControlMessage::SyncAssetQuery { assets, .. } => asset_presence(&images, &assets).await,
+            ControlMessage::SyncAssetGet { asset, offset, .. } => {
+                asset_chunk(&images, &asset, offset).await
+            }
+            ControlMessage::SyncAssetPut {
+                asset,
+                offset,
+                data,
+                ..
+            } => {
+                let image = asset_from_wire(&asset).map_err(invalid)?;
+                let data = bytes_from_wire(&data).map_err(invalid)?;
+                self.receive(&images, &device_id, &image, offset, data)
+                    .await
+            }
             ControlMessage::SyncHello { probe, .. } => {
                 let probe = match probe {
                     Some(probe) => {
@@ -218,6 +267,150 @@ impl SyncHub {
         }
         result
     }
+
+    /// Adds an upload chunk of a peer. A chunk at offset 0 starts the upload over; a chunk
+    /// that does not continue the pending upload is answered with where it does continue. The
+    /// complete image is verified against its reference before it is stored.
+    async fn receive(
+        &self,
+        images: &Arc<dyn ImageStore>,
+        device_id: &str,
+        image: &ReferencedImage,
+        offset: u32,
+        data: Vec<u8>,
+    ) -> Result<ControlMessage, HubError> {
+        let size = image.byte_size();
+        if offset == 0 {
+            let held = {
+                let image = image.clone();
+                blocking(images, move |store| store.holds(&image)).await
+            }
+            .map_err(store_failure)?;
+            if held {
+                self.drop_upload(device_id)?;
+                return Ok(ControlMessage::SyncAssetReceived { received: size });
+            }
+        }
+        let step = {
+            let mut uploads = self
+                .uploads
+                .lock()
+                .map_err(|_| HubError::failed("sync upload lock is unavailable"))?;
+            let sha256 = image.file().sha256();
+            let now = Instant::now();
+            uploads.retain(|_, pending| now.duration_since(pending.touched) < UPLOAD_IDLE_TIMEOUT);
+            if offset == 0 {
+                uploads.insert(
+                    device_id.to_string(),
+                    PendingUpload {
+                        sha256: sha256.to_string(),
+                        bytes: Vec::with_capacity(size as usize),
+                        touched: now,
+                    },
+                );
+            }
+            match uploads.get_mut(device_id) {
+                Some(pending)
+                    if pending.sha256 == sha256 && pending.bytes.len() == offset as usize =>
+                {
+                    pending.touched = now;
+                    if pending.bytes.len() + data.len() > size as usize {
+                        uploads.remove(device_id);
+                        return Err(invalid("sync asset chunk ends past the asset".to_string()));
+                    }
+                    pending.bytes.extend_from_slice(&data);
+                    if pending.bytes.len() == size as usize {
+                        let bytes = std::mem::take(&mut pending.bytes);
+                        uploads.remove(device_id);
+                        UploadStep::Complete(bytes)
+                    } else {
+                        UploadStep::Partial(pending.bytes.len() as u32)
+                    }
+                }
+                Some(pending) if pending.sha256 == sha256 => {
+                    UploadStep::Partial(pending.bytes.len() as u32)
+                }
+                _ => UploadStep::Partial(0),
+            }
+        };
+        let bytes = match step {
+            UploadStep::Partial(received) => {
+                return Ok(ControlMessage::SyncAssetReceived { received });
+            }
+            UploadStep::Complete(bytes) => bytes,
+        };
+        let stored = {
+            let image = image.clone();
+            blocking(images, move |store| store.store(&image, &bytes)).await
+        };
+        match stored {
+            Ok(()) => Ok(ControlMessage::SyncAssetReceived { received: size }),
+            Err(QuickNoteImageError::Failed(message)) => Err(HubError::failed(message)),
+            Err(error) => Err(HubError::rejected(
+                INVALID_ASSET,
+                describe_store_error(error),
+            )),
+        }
+    }
+
+    fn drop_upload(&self, device_id: &str) -> Result<(), HubError> {
+        self.uploads
+            .lock()
+            .map_err(|_| HubError::failed("sync upload lock is unavailable"))?
+            .remove(device_id);
+        Ok(())
+    }
+}
+
+/// Digests of the queried images the hub holds.
+async fn asset_presence(
+    images: &Arc<dyn ImageStore>,
+    assets: &[SyncAsset],
+) -> Result<ControlMessage, HubError> {
+    let references = assets
+        .iter()
+        .map(asset_from_wire)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(invalid)?;
+    let (held, _) = partition_held(images, references)
+        .await
+        .map_err(store_failure)?;
+    Ok(ControlMessage::SyncAssetPresence {
+        held: held
+            .into_iter()
+            .map(|image| image.file().sha256().to_string())
+            .collect(),
+    })
+}
+
+/// A chunk of an image the hub holds. The receiver verifies the assembled bytes.
+async fn asset_chunk(
+    images: &Arc<dyn ImageStore>,
+    asset: &SyncAsset,
+    offset: u32,
+) -> Result<ControlMessage, HubError> {
+    let image = asset_from_wire(asset).map_err(invalid)?;
+    let chunk = blocking(images, move |store| {
+        store.read_chunk(&image, offset, SYNC_ASSET_CHUNK_BYTES)
+    })
+    .await;
+    match chunk {
+        Ok(chunk) => Ok(ControlMessage::SyncAssetChunk {
+            data: bytes_to_wire(&chunk),
+        }),
+        Err(QuickNoteImageError::Unavailable) => Err(HubError::rejected(
+            ASSET_UNAVAILABLE,
+            "the hub does not hold this image",
+        )),
+        Err(error) => Err(store_failure(error)),
+    }
+}
+
+fn store_failure(error: QuickNoteImageError) -> HubError {
+    HubError::failed(format!(
+        "quick note images: {}",
+        describe_store_error(error)
+    ))
 }
 
 /// One request against the hub vault.
@@ -400,7 +593,9 @@ fn refusal_to_wire(refusal: StoreRefusal, writer: WriterId, seq: Seq) -> SyncRef
         StoreRefusal::Malformed
         | StoreRefusal::WrongSpace
         | StoreRefusal::BadSignature
-        | StoreRefusal::Untrusted => (SyncRefusalCode::Invalid, seq),
+        | StoreRefusal::Untrusted
+        | StoreRefusal::UnauthorizedRevoke => (SyncRefusalCode::Invalid, seq),
+        StoreRefusal::WriterLimit => (SyncRefusalCode::WriterLimit, seq),
     };
     SyncRefusal {
         code,

@@ -12,7 +12,7 @@ async fn guard(pool: &SqlitePool) -> usize {
 }
 
 async fn refusal(pool: &SqlitePool, sql: &str) -> String {
-    match sqlx::raw_sql(sql).execute(pool).await {
+    match sqlx::raw_sql(sqlx::AssertSqlSafe(sql)).execute(pool).await {
         Ok(_) => panic!("guarded write succeeded: {sql}"),
         Err(error) => error.to_string(),
     }

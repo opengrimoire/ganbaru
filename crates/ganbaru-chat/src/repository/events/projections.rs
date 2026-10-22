@@ -93,7 +93,8 @@ pub(in crate::repository) async fn apply_projection(
                     model_selection_data = excluded.model_selection_data,
                     safety_mode = excluded.safety_mode,
                     interaction_mode = excluded.interaction_mode,
-                    updated_at = excluded.updated_at",
+                    updated_at = excluded.updated_at
+                 WHERE chat_turns.thread_id = excluded.thread_id",
             )
             .bind(turn_id)
             .bind(thread_id)
@@ -261,7 +262,8 @@ pub(in crate::repository) async fn apply_projection(
                      VALUES (?, ?, ?, ?, 'assistant', ?, 'streaming', ?, ?, ?)
                      ON CONFLICT(id) DO UPDATE SET
                         normalized_markdown = chat_messages.normalized_markdown || excluded.normalized_markdown,
-                        updated_at = excluded.updated_at",
+                        updated_at = excluded.updated_at
+                     WHERE chat_messages.thread_id = excluded.thread_id",
                 )
                 .bind(item_id)
                 .bind(thread_id)
@@ -286,7 +288,7 @@ pub(in crate::repository) async fn apply_projection(
                          latest_preview = (
                              SELECT substr(normalized_markdown, -2000)
                              FROM chat_messages
-                             WHERE id = ?
+                             WHERE id = ? AND thread_id = chat_threads.id
                          )
                      WHERE id = ?",
                 )
@@ -335,7 +337,8 @@ pub(in crate::repository) async fn apply_projection(
                         END,
                         streaming_state = excluded.streaming_state,
                         content_metadata_data = excluded.content_metadata_data,
-                        updated_at = excluded.updated_at",
+                        updated_at = excluded.updated_at
+                     WHERE chat_messages.thread_id = excluded.thread_id",
                 )
                 .bind(&event.item_id)
                 .bind(thread_id)
@@ -368,7 +371,8 @@ pub(in crate::repository) async fn apply_projection(
                     title = excluded.title,
                     detail = COALESCE(NULLIF(excluded.detail, ''), chat_activities.detail),
                     safe_metadata_data = excluded.safe_metadata_data,
-                    updated_at = excluded.updated_at",
+                    updated_at = excluded.updated_at
+                 WHERE chat_activities.thread_id = excluded.thread_id",
                 )
                 .bind(&event.item_id)
                 .bind(thread_id)
@@ -410,6 +414,8 @@ pub(in crate::repository) async fn apply_projection(
                     "detail": event.detail,
                     "kind": event.kind,
                     "payload": event.safe_payload,
+                    "subject": event.subject,
+                    "sessionGrants": event.session_grants,
                 }))
                 .map_err(serialization_error)?,
             )
@@ -469,7 +475,8 @@ pub(in crate::repository) async fn apply_projection(
                      state, created_at, updated_at)
                  VALUES (?, ?, ?, ?, ?, 'proposed', ?, ?)
                  ON CONFLICT(id) DO UPDATE SET markdown = chat_plans.markdown || excluded.markdown,
-                    updated_at = excluded.updated_at",
+                    updated_at = excluded.updated_at
+                 WHERE chat_plans.thread_id = excluded.thread_id",
             )
             .bind(&event.plan_id)
             .bind(thread_id)
@@ -518,7 +525,8 @@ pub(in crate::repository) async fn apply_projection(
                          'thread_reverted', ?, ?, ?)
                  ON CONFLICT(id) DO UPDATE SET
                     safe_metadata_data = excluded.safe_metadata_data,
-                    updated_at = excluded.updated_at",
+                    updated_at = excluded.updated_at
+                 WHERE chat_activities.thread_id = excluded.thread_id",
             )
             .bind(format!("activity:{}", runtime.event_id.as_str()))
             .bind(thread_id)
@@ -571,7 +579,8 @@ async fn upsert_activity_detail(
                 WHEN excluded.item_kind = 'reasoning_text' THEN chat_activities.detail
                 ELSE COALESCE(chat_activities.detail, '') || COALESCE(excluded.detail, '')
             END,
-            updated_at = excluded.updated_at",
+            updated_at = excluded.updated_at
+         WHERE chat_activities.thread_id = excluded.thread_id",
     )
     .bind(item_id)
     .bind(runtime.thread_id.as_str())

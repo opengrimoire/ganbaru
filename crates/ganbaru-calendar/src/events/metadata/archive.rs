@@ -110,7 +110,7 @@ macro_rules! archive_row {
     ($tx:expr, $table:literal, {$($field:ident: $value:expr),+ $(,)?}) => {{
         let columns = &[$(stringify!($field)),+];
         let sql = format!("INSERT INTO {} ({}) VALUES ({})", $table, columns.join(", "), vec!["?"; columns.len()].join(", "));
-        sqlx::query(&sql)$(.bind($value))+.execute(&mut **$tx).await
+        sqlx::query(sqlx::AssertSqlSafe(sql.as_str()))$(.bind($value))+.execute(&mut **$tx).await
             .map_err(|error| format!("write Calendar archive {}: {error}", $table))?;
     }};
 }
@@ -191,7 +191,7 @@ impl PreparedArchive {
             archive_row!(tx, "calendar_event_archive_pomodoro_config_sequence_steps", {archive_event_id: id, step_index: row.step_index, focus_duration_minutes: row.focus_duration_minutes, break_phase: &row.break_phase, break_duration_minutes: row.break_duration_minutes});
         }
         for row in &self.metadata.music_assignments {
-            archive_row!(tx, "calendar_event_archive_music_assignments", {archive_event_id: id, owner_kind: &row.owner_kind, phase: &row.phase, behavior: &row.behavior, playlist_id: &row.playlist_id, soundscape_id: &row.soundscape_id, provenance_kind: &row.provenance_kind, provenance_id: &row.provenance_id, updated_at_ms: row.updated_at_ms, version: row.version, soundscape_behavior: &row.soundscape_behavior});
+            archive_row!(tx, "calendar_event_archive_music_assignments", {archive_event_id: id, owner_kind: &row.owner_kind, phase: &row.phase, behavior: &row.behavior, playlist_id: &row.playlist_id, provenance_kind: &row.provenance_kind, provenance_id: &row.provenance_id, updated_at_ms: row.updated_at_ms, version: row.version, soundscape_behavior: &row.soundscape_behavior, soundscape_preset_id: &row.soundscape_preset_id});
         }
         for row in &self.metadata.task_links {
             archive_row!(tx, "calendar_event_archive_task_links", {archive_event_id: id, task_id: &row.task_id, link_kind: &row.link_kind, created_at: &row.created_at});

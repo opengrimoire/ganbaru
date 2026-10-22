@@ -46,6 +46,8 @@ export interface ChatReviewFileFlags {
   pureRename: boolean;
   untracked: boolean;
   symlink: boolean;
+  /** Left out of the snapshot because the file is too large to review. */
+  tooLarge: boolean;
   providerReported: boolean;
   gitObserved: boolean;
   readOnly: boolean;

@@ -18,6 +18,13 @@
     </queries>
 
     <application>
+        <activity
+            android:name="org.opengrimoire.ganbaru.mobile.distractions.DistractionsNotificationRouteActivity"
+            android:excludeFromRecents="true"
+            android:exported="false"
+            android:noHistory="true"
+            android:taskAffinity=""
+            android:theme="@android:style/Theme.NoDisplay" />
         <provider
             android:name="org.opengrimoire.ganbaru.mobile.distractions.DistractionsGuardianProvider"
             android:authorities="${applicationId}.ganbaru.guardian.distractions"

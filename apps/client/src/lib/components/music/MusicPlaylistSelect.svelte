@@ -31,6 +31,7 @@
     loading = false,
     emptyLabel,
     class: className = "",
+    triggerClass = "",
   }: {
     value: string | null;
     playlists: readonly MusicPlaylistSummary[];
@@ -40,6 +41,8 @@
     loading?: boolean;
     emptyLabel?: string;
     class?: string;
+    /** Classes merged into the trigger so a host surface can match its own controls. */
+    triggerClass?: string;
   } = $props();
 
   const localization = getLocalization();
@@ -192,10 +195,11 @@
     aria-label={label}
     class={cn(
       "flex h-7 w-full min-w-0 items-center gap-2 rounded-md border border-border bg-card px-2.5 text-left text-[0.8rem] font-medium text-foreground transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:hover:bg-card dark:bg-transparent dark:disabled:hover:bg-transparent",
+      triggerClass,
       missing && "text-warning-foreground ring-1 ring-warning/55",
     )}
   >
-    {#if missing}<AlertTriangle size={14} class="shrink-0 text-warning" />{:else if value === null}<VolumeX size={14} strokeWidth={1.5} class="shrink-0 text-muted-foreground" />{:else}<ListMusic size={14} strokeWidth={1.5} class="shrink-0 text-muted-foreground" />{/if}
+    {#if missing}<AlertTriangle size={14} class="shrink-0 text-warning" />{:else if value === null}<VolumeX size={14} strokeWidth={1.5} class="shrink-0 text-muted-foreground" />{:else if selected}<span class="grid size-3.5 shrink-0 place-items-center text-muted-foreground"><MusicPlaylistIcon icon={selected.icon} size={14} strokeWidth={1.5} /></span>{:else}<ListMusic size={14} strokeWidth={1.5} class="shrink-0 text-muted-foreground" />{/if}
     <span class="min-w-0 flex-1 truncate">{#if loading}<Loading layout="inline" label={t("music.assignment.loadingPlaylists")} />{:else}{missing ?t("music.assignment.missingPlaylist") : selected ? systemMusicPlaylistName(selected.id, selected.name, t) : noneLabel}{/if}</span>
     <ChevronDown size={13} strokeWidth={2} class={cn("shrink-0 text-muted-foreground transition-transform", open && "rotate-180")} />
   </button>
@@ -233,8 +237,8 @@
         <button type="button" role="option" aria-selected={value === playlist.id} onclick={() => choose(playlist.id)} class="menu-item">
           <span class="grid size-4 shrink-0 place-items-center"><MusicPlaylistIcon icon={playlist.icon} size={15} /></span>
           <span class="min-w-0 flex-1 truncate font-medium">{systemMusicPlaylistName(playlist.id, playlist.name, t)}</span>
-          <span class="shrink-0 text-panel-detail tabular-nums text-muted-foreground">{formatNumber(localization.locale, playlist.totalCount)}</span>
           {#if value === playlist.id}<Check size={14} />{/if}
+          <span class="shrink-0 text-panel-detail tabular-nums text-muted-foreground">{formatNumber(localization.locale, playlist.totalCount)}</span>
         </button>
       {:else}
         <p class="px-3 py-6 text-center text-muted-foreground">{t("music.assignment.noPlaylistMatches")}</p>

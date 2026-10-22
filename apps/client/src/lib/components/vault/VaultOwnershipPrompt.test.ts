@@ -41,6 +41,7 @@ function pairingStatus(canWrite: boolean): PairingStatus {
     replicaReady: true,
     pendingTransfer: false,
     canInvite: false,
+    untouchedStarterVault: false,
   };
 }
 

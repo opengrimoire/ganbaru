@@ -4,7 +4,7 @@ use crate::links::{
 use crate::models::NoteHtmlExportDiagnosticDto;
 use crate::transfers::html_export::format::{escape_attr, escape_html, relative_link};
 use crate::transfers::html_export::{ExportBlock, ExportCommentThread, ExportDatabase, ExportPage};
-use crate::validation::rich_text_items_plain_text;
+use crate::validation::{is_exportable_web_reference_url, rich_text_items_plain_text};
 use serde_json::Value;
 use std::collections::HashMap;
 
@@ -270,14 +270,6 @@ impl HtmlRenderer<'_> {
             .get("url")
             .and_then(Value::as_str)
             .unwrap_or_default();
-        if !safe_href(url) {
-            self.warn_block(
-                block,
-                "html_export_external_reference_skipped",
-                "External reference URL was not safe to export",
-            );
-            return tag("p", &escape_html(&block.row.block_type));
-        }
         let label = block
             .payload
             .get("caption")
@@ -285,9 +277,22 @@ impl HtmlRenderer<'_> {
             .map(|items| rich_text_items_plain_text(items))
             .filter(|value| !value.trim().is_empty())
             .unwrap_or_else(|| url.to_string());
+        if !is_exportable_web_reference_url(&block.row.block_type, url) {
+            self.warn_block(
+                block,
+                "html_export_external_reference_skipped",
+                "External reference URL was not safe to export",
+            );
+            let text = if label.trim().is_empty() {
+                &block.row.block_type
+            } else {
+                &label
+            };
+            return tag("p", &escape_html(text));
+        }
         format!(
             "<p><a href=\"{}\">{}</a></p>",
-            escape_attr(url),
+            escape_attr(url.trim()),
             escape_html(&label)
         )
     }

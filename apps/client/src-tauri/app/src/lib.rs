@@ -10,9 +10,15 @@ mod chat;
 mod contacts;
 mod db;
 mod distractions;
+#[cfg(desktop)]
+mod file_drops;
 #[cfg(all(test, desktop))]
 mod first_use_contracts;
 mod music;
+#[cfg(desktop)]
+mod native_dialogs;
+#[cfg(desktop)]
+mod navigation_guard;
 mod notes;
 mod notifications;
 mod pomodoro;
@@ -40,8 +46,3 @@ fn install_default_tls_crypto_provider() {
 mod runtime;
 
 pub use runtime::run;
-
-#[cfg(target_os = "linux")]
-pub fn run_privileged_helper_if_requested() -> Option<Result<(), String>> {
-    vault::handoff::run_privileged_helper_if_requested()
-}

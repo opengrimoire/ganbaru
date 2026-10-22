@@ -2,6 +2,7 @@
 
 use super::models::{
     ChatError, ChatErrorCode, ChatResult, CredentialReferenceId, ProviderInstanceConfig,
+    ProviderInstanceId,
 };
 use serde::Serialize;
 use std::fmt;
@@ -98,10 +99,55 @@ pub trait CredentialStore: Send + Sync {
     fn remove(&self, reference: &CredentialReferenceId) -> Result<bool, CredentialStoreError>;
 }
 
+/// The only credential reference a provider instance may use for one environment variable.
+///
+/// Rust derives references from the instance and variable name, so a configuration cannot name
+/// another instance's secret or a source-control credential.
+pub fn provider_credential_reference(
+    instance_id: &ProviderInstanceId,
+    environment_name: &str,
+) -> ChatResult<CredentialReferenceId> {
+    let mut characters = environment_name.chars();
+    let valid_name = characters
+        .next()
+        .is_some_and(|character| character == '_' || character.is_ascii_alphabetic())
+        && characters.all(|character| character == '_' || character.is_ascii_alphanumeric());
+    if !valid_name {
+        return Err(ChatError::validation(
+            "environmentName",
+            "environment variable names use ASCII letters, digits, and underscores",
+        ));
+    }
+    CredentialReferenceId::new(format!(
+        "provider:{}:environment:{environment_name}",
+        instance_id.as_str()
+    ))
+    .map_err(|_| ChatError::validation("environmentName", "credential reference is invalid"))
+}
+
+/// Whether `reference` is the derived reference for this instance and variable.
+pub fn is_provider_credential_reference(
+    instance_id: &ProviderInstanceId,
+    environment_name: &str,
+    reference: &CredentialReferenceId,
+) -> bool {
+    provider_credential_reference(instance_id, environment_name)
+        .is_ok_and(|expected| &expected == reference)
+}
+
 pub fn materialize_provider_environment(
     configuration: &ProviderInstanceConfig,
     store: &impl CredentialStore,
 ) -> ChatResult<ProviderInstanceConfig> {
+    for (name, reference) in &configuration.credential_references {
+        if !is_provider_credential_reference(&configuration.instance_id, name, reference) {
+            return Err(ChatError::new(
+                ChatErrorCode::ConfigurationInvalid,
+                format!("Stored credential reference for {name} does not belong to this provider"),
+                true,
+            ));
+        }
+    }
     let mut resolved = configuration.clone();
     for (name, value) in &configuration.environment {
         let Some(inherited_name) = value.strip_prefix("inherit:") else {

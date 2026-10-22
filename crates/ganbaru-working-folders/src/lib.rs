@@ -1,6 +1,13 @@
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 use std::{collections::BTreeMap, fmt};
 
+mod managed_folder;
+
+pub use managed_folder::{
+    MANAGED_PROJECTS_DIRECTORY, managed_project_relative_path, resolve_managed_project_folder,
+    validate_managed_folder_name,
+};
+
 const MAX_IDENTIFIER_BYTES: usize = 1_024;
 
 /// Stable identifier for a project working folder.
@@ -147,12 +154,32 @@ where
     Option::<T>::deserialize(deserializer)
 }
 
+/// Device-local decision about whether a bound folder's repository programs,
+/// hooks, and provider configuration may run.
+///
+/// The decision covers the configuration whose digests it records. When the
+/// folder's configuration changes, the decision no longer applies and the
+/// folder runs untrusted until the user decides again.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkingFolderTrustRecord {
+    /// Hexadecimal digest of repository programs and hooks.
+    pub git_configuration_digest: String,
+    /// Hexadecimal digest of project provider configuration.
+    pub provider_configuration_digest: String,
+    pub trusted: bool,
+    pub decided_at: UtcTimestamp,
+}
+
 /// Device-local working-folder bindings and project selections for one scope.
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkingFolderDeviceScope {
     pub bindings: BTreeMap<ProjectWorkingFolderId, ProjectWorkingFolderBindingState>,
     pub last_selected_by_project: BTreeMap<String, ProjectWorkingFolderId>,
+    /// Trust decisions by folder. A folder without a record is untrusted.
+    #[serde(default)]
+    pub trust: BTreeMap<ProjectWorkingFolderId, WorkingFolderTrustRecord>,
 }
 
 /// Versioned working-folder device state partitioned by vault and device.

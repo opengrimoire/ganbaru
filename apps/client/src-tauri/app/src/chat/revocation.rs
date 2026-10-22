@@ -4,7 +4,7 @@ use super::internal_mcp::generate_opaque_handle;
 use ganbaru_chat::runtime::ChatRuntimeRegistry;
 use ganbaru_chat_contracts::models::{
     ChatAgentRunId, ChatAuthorizationRevisionId, ChatError, ChatErrorCode, ChatResult,
-    ChatThreadId, ChatTurnId,
+    ChatThreadId, ChatTurnId, ProjectWorkingFolderId,
 };
 use sqlx::{Row, SqlitePool};
 use std::time::Duration;
@@ -24,6 +24,115 @@ struct RevokedRun {
     run_id: ChatAgentRunId,
     turn_id: ChatTurnId,
     authorization_revision_id: ChatAuthorizationRevisionId,
+}
+
+/// Selects the active organizational runs whose authority a folder or live-check change ended.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum ActiveRunSelector<'a> {
+    /// Runs that execute in the working folder or hold it as an authorized folder source.
+    WorkingFolder(&'a ProjectWorkingFolderId),
+    /// Runs on one provider thread, narrowed to a provider turn when one is known.
+    ProviderTurn {
+        thread_id: &'a ChatThreadId,
+        turn_id: Option<&'a ChatTurnId>,
+    },
+}
+
+/// Revokes the allowed authorizations behind the active runs `selector` matches and queues
+/// their cleanup jobs, so the next drain cancels the runs and stops their providers.
+///
+/// Queued runs are left alone because they start only after the live checks pass again.
+/// Returns whether any authorization was revoked.
+pub(crate) async fn revoke_active_run_authorizations(
+    pool: &SqlitePool,
+    selector: ActiveRunSelector<'_>,
+    reason: &str,
+) -> ChatResult<bool> {
+    let (working_folder_id, thread_id, turn_id) = match selector {
+        ActiveRunSelector::WorkingFolder(folder) => (Some(folder.as_str()), None, None),
+        ActiveRunSelector::ProviderTurn { thread_id, turn_id } => (
+            None,
+            Some(thread_id.as_str()),
+            turn_id.map(ChatTurnId::as_str),
+        ),
+    };
+    let now = now_timestamp();
+    let mut transaction = pool.begin().await.map_err(persistence_error)?;
+    let rows = sqlx::query(
+        "SELECT DISTINCT authorization.id, assignment.teammate_id
+         FROM chat_agent_runs run
+         JOIN chat_assignment_authorization_revisions authorization
+           ON authorization.id = run.authorization_revision_id
+         JOIN chat_work_assignments assignment ON assignment.id = authorization.assignment_id
+         WHERE run.state IN ('starting', 'working', 'waiting')
+           AND authorization.decision_state = 'allowed'
+           AND authorization.revoked_at IS NULL
+           AND (?1 IS NULL OR run.working_folder_id = ?1 OR EXISTS (
+                 SELECT 1 FROM chat_assignment_authorized_folder_sources source
+                 WHERE source.authorization_revision_id = authorization.id
+                   AND source.working_folder_id = ?1
+               ))
+           AND (?2 IS NULL OR run.provider_thread_id = ?2)
+           AND (?3 IS NULL OR run.provider_turn_id = ?3)
+         ORDER BY authorization.id",
+    )
+    .bind(working_folder_id)
+    .bind(thread_id)
+    .bind(turn_id)
+    .fetch_all(&mut *transaction)
+    .await
+    .map_err(persistence_error)?;
+    for row in &rows {
+        let authorization_id: String = row.try_get("id").map_err(persistence_error)?;
+        let teammate_id: String = row.try_get("teammate_id").map_err(persistence_error)?;
+        sqlx::query(
+            "UPDATE chat_assignment_authorization_revisions
+             SET decision_state = 'revoked', reason = ?, revoked_at = ?
+             WHERE id = ? AND decision_state = 'allowed' AND revoked_at IS NULL",
+        )
+        .bind(reason)
+        .bind(&now)
+        .bind(&authorization_id)
+        .execute(&mut *transaction)
+        .await
+        .map_err(persistence_error)?;
+        sqlx::query(
+            "INSERT INTO chat_access_revocation_jobs
+                (id, teammate_id, authorization_revision_id, reason,
+                 available_at, created_at, updated_at)
+             SELECT 'access-revocation:' || lower(hex(randomblob(16))), ?, ?, ?, ?, ?, ?
+             WHERE NOT EXISTS (
+                 SELECT 1 FROM chat_access_revocation_jobs existing
+                 WHERE existing.authorization_revision_id = ?
+                   AND existing.state IN ('queued', 'claimed')
+             )",
+        )
+        .bind(&teammate_id)
+        .bind(&authorization_id)
+        .bind(reason)
+        .bind(&now)
+        .bind(&now)
+        .bind(&now)
+        .bind(&authorization_id)
+        .execute(&mut *transaction)
+        .await
+        .map_err(persistence_error)?;
+    }
+    transaction.commit().await.map_err(persistence_error)?;
+    Ok(!rows.is_empty())
+}
+
+/// Revokes the runs `selector` matches and, when any were revoked, stops them now.
+pub(crate) async fn revoke_and_stop_active_runs(
+    app: &tauri::AppHandle,
+    pool: &SqlitePool,
+    selector: ActiveRunSelector<'_>,
+    reason: &str,
+) -> ChatResult<()> {
+    if revoke_active_run_authorizations(pool, selector, reason).await? {
+        drain_access_revocation_jobs(app, pool).await?;
+    }
+    Ok(())
 }
 
 pub(crate) async fn drain_access_revocation_jobs(
@@ -239,7 +348,36 @@ async fn drain_claimed_job(
                 .await?;
         }
     }
+    clear_revoked_terminal_grants(app, pool, authorization_revision_id.as_deref()).await?;
     mark_claim_completed(pool, job_id, claim_token).await
+}
+
+/// Drops terminal start grants for the folders a revoked authorization ran in,
+/// so the next terminal there asks again.
+async fn clear_revoked_terminal_grants(
+    app: &tauri::AppHandle,
+    pool: &SqlitePool,
+    authorization_revision_id: Option<&str>,
+) -> ChatResult<()> {
+    let Some(authorization_revision_id) = authorization_revision_id else {
+        return Ok(());
+    };
+    let folders: Vec<String> = sqlx::query_scalar(
+        "SELECT DISTINCT thread.working_folder_id
+         FROM chat_agent_runs run
+         JOIN chat_threads thread ON thread.id = run.provider_thread_id
+         WHERE run.authorization_revision_id = ?",
+    )
+    .bind(authorization_revision_id)
+    .fetch_all(pool)
+    .await
+    .map_err(persistence_error)?;
+    let access = app.state::<super::terminal_access::ChatTerminalAccess>();
+    for folder in folders {
+        let folder = ProjectWorkingFolderId::new(folder).map_err(|_| revocation_error())?;
+        access.clear_folder(&folder)?;
+    }
+    Ok(())
 }
 
 async fn read_revoked_runs(
@@ -483,11 +621,240 @@ fn persistence_error<T>(_error: T) -> ChatError {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::{
-        REVOCATION_DRAIN_BATCH_SIZE, REVOCATION_RETRY_MAX_POLLS, REVOCATION_RETRY_MAX_SECONDS,
-        retry_delay_seconds,
+        ActiveRunSelector, REVOCATION_DRAIN_BATCH_SIZE, REVOCATION_RETRY_MAX_POLLS,
+        REVOCATION_RETRY_MAX_SECONDS, retry_delay_seconds, revoke_active_run_authorizations,
     };
+    use ganbaru_chat_contracts::models::{ChatThreadId, ChatTurnId, ProjectWorkingFolderId};
+    use sqlx::SqlitePool;
+
+    const NOW: &str = "2026-10-20T12:00:00.000Z";
+    const TEAMMATE: &str = "participant:folder-agent";
+
+    /// Seeds one working run in `workspace-1` that also holds `workspace-2` as a read source,
+    /// and a queued follow-up run for the same assignment.
+    pub(crate) async fn pool_with_folder_runs() -> SqlitePool {
+        let pool = crate::chat::tests::repository::pool_with_thread().await;
+        sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
+            "INSERT INTO project_working_folders
+                (id, project_id, display_name, kind, managed_relative_path,
+                 repository_kind, sort_order, created_at, updated_at)
+             VALUES
+                ('workspace-2', 'project-chat', 'Reference', 'external', NULL,
+                 'none', 1, '{NOW}', '{NOW}'),
+                ('workspace-3', 'project-chat', 'Unrelated', 'external', NULL,
+                 'none', 2, '{NOW}', '{NOW}');
+             UPDATE chat_conversations SET id = 'conversation:folders'
+             WHERE project_id = 'project-chat' AND conversation_kind = 'channel';
+             INSERT INTO chat_participants
+                (id, participant_kind, display_name, created_at, updated_at)
+             VALUES ('{TEAMMATE}', 'ai_teammate', 'Folder agent', '{NOW}', '{NOW}');
+             INSERT INTO chat_teammates (participant_id, role, created_at, updated_at)
+             VALUES ('{TEAMMATE}', 'Test', '{NOW}', '{NOW}');
+             INSERT INTO chat_teammate_policy_revisions
+                (id, teammate_id, revision, provider_instance_id, model_selection_data, created_at)
+             VALUES ('policy:folders', '{TEAMMATE}', 1, 'codex-personal', '{{}}', '{NOW}');
+             INSERT INTO chat_conversation_memberships
+                (conversation_id, participant_id, membership_role, created_at, updated_at)
+             VALUES ('conversation:folders', '{TEAMMATE}', 'member', '{NOW}', '{NOW}');
+             INSERT INTO chat_teammate_channel_memberships
+                (conversation_id, teammate_id, access_profile_id,
+                 read_history, participate, history_boundary, created_at, updated_at)
+             VALUES ('conversation:folders', '{TEAMMATE}', 'access-profile:build-and-test',
+                     1, 1, 'entire', '{NOW}', '{NOW}');
+             INSERT INTO chat_teammate_working_folder_grants
+                (conversation_id, teammate_id, project_id, working_folder_id,
+                 capability, capability_inherits_profile, is_default, created_at)
+             VALUES
+                ('conversation:folders', '{TEAMMATE}', 'project-chat', 'workspace-1',
+                 'execute', 1, 1, '{NOW}'),
+                ('conversation:folders', '{TEAMMATE}', 'project-chat', 'workspace-2',
+                 'read', 0, 0, '{NOW}');
+             INSERT INTO chat_conversation_items
+                (id, conversation_id, item_kind, ordinal, created_at)
+             VALUES ('item:folders', 'conversation:folders', 'message', 1, '{NOW}');
+             INSERT INTO chat_communication_messages
+                (item_id, author_participant_id, created_at)
+             VALUES ('item:folders', 'participant:local-owner', '{NOW}');
+             INSERT INTO chat_reply_threads
+                (id, conversation_id, root_item_id, last_activity_at, created_at, updated_at)
+             VALUES ('reply:folders', 'conversation:folders', 'item:folders',
+                     '{NOW}', '{NOW}', '{NOW}');
+             INSERT INTO chat_work_assignments
+                (id, reply_thread_id, teammate_id, triggering_message_item_id, state,
+                 created_at, updated_at)
+             VALUES ('assignment:folders', 'reply:folders', '{TEAMMATE}', 'item:folders',
+                     'working', '{NOW}', '{NOW}');
+             INSERT INTO chat_assignment_authorization_revisions
+                (id, assignment_id, revision, requester_participant_id,
+                 teammate_policy_revision_id, teammate_access_revision,
+                 destination_conversation_id, access_profile_revision_id,
+                 execution_environment_id, working_folder_id,
+                 resolved_runtime_approval_policy, scope_digest, decision_state, created_at)
+             VALUES
+                ('authorization:working', 'assignment:folders', 1, 'participant:local-owner',
+                 'policy:folders', 1, 'conversation:folders',
+                 'access-profile-revision:build-and-test:1', (SELECT id FROM chat_execution_environments WHERE working_folder_id = 'workspace-1'),
+                 'workspace-1', 'ask', printf('%064d', 0), 'allowed', '{NOW}'),
+                ('authorization:queued', 'assignment:folders', 2, 'participant:local-owner',
+                 'policy:folders', 1, 'conversation:folders',
+                 'access-profile-revision:build-and-test:1', (SELECT id FROM chat_execution_environments WHERE working_folder_id = 'workspace-1'),
+                 'workspace-1', 'ask', printf('%064d', 0), 'allowed', '{NOW}');
+             INSERT INTO chat_assignment_authorized_folder_sources
+                (authorization_revision_id, root_handle, working_folder_id, capability,
+                 is_execution_target, created_at, resolved_runtime_approval_policy)
+             VALUES
+                ('authorization:working', printf('%032d', 1), 'workspace-1', 'execute', 1, '{NOW}', 'ask'),
+                ('authorization:working', printf('%032d', 2), 'workspace-2', 'read', 0, '{NOW}', 'ask');
+             INSERT INTO chat_turns
+                (id, thread_id, ordinal, state, safety_mode, interaction_mode,
+                 created_at, updated_at)
+             VALUES
+                ('turn:working', 'thread-1', 1, 'active', 'ask_for_approval', 'build',
+                 '{NOW}', '{NOW}'),
+                ('turn:queued', 'thread-1', 2, 'pending', 'ask_for_approval', 'build',
+                 '{NOW}', '{NOW}');
+             INSERT INTO chat_agent_runs
+                (id, assignment_id, project_id, working_folder_id, execution_environment_id,
+                 teammate_policy_revision_id, authorization_revision_id,
+                 authorization_scope_digest, provider_turn_id, provider_thread_id, state,
+                 run_ordinal, created_at, updated_at)
+             VALUES
+                ('run:working', 'assignment:folders', 'project-chat', 'workspace-1',
+                 (SELECT id FROM chat_execution_environments WHERE working_folder_id = 'workspace-1'), 'policy:folders', 'authorization:working',
+                 printf('%064d', 0), 'turn:working', 'thread-1', 'working', 1, '{NOW}', '{NOW}'),
+                ('run:queued', 'assignment:folders', 'project-chat', 'workspace-1',
+                 (SELECT id FROM chat_execution_environments WHERE working_folder_id = 'workspace-1'), 'policy:folders', 'authorization:queued',
+                 printf('%064d', 0), 'turn:queued', 'thread-1', 'queued', 2, '{NOW}', '{NOW}');"
+        )))
+        .execute(&pool)
+        .await
+        .unwrap();
+        pool
+    }
+
+    async fn authorization_states(pool: &SqlitePool) -> Vec<(String, String)> {
+        sqlx::query_as(
+            "SELECT id, decision_state FROM chat_assignment_authorization_revisions ORDER BY id",
+        )
+        .fetch_all(pool)
+        .await
+        .unwrap()
+    }
+
+    async fn queued_job_authorizations(pool: &SqlitePool) -> Vec<String> {
+        sqlx::query_scalar(
+            "SELECT authorization_revision_id FROM chat_access_revocation_jobs
+             WHERE state = 'queued' ORDER BY authorization_revision_id",
+        )
+        .fetch_all(pool)
+        .await
+        .unwrap()
+    }
+
+    fn states(working: &str, queued: &str) -> Vec<(String, String)> {
+        vec![
+            ("authorization:queued".to_string(), queued.to_string()),
+            ("authorization:working".to_string(), working.to_string()),
+        ]
+    }
+
+    #[tokio::test]
+    async fn losing_a_folder_revokes_active_runs_that_execute_in_or_read_it() {
+        for folder in ["workspace-1", "workspace-2"] {
+            let pool = pool_with_folder_runs().await;
+            let folder = ProjectWorkingFolderId::new(folder).unwrap();
+            let revoked = revoke_active_run_authorizations(
+                &pool,
+                ActiveRunSelector::WorkingFolder(&folder),
+                "The working folder was unbound",
+            )
+            .await
+            .unwrap();
+
+            assert!(revoked);
+            assert_eq!(
+                authorization_states(&pool).await,
+                states("revoked", "allowed")
+            );
+            assert_eq!(
+                queued_job_authorizations(&pool).await,
+                vec!["authorization:working".to_string()]
+            );
+            let repeated = revoke_active_run_authorizations(
+                &pool,
+                ActiveRunSelector::WorkingFolder(&folder),
+                "The working folder was unbound",
+            )
+            .await
+            .unwrap();
+            assert!(!repeated);
+            assert_eq!(queued_job_authorizations(&pool).await.len(), 1);
+        }
+    }
+
+    #[tokio::test]
+    async fn losing_an_unrelated_folder_keeps_runs_authorized() {
+        let pool = pool_with_folder_runs().await;
+        let folder = ProjectWorkingFolderId::new("workspace-3").unwrap();
+        let revoked = revoke_active_run_authorizations(
+            &pool,
+            ActiveRunSelector::WorkingFolder(&folder),
+            "The working folder was archived",
+        )
+        .await
+        .unwrap();
+
+        assert!(!revoked);
+        assert_eq!(
+            authorization_states(&pool).await,
+            states("allowed", "allowed")
+        );
+        assert!(queued_job_authorizations(&pool).await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_failed_live_check_revokes_only_the_active_run_for_its_turn() {
+        let pool = pool_with_folder_runs().await;
+        let thread_id = ChatThreadId::new("thread-1").unwrap();
+        let queued_turn = ChatTurnId::new("turn:queued").unwrap();
+        let revoked = revoke_active_run_authorizations(
+            &pool,
+            ActiveRunSelector::ProviderTurn {
+                thread_id: &thread_id,
+                turn_id: Some(&queued_turn),
+            },
+            "Organizational run authority was lost",
+        )
+        .await
+        .unwrap();
+        assert!(
+            !revoked,
+            "queued runs pass the live checks again before they start"
+        );
+
+        let working_turn = ChatTurnId::new("turn:working").unwrap();
+        let revoked = revoke_active_run_authorizations(
+            &pool,
+            ActiveRunSelector::ProviderTurn {
+                thread_id: &thread_id,
+                turn_id: Some(&working_turn),
+            },
+            "Organizational run authority was lost",
+        )
+        .await
+        .unwrap();
+        assert!(revoked);
+        assert_eq!(
+            authorization_states(&pool).await,
+            states("revoked", "allowed")
+        );
+        assert_eq!(
+            queued_job_authorizations(&pool).await,
+            vec!["authorization:working".to_string()]
+        );
+    }
 
     #[test]
     fn revocation_recovery_batches_and_caps_retry_backoff() {

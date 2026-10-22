@@ -197,19 +197,6 @@ pub(super) fn canonical_verified_workspace(
     })
 }
 
-pub(super) fn canonical_current_directory() -> ChatResult<PathBuf> {
-    std::env::current_dir()
-        .ok()
-        .and_then(|path| std::fs::canonicalize(path).ok())
-        .ok_or_else(|| {
-            ChatError::new(
-                ChatErrorCode::ConfigurationInvalid,
-                "Claude probe working directory is unavailable",
-                true,
-            )
-        })
-}
-
 pub(super) fn new_uuid(instance_id: &ProviderInstanceId) -> String {
     let sequence = NEXT_UUID.fetch_add(1, Ordering::Relaxed);
     let now = std::time::SystemTime::now()

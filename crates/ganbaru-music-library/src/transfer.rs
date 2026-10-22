@@ -1,11 +1,11 @@
 //! Native Music transfer preparation and revision-checked, retry-safe import.
 
 use super::transfer_codec::{self as codec, validation};
-use super::transfer_read::{ITEM_TEXT_COLUMNS, TransferReadBudget};
+use super::transfer_read::{ALLOWANCE_EXCEEDED, ITEM_TEXT_COLUMNS, TransferReadBudget};
 use super::*;
 use serde::{Deserialize, Serialize};
 use sqlx::{Sqlite, SqlitePool, Transaction};
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -378,31 +378,89 @@ async fn prepare(
     Ok((preview, document))
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug)]
 struct ResolvedLocation {
     root_id: String,
     relative_path: String,
-    pattern: String,
     windows: bool,
 }
 
-fn path_pattern(path: &str, windows: bool) -> String {
-    let mut pattern = String::new();
-    for character in path.chars() {
-        if matches!(character, '*' | '?' | '[' | ']') {
-            pattern.push('?');
-        } else if windows
-            && character.to_lowercase().to_string() != character.to_uppercase().to_string()
-        {
-            pattern.push('[');
-            pattern.extend(character.to_lowercase());
-            pattern.extend(character.to_uppercase());
-            pattern.push(']');
-        } else {
-            pattern.push(character);
+/// Rows read per page while scanning one root's locations for M3U matches.
+const M3U_MATCH_PAGE_ROWS: i64 = 512;
+/// Longest stored location identifier or path considered for an M3U match. Stored paths are capped
+/// far below this, so a longer hostile row stays unresolved instead of being allocated.
+const MAX_M3U_MATCH_TEXT_BYTES: i64 = 16 * 1024;
+
+/// Compares M3U and stored paths with either separator, ignoring case for Windows roots.
+fn location_key(path: &str, windows: bool) -> String {
+    let normalized = path.replace('\\', "/");
+    if windows {
+        normalized.to_lowercase()
+    } else {
+        normalized
+    }
+}
+
+/// Scans each requested root once in key order and keeps only locations whose normalized path an
+/// M3U entry requested, so matching stays linear in the library size.
+async fn matching_locations(
+    transaction: &mut Transaction<'_, Sqlite>,
+    locations: &[&ResolvedLocation],
+    bindings: &[TransferBinding],
+    budget: &mut TransferReadBudget,
+) -> MusicLibraryResult<HashMap<(String, String), HashSet<String>>> {
+    let mut requested: BTreeMap<&str, HashSet<String>> = BTreeMap::new();
+    for location in locations {
+        requested
+            .entry(location.root_id.as_str())
+            .or_default()
+            .insert(location_key(&location.relative_path, location.windows));
+    }
+    let mut matches: HashMap<(String, String), HashSet<String>> = HashMap::new();
+    let mut retained = 0;
+    for (root_id, keys) in requested {
+        let windows = bindings
+            .iter()
+            .any(|binding| binding.root_id == root_id && binding.windows);
+        let mut after = String::new();
+        loop {
+            let page = sqlx::query_as::<_, (String, String)>(
+                "SELECT item_id, relative_path FROM music_local_locations WHERE root_id = ? AND relative_path > ? AND length(CAST(item_id AS BLOB)) <= ? AND length(CAST(relative_path AS BLOB)) <= ? ORDER BY relative_path LIMIT ?",
+            )
+            .bind(root_id)
+            .bind(&after)
+            .bind(MAX_M3U_MATCH_TEXT_BYTES)
+            .bind(MAX_M3U_MATCH_TEXT_BYTES)
+            .bind(M3U_MATCH_PAGE_ROWS)
+            .fetch_all(&mut **transaction)
+            .await
+            .map_err(|error| MusicLibraryError::database("match M3U locations", error))?;
+            let complete = i64::try_from(page.len()).is_ok_and(|rows| rows < M3U_MATCH_PAGE_ROWS);
+            let Some((_, last)) = page.last() else {
+                break;
+            };
+            after = last.clone();
+            for (item_id, path) in page {
+                let key = location_key(&path, windows);
+                if !keys.contains(&key) {
+                    continue;
+                }
+                retained += 1;
+                if retained > codec::MAX_MEMBERSHIPS {
+                    return Err(validation(ALLOWANCE_EXCEEDED));
+                }
+                budget.admit(1, 256 + 4 * (item_id.len() + root_id.len() + key.len()))?;
+                matches
+                    .entry((root_id.to_string(), key))
+                    .or_default()
+                    .insert(item_id);
+            }
+            if complete {
+                break;
+            }
         }
     }
-    pattern
+    Ok(matches)
 }
 
 fn resolve_location(
@@ -439,7 +497,6 @@ fn resolve_location(
                     root.len(),
                     ResolvedLocation {
                         root_id: binding.root_id.clone(),
-                        pattern: path_pattern(&relative_path, binding.windows),
                         relative_path,
                         windows: binding.windows,
                     },
@@ -461,7 +518,6 @@ fn resolve_location(
     Some(ResolvedLocation {
         root_id: root_id.to_string(),
         relative_path: relative_path.to_string(),
-        pattern: path_pattern(relative_path, windows),
         windows,
     })
 }
@@ -494,9 +550,8 @@ async fn prepare_m3u(
         .filter_map(|entry| entry.video_id.as_ref())
         .collect();
     let locations: Vec<_> = resolved.iter().flatten().collect();
-    let candidates = budget.read::<(String, String, String)>(transaction,
-        "SELECT DISTINCT location.item_id, location.root_id, replace(location.relative_path, char(92), '/') AS relative_path FROM music_local_locations AS location JOIN json_each(?) AS requested ON location.root_id = json_extract(requested.value, '$.root_id') AND replace(location.relative_path, char(92), '/') GLOB json_extract(requested.value, '$.pattern') ORDER BY location.item_id, location.root_id, location.relative_path", &["item_id", "root_id", "relative_path"], &[&serialized(&locations)?], codec::MAX_MEMBERSHIPS).await?;
-    let candidate_ids: Vec<_> = candidates.iter().map(|(id, _, _)| id).collect();
+    let location_items = matching_locations(transaction, &locations, bindings, budget).await?;
+    let candidate_ids: BTreeSet<_> = location_items.values().flatten().collect();
     let item_rows = budget.read::<MusicLibraryItemRow>(transaction,
         "SELECT * FROM music_library_items WHERE id IN (SELECT value FROM json_each(?)) OR youtube_video_id IN (SELECT value FROM json_each(?)) ORDER BY id", ITEM_TEXT_COLUMNS, &[&serialized(&candidate_ids)?, &serialized(&video_ids)?], codec::MAX_MEMBERSHIPS).await?;
     let mut by_id = HashMap::new();
@@ -516,14 +571,6 @@ async fn prepare_m3u(
             .entry(item)
             .or_default()
             .push(MusicItemSignal::try_from(signal.as_str()).map_err(validation)?);
-    }
-    let mut location_items: HashMap<(String, String), HashSet<String>> = HashMap::new();
-    for (item_id, root_id, path) in candidates {
-        let windows = bindings
-            .iter()
-            .any(|binding| binding.root_id == root_id && binding.windows);
-        let key = (root_id, if windows { path.to_lowercase() } else { path });
-        location_items.entry(key).or_default().insert(item_id);
     }
     let mut memberships = Vec::new();
     let mut used_roots = BTreeMap::new();
@@ -567,11 +614,7 @@ async fn prepare_m3u(
             };
             let key = (
                 location.root_id.clone(),
-                if location.windows {
-                    location.relative_path.to_lowercase()
-                } else {
-                    location.relative_path.clone()
-                },
+                location_key(&location.relative_path, location.windows),
             );
             let matching = location_items.get(&key);
             if matching.is_some_and(|items| items.len() > 1) {

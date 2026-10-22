@@ -1,4 +1,7 @@
 use super::*;
+use ganbaru_chat::git::hardened::internal_read_blocking;
+
+const MAX_GIT_DIRECTORY_OUTPUT: usize = 4_096;
 
 pub(super) fn discover_git_metadata_roots(root: &Path) -> Vec<PathBuf> {
     let mut roots = BTreeSet::new();
@@ -6,17 +9,11 @@ pub(super) fn discover_git_metadata_roots(root: &Path) -> Vec<PathBuf> {
         ["rev-parse", "--absolute-git-dir"].as_slice(),
         ["rev-parse", "--path-format=absolute", "--git-common-dir"].as_slice(),
     ] {
-        let Ok(output) = Command::new("git")
-            .arg("-C")
-            .arg(root)
-            .args(arguments)
-            .env("GIT_TERMINAL_PROMPT", "0")
-            .env("GIT_OPTIONAL_LOCKS", "0")
-            .output()
+        let Ok(output) = internal_read_blocking(root, arguments, None, MAX_GIT_DIRECTORY_OUTPUT)
         else {
             continue;
         };
-        if !output.status.success() || output.stdout.len() > 4_096 {
+        if !output.status.success() {
             continue;
         }
         let Some(value) = std::str::from_utf8(&output.stdout)

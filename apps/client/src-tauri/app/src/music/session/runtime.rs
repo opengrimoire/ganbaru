@@ -74,6 +74,8 @@ enum Request {
     },
     Control(SessionIntent),
     Focus(ganbaru_pomodoro::CommittedFocusEffect),
+    #[cfg(desktop)]
+    CalendarChanged,
     #[cfg(target_os = "android")]
     BackendUnavailable {
         session_id: String,
@@ -119,6 +121,9 @@ struct Owner {
     lifecycle: LifecycleControl,
     #[cfg(desktop)]
     completion_duck: Option<completion::CompletionDuck>,
+    /// Music volume setting last pushed to the soundscape engine, which plays relative to it.
+    #[cfg(desktop)]
+    soundscape_master: Option<f64>,
 }
 
 fn now_ms() -> i64 {
@@ -214,6 +219,8 @@ pub(crate) fn setup(app: &tauri::AppHandle) {
             lifecycle,
             #[cfg(desktop)]
             completion_duck: None,
+            #[cfg(desktop)]
+            soundscape_master: None,
         };
         let mut interval = tokio::time::interval(OBSERVATION_INTERVAL);
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -366,6 +373,22 @@ pub(crate) fn reconcile_committed_focus(
             reply: None,
         })
         .map_err(|error| format!("enqueue committed Focus music: {error}"))
+}
+
+/// Reads Calendar context on the next observation tick instead of waiting for the poll interval.
+#[cfg(desktop)]
+pub(crate) fn calendar_changed(app: &tauri::AppHandle) -> Result<(), String> {
+    let runtime = app
+        .try_state::<MusicSessionState>()
+        .ok_or_else(|| "Music owner is not initialized".to_string())?;
+    runtime
+        .sender
+        .try_send(Message {
+            request: Request::CalendarChanged,
+            expected_vault: None,
+            reply: None,
+        })
+        .map_err(|error| format!("enqueue Calendar change for Music: {error}"))
 }
 
 /// Service loss is an interruption, never a synthetic manual command or failed-track advance.
@@ -654,13 +677,17 @@ impl Owner {
             .map_err(|error| MusicLibraryError::runtime("stop prior music vault", error))?;
         }
         self.subscriptions.invalidate_context();
+        // Only the first context of this process is a new launch; later contexts reopen
+        // a vault this process already played, such as after a handoff or a vault switch.
+        let selection = if self.vault_id.is_none() {
+            persistence::RestoreSelection::Next
+        } else {
+            persistence::RestoreSelection::Saved
+        };
         self.pool = Some(
-            crate::db::connect_sqlite(
-                self.app.clone(),
-                format!("sqlite:{}", crate::vault::APP_SQLITE_FILE),
-            )
-            .await
-            .map_err(|error| MusicLibraryError::runtime("connect music session", error))?,
+            crate::db::connect_vault(&self.app)
+                .await
+                .map_err(|error| MusicLibraryError::runtime("connect music session", error))?,
         );
         self.vault_id = Some(vault_id);
         self.vault_generation = vault_generation;
@@ -701,7 +728,7 @@ impl Owner {
             transaction.commit().await.map_err(|error| {
                 MusicLibraryError::database("finish recovered music queue", error)
             })?;
-            let transition = persistence::restore(&mut restored, &saved, now_ms());
+            let transition = persistence::restore(&mut restored, &saved, selection, now_ms());
             self.commit(restored, transition, None, true).await?;
         }
         self.publish(true)?;
@@ -744,6 +771,11 @@ impl Owner {
                     self.intent(SessionIntent::BrowserHost { available: false }, None)
                         .await?;
                 }
+                return Ok(self.state.projection(false, now_ms()));
+            }
+            #[cfg(desktop)]
+            Request::CalendarChanged => {
+                self.calendar.poll_now();
                 return Ok(self.state.projection(false, now_ms()));
             }
             request => request,
@@ -927,6 +959,8 @@ impl Owner {
             | Request::Acknowledge { .. }
             | Request::ReadFrame { .. }
             | Request::Unsubscribe { .. } => (),
+            #[cfg(desktop)]
+            Request::CalendarChanged => (),
         }
         Ok(self.state.projection(include_queue, now_ms()))
     }
@@ -1234,6 +1268,8 @@ impl Owner {
     ) -> MusicLibraryResult<()> {
         let queue_changed = next.queue_revision != self.state.queue_revision
             || next.session_id != self.state.session_id;
+        #[cfg(desktop)]
+        let prior_status = self.state.status;
         self.state = next;
         #[cfg(desktop)]
         if self
@@ -1310,6 +1346,8 @@ impl Owner {
                 break;
             }
         }
+        #[cfg(desktop)]
+        self.follow_music_with_soundscape(prior_status).await;
         self.publish(queue_changed)?;
         Ok(())
     }
@@ -1511,10 +1549,66 @@ impl Owner {
             })?;
             crate::tray::publish_music_session(&self.app, &snapshot)
                 .map_err(|error| MusicLibraryError::runtime("publish Music tray", error))?;
+            self.push_soundscape_master();
         }
         self.subscriptions.publish(snapshot);
         self.subscriptions.flush(now_ms());
         Ok(())
+    }
+
+    /// Keeps the soundscape at its preset level relative to the Music volume setting, which applies
+    /// even while Music is paused or empty; mute silences both.
+    #[cfg(desktop)]
+    fn push_soundscape_master(&mut self) {
+        let master = if self.state.muted {
+            0.0
+        } else {
+            self.state.volume
+        };
+        if self.soundscape_master != Some(master) {
+            self.soundscape_master = Some(master);
+            crate::music::soundscape::set_master(&self.app, master);
+        }
+    }
+
+    /// Reads an on-by-default Music preference from the vault configuration.
+    async fn music_preference(&self, key: &'static str) -> MusicLibraryResult<bool> {
+        let app = self.app.clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            let raw = crate::vault::vault_read_config(app)
+                .map_err(|error| MusicLibraryError::runtime("read music preference", error))?;
+            let config: serde_json::Value = serde_json::from_str(&raw)
+                .map_err(|error| MusicLibraryError::runtime("decode music preference", error))?;
+            Ok(config
+                .get("preferences")
+                .and_then(|preferences| preferences.get(key))
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(true))
+        })
+        .await
+        .map_err(|error| MusicLibraryError::runtime("read music preference", error))?
+    }
+
+    /// Pauses the soundscape with Music when the listener wants that, and resumes one that a
+    /// Music pause paused. Music running out, failing, or stopping is not a pause.
+    ///
+    /// The Music state is already installed here, so an unreadable preference leaves the
+    /// soundscape alone instead of failing the Music change.
+    #[cfg(desktop)]
+    async fn follow_music_with_soundscape(&self, prior: SessionStatus) {
+        let playing = |status| matches!(status, SessionStatus::Playing | SessionStatus::Loading);
+        if playing(prior) && self.state.status == SessionStatus::Paused {
+            match self.music_preference("musicPauseSoundscapeWithMusic").await {
+                Ok(true) => crate::music::soundscape::pause_with_music(&self.app),
+                Ok(false) => {}
+                Err(error) => eprintln!("soundscape follows Music: {error}"),
+            }
+        } else if prior == SessionStatus::Paused && playing(self.state.status) {
+            // A vault change quiesces background output; nothing resumes until it is active again.
+            if let Ok(guard) = background_output_guard(&self.app) {
+                crate::music::soundscape::resume_with_music(&self.app, guard);
+            }
+        }
     }
 
     async fn tick(&mut self) -> MusicLibraryResult<()> {

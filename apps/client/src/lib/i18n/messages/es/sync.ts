@@ -37,6 +37,10 @@ export const sync = {
   pause: "Pausar sincronización",
   pauseFailed: "No se pudo cambiar el ajuste de sincronización",
   errorDetail: (message: string) => `Último error: ${message}`,
+  writerLimit: "Este dispositivo creó más identidades de sincronización de las permitidas, así que el coordinador rechaza sus cambios nuevos. Se quedan en este dispositivo.",
+  clockAhead: (device: string) =>
+    `El reloj de ${device} va adelantado respecto a este dispositivo. Sus ediciones ganan los cambios en conflicto hasta que los relojes coincidan, así que revisa su fecha y hora.`,
+  clockAheadOwn: "Algunas ediciones de este dispositivo se hicieron con su reloj adelantado. Ganan los cambios en conflicto hasta que pase esa hora.",
   recovery: {
     heading: "Eliminadas recientemente con ediciones sin guardar",
     description: "Estas notas se eliminaron en un dispositivo mientras otro aún las editaba.",

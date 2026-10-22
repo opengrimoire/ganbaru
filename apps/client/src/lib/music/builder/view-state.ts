@@ -15,7 +15,7 @@ export interface MusicReviewWorkspaceViewState {
   sessionSkippedIds: string[];
 }
 
-export type SoundscapeFilter = "all" | "generated" | "local" | `group:${string}`;
+export type SoundscapeFilter = "all" | "presets" | "layers";
 
 export interface MusicBuilderContextViewState {
   contextPanelOpen: boolean;

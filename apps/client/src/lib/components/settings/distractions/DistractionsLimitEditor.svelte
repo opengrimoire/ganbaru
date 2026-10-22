@@ -3,7 +3,7 @@
   import Plus from "@lucide/svelte/icons/plus";
   import Eraser from "@lucide/svelte/icons/eraser";
   import Save from "@lucide/svelte/icons/save";
-  import Trash2 from "@lucide/svelte/icons/trash-2";
+  import Trash2 from "@lucide/svelte/icons/trash";
   import EventColorPicker from "$lib/components/calendar/EventColorPicker.svelte";
   import { FALLBACK_COLOR_INDEX, type EventColor } from "$lib/calendar/types";
   import { EVENT_COLOR_OPTIONS } from "$lib/calendar/utils";

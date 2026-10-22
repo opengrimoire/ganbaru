@@ -12,7 +12,7 @@ Local links persist as `#notes?page=UUID` with an optional `block=UUID`; a link 
 
 Page and database mentions render as compact inline references. Hovering shows the current title with its route above it, from project group and project through folders and parent notes; a database's route ends with the note that holds it, and its card adds a schematic preview that fetches no rows. Metadata loads only on hover intent or activation. Clicking a database mention opens its database surface. Within the vault, rich clipboard paste keeps mention identities without duplicating their destinations; missing or invalid metadata degrades to readable text or an ordinary hyperlink.
 
-External links open through a Notes-owned native command that allows only HTTP, HTTPS, and email destinations, rejects embedded credentials, fetches nothing, and does not widen the generic opener allowlist. Local references stay within Notes navigation.
+External links, including bookmark, embed, link preview, and media block URLs and links in working-folder Markdown previews, open through a Notes-owned native command that allows only HTTP, HTTPS, and email destinations, rejects embedded credentials, fetches nothing, and does not widen the generic opener allowlist. Local references stay within Notes navigation.
 
 ## Stable links and aliases
 

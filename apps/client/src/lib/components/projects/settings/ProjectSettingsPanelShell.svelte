@@ -120,8 +120,8 @@
         <button
           type="button"
           class={cn(
-            "flex min-h-8 shrink-0 items-center gap-1.5 rounded-md bg-primary px-2 text-[0.8rem] font-medium text-primary-foreground disabled:cursor-not-allowed",
-            dirty || saving ? "hover:bg-primary/90" : "opacity-60",
+            "flex min-h-8 shrink-0 items-center gap-1.5 rounded-md px-2 text-[0.8rem] font-medium disabled:cursor-not-allowed",
+            dirty || saving ? "bg-primary text-primary-foreground hover:bg-primary/90" : "bg-secondary text-muted-foreground",
           )}
           disabled={saving || busy || !dirty}
           onclick={onSave}

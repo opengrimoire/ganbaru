@@ -5,12 +5,12 @@
 
 use ganbaru_sync_contracts::Field;
 use sqlx::sqlite::{SqliteArguments, SqliteRow};
-use sqlx::{Row, Sqlite, SqliteConnection};
+use sqlx::{AssertSqlSafe, Row, Sqlite, SqliteConnection};
 
 use crate::manifest::OwnedTable;
 
 /// A query with SQLite arguments.
-pub(crate) type SqliteQuery<'q> = sqlx::query::Query<'q, Sqlite, SqliteArguments<'q>>;
+pub(crate) type SqliteQuery<'q> = sqlx::query::Query<'q, Sqlite, SqliteArguments>;
 
 /// Quotes an identifier.
 pub(crate) fn ident(name: &str) -> String {
@@ -81,7 +81,7 @@ pub(crate) async fn read_columns(
         ident(table),
         ident(key_column)
     );
-    let row = sqlx::query(&sql)
+    let row = sqlx::query(AssertSqlSafe(sql.as_str()))
         .bind(key)
         .fetch_optional(&mut *conn)
         .await?;
@@ -102,7 +102,10 @@ pub(crate) async fn read_owned(
         ident(owned.parent_column),
         ident(owned.order_column),
     );
-    let rows = sqlx::query(&sql).bind(parent).fetch_all(&mut *conn).await?;
+    let rows = sqlx::query(AssertSqlSafe(sql.as_str()))
+        .bind(parent)
+        .fetch_all(&mut *conn)
+        .await?;
     rows.iter()
         .map(|row| read_fields(row, 0, owned.columns.len()))
         .collect()
@@ -120,7 +123,7 @@ pub(crate) async fn replace_owned(
         ident(owned.table),
         ident(owned.parent_column)
     );
-    sqlx::query(&delete)
+    sqlx::query(AssertSqlSafe(delete.as_str()))
         .bind(parent)
         .execute(&mut *conn)
         .await?;
@@ -136,7 +139,9 @@ pub(crate) async fn replace_owned(
         vec!["?"; columns.len()].join(", ")
     );
     for (position, fields) in rows.iter().enumerate() {
-        let mut query = sqlx::query(&insert).bind(parent).bind(position as i64);
+        let mut query = sqlx::query(AssertSqlSafe(insert.as_str()))
+            .bind(parent)
+            .bind(position as i64);
         for field in fields {
             query = bind_field(query, field);
         }

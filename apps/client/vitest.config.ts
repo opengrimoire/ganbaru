@@ -11,7 +11,7 @@ export default defineConfig({
     conditions: ["browser"],
   },
   test: {
-    include: ["src/**/*.test.ts"],
+    include: ["src/**/*.test.ts", "scripts/**/*.test.mjs"],
     setupFiles: ["./src/test-setup.ts"],
     coverage: {
       provider: "v8",

@@ -104,6 +104,9 @@ export const vaultHandoff = {
   networkAccessConfirmTitle: "¿Permitir la conexión del teléfono?",
   networkAccessConfirmMessage:
     "El firewall de Linux protege tu computadora de conexiones no deseadas. Ganbaru necesita su permiso para vincular tu teléfono con esta computadora mediante tu red local. Linux te pedirá tu contraseña, que Ganbaru nunca ve ni guarda.",
+  networkAccessNetworkConfirmMessage:
+    "Permitiste las conexiones del teléfono en otra red que usa las mismas direcciones que esta. ¿Permitirlas también en esta red? Linux no te pedirá tu contraseña.",
+  networkAccessNetworkConfirmation: "Los dispositivos vinculados no pueden conectarse hasta que permitas esta red",
   networkAccessRevokeTitle: "¿Quitar el acceso a la red local?",
   networkAccessRevokeMessage:
     "El firewall de Linux permite actualmente que los dispositivos vinculados se conecten con Ganbaru en esta red local. Linux te pedirá tu contraseña para quitar ese permiso. Ganbaru nunca ve ni guarda tu contraseña.",
@@ -139,6 +142,20 @@ export const vaultHandoff = {
   copyCode: "Copiar código de vinculación",
   codeCopied: "Código de vinculación copiado",
   copyCodeFailed: "No se pudo copiar el código de vinculación.",
+  enrollmentApprovalTitle: "¿Aprobar este dispositivo?",
+  enrollmentApprovalInstructions:
+    "Apruébalo solo si el dispositivo muestra este mismo código. Si no, recházalo: alguien más podría tener tu código de vinculación.",
+  enrollmentCode: "Código de confirmación",
+  enrollmentApprove: "Aprobar",
+  enrollmentDecline: "Rechazar",
+  enrollmentWaitingTitle: "Confirma en la otra computadora",
+  enrollmentWaiting: "La otra computadora muestra un código. Aprueba este dispositivo cuando su código coincide con este.",
+  enrollmentDeclined: "La otra computadora rechazó este dispositivo. Obtén ahí un código de vinculación nuevo e inténtalo de nuevo.",
+  enrollmentUnanswered:
+    "La otra computadora no aprobó este dispositivo a tiempo. Mantén abierto su código de vinculación e inténtalo de nuevo.",
+  enrollmentBusy: "Otro dispositivo espera aprobación en la otra computadora. Espera a que se responda e inténtalo de nuevo.",
+  enrollmentReplaced: "La otra computadora creó un código de vinculación nuevo. Usa el código nuevo para intentarlo de nuevo.",
+  enrollmentGone: "Ese dispositivo dejó de esperar aprobación.",
   qrDialogTitle: "Conectar otro dispositivo",
   qrInstructions:
     "Para conectar un teléfono, escanea este código QR en Ajustes > Datos. Para conectar otra computadora, copia el código de vinculación e introdúcelo en Ajustes > Datos.",
@@ -179,12 +196,29 @@ export const vaultHandoff = {
   sameNetwork: "Mantén ambas apps abiertas en la misma red local.",
   failed: (details: string) => `Falló la acción del dispositivo vinculado: ${details}`,
   blockerChat: "Termina o detén el trabajo activo de Chat antes de mover la bóveda.",
+  blockerTerminal: "Cierra las terminales de Chat en ejecución antes de mover la bóveda.",
   blockerFocus: "Termina o detén la sesión activa de Pomodoro antes de mover la bóveda.",
   blockerTransfer: "Termina o reintenta primero la transferencia actual de la bóveda.",
   incompatibleVersions:
     "Actualiza Ganbaru en ambos dispositivos antes de vincular o transferir datos. Sus formatos de datos son diferentes.",
   differentCoordinator:
     "Este dispositivo está vinculado con otra computadora. Desvincúlalo antes de conectarlo con una computadora diferente.",
+  linkedVaultInactive:
+    "Hay otra bóveda abierta en este dispositivo, así que la vinculación está en pausa. Vuelve a abrir la bóveda vinculada para reanudarla.",
+  coordinatorVaultInactive:
+    "La computadora coordinadora tiene otra bóveda abierta. Abre allí la bóveda vinculada y reintenta.",
+  ownershipChurnLimit:
+    "La edición cambió de dispositivo demasiadas veces en la última hora. Espera un rato y vuelve a cambiar de dispositivo.",
+  bundleRequestLimit:
+    "Este dispositivo pidió la bóveda demasiadas veces en la última hora. Espera un rato y vuelve a actualizar o a cambiar de dispositivo.",
+  deviceKeyMissing:
+    "Falta la clave de vinculación de este dispositivo en el llavero del sistema. Desvincula este dispositivo y vuelve a vincularlo.",
+  deviceKeyUnavailable:
+    "No se pudo leer la clave de vinculación de este dispositivo desde el llavero del sistema. Desbloquea el llavero o vuelve a iniciar sesión y reintenta.",
+  linkingDisabled:
+    "La vinculación de dispositivos está desactivada en este dispositivo porque no se pudieron leer sus datos de vinculación guardados. Tu bóveda sigue funcionando aquí; reinicia la aplicación y, si continúa, vuelve a vincular el dispositivo.",
+  coordinatorBusy:
+    "La computadora coordinadora está atendiendo demasiadas conexiones en este momento. Espera un momento y reintenta.",
   unreachable:
     "Este dispositivo no pudo comunicarse con la computadora coordinadora. Mantén ambas aplicaciones abiertas en la misma red local y reintenta.",
   ownerUnreachable:

@@ -1,6 +1,6 @@
 # Music automation
 
-Music automation selects playlist and background-sound behavior for Pomodoro phases and Calendar blocks without moving per-track configuration into Calendar events. All automatic selection happens in the native Music session (see [Playback](playback.md)); the frontend only renders provenance and accepted output.
+Music automation selects playlist and soundscape behavior for Pomodoro phases and Calendar occurrences without moving per-track configuration into Calendar events. All automatic selection happens in the native Music session (see [Playback](playback.md)); the frontend only renders provenance and accepted output.
 
 ## Phase assignments
 
@@ -11,11 +11,11 @@ Assignments are defined independently for focus, short break, long break, and th
 - Prepare a selected playlist without starting it.
 - Pause music.
 - Keep the current music.
-- Select, pause, keep, or inherit a background sound independently where supported.
+- Select one soundscape, pause, keep, or inherit the soundscape independently where supported.
 
-Assignments store playlist and background-sound intent only. Start, end, skip, rate, volume, weighting, and enabled state remain playlist-membership behavior.
+Assignments store playlist and soundscape intent only. Start, end, skip, rate, volume, weighting, and enabled state remain playlist-membership behavior.
 
-The Project settings UI currently exposes Focus, Short break, and Long break playlists under Event defaults. A chosen playlist plays automatically and an empty choice means silence; each phase boundary starts a fresh track, avoiding the previous one when alternatives exist. The broader assignment record and event override controls support the full behavior list above. Configuring background sounds inside playlists is planned.
+The Project settings UI exposes a playlist and, where soundscapes are supported, a soundscape for Focus, Short break, and Long break under Event defaults. A chosen playlist plays automatically and an empty choice means silence; each phase boundary starts a fresh track, avoiding the previous one when alternatives exist. The soundscape choice is None (the default) or a soundscape, so a phase can play music without a soundscape or a soundscape without music. The Calendar event panel uses the same choices for event overrides: one Playlist and one Soundscape row without Pomodoro, or a playlist and soundscape per phase with Pomodoro. Each choice shows the effective value and resolves separately; choosing the project's value again clears that part of the override, and None over a project soundscape is stored as keeping the current soundscape. The section toggle stores an explicit pause, which stops any soundscape. The section toggle silences both music and the soundscape or restores the project choices. The broader assignment record supports the full behavior list above. Configuring soundscapes inside playlists is planned.
 
 ## Ownership and precedence
 
@@ -26,7 +26,7 @@ Assignment sources:
 - **Event override:** an explicit event-specific choice, always distinguishable from inherited intent.
 - **Work environment:** planned.
 
-Precedence is event override, then a future work-environment assignment, then the event's project snapshot. This holds even for assignments that only select a background sound. Missing or deleted playlists and sounds produce an explicit unavailable result instead of silently selecting something else.
+Precedence is event override, then a future work-environment assignment, then the event's project snapshot. This holds even for assignments that only select a soundscape. Missing or deleted playlists and soundscapes produce an explicit unavailable result instead of silently selecting something else.
 
 ## Calendar activation (desktop)
 
@@ -46,9 +46,9 @@ Manual actions always win until the next accepted activation. Music keeps a sepa
 - Desktop Focus completion audio attenuates and pauses playing Music, keeping its position and persisted volume. Music resumes after the completion sound only if the same session, track, manual revision, and Focus context still own the pause. A manual control, new track, or changed assignment supersedes it.
 - Review playback in the playlist builder defers automatic takeover. Leaving Review lets the owner reconcile eligible automation without treating the deferred activation as consumed.
 
-## Background sounds
+## Soundscapes
 
-Desktop background sounds run independently of playlist media, and each phase resolves them separately, so music can continue while the sound changes or vice versa. Automation selects one specified sound; it never silently adds a layer to the listener's current selection. Platforms without the engine omit these actions. See [Background sounds](soundscapes.md).
+Desktop soundscapes run independently of playlist media, and each phase resolves them separately, so music can continue while the sound changes or vice versa. Automation replaces what is playing with the available layers of one specified soundscape; it never silently mixes them into the listener's current soundscape. A phase or event that chooses no soundscape stops one an earlier phase or event started, so a soundscape never carries over. An automatic soundscape also stops when its Focus run ends or its Calendar event ends with no run open, even where Music stays with the listener after a Calendar-only event. A soundscape started by hand keeps playing until a phase picks one or a stored pause stops it. Keep-current rows behave as choosing nothing. Manual changes during a phase stay temporary and never rewrite project or event assignments. Platforms without the engine omit these actions. See [Soundscapes](soundscapes.md).
 
 ## Planned integrations
 

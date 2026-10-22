@@ -17,7 +17,7 @@
     type NotesPageIconAssetMetadata,
   } from "$lib/notes/pages/icon";
   import type { NotesIcon } from "$lib/notes/types";
-  import SmilePlus from "@lucide/svelte/icons/smile-plus";
+  import SmilePlus from "@lucide/svelte/icons/face-slightly-smiling-plus";
   import IconPicker from "$lib/components/icon-picker/IconPicker.svelte";
   import NotesPageIcon from "$lib/components/notes/pages/NotesPageIcon.svelte";
 

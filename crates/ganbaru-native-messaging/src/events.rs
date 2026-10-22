@@ -1,8 +1,7 @@
-//! Host-only block event logging and existing-vault database writes.
+//! Host-only block event recording into an existing vault database.
 
 use chrono::SecondsFormat;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
-use std::io::Write;
 use std::str::FromStr;
 
 use crate::config::normalize_host_rule;
@@ -11,30 +10,13 @@ use crate::rules::HostDecision;
 use crate::snapshot::{RuntimeState, StateSnapshot, usage_db_path};
 use crate::{block_on, now_utc};
 
-const EVENTS_FILE: &str = "distractions-events.jsonl";
-
+/// Records a block in the vault database when this device may write it. Browsing history is
+/// kept nowhere else, so a host is never left in a device-local log outside the vault.
 pub(super) fn log_block_event(snapshot: &StateSnapshot, host: &str, decision: &HostDecision) {
-    let matched_rule_name = decision.matched_rule_name();
     let occurred_at = now_utc().to_rfc3339_opts(SecondsFormat::Millis, true);
     let Some(config_dir) = &snapshot.config_dir else {
         return;
     };
-    let event = serde_json::json!({
-        "occurredAt": occurred_at,
-        "urlHost": host,
-        "phase": snapshot.runtime.as_ref().map(|state| state.phase.as_str()).unwrap_or("inactive"),
-        "ruleNameSnapshot": matched_rule_name,
-        "decision": "blocked"
-    });
-    if let Ok(line) = serde_json::to_string(&event) {
-        if let Ok(mut file) = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(config_dir.join(EVENTS_FILE))
-        {
-            let _ = writeln!(file, "{line}");
-        }
-    }
     if native_vault_is_writable(config_dir, snapshot.vault_path.as_deref()) {
         if let Err(err) = record_block_event_in_database(snapshot, &occurred_at, host, decision) {
             eprintln!("failed to record distraction block event: {err}");

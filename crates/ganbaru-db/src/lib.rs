@@ -4,11 +4,11 @@ use sqlx::{
     sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous},
 };
 use std::{
-    collections::HashMap,
+    collections::{BTreeSet, HashMap},
     future::Future,
     path::{Path, PathBuf},
     pin::Pin,
-    sync::Arc,
+    sync::{Arc, LazyLock},
     time::Duration,
 };
 use tokio::sync::Mutex;
@@ -163,10 +163,15 @@ impl DatabasePoolRegistry {
     }
 
     async fn open(&self, path: &Path, access: DatabaseAccessMode) -> Result<SqlitePool, String> {
-        let mut options = SqliteConnectOptions::new()
-            .filename(path)
-            .foreign_keys(true)
-            .busy_timeout(WRITE_CONTENTION_TIMEOUT);
+        if access != DatabaseAccessMode::ReadOnly {
+            restrict_database_files(path, access == DatabaseAccessMode::ReadWrite);
+        }
+        let mut options = hardened_options(
+            SqliteConnectOptions::new()
+                .filename(path)
+                .foreign_keys(true)
+                .busy_timeout(WRITE_CONTENTION_TIMEOUT),
+        );
         options = match access {
             DatabaseAccessMode::ReadOnly => options.read_only(true),
             DatabaseAccessMode::ReadWrite => options
@@ -199,6 +204,9 @@ impl DatabasePoolRegistry {
         let initialization = async {
             match access {
                 DatabaseAccessMode::ReadWrite => {
+                    // An opened or imported vault folder can come from another device, so its
+                    // catalog is checked before migration writes can reach its triggers.
+                    validate_schema_catalog(&pool).await?;
                     run_migrations(&pool).await?;
                     sqlx::raw_sql("PRAGMA optimize")
                         .execute(&pool)
@@ -259,7 +267,7 @@ const CLOSE_DRAIN_PASSES: usize = 2;
 
 /// Closes a pool and returns once none of its connections holds the database open.
 ///
-/// sqlx 0.8 `Pool::close` can return while a connection that began returning to the pool before
+/// sqlx `Pool::close` can return while a connection that began returning to the pool before
 /// the close sits idle. That connection would close later on its worker thread and checkpoint
 /// the WAL after callers had already copied, moved, or replaced the database file. After a
 /// completed close no connection can be checked out, so another pass closes the idle ones.
@@ -304,20 +312,105 @@ pub fn migration_set_identity_material() -> Vec<u8> {
     identity
 }
 
-/// Validates that a read-only database has the complete embedded migration history.
+/// Validates that a database has the complete embedded migration history and exactly the schema
+/// that history produces.
 pub async fn validate_current_schema(pool: &SqlitePool) -> Result<(), String> {
+    let applied = validate_schema_catalog(pool).await?;
+    if applied != up_migrations().count() {
+        return Err("database schema does not match the current migration set".to_string());
+    }
+    Ok(())
+}
+
+/// Tables SQLite creates for query planner statistics. They hold no application data and appear
+/// after `PRAGMA optimize`, so their presence never makes a catalog differ.
+const SQLITE_STATISTICS_TABLES: [&str; 2] = ["sqlite_stat1", "sqlite_stat4"];
+
+/// One `sqlite_schema` row as (type, name, table name, SQL text).
+type SchemaObject = (String, String, String, Option<String>);
+type SchemaCatalog = BTreeSet<SchemaObject>;
+
+/// Reference catalogs keyed by the version of the last applied migration.
+static REFERENCE_CATALOGS: LazyLock<Mutex<HashMap<i64, Arc<SchemaCatalog>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+fn up_migrations() -> impl Iterator<Item = &'static sqlx::migrate::Migration> {
+    MIGRATOR
+        .iter()
+        .filter(|migration| !migration.migration_type.is_down_migration())
+}
+
+/// Validates an untrusted database catalog before any application query or integrity check.
+///
+/// The applied migration history must be a successful prefix of the embedded migration set,
+/// `_sqlx_migrations` must be a table, and every table, index, trigger, and view must equal the
+/// catalog that prefix produces on an empty database. Extra objects, such as a trigger that runs
+/// attacker SQL on application writes or a tampered FTS5 shadow table, are rejected. An empty
+/// database passes with no applied migrations.
+///
+/// Returns the number of applied migrations.
+pub async fn validate_schema_catalog(pool: &SqlitePool) -> Result<usize, String> {
+    let catalog = read_schema_catalog(pool).await?;
+    if catalog.is_empty() {
+        return Ok(0);
+    }
+    let history = catalog
+        .iter()
+        .filter(|(_, name, _, _)| name == MIGRATIONS_TABLE)
+        .collect::<Vec<_>>();
+    if history.len() != 1 || history[0].0 != "table" {
+        return Err("database migration history is not a table".to_string());
+    }
+    let applied = validate_migration_prefix(pool).await?;
+    let Some(last) = applied.last() else {
+        return Err("database has a schema without migration history".to_string());
+    };
+    if catalog != *reference_catalog(*last).await? {
+        return Err("database schema differs from its migration history".to_string());
+    }
+    Ok(applied.len())
+}
+
+const MIGRATIONS_TABLE: &str = "_sqlx_migrations";
+
+async fn read_schema_catalog(pool: &SqlitePool) -> Result<SchemaCatalog, String> {
+    let rows = sqlx::query("SELECT type, name, tbl_name, sql FROM main.sqlite_schema")
+        .fetch_all(pool)
+        .await
+        .map_err(|error| format!("read database schema: {error}"))?;
+    let mut catalog = SchemaCatalog::new();
+    for row in rows {
+        let object: SchemaObject = (
+            row.try_get("type")
+                .map_err(|error| format!("read schema object type: {error}"))?,
+            row.try_get("name")
+                .map_err(|error| format!("read schema object name: {error}"))?,
+            row.try_get("tbl_name")
+                .map_err(|error| format!("read schema object table: {error}"))?,
+            row.try_get("sql")
+                .map_err(|error| format!("read schema object SQL: {error}"))?,
+        );
+        if object.0 == "table" && SQLITE_STATISTICS_TABLES.contains(&object.1.as_str()) {
+            continue;
+        }
+        catalog.insert(object);
+    }
+    Ok(catalog)
+}
+
+/// Returns the applied migration versions after checking that they are a successful prefix of
+/// the embedded migration set with matching checksums.
+async fn validate_migration_prefix(pool: &SqlitePool) -> Result<Vec<i64>, String> {
     let rows =
         sqlx::query("SELECT version, checksum, success FROM _sqlx_migrations ORDER BY version ASC")
             .fetch_all(pool)
             .await
             .map_err(|error| format!("read database migration history: {error}"))?;
-    let expected = MIGRATOR
-        .iter()
-        .filter(|migration| !migration.migration_type.is_down_migration())
-        .collect::<Vec<_>>();
-    if rows.len() != expected.len() {
+    let expected = up_migrations().collect::<Vec<_>>();
+    if rows.len() > expected.len() {
         return Err("database schema does not match the current migration set".to_string());
     }
+    let mut versions = Vec::with_capacity(rows.len());
     for (row, migration) in rows.iter().zip(expected) {
         let version: i64 = row
             .try_get("version")
@@ -331,8 +424,79 @@ pub async fn validate_current_schema(pool: &SqlitePool) -> Result<(), String> {
         if version != migration.version || checksum != migration.checksum.as_ref() || !success {
             return Err("database migration history is incompatible".to_string());
         }
+        versions.push(version);
     }
-    Ok(())
+    Ok(versions)
+}
+
+/// Builds, or returns the cached, catalog of an empty database migrated through `version`.
+async fn reference_catalog(version: i64) -> Result<Arc<SchemaCatalog>, String> {
+    let mut catalogs = REFERENCE_CATALOGS.lock().await;
+    if let Some(catalog) = catalogs.get(&version) {
+        return Ok(catalog.clone());
+    }
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(hardened_options(
+            SqliteConnectOptions::new().in_memory(true),
+        ))
+        .await
+        .map_err(|error| format!("open reference schema: {error}"))?;
+    let built = async {
+        MIGRATOR
+            .run_to(version, &pool)
+            .await
+            .map_err(|error| format!("build reference schema: {error}"))?;
+        read_schema_catalog(&pool).await
+    }
+    .await;
+    pool.close().await;
+    let catalog = Arc::new(built?);
+    catalogs.insert(version, catalog.clone());
+    Ok(catalog)
+}
+
+/// Suffixes of the files SQLite keeps beside a database, which it creates with the
+/// database file's permissions.
+const DATABASE_FILE_SUFFIXES: [&str; 4] = ["", "-wal", "-shm", "-journal"];
+
+/// Keeps a writable vault database and its journal files private to the current user.
+///
+/// A missing database is created owner-only so its journal files inherit that mode, and an
+/// existing one loses group and other access. A vault on a file system without Unix
+/// permissions, such as a FAT or exFAT drive, refuses the change; the vault still opens there
+/// because its location is the user's choice, and the refusal is reported on standard error.
+fn restrict_database_files(path: &Path, create: bool) {
+    if create {
+        match ganbaru_atomic_files::create_private_file(path) {
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            // The connection reports any other creation failure with its open error.
+            Err(_) => return,
+        }
+    }
+    for suffix in DATABASE_FILE_SUFFIXES {
+        let mut file = path.as_os_str().to_owned();
+        file.push(suffix);
+        let file = PathBuf::from(file);
+        match ganbaru_atomic_files::restrict_to_owner(&file) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => eprintln!(
+                "could not make '{}' private to the current user: {error}",
+                file.display()
+            ),
+        }
+    }
+}
+
+/// Connection settings that limit what SQL stored in an untrusted schema can do: schema
+/// functions and virtual tables must be innocuous, and page cells are bounds-checked as they are
+/// read. Defensive mode is the bundled SQLite default through `SQLITE_DEFAULT_DEFENSIVE`.
+fn hardened_options(options: SqliteConnectOptions) -> SqliteConnectOptions {
+    options
+        .pragma("trusted_schema", "OFF")
+        .pragma("cell_size_check", "ON")
 }
 
 #[doc(hidden)]

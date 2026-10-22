@@ -9,6 +9,7 @@ use super::{
     ListChatAssignmentTargetsCommand,
 };
 use crate::chat::channels::{chat_pool, identifier_error, persistence_error};
+use crate::chat::organization::common::effective_runtime_approval;
 use sqlx::{Row, SqlitePool};
 use std::collections::BTreeMap;
 
@@ -115,10 +116,13 @@ pub async fn chat_list_assignment_targets(
                 },
                 display_name: row.try_get("display_name").map_err(persistence_error)?,
                 folder_capability: Some(grant.capability),
-                effective_runtime_approval: grant
-                    .runtime_approval_override
-                    .or(channel_access.runtime_approval_override)
-                    .unwrap_or(access.teammate_default_runtime_approval),
+                effective_runtime_approval: effective_runtime_approval(
+                    access.teammate_default_runtime_approval,
+                    grant
+                        .runtime_approval_override
+                        .or(channel_access.runtime_approval_override)
+                        .unwrap_or(access.teammate_default_runtime_approval),
+                ),
                 is_default: grant.is_default && !is_worktree,
                 binding_state,
                 lifecycle_state,
@@ -253,9 +257,12 @@ async fn read_scratch_assignment_target(
         kind: ChatAssignmentTargetKind::Scratch,
         display_name: "Private scratch".to_string(),
         folder_capability: None,
-        effective_runtime_approval: scratch_override
-            .or(channel_override)
-            .unwrap_or(teammate_default),
+        effective_runtime_approval: effective_runtime_approval(
+            teammate_default,
+            scratch_override
+                .or(channel_override)
+                .unwrap_or(teammate_default),
+        ),
         is_default: false,
         binding_state,
         eligible: lifecycle_state == ChatAssignmentTargetLifecycleState::Available

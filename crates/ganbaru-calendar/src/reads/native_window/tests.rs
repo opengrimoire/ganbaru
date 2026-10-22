@@ -315,3 +315,73 @@ fn native_window_rejects_excess_templates_and_bad_windows_without_truncating() {
         );
     });
 }
+
+#[test]
+fn native_window_isolates_faulty_templates_and_still_returns_healthy_events() {
+    crate::test_support::block_on(async {
+        let pool = pool().await;
+        sqlx::raw_sql("INSERT INTO calendar_events(id, title, start_time, end_time, timezone, calendar_id, rrule)
+            VALUES ('costly', 'Never matches', '1700-01-01T09:00:00Z', '1700-01-01T10:00:00Z', 'UTC', 'native-calendar', 'FREQ=YEARLY;BYMONTH=2;BYMONTHDAY=30;COUNT=2'),
+                   ('bad-override', 'Bad override', '2024-03-10T09:00:00Z', '2024-03-10T10:00:00Z', 'UTC', 'native-calendar', 'FREQ=DAILY;COUNT=3');
+            INSERT INTO calendar_event_overrides(id, parent_event_id, recurrence_id, start_time, end_time)
+            VALUES ('inverted', 'bad-override', '2024-03-11T09:00:00Z', '2024-03-11T10:00:00Z', '2024-03-11T09:00:00Z');")
+            .execute(&pool).await.unwrap();
+        let result = snapshot(&pool, &window("2024-03-09", "2024-03-15"), false).await;
+
+        let healthy = result
+            .occurrences
+            .iter()
+            .filter(|occurrence| occurrence.template_id == "series")
+            .count();
+        assert_eq!(healthy, 3);
+        assert_eq!(result.occurrences.len(), 3);
+        let mut failed = result
+            .diagnostics
+            .iter()
+            .map(|diagnostic| diagnostic.event_id.as_str())
+            .collect::<Vec<_>>();
+        failed.sort_unstable();
+        assert_eq!(failed, ["bad-override", "costly"]);
+        let costly = result
+            .diagnostics
+            .iter()
+            .find(|diagnostic| diagnostic.event_id == "costly")
+            .unwrap();
+        assert!(costly.message.contains("per-event"), "{}", costly.message);
+    });
+}
+
+#[test]
+fn native_render_window_flags_events_whose_resolved_music_plays() {
+    crate::test_support::block_on(async {
+        let pool = pool().await;
+        sqlx::raw_sql("INSERT INTO calendar_events(id, title, start_time, end_time, timezone, calendar_id)
+            VALUES('quiet', 'Quiet', '2024-03-09T16:00:00Z', '2024-03-09T17:00:00Z', 'UTC', 'native-calendar');
+            INSERT INTO music_context_assignments(owner_kind, owner_id, phase, behavior, playlist_id, provenance_kind, updated_at_ms)
+            VALUES('event-snapshot', 'series', 'focus', 'play-automatically', 'playlist-default-start-of-day', 'copied-project', 1),
+                  ('event-snapshot', 'quiet', 'focus', 'play-automatically', 'playlist-default-start-of-day', 'copied-project', 1),
+                  ('event-override', 'quiet', 'focus', 'pause-music', NULL, 'explicit', 1);")
+            .execute(&pool).await.unwrap();
+        let window = window("2024-03-09", "2024-03-09");
+        let flags = |result: &NativeCalendarWindow, id: &str| {
+            let event = result.events.iter().find(|event| event.id == id).unwrap();
+            (event.has_music_playlist, event.has_soundscape)
+        };
+        let rendered = snapshot(&pool, &window, false).await;
+        assert_eq!(flags(&rendered, "series"), (1, 0));
+        assert_eq!(flags(&rendered, "quiet"), (0, 0));
+        let mut tx = pool.begin().await.unwrap();
+        let notifications = read(&mut tx, &window, WindowPurpose::Notifications, false)
+            .await
+            .unwrap()
+            .expand(&window)
+            .unwrap();
+        tx.rollback().await.unwrap();
+        assert!(
+            notifications
+                .events
+                .iter()
+                .all(|event| event.has_music_playlist == 0)
+        );
+    });
+}

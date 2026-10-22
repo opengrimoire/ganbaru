@@ -1,5 +1,5 @@
 use super::helpers::migrated_memory_pool;
-use sqlx::Row;
+use sqlx::{AssertSqlSafe, Row};
 
 const NOW: &str = "2026-07-20T12:00:00Z";
 
@@ -155,6 +155,7 @@ fn schema_creates_chat_tables_indexes_and_no_device_paths() {
             "chat_assignment_authorized_folder_sources",
             "chat_host_tool_invocations",
             "chat_host_tool_returned_message_revisions",
+            "chat_preview_tool_invocations",
             "chat_scratch_scopes",
             "chat_scratch_generations",
             "chat_scratch_generation_sources",
@@ -219,6 +220,7 @@ fn schema_creates_chat_tables_indexes_and_no_device_paths() {
             "idx_chat_teammate_channel_memberships_teammate",
             "idx_chat_assignment_authorization_revisions_active",
             "idx_chat_host_tool_invocations_authorization",
+            "idx_chat_preview_tool_invocations_turn",
             "idx_chat_scratch_generations_active",
             "idx_chat_scratch_promotions_generation",
             "idx_chat_scratch_promotions_destination",
@@ -257,13 +259,15 @@ fn schema_creates_chat_tables_indexes_and_no_device_paths() {
             "chat_scratch_promotions",
             "chat_scratch_cleanup_jobs",
         ] {
-            let columns = sqlx::query(&format!("SELECT name FROM pragma_table_info('{table}')"))
-                .fetch_all(&pool)
-                .await
-                .unwrap()
-                .into_iter()
-                .map(|row| row.get::<String, _>("name"))
-                .collect::<Vec<_>>();
+            let columns = sqlx::query(AssertSqlSafe(format!(
+                "SELECT name FROM pragma_table_info('{table}')"
+            )))
+            .fetch_all(&pool)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|row| row.get::<String, _>("name"))
+            .collect::<Vec<_>>();
             assert!(!columns.iter().any(|column| {
                 column.contains("absolute_path")
                     || column.contains("canonical_path")
@@ -440,10 +444,22 @@ fn standalone_teammate_identity_is_inert_until_access_is_replaced() {
         .await
         .unwrap();
 
+        let stored_runtime_default: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM pragma_table_info('chat_teammate_access_state')
+             WHERE name = 'runtime_approval_policy'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
         assert_eq!(access_revision, 0);
         assert_eq!(memberships, 0);
         assert_eq!(ai_access, 0);
         assert_eq!(folder_grants, 0);
+        assert_eq!(
+            stored_runtime_default, 0,
+            "the teammate default runtime approval derives from its approval behavior"
+        );
     });
 }
 
@@ -1212,13 +1228,15 @@ fn working_folder_tool_schema_tracks_restore_invalidation_and_exact_cleanup() {
                 vec!["working_folder_id", "expected_object_id"],
             ),
         ] {
-            let columns = sqlx::query(&format!("SELECT name FROM pragma_table_info('{table}')"))
-                .fetch_all(&pool)
-                .await
-                .unwrap()
-                .into_iter()
-                .map(|row| row.get::<String, _>("name"))
-                .collect::<Vec<_>>();
+            let columns = sqlx::query(AssertSqlSafe(format!(
+                "SELECT name FROM pragma_table_info('{table}')"
+            )))
+            .fetch_all(&pool)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|row| row.get::<String, _>("name"))
+            .collect::<Vec<_>>();
             for column in expected {
                 assert!(
                     columns.iter().any(|value| value == column),
@@ -1377,5 +1395,76 @@ fn cleanup_queue_survives_thread_deletion_and_requires_exact_refs() {
                 .await
                 .unwrap();
         assert_eq!(target, "refs/ganbaru/chat/thread-1/checkpoint-1");
+    });
+}
+
+#[test]
+fn stored_relative_paths_reject_any_backslash_and_trailing_parent_segments() {
+    super::block_on(async {
+        let pool = migrated_memory_pool().await;
+        insert_project(&pool).await;
+        insert_working_folder(&pool, "folder-1", "project-1").await;
+        insert_thread(&pool, "thread-1", "folder-1", "project-1").await;
+        let shape_error = "Stored relative paths cannot contain a backslash or a parent segment";
+
+        let insert_attachment = |id: &'static str, path: &'static str| {
+            sqlx::query(
+                "INSERT INTO chat_attachments
+                    (id, working_folder_id, kind, original_display_name, mime_type, byte_size,
+                     sha256, managed_relative_path, signature_kind, created_at)
+                 VALUES (?, 'folder-1', 'image', 'screen.png', 'image/png', 8,
+                         'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+                         ?, 'png', ?)",
+            )
+            .bind(id)
+            .bind(path)
+            .bind(NOW)
+            .execute(&pool)
+        };
+        for path in ["assets\\chat\\a.png", "assets/chat\\..\\a.png", ".."] {
+            let error = insert_attachment("rejected", path).await.unwrap_err();
+            assert!(error.to_string().contains(shape_error), "{path}: {error}");
+        }
+        insert_attachment("accepted", "assets/chat/attachments/a.png")
+            .await
+            .unwrap();
+        let error = sqlx::query(
+            "UPDATE chat_resources SET managed_relative_path = 'assets\\b.png'
+             WHERE id = 'accepted'",
+        )
+        .execute(&pool)
+        .await
+        .unwrap_err();
+        assert!(error.to_string().contains(shape_error), "{error}");
+
+        let insert_comment = |id: &'static str, path: &'static str| {
+            sqlx::query(
+                "INSERT INTO chat_review_comments
+                    (id, thread_id, relative_path, content_revision, start_line, end_line,
+                     comment_text, created_at, updated_at)
+                 VALUES (?, 'thread-1', ?,
+                         'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+                         1, 1, 'Check this', ?, ?)",
+            )
+            .bind(id)
+            .bind(path)
+            .bind(NOW)
+            .bind(NOW)
+            .execute(&pool)
+        };
+        for path in ["src\\main.rs", "src/..", ".."] {
+            let error = insert_comment("rejected", path).await.unwrap_err();
+            assert!(error.to_string().contains(shape_error), "{path}: {error}");
+        }
+        insert_comment("accepted", "src/main..rs").await.unwrap();
+
+        let error = sqlx::query(
+            "UPDATE project_working_folders SET managed_relative_path = 'projects\\x'
+             WHERE id = 'folder-1'",
+        )
+        .execute(&pool)
+        .await
+        .unwrap_err();
+        assert!(error.to_string().contains(shape_error), "{error}");
     });
 }

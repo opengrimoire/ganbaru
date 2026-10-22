@@ -13,6 +13,7 @@ import type { ProjectSettingsWorkingFoldersPorts, WorkingFolderSelection } from 
 
 const chat = vi.hoisted(() => ({
   workingFolders: [] as ProjectWorkingFolderRead[],
+  loaded: false,
   loading: false,
   settings: {
     providerInstances: [] as ProviderInstanceRead[],
@@ -57,6 +58,11 @@ const folderApi = vi.hoisted(() => ({
   recreateManagedProjectWorkingFolder: vi.fn<ProjectSettingsWorkingFoldersPorts["recreate"]>(),
 }));
 vi.mock("$lib/api/project-working-folders", () => folderApi);
+const trustApi = vi.hoisted(() => ({
+  decideProjectWorkingFolderTrust: vi.fn<(id: string) => Promise<ProjectWorkingFolderRead | null>>(),
+  revokeProjectWorkingFolderTrust: vi.fn<(id: string) => Promise<ProjectWorkingFolderRead>>(),
+}));
+vi.mock("$lib/api/working-folder-trust", () => trustApi);
 
 let component: (ReturnType<typeof mount> & { saveDraft: () => Promise<void>; discardDraft: () => void }) | undefined;
 let target: HTMLDivElement;
@@ -65,6 +71,7 @@ beforeEach(() => {
   vi.resetAllMocks();
   chat.ensureLoaded.mockResolvedValue(undefined);
   chat.loading = false;
+  chat.loaded = false;
   chat.openWorkingFolder.mockResolvedValue(undefined);
   chat.setWorkingFolderProviderPreference.mockResolvedValue(undefined);
   chat.removeWorkingFolder.mockResolvedValue(undefined);
@@ -104,7 +111,7 @@ function folder(id: string, kind: "managed" | "external"): ProjectWorkingFolderR
       archivedAt: null, revision: 1,
     },
     bindingStatus: "available", canonicalPath: `/folders/${id}`,
-    lastVerifiedAt: "2026-10-01T00:00:00Z", currentBranch: null,
+    lastVerifiedAt: "2026-10-01T00:00:00Z", currentBranch: null, trust: "undecided",
   };
 }
 
@@ -127,7 +134,7 @@ function provider(instanceId: string, familyId: string, label: string): Provider
       credentialReferences: {}, visibleModelIds: [], favoriteModelIds: [],
       providerConfig: { schemaVersion: 1, value: {} },
     },
-    lastProbe: null, modelCatalog: null, lastSuccessfulProbeAt: null,
+    lastProbe: null, modelCatalog: null, lastSuccessfulProbeAt: null, runtimeReview: [],
   };
 }
 
@@ -159,6 +166,20 @@ function action(menu: HTMLElement, label: string): HTMLButtonElement {
 }
 
 describe("Project working folder settings", () => {
+  it("shows folders Chat already loaded before the primary folder read finishes", async () => {
+    chat.loaded = true;
+    let resolvePrimary: (primary: ChatProjectPrimaryWorkingFolderRead) => void = () => {};
+    api.readChatProjectPrimaryWorkingFolder.mockReturnValue(new Promise((resolve) => { resolvePrimary = resolve; }));
+    component = mount(ProjectSettingsWorkingFoldersSection, { target, props: { projectId: "project", onDirtyChange: () => {} } });
+    await tick();
+    const options = target.querySelector<HTMLButtonElement>('[aria-label="Options for managed"]');
+    expect(options).not.toBeNull();
+    expect(target.querySelector('[aria-label="Options for external"]')).not.toBeNull();
+    expect(options!.disabled).toBe(true);
+    resolvePrimary({ projectId: "project", workingFolderId: "managed", revision: 3 });
+    await vi.waitFor(() => expect(target.querySelector<HTMLButtonElement>('[aria-label="Options for managed"]')!.disabled).toBe(false));
+  });
+
   it("reports pending folder changes to the parent and restores them through Discard", async () => {
     const dirty = vi.fn();
     await render(dirty);
@@ -194,6 +215,25 @@ describe("Project working folder settings", () => {
     expect(chat.setWorkingFolderProviderPreference).toHaveBeenCalledExactlyOnceWith("managed", "local");
   });
 
+  it("applies device-local trust decisions immediately without dirtying the draft", async () => {
+    const dirty = vi.fn<(value: boolean) => void>();
+    trustApi.decideProjectWorkingFolderTrust.mockImplementation(async (id) => ({ ...folder(id, "external"), trust: "trusted" }));
+    trustApi.revokeProjectWorkingFolderTrust.mockImplementation(async (id) => ({ ...folder(id, "external"), trust: "untrusted" }));
+    await render(dirty);
+    let menu = await openFolderOptions("external");
+    expect(menu.textContent).toContain("Trust not decided on this device");
+    action(menu, "Trust folder").click();
+    await vi.waitFor(() => expect(trustApi.decideProjectWorkingFolderTrust).toHaveBeenCalledExactlyOnceWith("external"));
+    menu = await openFolderOptions("external");
+    await vi.waitFor(() => expect(menu.textContent).toContain("Trusted on this device"));
+    action(menu, "Revoke trust").click();
+    await vi.waitFor(() => expect(trustApi.revokeProjectWorkingFolderTrust).toHaveBeenCalledExactlyOnceWith("external"));
+    menu = await openFolderOptions("external");
+    await vi.waitFor(() => expect(menu.textContent).toContain("Hooks and repository programs are off on this device"));
+    expect(chat.workingFolders.find((entry) => entry.workingFolder.id === "external")?.trust).toBe("untrusted");
+    expect(dirty).not.toHaveBeenCalledWith(true);
+  });
+
   it("shows the full managed path and keeps protected actions visible without allowing changes", async () => {
     const prompt = vi.spyOn(window, "prompt");
     const confirm = vi.spyOn(window, "confirm");
@@ -202,7 +242,7 @@ describe("Project working folder settings", () => {
     expect(menu.textContent).toContain("/folders/managed");
     expect(menu.textContent).not.toContain("projects/project");
     expect([...menu.querySelectorAll("button")].map((button) => button.textContent?.trim())).toEqual([
-      "Open", "Primary", "Rebind", "Rename", "Archive", "Remove from project",
+      "Open", "Primary", "Rebind", "Trust folder", "Rename", "Archive", "Remove from project",
     ]);
     expect(action(menu, "Open").disabled).toBe(false);
     for (const label of ["Primary", "Rebind", "Rename", "Archive", "Remove from project"]) {

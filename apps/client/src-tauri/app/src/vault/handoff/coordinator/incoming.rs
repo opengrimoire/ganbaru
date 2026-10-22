@@ -8,6 +8,15 @@ use crate::vault::ownership::VaultOwnershipManager;
 use tauri::{Manager, Runtime};
 
 impl<R: Runtime> CoordinatorState<R> {
+    /// Refuses an upload for `vault_id` while the coordinator has another vault active, so a
+    /// returned snapshot never replaces an unrelated vault.
+    fn ensure_linked_vault_active(&self, vault_id: &str) -> Result<(), String> {
+        if crate::vault::active_vault_id(&self.app)? != vault_id {
+            return Err("uploaded vault is not active on the coordinator".to_string());
+        }
+        Ok(())
+    }
+
     pub(super) async fn uploaded(
         &mut self,
         metadata: BundleMetadata,
@@ -43,7 +52,7 @@ impl<R: Runtime> CoordinatorState<R> {
                         false,
                     )
                     .await?;
-                    let (device_id, _) = self.pairing.identity()?;
+                    let device_id = self.pairing.device_id()?;
                     self.pairing
                         .complete_incoming_activation(PendingAcknowledgement {
                             vault_id: metadata.vault_id.clone(),
@@ -63,7 +72,7 @@ impl<R: Runtime> CoordinatorState<R> {
             }
             return Err("another uploaded vault transfer is pending".to_string());
         }
-        let (local_device_id, _) = self.pairing.identity()?;
+        let local_device_id = self.pairing.device_id()?;
         let status = self
             .app
             .state::<VaultOwnershipManager>()
@@ -102,7 +111,7 @@ impl<R: Runtime> CoordinatorState<R> {
                 false,
             )
             .await?;
-            let (device_id, _) = self.pairing.identity()?;
+            let device_id = self.pairing.device_id()?;
             self.pairing
                 .complete_incoming_activation(PendingAcknowledgement {
                     vault_id: metadata.vault_id.clone(),
@@ -141,6 +150,7 @@ impl<R: Runtime> CoordinatorState<R> {
                 });
             }
         }
+        self.ensure_linked_vault_active(&metadata.vault_id)?;
         if let Some(incoming) = self.pairing.incoming_transfer()? {
             if incoming.metadata == *metadata
                 && incoming.source_device_id == source_device_id
@@ -153,7 +163,7 @@ impl<R: Runtime> CoordinatorState<R> {
             }
             return Err("another uploaded vault transfer is pending".to_string());
         }
-        let (local_device_id, _) = self.pairing.identity()?;
+        let local_device_id = self.pairing.device_id()?;
         let status = self
             .app
             .state::<VaultOwnershipManager>()
@@ -195,6 +205,7 @@ impl<R: Runtime> CoordinatorState<R> {
                 });
             }
         }
+        self.ensure_linked_vault_active(&metadata.vault_id)?;
         let incoming = self
             .pairing
             .incoming_transfer()?
@@ -250,7 +261,7 @@ impl<R: Runtime> CoordinatorState<R> {
                 metadata.generation,
             )?;
         }
-        let (device_id, _) = self.pairing.identity()?;
+        let device_id = self.pairing.device_id()?;
         self.pairing
             .complete_incoming_activation(PendingAcknowledgement {
                 vault_id: metadata.vault_id,

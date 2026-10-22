@@ -104,11 +104,11 @@ pub async fn chat_preview_checkpoint_restore(
     let target_for_git = target.clone();
     let (current, files) = tauri::async_runtime::spawn_blocking(move || {
         verify_checkpoint(&authorized_for_git, &target_for_git)?;
-        let current = current_git_snapshot(&authorized_for_git.canonical_path)?;
+        let current = current_git_snapshot(authorized_for_git.git_folder())?;
         require_head_context(&current, &target_for_git)?;
         let current_checkpoint = transient_checkpoint(&target_for_git, &current);
         let files = diff_files(
-            &authorized_for_git.canonical_path,
+            authorized_for_git.git_folder(),
             &current_checkpoint,
             &target_for_git,
         )?;
@@ -147,8 +147,7 @@ pub async fn chat_preview_checkpoint_restore(
     .map_err(persistence_error)?;
     let capabilities = app
         .state::<ChatRuntimeRegistry>()
-        .owner(request.thread_id)?
-        .snapshot()?
+        .snapshot(&request.thread_id)?
         .capabilities;
     let staged_changes = current.index_tree_oid != target.index_tree_oid;
     let mut warnings = Vec::new();

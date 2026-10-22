@@ -12,6 +12,10 @@ import type {
   QuickNoteConflictResolved,
   QuickNoteConflictVersion,
   QuickNoteCreate,
+  QuickNoteImage,
+  QuickNoteImageContentType,
+  QuickNoteImageErrorCode,
+  QuickNoteImagePick,
   QuickNoteRevisionRequest,
   QuickNoteReorderRequest,
   QuickNotesCollection,
@@ -23,6 +27,8 @@ import type {
   QuickNoteUpdate,
 } from "$lib/quick-notes/types";
 import {
+  QUICK_NOTE_IMAGE_CONTENT_TYPES,
+  QUICK_NOTE_IMAGE_LIMIT,
   QUICK_NOTE_ORDER_KEY_MAX_CHARS,
   QUICK_NOTE_TAG_NAME_MAX_CHARS,
 } from "$lib/quick-notes/types";
@@ -65,6 +71,38 @@ function mapRun(value: unknown, label: string): QuickNoteTextRun {
   };
 }
 
+const DIGEST_PATTERN = /^[0-9a-f]{64}$/u;
+
+function isImageContentType(value: unknown): value is QuickNoteImageContentType {
+  return QUICK_NOTE_IMAGE_CONTENT_TYPES.some((type) => type === value);
+}
+
+function positiveInteger(value: unknown, label: string): number {
+  const number = integer(value, label);
+  if (number <= 0) throw new Error(`${label} must be positive`);
+  return number;
+}
+
+/** Validates one image reference from the native side. */
+export function mapQuickNoteImage(value: unknown, label = "quick note image"): QuickNoteImage {
+  const row = record(value, label);
+  const sha256 = string(row.sha256, `${label}.sha256`);
+  if (!DIGEST_PATTERN.test(sha256)) throw new Error(`${label}.sha256 is invalid`);
+  if (!isImageContentType(row.contentType)) throw new Error(`${label}.contentType is invalid`);
+  return {
+    sha256,
+    contentType: row.contentType,
+    byteSize: positiveInteger(row.byteSize, `${label}.byteSize`),
+    width: positiveInteger(row.width, `${label}.width`),
+    height: positiveInteger(row.height, `${label}.height`),
+  };
+}
+
+function mapImages(value: unknown, label: string): QuickNoteImage[] {
+  if (!Array.isArray(value)) throw new Error(`${label} must be an array`);
+  return value.map((image, index) => mapQuickNoteImage(image, `${label}[${index}]`));
+}
+
 export function mapQuickNote(value: unknown): QuickNote {
   const row = record(value, "quick note");
   if (!Array.isArray(row.runs)) throw new Error("quick note.runs must be an array");
@@ -76,6 +114,7 @@ export function mapQuickNote(value: unknown): QuickNote {
     bodyPlainText: string(row.bodyPlainText, "quick note.bodyPlainText"),
     runs: row.runs.map((run, index) => mapRun(run, `quick note.runs[${index}]`)),
     previewTruncated: boolean(row.previewTruncated, "quick note.previewTruncated"),
+    images: mapImages(row.images, "quick note.images"),
     color,
     tagId: nullableString(row.tagId, "quick note.tagId"),
     pinned: boolean(row.pinned, "quick note.pinned"),
@@ -168,6 +207,126 @@ export async function deleteQuickNotePermanently(id: string): Promise<void> {
 
 export async function emptyQuickNotesTrash(): Promise<number> {
   return invoke<number>("quick_notes_empty_trash", { dbUrl: await ensureDbUrl() });
+}
+
+const QUICK_NOTE_IMAGE_ERROR_CODES = ["unsupported", "too_large", "unavailable", "failed"] as const;
+
+function isQuickNoteImageErrorCode(value: unknown): value is QuickNoteImageErrorCode {
+  return QUICK_NOTE_IMAGE_ERROR_CODES.some((code) => code === value);
+}
+
+/** A native image file failure with a stable code for user-facing messages. */
+export class QuickNoteImageError extends Error {
+  constructor(readonly code: QuickNoteImageErrorCode, message: string) {
+    super(message);
+    this.name = "QuickNoteImageError";
+  }
+}
+
+/** Converts a native image error payload, or returns null when it has another shape. */
+function imageErrorFrom(value: unknown): QuickNoteImageError | null {
+  if (typeof value !== "object" || value === null || !("code" in value)) return null;
+  if (!isQuickNoteImageErrorCode(value.code)) return null;
+  const message = "message" in value && typeof value.message === "string" ? value.message : value.code;
+  return new QuickNoteImageError(value.code, message);
+}
+
+async function invokeImage<T>(command: string, args?: Parameters<typeof invoke>[1]): Promise<T> {
+  try {
+    return await invoke<T>(command, args);
+  } catch (error: unknown) {
+    throw imageErrorFrom(error) ?? error;
+  }
+}
+
+/** Android IPC cannot carry raw request bodies, so its image imports travel as base64 text. */
+function sendsBase64Bodies(): boolean {
+  return typeof __GANBARU_BUILD_PLATFORM__ !== "undefined" && __GANBARU_BUILD_PLATFORM__ === "android";
+}
+
+const BASE64_CHUNK_BYTES = 0x8000;
+
+function encodeBase64(bytes: Uint8Array): string {
+  const parts: string[] = [];
+  for (let start = 0; start < bytes.length; start += BASE64_CHUNK_BYTES) {
+    parts.push(String.fromCharCode(...bytes.subarray(start, start + BASE64_CHUNK_BYTES)));
+  }
+  return btoa(parts.join(""));
+}
+
+/** Stores image bytes in the vault and returns the reference a note saves. */
+export async function importQuickNoteImage(bytes: Uint8Array): Promise<QuickNoteImage> {
+  const body = sendsBase64Bodies() ? { base64: encodeBase64(bytes) } : bytes;
+  return mapQuickNoteImage(await invokeImage<unknown>("quick_notes_import_image", body));
+}
+
+function imageFile(image: QuickNoteImage): { sha256: string; contentType: QuickNoteImageContentType } {
+  return { sha256: image.sha256, contentType: image.contentType };
+}
+
+/** Reads the verified bytes of an image; `unavailable` means this device does not hold them. */
+export async function readQuickNoteImage(image: QuickNoteImage): Promise<ArrayBuffer> {
+  const bytes = await invokeImage<unknown>("quick_notes_read_image", { file: imageFile(image) });
+  if (!(bytes instanceof ArrayBuffer)) throw new Error("quick note image bytes must be an ArrayBuffer");
+  return bytes;
+}
+
+/** Validates a picker result from the native side. */
+export function mapQuickNoteImagePick(value: unknown): QuickNoteImagePick {
+  const row = record(value, "quick note image pick");
+  if (!Array.isArray(row.rejected)) throw new Error("quick note image pick.rejected must be an array");
+  const skipped = integer(row.skipped, "quick note image pick.skipped");
+  if (skipped < 0) throw new Error("quick note image pick.skipped is invalid");
+  return {
+    images: mapImages(row.images, "quick note image pick.images"),
+    rejected: row.rejected.map((entry, index) => {
+      const label = `quick note image pick.rejected[${index}]`;
+      const rejection = record(entry, label);
+      const error = imageErrorFrom(rejection.error);
+      if (error === null) throw new Error(`${label}.error is invalid`);
+      return { fileName: string(rejection.fileName, `${label}.fileName`), code: error.code };
+    }),
+    skipped,
+  };
+}
+
+/** Opens the desktop image picker and imports up to `limit` picked files. */
+export async function pickQuickNoteImages(limit: number): Promise<QuickNoteImagePick> {
+  const bounded = Math.max(0, Math.min(Math.floor(limit), QUICK_NOTE_IMAGE_LIMIT));
+  return mapQuickNoteImagePick(await invokeImage<unknown>("quick_notes_pick_images", { limit: bounded }));
+}
+
+/**
+ * Imports up to `limit` of the files last dropped on this window. Rust reads the paths the operating system delivered
+ * with the drop, so a drop is imported once and only within a minute of it.
+ */
+export async function importDroppedQuickNoteImages(limit: number): Promise<QuickNoteImagePick> {
+  const bounded = Math.max(0, Math.min(Math.floor(limit), QUICK_NOTE_IMAGE_LIMIT));
+  return mapQuickNoteImagePick(await invokeImage<unknown>("quick_notes_import_dropped_images", { limit: bounded }));
+}
+
+/**
+ * Imports the image on the system clipboard, for pastes the webview hands over without it. Resolves an empty pick
+ * when the clipboard holds no image.
+ */
+export async function pasteQuickNoteClipboardImage(): Promise<QuickNoteImagePick> {
+  return mapQuickNoteImagePick(await invokeImage<unknown>("quick_notes_paste_clipboard_image"));
+}
+
+/** Saves a copy of an image outside the vault. Resolves `false` when the user cancels. */
+export async function downloadQuickNoteImage(image: QuickNoteImage): Promise<boolean> {
+  const saved = await invokeImage<unknown>("quick_notes_download_image", { file: imageFile(image) });
+  return boolean(saved, "quick note image download");
+}
+
+/** Deletes unreferenced image files past their grace period; returns how many were removed. */
+export async function collectQuickNoteImages(): Promise<number> {
+  const removed = integer(
+    await invoke<unknown>("quick_notes_collect_images", { dbUrl: await ensureDbUrl() }),
+    "quick note image collection",
+  );
+  if (removed < 0) throw new Error("quick note image collection is invalid");
+  return removed;
 }
 
 const ORDER_KEY_PATTERN = /^[0-9A-Za-z]+$/u;
@@ -287,7 +446,7 @@ async function invokeConflict(command: string, args: Record<string, unknown>): P
 }
 
 function conflictField(value: unknown, label: string): QuickNoteConflictField {
-  if (value !== "title" && value !== "body") throw new Error(`${label} is invalid`);
+  if (value !== "title" && value !== "body" && value !== "images") throw new Error(`${label} is invalid`);
   return value;
 }
 
@@ -301,7 +460,9 @@ function mapConflictVersion(value: unknown, label: string, field: QuickNoteConfl
     if (!Array.isArray(row.runs)) throw new Error(`${label}.runs must be an array`);
     runs = row.runs.map((run, index) => mapRun(run, `${label}.runs[${index}]`));
   }
-  if ((field === "title") !== (title !== null) || (field === "body") !== (runs !== null)) {
+  const images = row.images === null ? null : mapImages(row.images, `${label}.images`);
+  if ((field === "title") !== (title !== null) || (field === "body") !== (runs !== null)
+    || (field === "images") !== (images !== null)) {
     throw new Error(`${label} does not match its field`);
   }
   return {
@@ -311,6 +472,7 @@ function mapConflictVersion(value: unknown, label: string, field: QuickNoteConfl
     displayed: boolean(row.displayed, `${label}.displayed`),
     title,
     runs,
+    images,
   };
 }
 

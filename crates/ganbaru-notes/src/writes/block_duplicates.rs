@@ -1,14 +1,14 @@
 use super::block_comments::duplicate_block_comment_threads;
 use super::block_tree::{
-    load_block_subtree_rows, load_block_subtree_rows_including_trashed, load_blocks_by_ids,
-    normalize_selection_root_ids, refresh_duplicated_has_children,
+    copied_subtree_height, load_block_subtree_rows, load_block_subtree_rows_including_trashed,
+    load_blocks_by_ids, normalize_selection_root_ids, refresh_duplicated_has_children,
 };
 use super::copy_budget::{CopyBudget, CopyContext};
 use super::database_copy::{insert_database_copy, plan_database_copy};
 use super::page_duplicates::{insert_child_page_copy, plan_child_page_copy};
 use super::parents::{
-    ParentTarget, refresh_parent_has_children, resolve_block_parent, touch_page,
-    validate_block_for_parent,
+    ParentTarget, ensure_block_nesting_fits, refresh_parent_has_children, resolve_block_parent,
+    touch_page, validate_block_for_parent,
 };
 use super::sort::{next_sort_orders, sort_orders_before};
 use crate::models::{
@@ -295,6 +295,12 @@ pub(super) async fn duplicate_blocks_tx(
         let payload: Value = serde_json::from_str(&source_root.payload)
             .map_err(|e| format!("parse duplicated block payload: {e}"))?;
         validate_block_for_parent(&destination_parent, &source_root.block_type, &payload)?;
+        ensure_block_nesting_fits(
+            tx,
+            &destination_parent,
+            copied_subtree_height(&subtree_rows),
+        )
+        .await?;
         root_rows.push(source_root.clone());
         source_rows.extend(subtree_rows);
     }

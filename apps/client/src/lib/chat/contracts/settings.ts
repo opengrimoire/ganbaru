@@ -10,8 +10,16 @@ import type {
 export const CREDENTIAL_STORE_AVAILABILITIES = ["available", "unavailable"] as const;
 export type CredentialStoreAvailability = (typeof CREDENTIAL_STORE_AVAILABILITIES)[number];
 
+/** A portable runtime value this device has not confirmed yet. */
+export interface ProviderRuntimeReviewItem {
+  label: string;
+  widensPermissions: boolean;
+}
+
 export interface ProviderInstanceRead {
   configuration: ProviderInstanceConfig;
+  /** Values that keep the provider from running until this device confirms them. */
+  runtimeReview: ProviderRuntimeReviewItem[];
   lastProbe: ProviderProbeResult | null;
   lastSuccessfulProbeAt: string | null;
   modelCatalog: ProviderModelCatalog | null;

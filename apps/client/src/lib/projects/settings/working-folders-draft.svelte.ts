@@ -49,10 +49,20 @@ export function createProjectSettingsWorkingFoldersDraft(ports: ProjectSettingsW
   /** Load canonical state when the panel opens or switches projects. */
   function load(id: string, folders: readonly ProjectWorkingFolderRead[], selectedPrimary: ChatProjectPrimaryWorkingFolderRead,
     providerPreferences: Readonly<Record<string, string>>): void {
+    stage(id, folders, { ...selectedPrimary }, providerPreferences);
+  }
+
+  /** Show already known folders while the primary folder is still being read; the draft stays clean and unsaveable until {@link load}. */
+  function preview(id: string, folders: readonly ProjectWorkingFolderRead[], providerPreferences: Readonly<Record<string, string>>): void {
+    stage(id, folders, null, providerPreferences);
+  }
+
+  function stage(id: string, folders: readonly ProjectWorkingFolderRead[], selectedPrimary: ChatProjectPrimaryWorkingFolderRead | null,
+    providerPreferences: Readonly<Record<string, string>>): void {
     generation += 1;
     projectId = id;
     saved = folders.filter((folder) => folder.workingFolder.projectId === id).map(copy);
-    primary = { ...selectedPrimary };
+    primary = selectedPrimary;
     savedPreferences = Object.fromEntries(saved.map((folder) => [folder.workingFolder.id, providerPreferences[folder.workingFolder.id] ?? ""]));
     discard();
   }
@@ -84,7 +94,7 @@ export function createProjectSettingsWorkingFoldersDraft(ports: ProjectSettingsW
       const id = folder.workingFolder.id;
       const original = saved.find((entry) => entry.workingFolder.id === id);
       rows = rows.map((entry) => entry.workingFolder.id === id ? {
-        ...entry, canonicalPath: selection.canonicalPath, bindingStatus: "available", currentBranch: null,
+        ...entry, canonicalPath: selection.canonicalPath, bindingStatus: "available", currentBranch: null, trust: original?.canonicalPath === selection.canonicalPath ? original.trust : "undecided",
       } : entry);
       if (original?.canonicalPath === selection.canonicalPath && original.bindingStatus === "available") {
         const nextPaths = { ...paths }; delete nextPaths[id]; paths = nextPaths;
@@ -101,7 +111,7 @@ export function createProjectSettingsWorkingFoldersDraft(ports: ProjectSettingsW
         sortOrder: Math.max(0, ...rows.map((entry) => entry.workingFolder.sortOrder)) + 1,
         createdAt: now, updatedAt: now,
       },
-      canonicalPath: selection.canonicalPath, bindingStatus: "available", lastVerifiedAt: null, currentBranch: null,
+      canonicalPath: selection.canonicalPath, bindingStatus: "available", lastVerifiedAt: null, currentBranch: null, trust: "undecided",
     }];
     paths = { ...paths, [id]: selection };
     preferences = { ...preferences, [id]: "" };
@@ -144,11 +154,19 @@ export function createProjectSettingsWorkingFoldersDraft(ports: ProjectSettingsW
     const pendingSelection = paths[id];
     rows = rows.map((entry) => entry.workingFolder.id === id ? {
       ...copy(result),
-      ...(pendingSelection ? { canonicalPath: pendingSelection.canonicalPath, bindingStatus: "available" as const, currentBranch: null } : {}),
+      ...(pendingSelection ? { canonicalPath: pendingSelection.canonicalPath, bindingStatus: "available" as const, currentBranch: null, trust: "undecided" as const } : {}),
       workingFolder: {
         ...result.workingFolder, displayName: entry.workingFolder.displayName, archivedAt: entry.workingFolder.archivedAt,
       },
     } : entry);
+  }
+
+  /** Adopt an immediate device-local trust decision without making the draft dirty. */
+  function adoptTrust(result: ProjectWorkingFolderRead): void {
+    const id = result.workingFolder.id;
+    const withTrust = (entry: ProjectWorkingFolderRead) => entry.workingFolder.id === id ? { ...entry, trust: result.trust } : entry;
+    saved = saved.map(withTrust);
+    rows = rows.map(withTrust);
   }
 
   /** Commit folder configuration only after the settings session has validated its draft. */
@@ -211,7 +229,7 @@ export function createProjectSettingsWorkingFoldersDraft(ports: ProjectSettingsW
   }
 
   return {
-    load, clear, discard, invalidate, choose, rename, setArchived, remove, save,
+    load, preview, clear, discard, invalidate, choose, rename, setArchived, remove, save, adoptTrust,
     get folders() { return rows; },
     get primaryId() { return primaryId; },
     get primaryReady() { return primary !== null; },

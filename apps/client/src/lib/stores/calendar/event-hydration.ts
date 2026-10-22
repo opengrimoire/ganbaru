@@ -184,6 +184,8 @@ export function slimEvent(event: CalendarEvent): CalendarEvent {
   if (event.allDay) slim.allDay = true;
   if (event.meetingEnabled) slim.meetingEnabled = true;
   if (event.hasCallLink || event.url) slim.hasCallLink = true;
+  if (event.hasMusicPlaylist) slim.hasMusicPlaylist = true;
+  if (event.hasSoundscape) slim.hasSoundscape = true;
   if (event.location) slim.location = event.location;
   if (event.transparency === "transparent") slim.transparency = "transparent";
   if (event.status && event.status !== "confirmed") slim.status = event.status;

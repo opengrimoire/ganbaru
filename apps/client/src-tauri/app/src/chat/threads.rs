@@ -2,7 +2,6 @@
 
 use super::workspace::WorkingFolderAuthorizationOperation;
 use super::workspace::commands::authorize_working_folder;
-use super::{credentials::PlatformCredentialStore, credentials::materialize_provider_environment};
 use crate::db;
 use chrono::{SecondsFormat, Utc};
 use ganbaru_chat::repository::provider_lifecycle::{
@@ -19,6 +18,7 @@ use ganbaru_chat_providers::{
 use serde::Deserialize;
 use serde_json::{Value, json};
 use sqlx::SqlitePool;
+use std::collections::BTreeMap;
 use std::time::{Duration, Instant, SystemTime};
 use tauri::Manager;
 use tauri_plugin_opener::OpenerExt;
@@ -26,6 +26,9 @@ use tauri_plugin_opener::OpenerExt;
 const PERMANENT_DELETE_CLEANUP_GRACE: Duration = Duration::from_secs(24 * 60 * 60);
 const PROVIDER_LIFECYCLE_TIMEOUT: Duration = Duration::from_secs(30);
 const THREAD_DELETE_STOP_TIMEOUT: Duration = Duration::from_secs(15);
+/// Approval mode for a fork of an organizational thread, whose stored mode came from a
+/// teammate authorization rather than from the forking user.
+const DIRECT_FORK_SAFETY_MODE: &str = "ask_for_approval";
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -144,6 +147,7 @@ pub async fn chat_fork_thread(
             .fetch_one(&pool)
             .await
             .map_err(|_| ChatError::new(ChatErrorCode::Persistence, "read Chat thread", true))?;
+    let organizational = source_has_organizational_origin(&pool, &request.source_thread_id).await?;
     let (provider_thread_id, resume_cursor) = match source.provider_thread_id.clone() {
         Some(provider_thread_id)
             if matches!(source.provider_family_id.as_str(), "codex" | "opencode") =>
@@ -155,11 +159,19 @@ pub async fn chat_fork_thread(
                 WorkingFolderAuthorizationOperation::ProviderStart,
             )
             .await?;
+            let root_path = authorized.canonical_path.clone();
             let authorized = super::execution_environment::resolve_environment_workspace(
                 &app,
                 &pool,
                 authorized,
                 execution_environment_id.as_deref(),
+            )
+            .await?;
+            let authorized = super::workspace::commands::settle_project_configuration(
+                &app,
+                &root_path,
+                authorized,
+                super::workspace::commands::UndecidedProjectConfiguration::Ask,
             )
             .await?;
             let verified = ganbaru_chat_contracts::models::VerifiedWorkspaceContext {
@@ -173,13 +185,12 @@ pub async fn chat_fork_thread(
                     .to_string(),
                 repository_kind: authorized.repository_kind,
                 repository_identity: authorized.repository_identity,
+                project_configuration: authorized.project_configuration,
             };
             let provider =
                 super::settings_commands::read_provider(&app, &source.provider_instance_id)?;
-            let configuration = materialize_provider_environment(
-                &provider.configuration,
-                &PlatformCredentialStore::default(),
-            )?;
+            let configuration =
+                crate::chat::settings::approved_runtime(&app, &provider.configuration)?;
             let mut driver = ProviderDriverRegistry.create_driver(configuration)?;
             let context = DriverOperationContext {
                 operation_id: format!("provider-thread-fork:{}", request.new_thread_id.as_str()),
@@ -201,62 +212,25 @@ pub async fn chat_fork_thread(
         }
         _ => (None, None),
     };
+    let direct_continuation_group = if organizational {
+        Some(derive_direct_continuation_group(&app, &source.provider_instance_id).await?)
+    } else {
+        None
+    };
     let now = now_timestamp()?;
-    let mut transaction = pool
-        .begin()
-        .await
-        .map_err(|_| ChatError::new(ChatErrorCode::Persistence, "create Chat thread fork", true))?;
-    let inserted = sqlx::query(
-        "INSERT INTO chat_threads
-            (id, working_folder_id, execution_environment_id, project_id, title, title_source,
-             provider_family_id, provider_instance_id, continuation_group_id, provider_thread_id,
-             resume_cursor_schema_version, resume_cursor_data, model_selection_schema_version,
-             model_selection_data, safety_mode, interaction_mode, state, latest_turn_state,
-             last_activity_at, created_at, updated_at)
-         SELECT ?, working_folder_id, execution_environment_id, project_id, ?, 'user',
-                provider_family_id, provider_instance_id, continuation_group_id, ?, ?, ?,
-                model_selection_schema_version, model_selection_data, safety_mode, interaction_mode,
-                'idle', NULL, ?, ?, ?
-         FROM chat_threads WHERE id = ? AND state != 'closed'",
+    persist_thread_fork(
+        &pool,
+        ThreadForkRecord {
+            source_thread_id: &request.source_thread_id,
+            new_thread_id: &request.new_thread_id,
+            title,
+            provider_thread_id: provider_thread_id.as_ref().map(|value| value.as_str()),
+            resume_cursor: resume_cursor.as_ref(),
+            direct_continuation_group: direct_continuation_group.as_ref(),
+            now: now.as_str(),
+        },
     )
-    .bind(request.new_thread_id.as_str())
-    .bind(title)
-    .bind(provider_thread_id.as_ref().map(|value| value.as_str()))
-    .bind(
-        resume_cursor
-            .as_ref()
-            .map(|value| i64::from(value.schema_version)),
-    )
-    .bind(resume_cursor.as_ref().map(|value| value.value.to_string()))
-    .bind(now.as_str())
-    .bind(now.as_str())
-    .bind(now.as_str())
-    .bind(request.source_thread_id.as_str())
-    .execute(&mut *transaction)
-    .await
-    .map_err(|_| ChatError::new(ChatErrorCode::Persistence, "create Chat thread fork", true))?;
-    if inserted.rows_affected() != 1 {
-        return Err(ChatError::new(
-            ChatErrorCode::NotFound,
-            "Source Chat thread was not found",
-            true,
-        ));
-    }
-    sqlx::query(
-        "INSERT INTO chat_thread_relations
-            (child_thread_id, parent_thread_id, source_turn_id, relation_kind, created_at)
-         VALUES (?, ?, NULL, 'fork', ?)",
-    )
-    .bind(request.new_thread_id.as_str())
-    .bind(request.source_thread_id.as_str())
-    .bind(now.as_str())
-    .execute(&mut *transaction)
-    .await
-    .map_err(|_| ChatError::new(ChatErrorCode::Persistence, "record Chat thread fork", true))?;
-    transaction
-        .commit()
-        .await
-        .map_err(|_| ChatError::new(ChatErrorCode::Persistence, "create Chat thread fork", true))?;
+    .await?;
     reads::read_thread_shell(&pool, &request.new_thread_id).await
 }
 
@@ -277,6 +251,147 @@ fn provider_resume_cursor(
         schema_version: 1,
         value,
     })
+}
+
+/// Fields of a new fork row that are not copied from its source thread.
+struct ThreadForkRecord<'a> {
+    source_thread_id: &'a ChatThreadId,
+    new_thread_id: &'a ChatThreadId,
+    title: &'a str,
+    provider_thread_id: Option<&'a str>,
+    resume_cursor: Option<&'a ganbaru_chat_contracts::models::VersionedJson>,
+    /// Continuation group derived under direct authority, required when the source ran under
+    /// organizational authority.
+    direct_continuation_group: Option<&'a ganbaru_chat_contracts::models::ContinuationGroupId>,
+    now: &'a str,
+}
+
+/// Reports whether an assignment run ever executed in the thread, which marks provider history
+/// created under organizational authority.
+async fn source_has_organizational_origin(
+    executor: impl sqlx::SqliteExecutor<'_>,
+    thread_id: &ChatThreadId,
+) -> ChatResult<bool> {
+    sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM chat_agent_runs WHERE provider_thread_id = ?)")
+        .bind(thread_id.as_str())
+        .fetch_one(executor)
+        .await
+        .map_err(|_| ChatError::new(ChatErrorCode::Persistence, "read Chat thread origin", true))
+}
+
+/// Derives the continuation group a direct thread of this provider instance uses, so a fork of an
+/// organizational thread never continues inside the organizational group.
+async fn derive_direct_continuation_group(
+    app: &tauri::AppHandle,
+    provider_instance_id: &ganbaru_chat_contracts::models::ProviderInstanceId,
+) -> ChatResult<ganbaru_chat_contracts::models::ContinuationGroupId> {
+    let provider = super::settings_commands::read_provider(app, provider_instance_id)?;
+    let mut configuration = crate::chat::settings::approved_runtime(app, &provider.configuration)?;
+    configuration.internal_mcp = None;
+    let normalized_provider_home = configuration.provider_home.clone();
+    let mut driver = ProviderDriverRegistry.create_driver(configuration)?;
+    let context = DriverOperationContext {
+        operation_id: format!(
+            "provider-fork-continuation:{}",
+            provider_instance_id.as_str()
+        ),
+        deadline: Instant::now() + PROVIDER_LIFECYCLE_TIMEOUT,
+        cancellation: DriverCancellation::default(),
+    };
+    driver
+        .derive_continuation_group(
+            ganbaru_chat_contracts::models::ContinuationGroupRequest {
+                provider_instance_id: provider_instance_id.clone(),
+                normalized_provider_home,
+                account_identity: provider
+                    .last_probe
+                    .as_ref()
+                    .and_then(|probe| probe.account_label.clone()),
+                server_identity: None,
+                provider_fields: BTreeMap::new(),
+            },
+            &context,
+        )
+        .await
+}
+
+/// Inserts a fork as a plain direct thread with its fork relation.
+///
+/// A fork of a thread that ran under organizational authority takes the direct continuation group
+/// and the default approval mode instead of the source's values. Assignment runs, grants, and
+/// access profiles belong to the source's organizational records and are never copied.
+async fn persist_thread_fork(pool: &SqlitePool, record: ThreadForkRecord<'_>) -> ChatResult<()> {
+    let mut transaction = pool
+        .begin()
+        .await
+        .map_err(|_| ChatError::new(ChatErrorCode::Persistence, "create Chat thread fork", true))?;
+    let organizational =
+        source_has_organizational_origin(&mut *transaction, record.source_thread_id).await?;
+    let continuation_group = match (organizational, record.direct_continuation_group) {
+        (false, _) => None,
+        (true, Some(group)) => Some(group.as_str()),
+        (true, None) => {
+            return Err(ChatError::new(
+                ChatErrorCode::Conflict,
+                "The source thread now has organizational history; fork it again",
+                true,
+            ));
+        }
+    };
+    let safety_mode = organizational.then_some(DIRECT_FORK_SAFETY_MODE);
+    let inserted = sqlx::query(
+        "INSERT INTO chat_threads
+            (id, working_folder_id, execution_environment_id, project_id, title, title_source,
+             provider_family_id, provider_instance_id, continuation_group_id, provider_thread_id,
+             resume_cursor_schema_version, resume_cursor_data, model_selection_schema_version,
+             model_selection_data, safety_mode, interaction_mode, state, latest_turn_state,
+             last_activity_at, created_at, updated_at)
+         SELECT ?, working_folder_id, execution_environment_id, project_id, ?, 'user',
+                provider_family_id, provider_instance_id, coalesce(?, continuation_group_id),
+                ?, ?, ?, model_selection_schema_version, model_selection_data,
+                coalesce(?, safety_mode), interaction_mode, 'idle', NULL, ?, ?, ?
+         FROM chat_threads WHERE id = ? AND state != 'closed'",
+    )
+    .bind(record.new_thread_id.as_str())
+    .bind(record.title)
+    .bind(continuation_group)
+    .bind(record.provider_thread_id)
+    .bind(
+        record
+            .resume_cursor
+            .map(|value| i64::from(value.schema_version)),
+    )
+    .bind(record.resume_cursor.map(|value| value.value.to_string()))
+    .bind(safety_mode)
+    .bind(record.now)
+    .bind(record.now)
+    .bind(record.now)
+    .bind(record.source_thread_id.as_str())
+    .execute(&mut *transaction)
+    .await
+    .map_err(|_| ChatError::new(ChatErrorCode::Persistence, "create Chat thread fork", true))?;
+    if inserted.rows_affected() != 1 {
+        return Err(ChatError::new(
+            ChatErrorCode::NotFound,
+            "Source Chat thread was not found",
+            true,
+        ));
+    }
+    sqlx::query(
+        "INSERT INTO chat_thread_relations
+            (child_thread_id, parent_thread_id, source_turn_id, relation_kind, created_at)
+         VALUES (?, ?, NULL, 'fork', ?)",
+    )
+    .bind(record.new_thread_id.as_str())
+    .bind(record.source_thread_id.as_str())
+    .bind(record.now)
+    .execute(&mut *transaction)
+    .await
+    .map_err(|_| ChatError::new(ChatErrorCode::Persistence, "record Chat thread fork", true))?;
+    transaction
+        .commit()
+        .await
+        .map_err(|_| ChatError::new(ChatErrorCode::Persistence, "create Chat thread fork", true))
 }
 
 #[tauri::command]
@@ -475,10 +590,7 @@ async fn synchronize_provider_lifecycle(
     };
     let result = async {
         let provider = super::settings_commands::read_provider(app, &shell.provider_instance_id)?;
-        let configuration = materialize_provider_environment(
-            &provider.configuration,
-            &PlatformCredentialStore::default(),
-        )?;
+        let configuration = crate::chat::settings::approved_runtime(app, &provider.configuration)?;
         let mut driver = ProviderDriverRegistry.create_driver(configuration)?;
         let request = ProviderThreadLifecycleRequest {
             provider_thread_id: provider_thread_id.clone(),
@@ -541,7 +653,103 @@ fn timestamp(value: SystemTime) -> ChatResult<UtcTimestamp> {
 
 #[cfg(test)]
 mod tests {
-    use super::validate_external_url;
+    use super::{
+        DIRECT_FORK_SAFETY_MODE, ThreadForkRecord, persist_thread_fork,
+        source_has_organizational_origin, validate_external_url,
+    };
+    use ganbaru_chat_contracts::models::{ChatErrorCode, ChatThreadId, ContinuationGroupId};
+    use sqlx::SqlitePool;
+
+    const NOW: &str = "2026-10-20T12:00:00.000Z";
+
+    fn fork_record<'a>(
+        source: &'a ChatThreadId,
+        fork: &'a ChatThreadId,
+        direct: Option<&'a ContinuationGroupId>,
+    ) -> ThreadForkRecord<'a> {
+        ThreadForkRecord {
+            source_thread_id: source,
+            new_thread_id: fork,
+            title: "Fork",
+            provider_thread_id: None,
+            resume_cursor: None,
+            direct_continuation_group: direct,
+            now: NOW,
+        }
+    }
+
+    async fn fork_row(pool: &SqlitePool, thread_id: &str) -> (String, String) {
+        sqlx::query_as("SELECT continuation_group_id, safety_mode FROM chat_threads WHERE id = ?")
+            .bind(thread_id)
+            .fetch_one(pool)
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn organizational_threads_fork_as_plain_direct_threads() {
+        let pool = crate::chat::revocation::tests::pool_with_folder_runs().await;
+        sqlx::query("UPDATE chat_threads SET safety_mode = 'full_access' WHERE id = 'thread-1'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let source = ChatThreadId::new("thread-1").unwrap();
+        let fork = ChatThreadId::new("thread-fork").unwrap();
+        let direct = ContinuationGroupId::new("codex-home-direct").unwrap();
+
+        let refused = persist_thread_fork(&pool, fork_record(&source, &fork, None))
+            .await
+            .unwrap_err();
+        assert_eq!(refused.code, ChatErrorCode::Conflict);
+        persist_thread_fork(&pool, fork_record(&source, &fork, Some(&direct)))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            fork_row(&pool, "thread-fork").await,
+            (
+                "codex-home-direct".to_string(),
+                DIRECT_FORK_SAFETY_MODE.to_string()
+            )
+        );
+        let fork_runs: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM chat_agent_runs WHERE provider_thread_id = ?")
+                .bind("thread-fork")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(fork_runs, 0);
+        assert!(
+            !source_has_organizational_origin(&pool, &fork)
+                .await
+                .unwrap()
+        );
+        let relation: String = sqlx::query_scalar(
+            "SELECT relation_kind FROM chat_thread_relations
+             WHERE child_thread_id = 'thread-fork' AND parent_thread_id = 'thread-1'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(relation, "fork");
+    }
+
+    #[tokio::test]
+    async fn direct_threads_fork_with_their_own_continuation_group() {
+        let pool = crate::chat::tests::repository::pool_with_thread().await;
+        let source = ChatThreadId::new("thread-1").unwrap();
+        let fork = ChatThreadId::new("thread-fork").unwrap();
+        let unused = ContinuationGroupId::new("unused").unwrap();
+
+        persist_thread_fork(&pool, fork_record(&source, &fork, Some(&unused)))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            fork_row(&pool, "thread-fork").await,
+            ("continuation-1".to_string(), "ask_for_approval".to_string())
+        );
+    }
 
     #[test]
     fn external_chat_links_allow_only_uncredentialed_http_urls() {
@@ -549,6 +757,9 @@ mod tests {
         assert!(validate_external_url("http://localhost:3000/path").is_ok());
         assert!(validate_external_url("file:///etc/passwd").is_err());
         assert!(validate_external_url("javascript:alert(1)").is_err());
+        assert!(validate_external_url("mailto:someone@example.com").is_err());
+        assert!(validate_external_url("vscode://file/tmp/x").is_err());
+        assert!(validate_external_url("data:text/html,<p>x</p>").is_err());
         assert!(validate_external_url("https://token@example.com").is_err());
         assert!(validate_external_url("https://example.com/\nheader").is_err());
     }

@@ -29,10 +29,10 @@ pub use page_lifecycle::{
     archive_page, move_page, permanently_delete_page, purge_expired_trashed_pages, trash_page,
 };
 pub use pages::{create_child_page_from_block, create_page, update_page};
-pub(crate) use parents::validate_block_for_parent;
 pub use parents::{
-    ParentTarget, parent_target_from_block_row, refresh_parent_has_children, resolve_block_parent,
-    touch_page, validate_page_parent_exists,
+    MAX_BLOCK_DEPTH, ParentTarget, parent_target_from_block_row, refresh_parent_has_children,
+    resolve_block_parent, touch_page, validate_page_parent_exists,
 };
+pub(crate) use parents::{block_nesting_error, validate_block_for_parent};
 pub use payloads::{default_text_payload, page_title_properties, rich_text};
 pub use sort::next_sort_orders;

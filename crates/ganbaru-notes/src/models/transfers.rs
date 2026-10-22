@@ -124,6 +124,9 @@ pub struct NoteNotionApiImportRequest {
     pub keep_external_file_references: Option<bool>,
     pub page_size: Option<i64>,
     pub project_id: Option<String>,
+    /// Client-chosen ID that addresses this import when stopping it.
+    #[serde(default)]
+    pub import_id: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -253,10 +256,12 @@ impl NoteNotionApiImportDto {
     }
 }
 
+/// Import options for a Notion export folder. The folder itself comes from a native picker, never
+/// from this request.
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct NoteNotionExportImportRequest {
     pub parent: NoteParent,
-    pub export_root_path: String,
     pub source_workspace_id: Option<String>,
     pub keep_external_file_references: Option<bool>,
     pub copy_local_file_references: Option<bool>,

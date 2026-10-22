@@ -55,7 +55,7 @@ Re-import identity:
 4. Linked events: the preserved component is reconstructed and generated-owned fields are overlaid from current projection data.
 5. Local events without a preserved component are generated cleanly from projection data.
 6. Preserved `VTIMEZONE` definitions are emitted before generated timezone stubs. Preserved top-level `VTODO`, `VJOURNAL`, `VFREEBUSY`, and custom components pass through unchanged.
-7. Output uses CRLF line endings, 75-octet UTF-8-safe folding, TEXT escaping, and RFC 6868 parameter escaping, then goes through the native atomic writer.
+7. Output uses CRLF line endings, 75-octet UTF-8-safe folding, TEXT escaping, and RFC 6868 parameter escaping, then goes through the native atomic writer. Values that are not TEXT (UID, URI, calendar address, time zone identifier, trigger) drop control characters other than tab, preserved property and parameter names must match the RFC 5545 name grammar, and extended properties must be `X-` names, so no stored value can end its content line and add a property or component.
 
 Rules:
 
@@ -113,8 +113,10 @@ Never required for startup: raw `.ics` text, every preserved component of a cale
 | Boundary | Limit |
 | --- | --- |
 | Plain `.ics` file and each zip entry | 25 MiB |
-| Zip archive | 1,024 entries, 250 MiB total uncompressed; unsafe paths, encrypted entries, and wrong extensions are rejected |
-| Parser | 2 MiB per unfolded line, 50,000 components, 500,000 properties, nesting depth 32, 1 MiB per inline binary `ATTACH` |
+| Zip archive | 1,024 entries, 64 MiB total uncompressed, counted from decompressed bytes; an entry larger than its declared size is rejected; unsafe paths, encrypted entries, and wrong extensions are rejected |
+| Parser | 2 MiB per unfolded line, 50,000 components, 500,000 properties, nesting depth 32, 1 MiB per inline binary `ATTACH`; lines split on LF exactly as ical.js splits them, and the parsed tree is rechecked for depth and component count |
+| Preserved jCal | Each preserved component stores only its own name and properties; children are stored as their own rows and rebuilt on export. Native import rejects trees deeper than 32 levels and more than 64 MiB of preserved jCal per import |
+| Native import | 250,000 events per import, five times the parser component limit, or the import is rejected. An event with more than 10,000 attendees, 1,000 alarms, 50,000 overrides, or 50,000 excluded or added dates, or with a start, end, or listed date that recurrence expansion cannot read, is skipped with a warning while the rest import; unsupported rules, unresolved zones, and empty ranges are kept for preservation and reported per event |
 | Export snapshot | 500,000 records and 64 MiB of text, preflighted before allocation; preserved trees at most 32 levels; reconstructed and serialized output also capped at 64 MiB |
 | Export output file | 25 MiB, enforced by the native writer |
 | Export concurrency | One export prepares at a time; overlapping requests are rejected, not queued |

@@ -1,6 +1,7 @@
 //! Project prepared writes through the same slim rows and expander as persisted reads.
 
 use super::{Metadata, PreparedMutation};
+use crate::reads::event_music::{EventMusicAssignment, event_music_flags};
 use crate::reads::native_window::{NativeCalendarWindow, WindowSource};
 use crate::reads::{DbCalendarEventRow, DbOverrideRow, DbWindowAttendeeRow};
 use crate::recurrence::canonical::Window;
@@ -100,6 +101,20 @@ impl Metadata {
                 .map_err(|error| format!("encode Calendar preview rhythm: {error}"))?,
             )
         };
+        let music_assignments: Vec<_> = self
+            .music_assignments
+            .iter()
+            .map(|row| EventMusicAssignment {
+                owner_id: row.owner_id.clone(),
+                owner_kind: row.owner_kind.clone(),
+                phase: row.phase.clone(),
+                behavior: row.behavior.clone(),
+                has_playlist: row.playlist_id.is_some(),
+                soundscape_behavior: row.soundscape_behavior.clone(),
+                has_soundscape_preset: row.soundscape_preset_id.is_some(),
+            })
+            .collect();
+        let music = event_music_flags(&music_assignments, config.is_some());
         Ok(DbCalendarEventRow {
             id: event.id.clone(),
             title: event.title.clone(),
@@ -121,6 +136,8 @@ impl Metadata {
             location: event.location.clone(),
             has_call_link: i64::from(!event.url.is_empty()),
             meeting_enabled: event.meeting_enabled,
+            has_music_playlist: i64::from(music.playlist),
+            has_soundscape: i64::from(music.soundscape),
             transparency: event.transparency.clone(),
             status: event.status.clone(),
             local_rsvp_status: event.local_rsvp_status.clone(),

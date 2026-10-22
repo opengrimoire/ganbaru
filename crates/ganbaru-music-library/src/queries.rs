@@ -137,7 +137,7 @@ pub async fn playlist_playback_entries(
     Ok(entries)
 }
 
-fn push_item_from(builder: &mut QueryBuilder<'_, Sqlite>, request: &MusicItemWindowRequest) {
+fn push_item_from(builder: &mut QueryBuilder<Sqlite>, request: &MusicItemWindowRequest) {
     builder.push(
         " FROM music_library_items AS item
           LEFT JOIN music_listening_statistics AS stats ON stats.item_id = item.id ",
@@ -157,7 +157,7 @@ fn push_item_from(builder: &mut QueryBuilder<'_, Sqlite>, request: &MusicItemWin
     }
 }
 
-fn push_item_filters(builder: &mut QueryBuilder<'_, Sqlite>, request: &MusicItemWindowRequest) {
+fn push_item_filters(builder: &mut QueryBuilder<Sqlite>, request: &MusicItemWindowRequest) {
     builder.push(" WHERE 1 = 1 ");
     if let Some(source_kind) = request.source_kind {
         builder.push("AND item.source_kind = ");
@@ -223,7 +223,7 @@ fn push_item_filters(builder: &mut QueryBuilder<'_, Sqlite>, request: &MusicItem
     }
 }
 
-fn push_item_order(builder: &mut QueryBuilder<'_, Sqlite>, request: &MusicItemWindowRequest) {
+fn push_item_order(builder: &mut QueryBuilder<Sqlite>, request: &MusicItemWindowRequest) {
     builder.push(" ORDER BY ");
     if let Some(group) = group_expression(request.group_by) {
         builder.push(group);

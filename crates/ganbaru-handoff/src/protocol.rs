@@ -9,11 +9,15 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 mod sync;
 
 pub use sync::{
-    MAX_SYNC_HASHES, SYNC_PAGE_BYTES, SyncProbe, SyncRefusal, SyncRefusalCode, SyncSeq,
+    MAX_SYNC_ASSET_BYTES, MAX_SYNC_ASSETS, MAX_SYNC_HASHES, SYNC_ASSET_CHUNK_BYTES,
+    SYNC_PAGE_BYTES, SyncAsset, SyncProbe, SyncRefusal, SyncRefusalCode, SyncSeq,
 };
 
-pub const PROTOCOL_VERSION: u16 = 5;
+pub const PROTOCOL_VERSION: u16 = 6;
 pub const MAX_CONTROL_BYTES: usize = 1024 * 1024;
+/// Frame bound before the peer presents a linked certificate. Enrollment (with its 8 KiB
+/// certificate) and contact requests fit well inside it.
+pub const MAX_UNAUTHENTICATED_CONTROL_BYTES: usize = 16 * 1024;
 pub const MAX_ARCHIVE_BYTES: u64 = 100 * 1024 * 1024 * 1024;
 pub const MAX_IDENTIFIER_BYTES: usize = 160;
 pub const MAX_DEVICE_LABEL_BYTES: usize = 128;
@@ -90,13 +94,38 @@ pub fn ensure_compatible(
     Ok(())
 }
 
+/// A pairing invitation secret. It serializes as the plain string, and `Debug` never prints it.
+#[derive(Clone, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(transparent)]
+pub struct InvitationSecret(String);
+
+impl From<String> for InvitationSecret {
+    fn from(value: String) -> Self {
+        Self(value)
+    }
+}
+
+impl std::ops::Deref for InvitationSecret {
+    type Target = str;
+
+    fn deref(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Debug for InvitationSecret {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("InvitationSecret([REDACTED])")
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PairingInvitation {
     pub protocol_version: u16,
     pub compatibility: HandoffCompatibility,
     pub invitation_id: String,
-    pub secret: String,
+    pub secret: InvitationSecret,
     pub endpoint: String,
     pub coordinator_fingerprint: String,
     pub coordinator_device_id: String,
@@ -111,12 +140,15 @@ impl PairingInvitation {
         self.compatibility.validate()?;
         validate_identifier("invitation id", &self.invitation_id)?;
         validate_identifier("invitation secret", &self.secret)?;
-        validate_identifier("coordinator fingerprint", &self.coordinator_fingerprint)?;
+        validate_certificate_fingerprint("coordinator fingerprint", &self.coordinator_fingerprint)?;
         validate_identifier("coordinator device id", &self.coordinator_device_id)?;
         validate_identifier("vault id", &self.vault_id)?;
-        self.endpoint
+        let endpoint = self
+            .endpoint
             .parse::<std::net::SocketAddr>()
             .map_err(|_| "pairing invitation endpoint is invalid".to_string())?;
+        crate::dial::validate_dial_endpoint(endpoint)
+            .map_err(|error| format!("pairing invitation endpoint is refused: {error}"))?;
         if self.expires_at_ms <= now_ms {
             return Err("pairing invitation has expired".to_string());
         }
@@ -181,7 +213,7 @@ pub enum ControlMessage {
     Enroll {
         protocol_version: u16,
         invitation_id: String,
-        secret: String,
+        secret: InvitationSecret,
         vault_id: String,
         device_id: String,
         device_label: String,
@@ -380,6 +412,42 @@ pub enum ControlMessage {
     SyncHashList {
         hashes: Vec<String>,
     },
+    /// Authenticated: which of these assets the hub holds.
+    SyncAssetQuery {
+        protocol_version: u16,
+        vault_id: String,
+        device_id: String,
+        assets: Vec<SyncAsset>,
+    },
+    /// Digests of the queried assets the hub holds.
+    SyncAssetPresence {
+        held: Vec<String>,
+    },
+    /// Authenticated: a chunk of an asset the hub holds, from `offset`.
+    SyncAssetGet {
+        protocol_version: u16,
+        vault_id: String,
+        device_id: String,
+        asset: SyncAsset,
+        offset: u32,
+    },
+    SyncAssetChunk {
+        data: String,
+    },
+    /// Authenticated: a chunk of an asset the hub lacks, at `offset`.
+    SyncAssetPut {
+        protocol_version: u16,
+        vault_id: String,
+        device_id: String,
+        asset: SyncAsset,
+        offset: u32,
+        data: String,
+    },
+    /// The bytes of the asset the hub received so far, where the next chunk starts; the asset
+    /// size once the hub verified and stored it.
+    SyncAssetReceived {
+        received: u32,
+    },
     Error {
         code: String,
         message: String,
@@ -416,6 +484,21 @@ impl ControlMessage {
                 vault_id,
                 device_id,
                 ..
+            }
+            | Self::SyncAssetQuery {
+                vault_id,
+                device_id,
+                ..
+            }
+            | Self::SyncAssetGet {
+                vault_id,
+                device_id,
+                ..
+            }
+            | Self::SyncAssetPut {
+                vault_id,
+                device_id,
+                ..
             } => Some((vault_id, device_id)),
             _ => None,
         }
@@ -438,9 +521,7 @@ impl ControlMessage {
                 validate_identifier("invitation secret", secret)?;
                 validate_identifier("vault id", vault_id)?;
                 validate_identifier("device id", device_id)?;
-                if device_label.trim().is_empty() || device_label.len() > MAX_DEVICE_LABEL_BYTES {
-                    return Err("device label is invalid".to_string());
-                }
+                validate_device_label("device label", device_label)?;
                 if device_certificate.is_empty() || device_certificate.len() > 8 * 1024 {
                     return Err("device certificate is invalid".to_string());
                 }
@@ -452,12 +533,8 @@ impl ControlMessage {
             } => {
                 validate_protocol(*protocol_version)?;
                 validate_identifier("coordinator device id", coordinator_device_id)?;
-                if coordinator_device_label.as_ref().is_some_and(|label| {
-                    label.trim().is_empty()
-                        || label.len() > MAX_DEVICE_LABEL_BYTES
-                        || label.chars().any(char::is_control)
-                }) {
-                    return Err("coordinator device label is invalid".to_string());
+                if let Some(label) = coordinator_device_label {
+                    validate_device_label("coordinator device label", label)?;
                 }
             }
             Self::RequestBundle {
@@ -637,7 +714,7 @@ impl ControlMessage {
                     requester_public_key,
                     ganbaru_contacts::PUBLIC_KEY_TEXT_LENGTH,
                 )?;
-                if (unix_time_ms() - *issued_at_ms).abs() > STATUS_REPLAY_WINDOW_MS {
+                if unix_time_ms().abs_diff(*issued_at_ms) > STATUS_REPLAY_WINDOW_MS.unsigned_abs() {
                     return Err("contact request status is outside the replay window".to_string());
                 }
                 validate_base64url_text(
@@ -759,6 +836,40 @@ impl ControlMessage {
                 sync::validate_hash_range(*from_seq, *limit)?;
             }
             Self::SyncHashList { hashes } => sync::validate_hashes(hashes)?,
+            Self::SyncAssetQuery {
+                protocol_version,
+                vault_id,
+                device_id,
+                assets,
+            } => {
+                validate_sync_peer(*protocol_version, vault_id, device_id)?;
+                sync::validate_assets(assets)?;
+            }
+            Self::SyncAssetPresence { held } => sync::validate_asset_digests(held)?,
+            Self::SyncAssetGet {
+                protocol_version,
+                vault_id,
+                device_id,
+                asset,
+                offset,
+            } => {
+                validate_sync_peer(*protocol_version, vault_id, device_id)?;
+                sync::validate_asset(asset)?;
+                sync::validate_asset_offset(asset, *offset)?;
+            }
+            Self::SyncAssetChunk { data } => sync::validate_asset_data(data)?,
+            Self::SyncAssetPut {
+                protocol_version,
+                vault_id,
+                device_id,
+                asset,
+                offset,
+                data,
+            } => {
+                validate_sync_peer(*protocol_version, vault_id, device_id)?;
+                sync::validate_asset_chunk(asset, *offset, data)?;
+            }
+            Self::SyncAssetReceived { received } => sync::validate_asset_received(*received)?,
             Self::Error { code, message, .. } => {
                 validate_identifier("error code", code)?;
                 if message.is_empty() || message.len() > 1024 {
@@ -867,12 +978,24 @@ pub async fn read_control<R>(reader: &mut R) -> Result<ControlMessage, String>
 where
     R: AsyncRead + Unpin,
 {
+    read_control_limited(reader, MAX_CONTROL_BYTES).await
+}
+
+/// Reads one control frame no larger than `max_bytes`, which never exceeds
+/// [`MAX_CONTROL_BYTES`].
+pub async fn read_control_limited<R>(
+    reader: &mut R,
+    max_bytes: usize,
+) -> Result<ControlMessage, String>
+where
+    R: AsyncRead + Unpin,
+{
     let length = reader
         .read_u32()
         .await
         .map_err(|error| format!("read handoff message length: {error}"))?
         as usize;
-    if length == 0 || length > MAX_CONTROL_BYTES {
+    if length == 0 || length > max_bytes.min(MAX_CONTROL_BYTES) {
         return Err("handoff control message has an invalid size".to_string());
     }
     let mut encoded = vec![0_u8; length];
@@ -1026,7 +1149,7 @@ fn decode_pairing_qr_payload(payload: &[u8], now_ms: i64) -> Result<PairingInvit
             database_schema_sha256,
         },
         invitation_id,
-        secret,
+        secret: secret.into(),
         endpoint,
         coordinator_fingerprint,
         coordinator_device_id,
@@ -1079,7 +1202,6 @@ fn take_qr_bytes<'a>(
     Ok(value)
 }
 
-#[cfg(desktop)]
 fn decode_qr_digest(value: &str, label: &str) -> Result<[u8; 32], String> {
     validate_sha256(value).map_err(|_| format!("{label} is invalid"))?;
     let mut digest = [0_u8; 32];
@@ -1130,6 +1252,37 @@ pub fn sha256_file(path: &Path) -> Result<String, String> {
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect())
+}
+
+/// Validates a device label another device will display, with the shared display text rules.
+///
+/// # Errors
+///
+/// Returns a message naming `field` when the label is blank, too long, or holds a control,
+/// bidirectional override, or invisible character.
+pub fn validate_device_label(field: &str, label: &str) -> Result<(), String> {
+    ganbaru_contacts::validate_display_text(label, MAX_DEVICE_LABEL_BYTES)
+        .map_err(|error| format!("{field} is invalid: {error}"))
+}
+
+/// Accepts only the form certificate fingerprints are produced in: the SHA-256 of the DER
+/// certificate as 64 lowercase hex characters. Every stored, scanned, or received fingerprint
+/// passes this check so pins can be compared exactly.
+pub fn validate_certificate_fingerprint(label: &str, value: &str) -> Result<(), String> {
+    if value.len() != 64
+        || !value
+            .bytes()
+            .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
+    {
+        return Err(format!("{label} is invalid"));
+    }
+    Ok(())
+}
+
+/// The 32-byte digest of a fingerprint that passes [`validate_certificate_fingerprint`].
+pub fn decode_certificate_fingerprint(value: &str) -> Option<[u8; 32]> {
+    validate_certificate_fingerprint("certificate fingerprint", value).ok()?;
+    decode_qr_digest(value, "certificate fingerprint").ok()
 }
 
 pub fn validate_identifier(label: &str, value: &str) -> Result<(), String> {
@@ -1189,13 +1342,73 @@ mod tests {
             protocol_version: PROTOCOL_VERSION,
             compatibility: test_compatibility(),
             invitation_id: "invite-abcdefghijklmnopqrstuv".to_string(),
-            secret: "abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG".to_string(),
+            secret: "abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG"
+                .to_string()
+                .into(),
             endpoint: "192.168.1.20:43821".to_string(),
             coordinator_fingerprint: "b".repeat(64),
             coordinator_device_id: "device-abcdefghijklmnopqrstuv".to_string(),
             vault_id: "vault-abcdefghijklmnopqrstuv".to_string(),
             generation: 7,
             expires_at_ms: i64::MAX,
+        }
+    }
+
+    #[test]
+    fn invitation_secrets_serialize_plainly_and_stay_out_of_debug_output() {
+        let invitation = qr_invitation();
+        let secret = invitation.secret.to_string();
+        let enroll = ControlMessage::Enroll {
+            protocol_version: PROTOCOL_VERSION,
+            invitation_id: invitation.invitation_id.clone(),
+            secret: invitation.secret.clone(),
+            vault_id: invitation.vault_id.clone(),
+            device_id: "device-phone".to_string(),
+            device_label: "Phone".to_string(),
+            device_kind: DeviceKind::Phone,
+            device_certificate: "certificate".to_string(),
+        };
+        for output in [format!("{invitation:?}"), format!("{enroll:?}")] {
+            assert!(!output.contains(&secret), "{output}");
+            assert!(output.contains("[REDACTED]"), "{output}");
+        }
+        let serialized = serde_json::to_value(&enroll).expect("serialize enrollment");
+        assert_eq!(serialized["secret"], secret.as_str());
+        let decoded: ControlMessage =
+            serde_json::from_value(serialized).expect("decode enrollment");
+        assert_eq!(decoded, enroll);
+    }
+
+    #[test]
+    fn enrollment_messages_reject_control_and_bidi_labels() {
+        let enroll = |label: &str| ControlMessage::Enroll {
+            protocol_version: PROTOCOL_VERSION,
+            invitation_id: "invite-abcdefghijklmnopqrstuv".to_string(),
+            secret: "abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG"
+                .to_string()
+                .into(),
+            vault_id: "vault-abcdefghijklmnopqrstuv".to_string(),
+            device_id: "device-phone".to_string(),
+            device_label: label.to_string(),
+            device_kind: DeviceKind::Phone,
+            device_certificate: "certificate".to_string(),
+        };
+        let enrolled = |label: &str| ControlMessage::Enrolled {
+            protocol_version: PROTOCOL_VERSION,
+            coordinator_device_id: "device-desktop".to_string(),
+            coordinator_device_label: Some(label.to_string()),
+        };
+        for label in ["phone\u{0007}", "a\u{202E}b", "a\u{200F}b", ""] {
+            assert!(enroll(label).validate().is_err(), "{label:?}");
+            assert!(enrolled(label).validate().is_err(), "{label:?}");
+        }
+        for label in [
+            "Phone",
+            "\u{1F469}\u{200D}\u{1F4BB}",
+            "\u{0645}\u{200C}\u{0627}",
+        ] {
+            assert_eq!(enroll(label).validate(), Ok(()), "{label:?}");
+            assert_eq!(enrolled(label).validate(), Ok(()), "{label:?}");
         }
     }
 
@@ -1224,6 +1437,68 @@ mod tests {
             decode_pairing_qr_luma(image_width, image_width, &image, 1).expect("QR should decode"),
             invitation
         );
+    }
+
+    #[test]
+    fn certificate_fingerprints_require_exactly_64_lowercase_hex_characters() {
+        let lowercase = "0123456789abcdef".repeat(4);
+        assert!(validate_certificate_fingerprint("fingerprint", &lowercase).is_ok());
+        let digest = decode_certificate_fingerprint(&lowercase).expect("lowercase digest");
+        assert_eq!(encode_qr_digest(digest), lowercase);
+        for invalid in [
+            lowercase.to_ascii_uppercase(),
+            format!("+{}", &lowercase[1..]),
+            format!("{} ", &lowercase[1..]),
+            lowercase[1..].to_string(),
+            format!("{lowercase}0"),
+            "g".repeat(64),
+        ] {
+            assert!(
+                validate_certificate_fingerprint("fingerprint", &invalid).is_err(),
+                "{invalid}"
+            );
+            assert!(
+                decode_certificate_fingerprint(&invalid).is_none(),
+                "{invalid}"
+            );
+            let invitation = PairingInvitation {
+                coordinator_fingerprint: invalid.clone(),
+                ..qr_invitation()
+            };
+            assert!(invitation.validate(0).is_err(), "{invalid}");
+        }
+    }
+    #[test]
+    fn invitations_with_non_lan_endpoints_fail_validation() {
+        for endpoint in [
+            "203.0.113.5:443",
+            "8.8.8.8:43821",
+            "224.0.0.251:43821",
+            "192.168.1.20:0",
+        ] {
+            let invitation = PairingInvitation {
+                endpoint: endpoint.to_string(),
+                ..qr_invitation()
+            };
+            assert!(invitation.validate(0).is_err(), "{endpoint}");
+            assert!(encode_invitation(&invitation).is_err(), "{endpoint}");
+            let crafted = base64::Engine::encode(
+                &base64::engine::general_purpose::URL_SAFE_NO_PAD,
+                serde_json::to_vec(&invitation).expect("invitation json"),
+            );
+            assert!(decode_invitation(&crafted, 0).is_err(), "{endpoint}");
+        }
+        for endpoint in [
+            "100.64.3.4:43821",
+            "[2a01:4f8:10:20::5]:43821",
+            "[fe80::1]:43821",
+        ] {
+            let invitation = PairingInvitation {
+                endpoint: endpoint.to_string(),
+                ..qr_invitation()
+            };
+            assert_eq!(invitation.validate(0), Ok(()), "{endpoint}");
+        }
     }
 
     #[test]
@@ -1284,6 +1559,98 @@ mod tests {
         assert!(metadata.validate().unwrap_err().contains("bundle size"));
     }
 
+    fn asset(byte_size: u32) -> SyncAsset {
+        SyncAsset {
+            sha256: "a".repeat(64),
+            content_type: "image/png".to_string(),
+            byte_size,
+        }
+    }
+
+    fn put(asset: SyncAsset, offset: u32, data: String) -> ControlMessage {
+        ControlMessage::SyncAssetPut {
+            protocol_version: PROTOCOL_VERSION,
+            vault_id: "vault-1".to_string(),
+            device_id: "device-1".to_string(),
+            asset,
+            offset,
+            data,
+        }
+    }
+
+    #[test]
+    fn asset_references_must_be_well_formed() {
+        let query = |assets: Vec<SyncAsset>| ControlMessage::SyncAssetQuery {
+            protocol_version: PROTOCOL_VERSION,
+            vault_id: "vault-1".to_string(),
+            device_id: "device-1".to_string(),
+            assets,
+        };
+        query(vec![asset(10)]).validate().unwrap();
+        let mut upper = asset(10);
+        upper.sha256 = "A".repeat(64);
+        let mut short = asset(10);
+        short.sha256 = "a".repeat(63);
+        for content_type in [
+            "image",
+            "image/",
+            "/png",
+            "image/png/x",
+            "Image/PNG",
+            "image/p ng",
+        ] {
+            let mut typed = asset(10);
+            typed.content_type = content_type.to_string();
+            assert!(query(vec![typed]).validate().is_err(), "{content_type}");
+        }
+        for invalid in [upper, short, asset(0), asset(MAX_SYNC_ASSET_BYTES + 1)] {
+            assert!(query(vec![invalid]).validate().is_err());
+        }
+        assert!(
+            query(vec![asset(10); MAX_SYNC_ASSETS + 1])
+                .validate()
+                .unwrap_err()
+                .contains("too large")
+        );
+        let presence = |held: Vec<String>| ControlMessage::SyncAssetPresence { held };
+        presence(vec!["a".repeat(64)]).validate().unwrap();
+        assert!(presence(vec!["../a".to_string()]).validate().is_err());
+    }
+
+    #[test]
+    fn asset_chunks_must_lie_inside_their_asset() {
+        put(asset(6), 0, "AAAAAAAA".to_string()).validate().unwrap();
+        put(asset(6), 3, "AAAA".to_string()).validate().unwrap();
+        assert!(
+            put(asset(6), 3, "AAAAAAAA".to_string())
+                .validate()
+                .unwrap_err()
+                .contains("past the asset")
+        );
+        assert!(put(asset(6), 6, "AAAA".to_string()).validate().is_err());
+        assert!(put(asset(6), 0, String::new()).validate().is_err());
+        assert!(put(asset(6), 0, "AA+/".to_string()).validate().is_err());
+        let oversized = "A".repeat((SYNC_ASSET_CHUNK_BYTES * 4).div_ceil(3) + 4);
+        assert!(
+            put(asset(MAX_SYNC_ASSET_BYTES), 0, oversized)
+                .validate()
+                .is_err()
+        );
+
+        let get = |offset| ControlMessage::SyncAssetGet {
+            protocol_version: PROTOCOL_VERSION,
+            vault_id: "vault-1".to_string(),
+            device_id: "device-1".to_string(),
+            asset: asset(6),
+            offset,
+        };
+        get(5).validate().unwrap();
+        assert!(get(6).validate().is_err());
+        let received = |received| ControlMessage::SyncAssetReceived { received };
+        received(MAX_SYNC_ASSET_BYTES).validate().unwrap();
+        assert!(received(MAX_SYNC_ASSET_BYTES + 1).validate().is_err());
+    }
+
     #[test]
     fn compatibility_requires_the_same_database_migration_set() {
         let local = test_compatibility();
@@ -1296,5 +1663,33 @@ mod tests {
         assert!(error.contains("compatibility mismatch"));
         assert!(error.contains("test"));
         assert!(error.contains("newer"));
+    }
+
+    #[test]
+    fn contact_status_replay_window_holds_at_every_timestamp_extreme() {
+        let status = |issued_at_ms: i64| ControlMessage::ContactRequestStatus {
+            protocol_version: PROTOCOL_VERSION,
+            request_id: "request-abcdefghijklmnopqrstuv".to_string(),
+            requester_public_key: "a".repeat(ganbaru_contacts::PUBLIC_KEY_TEXT_LENGTH),
+            issued_at_ms,
+            signature: "s".repeat(SIGNATURE_TEXT_LENGTH),
+        };
+        let now = unix_time_ms();
+
+        status(now).validate().expect("current status poll");
+        status(now - STATUS_REPLAY_WINDOW_MS / 2)
+            .validate()
+            .expect("status poll inside the window");
+        for issued_at_ms in [
+            i64::MIN,
+            i64::MIN + 1,
+            i64::MAX,
+            0,
+            now - 2 * STATUS_REPLAY_WINDOW_MS,
+            now + 2 * STATUS_REPLAY_WINDOW_MS,
+        ] {
+            let error = status(issued_at_ms).validate().unwrap_err();
+            assert!(error.contains("replay window"), "{issued_at_ms}: {error}");
+        }
     }
 }

@@ -5,7 +5,7 @@ use super::{
     projection::{GuardianCapture, NotificationCopy},
     synchronize_locked,
 };
-use crate::{db::connect_sqlite, vault};
+use crate::vault;
 use ganbaru_mobile_distractions::MobileDistractionsExt;
 use serde_json::Value;
 use std::{
@@ -22,7 +22,7 @@ use tauri::{Manager, Runtime};
 const REFRESH_INTERVAL: Duration = Duration::from_secs(5);
 const MAX_VIEW_AGE: Duration = Duration::from_secs(10);
 const DRAIN_WAIT: Duration = Duration::from_secs(5);
-const MAX_CONFIG_BYTES: u64 = 1024 * 1024;
+const MAX_CONFIG_BYTES: u64 = crate::vault::MAX_VAULT_CONFIG_BYTES;
 
 struct Frame {
     generation: u64,
@@ -335,7 +335,7 @@ async fn refresh<R: Runtime>(
         if vault::active_vault_path(app)? != path {
             return Err("Guardian vault changed before accounting".into());
         }
-        let pool = connect_sqlite(app.clone(), super::ACTIVE_DB_URL.into()).await?;
+        let pool = crate::db::connect_vault(app).await?;
         let mut tx = pool
             .begin()
             .await

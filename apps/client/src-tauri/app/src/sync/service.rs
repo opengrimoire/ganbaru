@@ -1,14 +1,19 @@
 //! The sync service of the active vault: it imports carried operations, keeps the local writer
-//! current, seals local captures after commits, and exchanges with the hub. On the coordinator
-//! it applies what linked devices push and revokes the writers of unlinked devices.
+//! current, seals local captures after commits, and exchanges operations and Quick note image
+//! files with the hub. On the coordinator it applies what linked devices push and revokes the
+//! writers of unlinked devices.
 
 use super::access::vault_connection_hook;
+use super::assets::{AssetMemory, AssetSession, AssetTransfer, ImageStore, MAX_ASSET_PASS_BYTES};
 use super::carry_forward;
 use super::client::{ClientSession, Exchange, ForkPoint, PeerIds};
 #[cfg(desktop)]
 use super::hub::{HubVault, OpenHubVault, SyncHub};
+use super::images::ActiveVaultImages;
 use super::recovery::{RecoveryChoice, RecoveryRequest};
-use super::status::{SyncRole, SyncState, SyncStatusView, emit_applied, emit_status};
+use super::status::{
+    SyncErrorCode, SyncRole, SyncState, SyncStatusView, emit_applied, emit_status,
+};
 use super::transport::PairedTransport;
 use super::writer::{
     ActiveWriter, SuccessorPlan, SyncFiles, WriterCheck, WriterKeyStore, check_writer,
@@ -17,6 +22,7 @@ use super::writer::{
 use crate::db::DatabaseState;
 use crate::vault::handoff::pairing::PairingManager;
 use ganbaru_db::{DatabaseAccessMode, DatabasePoolRegistry};
+use ganbaru_handoff::protocol::SyncRefusalCode;
 use ganbaru_sync::{Engine, SealReport, SpaceContext, SyncError, WriterState, local};
 use ganbaru_sync_contracts::VersionVector;
 use ganbaru_sync_contracts::op::RevokeReason;
@@ -162,7 +168,13 @@ async fn open_hub_vault<R: Runtime>(app: &AppHandle<R>) -> Result<Option<HubVaul
         return Ok(None);
     };
     let vault_id = crate::vault::active_vault_id(app)?;
-    Ok(Some(HubVault { pool, vault_id }))
+    let images: Arc<dyn ImageStore> = Arc::new(ActiveVaultImages::open(app, &vault_id)?);
+    Ok(Some(HubVault {
+        pool,
+        device_id: coordinator_device_id(app, &vault_id)?,
+        vault_id,
+        images,
+    }))
 }
 
 /// Stops the service before a vault transition, letting a running pass finish first.
@@ -323,6 +335,19 @@ fn retry_delay(failures: usize) -> Duration {
     RETRY_DELAYS[failures.saturating_sub(1).min(RETRY_DELAYS.len() - 1)]
 }
 
+fn asset_session<'s, R: Runtime>(
+    session: &'s Session<'_, R>,
+    peer: &'s AssetPeer,
+) -> AssetSession<'s, PairedTransport> {
+    AssetSession {
+        transport: &peer.transport,
+        ids: &peer.ids,
+        pool: &session.pool,
+        store: &peer.images,
+        max_bytes: MAX_ASSET_PASS_BYTES,
+    }
+}
+
 /// State one service run keeps between passes. A vault transition stops the run, so the state
 /// always belongs to one vault database.
 #[derive(Default)]
@@ -334,7 +359,16 @@ struct ServiceState {
     stalled_captures: Option<u64>,
     /// The stored vector at the last apply; apply runs again only after the log grows.
     applied_at: Option<VersionVector>,
+    /// Which images the hub holds or lacks, so passes do not ask again.
+    assets: AssetMemory,
     view: SyncStatusView,
+}
+
+/// The hub and image files of one pass's asset steps.
+struct AssetPeer {
+    transport: PairedTransport,
+    ids: PeerIds,
+    images: Arc<dyn ImageStore>,
 }
 
 impl ServiceState {
@@ -419,10 +453,11 @@ impl ServiceState {
         view.paused = self.paused(app)?;
         let mut next = Next::Idle;
         let is_hub = peer.is_none();
+        let mut asset_peer = None;
         match peer {
             None => {}
             Some(_) if view.paused => view.state = SyncState::Paused,
-            Some((vault_id, device_id)) => {
+            Some((linked_vault, device_id)) => {
                 self.publish(
                     app,
                     SyncStatusView {
@@ -430,18 +465,39 @@ impl ServiceState {
                         ..view.clone()
                     },
                 );
-                let wait = OnlineWait {
+                let assets = AssetPeer {
                     transport: PairedTransport(manager.clone()),
                     ids: PeerIds {
-                        vault_id,
+                        vault_id: linked_vault,
                         device_id,
                     },
-                    known: VersionVector::new(),
+                    images: Arc::new(ActiveVaultImages::open(app, &vault_id)?),
                 };
-                next = self.exchange(&session, wait, view).await?;
+                let mut transfer = AssetTransfer::default();
+                next = match self.upload_images(&session, &assets, &mut transfer).await {
+                    Err(error) => {
+                        view.state = SyncState::Offline;
+                        view.last_error = Some(error);
+                        Next::Retry
+                    }
+                    Ok(()) => {
+                        let wait = OnlineWait {
+                            transport: assets.transport.clone(),
+                            ids: assets.ids.clone(),
+                            known: VersionVector::new(),
+                        };
+                        self.exchange(&session, wait, view).await?
+                    }
+                };
+                asset_peer = Some((assets, transfer));
             }
         }
         self.apply_new(&session).await?;
+        if let Some((assets, mut transfer)) = asset_peer {
+            next = self
+                .download_images(&session, &assets, &mut transfer, next, view)
+                .await;
+        }
         if !recovery.is_empty() && self.writer.is_some() {
             let mut restored = BTreeSet::new();
             for request in recovery.drain(..) {
@@ -461,15 +517,26 @@ impl ServiceState {
                 .revoke_unlinked(&manager, &vault_id, &mut self.writer)
                 .await?;
         }
-        let status = {
+        let (status, clock_warnings) = {
             let mut conn = acquire(&session.pool).await?;
-            session
+            let status = session
                 .engine
                 .status(&mut conn, &session.ctx)
                 .await
-                .map_err(|error| format!("read sync status: {error}"))?
+                .map_err(|error| format!("read sync status: {error}"))?;
+            let clock_warnings = session
+                .engine
+                .far_ahead_writers(&mut conn, &session.ctx, now_ms()?)
+                .await
+                .map_err(|error| format!("read sync clocks: {error}"))?;
+            (status, clock_warnings)
         };
         view.set_counts(&status);
+        if clock_warnings.is_empty() {
+            view.clock_ahead_devices.clear();
+        } else {
+            view.set_clock_ahead(&status, &clock_warnings, &super::devices::read(app)?);
+        }
         Ok(next)
     }
 
@@ -504,10 +571,16 @@ impl ServiceState {
                 }
                 Ok(Exchange::Done(done)) => {
                     view.last_exchange_at_ms = Some(now_ms()?);
+                    if done.pulled > 0 {
+                        self.assets.hub_changed();
+                    }
                     match done.problem {
                         Some(problem) => {
                             view.state = SyncState::Error;
                             view.last_error = Some(problem);
+                            view.last_error_code = (done.refusal
+                                == Some(SyncRefusalCode::WriterLimit))
+                            .then_some(SyncErrorCode::WriterLimit);
                         }
                         None if done.more => return Ok(Next::Continue),
                         None => {}
@@ -525,6 +598,52 @@ impl ServiceState {
             }
         }
         Err("sync fork recovery did not settle".to_string())
+    }
+
+    /// Uploads the images this device holds and the hub lacks, ahead of the operations that
+    /// reference them. Only a transport failure is an error; a file that could not be read is a
+    /// problem in `transfer`.
+    async fn upload_images<R: Runtime>(
+        &mut self,
+        session: &Session<'_, R>,
+        peer: &AssetPeer,
+        transfer: &mut AssetTransfer,
+    ) -> Result<(), String> {
+        asset_session(session, peer)
+            .upload(&mut self.assets, transfer)
+            .await
+    }
+
+    /// Downloads the referenced images this device lacks once operations were applied, then
+    /// folds the outcome of both directions into the status and the next wait. Downloads run
+    /// only after an exchange that reached the hub.
+    async fn download_images<R: Runtime>(
+        &mut self,
+        session: &Session<'_, R>,
+        peer: &AssetPeer,
+        transfer: &mut AssetTransfer,
+        next: Next,
+        view: &mut SyncStatusView,
+    ) -> Next {
+        if !matches!(next, Next::Online(_) | Next::Continue) {
+            return next;
+        }
+        let downloaded = asset_session(session, peer)
+            .download(&mut self.assets, transfer)
+            .await;
+        if let Err(error) = downloaded {
+            view.state = SyncState::Offline;
+            view.last_error = Some(error);
+            return Next::Retry;
+        }
+        if let Some(problem) = transfer.problem.take() {
+            view.state = SyncState::Error;
+            view.last_error = Some(problem);
+        }
+        match next {
+            Next::Online(_) if transfer.more => Next::Continue,
+            next => next,
+        }
     }
 
     /// Applies stored operations once the log grew since the last apply. Apply always commits,
@@ -682,12 +801,14 @@ async fn seal_quiesced_with<R: Runtime>(
 }
 
 /// Exports local operations the staged replacement lacks, before the replacement happens.
-pub(crate) async fn export_for_replacement(
+pub(crate) async fn export_for_replacement<R: Runtime>(
+    app: &AppHandle<R>,
     current: &std::path::Path,
     replacement: &std::path::Path,
     files: &SyncFiles,
 ) -> Result<usize, String> {
-    carry_forward::export(&Engine::vault(), current, replacement, files).await
+    let coordinator = coordinator_device_id(app, &files.vault_id)?;
+    carry_forward::export(&Engine::vault(), current, replacement, files, &coordinator).await
 }
 
 /// Whether a missing person key may be requested from the coordinator.
@@ -717,9 +838,10 @@ impl<'a, R: Runtime> Session<'a, R> {
         vault_id: &str,
         key_release: KeyRelease,
     ) -> Result<Option<Self>, String> {
+        let coordinator = coordinator_device_id(app, vault_id)?;
         let ctx = {
             let mut conn = acquire(&pool).await?;
-            local::space_context(&mut conn, vault_id)
+            local::space_context(&mut conn, vault_id, &coordinator)
                 .await
                 .map_err(|error| format!("read sync space: {error}"))?
         };
@@ -1075,6 +1197,20 @@ fn sync_directory<R: Runtime>(app: &AppHandle<R>) -> Result<PathBuf, String> {
     std::fs::create_dir_all(&directory)
         .map_err(|error| format!("create sync directory: {error}"))?;
     Ok(directory)
+}
+
+/// Device id of the coordinator whose writers may revoke in `vault_id`: the pinned coordinator
+/// when this device is linked to one for that vault, otherwise this device, which then hosts
+/// the hub or does not sync with others.
+pub(crate) fn coordinator_device_id<R: Runtime>(
+    app: &AppHandle<R>,
+    vault_id: &str,
+) -> Result<String, String> {
+    let pin = app.state::<PairingManager>().coordinator_pin()?;
+    match pin.filter(|pin| pin.vault_id == vault_id) {
+        Some(pin) => Ok(pin.device_id),
+        None => crate::vault::ensure_device_id(app),
+    }
 }
 
 /// Device-local sync files of a vault.

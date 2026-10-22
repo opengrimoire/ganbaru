@@ -75,6 +75,40 @@ describe("ChatReviewPanel", () => {
     expect(target.querySelector(".review-content [data-loading]")).toBeNull();
   });
 
+  it("shows a too large notice instead of a load failure for files left out of the snapshot", async () => {
+    const base = snapshot();
+    const [file] = base.files;
+    api.openReview.mockResolvedValue({
+      ...base,
+      files: [{
+        ...file,
+        additions: null,
+        deletions: null,
+        flags: { ...file.flags, tooLarge: true },
+      }],
+    });
+    api.readPatches.mockResolvedValue({
+      patches: [{
+        fileId: file.fileId,
+        patch: null,
+        hunks: [],
+        continuationCursor: null,
+        state: "unavailable",
+      }],
+      continuationCursor: null,
+    });
+    target = document.createElement("div");
+    document.body.append(target);
+    component = mount(ChatReviewPanel, {
+      target,
+      props: { source: { kind: "working_tree", mode: "all" } },
+    });
+
+    await vi.waitFor(() => expect(target?.textContent).toContain("too large to show in Review"));
+
+    expect(target.querySelector('[role="alert"]')).toBeNull();
+  });
+
   it("opens provider changes against the hidden session that produced them", async () => {
     const chat = getChat();
     chat.selectedThreadId = "current-thread";
@@ -130,6 +164,7 @@ function snapshot(): ChatReviewSnapshotRead {
         pureRename: false,
         untracked: true,
         symlink: false,
+        tooLarge: false,
         providerReported: true,
         gitObserved: true,
         readOnly: false,

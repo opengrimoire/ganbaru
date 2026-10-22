@@ -110,11 +110,16 @@ fn text_and_blob_fields_stop_at_their_limits() {
 }
 
 #[test]
-fn operations_hold_one_to_the_maximum_changes() {
+fn operations_hold_zero_to_the_maximum_changes() {
     let key = writer_key();
+    let empty = changes_operation(Vec::new(), Vec::new());
+    let sealed = empty.seal(&key).unwrap();
     assert_eq!(
-        codec_error(changes_operation(Vec::new(), Vec::new()).seal(&key)),
-        CodecError::Bounds("changes")
+        Envelope::decode(sealed.bytes())
+            .unwrap()
+            .operation()
+            .unwrap(),
+        empty
     );
     let full: Vec<Change> = (0..MAX_CHANGES_PER_OPERATION).map(tombstone).collect();
     let sealed = changes_operation(full, Vec::new()).seal(&key).unwrap();

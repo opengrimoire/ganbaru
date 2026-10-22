@@ -1,13 +1,13 @@
 //! Device-local Chat bindings and provider runtime metadata.
 
 #[cfg(desktop)]
-use crate::vault::{active_vault_id, read_app_state, update_app_state, vault_device_id};
+use crate::vault::{active_vault_id, ensure_device_id, read_app_state, update_app_state};
 use ganbaru_chat_contracts::models::{
     ChatThreadId, ProjectWorkingFolderId, ProviderInstanceId, ProviderModelCatalog,
     ProviderProbeResult, UtcTimestamp,
 };
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 #[cfg(desktop)]
 use tauri::Runtime;
 
@@ -21,6 +21,9 @@ pub struct ChatProviderDeviceState {
     pub last_probe: Option<ProviderProbeResult>,
     pub last_successful_probe_at: Option<UtcTimestamp>,
     pub model_catalog: Option<ProviderModelCatalog>,
+    /// Digests of portable runtime values this device confirmed for the instance.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub approved_runtime_items: BTreeSet<String>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
@@ -58,6 +61,14 @@ pub struct ChatDeviceScope {
     pub preferences: ChatMachinePreferences,
     pub diagnostics: ChatDiagnosticPreferences,
     pub execution_environment_paths: BTreeMap<String, String>,
+    /// Preview origins the user allowed, keyed by Chat thread ID: external sites the model may
+    /// use and loopback origins the thread may navigate to.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub preview_model_origins: BTreeMap<String, BTreeSet<String>>,
+    /// Generation token naming each working folder's preview web data directory under the app
+    /// config directory. Discarding the data replaces the token.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub preview_data_stores: BTreeMap<ProjectWorkingFolderId, String>,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -134,7 +145,7 @@ pub fn read_active_device_scope<R: Runtime>(
     app: &tauri::AppHandle<R>,
 ) -> Result<ChatDeviceScope, String> {
     let vault_id = active_vault_id(app)?;
-    let device_id = vault_device_id(app.clone())?;
+    let device_id = ensure_device_id(app)?;
     let state = read_app_state(app)?;
     Ok(state
         .chat
@@ -149,7 +160,7 @@ pub fn update_active_device_scope<R: Runtime, T>(
     update: impl FnOnce(&mut ChatDeviceScope) -> Result<T, String>,
 ) -> Result<T, String> {
     let vault_id = active_vault_id(app)?;
-    let device_id = vault_device_id(app.clone())?;
+    let device_id = ensure_device_id(app)?;
     update_app_state(app, |state| {
         if state.chat.schema_version != CHAT_DEVICE_STATE_SCHEMA_VERSION {
             return Err("Chat device state schema is unsupported".to_string());

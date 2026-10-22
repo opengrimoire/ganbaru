@@ -1,5 +1,5 @@
 pub mod files;
-pub mod image_metadata;
+pub use ganbaru_image_metadata as image_metadata;
 pub mod page_covers;
 pub mod page_icons;
 
@@ -624,7 +624,7 @@ fn validate_managed_asset(asset: &ManagedAssetWrite<'_>) -> Result<&'static str,
     Ok(kind)
 }
 
-fn validate_managed_asset_path(relative_path: &str) -> Result<(), String> {
+pub(crate) fn validate_managed_asset_path(relative_path: &str) -> Result<(), String> {
     let prefix = [
         ASSET_PAGE_ICON_PREFIX,
         ASSET_PAGE_COVER_PREFIX,

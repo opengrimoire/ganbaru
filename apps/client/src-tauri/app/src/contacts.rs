@@ -11,7 +11,6 @@ pub(crate) mod store;
 #[cfg(test)]
 mod tests;
 
-use crate::db::connect_sqlite;
 use crate::vault::handoff::protocol::QrMatrix;
 use ganbaru_contacts::TrustKind;
 use serde::{Deserialize, Serialize};
@@ -199,11 +198,37 @@ pub struct UpdateTrustRequest {
 }
 
 pub(crate) async fn contacts_pool<R: Runtime>(app: &AppHandle<R>) -> Result<SqlitePool, String> {
-    connect_sqlite(
-        app.clone(),
-        format!("sqlite:{}", crate::vault::APP_SQLITE_FILE),
-    )
-    .await
+    crate::db::connect_vault(app).await
+}
+
+/// Whether the active vault holds a person identity, so a card handed out earlier may name
+/// this device. Only the identity row is read, never the keyring. A vault database that exists
+/// but cannot be read counts as holding one, so requests keep arriving.
+#[cfg(desktop)]
+pub(crate) async fn person_identity_exists<R: Runtime>(app: &AppHandle<R>) -> bool {
+    let Ok(database) = crate::vault::active_database_path(app) else {
+        return false;
+    };
+    if !database.is_file() {
+        return false;
+    }
+    match contacts_pool(app).await {
+        Ok(pool) => identity::load_identity_row(&pool)
+            .await
+            .map_or(true, |row| row.is_some()),
+        Err(_) => true,
+    }
+}
+
+/// Starts the listener a contact card names before the card is signed, on a desktop that
+/// coordinates its own devices. Without a LAN address the card stays unreachable, as before.
+async fn ensure_card_endpoint<R: Runtime>(app: &AppHandle<R>) {
+    #[cfg(desktop)]
+    if let Err(error) = crate::vault::handoff::ensure_desktop_coordinator(app).await {
+        eprintln!("contact card delivery listener is unavailable: {error}");
+    }
+    #[cfg(not(desktop))]
+    let _ = app;
 }
 
 fn require_writable<R: Runtime>(app: &AppHandle<R>) -> Result<(), ContactsError> {
@@ -229,7 +254,7 @@ async fn snapshot<R: Runtime>(
         .into_iter()
         .map(store::ContactRow::view)
         .collect::<Result<Vec<_>, _>>()?;
-    let requests = store::list_requests(pool)
+    let requests = store::list_pending_requests(pool)
         .await?
         .iter()
         .map(store::RequestRow::view)
@@ -253,6 +278,7 @@ pub async fn contacts_list<R: Runtime>(
 pub async fn contacts_local_card<R: Runtime>(
     app: AppHandle<R>,
 ) -> Result<LocalCardView, ContactsError> {
+    ensure_card_endpoint(&app).await;
     let pool = contacts_pool(&app).await?;
     let identity = identity::ensure_identity(&app, &pool).await?;
     card::local_card_view(&app, &identity)
@@ -263,6 +289,7 @@ pub async fn contacts_regenerate_card<R: Runtime>(
     app: AppHandle<R>,
 ) -> Result<LocalCardView, ContactsError> {
     require_writable(&app)?;
+    ensure_card_endpoint(&app).await;
     let pool = contacts_pool(&app).await?;
     let identity = identity::ensure_identity(&app, &pool).await?;
     let identity = card::rotate_card(&pool, identity).await?;
@@ -288,8 +315,10 @@ pub async fn contacts_parse_card<R: Runtime>(
         color: signed.card.color,
         verification_code: signed.verification_code(),
         contact_id: signed.card.public_key.contact_id(),
-        has_endpoint: !signed.card.endpoint_hint.is_empty()
-            && signed.card.coordinator_fingerprint.is_some(),
+        has_endpoint: signed.card.coordinator_fingerprint.is_some()
+            && signed.card.endpoint_hint.parse().is_ok_and(|endpoint| {
+                ganbaru_handoff::dial::validate_dial_endpoint(endpoint).is_ok()
+            }),
         is_self: identity.is_some_and(|identity| identity.public_key == signed.card.public_key),
         existing_state: existing.and_then(|row| ContactState::parse(&row.state)),
         pending_sent,
@@ -312,6 +341,7 @@ pub async fn contacts_send_request<R: Runtime>(
     request: SendContactRequest,
 ) -> Result<ContactsSnapshot, ContactsError> {
     require_writable(&app)?;
+    ensure_card_endpoint(&app).await;
     let pool = contacts_pool(&app).await?;
     let identity = identity::ensure_identity(&app, &pool).await?;
     requests::send_request(

@@ -195,10 +195,10 @@
     <div class="grid gap-2 rounded-floating-item border border-border px-3 py-2.5">
       <div class="flex min-w-0 items-center gap-2.5">
         <PersonAvatar displayName={parsed.displayName} color={parsed.color} size={30} />
-        <span class="min-w-0 flex-1 truncate text-sm font-medium text-foreground">{parsed.displayName}</span>
+        <span class="min-w-0 flex-1 truncate text-sm font-medium text-foreground" dir="auto">{parsed.displayName}</span>
       </div>
       <span class="contacts-field-label">{t("contacts.addContact.verificationLabel")}</span>
-      <p class="font-mono text-[1.1rem] font-semibold tracking-[0.2em] text-foreground tabular-nums" aria-live="polite">{parsed.verificationCode}</p>
+      <p class="font-mono text-[1.1rem] font-semibold tracking-[0.2em] wrap-break-word text-foreground tabular-nums" aria-live="polite">{parsed.verificationCode}</p>
       <p class="text-panel-detail text-muted-foreground">{t("contacts.addContact.verificationDescription")}</p>
     </div>
   {/if}

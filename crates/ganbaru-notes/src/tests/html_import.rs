@@ -198,3 +198,177 @@ fn html_import_sanitizes_unsafe_markup_and_requires_media_policy() {
         assert_eq!(imported_file_assets, 0);
     });
 }
+
+const WORKER_STACK_BYTES: usize = 2 * 1024 * 1024;
+const TEST_BLOCK_BUDGET: usize = 10_000;
+
+fn on_worker_stack<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'static) -> T {
+    std::thread::Builder::new()
+        .stack_size(WORKER_STACK_BYTES)
+        .spawn(work)
+        .unwrap()
+        .join()
+        .expect("HTML import must not overflow a worker stack")
+}
+
+fn nested_html(open: &str, close: &str, depth: usize) -> String {
+    format!("{}text{}", open.repeat(depth), close.repeat(depth))
+}
+
+fn html_request(html: String) -> NoteHtmlImportRequest {
+    NoteHtmlImportRequest {
+        parent: workspace_parent(),
+        title: None,
+        source_name: Some("nested.html".to_string()),
+        after_block_id: None,
+        keep_external_file_references: Some(false),
+        project_id: None,
+        html,
+    }
+}
+
+#[test]
+fn html_import_rejects_nesting_beyond_the_depth_limit_without_overflowing() {
+    for open in ["<div>", "<b>"] {
+        let error = on_worker_stack(move || {
+            transfers::html_import::parse_html(&open.repeat(20_000), false, TEST_BLOCK_BUDGET)
+                .err()
+                .expect("deep nesting must be rejected")
+        });
+        assert!(error.contains("nesting depth limit"), "{error}");
+    }
+    let error = on_worker_stack(|| {
+        crate::test_block_on(async {
+            let pool = migrated_memory_pool().await;
+            transfers::html_import::import_page(&pool, html_request("<div>".repeat(20_000)))
+                .await
+                .err()
+                .expect("deep nesting must be rejected")
+        })
+    });
+    assert!(error.contains("nesting depth limit"), "{error}");
+}
+
+#[test]
+fn html_import_accepts_nesting_at_the_depth_limit_on_a_worker_stack() {
+    let depth = transfers::html_import::syntax::MAX_HTML_IMPORT_DEPTH;
+    for (open, close) in [
+        ("<div>", "</div>"),
+        ("<b>", "</b>"),
+        ("<ul><li>", "</li></ul>"),
+        ("<blockquote>", "</blockquote>"),
+    ] {
+        let levels = depth / open.matches('<').count();
+        let imported = on_worker_stack(move || {
+            crate::test_block_on(async {
+                let pool = migrated_memory_pool().await;
+                transfers::html_import::import_page(
+                    &pool,
+                    html_request(nested_html(open, close, levels)),
+                )
+                .await
+            })
+        });
+        let imported = imported.unwrap_or_else(|error| panic!("{open}: {error}"));
+        let value = serde_json::to_value(imported).unwrap();
+        assert!(value["imported_block_count"].as_i64().unwrap() >= 1);
+    }
+}
+
+#[test]
+fn html_import_rejects_deep_raw_markup_before_sanitizing() {
+    for html in [
+        "<div>".repeat(200_000),
+        "<div/>".repeat(150_000),
+        "<div></b>".repeat(100_000),
+        "<blockquote><span>".repeat(100_000),
+    ] {
+        let started = std::time::Instant::now();
+        let error = transfers::html_import::parse_html(&html, false, TEST_BLOCK_BUDGET)
+            .err()
+            .expect("deep raw markup must be rejected");
+        assert!(error.contains("nesting depth limit"), "{error}");
+        assert!(started.elapsed() < ADVERSARIAL_PARSE_LIMIT);
+    }
+}
+
+#[test]
+fn html_import_depth_check_accepts_wide_and_implicitly_closed_markup() {
+    let svg_paths = "<path d=\"M0 0\"/>".repeat(2_000);
+    let script_markup = "'<div>' + ".repeat(2_000);
+    for html in [
+        "<p>Paragraph".repeat(2_000),
+        format!("<ul>{}</ul>", "<li>Item".repeat(2_000)),
+        format!("<table>{}</table>", "<tr><td>Cell".repeat(2_000)),
+        "<div>Sibling</div>".repeat(2_000),
+        format!("<svg>{svg_paths}</svg><p>After</p>"),
+        format!("<script>{script_markup}</script><p>After</p>"),
+        format!("<!-- {} --><p>After</p>", "<div>".repeat(2_000)),
+    ] {
+        transfers::html_import::parse_html(&html, false, TEST_BLOCK_BUDGET)
+            .unwrap_or_else(|error| panic!("{error}: {}", &html[..60]));
+    }
+}
+
+#[test]
+fn html_import_skips_tables_wider_than_notes_supports_without_padding_rows() {
+    let html = format!(
+        "<table><tr>{}</tr>{}</table><p>After</p>",
+        "<td>".repeat(100_000),
+        "<tr></tr>".repeat(50_000)
+    );
+    let started = std::time::Instant::now();
+    let plan = transfers::html_import::parse_html(&html, false, 1_000).unwrap();
+    assert!(started.elapsed() < ADVERSARIAL_PARSE_LIMIT);
+    assert_eq!(plan.blocks.len(), 2);
+    assert_eq!(plan.blocks[0].block_type, "unsupported");
+    let diagnostics = serde_json::to_value(&plan.diagnostics).unwrap();
+    assert!(
+        diagnostics
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|diagnostic| diagnostic["code"] == "table_too_wide")
+    );
+}
+
+#[test]
+fn html_import_stops_table_rows_at_the_block_budget() {
+    let row = format!("<tr>{}</tr>", "<td>x</td>".repeat(100));
+    let html = format!("<table>{}</table>", row.repeat(1_001));
+    let error = transfers::html_import::parse_html(&html, false, 1_000)
+        .err()
+        .expect("rows beyond the block budget must be rejected");
+    assert!(error.contains("up to 1000 blocks"), "{error}");
+}
+
+#[test]
+fn html_import_decodes_adversarial_entity_runs_in_linear_time() {
+    let title = format!("<title>{};</title>", "&".repeat(1_000_000));
+    let body = format!("<p>{};</p>", "&".repeat(1_000_000));
+    let started = std::time::Instant::now();
+    let titled = transfers::html_import::parse_html(&title, false, 1_000).unwrap();
+    let text = transfers::html_import::parse_html(&body, false, 1_000).unwrap();
+    assert!(started.elapsed() < ADVERSARIAL_PARSE_LIMIT);
+    assert_eq!(titled.title.as_deref().map(str::len), Some(240));
+    assert_eq!(text.blocks.len(), 1);
+}
+
+#[test]
+fn html_import_reports_many_unsupported_tags_with_correct_lines() {
+    let html = (0..200_000)
+        .map(|index| format!("<x{index:x}></x{index:x}>\n"))
+        .collect::<String>();
+    let started = std::time::Instant::now();
+    let plan = transfers::html_import::parse_html(&html, false, 1_000).unwrap();
+    assert!(started.elapsed() < ADVERSARIAL_PARSE_LIMIT);
+    let diagnostics = serde_json::to_value(&plan.diagnostics).unwrap();
+    let last = diagnostics
+        .as_array()
+        .unwrap()
+        .iter()
+        .rfind(|diagnostic| diagnostic["code"] == "html_element_unsupported")
+        .unwrap()
+        .clone();
+    assert_eq!(last["line"], 200_000);
+}

@@ -69,6 +69,19 @@ export function syncDeviceName(device: SyncDeviceRef, ownLabel: string, unknownL
   return device.deviceLabel ?? unknownLabel;
 }
 
+/**
+ * Describes devices whose edits carry clocks far ahead of this device, without repeated lines.
+ * Those edits win concurrent changes until the clocks agree.
+ */
+export function syncClockAheadLines(t: Translate, status: SyncStatusView): string[] {
+  const lines = status.clockAheadDevices.map((device) =>
+    device.ownDevice
+      ? t("sync.clockAheadOwn")
+      : t("sync.clockAhead", syncDeviceName(device, t("sync.recovery.thisDevice"), t("sync.recovery.otherDevice"))),
+  );
+  return [...new Set(lines)];
+}
+
 /** Labels the service state. */
 export function syncStateLabel(t: Translate, state: SyncState): string {
   switch (state) {

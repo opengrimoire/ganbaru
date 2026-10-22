@@ -134,8 +134,15 @@
   let sourceRenameNodeId = $state<string | null>(null);
   let sourceRenameSaving = $state(false);
   let sourceRenameError = $state<string | null>(null);
-  let localSourceNameOverride = $state(getConfigKey<string | null>("music.sources.localName", null));
-  let youtubeSourceNameOverride = $state(getConfigKey<string | null>("music.sources.youtubeName", null));
+  let localSourceNameOverride = $state(savedSourceName("music.sources.localName"));
+  let youtubeSourceNameOverride = $state(savedSourceName("music.sources.youtubeName"));
+
+  /** Read a saved source name, ignoring a value of any other type that a vault file may hold. */
+  function savedSourceName(key: string): string | null {
+    const saved = getConfigKey<unknown>(key, null);
+    return typeof saved === "string" ? saved : null;
+  }
+
   let repairItemId = $state<string | null>(null);
   let pendingRefreshPlan = $state<MusicSourceRefreshPlan | null>(null);
   let playlistSurface = $state<"create" | "edit" | "duplicate" | "delete" | null>(null);
@@ -171,7 +178,7 @@
   let previouslyActive = false;
   const contextViewState = $state(createMusicBuilderContextViewState());
   const reviewTreeViewState = $state(createMusicReviewTreeViewState());
-  const reviewWorkspaceViewState = $state(createMusicReviewWorkspaceViewState());
+  let reviewWorkspaceViewState = $state(createMusicReviewWorkspaceViewState());
   const layout = $derived(projectMusicBuilderLayout({ width, height }));
   const destination = $derived(history.current.destination);
   const playlistManagementActive = $derived(
@@ -510,7 +517,7 @@
 
   function closeSourceSurface(): void {
     sources.cancelResolution();
-    if (sourceSurface === "relink" && sources.relinkPlan?.state === "ready") {
+    if (sourceSurface === "relink" && sources.relinkCancellable) {
       void sources.cancelRelink();
     }
     sourceSurface = null;
@@ -1133,7 +1140,7 @@
                 </div>
               {/if}
             {:else if destination.kind === "soundscapes"}
-              <button type="button" onclick={() => { if (contextViewState.soundscapeFilter === "generated") contextViewState.soundscapeFilter = "local"; soundscapeAddRequest += 1; }} class="toolbar-primary"><Plus size={13} />{t("music.soundscape.addLoop")}</button>
+              <button type="button" onclick={() => { if (contextViewState.soundscapeFilter === "presets") contextViewState.soundscapeFilter = "layers"; soundscapeAddRequest += 1; }} class="toolbar-primary"><Plus size={13} />{t("music.soundscape.addLoop")}</button>
             {/if}
           {/snippet}
         </MusicBuilderToolbar>
@@ -1191,7 +1198,7 @@
             {/if}
           </div>
         {:else}
-          <MusicReviewWorkspace items={reviewItems} totalCount={reviewItems.length} {library} {inspector} {sources} {audition} {review} {bulk} {active} selectedItemIds={reviewTreeViewState.selectedItemIds} selectedFolderIds={reviewTreeViewState.selectedFolderIds} onClearSelection={clearReviewSelection} autoplay={reviewAutoplay} onAutoplayChange={setReviewAutoplay} onOpenPlayer={openPlayerFromBuilder} compactPlayerLabel={mobilePresentation} showPanelButton={layout.contextPanelPresentation === "sheet"} onOpenPanel={() => contextViewState.contextPanelOpen = true} onEditPlaylist={(playlistId) => { void openPlaylistManagementSurface(playlistId, "edit"); }} onDeletePlaylist={(playlistId) => { void openPlaylistManagementSurface(playlistId, "delete"); }} onReorderPlaylists={reorderPlaylistSummaries} issue={activeReviewIssue} repairAvailable={activeReviewIssue ? canRepairIssue(activeReviewIssue) : false} onRepairIssue={repairIssue} viewState={reviewWorkspaceViewState} />
+          <MusicReviewWorkspace items={reviewItems} totalCount={reviewItems.length} {library} {inspector} {sources} {audition} {review} {bulk} {active} selectedItemIds={reviewTreeViewState.selectedItemIds} selectedFolderIds={reviewTreeViewState.selectedFolderIds} onClearSelection={clearReviewSelection} autoplay={reviewAutoplay} onAutoplayChange={setReviewAutoplay} onOpenPlayer={openPlayerFromBuilder} compactPlayerLabel={mobilePresentation} showPanelButton={layout.contextPanelPresentation === "sheet"} onOpenPanel={() => contextViewState.contextPanelOpen = true} onEditPlaylist={(playlistId) => { void openPlaylistManagementSurface(playlistId, "edit"); }} onDeletePlaylist={(playlistId) => { void openPlaylistManagementSurface(playlistId, "delete"); }} onReorderPlaylists={reorderPlaylistSummaries} issue={activeReviewIssue} repairAvailable={activeReviewIssue ? canRepairIssue(activeReviewIssue) : false} onRepairIssue={repairIssue} bind:viewState={reviewWorkspaceViewState} />
         {/if}
       {:else if playlistManagementOpen && (destination.kind === "playlists" || destination.kind === "playlist")}
         <div class="min-h-0 flex-1 overflow-y-auto p-3" data-music-scrollable="true"><MusicPlaylistManager bind:this={playlistManager} bind:actionsDisabled={playlistManagerActionsDisabled} playlists={library.playlistSummaries} onEdit={(playlistId) => { void openPlaylistManagementSurface(playlistId, "edit"); }} onDelete={(playlistId) => { void openPlaylistManagementSurface(playlistId, "delete"); }} onReorder={reorderPlaylistSummaries} onDone={() => playlistManagementOpen = false} showHeader={false} /></div>
@@ -1275,7 +1282,7 @@
           onRemoveSnooze={(item) => removeItemSnoozes(item, null)}
         />
       {:else if destination.kind === "soundscapes"}
-        <MusicSoundscapeBuilder filter={contextViewState.soundscapeFilter} compact addRequest={soundscapeAddRequest} onPlaybackStart={takePlaybackOwnership} onGroupRemoved={() => contextViewState.soundscapeFilter = "local"} />
+        <MusicSoundscapeBuilder filter={contextViewState.soundscapeFilter} addRequest={soundscapeAddRequest} onPlaybackStart={takePlaybackOwnership} />
       {:else}
         <MusicBuilderOverview {destination} search={library.currentState.search} playlists={library.playlistSummaries} onNavigate={(next) => { void navigate(next); }} onPrimary={primaryAction} onImport={() => interchange.show("import")} onExport={() => interchange.show("export", destination.kind === "playlist" ? destination.playlistId : null)} compact />
       {/if}

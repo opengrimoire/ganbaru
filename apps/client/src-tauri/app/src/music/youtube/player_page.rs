@@ -62,8 +62,33 @@ pub(crate) fn youtube_host_html() -> &'static str {
       };
     }
 
+    const nativeHost = typeof window.ganbaruYouTubeHost === "object" ? window.ganbaruYouTubeHost : null;
+    const parentOrigin = targetableParentOrigin();
+
+    // Messages go only to the embedding app origin. A custom-scheme app origin is opaque to
+    // postMessage and cannot be named, so only that case falls back to any origin.
+    function targetableParentOrigin() {
+      const ancestors = location.ancestorOrigins;
+      const origin = ancestors && ancestors.length > 0 ? ancestors[0] : "";
+      try {
+        return origin && new URL(origin).origin === origin ? origin : "*";
+      } catch {
+        return "*";
+      }
+    }
+
     function send(message) {
-      parent.postMessage({ token, load: loadId, ...message }, "*");
+      const payload = { token, load: loadId, ...message };
+      if (nativeHost) {
+        nativeHost.postMessage(JSON.stringify(payload));
+        return;
+      }
+      parent.postMessage(payload, parentOrigin);
+    }
+
+    function acceptCommand(data) {
+      if (!data || data.token !== token || data.type !== "ganbaru-youtube-command") return;
+      handleCommand(data);
     }
 
     function resetPlayerElement() {
@@ -199,7 +224,7 @@ pub(crate) fn youtube_host_html() -> &'static str {
         playsinline: 1,
         rel: 0,
         origin: location.origin,
-        widget_referrer: location.href
+        widget_referrer: location.origin
       };
       if (source.kind === "youtube-playlist") {
         vars.listType = "playlist";
@@ -312,12 +337,21 @@ pub(crate) fn youtube_host_html() -> &'static str {
       }
     };
 
-    window.addEventListener("message", (event) => {
-      if (event.source !== parent) return;
-      const data = event.data;
-      if (!data || data.token !== token || data.type !== "ganbaru-youtube-command") return;
-      handleCommand(data);
-    });
+    if (nativeHost) {
+      nativeHost.addEventListener("message", (event) => {
+        if (typeof event.data !== "string") return;
+        try {
+          acceptCommand(JSON.parse(event.data));
+        } catch {
+          return;
+        }
+      });
+    } else {
+      window.addEventListener("message", (event) => {
+        if (event.source !== parent) return;
+        acceptCommand(event.data);
+      });
+    }
 
     window.setInterval(() => {
       if (player && playbackActive) snapshot();

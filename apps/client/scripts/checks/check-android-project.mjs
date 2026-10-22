@@ -80,6 +80,12 @@ const [
   mobileDocumentsBuild,
   mobileMediaBuild,
   mobileNotificationsBuild,
+  youTubeHostViews,
+  mobileDistractionsManifest,
+  mobileNotificationsPlugin,
+  mobileDistractionsPlugin,
+  webViewPermissionPolicy,
+  wrapperJar,
 ] =
   await Promise.all([
     readAndroidFile("build.gradle.kts"),
@@ -114,6 +120,18 @@ const [
     readClientFile("../../crates/ganbaru-mobile-documents/android/build.gradle.kts"),
     readClientFile("../../crates/ganbaru-mobile-media/android/build.gradle.kts"),
     readClientFile("../../crates/ganbaru-mobile-notifications/android/build.gradle.kts"),
+    readClientFile(
+      "../../crates/ganbaru-mobile-media/android/src/main/java/org/opengrimoire/ganbaru/mobile/media/YouTubeHostViews.kt",
+    ),
+    readClientFile("../../crates/ganbaru-mobile-distractions/android/src/main/AndroidManifest.xml"),
+    readClientFile(
+      "../../crates/ganbaru-mobile-notifications/android/src/main/java/org/opengrimoire/ganbaru/mobile/notifications/MobileNotificationsPlugin.kt",
+    ),
+    readClientFile(
+      "../../crates/ganbaru-mobile-distractions/android/src/main/java/org/opengrimoire/ganbaru/mobile/distractions/MobileDistractionsPlugin.kt",
+    ),
+    readAndroidFile("app/src/main/java/org/opengrimoire/ganbaru/WebViewPermissionPolicy.kt"),
+    readAndroidBytes("gradle/wrapper/gradle-wrapper.jar"),
   ]);
 
 const failures = [];
@@ -156,6 +174,14 @@ for (const nativeOnly of [
     failures.push(`Android capability must keep native Focus authority private: ${nativeOnly}`);
   }
 }
+// Document picker and download commands take app-private paths, so only Rust callers that derive those paths may
+// reach them.
+for (const permission of androidCapabilityConfig.permissions) {
+  const identifier = typeof permission === "string" ? permission : permission.identifier;
+  if (identifier.startsWith("ganbaru-mobile-documents:")) {
+    failures.push(`Android capability must keep document transfer commands native-only: ${identifier}`);
+  }
+}
 for (const expected of [
   'const PLUGIN_NAME: &str = "ganbaru-mobile-notifications";',
   "tauri::plugin::Builder::new(PLUGIN_NAME)",
@@ -191,6 +217,57 @@ rejectText(
   failures,
 );
 
+for (const key of ["csp", "devCsp"]) {
+  if (androidConfig.app?.security?.[key]?.["frame-src"] !== "'none'") {
+    failures.push(`Android ${key} must deny every frame source because YouTube runs in a separate native WebView`);
+  }
+}
+const androidDevCsp = androidConfig.app?.security?.devCsp ?? {};
+for (const directive of ["default-src", "script-src", "style-src", "font-src", "connect-src"]) {
+  const sources = String(androidDevCsp[directive] ?? "").split(/\s+/u);
+  if (sources.some((source) => source.endsWith(":*"))) {
+    failures.push(`Android devCsp ${directive} must name the dev server ports instead of any port`);
+  }
+}
+for (const forbidden of ["addJavascriptInterface", "addDocumentStartJavaScript", "evaluateJavascript"]) {
+  rejectText(youTubeHostViews, forbidden, "native YouTube host WebView", failures);
+}
+for (const expected of [
+  "WebViewCompat.addWebMessageListener(",
+  "allowFileAccess = false",
+  "allowContentAccess = false",
+]) {
+  requireText(youTubeHostViews, expected, "native YouTube host WebView", failures);
+}
+for (const expected of [
+  'val appOriginInitScriptRule = "setOf(\\"http://tauri.localhost\\", \\"https://tauri.localhost\\")"',
+  'registerInitScriptOriginTask("Release", appOriginInitScriptRule)',
+  'it.name.endsWith("ReleaseKotlin")',
+  "dependsOn(releaseInitScriptOrigins, releaseChromeClientCallbacks)",
+]) {
+  requireText(appBuild, expected, "release init script origin restriction", failures);
+}
+
+for (const expected of [
+  "registerChromeClientCallbackTask(\"Release\")",
+  "dependsOn(releaseInitScriptOrigins, releaseChromeClientCallbacks)",
+  "dependsOn(debugInitScriptOrigins, debugChromeClientCallbacks)",
+]) {
+  requireText(appBuild, expected, "generated chrome client callback pin", failures);
+}
+for (const expected of [
+  "Handler(Looper.getMainLooper()).post { installPermissionPolicy(webView) }",
+  "webView.webChromeClient = AppOriginChromeClient(",
+]) {
+  requireText(mainActivity, expected, "WebView permission policy", failures);
+}
+for (const expected of [
+  "if (allowed) delegate.onPermissionRequest(request) else request.deny()",
+  "callback?.invoke(origin, false, false)",
+]) {
+  requireText(webViewPermissionPolicy, expected, "WebView permission policy", failures);
+}
+
 requireText(rootBuild, 'classpath("com.android.tools.build:gradle:8.11.0")', "root build", failures);
 requireText(
   rootBuild,
@@ -199,6 +276,19 @@ requireText(
   failures,
 );
 requireText(wrapper, "gradle-8.14.3-bin.zip", "Gradle wrapper", failures);
+// The wrapper verifies the downloaded distribution against the published SHA-256
+// (services.gradle.org/distributions/gradle-8.14.3-bin.zip.sha256), and the committed wrapper JAR must stay the
+// official Gradle 6.9.x wrapper (services.gradle.org/versions/all lists its checksum) so neither can change unreviewed.
+requireText(
+  wrapper,
+  "distributionSha256Sum=bd71102213493060956ec229d946beee57158dbd89d0e62b91bca0fa2c5f3531",
+  "Gradle wrapper",
+  failures,
+);
+const wrapperJarSha256 = createHash("sha256").update(wrapperJar).digest("hex");
+if (wrapperJarSha256 !== "e996d452d2645e70c01c11143ca2d3742734a28da2bf61f25c82bdc288c9e637") {
+  failures.push("gradle-wrapper.jar must be an official Gradle wrapper with a reviewed checksum");
+}
 
 for (const expected of [
   "abstract val execOperations: ExecOperations",
@@ -238,6 +328,11 @@ for (const [expected, label] of [
   ['applicationIdSuffix = ".dev"', "debug application ID suffix"],
   ['rootProject.file("keystore.properties")', "release signing properties"],
   ['signingConfig = signingConfigs.findByName("release")', "release signing configuration"],
+  [
+    "if (releaseTaskRequested && !releaseSigningPropertiesFile.isFile && !unsignedReleaseRequested) {",
+    "explicit unsigned release opt-in",
+  ],
+  ['providers.environmentVariable("GANBARU_ANDROID_UNSIGNED_RELEASE").orNull == "true"', "unsigned release flag"],
   ['manifestPlaceholders["usesCleartextTraffic"] = "false"', "production cleartext policy"],
   ["sourceCompatibility = JavaVersion.VERSION_17", "Java source compatibility"],
   ["targetCompatibility = JavaVersion.VERSION_17", "Java target compatibility"],
@@ -335,6 +430,37 @@ for (const domain of backupDomains) {
   if (countText(extractionRules, exclusion) !== 2) {
     failures.push(`data extraction rules must exclude ${domain} from cloud and device transfer`);
   }
+}
+
+/** Require a notification route activity that other apps cannot start. */
+function requirePrivateRouteActivity(pluginManifest, className, label) {
+  const declaration = pluginManifest.match(
+    new RegExp(`<activity\\s[^>]*android:name="[^"]*\\.${className}"[^>]*>`, "u"),
+  )?.[0];
+  if (declaration === undefined) {
+    failures.push(`${label} manifest must declare ${className}`);
+    return;
+  }
+  requireText(declaration, 'android:exported="false"', `${label} ${className}`, failures);
+}
+
+requirePrivateRouteActivity(
+  mobileNotificationManifest,
+  "CalendarNotificationRouteActivity",
+  "notifications plugin",
+);
+requirePrivateRouteActivity(
+  mobileDistractionsManifest,
+  "DistractionsNotificationRouteActivity",
+  "distractions plugin",
+);
+for (const [source, label] of [
+  [mobileNotificationsPlugin, "notifications plugin"],
+  [mobileDistractionsPlugin, "distractions plugin"],
+  [mainActivity, "MainActivity"],
+]) {
+  rejectText(source, "captureAction(", label, failures);
+  rejectText(source, "DistractionsNotificationActionStore.capture(", label, failures);
 }
 
 if (failures.length > 0) {

@@ -38,7 +38,6 @@
     "@replit/codemirror-lang-svelte": "6.0.0",
     "@tauri-apps/api": "2.11.0",
     "@tauri-apps/plugin-opener": "2.5.4",
-    "@tauri-apps/plugin-updater": "2.10.1",
     "@xterm/addon-fit": "0.11.0",
     "@xterm/xterm": "6.0.0",
     "codemirror": "6.0.2",
@@ -47,13 +46,13 @@
     "marked": "18.0.6"
   },
   "devDependencies": {
-    "@lucide/svelte": "^0.577.0",
+    "@lucide/svelte": "^1.59.0",
     "@sveltejs/vite-plugin-svelte": "^7.1.2",
     "@tailwindcss/language-server": "^0.14.29",
     "@tailwindcss/vite": "^4.3.0",
     "@tauri-apps/cli": "^2.11.1",
     "@types/node": "^22.12.0",
-    "@vitest/coverage-v8": "^4.1.11",
+    "@vitest/coverage-v8": "^4.1.12",
     "clsx": "^2.1.1",
     "jsdom": "^29.0.1",
     "svelte": "^5.55.7",
@@ -61,7 +60,7 @@
     "tailwind-merge": "^3.5.0",
     "tailwindcss": "^4.3.0",
     "typescript": "6.0.3",
-    "vite": "8.0.16",
-    "vitest": "^4.1.11"
+    "vite": "8.1.6",
+    "vitest": "^4.1.12"
   }
 }

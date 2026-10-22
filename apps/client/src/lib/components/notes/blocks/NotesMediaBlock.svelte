@@ -1,6 +1,6 @@
 <script lang="ts">
   import { tick } from "svelte";
-  import { openUrl } from "@tauri-apps/plugin-opener";
+  import { openNotesExternalUrl } from "$lib/api/notes/knowledge";
   import {
     notesFileAssetUrl,
     pickNotesFileAsset,
@@ -43,8 +43,8 @@
   import FileIcon from "@lucide/svelte/icons/file";
   import FileText from "@lucide/svelte/icons/file-text";
   import ImageIcon from "@lucide/svelte/icons/image";
-  import Music from "@lucide/svelte/icons/music";
-  import Trash2 from "@lucide/svelte/icons/trash-2";
+  import Music from "@lucide/svelte/icons/eighth-notes";
+  import Trash2 from "@lucide/svelte/icons/trash";
   import Upload from "@lucide/svelte/icons/upload";
   import Video from "@lucide/svelte/icons/video";
 
@@ -326,7 +326,7 @@
     if (!canOpen) return;
     try {
       openError = null;
-      await openUrl(urlDraft.trim());
+      await openNotesExternalUrl(urlDraft.trim());
     } catch (error) {
       openError = error instanceof Error ? error.message : String(error);
     }

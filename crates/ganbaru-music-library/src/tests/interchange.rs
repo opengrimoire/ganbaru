@@ -209,3 +209,41 @@ fn interchange_conflict_policy_never_overwrites_without_replace() {
         );
     });
 }
+
+#[test]
+fn interchange_import_truncates_item_descriptions_that_the_schema_caps() {
+    crate::test_support::block_on(async {
+        let pool = super::pool().await;
+        let mut import_request = request(MusicImportPlaylistConflict::ImportCopy);
+        let item = &mut import_request.document.playlists[0].memberships[0].item;
+        item.title = "é".repeat(MAX_ITEM_DESCRIPTION_CHARS * 20);
+        item.artist = "a".repeat(MAX_ITEM_DESCRIPTION_CHARS + 1);
+
+        super::super::interchange::import(&pool, import_request)
+            .await
+            .unwrap();
+        let stored: (i64, i64, i64) = sqlx::query_as(
+            "SELECT length(original_title), length(original_artist), length(original_album)
+             FROM music_library_items",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        let limit = MAX_ITEM_DESCRIPTION_CHARS as i64;
+        assert_eq!(stored, (limit, limit, "Soundtrack".len() as i64));
+
+        super::seed_item(&pool, "item-direct", "local:direct").await;
+        for column in ["original_title", "original_artist", "original_album"] {
+            let update = format!("UPDATE music_library_items SET {column} = ? WHERE id = ?");
+            assert!(
+                sqlx::query(sqlx::AssertSqlSafe(update))
+                    .bind("x".repeat(MAX_ITEM_DESCRIPTION_CHARS + 1))
+                    .bind("item-direct")
+                    .execute(&pool)
+                    .await
+                    .is_err(),
+                "{column} accepts text past the cap"
+            );
+        }
+    });
+}

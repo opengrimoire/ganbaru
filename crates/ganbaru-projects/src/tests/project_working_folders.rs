@@ -15,7 +15,6 @@ fn project_creation_persists_and_creates_its_managed_working_folder() {
         let project = ProjectCreate {
             id: "project-created-test".to_string(),
             group_id: ROUTINE_GROUP_ID.to_string(),
-            template_id: "blank".to_string(),
             name: "Created test".to_string(),
             icon: "lucide:folder".to_string(),
             color: None,

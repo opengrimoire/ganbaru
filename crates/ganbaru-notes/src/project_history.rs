@@ -46,7 +46,10 @@ use schedule::{
 pub use schedule::{notes_flush_due_project_history, notes_initialize_project_history};
 
 use crate::{NoteParent, local_user, writes};
-use bundles::{garbage_collect_bundles_tx, load_bundle_tx, store_bundle_tx};
+use bundles::{
+    MAX_HISTORY_VERSION_ROW_BYTES, garbage_collect_bundles_tx, load_bundle_tx,
+    load_bundle_within_tx, store_bundle_tx,
+};
 use scope::{ProjectHistoryGraph, load_project_graph};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;

@@ -72,7 +72,7 @@ pub struct MusicContextAssignment {
     pub phase: MusicActivityPhase,
     pub behavior: MusicAssignmentBehavior,
     pub playlist_id: Option<String>,
-    pub soundscape_id: Option<String>,
+    pub soundscape_preset_id: Option<String>,
     pub soundscape_behavior: MusicSoundscapeBehavior,
     pub provenance_kind: MusicAssignmentProvenanceKind,
     pub provenance_id: Option<String>,
@@ -86,7 +86,7 @@ pub struct MusicContextAssignmentDraft {
     pub phase: MusicActivityPhase,
     pub behavior: MusicAssignmentBehavior,
     pub playlist_id: Option<String>,
-    pub soundscape_id: Option<String>,
+    pub soundscape_preset_id: Option<String>,
     pub soundscape_behavior: MusicSoundscapeBehavior,
     pub provenance_kind: MusicAssignmentProvenanceKind,
     pub provenance_id: Option<String>,
@@ -124,7 +124,7 @@ pub async fn load_assignments(
 ) -> MusicLibraryResult<Vec<MusicContextAssignment>> {
     validate_id(owner_id, "ownerId")?;
     let rows = sqlx::query_as::<_, AssignmentRow>(
-        "SELECT owner_kind, owner_id, phase, behavior, playlist_id, soundscape_id, soundscape_behavior,
+        "SELECT owner_kind, owner_id, phase, behavior, playlist_id, soundscape_preset_id, soundscape_behavior,
                 provenance_kind, provenance_id, updated_at_ms, version
          FROM music_context_assignments
          WHERE owner_kind = ? AND owner_id = ?
@@ -201,7 +201,7 @@ pub async fn replace_assignments_in_transaction(
             + 1;
         sqlx::query(
             "INSERT INTO music_context_assignments
-                (owner_kind, owner_id, phase, behavior, playlist_id, soundscape_id, soundscape_behavior,
+                (owner_kind, owner_id, phase, behavior, playlist_id, soundscape_preset_id, soundscape_behavior,
                  provenance_kind, provenance_id, updated_at_ms, version)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
@@ -210,7 +210,7 @@ pub async fn replace_assignments_in_transaction(
         .bind(assignment.phase.as_ref())
         .bind(assignment.behavior.as_ref())
         .bind(assignment.playlist_id)
-        .bind(assignment.soundscape_id)
+        .bind(assignment.soundscape_preset_id)
         .bind(assignment.soundscape_behavior.as_ref())
         .bind(assignment.provenance_kind.as_ref())
         .bind(assignment.provenance_id)
@@ -257,8 +257,9 @@ pub fn validate_drafts(
             ));
         }
         validate_optional_id(&assignment.playlist_id, "playlistId")?;
-        validate_optional_id(&assignment.soundscape_id, "soundscapeId")?;
+        validate_optional_id(&assignment.soundscape_preset_id, "soundscapePresetId")?;
         validate_optional_id(&assignment.provenance_id, "provenanceId")?;
+        validate_soundscape_choice(assignment)?;
         let expected_provenance = match owner_kind {
             MusicAssignmentOwnerKind::EventSnapshot => MusicAssignmentProvenanceKind::CopiedProject,
             MusicAssignmentOwnerKind::WorkEnvironment => {
@@ -280,6 +281,24 @@ pub fn validate_drafts(
         }
     }
     Ok(())
+}
+
+/// A selected soundscape names one preset; other behaviors name none.
+fn validate_soundscape_choice(assignment: &MusicContextAssignmentDraft) -> MusicLibraryResult<()> {
+    match (
+        assignment.soundscape_behavior,
+        assignment.soundscape_preset_id.is_some(),
+    ) {
+        (MusicSoundscapeBehavior::PlaySelected, false) => Err(MusicLibraryError::validation(
+            "soundscapePresetId",
+            "play-selected requires a preset",
+        )),
+        (MusicSoundscapeBehavior::PlaySelected, true) | (_, false) => Ok(()),
+        (_, true) => Err(MusicLibraryError::validation(
+            "soundscapePresetId",
+            "only play-selected may name a preset",
+        )),
+    }
 }
 
 fn validate_id(value: &str, field: &str) -> MusicLibraryResult<()> {
@@ -315,7 +334,7 @@ pub fn decode(row: AssignmentRow) -> MusicLibraryResult<MusicContextAssignment> 
         behavior: MusicAssignmentBehavior::try_from(row.3.as_str())
             .map_err(|message| MusicLibraryError::runtime("decode assignment behavior", message))?,
         playlist_id: row.4,
-        soundscape_id: row.5,
+        soundscape_preset_id: row.5,
         soundscape_behavior: MusicSoundscapeBehavior::try_from(row.6.as_str())
             .map_err(|message| MusicLibraryError::runtime("decode soundscape behavior", message))?,
         provenance_kind: MusicAssignmentProvenanceKind::try_from(row.7.as_str()).map_err(

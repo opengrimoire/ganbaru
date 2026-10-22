@@ -1,16 +1,27 @@
 //! Project-owned working folders and device-local binding authorization.
 
+mod external_open;
 pub mod files;
 pub mod mutation;
+pub use external_open::*;
+pub use ganbaru_chat_contracts::protected_paths;
+#[cfg(test)]
+mod trust_tests;
 
 use super::models::{
     ChatError, ChatErrorCode, ChatResult, ProjectWorkingFolderId, RepositoryKind, UtcTimestamp,
 };
+use crate::git::GitFolder;
+use crate::git::hardened::{
+    FolderConfigDigest, FolderConfiguration, GitFolderTrust, ProviderConfigurationEntries,
+};
 use chrono::{SecondsFormat, Utc};
-use ganbaru_working_folders::{ProjectWorkingFolderBindingState, WorkingFolderDeviceScope};
+use ganbaru_chat_contracts::models::ProjectConfigurationAccess;
+use ganbaru_working_folders::{
+    ProjectWorkingFolderBindingState, WorkingFolderDeviceScope, WorkingFolderTrustRecord,
+};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::ffi::OsStr;
 use std::fs::{self, OpenOptions};
 use std::path::{Component, Path, PathBuf};
 
@@ -25,6 +36,28 @@ pub enum WorkingFolderBindingStatus {
     RepositoryMismatch,
 }
 
+/// Device-local trust decision for a folder's repository programs, hooks, and
+/// provider configuration, as recorded without rereading the folder.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkingFolderTrustState {
+    /// No decision is recorded; user Git actions ask first.
+    Undecided,
+    Trusted,
+    Untrusted,
+}
+
+impl WorkingFolderTrustState {
+    /// Reads the recorded decision for `id` in `scope`.
+    pub fn recorded(scope: &WorkingFolderDeviceScope, id: &ProjectWorkingFolderId) -> Self {
+        match scope.trust.get(id) {
+            None => Self::Undecided,
+            Some(record) if record.trusted => Self::Trusted,
+            Some(_) => Self::Untrusted,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum WorkingFolderAuthorizationOperation {
     ProviderStart,
@@ -33,24 +66,28 @@ pub enum WorkingFolderAuthorizationOperation {
     MentionResolution,
     TerminalStart,
     Git,
+    /// A Git action the user started that may run the folder's hooks and
+    /// repository programs, such as commit, push, or staging.
+    GitUser,
     Diff,
     Restore,
 }
 
 impl WorkingFolderAuthorizationOperation {
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 9] = [
         Self::ProviderStart,
         Self::FileRead,
         Self::FileWrite,
         Self::MentionResolution,
         Self::TerminalStart,
         Self::Git,
+        Self::GitUser,
         Self::Diff,
         Self::Restore,
     ];
 
     fn requires_repository_continuity(self) -> bool {
-        matches!(self, Self::Git | Self::Diff | Self::Restore)
+        matches!(self, Self::Git | Self::GitUser | Self::Diff | Self::Restore)
     }
 }
 
@@ -94,6 +131,7 @@ pub struct ProjectWorkingFolderRead {
     pub canonical_path: Option<String>,
     pub last_verified_at: Option<UtcTimestamp>,
     pub current_branch: Option<String>,
+    pub trust: WorkingFolderTrustState,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -113,6 +151,19 @@ pub struct AuthorizedWorkingFolder {
     pub repository_identity: Option<String>,
     /// Filesystem identity of the currently authorized Git common directory.
     pub repository_storage_identity: Option<String>,
+    /// Device-local trust decision for repository programs and hooks.
+    pub git_trust: GitFolderTrust,
+    /// Whether a provider started here may load project provider
+    /// configuration. Restricted until a provider start settles it against the
+    /// folder trust decision.
+    pub project_configuration: ProjectConfigurationAccess,
+}
+
+impl AuthorizedWorkingFolder {
+    /// Returns the folder as a Git run target with its trust decision.
+    pub fn git_folder(&self) -> GitFolder<'_> {
+        GitFolder::new(&self.canonical_path, self.git_trust)
+    }
 }
 
 pub fn prepare_workspace_binding(
@@ -185,7 +236,134 @@ pub fn authorize_workspace(
             .then(|| workspace.repository_identity.clone())
             .flatten(),
         repository_storage_identity,
+        git_trust: folder_git_trust(scope, &workspace.id),
+        project_configuration: ProjectConfigurationAccess::Restricted,
     })
+}
+
+/// Resolves the recorded trust decision for a folder. A missing, declined, or
+/// unreadable record is untrusted; a trusted record still applies only while
+/// the folder's configuration matches its digest.
+pub fn folder_git_trust(
+    scope: &WorkingFolderDeviceScope,
+    working_folder_id: &ProjectWorkingFolderId,
+) -> GitFolderTrust {
+    scope
+        .trust
+        .get(working_folder_id)
+        .filter(|record| record.trusted)
+        .and_then(|record| FolderConfigDigest::from_hex(&record.git_configuration_digest))
+        .map_or(GitFolderTrust::Untrusted, GitFolderTrust::Trusted)
+}
+
+/// What a user Git action needs from the folder's trust record before it runs.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TrustDecisionCheck {
+    /// A recorded decision, trusted or declined, covers the current Git
+    /// configuration. A declined decision runs the action untrusted.
+    Decided,
+    /// The folder defines no repository programs or hooks, so a trusted
+    /// record for this configuration is written without asking.
+    NothingToDecide,
+    /// No decision covers the current Git configuration; the user decides.
+    Required,
+}
+
+/// Compares the folder's recorded decision with its current configuration.
+pub fn check_trust_decision(
+    scope: &WorkingFolderDeviceScope,
+    working_folder_id: &ProjectWorkingFolderId,
+    configuration: &FolderConfiguration,
+) -> TrustDecisionCheck {
+    let current = configuration.git.to_hex();
+    match scope.trust.get(working_folder_id) {
+        Some(record) if record.git_configuration_digest == current => TrustDecisionCheck::Decided,
+        _ if configuration.git_is_empty => TrustDecisionCheck::NothingToDecide,
+        _ => TrustDecisionCheck::Required,
+    }
+}
+
+/// What a provider start may load from project provider configuration.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ProjectConfigurationCheck {
+    /// The recorded decision, or the absence of configuration, settles it.
+    Decided(ProjectConfigurationAccess),
+    /// No decision covers the folder's current provider configuration; the
+    /// user decides before the provider starts.
+    Required,
+}
+
+/// Decides whether a provider started in a folder may load its project
+/// configuration. `root` is the bound folder the trust record describes and
+/// `launch` is the directory the provider starts in, which is a worktree for
+/// isolated environments. A worktree loads project configuration only when
+/// every entry it has is one the folder decision already covers.
+pub fn check_project_configuration(
+    scope: &WorkingFolderDeviceScope,
+    working_folder_id: &ProjectWorkingFolderId,
+    root: &ProviderConfigurationEntries,
+    launch: &ProviderConfigurationEntries,
+) -> ProjectConfigurationCheck {
+    let access = |trusted: bool| {
+        if trusted && launch.is_covered_by(root) {
+            ProjectConfigurationAccess::Trusted
+        } else {
+            ProjectConfigurationAccess::Restricted
+        }
+    };
+    if root.is_empty() {
+        return ProjectConfigurationCheck::Decided(access(true));
+    }
+    let current = root.digest().to_hex();
+    match scope.trust.get(working_folder_id) {
+        Some(record) if record.provider_configuration_digest == current => {
+            ProjectConfigurationCheck::Decided(access(record.trusted))
+        }
+        _ => ProjectConfigurationCheck::Required,
+    }
+}
+
+/// Builds the record of a decision about `configuration`.
+pub fn trust_record(
+    configuration: &FolderConfiguration,
+    trusted: bool,
+    decided_at: UtcTimestamp,
+) -> WorkingFolderTrustRecord {
+    WorkingFolderTrustRecord {
+        git_configuration_digest: configuration.git.to_hex(),
+        provider_configuration_digest: configuration.provider.to_hex(),
+        trusted,
+        decided_at,
+    }
+}
+
+/// Builds the record written without asking when the Git configuration has
+/// nothing to decide. Provider configuration the user never saw stays
+/// undecided, so its digest is recorded only when it is empty too.
+pub fn automatic_trust_record(
+    configuration: &FolderConfiguration,
+    decided_at: UtcTimestamp,
+) -> WorkingFolderTrustRecord {
+    let mut record = trust_record(configuration, true, decided_at);
+    if !configuration.provider_is_empty {
+        record.provider_configuration_digest = String::new();
+    }
+    record
+}
+
+/// Error returned when a user Git action or a provider start needs a trust
+/// decision first. The details carry the folder so the caller can ask and
+/// retry.
+pub fn trust_decision_required_error(working_folder_id: &ProjectWorkingFolderId) -> ChatError {
+    let mut error = ChatError::new(
+        ChatErrorCode::TrustDecisionRequired,
+        "Decide whether to trust this folder's repository and provider configuration",
+        true,
+    );
+    error.details = Some(Box::new(serde_json::json!({
+        "workingFolderId": working_folder_id.as_str(),
+    })));
+    error
 }
 
 pub fn resolve_workspace_relative_path(
@@ -222,6 +400,7 @@ pub fn workspace_read(
     workspace: ProjectWorkingFolder,
     scope: &WorkingFolderDeviceScope,
 ) -> ChatResult<ProjectWorkingFolderRead> {
+    let trust = WorkingFolderTrustState::recorded(scope, &workspace.id);
     let binding = scope.bindings.get(&workspace.id);
     let (binding_status, current_branch) = match binding {
         None => (WorkingFolderBindingStatus::Unbound, None),
@@ -251,6 +430,7 @@ pub fn workspace_read(
         canonical_path: binding.map(|value| value.canonical_path.clone()),
         last_verified_at: binding.map(|value| value.last_verified_at.clone()),
         current_branch,
+        trust,
     })
 }
 
@@ -524,6 +704,10 @@ pub fn filesystem_identity(path: &Path, domain: &[u8]) -> ChatResult<String> {
 }
 
 #[cfg(windows)]
+#[allow(
+    unsafe_code,
+    reason = "Retained unsafe boundary; see docs/data/security/unsafe-rust.md."
+)]
 pub fn filesystem_identity(path: &Path, domain: &[u8]) -> ChatResult<String> {
     use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
     use std::os::windows::io::AsRawHandle;
@@ -633,62 +817,4 @@ fn path_validation_error() -> ChatError {
         "relativePath",
         "Workspace paths must be normalized relative paths",
     )
-}
-
-pub fn open_authorized_workspace(authorized: &AuthorizedWorkingFolder) -> ChatResult<()> {
-    open_authorized_path(authorized, &authorized.canonical_path)
-}
-
-pub fn open_authorized_path(authorized: &AuthorizedWorkingFolder, path: &Path) -> ChatResult<()> {
-    if !path.starts_with(&authorized.canonical_path) {
-        return Err(ChatError::new(
-            ChatErrorCode::Permission,
-            "Workspace path resolves outside the bound folder",
-            false,
-        ));
-    }
-    spawn_file_manager(path).map_err(|_| {
-        ChatError::new(
-            ChatErrorCode::Internal,
-            "The project working-folder path could not be opened",
-            true,
-        )
-    })
-}
-
-#[cfg(target_os = "linux")]
-fn spawn_file_manager(path: &Path) -> std::io::Result<()> {
-    spawn_file_manager_command("xdg-open", [path.as_os_str()])
-}
-
-#[cfg(target_os = "macos")]
-fn spawn_file_manager(path: &Path) -> std::io::Result<()> {
-    spawn_file_manager_command("open", [path.as_os_str()])
-}
-
-#[cfg(windows)]
-fn spawn_file_manager(path: &Path) -> std::io::Result<()> {
-    spawn_file_manager_command("explorer.exe", [path.as_os_str()])
-}
-
-#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
-fn spawn_file_manager(_path: &Path) -> std::io::Result<()> {
-    Err(std::io::Error::new(
-        std::io::ErrorKind::Unsupported,
-        "platform is unsupported",
-    ))
-}
-
-fn spawn_file_manager_command<I, S>(program: &str, arguments: I) -> std::io::Result<()>
-where
-    I: IntoIterator<Item = S>,
-    S: AsRef<OsStr>,
-{
-    std::process::Command::new(program)
-        .args(arguments)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .map(|_| ())
 }

@@ -20,8 +20,8 @@
   import Rows3 from "@lucide/svelte/icons/rows-3";
   import Search from "@lucide/svelte/icons/search";
   import Space from "@lucide/svelte/icons/space";
-  import Trash2 from "@lucide/svelte/icons/trash-2";
-  import WrapText from "@lucide/svelte/icons/wrap-text";
+  import Trash2 from "@lucide/svelte/icons/trash";
+  import WrapText from "@lucide/svelte/icons/text-wrap";
   import * as chatApi from "$lib/api/chat";
   import type {
     ChatChangedFileRead,
@@ -247,6 +247,7 @@
     Boolean(error)
       && renderItems.length === 0
       && !selectedReviewFile?.flags.binary
+      && !selectedReviewFile?.flags.tooLarge
       && selectedPatch?.state !== "oversized_hunk"
       && selectedPatch?.state !== "unavailable"
       && !(selectedReviewFile && loadingPatchIds.includes(selectedReviewFile.fileId))
@@ -815,6 +816,8 @@
             onResolveComment={(comment, resolved) => void setCommentResolved(comment, resolved)}
             onViewport={(next) => { viewport = next; }}
           />
+        {:else if selectedReviewFile?.flags.tooLarge}
+          <div class="review-notice"><AlertTriangle size={22} /><p>{t("chat.review.tooLargeFile")}</p></div>
         {:else if selectedReviewFile?.flags.binary}
           <div class="review-notice"><FileDiff size={22} /><p>{t("chat.inspector.binary")}</p></div>
         {:else if selectedPatch?.state === "oversized_hunk"}

@@ -8,13 +8,16 @@ mod mapping;
 mod picker;
 mod preferences;
 mod providers;
+mod runtime_approval;
 mod store;
 
 pub(crate) use credentials::invalidate_provider_state_for_credential;
+#[cfg(all(test, unix))]
+pub(crate) use discovery::installed_provider_executables;
 #[cfg(test)]
 pub(crate) use discovery::{
-    default_provider_configuration, installed_provider_executables,
-    provider_family_is_discoverable, should_discover_default_provider,
+    default_provider_configuration, provider_family_is_discoverable,
+    should_discover_default_provider,
 };
 pub(crate) use discovery::{
     discover_default_providers, discover_default_providers_once, executable_search_directories,
@@ -27,6 +30,11 @@ pub(crate) use mapping::{
 pub(crate) use picker::{pick_local_path, validate_picker_title};
 pub(crate) use preferences::{remember_composer_selection, set_working_folder_provider_preference};
 pub(crate) use providers::{apply_provider_probe, operation_context, unique_model_ids};
+pub(crate) use runtime_approval::{
+    ProviderRuntimePrompt, ProviderRuntimeReviewRead, RuntimeReceipts, approval_digests,
+    approved_runtime, ask_runtime_approval, ingress_review_items, pending_portable_items,
+    require_runtime_approved_on_device, validate_runtime_prompt,
+};
 pub(crate) use store::{mutate_chat_config, provider_mut, read_chat_config, read_settings};
 
 pub(crate) fn provider_not_found_error() -> ChatError {

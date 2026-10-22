@@ -11,7 +11,7 @@
   import ShieldCheck from "@lucide/svelte/icons/shield-check";
   import Plus from "@lucide/svelte/icons/plus";
   import Search from "@lucide/svelte/icons/search";
-  import Trash2 from "@lucide/svelte/icons/trash-2";
+  import Trash2 from "@lucide/svelte/icons/trash";
   import X from "@lucide/svelte/icons/x";
   import * as chatApi from "$lib/api/chat";
   import type {
@@ -769,7 +769,6 @@
                     <ul>
                       <li>{editor.conflictComparison.identityChanged ? t("settings.chat.teammates.conflict.identityChanged") : t("settings.chat.teammates.conflict.identityUnchanged")}</li>
                       <li>{editor.conflictComparison.policyChanged ? t("settings.chat.teammates.conflict.policyChanged") : t("settings.chat.teammates.conflict.policyUnchanged")}</li>
-                      <li>{editor.conflictComparison.runtimeApprovalChanged ? t("settings.chat.teammates.conflict.runtimeChanged") : t("settings.chat.teammates.conflict.runtimeUnchanged")}</li>
                       <li>{t("settings.chat.teammates.conflict.channelSummary", editor.conflictComparison.addedChannelCount, editor.conflictComparison.removedChannelCount, editor.conflictComparison.changedChannelCount)}</li>
                     </ul>
                   </div>

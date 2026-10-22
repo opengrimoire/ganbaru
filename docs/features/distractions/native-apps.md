@@ -5,7 +5,7 @@ Desktop and Android enforce selected applications through different operating-sy
 ## Shared safety rules
 
 - Only explicitly selected applications can be targets.
-- Selection records stable platform identity plus a user-facing label.
+- Selection records a platform identity plus a user-facing label: the package name on Android, and on desktop the application name, whose process names come from the installed application catalog at enforcement time rather than from the vault.
 - Protected applications are rejected at selection and enforcement time.
 - Stale, disabled, removed, mismatched, or unauthorized rules perform no destructive action.
 - Enforcement is rate-limited and explains how to change the responsible setting.
@@ -15,15 +15,17 @@ Desktop and Android enforce selected applications through different operating-sy
 
 Application discovery is on demand. The picker excludes system and basic utility targets that are unsafe or unrelated to procrastination. Adding or removing an enforced app requires confirmation.
 
-A desktop identity can include executable, application identifier, desktop entry, and normalized match names. Generic runtimes or shell hosts are not sufficient targets because closing them could affect unrelated work.
+A desktop rule stores its application name and normalized match names. The vault configuration is not trusted to choose process names: enforcement uses only the rule's own name and the process names the installed application catalog lists for that name, including entries the picker hides in the current desktop session. A typed rule therefore matches its own name, and a picked app also matches its desktop entry's executable. Generic runtimes, shell hosts, session services (systemd, PipeWire, agents), multiplexers, terminal emulators, and compositors are protected and never sufficient targets because closing them could affect unrelated work.
+
+Residual risk: an edited vault configuration can still add a visible rule whose own name is an unprotected user application, so the rule list in Settings is the place to review what the blocker can close.
 
 ## Desktop phase enforcement
 
-Process or foreground checks run only while a relevant phase rule is active. Ending the phase stops checks immediately, and late observations are ignored.
+Process or foreground checks run only while a relevant phase rule is active. Process observation, open-app counting, and close revalidation consider only processes whose real user ID is the signed-in user's; other accounts' processes on a shared machine are never counted or closed. Ending the phase stops checks immediately, and late observations are ignored.
 
-On platforms with a safe close adapter, enforcement binds the exact observation to the exact persisted rule. Immediately before a graceful close and before any stronger fallback, the backend revalidates process identity, start identity, active vault, fresh phase or limit state, target rule, and protected-app policy.
+Linux is the only desktop with a close adapter today; other desktops refuse close requests. On Linux, enforcement binds the exact observation (process ID, start time, executable, and names) to the exact persisted rule in the active vault. Immediately before a graceful close and before any stronger fallback, the backend revalidates process identity, start identity, active vault, fresh phase or limit state, target rule, and protected-app policy.
 
-A PID alone never authorizes termination because it can be reused. A process-name match alone is also insufficient.
+A PID alone never authorizes termination because it can be reused. A process-name match alone is also insufficient. On Linux the protected check covers every observed name, the kernel-reported executable basename (which a process cannot rename), and 15-byte truncated `comm` names that prefix a protected name. On Linux the backend opens a pidfd for the PID before the first identity check and sends every signal through it, so a process that exits and has its PID reused after the check never receives the signal; kernels without `pidfd_open` signal the PID directly right after the same check.
 
 ## Desktop usage limits
 

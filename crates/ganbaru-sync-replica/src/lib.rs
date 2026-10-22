@@ -1,10 +1,11 @@
 //! A vault replica's part in concurrent sync, independent of Tauri: guarded database access that
 //! signals commits, the installation writer with its keys and device-local record, carry-forward
 //! of local operations across whole-vault replacement, recovery offers, and both sides of the LAN
-//! exchange over the handoff protocol. The app owns the service lifecycle, the transport, and
+//! exchange of operations and Quick note image files over the handoff protocol. The app owns the service lifecycle, the transport, and
 //! the frontend projection.
 
 pub mod access;
+pub mod assets;
 pub mod carry_forward;
 pub mod client;
 #[cfg(desktop)]

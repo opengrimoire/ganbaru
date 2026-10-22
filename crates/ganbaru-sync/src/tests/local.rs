@@ -1,13 +1,14 @@
 //! Installation helpers: space context, writer high-water check, snapshot copies, and
 //! carry-forward across a database replacement.
 
-use super::replica::{Replica, VAULT_ID, connection_from, person};
+use super::replica::{COORDINATOR_INDEX, Replica, VAULT_ID, connection_from, device_id, person};
 use super::{block_on, migrated_pool};
 use crate::local::{
     self, LocalWriterHead, decode_bundle, encode_bundle, has_pending_captures,
     prepare_snapshot_copy, replacement_vector, space_context,
 };
 use crate::log::WriterState;
+use ganbaru_sync_contracts::VersionVector;
 
 async fn add_note(replica: &mut Replica, id: &str, title: &str) {
     replica
@@ -22,7 +23,7 @@ fn space_context_needs_the_person_identity() {
     block_on(async {
         let mut replica = Replica::new(0, 1).await;
         assert!(
-            space_context(&mut replica.conn, VAULT_ID)
+            space_context(&mut replica.conn, VAULT_ID, &device_id(COORDINATOR_INDEX))
                 .await
                 .unwrap()
                 .is_none()
@@ -36,7 +37,7 @@ fn space_context_needs_the_person_identity() {
                 person().public_key().to_text()
             ))
             .await;
-        let ctx = space_context(&mut replica.conn, VAULT_ID)
+        let ctx = space_context(&mut replica.conn, VAULT_ID, &device_id(COORDINATOR_INDEX))
             .await
             .unwrap()
             .unwrap();
@@ -199,6 +200,56 @@ fn carry_forward_from_a_database_without_a_space_is_empty() {
                 .next()
                 .is_none()
         );
+    });
+}
+
+#[test]
+fn pages_keep_arrival_order_across_writer_chunks() {
+    block_on(async {
+        let mut hub = Replica::new(0, 6).await;
+        let mut device = Replica::new(1, 6).await;
+        for index in 0..150 {
+            add_note(&mut hub, &format!("hub-{index}"), "Hub").await;
+            hub.seal().await.unwrap();
+            add_note(&mut device, &format!("device-{index}"), "Device").await;
+            device.seal().await.unwrap();
+            hub.pull(&mut device).await;
+        }
+        let arrival: Vec<Vec<u8>> =
+            sqlx::query_scalar("SELECT envelope FROM sync_ops WHERE space_id = ? ORDER BY rowid")
+                .bind(hub.ctx.space.as_bytes().as_slice())
+                .fetch_all(&mut hub.conn)
+                .await
+                .unwrap();
+        assert!(arrival.len() >= 300);
+
+        let whole = hub
+            .engine
+            .ops_after(&mut hub.conn, &hub.ctx, &Default::default(), usize::MAX)
+            .await
+            .unwrap();
+        assert!(!whole.more);
+        assert_eq!(whole.ops, arrival);
+
+        let mut known = VersionVector::default();
+        let mut paged = Vec::new();
+        loop {
+            let page = hub
+                .engine
+                .ops_after(&mut hub.conn, &hub.ctx, &known, 1)
+                .await
+                .unwrap();
+            assert_eq!(page.ops.len(), 1);
+            for bytes in &page.ops {
+                let envelope = ganbaru_sync_contracts::Envelope::decode(bytes).unwrap();
+                known.advance(envelope.writer, envelope.seq);
+            }
+            paged.extend(page.ops);
+            if !page.more {
+                break;
+            }
+        }
+        assert_eq!(paged, arrival);
     });
 }
 

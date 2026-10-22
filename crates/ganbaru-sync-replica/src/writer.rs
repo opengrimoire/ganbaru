@@ -173,7 +173,16 @@ pub fn read_record(path: &Path) -> Result<Option<WriterRecord>, String> {
     if record.schema_version != RECORD_SCHEMA_VERSION {
         return Err("sync writer record has an unsupported schema version".to_string());
     }
+    if !names_writer(&record.writer_id) || !record.retired_keys.iter().all(|id| names_writer(id)) {
+        return Err("sync writer record names an invalid writer id".to_string());
+    }
     Ok(Some(record))
+}
+
+/// Whether `id` is the canonical lowercase hex form of a writer id. Record ids name key store
+/// entries and Android key files, so only the form this installation writes is accepted.
+fn names_writer(id: &str) -> bool {
+    WriterId::from_hex(id).is_some_and(|writer| writer.to_hex() == id)
 }
 
 fn write_record(path: &Path, record: &WriterRecord) -> Result<(), String> {

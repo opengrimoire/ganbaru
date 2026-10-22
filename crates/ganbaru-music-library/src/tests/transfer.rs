@@ -87,7 +87,7 @@ fn music_transfer_admits_database_bytes_before_loading_selected_families() {
         for statement in [
             "UPDATE music_local_roots SET name=?",
             "UPDATE music_playlists SET icon=?",
-            "UPDATE music_library_items SET original_title=?",
+            "UPDATE music_library_items SET title_override=?",
             "UPDATE music_snoozes SET reason=?",
             "UPDATE music_context_assignments SET provenance_id=?",
         ] {
@@ -141,7 +141,7 @@ fn music_transfer_shares_database_allowance_across_items_children_and_conflict_r
         let initial = reviewed(&pool, source(), "initial").await;
         transfer::commit(&pool, initial, &[]).await.unwrap();
         let text = "x".repeat(super::transfer_read::MAX_READ_BYTES / 8);
-        sqlx::query("UPDATE music_library_items SET original_title=?")
+        sqlx::query("UPDATE music_library_items SET title_override=?")
             .bind(&text)
             .execute(&pool)
             .await
@@ -204,10 +204,11 @@ fn music_transfer_rolls_back_every_write_if_receipt_persistence_fails() {
             "music_snoozes",
             "music_transfer_receipts",
         ] {
-            let count: i64 = sqlx::query_scalar(&format!("SELECT COUNT(*) FROM {table}"))
-                .fetch_one(&pool)
-                .await
-                .unwrap();
+            let count: i64 =
+                sqlx::query_scalar(sqlx::AssertSqlSafe(format!("SELECT COUNT(*) FROM {table}")))
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
             assert_eq!(count, 0, "{table} must roll back");
         }
         sqlx::query("DROP TRIGGER fail_receipt")
@@ -352,6 +353,39 @@ fn music_transfer_matches_windows_case_without_changing_portable_identity() {
             !codec::serialize_json(snapshot)
                 .unwrap()
                 .contains("content://")
+        );
+    });
+}
+
+#[test]
+fn music_transfer_matches_m3u_paths_literally_through_one_keyed_pass() {
+    crate::test_support::block_on(async {
+        let pool = super::pool().await;
+        let initial = reviewed(&pool, source(), "initial").await;
+        transfer::commit(&pool, initial, &[]).await.unwrap();
+        sqlx::query("UPDATE music_local_locations SET relative_path = 'Album\\Mix [live]*?.flac'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("WITH RECURSIVE numbers(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM numbers WHERE n < 20000) INSERT INTO music_library_items (id, identity_key, source_kind, original_title, discovered_at_ms, updated_at_ms) SELECT 'bulk-' || n, 'bulk:' || n, 'local-file', 'Bulk', 1700000000000, 1700000000000 FROM numbers").execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO music_local_locations (id, item_id, root_id, relative_path, first_seen_at_ms, updated_at_ms) SELECT 'location-' || id, id, 'root-1', 'bulk/' || substr(id, 6) || '.flac', 1700000000000, 1700000000000 FROM music_library_items WHERE id LIKE 'bulk-%'").execute(&pool).await.unwrap();
+        let mut contents = "Album/Mix [live]*?.flac\nAlbum/Mix XliveX**.flac\n".to_string();
+        for n in 1..=2_000 {
+            contents.push_str(&format!("bulk/{n}.flac\n"));
+        }
+        let source = MusicTransferSource {
+            contents,
+            relative_root_id: Some("root-1".to_string()),
+            ..source()
+        };
+        let preview = transfer::preview(&pool, &source, &[]).await.unwrap();
+        assert_eq!(
+            (
+                preview.matched_items,
+                preview.new_items,
+                preview.unresolved_local_count
+            ),
+            (2_001, 1, 0)
         );
     });
 }

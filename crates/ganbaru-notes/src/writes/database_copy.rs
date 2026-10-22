@@ -6,7 +6,7 @@ use super::page_duplicates::{DuplicatePageGraph, insert_child_page_copy, plan_ch
 use crate::models::{NoteBlockRow, NoteDataSourceRow, NotePageRow, NoteParent};
 use crate::{assets, data_sources};
 use serde_json::Value;
-use sqlx::{Sqlite, Transaction};
+use sqlx::{AssertSqlSafe, Sqlite, Transaction};
 use std::collections::{HashMap, HashSet};
 
 pub(super) use super::copy_budget::MAX_COPY_OBJECTS;
@@ -752,24 +752,27 @@ pub(super) async fn remap_column(
     id: &str,
     identities: &HashMap<String, String>,
 ) -> Result<(), String> {
-    let raw: Option<String> =
-        sqlx::query_scalar(&format!("SELECT {column} FROM {table} WHERE id = ?"))
-            .bind(id)
-            .fetch_one(&mut **tx)
-            .await
-            .map_err(|e| format!("read copied references: {e}"))?;
+    let raw: Option<String> = sqlx::query_scalar(AssertSqlSafe(format!(
+        "SELECT {column} FROM {table} WHERE id = ?"
+    )))
+    .bind(id)
+    .fetch_one(&mut **tx)
+    .await
+    .map_err(|e| format!("read copied references: {e}"))?;
     let Some(raw) = raw else {
         return Ok(());
     };
     let mut value: Value =
         serde_json::from_str(&raw).map_err(|e| format!("parse copied references: {e}"))?;
     remap_json_ids(&mut value, identities);
-    sqlx::query(&format!("UPDATE {table} SET {column} = ? WHERE id = ?"))
-        .bind(value.to_string())
-        .bind(id)
-        .execute(&mut **tx)
-        .await
-        .map_err(|e| format!("remap copied references: {e}"))?;
+    sqlx::query(AssertSqlSafe(format!(
+        "UPDATE {table} SET {column} = ? WHERE id = ?"
+    )))
+    .bind(value.to_string())
+    .bind(id)
+    .execute(&mut **tx)
+    .await
+    .map_err(|e| format!("remap copied references: {e}"))?;
     Ok(())
 }
 

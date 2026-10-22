@@ -121,14 +121,10 @@ describe("teammate editor workflow", () => {
     const firstLoad = editor.initializeSelectedTeammate(first);
     editor.selectedId = second.participant.id;
     await editor.initializeSelectedTeammate(second);
-    pending.resolve({
-      ...access(first.participant.id, 99),
-      teammateDefaultRuntimeApproval: "unattended",
-    });
+    pending.resolve(access(first.participant.id, 99));
     await firstLoad;
 
     expect(editor.displayName).toBe(second.participant.displayName);
-    expect(editor.teammateDefaultRuntimeApproval).toBe("ask");
     expect(editor.loadingAccess).toBe(false);
     expect(editor.dirty).toBe(false);
     editor.instructions = "A new instruction";

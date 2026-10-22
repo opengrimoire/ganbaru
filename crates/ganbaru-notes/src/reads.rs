@@ -6,11 +6,14 @@ use crate::models::{
 };
 use crate::validation::{require_uuid, validate_page_size};
 use serde::{Deserialize, Serialize};
-use sqlx::{QueryBuilder, Sqlite, SqlitePool};
+use sqlx::{AssertSqlSafe, QueryBuilder, Sqlite, SqlitePool};
 use std::collections::{HashMap, HashSet};
 
 const DEFAULT_PAGE_SIZE: i64 = 50;
 const BLOCK_FRONTIER_PARENT_BATCH_SIZE: usize = 400;
+/// Most parent block IDs one frontier read accepts. Far above a page's nested parents per level;
+/// the frontend sends larger levels in several reads.
+pub const MAX_BLOCK_FRONTIER_PARENT_IDS: usize = 2_000;
 const SUMMARY_WINDOW_SIZE: i64 = 50;
 const MAX_SUMMARY_WINDOW_SIZE: i64 = 100;
 /// Deepest page or folder ancestry read for a location, which also ends a malformed parent cycle.
@@ -140,7 +143,7 @@ async fn list_page_summary_window(
     ))
 }
 
-fn push_page_summary_cursor(query: &mut QueryBuilder<'_, Sqlite>, cursor: &PageSummaryCursor) {
+fn push_page_summary_cursor(query: &mut QueryBuilder<Sqlite>, cursor: &PageSummaryCursor) {
     query
         .push(" AND (last_edited_time < ")
         .push_bind(cursor.last_edited_time.clone());
@@ -501,7 +504,7 @@ fn sort_page_rows(rows: &mut [NotePageSummaryDto]) {
 }
 
 async fn load_sidebar_root_page_rows(pool: &SqlitePool) -> Result<Vec<NotePageSummaryDto>, String> {
-    sqlx::query_as::<_, NotePageSummaryDto>(&format!(
+    sqlx::query_as::<_, NotePageSummaryDto>(AssertSqlSafe(format!(
         "SELECT {}
          FROM notes_pages
          WHERE in_trash = 0
@@ -510,7 +513,7 @@ async fn load_sidebar_root_page_rows(pool: &SqlitePool) -> Result<Vec<NotePageSu
            AND parent_type <> 'data_source_id'
          ORDER BY last_edited_time DESC, title COLLATE NOCASE ASC, id ASC LIMIT 50",
         crate::workspace_shell::page_projection()
-    ))
+    )))
     .fetch_all(pool)
     .await
     .map_err(|e| format!("list notes sidebar root pages: {e}"))
@@ -589,7 +592,7 @@ async fn load_active_ancestor_page_rows(
          LIMIT 64",
         crate::workspace_shell::page_projection()
     );
-    sqlx::query_as::<_, NotePageSummaryDto>(&query)
+    sqlx::query_as::<_, NotePageSummaryDto>(AssertSqlSafe(query.as_str()))
         .bind(page_id)
         .fetch_all(pool)
         .await
@@ -757,7 +760,7 @@ pub async fn block_outline_frontier(
 ) -> Result<Vec<NoteBlockOutlineDto>, String> {
     let page_id = page_id.trim();
     require_uuid(page_id, "page_id")?;
-    let parent_ids = normalize_block_ids(parent_ids, "parent_id")?;
+    let parent_ids = normalize_frontier_parent_ids(parent_ids)?;
     if parent_ids.is_empty() {
         return Ok(Vec::new());
     }
@@ -824,6 +827,17 @@ pub async fn hydrate_blocks(
         .collect()
 }
 
+/// Validates and dedupes one frontier read's parent IDs, refusing more than
+/// [`MAX_BLOCK_FRONTIER_PARENT_IDS`] before any ID is parsed.
+fn normalize_frontier_parent_ids(parent_ids: &[String]) -> Result<Vec<String>, String> {
+    if parent_ids.len() > MAX_BLOCK_FRONTIER_PARENT_IDS {
+        return Err(format!(
+            "block frontier reads are limited to {MAX_BLOCK_FRONTIER_PARENT_IDS} parent blocks"
+        ));
+    }
+    normalize_block_ids(parent_ids, "parent_id")
+}
+
 fn normalize_block_ids(ids: &[String], label: &str) -> Result<Vec<String>, String> {
     let mut normalized = Vec::with_capacity(ids.len());
     let mut seen = HashSet::new();
@@ -880,17 +894,9 @@ pub async fn block_frontier(
     pool: &SqlitePool,
     parent_ids: &[String],
 ) -> Result<NoteBlockFrontierDto, String> {
-    if parent_ids.is_empty() {
+    let normalized = normalize_frontier_parent_ids(parent_ids)?;
+    if normalized.is_empty() {
         return Ok(NoteBlockFrontierDto::new(Vec::new()));
-    }
-    let mut normalized = Vec::with_capacity(parent_ids.len());
-    let mut seen = HashSet::new();
-    for parent_id in parent_ids {
-        let parent_id = parent_id.trim();
-        require_uuid(parent_id, "parent_id")?;
-        if seen.insert(parent_id.to_string()) {
-            normalized.push(parent_id.to_string());
-        }
     }
     let mut rows = Vec::new();
     for parent_batch in normalized.chunks(BLOCK_FRONTIER_PARENT_BATCH_SIZE) {

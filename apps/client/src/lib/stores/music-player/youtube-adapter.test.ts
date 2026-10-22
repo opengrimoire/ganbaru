@@ -383,4 +383,68 @@ describe("Music YouTube adapter", () => {
       resolutionState: "unavailable",
     }));
   });
+
+  it("routes commands and page messages through a registered native host only", async () => {
+    const source = youtubeVideoSourceFromId("video-1");
+    const contentWindow = { postMessage: vi.fn() };
+    const state: MusicYouTubeState = {
+      currentSource: source,
+      snapshot: { ...DEFAULT_PLAYBACK_SNAPSHOT, status: "loading" },
+      playerError: null,
+      queue: [source],
+      queueHistory: [],
+      shuffleEnabled: false,
+      shuffleOrder: [],
+      pendingQueueIndex: null,
+      youtubeHostUrl: null,
+      youtubeFrame: { contentWindow } as unknown as HTMLIFrameElement,
+      youtubeHostToken: null,
+      youtubeHostReady: false,
+    };
+    const loadRuntime = new MusicLoadRuntime();
+    const generation = loadRuntime.begin();
+    const nativeHost = {
+      open: vi.fn(async () => undefined),
+      setBounds: vi.fn(async () => undefined),
+      post: vi.fn(),
+      close: vi.fn(async () => undefined),
+    };
+    const adapter = createMusicYouTubeAdapter({
+      state,
+      loadRuntime,
+      effectiveVolume: () => 1,
+      resolvePlaylist: vi.fn(async () => undefined),
+      persist: vi.fn(async () => undefined),
+      updateExternalControls: vi.fn(),
+      onDurationKnown: vi.fn(),
+      setPlaybackStarting: vi.fn(),
+      getHostUrl: vi.fn(async () => "https://appassets.androidplatform.net/youtube-player.html?token=test-token"),
+      persistYouTubeVideo: vi.fn(async () => undefined),
+      persistYouTubePlaylist: vi.fn(async () => undefined),
+      reportYouTubeFailure: vi.fn(async () => undefined),
+    });
+    adapter.registerNativeHost(nativeHost);
+    await adapter.load(source, null, generation, true);
+    const ready = { token: "test-token", load: String(generation), type: "ganbaru-youtube-ready" };
+
+    adapter.handleMessage({ source: contentWindow, data: ready } as unknown as MessageEvent<unknown>);
+    expect(state.youtubeHostReady).toBe(false);
+    adapter.handleNativeData({ ...ready, token: "other-token" });
+    expect(state.youtubeHostReady).toBe(false);
+    adapter.handleNativeData(ready);
+    expect(state.youtubeHostReady).toBe(true);
+
+    adapter.post({ action: "pause" });
+    expect(nativeHost.post).toHaveBeenCalledWith({
+      type: "ganbaru-youtube-command",
+      token: "test-token",
+      action: "pause",
+    });
+    expect(contentWindow.postMessage).not.toHaveBeenCalled();
+
+    adapter.registerNativeHost(null);
+    state.youtubeHostReady = false;
+    adapter.handleNativeData(ready);
+    expect(state.youtubeHostReady).toBe(false);
+  });
 });

@@ -7,6 +7,8 @@ pub mod checkpoint_commands;
 #[cfg(desktop)]
 pub mod checkpoints;
 #[cfg(desktop)]
+pub(crate) mod cleanup_service;
+#[cfg(desktop)]
 pub(crate) mod command_support;
 #[cfg(desktop)]
 pub mod credentials;
@@ -54,6 +56,8 @@ pub mod settings_commands;
 pub mod source_control;
 #[cfg(desktop)]
 pub mod terminal;
+#[cfg(desktop)]
+pub mod terminal_access;
 #[cfg(desktop)]
 pub mod terminal_commands;
 #[cfg(desktop)]

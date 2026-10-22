@@ -1,5 +1,10 @@
 //! Desktop idle and webcam activity probes used for Focus admission and idle warnings.
 
+#![allow(
+    unsafe_code,
+    reason = "Retained unsafe boundary; see docs/data/security/unsafe-rust.md."
+)]
+
 use serde::{Deserialize, Serialize};
 
 #[cfg(any(target_os = "linux", target_os = "windows", target_os = "macos"))]
@@ -87,8 +92,7 @@ fn linux_idle_time_ms() -> Option<u64> {
 }
 
 #[cfg(target_os = "linux")]
-#[tauri::command]
-pub fn focus_idle_status() -> IdleStatus {
+pub(crate) fn focus_idle_status() -> IdleStatus {
     IdleStatus {
         idle_ms: linux_idle_time_ms(),
         webcam_in_use: is_webcam_in_use(),
@@ -142,8 +146,7 @@ fn is_webcam_in_use_windows() -> bool {
 }
 
 #[cfg(target_os = "windows")]
-#[tauri::command]
-pub fn focus_idle_status() -> IdleStatus {
+pub(crate) fn focus_idle_status() -> IdleStatus {
     IdleStatus {
         idle_ms: windows_idle_time_ms(),
         webcam_in_use: is_webcam_in_use_windows(),
@@ -178,8 +181,7 @@ fn is_webcam_in_use_macos() -> bool {
 }
 
 #[cfg(target_os = "macos")]
-#[tauri::command]
-pub fn focus_idle_status() -> IdleStatus {
+pub(crate) fn focus_idle_status() -> IdleStatus {
     IdleStatus {
         idle_ms: macos_idle_time_ms(),
         webcam_in_use: is_webcam_in_use_macos(),
@@ -187,8 +189,7 @@ pub fn focus_idle_status() -> IdleStatus {
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
-#[tauri::command]
-pub fn focus_idle_status() -> IdleStatus {
+pub(crate) fn focus_idle_status() -> IdleStatus {
     IdleStatus {
         idle_ms: None,
         webcam_in_use: false,

@@ -47,7 +47,7 @@ Download the latest release from [GitHub Releases](https://github.com/opengrimoi
 
 Arch-based distro users can install with `yay -S ganbaru-bin` or another AUR helper.
 
-Use `SHA256SUMS` if you want to check that your downloaded installer matches the checksum published with this release. The `.sig` files and `latest.json` are used by Ganbaru's built-in updater, not files you need to download.
+Use `SHA256SUMS` if you want to check that your downloaded installer matches the checksum published with this release. `SHA256SUMS.asc` is its signature by the package repository key. The `.sig` files and `latest.json` are used by Ganbaru's built-in updater, not files you need to download.
 
 ## Features
 

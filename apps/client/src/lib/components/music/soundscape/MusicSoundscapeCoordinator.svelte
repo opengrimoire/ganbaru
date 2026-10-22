@@ -11,6 +11,14 @@
     const version = player.soundscapeVersion;
     if (version !== null && version !== undefined) void soundscape.refreshAcceptedOutput();
   });
+  // Pausing or resuming Music can pause or resume the soundscape natively without a new version.
+  const musicPaused = $derived(player.snapshot.status === "paused");
+  let followedMusicPaused: boolean | null = null;
+  $effect(() => {
+    const paused = musicPaused;
+    if (followedMusicPaused !== null && paused !== followedMusicPaused) void soundscape.refreshAcceptedOutput();
+    followedMusicPaused = paused;
+  });
   onMount(() => {
     let hiddenAt: number | null = null;
     const onVisibility = () => {

@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use sqlx::{Row, Sqlite, SqlitePool, Transaction};
+use sqlx::{AssertSqlSafe, Row, Sqlite, SqlitePool, Transaction};
 
 use super::icalendar::load_component_jcal;
 use super::{DbCalendarEventRow, DbFullEventRow, DbFullOverrideRow};
@@ -55,7 +55,7 @@ async fn load_i64_list_map_tx(
         "SELECT event_id, {column} AS value FROM {table}
          WHERE event_id IN ({placeholders}) ORDER BY event_id ASC, sort_order ASC"
     );
-    let mut query = sqlx::query(&query);
+    let mut query = sqlx::query(AssertSqlSafe(query.as_str()));
     for id in ids {
         query = query.bind(id);
     }
@@ -96,7 +96,7 @@ async fn load_string_list_map_tx(
         "SELECT event_id, {column} AS value FROM {table}
          WHERE event_id IN ({placeholders}) ORDER BY event_id ASC, sort_order ASC"
     );
-    let mut query = sqlx::query(&query);
+    let mut query = sqlx::query(AssertSqlSafe(query.as_str()));
     for id in ids {
         query = query.bind(id);
     }
@@ -199,7 +199,7 @@ async fn load_i64_list_map(
          WHERE event_id IN ({placeholders})
          ORDER BY event_id ASC, sort_order ASC"
     );
-    let mut q = sqlx::query(&query);
+    let mut q = sqlx::query(AssertSqlSafe(query.as_str()));
     for id in ids {
         q = q.bind(id);
     }
@@ -265,7 +265,7 @@ async fn load_ordered_values(
          WHERE event_id IN ({placeholders})
          ORDER BY event_id ASC, sort_order ASC"
     );
-    let mut q = sqlx::query(&query);
+    let mut q = sqlx::query(AssertSqlSafe(query.as_str()));
     for id in ids {
         q = q.bind(id);
     }
@@ -303,7 +303,7 @@ async fn load_property_map(
          WHERE {owner_column} IN ({placeholders})
          ORDER BY {owner_column} ASC, sort_order ASC"
     );
-    let mut q = sqlx::query(&query);
+    let mut q = sqlx::query(AssertSqlSafe(query.as_str()));
     for id in ids {
         q = q.bind(id);
     }

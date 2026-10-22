@@ -1,16 +1,15 @@
 use crate::data_sources;
+use crate::links::backlinks::{self, VISIBLE_SOURCE_FILTER, VISIBLE_SOURCE_JOINS};
 use crate::models::{
     NoteAgentBridgeExportDiagnosticDto, NoteAgentBridgeExportDto, NoteAgentBridgeExportRequest,
     NoteAgentBridgeExportSaveDto, NoteDataSourceCsvExportRequest,
 };
 use crate::validation::require_uuid;
 use serde_json::Value;
-use sqlx::{Row, SqlitePool};
+use sqlx::{AssertSqlSafe, Row, SqlitePool};
 use std::{
     collections::{BTreeSet, HashMap, HashSet},
-    fs,
-    io::Write,
-    path::{Path, PathBuf},
+    path::Path,
 };
 
 mod render;
@@ -275,7 +274,7 @@ async fn load_exact_pages(
          ORDER BY lower(title) ASC, id ASC",
         placeholders(requested_page_ids.len())
     );
-    let mut query = sqlx::query(&sql);
+    let mut query = sqlx::query(AssertSqlSafe(sql.as_str()));
     for id in requested_page_ids {
         query = query.bind(id);
     }
@@ -323,7 +322,7 @@ async fn load_pages_with_descendants(
          JOIN bridge_pages ON bridge_pages.id = page.id
          ORDER BY lower(page.title) ASC, page.id ASC"
     );
-    let mut query = sqlx::query(&sql);
+    let mut query = sqlx::query(AssertSqlSafe(sql.as_str()));
     for id in requested_page_ids {
         query = query.bind(id);
     }
@@ -370,7 +369,7 @@ async fn load_database_views(
          ORDER BY lower(page.title) ASC, block.sort_order ASC, block.id ASC",
         placeholders(page_ids.len())
     );
-    let mut query = sqlx::query(&sql);
+    let mut query = sqlx::query(AssertSqlSafe(sql.as_str()));
     for id in page_ids {
         query = query.bind(id);
     }
@@ -466,27 +465,29 @@ async fn load_backlinks(
     if page_ids.is_empty() {
         return Ok(Vec::new());
     }
+    backlinks::ensure_index_current(pool).await?;
     let sql = format!(
-        "SELECT backlink.target_id,
+        "SELECT idx.target_id,
                 target.title AS target_title,
-                backlink.source_page_id,
-                source.title AS source_page_title,
-                backlink.source_block_id,
-                backlink.source_comment_id,
-                backlink.reference_type,
-                backlink.snippet
-         FROM notes_backlink_index backlink
-         JOIN notes_pages target ON target.id = backlink.target_id
-         JOIN notes_pages source ON source.id = backlink.source_page_id
-         WHERE backlink.target_type = 'page'
-           AND backlink.target_id IN ({})
+                idx.source_page_id,
+                source_page.title AS source_page_title,
+                idx.source_block_id,
+                idx.source_comment_id,
+                idx.reference_type,
+                idx.snippet
+         FROM notes_backlink_index AS idx
+         JOIN notes_pages AS target ON target.id = idx.target_id
+         {VISIBLE_SOURCE_JOINS}
+         WHERE idx.target_type = 'page'
+           AND idx.target_id IN ({})
+           AND {VISIBLE_SOURCE_FILTER}
          ORDER BY lower(target.title) ASC,
-                  lower(source.title) ASC,
-                  backlink.reference_type ASC,
-                  backlink.id ASC",
+                  lower(source_page.title) ASC,
+                  idx.reference_type ASC,
+                  idx.id ASC",
         placeholders(page_ids.len())
     );
-    let mut query = sqlx::query(&sql);
+    let mut query = sqlx::query(AssertSqlSafe(sql.as_str()));
     for id in page_ids {
         query = query.bind(id);
     }
@@ -551,7 +552,7 @@ async fn project_scope_ids(
             placeholders(page_ids.len()),
             placeholders(page_ids.len())
         );
-        let mut query = sqlx::query_scalar::<_, String>(&sql);
+        let mut query = sqlx::query_scalar::<_, String>(AssertSqlSafe(sql.as_str()));
         for id in page_ids {
             query = query.bind(id);
         }
@@ -588,7 +589,7 @@ async fn load_projects(
          ORDER BY lower(group_row.name) ASC, lower(project.name) ASC, project.id ASC",
         placeholders(project_ids.len())
     );
-    let mut query = sqlx::query(&project_sql);
+    let mut query = sqlx::query(AssertSqlSafe(project_sql.as_str()));
     for id in project_ids {
         query = query.bind(id);
     }
@@ -740,7 +741,7 @@ async fn load_checklist_items(
          ORDER BY task_id ASC, sort_order ASC, id ASC",
         placeholders(task_ids.len())
     );
-    let mut query = sqlx::query(&sql);
+    let mut query = sqlx::query(AssertSqlSafe(sql.as_str()));
     for id in task_ids {
         query = query.bind(id);
     }
@@ -784,7 +785,7 @@ async fn load_task_tags(
          ORDER BY link.task_id ASC, lower(tag.name) ASC, tag.id ASC",
         placeholders(task_ids.len())
     );
-    let mut query = sqlx::query(&sql);
+    let mut query = sqlx::query(AssertSqlSafe(sql.as_str()));
     for id in task_ids {
         query = query.bind(id);
     }
@@ -824,26 +825,10 @@ fn require_markdown_extension(path: &Path) -> Result<(), String> {
 }
 
 fn write_markdown_file(path: &Path, contents: &str) -> Result<(), String> {
-    let temporary_path = temporary_markdown_path(path)?;
-    let result = fs::File::create(&temporary_path)
-        .map_err(|e| format!("create agent bridge export: {e}"))
-        .and_then(|mut file| {
-            file.write_all(contents.as_bytes())
-                .map_err(|e| format!("write agent bridge export: {e}"))
-        })
-        .and_then(|()| {
-            fs::rename(&temporary_path, path).map_err(|e| format!("save agent bridge export: {e}"))
-        });
-    if result.is_err() {
-        let _ = fs::remove_file(&temporary_path);
-    }
-    result
-}
-
-fn temporary_markdown_path(path: &Path) -> Result<PathBuf, String> {
-    let file_name = path
-        .file_name()
-        .ok_or_else(|| "agent bridge export path has no file name".to_string())?
-        .to_string_lossy();
-    Ok(path.with_file_name(format!("{file_name}.tmp")))
+    ganbaru_atomic_files::write_file_atomically(
+        path,
+        contents.as_bytes(),
+        ganbaru_atomic_files::FileAccess::Default,
+    )
+    .map_err(|e| format!("save agent bridge export: {e}"))
 }

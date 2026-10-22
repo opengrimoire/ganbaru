@@ -3,6 +3,7 @@ resolver = "3"
 members = [
   "apps/client/src-tauri",
   "apps/client/src-tauri/app",
+  "crates/ganbaru-atomic-files",
   "crates/ganbaru-calendar",
   "crates/ganbaru-chat",
   "crates/ganbaru-chat-contracts",
@@ -11,6 +12,8 @@ members = [
   "crates/ganbaru-db",
   "crates/ganbaru-distractions",
   "crates/ganbaru-handoff",
+  "crates/ganbaru-image-metadata",
+  "crates/ganbaru-linking-firewall",
   "crates/ganbaru-mobile-documents",
   "crates/ganbaru-mobile-distractions",
   "crates/ganbaru-mobile-media",
@@ -37,6 +40,10 @@ rust-version = "1.98"
 authors = ["Ganbaru"]
 license = "AGPL-3.0-only"
 
+[workspace.lints.rust]
+# Unsafe code is allowed only in modules listed in docs/data/security/unsafe-rust.md.
+unsafe_code = "deny"
+
 [workspace.lints.clippy]
 # Nested guards and let-chains are both valid; choose by readability and scope.
 collapsible_if = "allow"
@@ -49,7 +56,9 @@ base64 = "0.22.1"
 block2 = "0.6.2"
 cairo-rs = { version = "0.18.5", features = ["png"] }
 chrono = { version = "0.4", default-features = false, features = ["std", "serde"] }
+dunce = "1.0.5"
 flate2 = "1.1.9"
+ganbaru-atomic-files = { path = "crates/ganbaru-atomic-files" }
 ganbaru-calendar = { path = "crates/ganbaru-calendar" }
 ganbaru-chat = { path = "crates/ganbaru-chat", default-features = false }
 ganbaru-chat-contracts = { path = "crates/ganbaru-chat-contracts" }
@@ -58,6 +67,7 @@ ganbaru-civil-time = { path = "crates/ganbaru-civil-time" }
 ganbaru-db = { path = "crates/ganbaru-db" }
 ganbaru-distractions = { path = "crates/ganbaru-distractions" }
 ganbaru-handoff = { path = "crates/ganbaru-handoff" }
+ganbaru-image-metadata = { path = "crates/ganbaru-image-metadata" }
 ganbaru-mobile-documents = { path = "crates/ganbaru-mobile-documents" }
 ganbaru-mobile-distractions = { path = "crates/ganbaru-mobile-distractions" }
 ganbaru-mobile-media = { path = "crates/ganbaru-mobile-media" }
@@ -76,6 +86,8 @@ ganbaru-sync-replica = { path = "crates/ganbaru-sync-replica" }
 ganbaru-themes = { path = "crates/ganbaru-themes" }
 ganbaru-working-folders = { path = "crates/ganbaru-working-folders" }
 gtk = "0.18"
+hyper = { version = "1.10.1", default-features = false, features = ["http1", "server"] }
+hyper-util = { version = "0.1.20", default-features = false, features = ["service", "tokio"] }
 jiff = { version = "0.2.37", default-features = false, features = [
   "std",
   "tz-system",
@@ -85,6 +97,7 @@ jiff = { version = "0.2.37", default-features = false, features = [
 ] }
 keyring = "4.1.5"
 libc = "0.2"
+libsqlite3-sys = { version = "0.37", default-features = false }
 notify = "=8.2.0"
 notify-rust = "4"
 objc2 = "0.6.4"
@@ -134,13 +147,14 @@ rodio = { version = "0.22.2", default-features = false, features = [
   "symphonia-wav",
   "symphonia-pcm",
 ] }
+rustix = { version = "1.1.4", default-features = false, features = ["std", "process"] }
 rustls = { version = "0.23.45", default-features = false, features = ["ring"] }
 qrcode = { version = "0.14.1", default-features = false }
 quircs = "0.10.3"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10.9"
-sqlx = { version = "0.8", default-features = false, features = ["sqlite", "runtime-tokio", "macros", "migrate", "json"] }
+sqlx = { version = "0.9", default-features = false, features = ["sqlite-bundled", "sqlite-deserialize", "runtime-tokio", "macros", "migrate", "json"] }
 tauri = { version = "~2.11.1" }
 tauri-build = { version = "~2.6.1", features = [] }
 tauri-plugin-dialog = "2"
@@ -161,7 +175,6 @@ windows = { version = "0.61", features = [
   "Media",
   "Win32_Foundation",
   "Win32_Security",
-  "Win32_Security_Cryptography",
   "Win32_Storage_FileSystem",
   "Win32_System_Diagnostics_ToolHelp",
   "Win32_System_Com",
@@ -182,3 +195,19 @@ zip = { version = "9.0.4", default-features = false, features = ["deflate"] }
 
 [profile.dev]
 debug = "line-tables-only"
+
+# The Notes HTML sanitizer stack dominates import time and is too slow for import tests when unoptimized.
+[profile.dev.package.ammonia]
+opt-level = 3
+
+[profile.dev.package.html5ever]
+opt-level = 3
+
+[profile.dev.package.markup5ever]
+opt-level = 3
+
+[profile.dev.package.tendril]
+opt-level = 3
+
+[profile.dev.package.string_cache]
+opt-level = 3

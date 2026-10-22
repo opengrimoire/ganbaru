@@ -3,6 +3,9 @@ use crate::models::{
     UtcTimestamp,
 };
 use crate::repository::attachments;
+use ganbaru_atomic_files::{
+    FinalSymlink, create_directories_within, read_regular_file_capped, remove_file_within,
+};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use sqlx::{Row, SqlitePool};
@@ -27,6 +30,16 @@ pub struct StoreBrowserArtifact<'a> {
     pub frame_count: Option<u64>,
     pub created_at: &'a UtcTimestamp,
     pub bytes: &'a [u8],
+    /// Rolling per-thread limit applied before anything is written; `None` stores unconditionally.
+    pub quota: Option<BrowserArtifactQuota<'a>>,
+}
+
+/// Rolling per-thread limit on browser artifacts created since `since`, counting the artifact being stored.
+#[derive(Clone, Copy, Debug)]
+pub struct BrowserArtifactQuota<'a> {
+    pub since: &'a UtcTimestamp,
+    pub max_count: u64,
+    pub max_bytes: u64,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
@@ -160,13 +173,17 @@ pub async fn store_browser_artifact(
         ChatResourceKind::BrowserRecording if input.mime_type == "application/zip" => "zip",
         _ => return Err(invalid_resource_error()),
     };
+    if let Some(quota) = input.quota {
+        enforce_browser_artifact_quota(pool, input.thread_id, input.bytes.len() as u64, quota)
+            .await?;
+    }
     let relative_path = format!(
         "assets/chat/browser-artifacts/{}.{}",
         input.resource_id, extension
     );
     let destination = attachments::resolve_managed_chat_path(vault_root, &relative_path)?;
     let parent = destination.parent().ok_or_else(invalid_resource_error)?;
-    fs::create_dir_all(parent).map_err(io_error)?;
+    create_directories_within(vault_root, parent).map_err(io_error)?;
     let temporary = destination.with_extension(format!("{extension}.tmp"));
     let write_result = (|| -> std::io::Result<()> {
         let mut options = fs::OpenOptions::new();
@@ -182,7 +199,7 @@ pub async fn store_browser_artifact(
         fs::rename(&temporary, &destination)
     })();
     if write_result.is_err() {
-        let _ = fs::remove_file(&temporary);
+        let _ = remove_file_within(vault_root, &temporary);
         return Err(io_error(write_result.err()));
     }
     let sha256 = format!("{:x}", Sha256::digest(input.bytes));
@@ -253,11 +270,11 @@ pub async fn store_browser_artifact(
     .await;
     if let Err(error) = result {
         let _ = transaction.rollback().await;
-        let _ = fs::remove_file(&destination);
+        let _ = remove_file_within(vault_root, &destination);
         return Err(error);
     }
     if let Err(error) = transaction.commit().await {
-        let _ = fs::remove_file(&destination);
+        let _ = remove_file_within(vault_root, &destination);
         return Err(persistence_error(error));
     }
     Ok(ChatResourceRead {
@@ -273,6 +290,36 @@ pub async fn store_browser_artifact(
     })
 }
 
+async fn enforce_browser_artifact_quota(
+    pool: &SqlitePool,
+    thread_id: &ChatThreadId,
+    pending_bytes: u64,
+    quota: BrowserArtifactQuota<'_>,
+) -> ChatResult<()> {
+    let (count, bytes) = sqlx::query_as::<_, (i64, i64)>(
+        "SELECT COUNT(*), COALESCE(SUM(resource.byte_size), 0)
+         FROM chat_browser_artifacts artifact
+         JOIN chat_resources resource ON resource.id = artifact.resource_id
+         WHERE artifact.thread_id = ? AND julianday(artifact.created_at) >= julianday(?)",
+    )
+    .bind(thread_id.as_str())
+    .bind(quota.since.as_str())
+    .fetch_one(pool)
+    .await
+    .map_err(persistence_error)?;
+    let count = u64::try_from(count).map_err(|_| corrupt_data_error())?;
+    let bytes = u64::try_from(bytes).map_err(|_| corrupt_data_error())?;
+    if count.saturating_add(1) > quota.max_count
+        || bytes.saturating_add(pending_bytes) > quota.max_bytes
+    {
+        return Err(ChatError::validation(
+            "artifact",
+            "Browser artifact quota for this thread is reached; try again later",
+        ));
+    }
+    Ok(())
+}
+
 fn read_browser_artifact_bytes(
     vault_root: &Path,
     resource: &StoredChatResource,
@@ -285,14 +332,12 @@ fn read_browser_artifact_bytes(
         return Err(invalid_resource_error());
     }
     let path = attachments::resolve_managed_chat_path(vault_root, &resource.managed_relative_path)?;
-    let metadata = fs::symlink_metadata(&path).map_err(io_error)?;
-    if metadata.file_type().is_symlink()
-        || !metadata.is_file()
-        || metadata.len() != resource.read.byte_size
-    {
+    let bytes = read_regular_file_capped(&path, resource.read.byte_size, FinalSymlink::Refuse)
+        .map_err(|_| invalid_resource_error())?;
+    if bytes.len() as u64 != resource.read.byte_size {
         return Err(invalid_resource_error());
     }
-    fs::read(path).map_err(io_error)
+    Ok(bytes)
 }
 
 fn parse_stored_resource(row: sqlx::sqlite::SqliteRow) -> ChatResult<StoredChatResource> {

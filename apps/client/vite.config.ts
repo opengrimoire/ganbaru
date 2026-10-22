@@ -443,12 +443,6 @@ export default defineConfig({
           ? "src/lib/components/notes/project-platform-importers.mobile.ts"
           : "src/lib/components/notes/project-platform-importers.ts",
       ),
-      "$lib/components/music/MusicSoundtrackAssignmentEditor.svelte": path.resolve(
-        configDir,
-        isMobileBuild
-          ? "src/lib/components/music/MusicSoundtrackAssignmentEditor.mobile.svelte"
-          : "src/lib/components/music/MusicSoundtrackAssignmentEditor.svelte",
-      ),
       "$lib/components/music/soundscape/MusicSoundscapeControl.svelte": path.resolve(
         configDir,
         isMobileBuild

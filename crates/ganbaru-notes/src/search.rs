@@ -188,7 +188,7 @@ pub async fn search(
         .map(NoteSearchWindowDto::into_results)
 }
 
-fn push_search_cursor(query: &mut QueryBuilder<'_, Sqlite>, cursor: &SearchCursor) {
+fn push_search_cursor(query: &mut QueryBuilder<Sqlite>, cursor: &SearchCursor) {
     query
         .push(" AND (source_order > ")
         .push_bind(cursor.source_order);
@@ -692,10 +692,10 @@ async fn search_candidate(
 }
 
 async fn load_page_summary(pool: &SqlitePool, page_id: &str) -> Result<NotePageSummaryDto, String> {
-    sqlx::query_as::<_, NotePageSummaryDto>(&format!(
+    sqlx::query_as::<_, NotePageSummaryDto>(sqlx::AssertSqlSafe(format!(
         "SELECT {} FROM notes_pages WHERE id = ? AND in_trash = 0 AND archived = 0",
         crate::workspace_shell::page_projection()
-    ))
+    )))
     .bind(page_id)
     .fetch_one(pool)
     .await

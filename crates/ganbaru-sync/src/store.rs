@@ -4,9 +4,11 @@
 //! writer and continues that writer's chain; whether it can be applied is decided separately, so
 //! an operation this version cannot read is kept, forwarded to peers, and held.
 
+use ganbaru_sync_contracts::bounds::{MAX_WRITERS_PER_DEVICE, MAX_WRITERS_PER_SPACE};
 use ganbaru_sync_contracts::op::FORMAT_VERSION;
 use ganbaru_sync_contracts::{
-    Content, Envelope, Hlc, Operation, OperationError, PayloadError, Seq, VersionVector, WriterId,
+    Content, Envelope, Hlc, Operation, OperationError, OperationKind, PayloadError, Seq,
+    VersionVector, WriterId,
 };
 use sqlx::{Connection, SqliteConnection};
 
@@ -81,6 +83,10 @@ pub enum StoreRefusal {
     },
     /// The writer was revoked, forked, or re-sealed and the operation is above its cutoff.
     Revoked,
+    /// A revocation issued by a writer of a device other than the coordinator.
+    UnauthorizedRevoke,
+    /// The genesis would exceed the writers its device or the space may have.
+    WriterLimit,
     /// Earlier operations of the writer are missing.
     Gap {
         /// Next sequence the writer's chain needs.
@@ -277,6 +283,9 @@ async fn store_genesis(
         return Ok(StoreOutcome::Refused(StoreRefusal::Malformed));
     }
     let cert = &certificate.certificate;
+    if !within_writer_limits(conn, ctx, &cert.device_id).await? {
+        return Ok(StoreOutcome::Refused(StoreRefusal::WriterLimit));
+    }
     sqlx::query(
         "INSERT INTO sync_writers
             (space_id, writer_id, public_key, device_id, certificate, state, predecessor,
@@ -309,6 +318,13 @@ async fn store_genesis(
     )
     .await?;
     Ok(StoreOutcome::Stored { held: None })
+}
+
+/// Whether `writer` may issue an operation of wire `kind`. Only writers of the coordinator device
+/// revoke, because the coordinator alone decides which devices stay linked. Wire kind 2 stays
+/// reserved for revocations in every format, so the check needs no payload decoding.
+pub(crate) fn may_issue(ctx: &SpaceContext, writer: &WriterRow, kind: u8) -> bool {
+    kind != OperationKind::Revoke.as_u8() || writer.device_id == ctx.coordinator_device_id
 }
 
 async fn store_next(
@@ -351,6 +367,9 @@ async fn store_next(
         return Ok(StoreOutcome::Refused(StoreRefusal::Fork {
             seq: writer.stored,
         }));
+    }
+    if !may_issue(ctx, writer, envelope.kind) {
+        return Ok(StoreOutcome::Refused(StoreRefusal::UnauthorizedRevoke));
     }
     let classified = classify(engine, envelope);
     if matches!(classified, Classified::Malformed) {
@@ -451,4 +470,22 @@ impl Engine {
         tx.commit().await?;
         Ok(outcomes)
     }
+}
+
+/// Whether the space can admit one more writer of `device_id` within
+/// [`MAX_WRITERS_PER_DEVICE`] and [`MAX_WRITERS_PER_SPACE`].
+async fn within_writer_limits(
+    conn: &mut SqliteConnection,
+    ctx: &SpaceContext,
+    device_id: &str,
+) -> SyncResult<bool> {
+    let (device, space): (i64, i64) = sqlx::query_as(
+        "SELECT COALESCE(SUM(device_id = ?), 0), COUNT(*) FROM sync_writers WHERE space_id = ?",
+    )
+    .bind(device_id)
+    .bind(ctx.space.as_bytes().as_slice())
+    .fetch_one(&mut *conn)
+    .await?;
+    let below = |count: i64, limit: usize| usize::try_from(count).is_ok_and(|count| count < limit);
+    Ok(below(device, MAX_WRITERS_PER_DEVICE) && below(space, MAX_WRITERS_PER_SPACE))
 }

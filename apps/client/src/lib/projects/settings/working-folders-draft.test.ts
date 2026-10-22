@@ -12,7 +12,7 @@ function folder(id: string, kind: "managed" | "external" = "external"): ProjectW
     workingFolder: { id, projectId: "project", displayName: id, kind, managedRelativePath: kind === "managed" ? "projects/project" : null,
       repositoryKind: "none", repositoryIdentity: null, sortOrder: 1, createdAt: "2026-01-01T00:00:00Z",
       updatedAt: "2026-01-01T00:00:00Z", archivedAt: null, revision: 1 },
-    canonicalPath: `/folders/${id}`, bindingStatus: "available", lastVerifiedAt: null, currentBranch: null,
+    canonicalPath: `/folders/${id}`, bindingStatus: "available", lastVerifiedAt: null, currentBranch: null, trust: "undecided",
   };
 }
 
@@ -172,5 +172,20 @@ describe("Project settings working-folder drafts", () => {
     expect(ports.add).not.toHaveBeenCalled();
     expect(ports.remove).not.toHaveBeenCalled();
     expect(ports.archive).not.toHaveBeenCalled();
+  });
+
+  it("previews known folders as a clean draft until the primary folder is loaded", () => {
+    const { draft, canonical } = setup();
+    const foreign = { ...folder("foreign"), workingFolder: { ...folder("foreign").workingFolder, projectId: "elsewhere" } };
+    draft.preview("project", [...canonical, foreign], { external: "old-provider" });
+    expect(draft.folders).toEqual(canonical);
+    expect(draft.preference("external")).toBe("old-provider");
+    expect(draft.primaryId).toBeNull();
+    expect(draft.primaryReady).toBe(false);
+    expect(draft.dirty).toBe(false);
+    draft.load("project", canonical, { projectId: "project", workingFolderId: "managed", revision: 3 }, { external: "old-provider" });
+    expect(draft.primaryId).toBe("managed");
+    expect(draft.primaryReady).toBe(true);
+    expect(draft.dirty).toBe(false);
   });
 });

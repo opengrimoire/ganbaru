@@ -6,7 +6,7 @@ A page has a stable identity, title, parent, optional project, icon, cover, prop
 
 An empty title is valid and receives a localized fallback in navigation. Renaming a page updates navigation and link presentation without changing stable link identity, and title drafts and committed renames or moves update the header and sidebar immediately.
 
-Opening a page uses one native page-open read for breadcrumbs, the initial block range, and its outline; optional panels and descendant hydration do not delay editing. Pending edits flush before leaving a page, and previous documents are released rather than cached. A brief skeleton appears only for slow loads, and a failed read shows its error with Retry while navigation stays available. New pages appear in navigation and the editor while their creation is still committing.
+Opening a page uses one native page-open read for breadcrumbs, the initial block range, and its outline; optional panels and descendant hydration do not delay editing. Descendant reads take at most 2,000 parent blocks each, and larger levels are read in several requests. Pending edits flush before leaving a page, and previous documents are released rather than cached. A brief skeleton appears only for slow loads, and a failed read shows its error with Retry while navigation stays available. New pages appear in navigation and the editor while their creation is still committing.
 
 ## Folders
 
@@ -56,7 +56,7 @@ Navigation, Archive, Trash, destination, and search surfaces use page summaries 
 
 Authorized project working folders appear as source-aware roots when they contain Markdown files. Scanning is recursive and bounded, rejects symbolic links and unsafe paths, skips common generated and dependency directories, and reports truncated results. Unavailable folders and scan errors stay visible.
 
-Opening a file provides raw editing, sanitized preview, dirty state, explicit Save, Refresh, Open externally, and Copy relative path. Reads include a revision digest, and Save requires the expected digest and replaces the file atomically. If another tool changed the file while local edits are dirty, Notes refuses to overwrite it and offers Reload, Copy local text, or Open externally. Notes does not create, rename, move, or delete working-folder files.
+Opening a file provides raw editing, sanitized preview, dirty state, explicit Save, Refresh, Open externally, and Copy relative path. Reads include a revision digest, and Save requires the expected digest and replaces the file atomically. Reads and saves use the same working-folder file helpers as Chat: each path component opens relative to its parent directory handle without following symbolic links, so a directory swapped during the operation cannot redirect it outside the folder, protected repository and credential paths are refused, Save exchanges in an exclusively created temporary file from the same directory handle, and concurrent saves from Notes and Chat are serialized. Files up to 4 MiB are editable. If another tool changed the file while local edits are dirty, Notes refuses to overwrite it and offers Reload, Copy local text, or Open externally. Notes does not create, rename, move, or delete working-folder files.
 
 Android omits working-folder Markdown because local project folders and desktop path authority are unavailable there.
 

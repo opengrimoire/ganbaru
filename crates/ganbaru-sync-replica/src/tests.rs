@@ -85,12 +85,13 @@ async fn create_vault(registry: &DatabasePoolRegistry, path: &Path) -> sqlx::Sql
     pool
 }
 
-async fn context(conn: &mut SqliteConnection) -> SpaceContext {
+/// Initializes the test space, coordinated by the device `coordinator`.
+async fn context(conn: &mut SqliteConnection, coordinator: &str) -> SpaceContext {
     Engine::vault()
         .init_space(conn, VAULT_ID, NOW_MS)
         .await
         .expect("initialize space");
-    local::space_context(conn, VAULT_ID)
+    local::space_context(conn, VAULT_ID, coordinator)
         .await
         .expect("read space")
         .expect("space context")
@@ -124,7 +125,7 @@ async fn check(
 fn record(last_committed_seq: u64, reserved_through: u64) -> WriterRecord {
     WriterRecord {
         schema_version: 1,
-        writer_id: "00".repeat(32),
+        writer_id: "00".repeat(16),
         certificate: String::new(),
         reserved_through,
         last_committed_seq,
@@ -196,6 +197,46 @@ fn reservations_grow_in_blocks() {
 }
 
 #[test]
+fn records_naming_a_non_canonical_writer_id_are_refused() {
+    let directory = TestDirectory::new("record-ids");
+    let files = directory.files();
+    let keys = directory.keys();
+    std::fs::create_dir_all(&files.directory).expect("create sync directory");
+    let outside = directory.path().join("outside.key");
+    std::fs::write(&outside, b"not a writer key").expect("write outside file");
+    let canonical = "ab".repeat(16);
+    let cases = [
+        ("../outside".to_string(), Vec::new()),
+        ("AB".repeat(16), Vec::new()),
+        (canonical.clone(), vec!["../../outside".to_string()]),
+        (canonical.clone(), vec!["ab".repeat(15)]),
+    ];
+    for (writer_id, retired_keys) in cases {
+        let mut stored = record(0, 0);
+        stored.writer_id = writer_id.clone();
+        stored.retired_keys = retired_keys.clone();
+        std::fs::write(
+            files.record_path(),
+            serde_json::to_vec(&stored).expect("encode record"),
+        )
+        .expect("write record");
+        let error = read_stored_writer(&files, &keys)
+            .err()
+            .unwrap_or_else(|| panic!("{writer_id} with {retired_keys:?} was accepted"));
+        assert_eq!(error, "sync writer record names an invalid writer id");
+    }
+    let mut stored = record(0, 0);
+    stored.writer_id = canonical;
+    std::fs::write(
+        files.record_path(),
+        serde_json::to_vec(&stored).expect("encode record"),
+    )
+    .expect("write record");
+    assert!(read_record(&files.record_path()).expect("read").is_some());
+    assert!(outside.exists());
+}
+
+#[test]
 fn writer_survives_restarts_and_rotates_after_a_restore() {
     block_on(async {
         let directory = TestDirectory::new("writer");
@@ -206,7 +247,7 @@ fn writer_survives_restarts_and_rotates_after_a_restore() {
 
         let first = create_vault(&registry, &directory.path().join("first.sqlite")).await;
         let mut conn = acquire(&first).await;
-        let ctx = context(&mut conn).await;
+        let ctx = context(&mut conn, DEVICE_ID).await;
         let WriterCheck::Successor(plan) = check(&engine, &mut conn, &ctx, &directory).await else {
             panic!("a vault without a record needs a writer");
         };
@@ -235,7 +276,7 @@ fn writer_survives_restarts_and_rotates_after_a_restore() {
         // A restored database lacks the committed chain of the recorded writer.
         let restored = create_vault(&registry, &directory.path().join("restored.sqlite")).await;
         let mut conn = acquire(&restored).await;
-        context(&mut conn).await;
+        context(&mut conn, DEVICE_ID).await;
         let WriterCheck::Successor(plan) = check(&engine, &mut conn, &ctx, &directory).await else {
             panic!("a restored database needs a successor");
         };
@@ -276,7 +317,7 @@ fn carried_operations_reach_the_replacement_once() {
         let current = create_vault(&registry, &current_path).await;
         create_vault(&registry, &replacement_path).await;
         let mut conn = acquire(&current).await;
-        let ctx = context(&mut conn).await;
+        let ctx = context(&mut conn, DEVICE_ID).await;
         let mut writer = create_writer(
             &files,
             &keys,
@@ -290,9 +331,10 @@ fn carried_operations_reach_the_replacement_once() {
         add_note(&mut conn, "note-unsealed").await;
         drop(conn);
         registry.close_all().await.expect("close pools");
-        let refused = carry_forward::export(&engine, &current_path, &replacement_path, &files)
-            .await
-            .expect_err("pending captures refuse the export");
+        let refused =
+            carry_forward::export(&engine, &current_path, &replacement_path, &files, DEVICE_ID)
+                .await
+                .expect_err("pending captures refuse the export");
         assert!(refused.contains("not sealed"));
 
         let current = registry.connect_path(&current_path).await.expect("reopen");
@@ -306,9 +348,10 @@ fn carried_operations_reach_the_replacement_once() {
         drop(conn);
         registry.close_all().await.expect("close pools");
 
-        let exported = carry_forward::export(&engine, &current_path, &replacement_path, &files)
-            .await
-            .expect("export");
+        let exported =
+            carry_forward::export(&engine, &current_path, &replacement_path, &files, DEVICE_ID)
+                .await
+                .expect("export");
         assert_eq!(u64::try_from(exported).expect("count"), last);
         assert!(files.carry_path().exists());
 
@@ -349,6 +392,37 @@ fn carried_operations_reach_the_replacement_once() {
         );
         drop(conn);
         drop(replacement);
+        registry.close_all().await.expect("close pools");
+    });
+}
+
+#[test]
+fn oversized_carry_bundles_are_refused_before_reading() {
+    block_on(async {
+        let directory = TestDirectory::new("carry-oversized");
+        let registry = DatabasePoolRegistry::default();
+        let engine = Engine::vault();
+        let files = directory.files();
+        let pool = create_vault(&registry, &directory.path().join("vault.sqlite")).await;
+        let mut conn = acquire(&pool).await;
+        let ctx = context(&mut conn, DEVICE_ID).await;
+        std::fs::create_dir_all(&files.directory).expect("create sync directory");
+        let bundle = std::fs::File::create(files.carry_path()).expect("create bundle");
+        bundle
+            .set_len(ganbaru_sync::local::MAX_BUNDLE_BYTES as u64 + 1)
+            .expect("size bundle");
+        drop(bundle);
+
+        let error = carry_forward::import_pending(&engine, &mut conn, &ctx, &files, NOW_MS)
+            .await
+            .expect_err("an oversized bundle is refused");
+        assert_eq!(
+            error,
+            "carry-forward bundle is not a file within the size limit"
+        );
+        assert!(files.carry_path().exists());
+        drop(conn);
+        drop(pool);
         registry.close_all().await.expect("close pools");
     });
 }

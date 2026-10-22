@@ -31,7 +31,7 @@ interface VaultModeProbe {
   updatedAt?: string;
 }
 
-async function resolveUrl(): Promise<string> {
+async function wantsBenchmarkDatabase(): Promise<boolean> {
   try {
     const json = await invoke<string | null>("read_benchmark_state");
     if (json) {
@@ -40,14 +40,27 @@ async function resolveUrl(): Promise<string> {
         && parsed?.datasetVersion === DENSE_DATASET_VERSION;
       const fresh = isFreshBenchmarkTotalAge(parsed) && isFreshBenchmarkPendingAge(parsed);
       const benchmarkPending = isBenchmarkPendingStage(parsed?.stage);
-      if (parsed?.vaultMode === "benchmark" && benchmarkPending && validVersion && fresh) {
-        return BENCHMARK_DB_URL;
-      }
+      return parsed?.vaultMode === "benchmark" && benchmarkPending && validVersion && fresh;
     }
   } catch (e) {
     console.error("dbUrl: failed to probe benchmark state, falling back to user DB", e);
   }
-  return USER_DB_URL;
+  return false;
+}
+
+/**
+ * Asks Rust to select this process's database. Rust fixes the first selection for the
+ * process lifetime, so every window receives the same URL and commands naming any other
+ * database fail.
+ */
+async function resolveUrl(): Promise<string> {
+  const url = await invoke<string>("select_database_target", {
+    benchmark: await wantsBenchmarkDatabase(),
+  });
+  if (url !== USER_DB_URL && url !== BENCHMARK_DB_URL) {
+    throw new Error(`Unexpected database target ${url}`);
+  }
+  return url;
 }
 
 /**

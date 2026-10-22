@@ -8,11 +8,13 @@ This document is the command and gate-selection reference. Supporting documents 
 - [Test authoring](test-authoring.md): useful frontend, Rust, SQLite, authorization, and UI tests.
 - [Android acceptance](android.md): physical-device, emulator, permission, lifecycle, and release cases.
 - [Local vault handoff](vault-handoff.md): physical desktop and Android round-trip acceptance and result record.
+- [Chat provider trust](chat-provider-trust.md): project provider configuration in trusted and untrusted folders, with marker hooks.
 - [Calendar recurrence](calendar-recurrence.md): recurrence edit, protection, deletion, and Undo matrices.
 - [Notes editor](notes-editor.md): editor, database, transfer, clipboard, and recovery acceptance.
 - [Project dependency cascades](project-dependency-cascades.md): dependency date review, apply, retry, and Gantt acceptance.
 - [Distraction blocker runtime](distractions.md): desktop and Android runtime acceptance without the WebView.
 - [Music desktop](music.md): real audio, lifecycle, and automation acceptance.
+- [Desktop windows](desktop-windows.md): detached tab windows, Focus overlays, and Chat previews under per-window permissions.
 - [Performance harness](../performance/harness.md): benchmark-only contracts outside normal validation.
 
 ## Goals
@@ -23,7 +25,7 @@ Test count and coverage percentage are not quality targets. Coverage follows pro
 
 ## Validation layers
 
-- **Frontend tests:** Vitest tests next to source, using Node by default and jsdom only for real DOM behavior.
+- **Frontend tests:** Vitest tests next to source, using Node by default and jsdom only for real DOM behavior. Release and validation scripts under `apps/client/scripts/` keep their `.test.mjs` files beside them in the same suite.
 - **Rust tests:** domain, persistence, provider, platform, migration, transaction, recovery, and command-boundary tests in the owning crate.
 - **Static checks:** Svelte Check, TypeScript, Rust formatting, Clippy, provider protocol snapshots, and Tailwind diagnostics.
 - **Production bundle contracts:** real Vite builds that verify route closures, source-module ceilings, platform composition, and forbidden eager imports.
@@ -37,19 +39,19 @@ Always use the workspace flag for root scripts.
 
 | Command | Purpose |
 | --- | --- |
-| `pnpm -w run check` | Rust formatting and Clippy, then provider protocol snapshots, Svelte Check, and TypeScript |
-| `pnpm -w run test` | Rust tests, then normal frontend tests in four sequential shards |
+| `pnpm -w run check` | Rust formatting and Clippy, then the workflow signing-isolation and unsafe inventory checks, provider protocol snapshots, Svelte Check, and TypeScript |
+| `pnpm -w run test` | Rust tests, then normal frontend tests in sequential shards |
 | `pnpm -w run test:benchmark-contracts` | Explicit benchmark fixture and harness contracts, excluded from normal validation |
 | `pnpm -w run editor-check` | Tailwind editor-style diagnostics |
 | `pnpm -w run bundle-contracts` | Desktop and Android production-build contracts |
 | `pnpm -w run audit` | pnpm and Rust dependency audits |
 | `pnpm -w run validate` | Complete normal code gate |
-| `pnpm -w run validate:ci` | The same gate with hosted-runner concurrency, split into `validate:ci:rust` and `validate:ci:frontend` |
+| `pnpm -w run validate:rust`, `validate:frontend` | The two halves of `validate`, run as separate CI jobs |
 | `pnpm -w run validate:full` | Dependency audits followed by the normal code gate |
 
 `validate` is the normal comprehensive gate. `validate:full` is required for dependency or lockfile changes, security-sensitive dependency work, releases, and explicit full-security requests.
 
-For pull requests and the merge queue, `.github/workflows/check.yml` runs `validate:ci:rust` and `validate:ci:frontend` as parallel Linux jobs, and the required `linux validation` check passes only when both pass. Together they cover the same static checks, tests, editor diagnostics, and bundle contracts as local `validate`. Rust uses four Cargo build jobs and four test threads, and Vitest runs two sequential two-worker shards. The Rust job restores a dependency cache that only pushes to `dev` save. The independent Android job builds an ARM64 debug APK, while the Windows job runs `cargo check -p ganbaru` without producing an installer.
+For pull requests and the merge queue, `.github/workflows/check.yml` runs `validate:rust` and `validate:frontend` as parallel Linux jobs with the standard validation profile, and the required `linux validation` check passes only when both pass. Together they are exactly local `validate`. The Rust job restores a dependency cache that only pushes to `dev` save. The independent Android job builds an ARM64 debug APK, while the Windows job runs `cargo check -p ganbaru` without producing an installer.
 
 ## Choosing a gate
 
@@ -66,10 +68,10 @@ Confirm that Vitest reports only the requested files. Stop and correct the comma
 ### Focused Rust behavior
 
 ```sh
-cargo test -p ganbaru-chat --lib -j 1 test_name -- --test-threads=1
-cargo test -p ganbaru-notes --lib -j 1 test_name -- --test-threads=1
-cargo test -p ganbaru-db --lib -j 1 test_name -- --test-threads=1
-cargo test -p ganbaru-tauri-app --lib -j 1 test_name -- --test-threads=1
+cargo test -p ganbaru-chat --lib -j 4 test_name -- --test-threads=4
+cargo test -p ganbaru-notes --lib -j 4 test_name -- --test-threads=4
+cargo test -p ganbaru-db --lib -j 4 test_name -- --test-threads=4
+cargo test -p ganbaru-tauri-app --lib -j 4 test_name -- --test-threads=4
 ```
 
 Substitute `ganbaru-chat-contracts`, `ganbaru-chat-providers`, `ganbaru-pomodoro`, `ganbaru-working-folders`, `ganbaru-contacts`, `ganbaru-sync-contracts`, `ganbaru-sync`, or `ganbaru-sync-replica` when that crate owns the behavior.
@@ -77,11 +79,11 @@ Substitute `ganbaru-chat-contracts`, `ganbaru-chat-providers`, `ganbaru-pomodoro
 ### Focused sync behavior
 
 ```sh
-cargo test -p ganbaru-sync-contracts --lib -j 1 -- --test-threads=1
-cargo test -p ganbaru-sync --lib -j 1 conformance -- --test-threads=1
-cargo test -p ganbaru-sync --lib -j 1 sim -- --test-threads=1
-cargo test -p ganbaru-sync-replica --lib -j 1 -- --test-threads=1
-cargo test -p ganbaru-tauri-app --lib -j 1 sync -- --test-threads=1
+cargo test -p ganbaru-sync-contracts --lib -j 4 -- --test-threads=4
+cargo test -p ganbaru-sync --lib -j 4 conformance -- --test-threads=4
+cargo test -p ganbaru-sync --lib -j 4 sim -- --test-threads=4
+cargo test -p ganbaru-sync-replica --lib -j 4 -- --test-threads=4
+cargo test -p ganbaru-tauri-app --lib -j 4 sync -- --test-threads=4
 ```
 
 The contracts crate owns golden operation vectors, mutation tests, and order key fuzzing. A golden vector mismatch means the operation encoding changed by accident, because every stored log depends on it; regenerate vectors with `GANBARU_SYNC_BLESS_VECTORS=1` only when deliberately introducing a new format version. The engine's conformance tests compare every table, column, and capture trigger of a freshly migrated database with the sync manifest.
@@ -93,13 +95,14 @@ The engine's desktop performance budgets (capture overhead per write, seal of 10
 Use the native messaging binary only for binary-local tests:
 
 ```sh
-cargo test -p ganbaru-native-messaging --bin ganbaru-native-messaging -j 1 test_name -- --test-threads=1
+cargo test -p ganbaru-linking-firewall --bin ganbaru-linking-firewall -j 4 test_name -- --test-threads=4
+cargo test -p ganbaru-native-messaging --bin ganbaru-native-messaging -j 4 test_name -- --test-threads=4
 ```
 
 Check desktop composition after changing a core crate or Tauri adapter:
 
 ```sh
-cargo check -p ganbaru --bin ganbaru -j 1
+cargo check -p ganbaru --bin ganbaru -j 4
 ```
 
 ### Focused static feedback
@@ -107,7 +110,7 @@ cargo check -p ganbaru --bin ganbaru -j 1
 ```sh
 pnpm --dir apps/client run check
 cargo fmt --check
-cargo clippy --workspace -j 1 -- -D warnings
+cargo clippy --workspace -j 4 -- -D warnings
 pnpm -w run editor-check
 ```
 
@@ -131,9 +134,9 @@ If a batch already passed the required gate, do not repeat it unless later chang
 
 ## Execution constraints
 
-Broad root scripts intentionally serialize Rust and frontend work. Do not start Cargo, Vitest, Svelte Check, Turbo, or another broad validation command while `check`, `test`, `validate`, or `validate:full` is active.
+Broad root scripts run Rust and frontend work one after the other. Do not start Cargo, Vitest, Svelte Check, Turbo, or another broad validation command while `check`, `test`, `validate`, or `validate:full` is active.
 
-Focused Cargo commands use one build job and one test thread. Focused Vitest uses one worker. Do not increase broad concurrency, combine Rust and frontend stages, or remove sharding without measuring peak memory and confirming unchanged coverage.
+Focused Cargo commands use four build jobs and test threads, or one of each under the low-memory validation profile. Focused Vitest uses one worker. Do not increase broad concurrency, combine Rust and frontend stages, or remove sharding without measuring peak memory and confirming unchanged coverage.
 
 See [Validation infrastructure](validation-infrastructure.md) for ordering, heap limits, caches, bundle contracts, and topology changes.
 

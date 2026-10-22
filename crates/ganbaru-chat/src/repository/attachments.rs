@@ -1,10 +1,14 @@
 use crate::models::{
     ChatAttachmentId, ChatError, ChatErrorCode, ChatResult, ProjectWorkingFolderId, UtcTimestamp,
 };
+use ganbaru_atomic_files::{
+    FinalSymlink, create_directories_within, read_regular_file_capped, remove_file_within,
+};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use sqlx::{Row, SqlitePool};
 use std::fs;
+use std::io;
 use std::path::{Component, Path, PathBuf};
 
 const MAX_ATTACHMENT_BYTES: u64 = 50 * 1024 * 1024;
@@ -51,29 +55,19 @@ pub async fn import_attachment(
     requested_kind: ChatAttachmentKind,
     now: &UtcTimestamp,
 ) -> ChatResult<ChatAttachmentRead> {
-    let metadata = fs::symlink_metadata(source_path).map_err(io_error)?;
-    if metadata.file_type().is_symlink()
-        || !metadata.is_file()
-        || metadata.len() > MAX_ATTACHMENT_BYTES
-    {
-        return Err(ChatError::validation(
-            "attachment",
-            "Attachment is not a supported bounded file",
-        ));
-    }
     let display_name = source_path
         .file_name()
         .and_then(|value| value.to_str())
         .filter(|value| !value.trim().is_empty() && value.len() <= 1000)
-        .ok_or_else(|| ChatError::validation("attachment.name", "Attachment name is invalid"))?
-        .to_string();
-    let bytes = fs::read(source_path).map_err(io_error)?;
-    if bytes.len() as u64 != metadata.len() {
-        return Err(ChatError::validation(
-            "attachment",
-            "Attachment changed during import",
-        ));
-    }
+        .map(display_name_without_control_characters)
+        .ok_or_else(|| ChatError::validation("attachment.name", "Attachment name is invalid"))?;
+    let bytes = read_regular_file_capped(source_path, MAX_ATTACHMENT_BYTES, FinalSymlink::Refuse)
+        .map_err(|error| match error.kind() {
+        io::ErrorKind::FileTooLarge | io::ErrorKind::InvalidInput => {
+            ChatError::validation("attachment", "Attachment is not a supported bounded file")
+        }
+        _ => io_error(error),
+    })?;
     persist_attachment_bytes(
         pool,
         vault_root,
@@ -100,7 +94,7 @@ pub async fn import_attachment_bytes(
     let display_name = request.display_name.trim();
     if display_name.is_empty()
         || display_name.len() > 1_000
-        || display_name.chars().any(char::is_control)
+        || crate::workspace::protected_paths::text_has_control_characters(display_name)
     {
         return Err(ChatError::validation(
             "attachment.name",
@@ -116,6 +110,21 @@ pub async fn import_attachment_bytes(
         },
     )
     .await
+}
+
+/// Keeps a picked file attachable when its name holds control characters by
+/// showing each one as the replacement character.
+fn display_name_without_control_characters(file_name: &str) -> String {
+    file_name
+        .chars()
+        .map(|character| {
+            if character.is_control() {
+                char::REPLACEMENT_CHARACTER
+            } else {
+                character
+            }
+        })
+        .collect()
 }
 
 async fn persist_attachment_bytes(
@@ -134,7 +143,7 @@ async fn persist_attachment_bytes(
     );
     let destination = resolve_managed_path(vault_root, &relative_path)?;
     let parent = destination.parent().ok_or_else(invalid_path_error)?;
-    fs::create_dir_all(parent).map_err(io_error)?;
+    create_directories_within(vault_root, parent).map_err(io_error)?;
     write_restrictive(&destination, request.bytes)?;
     let inserted = sqlx::query(
         "INSERT INTO chat_attachments
@@ -155,7 +164,7 @@ async fn persist_attachment_bytes(
     .execute(pool)
     .await;
     if let Err(error) = inserted {
-        let _ = fs::remove_file(&destination);
+        let _ = remove_file_within(vault_root, &destination);
         return Err(persistence_error(error));
     }
     read_attachment(pool, &request.attachment_id)
@@ -218,15 +227,15 @@ pub fn read_managed_attachment_bytes(
     attachment: &ChatAttachmentRead,
 ) -> ChatResult<(PathBuf, Vec<u8>)> {
     let path = resolve_managed_path(vault_root, &attachment.managed_relative_path)?;
-    let metadata = fs::symlink_metadata(&path).map_err(io_error)?;
-    if metadata.file_type().is_symlink()
-        || !metadata.is_file()
-        || metadata.len() != attachment.byte_size
-        || metadata.len() > MAX_ATTACHMENT_BYTES
-    {
+    let bytes = read_regular_file_capped(
+        &path,
+        attachment.byte_size.min(MAX_ATTACHMENT_BYTES),
+        FinalSymlink::Refuse,
+    )
+    .map_err(|_| invalid_attachment_error())?;
+    if bytes.len() as u64 != attachment.byte_size {
         return Err(invalid_attachment_error());
     }
-    let bytes = fs::read(&path).map_err(io_error)?;
     if format!("{:x}", Sha256::digest(&bytes)) != attachment.sha256 {
         return Err(ChatError::new(
             ChatErrorCode::Conflict,
@@ -242,6 +251,7 @@ pub async fn run_due_attachment_cleanup(
     vault_root: &Path,
     now: &UtcTimestamp,
 ) -> ChatResult<u64> {
+    super::lifecycle::release_stale_cleanup_jobs(pool, "attachment_file", now).await?;
     let rows = sqlx::query(
         "SELECT id, exact_target FROM chat_cleanup_jobs
          WHERE cleanup_kind = 'attachment_file'
@@ -256,7 +266,7 @@ pub async fn run_due_attachment_cleanup(
     for row in rows {
         let cleanup_id: String = row.try_get("id").map_err(persistence_error)?;
         let relative_path: String = row.try_get("exact_target").map_err(persistence_error)?;
-        sqlx::query(
+        let claimed = sqlx::query(
             "UPDATE chat_cleanup_jobs SET state = 'running', attempt_count = attempt_count + 1,
                     updated_at = ? WHERE id = ? AND state IN ('pending', 'failed')",
         )
@@ -265,6 +275,9 @@ pub async fn run_due_attachment_cleanup(
         .execute(pool)
         .await
         .map_err(persistence_error)?;
+        if claimed.rows_affected() != 1 {
+            continue;
+        }
         let still_referenced: bool = sqlx::query_scalar(
             "SELECT EXISTS(
                 SELECT 1 FROM chat_attachments a
@@ -301,13 +314,8 @@ pub async fn run_due_attachment_cleanup(
             completed += 1;
             continue;
         }
-        let result = resolve_managed_chat_path(vault_root, &relative_path).and_then(|path| {
-            match fs::remove_file(path) {
-                Ok(()) => Ok(()),
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-                Err(error) => Err(io_error(error)),
-            }
-        });
+        let result = resolve_managed_chat_path(vault_root, &relative_path)
+            .and_then(|path| remove_file_within(vault_root, &path).map_err(io_error));
         match result {
             Ok(()) => {
                 let mut transaction = pool.begin().await.map_err(persistence_error)?;

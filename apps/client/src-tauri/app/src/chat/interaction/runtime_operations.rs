@@ -1,7 +1,6 @@
 //! Provider runtime operations initiated by interaction controls.
 
 use super::support::{chat_pool, now_timestamp, persistence_error, require_workspace};
-use crate::chat::credentials::{PlatformCredentialStore, materialize_provider_environment};
 use crate::chat::device_state::{read_active_device_scope, update_active_device_scope};
 use crate::chat::workspace::WorkingFolderAuthorizationOperation;
 use ganbaru_chat::driver_operations::{complete_driver_operation, replay_driver_receipt};
@@ -10,7 +9,7 @@ use ganbaru_chat::runtime::ChatRuntimeRegistry;
 use ganbaru_chat_contracts::models::{
     ChatCommandContext, ChatCommandId, ChatError, ChatErrorCode, ChatResult, ChatThreadId,
     ChatTurnId, CompactContextRequest, DriverOperationReceipt, InterruptTurnRequest, McpStatusRead,
-    McpStatusRequest, ProjectWorkingFolderId, ProviderInstanceId,
+    McpStatusRequest, ProjectConfigurationAccess, ProjectWorkingFolderId, ProviderInstanceId,
 };
 use ganbaru_chat_providers::{
     DriverCancellation, DriverOperationContext, ProviderDriverFactory, ProviderDriverRegistry,
@@ -28,14 +27,12 @@ pub(crate) async fn compact_context(
     let pool = chat_pool(app.clone(), db_url).await?;
     let owner = app
         .state::<ChatRuntimeRegistry>()
-        .owner(thread_id.clone())?;
-    let session_id = owner.snapshot()?.session_id.ok_or_else(|| {
-        ChatError::new(
-            ChatErrorCode::InvalidStateTransition,
-            "Chat session is not running",
-            true,
-        )
-    })?;
+        .existing_owner(&thread_id)?
+        .ok_or_else(session_not_running_error)?;
+    let session_id = owner
+        .snapshot()?
+        .session_id
+        .ok_or_else(session_not_running_error)?;
     match claim_command_receipt(
         &pool,
         &client_command_id,
@@ -108,13 +105,18 @@ pub(crate) async fn read_mcp_status(
                 true,
             ));
         }
-        let owner = app.state::<ChatRuntimeRegistry>().owner(thread_id)?;
-        if let Some(session_id) = owner.snapshot()?.session_id {
+        let owner = app
+            .state::<ChatRuntimeRegistry>()
+            .existing_owner(&thread_id)?;
+        if let Some(owner) = owner
+            && let Some(session_id) = owner.snapshot()?.session_id
+        {
             return owner
                 .read_mcp_status(
                     McpStatusRequest {
                         session_id: Some(session_id),
                         working_directory: None,
+                        project_configuration: ProjectConfigurationAccess::Restricted,
                     },
                     context,
                 )
@@ -122,16 +124,22 @@ pub(crate) async fn read_mcp_status(
         }
     }
 
-    let configuration = materialize_provider_environment(
-        &provider.configuration,
-        &PlatformCredentialStore::default(),
-    )?;
+    let root = workspace.canonical_path.clone();
+    let workspace = crate::chat::workspace::commands::settle_project_configuration(
+        &app,
+        &root,
+        workspace,
+        crate::chat::workspace::commands::UndecidedProjectConfiguration::Restrict,
+    )
+    .await?;
+    let configuration = crate::chat::settings::approved_runtime(&app, &provider.configuration)?;
     let mut driver = ProviderDriverRegistry.create_driver(configuration)?;
     driver
         .read_mcp_status(
             McpStatusRequest {
                 session_id: None,
                 working_directory: Some(workspace.canonical_path),
+                project_configuration: workspace.project_configuration,
             },
             &context,
         )
@@ -179,21 +187,24 @@ pub(crate) async fn stop_session(
     client_command_id: ChatCommandId,
 ) -> ChatResult<DriverOperationReceipt> {
     let pool = chat_pool(app.clone(), db_url).await?;
-    let owner = app
-        .state::<ChatRuntimeRegistry>()
-        .owner(thread_id.clone())?;
+    let registry = app.state::<ChatRuntimeRegistry>();
+    let owner = match registry.existing_owner(&thread_id)? {
+        Some(owner) => owner,
+        None if force => {
+            require_active_thread(&pool, &thread_id).await?;
+            registry.owner(thread_id.clone())?
+        }
+        None => return Err(session_not_running_error()),
+    };
     let runtime_snapshot = owner.snapshot()?;
     let interrupt_context = if force {
         None
     } else {
         Some((
-            runtime_snapshot.session_id.clone().ok_or_else(|| {
-                ChatError::new(
-                    ChatErrorCode::InvalidStateTransition,
-                    "Chat session is not running",
-                    true,
-                )
-            })?,
+            runtime_snapshot
+                .session_id
+                .clone()
+                .ok_or_else(session_not_running_error)?,
             runtime_snapshot.active_turn_id.clone().ok_or_else(|| {
                 ChatError::new(
                     ChatErrorCode::InvalidStateTransition,
@@ -246,6 +257,9 @@ pub(crate) async fn stop_session(
             true,
         )
     })?;
+    app.state::<crate::chat::internal_mcp::InternalMcpRegistry>()
+        .end_direct_turn(&thread_id, Some(&turn_id))
+        .await;
     let result = owner
         .interrupt_turn(
             InterruptTurnRequest {
@@ -260,6 +274,37 @@ pub(crate) async fn stop_session(
         )
         .await;
     complete_driver_operation(&pool, &client_command_id, result).await
+}
+
+/// Confirms that a thread exists and is not archived before a runtime owner is created for it.
+async fn require_active_thread(
+    pool: &sqlx::SqlitePool,
+    thread_id: &ChatThreadId,
+) -> ChatResult<()> {
+    let exists: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM chat_threads WHERE id = ? AND archived_at IS NULL)",
+    )
+    .bind(thread_id.as_str())
+    .fetch_one(pool)
+    .await
+    .map_err(persistence_error)?;
+    if exists {
+        Ok(())
+    } else {
+        Err(ChatError::new(
+            ChatErrorCode::NotFound,
+            "Chat thread was not found",
+            true,
+        ))
+    }
+}
+
+fn session_not_running_error() -> ChatError {
+    ChatError::new(
+        ChatErrorCode::InvalidStateTransition,
+        "Chat session is not running",
+        true,
+    )
 }
 
 fn operation_context(operation_id: &str, timeout: Duration) -> DriverOperationContext {

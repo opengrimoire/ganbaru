@@ -13,6 +13,7 @@ mod plain_text;
 mod primitives;
 mod requests;
 mod rich_text;
+mod web_reference;
 
 use assets::*;
 use block::*;
@@ -21,7 +22,7 @@ use media::*;
 use rich_text::*;
 
 pub use assets::{validate_icon_value, validate_native_icon, validate_page_cover_value};
-pub use block::validate_block_payload;
+pub use block::{MAX_TABLE_WIDTH, validate_block_payload};
 #[allow(unused_imports)]
 pub use catalog::{
     NOTE_BLOCK_TYPES, block_payload_supports_children, block_type_supports_children,
@@ -40,4 +41,8 @@ pub use requests::{
 pub use rich_text::{
     date_mention_reminder_minutes_before, validate_comment_body_rich_text,
     validate_comment_rich_text, validate_date_mention_reminder, validate_rich_text_url,
+};
+pub use web_reference::{
+    is_exportable_web_reference_url, is_storable_bookmark_url, is_storable_web_content_url,
+    uri_scheme,
 };

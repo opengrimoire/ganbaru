@@ -5,6 +5,7 @@
 
 pub(crate) mod commands;
 pub(crate) mod devices;
+mod images;
 mod recovery;
 mod service;
 mod status;
@@ -12,7 +13,7 @@ mod transport;
 
 #[cfg(desktop)]
 pub(crate) use ganbaru_sync_replica::hub;
-use ganbaru_sync_replica::{access, carry_forward, client, writer};
+use ganbaru_sync_replica::{access, assets, carry_forward, client, writer};
 
 #[cfg(test)]
 mod tests;

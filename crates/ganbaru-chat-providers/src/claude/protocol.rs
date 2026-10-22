@@ -183,6 +183,10 @@ pub struct ClaudeLaunchOptions<'a> {
     pub effort: Option<&'a str>,
     pub fast_mode: Option<bool>,
     pub modes: TurnModeSnapshot,
+    /// Untrusted folders start with user settings only, which leaves project
+    /// settings, hooks, skills, commands, agents, MCP servers, and `CLAUDE.md`
+    /// unloaded.
+    pub project_configuration: ProjectConfigurationAccess,
 }
 
 pub fn launch_arguments(
@@ -250,6 +254,10 @@ pub fn launch_arguments(
     if let Some(fast_mode) = options.fast_mode {
         arguments.push("--settings".to_string());
         arguments.push(json!({ "fastMode": fast_mode }).to_string());
+    }
+    if options.project_configuration == ProjectConfigurationAccess::Restricted {
+        arguments.push("--setting-sources".to_string());
+        arguments.push("user".to_string());
     }
     arguments.extend(configured.iter().cloned());
     Ok(arguments)
@@ -731,6 +739,10 @@ fn validate_launch_arguments(arguments: &[String]) -> ChatResult<()> {
         "--permission-mode",
         "--dangerously-skip-permissions",
         "--allow-dangerously-skip-permissions",
+        "-c",
+        "--continue",
+        "-r",
+        "--fork-session",
         "--resume",
         "--resume-session-at",
         "--session-id",

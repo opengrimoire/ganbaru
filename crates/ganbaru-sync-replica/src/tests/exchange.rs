@@ -1,16 +1,25 @@
 use super::{
     NOW_MS, TestDirectory, VAULT_ID, acquire, add_note, block_on, context, create_vault, person,
 };
+use crate::assets::{
+    ASSET_UNAVAILABLE, AssetMemory, AssetSession, AssetTransfer, INVALID_ASSET, ImageStore,
+    MAX_ASSET_PASS_BYTES, VaultImages,
+};
 use crate::client::{
     ClientSession, Exchange, Exchanged, MAX_EXCHANGE_BYTES, PeerIds, SyncTransport, wait,
 };
 use crate::hub::{HubVault, OpenHubVault, SyncHub};
 use crate::recovery::{RecoveryAction, RecoveryChoice};
+use crate::wire::{asset_to_wire, bytes_to_wire};
 use crate::writer::{ActiveWriter, SuccessorPlan, create_writer};
 use ganbaru_db::DatabasePoolRegistry;
-use ganbaru_handoff::protocol::ControlMessage;
+use ganbaru_handoff::protocol::{
+    ControlMessage, PROTOCOL_VERSION, SYNC_ASSET_CHUNK_BYTES, SyncRefusalCode,
+};
+use ganbaru_quick_notes::images::{self, ReferencedImage};
 use ganbaru_sync::manifest::vault::quick_notes::NOTES_TABLE;
 use ganbaru_sync::{Engine, SpaceContext};
+use ganbaru_sync_contracts::bounds::MAX_WRITERS_PER_DEVICE;
 use ganbaru_sync_contracts::op::RevokeReason;
 use ganbaru_sync_contracts::{VersionVector, WriterId};
 use sqlx::SqlitePool;
@@ -42,6 +51,7 @@ struct Replica {
     pool: SqlitePool,
     ctx: SpaceContext,
     writer: ActiveWriter,
+    images: Arc<dyn ImageStore>,
 }
 
 impl Replica {
@@ -58,7 +68,7 @@ impl Replica {
         pool: SqlitePool,
         device_id: &str,
     ) -> Self {
-        let ctx = context(&mut *acquire(&pool).await).await;
+        let ctx = context(&mut *acquire(&pool).await, HUB_DEVICE).await;
         let writer = create_writer(
             &directory.files(),
             &directory.keys(),
@@ -68,7 +78,11 @@ impl Replica {
             NOW_MS,
         )
         .expect("create writer");
+        let images: Arc<dyn ImageStore> = Arc::new(VaultImages {
+            root: directory.path().to_path_buf(),
+        });
         Self {
+            images,
             directory,
             registry,
             pool,
@@ -83,7 +97,7 @@ impl Replica {
     }
 
     /// Runs a local edit and seals it.
-    async fn edit(&mut self, sql: &str, id: &str) {
+    async fn edit(&mut self, sql: &'static str, id: &str) {
         sqlx::query(sql)
             .bind(id)
             .execute(&self.pool)
@@ -172,6 +186,74 @@ impl Replica {
         drop(self.pool);
         self.registry.close_all().await.expect("close pools");
     }
+
+    /// Stores an image file and adds it to a note, without sealing.
+    async fn add_image(&self, note_id: &str, sort_order: i64, bytes: &[u8]) -> ReferencedImage {
+        let image = reference(bytes);
+        images::store_image(self.directory.path(), &image, bytes).expect("store image");
+        sqlx::query(
+            "INSERT INTO quick_note_images
+                (note_id, sort_order, sha256, content_type, byte_size, width, height)
+             VALUES (?, ?, ?, ?, ?, 40, 30)",
+        )
+        .bind(note_id)
+        .bind(sort_order)
+        .bind(image.file().sha256())
+        .bind(image.file().content_type())
+        .bind(image.byte_size())
+        .execute(&self.pool)
+        .await
+        .expect("add image");
+        image
+    }
+
+    fn image_bytes(&self, image: &ReferencedImage) -> Option<Vec<u8>> {
+        images::read_image(self.directory.path(), image.file()).ok()
+    }
+
+    async fn upload(
+        &self,
+        transport: &DirectTransport,
+        ids: &PeerIds,
+        memory: &mut AssetMemory,
+        max_bytes: usize,
+    ) -> AssetTransfer {
+        let mut transfer = AssetTransfer::default();
+        self.assets(transport, ids, max_bytes)
+            .upload(memory, &mut transfer)
+            .await
+            .expect("upload images");
+        transfer
+    }
+
+    async fn download(
+        &self,
+        transport: &DirectTransport,
+        ids: &PeerIds,
+        memory: &mut AssetMemory,
+    ) -> AssetTransfer {
+        let mut transfer = AssetTransfer::default();
+        self.assets(transport, ids, MAX_ASSET_PASS_BYTES)
+            .download(memory, &mut transfer)
+            .await
+            .expect("download images");
+        transfer
+    }
+
+    fn assets<'a>(
+        &'a self,
+        transport: &'a DirectTransport,
+        ids: &'a PeerIds,
+        max_bytes: usize,
+    ) -> AssetSession<'a, DirectTransport> {
+        AssetSession {
+            transport,
+            ids,
+            pool: &self.pool,
+            store: &self.images,
+            max_bytes,
+        }
+    }
 }
 
 fn phone_ids() -> PeerIds {
@@ -181,15 +263,19 @@ fn phone_ids() -> PeerIds {
     }
 }
 
-/// A hub serving `pool`, with the change signal its service would bump.
-fn hub(pool: &SqlitePool) -> (DirectTransport, watch::Sender<u64>) {
-    let pool = pool.clone();
+/// A hub serving the replica's vault, with the change signal its service would bump.
+fn hub(replica: &Replica) -> (DirectTransport, watch::Sender<u64>) {
+    let pool = replica.pool.clone();
+    let images = Arc::clone(&replica.images);
     let open: OpenHubVault = Arc::new(move || {
         let pool = pool.clone();
+        let images = Arc::clone(&images);
         Box::pin(async move {
             Ok(Some(HubVault {
                 pool,
                 vault_id: VAULT_ID.to_string(),
+                device_id: HUB_DEVICE.to_string(),
+                images,
             }))
         })
     });
@@ -221,7 +307,7 @@ fn exchange_pushes_and_pulls_until_both_replicas_hold_every_operation() {
     block_on(async {
         let mut hub_replica = Replica::new("hub", HUB_DEVICE).await;
         let mut phone = Replica::new("phone", PHONE_DEVICE).await;
-        let (transport, _changes) = hub(&hub_replica.pool);
+        let (transport, _changes) = hub(&hub_replica);
         hub_replica.seal_note("note-hub").await;
         phone.seal_note("note-phone").await;
 
@@ -261,7 +347,7 @@ fn an_exchange_stops_at_its_byte_bound_and_the_next_one_continues() {
     block_on(async {
         let mut hub_replica = Replica::new("hub", HUB_DEVICE).await;
         let mut phone = Replica::new("phone", PHONE_DEVICE).await;
-        let (transport, _changes) = hub(&hub_replica.pool);
+        let (transport, _changes) = hub(&hub_replica);
         for index in 0..3 {
             hub_replica.seal_note(&format!("note-{index}")).await;
         }
@@ -309,7 +395,7 @@ fn wait_returns_once_the_hub_stores_new_operations() {
     block_on(async {
         let mut hub_replica = Replica::new("hub-wait", HUB_DEVICE).await;
         let phone = Replica::new("phone-wait", PHONE_DEVICE).await;
-        let (transport, changes) = hub(&hub_replica.pool);
+        let (transport, changes) = hub(&hub_replica);
         hub_replica.seal_note("note-first").await;
         let known = done(
             phone
@@ -338,7 +424,7 @@ fn hub_refuses_foreign_geneses_unlinked_writers_and_other_vaults() {
     block_on(async {
         let mut hub_replica = Replica::new("hub-refuse", HUB_DEVICE).await;
         let mut phone = Replica::new("phone-refuse", PHONE_DEVICE).await;
-        let (transport, _changes) = hub(&hub_replica.pool);
+        let (transport, _changes) = hub(&hub_replica);
         phone.seal_note("note-phone").await;
 
         let other_vault = PeerIds {
@@ -419,11 +505,116 @@ fn hub_refuses_foreign_geneses_unlinked_writers_and_other_vaults() {
 }
 
 #[test]
+fn hub_refuses_a_revocation_from_a_linked_device() {
+    block_on(async {
+        let mut hub_replica = Replica::new("hub-revoke", HUB_DEVICE).await;
+        let mut phone = Replica::new("phone-revoke", PHONE_DEVICE).await;
+        let (transport, _changes) = hub(&hub_replica);
+        hub_replica.seal_note("note-hub").await;
+        converge(&mut hub_replica, &mut phone, &transport).await;
+        let target = hub_replica.writer.id();
+        let cutoff = phone.stored().await.get(&target);
+        assert!(cutoff > 0);
+
+        // A modified build on the phone treats itself as the coordinator.
+        phone.ctx.coordinator_device_id = PHONE_DEVICE.to_string();
+        let seq = {
+            let mut conn = acquire(&phone.pool).await;
+            Engine::vault()
+                .seal_revoke(
+                    &mut conn,
+                    &phone.ctx,
+                    target,
+                    cutoff,
+                    RevokeReason::Revoked,
+                    &mut phone.writer.local(),
+                    NOW_MS,
+                )
+                .await
+                .expect("revoke")
+                .last_seq
+                .expect("revocation sealed")
+        };
+        phone.writer.committed(seq).expect("record commit");
+        let refused = done(
+            phone
+                .exchange(&transport, &phone_ids())
+                .await
+                .expect("exchange"),
+        );
+        assert!(
+            refused
+                .problem
+                .as_deref()
+                .is_some_and(|problem| problem.contains("Invalid")),
+            "{refused:?}"
+        );
+        assert_eq!(hub_replica.stored().await.get(&phone.writer.id()), seq - 1);
+        hub_replica.apply().await;
+        assert!(hub_replica.has_note("note-hub").await);
+        hub_replica.close().await;
+        phone.close().await;
+    });
+}
+
+#[test]
+fn hub_refuses_a_device_past_its_writer_limit() {
+    block_on(async {
+        let hub_replica = Replica::new("hub-writer-limit", HUB_DEVICE).await;
+        let mut phone = Replica::new("phone-writer-limit", PHONE_DEVICE).await;
+        let (transport, _changes) = hub(&hub_replica);
+        // A modified build mints a fresh writer for every operation.
+        for index in 0..MAX_WRITERS_PER_DEVICE {
+            if index > 0 {
+                phone.writer = create_writer(
+                    &phone.directory.files(),
+                    &phone.directory.keys(),
+                    SuccessorPlan::default(),
+                    &person(),
+                    PHONE_DEVICE,
+                    NOW_MS,
+                )
+                .expect("create writer");
+            }
+            phone.seal_note(&format!("note-{index}")).await;
+        }
+        let within = done(
+            phone
+                .exchange(&transport, &phone_ids())
+                .await
+                .expect("exchange"),
+        );
+        assert_eq!(within.problem, None, "{within:?}");
+
+        phone.writer = create_writer(
+            &phone.directory.files(),
+            &phone.directory.keys(),
+            SuccessorPlan::default(),
+            &person(),
+            PHONE_DEVICE,
+            NOW_MS,
+        )
+        .expect("create writer");
+        phone.seal_note("note-past-limit").await;
+        let refused = done(
+            phone
+                .exchange(&transport, &phone_ids())
+                .await
+                .expect("exchange"),
+        );
+        assert_eq!(refused.refusal, Some(SyncRefusalCode::WriterLimit));
+        assert_eq!(hub_replica.stored().await.get(&phone.writer.id()), 0);
+        hub_replica.close().await;
+        phone.close().await;
+    });
+}
+
+#[test]
 fn a_cloned_installation_is_found_and_resealed_by_a_successor() {
     block_on(async {
         let mut hub_replica = Replica::new("hub-fork", HUB_DEVICE).await;
         let mut original = Replica::new("phone-fork", PHONE_DEVICE).await;
-        let (transport, _changes) = hub(&hub_replica.pool);
+        let (transport, _changes) = hub(&hub_replica);
         let shared = original.seal_note("note-shared").await;
         done(
             original
@@ -571,7 +762,7 @@ fn a_resolved_title_conflict_closes_on_both_replicas() {
     block_on(async {
         let mut hub_replica = Replica::new("conflict-hub", HUB_DEVICE).await;
         let mut phone = Replica::new("conflict-phone", PHONE_DEVICE).await;
-        let (transport, _changes) = hub(&hub_replica.pool);
+        let (transport, _changes) = hub(&hub_replica);
         hub_replica.seal_note("note-1").await;
         converge(&mut hub_replica, &mut phone, &transport).await;
 
@@ -657,7 +848,7 @@ fn restoring_an_edit_that_outlived_a_deletion_closes_the_offer_everywhere() {
     block_on(async {
         let mut hub_replica = Replica::new("recovery-hub", HUB_DEVICE).await;
         let mut phone = Replica::new("recovery-phone", PHONE_DEVICE).await;
-        let (transport, _changes) = hub(&hub_replica.pool);
+        let (transport, _changes) = hub(&hub_replica);
         hub_replica.seal_note("note-2").await;
         converge(&mut hub_replica, &mut phone, &transport).await;
 
@@ -711,7 +902,7 @@ fn discarding_a_recovery_offer_keeps_the_deletion() {
     block_on(async {
         let mut hub_replica = Replica::new("discard-hub", HUB_DEVICE).await;
         let mut phone = Replica::new("discard-phone", PHONE_DEVICE).await;
-        let (transport, _changes) = hub(&hub_replica.pool);
+        let (transport, _changes) = hub(&hub_replica);
         hub_replica.seal_note("note-3").await;
         converge(&mut hub_replica, &mut phone, &transport).await;
 
@@ -750,5 +941,257 @@ fn discarding_a_recovery_offer_keeps_the_deletion() {
         }
         hub_replica.close().await;
         phone.close().await;
+    });
+}
+
+const TABLET_DEVICE: &str = "device-tablet";
+
+fn tablet_ids() -> PeerIds {
+    PeerIds {
+        vault_id: VAULT_ID.to_string(),
+        device_id: TABLET_DEVICE.to_string(),
+    }
+}
+
+/// Header-only PNG bytes padded to `len`, enough for metadata parsing; `seed` varies the digest.
+fn png(len: usize, seed: u8) -> Vec<u8> {
+    let mut bytes = vec![0; 34];
+    bytes[..8].copy_from_slice(b"\x89PNG\r\n\x1a\n");
+    bytes[8..12].copy_from_slice(&13u32.to_be_bytes());
+    bytes[12..16].copy_from_slice(b"IHDR");
+    bytes[16..20].copy_from_slice(&40u32.to_be_bytes());
+    bytes[20..24].copy_from_slice(&30u32.to_be_bytes());
+    bytes[24..29].copy_from_slice(&[8, 6, 0, 0, 0]);
+    bytes[33] = seed;
+    bytes.resize(len.max(34), seed);
+    bytes
+}
+
+fn reference(bytes: &[u8]) -> ReferencedImage {
+    let image = serde_json::to_value(images::describe_image(bytes).expect("describe image"))
+        .expect("serialize image");
+    ReferencedImage::new(
+        image["sha256"].as_str().expect("digest").to_string(),
+        image["contentType"]
+            .as_str()
+            .expect("content type")
+            .to_string(),
+        u32::try_from(bytes.len()).expect("image size"),
+    )
+    .expect("reference image")
+}
+
+fn put(image: &ReferencedImage, offset: u32, bytes: &[u8]) -> ControlMessage {
+    ControlMessage::SyncAssetPut {
+        protocol_version: PROTOCOL_VERSION,
+        vault_id: VAULT_ID.to_string(),
+        device_id: PHONE_DEVICE.to_string(),
+        asset: asset_to_wire(image),
+        offset,
+        data: bytes_to_wire(bytes),
+    }
+}
+
+fn error_code(response: ControlMessage) -> String {
+    match response {
+        ControlMessage::Error { code, .. } => code,
+        other => panic!("expected an error, got {other:?}"),
+    }
+}
+
+fn received(response: ControlMessage) -> u32 {
+    match response {
+        ControlMessage::SyncAssetReceived { received } => received,
+        other => panic!("expected upload progress, got {other:?}"),
+    }
+}
+
+#[test]
+fn images_travel_through_the_hub_ahead_of_the_notes_that_reference_them() {
+    block_on(async {
+        let hub_replica = Replica::new("images-hub", HUB_DEVICE).await;
+        let mut phone = Replica::new("images-phone", PHONE_DEVICE).await;
+        let mut tablet = Replica::new("images-tablet", TABLET_DEVICE).await;
+        let (transport, _changes) = hub(&hub_replica);
+        add_note(&mut *acquire(&phone.pool).await, "note-images").await;
+        let large = png(SYNC_ASSET_CHUNK_BYTES * 2 + 17, 1);
+        let small = png(64, 2);
+        let large_image = phone.add_image("note-images", 0, &large).await;
+        let small_image = phone.add_image("note-images", 1, &small).await;
+        phone.seal().await;
+
+        let mut phone_memory = AssetMemory::default();
+        let uploaded = phone
+            .upload(
+                &transport,
+                &phone_ids(),
+                &mut phone_memory,
+                MAX_ASSET_PASS_BYTES,
+            )
+            .await;
+        assert_eq!(
+            (uploaded.uploaded, uploaded.more, uploaded.problem),
+            (2, false, None)
+        );
+        assert_eq!(hub_replica.image_bytes(&large_image), Some(large.clone()));
+        done(
+            phone
+                .exchange(&transport, &phone_ids())
+                .await
+                .expect("exchange"),
+        );
+        let again = phone
+            .upload(
+                &transport,
+                &phone_ids(),
+                &mut phone_memory,
+                MAX_ASSET_PASS_BYTES,
+            )
+            .await;
+        assert_eq!(again, AssetTransfer::default());
+
+        done(
+            tablet
+                .exchange(&transport, &tablet_ids())
+                .await
+                .expect("exchange"),
+        );
+        tablet.apply().await;
+        assert_eq!(tablet.image_bytes(&large_image), None);
+        let mut tablet_memory = AssetMemory::default();
+        let downloaded = tablet
+            .download(&transport, &tablet_ids(), &mut tablet_memory)
+            .await;
+        assert_eq!((downloaded.downloaded, downloaded.problem), (2, None));
+        assert_eq!(tablet.image_bytes(&large_image), Some(large));
+        assert_eq!(tablet.image_bytes(&small_image), Some(small));
+        let again = tablet
+            .download(&transport, &tablet_ids(), &mut tablet_memory)
+            .await;
+        assert_eq!(again, AssetTransfer::default());
+
+        hub_replica.close().await;
+        phone.close().await;
+        tablet.close().await;
+    });
+}
+
+#[test]
+fn image_transfers_stop_at_their_byte_bound_and_resume() {
+    block_on(async {
+        let hub_replica = Replica::new("bound-hub", HUB_DEVICE).await;
+        let phone = Replica::new("bound-phone", PHONE_DEVICE).await;
+        let (transport, _changes) = hub(&hub_replica);
+        add_note(&mut *acquire(&phone.pool).await, "note-images").await;
+        phone.add_image("note-images", 0, &png(100, 1)).await;
+        phone.add_image("note-images", 1, &png(100, 2)).await;
+
+        let mut memory = AssetMemory::default();
+        let first = phone.upload(&transport, &phone_ids(), &mut memory, 1).await;
+        assert_eq!((first.uploaded, first.more), (1, true));
+        let second = phone.upload(&transport, &phone_ids(), &mut memory, 1).await;
+        assert_eq!((second.uploaded, second.more), (1, false));
+        hub_replica.close().await;
+        phone.close().await;
+    });
+}
+
+#[test]
+fn the_hub_verifies_uploads_and_reports_missing_images() {
+    block_on(async {
+        let hub_replica = Replica::new("verify-hub", HUB_DEVICE).await;
+        let (transport, _changes) = hub(&hub_replica);
+        let bytes = png(SYNC_ASSET_CHUNK_BYTES + 10, 3);
+        let image = reference(&bytes);
+
+        let get = ControlMessage::SyncAssetGet {
+            protocol_version: PROTOCOL_VERSION,
+            vault_id: VAULT_ID.to_string(),
+            device_id: PHONE_DEVICE.to_string(),
+            asset: asset_to_wire(&image),
+            offset: 0,
+        };
+        let missing = transport.request(get.clone()).await.expect("get");
+        assert_eq!(error_code(missing), ASSET_UNAVAILABLE);
+
+        let mut tampered = bytes.clone();
+        *tampered.last_mut().expect("bytes") ^= 0xff;
+        let (head, tail) = tampered.split_at(SYNC_ASSET_CHUNK_BYTES);
+        let progress = transport.request(put(&image, 0, head)).await.expect("put");
+        assert_eq!(received(progress), SYNC_ASSET_CHUNK_BYTES as u32);
+        let refused = transport
+            .request(put(&image, SYNC_ASSET_CHUNK_BYTES as u32, tail))
+            .await
+            .expect("put");
+        assert_eq!(error_code(refused), INVALID_ASSET);
+        assert_eq!(hub_replica.image_bytes(&image), None);
+
+        // A chunk that does not continue the pending upload learns where to restart.
+        let (head, tail) = bytes.split_at(SYNC_ASSET_CHUNK_BYTES);
+        let restart = transport
+            .request(put(&image, SYNC_ASSET_CHUNK_BYTES as u32, tail))
+            .await
+            .expect("put");
+        assert_eq!(received(restart), 0);
+        transport.request(put(&image, 0, head)).await.expect("put");
+        let stored = transport
+            .request(put(&image, SYNC_ASSET_CHUNK_BYTES as u32, tail))
+            .await
+            .expect("put");
+        assert_eq!(received(stored), image.byte_size());
+        assert_eq!(hub_replica.image_bytes(&image), Some(bytes.clone()));
+        let held = transport.request(put(&image, 0, head)).await.expect("put");
+        assert_eq!(received(held), image.byte_size());
+        match transport.request(get).await.expect("get") {
+            ControlMessage::SyncAssetChunk { data } => {
+                assert_eq!(data, bytes_to_wire(head));
+            }
+            other => panic!("expected a chunk, got {other:?}"),
+        }
+        hub_replica.close().await;
+    });
+}
+
+#[test]
+fn a_replica_refuses_damaged_image_bytes_from_the_hub() {
+    block_on(async {
+        let mut hub_replica = Replica::new("damaged-hub", HUB_DEVICE).await;
+        let mut tablet = Replica::new("damaged-tablet", TABLET_DEVICE).await;
+        let (transport, _changes) = hub(&hub_replica);
+        add_note(&mut *acquire(&hub_replica.pool).await, "note-images").await;
+        let image = hub_replica.add_image("note-images", 0, &png(80, 4)).await;
+        hub_replica.seal().await;
+        let path =
+            images::image_path(hub_replica.directory.path(), image.file()).expect("image path");
+        let mut damaged = std::fs::read(&path).expect("read image");
+        *damaged.last_mut().expect("bytes") ^= 0xff;
+        std::fs::write(&path, damaged).expect("damage image");
+
+        done(
+            tablet
+                .exchange(&transport, &tablet_ids())
+                .await
+                .expect("exchange"),
+        );
+        tablet.apply().await;
+        let mut memory = AssetMemory::default();
+        let refused = tablet
+            .download(&transport, &tablet_ids(), &mut memory)
+            .await;
+        assert_eq!(refused.downloaded, 0);
+        assert!(
+            refused
+                .problem
+                .as_deref()
+                .is_some_and(|problem| problem.contains("do not match")),
+            "{refused:?}"
+        );
+        assert_eq!(tablet.image_bytes(&image), None);
+        let skipped = tablet
+            .download(&transport, &tablet_ids(), &mut memory)
+            .await;
+        assert_eq!(skipped, AssetTransfer::default());
+        hub_replica.close().await;
+        tablet.close().await;
     });
 }

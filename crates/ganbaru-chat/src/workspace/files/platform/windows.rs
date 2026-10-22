@@ -1,3 +1,8 @@
+#![allow(
+    unsafe_code,
+    reason = "Retained unsafe boundary; see docs/data/security/unsafe-rust.md."
+)]
+
 use super::*;
 #[cfg(windows)]
 use ::windows as windows_crate;
@@ -43,6 +48,7 @@ fn windows_file_identity(file: &File) -> std::io::Result<WindowsFileIdentity> {
 fn windows_regular_file_state(
     path: &Path,
     relative_path: &str,
+    max_bytes: u64,
 ) -> ChatResult<(WindowsFileIdentity, String)> {
     use std::os::windows::fs::OpenOptionsExt;
 
@@ -61,7 +67,7 @@ fn windows_regular_file_state(
         return Err(workspace_file_recovery_error());
     }
     let identity = windows_file_identity(&file).map_err(|_| workspace_file_recovery_error())?;
-    let (revision, _) = revision_and_permissions(&mut file, relative_path)?;
+    let (revision, _) = revision_and_permissions(&mut file, relative_path, max_bytes)?;
     Ok((identity, revision))
 }
 
@@ -100,6 +106,11 @@ fn windows_workspace_directory_chain(
 ) -> ChatResult<(PathBuf, Vec<File>)> {
     let mut path = root.to_path_buf();
     let mut handles = vec![windows_open_directory(&path)?];
+    // A case or short-name alias of the Git directory resolves to the same
+    // file identity even when its spelling passes the protected path check.
+    let git_identity = windows_open_directory(&root.join(".git"))
+        .ok()
+        .and_then(|git| windows_file_identity(&git).ok());
     for component in Path::new(relative_path).components() {
         let Component::Normal(name) = component else {
             return Err(ChatError::validation(
@@ -108,7 +119,17 @@ fn windows_workspace_directory_chain(
             ));
         };
         path.push(name);
-        handles.push(windows_open_directory(&path)?);
+        let directory = windows_open_directory(&path)?;
+        if let Some(git_identity) = git_identity
+            && windows_file_identity(&directory).map_err(file_error)? == git_identity
+        {
+            return Err(ChatError::new(
+                ChatErrorCode::Permission,
+                "Workspace path is protected",
+                false,
+            ));
+        }
+        handles.push(directory);
     }
     Ok((path, handles))
 }
@@ -278,7 +299,8 @@ pub(in crate::workspace::files) fn delete_workspace_file_atomically(
     let (_current_parents, mut current) = windows_open_regular_file(root, relative_path)?;
     let current_identity =
         windows_file_identity(&current).map_err(|_| workspace_file_write_error())?;
-    let (current_revision, _) = revision_and_permissions(&mut current, relative_path)?;
+    let (current_revision, _) =
+        revision_and_permissions(&mut current, relative_path, MAX_PREVIEW_BYTES)?;
     if current_revision != expected_revision {
         return Err(stale_workspace_file_error());
     }
@@ -286,8 +308,8 @@ pub(in crate::workspace::files) fn delete_workspace_file_atomically(
     let backup = windows_private_artifact_path(&parent, "backup")
         .map_err(|_| workspace_file_recovery_error())?;
     windows_move_file_no_replace(&target, &backup).map_err(|_| workspace_file_recovery_error())?;
-    let displaced_matches =
-        windows_regular_file_state(&backup, relative_path).is_ok_and(|(identity, revision)| {
+    let displaced_matches = windows_regular_file_state(&backup, relative_path, MAX_PREVIEW_BYTES)
+        .is_ok_and(|(identity, revision)| {
             identity == current_identity && revision == expected_revision
         });
     if !displaced_matches {
@@ -306,6 +328,7 @@ pub(in crate::workspace::files) fn write_workspace_text_atomically(
     relative_path: &str,
     contents: &str,
     expected_revision: &str,
+    max_bytes: u64,
 ) -> ChatResult<()> {
     use std::os::windows::fs::OpenOptionsExt;
 
@@ -323,13 +346,15 @@ pub(in crate::workspace::files) fn write_workspace_text_atomically(
     let (_current_parents, mut current) = windows_open_regular_file(root, relative_path)?;
     let current_identity =
         windows_file_identity(&current).map_err(|_| workspace_file_write_error())?;
-    let (current_revision, permissions) = revision_and_permissions(&mut current, relative_path)?;
+    let (current_revision, permissions) =
+        revision_and_permissions(&mut current, relative_path, max_bytes)?;
     if current_revision != expected_revision {
         return Err(stale_workspace_file_error());
     }
     let replacement_revision = workspace_file_revision(relative_path, contents.as_bytes());
 
-    let temporary = windows_temporary_path(&parent);
+    let temporary =
+        windows_private_artifact_path(&parent, "tmp").map_err(|_| workspace_file_write_error())?;
     let mut options = OpenOptions::new();
     options
         .read(true)
@@ -361,8 +386,8 @@ pub(in crate::workspace::files) fn write_workspace_text_atomically(
         // ReplaceFileW can move the original to its backup before reporting failure.
         // Restore that documented partial state only after verifying the original bytes.
         let target_exists = fs::symlink_metadata(&target).is_ok();
-        let backup_is_original =
-            windows_regular_file_state(&backup, relative_path).is_ok_and(|(identity, revision)| {
+        let backup_is_original = windows_regular_file_state(&backup, relative_path, max_bytes)
+            .is_ok_and(|(identity, revision)| {
                 identity == current_identity && revision == expected_revision
             });
         if !target_exists && backup_is_original {
@@ -375,12 +400,12 @@ pub(in crate::workspace::files) fn write_workspace_text_atomically(
         return Err(workspace_file_recovery_error());
     }
 
-    let displaced_is_original =
-        windows_regular_file_state(&backup, relative_path).is_ok_and(|(identity, revision)| {
+    let displaced_is_original = windows_regular_file_state(&backup, relative_path, max_bytes)
+        .is_ok_and(|(identity, revision)| {
             identity == current_identity && revision == expected_revision
         });
-    let installed_is_replacement =
-        windows_regular_file_state(&target, relative_path).is_ok_and(|(identity, revision)| {
+    let installed_is_replacement = windows_regular_file_state(&target, relative_path, max_bytes)
+        .is_ok_and(|(identity, revision)| {
             identity == replacement_identity && revision == replacement_revision
         });
     if !displaced_is_original {
@@ -402,41 +427,8 @@ pub(in crate::workspace::files) fn write_workspace_text_atomically(
 }
 
 #[cfg(windows)]
-fn windows_temporary_path(parent: &Path) -> PathBuf {
-    let generation = WORKSPACE_FILE_WRITE_GENERATION.fetch_add(1, Ordering::Relaxed);
-    let nonce = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    parent.join(format!(
-        ".ganbaru.{}.{}.{}.tmp",
-        std::process::id(),
-        generation,
-        nonce
-    ))
-}
-
-#[cfg(windows)]
 fn windows_private_artifact_path(parent: &Path, kind: &str) -> std::io::Result<PathBuf> {
-    use windows_crate::Win32::Security::Cryptography::{
-        BCRYPT_USE_SYSTEM_PREFERRED_RNG, BCryptGenRandom,
-    };
-
-    windows_private_artifact_path_with(parent, kind, |random| {
-        // SAFETY: The binding receives an exclusive, initialized output slice
-        // that remains live for the synchronous call. A null algorithm handle
-        // is required with BCRYPT_USE_SYSTEM_PREFERRED_RNG, and no pointer is
-        // retained after BCryptGenRandom returns.
-        let status = unsafe { BCryptGenRandom(None, random, BCRYPT_USE_SYSTEM_PREFERRED_RNG) };
-        if status.0 < 0 {
-            Err(std::io::Error::other(format!(
-                "BCryptGenRandom failed with NTSTATUS {:#x}",
-                status.0
-            )))
-        } else {
-            Ok(())
-        }
-    })
+    windows_private_artifact_path_with(parent, kind, ganbaru_atomic_files::fill_random)
 }
 
 #[cfg(any(windows, test))]
@@ -445,17 +437,10 @@ fn windows_private_artifact_path_with(
     kind: &str,
     mut fill_random: impl FnMut(&mut [u8]) -> std::io::Result<()>,
 ) -> std::io::Result<std::path::PathBuf> {
-    const RANDOM_BYTES: usize = 32;
     const GENERATION_ATTEMPTS: usize = 4;
 
     for _ in 0..GENERATION_ATTEMPTS {
-        let mut random = [0_u8; RANDOM_BYTES];
-        fill_random(&mut random)?;
-        let token = random
-            .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect::<String>();
-        let candidate = parent.join(format!(".ganbaru.{kind}.{token}"));
+        let candidate = parent.join(private_artifact_name_with(kind, &mut fill_random)?);
         match fs::symlink_metadata(&candidate) {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(candidate),
             Ok(_) => continue,

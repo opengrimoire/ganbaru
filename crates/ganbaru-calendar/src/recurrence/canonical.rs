@@ -161,6 +161,28 @@ pub(crate) fn stored_time(
     Ok((civil, civil_time::explicit_instant(civil, home_zone)?))
 }
 
+/// Checks that an override's own start and end parse and, when both are present, form a valid
+/// range, so a malformed override is rejected before it reaches storage.
+pub(crate) fn validate_override_times(
+    start: Option<&str>,
+    end: Option<&str>,
+    home_zone: &TimeZone,
+    all_day: bool,
+) -> Result<(), String> {
+    let start = start
+        .map(|start| stored_time(start, home_zone, all_day))
+        .transpose()?;
+    let end = end
+        .map(|end| stored_time(end, home_zone, all_day))
+        .transpose()?;
+    if let (Some((start_civil, start_ms)), Some((end_civil, end_ms))) = (start, end) {
+        if (all_day && end_civil.date() < start_civil.date()) || (!all_day && end_ms <= start_ms) {
+            return Err("Calendar occurrence override produces an invalid range".into());
+        }
+    }
+    Ok(())
+}
+
 /// Interpret a persisted override identity with the same rules as expansion.
 pub(crate) fn override_date(
     value: &str,
@@ -531,15 +553,31 @@ impl Template {
     }
 }
 
-/// Every template shares one request budget; outputs retain corresponding input order.
+/// Expands each template on its own: a failing template yields its error without discarding the
+/// others. Templates share one request budget, each with its own candidate allowance, and outputs
+/// retain corresponding input order.
+pub(crate) fn expand_each_template(
+    templates: &[Template],
+    window: &Window,
+) -> Vec<Result<Vec<Occurrence>, String>> {
+    let mut budget = ExpansionBudget::per_template();
+    templates
+        .iter()
+        .map(|template| {
+            budget.start_template();
+            template.expand(window, &mut budget)
+        })
+        .collect()
+}
+
+/// Expands every template, failing when any template fails.
+#[cfg(test)]
 pub(crate) fn expand_templates(
     templates: &[Template],
     window: &Window,
 ) -> Result<Vec<Vec<Occurrence>>, String> {
-    let mut budget = ExpansionBudget::default();
-    templates
-        .iter()
-        .map(|template| template.expand(window, &mut budget))
+    expand_each_template(templates, window)
+        .into_iter()
         .collect()
 }
 

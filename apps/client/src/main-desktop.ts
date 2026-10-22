@@ -188,7 +188,19 @@ const appPromise = (async () => {
       import("$lib/api/vault-handoff"),
       import("$lib/components/vault/handoff/PairingQrCode.svelte"),
     ]);
-    const initialStatus = await handoffApi.readPairingStatus();
+    const initialStatus = await handoffApi.readPairingStatus().catch((error: unknown) => {
+      console.warn("Vault linking is unavailable; skipping the linking step:", error);
+      return null;
+    });
+    if (!initialStatus) {
+      // Linking can be disabled for this run; Settings explains it, and startup must continue.
+      const [{ default: App }] = await Promise.all([
+        appModulePromise,
+        workspacePreparation.catch(prepareWorkspace),
+      ]);
+      if (currentView) await unmount(currentView);
+      return mount(App, { target });
+    }
     const initialInvitation = initialStatus.linked
       ? null
       : await handoffApi.createPairingInvitation();

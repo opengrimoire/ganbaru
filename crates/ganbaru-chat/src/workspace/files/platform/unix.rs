@@ -1,3 +1,8 @@
+#![allow(
+    unsafe_code,
+    reason = "Retained unsafe boundary; see docs/data/security/unsafe-rust.md."
+)]
+
 use super::*;
 use std::ptr::NonNull;
 
@@ -103,6 +108,41 @@ fn create_new_file_at(directory: &File, name: &CStr) -> std::io::Result<File> {
     Ok(unsafe { File::from_raw_fd(descriptor) })
 }
 
+/// Device and inode of `<root>/.git` when it is a real directory.
+type GitDirectoryIdentity = Option<(u64, u64)>;
+
+/// Records the identity of the folder's Git directory so a case or short-name
+/// alias that resolves to it is refused even when its spelling passes the
+/// protected path check.
+fn git_directory_identity(root: &File) -> std::io::Result<GitDirectoryIdentity> {
+    match open_existing_at(root, c".git", ExistingEntryKind::Directory) {
+        Ok(git) => {
+            let metadata = git.metadata()?;
+            Ok(Some((metadata.dev(), metadata.ino())))
+        }
+        Err(error)
+            if matches!(
+                error.raw_os_error(),
+                Some(libc::ENOENT | libc::ENOTDIR | libc::ELOOP)
+            ) =>
+        {
+            Ok(None)
+        }
+        Err(error) => Err(error),
+    }
+}
+
+fn refuse_git_directory(directory: &File, git: GitDirectoryIdentity) -> std::io::Result<()> {
+    let Some(identity) = git else {
+        return Ok(());
+    };
+    let metadata = directory.metadata()?;
+    if (metadata.dev(), metadata.ino()) == identity {
+        return Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied));
+    }
+    Ok(())
+}
+
 #[cfg(unix)]
 fn secure_workspace_directory(root: &Path, relative_path: &str) -> std::io::Result<File> {
     use std::os::unix::fs::OpenOptionsExt;
@@ -112,6 +152,7 @@ fn secure_workspace_directory(root: &Path, relative_path: &str) -> std::io::Resu
         .read(true)
         .custom_flags(libc::O_CLOEXEC | libc::O_DIRECTORY | libc::O_NOFOLLOW);
     let mut directory = options.open(root)?;
+    let git = git_directory_identity(&directory)?;
     for component in Path::new(relative_path).components() {
         let Component::Normal(name) = component else {
             return Err(std::io::Error::from(std::io::ErrorKind::InvalidInput));
@@ -119,6 +160,7 @@ fn secure_workspace_directory(root: &Path, relative_path: &str) -> std::io::Resu
         let name = CString::new(name.as_bytes())
             .map_err(|_| std::io::Error::from(std::io::ErrorKind::InvalidInput))?;
         directory = open_existing_at(&directory, &name, ExistingEntryKind::Directory)?;
+        refuse_git_directory(&directory, git)?;
     }
     Ok(directory)
 }
@@ -271,6 +313,7 @@ pub(in crate::workspace::files) fn secure_workspace_parent(
         .read(true)
         .custom_flags(libc::O_CLOEXEC | libc::O_DIRECTORY | libc::O_NOFOLLOW);
     let mut directory = root_options.open(root)?;
+    let git = git_directory_identity(&directory)?;
     if let Some(parent) = relative.parent() {
         for component in parent.components() {
             let Component::Normal(name) = component else {
@@ -279,6 +322,7 @@ pub(in crate::workspace::files) fn secure_workspace_parent(
             let name = CString::new(name.as_bytes())
                 .map_err(|_| std::io::Error::from(std::io::ErrorKind::InvalidInput))?;
             directory = open_existing_at(&directory, &name, ExistingEntryKind::Directory)?;
+            refuse_git_directory(&directory, git)?;
         }
     }
     let file_name = relative
@@ -569,7 +613,8 @@ pub(in crate::workspace::files) fn delete_workspace_file_atomically(
     let parent =
         secure_workspace_parent(root, relative_path).map_err(|_| workspace_file_write_error())?;
     let mut current = open_regular_file_at(&parent).map_err(|_| workspace_file_write_error())?;
-    let (current_revision, _) = revision_and_permissions(&mut current, relative_path)?;
+    let (current_revision, _) =
+        revision_and_permissions(&mut current, relative_path, MAX_PREVIEW_BYTES)?;
     if current_revision != expected_revision {
         return Err(stale_workspace_file_error());
     }
@@ -577,18 +622,10 @@ pub(in crate::workspace::files) fn delete_workspace_file_atomically(
         .metadata()
         .map_err(|_| workspace_file_write_error())?;
     let identity = (metadata.dev(), metadata.ino());
-    let generation = WORKSPACE_FILE_WRITE_GENERATION.fetch_add(1, Ordering::Relaxed);
-    let nonce = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    let backup_name = CString::new(format!(
-        ".ganbaru.{}.{}.{}.backup",
-        std::process::id(),
-        generation,
-        nonce,
-    ))
-    .map_err(|_| workspace_file_write_error())?;
+    let backup_name = private_artifact_name("backup")
+        .ok()
+        .and_then(|name| CString::new(name).ok())
+        .ok_or_else(workspace_file_write_error)?;
     rename_noreplace_at(&parent, &parent.file_name, &backup_name)
         .map_err(|_| workspace_file_write_error())?;
     let verification = (|| {
@@ -603,7 +640,8 @@ pub(in crate::workspace::files) fn delete_workspace_file_atomically(
         {
             return Err(stale_workspace_file_error());
         }
-        let (revision, _) = revision_and_permissions(&mut displaced, relative_path)?;
+        let (revision, _) =
+            revision_and_permissions(&mut displaced, relative_path, MAX_PREVIEW_BYTES)?;
         if revision != expected_revision {
             return Err(stale_workspace_file_error());
         }
@@ -623,11 +661,12 @@ pub(in crate::workspace::files) fn write_workspace_text_atomically(
     relative_path: &str,
     contents: &str,
     expected_revision: &str,
+    max_bytes: u64,
 ) -> ChatResult<()> {
     let parent =
         secure_workspace_parent(root, relative_path).map_err(|_| workspace_file_write_error())?;
     let mut current = open_regular_file_at(&parent).map_err(|_| workspace_file_write_error())?;
-    let (current_revision, _) = revision_and_permissions(&mut current, relative_path)?;
+    let (current_revision, _) = revision_and_permissions(&mut current, relative_path, max_bytes)?;
     if current_revision != expected_revision {
         return Err(stale_workspace_file_error());
     }
@@ -636,18 +675,10 @@ pub(in crate::workspace::files) fn write_workspace_text_atomically(
         .map_err(|_| workspace_file_write_error())?;
     let current_identity = (current_metadata.dev(), current_metadata.ino());
 
-    let generation = WORKSPACE_FILE_WRITE_GENERATION.fetch_add(1, Ordering::Relaxed);
-    let nonce = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    let temporary_name = CString::new(format!(
-        ".ganbaru.{}.{}.{}.tmp",
-        std::process::id(),
-        generation,
-        nonce,
-    ))
-    .map_err(|_| workspace_file_write_error())?;
+    let temporary_name = private_artifact_name("tmp")
+        .ok()
+        .and_then(|name| CString::new(name).ok())
+        .ok_or_else(workspace_file_write_error)?;
     let mut replacement =
         create_file_at(&parent, &temporary_name, 0o600).map_err(|error| match error {
             CreateFileAtError::Create(_) => workspace_file_write_error(),
@@ -687,7 +718,8 @@ pub(in crate::workspace::files) fn write_workspace_text_atomically(
         if (installed_metadata.dev(), installed_metadata.ino()) != replacement_identity {
             return Ok(false);
         }
-        let (installed_revision, _) = revision_and_permissions(&mut installed, relative_path)?;
+        let (installed_revision, _) =
+            revision_and_permissions(&mut installed, relative_path, max_bytes)?;
         Ok(installed_revision == replacement_revision)
     })()
     .unwrap_or(false);
@@ -705,7 +737,7 @@ pub(in crate::workspace::files) fn write_workspace_text_atomically(
             return Err(stale_workspace_file_error());
         }
         let (displaced_revision, displaced_permissions) =
-            revision_and_permissions(&mut displaced, relative_path)?;
+            revision_and_permissions(&mut displaced, relative_path, max_bytes)?;
         if displaced_revision != expected_revision {
             return Err(stale_workspace_file_error());
         }

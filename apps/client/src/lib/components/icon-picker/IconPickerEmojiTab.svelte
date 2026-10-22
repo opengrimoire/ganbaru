@@ -7,7 +7,7 @@
   import Search from "@lucide/svelte/icons/search";
   import Shapes from "@lucide/svelte/icons/shapes";
   import Shuffle from "@lucide/svelte/icons/shuffle";
-  import Smile from "@lucide/svelte/icons/smile";
+  import Smile from "@lucide/svelte/icons/face-slightly-smiling";
   import Trophy from "@lucide/svelte/icons/trophy";
   import Utensils from "@lucide/svelte/icons/utensils";
   import UserRound from "@lucide/svelte/icons/user-round";

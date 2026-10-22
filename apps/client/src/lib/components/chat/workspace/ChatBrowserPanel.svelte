@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onDestroy, onMount, tick } from "svelte";
+  import { listen } from "@tauri-apps/api/event";
   import ArrowLeft from "@lucide/svelte/icons/arrow-left";
   import ArrowRight from "@lucide/svelte/icons/arrow-right";
   import Camera from "@lucide/svelte/icons/camera";
@@ -7,6 +8,8 @@
   import Monitor from "@lucide/svelte/icons/monitor";
   import RefreshCw from "@lucide/svelte/icons/refresh-cw";
   import Search from "@lucide/svelte/icons/search";
+  import ShieldCheck from "@lucide/svelte/icons/shield-check";
+  import ShieldOff from "@lucide/svelte/icons/shield-off";
   import Smartphone from "@lucide/svelte/icons/smartphone";
   import Tablet from "@lucide/svelte/icons/tablet";
   import Video from "@lucide/svelte/icons/video";
@@ -14,6 +17,7 @@
   import X from "@lucide/svelte/icons/x";
   import * as chatApi from "$lib/api/chat";
   import type { BrowserTabBounds, BrowserTabRead } from "$lib/chat/contracts";
+  import { urlReach } from "$lib/chat/workspace/loopback";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { useChat } from "$lib/stores/chat.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
@@ -32,16 +36,108 @@
   let recording = $state(false);
   let artifactStatus: string | null = $state(null);
   let discoveredServers: chatApi.DiscoveredPreviewServer[] = $state([]);
+  let modelOrigins = $state<string[]>([]);
+  let approval = $state<chatApi.PreviewApproval | null>(null);
+  let promptText = $state("");
   let error: string | null = $state(null);
   let preset: ViewportPreset = $state("responsive");
   let resizeObserver: ResizeObserver | null = null;
   let resizeFrame: number | null = null;
   const threadId = $derived(chat.selectedThreadId ?? chat.draftThreadId);
+  const currentOrigin = $derived(externalOrigin(browserTab));
+  const modelAllowed = $derived(currentOrigin !== null && modelOrigins.includes(currentOrigin));
 
   onMount(() => {
     resizeObserver = new ResizeObserver(() => queueResize());
     if (viewport) resizeObserver.observe(viewport);
+    let disposed = false;
+    let unlisten: (() => void) | null = null;
+    void listen<unknown>(chatApi.CHAT_BROWSER_APPROVAL_EVENT, (event) => {
+      const payload = event.payload;
+      if (typeof payload !== "object" || payload === null) return;
+      const notified = (payload as Record<string, unknown>).threadId;
+      if (typeof notified === "string" && notified === loadedThreadId) void loadApproval(notified);
+    }).then((stop) => {
+      if (disposed) stop();
+      else unlisten = stop;
+    }).catch((reason: unknown) => {
+      error = message(reason);
+    });
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
   });
+
+  async function loadApproval(selectedThreadId: string): Promise<void> {
+    try {
+      const pending = await chatApi.readPendingBrowserApproval(selectedThreadId);
+      if (selectedThreadId !== loadedThreadId) return;
+      if (!sameApproval(approval, pending)) {
+        promptText = pending?.kind === "dialog" ? pending.defaultText : "";
+      }
+      approval = pending;
+    } catch (reason) {
+      error = message(reason);
+    }
+  }
+
+  function sameApproval(current: chatApi.PreviewApproval | null, next: chatApi.PreviewApproval | null): boolean {
+    if (current === null || next === null) return current === next;
+    if ("requestId" in current && "requestId" in next) return current.requestId === next.requestId;
+    return current.kind === next.kind;
+  }
+
+  function approvalText(pending: chatApi.PreviewApproval): string {
+    switch (pending.kind) {
+      case "navigation": return t("chat.browser.approvalNavigation", pending.origin);
+      case "network": return t("chat.browser.approvalNetwork");
+      case "permission": return t("chat.browser.pagePermission", pending.origin, t(`chat.browser.pagePermissions.${pending.permission}`));
+      case "dialog": return t(`chat.browser.pageDialog.${pending.dialogKind}`, pending.origin);
+    }
+  }
+
+  function approvalChoices(pending: chatApi.PreviewApproval): { refuse: string | null; accept: string } {
+    if (pending.kind === "permission") {
+      return { refuse: t("chat.browser.pagePermissionDeny"), accept: t("chat.browser.approvalAllow") };
+    }
+    if (pending.kind !== "dialog") {
+      return { refuse: t("chat.browser.approvalDismiss"), accept: t("chat.browser.approvalAllow") };
+    }
+    switch (pending.dialogKind) {
+      case "alert": return { refuse: null, accept: t("chat.browser.pageDialogOk") };
+      case "beforeUnload": return { refuse: t("chat.browser.pageDialogStay"), accept: t("chat.browser.pageDialogLeave") };
+      default: return { refuse: t("chat.browser.pageDialogCancel"), accept: t("chat.browser.pageDialogOk") };
+    }
+  }
+
+  async function resolveApproval(allow: boolean): Promise<void> {
+    if (!threadId || !approval) return;
+    const selectedThread = threadId;
+    const resolved = approval;
+    const page = "requestId" in resolved
+      ? {
+        requestId: resolved.requestId,
+        text: allow && resolved.kind === "dialog" && resolved.dialogKind === "prompt" ? promptText : undefined,
+      }
+      : undefined;
+    approval = null;
+    error = null;
+    try {
+      const navigated = await chatApi.resolveBrowserApproval(selectedThread, allow, page);
+      if (navigated && selectedThread === threadId) {
+        tabs = tabs.map((tab) => tab.tabId === navigated.tabId ? navigated : tab);
+        if (navigated.tabId === tabId) {
+          browserTab = navigated;
+          url = navigated.currentUrl;
+        }
+      }
+    } catch (reason) {
+      error = message(reason);
+    } finally {
+      if (selectedThread === loadedThreadId) void loadApproval(selectedThread);
+    }
+  }
 
   $effect(() => {
     const selectedThreadId = threadId;
@@ -85,12 +181,19 @@
     browserTab = null;
     tabs = [];
     url = "";
+    modelOrigins = [];
+    approval = null;
     tabId = selectedThreadId ? `preview:${selectedThreadId}:main` : null;
     if (!selectedThreadId) return;
+    void loadApproval(selectedThreadId);
     try {
-      const stored = await chatApi.readBrowserStatus(selectedThreadId);
+      const [stored, grants] = await Promise.all([
+        chatApi.readBrowserStatus(selectedThreadId),
+        chatApi.readPreviewModelOrigins(),
+      ]);
       if (selectedThreadId !== loadedThreadId) return;
       tabs = stored;
+      modelOrigins = grants.filter((grant) => grant.threadId === selectedThreadId).map((grant) => grant.origin);
       const selected = stored.find((tab) => tab.visible) ?? stored[0] ?? null;
       if (selected) {
         tabId = selected.tabId;
@@ -107,12 +210,40 @@
     return /^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed) ? trimmed : `http://${trimmed}`;
   }
 
+  /** Whether a navigation leaves loopback and needs confirmation. Unparsable text goes to Rust, which reports it. */
   function isExternal(value: string): boolean {
+    return urlReach(value) === "external";
+  }
+
+  function externalOrigin(tab: BrowserTabRead | null): string | null {
+    return tab?.visible && tab.externalOrigin ? originOf(tab.currentUrl) : null;
+  }
+
+  function originOf(value: string): string | null {
     try {
-      const host = new URL(value).hostname;
-      return host !== "localhost" && host !== "127.0.0.1" && host !== "::1";
+      return new URL(value).origin;
     } catch {
-      return false;
+      return null;
+    }
+  }
+
+  async function toggleModelAccess(): Promise<void> {
+    if (!threadId || !tabId || !currentOrigin || loading) return;
+    const selectedThread = threadId;
+    loading = true;
+    error = null;
+    try {
+      if (modelAllowed) {
+        await chatApi.revokePreviewModelOrigin(selectedThread, currentOrigin);
+        modelOrigins = modelOrigins.filter((origin) => origin !== currentOrigin);
+      } else {
+        const origin = await chatApi.allowPreviewModelOrigin(selectedThread, tabId);
+        if (selectedThread === threadId && !modelOrigins.includes(origin)) modelOrigins = [...modelOrigins, origin];
+      }
+    } catch (reason) {
+      error = message(reason);
+    } finally {
+      loading = false;
     }
   }
 
@@ -348,8 +479,23 @@
     <button type="button" class:active={preset === "desktop"} aria-label={t("chat.browser.desktop")} title={t("chat.browser.desktop")} onclick={() => setPreset("desktop")}><Monitor size={13} /></button>
     <button type="button" disabled={!browserTab?.visible || loading} aria-label={t("chat.browser.screenshot")} title={t("chat.browser.screenshot")} onclick={() => void captureScreenshot()}><Camera size={13} /></button>
     <button type="button" class:active={recording} disabled={!browserTab?.visible || loading} aria-label={recording ? t("chat.browser.recordingStop") : t("chat.browser.recordingStart")} title={recording ? t("chat.browser.recordingStop") : t("chat.browser.recordingStart")} onclick={() => void toggleRecording()}><Video size={13} /></button>
+    {#if currentOrigin}<button type="button" class:active={modelAllowed} disabled={loading} aria-pressed={modelAllowed} aria-label={modelAllowed ? t("chat.browser.modelAccessRevoke", currentOrigin) : t("chat.browser.modelAccessAllow", currentOrigin)} title={modelAllowed ? t("chat.browser.modelAccessRevoke", currentOrigin) : t("chat.browser.modelAccessAllow", currentOrigin)} onclick={() => void toggleModelAccess()}>{#if modelAllowed}<ShieldCheck size={13} />{:else}<ShieldOff size={13} />{/if}</button>{/if}
     {#if browserTab}<span>{browserTab.viewportWidth} × {browserTab.viewportHeight}</span>{/if}
   </div>
+  {#if approval}
+    {@const choices = approvalChoices(approval)}
+    <div class="approval" role="alert">
+      <p>{approvalText(approval)}</p>
+      {#if approval.kind === "dialog" && approval.message}<p class="page-message">{approval.message}</p>{/if}
+      {#if approval.kind === "dialog" && approval.dialogKind === "prompt"}
+        <input class="field page-text" bind:value={promptText} spellcheck="false" aria-label={t("chat.browser.pageDialogText")} />
+      {/if}
+      <div>
+        {#if choices.refuse}<button type="button" class="chat-secondary-button" onclick={() => void resolveApproval(false)}>{choices.refuse}</button>{/if}
+        <button type="button" class="chat-primary-button" onclick={() => void resolveApproval(true)}>{choices.accept}</button>
+      </div>
+    </div>
+  {/if}
   {#if artifactStatus}<p role="status" class="artifact-status">{artifactStatus}</p>{/if}
   {#if error}<Notice class="error" message={error} />{/if}
   <div bind:this={viewport} class="browser-viewport">
@@ -384,5 +530,10 @@
   .browser-viewport { position: relative; min-height: 0; flex: 1; overflow: hidden; background: color-mix(in srgb, var(--muted) 28%, var(--background)); }
   .empty { display: grid; height: 100%; place-items: center; align-content: center; gap: 0.55rem; padding: 1rem; color: var(--muted-foreground); text-align: center; font-size: calc(0.72rem * var(--type-scale)); }
   .browser-panel > :global(.error) { border-bottom: 1px solid var(--border); padding: 0.45rem 0.65rem; font-size: calc(0.68rem * var(--type-scale)); }
+  .approval { display: flex; flex-wrap: wrap; align-items: center; gap: 0.4rem 0.6rem; border-bottom: 1px solid var(--border); padding: 0.45rem 0.65rem; font-size: calc(0.68rem * var(--type-scale)); }
+  .approval p { min-width: 12rem; flex: 1; }
+  .approval div { display: flex; margin-left: auto; gap: 0.35rem; }
+  .approval .page-message { min-width: 0; flex-basis: 100%; max-height: 8rem; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .approval .page-text { flex-basis: 100%; min-width: 0; }
   .artifact-status { border-bottom: 1px solid var(--border); padding: 0.35rem 0.65rem; color: var(--muted-foreground); font-size: calc(0.66rem * var(--type-scale)); }
 </style>

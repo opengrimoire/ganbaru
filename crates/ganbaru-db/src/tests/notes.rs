@@ -1,5 +1,5 @@
 use super::helpers::migrated_memory_pool;
-use sqlx::Row;
+use sqlx::{AssertSqlSafe, Row};
 
 #[test]
 fn schema_creates_normalized_notes_database_tables() {
@@ -442,10 +442,11 @@ fn schema_creates_notes_comment_reactions_and_notification_preferences() {
             "notes_comment_thread_mutes",
             "notes_page_notification_settings",
         ] {
-            let remaining: i64 = sqlx::query_scalar(&format!("SELECT COUNT(*) FROM {table}"))
-                .fetch_one(&pool)
-                .await
-                .unwrap();
+            let remaining: i64 =
+                sqlx::query_scalar(AssertSqlSafe(format!("SELECT COUNT(*) FROM {table}")))
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
             assert_eq!(remaining, 0, "{table} follows its page");
         }
     });
@@ -1818,16 +1819,18 @@ fn notes_block_types_accept_six_heading_levels_in_blocks_and_templates() {
         ).execute(&pool).await.unwrap();
         for table in ["notes_blocks", "notes_page_template_blocks"] {
             for heading in ["heading_5", "heading_6"] {
-                sqlx::query(&format!("UPDATE {table} SET type = ? WHERE id = 'parent'"))
-                    .bind(heading)
-                    .execute(&pool)
-                    .await
-                    .unwrap();
+                sqlx::query(AssertSqlSafe(format!(
+                    "UPDATE {table} SET type = ? WHERE id = 'parent'"
+                )))
+                .bind(heading)
+                .execute(&pool)
+                .await
+                .unwrap();
             }
             assert!(
-                sqlx::query(&format!(
+                sqlx::query(AssertSqlSafe(format!(
                     "UPDATE {table} SET type = 'heading_7' WHERE id = 'parent'"
-                ))
+                )))
                 .execute(&pool)
                 .await
                 .is_err()

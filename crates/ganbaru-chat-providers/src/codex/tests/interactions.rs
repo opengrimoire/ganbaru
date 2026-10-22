@@ -149,3 +149,60 @@ fn secret_structured_answers_are_sent_to_codex_but_not_canonicalized() {
         );
     });
 }
+
+#[test]
+fn file_change_approvals_show_the_write_root_that_allow_for_session_grants() {
+    let request = |grant_root: Value| {
+        json!({ "threadId": "t", "turnId": "u", "itemId": "i", "grantRoot": grant_root })
+            .as_object()
+            .unwrap()
+            .clone()
+    };
+    let method = "item/fileChange/requestApproval";
+
+    let granted = approval_display(method, &request(json!("/home/user/elsewhere")));
+    assert!(granted.allow_session);
+    assert_eq!(
+        granted
+            .subject
+            .as_ref()
+            .map(|subject| (subject.kind, subject.text.as_str())),
+        Some((ApprovalSubjectKind::Path, "/home/user/elsewhere"))
+    );
+    assert_eq!(
+        granted.session_grants,
+        vec![SessionPermissionGrant::Directory {
+            path: "/home/user/elsewhere".to_string()
+        }]
+    );
+
+    let plain = approval_display(method, &request(Value::Null));
+    assert!(plain.allow_session && plain.subject.is_none() && plain.session_grants.is_empty());
+
+    for unshowable in [json!(""), json!(["/"]), json!("/".repeat(4 * 1024 + 1))] {
+        let display = approval_display(method, &request(unshowable));
+        assert!(!display.allow_session);
+        assert!(display.session_grants.is_empty());
+    }
+}
+
+#[test]
+fn command_approvals_show_the_command_and_its_working_directory() {
+    let object = json!({
+        "threadId": "t",
+        "turnId": "u",
+        "itemId": "i",
+        "command": "rm -rf build",
+        "cwd": "/srv/other-project"
+    });
+    let display = approval_display(
+        "item/commandExecution/requestApproval",
+        object.as_object().unwrap(),
+    );
+    let subject = display.subject.unwrap();
+    assert_eq!(subject.kind, ApprovalSubjectKind::Command);
+    assert_eq!(subject.text, "rm -rf build");
+    assert_eq!(subject.location.as_deref(), Some("/srv/other-project"));
+    assert!(!subject.truncated);
+    assert!(display.allow_session && display.session_grants.is_empty());
+}

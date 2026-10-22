@@ -48,31 +48,87 @@ fn apply_linux_notification_hints(
     }
 }
 
-fn show_notification_with_linux_action<F>(
-    notification: &Notification,
-    error_context: &str,
-    on_action: F,
-) where
-    F: FnOnce(&str),
+/// Notifications that may listen for an action at once; further ones show without action buttons.
+#[cfg(any(target_os = "linux", test))]
+const MAX_NOTIFICATION_ACTION_WAITS: usize = 16;
+/// How long a shown notification keeps listening for its action.
+#[cfg(any(target_os = "linux", test))]
+const NOTIFICATION_ACTION_WAIT: std::time::Duration = std::time::Duration::from_secs(120);
+const MAX_NOTIFICATION_SUMMARY_CHARS: usize = 160;
+const MAX_NOTIFICATION_BODY_CHARS: usize = 1_000;
+const NOTIFICATION_TRUNCATION_MARK: char = '\u{2026}';
+
+#[cfg(target_os = "linux")]
+static NOTIFICATION_ACTION_WAITS: std::sync::LazyLock<std::sync::Arc<tokio::sync::Semaphore>> =
+    std::sync::LazyLock::new(|| {
+        std::sync::Arc::new(tokio::sync::Semaphore::new(MAX_NOTIFICATION_ACTION_WAITS))
+    });
+
+/// Takes one action wait slot, or strips the action buttons when every slot is taken so the
+/// notification never offers an action nothing listens for.
+#[cfg(any(target_os = "linux", test))]
+fn reserve_action_wait(
+    slots: &std::sync::Arc<tokio::sync::Semaphore>,
+    notification: &mut Notification,
+) -> Option<tokio::sync::OwnedSemaphorePermit> {
+    let slot = slots.clone().try_acquire_owned().ok();
+    if slot.is_none() {
+        notification.actions.clear();
+    }
+    slot
+}
+
+/// Listens for an action until `wait` finishes or `NOTIFICATION_ACTION_WAIT` elapses, then frees
+/// the action wait slot.
+#[cfg(any(target_os = "linux", test))]
+async fn listen_for_action(
+    slot: tokio::sync::OwnedSemaphorePermit,
+    wait: impl std::future::Future<Output = ()>,
+) {
+    // An elapsed wait only stops listening; the notification server still owns the notification.
+    let _elapsed = tokio::time::timeout(NOTIFICATION_ACTION_WAIT, wait).await;
+    drop(slot);
+}
+
+/// Shows a notification off the calling thread and runs `on_action` for the action the user picks.
+///
+/// On Linux each listening notification holds one of `MAX_NOTIFICATION_ACTION_WAITS` slots for at
+/// most `NOTIFICATION_ACTION_WAIT`, so repeated requests cannot pin threads or connections; once the
+/// slots are taken, notifications still show but without action buttons.
+fn spawn_notification<F>(notification: Notification, error_context: &'static str, on_action: F)
+where
+    F: FnOnce(&str) + Send + 'static,
 {
     #[cfg(target_os = "linux")]
-    {
-        match notification.show() {
-            Ok(handle) => {
-                handle.wait_for_action(on_action);
+    tauri::async_runtime::spawn(async move {
+        let mut notification = notification;
+        let action_slot = reserve_action_wait(&NOTIFICATION_ACTION_WAITS, &mut notification);
+        let handle = match notification.show_async().await {
+            Ok(handle) => handle,
+            Err(error) => {
+                eprintln!("{error_context}: {error}");
+                return;
             }
-            Err(e) => {
-                eprintln!("{error_context}: {e}");
+        };
+        let Some(action_slot) = action_slot else {
+            return;
+        };
+        let wait = handle.wait_for_action_async(|response| {
+            if let notify_rust::ActionResponse::Custom(action) = response {
+                on_action(action);
             }
-        }
-    }
+        });
+        listen_for_action(action_slot, wait).await;
+    });
 
     #[cfg(not(target_os = "linux"))]
     {
         let _ = on_action;
-        if let Err(e) = notification.show() {
-            eprintln!("{error_context}: {e}");
-        }
+        tauri::async_runtime::spawn_blocking(move || {
+            if let Err(error) = notification.show() {
+                eprintln!("{error_context}: {error}");
+            }
+        });
     }
 }
 
@@ -109,6 +165,10 @@ fn focus_main_window(app: tauri::AppHandle) {
     });
 }
 
+/// Whether the notification server may render body markup: the freedesktop servers notify-rust
+/// talks to on Linux and the BSDs. Windows shows text as given.
+const BODY_MARKUP: bool = cfg!(all(unix, not(target_os = "macos")));
+
 fn escape_notification_markup(value: &str) -> String {
     value
         .replace('&', "&amp;")
@@ -116,13 +176,59 @@ fn escape_notification_markup(value: &str) -> String {
         .replace('>', "&gt;")
 }
 
-fn notification_summary(value: &str) -> String {
+/// Shortens `value` to at most `max_chars` characters, marking any cut with an ellipsis.
+fn bounded_notification_text(value: &str, max_chars: usize) -> String {
+    if value.chars().count() <= max_chars {
+        return value.to_string();
+    }
+    let mut bounded = value
+        .chars()
+        .take(max_chars.saturating_sub(1))
+        .collect::<String>();
+    bounded.push(NOTIFICATION_TRUNCATION_MARK);
+    bounded
+}
+
+/// First line of `value`, bounded, or `fallback` when it is blank. Summaries are plain text in
+/// the notification specification, so they are not escaped.
+fn notification_summary(value: &str, fallback: &str) -> String {
     let summary = value.lines().next().unwrap_or("").trim();
     if summary.is_empty() {
-        "Calendar event".to_string()
+        fallback.to_string()
     } else {
-        escape_notification_markup(summary)
+        bounded_notification_text(summary, MAX_NOTIFICATION_SUMMARY_CHARS)
     }
+}
+
+/// `value` bounded before it is escaped, so no entity is split, and escaped where the server
+/// may render body markup, so text never becomes a link, image, or style.
+fn notification_body(value: &str) -> String {
+    let bounded = bounded_notification_text(value, MAX_NOTIFICATION_BODY_CHARS);
+    if BODY_MARKUP {
+        escape_notification_markup(&bounded)
+    } else {
+        bounded
+    }
+}
+
+/// Sets the summary and optional body of `notification`. Every notification sets its text here
+/// and nowhere else.
+fn set_notification_text(
+    notification: &mut Notification,
+    summary: &str,
+    fallback: &str,
+    body: Option<&str>,
+) {
+    notification.summary(&notification_summary(summary, fallback));
+    if let Some(body) = body {
+        notification.body(&notification_body(body));
+    }
+}
+
+fn notification_with_text(summary: &str, fallback: &str, body: Option<&str>) -> Notification {
+    let mut notification = Notification::new();
+    set_notification_text(&mut notification, summary, fallback, body);
+    notification
 }
 
 #[tauri::command]
@@ -137,36 +243,30 @@ pub fn show_event_notification(
     if play_sound.unwrap_or(true) {
         app_sounds.play(AppSound::EventNotification);
     }
-    std::thread::spawn(move || {
-        let summary = notification_summary(&title);
-        let body = escape_notification_markup(&body);
-        let opens_calendar = open_calendar.unwrap_or(false);
-        let action_label = if opens_calendar {
-            "Open calendar"
-        } else {
-            "Open Ganbaru"
-        };
-        let mut notification = Notification::new();
-        notification
-            .appname("Ganbaru")
-            .summary(&summary)
-            .body(&body)
-            .action("open", action_label)
-            .timeout(15_000);
-        apply_linux_notification_hints(&mut notification, Some("calendar"), true, true);
-        show_notification_with_linux_action(
-            &notification,
-            "Failed to show event notification",
-            |action| {
-                if action == "open" || action == "default" {
-                    if opens_calendar {
-                        let _ = app.emit("calendar-notification-open", ());
-                    }
-                    focus_main_window(app.clone());
+    let opens_calendar = open_calendar.unwrap_or(false);
+    let action_label = if opens_calendar {
+        "Open calendar"
+    } else {
+        "Open Ganbaru"
+    };
+    let mut notification = notification_with_text(&title, "Calendar event", Some(&body));
+    notification
+        .appname("Ganbaru")
+        .action("open", action_label)
+        .timeout(15_000);
+    apply_linux_notification_hints(&mut notification, Some("calendar"), true, true);
+    spawn_notification(
+        notification,
+        "Failed to show event notification",
+        move |action| {
+            if action == "open" || action == "default" {
+                if opens_calendar {
+                    let _ = app.emit("calendar-notification-open", ());
                 }
-            },
-        );
-    });
+                focus_main_window(app);
+            }
+        },
+    );
 }
 
 #[tauri::command]
@@ -182,34 +282,25 @@ pub fn show_notes_notification(
     if play_sound.unwrap_or(true) {
         app_sounds.play(AppSound::EventNotification);
     }
-    std::thread::spawn(move || {
-        let summary = notification_summary(&title);
-        let body = escape_notification_markup(&body);
-        let mut notification = Notification::new();
-        notification
-            .appname("Ganbaru")
-            .summary(&summary)
-            .body(&body)
-            .action("open", "Open note")
-            .timeout(15_000);
-        apply_linux_notification_hints(&mut notification, Some("reminder"), true, true);
-        show_notification_with_linux_action(
-            &notification,
-            "Failed to show notes notification",
-            |action| {
-                if action == "open" || action == "default" {
-                    let _ = app.emit(
-                        "notes-notification-open",
-                        NotesNotificationOpenPayload {
-                            page_id: page_id.clone(),
-                            block_id: block_id.clone(),
-                        },
-                    );
-                    focus_main_window(app.clone());
-                }
-            },
-        );
-    });
+    let mut notification = notification_with_text(&title, "Note reminder", Some(&body));
+    notification
+        .appname("Ganbaru")
+        .action("open", "Open note")
+        .timeout(15_000);
+    apply_linux_notification_hints(&mut notification, Some("reminder"), true, true);
+    spawn_notification(
+        notification,
+        "Failed to show notes notification",
+        move |action| {
+            if action == "open" || action == "default" {
+                let _ = app.emit(
+                    "notes-notification-open",
+                    NotesNotificationOpenPayload { page_id, block_id },
+                );
+                focus_main_window(app);
+            }
+        },
+    );
 }
 
 #[tauri::command]
@@ -225,34 +316,28 @@ pub fn show_project_task_notification(
     if play_sound.unwrap_or(true) {
         app_sounds.play(AppSound::EventNotification);
     }
-    std::thread::spawn(move || {
-        let summary = notification_summary(&title);
-        let body = escape_notification_markup(&body);
-        let mut notification = Notification::new();
-        notification
-            .appname("Ganbaru")
-            .summary(&summary)
-            .body(&body)
-            .action("open", "Open task")
-            .timeout(15_000);
-        apply_linux_notification_hints(&mut notification, Some("reminder"), true, true);
-        show_notification_with_linux_action(
-            &notification,
-            "Failed to show project task notification",
-            |action| {
-                if action == "open" || action == "default" {
-                    let _ = app.emit(
-                        "project-task-notification-open",
-                        ProjectTaskNotificationOpenPayload {
-                            project_id: project_id.clone(),
-                            task_id: task_id.clone(),
-                        },
-                    );
-                    focus_main_window(app.clone());
-                }
-            },
-        );
-    });
+    let mut notification = notification_with_text(&title, "Task reminder", Some(&body));
+    notification
+        .appname("Ganbaru")
+        .action("open", "Open task")
+        .timeout(15_000);
+    apply_linux_notification_hints(&mut notification, Some("reminder"), true, true);
+    spawn_notification(
+        notification,
+        "Failed to show project task notification",
+        move |action| {
+            if action == "open" || action == "default" {
+                let _ = app.emit(
+                    "project-task-notification-open",
+                    ProjectTaskNotificationOpenPayload {
+                        project_id,
+                        task_id,
+                    },
+                );
+                focus_main_window(app);
+            }
+        },
+    );
 }
 
 #[tauri::command]
@@ -263,129 +348,94 @@ pub fn show_benchmark_notification(
     app_sounds: State<'_, AppSoundState>,
 ) {
     app_sounds.play(AppSound::EventNotification);
-    std::thread::spawn(move || {
-        let mut notification = Notification::new();
-        notification
-            .summary(&title)
-            .body(&body)
-            .action("show_summary", "Show summary")
-            .timeout(10_000)
-            .id(9002);
-        apply_linux_notification_hints(&mut notification, None, false, true);
-        show_notification_with_linux_action(
-            &notification,
-            "Failed to show benchmark notification",
-            |action| {
-                if action == "show_summary" || action == "default" {
-                    focus_main_window(app.clone());
-                }
-            },
-        );
-    });
+    let mut notification = notification_with_text(&title, "Benchmark finished", Some(&body));
+    notification
+        .action("show_summary", "Show summary")
+        .timeout(10_000)
+        .id(9002);
+    apply_linux_notification_hints(&mut notification, None, false, true);
+    spawn_notification(
+        notification,
+        "Failed to show benchmark notification",
+        move |action| {
+            if action == "show_summary" || action == "default" {
+                focus_main_window(app);
+            }
+        },
+    );
 }
 
-#[tauri::command]
-pub fn show_distractions_desktop_block_notification(
+/// Longest app or limit name a distraction notification quotes.
+const MAX_DISTRACTION_NAME_CHARS: usize = 80;
+
+/// First line of a distraction app or limit name, bounded, or `fallback` when it is blank.
+fn distraction_notification_name(value: &str, fallback: &str) -> String {
+    let name = value.lines().next().unwrap_or("").trim();
+    if name.is_empty() {
+        fallback.to_string()
+    } else {
+        bounded_notification_text(name, MAX_DISTRACTION_NAME_CHARS)
+    }
+}
+
+pub(crate) fn show_distractions_desktop_block_notification(
     app: tauri::AppHandle,
     app_name: String,
     app_sounds: State<'_, AppSoundState>,
 ) {
     app_sounds.play(AppSound::EventNotification);
-    std::thread::spawn(move || {
-        let app_name = app_name
-            .lines()
-            .next()
-            .unwrap_or("")
-            .trim()
-            .chars()
-            .take(80)
-            .collect::<String>();
-        let app_name = if app_name.is_empty() {
-            "The blocked app".to_string()
-        } else {
-            app_name
-        };
-        let body = escape_notification_markup(&format!(
-            "{app_name} was closed because it is blocked by your desktop rules. Change this in Settings > Distractions > Desktop apps (or click this notification)"
-        ));
-        let mut notification = Notification::new();
-        notification
-            .appname("Ganbaru")
-            .summary("App closed by Ganbaru")
-            .body(&body)
-            .action("default", "Open desktop apps")
-            .timeout(10_000);
-        apply_linux_notification_hints(&mut notification, Some("device"), true, true);
-        show_notification_with_linux_action(
-            &notification,
-            "Failed to show distraction desktop block notification",
-            |action| {
-                if action == "default" {
-                    let _ = app.emit("distractions-open-desktop-settings", ());
-                    focus_main_window(app.clone());
-                }
-            },
-        );
-    });
+    let app_name = distraction_notification_name(&app_name, "The blocked app");
+    let body = format!(
+        "{app_name} was closed because it is blocked by your desktop rules. Change this in Settings > Distractions > Desktop apps (or click this notification)"
+    );
+    let summary = "App closed by Ganbaru";
+    let mut notification = notification_with_text(summary, summary, Some(&body));
+    notification
+        .appname("Ganbaru")
+        .action("default", "Open desktop apps")
+        .timeout(10_000);
+    apply_linux_notification_hints(&mut notification, Some("device"), true, true);
+    spawn_notification(
+        notification,
+        "Failed to show distraction desktop block notification",
+        move |action| {
+            if action == "default" {
+                let _ = app.emit("distractions-open-desktop-settings", ());
+                focus_main_window(app);
+            }
+        },
+    );
 }
 
-#[tauri::command]
-pub fn show_distractions_desktop_limit_notification(
+pub(crate) fn show_distractions_desktop_limit_notification(
     app: tauri::AppHandle,
     app_name: String,
     limit_name: String,
     app_sounds: State<'_, AppSoundState>,
 ) {
     app_sounds.play(AppSound::EventNotification);
-    std::thread::spawn(move || {
-        let app_name = app_name
-            .lines()
-            .next()
-            .unwrap_or("")
-            .trim()
-            .chars()
-            .take(80)
-            .collect::<String>();
-        let app_name = if app_name.is_empty() {
-            "The app".to_string()
-        } else {
-            app_name
-        };
-        let limit_name = limit_name
-            .lines()
-            .next()
-            .unwrap_or("")
-            .trim()
-            .chars()
-            .take(80)
-            .collect::<String>();
-        let limit_name = if limit_name.is_empty() {
-            "a usage limit".to_string()
-        } else {
-            limit_name
-        };
-        let body = escape_notification_markup(&format!(
-            "{app_name} was closed because {limit_name} reached its limit. Change this in Settings > Distractions > Limits (or click this notification)"
-        ));
-        let mut notification = Notification::new();
-        notification
-            .appname("Ganbaru")
-            .summary("Usage limit reached")
-            .body(&body)
-            .action("default", "Open limits")
-            .timeout(10_000);
-        apply_linux_notification_hints(&mut notification, Some("device"), true, true);
-        show_notification_with_linux_action(
-            &notification,
-            "Failed to show distraction desktop limit notification",
-            |action| {
-                if action == "default" {
-                    let _ = app.emit("distractions-open-limits-settings", ());
-                    focus_main_window(app.clone());
-                }
-            },
-        );
-    });
+    let app_name = distraction_notification_name(&app_name, "The app");
+    let limit_name = distraction_notification_name(&limit_name, "a usage limit");
+    let body = format!(
+        "{app_name} was closed because {limit_name} reached its limit. Change this in Settings > Distractions > Limits (or click this notification)"
+    );
+    let summary = "Usage limit reached";
+    let mut notification = notification_with_text(summary, summary, Some(&body));
+    notification
+        .appname("Ganbaru")
+        .action("default", "Open limits")
+        .timeout(10_000);
+    apply_linux_notification_hints(&mut notification, Some("device"), true, true);
+    spawn_notification(
+        notification,
+        "Failed to show distraction desktop limit notification",
+        move |action| {
+            if action == "default" {
+                let _ = app.emit("distractions-open-limits-settings", ());
+                focus_main_window(app);
+            }
+        },
+    );
 }
 
 /// Desktop alerts are emitted only from an accepted native Focus presentation.
@@ -471,7 +521,8 @@ pub(crate) fn show_native_focus_alert(
             extend_label,
             remaining_ms,
         } => {
-            notification.summary(&title).id(9001);
+            set_notification_text(&mut notification, &title, "Focus", None);
+            notification.id(9001);
             #[cfg(target_os = "linux")]
             if let Some(label) = extend_label {
                 notification.action("add_time", &label);
@@ -486,7 +537,8 @@ pub(crate) fn show_native_focus_alert(
             resume_label,
             dismiss_label,
         } => {
-            notification.summary(&title).body(&body).id(9003);
+            set_notification_text(&mut notification, &title, "Focus", Some(&body));
+            notification.id(9003);
             #[cfg(target_os = "linux")]
             notification
                 .action("resume", &resume_label)
@@ -505,7 +557,12 @@ pub(crate) fn show_native_focus_alert(
     ) {
         return Err("Native Focus alert context changed before publication".into());
     }
+    #[cfg(target_os = "linux")]
     let handle = notification
+        .show()
+        .map_err(|error| format!("Show native Focus alert: {error}"))?;
+    #[cfg(not(target_os = "linux"))]
+    notification
         .show()
         .map_err(|error| format!("Show native Focus alert: {error}"))?;
     #[cfg(target_os = "linux")]
@@ -542,9 +599,134 @@ pub(crate) fn show_native_focus_alert(
             handle.close_async().await;
         }
     });
-    #[cfg(not(target_os = "linux"))]
-    let _ = handle;
     Ok(())
+}
+
+#[cfg(test)]
+mod notification_bounds_tests {
+    use super::*;
+
+    #[test]
+    fn notification_text_is_bounded_before_markup_is_escaped() {
+        let long_title = format!(
+            "{}\nsecond line",
+            "<".repeat(MAX_NOTIFICATION_SUMMARY_CHARS * 4)
+        );
+        let summary = notification_summary(&long_title, "Calendar event");
+        assert_eq!(
+            summary,
+            format!(
+                "{}{NOTIFICATION_TRUNCATION_MARK}",
+                "<".repeat(MAX_NOTIFICATION_SUMMARY_CHARS - 1)
+            ),
+            "only the first line is kept, as plain text"
+        );
+        let markup = "<".repeat(MAX_NOTIFICATION_BODY_CHARS * 2);
+        let expected = format!(
+            "{}{NOTIFICATION_TRUNCATION_MARK}",
+            "<".repeat(MAX_NOTIFICATION_BODY_CHARS - 1)
+        );
+        assert_eq!(
+            notification_body(&markup),
+            if BODY_MARKUP {
+                escape_notification_markup(&expected)
+            } else {
+                expected
+            },
+            "the body is bounded before escaping, so no entity is split"
+        );
+        assert_eq!(
+            notification_summary(" \n title", "Task reminder"),
+            "Task reminder"
+        );
+
+        let body = notification_body(&"\u{e9}".repeat(MAX_NOTIFICATION_BODY_CHARS + 1));
+        assert_eq!(body.chars().count(), MAX_NOTIFICATION_BODY_CHARS);
+        assert!(body.ends_with(NOTIFICATION_TRUNCATION_MARK));
+        assert_eq!(
+            notification_body("a & b"),
+            if BODY_MARKUP { "a &amp; b" } else { "a & b" }
+        );
+        assert_eq!(
+            distraction_notification_name(&"x".repeat(200), "The app")
+                .chars()
+                .count(),
+            MAX_DISTRACTION_NAME_CHARS
+        );
+        assert_eq!(distraction_notification_name("\n", "The app"), "The app");
+    }
+
+    #[test]
+    fn every_notification_sets_its_text_through_the_escaping_builder() {
+        let notification = notification_with_text(
+            "R&D <b>review</b>\nsecond line",
+            "Focus",
+            Some("<a href=\"https://example.com\"><img src=\"x\"/></a> & more"),
+        );
+        assert_eq!(notification.summary, "R&D <b>review</b>");
+        if BODY_MARKUP {
+            assert_eq!(
+                notification.body,
+                "&lt;a href=\"https://example.com\"&gt;&lt;img src=\"x\"/&gt;&lt;/a&gt; &amp; more"
+            );
+        }
+
+        let source = include_str!("desktop.rs");
+        let production = source
+            .split_once("#[cfg(test)]")
+            .map_or(source, |(production, _)| production);
+        for setter in [".summary(", ".body("] {
+            assert_eq!(
+                production.matches(setter).count(),
+                1,
+                "{setter} is called only by set_notification_text"
+            );
+        }
+    }
+
+    #[test]
+    fn notifications_beyond_the_wait_limit_show_without_actions() {
+        let slots = std::sync::Arc::new(tokio::sync::Semaphore::new(MAX_NOTIFICATION_ACTION_WAITS));
+        let mut held = Vec::new();
+        for _ in 0..MAX_NOTIFICATION_ACTION_WAITS {
+            let mut notification = Notification::new();
+            notification.action("open", "Open");
+            held.push(reserve_action_wait(&slots, &mut notification).expect("slot should be free"));
+            assert_eq!(notification.actions.len(), 2);
+        }
+
+        let mut overflow = Notification::new();
+        overflow.action("open", "Open");
+        assert!(reserve_action_wait(&slots, &mut overflow).is_none());
+        assert!(overflow.actions.is_empty());
+
+        held.pop();
+        let mut later = Notification::new();
+        later.action("open", "Open");
+        assert!(reserve_action_wait(&slots, &mut later).is_some());
+        assert_eq!(later.actions.len(), 2);
+    }
+
+    #[test]
+    fn an_unanswered_notification_frees_its_action_slot_after_the_wait_limit() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .start_paused(true)
+            .build()
+            .expect("build paused runtime");
+        runtime.block_on(async {
+            let slots = std::sync::Arc::new(tokio::sync::Semaphore::new(1));
+            let mut notification = Notification::new();
+            notification.action("open", "Open");
+            let slot = reserve_action_wait(&slots, &mut notification).expect("slot should be free");
+            let started = tokio::time::Instant::now();
+
+            listen_for_action(slot, std::future::pending()).await;
+
+            assert_eq!(started.elapsed(), NOTIFICATION_ACTION_WAIT);
+            assert_eq!(slots.available_permits(), 1);
+        });
+    }
 }
 
 #[cfg(test)]

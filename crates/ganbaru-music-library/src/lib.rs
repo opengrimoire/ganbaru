@@ -27,7 +27,8 @@ mod rows;
 pub mod search;
 pub mod session;
 #[cfg(desktop)]
-pub mod soundscape_groups;
+#[cfg(desktop)]
+pub mod soundscape_presets;
 #[cfg(desktop)]
 pub mod soundscapes;
 pub mod source_lifecycle;
@@ -49,6 +50,7 @@ pub use transfer::{
     MusicTransferSource,
 };
 pub(crate) use validation::*;
+pub use validation::{MAX_ITEM_DESCRIPTION_CHARS, bounded_item_description};
 
 #[cfg(test)]
 mod tests;

@@ -104,6 +104,7 @@ describe("ChatWorkspaceHeader", () => {
       canonicalPath: "/work/ganbaru",
       lastVerifiedAt: "2026-07-26T12:00:00.000Z",
       currentBranch: "feat/chat-shell",
+      trust: "trusted",
     }];
     chat.activeThreads = [];
     chat.archivedThreads = [];

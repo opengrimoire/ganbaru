@@ -13,9 +13,12 @@ struct AssignmentRow {
     behavior: String,
     playlist_id: Option<String>,
     soundscape_behavior: String,
-    soundscape_id: Option<String>,
+    soundscape_preset_id: Option<String>,
 }
 
+/// Resolves music and soundscape independently: each takes the most specific layer
+/// (event override, work environment, then project snapshot) that does not inherit it. The
+/// source names the layer that chose the music, or the sound when no layer chose music.
 async fn resolve_assignment(
     connection: &mut sqlx::SqliteConnection,
     event_id: &str,
@@ -27,7 +30,8 @@ async fn resolve_assignment(
            (owner_id = ? AND owner_kind IN ('event-override', 'event-snapshot'))
            OR (owner_kind = 'work-environment' AND owner_id =
              (SELECT environment_id FROM calendar_events WHERE id = ?)))
-         AND (length(CAST(playlist_id AS BLOB)) > ? OR length(CAST(soundscape_id AS BLOB)) > ?))",
+         AND (length(CAST(playlist_id AS BLOB)) > ?
+           OR length(CAST(soundscape_preset_id AS BLOB)) > ?))",
     )
     .bind(phase.as_ref())
     .bind(event_id)
@@ -43,22 +47,38 @@ async fn resolve_assignment(
             "a soundtrack reference exceeds its size limit",
         ));
     }
-    sqlx::query_as(
-        "SELECT owner_kind AS source, behavior, playlist_id, soundscape_behavior, soundscape_id
+    let layers: Vec<AssignmentRow> = sqlx::query_as(
+        "SELECT owner_kind AS source, behavior, playlist_id, soundscape_behavior, soundscape_preset_id
          FROM music_context_assignments
          WHERE phase = ? AND (behavior != 'inherit' OR soundscape_behavior != 'inherit') AND (
            (owner_id = ? AND owner_kind IN ('event-override', 'event-snapshot'))
            OR (owner_kind = 'work-environment' AND owner_id =
              (SELECT environment_id FROM calendar_events WHERE id = ?)))
          ORDER BY CASE owner_kind WHEN 'event-override' THEN 0
-           WHEN 'work-environment' THEN 1 ELSE 2 END LIMIT 1",
+           WHEN 'work-environment' THEN 1 ELSE 2 END",
     )
     .bind(phase.as_ref())
     .bind(event_id)
     .bind(event_id)
-    .fetch_optional(connection)
+    .fetch_all(connection)
     .await
-    .map_err(|error| MusicLibraryError::database("resolve accepted soundtrack", error))
+    .map_err(|error| MusicLibraryError::database("resolve accepted soundtrack", error))?;
+    let inherit = MusicAssignmentBehavior::Inherit.as_ref();
+    let music = layers.iter().find(|layer| layer.behavior != inherit);
+    let sound = layers
+        .iter()
+        .find(|layer| layer.soundscape_behavior != inherit);
+    let Some(source) = music.or(sound) else {
+        return Ok(None);
+    };
+    Ok(Some(AssignmentRow {
+        source: source.source.clone(),
+        behavior: music.map_or_else(|| inherit.into(), |layer| layer.behavior.clone()),
+        playlist_id: music.and_then(|layer| layer.playlist_id.clone()),
+        soundscape_behavior: sound
+            .map_or_else(|| inherit.into(), |layer| layer.soundscape_behavior.clone()),
+        soundscape_preset_id: sound.and_then(|layer| layer.soundscape_preset_id.clone()),
+    }))
 }
 
 #[cfg(test)]
@@ -215,7 +235,19 @@ impl Owner {
                     self.state.owner,
                     SessionOwner::CalendarEvent | SessionOwner::Pomodoro
                 );
-            if action.is_some() || clear_context {
+            #[cfg(desktop)]
+            let soundscape = super::context_soundscape::prepare(
+                &mut transaction,
+                &BTreeMap::new(),
+                ganbaru_music::assignments::MusicSoundscapeBehavior::Inherit.as_ref(),
+                None,
+            )
+            .await?;
+            #[cfg(desktop)]
+            let soundscape_acts = soundscape.acts();
+            #[cfg(mobile)]
+            let soundscape_acts = false;
+            if action.is_some() || clear_context || soundscape_acts {
                 let mut next = self.state.clone();
                 let transition = if clear_context {
                     next.context = None;
@@ -254,6 +286,11 @@ impl Owner {
                 })?;
                 self.install(next, transition).await?;
             }
+            #[cfg(desktop)]
+            if soundscape_acts {
+                self.finish_context_soundscape(soundscape, activation, permit)
+                    .await?;
+            }
             return Ok(true);
         };
         let AssignmentRow {
@@ -261,7 +298,7 @@ impl Owner {
             behavior,
             playlist_id,
             soundscape_behavior,
-            soundscape_id,
+            soundscape_preset_id,
         } = assignment;
         let behavior = MusicAssignmentBehavior::try_from(behavior.as_str())
             .map_err(|error| MusicLibraryError::validation("assignment.behavior", error))?;
@@ -391,15 +428,26 @@ impl Owner {
                 .extend(prior.apply(SessionIntent::Stop, now_ms()).listening);
         }
         #[cfg(desktop)]
+        let soundscape_paths = {
+            let app = self.app.clone();
+            let vault_id = self.vault_id.clone().unwrap_or_default();
+            tauri::async_runtime::spawn_blocking(move || {
+                crate::music::soundscape_paths::paths(&app, &vault_id)
+            })
+            .await
+            .map_err(|error| MusicLibraryError::runtime("read soundscape paths", error))?
+            .map_err(|error| MusicLibraryError::runtime("read soundscape paths", error))?
+        };
+        #[cfg(desktop)]
         let soundscape = super::context_soundscape::prepare(
             &mut transaction,
-            &self.device_id,
+            &soundscape_paths,
             &soundscape_behavior,
-            soundscape_id.as_deref(),
+            soundscape_preset_id.as_deref(),
         )
         .await?;
         #[cfg(mobile)]
-        let _ = (soundscape_behavior, soundscape_id);
+        let _ = (soundscape_behavior, soundscape_preset_id);
         #[cfg(desktop)]
         if soundscape.missing
             && let Some(context) = &mut next.context
@@ -430,6 +478,21 @@ impl Owner {
             .map_err(|error| MusicLibraryError::database("commit accepted soundtrack", error))?;
         self.install(next, transition).await?;
         #[cfg(desktop)]
+        self.finish_context_soundscape(soundscape, activation, permit)
+            .await?;
+        #[cfg(mobile)]
+        drop(permit);
+        Ok(true)
+    }
+
+    /// Deliver a committed soundscape effect, then project the accepted soundscape version.
+    #[cfg(desktop)]
+    async fn finish_context_soundscape(
+        &mut self,
+        soundscape: super::context_soundscape::PreparedSoundscape,
+        activation: ContextActivation,
+        permit: crate::vault::ownership::ManagedVaultWritePermit,
+    ) -> MusicLibraryResult<()> {
         if let Err(error) = self
             .deliver_context_soundscape(soundscape, activation, permit)
             .await
@@ -439,22 +502,15 @@ impl Owner {
             ));
             self.publish(false)?;
         }
-        #[cfg(desktop)]
-        {
-            let version: i64 = sqlx::query_scalar(
-                "SELECT version FROM music_soundscape_state WHERE singleton = 1",
-            )
-            .fetch_one(self.pool.as_ref().expect("initialized music pool"))
-            .await
-            .map_err(|error| {
-                MusicLibraryError::database("project accepted background sound", error)
-            })?;
-            self.state.soundscape_version = Some(version);
-            self.publish(false)?;
-        }
-        #[cfg(mobile)]
-        drop(permit);
-        Ok(true)
+        let version: i64 =
+            sqlx::query_scalar("SELECT version FROM music_soundscape_state WHERE singleton = 1")
+                .fetch_one(self.pool.as_ref().expect("initialized music pool"))
+                .await
+                .map_err(|error| {
+                    MusicLibraryError::database("project accepted soundscape", error)
+                })?;
+        self.state.soundscape_version = Some(version);
+        self.publish(false)
     }
 }
 

@@ -34,6 +34,11 @@ impl CalendarActivationState {
         true
     }
 
+    /// Moves the next read forward while keeping the current activation, so an unchanged event never restarts.
+    pub(in super::super) fn poll_now(&mut self) {
+        self.poll_at = Instant::now();
+    }
+
     pub(in super::super) fn retry(&mut self) {
         self.key = None;
         self.poll_at = Instant::now();
@@ -97,24 +102,41 @@ impl Owner {
         self.accept_calendar_poll(boundary)?;
         let Some(activation) = activation else {
             self.calendar.key = None;
-            if self.state.owner == SessionOwner::CalendarEvent && self.state.context.is_some() {
+            // With no Focus run or Calendar event active, Music stays with the listener and a
+            // soundscape that a phase or event started ends.
+            let released_soundscape =
+                super::super::context_soundscape::release_automatic(&mut transaction).await?;
+            let released_music = (self.state.owner == SessionOwner::CalendarEvent
+                && self.state.context.is_some())
+            .then(|| {
                 let mut next = self.state.clone();
                 next.context = None;
                 next.owner = SessionOwner::Manual;
                 let transition = next.apply(SessionIntent::Refresh, now_ms());
+                (next, transition)
+            });
+            if released_soundscape.is_none() && released_music.is_none() {
+                return Ok(());
+            }
+            if let Some((next, transition)) = &released_music {
                 persistence::commit_in_transaction(
                     &mut transaction,
                     &self.device_id,
-                    &next,
-                    &transition,
+                    next,
+                    transition,
                     action,
                     now_ms(),
                 )
                 .await?;
-                transaction.commit().await.map_err(|error| {
-                    MusicLibraryError::database("release ended Calendar soundtrack", error)
-                })?;
+            }
+            transaction.commit().await.map_err(|error| {
+                MusicLibraryError::database("release ended Calendar soundtrack", error)
+            })?;
+            if let Some((next, transition)) = released_music {
                 self.install(next, transition).await?;
+            }
+            if let Some(version) = released_soundscape {
+                self.silence_released_soundscape(version).await?;
             }
             return Ok(());
         };
@@ -163,13 +185,19 @@ impl Owner {
             .map_err(|error| {
                 MusicLibraryError::runtime("read Calendar soundtrack window", error)
             })?;
+        let automatic_soundscape =
+            super::super::context_soundscape::automatic_playing(&mut transaction).await?;
         // Expansion is CPU work; release the shared connection before it starts.
         drop(transaction);
         let projected = expand(source, window.clone()).await?;
         let (activation, boundary) = select(&projected, now)?;
         let pending = match &activation {
             Some(activation) => self.calendar.key.as_deref() != Some(&activation.key),
-            None => self.state.owner == SessionOwner::CalendarEvent && self.state.context.is_some(),
+            None => {
+                automatic_soundscape
+                    || (self.state.owner == SessionOwner::CalendarEvent
+                        && self.state.context.is_some())
+            }
         };
         if !pending {
             if activation.is_none() {

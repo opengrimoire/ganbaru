@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use super::templates::insert_default_project_graphs;
+use super::defaults::insert_default_project_graphs;
 
 pub(super) const ROUTINE_GROUP_ID: &str = "group-routine";
 

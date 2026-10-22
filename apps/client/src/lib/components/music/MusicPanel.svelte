@@ -1,11 +1,10 @@
 <script lang="ts">
   import { onDestroy, tick } from "svelte";
-  import AlertCircle from "@lucide/svelte/icons/alert-circle";
+  import AlertCircle from "@lucide/svelte/icons/circle-alert";
   import FolderSearch from "@lucide/svelte/icons/folder-search";
   import ListMusic from "@lucide/svelte/icons/list-music";
   import MonitorPlay from "@lucide/svelte/icons/monitor-play";
   import LoaderCircle from "@lucide/svelte/icons/loader-circle";
-  import CalendarClock from "@lucide/svelte/icons/calendar-clock";
   import Pause from "@lucide/svelte/icons/pause";
   import Play from "@lucide/svelte/icons/play";
   import SkipBack from "@lucide/svelte/icons/skip-back";
@@ -74,6 +73,7 @@
   let playlistScrollContainer = $state<HTMLElement | undefined>();
   let volumeMenuRoot = $state<HTMLElement | null>(null);
   let volumeMenuOpen = $state(false);
+  let soundscapeControl = $state<ReturnType<typeof MusicSoundscapeControl> | null>(null);
   const playlistVisible = $derived(player.playlistVisible);
   const playlistHasContent = $derived(player.queue.length > 0);
   /** First use opens the Builder only once a folder is connected or being prepared, never just to ask for one. */
@@ -517,7 +517,8 @@
     }
     if (event.code === "Space") {
       claimKeyboardShortcut(event);
-      void player.togglePlay();
+      if (soundscapeControl?.isOpen()) soundscapeControl.togglePlayback();
+      else void player.togglePlay();
       return;
     }
     const seekDigit = digitSeekShortcut(event);
@@ -566,7 +567,12 @@
       void player.adjustVolume(-volumeShortcutStep);
       return;
     }
-    if (event.key.toLowerCase() === "s" || event.key.toLowerCase() === "r") {
+    if (event.key.toLowerCase() === "s" && soundscapeControl) {
+      claimKeyboardShortcut(event);
+      soundscapeControl.toggleOpen();
+      return;
+    }
+    if (event.key.toLowerCase() === "r") {
       claimKeyboardShortcut(event);
       if (player.queue.length > 0) player.setPlaybackMode(player.playbackMode === "shuffle" ? "in-order" : "shuffle");
       return;
@@ -627,19 +633,20 @@
   function handleMediaSurfaceClick(event: MouseEvent): void {
     event.preventDefault();
     if (event.button !== 0) return;
-    if (event.detail > 1) return;
     clearMediaSurfaceClickTimeout();
+    if (event.detail > 1) return;
     mediaSurfaceClickTimeoutId = window.setTimeout(() => {
       mediaSurfaceClickTimeoutId = null;
       void player.togglePlay();
     }, 250);
   }
 
-  function handleMediaSurfaceDoubleClick(event: MouseEvent): void {
+  /** Toggles fullscreen on the second press of a double click, while WebKit still credits the press as user activation. */
+  function handleMediaSurfaceMouseDown(event: MouseEvent): void {
+    if (event.button !== 0 || event.detail !== 2) return;
     event.preventDefault();
-    if (event.button !== 0) return;
     clearMediaSurfaceClickTimeout();
-    window.dispatchEvent(new CustomEvent(mediaSurfaceFullscreenEvent));
+    window.dispatchEvent(new CustomEvent(mediaSurfaceFullscreenEvent, { detail: event }));
   }
 
   function clearMediaSurfaceClickTimeout(): void {
@@ -740,7 +747,7 @@
     if (mediaSurfaceFullscreen && event.key.toLowerCase() === "f") {
       event.preventDefault();
       event.stopPropagation();
-      window.dispatchEvent(new CustomEvent(mediaSurfaceFullscreenEvent));
+      window.dispatchEvent(new CustomEvent(mediaSurfaceFullscreenEvent, { detail: event }));
     }
   }
 </script>
@@ -918,18 +925,6 @@
         <button type="button" class="notice-action-text" onclick={() => player.inspectContextAssignment()}>{t("music.assignment.context.inspect")}</button>
       {/snippet}
     </Notice>
-  {:else if visibleContext}
-    <div class="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1.5 border-y border-border/55 bg-primary/6 px-3 py-2 text-[0.68rem]" role="status">
-      <CalendarClock size={14} class="shrink-0 text-primary" />
-      <div class="min-w-40 flex-1 leading-relaxed">
-        <p class="font-semibold text-foreground">{contextSummary}</p>
-        <p class="text-muted-foreground">{t(`music.assignment.context.state.${visibleContext.state}`)}</p>
-      </div>
-      {#if visibleContext.state === "prepared"}
-        <button type="button" onclick={() => { void player.playPlayback(); }} class="rounded-md bg-primary px-2.5 py-1 font-semibold text-primary-foreground hover:bg-primary/90">{t("music.assignment.context.preparedPlay")}</button>
-      {/if}
-      <button type="button" onclick={() => player.inspectContextAssignment()} class="rounded-md px-2.5 py-1 font-semibold text-primary hover:bg-primary/10">{t("music.assignment.context.inspect")}</button>
-    </div>
   {/if}
 
   <div
@@ -965,7 +960,7 @@
         aria-label={player.isPlaying ? t("music.pause") : t("music.play")}
         data-app-tooltip-disabled="true"
         onclick={handleMediaSurfaceClick}
-        ondblclick={handleMediaSurfaceDoubleClick}
+        onmousedown={handleMediaSurfaceMouseDown}
         onkeydown={handleMediaSurfaceKeydown}
         onwheel={(event) => player.handleVolumeWheel(event)}
       >
@@ -981,7 +976,7 @@
             <button
               type="button"
               onclick={(event) => { event.stopPropagation(); showMainWindow(); }}
-              ondblclick={(event) => event.stopPropagation()}
+              onmousedown={(event) => event.stopPropagation()}
               onkeydown={(event) => event.stopPropagation()}
               class="text-[0.733333rem] font-medium text-primary hover:underline"
             >{t("music.nativeSession.showMainWindow")}</button>
@@ -1033,7 +1028,7 @@
               </div>
             {/if}
 
-            <div class="relative min-h-0 flex-1">
+            <div class="relative isolate min-h-0 flex-1">
               <div
                 bind:this={playlistScrollContainer}
                 use:playlistViewportAction
@@ -1182,7 +1177,7 @@
             </button>
           </div>
           {#if supportsSoundscapes}
-            <MusicSoundscapeControl onOpenSoundscapes={() => openPlaylistBuilder({ kind: "open-soundscapes" })} />
+            <MusicSoundscapeControl bind:this={soundscapeControl} onOpenSoundscapes={() => openPlaylistBuilder({ kind: "open-soundscapes" })} />
           {/if}
           <div
             bind:this={volumeMenuRoot}

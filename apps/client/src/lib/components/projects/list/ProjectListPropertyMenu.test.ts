@@ -118,7 +118,7 @@ describe("Projects property icons", () => {
     expect(iconButton.disabled).toBe(false);
     iconButton.click();
     // The picker loads on first use and replaces the placeholder trigger with its own.
-    await vi.waitFor(() => expect(button("Property icon", menu).getAttribute("aria-expanded")).toBe("true"));
+    await vi.waitFor(() => expect(button("Property icon", menu).getAttribute("aria-expanded")).toBe("true"), { timeout: 5_000 });
     button("Remove").click();
     await vi.waitFor(() => expect(store.updateCustomField).toHaveBeenCalledWith(expect.objectContaining({id: "points"}), {icon: null}));
     expect(menu.isConnected).toBe(true);

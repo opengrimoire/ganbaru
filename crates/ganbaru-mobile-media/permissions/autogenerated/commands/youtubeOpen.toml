@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-youtubeOpen"
+description = "Enables the youtubeOpen command without any pre-configured scope."
+commands.allow = ["youtubeOpen"]
+
+[[permission]]
+identifier = "deny-youtubeOpen"
+description = "Denies the youtubeOpen command without any pre-configured scope."
+commands.deny = ["youtubeOpen"]

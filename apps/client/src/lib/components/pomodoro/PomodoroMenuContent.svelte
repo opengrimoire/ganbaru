@@ -11,16 +11,13 @@
   import type { PlaybackStatus } from "$lib/music/playback";
   import { getMusicPlayer } from "$lib/stores/music-player.svelte";
   import { getPomodoro } from "$lib/stores/pomodoro.svelte";
-  import { cn } from "$lib/utils";
 
   let {
     includeMusic,
-    touch = false,
     onDismiss,
     onOpenMusic,
   }: {
     includeMusic: boolean;
-    touch?: boolean;
     onDismiss: () => void;
     onOpenMusic: () => void;
   } = $props();
@@ -116,7 +113,7 @@
 </script>
 
 {#if isActive}
-  <div class="menu-label">
+  <div class="menu-label tabular-nums">
     {pomodoro.phase !== "focus" && pomodoro.remainingSeconds === 0
       ? t("pomodoroNotification.breakCompleteTitle")
       : t("titleBar.pomodoro.left", pomodoro.formattedTime)}
@@ -183,22 +180,6 @@
 
 {#if includeMusic}
   <div role="separator" class="menu-separator"></div>
-  {#if musicPlayer.contextPlayback && musicPlayer.contextPlayback.state !== "overridden"}
-    <button
-      type="button"
-      onclick={() => { musicPlayer.inspectContextAssignment(); onDismiss(); }}
-      class={cn(
-        "menu-item items-start gap-2 bg-primary/7 py-2",
-        touch ? "active:bg-primary/12" : "hover:bg-primary/12",
-      )}
-    >
-      <span class="mt-1 h-1.5 w-1.5 shrink-0 rounded-full bg-primary"></span>
-      <span class="min-w-0">
-        <span class="block truncate font-medium">{t("titleBar.music.contextual", t(`music.assignment.phase.${musicPlayer.contextPlayback.phase}`), musicPlayer.contextPlayback.eventTitle)}</span>
-        <span class="block text-panel-detail text-muted-foreground">{t("titleBar.music.inspectAssignment")}</span>
-      </span>
-    </button>
-  {/if}
   <div class="menu-label">
     <span class="block truncate">{#if musicStatusLoading}<Loading layout="inline" label={t("titleBar.music.status.loading")} />{:else}{musicStatusText}{/if}</span>
   </div>

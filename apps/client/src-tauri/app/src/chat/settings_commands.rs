@@ -2,12 +2,20 @@
 
 use super::credentials::{
     CredentialStore, CredentialStoreAvailability, PlatformCredentialStore, SecretValue,
-    materialize_provider_environment,
+    is_provider_credential_reference, materialize_provider_environment,
+    provider_credential_reference,
 };
 #[cfg(test)]
 use super::device_state::ChatProviderDeviceState;
 use super::device_state::{read_active_device_scope, update_active_device_scope};
+#[cfg(all(test, unix))]
+use super::settings::installed_provider_executables;
 pub(crate) use super::settings::read_provider;
+use super::settings::{
+    ProviderRuntimePrompt, ProviderRuntimeReviewRead, RuntimeReceipts, approval_digests,
+    approved_runtime, ask_runtime_approval, ingress_review_items, pending_portable_items,
+    require_runtime_approved_on_device, validate_runtime_prompt,
+};
 use super::settings::{
     apply_provider_probe, config_io_error, credential_error, device_configuration,
     device_state_error, discover_default_providers, discover_default_providers_once,
@@ -20,8 +28,8 @@ use super::settings::{
 };
 #[cfg(test)]
 use super::settings::{
-    default_provider_configuration, installed_provider_executables,
-    provider_family_is_discoverable, should_discover_default_provider,
+    default_provider_configuration, provider_family_is_discoverable,
+    should_discover_default_provider,
 };
 use crate::vault;
 use ganbaru_chat_contracts::config::{
@@ -34,6 +42,7 @@ use ganbaru_chat_contracts::models::{
     ProjectWorkingFolderId, ProviderFamilyMetadataRead, ProviderInstanceConfig, ProviderInstanceId,
     ProviderModelCatalog, ProviderProbeResult,
 };
+use ganbaru_chat_providers::runtime_review::DevicePathKind;
 use ganbaru_chat_providers::{ProviderDriverFactory, ProviderDriverRegistry};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
@@ -44,6 +53,7 @@ pub struct ChatSettingsState {
     pub(crate) mutation_lock: Mutex<()>,
     pub(crate) discovery_lock: tokio::sync::Mutex<()>,
     pub(crate) discovered_vaults: Mutex<BTreeSet<String>>,
+    pub(crate) runtime_receipts: RuntimeReceipts,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -56,6 +66,7 @@ pub struct SaveProviderInstanceRequest {
 #[serde(rename_all = "camelCase")]
 pub struct ProviderInstanceRead {
     pub configuration: ProviderInstanceConfig,
+    pub runtime_review: Vec<ProviderRuntimeReviewRead>,
     pub last_probe: Option<ProviderProbeResult>,
     pub last_successful_probe_at: Option<ganbaru_chat_contracts::models::UtcTimestamp>,
     pub model_catalog: Option<ProviderModelCatalog>,
@@ -154,24 +165,51 @@ pub fn chat_set_last_selected_thread(
     .map_err(device_state_error)
 }
 
+/// Saves a provider after this device confirms any runtime values nothing has vouched for.
+///
+/// Returns `None` when the user cancels the native confirmation.
 #[tauri::command]
-pub fn chat_save_provider(
+pub async fn chat_save_provider(
     app: tauri::AppHandle,
     state: tauri::State<'_, ChatSettingsState>,
     request: SaveProviderInstanceRequest,
-) -> ChatResult<ProviderInstanceRead> {
+    prompt: ProviderRuntimePrompt,
+) -> ChatResult<Option<ProviderInstanceRead>> {
+    validate_runtime_prompt(&prompt)?;
     ProviderDriverRegistry.create_driver(request.configuration.clone())?;
-    let previous = match read_provider(&app, &request.configuration.instance_id) {
+    let scope = read_active_device_scope(&app).map_err(device_state_error)?;
+    let pending = ingress_review_items(
+        &request.configuration,
+        scope
+            .provider_instances
+            .get(&request.configuration.instance_id),
+        &state.runtime_receipts,
+    );
+    if !pending.is_empty()
+        && !ask_runtime_approval(&app, &prompt, &request.configuration.label, &pending).await?
+    {
+        return Ok(None);
+    }
+    save_confirmed_provider(&app, &state, &request.configuration).map(Some)
+}
+
+fn save_confirmed_provider(
+    app: &tauri::AppHandle,
+    state: &ChatSettingsState,
+    configuration: &ProviderInstanceConfig,
+) -> ChatResult<ProviderInstanceRead> {
+    let previous = match read_provider(app, &configuration.instance_id) {
         Ok(read) => Some(read.configuration),
         Err(error) if error.code == ChatErrorCode::NotFound => None,
         Err(error) => return Err(error),
     };
     let runtime_changed = previous
         .as_ref()
-        .is_none_or(|previous| provider_runtime_changed(previous, &request.configuration));
-    let portable = portable_configuration(&request.configuration);
-    let device = device_configuration(&request.configuration);
-    mutate_chat_config(&app, &state, |config| {
+        .is_none_or(|previous| provider_runtime_changed(previous, configuration));
+    let portable = portable_configuration(configuration);
+    let device = device_configuration(configuration);
+    let approvals = approval_digests(configuration);
+    mutate_chat_config(app, state, |config| {
         config
             .automatic_provider_setup_disabled
             .remove(&portable.family_id);
@@ -186,13 +224,14 @@ pub fn chat_save_provider(
         }
         Ok(())
     })?;
-    update_active_device_scope(&app, |scope| {
+    update_active_device_scope(app, |scope| {
         let existing = scope
             .provider_instances
-            .entry(request.configuration.instance_id.clone())
+            .entry(configuration.instance_id.clone())
             .or_default();
         existing.executable_path = device.executable_path.clone();
         existing.provider_home_path = device.provider_home_path.clone();
+        existing.approved_runtime_items = approvals.clone();
         if runtime_changed {
             existing.last_probe = None;
             if let Some(catalog) = existing.model_catalog.as_mut() {
@@ -202,8 +241,43 @@ pub fn chat_save_provider(
         Ok(())
     })
     .map_err(device_state_error)?;
-    let scope = read_active_device_scope(&app).map_err(device_state_error)?;
+    let scope = read_active_device_scope(app).map_err(device_state_error)?;
     Ok(provider_instance_read(&portable, &scope.provider_instances))
+}
+
+/// Confirms a stored provider's portable runtime values on this device.
+///
+/// Returns `None` when the user cancels; approvals stay unchanged in that case.
+#[tauri::command]
+pub async fn chat_confirm_provider_runtime(
+    app: tauri::AppHandle,
+    instance_id: ProviderInstanceId,
+    prompt: ProviderRuntimePrompt,
+) -> ChatResult<Option<ProviderInstanceRead>> {
+    validate_runtime_prompt(&prompt)?;
+    let read = read_provider(&app, &instance_id)?;
+    let scope = read_active_device_scope(&app).map_err(device_state_error)?;
+    let pending = pending_portable_items(
+        &read.configuration,
+        scope.provider_instances.get(&instance_id),
+    );
+    if pending.is_empty() {
+        return Ok(Some(read));
+    }
+    if !ask_runtime_approval(&app, &prompt, &read.configuration.label, &pending).await? {
+        return Ok(None);
+    }
+    let approvals = approval_digests(&read.configuration);
+    update_active_device_scope(&app, |scope| {
+        scope
+            .provider_instances
+            .entry(instance_id.clone())
+            .or_default()
+            .approved_runtime_items = approvals.clone();
+        Ok(())
+    })
+    .map_err(device_state_error)?;
+    read_provider(&app, &instance_id).map(Some)
 }
 
 #[tauri::command]
@@ -261,7 +335,10 @@ pub fn chat_remove_provider(
     .map_err(device_state_error)?;
     let store = PlatformCredentialStore::default();
     let mut credential_cleanup_failed = false;
-    for reference in provider.credential_references.values() {
+    for (name, reference) in &provider.credential_references {
+        if !is_provider_credential_reference(&provider.instance_id, name, reference) {
+            continue;
+        }
         if store.remove(reference).is_err() {
             credential_cleanup_failed = true;
         }
@@ -272,10 +349,34 @@ pub fn chat_remove_provider(
     })
 }
 
+/// Tests an unsaved provider after this device confirms any runtime values nothing has vouched for.
+///
+/// A confirmation here is remembered briefly in memory so the following save does not ask again;
+/// it never becomes a stored approval. Returns `None` when the user cancels.
 #[tauri::command]
 pub async fn chat_test_provider(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, ChatSettingsState>,
     request: SaveProviderInstanceRequest,
-) -> ChatResult<ProviderSetupTestRead> {
+    prompt: ProviderRuntimePrompt,
+) -> ChatResult<Option<ProviderSetupTestRead>> {
+    validate_runtime_prompt(&prompt)?;
+    let scope = read_active_device_scope(&app).map_err(device_state_error)?;
+    let pending = ingress_review_items(
+        &request.configuration,
+        scope
+            .provider_instances
+            .get(&request.configuration.instance_id),
+        &state.runtime_receipts,
+    );
+    if !pending.is_empty() {
+        if !ask_runtime_approval(&app, &prompt, &request.configuration.label, &pending).await? {
+            return Ok(None);
+        }
+        state
+            .runtime_receipts
+            .record_confirmed_items(&request.configuration.instance_id, &pending);
+    }
     let configuration = materialize_provider_environment(
         &request.configuration,
         &PlatformCredentialStore::default(),
@@ -292,10 +393,10 @@ pub async fn chat_test_provider(
     } else {
         None
     };
-    Ok(ProviderSetupTestRead {
+    Ok(Some(ProviderSetupTestRead {
         probe,
         model_catalog,
-    })
+    }))
 }
 
 #[tauri::command]
@@ -305,6 +406,7 @@ pub async fn chat_probe_provider(
 ) -> ChatResult<ProviderProbeResult> {
     let read = read_provider(&app, &instance_id)?;
     let original_configuration = read.configuration;
+    require_runtime_approved_on_device(&app, &original_configuration)?;
     let original =
         probe_provider_configuration(original_configuration.clone(), "probe-provider").await?;
     let selected = if original.probe.state == ProbeState::ExecutableMissing {
@@ -390,8 +492,7 @@ pub async fn chat_refresh_provider_models(
     instance_id: ProviderInstanceId,
 ) -> ChatResult<ProviderModelCatalog> {
     let read = read_provider(&app, &instance_id)?;
-    let configuration =
-        materialize_provider_environment(&read.configuration, &PlatformCredentialStore::default())?;
+    let configuration = approved_runtime(&app, &read.configuration)?;
     let mut driver = ProviderDriverRegistry.create_driver(configuration)?;
     let catalog = driver
         .discover_models(&operation_context("discover-provider-models"))
@@ -475,24 +576,30 @@ pub fn chat_remember_composer_selection(
     })
 }
 
+/// Store a provider secret under the reference Rust derives for this instance and variable.
 #[tauri::command]
 pub fn chat_replace_credential(
     app: tauri::AppHandle,
-    reference_id: CredentialReferenceId,
+    instance_id: ProviderInstanceId,
+    environment_name: String,
     secret: String,
-) -> ChatResult<()> {
+) -> ChatResult<CredentialReferenceId> {
+    let reference_id = provider_credential_reference(&instance_id, &environment_name)?;
     let secret = SecretValue::new(secret).map_err(credential_error)?;
     PlatformCredentialStore::default()
         .replace(&reference_id, &secret)
         .map_err(credential_error)?;
-    invalidate_provider_state_for_credential(&app, &reference_id)
+    invalidate_provider_state_for_credential(&app, &reference_id)?;
+    Ok(reference_id)
 }
 
 #[tauri::command]
 pub fn chat_remove_credential(
     app: tauri::AppHandle,
-    reference_id: CredentialReferenceId,
+    instance_id: ProviderInstanceId,
+    environment_name: String,
 ) -> ChatResult<bool> {
+    let reference_id = provider_credential_reference(&instance_id, &environment_name)?;
     let removed = PlatformCredentialStore::default()
         .remove(&reference_id)
         .map_err(credential_error)?;
@@ -503,17 +610,31 @@ pub fn chat_remove_credential(
 #[tauri::command]
 pub async fn chat_pick_provider_executable(
     app: tauri::AppHandle,
+    state: tauri::State<'_, ChatSettingsState>,
     title: String,
 ) -> ChatResult<Option<String>> {
-    pick_local_path(&app, false, validate_picker_title(&title)?).await
+    let picked = pick_local_path(&app, false, validate_picker_title(&title)?).await?;
+    if let Some(path) = &picked {
+        state
+            .runtime_receipts
+            .record_picked_path(DevicePathKind::Executable, path);
+    }
+    Ok(picked)
 }
 
 #[tauri::command]
 pub async fn chat_pick_provider_home(
     app: tauri::AppHandle,
+    state: tauri::State<'_, ChatSettingsState>,
     title: String,
 ) -> ChatResult<Option<String>> {
-    pick_local_path(&app, true, validate_picker_title(&title)?).await
+    let picked = pick_local_path(&app, true, validate_picker_title(&title)?).await?;
+    if let Some(path) = &picked {
+        state
+            .runtime_receipts
+            .record_picked_path(DevicePathKind::ProviderHome, path);
+    }
+    Ok(picked)
 }
 
 #[cfg(test)]
@@ -724,5 +845,61 @@ mod tests {
 
         assert_eq!(replacements, expected);
         std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn installed_provider_search_skips_programs_other_users_can_replace() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = std::env::temp_dir().join(format!(
+            "ganbaru-provider-discovery-shared-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let private = root.join("private");
+        let shared = root.join("shared");
+        std::fs::create_dir_all(&private).unwrap();
+        std::fs::create_dir_all(&shared).unwrap();
+        let set_mode = |path: &std::path::Path, mode: u32| {
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
+        };
+        set_mode(&private, 0o775);
+        for (directory, name, mode) in [
+            (&private, "group-provider", 0o775),
+            (&private, "world-provider", 0o777),
+            (&shared, "group-provider", 0o755),
+        ] {
+            let executable = directory.join(name);
+            std::fs::write(&executable, "#!/bin/sh\nexit 0\n").unwrap();
+            set_mode(&executable, mode);
+        }
+        set_mode(&shared, 0o1777);
+        let mut metadata = ProviderDriverRegistry.list_metadata().remove(0);
+        metadata.default_executable_candidates =
+            vec!["world-provider".to_string(), "group-provider".to_string()];
+        let path = std::env::join_paths([
+            std::path::PathBuf::from("relative"),
+            std::path::PathBuf::new(),
+            shared.clone(),
+            private.clone(),
+        ])
+        .unwrap();
+        let directories = ganbaru_chat_providers::executable_search::path_search_directories(&path);
+
+        let found = installed_provider_executables(&metadata, &directories);
+
+        assert_eq!(directories, vec![shared.clone(), private.clone()]);
+        assert_eq!(
+            found,
+            vec![
+                private
+                    .join("group-provider")
+                    .to_string_lossy()
+                    .into_owned()
+            ]
+        );
+        set_mode(&shared, 0o755);
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

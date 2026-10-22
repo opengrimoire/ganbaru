@@ -4,7 +4,7 @@ use super::{ContactRequestView, ContactView};
 use chrono::{DateTime, Utc};
 use ganbaru_contacts::{PersonPublicKey, TrustKind};
 use serde::{Deserialize, Serialize};
-use sqlx::{Executor, FromRow, Sqlite};
+use sqlx::{AssertSqlSafe, Executor, FromRow, Sqlite};
 
 const TIME_FORMAT: &str = "%Y-%m-%dT%H:%M:%S%.3fZ";
 
@@ -96,19 +96,6 @@ pub(crate) fn format_time(time: DateTime<Utc>) -> String {
 
 pub(crate) fn encode_hex(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
-}
-
-/// Decodes a 64-character lowercase or uppercase hex digest.
-pub(crate) fn decode_hex_digest(text: &str) -> Option<[u8; 32]> {
-    if text.len() != 64 {
-        return None;
-    }
-    let mut digest = [0u8; 32];
-    for (index, chunk) in text.as_bytes().chunks(2).enumerate() {
-        let pair = std::str::from_utf8(chunk).ok()?;
-        digest[index] = u8::from_str_radix(pair, 16).ok()?;
-    }
-    Some(digest)
 }
 
 /// A trust decision together with the expiry it implies when granted now.
@@ -244,9 +231,9 @@ pub(crate) async fn list_contacts<'e, E>(executor: E) -> Result<Vec<ContactRow>,
 where
     E: Executor<'e, Database = Sqlite>,
 {
-    sqlx::query_as(&format!(
+    sqlx::query_as(AssertSqlSafe(format!(
         "SELECT {CONTACT_COLUMNS} FROM contacts ORDER BY state, lower(display_name), id"
-    ))
+    )))
     .fetch_all(executor)
     .await
     .map_err(|error| db_error("list contacts", error))
@@ -259,9 +246,9 @@ pub(crate) async fn contact_by_key<'e, E>(
 where
     E: Executor<'e, Database = Sqlite>,
 {
-    sqlx::query_as(&format!(
+    sqlx::query_as(AssertSqlSafe(format!(
         "SELECT {CONTACT_COLUMNS} FROM contacts WHERE public_key = ?"
-    ))
+    )))
     .bind(public_key)
     .fetch_optional(executor)
     .await
@@ -276,9 +263,9 @@ pub(crate) async fn contact_by_id<'e, E>(
 where
     E: Executor<'e, Database = Sqlite>,
 {
-    sqlx::query_as(&format!(
+    sqlx::query_as(AssertSqlSafe(format!(
         "SELECT {CONTACT_COLUMNS} FROM contacts WHERE id = ?"
-    ))
+    )))
     .bind(id)
     .fetch_optional(executor)
     .await
@@ -292,20 +279,21 @@ pub(crate) struct NewContact<'a> {
     pub color: u8,
 }
 
-/// Creates or reactivates an active contact with the given trust grants.
+/// Creates or updates an active contact with the given trust grants. A blocked contact is left
+/// unchanged, because only an explicit unblock may clear a block. Returns whether a row was written.
 pub(crate) async fn upsert_active_contact<'e, E>(
     executor: E,
     contact: NewContact<'_>,
     invite: &TrustGrant,
     message: &TrustGrant,
     now: DateTime<Utc>,
-) -> Result<(), String>
+) -> Result<bool, String>
 where
     E: Executor<'e, Database = Sqlite>,
 {
     let time = format_time(now);
     let id = crate::vault::handoff::pairing::random_token("contact")?;
-    sqlx::query(
+    let result = sqlx::query(
         "INSERT INTO contacts (
             id, public_key, display_name, color, state, invite_trust, invite_trust_expires_at,
             message_trust, message_trust_expires_at, accepted_at, blocked_at, created_at, updated_at
@@ -319,8 +307,8 @@ where
             message_trust = excluded.message_trust,
             message_trust_expires_at = excluded.message_trust_expires_at,
             accepted_at = excluded.accepted_at,
-            blocked_at = NULL,
-            updated_at = excluded.updated_at",
+            updated_at = excluded.updated_at
+         WHERE contacts.state <> 'blocked'",
     )
     .bind(id)
     .bind(contact.public_key)
@@ -336,7 +324,7 @@ where
     .execute(executor)
     .await
     .map_err(|error| db_error("store contact", error))?;
-    Ok(())
+    Ok(result.rows_affected() == 1)
 }
 
 /// Creates or converts a contact row into a blocked one with no trust.
@@ -428,13 +416,29 @@ where
     Ok(result.rows_affected() == 1)
 }
 
+#[cfg(test)]
 pub(crate) async fn list_requests<'e, E>(executor: E) -> Result<Vec<RequestRow>, String>
 where
     E: Executor<'e, Database = Sqlite>,
 {
-    sqlx::query_as(&format!(
+    sqlx::query_as(AssertSqlSafe(format!(
         "SELECT {REQUEST_COLUMNS} FROM contact_requests ORDER BY created_at DESC, id"
-    ))
+    )))
+    .fetch_all(executor)
+    .await
+    .map_err(|error| db_error("list contact requests", error))
+}
+
+/// Pending requests in both directions, newest first. Handled requests are never listed.
+pub(crate) async fn list_pending_requests<'e, E>(executor: E) -> Result<Vec<RequestRow>, String>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    sqlx::query_as(AssertSqlSafe(format!(
+        "SELECT {REQUEST_COLUMNS} FROM contact_requests
+         WHERE state = 'pending'
+         ORDER BY created_at DESC, id"
+    )))
     .fetch_all(executor)
     .await
     .map_err(|error| db_error("list contact requests", error))
@@ -447,9 +451,9 @@ pub(crate) async fn request_by_id<'e, E>(
 where
     E: Executor<'e, Database = Sqlite>,
 {
-    sqlx::query_as(&format!(
+    sqlx::query_as(AssertSqlSafe(format!(
         "SELECT {REQUEST_COLUMNS} FROM contact_requests WHERE id = ?"
-    ))
+    )))
     .bind(id)
     .fetch_optional(executor)
     .await
@@ -464,10 +468,10 @@ pub(crate) async fn pending_request<'e, E>(
 where
     E: Executor<'e, Database = Sqlite>,
 {
-    sqlx::query_as(&format!(
+    sqlx::query_as(AssertSqlSafe(format!(
         "SELECT {REQUEST_COLUMNS} FROM contact_requests
          WHERE direction = ? AND public_key = ? AND state = 'pending'"
-    ))
+    )))
     .bind(direction.as_str())
     .bind(public_key)
     .fetch_optional(executor)
@@ -482,10 +486,10 @@ pub(crate) async fn pending_requests<'e, E>(
 where
     E: Executor<'e, Database = Sqlite>,
 {
-    sqlx::query_as(&format!(
+    sqlx::query_as(AssertSqlSafe(format!(
         "SELECT {REQUEST_COLUMNS} FROM contact_requests
          WHERE direction = ? AND state = 'pending' ORDER BY created_at, id"
-    ))
+    )))
     .bind(direction.as_str())
     .fetch_all(executor)
     .await
@@ -500,10 +504,10 @@ pub(crate) async fn latest_request_from<'e, E>(
 where
     E: Executor<'e, Database = Sqlite>,
 {
-    sqlx::query_as(&format!(
+    sqlx::query_as(AssertSqlSafe(format!(
         "SELECT {REQUEST_COLUMNS} FROM contact_requests
          WHERE public_key = ? ORDER BY created_at DESC, id LIMIT 1"
-    ))
+    )))
     .bind(public_key)
     .fetch_optional(executor)
     .await
@@ -652,19 +656,18 @@ where
     .map_err(|error| db_error("count pending contact requests", error))
 }
 
-/// Expires the oldest pending received requests until at most `keep` remain.
+/// Deletes the oldest pending received requests until at most `keep` remain. A deleted request
+/// looks pending to its requester until it expires on their side.
 #[cfg(any(desktop, test))]
-pub(crate) async fn expire_oldest_pending_received<'e, E>(
+pub(crate) async fn delete_oldest_pending_received<'e, E>(
     executor: E,
     keep: i64,
-    now: DateTime<Utc>,
 ) -> Result<(), String>
 where
     E: Executor<'e, Database = Sqlite>,
 {
     sqlx::query(
-        "UPDATE contact_requests
-         SET state = 'expired', updated_at = ?
+        "DELETE FROM contact_requests
          WHERE id IN (
             SELECT id FROM contact_requests
             WHERE direction = 'received' AND state = 'pending'
@@ -672,11 +675,40 @@ where
             LIMIT -1 OFFSET ?
          )",
     )
-    .bind(format_time(now))
     .bind(keep)
     .execute(executor)
     .await
-    .map_err(|error| db_error("expire oldest contact requests", error))?;
+    .map_err(|error| db_error("delete oldest contact requests", error))?;
+    Ok(())
+}
+
+/// Deletes handled (accepted, declined, or expired) requests last changed before `cutoff`,
+/// and the oldest handled requests beyond the newest `keep`.
+pub(crate) async fn prune_handled_requests<'e, E>(
+    executor: E,
+    cutoff: DateTime<Utc>,
+    keep: i64,
+) -> Result<(), String>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    sqlx::query(
+        "DELETE FROM contact_requests
+         WHERE state <> 'pending' AND (
+            updated_at < ?
+            OR id IN (
+                SELECT id FROM contact_requests
+                WHERE state <> 'pending'
+                ORDER BY updated_at DESC, id DESC
+                LIMIT -1 OFFSET ?
+            )
+         )",
+    )
+    .bind(format_time(cutoff))
+    .bind(keep)
+    .execute(executor)
+    .await
+    .map_err(|error| db_error("prune handled contact requests", error))?;
     Ok(())
 }
 

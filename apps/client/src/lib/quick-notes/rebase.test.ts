@@ -5,6 +5,7 @@ function fields(overrides: Partial<QuickNoteEditableFields> = {}): QuickNoteEdit
   return {
     title: "Plan",
     runs: [{ content: "Start", bold: false, italic: false, underline: false }],
+    images: [],
     color: 1,
     tagId: null,
     pinned: false,
@@ -60,5 +61,17 @@ describe("rebaseQuickNoteEdits", () => {
   it("treats a formatting change as a body change", () => {
     const result = rebaseQuickNoteEdits(fields(), fields({ runs: text("Start", true) }), fields({ runs: text("Remote") }));
     expect(result).toEqual({ kind: "conflict", fields: ["runs"] });
+  });
+
+  it("keeps local image edits and reports image lists both sides changed", () => {
+    const first = { sha256: "a".repeat(64), contentType: "image/png" as const, byteSize: 10, width: 4, height: 3 };
+    const second = { ...first, sha256: "b".repeat(64) };
+    const third = { ...first, sha256: "c".repeat(64) };
+    expect(rebaseQuickNoteEdits(fields(), fields({ images: [first] }), fields({ title: "Remote" })))
+      .toEqual({ kind: "rebased", fields: fields({ title: "Remote", images: [first] }) });
+    expect(rebaseQuickNoteEdits(fields({ images: [first, second] }), fields({ images: [second, first] }), fields({ images: [first, second, third] })))
+      .toEqual({ kind: "conflict", fields: ["images"] });
+    expect(rebaseQuickNoteEdits(fields(), fields({ images: [first] }), fields({ images: [{ ...first }] })))
+      .toEqual({ kind: "rebased", fields: fields({ images: [first] }) });
   });
 });

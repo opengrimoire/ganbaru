@@ -1,6 +1,6 @@
 use serde::Deserialize;
 use std::sync::{
-    LazyLock, Mutex,
+    LazyLock, Mutex, MutexGuard, PoisonError,
     atomic::{AtomicBool, Ordering},
 };
 use tauri::{
@@ -20,6 +20,39 @@ const PAUSED_PULSE_AMOUNTS: [f64; 22] = [
     0.75, 0.5, 0.25, 0.067, 0.0,
 ];
 const MUSIC_TRAY_STATUS_MAX_CHARS: usize = 25;
+
+/// Music status keys the tray labels; any other value shows as idle.
+const MUSIC_TRAY_STATUSES: [&str; 7] = [
+    "idle", "playing", "paused", "loading", "ready", "ended", "error",
+];
+/// Longest Music title or context label kept for the tray tooltip.
+const MUSIC_TRAY_TEXT_MAX_CHARS: usize = 160;
+
+/// Locks tray presentation state. Every update replaces displayed values whole, so a panic while
+/// a lock was held leaves nothing to repair and the tray keeps working.
+fn lock_tray<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// Music tray state from a webview update, with the status reduced to a known key and the
+/// title and context label bounded.
+fn music_tray_state(update: MusicTrayUpdate) -> MusicTrayState {
+    let bound = |value: Option<String>| {
+        value.map(|value| truncate_tray_menu_label(&value, MUSIC_TRAY_TEXT_MAX_CHARS))
+    };
+    let status = if MUSIC_TRAY_STATUSES.contains(&update.status.as_str()) {
+        update.status
+    } else {
+        "idle".to_string()
+    };
+    MusicTrayState {
+        status,
+        title: bound(update.title),
+        can_play_pause: update.can_play_pause,
+        can_previous: update.can_previous,
+        can_next: update.can_next,
+    }
+}
 
 #[derive(Debug, Clone)]
 struct PomodoroTrayState {
@@ -41,7 +74,6 @@ struct MusicTrayState {
     can_play_pause: bool,
     can_previous: bool,
     can_next: bool,
-    context_label: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -65,7 +97,6 @@ pub struct MusicTrayUpdate {
     can_play_pause: bool,
     can_previous: bool,
     can_next: bool,
-    context_label: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -86,7 +117,6 @@ struct MenuShape {
     music_can_play_pause: bool,
     music_can_previous: bool,
     music_can_next: bool,
-    music_context_label: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -115,7 +145,6 @@ static TRAY_STATE: LazyLock<Mutex<TrayState>> = LazyLock::new(|| {
             can_play_pause: false,
             can_previous: false,
             can_next: false,
-            context_label: None,
         },
     })
 });
@@ -333,10 +362,7 @@ fn tray_tooltip(state: &TrayState) -> String {
         "No active session".to_string()
     };
     let music = music_status_text(&state.music);
-    match state.music.context_label.as_deref() {
-        Some(context) => format!("Ganbaru\n{pomodoro}\n{music}\n{context}"),
-        None => format!("Ganbaru\n{pomodoro}\n{music}"),
-    }
+    format!("Ganbaru\n{pomodoro}\n{music}")
 }
 
 fn menu_shape(state: &TrayState) -> MenuShape {
@@ -351,7 +377,6 @@ fn menu_shape(state: &TrayState) -> MenuShape {
         music_can_play_pause: state.music.can_play_pause,
         music_can_previous: state.music.can_previous,
         music_can_next: state.music.can_next,
-        music_context_label: state.music.context_label.clone(),
     }
 }
 
@@ -368,7 +393,7 @@ fn build_menu(app: &AppHandle, state: &TrayState) -> Result<Menu<tauri::Wry>, St
         .build(app)
         .map_err(|e| e.to_string())?;
     {
-        let mut stored = POMODORO_STATUS_ITEM.lock().unwrap();
+        let mut stored = lock_tray(&POMODORO_STATUS_ITEM);
         *stored = Some(pomodoro_status.clone());
     }
 
@@ -378,7 +403,7 @@ fn build_menu(app: &AppHandle, state: &TrayState) -> Result<Menu<tauri::Wry>, St
             .build(app)
             .map_err(|e| e.to_string())?;
     {
-        let mut stored = MUSIC_STATUS_ITEM.lock().unwrap();
+        let mut stored = lock_tray(&MUSIC_STATUS_ITEM);
         *stored = Some(music_status.clone());
     }
 
@@ -423,31 +448,14 @@ fn build_menu(app: &AppHandle, state: &TrayState) -> Result<Menu<tauri::Wry>, St
         .build(app)
         .map_err(|e| e.to_string())?;
 
-    let mut builder = MenuBuilder::new(app)
+    MenuBuilder::new(app)
         .item(&pomodoro_status)
         .item(&pause_resume_item)
         .item(&add_focus_time_item)
         .item(&skip_item)
         .item(&separator)
         .item(&music_status)
-        .item(&play_pause_item);
-    let context_item;
-    let inspect_item;
-    if let Some(context_label) = state.music.context_label.as_deref() {
-        context_item = MenuItemBuilder::with_id(
-            "music_context_status",
-            truncate_tray_menu_label(context_label, MUSIC_TRAY_STATUS_MAX_CHARS),
-        )
-        .enabled(false)
-        .build(app)
-        .map_err(|e| e.to_string())?;
-        inspect_item =
-            MenuItemBuilder::with_id("music_inspect_assignment", "Inspect soundtrack assignment")
-                .build(app)
-                .map_err(|e| e.to_string())?;
-        builder = builder.item(&context_item).item(&inspect_item);
-    }
-    builder
+        .item(&play_pause_item)
         .item(&previous_item)
         .item(&next_item)
         .item(&open_music_item)
@@ -468,7 +476,7 @@ fn apply_tray_state(app: &AppHandle, state: &TrayState) -> Result<(), String> {
     let paused_pulse_frame = pomodoro_paused_pulse_frame(&state.pomodoro);
     let icon_key = tray_icon_key(progress, active, paused_pulse_frame);
     {
-        let mut last = LAST_ICON_KEY.lock().unwrap();
+        let mut last = lock_tray(&LAST_ICON_KEY);
         if *last != icon_key {
             let pixels = render_progress_icon_with_pause(progress, active, paused_pulse_frame);
             set_tray_icon(&tray, pixels)?;
@@ -480,7 +488,7 @@ fn apply_tray_state(app: &AppHandle, state: &TrayState) -> Result<(), String> {
         .map_err(|e| e.to_string())?;
 
     {
-        let item = POMODORO_STATUS_ITEM.lock().unwrap();
+        let item = lock_tray(&POMODORO_STATUS_ITEM);
         if let Some(ref status_item) = *item {
             status_item
                 .set_text(pomodoro_status_text(&state.pomodoro))
@@ -488,7 +496,7 @@ fn apply_tray_state(app: &AppHandle, state: &TrayState) -> Result<(), String> {
         }
     }
     {
-        let item = MUSIC_STATUS_ITEM.lock().unwrap();
+        let item = lock_tray(&MUSIC_STATUS_ITEM);
         if let Some(ref status_item) = *item {
             status_item
                 .set_text(music_menu_status_text(&state.music))
@@ -497,11 +505,11 @@ fn apply_tray_state(app: &AppHandle, state: &TrayState) -> Result<(), String> {
     }
 
     let shape = menu_shape(state);
-    let should_rebuild = LAST_MENU_SHAPE.lock().unwrap().as_ref() != Some(&shape);
+    let should_rebuild = lock_tray(&LAST_MENU_SHAPE).as_ref() != Some(&shape);
     if should_rebuild {
         let menu = build_menu(app, state)?;
         tray.set_menu(Some(menu)).map_err(|e| e.to_string())?;
-        *LAST_MENU_SHAPE.lock().unwrap() = Some(shape);
+        *lock_tray(&LAST_MENU_SHAPE) = Some(shape);
     }
 
     Ok(())
@@ -511,10 +519,10 @@ fn apply_tray_state(app: &AppHandle, state: &TrayState) -> Result<(), String> {
 pub fn setup_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
     let idle_icon = render_progress_icon(0.0, false);
     let icon = Image::new_owned(idle_icon, ICON_SIZE, ICON_SIZE);
-    let state = TRAY_STATE.lock().unwrap().clone();
+    let state = lock_tray(&TRAY_STATE).clone();
     let menu = build_menu(app, &state).map_err(std::io::Error::other)?;
     {
-        let mut last = LAST_ICON_KEY.lock().unwrap();
+        let mut last = lock_tray(&LAST_ICON_KEY);
         *last = TrayIconKey::Empty;
     }
 
@@ -524,7 +532,7 @@ pub fn setup_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
         .menu(&menu)
         .on_menu_event(move |app, event| match event.id().as_ref() {
             "pause_resume" => {
-                let state = TRAY_STATE.lock().unwrap().pomodoro.clone();
+                let state = lock_tray(&TRAY_STATE).pomodoro.clone();
                 if state.can_pause_resume {
                     dispatch_focus_control(
                         app,
@@ -541,14 +549,14 @@ pub fn setup_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
                 dispatch_focus_control(
                     app,
                     ganbaru_pomodoro::FocusIntent::Advance,
-                    TRAY_STATE.lock().unwrap().pomodoro.native_context.clone(),
+                    lock_tray(&TRAY_STATE).pomodoro.native_context.clone(),
                 );
             }
             "add_focus_time" => {
                 dispatch_focus_control(
                     app,
                     ganbaru_pomodoro::FocusIntent::ExtendFocus { seconds: 180 },
-                    TRAY_STATE.lock().unwrap().pomodoro.native_context.clone(),
+                    lock_tray(&TRAY_STATE).pomodoro.native_context.clone(),
                 );
             }
             "music_play_pause" => {
@@ -562,9 +570,6 @@ pub fn setup_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
             }
             "music_open" => {
                 let _ = app.emit("tray-music-open", ());
-            }
-            "music_inspect_assignment" => {
-                let _ = app.emit("tray-music-inspect-assignment", ());
             }
             _ => {}
         })
@@ -590,10 +595,7 @@ async fn update_tray(
             ) {
                 return Err("Native Focus tray delivery was superseded or expired".to_owned());
             }
-            let previous = TRAY_STATE
-                .lock()
-                .map_err(|error| format!("Read native tray state: {error}"))?
-                .clone();
+            let previous = lock_tray(&TRAY_STATE).clone();
             let mut next = previous;
             next.pomodoro = PomodoroTrayState {
                 phase: update.phase,
@@ -608,10 +610,7 @@ async fn update_tray(
             };
             apply_tray_state(&callback_app, &next)?;
             // Main-thread menu events cannot run until its displayed context is retained.
-            TRAY_STATE
-                .lock()
-                .map_err(|error| format!("Publish native tray state: {error}"))?
-                .pomodoro = next.pomodoro;
+            lock_tray(&TRAY_STATE).pomodoro = next.pomodoro;
             Ok(())
         })();
         let _ = response.send(result);
@@ -703,17 +702,8 @@ pub(crate) async fn reconcile_committed_focus(
 /// Update the Music section of the shared tray menu.
 #[tauri::command]
 pub fn update_music_tray(app: AppHandle, update: MusicTrayUpdate) -> Result<(), String> {
-    {
-        let mut state = TRAY_STATE.lock().unwrap();
-        state.music = MusicTrayState {
-            status: update.status,
-            title: update.title,
-            can_play_pause: update.can_play_pause,
-            can_previous: update.can_previous,
-            can_next: update.can_next,
-            context_label: update.context_label,
-        };
-    }
+    let music = music_tray_state(update);
+    lock_tray(&TRAY_STATE).music = music;
     // Retain one queued refresh and read the displayed Focus context on the main
     // thread. A delayed Music update cannot redraw an earlier Focus phase while
     // retaining a newer run's controls, or accumulate refreshes behind a stalled UI.
@@ -723,11 +713,8 @@ pub fn update_music_tray(app: AppHandle, update: MusicTrayUpdate) -> Result<(), 
     let callback_app = app.clone();
     if let Err(error) = app.run_on_main_thread(move || {
         MUSIC_TRAY_REFRESH_QUEUED.store(false, Ordering::Release);
-        let result = TRAY_STATE
-            .lock()
-            .map_err(|error| format!("Read shared tray state: {error}"))
-            .map(|state| state.clone())
-            .and_then(|state| apply_tray_state(&callback_app, &state));
+        let state = lock_tray(&TRAY_STATE).clone();
+        let result = apply_tray_state(&callback_app, &state);
         if let Err(error) = result {
             eprintln!("Publish shared native tray presentation: {error}");
         }
@@ -760,10 +747,6 @@ pub(crate) fn publish_music_session(
             can_play_pause: session.current_source.is_some(),
             can_previous: session.can_previous,
             can_next: session.can_next,
-            context_label: session
-                .context
-                .as_ref()
-                .map(|context| context.event_title.clone()),
         },
     )
 }
@@ -791,7 +774,6 @@ mod tests {
                 can_play_pause: false,
                 can_previous: false,
                 can_next: false,
-                context_label: None,
             },
         }
     }
@@ -905,6 +887,49 @@ mod tests {
     }
 
     #[test]
+    fn music_tray_updates_are_bounded_before_they_are_stored() {
+        let state = music_tray_state(MusicTrayUpdate {
+            status: "x".repeat(10_000),
+            title: Some("t".repeat(100_000)),
+            can_play_pause: true,
+            can_previous: false,
+            can_next: false,
+        });
+
+        assert_eq!(state.status, "idle");
+        assert!(state.title.unwrap().chars().count() <= MUSIC_TRAY_TEXT_MAX_CHARS);
+        let playing = music_tray_state(MusicTrayUpdate {
+            status: "playing".to_string(),
+            title: Some("City of Tears".to_string()),
+            can_play_pause: true,
+            can_previous: true,
+            can_next: true,
+        });
+        assert_eq!(playing.status, "playing");
+        assert_eq!(playing.title.as_deref(), Some("City of Tears"));
+    }
+
+    #[test]
+    fn a_poisoned_tray_lock_keeps_serving_its_state() {
+        let mutex = std::sync::Arc::new(Mutex::new(7_u8));
+        let poisoner = std::sync::Arc::clone(&mutex);
+        let _ = std::thread::spawn(move || {
+            let _guard = poisoner.lock().unwrap();
+            panic!("poison the tray lock");
+        })
+        .join();
+        assert!(mutex.is_poisoned());
+        assert_eq!(*lock_tray(&mutex), 7);
+
+        let source = include_str!("tray.rs");
+        let production = source
+            .split_once("#[cfg(test)]")
+            .map_or(source, |(production, _)| production);
+        assert!(!production.contains(".lock().unwrap()"));
+        assert!(!production.contains(".lock()\n"));
+    }
+
+    #[test]
     fn long_music_menu_status_is_truncated() {
         let full_title =
             "Christopher Larkin - Hollow Knight (Original Soundtrack) - 09 City of Tears";
@@ -914,7 +939,6 @@ mod tests {
             can_play_pause: true,
             can_previous: true,
             can_next: true,
-            context_label: None,
         };
 
         let label = music_menu_status_text(&state);
@@ -936,26 +960,11 @@ mod tests {
             can_play_pause: true,
             can_previous: true,
             can_next: true,
-            context_label: None,
         };
 
         assert_eq!(
             music_status_text(&state),
             "Christopher Larkin - Hollow Knight (Original Soundtrack) - 09 City of Tears"
-        );
-    }
-
-    #[test]
-    fn contextual_music_is_visible_in_the_tooltip_and_menu_shape() {
-        let mut state = tray_state_with_pause_resume(true);
-        state.music.status = "playing".to_string();
-        state.music.title = Some("City of Tears".to_string());
-        state.music.context_label = Some("Focus soundtrack for Reading".to_string());
-
-        assert!(tray_tooltip(&state).contains("Focus soundtrack for Reading"));
-        assert_eq!(
-            menu_shape(&state).music_context_label.as_deref(),
-            Some("Focus soundtrack for Reading")
         );
     }
 }

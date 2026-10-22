@@ -11,7 +11,6 @@ use sqlx::{Sqlite, Transaction};
 use std::collections::HashSet;
 
 const MAX_LAYOUT_CHILDREN: i64 = 20_000;
-const MAX_TABLE_WIDTH: usize = 100;
 const MAX_LAYOUT_PAYLOAD_BYTES: i64 = 16 * 1024 * 1024;
 
 async fn child_ids(tx: &mut Transaction<'_, Sqlite>, id: &str) -> Result<Vec<String>, String> {
@@ -136,8 +135,8 @@ pub(super) async fn table_column(
         rows.push((row_id.clone(), row_payload));
     }
     if width == 0
-        || width > MAX_TABLE_WIDTH
-        || (insert && width == MAX_TABLE_WIDTH)
+        || width > validation::MAX_TABLE_WIDTH
+        || (insert && width == validation::MAX_TABLE_WIDTH)
         || (!insert && width == 1)
         || index > width
         || (!insert && index == width)

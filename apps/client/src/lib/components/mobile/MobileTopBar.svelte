@@ -1,7 +1,7 @@
 <script lang="ts">
   import type { Snippet } from "svelte";
   import Settings from "@lucide/svelte/icons/settings";
-  import Music from "@lucide/svelte/icons/music";
+  import Music from "@lucide/svelte/icons/eighth-notes";
   import StickyNote from "@lucide/svelte/icons/sticky-note";
   import { mobileCenteredPanelGeometry } from "$lib/mobile/layout";
   import PomodoroProgressRing from "$lib/components/pomodoro/PomodoroProgressRing.svelte";
@@ -184,7 +184,6 @@
           <div use:scrollEdgeFadeAction class="surface-floating-body min-h-0 overflow-y-auto">
             <PomodoroMenuSurface
               includeMusic={musicVisible}
-              touch
               onDismiss={onClosePomodoro}
               onOpenMusic={onOpenMusic}
             />

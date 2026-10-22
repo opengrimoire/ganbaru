@@ -209,6 +209,10 @@ export interface CalendarEvent {
   meetingEnabled?: boolean;
   /** Render-only marker for a stored call link when the URL is not loaded. */
   hasCallLink?: boolean;
+  /** Render-only marker for an event that starts a playlist in at least one of its phases. */
+  hasMusicPlaylist?: boolean;
+  /** Render-only marker for an event that starts a soundscape in at least one of its phases. */
+  hasSoundscape?: boolean;
   location?: string;
   url?: string;
   transparency?: EventTransparency;

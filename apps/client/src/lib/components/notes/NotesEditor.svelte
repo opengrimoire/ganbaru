@@ -13,19 +13,19 @@
   import FolderInput from "@lucide/svelte/icons/folder-input";
   import FolderTree from "@lucide/svelte/icons/folder-tree";
   import GitBranch from "@lucide/svelte/icons/git-branch";
-  import History from "@lucide/svelte/icons/history";
+  import History from "@lucide/svelte/icons/rotate-ccw-clock";
   import { NOTES_COVER_DEFAULT_FOCAL_POINT } from "$lib/notes/pages/cover";
   import type { NotesCoverFocalPoint, NotesPageCover as CoverValue } from "$lib/notes/contracts/assets";
   import ImagePlus from "@lucide/svelte/icons/image-plus";
   import Link2 from "@lucide/svelte/icons/link-2";
   import MessageSquare from "@lucide/svelte/icons/message-square";
-  import MoreHorizontal from "@lucide/svelte/icons/more-horizontal";
+  import MoreHorizontal from "@lucide/svelte/icons/ellipsis";
   import Pencil from "@lucide/svelte/icons/pencil";
   import PencilLine from "@lucide/svelte/icons/pencil-line";
   import Share2 from "@lucide/svelte/icons/share-2";
-  import SmilePlus from "@lucide/svelte/icons/smile-plus";
+  import SmilePlus from "@lucide/svelte/icons/face-slightly-smiling-plus";
   import Star from "@lucide/svelte/icons/star";
-  import Trash2 from "@lucide/svelte/icons/trash-2";
+  import Trash2 from "@lucide/svelte/icons/trash";
   import X from "@lucide/svelte/icons/x";
   import {
     notesPageIconAssetUrl,

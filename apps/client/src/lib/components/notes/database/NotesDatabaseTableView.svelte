@@ -124,7 +124,7 @@
   import Star from "@lucide/svelte/icons/star";
   import Plus from "@lucide/svelte/icons/plus";
   import Sigma from "@lucide/svelte/icons/sigma";
-  import Trash2 from "@lucide/svelte/icons/trash-2";
+  import Trash2 from "@lucide/svelte/icons/trash";
   import X from "@lucide/svelte/icons/x";
   import ArrowLeftToLine from "@lucide/svelte/icons/arrow-left-to-line";
   import ArrowRightToLine from "@lucide/svelte/icons/arrow-right-to-line";

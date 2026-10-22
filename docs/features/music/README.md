@@ -1,6 +1,6 @@
 # Music
 
-Music provides persistent local and YouTube playback, playlist organization, review, background sounds, and phase-based soundtrack automation. It supports focus without classifying a listener's music as productive or distracting.
+Music provides persistent local and YouTube playback, playlist organization, review, soundscapes, and phase-based soundtrack automation. It supports focus without classifying a listener's music as productive or distracting.
 
 ## Current scope
 
@@ -9,7 +9,7 @@ Music provides persistent local and YouTube playback, playlist organization, rev
 | Native app-level player with queue, order modes, repeat, volume, and resume | Implemented; physical platform acceptance pending |
 | Canonical local and YouTube library, refresh, repair, artwork, search, and JSON/M3U8 transfer | Implemented |
 | Playlist membership settings, review, snooze, and playlist management | Implemented |
-| Desktop local audio, local video, YouTube, background sounds, tray, title-bar, and hardware controls | Implemented with platform codec limits |
+| Desktop local audio, local video, YouTube, soundscapes, tray, title-bar, and hardware controls | Implemented with platform codec limits |
 | Android selected-folder local audio through Media3 | Implemented in source; release validation pending |
 | Project and Calendar event phase soundtrack assignments | Implemented |
 | Work-environment and sleep-alarm automation | Planned |
@@ -33,7 +33,7 @@ Ganbaru does not infer whether a track is distracting. The user chooses playlist
 
 - [Library and sources](library-and-sources.md)
 - [Playback](playback.md)
-- [Background sounds](soundscapes.md)
+- [Soundscapes](soundscapes.md)
 - [Playlists and review](playlists-and-review.md)
 - [Automation](automation.md)
 - [Android native services](../../platforms/android/native-services-and-data.md)

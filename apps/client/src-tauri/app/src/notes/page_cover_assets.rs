@@ -26,14 +26,18 @@ pub async fn notes_pick_page_cover_file<R: Runtime>(
     if let Some(directory) = app.path().picture_dir().ok().filter(|path| path.is_dir()) {
         picker = picker.set_directory(directory);
     }
-    let Some(path) = picker.blocking_pick_file().map(dialog_path).transpose()? else {
+    let picked = super::on_dialog_thread(move || picker.blocking_pick_file()).await?;
+    let Some(path) = picked.map(dialog_path).transpose()? else {
         return Ok(None);
     };
     let original_name = path
         .file_name()
         .and_then(|name| name.to_str())
         .map(ToOwned::to_owned);
-    let bytes = ganbaru_notes::assets::page_covers::read_file_capped(&path)?;
+    let bytes = ganbaru_notes::blocking::run_blocking(move || {
+        ganbaru_notes::assets::page_covers::read_picked_file_capped(&path)
+    })
+    .await?;
     let pool = connect_sqlite(app.clone(), db_url).await?;
     let vault_root = vault::active_writable_vault_path(&app)?;
     ganbaru_notes::assets::page_covers::save_page_cover_bytes(

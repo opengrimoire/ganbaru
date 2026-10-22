@@ -36,12 +36,14 @@ Normal changes enter through pull requests. Protected branches, release tags, en
 
 Release jobs follow least privilege:
 
-- Checkout credentials are not persisted.
+- Checkout credentials are not persisted, and jobs that push give the workflow token to each git command as a per-command header and to `gh` only in the step that uses it; no token is written into a remote URL or `.git/config`, which `check:workflows` enforces.
 - Third-party actions use reviewed immutable commit pins.
 - Pull request code never runs in a privileged `pull_request_target` context.
 - Build, signing, release publication, package-repository publication, and AUR publication use separate jobs and credentials.
-- Signing keys are present only in the protected job that needs them.
+- Signing keys are present only in the protected signing job, which never installs workspace dependencies or runs repository build code. Unprivileged jobs build unsigned desktop and Android artifacts; the signing job checks each artifact against the SHA-256 digest its build job recorded, signs Android output with `apksigner` and `jarsigner`, and signs updater assets with the Tauri CLI version from `pnpm-lock.yaml`, downloaded directly and checked against the lockfile integrity. `pnpm -w run check:workflows` fails if a job holding signing or publishing secrets runs a package manager, Cargo, Gradle, or Vite, or uses an action outside a small allowlist.
 - Artifacts are handed between jobs explicitly.
+- Build tools fetched outside a package manager are pinned by checksum: workflows check the Android command line tools archive with `sha256sum -c` before unpacking it, and the Gradle wrapper verifies its distribution with `distributionSha256Sum`. `check:workflows` rejects a workflow download that is not immediately checksum-verified, and `check:android-project` pins the distribution checksum and the committed wrapper JAR. Gradle dependency verification metadata is not yet recorded; Gradle plugins and libraries rely on the pinned versions and HTTPS repositories.
+- The signing job signs each RPM with the package repository key, then writes `SHA256SUMS` over every release asset and signs it with the same key. Package-repository and AUR publication run after the draft is published and download assets again, so they verify that signature with `gpgv` against the package repository public key committed in `apps/client/src-tauri/release-keys/` and require every downloaded file to match before using it. The package repository signs metadata only for pool files its previous signed pool manifest lists with the same digest.
 - Untrusted builds cannot populate a trusted release cache.
 - Mutable tags and unverified host keys are rejected.
 

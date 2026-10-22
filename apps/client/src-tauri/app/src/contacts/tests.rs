@@ -3,6 +3,7 @@ use super::requests::{
     self, CARD_REVOKED_CODE, INVALID_REQUEST_CODE, MAX_PENDING_RECEIVED, PeerReply, StatusOutcome,
 };
 use super::store::{self, ContactState, RequestDirection, RequestState, TrustGrant};
+use crate::vault::handoff::protocol::{ContactRequestOutcome, ControlMessage};
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use ganbaru_contacts::{
@@ -279,19 +280,88 @@ async fn pending_received_requests_are_capped() {
     }
 
     let rows = store::list_requests(&pool).await.unwrap();
-    assert_eq!(rows.len(), total);
-    let pending = rows.iter().filter(|row| row.state == "pending").count();
-    let expired: Vec<&str> = rows
-        .iter()
-        .filter(|row| row.state == "expired")
-        .map(|row| row.id.as_str())
-        .collect();
-    assert_eq!(pending, usize::try_from(MAX_PENDING_RECEIVED).unwrap());
-    assert_eq!(expired.len(), 3);
+    assert_eq!(rows.len(), usize::try_from(MAX_PENDING_RECEIVED).unwrap());
+    assert!(rows.iter().all(|row| row.state == "pending"));
+    let ids: Vec<&str> = rows.iter().map(|row| row.id.as_str()).collect();
+    let newest = format!("contact-{:03}", total - 1);
+    assert!(ids.contains(&newest.as_str()), "the newest request is kept");
+    for evicted in ["contact-000", "contact-001", "contact-002"] {
+        assert!(!ids.contains(&evicted), "the oldest requests are deleted");
+    }
+}
+
+#[tokio::test]
+async fn handled_requests_are_deleted_after_the_retention_window() {
+    let pool = migrated_memory_pool().await;
+    let recipient = Person::new("Recipient");
+    let old = Person::new("Old");
+    let newer = Person::new("Newer");
+    let start = store::now();
+    deliver(&pool, &recipient, &old, "contact-old").await;
+    let expired_at = start + chrono::Duration::days(requests::REQUEST_TTL_DAYS + 1);
+    store::expire_stale_requests(&pool, expired_at)
+        .await
+        .unwrap();
     assert!(
-        expired.contains(&"contact-000"),
-        "the oldest rows expire first"
+        store::list_pending_requests(&pool)
+            .await
+            .unwrap()
+            .is_empty(),
+        "handled requests are never listed"
     );
+
+    let later = expired_at + chrono::Duration::days(requests::HANDLED_REQUEST_RETENTION_DAYS + 1);
+    let reply = requests::receive_request(
+        &pool,
+        &recipient.identity,
+        later,
+        &encode_nonce(&recipient.identity.card_nonce),
+        &newer.card().text(),
+        "contact-new",
+        &newer.request_signature(&recipient.identity.card_nonce, "contact-new"),
+    )
+    .await
+    .unwrap();
+    assert_eq!(reply, received("contact-new"));
+
+    let rows = store::list_requests(&pool).await.unwrap();
+    let ids: Vec<&str> = rows.iter().map(|row| row.id.as_str()).collect();
+    assert_eq!(ids, ["contact-new"]);
+}
+
+#[tokio::test]
+async fn handled_requests_are_capped_with_the_oldest_deleted_first() {
+    let pool = migrated_memory_pool().await;
+    let recipient = Person::new("Recipient");
+    let handled = usize::try_from(requests::MAX_HANDLED_REQUESTS).unwrap() + 3;
+    let now = store::now();
+    for index in 0..handled {
+        let id = format!("contact-{index:03}");
+        deliver(&pool, &recipient, &Person::new("Many"), &id).await;
+        assert!(
+            store::set_request_state(&pool, &id, None, RequestState::Declined, None, now)
+                .await
+                .unwrap()
+        );
+    }
+    deliver(&pool, &recipient, &Person::new("Last"), "contact-last").await;
+
+    let rows = store::list_requests(&pool).await.unwrap();
+    let declined = rows.iter().filter(|row| row.state == "declined").count();
+    assert_eq!(
+        declined,
+        usize::try_from(requests::MAX_HANDLED_REQUESTS).unwrap()
+    );
+    let ids: Vec<&str> = rows.iter().map(|row| row.id.as_str()).collect();
+    assert!(ids.contains(&"contact-last"), "the new request is kept");
+    let newest_handled = format!("contact-{:03}", handled - 1);
+    assert!(ids.contains(&newest_handled.as_str()));
+    for pruned in ["contact-000", "contact-001", "contact-002"] {
+        assert!(
+            !ids.contains(&pruned),
+            "the oldest handled requests are deleted"
+        );
+    }
 }
 
 #[tokio::test]
@@ -607,6 +677,113 @@ async fn expired_requests_stop_being_pending() {
     store::expire_stale_requests(&pool, later).await.unwrap();
 
     let row = store::request_by_id(&pool, "contact-one")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(row.state, "expired");
+}
+
+async fn insert_sent_request(pool: &SqlitePool, recipient: &Person, request_id: &str) {
+    let card = recipient.card();
+    let now = store::now();
+    store::insert_request(
+        pool,
+        store::NewRequest {
+            id: request_id,
+            direction: RequestDirection::Sent,
+            public_key: &recipient.key.public_key().to_text(),
+            display_name: recipient.name,
+            color: 7,
+            card: &card.text(),
+            card_digest: &store::encode_hex(&card.digest),
+            endpoint_hint: "127.0.0.1:43821",
+            coordinator_fingerprint: &store::encode_hex(&[9u8; 32]),
+            invite_trust: TrustKind::UntilRevoked,
+            message_trust: TrustKind::UntilRevoked,
+            expires_at: now + chrono::Duration::days(requests::REQUEST_TTL_DAYS),
+        },
+        now,
+    )
+    .await
+    .unwrap();
+}
+
+fn accepted_by(recipient: &Person) -> Result<ControlMessage, String> {
+    Ok(ControlMessage::ContactRequestState {
+        state: ContactRequestOutcome::Accepted,
+        recipient_card: Some(recipient.card().text()),
+    })
+}
+
+#[tokio::test]
+async fn an_accepted_poll_does_not_reopen_a_request_cancelled_while_in_flight() {
+    let pool = migrated_memory_pool().await;
+    let recipient = Person::new("Recipient");
+    insert_sent_request(&pool, &recipient, "contact-one").await;
+    let in_flight = store::request_by_id(&pool, "contact-one")
+        .await
+        .unwrap()
+        .unwrap();
+    requests::close_request(
+        &pool,
+        "contact-one",
+        in_flight.revision,
+        RequestDirection::Sent,
+        RequestState::Expired,
+    )
+    .await
+    .unwrap();
+
+    let resolved =
+        requests::apply_status_response(&pool, &in_flight, accepted_by(&recipient), store::now())
+            .await
+            .unwrap();
+
+    assert!(resolved);
+    let row = store::request_by_id(&pool, "contact-one")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(row.state, "expired");
+    let key = recipient.key.public_key().to_text();
+    assert!(store::contact_by_key(&pool, &key).await.unwrap().is_none());
+}
+
+#[tokio::test]
+async fn an_accepted_poll_never_clears_a_block() {
+    let pool = migrated_memory_pool().await;
+    let recipient = Person::new("Recipient");
+    let key = recipient.key.public_key().to_text();
+    insert_sent_request(&pool, &recipient, "contact-one").await;
+    let in_flight = store::request_by_id(&pool, "contact-one")
+        .await
+        .unwrap()
+        .unwrap();
+    requests::block_person(&pool, &key, store::now())
+        .await
+        .unwrap();
+
+    requests::apply_status_response(&pool, &in_flight, accepted_by(&recipient), store::now())
+        .await
+        .unwrap();
+    let blocked = store::contact_by_key(&pool, &key).await.unwrap().unwrap();
+    assert_eq!(blocked.state, "blocked");
+    assert_eq!(blocked.invite_trust, "not_allowed");
+
+    insert_sent_request(&pool, &recipient, "contact-two").await;
+    let pending = store::request_by_id(&pool, "contact-two")
+        .await
+        .unwrap()
+        .unwrap();
+    let resolved =
+        requests::apply_status_response(&pool, &pending, accepted_by(&recipient), store::now())
+            .await
+            .unwrap();
+    assert!(resolved);
+    let blocked = store::contact_by_key(&pool, &key).await.unwrap().unwrap();
+    assert_eq!(blocked.state, "blocked");
+    assert!(blocked.blocked_at.is_some());
+    let row = store::request_by_id(&pool, "contact-two")
         .await
         .unwrap()
         .unwrap();

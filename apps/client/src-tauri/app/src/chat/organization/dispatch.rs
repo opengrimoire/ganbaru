@@ -1,6 +1,9 @@
 //! Assignment dispatch and live provider delivery.
 
-use super::common::{new_id, serialization_error, sha256_hex};
+use super::common::{
+    native_assignment_safety_mode, new_id, parse_runtime_approval_policy, serialization_error,
+    sha256_hex,
+};
 use super::reads::read_policy;
 use super::{chat_pool, identifier_error, now_timestamp, persistence_error, u64_value};
 use ganbaru_chat_contracts::models::*;
@@ -243,6 +246,10 @@ async fn dispatch_claimed_assignment(
     .map_err(identifier_error)?;
     let policy_revision = u64_value(row.try_get("policy_revision").map_err(persistence_error)?)?;
     let policy = read_policy(pool, &teammate_id, policy_revision).await?;
+    let resolved_runtime_approval = parse_runtime_approval_policy(
+        &row.try_get::<String, _>("resolved_runtime_approval_policy")
+            .map_err(persistence_error)?,
+    )?;
     let working_folder_id = row
         .try_get::<Option<String>, _>("working_folder_id")
         .map_err(persistence_error)?
@@ -454,7 +461,11 @@ async fn dispatch_claimed_assignment(
         provider_managed_model: policy.provider_managed_model,
         model_id: policy.model_id,
         model_options: policy.model_options,
-        modes: assignment_turn_modes(policy.safety_mode, has_native_target),
+        modes: assignment_turn_modes(
+            policy.safety_mode,
+            resolved_runtime_approval,
+            has_native_target,
+        ),
         prompt: row.try_get("serialized_text").map_err(persistence_error)?,
         attachment_ids,
         mentions,
@@ -848,22 +859,20 @@ pub(super) async fn deliver_assignment_input(
     Ok(())
 }
 
-fn teammate_cli_safety_mode(value: ChatApprovalPolicy) -> SafetyMode {
-    match value {
-        ChatApprovalPolicy::AskForApproval => SafetyMode::AskForApproval,
-        ChatApprovalPolicy::ApproveForMe => SafetyMode::ApproveForMe,
-        ChatApprovalPolicy::FullAccess => SafetyMode::FullAccess,
-        ChatApprovalPolicy::Custom => SafetyMode::Custom,
-    }
-}
-
+/// Chooses the turn modes for an organizational assignment. Native targets run
+/// with the frozen effective runtime approval, which is never broader than the
+/// teammate's own approval behavior; targetless assignments stay conversational.
 fn assignment_turn_modes(
     teammate_approval: ChatApprovalPolicy,
+    resolved_runtime_approval: ChatRuntimeApprovalPolicy,
     has_native_target: bool,
 ) -> TurnModeSnapshot {
     if has_native_target {
         return TurnModeSnapshot {
-            safety_mode: teammate_cli_safety_mode(teammate_approval),
+            safety_mode: native_assignment_safety_mode(
+                teammate_approval,
+                resolved_runtime_approval,
+            ),
             interaction_mode: InteractionMode::Build,
         };
     }
@@ -875,19 +884,73 @@ fn assignment_turn_modes(
 
 #[cfg(test)]
 mod tests {
-    use super::{ChatApprovalPolicy, InteractionMode, SafetyMode, assignment_turn_modes};
+    use super::{
+        ChatApprovalPolicy, ChatRuntimeApprovalPolicy, InteractionMode, SafetyMode,
+        assignment_turn_modes,
+    };
 
     #[test]
     fn targetless_assignments_use_a_narrow_conversation_mode() {
-        let modes = assignment_turn_modes(ChatApprovalPolicy::FullAccess, false);
+        let modes = assignment_turn_modes(
+            ChatApprovalPolicy::FullAccess,
+            ChatRuntimeApprovalPolicy::Unattended,
+            false,
+        );
         assert_eq!(modes.safety_mode, SafetyMode::AskForApproval);
         assert_eq!(modes.interaction_mode, InteractionMode::Build);
     }
 
     #[test]
-    fn native_assignments_keep_the_teammate_cli_approval_behavior() {
-        let modes = assignment_turn_modes(ChatApprovalPolicy::FullAccess, true);
-        assert_eq!(modes.safety_mode, SafetyMode::FullAccess);
-        assert_eq!(modes.interaction_mode, InteractionMode::Build);
+    fn native_assignments_run_with_the_frozen_effective_approval() {
+        let cases = [
+            (
+                ChatApprovalPolicy::FullAccess,
+                ChatRuntimeApprovalPolicy::Unattended,
+                SafetyMode::FullAccess,
+            ),
+            (
+                ChatApprovalPolicy::FullAccess,
+                ChatRuntimeApprovalPolicy::AutoApprove,
+                SafetyMode::ApproveForMe,
+            ),
+            (
+                ChatApprovalPolicy::FullAccess,
+                ChatRuntimeApprovalPolicy::Ask,
+                SafetyMode::AskForApproval,
+            ),
+            (
+                ChatApprovalPolicy::ApproveForMe,
+                ChatRuntimeApprovalPolicy::AutoApprove,
+                SafetyMode::ApproveForMe,
+            ),
+            (
+                ChatApprovalPolicy::AskForApproval,
+                ChatRuntimeApprovalPolicy::Ask,
+                SafetyMode::AskForApproval,
+            ),
+            (
+                ChatApprovalPolicy::AskForApproval,
+                ChatRuntimeApprovalPolicy::ProviderCustom,
+                SafetyMode::AskForApproval,
+            ),
+            (
+                ChatApprovalPolicy::Custom,
+                ChatRuntimeApprovalPolicy::ProviderCustom,
+                SafetyMode::Custom,
+            ),
+            (
+                ChatApprovalPolicy::Custom,
+                ChatRuntimeApprovalPolicy::Ask,
+                SafetyMode::Custom,
+            ),
+        ];
+        for (teammate, resolved, expected) in cases {
+            let modes = assignment_turn_modes(teammate, resolved, true);
+            assert_eq!(
+                modes.safety_mode, expected,
+                "{teammate:?} with {resolved:?}"
+            );
+            assert_eq!(modes.interaction_mode, InteractionMode::Build);
+        }
     }
 }

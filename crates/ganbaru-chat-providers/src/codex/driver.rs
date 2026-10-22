@@ -37,7 +37,10 @@ use commands::{clear_codex_command_route, dispatch_codex_command};
 use session_open::SessionOpenInput;
 use support::*;
 #[cfg(test)]
-pub(super) use support::{confirmed_resume_not_found, validated_app_server_arguments};
+pub(super) use support::{
+    append_project_configuration_arguments, confirmed_resume_not_found,
+    validated_app_server_arguments,
+};
 
 const CODEX_STDERR_LIMIT_BYTES: usize = 256 * 1024;
 const SESSION_GRACEFUL_STOP: Duration = Duration::from_millis(500);
@@ -239,6 +242,7 @@ impl ProviderDriver for CodexProviderDriver {
             let response = self
                 .execute_thread_request(
                     &workspace,
+                    request.workspace.project_configuration,
                     "thread/fork",
                     json!({
                         "threadId": request.provider_thread_id.as_str(),
@@ -267,7 +271,8 @@ impl ProviderDriver for CodexProviderDriver {
                 ChatError::validation("title", "A provider thread title is required")
             })?;
             self.execute_thread_request(
-                &canonical_current_directory()?,
+                &crate::probe_directory::ProbeDirectory::create()?,
+                ProjectConfigurationAccess::Restricted,
                 "thread/name/set",
                 json!({ "threadId": request.provider_thread_id.as_str(), "name": title }),
                 context,
@@ -284,7 +289,8 @@ impl ProviderDriver for CodexProviderDriver {
     ) -> DriverFuture<'a, DriverOperationReceipt> {
         Box::pin(async move {
             self.execute_thread_request(
-                &canonical_current_directory()?,
+                &crate::probe_directory::ProbeDirectory::create()?,
+                ProjectConfigurationAccess::Restricted,
                 "thread/archive",
                 json!({ "threadId": request.provider_thread_id.as_str() }),
                 context,
@@ -301,7 +307,8 @@ impl ProviderDriver for CodexProviderDriver {
     ) -> DriverFuture<'a, DriverOperationReceipt> {
         Box::pin(async move {
             self.execute_thread_request(
-                &canonical_current_directory()?,
+                &crate::probe_directory::ProbeDirectory::create()?,
+                ProjectConfigurationAccess::Restricted,
                 "thread/delete",
                 json!({ "threadId": request.provider_thread_id.as_str() }),
                 context,
@@ -318,7 +325,8 @@ impl ProviderDriver for CodexProviderDriver {
     ) -> DriverFuture<'a, DriverOperationReceipt> {
         Box::pin(async move {
             self.execute_thread_request(
-                &canonical_current_directory()?,
+                &crate::probe_directory::ProbeDirectory::create()?,
+                ProjectConfigurationAccess::Restricted,
                 "thread/unsubscribe",
                 json!({ "threadId": request.provider_thread_id.as_str() }),
                 context,
@@ -403,8 +411,12 @@ impl ProviderDriver for CodexProviderDriver {
                     "Codex MCP status requires a working directory without a live session",
                 )
             })?;
-            self.read_standalone_mcp_status(working_directory, context)
-                .await
+            self.read_standalone_mcp_status(
+                working_directory,
+                request.project_configuration,
+                context,
+            )
+            .await
         })
     }
 
@@ -609,6 +621,7 @@ impl ProviderDriver for CodexProviderDriver {
                 custom_safety.as_ref(),
                 live.organizational,
             )?;
+            let network_access = sandbox_network_access(&params);
             {
                 let mut state = live.route.lock().map_err(|_| driver_state_error())?;
                 state.active_chat_turn_id = Some(request.turn_id.clone());
@@ -676,6 +689,7 @@ impl ProviderDriver for CodexProviderDriver {
                 state: ChatTurnState::Active,
                 provider_turn_id: Some(provider_turn_id),
                 accepted_at: now_utc()?,
+                sandbox_network_access: Some(network_access),
             })
         })
     }

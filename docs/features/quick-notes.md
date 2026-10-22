@@ -2,7 +2,7 @@
 
 Quick notes is an app-wide capture surface for temporary thoughts, reminders, and small pieces of information. It is deliberately separate from [Notes](notes/README.md).
 
-A Quick note has no project membership, page hierarchy, blocks, icons, covers, comments, backlinks, attachments, version history, import/export, or collaboration state.
+A Quick note has no project membership, page hierarchy, blocks, icons, covers, comments, backlinks, file attachments other than images, version history, import/export, or collaboration state.
 
 ## Collection
 
@@ -34,6 +34,16 @@ Edits autosave after a short debounce, and pending writes flush at relevant life
 
 Revision-sensitive native writes return a stable `revision_conflict` code for stale revisions and `failed` for other failures. Recovery decisions use that code, never words in the diagnostic message.
 
+## Images
+
+A note holds up to 24 PNG, JPEG, WebP, or GIF images of at most 25 MiB each. Images are added with the editor's Add images button (the native file picker on desktop, the system picker on Android), by pasting copied images, or by dropping files on the editor (on desktop, anywhere on the window while the editor is open). A paste that carries copied text along with a picture of it, as office suites produce, inserts the text instead. Adding an image the note already has is skipped, and files that are too large, unsupported, or unreadable are reported without blocking the rest.
+
+Images sit above the title, flush with the top of the card and editor, as justified rows that keep each image's shape: only extreme panoramas and tall strips are cropped. Rows have a bounded height, so a row of tall images that would be taller is shown narrower and centered, cropping at most a tenth of its height when that is enough to fill the width. Cards show up to six images and count the rest on the last tile. A note with only images shows just the mosaic.
+
+Selecting an image in the editor opens a viewer over the dimmed app: the image grows out of its tile, starts fitted to the window with its zoom shown as 100%, and returns to its tile on close. The viewer has zoom (wheel, pinch, double tap, click, and keys), panning, previous and next navigation with wrapping, swipe to change image, and swipe down or Escape to close. The viewer can copy the image to the clipboard, save a copy (a save dialog on desktop, shared Downloads on Android), and remove it from the note. Removal offers Undo in the editor. Read-only notes in Trash can view, copy, and save images but not change them.
+
+Mosaics read scaled copies of large images and the viewer reads the original, both lazily and with bounded concurrency. Image files that no note, conflict version, or recovery entry references are deleted after a one-day grace period.
+
 ## Lifecycle
 
 Active notes can be pinned, archived, or moved to Trash. Archive and Trash clear pin state. Trash remembers whether the note came from active or Archive so restore returns it appropriately.
@@ -45,12 +55,13 @@ Trashed notes are read-only and are permanently deleted after seven days. Expire
 **Implemented in source; physical multi-device acceptance is pending.** Quick notes and their tags are editable on every linked device, online or offline, including devices that hold a read-only copy of the rest of the vault. Changes reach other devices on the same LAN through the coordinator desktop and converge to identical state everywhere. Protocol, writers, and delivery are owned by [Device linking and synchronization](../data/sync.md); merge rules are in the [sync algorithm](../algorithms/sync/README.md).
 
 - **Silent merges:** concurrent changes to color, tag, lifecycle, and order resolve deterministically without asking the user. Two devices that create a tag with the same name end with one tag that keeps every assignment.
-- **Conflicts:** concurrent edits of the same note's title or body to different values become a conflict. The card shows a conflict badge, and the editor shows a banner listing each version with its device and time: keep this keeps the displayed version, use this picks another version, and keep both keeps the displayed version and creates a new note from the other. Resolving on one device clears the conflict everywhere, and unsaved edits to other fields survive the resolution.
+- **Conflicts:** concurrent edits of the same note's title, body, or image list to different values become a conflict. The card shows a conflict badge, and the editor shows a banner listing each version with its device and time: keep this keeps the displayed version, use this picks another version, and keep both keeps the displayed version and creates a new note from the other. Resolving on one device clears the conflict everywhere, and unsaved edits to other fields survive the resolution.
 - **Recovery:** a note deleted on one device, including by the Trash purge, while another device edited it is not lost silently. The edit becomes a recovery entry in the Settings sync section, where Restore creates an active note from the retained values and Discard drops them. Either choice applies on every device.
+- **Images:** image files follow the notes that reference them through the coordinator. A note can appear on another device before its images do; its tiles show a placeholder and load once the file arrives. Images added on a device that is offline upload on its next exchange.
 
 ## Data ownership
 
-Quick notes, tags, formatted text runs, lifecycle, order, color, revision, and derived search text are SQLite-canonical. Reordering is transactional and does not pretend content changed.
+Quick notes, tags, formatted text runs, image references, lifecycle, order, color, revision, and derived search text are SQLite-canonical. Image bytes are content-addressed files under the vault's `assets/quick-notes/images/`, verified against their names on every read. Reordering is transactional and does not pretend content changed.
 
 Quick notes creates no Markdown files and does not participate in Notes search, history, backlinks, exports, or collaboration.
 

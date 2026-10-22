@@ -15,6 +15,7 @@ import android.os.Looper
 import android.provider.Settings
 import android.view.ViewGroup
 import android.webkit.JavascriptInterface
+import android.webkit.WebChromeClient
 import android.webkit.WebView
 import android.widget.ImageView
 import androidx.activity.enableEdgeToEdge
@@ -329,9 +330,20 @@ class MainActivity : TauriActivity() {
     appearancePreferences.edit().putInt(NIGHT_MODE_KEY, mode).apply()
   }
 
+  private fun installPermissionPolicy(webView: WebView) {
+    val current = webView.webChromeClient
+    if (current is AppOriginChromeClient) return
+    webView.webChromeClient = AppOriginChromeClient(current ?: WebChromeClient()) {
+      if (BuildConfig.DEBUG) webView.url else null
+    }
+  }
+
   override fun onWebViewCreate(webView: WebView) {
     super.onWebViewCreate(webView)
     appWebView = webView
+    // The generated chrome client is attached after this callback returns, so the wrapper installs on the next turn
+    // of the main looper, before any page script can request a permission.
+    Handler(Looper.getMainLooper()).post { installPermissionPolicy(webView) }
     webView.setBackgroundColor(storedWindowBackground())
     if (WebViewFeature.isFeatureSupported(WebViewFeature.ALGORITHMIC_DARKENING)) {
       WebSettingsCompat.setAlgorithmicDarkeningAllowed(webView.settings, false)

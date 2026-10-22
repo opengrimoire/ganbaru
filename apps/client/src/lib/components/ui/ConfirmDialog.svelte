@@ -8,6 +8,7 @@
   } from "$lib/modal-focus";
   import { BUILD_PLATFORM_PROFILE, platformHasCapability } from "$lib/platform";
   import { getMobileBackStack } from "$lib/stores/mobile-back-stack.svelte";
+  import { createBackdropPress } from "$lib/utils/backdrop-press";
 
   const { t } = getLocalization();
   const mobileBackStack = getMobileBackStack();
@@ -43,6 +44,7 @@
 
   const displayMessage = $derived(message.replace(/\.\s*$/u, ""));
   let cancelButtonElement = $state<HTMLButtonElement | null>(null);
+  const backdropPress = createBackdropPress();
 
   function handleKeydown(e: KeyboardEvent) {
     if (e.key === "Tab" && element) {
@@ -98,7 +100,8 @@
 <div
   class="fixed z-90 flex items-center justify-center"
   style="left: var(--visual-viewport-offset-left); top: var(--visual-viewport-offset-top); width: var(--visual-viewport-width); height: var(--visual-viewport-height); padding: calc(var(--safe-area-top) + 1rem) calc(var(--safe-area-right) + 1rem) calc(var(--safe-area-bottom) + 1rem) calc(var(--safe-area-left) + 1rem);"
-  onclick={(e) => { e.stopPropagation(); onDismiss(); }}
+  onpointerdown={backdropPress.start}
+  onclick={(e) => { e.stopPropagation(); if (backdropPress.isClick(e)) onDismiss(); }}
 >
   <div class="surface-backdrop absolute inset-0"></div>
   <!-- svelte-ignore a11y_no_static_element_interactions -->

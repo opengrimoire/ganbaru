@@ -27,7 +27,6 @@ Groups organize projects. Projects own settings, statuses, priorities, tags, cus
 | Embedded web page views | Planned |
 | Filters, sorting, grouping, selection, bulk actions, and custom columns | Implemented |
 | Project defaults, statuses, priorities, tags, custom fields, and icons | Implemented |
-| Built-in project templates | Implemented |
 | User-defined project templates | Planned |
 | Task scheduling and task-event links | Implemented |
 | Focus and break playlist defaults | Implemented |

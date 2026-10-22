@@ -1,18 +1,37 @@
 //! Bounded Git process execution and typed porcelain parsing.
 
+pub mod hardened;
+
 use super::models::{ChatError, ChatErrorCode, ChatResult};
+use hardened::{GIT_NETWORK_DEADLINE, GIT_READ_DEADLINE, GitFolderTrust, GitPolicy, OwnedGitRun};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
 use std::time::Duration;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::process::Command;
 
-const GIT_TIMEOUT: Duration = Duration::from_secs(60);
-const GIT_NETWORK_TIMEOUT: Duration = Duration::from_secs(180);
+/// A folder Git runs in, with this device's trust in its configuration.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct GitFolder<'a> {
+    pub root: &'a Path,
+    pub trust: GitFolderTrust,
+}
+
+impl<'a> GitFolder<'a> {
+    pub const fn new(root: &'a Path, trust: GitFolderTrust) -> Self {
+        Self { root, trust }
+    }
+
+    /// A folder whose repository programs and hooks never run.
+    pub const fn untrusted(root: &'a Path) -> Self {
+        Self::new(root, GitFolderTrust::Untrusted)
+    }
+}
+
 const MAX_GIT_OUTPUT_BYTES: usize = 8 * 1024 * 1024;
 const MAX_REVIEW_OUTPUT_BYTES: usize = 64 * 1024 * 1024;
+/// Longest git or hosted CLI error text returned to the webview, in characters.
+pub(crate) const MAX_DIAGNOSTIC_CHARS: usize = 2_048;
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -69,6 +88,7 @@ pub struct GitWorktreeRead {
 
 struct GitOutput {
     stdout: Vec<u8>,
+    stdout_bytes: u64,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -78,9 +98,9 @@ struct GitStorage<'a> {
     alternate_object_directory: Option<&'a Path>,
 }
 
-pub async fn status(root: &Path) -> ChatResult<GitStatusRead> {
+pub async fn status(folder: GitFolder<'_>) -> ChatResult<GitStatusRead> {
     let output = run(
-        root,
+        folder,
         &[
             "status",
             "--porcelain=v2",
@@ -88,79 +108,131 @@ pub async fn status(root: &Path) -> ChatResult<GitStatusRead> {
             "--untracked-files=all",
             "-z",
         ],
-        false,
+        GitCall::Internal,
     )
     .await?;
     parse_status(&output.stdout)
 }
 
-pub async fn diff(root: &Path, staged: bool, relative_path: Option<&str>) -> ChatResult<String> {
-    let mut arguments = vec!["diff", "--no-ext-diff", "--no-color"];
-    if staged {
-        arguments.push("--cached");
-    }
-    if let Some(path) = relative_path {
-        arguments.extend(["--", path]);
-    }
-    let output = run(root, &arguments, false).await?;
-    String::from_utf8(output.stdout)
-        .map_err(|_| git_protocol_error("Git diff output is not valid UTF-8"))
+/// Rewrites repository-relative paths, as status and diffs report them, into pathspecs
+/// relative to the working folder, where Git resolves them.
+///
+/// A working folder below the repository root reaches paths outside it through `..`, as the
+/// user's own `git` does from that folder.
+pub async fn folder_pathspecs(folder: GitFolder<'_>, paths: &[String]) -> ChatResult<Vec<String>> {
+    let output = run(folder, &["rev-parse", "--show-prefix"], GitCall::Internal).await?;
+    let prefix = String::from_utf8(output.stdout)
+        .map_err(|_| git_protocol_error("Git folder prefix is not valid UTF-8"))?;
+    let prefix = prefix.strip_suffix('\n').unwrap_or(&prefix);
+    Ok(paths
+        .iter()
+        .map(|path| pathspec_below_prefix(prefix, path))
+        .collect())
 }
 
-pub async fn stage(root: &Path, paths: &[String]) -> ChatResult<()> {
+/// The pathspec for repository-relative `path` from the folder at `prefix`, which is empty
+/// at the repository root and otherwise ends with `/`.
+fn pathspec_below_prefix(prefix: &str, path: &str) -> String {
+    if prefix.is_empty() {
+        return path.to_string();
+    }
+    if let Some(inside) = path.strip_prefix(prefix)
+        && !inside.is_empty()
+    {
+        return inside.to_string();
+    }
+    let depth = prefix
+        .split('/')
+        .filter(|component| !component.is_empty())
+        .count();
+    format!("{}{path}", "../".repeat(depth))
+}
+
+pub async fn stage(folder: GitFolder<'_>, paths: &[String]) -> ChatResult<()> {
+    let paths = folder_pathspecs(folder, paths).await?;
     let mut arguments = vec!["add", "--"];
     arguments.extend(paths.iter().map(String::as_str));
-    run(root, &arguments, false).await.map(|_| ())
+    run(folder, &arguments, GitCall::User).await.map(|_| ())
 }
 
-pub async fn unstage(root: &Path, paths: &[String]) -> ChatResult<()> {
-    let source = match run(root, &["rev-parse", "--verify", "HEAD^{tree}"], false).await {
+pub async fn unstage(folder: GitFolder<'_>, paths: &[String]) -> ChatResult<()> {
+    let source = match run(
+        folder,
+        &["rev-parse", "--verify", "HEAD^{tree}"],
+        GitCall::Internal,
+    )
+    .await
+    {
         Ok(output) => String::from_utf8(output.stdout)
             .map_err(|_| git_protocol_error("Git tree ID is not valid UTF-8"))?
             .trim()
             .to_string(),
         Err(_) => String::from_utf8(
-            run_bounded(root, &["mktree"], false, Some(&[]), MAX_GIT_OUTPUT_BYTES)
-                .await?
-                .stdout,
+            run_bounded(
+                folder,
+                &["mktree"],
+                GitCall::Internal,
+                Some(&[]),
+                MAX_GIT_OUTPUT_BYTES,
+            )
+            .await?
+            .stdout,
         )
         .map_err(|_| git_protocol_error("Git empty tree ID is not valid UTF-8"))?
         .trim()
         .to_string(),
     };
+    let paths = folder_pathspecs(folder, paths).await?;
     let source_argument = format!("--source={source}");
     let mut arguments = vec!["restore", "--staged", source_argument.as_str(), "--"];
     arguments.extend(paths.iter().map(String::as_str));
-    run(root, &arguments, false).await.map(|_| ())
+    run(folder, &arguments, GitCall::User).await.map(|_| ())
 }
 
-pub async fn commit(root: &Path, message: &str) -> ChatResult<()> {
-    run(root, &["commit", "-m", message], false)
+pub async fn commit(folder: GitFolder<'_>, message: &str) -> ChatResult<()> {
+    run(folder, &["commit", "-m", message], GitCall::User)
         .await
         .map(|_| ())
 }
 
-pub async fn fetch(root: &Path, remote: Option<&str>) -> ChatResult<()> {
+pub async fn fetch(folder: GitFolder<'_>, remote: Option<&str>) -> ChatResult<()> {
     let mut arguments = vec!["fetch", "--prune"];
     if let Some(remote) = remote {
+        require_configured_remote(folder, remote).await?;
         arguments.push(remote);
     }
-    run(root, &arguments, true).await.map(|_| ())
+    run(folder, &arguments, GitCall::UserNetwork)
+        .await
+        .map(|_| ())
 }
 
-pub async fn pull(root: &Path, remote: Option<&str>, branch: Option<&str>) -> ChatResult<()> {
+pub async fn pull(
+    folder: GitFolder<'_>,
+    remote: Option<&str>,
+    branch: Option<&str>,
+) -> ChatResult<()> {
     let mut arguments = vec!["pull", "--ff-only"];
     if let Some(remote) = remote {
+        require_configured_remote(folder, remote).await?;
         arguments.push(remote);
     }
     if let Some(branch) = branch {
+        if remote.is_none() {
+            return Err(ChatError::validation(
+                "remote",
+                "A Git branch needs its remote",
+            ));
+        }
+        validate_branch_name(branch)?;
         arguments.push(branch);
     }
-    run(root, &arguments, true).await.map(|_| ())
+    run(folder, &arguments, GitCall::UserNetwork)
+        .await
+        .map(|_| ())
 }
 
 pub async fn push(
-    root: &Path,
+    folder: GitFolder<'_>,
     remote: Option<&str>,
     branch: Option<&str>,
     force_with_lease: bool,
@@ -170,16 +242,26 @@ pub async fn push(
         arguments.push("--force-with-lease");
     }
     if let Some(remote) = remote {
+        require_configured_remote(folder, remote).await?;
         arguments.push(remote);
     }
     if let Some(branch) = branch {
+        if remote.is_none() {
+            return Err(ChatError::validation(
+                "remote",
+                "A Git branch needs its remote",
+            ));
+        }
+        validate_branch_name(branch)?;
         arguments.push(branch);
     }
-    run(root, &arguments, true).await.map(|_| ())
+    run(folder, &arguments, GitCall::UserNetwork)
+        .await
+        .map(|_| ())
 }
 
-pub async fn remotes(root: &Path) -> ChatResult<Vec<GitRemoteRead>> {
-    let output = run(root, &["remote", "-v"], false).await?;
+pub async fn remotes(folder: GitFolder<'_>) -> ChatResult<Vec<GitRemoteRead>> {
+    let output = run(folder, &["remote", "-v"], GitCall::Internal).await?;
     let text = String::from_utf8(output.stdout)
         .map_err(|_| git_protocol_error("Git remote output is not valid UTF-8"))?;
     let mut remotes = Vec::<GitRemoteRead>::new();
@@ -210,15 +292,15 @@ pub async fn remotes(root: &Path) -> ChatResult<Vec<GitRemoteRead>> {
     Ok(remotes)
 }
 
-pub async fn branches(root: &Path) -> ChatResult<Vec<GitBranchRead>> {
+pub async fn branches(folder: GitFolder<'_>) -> ChatResult<Vec<GitBranchRead>> {
     let output = run(
-        root,
+        folder,
         &[
             "for-each-ref",
             "--format=%(HEAD)%00%(refname:short)%00%(upstream:short)%00%(upstream:track,nobracket)%00",
             "refs/heads/",
         ],
-        false,
+        GitCall::Internal,
     )
     .await?;
     let text = String::from_utf8(output.stdout)
@@ -241,8 +323,13 @@ pub async fn branches(root: &Path) -> ChatResult<Vec<GitBranchRead>> {
     Ok(branches)
 }
 
-pub async fn worktrees(root: &Path) -> ChatResult<Vec<GitWorktreeRead>> {
-    let output = run(root, &["worktree", "list", "--porcelain", "-z"], false).await?;
+pub async fn worktrees(folder: GitFolder<'_>) -> ChatResult<Vec<GitWorktreeRead>> {
+    let output = run(
+        folder,
+        &["worktree", "list", "--porcelain", "-z"],
+        GitCall::Internal,
+    )
+    .await?;
     let text = String::from_utf8(output.stdout)
         .map_err(|_| git_protocol_error("Git worktree output is not valid UTF-8"))?;
     let mut reads = Vec::new();
@@ -289,11 +376,11 @@ pub async fn worktrees(root: &Path) -> ChatResult<Vec<GitWorktreeRead>> {
     Ok(reads)
 }
 
-pub async fn common_directory(root: &Path) -> ChatResult<PathBuf> {
+pub async fn common_directory(folder: GitFolder<'_>) -> ChatResult<PathBuf> {
     let output = run(
-        root,
+        folder,
         &["rev-parse", "--path-format=absolute", "--git-common-dir"],
-        false,
+        GitCall::Internal,
     )
     .await?;
     let value = String::from_utf8(output.stdout)
@@ -306,13 +393,13 @@ pub async fn common_directory(root: &Path) -> ChatResult<PathBuf> {
 }
 
 pub async fn add_worktree(
-    root: &Path,
+    folder: GitFolder<'_>,
     worktree_path: &str,
     branch: &str,
     base_reference: &str,
 ) -> ChatResult<()> {
     run(
-        root,
+        folder,
         &[
             "worktree",
             "add",
@@ -321,80 +408,90 @@ pub async fn add_worktree(
             worktree_path,
             base_reference,
         ],
-        true,
+        GitCall::UserNetwork,
     )
     .await
     .map(|_| ())
 }
 
-pub async fn remove_worktree(root: &Path, worktree_path: &str) -> ChatResult<()> {
-    run(root, &["worktree", "remove", worktree_path], false)
-        .await
-        .map(|_| ())
+pub async fn remove_worktree(folder: GitFolder<'_>, worktree_path: &str) -> ChatResult<()> {
+    run(
+        folder,
+        &["worktree", "remove", worktree_path],
+        GitCall::Internal,
+    )
+    .await
+    .map(|_| ())
 }
 
-pub async fn head_object_id(root: &Path) -> ChatResult<String> {
-    let output = run(root, &["rev-parse", "HEAD"], false).await?;
+pub async fn head_object_id(folder: GitFolder<'_>) -> ChatResult<String> {
+    let output = run(folder, &["rev-parse", "HEAD"], GitCall::Internal).await?;
     String::from_utf8(output.stdout)
         .map(|value| value.trim().to_string())
         .map_err(|_| git_protocol_error("Git object ID is not valid UTF-8"))
 }
 
-pub async fn initialize(root: &Path, initial_branch: Option<&str>) -> ChatResult<()> {
+pub async fn initialize(folder: GitFolder<'_>, initial_branch: Option<&str>) -> ChatResult<()> {
     let mut arguments = vec!["init"];
     if let Some(branch) = initial_branch {
         arguments.extend(["--initial-branch", branch]);
     }
-    run(root, &arguments, false).await.map(|_| ())
+    run(folder, &arguments, GitCall::User).await.map(|_| ())
 }
 
-pub async fn clone_into(root: &Path, remote_url: &str, remote_name: &str) -> ChatResult<()> {
+pub async fn clone_into(
+    folder: GitFolder<'_>,
+    remote_url: &str,
+    remote_name: &str,
+) -> ChatResult<()> {
     validate_git_argument(remote_url)?;
     validate_git_argument(remote_name)?;
     run(
-        root,
+        folder,
         &["clone", "--origin", remote_name, "--", remote_url, "."],
-        true,
+        GitCall::UserNetwork,
     )
     .await
     .map(|_| ())
 }
 
 pub async fn discard_paths(
-    root: &Path,
+    folder: GitFolder<'_>,
     tracked_paths: &[String],
     untracked_paths: &[String],
 ) -> ChatResult<()> {
+    let tracked_paths = folder_pathspecs(folder, tracked_paths).await?;
+    let untracked_paths = folder_pathspecs(folder, untracked_paths).await?;
     if !tracked_paths.is_empty() {
         let mut arguments = vec!["restore", "--worktree", "--"];
         arguments.extend(tracked_paths.iter().map(String::as_str));
-        run(root, &arguments, false).await?;
+        run(folder, &arguments, GitCall::User).await?;
     }
     if !untracked_paths.is_empty() {
         let mut arguments = vec!["clean", "-f", "--"];
         arguments.extend(untracked_paths.iter().map(String::as_str));
-        run(root, &arguments, false).await?;
+        run(folder, &arguments, GitCall::User).await?;
     }
     Ok(())
 }
 
-pub async fn delete_branch(root: &Path, branch: &str, force: bool) -> ChatResult<()> {
+pub async fn delete_branch(folder: GitFolder<'_>, branch: &str, force: bool) -> ChatResult<()> {
     validate_git_argument(branch)?;
     run(
-        root,
+        folder,
         &["branch", if force { "-D" } else { "-d" }, branch],
-        false,
+        GitCall::User,
     )
     .await
     .map(|_| ())
 }
 
 pub async fn checkout_bitbucket_pull_request(
-    root: &Path,
+    folder: GitFolder<'_>,
     remote_name: &str,
     reference: &str,
 ) -> ChatResult<()> {
-    validate_git_argument(remote_name)?;
+    require_configured_remote(folder, remote_name).await?;
     if reference.is_empty()
         || reference.len() > 64
         || !reference
@@ -408,17 +505,70 @@ pub async fn checkout_bitbucket_pull_request(
     }
     let remote_tracking_ref = format!("refs/remotes/{remote_name}/pull-request/{reference}");
     let refspec = format!("refs/pull-requests/{reference}/from:{remote_tracking_ref}");
-    run(root, &["fetch", remote_name, &refspec], true).await?;
+    run(
+        folder,
+        &["fetch", remote_name, &refspec],
+        GitCall::UserNetwork,
+    )
+    .await?;
     let local_branch = format!("pull-request-{reference}");
     run(
-        root,
+        folder,
         &["checkout", "-b", &local_branch, &remote_tracking_ref],
-        false,
+        GitCall::User,
     )
     .await
     .map(|_| ())
 }
 
+/// Longest branch name accepted from the webview.
+const MAX_BRANCH_NAME_BYTES: usize = 1_024;
+
+/// Validates a branch name with `git check-ref-format --branch` rules, and
+/// additionally refuses refspec syntax so a name can never force-push, map to
+/// another ref, or match several refs.
+pub fn validate_branch_name(value: &str) -> ChatResult<()> {
+    let invalid = || ChatError::validation("branch", "Git branch name is invalid");
+    if value.is_empty()
+        || value.len() > MAX_BRANCH_NAME_BYTES
+        || value == "@"
+        || value.starts_with(['-', '+', '/'])
+        || value.ends_with(['/', '.'])
+        || value.ends_with(".lock")
+        || value.contains("..")
+        || value.contains("//")
+        || value.contains("@{")
+        || value.chars().any(|character| {
+            character.is_control()
+                || character.is_whitespace()
+                || matches!(character, '~' | '^' | ':' | '?' | '*' | '[' | '\\')
+        })
+        || value
+            .split('/')
+            .any(|component| component.starts_with('.') || component.ends_with(".lock"))
+    {
+        return Err(invalid());
+    }
+    Ok(())
+}
+
+/// Accepts only the name of a remote already configured in the repository, so
+/// a URL or path cannot redirect a push, pull, or fetch.
+async fn require_configured_remote(folder: GitFolder<'_>, remote: &str) -> ChatResult<()> {
+    validate_git_argument(remote)?;
+    if remotes(folder)
+        .await?
+        .iter()
+        .any(|configured| configured.name == remote)
+    {
+        Ok(())
+    } else {
+        Err(ChatError::validation(
+            "remote",
+            "Git remote is not configured in this repository",
+        ))
+    }
+}
 fn validate_git_argument(value: &str) -> ChatResult<()> {
     if value.is_empty()
         || value.len() > 1_024
@@ -434,22 +584,73 @@ fn validate_git_argument(value: &str) -> ChatResult<()> {
     Ok(())
 }
 
-async fn run(root: &Path, arguments: &[&str], network: bool) -> ChatResult<GitOutput> {
-    run_bounded(root, arguments, network, None, MAX_GIT_OUTPUT_BYTES).await
+/// How a Git call is classified for hardening and deadlines.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum GitCall {
+    /// Started by Ganbaru for reads, review, or bookkeeping.
+    Internal,
+    /// Requested by the user and local to the repository.
+    User,
+    /// Requested by the user and reaching a remote.
+    UserNetwork,
+}
+
+impl GitCall {
+    fn policy(self, trust: GitFolderTrust) -> GitPolicy {
+        match self {
+            Self::Internal => GitPolicy::internal(trust),
+            Self::User | Self::UserNetwork => GitPolicy::user(trust),
+        }
+    }
+
+    fn deadline(self) -> Duration {
+        match self {
+            Self::Internal | Self::User => GIT_READ_DEADLINE,
+            Self::UserNetwork => GIT_NETWORK_DEADLINE,
+        }
+    }
+}
+
+async fn run(folder: GitFolder<'_>, arguments: &[&str], call: GitCall) -> ChatResult<GitOutput> {
+    run_bounded(folder, arguments, call, None, MAX_GIT_OUTPUT_BYTES).await
 }
 
 pub async fn review_output(
-    root: &Path,
+    folder: GitFolder<'_>,
     arguments: &[&str],
     input: Option<&[u8]>,
 ) -> ChatResult<Vec<u8>> {
-    run_bounded(root, arguments, false, input, MAX_REVIEW_OUTPUT_BYTES)
-        .await
-        .map(|output| output.stdout)
+    run_bounded(
+        folder,
+        arguments,
+        GitCall::Internal,
+        input,
+        MAX_REVIEW_OUTPUT_BYTES,
+    )
+    .await
+    .map(|output| output.stdout)
+}
+
+/// Runs a user-requested review mutation (stage, unstage, or discard) with
+/// the same configuration the user's terminal would apply.
+pub async fn review_action_output(
+    folder: GitFolder<'_>,
+    arguments: &[&str],
+    input: Option<&[u8]>,
+) -> ChatResult<Vec<u8>> {
+    run_bounded(
+        folder,
+        arguments,
+        GitCall::User,
+        input,
+        MAX_REVIEW_OUTPUT_BYTES,
+    )
+    .await
+    .map(|output| output.stdout)
 }
 
 pub async fn review_output_in_storage(
-    root: &Path,
+    folder: GitFolder<'_>,
     arguments: &[&str],
     input: Option<&[u8]>,
     index_file: Option<&Path>,
@@ -457,11 +658,12 @@ pub async fn review_output_in_storage(
     alternate_object_directory: Option<&Path>,
 ) -> ChatResult<Vec<u8>> {
     run_bounded_with_storage(
-        root,
+        folder,
         arguments,
-        false,
+        GitCall::Internal,
         input,
         MAX_REVIEW_OUTPUT_BYTES,
+        None,
         GitStorage {
             index_file,
             object_directory,
@@ -473,150 +675,71 @@ pub async fn review_output_in_storage(
 }
 
 pub async fn review_output_to_file_in_storage(
-    root: &Path,
+    folder: GitFolder<'_>,
     arguments: &[&str],
     output_path: &Path,
     maximum_output_bytes: usize,
     object_directory: Option<&Path>,
     alternate_object_directory: Option<&Path>,
 ) -> ChatResult<u64> {
-    let mut command = Command::new("git");
-    command
-        .arg("-C")
-        .arg(root)
-        .args(arguments)
-        .env("GIT_LITERAL_PATHSPECS", "1")
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .env("GCM_INTERACTIVE", "never")
-        .env("LC_ALL", "C")
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true);
-    apply_storage_environment(
-        &mut command,
+    run_bounded_with_storage(
+        folder,
+        arguments,
+        GitCall::Internal,
+        None,
+        maximum_output_bytes,
+        Some(output_path),
         GitStorage {
             index_file: None,
             object_directory,
             alternate_object_directory,
         },
-    )?;
-    let mut child = command.spawn().map_err(|_| git_unavailable_error())?;
-    let stdout = child.stdout.take().ok_or_else(git_unavailable_error)?;
-    let stderr = child.stderr.take().ok_or_else(git_unavailable_error)?;
-    let output_path = output_path.to_path_buf();
-    let stdout_task = tokio::spawn(write_bounded_file(
-        stdout,
-        output_path,
-        maximum_output_bytes,
-    ));
-    let stderr_task = tokio::spawn(read_bounded(stderr, MAX_GIT_OUTPUT_BYTES));
-    let status = match tokio::time::timeout(GIT_TIMEOUT, child.wait()).await {
-        Ok(status) => status.map_err(|_| git_unavailable_error())?,
-        Err(_) => {
-            let _ = child.kill().await;
-            let _ = child.wait().await;
-            let _ = stdout_task.await;
-            let _ = stderr_task.await;
-            return Err(ChatError::new(
-                ChatErrorCode::Timeout,
-                "Git operation timed out",
-                true,
-            ));
-        }
-    };
-    let byte_size = stdout_task.await.map_err(|_| git_unavailable_error())??;
-    let stderr = stderr_task.await.map_err(|_| git_unavailable_error())??;
-    if !status.success() {
-        let detail = String::from_utf8_lossy(&stderr).trim().to_string();
-        return Err(ChatError {
-            code: ChatErrorCode::Conflict,
-            message: "Git operation failed safely".to_string(),
-            field: None,
-            recoverable: true,
-            details: (!detail.is_empty()).then(|| Box::new(json!({ "stderr": detail }))),
-        });
-    }
-    Ok(byte_size)
+    )
+    .await
+    .map(|output| output.stdout_bytes)
 }
 
 async fn run_bounded(
-    root: &Path,
+    folder: GitFolder<'_>,
     arguments: &[&str],
-    network: bool,
+    call: GitCall,
     input: Option<&[u8]>,
     maximum_output_bytes: usize,
 ) -> ChatResult<GitOutput> {
     run_bounded_with_storage(
-        root,
+        folder,
         arguments,
-        network,
+        call,
         input,
         maximum_output_bytes,
+        None,
         GitStorage::default(),
     )
     .await
 }
 
 async fn run_bounded_with_storage(
-    root: &Path,
+    folder: GitFolder<'_>,
     arguments: &[&str],
-    network: bool,
+    call: GitCall,
     input: Option<&[u8]>,
     maximum_output_bytes: usize,
+    stdout_file: Option<&Path>,
     storage: GitStorage<'_>,
 ) -> ChatResult<GitOutput> {
-    let mut command = Command::new("git");
-    command
-        .arg("-C")
-        .arg(root)
-        .args(arguments)
-        .env("GIT_LITERAL_PATHSPECS", "1")
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .env("GCM_INTERACTIVE", "never")
-        .env("LC_ALL", "C")
-        .stdin(if input.is_some() {
-            Stdio::piped()
-        } else {
-            Stdio::null()
-        })
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true);
-    apply_storage_environment(&mut command, storage)?;
-    let mut child = command.spawn().map_err(|_| git_unavailable_error())?;
-    let stdout = child.stdout.take().ok_or_else(git_unavailable_error)?;
-    let stderr = child.stderr.take().ok_or_else(git_unavailable_error)?;
-    let stdout_task = tokio::spawn(read_bounded(stdout, maximum_output_bytes));
-    let stderr_task = tokio::spawn(read_bounded(stderr, maximum_output_bytes));
-    if let Some(bytes) = input {
-        let mut stdin = child.stdin.take().ok_or_else(git_unavailable_error)?;
-        tokio::time::timeout(GIT_TIMEOUT, stdin.write_all(bytes))
-            .await
-            .map_err(|_| ChatError::new(ChatErrorCode::Timeout, "Git input timed out", true))?
-            .map_err(|_| git_unavailable_error())?;
-        drop(stdin);
-    }
-    let timeout = if network {
-        GIT_NETWORK_TIMEOUT
-    } else {
-        GIT_TIMEOUT
-    };
-    let status = match tokio::time::timeout(timeout, child.wait()).await {
-        Ok(status) => status.map_err(|_| git_unavailable_error())?,
-        Err(_) => {
-            let _ = child.kill().await;
-            return Err(ChatError::new(
-                ChatErrorCode::Timeout,
-                "Git operation timed out",
-                true,
-            ));
-        }
-    };
-    let stdout = stdout_task.await.map_err(|_| git_unavailable_error())??;
-    let stderr = stderr_task.await.map_err(|_| git_unavailable_error())??;
-    if !status.success() {
-        let detail = String::from_utf8_lossy(&stderr).trim().to_string();
+    let output = hardened::run(OwnedGitRun {
+        root: folder.root.to_path_buf(),
+        arguments: arguments.iter().map(OsString::from).collect(),
+        policy: call.policy(folder.trust),
+        deadline: call.deadline(),
+        input: input.map(<[u8]>::to_vec),
+        maximum_output_bytes,
+        stdout_file: stdout_file.map(Path::to_path_buf),
+        environment: storage_environment(storage)?,
+    })
+    .await?;
+    if !output.status.success() {
+        let detail = diagnostic_text(&output.stderr);
         return Err(ChatError {
             code: ChatErrorCode::Conflict,
             message: "Git operation failed safely".to_string(),
@@ -625,15 +748,65 @@ async fn run_bounded_with_storage(
             details: (!detail.is_empty()).then(|| Box::new(json!({ "stderr": detail }))),
         });
     }
-    Ok(GitOutput { stdout })
+    Ok(GitOutput {
+        stdout: output.stdout,
+        stdout_bytes: output.stdout_bytes,
+    })
 }
 
-fn apply_storage_environment(command: &mut Command, storage: GitStorage<'_>) -> ChatResult<()> {
+/// Turns tool error output into text safe to show: control and bidirectional formatting
+/// characters are removed (line breaks and tabs stay), credentials in `scheme://user@host`
+/// URLs are dropped, and the result is capped at [`MAX_DIAGNOSTIC_CHARS`] with a visible marker.
+pub(crate) fn diagnostic_text(raw: &[u8]) -> String {
+    let lossy = String::from_utf8_lossy(raw);
+    let visible: String = lossy
+        .chars()
+        .filter(|character| {
+            matches!(character, '\n' | '\t')
+                || !(character.is_control()
+                    || matches!(character, '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}'))
+        })
+        .collect();
+    let redacted = without_url_userinfo(visible.trim());
+    let mut characters = redacted.chars();
+    let mut text: String = characters.by_ref().take(MAX_DIAGNOSTIC_CHARS).collect();
+    if characters.next().is_some() {
+        text.push_str(" [truncated]");
+    }
+    text
+}
+
+/// Removes the `user[:password]@` part after every `://` in `text`.
+fn without_url_userinfo(text: &str) -> String {
+    let mut output = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(index) = rest.find("://") {
+        let (before, after_scheme) = rest.split_at(index + 3);
+        output.push_str(before);
+        let authority_end = after_scheme
+            .find(|character: char| {
+                matches!(character, '/' | '?' | '#') || character.is_whitespace()
+            })
+            .unwrap_or(after_scheme.len());
+        let authority = &after_scheme[..authority_end];
+        output.push_str(
+            authority
+                .rsplit_once('@')
+                .map_or(authority, |(_, host)| host),
+        );
+        rest = &after_scheme[authority_end..];
+    }
+    output.push_str(rest);
+    output
+}
+
+fn storage_environment(storage: GitStorage<'_>) -> ChatResult<Vec<(String, OsString)>> {
+    let mut environment = Vec::new();
     if let Some(index_file) = storage.index_file {
-        command.env("GIT_INDEX_FILE", index_file);
+        environment.push(("GIT_INDEX_FILE".to_string(), index_file.into()));
     }
     if let Some(object_directory) = storage.object_directory {
-        command.env("GIT_OBJECT_DIRECTORY", object_directory);
+        environment.push(("GIT_OBJECT_DIRECTORY".to_string(), object_directory.into()));
     }
     if let Some(alternate) = storage.alternate_object_directory {
         let alternates = std::env::join_paths([alternate]).map_err(|_| {
@@ -643,66 +816,9 @@ fn apply_storage_environment(command: &mut Command, storage: GitStorage<'_>) -> 
                 false,
             )
         })?;
-        command.env("GIT_ALTERNATE_OBJECT_DIRECTORIES", alternates);
+        environment.push(("GIT_ALTERNATE_OBJECT_DIRECTORIES".to_string(), alternates));
     }
-    Ok(())
-}
-
-async fn read_bounded<R: tokio::io::AsyncRead + Unpin>(
-    reader: R,
-    maximum_bytes: usize,
-) -> ChatResult<Vec<u8>> {
-    let mut bytes = Vec::new();
-    reader
-        .take((maximum_bytes + 1) as u64)
-        .read_to_end(&mut bytes)
-        .await
-        .map_err(|_| git_unavailable_error())?;
-    if bytes.len() > maximum_bytes {
-        return Err(ChatError::new(
-            ChatErrorCode::Protocol,
-            "Git output exceeds the supported limit",
-            true,
-        ));
-    }
-    Ok(bytes)
-}
-
-async fn write_bounded_file<R: tokio::io::AsyncRead + Unpin>(
-    mut reader: R,
-    path: PathBuf,
-    maximum_bytes: usize,
-) -> ChatResult<u64> {
-    let mut file = tokio::fs::OpenOptions::new()
-        .create_new(true)
-        .write(true)
-        .open(path)
-        .await
-        .map_err(|_| git_unavailable_error())?;
-    let mut buffer = [0_u8; 64 * 1024];
-    let mut total = 0_usize;
-    loop {
-        let read = reader
-            .read(&mut buffer)
-            .await
-            .map_err(|_| git_unavailable_error())?;
-        if read == 0 {
-            break;
-        }
-        total = total.saturating_add(read);
-        if total > maximum_bytes {
-            return Err(ChatError::new(
-                ChatErrorCode::Protocol,
-                "Git output exceeds the supported limit",
-                true,
-            ));
-        }
-        file.write_all(&buffer[..read])
-            .await
-            .map_err(|_| git_unavailable_error())?;
-    }
-    file.flush().await.map_err(|_| git_unavailable_error())?;
-    u64::try_from(total).map_err(|_| git_unavailable_error())
+    Ok(environment)
 }
 
 fn parse_status(bytes: &[u8]) -> ChatResult<GitStatusRead> {
@@ -826,21 +942,16 @@ fn parse_track(value: &str) -> (u64, u64) {
     (ahead, behind)
 }
 
-fn git_unavailable_error() -> ChatError {
-    ChatError::new(
-        ChatErrorCode::DriverUnavailable,
-        "Git is unavailable for this workspace",
-        true,
-    )
-}
-
 fn git_protocol_error(message: &str) -> ChatError {
     ChatError::new(ChatErrorCode::Protocol, message, true)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{discard_paths, initialize, parse_status, run};
+    use super::{
+        GitCall, GitFolder, discard_paths, fetch, initialize, parse_status, pathspec_below_prefix,
+        pull, push, run, stage, status, unstage, validate_branch_name,
+    };
     use std::fs;
     use std::path::{Path, PathBuf};
 
@@ -864,6 +975,27 @@ mod tests {
         fn path(&self) -> &Path {
             &self.0
         }
+    }
+
+    #[test]
+    fn diagnostic_text_strips_controls_and_credentials_and_marks_truncation() {
+        let raw = "fatal: \u{1b}[31mremote\u{1b}[0m https://user:token@example.com/org/repo.git\r\n\u{202e}gnirts\ttab\u{7}";
+        assert_eq!(
+            super::diagnostic_text(raw.as_bytes()),
+            "fatal: [31mremote[0m https://example.com/org/repo.git\ngnirts\ttab"
+        );
+        assert_eq!(
+            super::diagnostic_text(b"see ssh://git@host:22/x and git@github.com:org/repo"),
+            "see ssh://host:22/x and git@github.com:org/repo"
+        );
+
+        let at_limit = "y".repeat(super::MAX_DIAGNOSTIC_CHARS);
+        assert_eq!(super::diagnostic_text(at_limit.as_bytes()), at_limit);
+        let over_limit = "x".repeat(super::MAX_DIAGNOSTIC_CHARS + 1);
+        assert_eq!(
+            super::diagnostic_text(over_limit.as_bytes()),
+            format!("{} [truncated]", "x".repeat(super::MAX_DIAGNOSTIC_CHARS))
+        );
     }
 
     impl Drop for TestDirectory {
@@ -893,34 +1025,47 @@ mod tests {
     async fn discard_restores_tracked_files_and_removes_confirmed_untracked_files() {
         let directory = TestDirectory::new();
         let root = directory.path();
-        initialize(root, Some("main"))
+        let folder = GitFolder::untrusted(root);
+        initialize(folder, Some("main"))
             .await
             .expect("repository should initialize");
-        run(root, &["config", "user.name", "Ganbaru test"], false)
-            .await
-            .expect("user name should configure");
         run(
-            root,
+            folder,
+            &["config", "user.name", "Ganbaru test"],
+            GitCall::User,
+        )
+        .await
+        .expect("user name should configure");
+        run(
+            folder,
             &["config", "user.email", "test@example.invalid"],
-            false,
+            GitCall::User,
         )
         .await
         .expect("user email should configure");
-        run(root, &["config", "commit.gpgsign", "false"], false)
-            .await
-            .expect("test signing should configure");
+        run(
+            folder,
+            &["config", "commit.gpgsign", "false"],
+            GitCall::User,
+        )
+        .await
+        .expect("test signing should configure");
         fs::write(root.join("tracked.txt"), "base\n").expect("tracked file should write");
-        run(root, &["add", "--", "tracked.txt"], false)
+        run(folder, &["add", "--", "tracked.txt"], GitCall::User)
             .await
             .expect("tracked file should stage");
-        run(root, &["commit", "-m", "test: add fixture"], false)
-            .await
-            .expect("fixture should commit");
+        run(
+            folder,
+            &["commit", "-m", "test: add fixture"],
+            GitCall::User,
+        )
+        .await
+        .expect("fixture should commit");
 
         fs::write(root.join("tracked.txt"), "changed\n").expect("tracked file should change");
         fs::write(root.join("untracked.txt"), "temporary\n").expect("untracked file should write");
         discard_paths(
-            root,
+            folder,
             &["tracked.txt".to_string()],
             &["untracked.txt".to_string()],
         )
@@ -932,5 +1077,216 @@ mod tests {
             "base\n"
         );
         assert!(!root.join("untracked.txt").exists());
+    }
+
+    #[test]
+    fn repository_paths_become_pathspecs_relative_to_the_folder() {
+        assert_eq!(pathspec_below_prefix("", "sub/a.txt"), "sub/a.txt");
+        assert_eq!(pathspec_below_prefix("sub/", "sub/a.txt"), "a.txt");
+        assert_eq!(pathspec_below_prefix("sub/", "sub/sub/a.txt"), "sub/a.txt");
+        assert_eq!(pathspec_below_prefix("sub/", "sub"), "../sub");
+        assert_eq!(pathspec_below_prefix("sub/", "subway.txt"), "../subway.txt");
+        assert_eq!(pathspec_below_prefix("a/b/", "a/c.txt"), "../../a/c.txt");
+    }
+
+    #[tokio::test]
+    async fn folder_below_the_repository_root_acts_on_the_paths_status_reports() {
+        let directory = TestDirectory::new();
+        let root = directory.path();
+        let repository = GitFolder::untrusted(root);
+        initialize(repository, Some("main"))
+            .await
+            .expect("repository should initialize");
+        for (key, value) in [
+            ("user.name", "Ganbaru test"),
+            ("user.email", "test@example.invalid"),
+            ("commit.gpgsign", "false"),
+        ] {
+            run(repository, &["config", key, value], GitCall::User)
+                .await
+                .expect("test identity should configure");
+        }
+        fs::create_dir_all(root.join("sub/sub")).expect("nested folders should create");
+        fs::create_dir_all(root.join("other")).expect("sibling folder should create");
+        fs::write(root.join("sub/tracked.txt"), "base\n").expect("tracked file should write");
+        run(repository, &["add", "--", "sub/tracked.txt"], GitCall::User)
+            .await
+            .expect("tracked file should stage");
+        run(
+            repository,
+            &["commit", "-m", "test: add fixture"],
+            GitCall::User,
+        )
+        .await
+        .expect("fixture should commit");
+
+        let sub = root.join("sub");
+        let folder = GitFolder::untrusted(&sub);
+        fs::write(root.join("sub/a.txt"), "discard me\n").expect("untracked file should write");
+        fs::write(root.join("sub/sub/a.txt"), "keep me\n").expect("nested file should write");
+        fs::write(root.join("sub/tracked.txt"), "changed\n").expect("tracked file should change");
+        fs::write(root.join("other/o.txt"), "outside\n").expect("sibling file should write");
+        let reported = status(folder)
+            .await
+            .expect("status should read")
+            .files
+            .into_iter()
+            .map(|file| file.relative_path)
+            .collect::<Vec<_>>();
+        for path in [
+            "sub/a.txt",
+            "sub/sub/a.txt",
+            "sub/tracked.txt",
+            "other/o.txt",
+        ] {
+            assert!(reported.iter().any(|reported| reported == path), "{path}");
+        }
+
+        discard_paths(
+            folder,
+            &["sub/tracked.txt".to_string()],
+            &["sub/a.txt".to_string()],
+        )
+        .await
+        .expect("selected changes should discard");
+        assert!(!root.join("sub/a.txt").exists());
+        assert_eq!(
+            fs::read_to_string(root.join("sub/sub/a.txt")).expect("nested file should read"),
+            "keep me\n"
+        );
+        assert_eq!(
+            fs::read_to_string(root.join("sub/tracked.txt")).expect("tracked file should read"),
+            "base\n"
+        );
+
+        stage(
+            folder,
+            &["sub/sub/a.txt".to_string(), "other/o.txt".to_string()],
+        )
+        .await
+        .expect("paths should stage");
+        let staged = status(folder)
+            .await
+            .expect("status should read")
+            .files
+            .into_iter()
+            .filter(|file| file.index_status == "A")
+            .map(|file| file.relative_path)
+            .collect::<Vec<_>>();
+        assert_eq!(staged, ["other/o.txt", "sub/sub/a.txt"]);
+        unstage(folder, &["other/o.txt".to_string()])
+            .await
+            .expect("path should unstage");
+        let staged = status(folder)
+            .await
+            .expect("status should read")
+            .files
+            .into_iter()
+            .filter(|file| file.index_status == "A")
+            .map(|file| file.relative_path)
+            .collect::<Vec<_>>();
+        assert_eq!(staged, ["sub/sub/a.txt"]);
+    }
+
+    #[test]
+    fn branch_names_follow_ref_rules_and_refuse_refspec_syntax() {
+        for name in [
+            "main",
+            "feature/login",
+            "release-1.2",
+            "user/fix_bug",
+            "v2",
+            "c++-port",
+            "été",
+        ] {
+            assert!(
+                validate_branch_name(name).is_ok(),
+                "{name} should be accepted"
+            );
+        }
+        for name in [
+            "",
+            "+main",
+            "main:other",
+            "refs/*",
+            "main^",
+            "main~1",
+            "a..b",
+            "-delete",
+            "/main",
+            "main/",
+            "main.",
+            "main.lock",
+            "feature/.hidden",
+            "a//b",
+            "@",
+            "main@{1}",
+            "a b",
+            "a?b",
+            "a[b",
+            "a\\b",
+            "a\u{7}b",
+        ] {
+            assert!(
+                validate_branch_name(name).is_err(),
+                "{name:?} should be refused"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn network_operations_accept_only_configured_remotes() {
+        let directory = TestDirectory::new();
+        let root = directory.path();
+        let folder = GitFolder::untrusted(root);
+        initialize(folder, Some("main"))
+            .await
+            .expect("repository should initialize");
+        let target = TestDirectory::new();
+        let target_path = target
+            .path()
+            .to_str()
+            .expect("temporary path should be UTF-8");
+
+        for remote in [target_path, "https://example.invalid/repo.git", "origin"] {
+            assert!(fetch(folder, Some(remote)).await.is_err(), "{remote} fetch");
+            assert!(
+                pull(folder, Some(remote), None).await.is_err(),
+                "{remote} pull"
+            );
+            assert!(
+                push(folder, Some(remote), Some("main"), false)
+                    .await
+                    .is_err(),
+                "{remote} push"
+            );
+        }
+        assert!(push(folder, None, Some("main"), false).await.is_err());
+        assert!(pull(folder, None, Some("main")).await.is_err());
+        assert!(
+            fs::read_dir(target.path())
+                .expect("target should list")
+                .next()
+                .is_none(),
+            "nothing should reach the unconfigured target"
+        );
+
+        run(
+            GitFolder::untrusted(target.path()),
+            &["init", "--bare", "--quiet"],
+            GitCall::User,
+        )
+        .await
+        .expect("target repository should initialize");
+        run(
+            folder,
+            &["remote", "add", "origin", target_path],
+            GitCall::User,
+        )
+        .await
+        .expect("remote should be configured");
+        fetch(folder, Some("origin"))
+            .await
+            .expect("configured remotes should fetch");
     }
 }

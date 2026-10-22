@@ -1,7 +1,7 @@
 use sqlx::SqlitePool;
-use std::fs;
 use std::path::Path;
 
+use super::defaults::insert_default_project_graphs;
 use super::models::{
     ProjectCreate, ProjectPriorityRow, ProjectSectionRow, ProjectStatusRow, ProjectUpdate,
     ProjectsMutationRows,
@@ -10,18 +10,15 @@ use super::mutations::{
     normalized_optional_identifier, normalized_optional_text, project_mutation,
 };
 use super::routine::{ROUTINE_GROUP_ID, built_in_routine_project};
-use super::templates::{
-    insert_default_priorities, insert_default_statuses, insert_template_sections,
-};
 use super::validation::{
     require_non_empty, validate_enum, validate_project_create, validate_project_update,
 };
-use super::views::{insert_default_views, load_project_views};
+use super::views::load_project_views;
 
 const NOTES_PAGE_OPEN_MODES: &[&str] = &["center", "side", "full"];
 const NOTES_HISTORY_RETENTION_DAYS: &[i64] = &[0, 7, 30, 90, 180, 365];
 
-/// Creates a project with its template rows and managed working folder under `vault_root`.
+/// Creates a project with its default rows and managed working folder under `vault_root`.
 pub async fn create_project(
     pool: &SqlitePool,
     vault_root: &Path,
@@ -70,7 +67,8 @@ pub async fn create_project(
     .map_err(|e| format!("create project: {e}"))?;
 
     let managed_folder_id = format!("working-folder:{}", project.id);
-    let managed_relative_path = format!("projects/{}", project.id);
+    let managed_relative_path =
+        ganbaru_working_folders::managed_project_relative_path(&project.id)?;
     sqlx::query(
         "INSERT INTO project_working_folders
             (id, project_id, display_name, kind, managed_relative_path, sort_order)
@@ -84,13 +82,9 @@ pub async fn create_project(
     .await
     .map_err(|e| format!("create managed project working folder: {e}"))?;
 
-    insert_template_sections(&mut tx, &project.id, &project.template_id).await?;
-    insert_default_statuses(&mut tx, &project.id).await?;
-    insert_default_priorities(&mut tx, &project.id).await?;
-    insert_default_views(&mut tx, &[project.id.as_str()]).await?;
+    insert_default_project_graphs(&mut tx, &[project.id.as_str()]).await?;
 
-    let managed_folder_path = vault_root.join(&managed_relative_path);
-    fs::create_dir_all(&managed_folder_path)
+    ganbaru_working_folders::resolve_managed_project_folder(vault_root, &project.id)
         .map_err(|e| format!("create managed project working folder: {e}"))?;
     tx.commit().await.map_err(|e| format!("commit: {e}"))?;
     let mut mutation = project_mutation(pool, &project.id).await?;

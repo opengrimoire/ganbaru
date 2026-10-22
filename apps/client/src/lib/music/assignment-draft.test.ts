@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 import {
   completeMusicAssignmentDrafts,
   musicAssignmentDraftsEqual,
-  nextMusicAssignmentPhase,
   persistedMusicAssignmentDrafts,
   updateMusicAssignmentDraft,
 } from "./assignment-draft";
@@ -13,7 +12,7 @@ describe("music assignment drafts", () => {
       phase: "short-break",
       behavior: "pause-music",
       playlistId: null,
-      soundscapeId: null,
+      soundscapePresetId: null,
       soundscapeBehavior: "inherit",
       provenanceKind: "explicit",
       provenanceId: null,
@@ -33,18 +32,19 @@ describe("music assignment drafts", () => {
 
   it("drops untouched inherit rows but retains soundscape-only intent", () => {
     const drafts = completeMusicAssignmentDrafts([]);
-    const withSoundscape = updateMusicAssignmentDraft(drafts, "long-break", { soundscapeId: "rain" });
+    const withSoundscape = updateMusicAssignmentDraft(drafts, "long-break", { soundscapeBehavior: "play-selected", soundscapePresetId: "rain" });
     expect(persistedMusicAssignmentDrafts(withSoundscape).map((entry) => entry.phase)).toEqual(["long-break"]);
+  });
+
+  it("clears the preset when the phase stops playing a soundscape", () => {
+    const drafts = completeMusicAssignmentDrafts([]);
+    const withPreset = updateMusicAssignmentDraft(drafts, "focus", { soundscapeBehavior: "play-selected", soundscapePresetId: "preset-1" });
+    const silenced = updateMusicAssignmentDraft(withPreset, "focus", { soundscapeBehavior: "pause-soundscape" })[0];
+    expect(silenced.soundscapePresetId).toBeNull();
+    expect(persistedMusicAssignmentDrafts(withPreset).map((entry) => entry.soundscapePresetId)).toEqual(["preset-1"]);
   });
 
   it("compares sparse and complete drafts by semantic value", () => {
     expect(musicAssignmentDraftsEqual([], completeMusicAssignmentDrafts([]))).toBe(true);
-  });
-
-  it("moves phase tabs with wrapping arrow and boundary navigation", () => {
-    expect(nextMusicAssignmentPhase("focus", "ArrowLeft")).toBe("long-break");
-    expect(nextMusicAssignmentPhase("long-break", "ArrowRight")).toBe("focus");
-    expect(nextMusicAssignmentPhase("short-break", "Home")).toBe("focus");
-    expect(nextMusicAssignmentPhase("short-break", "End")).toBe("long-break");
   });
 });

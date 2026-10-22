@@ -8,13 +8,13 @@ Project settings can define:
 - Default event color, optional event name, and timed duration or all-day behavior.
 - Default Pomodoro mode and custom rhythm.
 - Global or project-specific idle behavior.
-- Focus, short break, and long break playlists.
+- Focus, short break, and long break playlists and soundscapes.
 - Project-local statuses, priorities, tags, and custom fields.
 - Working folders where the platform supports them.
 
-New projects default to no event name, the adaptive Pomodoro preset, global idle behavior, and no playlists unless a template says otherwise.
+Creating a project or group asks only for its name and icon; Enter creates it. Icons keep the automatic color at creation, and icon color is chosen later in project settings. A project created from the event panel's picker takes the event's color as its event color when that event is saved, unless the event uses the default color. New projects default to no event name, the adaptive Pomodoro preset, global idle behavior, and no playlists, and start with a General section plus the default statuses and priorities. New groups default to the layers icon and new projects to the briefcase icon.
 
-Playlist selectors list real Music playlists. Choosing a playlist plays it automatically during that phase; choosing None means silence. A missing or deleted playlist remains an explicit unavailable assignment with a repair path. Track-level settings stay in Music playlist membership data; see [Music automation](../music/automation.md).
+Playlist selectors list real Music playlists. Choosing a playlist plays it automatically during that phase; choosing None means silence. On platforms with soundscapes, each phase also chooses None (the default) or a soundscape, independently of its playlist. A missing or deleted playlist or soundscape remains an explicit unavailable assignment with a repair path. Track-level settings stay in Music playlist membership data; see [Music automation](../music/automation.md).
 
 Work-environment and anti-distraction defaults are planned and must not appear as functional selectors until their storage and runtime behavior exist.
 
@@ -36,9 +36,7 @@ Projects support text, number, select, multi-select, status, date, person, files
 
 ## Project templates
 
-Built-in templates (Blank, Software, Course, Routine, Reading, and Chores) initialize sections plus the default statuses and priorities. Applying a template produces independent canonical rows; there is no ongoing inheritance.
-
-Planned: user-defined templates that can also carry settings, tags, custom fields, and planning defaults, with the same no-inheritance rule.
+Planned: user-defined templates that carry sections, settings, tags, custom fields, and planning defaults. Applying a template produces independent canonical rows; there is no ongoing inheritance. There are no built-in templates, because differing only in starting sections did not justify a choice at creation.
 
 ## Scheduling tasks
 
@@ -63,6 +61,8 @@ Planned: explicit date locks and per-proposal protection overrides. The task sch
 ## Working folders
 
 A project can own a managed working folder (created inside the vault) and device-local bindings to external folders where supported. Organizational Chat runs resolve their execution target through the authorized binding; see [Chat execution and workspace](../chat/execution-and-workspace.md).
+
+Each folder shows whether this device trusts its repository programs, hooks, and provider settings, and its menu grants or revokes that trust immediately. Binding a folder through the picker asks once; see [Chat security](../../data/security/chat.md#git-and-hosted-clis).
 
 Working-folder files remain filesystem-canonical. Project settings store identity, provider preference, and primary selection, not file contents. Mobile omits local coding execution and desktop path selection.
 

@@ -300,7 +300,7 @@ pub(super) async fn next_task_sort_order(
          FROM project_tasks
          WHERE project_id = ? AND {owner_column} = ?"
     );
-    sqlx::query_scalar::<_, f64>(&sql)
+    sqlx::query_scalar::<_, f64>(sqlx::AssertSqlSafe(sql.as_str()))
         .bind(project_id)
         .bind(owner_id)
         .fetch_one(&mut **tx)

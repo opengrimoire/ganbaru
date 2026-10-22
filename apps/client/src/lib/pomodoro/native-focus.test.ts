@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { focusDisplayElapsedSeconds, focusDisplayRemainingSeconds, focusNeedsVisualClock, focusProjectionIsCurrent, parseFocusCommandResult, parseFocusNotice, parseFocusProjection } from "./native-focus";
+import { focusDisplayElapsedSeconds, focusDisplayRemainingSeconds, focusNeedsVisualClock, focusProjectionIsCurrent, focusSnapshotAgeMs, parseFocusCommandResult, parseFocusNotice, parseFocusProjection } from "./native-focus";
 import { DEFAULT_POMODORO_CONFIG } from "./rhythm";
 import { focusProjection } from "./native-focus.test-helpers";
 
@@ -94,6 +94,20 @@ describe("native Focus response boundaries", () => {
     expect(state.segment.status).toBe("active");
     state.mode = "manual_pause";
     expect(focusDisplayElapsedSeconds(state, 100_000)).toBe(50);
+  });
+
+  it("counts down from native observation so a cached snapshot matches a fresh one", () => {
+    const cached = focusProjection().snapshot;
+    if (!cached) throw new Error("Missing fixture state");
+    cached.mode = "running";
+    cached.remainingMs = 600_000;
+    const fresh = { ...cached, observedAtMs: 112_000, remainingMs: 588_000 };
+    const wallNowMs = 112_500;
+    expect(focusDisplayRemainingSeconds(cached, focusSnapshotAgeMs(cached, wallNowMs)))
+      .toBe(focusDisplayRemainingSeconds(fresh, focusSnapshotAgeMs(fresh, wallNowMs)));
+    expect(focusDisplayRemainingSeconds(cached, focusSnapshotAgeMs(cached, wallNowMs))).toBe(588);
+    expect(focusSnapshotAgeMs(cached, 90_000)).toBe(0);
+    expect(focusSnapshotAgeMs(null, wallNowMs)).toBe(0);
   });
 
   it("runs the visual clock only while visible counters can change", () => {

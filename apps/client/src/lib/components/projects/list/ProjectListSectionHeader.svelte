@@ -4,7 +4,7 @@
   import ChevronDown from "@lucide/svelte/icons/chevron-down";
   import ChevronRight from "@lucide/svelte/icons/chevron-right";
   import EyeOff from "@lucide/svelte/icons/eye-off";
-  import MoreHorizontal from "@lucide/svelte/icons/more-horizontal";
+  import MoreHorizontal from "@lucide/svelte/icons/ellipsis";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { cn, type MaybePromise } from "$lib/utils";
   import type { ProjectSection } from "$lib/projects/types";

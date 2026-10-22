@@ -24,7 +24,7 @@ Provider configuration and model mapping are separate from provider sessions. Ch
 
 ## Canonical events and projections
 
-Provider events are validated, bounded, normalized, and appended as canonical application events. Sequence and projection changes commit before a lightweight frontend notification is emitted.
+Provider events are validated, bounded, normalized, and appended as canonical application events. Sequence and projection changes commit before a lightweight frontend notification is emitted. Event, item, and request IDs that a provider numbers per process are scoped to the provider session, and a projection row keyed by a provider item ID is only ever updated by events of its own thread.
 
 The combined timeline, turn state, message view, command activity, usage summary, and inspector data are projections. They may be persisted for performance but remain rebuildable from canonical events and organizational messages. Projection rebuild preserves channel and authorization scope.
 
@@ -79,9 +79,11 @@ Only one mutable provider driver generation owns an active thread at a time. Sto
 
 Preview and terminal metadata retained in SQLite is organizational evidence or resumable presentation state, not ambient process authority. Restart requires fresh target and authorization checks.
 
+Each model preview tool call in a direct session has an app-owned audit row keyed by its turn, with the tool name, an argument hash, the outcome, and the result size; the rows also hold that turn's call and byte budget and are deleted with the turn. Organizational host tool calls keep their own audit rows keyed by the authorization revision.
+
 ## Coordination and command receipts
 
-Scheduling, follow-ups, interaction responses, handoffs, and other coordination commands have stable request or receipt identity where retry can occur. Replaying the same accepted command cannot duplicate a message, assignment, or provider action.
+Scheduling, follow-ups, interaction responses, handoffs, and other coordination commands have stable request or receipt identity where retry can occur. Replaying the same accepted command cannot duplicate a message, assignment, or provider action. A queued follow-up keeps its thread for life: saving it again replaces only that thread's still queued follow-up, and a sent or cancelled one is never revived.
 
 Canonical organization state commits before process notifications. If process delivery fails, the retry state identifies the intended command without inventing another organizational event.
 

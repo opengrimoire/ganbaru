@@ -61,7 +61,7 @@ macro_rules! stored_row {
             pub(super) async fn insert(&self, connection: &mut SqliteConnection) -> Result<(), String> {
                 let columns = &[$(stringify!($field)),+];
                 let sql = format!("INSERT INTO {} ({}) VALUES ({})", $table, columns.join(", "), vec!["?"; columns.len()].join(", "));
-                sqlx::query(&sql)$(.bind(&self.$field))+.execute(connection).await
+                sqlx::query(sqlx::AssertSqlSafe(sql.as_str()))$(.bind(&self.$field))+.execute(connection).await
                     .map_err(|error| format!("write Calendar {}: {error}", $table))?;
                 Ok(())
             }
@@ -236,12 +236,12 @@ stored_row!(MusicAssignment, "music_context_assignments", "owner_id = ?1 AND own
     phase: String,
     behavior: String,
     playlist_id: Option<String>,
-    soundscape_id: Option<String>,
     provenance_kind: String,
     provenance_id: Option<String>,
     updated_at_ms: i64,
     version: i64,
     soundscape_behavior: String,
+    soundscape_preset_id: Option<String>,
 });
 
 stored_row!(TaskLink, "project_task_event_links", "event_id = ?1", (task_id), {

@@ -1,6 +1,186 @@
+use std::sync::{Mutex, PoisonError};
+use std::time::Duration;
+
+use base64::Engine as _;
 use serde::Serialize;
+use tauri::ipc::Channel;
+use tauri_plugin_updater::{Update, UpdaterExt};
 
 const RELEASE_PAGE_URL: &str = "https://github.com/opengrimoire/ganbaru/releases/latest";
+/// Time allowed for fetching the update feed.
+const UPDATE_CHECK_TIMEOUT: Duration = Duration::from_secs(30);
+/// Time allowed for downloading an update package.
+const UPDATE_DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(120);
+/// Prefix of the authenticated comment line in a minisign signature.
+const TRUSTED_COMMENT_PREFIX: &str = "trusted comment: ";
+/// Field of the trusted comment that names the signed file.
+const SIGNED_FILE_FIELD: &str = "file:";
+
+/// Update found by the last check. Rust keeps it so the webview never chooses the feed, target,
+/// headers, proxy, or downgrade policy.
+#[derive(Default)]
+pub struct PendingUpdate(Mutex<Option<Update>>);
+
+impl PendingUpdate {
+    fn replace(&self, update: Option<Update>) {
+        *self.0.lock().unwrap_or_else(PoisonError::into_inner) = update;
+    }
+
+    fn current(&self) -> Option<Update> {
+        self.0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+}
+
+/// Newer release offered by the update feed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AvailableUpdate {
+    version: String,
+    current_version: String,
+    body: Option<String>,
+}
+
+impl From<&Update> for AvailableUpdate {
+    fn from(update: &Update) -> Self {
+        Self {
+            version: update.version.clone(),
+            current_version: update.current_version.clone(),
+            body: update.body.clone(),
+        }
+    }
+}
+
+/// Download progress streamed to the webview, shaped like the updater plugin's JavaScript events.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "event", content = "data", rename_all_fields = "camelCase")]
+pub enum UpdateDownloadEvent {
+    Started { content_length: Option<u64> },
+    Progress { chunk_length: usize },
+    Finished,
+}
+
+/// Reasons an update cannot be installed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum UpdateInstallError {
+    SelfUpdateUnavailable,
+    NoPendingUpdate,
+    SignatureEncoding,
+    MissingSignedFile,
+    VersionNotSigned { version: String, file: String },
+}
+
+impl std::fmt::Display for UpdateInstallError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::SelfUpdateUnavailable => {
+                formatter.write_str("this installation is updated by its package manager")
+            }
+            Self::NoPendingUpdate => formatter.write_str("no update is ready to install"),
+            Self::SignatureEncoding => formatter.write_str("the update signature is malformed"),
+            Self::MissingSignedFile => {
+                formatter.write_str("the update signature does not name its file")
+            }
+            Self::VersionNotSigned { version, file } => write!(
+                formatter,
+                "the update signature is for {file}, not version {version}"
+            ),
+        }
+    }
+}
+
+/// Requires the authenticated signature comment to name a file built for `version`. Release assets
+/// are named `<name>_<version>_<arch>`, so feed metadata cannot relabel an older signed package.
+fn verify_signed_version(signature: &str, version: &str) -> Result<(), UpdateInstallError> {
+    let decoded = base64::engine::general_purpose::STANDARD
+        .decode(signature.trim())
+        .map_err(|_| UpdateInstallError::SignatureEncoding)?;
+    let text = std::str::from_utf8(&decoded).map_err(|_| UpdateInstallError::SignatureEncoding)?;
+    let file = text
+        .lines()
+        .find_map(|line| line.strip_prefix(TRUSTED_COMMENT_PREFIX))
+        .and_then(|comment| {
+            comment
+                .split('\t')
+                .find_map(|field| field.strip_prefix(SIGNED_FILE_FIELD))
+        })
+        .filter(|file| !file.is_empty())
+        .ok_or(UpdateInstallError::MissingSignedFile)?;
+    if file.contains(&format!("_{version}_")) {
+        Ok(())
+    } else {
+        Err(UpdateInstallError::VersionNotSigned {
+            version: version.to_owned(),
+            file: file.to_owned(),
+        })
+    }
+}
+
+/// Progress is advisory, so a closed window must not abort an install that is already downloading.
+fn send_download_event(channel: &Channel<UpdateDownloadEvent>, event: UpdateDownloadEvent) {
+    if let Err(error) = channel.send(event) {
+        eprintln!("failed to report update download progress: {error}");
+    }
+}
+
+/// Check the configured update feed. Only newer versions are offered.
+#[tauri::command]
+pub async fn updates_check(
+    app: tauri::AppHandle,
+    pending: tauri::State<'_, PendingUpdate>,
+) -> Result<Option<AvailableUpdate>, String> {
+    pending.replace(None);
+    let update = app
+        .updater_builder()
+        .timeout(UPDATE_CHECK_TIMEOUT)
+        .build()
+        .map_err(|error| error.to_string())?
+        .check()
+        .await
+        .map_err(|error| error.to_string())?;
+    let available = update.as_ref().map(AvailableUpdate::from);
+    pending.replace(update);
+    Ok(available)
+}
+
+/// Download, verify, and install the update found by the last check. The plugin verifies the package
+/// signature, and the signed file name must carry the offered version.
+#[tauri::command]
+pub async fn updates_install(
+    pending: tauri::State<'_, PendingUpdate>,
+    on_event: Channel<UpdateDownloadEvent>,
+) -> Result<(), String> {
+    if !updater_install_context().self_updater {
+        return Err(UpdateInstallError::SelfUpdateUnavailable.to_string());
+    }
+    let mut update = pending
+        .current()
+        .ok_or_else(|| UpdateInstallError::NoPendingUpdate.to_string())?;
+    update.timeout = Some(UPDATE_DOWNLOAD_TIMEOUT);
+
+    let mut started = false;
+    let bytes = update
+        .download(
+            |chunk_length, content_length| {
+                if !started {
+                    started = true;
+                    send_download_event(&on_event, UpdateDownloadEvent::Started { content_length });
+                }
+                send_download_event(&on_event, UpdateDownloadEvent::Progress { chunk_length });
+            },
+            || {
+                send_download_event(&on_event, UpdateDownloadEvent::Finished);
+            },
+        )
+        .await
+        .map_err(|error| error.to_string())?;
+    verify_signed_version(&update.signature, &update.version).map_err(|error| error.to_string())?;
+    update.install(bytes).map_err(|error| error.to_string())?;
+    pending.replace(None);
+    Ok(())
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RuntimePlatform {
@@ -244,10 +424,69 @@ fn parse_os_release_value(raw: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        InstallDetectionInput, OsRelease, RuntimePlatform, UpdatePackageManager,
-        copy_command_for_package_manager, detect_update_install_context, linux_package_manager,
-        parse_os_release,
+        InstallDetectionInput, OsRelease, RuntimePlatform, UpdateDownloadEvent, UpdateInstallError,
+        UpdatePackageManager, copy_command_for_package_manager, detect_update_install_context,
+        linux_package_manager, parse_os_release, verify_signed_version,
     };
+    use base64::Engine as _;
+
+    /// Linux updater signature published with release 0.1.12.
+    const SIGNATURE_0_1_12: &str = "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVURU9UaFhnY1ZKRERlWkZqV1NJK1hHNXZ5L2Rwc2NYcjZ2RVhDUi9GSUdIcU5pWDdtemxDWFVhNWxHdEFVZUNjSndTM1M5N1FzRjRHMjAvUGhkZmdxN0FlQVoyK3ZNYkFzPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkyMjg0MDExCWZpbGU6Z2FuYmFydV8wLjEuMTJfYW1kNjQuQXBwSW1hZ2UKb0dBSVd0bUkxa2ZrdGNGNDNzSHkwSDY2RjA2cVVDbkdTZTExRklyRWNTSi9hS3NwK2txRGpPL0RSNk54Uk45QVdRRThGeCtiYmY1aDkyQnNzcVlTREE9PQo=";
+
+    fn encode(text: &str) -> String {
+        base64::engine::general_purpose::STANDARD.encode(text)
+    }
+
+    #[test]
+    fn signed_file_name_must_carry_the_offered_version() {
+        assert_eq!(verify_signed_version(SIGNATURE_0_1_12, "0.1.12"), Ok(()));
+        for relabeled in ["0.1.13", "0.1.1", "0.2.0", "1.12"] {
+            assert_eq!(
+                verify_signed_version(SIGNATURE_0_1_12, relabeled),
+                Err(UpdateInstallError::VersionNotSigned {
+                    version: relabeled.to_owned(),
+                    file: "ganbaru_0.1.12_amd64.AppImage".to_owned(),
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn signatures_without_a_signed_file_name_are_rejected() {
+        assert_eq!(
+            verify_signed_version("not base64!", "0.1.12"),
+            Err(UpdateInstallError::SignatureEncoding)
+        );
+        for text in [
+            "untrusted comment: file:ganbaru_0.1.12_amd64.AppImage\nsig\ntrusted comment: timestamp:1\nglobal\n",
+            "untrusted comment: x\nsig\ntrusted comment: timestamp:1\tfile:\nglobal\n",
+            "untrusted comment: x\nsig\n",
+        ] {
+            assert_eq!(
+                verify_signed_version(&encode(text), "0.1.12"),
+                Err(UpdateInstallError::MissingSignedFile)
+            );
+        }
+    }
+
+    #[test]
+    fn download_events_match_the_plugin_event_shape() {
+        assert_eq!(
+            serde_json::to_value(UpdateDownloadEvent::Started {
+                content_length: Some(10)
+            })
+            .unwrap(),
+            serde_json::json!({ "event": "Started", "data": { "contentLength": 10 } })
+        );
+        assert_eq!(
+            serde_json::to_value(UpdateDownloadEvent::Progress { chunk_length: 4 }).unwrap(),
+            serde_json::json!({ "event": "Progress", "data": { "chunkLength": 4 } })
+        );
+        assert_eq!(
+            serde_json::to_value(UpdateDownloadEvent::Finished).unwrap(),
+            serde_json::json!({ "event": "Finished" })
+        );
+    }
 
     #[test]
     fn appimage_runtime_uses_self_updater() {

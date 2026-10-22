@@ -4,7 +4,6 @@ use super::checkpoints::ensure_post_turn_checkpoint;
 use super::persistence::ThreadRuntimeData;
 use super::support::{PROVIDER_START_TIMEOUT, now_timestamp, operation_context};
 use super::validation::validate_modes;
-use crate::chat::credentials::{PlatformCredentialStore, materialize_provider_environment};
 use crate::chat::ingestion::{ChatEventIngestor, TauriChatChangeEmitter};
 use crate::chat::send_commands::SendChatTurnCommand;
 use crate::chat::workspace::AuthorizedWorkingFolder;
@@ -91,10 +90,8 @@ pub(super) async fn ensure_session_with_executable_recovery(
     }
     let repaired_provider =
         crate::chat::settings_commands::read_provider(app, &request.provider_instance_id)?;
-    let mut repaired_configuration = materialize_provider_environment(
-        &repaired_provider.configuration,
-        &PlatformCredentialStore::default(),
-    )?;
+    let mut repaired_configuration =
+        crate::chat::settings::approved_runtime(app, &repaired_provider.configuration)?;
     repaired_configuration.internal_mcp = internal_mcp;
     let retry = ensure_session(EnsureSessionContext {
         app,
@@ -174,6 +171,7 @@ pub(super) async fn ensure_session(
             .to_string(),
         repository_kind: workspace.repository_kind,
         repository_identity: workspace.repository_identity.clone(),
+        project_configuration: workspace.project_configuration,
     };
     let native_workspace_authorized =
         request.working_folder_id.is_some() || request.scratch_generation_id.is_some();
@@ -306,6 +304,15 @@ impl ProviderEventSink for DurableChatEventSink {
                         .state::<crate::chat::internal_mcp::InternalMcpRegistry>()
                         .revoke_run_scope(&event.thread_id)
                         .await;
+                    if error.code == ChatErrorCode::Permission {
+                        stop_run_without_live_authority(
+                            &self.app,
+                            &self.pool,
+                            &event.thread_id,
+                            event.turn_id.as_ref(),
+                        )
+                        .await;
+                    }
                     return Err(error);
                 }
                 if !self.native_workspace_authorized && event_changes_files(&event.event) {
@@ -317,12 +324,49 @@ impl ProviderEventSink for DurableChatEventSink {
                 }
             }
             normalize_changed_file_paths(&mut event.event, &self.workspace.canonical_path);
+            if !self.organizational {
+                let closed_turn = match &event.event {
+                    CanonicalEvent::TurnCompleted(_) | CanonicalEvent::TurnAborted(_) => {
+                        Some(event.turn_id.as_ref())
+                    }
+                    CanonicalEvent::SessionExited(_) => Some(None),
+                    _ => None,
+                };
+                if let Some(turn_id) = closed_turn {
+                    self.app
+                        .state::<crate::chat::internal_mcp::InternalMcpRegistry>()
+                        .end_direct_turn(&event.thread_id, turn_id)
+                        .await;
+                }
+            }
             let settled_turn = matches!(
                 &event.event,
                 CanonicalEvent::TurnCompleted(_) | CanonicalEvent::TurnAborted(_)
             )
             .then(|| (event.thread_id.clone(), event.turn_id.clone()))
             .and_then(|(thread_id, turn_id)| turn_id.map(|turn_id| (thread_id, turn_id)));
+            if let Some((thread_id, turn_id)) =
+                settled_turn.as_ref().filter(|_| self.checkpoint_enabled)
+            {
+                let checkpoint_files = match now_timestamp() {
+                    Ok(settled_at) => {
+                        ensure_post_turn_checkpoint(
+                            &self.pool,
+                            &self.workspace,
+                            thread_id,
+                            turn_id,
+                            &settled_at,
+                        )
+                        .await
+                    }
+                    Err(_) => None,
+                };
+                if let (CanonicalEvent::TurnCompleted(completed), Some(files)) =
+                    (&mut event.event, checkpoint_files)
+                {
+                    merge_checkpoint_changed_files(&mut completed.changed_files, files);
+                }
+            }
             let stopped_thread = matches!(&event.event, CanonicalEvent::SessionExited(_))
                 .then(|| event.thread_id.clone());
             let ingestion: ChatResult<()> = async {
@@ -342,18 +386,6 @@ impl ProviderEventSink for DurableChatEventSink {
             }
             .await;
             if let Some((thread_id, turn_id)) = settled_turn {
-                if ingestion.is_ok() && self.checkpoint_enabled {
-                    if let Ok(settled_at) = now_timestamp() {
-                        ensure_post_turn_checkpoint(
-                            &self.pool,
-                            &self.workspace,
-                            &thread_id,
-                            &turn_id,
-                            &settled_at,
-                        )
-                        .await;
-                    }
-                }
                 self.app
                     .state::<crate::chat::workspace::mutation::ChatWorkspaceMutationRegistry>()
                     .finish_provider_turn(&thread_id, &turn_id);
@@ -372,6 +404,46 @@ impl ProviderEventSink for DurableChatEventSink {
     }
 }
 
+/// Revokes the authorization of a run that failed its live check and stops the provider.
+///
+/// The drain runs in the background because stopping the provider shuts down the router
+/// that is delivering this event. A database failure leaves the run to the next event.
+async fn stop_run_without_live_authority(
+    app: &tauri::AppHandle,
+    pool: &SqlitePool,
+    thread_id: &ChatThreadId,
+    turn_id: Option<&ChatTurnId>,
+) {
+    let selector = crate::chat::revocation::ActiveRunSelector::ProviderTurn { thread_id, turn_id };
+    match crate::chat::revocation::revoke_active_run_authorizations(
+        pool,
+        selector,
+        "Organizational run authority was lost",
+    )
+    .await
+    {
+        Ok(true) => {
+            let app = app.clone();
+            let pool = pool.clone();
+            tauri::async_runtime::spawn(async move {
+                if let Err(error) =
+                    crate::chat::revocation::drain_access_revocation_jobs(&app, &pool).await
+                {
+                    eprintln!(
+                        "Chat revocation after a failed live check failed with code {:?}",
+                        error.code
+                    );
+                }
+            });
+        }
+        Ok(false) => {}
+        Err(error) => eprintln!(
+            "Chat run revocation after a failed live check failed with code {:?}",
+            error.code
+        ),
+    }
+}
+
 fn event_changes_files(event: &CanonicalEvent) -> bool {
     match event {
         CanonicalEvent::DiffUpdated(event) => !event.files.is_empty(),
@@ -380,7 +452,7 @@ fn event_changes_files(event: &CanonicalEvent) -> bool {
     }
 }
 
-async fn require_live_authorization(
+pub(super) async fn require_live_authorization(
     pool: &SqlitePool,
     thread_id: &ChatThreadId,
     turn_id: Option<&ChatTurnId>,
@@ -396,6 +468,7 @@ async fn require_live_authorization(
           AND authorization.assignment_id = run.assignment_id
           AND authorization.scope_digest = run.authorization_scope_digest
          JOIN chat_work_assignments assignment ON assignment.id = run.assignment_id
+         JOIN projects project ON project.id = run.project_id AND project.status != 'archived'
          JOIN chat_conversation_memberships membership
            ON membership.conversation_id = authorization.destination_conversation_id
           AND membership.participant_id = assignment.teammate_id
@@ -425,7 +498,7 @@ async fn require_live_authorization(
     .bind(turn_id.map(ChatTurnId::as_str))
     .fetch_optional(pool)
     .await
-    .map_err(|_| live_authorization_error())?;
+    .map_err(|_| live_authorization_unavailable_error())?;
     let active = active.ok_or_else(live_authorization_error)?;
     let binding = AgentRunBinding {
         run_id: ChatAgentRunId::new(
@@ -484,6 +557,38 @@ fn live_authorization_error() -> ChatError {
         "The organizational run authorization is no longer active",
         false,
     )
+}
+
+fn live_authorization_unavailable_error() -> ChatError {
+    ChatError::new(
+        ChatErrorCode::Persistence,
+        "The organizational run authorization could not be checked",
+        true,
+    )
+}
+
+/// Adds the files a post-turn checkpoint observed to the provider's report.
+///
+/// The checkpoint diff comes first and wins for a path both name, so a provider can
+/// neither hide a change by omitting it nor crowd it out with reported paths.
+pub(super) fn merge_checkpoint_changed_files(
+    reported: &mut Vec<ChangedFileSummary>,
+    observed: Vec<ChangedFileSummary>,
+) {
+    let mut merged = observed;
+    merged.truncate(MAX_PROVIDER_CHANGED_FILES);
+    for file in std::mem::take(reported) {
+        if merged.len() >= MAX_PROVIDER_CHANGED_FILES {
+            break;
+        }
+        if !merged
+            .iter()
+            .any(|candidate| candidate.relative_path == file.relative_path)
+        {
+            merged.push(file);
+        }
+    }
+    *reported = merged;
 }
 
 pub(super) fn normalize_changed_file_paths(

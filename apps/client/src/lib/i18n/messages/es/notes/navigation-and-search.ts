@@ -116,6 +116,8 @@ export const navigationAndSearch = {
   notionApiImportKeepExternalFilesDescription: "Mantiene URLs remotas compatibles como referencias",
   notionApiImportSubmit: "Importar",
   notionApiImportImporting: "Importando",
+  notionApiImportStop: "Detener importación",
+  notionApiImportStopping: "Deteniendo",
   notionApiImportFailed: (message: string) => `No se pudo importar desde Notion API: ${message}`,
   notionApiImportComplete: (pages: number, blocks: number, comments: number) =>
     `Se importaron ${pages} ${pages === 1 ? "nota" : "notas"}, ${blocks} ${blocks === 1 ? "bloque" : "bloques"} y ${comments} ${comments === 1 ? "comentario" : "comentarios"}`,
@@ -123,8 +125,6 @@ export const navigationAndSearch = {
     `${requests} ${requests === 1 ? "solicitud" : "solicitudes"}, ${retries} ${retries === 1 ? "reintento" : "reintentos"}, ${rateLimits} ${rateLimits === 1 ? "límite de tasa" : "límites de tasa"}`,
   notionExportImportOpen: "Importar carpeta exportada de Notion",
   notionExportImportDialogTitle: "Importación de carpeta exportada de Notion",
-  notionExportImportFolderLabel: "Ruta de la carpeta exportada",
-  notionExportImportFolderDescription: "Ruta a la carpeta exportada de Notion ya extraída",
   notionExportImportWorkspaceLabel: "ID de espacio de trabajo",
   notionExportImportWorkspaceDescription: "Etiqueta opcional del espacio de trabajo de origen",
   notionExportImportMarkdown: "Importar notas Markdown",
@@ -137,7 +137,7 @@ export const navigationAndSearch = {
   notionExportImportCopyFilesDescription: "Copia archivos aceptados a los activos gestionados de Notas",
   notionExportImportKeepExternalFiles: "Conservar referencias a archivos externos",
   notionExportImportKeepExternalFilesDescription: "Mantiene URLs remotas compatibles como referencias",
-  notionExportImportSubmit: "Importar",
+  notionExportImportSubmit: "Elegir carpeta e importar",
   notionExportImportImporting: "Importando",
   notionExportImportFailed: (message: string) =>
     `No se pudo importar la carpeta exportada de Notion: ${message}`,

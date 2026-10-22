@@ -17,6 +17,7 @@ workspace = true
 base64 = { workspace = true }
 chrono = { workspace = true }
 flate2 = { workspace = true }
+ganbaru-atomic-files = { workspace = true }
 ganbaru-calendar = { workspace = true }
 ganbaru-chat-contracts = { workspace = true }
 ganbaru-chat = { workspace = true }
@@ -57,6 +58,8 @@ axum = { workspace = true }
 ganbaru-chat = { workspace = true, features = ["native-runtime"] }
 ganbaru-chat-providers = { workspace = true }
 ganbaru-music-player = { workspace = true }
+hyper = { workspace = true }
+hyper-util = { workspace = true }
 keyring = { workspace = true }
 notify = { workspace = true }
 notify-rust = { workspace = true }
@@ -82,6 +85,7 @@ tauri-plugin-fs = { workspace = true }
 [target.'cfg(target_os = "linux")'.dependencies]
 cairo-rs = { workspace = true }
 gtk = { workspace = true }
+rustix = { workspace = true }
 webkit2gtk = { workspace = true }
 wayland-client = { workspace = true }
 wayland-protocols-wlr = { workspace = true }
@@ -102,3 +106,4 @@ objc2-web-kit = { workspace = true }
 [dev-dependencies]
 ganbaru-chat = { workspace = true, features = ["test-support"] }
 ganbaru-handoff = { workspace = true, features = ["test-support"] }
+tokio = { workspace = true, features = ["test-util"] }

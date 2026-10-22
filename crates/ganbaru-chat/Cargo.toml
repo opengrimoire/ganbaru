@@ -20,6 +20,7 @@ workspace = true
 
 [dependencies]
 chrono = { workspace = true }
+ganbaru-atomic-files = { workspace = true }
 ganbaru-chat-contracts = { workspace = true }
 ganbaru-chat-providers = { workspace = true, optional = true }
 ganbaru-working-folders = { workspace = true }
@@ -34,6 +35,7 @@ tokio = { workspace = true }
 libc = { workspace = true }
 
 [target.'cfg(target_os = "windows")'.dependencies]
+dunce = { workspace = true }
 windows = { workspace = true }
 
 [dev-dependencies]

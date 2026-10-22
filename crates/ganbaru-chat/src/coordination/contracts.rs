@@ -108,7 +108,6 @@ pub struct ChatTeammateChannelAccessInput {
 pub struct PreviewChatTeammateAccessCommand {
     pub teammate_id: ChatParticipantId,
     pub expected_access_revision: u64,
-    pub teammate_default_runtime_approval: ChatRuntimeApprovalPolicy,
     #[serde(default)]
     pub channels: Vec<ChatTeammateChannelAccessInput>,
     #[serde(default)]
@@ -122,7 +121,6 @@ pub struct PreviewChatTeammateAccessCommand {
 pub struct ReplaceChatTeammateAccessCommand {
     pub teammate_id: ChatParticipantId,
     pub expected_access_revision: u64,
-    pub teammate_default_runtime_approval: ChatRuntimeApprovalPolicy,
     #[serde(default)]
     pub channels: Vec<ChatTeammateChannelAccessInput>,
     #[serde(default)]
@@ -322,7 +320,6 @@ mod tests {
         let payload = json!({
             "teammateId": "teammate:reviewer",
             "expectedAccessRevision": 4,
-            "teammateDefaultRuntimeApproval": "ask",
             "channels": [],
             "teammateProfile": {
                 "teammateId": "teammate:reviewer",

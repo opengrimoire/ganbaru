@@ -14,8 +14,14 @@ use std::collections::{HashMap, HashSet};
 const DEFAULT_BLOCK_SORT_STEP: f64 = 1000.0;
 const EDIT_SESSION_SNAPSHOT_WINDOW_MINUTES: i64 = 5;
 
-enum SnapshotInsertMode {
-    PreserveAvailableIds,
+/// How restored snapshot blocks choose their ids.
+enum SnapshotInsertMode<'a> {
+    /// Keeps a snapshot id when it is free. A `child_page` id keeps its page only when that page
+    /// does not exist or is one of `owned_child_pages`, the pages that belonged to the restored
+    /// page before the restore, so a restore never pulls in a page that now lives elsewhere.
+    PreserveAvailableIds {
+        owned_child_pages: &'a HashSet<String>,
+    },
     CopyWithFreshIds,
 }
 
@@ -266,6 +272,7 @@ async fn replace_page_from_snapshot(
     if owns_database || snapshot_has_database {
         return Err("This page contains database content. Restore a project version to recover its complete database graph.".to_string());
     }
+    let owned_child_pages = load_owned_child_pages(tx, page_id).await?;
     trash_current_child_pages(tx, page_id).await?;
     sqlx::query("DELETE FROM notes_blocks WHERE page_id = ?")
         .bind(page_id)
@@ -296,7 +303,9 @@ async fn replace_page_from_snapshot(
         tx,
         page_id,
         &blocks,
-        SnapshotInsertMode::PreserveAvailableIds,
+        SnapshotInsertMode::PreserveAvailableIds {
+            owned_child_pages: &owned_child_pages,
+        },
         None,
     )
     .await?;
@@ -310,7 +319,7 @@ async fn insert_snapshot_blocks(
     tx: &mut Transaction<'_, Sqlite>,
     page_id: &str,
     blocks: &[NoteBlockRow],
-    mode: SnapshotInsertMode,
+    mode: SnapshotInsertMode<'_>,
     after_block_id: Option<&str>,
 ) -> Result<Vec<String>, String> {
     if blocks.is_empty() {
@@ -332,8 +341,11 @@ async fn insert_snapshot_blocks(
     for block in blocks {
         let next_id = match mode {
             SnapshotInsertMode::CopyWithFreshIds => new_note_id(tx, &mut reserved_ids).await?,
-            SnapshotInsertMode::PreserveAvailableIds => {
-                if block_id_exists(tx, &block.id).await? {
+            SnapshotInsertMode::PreserveAvailableIds { owned_child_pages } => {
+                let foreign_page = block.block_type == "child_page"
+                    && !owned_child_pages.contains(&block.id)
+                    && page_id_exists(tx, &block.id).await?;
+                if foreign_page || block_id_exists(tx, &block.id).await? {
                     new_note_id(tx, &mut reserved_ids).await?
                 } else {
                     block.id.clone()
@@ -941,6 +953,35 @@ async fn next_page_root_sort_orders(
     Ok((1..=count)
         .map(|index| base + DEFAULT_BLOCK_SORT_STEP * index as f64)
         .collect())
+}
+
+/// Loads the pages whose parent is `page_id` or one of its blocks, trashed ones included, so a
+/// restore can bring back its own children without taking pages that moved elsewhere.
+async fn load_owned_child_pages(
+    tx: &mut Transaction<'_, Sqlite>,
+    page_id: &str,
+) -> Result<HashSet<String>, String> {
+    let ids: Vec<String> = sqlx::query_scalar(
+        "SELECT id FROM notes_pages
+         WHERE (parent_type = 'page_id' AND parent_page_id = ?)
+            OR (parent_type = 'block_id'
+                AND parent_block_id IN (SELECT id FROM notes_blocks WHERE page_id = ?))",
+    )
+    .bind(page_id)
+    .bind(page_id)
+    .fetch_all(&mut **tx)
+    .await
+    .map_err(|e| format!("load child pages before history restore: {e}"))?;
+    Ok(ids.into_iter().collect())
+}
+
+async fn page_id_exists(tx: &mut Transaction<'_, Sqlite>, page_id: &str) -> Result<bool, String> {
+    let exists: Option<i64> = sqlx::query_scalar("SELECT 1 FROM notes_pages WHERE id = ?")
+        .bind(page_id)
+        .fetch_optional(&mut **tx)
+        .await
+        .map_err(|e| format!("check notes history page id: {e}"))?;
+    Ok(exists.is_some())
 }
 
 async fn block_id_exists(tx: &mut Transaction<'_, Sqlite>, block_id: &str) -> Result<bool, String> {

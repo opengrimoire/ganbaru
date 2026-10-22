@@ -1,9 +1,10 @@
 //! Device-local Distractions usage spool and linked-device accounting cache.
 
 use crate::vault::handoff::protocol::{DistractionsSampleMessage, MAX_DISTRACTIONS_SAMPLES};
+use ganbaru_distractions::usage::{UsageDateWindow, usage_date_window};
 use sha2::{Digest, Sha256};
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
-use sqlx::{Row, SqlitePool};
+use sqlx::{AssertSqlSafe, Row, SqlitePool};
 use std::path::{Path, PathBuf};
 use tauri::{Manager, Runtime};
 
@@ -353,7 +354,14 @@ pub(crate) async fn drain_local_spool<R: Runtime>(
     vault_id: &str,
     device_id: &str,
 ) -> Result<usize, String> {
-    drain_local_spool_at(&spool_path(app)?, pool, vault_id, device_id).await
+    drain_local_spool_at(
+        &spool_path(app)?,
+        pool,
+        vault_id,
+        device_id,
+        &current_usage_date_window(),
+    )
+    .await
 }
 
 #[cfg(desktop)]
@@ -362,6 +370,7 @@ async fn drain_local_spool_at(
     pool: &SqlitePool,
     vault_id: &str,
     device_id: &str,
+    window: &UsageDateWindow,
 ) -> Result<usize, String> {
     if !tokio::fs::try_exists(path)
         .await
@@ -375,7 +384,7 @@ async fn drain_local_spool_at(
         if samples.is_empty() {
             return Ok(total);
         }
-        let acknowledged = import_linked_samples(pool, &samples).await?;
+        let acknowledged = import_linked_samples_within(pool, device_id, &samples, window).await?;
         acknowledge_at(path, vault_id, device_id, &acknowledged).await?;
         total += acknowledged.len();
     }
@@ -720,7 +729,7 @@ async fn accounting_source_days_at(
                 SELECT 1 FROM accepted_usage_samples a WHERE a.vault_id = p.vault_id
                   AND a.device_id = p.device_id AND a.sample_id = p.sample_id)";
         let count_sql = format!("SELECT COUNT(*) FROM ({source_sql} LIMIT ?)");
-        let count: i64 = sqlx::query_scalar(&count_sql)
+        let count: i64 = sqlx::query_scalar(AssertSqlSafe(count_sql.as_str()))
             .bind(vault_id)
             .bind(week)
             .bind(local_date)
@@ -740,7 +749,7 @@ async fn accounting_source_days_at(
             FROM ({source_sql}) GROUP BY source_type, source_key, local_date
             ORDER BY local_date, source_type, source_key LIMIT ?"
         );
-        let rows = sqlx::query(&query)
+        let rows = sqlx::query(AssertSqlSafe(query.as_str()))
             .bind(vault_id)
             .bind(week)
             .bind(local_date)
@@ -784,15 +793,48 @@ async fn accounting_source_days_at(
     result
 }
 
+fn current_usage_date_window() -> UsageDateWindow {
+    usage_date_window(crate::vault::now_utc().date_naive())
+}
+
+/// Imports usage samples that `device_id`, the authenticated sender, captured, and prunes usage
+/// history older than the retention window.
+///
+/// Every sample must name `device_id`; senders always stamp their own identity, so a mismatch
+/// rejects the whole batch. Samples dated outside the history window are skipped but still
+/// acknowledged, so the sender's spool drains instead of retrying them forever.
 pub(crate) async fn import_linked_samples(
     pool: &SqlitePool,
+    device_id: &str,
     samples: &[DistractionsSampleMessage],
 ) -> Result<Vec<String>, String> {
+    import_linked_samples_within(pool, device_id, samples, &current_usage_date_window()).await
+}
+
+async fn import_linked_samples_within(
+    pool: &SqlitePool,
+    device_id: &str,
+    samples: &[DistractionsSampleMessage],
+    window: &UsageDateWindow,
+) -> Result<Vec<String>, String> {
+    if samples.iter().any(|sample| sample.device_id != device_id) {
+        return Err("linked Distractions usage names a different device".to_string());
+    }
     let mut transaction = pool
         .begin()
         .await
         .map_err(|error| format!("begin linked Distractions import: {error}"))?;
+    sqlx::query("DELETE FROM distractions_usage_samples WHERE local_date < ?")
+        .bind(&window.earliest)
+        .execute(&mut *transaction)
+        .await
+        .map_err(|error| format!("apply Distractions usage retention: {error}"))?;
+    let mut skipped = 0_usize;
     for sample in samples {
+        if !window.contains(&sample.local_date) {
+            skipped += 1;
+            continue;
+        }
         sqlx::query(
             "INSERT OR IGNORE INTO distractions_usage_samples
                 (id, source_type, source_key, display_name, started_at_ms,
@@ -815,6 +857,12 @@ pub(crate) async fn import_linked_samples(
         .commit()
         .await
         .map_err(|error| format!("commit linked Distractions import: {error}"))?;
+    if skipped > 0 {
+        eprintln!(
+            "skipped {skipped} Distractions usage samples dated outside {}..={}",
+            window.earliest, window.latest
+        );
+    }
     Ok(samples
         .iter()
         .map(|sample| sample.sample_id.clone())
@@ -933,7 +981,7 @@ async fn insert_message_executor(
              started_at_ms, elapsed_seconds, local_date, created_at_ms)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
     );
-    sqlx::query(&query)
+    sqlx::query(AssertSqlSafe(query.as_str()))
         .bind(&sample.sample_id)
         .bind(vault_id)
         .bind(&sample.device_id)
@@ -985,7 +1033,7 @@ async fn read_messages_with_limit(
          WHERE vault_id = ? AND (? IS NULL OR device_id = ?)
          ORDER BY created_at_ms ASC, sample_id ASC LIMIT ?"
     );
-    let rows = sqlx::query(&query)
+    let rows = sqlx::query(AssertSqlSafe(query.as_str()))
         .bind(vault_id)
         .bind(device_id)
         .bind(device_id)
@@ -1025,7 +1073,7 @@ mod tests {
         // No canonical schema is needed when no device spool has been written.
         for _ in 0..3 {
             assert_eq!(
-                drain_local_spool_at(&path, &canonical, "vault", "device")
+                drain_local_spool_at(&path, &canonical, "vault", "device", &test_window())
                     .await
                     .unwrap(),
                 0
@@ -1046,6 +1094,106 @@ mod tests {
                 std::process::id()
             ))
             .join(SPOOL_FILE)
+    }
+
+    fn test_window() -> UsageDateWindow {
+        usage_date_window(chrono::NaiveDate::from_ymd_opt(2026, 9, 13).unwrap())
+    }
+
+    async fn usage_database() -> SqlitePool {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("open usage database");
+        sqlx::query(
+            "CREATE TABLE distractions_usage_samples (
+                id TEXT PRIMARY KEY,
+                source_type TEXT NOT NULL,
+                source_key TEXT NOT NULL,
+                display_name TEXT,
+                started_at_ms INTEGER NOT NULL,
+                elapsed_seconds INTEGER NOT NULL,
+                local_date TEXT NOT NULL,
+                created_at_ms INTEGER NOT NULL
+            )",
+        )
+        .execute(&pool)
+        .await
+        .expect("create usage table");
+        pool
+    }
+
+    async fn stored_dates(pool: &SqlitePool) -> Vec<String> {
+        sqlx::query_scalar("SELECT local_date FROM distractions_usage_samples ORDER BY local_date")
+            .fetch_all(pool)
+            .await
+            .expect("read usage dates")
+    }
+
+    #[tokio::test]
+    async fn linked_usage_naming_another_device_is_rejected_whole() {
+        let pool = usage_database().await;
+        let mut forged = sample("forged", 30);
+        forged.device_id = "laptop".to_string();
+
+        let result = import_linked_samples_within(
+            &pool,
+            "phone",
+            &[sample("own", 12), forged],
+            &test_window(),
+        )
+        .await;
+
+        assert!(result.is_err());
+        assert!(stored_dates(&pool).await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn linked_usage_outside_the_history_window_is_acknowledged_but_not_counted() {
+        let pool = usage_database().await;
+        let mut future = sample("future", 30);
+        future.local_date = "2026-09-15".to_string();
+        let mut expired = sample("expired", 30);
+        expired.local_date = "2025-01-01".to_string();
+        let mut zone_ahead = sample("zone-ahead", 30);
+        zone_ahead.local_date = "2026-09-14".to_string();
+
+        let acknowledged = import_linked_samples_within(
+            &pool,
+            "phone",
+            &[sample("today", 12), future, expired, zone_ahead],
+            &test_window(),
+        )
+        .await
+        .expect("import usage");
+
+        assert_eq!(acknowledged, ["today", "future", "expired", "zone-ahead"]);
+        assert_eq!(stored_dates(&pool).await, ["2026-09-13", "2026-09-14"]);
+    }
+
+    #[tokio::test]
+    async fn linked_import_prunes_usage_history_past_retention() {
+        let pool = usage_database().await;
+        for (id, date) in [("old", "2025-08-01"), ("kept", "2025-08-15")] {
+            sqlx::query(
+                "INSERT INTO distractions_usage_samples
+                    (id, source_type, source_key, display_name, started_at_ms,
+                     elapsed_seconds, local_date, created_at_ms)
+                 VALUES (?, 'mobile-app', 'com.example.video', NULL, 1, 12, ?, 2)",
+            )
+            .bind(id)
+            .bind(date)
+            .execute(&pool)
+            .await
+            .expect("insert owner sample");
+        }
+
+        import_linked_samples_within(&pool, "phone", &[], &test_window())
+            .await
+            .expect("import usage");
+
+        assert_eq!(stored_dates(&pool).await, ["2025-08-15"]);
     }
 
     fn sample(id: &str, seconds: i64) -> DistractionsSampleMessage {
@@ -1355,7 +1503,7 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(
-            drain_local_spool_at(&path, &canonical, "vault", "phone")
+            drain_local_spool_at(&path, &canonical, "vault", "phone", &test_window())
                 .await
                 .unwrap(),
             250
@@ -1373,7 +1521,7 @@ mod tests {
                 .is_empty()
         );
         assert_eq!(
-            drain_local_spool_at(&path, &canonical, "vault", "phone")
+            drain_local_spool_at(&path, &canonical, "vault", "phone", &test_window())
                 .await
                 .unwrap(),
             0
@@ -1677,12 +1825,22 @@ mod tests {
         .await
         .expect("create usage table");
         let remote = sample("retry-stable", 18);
-        import_linked_samples(&pool, std::slice::from_ref(&remote))
-            .await
-            .expect("first import");
-        import_linked_samples(&pool, std::slice::from_ref(&remote))
-            .await
-            .expect("retry import");
+        import_linked_samples_within(
+            &pool,
+            "phone",
+            std::slice::from_ref(&remote),
+            &test_window(),
+        )
+        .await
+        .expect("first import");
+        import_linked_samples_within(
+            &pool,
+            "phone",
+            std::slice::from_ref(&remote),
+            &test_window(),
+        )
+        .await
+        .expect("retry import");
         sqlx::query(
             "INSERT INTO distractions_usage_samples
                 (id, source_type, source_key, display_name, started_at_ms,

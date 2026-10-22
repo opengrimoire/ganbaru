@@ -1,7 +1,7 @@
 <script lang="ts">
-  import AlertTriangle from "@lucide/svelte/icons/alert-triangle";
+  import AlertTriangle from "@lucide/svelte/icons/triangle-alert";
   import ArrowDown from "@lucide/svelte/icons/arrow-down";
-  import Wand2 from "@lucide/svelte/icons/wand-2";
+  import Wand2 from "@lucide/svelte/icons/wand-sparkles";
   import { getLocalization } from "$lib/i18n/translator.svelte";
 
   let {

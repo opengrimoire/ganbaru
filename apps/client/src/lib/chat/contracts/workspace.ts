@@ -7,6 +7,9 @@ export const WORKING_FOLDER_BINDING_STATUSES = [
   "repository_mismatch",
 ] as const;
 export type WorkingFolderBindingStatus = (typeof WORKING_FOLDER_BINDING_STATUSES)[number];
+/** This device's decision about a folder's repository programs, hooks, and provider settings. */
+export const WORKING_FOLDER_TRUST_STATES = ["undecided", "trusted", "untrusted"] as const;
+export type WorkingFolderTrustState = (typeof WORKING_FOLDER_TRUST_STATES)[number];
 export const WORKING_FOLDER_KINDS = ["managed", "external"] as const;
 export type WorkingFolderKind = (typeof WORKING_FOLDER_KINDS)[number];
 
@@ -44,4 +47,5 @@ export interface ProjectWorkingFolderRead {
   canonicalPath: string | null;
   lastVerifiedAt: UtcTimestamp | null;
   currentBranch: string | null;
+  trust: WorkingFolderTrustState;
 }

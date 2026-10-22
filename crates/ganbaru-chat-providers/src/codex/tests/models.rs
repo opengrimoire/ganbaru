@@ -482,3 +482,30 @@ fn model_catalog_keeps_options_and_image_capability() {
     );
     assert_eq!(default_value.as_deref(), Some("fast"));
 }
+
+#[test]
+fn turn_network_access_follows_the_codex_sandbox_policy() {
+    assert_eq!(
+        preset_network_access(SafetyMode::AskForApproval),
+        Some(false)
+    );
+    assert_eq!(preset_network_access(SafetyMode::ApproveForMe), Some(false));
+    assert_eq!(preset_network_access(SafetyMode::FullAccess), Some(true));
+    assert_eq!(preset_network_access(SafetyMode::Custom), None);
+
+    assert!(sandbox_network_access(
+        &json!({ "sandboxPolicy": { "type": "dangerFullAccess" } })
+    ));
+    assert!(!sandbox_network_access(
+        &json!({ "sandboxPolicy": { "type": "workspaceWrite", "networkAccess": false } })
+    ));
+    assert!(sandbox_network_access(
+        &json!({ "sandboxPolicy": { "type": "workspaceWrite", "networkAccess": true } })
+    ));
+    assert!(!sandbox_network_access(
+        &json!({ "sandboxPolicy": { "type": "readOnly" } })
+    ));
+    assert!(!sandbox_network_access(
+        &json!({ "permissions": "project-edit" })
+    ));
+}

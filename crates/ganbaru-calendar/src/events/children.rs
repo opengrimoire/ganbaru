@@ -371,7 +371,7 @@ pub(super) async fn replace_i64_list(
     values: Vec<i64>,
 ) -> Result<(), String> {
     let delete = format!("DELETE FROM {table} WHERE event_id = ?");
-    sqlx::query(&delete)
+    sqlx::query(sqlx::AssertSqlSafe(delete.as_str()))
         .bind(event_id)
         .execute(&mut **tx)
         .await
@@ -381,7 +381,7 @@ pub(super) async fn replace_i64_list(
          VALUES (lower(hex(randomblob(16))), ?, ?, ?)"
     );
     for (sort_order, value) in values.into_iter().enumerate() {
-        sqlx::query(&insert)
+        sqlx::query(sqlx::AssertSqlSafe(insert.as_str()))
             .bind(event_id)
             .bind(value)
             .bind(sort_order as i64)
@@ -400,7 +400,7 @@ pub(super) async fn replace_string_list(
     values: Vec<String>,
 ) -> Result<(), String> {
     let delete = format!("DELETE FROM {table} WHERE event_id = ?");
-    sqlx::query(&delete)
+    sqlx::query(sqlx::AssertSqlSafe(delete.as_str()))
         .bind(event_id)
         .execute(&mut **tx)
         .await
@@ -410,7 +410,7 @@ pub(super) async fn replace_string_list(
          VALUES (lower(hex(randomblob(16))), ?, ?, ?)"
     );
     for (sort_order, value) in values.into_iter().enumerate() {
-        sqlx::query(&insert)
+        sqlx::query(sqlx::AssertSqlSafe(insert.as_str()))
             .bind(event_id)
             .bind(value)
             .bind(sort_order as i64)
@@ -429,7 +429,7 @@ pub(super) async fn replace_extended_properties(
     values: Vec<(String, String)>,
 ) -> Result<(), String> {
     let delete = format!("DELETE FROM {table} WHERE {owner_column} = ?");
-    sqlx::query(&delete)
+    sqlx::query(sqlx::AssertSqlSafe(delete.as_str()))
         .bind(owner_id)
         .execute(&mut **tx)
         .await
@@ -439,7 +439,7 @@ pub(super) async fn replace_extended_properties(
          VALUES (lower(hex(randomblob(16))), ?, ?, ?, ?)"
     );
     for (sort_order, (key, value)) in values.into_iter().enumerate() {
-        sqlx::query(&insert)
+        sqlx::query(sqlx::AssertSqlSafe(insert.as_str()))
             .bind(owner_id)
             .bind(key)
             .bind(value)
@@ -483,7 +483,7 @@ pub(super) async fn update_text(
     value: &str,
 ) -> Result<(), String> {
     let query = format!("UPDATE calendar_events SET {column} = ? WHERE id = ?");
-    sqlx::query(&query)
+    sqlx::query(sqlx::AssertSqlSafe(query.as_str()))
         .bind(value)
         .bind(id)
         .execute(&mut **tx)
@@ -499,7 +499,7 @@ pub(super) async fn update_optional_text(
     value: Option<&str>,
 ) -> Result<(), String> {
     let query = format!("UPDATE calendar_events SET {column} = ? WHERE id = ?");
-    sqlx::query(&query)
+    sqlx::query(sqlx::AssertSqlSafe(query.as_str()))
         .bind(value)
         .bind(id)
         .execute(&mut **tx)
@@ -515,7 +515,7 @@ pub(super) async fn update_i64(
     value: i64,
 ) -> Result<(), String> {
     let query = format!("UPDATE calendar_events SET {column} = ? WHERE id = ?");
-    sqlx::query(&query)
+    sqlx::query(sqlx::AssertSqlSafe(query.as_str()))
         .bind(value)
         .bind(id)
         .execute(&mut **tx)
@@ -531,7 +531,7 @@ pub(super) async fn update_optional_i64(
     value: Option<i64>,
 ) -> Result<(), String> {
     let query = format!("UPDATE calendar_events SET {column} = ? WHERE id = ?");
-    sqlx::query(&query)
+    sqlx::query(sqlx::AssertSqlSafe(query.as_str()))
         .bind(value)
         .bind(id)
         .execute(&mut **tx)

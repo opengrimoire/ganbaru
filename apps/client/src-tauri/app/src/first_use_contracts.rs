@@ -1,3 +1,8 @@
+#![allow(
+    unsafe_code,
+    reason = "Retained unsafe boundary; see docs/data/security/unsafe-rust.md."
+)]
+
 use serde::Serialize;
 use sqlx::{SqliteConnection, SqlitePool};
 use std::ffi::{CStr, c_char, c_int, c_uint, c_void};
@@ -311,10 +316,11 @@ async fn assert_no_user_content(pool: &SqlitePool) {
         "notes_page_templates",
         "project_tasks",
     ] {
-        let count: i64 = sqlx::query_scalar(&format!("SELECT COUNT(*) FROM {table}"))
-            .fetch_one(pool)
-            .await
-            .unwrap_or_else(|error| panic!("count {table}: {error}"));
+        let count: i64 =
+            sqlx::query_scalar(sqlx::AssertSqlSafe(format!("SELECT COUNT(*) FROM {table}")))
+                .fetch_one(pool)
+                .await
+                .unwrap_or_else(|error| panic!("count {table}: {error}"));
         assert_eq!(count, 0, "fixture should have no rows in {table}");
     }
 }

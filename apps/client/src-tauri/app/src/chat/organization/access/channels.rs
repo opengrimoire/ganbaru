@@ -11,7 +11,8 @@ use super::{
 use super::{ResolvedChannelAccess, history_boundary_is_expansion, issue};
 use crate::chat::channels::{identifier_error, optional_timestamp, persistence_error, u64_value};
 use crate::chat::organization::common::{
-    parse_folder_capability, parse_history_boundary, parse_runtime_approval_policy,
+    parse_approval_policy, parse_folder_capability, parse_history_boundary,
+    parse_runtime_approval_policy, teammate_runtime_approval,
 };
 use sqlx::{Row, SqlitePool};
 use std::collections::BTreeSet;
@@ -21,8 +22,13 @@ pub(in crate::chat::organization) async fn read_teammate_access(
     teammate_id: &ChatParticipantId,
 ) -> ChatResult<ChatTeammateAccessRead> {
     let state = sqlx::query(
-        "SELECT access_revision, runtime_approval_policy
-         FROM chat_teammate_access_state WHERE teammate_id = ?",
+        "SELECT access_state.access_revision, policy.safety_mode
+         FROM chat_teammate_access_state access_state
+         JOIN chat_teammates teammate ON teammate.participant_id = access_state.teammate_id
+         JOIN chat_teammate_policy_revisions policy
+           ON policy.teammate_id = teammate.participant_id
+          AND policy.revision = teammate.latest_policy_revision
+         WHERE access_state.teammate_id = ?",
     )
     .bind(teammate_id.as_str())
     .fetch_optional(pool)
@@ -253,11 +259,11 @@ pub(in crate::chat::organization) async fn read_teammate_access(
                 .try_get("access_revision")
                 .map_err(persistence_error)?,
         )?,
-        teammate_default_runtime_approval: parse_runtime_approval_policy(
+        teammate_default_runtime_approval: teammate_runtime_approval(parse_approval_policy(
             &state
-                .try_get::<String, _>("runtime_approval_policy")
+                .try_get::<String, _>("safety_mode")
                 .map_err(persistence_error)?,
-        )?,
+        )?),
         channels,
     })
 }

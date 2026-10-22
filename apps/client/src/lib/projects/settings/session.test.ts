@@ -168,7 +168,7 @@ describe("project settings session", () => {
         phase: "focus",
         behavior: "play-automatically",
         playlistId: "playlist-1",
-        soundscapeId: null,
+        soundscapePresetId: null,
         soundscapeBehavior: "inherit",
         provenanceKind: "explicit",
         provenanceId: null,

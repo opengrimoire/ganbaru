@@ -104,6 +104,7 @@ async fn insert_project_page(pool: &SqlitePool, page_id: &str, block_id: &str, t
 
 mod checkpoint;
 mod contracts;
+mod manifest_bounds;
 mod read_projection;
 mod restore_adapter;
 mod retention;

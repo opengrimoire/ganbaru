@@ -1,6 +1,6 @@
 //! Projection of provider runtime events into organizational conversations.
 
-use super::super::events::{CanonicalEvent, CanonicalRuntimeEvent};
+use super::super::events::{CanonicalEvent, CanonicalRuntimeEvent, ChangedFileSummary};
 use super::super::models::{
     ChatError, ChatErrorCode, ChatParticipantId, ChatReplyThreadId, ChatResult, ChatTurnId,
     ChatWorkAssignmentId,
@@ -25,13 +25,21 @@ fn identifier_error(_error: String) -> ChatError {
     )
 }
 
+/// Run states after which provider events no longer project into organizational Chat.
+const SETTLED_RUN_STATES: [&str; 3] = ["completed", "failed", "cancelled"];
+
+/// Projects a provider event into the organizational state of the agent run it belongs to.
+///
+/// Events are matched by provider turn, or by provider thread while a run is active. A run that
+/// has settled (completed, failed, or cancelled by revocation) ignores later events, so a late or
+/// replayed provider event can neither reopen it nor overwrite how it ended.
 pub async fn project_provider_event_in_transaction(
     transaction: &mut Transaction<'_, Sqlite>,
     runtime: &CanonicalRuntimeEvent,
 ) -> ChatResult<bool> {
     let run = sqlx::query(
-        "SELECT run.id AS run_id, run.assignment_id, assignment.reply_thread_id,
-                assignment.teammate_id
+        "SELECT run.id AS run_id, run.state AS run_state, run.assignment_id,
+                assignment.reply_thread_id, assignment.teammate_id
          FROM chat_agent_runs run
          JOIN chat_work_assignments assignment ON assignment.id = run.assignment_id
          WHERE (
@@ -50,6 +58,10 @@ pub async fn project_provider_event_in_transaction(
     let Some(run) = run else {
         return Ok(false);
     };
+    let run_state: String = run.try_get("run_state").map_err(persistence_error)?;
+    if SETTLED_RUN_STATES.contains(&run_state.as_str()) {
+        return Ok(false);
+    }
     let run_id: String = run.try_get("run_id").map_err(persistence_error)?;
     let assignment_id = ChatWorkAssignmentId::new(
         run.try_get::<String, _>("assignment_id")
@@ -182,7 +194,8 @@ pub async fn project_provider_event_in_transaction(
             .fetch_optional(&mut **transaction)
             .await
             .map_err(persistence_error)?;
-            let state = if event.changed_files.is_empty() {
+            let changed_files = turn_changed_files(transaction, runtime).await?;
+            let state = if changed_files.is_empty() {
                 "completed"
             } else {
                 "ready_for_review"
@@ -201,7 +214,7 @@ pub async fn project_provider_event_in_transaction(
                 transaction,
                 runtime,
                 &target,
-                if event.changed_files.is_empty() {
+                if changed_files.is_empty() {
                     "result"
                 } else {
                     "review"
@@ -213,7 +226,7 @@ pub async fn project_provider_event_in_transaction(
                 json!({
                     "stopReason": event.stop_reason,
                     "usage": event.usage,
-                    "changedFiles": event.changed_files,
+                    "changedFiles": changed_files,
                     "providerExecutionThreadId": runtime.thread_id,
                     "providerExecutionTurnId": runtime.turn_id,
                 }),
@@ -421,7 +434,7 @@ async fn update_assignment_and_run_state(
     .execute(&mut **transaction)
     .await
     .map_err(persistence_error)?;
-    let run_terminal = matches!(run_state, "completed" | "failed" | "cancelled");
+    let run_terminal = SETTLED_RUN_STATES.contains(&run_state);
     sqlx::query(
         "UPDATE chat_agent_runs
          SET state = ?, settled_at = CASE WHEN ? THEN ? ELSE NULL END, updated_at = ?
@@ -440,6 +453,28 @@ async fn update_assignment_and_run_state(
 
 fn sha256_hex(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
+}
+
+/// Reads the files recorded for the completed turn: every diff update, the completion
+/// report, and the post-turn checkpoint diff merged by the ingestion path.
+async fn turn_changed_files(
+    transaction: &mut Transaction<'_, Sqlite>,
+    runtime: &CanonicalRuntimeEvent,
+) -> ChatResult<Vec<ChangedFileSummary>> {
+    let data: Option<String> = sqlx::query_scalar(
+        "SELECT changed_file_summary_data FROM chat_turns WHERE id = ? AND thread_id = ?",
+    )
+    .bind(runtime.turn_id.as_ref().map(ChatTurnId::as_str))
+    .bind(runtime.thread_id.as_str())
+    .fetch_optional(&mut **transaction)
+    .await
+    .map_err(persistence_error)?
+    .flatten();
+    data.as_deref()
+        .map(serde_json::from_str::<Vec<ChangedFileSummary>>)
+        .transpose()
+        .map_err(serialization_error)
+        .map(Option::unwrap_or_default)
 }
 
 fn serialization_error<T>(_error: T) -> ChatError {

@@ -3,7 +3,7 @@
 #[cfg(desktop)]
 mod server;
 #[cfg(desktop)]
-pub(crate) use server::serve_with_coordinator;
+pub(crate) use server::{CoordinatorServices, LanAdmission, serve_with_coordinator};
 
 use super::pairing::{
     CoordinatorPin, PairingManager, TlsIdentity, certificate_fingerprint, encode_certificate,
@@ -12,10 +12,12 @@ use super::protocol::{
     BundleMetadata, BundlePurpose, ControlMessage, PROTOCOL_VERSION, PairingInvitation,
     TRANSFER_CHUNK_BYTES, read_control, unix_time_ms, write_control,
 };
+use ganbaru_handoff::dial::{LoopbackPolicy, authorize_dial_target};
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::crypto::{WebPkiSupportedAlgorithms, verify_tls12_signature, verify_tls13_signature};
 use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
 use rustls::{DigitallySignedStruct, SignatureScheme};
+use std::net::{IpAddr, Ipv6Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -28,6 +30,9 @@ const TLS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 const CONTROL_TIMEOUT: Duration = Duration::from_secs(15);
 const CHUNK_TIMEOUT: Duration = Duration::from_secs(20);
 const BUNDLE_COORDINATION_WAIT: Duration = Duration::from_secs(90);
+/// How long the coordinator holds an enrollment for its user before refusing it. The enrolling
+/// device waits longer, so it never gives up on a request the coordinator could still link.
+pub(crate) const ENROLLMENT_APPROVAL_TIMEOUT: Duration = Duration::from_secs(120);
 const BUNDLE_COORDINATION_POLL_INTERVAL: Duration = Duration::from_secs(1);
 const MEMBERSHIP_REVOKED_CODE: &str = "membership_revoked";
 
@@ -140,6 +145,17 @@ where
         .map_err(|error| format!("flush transfer bundle: {error}"))
 }
 
+/// Loads the device ID and TLS identity on a blocking thread, because the first load may wait on
+/// the operating-system keyring.
+pub(crate) async fn load_tls_identity(
+    manager: &PairingManager,
+) -> Result<(String, TlsIdentity), String> {
+    let manager = manager.clone();
+    tokio::task::spawn_blocking(move || manager.identity())
+        .await
+        .map_err(|error| format!("load device linking key: {error}"))?
+}
+
 pub(crate) async fn enroll(
     manager: &PairingManager,
     invitation: &PairingInvitation,
@@ -151,7 +167,7 @@ pub(crate) async fn enroll(
         .endpoint
         .parse()
         .map_err(|_| "pairing endpoint is invalid".to_string())?;
-    let (device_id, identity) = manager.identity()?;
+    let (device_id, identity) = load_tls_identity(manager).await?;
     let mut stream = connect_pinned(endpoint, &invitation.coordinator_fingerprint, None).await?;
     timeout_control(write_control(
         &mut stream,
@@ -167,7 +183,13 @@ pub(crate) async fn enroll(
         },
     ))
     .await?;
-    match timeout_control(read_control(&mut stream)).await? {
+    let response = tokio::time::timeout(
+        ENROLLMENT_APPROVAL_TIMEOUT + CONTROL_TIMEOUT,
+        read_control(&mut stream),
+    )
+    .await
+    .map_err(|_| "the coordinator did not answer the enrollment".to_string())??;
+    match response {
         ControlMessage::Enrolled {
             coordinator_device_id,
             coordinator_device_label,
@@ -200,7 +222,7 @@ pub(crate) async fn request_bundle(
     let coordinator = manager
         .coordinator_pin()?
         .ok_or_else(|| "this device is not linked to a coordinator".to_string())?;
-    let (device_id, _) = manager.identity()?;
+    let device_id = manager.device_id()?;
     let started = tokio::time::Instant::now();
     loop {
         if cancellation.is_cancelled() {
@@ -339,7 +361,7 @@ pub(crate) async fn upload_bundle(
         .endpoint
         .parse()
         .map_err(|_| "coordinator endpoint is invalid".to_string())?;
-    let (_, identity) = manager.identity()?;
+    let (_, identity) = load_tls_identity(manager).await?;
     let mut stream = connect_pinned(
         endpoint,
         &coordinator.certificate_fingerprint,
@@ -409,7 +431,7 @@ pub(crate) async fn probe_coordinator(
     let coordinator = manager
         .coordinator_pin()?
         .ok_or_else(|| "this device is not linked to a coordinator".to_string())?;
-    let (device_id, _) = manager.identity()?;
+    let device_id = manager.device_id()?;
     match authenticated_exchange(
         manager,
         ControlMessage::RefreshRequest {
@@ -449,7 +471,7 @@ pub(crate) async fn exchange_distractions(
     let coordinator = manager
         .coordinator_pin()?
         .ok_or_else(|| "this device is not linked to a coordinator".to_string())?;
-    let (device_id, _) = manager.identity()?;
+    let device_id = manager.device_id()?;
     match authenticated_exchange(
         manager,
         ControlMessage::DistractionsExchange {
@@ -493,7 +515,7 @@ pub(crate) async fn request_person_key(manager: &PairingManager) -> Result<Contr
     let coordinator = manager
         .coordinator_pin()?
         .ok_or_else(|| "this device is not linked to a coordinator".to_string())?;
-    let (device_id, _) = manager.identity()?;
+    let device_id = manager.device_id()?;
     authenticated_exchange(
         manager,
         ControlMessage::PersonKeyRequest {
@@ -511,7 +533,7 @@ pub(crate) fn sync_peer(manager: &PairingManager) -> Result<Option<(String, Stri
     let Some(coordinator) = manager.coordinator_pin()? else {
         return Ok(None);
     };
-    let (device_id, _) = manager.identity()?;
+    let device_id = manager.device_id()?;
     Ok(Some((coordinator.vault_id, device_id)))
 }
 
@@ -534,7 +556,7 @@ async fn authenticated_exchange(
         .endpoint
         .parse()
         .map_err(|_| "coordinator endpoint is invalid".to_string())?;
-    let (_, identity) = manager.identity()?;
+    let (_, identity) = load_tls_identity(manager).await?;
     let mut stream = connect_pinned(
         endpoint,
         &coordinator.certificate_fingerprint,
@@ -591,7 +613,7 @@ async fn download_bundle_inner(
         .endpoint
         .parse()
         .map_err(|_| "coordinator endpoint is invalid".to_string())?;
-    let (_, identity) = manager.identity()?;
+    let (_, identity) = load_tls_identity(manager).await?;
     let mut stream = connect_pinned(
         endpoint,
         &coordinator.certificate_fingerprint,
@@ -700,13 +722,43 @@ fn prepare_partial(
     Ok(0)
 }
 
+/// Loopback peers exist only when two development instances link on one machine.
+const LOOPBACK_DIAL: LoopbackPolicy = if cfg!(debug_assertions) {
+    LoopbackPolicy::Allow
+} else {
+    LoopbackPolicy::Reject
+};
+
+/// Refuses dial targets outside the local network before any packet is sent. Invitations,
+/// cards, and coordinator pins all reach the network through [`connect_pinned`].
+fn authorize_endpoint(endpoint: SocketAddr) -> Result<(), String> {
+    let on_link_source = match endpoint.ip() {
+        IpAddr::V6(target) => ipv6_source_for(target),
+        IpAddr::V4(_) => None,
+    };
+    authorize_dial_target(endpoint, LOOPBACK_DIAL, on_link_source)
+        .map_err(|error| format!("refuse device connection: {error}"))
+}
+
+/// Returns the IPv6 source address the operating system selects to reach `target`. Connecting
+/// a UDP socket only selects a route; it sends nothing.
+fn ipv6_source_for(target: Ipv6Addr) -> Option<Ipv6Addr> {
+    let socket = std::net::UdpSocket::bind((Ipv6Addr::UNSPECIFIED, 0)).ok()?;
+    socket.connect((target, 9)).ok()?;
+    match socket.local_addr().ok()?.ip() {
+        IpAddr::V6(source) => Some(source),
+        IpAddr::V4(_) => None,
+    }
+}
+
 async fn connect_pinned(
-    endpoint: std::net::SocketAddr,
+    endpoint: SocketAddr,
     fingerprint: &str,
     identity: Option<TlsIdentity>,
 ) -> Result<tokio_rustls::client::TlsStream<TcpStream>, String> {
+    authorize_endpoint(endpoint)?;
     let verifier = Arc::new(PinnedServerVerifier::new(fingerprint.to_string()));
-    let builder = rustls::ClientConfig::builder()
+    let builder = rustls::ClientConfig::builder_with_protocol_versions(&[&rustls::version::TLS13])
         .dangerous()
         .with_custom_certificate_verifier(verifier);
     let config = match identity {

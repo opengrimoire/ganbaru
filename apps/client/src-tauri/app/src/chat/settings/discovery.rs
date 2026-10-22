@@ -15,6 +15,11 @@ use ganbaru_chat_contracts::models::{
     ProviderImplementationStatus, ProviderInstanceConfig, ProviderInstanceId, ProviderModelCatalog,
     ProviderProbeResult, VersionedJson,
 };
+#[cfg(not(windows))]
+use ganbaru_chat_providers::executable_search::PLATFORM_EXECUTABLE_DIRECTORIES;
+use ganbaru_chat_providers::executable_search::{
+    is_safe_executable_candidate, path_search_directories,
+};
 use ganbaru_chat_providers::{ProviderDriverFactory, ProviderDriverRegistry};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -93,7 +98,7 @@ pub(crate) fn default_provider_configuration(
 
 pub(crate) fn executable_search_directories() -> Vec<PathBuf> {
     let mut directories = std::env::var_os("PATH")
-        .map(|path| std::env::split_paths(&path).collect::<Vec<_>>())
+        .map(|path| path_search_directories(&path))
         .unwrap_or_default();
     if let Some(home) = platform_user_home() {
         directories.extend(fallback_executable_directories(&home));
@@ -115,10 +120,7 @@ pub(crate) fn installed_provider_executables(
         for directory in search_directories {
             for candidate_name in executable_candidate_names(name) {
                 let candidate = directory.join(candidate_name);
-                if !candidate.is_file()
-                    || !is_executable(&candidate)
-                    || !found.insert(candidate.clone())
-                {
+                if !is_safe_executable_candidate(&candidate) || !found.insert(candidate.clone()) {
                     continue;
                 }
                 if let Some(path) = candidate.to_str() {
@@ -195,23 +197,11 @@ fn fallback_executable_directories(home: &Path) -> Vec<PathBuf> {
             home.join(".bun").join("bin"),
             home.join(".cargo").join("bin"),
             home.join(".volta").join("bin"),
-            PathBuf::from("/opt/homebrew/bin"),
-            PathBuf::from("/home/linuxbrew/.linuxbrew/bin"),
         ]
+        .into_iter()
+        .chain(PLATFORM_EXECUTABLE_DIRECTORIES.iter().map(PathBuf::from))
+        .collect()
     }
-}
-
-#[cfg(unix)]
-fn is_executable(path: &Path) -> bool {
-    use std::os::unix::fs::PermissionsExt;
-    path.metadata()
-        .map(|metadata| metadata.permissions().mode() & 0o111 != 0)
-        .unwrap_or(false)
-}
-
-#[cfg(not(unix))]
-fn is_executable(path: &Path) -> bool {
-    path.is_file()
 }
 
 fn default_provider_configuration_error() -> ChatError {
@@ -300,6 +290,7 @@ pub(crate) async fn discover_default_providers(
                         .then(|| probe.checked_at.clone()),
                     last_probe: Some(probe.clone()),
                     model_catalog,
+                    approved_runtime_items: Default::default(),
                 },
             );
             Ok(())

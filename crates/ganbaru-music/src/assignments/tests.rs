@@ -32,7 +32,7 @@ fn draft(
         phase,
         behavior,
         playlist_id: Some("playlist-1".to_string()),
-        soundscape_id: None,
+        soundscape_preset_id: None,
         soundscape_behavior: MusicSoundscapeBehavior::Inherit,
         provenance_kind: MusicAssignmentProvenanceKind::Explicit,
         provenance_id: None,
@@ -175,5 +175,38 @@ fn work_environment_contract_round_trips_without_a_settings_surface() {
             saved[0].provenance_kind,
             MusicAssignmentProvenanceKind::WorkEnvironment
         );
+    });
+}
+
+#[test]
+fn context_assignments_select_only_presets() {
+    block_on(async {
+        let pool = pool().await;
+        let mut preset = draft(MusicActivityPhase::Focus, MusicAssignmentBehavior::Inherit);
+        preset.soundscape_behavior = MusicSoundscapeBehavior::PlaySelected;
+        preset.soundscape_preset_id = Some("preset-1".to_string());
+        let saved = super::replace_assignments(
+            &pool,
+            MusicContextAssignmentSet {
+                owner_kind: MusicAssignmentOwnerKind::ProjectDefault,
+                owner_id: "project-1".to_string(),
+                assignments: vec![preset.clone()],
+                updated_at_ms: 1_700_000_000_000,
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(saved[0].soundscape_preset_id.as_deref(), Some("preset-1"));
+
+        let mut neither = preset.clone();
+        neither.soundscape_preset_id = None;
+        let mut paused_with_preset = preset;
+        paused_with_preset.soundscape_behavior = MusicSoundscapeBehavior::PauseSoundscape;
+        for invalid in [neither, paused_with_preset] {
+            let error =
+                super::validate_drafts(MusicAssignmentOwnerKind::ProjectDefault, &[invalid])
+                    .unwrap_err();
+            assert_eq!(error.field.as_deref(), Some("soundscapePresetId"));
+        }
     });
 }

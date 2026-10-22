@@ -1,5 +1,7 @@
 #[cfg(desktop)]
 use base64::{Engine as _, engine::general_purpose};
+#[cfg(desktop)]
+use path_authority::{MusicPathKind, authorize, grant_path};
 #[cfg(not(target_os = "ios"))]
 use serde::{Deserialize, Serialize};
 #[cfg(desktop)]
@@ -7,7 +9,6 @@ use std::{
     collections::{HashMap, VecDeque},
     fs,
     path::{Path, PathBuf},
-    process::Stdio,
 };
 #[cfg(desktop)]
 use std::{
@@ -25,6 +26,7 @@ pub(crate) mod library;
 pub(crate) mod media_controls;
 #[cfg(not(target_os = "ios"))]
 pub(crate) mod media_server;
+pub(crate) mod path_authority;
 pub(crate) mod player;
 #[cfg(not(target_os = "ios"))]
 pub(crate) mod root_bindings;
@@ -32,6 +34,8 @@ pub(crate) mod root_bindings;
 pub(crate) mod session;
 #[cfg(desktop)]
 pub(crate) mod soundscape;
+#[cfg(desktop)]
+pub(crate) mod soundscape_paths;
 #[cfg(not(target_os = "ios"))]
 pub(crate) mod youtube;
 
@@ -39,7 +43,9 @@ pub(crate) mod youtube;
 pub(crate) use media_server::setup_youtube_host;
 
 #[cfg(desktop)]
-use ganbaru_music_library::artwork::{extract_embedded_artwork, find_track_artwork};
+use ganbaru_music_library::artwork::{
+    extract_embedded_artwork, find_track_artwork, sniff_image_content_type as artwork_content_type,
+};
 #[cfg(desktop)]
 use ganbaru_music_library::media::{MEDIA_EXTENSIONS, is_supported_media_path};
 
@@ -53,6 +59,18 @@ const MAX_INTERCHANGE_BYTES: u64 = 8 * 1024 * 1024;
 static MEDIA_FOLDER_SCAN_GENERATION: AtomicU64 = AtomicU64::new(0);
 #[cfg(desktop)]
 const SOUNDSCAPE_AUDIO_EXTENSIONS: &[&str] = &["flac", "m4a", "mp3", "mp4", "oga", "ogg", "wav"];
+
+/// Reports whether a background audio path has an extension the soundscape engine accepts.
+#[cfg(desktop)]
+pub(crate) fn is_soundscape_audio_path(path: &Path) -> bool {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| {
+            SOUNDSCAPE_AUDIO_EXTENSIONS
+                .iter()
+                .any(|allowed| extension.eq_ignore_ascii_case(allowed))
+        })
+}
 
 #[cfg(desktop)]
 fn replace_music_export_file(path: &Path, contents: &[u8]) -> Result<(), String> {
@@ -124,6 +142,7 @@ pub async fn music_pick_media_folder(
         let Some(folder) = picker.blocking_pick_folder().map(dialog_path).transpose()? else {
             return Ok(None);
         };
+        grant_path(&app, MusicPathKind::Folder, &folder)?;
 
         let generation = MEDIA_FOLDER_SCAN_GENERATION.fetch_add(1, Ordering::AcqRel) + 1;
         scan_media_folder_with_cancel(&folder, || {
@@ -172,7 +191,12 @@ pub async fn music_detect_default_folder(
         let Some(folder) = music_folder_start_directory(&app) else {
             return Ok(None);
         };
-        detect_non_empty_media_folder(&folder)
+        let selection = detect_non_empty_media_folder(&folder)?;
+        // The operating system audio folder is offered as a source, so Rust grants it here.
+        if selection.is_some() {
+            grant_path(&app, MusicPathKind::Folder, &folder)?;
+        }
+        Ok(selection)
     })
     .await
     .map_err(|error| format!("default music folder scan failed: {error}"))?
@@ -237,11 +261,11 @@ pub async fn music_pick_root_binding_folder(
         if let Some(directory) = music_folder_start_directory(&app) {
             picker = picker.set_directory(directory);
         }
-        picker
-            .blocking_pick_folder()
-            .map(dialog_path)
-            .transpose()
-            .map(|path| path.map(|value| value.to_string_lossy().into_owned()))
+        let Some(folder) = picker.blocking_pick_folder().map(dialog_path).transpose()? else {
+            return Ok(None);
+        };
+        grant_path(&app, MusicPathKind::Folder, &folder)?;
+        Ok(Some(folder.to_string_lossy().into_owned()))
     })
     .await
     .map_err(|error| format!("music folder mapping picker failed: {error}"))?
@@ -272,7 +296,7 @@ pub async fn music_pick_media_file(app: tauri::AppHandle) -> Result<Option<Strin
         if let Some(directory) = music_folder_start_directory(&app) {
             picker = picker.set_directory(directory);
         }
-        picker.blocking_pick_file().map(dialog_path).transpose()
+        pick_granted_file(&app, picker)
     })
     .await
     .map_err(|error| format!("media file picker failed: {error}"))??;
@@ -291,7 +315,7 @@ pub async fn music_pick_soundscape_file(app: tauri::AppHandle) -> Result<Option<
         if let Some(directory) = music_folder_start_directory(&app) {
             picker = picker.set_directory(directory);
         }
-        picker.blocking_pick_file().map(dialog_path).transpose()
+        pick_granted_file(&app, picker)
     })
     .await
     .map_err(|error| format!("background audio picker failed: {error}"))??;
@@ -302,16 +326,15 @@ pub async fn music_pick_soundscape_file(app: tauri::AppHandle) -> Result<Option<
 #[tauri::command]
 pub async fn music_pick_artwork_file(app: tauri::AppHandle) -> Result<Option<String>, String> {
     let selected = tauri::async_runtime::spawn_blocking(move || {
-        app.dialog()
+        let picker = app
+            .dialog()
             .file()
             .set_title("Select playlist artwork")
             .add_filter(
                 "Images",
                 &["png", "jpg", "jpeg", "webp", "gif", "bmp", "avif"],
-            )
-            .blocking_pick_file()
-            .map(dialog_path)
-            .transpose()
+            );
+        pick_granted_file(&app, picker)
     })
     .await
     .map_err(|error| format!("artwork file picker failed: {error}"))??;
@@ -488,16 +511,10 @@ fn music_interchange_file_name(default_name: &str, extension: &str) -> Result<St
 
 #[cfg(desktop)]
 #[tauri::command]
-pub async fn music_artwork_data_url(path: String) -> Result<String, String> {
+pub async fn music_artwork_data_url(app: tauri::AppHandle, path: String) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let path = PathBuf::from(path);
-        require_absolute_file(&path)?;
-        let metadata = fs::metadata(&path)
-            .map_err(|error| format!("failed to inspect artwork file: {error}"))?;
-        if metadata.len() > MAX_ARTWORK_BYTES {
-            return Err("artwork file exceeds the 12 MB display limit".to_string());
-        }
-        let bytes = fs::read(&path).map_err(|error| format!("failed to read artwork: {error}"))?;
+        let path = authorize(&app, &path, MusicPathKind::File)?;
+        let bytes = read_bounded_artwork(&path, MAX_ARTWORK_BYTES)?;
         let content_type = artwork_content_type(&bytes)
             .ok_or_else(|| "selected artwork is not a supported image".to_string())?;
         Ok(format!(
@@ -522,10 +539,12 @@ pub async fn music_artwork_data_url(app: tauri::AppHandle, path: String) -> Resu
 
 #[cfg(desktop)]
 #[tauri::command]
-pub async fn music_embedded_artwork_data_url(path: String) -> Result<Option<String>, String> {
+pub async fn music_embedded_artwork_data_url(
+    app: tauri::AppHandle,
+    path: String,
+) -> Result<Option<String>, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let path = PathBuf::from(path);
-        require_absolute_file(&path)?;
+        let path = authorize(&app, &path, MusicPathKind::File)?;
         let Some(artwork) = extract_embedded_artwork(&path)? else {
             return Ok(None);
         };
@@ -555,23 +574,23 @@ pub async fn music_embedded_artwork_data_url(
         .await
 }
 
+/// Reads at most `limit` bytes from one open handle, so a file that grows or is swapped after
+/// authorization cannot force an unbounded read.
 #[cfg(desktop)]
-fn artwork_content_type(bytes: &[u8]) -> Option<&'static str> {
-    if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
-        Some("image/png")
-    } else if bytes.starts_with(&[0xff, 0xd8, 0xff]) {
-        Some("image/jpeg")
-    } else if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
-        Some("image/gif")
-    } else if bytes.len() >= 12 && &bytes[..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
-        Some("image/webp")
-    } else if bytes.starts_with(b"BM") {
-        Some("image/bmp")
-    } else if bytes.len() >= 12 && &bytes[4..8] == b"ftyp" && &bytes[8..12] == b"avif" {
-        Some("image/avif")
-    } else {
-        None
+fn read_bounded_artwork(path: &Path, limit: u64) -> Result<Vec<u8>, String> {
+    use std::io::Read;
+    let file = fs::File::open(path).map_err(|error| format!("failed to read artwork: {error}"))?;
+    let mut bytes = Vec::new();
+    file.take(limit.saturating_add(1))
+        .read_to_end(&mut bytes)
+        .map_err(|error| format!("failed to read artwork: {error}"))?;
+    if bytes.len() as u64 > limit {
+        return Err(format!(
+            "artwork file exceeds the {} MB display limit",
+            limit / (1024 * 1024)
+        ));
     }
+    Ok(bytes)
 }
 
 #[cfg(desktop)]
@@ -586,10 +605,13 @@ fn existing_music_start_directory(candidate: Option<PathBuf>) -> Option<PathBuf>
 
 #[cfg(desktop)]
 #[tauri::command]
-pub fn music_reveal_local_file(path: String) -> Result<(), String> {
-    let path = PathBuf::from(path);
-    require_absolute_file(&path)?;
-    reveal_local_file(&path)
+pub async fn music_reveal_local_file(app: tauri::AppHandle, path: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let path = authorize(&app, &path, MusicPathKind::File)?;
+        reveal_local_file(&path)
+    })
+    .await
+    .map_err(|error| format!("media file location task failed: {error}"))?
 }
 
 #[cfg(test)]
@@ -665,6 +687,19 @@ fn scan_media_folder_with_cancel(
     })
 }
 
+/// Shows a native file picker and grants the chosen file on this device.
+#[cfg(desktop)]
+fn pick_granted_file(
+    app: &tauri::AppHandle,
+    picker: tauri_plugin_dialog::FileDialogBuilder<tauri::Wry>,
+) -> Result<Option<PathBuf>, String> {
+    let Some(file) = picker.blocking_pick_file().map(dialog_path).transpose()? else {
+        return Ok(None);
+    };
+    grant_path(app, MusicPathKind::File, &file)?;
+    Ok(Some(file))
+}
+
 #[cfg(desktop)]
 fn dialog_path(path: FilePath) -> Result<PathBuf, String> {
     path.into_path()
@@ -685,19 +720,6 @@ fn require_absolute_directory(path: &Path) -> Result<(), String> {
     }
 }
 
-#[cfg(desktop)]
-fn require_absolute_file(path: &Path) -> Result<(), String> {
-    if !path.is_absolute() {
-        return Err("media file path must be absolute".to_string());
-    }
-    let metadata = fs::metadata(path).map_err(|e| format!("failed to inspect media file: {e}"))?;
-    if metadata.is_file() {
-        Ok(())
-    } else {
-        Err("selected media path must be a file".to_string())
-    }
-}
-
 #[cfg(target_os = "linux")]
 fn reveal_local_file(path: &Path) -> Result<(), String> {
     let folder = path
@@ -711,10 +733,12 @@ fn reveal_local_file(path: &Path) -> Result<(), String> {
     spawn_file_manager_command("open", [std::ffi::OsStr::new("-R"), path.as_os_str()])
 }
 
+/// Selects the file through the shell item ID API, which takes the path as data rather than as
+/// part of an `explorer.exe` command line, where commas and quotes act as separators.
 #[cfg(windows)]
 fn reveal_local_file(path: &Path) -> Result<(), String> {
-    let selection = format!("/select,{}", path.display());
-    spawn_file_manager_command("explorer.exe", [std::ffi::OsStr::new(&selection)])
+    tauri_plugin_opener::reveal_item_in_dir(path)
+        .map_err(|error| format!("open media file location: {error}"))
 }
 
 #[cfg(all(desktop, not(any(target_os = "linux", target_os = "macos", windows))))]
@@ -722,7 +746,7 @@ fn reveal_local_file(_path: &Path) -> Result<(), String> {
     Err("opening media file locations is not implemented for this platform".to_string())
 }
 
-#[cfg(desktop)]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn spawn_file_manager_command<I, S>(program: &str, args: I) -> Result<(), String>
 where
     I: IntoIterator<Item = S>,
@@ -730,9 +754,9 @@ where
 {
     std::process::Command::new(program)
         .args(args)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
         .spawn()
         .map(|_| ())
         .map_err(|e| format!("open media file location: {e}"))
@@ -753,6 +777,56 @@ mod tests {
     use super::youtube::player_page::youtube_host_html;
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    /// Returns the source of the first function named `name`, from its header line to its
+    /// closing brace at column zero.
+    fn function_source<'a>(source: &'a str, name: &str) -> &'a str {
+        let header = format!("fn {name}(");
+        let found = source
+            .find(&header)
+            .unwrap_or_else(|| panic!("{name} is defined"));
+        let start = source[..found].rfind('\n').map_or(0, |index| index + 1);
+        let end = source[start..]
+            .find("\n}\n")
+            .map_or(source.len(), |index| start + index + 3);
+        &source[start..end]
+    }
+
+    #[test]
+    fn music_file_commands_inspect_media_off_the_main_thread() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/music");
+        for (file, command) in [
+            ("media_server.rs", "music_register_media_file"),
+            ("media_server.rs", "music_register_embedded_artwork"),
+            ("player.rs", "media_player_probe"),
+        ] {
+            let source =
+                std::fs::read_to_string(root.join(file)).expect("read Music command source");
+            let function = function_source(&source, command);
+            assert!(
+                function
+                    .lines()
+                    .next()
+                    .is_some_and(|line| line.contains("async fn")),
+                "{command} must be async so Tauri does not run it on the main thread"
+            );
+            assert!(
+                function.contains("spawn_blocking("),
+                "{command} must move file and parser work to a blocking thread"
+            );
+        }
+    }
+
+    #[test]
+    fn youtube_host_keeps_its_token_from_youtube_and_targets_the_app_origin() {
+        let host = youtube_host_html();
+
+        assert!(host.contains("widget_referrer: location.origin"));
+        assert!(!host.contains("location.href"));
+        assert!(host.contains("parent.postMessage(payload, parentOrigin)"));
+        assert!(!host.contains("parent.postMessage(payload, \"*\")"));
+        assert!(host.contains("location.ancestorOrigins"));
+    }
 
     #[test]
     fn youtube_host_uses_supported_minimal_chrome_parameters() {
@@ -961,6 +1035,33 @@ mod tests {
             Some("image/jpeg")
         );
         assert_eq!(artwork_content_type(b"not an image"), None);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_reveal_resolves_the_path_as_data_instead_of_a_command_line() {
+        let missing = unique_temporary_dir("ganbaru-reveal").join(r#"a,b",c.mp3"#);
+        assert!(reveal_local_file(&missing).is_err());
+    }
+
+    #[test]
+    fn artwork_data_url_reads_at_most_the_limit_from_one_handle() {
+        let directory = unique_temporary_dir("ganbaru-artwork-bound");
+        fs::create_dir_all(&directory).unwrap();
+        let fits = directory.join("fits.png");
+        let grown = directory.join("grown.png");
+        fs::write(&fits, [7_u8; 16]).unwrap();
+        fs::write(&grown, [7_u8; 17]).unwrap();
+
+        assert_eq!(read_bounded_artwork(&fits, 16).unwrap().len(), 16);
+        assert!(read_bounded_artwork(&grown, 16).is_err());
+        #[cfg(unix)]
+        {
+            let endless = directory.join("endless.png");
+            std::os::unix::fs::symlink("/dev/zero", &endless).unwrap();
+            assert!(read_bounded_artwork(&endless, 16).is_err());
+        }
+        fs::remove_dir_all(&directory).unwrap();
     }
 
     fn unique_temporary_dir(name: &str) -> PathBuf {

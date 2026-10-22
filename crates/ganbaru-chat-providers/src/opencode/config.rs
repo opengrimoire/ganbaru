@@ -11,6 +11,9 @@ use std::net::IpAddr;
 
 pub const OPENCODE_PASSWORD_ENVIRONMENT: &str = "OPENCODE_SERVER_PASSWORD";
 const MAX_SERVER_URL_BYTES: usize = 2 * 1024;
+/// Random bytes in the password generated for each owned OpenCode server.
+pub const OWNED_SERVER_SECRET_BYTES: usize = 32;
+const HEX_DIGITS: &[u8; 16] = b"0123456789abcdef";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum OpenCodeConnectionMode {
@@ -38,6 +41,27 @@ struct StoredOpenCodeSettings {
 pub struct OpenCodeSecret(String);
 
 impl OpenCodeSecret {
+    /// Generates an ephemeral server password from the operating-system CSPRNG.
+    pub(super) fn generate() -> ChatResult<Self> {
+        let mut bytes = [0_u8; OWNED_SERVER_SECRET_BYTES];
+        rustls::crypto::ring::default_provider()
+            .secure_random
+            .fill(&mut bytes)
+            .map_err(|_| {
+                ChatError::new(
+                    ChatErrorCode::Internal,
+                    "Operating-system secure randomness is unavailable",
+                    false,
+                )
+            })?;
+        let mut encoded = String::with_capacity(OWNED_SERVER_SECRET_BYTES * 2);
+        for byte in bytes {
+            encoded.push(char::from(HEX_DIGITS[usize::from(byte >> 4)]));
+            encoded.push(char::from(HEX_DIGITS[usize::from(byte & 0x0f)]));
+        }
+        Ok(Self(encoded))
+    }
+
     pub(super) fn expose(&self) -> &str {
         &self.0
     }

@@ -1,5 +1,5 @@
 //! Quick notes persistence independent of Tauri and the WebView: windowed lists and search,
-//! revisioned writes, lifecycle and trash retention, ordering, tags, and resolution of
+//! revisioned writes, images, lifecycle and trash retention, ordering, tags, and resolution of
 //! conflicts left by replicated edits.
 //!
 //! Callers supply an authorized vault pool and decide whether the device may write.
@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 use sqlx::{FromRow, QueryBuilder, Sqlite, SqlitePool, Transaction};
 
 mod conflicts;
+pub mod images;
 mod order;
 pub mod tags;
 
@@ -21,6 +22,8 @@ pub use conflicts::{
     QuickNoteConflictError, QuickNoteConflictRead, QuickNoteConflictResolution,
     QuickNoteConflictResolved, conflict_from_pool, resolve_from_pool,
 };
+pub use images::{QuickNoteImage, QuickNoteImageError, QuickNoteImageFile};
+use images::{load_images, replace_images, validate_note_images};
 use order::{OrderedRow, placement, take_key};
 pub use tags::{QuickNoteTagError, QuickNoteTagRead, QuickNoteTagReorder, QuickNoteTagWrite};
 
@@ -72,6 +75,7 @@ pub struct QuickNoteWrite {
     id: String,
     title: String,
     runs: Vec<QuickNoteTextRun>,
+    images: Vec<QuickNoteImage>,
     color: i64,
     tag_id: Option<String>,
     pinned: bool,
@@ -84,6 +88,7 @@ pub struct QuickNoteUpdate {
     expected_revision: i64,
     title: String,
     runs: Vec<QuickNoteTextRun>,
+    images: Vec<QuickNoteImage>,
     color: i64,
     tag_id: Option<String>,
     pinned: bool,
@@ -173,6 +178,7 @@ pub struct QuickNoteRead {
     body_plain_text: String,
     runs: Vec<QuickNoteTextRun>,
     preview_truncated: bool,
+    images: Vec<QuickNoteImage>,
     color: i64,
     tag_id: Option<String>,
     pinned: bool,
@@ -181,7 +187,7 @@ pub struct QuickNoteRead {
     revision: i64,
     created_at: String,
     updated_at: String,
-    /// Whether replicated edits left a conflict on the title or body.
+    /// Whether replicated edits left a conflict on the title, body, or images.
     has_conflict: bool,
 }
 
@@ -359,7 +365,12 @@ fn truncate_preview(runs: Vec<QuickNoteTextRun>) -> (Vec<QuickNoteTextRun>, bool
     (preview, true)
 }
 
-fn read_note(mut row: QuickNoteRow, runs: Vec<QuickNoteTextRun>, preview: bool) -> QuickNoteRead {
+fn read_note(
+    mut row: QuickNoteRow,
+    runs: Vec<QuickNoteTextRun>,
+    images: Vec<QuickNoteImage>,
+    preview: bool,
+) -> QuickNoteRead {
     let (runs, preview_truncated) = if preview {
         row.body_plain_text = row.body_plain_text.chars().take(PREVIEW_CHARS).collect();
         truncate_preview(runs)
@@ -372,6 +383,7 @@ fn read_note(mut row: QuickNoteRow, runs: Vec<QuickNoteTextRun>, preview: bool) 
         body_plain_text: row.body_plain_text,
         runs,
         preview_truncated,
+        images,
         color: row.color,
         tag_id: row.tag_id,
         pinned: row.pinned != 0,
@@ -400,17 +412,23 @@ pub async fn load_note_from_pool(pool: &SqlitePool, id: &str) -> Result<QuickNot
                 OR q.trashed_at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now', ?))",
         has_conflict_column()
     );
-    let row = sqlx::query_as::<_, QuickNoteRow>(&sql)
+    let row = sqlx::query_as::<_, QuickNoteRow>(sqlx::AssertSqlSafe(sql.as_str()))
         .bind(id)
         .bind(trash_expiry_modifier())
         .fetch_optional(pool)
         .await
         .map_err(|error| format!("load quick note: {error}"))?
         .ok_or_else(|| "quick note not found".to_string())?;
-    let rows = load_run_rows(pool, &[id.to_string()]).await?;
+    let ids = [id.to_string()];
+    let rows = load_run_rows(pool, &ids).await?;
+    let images = load_images(pool, &ids)
+        .await?
+        .remove(id)
+        .unwrap_or_default();
     Ok(read_note(
         row,
         read_runs(rows).remove(id).unwrap_or_default(),
+        images,
         false,
     ))
 }
@@ -603,11 +621,13 @@ pub async fn list_window_from_pool(
     };
     let ids = rows.iter().map(|row| row.id.clone()).collect::<Vec<_>>();
     let mut runs = read_runs(load_run_rows(pool, &ids).await?);
+    let mut images = load_images(pool, &ids).await?;
     let notes = rows
         .into_iter()
         .map(|row| {
             let note_runs = runs.remove(&row.id).unwrap_or_default();
-            read_note(row, note_runs, true)
+            let note_images = images.remove(&row.id).unwrap_or_default();
+            read_note(row, note_runs, note_images, true)
         })
         .collect();
     Ok(QuickNotesWindow { notes, next_cursor })
@@ -696,6 +716,7 @@ async fn insert_note(
     note: &QuickNoteWrite,
 ) -> Result<(), String> {
     let runs = validate_content(&note.id, &note.title, &note.runs, note.color)?;
+    validate_note_images(&note.images)?;
     validate_optional_tag_id(note.tag_id.as_deref())?;
     let body = body_plain_text(&runs);
     let group = active_group(tx, note.pinned, &note.id).await?;
@@ -718,7 +739,8 @@ async fn insert_note(
     .execute(&mut **tx)
     .await
     .map_err(|error| format!("create quick note: {error}"))?;
-    replace_runs(tx, &note.id, &runs).await
+    replace_runs(tx, &note.id, &runs).await?;
+    replace_images(tx, &note.id, &note.images).await
 }
 
 /// A random version 4 UUID for notes created by the backend, in the form the frontend uses.
@@ -750,6 +772,7 @@ pub async fn restore_recovered(
         id: new_note_id()?,
         title: String::new(),
         runs: Vec::new(),
+        images: Vec::new(),
         color: 0,
         tag_id: None,
         pinned: false,
@@ -758,6 +781,7 @@ pub async fn restore_recovered(
         match (*group, value.fields()) {
             (note_group::TITLE, [Field::Text(title)]) => note.title = title.clone(),
             (note_group::BODY, _) => note.runs = conflicts::runs_from_value(value)?,
+            (note_group::IMAGES, _) => note.images = images::images_from_value(value)?,
             (note_group::COLOR, [Field::Integer(color)]) => note.color = *color,
             (note_group::TAG, [Field::Text(tag_id)]) => note.tag_id = Some(tag_id.clone()),
             _ => {}
@@ -780,6 +804,7 @@ pub async fn update_from_pool(
     note: QuickNoteUpdate,
 ) -> Result<QuickNoteRead, QuickNoteWriteError> {
     let runs = validate_content(&note.id, &note.title, &note.runs, note.color)?;
+    validate_note_images(&note.images)?;
     validate_optional_tag_id(note.tag_id.as_deref())?;
     if note.expected_revision < 1 {
         return Err("quick note revision must be positive".to_string().into());
@@ -814,6 +839,7 @@ pub async fn update_from_pool(
         ));
     }
     replace_runs(&mut tx, &note.id, &runs).await?;
+    replace_images(&mut tx, &note.id, &note.images).await?;
     tx.commit()
         .await
         .map_err(|error| format!("commit quick note update: {error}"))?;
@@ -832,7 +858,7 @@ enum Placement {
 async fn revision_mutation(
     pool: &SqlitePool,
     request: &QuickNoteRevisionRequest,
-    sql: &str,
+    sql: &'static str,
     context: &str,
     placement: Placement,
 ) -> Result<QuickNoteRead, QuickNoteWriteError> {

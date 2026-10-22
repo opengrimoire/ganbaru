@@ -5,7 +5,7 @@
   import RefreshCw from "@lucide/svelte/icons/refresh-cw";
   import Search from "@lucide/svelte/icons/search";
   import Star from "@lucide/svelte/icons/star";
-  import Trash2 from "@lucide/svelte/icons/trash-2";
+  import Trash2 from "@lucide/svelte/icons/trash";
   import type {
     JsonValue,
     ProviderFamilyMetadataRead,
@@ -175,6 +175,14 @@
     }
   }
 
+  async function confirmRuntime(): Promise<void> {
+    if (!selectedProvider) return;
+    const instanceId = selectedProvider.configuration.instanceId;
+    await perform(instanceId, async () => {
+      await chat.confirmProviderRuntime(instanceId);
+    });
+  }
+
   async function refreshAll(): Promise<void> {
     if (refreshingAll) return;
     refreshingAll = true;
@@ -287,10 +295,11 @@
     config.customModelLabels = { ...existingLabels, ...(label ? { [id]: label } : {}) };
     customError = null;
     await perform(selectedProvider.configuration.instanceId, async () => {
-      await chat.saveProvider({
+      const saved = await chat.saveProvider({
         ...selectedProvider.configuration,
         providerConfig: { ...selectedProvider.configuration.providerConfig, value: config },
       });
+      if (!saved) return;
       await chat.probeProvider(selectedProvider.configuration.instanceId);
       await chat.refreshModels(selectedProvider.configuration.instanceId);
       customId = "";
@@ -310,12 +319,13 @@
     config.customModelIds = customIds;
     config.customModelLabels = labels;
     await perform(selectedProvider.configuration.instanceId, async () => {
-      await chat.saveProvider({
+      const saved = await chat.saveProvider({
         ...selectedProvider.configuration,
         visibleModelIds: selectedProvider.configuration.visibleModelIds.filter((id) => id !== modelId),
         favoriteModelIds: selectedProvider.configuration.favoriteModelIds.filter((id) => id !== modelId),
         providerConfig: { ...selectedProvider.configuration.providerConfig, value: config },
       });
+      if (!saved) return;
       await chat.probeProvider(selectedProvider.configuration.instanceId);
       await chat.refreshModels(selectedProvider.configuration.instanceId);
     });
@@ -556,6 +566,19 @@
                   {#if selectedProvider.lastProbe?.state === "authentication_required"}
                     <p class="provider-notice">{t("settings.chat.providers.loginHelp")}</p>
                   {/if}
+                  {#if selectedProvider.runtimeReview.length > 0}
+                    <section class="provider-notice runtime-review">
+                      <p>{t("settings.chat.setup.runtimeReviewNotice")}</p>
+                      <ul>
+                        {#each selectedProvider.runtimeReview as item, index (index)}
+                          <li>{item.label}</li>
+                        {/each}
+                      </ul>
+                      <button type="button" class="compact-action" disabled={selectedBusy} onclick={() => void confirmRuntime()}>
+                        {t("settings.chat.setup.runtimeReviewButton")}
+                      </button>
+                    </section>
+                  {/if}
 
                   <section class="editor-section catalog-section">
                     {#if acceptsCustomModels}
@@ -759,6 +782,9 @@
   .refresh-summary.attention { border-left-color:var(--destructive); }
   .custom-model-editor p { color:var(--destructive); }
   .editor-content { display:grid; align-content:start; gap:1rem; }
+  .runtime-review { display:grid; gap:0.4rem; }
+  .runtime-review ul { display:grid; gap:0.2rem; padding-left:1rem; list-style:disc; overflow-wrap:anywhere; }
+  .runtime-review button { justify-self:start; }
   .editor-section { display:grid; min-width:0; gap:0.65rem; }
   .catalog-section { gap:0; }
   .catalog-actions { display:flex; justify-content:flex-end; padding:0 0.25rem 0.65rem; }

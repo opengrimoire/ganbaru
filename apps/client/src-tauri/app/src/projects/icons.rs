@@ -1,4 +1,5 @@
 use base64::{Engine as _, engine::general_purpose};
+use ganbaru_atomic_files::{FinalSymlink, read_regular_file_capped};
 use ganbaru_notes::assets::image_metadata::{
     ManagedImageDimensionError, ManagedImageKind, ManagedImageMetadata, ManagedImageMetadataError,
     parse_managed_image_metadata, validate_managed_image_dimensions,
@@ -12,11 +13,12 @@ use reqwest::{
 };
 use serde::Serialize;
 use sha2::{Digest, Sha256};
+use sqlx::SqlitePool;
 use std::{
-    collections::HashSet,
-    fs,
-    io::Write,
+    collections::{BTreeMap, HashSet},
+    fs, io,
     path::{Component, Path, PathBuf},
+    sync::{LazyLock, Mutex, PoisonError},
 };
 #[cfg(desktop)]
 use std::{
@@ -33,7 +35,20 @@ use tauri::{AppHandle, Runtime};
 #[cfg(desktop)]
 use tauri_plugin_dialog::{DialogExt, FilePath};
 
-use crate::{db::connect_sqlite, vault};
+#[cfg(desktop)]
+use crate::native_dialogs::on_dialog_thread;
+use crate::{db::connect_vault, vault};
+
+/// Project icon files this process created. A discarded upload may delete only these, so a
+/// webview cannot remove icons that existed before it saved them.
+static CREATED_PROJECT_ICONS: LazyLock<Mutex<HashSet<PathBuf>>> =
+    LazyLock::new(|| Mutex::new(HashSet::new()));
+
+fn created_project_icons() -> std::sync::MutexGuard<'static, HashSet<PathBuf>> {
+    CREATED_PROJECT_ICONS
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+}
 
 const PROJECT_ICON_MAX_DISPLAY_MEGABYTES: usize = 3;
 const PROJECT_ICON_MAX_BYTES: usize = PROJECT_ICON_MAX_DISPLAY_MEGABYTES * 1024 * 1024;
@@ -64,14 +79,6 @@ fn project_icon_start_directory<R: Runtime>(app: &AppHandle<R>) -> Option<PathBu
 
 fn active_project_icon_dir<R: Runtime>(app: &AppHandle<R>) -> Result<PathBuf, String> {
     Ok(vault::active_vault_path(app)?
-        .join("assets")
-        .join(PROJECT_ICON_DIR))
-}
-
-fn active_writable_project_icon_dir<R: Runtime>(
-    app: &AppHandle<R>,
-) -> Result<vault::WritableVaultPath, String> {
-    Ok(vault::active_writable_vault_path(app)?
         .join("assets")
         .join(PROJECT_ICON_DIR))
 }
@@ -169,26 +176,18 @@ fn hex_hash(bytes: &[u8]) -> String {
     output
 }
 
-fn write_binary_file_atomically(path: &Path, bytes: &[u8]) -> Result<(), String> {
-    let parent = path
-        .parent()
-        .ok_or_else(|| "project icon target has no parent".to_string())?;
-    fs::create_dir_all(parent).map_err(|e| format!("create project icon directory: {e}"))?;
-    let file_name = path
-        .file_name()
-        .ok_or_else(|| "project icon target has no file name".to_string())?
-        .to_string_lossy()
-        .into_owned();
-    let temporary_path = parent.join(format!("{file_name}.tmp"));
-    {
-        let mut file =
-            fs::File::create(&temporary_path).map_err(|e| format!("write project icon: {e}"))?;
-        file.write_all(bytes)
-            .map_err(|e| format!("write project icon: {e}"))?;
-        file.sync_all()
-            .map_err(|e| format!("sync project icon: {e}"))?;
-    }
-    fs::rename(&temporary_path, path).map_err(|e| format!("save project icon: {e}"))
+fn write_binary_file_atomically(
+    vault_root: &Path,
+    path: &Path,
+    bytes: &[u8],
+) -> Result<(), String> {
+    ganbaru_atomic_files::write_file_atomically_within(
+        vault_root,
+        path,
+        bytes,
+        ganbaru_atomic_files::FileAccess::Default,
+    )
+    .map_err(|error| format!("save project icon: {error}"))
 }
 
 fn save_project_icon_bytes<R: Runtime>(
@@ -199,22 +198,28 @@ fn save_project_icon_bytes<R: Runtime>(
     let kind = validate_project_icon_image(&bytes)?.kind;
     let file_name = format!("{}.{}", hex_hash(&bytes), kind.extension());
     let relative_path = format!("{PROJECT_ICON_DIR}/{file_name}");
-    let path = active_writable_project_icon_dir(app)?.join(file_name);
-    if !path.exists() {
-        write_binary_file_atomically(&path, &bytes)?;
+    let writable_root = vault::active_writable_vault_path(app)?;
+    let vault_root = writable_root.to_path_buf();
+    let path = writable_root
+        .join("assets")
+        .join(PROJECT_ICON_DIR)
+        .join(file_name);
+    if !ganbaru_atomic_files::is_regular_file(&path) {
+        write_binary_file_atomically(&vault_root, &path, &bytes)?;
+        created_project_icons().insert(path.to_path_buf());
     }
     Ok(ProjectIconAsset { relative_path })
 }
 
-fn read_file_capped(path: &Path) -> Result<Vec<u8>, String> {
-    let metadata = fs::metadata(path).map_err(|e| format!("inspect project icon image: {e}"))?;
-    if !metadata.is_file() {
-        return Err("project icon image path must be a file".to_string());
-    }
-    if metadata.len() > PROJECT_ICON_MAX_BYTES as u64 {
-        return Err(project_icon_size_limit_error());
-    }
-    let bytes = fs::read(path).map_err(|e| format!("read project icon image: {e}"))?;
+fn read_file_capped(path: &Path, final_symlink: FinalSymlink) -> Result<Vec<u8>, String> {
+    let bytes = read_regular_file_capped(path, PROJECT_ICON_MAX_BYTES as u64, final_symlink)
+        .map_err(|error| match error.kind() {
+            io::ErrorKind::FileTooLarge => project_icon_size_limit_error(),
+            io::ErrorKind::InvalidInput => {
+                "project icon image path must be a regular file".to_string()
+            }
+            _ => format!("read project icon image: {error}"),
+        })?;
     ensure_project_icon_size(&bytes)?;
     Ok(bytes)
 }
@@ -322,11 +327,19 @@ fn is_public_project_icon_ip(address: IpAddr) -> bool {
     }
 }
 
+/// Parses a project icon URL for one request hop. An `http` URL, typed or redirected to, is
+/// upgraded to `https`, so a plain-text request is never sent and a server that only speaks
+/// HTTP fails at the TLS handshake.
 #[cfg(desktop)]
 fn validate_project_icon_network_url(url: &str) -> Result<Url, String> {
-    let parsed = Url::parse(url).map_err(|_| "project icon URL is invalid".to_string())?;
-    if !matches!(parsed.scheme(), "http" | "https") {
-        return Err("project icon URL must use http or https".to_string());
+    let mut parsed = Url::parse(url).map_err(|_| "project icon URL is invalid".to_string())?;
+    if parsed.scheme() == "http" {
+        parsed
+            .set_scheme("https")
+            .map_err(|()| "project icon URL is invalid".to_string())?;
+    }
+    if parsed.scheme() != "https" {
+        return Err("project icon URL must use https".to_string());
     }
     if !parsed.username().is_empty() || parsed.password().is_some() {
         return Err("project icon URL cannot contain credentials".to_string());
@@ -455,6 +468,7 @@ impl ProjectIconHttpTransport for ReqwestProjectIconHttpTransport {
             let client = reqwest::Client::builder()
                 .timeout(timeout)
                 .redirect(Policy::none())
+                .https_only(true)
                 .no_proxy()
                 .dns_resolver(PublicProjectIconDnsResolver)
                 .build()
@@ -588,10 +602,11 @@ pub async fn projects_icon_pick_image_file<R: Runtime>(
     if let Some(directory) = project_icon_start_directory(&app) {
         picker = picker.set_directory(directory);
     }
-    let Some(path) = picker.blocking_pick_file().map(dialog_path).transpose()? else {
+    let picked = on_dialog_thread(move || picker.blocking_pick_file()).await?;
+    let Some(path) = picked.map(dialog_path).transpose()? else {
         return Ok(None);
     };
-    let bytes = read_file_capped(&path)?;
+    let bytes = read_file_capped(&path, FinalSymlink::Follow)?;
     save_project_icon_bytes(&app, bytes).map(Some)
 }
 
@@ -632,46 +647,128 @@ pub fn projects_icon_asset_data_url<R: Runtime>(
     relative_path: String,
 ) -> Result<String, String> {
     let path = asset_path_for_relative(&app, &relative_path)?;
-    let bytes = read_file_capped(&path)?;
+    let bytes = read_file_capped(&path, FinalSymlink::Refuse)?;
     project_icon_data_url(&bytes)
 }
 
+fn quote_identifier(name: &str) -> String {
+    format!("\"{}\"", name.replace('"', "\"\""))
+}
+
+/// Lists every ordinary table with its text-affinity columns, the columns that can hold an icon
+/// reference directly or inside JSON. Virtual tables are skipped because their shadow tables
+/// carry the same text.
+async fn text_columns_by_table(pool: &SqlitePool) -> Result<BTreeMap<String, Vec<String>>, String> {
+    let rows = sqlx::query_as::<_, (String, String)>(
+        "SELECT m.name, p.name
+         FROM sqlite_schema AS m
+         JOIN pragma_table_info(m.name) AS p
+         WHERE m.type = 'table'
+           AND m.name NOT LIKE 'sqlite_%'
+           AND m.sql NOT LIKE 'CREATE VIRTUAL TABLE%'
+           AND (upper(p.type) LIKE '%TEXT%'
+             OR upper(p.type) LIKE '%CHAR%'
+             OR upper(p.type) LIKE '%CLOB%')
+         ORDER BY m.name, p.cid",
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(|e| format!("list project icon reference columns: {e}"))?;
+    let mut tables = BTreeMap::<String, Vec<String>>::new();
+    for (table, column) in rows {
+        tables.entry(table).or_default().push(column);
+    }
+    Ok(tables)
+}
+
+/// Returns the candidate relative paths that any text column of the database mentions. Icon
+/// columns store `asset:project-icons/...` and Notes JSON stores `project-icons/...`, so a
+/// substring match covers both, and a false match only keeps a file.
+async fn referenced_project_icons(
+    pool: &SqlitePool,
+    candidates: &[&str],
+) -> Result<HashSet<String>, String> {
+    let mut referenced = HashSet::new();
+    if candidates.is_empty() {
+        return Ok(referenced);
+    }
+    for (table, columns) in text_columns_by_table(pool).await? {
+        let condition = columns
+            .iter()
+            .map(|column| format!("instr({}, ?1) > 0", quote_identifier(column)))
+            .collect::<Vec<_>>()
+            .join(" OR ");
+        // Identifiers come from the database schema and are quoted; the candidate is bound.
+        let query = format!(
+            "SELECT EXISTS(SELECT 1 FROM {} WHERE {condition})",
+            quote_identifier(&table)
+        );
+        for candidate in candidates {
+            if referenced.contains(*candidate) {
+                continue;
+            }
+            let found = sqlx::query_scalar::<_, bool>(sqlx::AssertSqlSafe(query.as_str()))
+                .bind(*candidate)
+                .fetch_one(pool)
+                .await
+                .map_err(|e| format!("search project icon references in {table}: {e}"))?;
+            if found {
+                referenced.insert((*candidate).to_string());
+            }
+        }
+        if referenced.len() == candidates.len() {
+            break;
+        }
+    }
+    Ok(referenced)
+}
+
+/// Maps each requested relative path that names a file this process created to its absolute
+/// path, keyed by the normalized relative path. Invalid paths fail the whole request.
+fn created_icon_candidates(
+    icon_dir: &Path,
+    relative_paths: &[String],
+    created: &HashSet<PathBuf>,
+) -> Result<BTreeMap<String, PathBuf>, String> {
+    let mut candidates = BTreeMap::new();
+    for relative_path in relative_paths {
+        let file_name = validate_project_icon_relative_path(relative_path)?;
+        let path = icon_dir.join(file_name);
+        if created.contains(&path) {
+            candidates.insert(format!("{PROJECT_ICON_DIR}/{file_name}"), path);
+        }
+    }
+    Ok(candidates)
+}
+
+/// Deletes discarded uploads that this process created and that nothing in the vault references.
 #[tauri::command]
 pub async fn projects_icon_delete_assets_if_unreferenced<R: Runtime>(
     app: AppHandle<R>,
-    db_url: String,
     relative_paths: Vec<String>,
 ) -> Result<(), String> {
-    let _write_permit = vault::active_writable_vault_path(&app)?;
-    let mut candidates = HashSet::new();
-    for relative_path in relative_paths {
-        validate_project_icon_relative_path(&relative_path)?;
-        candidates.insert(relative_path);
-    }
+    let write_permit = vault::active_writable_vault_path(&app)?;
+    let icon_dir = write_permit
+        .to_path_buf()
+        .join("assets")
+        .join(PROJECT_ICON_DIR);
+    let candidates = created_icon_candidates(&icon_dir, &relative_paths, &created_project_icons())?;
     if candidates.is_empty() {
         return Ok(());
     }
-    let pool = connect_sqlite(app.clone(), db_url).await?;
-    let mut referenced = HashSet::new();
-    for row in sqlx::query_scalar::<_, String>(
-        "SELECT icon FROM project_groups
-         UNION ALL SELECT icon FROM projects
-         UNION ALL SELECT icon FROM music_playlists
-         UNION ALL SELECT ('asset:' || asset_path) FROM project_custom_emojis",
-    )
-    .fetch_all(&pool)
-    .await
-    .map_err(|e| format!("load project icon references: {e}"))?
-    {
-        if let Some(relative_path) = row.strip_prefix("asset:") {
-            referenced.insert(relative_path.to_string());
+    let pool = connect_vault(&app).await?;
+    let candidate_paths = candidates.keys().map(String::as_str).collect::<Vec<_>>();
+    let referenced = referenced_project_icons(&pool, &candidate_paths).await?;
+    for (relative_path, path) in candidates {
+        if referenced.contains(&relative_path) {
+            continue;
         }
-    }
-    for relative_path in candidates.difference(&referenced) {
-        let path = asset_path_for_relative(&app, relative_path)?;
-        if path.exists() {
-            fs::remove_file(&path).map_err(|e| format!("delete project icon asset: {e}"))?;
+        match fs::remove_file(&path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(format!("delete project icon asset: {error}")),
         }
+        created_project_icons().remove(&path);
     }
     Ok(())
 }
@@ -928,6 +1025,56 @@ mod tests {
     }
 
     #[test]
+    fn project_icon_requests_use_https_for_typed_and_redirected_urls() {
+        let expected = png(100, 50);
+        let transport = FakeProjectIconHttpTransport::new(vec![
+            Ok(ProjectIconHttpHop::Redirect(
+                "http://cdn.example.net/icon.png".to_string(),
+            )),
+            Ok(ProjectIconHttpHop::Image {
+                bytes: expected.clone(),
+                content_type: Some("image/png".to_string()),
+            }),
+        ]);
+        let actual = tauri::async_runtime::block_on(download_project_icon_url_with_transport(
+            &transport,
+            "http://example.com/icon.png",
+        ))
+        .unwrap();
+        assert_eq!(actual, expected);
+        assert_eq!(
+            *transport.requested_urls.lock().unwrap(),
+            [
+                "https://example.com/icon.png",
+                "https://cdn.example.net/icon.png"
+            ]
+        );
+    }
+
+    #[test]
+    fn project_icon_downgrade_redirect_to_the_same_url_stops_as_a_loop() {
+        let transport = FakeProjectIconHttpTransport::new(vec![Ok(ProjectIconHttpHop::Redirect(
+            "http://example.com/icon.png".to_string(),
+        ))]);
+        let error = tauri::async_runtime::block_on(download_project_icon_url_with_transport(
+            &transport,
+            "https://example.com/icon.png",
+        ))
+        .unwrap_err();
+        assert_eq!(error, "project icon redirect loop detected");
+        assert_eq!(transport.request_count(), 1);
+    }
+
+    #[test]
+    fn project_icon_urls_refuse_schemes_other_than_https() {
+        for url in ["ftp://example.com/icon.png", "file:///tmp/icon.png"] {
+            assert_eq!(
+                validate_project_icon_network_url(url).unwrap_err(),
+                "project icon URL must use https"
+            );
+        }
+    }
+    #[test]
     fn project_icon_redirect_count_stays_at_the_existing_limit() {
         let transport = FakeProjectIconHttpTransport::new(
             (1..=5)
@@ -1011,5 +1158,183 @@ mod tests {
             error,
             "project icon response MIME type does not match its image contents"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn vault_project_icon_reads_refuse_symlinks_and_oversized_files() {
+        let root = std::env::temp_dir().join(format!(
+            "ganbaru-project-icon-read-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let picture = root.join("picture.png");
+        fs::write(&picture, png(64, 64)).unwrap();
+        let link = root.join("linked.png");
+        std::os::unix::fs::symlink(&picture, &link).unwrap();
+        let oversized = root.join("oversized.png");
+        fs::File::create(&oversized)
+            .unwrap()
+            .set_len(PROJECT_ICON_MAX_BYTES as u64 + 1)
+            .unwrap();
+
+        assert_eq!(
+            read_file_capped(&link, FinalSymlink::Follow).unwrap(),
+            png(64, 64)
+        );
+        assert_eq!(
+            read_file_capped(&link, FinalSymlink::Refuse).unwrap_err(),
+            "project icon image path must be a regular file"
+        );
+        assert!(
+            read_file_capped(&oversized, FinalSymlink::Refuse)
+                .unwrap_err()
+                .contains("MB limit")
+        );
+        fs::remove_dir_all(&root).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod reference_tests {
+    use super::*;
+
+    const SOUNDSCAPE_ICON: &str = "project-icons/soundscape.png";
+    const EMOJI_ICON: &str = "project-icons/emoji.png";
+    const BLOCK_ICON: &str = "project-icons/block.webp";
+    const HISTORY_ICON: &str = "project-icons/history.jpg";
+    const UNUSED_ICON: &str = "project-icons/unused.png";
+
+    async fn migrated_pool() -> SqlitePool {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        ganbaru_db::run_migrations(&pool).await.unwrap();
+        // Reference rows are seeded without their owning pages and users.
+        sqlx::raw_sql("PRAGMA foreign_keys=OFF")
+            .execute(&pool)
+            .await
+            .unwrap();
+        pool
+    }
+
+    fn custom_emoji_icon(path: &str) -> String {
+        serde_json::json!({
+            "type": "custom_emoji",
+            "custom_emoji": { "id": "emoji", "ganbaru_asset_path": path },
+        })
+        .to_string()
+    }
+
+    async fn seed_references(pool: &SqlitePool) {
+        sqlx::query(
+            "UPDATE music_soundscapes SET icon = ?1
+             WHERE id = (SELECT id FROM music_soundscapes ORDER BY id LIMIT 1)",
+        )
+        .bind(format!("asset:{SOUNDSCAPE_ICON}"))
+        .execute(pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO project_custom_emojis (id, name, asset_path) VALUES ('e', 'e', ?1)",
+        )
+        .bind(EMOJI_ICON)
+        .execute(pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO notes_blocks (id, page_id, parent_type, parent_page_id, type, payload)
+             VALUES ('b', 'p', 'page_id', 'p', 'callout', ?1)",
+        )
+        .bind(format!(
+            r#"{{"callout":{{"icon":{}}}}}"#,
+            custom_emoji_icon(BLOCK_ICON)
+        ))
+        .execute(pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO notes_page_history_snapshots (
+                id, page_id, parent_type, properties, blocks, reason, created_by,
+                page_created_time, page_last_edited_time
+             ) VALUES ('s', 'p', 'workspace', '{}', ?1, 'edit', 'u', 't', 't')",
+        )
+        .bind(format!(
+            r#"[{{"payload":{{"icon":{}}}}}]"#,
+            custom_emoji_icon(HISTORY_ICON)
+        ))
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    #[test]
+    fn reference_scan_finds_icon_columns_and_nested_notes_json() {
+        tauri::async_runtime::block_on(async {
+            let pool = migrated_pool().await;
+            seed_references(&pool).await;
+            let candidates = [
+                SOUNDSCAPE_ICON,
+                EMOJI_ICON,
+                BLOCK_ICON,
+                HISTORY_ICON,
+                UNUSED_ICON,
+            ];
+            let referenced = referenced_project_icons(&pool, &candidates).await.unwrap();
+            let expected = [SOUNDSCAPE_ICON, EMOJI_ICON, BLOCK_ICON, HISTORY_ICON]
+                .map(str::to_string)
+                .into_iter()
+                .collect::<HashSet<_>>();
+            assert_eq!(referenced, expected);
+        });
+    }
+
+    #[test]
+    fn only_icons_this_process_created_are_deletion_candidates() {
+        let icon_dir = Path::new("/vault/assets/project-icons");
+        let created = HashSet::from([icon_dir.join("draft.png")]);
+        let requested = ["project-icons/draft.png", "project-icons/older.png"].map(String::from);
+        let candidates = created_icon_candidates(icon_dir, &requested, &created).unwrap();
+        assert_eq!(
+            candidates,
+            BTreeMap::from([(
+                "project-icons/draft.png".to_string(),
+                icon_dir.join("draft.png")
+            )])
+        );
+        let escape = [" project-icons/draft.png ", "project-icons/../draft.png"].map(String::from);
+        assert!(created_icon_candidates(icon_dir, &escape, &created).is_err());
+    }
+
+    #[test]
+    fn reference_scan_covers_every_icon_column_in_the_schema() {
+        tauri::async_runtime::block_on(async {
+            let pool = migrated_pool().await;
+            let icon_columns = sqlx::query_as::<_, (String, String)>(
+                "SELECT m.name, p.name
+                 FROM sqlite_schema AS m
+                 JOIN pragma_table_info(m.name) AS p
+                 WHERE m.type = 'table' AND (p.name = 'icon' OR p.name GLOB '*_icon')",
+            )
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+            assert!(icon_columns.len() >= 10, "{icon_columns:?}");
+            let scanned = text_columns_by_table(&pool).await.unwrap();
+            for (table, column) in icon_columns {
+                assert!(
+                    scanned
+                        .get(&table)
+                        .is_some_and(|columns| columns.contains(&column)),
+                    "{table}.{column} is not scanned"
+                );
+            }
+        });
     }
 }

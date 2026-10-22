@@ -6,7 +6,7 @@ use std::io::{self, Write};
 
 use serde::Serialize;
 use serde_json::Value;
-use sqlx::{FromRow, Row, SqliteConnection, SqlitePool, sqlite::SqliteRow};
+use sqlx::{AssertSqlSafe, FromRow, Row, SqliteConnection, SqlitePool, sqlite::SqliteRow};
 
 use super::export_preservation::ExportPreservationRows;
 use super::icalendar::calendar_icalendar_export_metadata;
@@ -107,7 +107,7 @@ impl ExportBudget {
         );
         let limit = i64::try_from(self.records_left + 1)
             .map_err(|_| "Calendar export record limit overflow")?;
-        let sizes = sqlx::query(&preflight)
+        let sizes = sqlx::query(AssertSqlSafe(preflight.as_str()))
             .bind(calendar_id)
             .bind(limit)
             .fetch_one(&mut *connection)
@@ -140,7 +140,7 @@ impl ExportBudget {
         if records == 0 {
             return Ok(Vec::new());
         }
-        sqlx::query_as(sql)
+        sqlx::query_as(AssertSqlSafe(sql))
             .bind(calendar_id)
             .fetch_all(connection)
             .await

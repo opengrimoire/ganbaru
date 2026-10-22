@@ -366,9 +366,9 @@ async fn import_item(
         .bind(&item.identity_key)
         .bind(item.source_kind.as_ref())
         .bind(&item.youtube_video_id)
-        .bind(&item.title)
-        .bind(&item.artist)
-        .bind(&item.album)
+        .bind(bounded_item_description(&item.title))
+        .bind(bounded_item_description(&item.artist))
+        .bind(bounded_item_description(&item.album))
         .bind(item.duration_ms)
         .bind(if item.source_kind == MusicLibrarySourceKind::LocalFile {
             "missing"
@@ -384,9 +384,9 @@ async fn import_item(
         sqlx::query(
             "UPDATE music_library_items SET original_title = ?, original_artist = ?, original_album = ?, duration_ms = ?, updated_at_ms = ?, version = version + 1 WHERE id = ?",
         )
-        .bind(&item.title)
-        .bind(&item.artist)
-        .bind(&item.album)
+        .bind(bounded_item_description(&item.title))
+        .bind(bounded_item_description(&item.artist))
+        .bind(bounded_item_description(&item.album))
         .bind(item.duration_ms)
         .bind(request.imported_at)
         .bind(&item_id)
@@ -538,12 +538,12 @@ async fn import_assignments(
         };
         sqlx::query(
             "INSERT INTO music_context_assignments
-                (owner_kind, owner_id, phase, behavior, playlist_id, soundscape_id,
+                (owner_kind, owner_id, phase, behavior, playlist_id, soundscape_preset_id,
                  soundscape_behavior, provenance_kind, provenance_id, updated_at_ms, version)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
              ON CONFLICT(owner_kind, owner_id, phase) DO UPDATE SET
                 behavior = excluded.behavior, playlist_id = excluded.playlist_id,
-                soundscape_id = excluded.soundscape_id,
+                soundscape_preset_id = excluded.soundscape_preset_id,
                 soundscape_behavior = excluded.soundscape_behavior,
                 provenance_kind = excluded.provenance_kind,
                 provenance_id = excluded.provenance_id,
@@ -554,7 +554,7 @@ async fn import_assignments(
         .bind(assignment.phase.as_ref())
         .bind(assignment.behavior.as_ref())
         .bind(imported_playlist_id)
-        .bind(&assignment.soundscape_id)
+        .bind(&assignment.soundscape_preset_id)
         .bind(assignment.soundscape_behavior.as_ref())
         .bind(assignment.provenance_kind.as_ref())
         .bind(&assignment.provenance_id)

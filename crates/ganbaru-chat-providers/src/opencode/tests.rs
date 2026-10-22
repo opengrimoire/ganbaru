@@ -2,6 +2,7 @@
 
 use super::cli::*;
 use super::config::*;
+use super::driver::registers_internal_mcp;
 use super::event_stream::*;
 use super::http_client::*;
 use super::local_server::*;
@@ -9,7 +10,7 @@ use super::normalizer::*;
 use super::permissions::*;
 use super::protocol::*;
 use super::support::{capabilities, capability_kinds, prompt, provider_command};
-use crate::events::{CanonicalEvent, CanonicalRuntimeEvent};
+use crate::events::{CanonicalEvent, CanonicalRuntimeEvent, SessionPermissionGrant};
 use crate::models::*;
 use serde::Deserialize;
 use serde_json::json;
@@ -584,6 +585,10 @@ fn owned_server_arguments_and_readiness_are_exact() {
 
 #[cfg(unix)]
 #[test]
+#[allow(
+    unsafe_code,
+    reason = "Retained unsafe boundary; see docs/data/security/unsafe-rust.md."
+)]
 fn owned_server_fixture_stops_its_process_tree() {
     use std::os::unix::fs::PermissionsExt;
     use std::time::Duration;
@@ -593,22 +598,20 @@ fn owned_server_fixture_stops_its_process_tree() {
         let executable = directory.path().join("opencode-fixture");
         std::fs::write(
             &executable,
-            "#!/bin/sh\nif [ \"$OPENCODE_SERVER_PASSWORD\" != \"sentinel-secret\" ]; then exit 12; fi\ntrap '' TERM\necho 'opencode server listening on http://127.0.0.1:43123'\nwhile :; do /bin/sleep 1; done\n",
+            "#!/bin/sh\nif [ -z \"$OPENCODE_SERVER_PASSWORD\" ]; then exit 12; fi\ntrap '' TERM\necho \"opencode server listening on $FIXTURE_ORIGIN\"\nwhile :; do /bin/sleep 1; done\n",
         )
         .unwrap();
         std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let fixture = HttpFixture::start(UNAUTHORIZED_RESPONSE);
         let mut configuration = configuration(json!({ "mode": "local" }));
         configuration.executable = executable.to_string_lossy().into_owned();
-        configuration.environment.insert(
-            OPENCODE_PASSWORD_ENVIRONMENT.to_string(),
-            "sentinel-secret".to_string(),
-        );
-        let password = take_server_password(&mut configuration).unwrap();
-        let mut server =
-            OwnedOpenCodeServer::start(&configuration, directory.path(), Some(&password))
-                .await
-                .unwrap();
-        assert_eq!(server.origin, "http://127.0.0.1:43123");
+        configuration
+            .environment
+            .insert("FIXTURE_ORIGIN".to_string(), fixture.origin.clone());
+        let mut server = OwnedOpenCodeServer::start(&configuration, directory.path())
+            .await
+            .unwrap();
+        assert_eq!(server.origin, fixture.origin);
         let process_group_id = libc::pid_t::try_from(server.process_id().unwrap())
             .ok()
             .filter(|pid| *pid > 1)
@@ -635,6 +638,122 @@ fn owned_server_fixture_stops_its_process_tree() {
         }
     });
 }
+
+#[cfg(unix)]
+#[test]
+fn owned_server_always_receives_generated_password() {
+    use std::os::unix::fs::PermissionsExt;
+
+    crate::test_block_on(async {
+        let directory = TestDirectory::new("owned-server-password");
+        let executable = directory.path().join("opencode-fixture");
+        let recorded = directory.path().join("password");
+        std::fs::write(
+            &executable,
+            "#!/bin/sh\nprintf '%s' \"$OPENCODE_SERVER_PASSWORD\" > \"$FIXTURE_PASSWORD_FILE\"\necho \"opencode server listening on $FIXTURE_ORIGIN\"\nwhile :; do /bin/sleep 1; done\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let mut passwords = Vec::new();
+        for _ in 0..2 {
+            let fixture = HttpFixture::start(UNAUTHORIZED_RESPONSE);
+            let mut configuration = configuration(json!({ "mode": "local" }));
+            configuration.executable = executable.to_string_lossy().into_owned();
+            configuration
+                .environment
+                .insert("FIXTURE_ORIGIN".to_string(), fixture.origin.clone());
+            configuration.environment.insert(
+                "FIXTURE_PASSWORD_FILE".to_string(),
+                recorded.to_string_lossy().into_owned(),
+            );
+            let mut server = OwnedOpenCodeServer::start(&configuration, directory.path())
+                .await
+                .unwrap();
+            let received = std::fs::read_to_string(&recorded).unwrap();
+            server.stop().await.unwrap();
+
+            assert_eq!(received, server.password().expose());
+            assert_eq!(received.len(), OWNED_SERVER_SECRET_BYTES * 2);
+            assert!(received.bytes().all(|byte| byte.is_ascii_hexdigit()));
+            let probe = fixture.request();
+            assert!(probe.starts_with("GET /agent?directory="));
+            assert!(!probe.to_ascii_lowercase().contains("authorization:"));
+            passwords.push(received);
+        }
+        assert_ne!(
+            passwords[0], passwords[1],
+            "every owned start uses a fresh secret"
+        );
+    });
+}
+
+#[cfg(unix)]
+#[test]
+fn owned_server_fails_closed_when_it_accepts_unauthenticated_requests() {
+    use std::os::unix::fs::PermissionsExt;
+
+    crate::test_block_on(async {
+        let directory = TestDirectory::new("owned-server-open");
+        let executable = directory.path().join("opencode-fixture");
+        std::fs::write(
+            &executable,
+            "#!/bin/sh\necho \"opencode server listening on $FIXTURE_ORIGIN\"\nwhile :; do /bin/sleep 1; done\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let fixture = HttpFixture::start(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n[]",
+        );
+        let mut configuration = configuration(json!({ "mode": "local" }));
+        configuration.executable = executable.to_string_lossy().into_owned();
+        configuration
+            .environment
+            .insert("FIXTURE_ORIGIN".to_string(), fixture.origin.clone());
+        let error = match OwnedOpenCodeServer::start(&configuration, directory.path()).await {
+            Ok(mut server) => {
+                server.stop().await.unwrap();
+                panic!("an unauthenticated server must not be used")
+            }
+            Err(error) => error,
+        };
+        assert_eq!(error.code, ChatErrorCode::Permission);
+        fixture.request();
+    });
+}
+
+#[test]
+fn internal_mcp_not_registered_for_unauthenticated_external_server() {
+    let mut external = configuration(json!({
+        "mode": "external",
+        "serverUrl": "http://127.0.0.1:4096",
+        "allowInsecureExternalHttp": true,
+        "confirmExternalWorkspaceAccess": true
+    }));
+    let external_settings = OpenCodeProviderSettings::parse(&external).unwrap();
+    assert!(!registers_internal_mcp(
+        &external_settings.connection,
+        take_server_password(&mut external).as_ref()
+    ));
+    external.environment.insert(
+        OPENCODE_PASSWORD_ENVIRONMENT.to_string(),
+        "external-secret".to_string(),
+    );
+    assert!(
+        !registers_internal_mcp(
+            &external_settings.connection,
+            take_server_password(&mut external).as_ref()
+        ),
+        "external servers are outside Ganbaru's ownership and never receive the token"
+    );
+
+    let local = settings(json!({ "mode": "local" }));
+    assert!(!registers_internal_mcp(&local.connection, None));
+    let generated = OpenCodeSecret::generate().unwrap();
+    assert!(registers_internal_mcp(&local.connection, Some(&generated)));
+}
+
+#[cfg(unix)]
+const UNAUTHORIZED_RESPONSE: &str = "HTTP/1.1 401 Unauthorized\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}";
 
 #[cfg(unix)]
 #[test]
@@ -669,7 +788,6 @@ fn owned_server_reports_early_exit_timeout_and_oversized_output() {
             let result = OwnedOpenCodeServer::start_with_timeout(
                 &configuration,
                 directory.path(),
-                None,
                 Duration::from_millis(75),
             )
             .await;
@@ -741,6 +859,13 @@ fn event_fixture_normalizes_core_activity_and_deduplicates_replay() {
             .collect::<Vec<_>>(),
         ["once", "always", "reject"]
     );
+    assert_eq!(
+        approval.session_grants,
+        [SessionPermissionGrant::AllowRule {
+            tool_name: "edit".to_string(),
+            rule_content: Some("src/**".to_string()),
+        }]
+    );
     let serialized_events = serde_json::to_string(&events).unwrap();
     assert!(!serialized_events.contains("must-redact"));
     assert!(!serialized_events.contains("authorization"));
@@ -759,6 +884,69 @@ fn event_fixture_normalizes_core_activity_and_deduplicates_replay() {
             .unwrap()
             .is_empty()
     );
+}
+
+#[test]
+fn permission_session_option_is_withheld_when_its_grants_cannot_be_listed() {
+    let normalizer = OpenCodeEventNormalizer::new(
+        ProviderInstanceId::new("opencode-instance").unwrap(),
+        ChatThreadId::new("thread-fixture").unwrap(),
+        ProviderSessionId::new("local-session-fixture").unwrap(),
+    );
+    let mut state = OpenCodeRouteState::new(
+        "ses_fixture".to_string(),
+        TurnModeSnapshot {
+            safety_mode: SafetyMode::AskForApproval,
+            interaction_mode: InteractionMode::Build,
+        },
+    );
+    state.active_turn_id = Some(ChatTurnId::new("turn-fixture").unwrap());
+    let too_many = (0..33)
+        .map(|index| format!("dir{index}/**"))
+        .collect::<Vec<_>>();
+    for (index, always) in [
+        json!(too_many),
+        json!(["x".repeat(4097)]),
+        json!(["src/**", 7]),
+        json!([]),
+        json!(null),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let events = normalizer
+            .normalize(
+                &mut state,
+                json!({
+                    "type": "permission.asked",
+                    "properties": {
+                        "id": format!("perm_withheld_{index}"),
+                        "sessionID": "ses_fixture",
+                        "permission": "bash",
+                        "patterns": ["git status"],
+                        "always": always,
+                    }
+                }),
+            )
+            .unwrap();
+        let request = events
+            .iter()
+            .find_map(|event| match &event.event {
+                CanonicalEvent::RequestOpened(request) => Some(request),
+                _ => None,
+            })
+            .unwrap();
+        assert!(request.session_grants.is_empty(), "case {index}");
+        assert_eq!(
+            request
+                .allowed_decisions
+                .iter()
+                .map(|decision| decision.id.as_str())
+                .collect::<Vec<_>>(),
+            ["once", "reject"],
+            "case {index}"
+        );
+    }
 }
 
 #[test]
@@ -839,6 +1027,27 @@ fn malformed_and_cross_session_events_are_bounded() {
         .normalize(
             &mut state,
             json!({ "type": "session.status", "properties": { "sessionID": "other", "status": { "type": "busy" } } })
+        )
+        .unwrap()
+        .is_empty());
+    for nested in [
+        json!({ "type": "message.updated", "properties": { "info": { "id": "msg_child", "sessionID": "ses_child", "role": "assistant" } } }),
+        json!({ "type": "message.part.updated", "properties": { "part": { "id": "part_child", "sessionID": "ses_child", "messageID": "msg_child", "type": "text", "text": "child" } } }),
+        json!({ "type": "message.part.updated", "properties": { "sessionID": "ses_fixture", "part": { "id": "part_mixed", "sessionID": "ses_child", "messageID": "msg_child", "type": "text", "text": "mixed" } } }),
+        json!({ "type": "session.updated", "properties": { "info": { "id": "ses_child", "title": "Subagent" } } }),
+    ] {
+        assert!(
+            normalizer
+                .normalize(&mut state, nested.clone())
+                .unwrap()
+                .is_empty(),
+            "{nested}"
+        );
+    }
+    assert!(!normalizer
+        .normalize(
+            &mut state,
+            json!({ "type": "session.updated", "properties": { "info": { "id": "ses_fixture", "title": "Renamed" } } })
         )
         .unwrap()
         .is_empty());
@@ -1011,4 +1220,59 @@ pub(super) fn complete_request_length(request: &[u8]) -> Option<usize> {
         })
         .unwrap_or(0);
     Some(header_end + content_length)
+}
+
+/// Mirrors OpenCode's rule evaluation: the last rule whose permission and
+/// pattern match decides, and `*` spans path separators.
+fn evaluated_action(
+    rules: &[OpenCodePermissionRule],
+    permission: &str,
+    target: &str,
+) -> OpenCodePermissionAction {
+    fn wildcard(input: &str, pattern: &str) -> bool {
+        match pattern.split_once('*') {
+            None => input == pattern,
+            Some((prefix, rest)) => {
+                input.starts_with(prefix)
+                    && (prefix.len()..=input.len())
+                        .filter(|index| input.is_char_boundary(*index))
+                        .any(|index| wildcard(&input[index..], rest))
+            }
+        }
+    }
+    rules
+        .iter()
+        .rev()
+        .find(|rule| wildcard(permission, &rule.permission) && wildcard(target, &rule.pattern))
+        .map_or(OpenCodePermissionAction::Ask, |rule| rule.action)
+}
+
+#[test]
+fn ask_rules_keep_repository_metadata_edits_reviewed() {
+    let rules = permission_rules(SafetyMode::AskForApproval);
+    for target in [
+        ".git/config",
+        ".git/hooks/pre-commit",
+        "vendor/lib/.git/config",
+        "/home/user/project/.git/config",
+        "sub/.git",
+    ] {
+        assert_eq!(
+            evaluated_action(&rules, "edit", target),
+            OpenCodePermissionAction::Ask,
+            "{target} must ask"
+        );
+    }
+    for target in [
+        "src/lib.rs",
+        ".github/workflows/ci.yml",
+        ".gitignore",
+        "/home/user/project/.gitattributes",
+    ] {
+        assert_eq!(
+            evaluated_action(&rules, "edit", target),
+            OpenCodePermissionAction::Allow,
+            "{target} must stay automatic"
+        );
+    }
 }

@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+  parseAvailableUpdate,
+  parseUpdateDownloadEvent,
   parseUpdateInstallContext,
   parseStoredUpdateCheckAt,
   releasePageUrl,
@@ -117,5 +119,42 @@ describe("update helpers", () => {
       "https://github.com/opengrimoire/ganbaru/releases/latest",
     );
     expect(updatePrimaryAction(context)).toBe("release-page");
+  });
+});
+
+describe("Rust updater payloads", () => {
+  it("accepts an offered update and drops a non-string body", () => {
+    expect(parseAvailableUpdate({ version: "0.1.13", currentVersion: "0.1.12", body: "Notes" })).toEqual({
+      version: "0.1.13",
+      currentVersion: "0.1.12",
+      body: "Notes",
+    });
+    expect(parseAvailableUpdate({ version: "0.1.13", currentVersion: "0.1.12", body: 4 })?.body).toBeNull();
+  });
+
+  it("treats missing or malformed versions as no update", () => {
+    expect(parseAvailableUpdate(null)).toBeNull();
+    expect(parseAvailableUpdate({ version: "latest", currentVersion: "0.1.12" })).toBeNull();
+    expect(parseAvailableUpdate({ version: "0.1.13" })).toBeNull();
+  });
+
+  it("parses progress events and rejects unusable byte counts", () => {
+    expect(parseUpdateDownloadEvent({ event: "Started", data: { contentLength: 10 } })).toEqual({
+      event: "Started",
+      data: { contentLength: 10 },
+    });
+    expect(parseUpdateDownloadEvent({ event: "Started", data: { contentLength: null } })).toEqual({
+      event: "Started",
+      data: { contentLength: null },
+    });
+    expect(parseUpdateDownloadEvent({ event: "Progress", data: { chunkLength: 4 } })).toEqual({
+      event: "Progress",
+      data: { chunkLength: 4 },
+    });
+    expect(parseUpdateDownloadEvent({ event: "Finished" })).toEqual({ event: "Finished" });
+    expect(parseUpdateDownloadEvent({ event: "Progress", data: { chunkLength: -1 } })).toBeNull();
+    expect(parseUpdateDownloadEvent({ event: "Progress", data: { chunkLength: 1.5 } })).toBeNull();
+    expect(parseUpdateDownloadEvent({ event: "Other", data: {} })).toBeNull();
+    expect(parseUpdateDownloadEvent("Finished")).toBeNull();
   });
 });

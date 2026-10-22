@@ -966,11 +966,10 @@ fn reconcile_overlay_windows(
                 background_color,
                 true,
             )
-            .map_err(|err| {
+            .inspect_err(|_| {
                 for label in created_labels {
                     destroy_existing_window(app, &label);
                 }
-                err
             })?;
         }
     }
@@ -1269,8 +1268,8 @@ pub(crate) fn show_pomodoro_completion_overlay(
 mod tests {
     use super::shortcuts::{
         SHORTCUT_RESTORE_VALUE_MAX_BYTES, SavedShortcuts, is_allowed_gsettings_restore_target,
-        read_saved_shortcuts_file_or_clear, validate_saved_shortcuts,
-        validate_saved_shortcuts_or_clear,
+        load_pending_restore, merge_pending_originals, unusable_restore_path,
+        validate_saved_shortcuts,
     };
     use super::*;
     use std::collections::{HashMap, HashSet};
@@ -1473,18 +1472,29 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn malformed_restore_file_is_deleted_without_validation() {
-        let path = unique_restore_file("malformed-shortcuts");
-        std::fs::write(&path, "{not valid json").expect("restore fixture should be writable");
-
-        assert!(read_saved_shortcuts_file_or_clear(&path).is_err());
-        assert!(!path.exists());
+    fn restore_fixture_dir(name: &str) -> PathBuf {
+        let dir = unique_restore_file(name).with_extension("");
+        std::fs::create_dir_all(&dir).expect("restore fixture directory should be creatable");
+        dir.join("gnome-shortcuts-restore.json")
     }
 
     #[test]
-    fn invalid_restore_file_is_deleted_before_apply() {
-        let path = unique_restore_file("invalid-shortcuts");
+    fn malformed_restore_file_is_kept_aside_instead_of_deleted() {
+        let path = restore_fixture_dir("malformed-shortcuts");
+        std::fs::write(&path, "{not valid json").expect("restore fixture should be writable");
+
+        assert!(load_pending_restore(&path, &known_keys()).is_err());
+        assert!(!path.exists());
+        assert_eq!(
+            std::fs::read_to_string(unusable_restore_path(&path))
+                .expect("unusable restore file should be kept"),
+            "{not valid json"
+        );
+    }
+
+    #[test]
+    fn invalid_restore_file_is_kept_aside_before_apply() {
+        let path = restore_fixture_dir("invalid-shortcuts");
         let mut saved = valid_saved_shortcuts();
         saved.disabled[0].1 = "unknown-key".to_string();
         std::fs::write(
@@ -1493,8 +1503,71 @@ mod tests {
         )
         .expect("restore fixture should be writable");
 
-        let saved = read_saved_shortcuts_file_or_clear(&path).expect("fixture should parse");
-        assert!(validate_saved_shortcuts_or_clear(&path, saved, &known_keys()).is_err());
+        assert!(load_pending_restore(&path, &known_keys()).is_err());
         assert!(!path.exists());
+        assert!(unusable_restore_path(&path).exists());
+    }
+
+    #[test]
+    fn pending_restore_file_returns_recorded_originals() {
+        let path = restore_fixture_dir("pending-shortcuts");
+        assert!(matches!(
+            load_pending_restore(&path, &known_keys()),
+            Ok(None)
+        ));
+        std::fs::write(
+            &path,
+            serde_json::to_string(&valid_saved_shortcuts())
+                .expect("restore fixture should serialize"),
+        )
+        .expect("restore fixture should be writable");
+
+        let pending = load_pending_restore(&path, &known_keys())
+            .expect("pending restore should load")
+            .expect("pending restore should exist");
+        assert_eq!(pending.overlay_key, "'Super_L'");
+        assert_eq!(pending.disabled[0].2, "['<Alt>F4']");
+        assert!(path.exists());
+    }
+
+    #[test]
+    fn disabling_again_keeps_recorded_originals_over_disabled_values() {
+        let pending = valid_saved_shortcuts();
+        let captured = SavedShortcuts {
+            overlay_key: "''".to_string(),
+            dock_hotkeys: "false".to_string(),
+            disabled: vec![
+                (
+                    "org.gnome.desktop.wm.keybindings".to_string(),
+                    "close".to_string(),
+                    "['<Super>q']".to_string(),
+                ),
+                (
+                    "org.gnome.desktop.wm.keybindings".to_string(),
+                    "switch-applications".to_string(),
+                    "['<Alt>Tab']".to_string(),
+                ),
+            ],
+        };
+
+        let merged = merge_pending_originals(pending, captured);
+
+        assert_eq!(merged.overlay_key, "'Super_L'");
+        assert_eq!(merged.dock_hotkeys, "true");
+        assert_eq!(
+            merged.disabled,
+            vec![
+                (
+                    "org.gnome.desktop.wm.keybindings".to_string(),
+                    "close".to_string(),
+                    "['<Alt>F4']".to_string(),
+                ),
+                (
+                    "org.gnome.desktop.wm.keybindings".to_string(),
+                    "switch-applications".to_string(),
+                    "['<Alt>Tab']".to_string(),
+                ),
+            ]
+        );
     }
 }

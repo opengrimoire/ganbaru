@@ -270,6 +270,17 @@ impl VaultOwnershipManager {
         }
     }
 
+    /// Admits the owner and linked stable replicas, which may write replicated domains and
+    /// their verified assets.
+    fn require_replicated_writable(&self, vault_id: &str) -> Result<(), String> {
+        let status = self.status(vault_id)?;
+        if status.can_write || status.replicated_writes {
+            Ok(())
+        } else {
+            Err(READ_ONLY_ERROR.to_string())
+        }
+    }
+
     pub(crate) fn ensure_can_recover_local_copy(&self, vault_id: &str) -> Result<(), String> {
         self.with_record(vault_id, |device_id, record| {
             if record.owner_device_id == device_id {
@@ -394,7 +405,24 @@ impl VaultOwnershipManager {
         &self,
         vault_id: &str,
     ) -> Result<ManagedVaultWritePermit, String> {
-        self.require_writable(vault_id)?;
+        self.acquire_write_permit(vault_id, Self::require_writable)
+    }
+
+    /// A managed write permit for the assets of replicated domains, which linked stable
+    /// replicas may write as well as the owner. Handoff fences it like any managed write.
+    pub(crate) fn acquire_replicated_asset_write(
+        &self,
+        vault_id: &str,
+    ) -> Result<ManagedVaultWritePermit, String> {
+        self.acquire_write_permit(vault_id, Self::require_replicated_writable)
+    }
+
+    fn acquire_write_permit(
+        &self,
+        vault_id: &str,
+        require: fn(&Self, &str) -> Result<(), String>,
+    ) -> Result<ManagedVaultWritePermit, String> {
+        require(self, vault_id)?;
         let permit = {
             let mut state = self
                 .write_fence
@@ -412,7 +440,7 @@ impl VaultOwnershipManager {
                 control: Arc::clone(&self.write_fence),
             }
         };
-        if let Err(error) = self.require_writable(vault_id) {
+        if let Err(error) = require(self, vault_id) {
             drop(permit);
             return Err(error);
         }
@@ -1148,6 +1176,7 @@ mod tests {
             replica.database_access("vault").unwrap(),
             VaultDatabaseAccess::ReadOnly
         );
+        assert!(replica.acquire_replicated_asset_write("vault").is_err());
         replica
             .set_link_probe(Some(Arc::new(|vault_id: &str| vault_id == "vault")))
             .unwrap();
@@ -1165,11 +1194,17 @@ mod tests {
             VaultDatabaseAccess::Guarded
         );
         assert!(replica.require_writable("vault").is_err());
+        assert!(replica.acquire_managed_write("vault").is_err());
+        drop(replica.acquire_replicated_asset_write("vault").unwrap());
+        let fence = replica.fence_managed_writes().unwrap();
+        assert!(replica.acquire_replicated_asset_write("vault").is_err());
+        drop(fence);
 
         replica
             .accept_incoming_grant("vault", "transfer".into(), "desktop".into(), 1)
             .unwrap();
         assert!(!replica.status("vault").unwrap().replicated_writes);
+        assert!(replica.acquire_replicated_asset_write("vault").is_err());
         assert_eq!(
             replica.database_access("vault").unwrap(),
             VaultDatabaseAccess::ReadOnly
@@ -1186,6 +1221,7 @@ mod tests {
             owner.database_access("vault").unwrap(),
             VaultDatabaseAccess::ReadWrite
         );
+        assert!(owner.acquire_replicated_asset_write("vault").is_ok());
         fs::remove_file(path).unwrap();
     }
 

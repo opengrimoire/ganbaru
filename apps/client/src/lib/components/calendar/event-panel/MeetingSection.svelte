@@ -9,7 +9,7 @@
   import MapPin from "@lucide/svelte/icons/map-pin";
   import Video from "@lucide/svelte/icons/video";
   import Check from "@lucide/svelte/icons/check";
-  import CircleHelp from "@lucide/svelte/icons/circle-help";
+  import CircleHelp from "@lucide/svelte/icons/circle-question-mark";
   import Minus from "@lucide/svelte/icons/minus";
   import X from "@lucide/svelte/icons/x";
   import Flag from "@lucide/svelte/icons/flag";

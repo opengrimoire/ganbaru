@@ -38,6 +38,8 @@ fn startup_recovery_interrupts_only_turns_without_proven_resumability() {
                         schema_version: 1,
                         value: serde_json::json!({}),
                     },
+                    subject: None,
+                    session_grants: Vec::new(),
                 }),
             ),
         )

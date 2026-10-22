@@ -5,13 +5,14 @@
   import Pin from "@lucide/svelte/icons/pin";
   import PinOff from "@lucide/svelte/icons/pin-off";
   import RotateCcw from "@lucide/svelte/icons/rotate-ccw";
-  import Trash2 from "@lucide/svelte/icons/trash-2";
+  import Trash2 from "@lucide/svelte/icons/trash";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { getQuickNoteColor } from "$lib/quick-notes/colors";
   import type { EventColor } from "$lib/calendar/types";
   import type { QuickNote, QuickNotesCollection, QuickNoteTag } from "$lib/quick-notes/types";
   import type { Theme } from "$lib/themes";
   import QuickNoteColorPicker from "./QuickNoteColorPicker.svelte";
+  import QuickNoteImageMosaic from "./QuickNoteImageMosaic.svelte";
   import QuickNoteRichText from "./QuickNoteRichText.svelte";
   import QuickNoteTagPicker from "./QuickNoteTagPicker.svelte";
 
@@ -59,6 +60,10 @@
   const { t } = getLocalization();
   const colors = $derived(getQuickNoteColor(note.color, theme));
   const tag = $derived(tags.find((candidate) => candidate.id === note.tagId) ?? null);
+  /** An image-only note shows just its mosaic; any other note keeps its text area, even when empty. */
+  const hasText = $derived(
+    note.hasConflict || tag !== null || note.title.length > 0 || note.runs.length > 0 || note.images.length === 0,
+  );
   const surfaceStyle = $derived(`--quick-card-bg: ${colors.bg}; --quick-card-fg: ${colors.text};`);
   const actionClass = "flex size-7 items-center justify-center rounded-md transition-colors hover:bg-black/10 aria-expanded:bg-black/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-current dark:hover:bg-white/10 dark:aria-expanded:bg-white/10";
   function handleReorderKeydown(event: KeyboardEvent): void {
@@ -73,32 +78,40 @@
   class="quick-note-card group relative overflow-hidden rounded-xl"
   style={surfaceStyle}
 >
+  <!-- The focus ring is drawn over the images, which would otherwise cover an inset ring. -->
   <button
     type="button"
-    class={`block w-full px-3.5 pt-3 text-left outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-current ${mobileLayout ? "min-h-12 pb-3" : "pb-2"}`}
+    class={`relative block w-full text-left outline-none after:pointer-events-none after:absolute after:inset-0 focus-visible:after:ring-2 focus-visible:after:ring-current focus-visible:after:ring-inset ${mobileLayout ? "min-h-12" : ""}`}
     onclick={onOpen}
     onkeydown={reorderable ? handleReorderKeydown : undefined}
   >
-    {#if note.hasConflict || tag}
-      <span class={`flex max-w-full flex-wrap items-center gap-1 ${note.title || note.runs.length > 0 ? "mb-1.5" : ""}`}>
-        {#if note.hasConflict}
-          <span class="inline-flex items-center gap-1 rounded-md bg-black/8 px-1.5 py-0.5 text-[0.65rem] font-medium dark:bg-white/10" title={t("quickNotes.conflict.cardHint")}>
-            <GitCompareArrows class="size-3" strokeWidth={1.75} aria-hidden="true" />{t("quickNotes.conflict.badge")}
+    {#if note.images.length > 0}
+      <QuickNoteImageMosaic images={note.images} variant="preview" />
+    {/if}
+    {#if hasText}
+      <span class={`block px-3.5 pt-3 ${mobileLayout ? "pb-3" : "pb-2"}`}>
+        {#if note.hasConflict || tag}
+          <span class={`flex max-w-full flex-wrap items-center gap-1 ${note.title || note.runs.length > 0 ? "mb-1.5" : ""}`}>
+            {#if note.hasConflict}
+              <span class="inline-flex items-center gap-1 rounded-md bg-black/8 px-1.5 py-0.5 text-[0.65rem] font-medium dark:bg-white/10" title={t("quickNotes.conflict.cardHint")}>
+                <GitCompareArrows class="size-3" strokeWidth={1.75} aria-hidden="true" />{t("quickNotes.conflict.badge")}
+              </span>
+            {/if}
+            {#if tag}<span class="inline-flex max-w-full truncate rounded-md bg-black/8 px-1.5 py-0.5 text-[0.65rem] font-medium dark:bg-white/10">{tag.name}</span>{/if}
           </span>
         {/if}
-        {#if tag}<span class="inline-flex max-w-full truncate rounded-md bg-black/8 px-1.5 py-0.5 text-[0.65rem] font-medium dark:bg-white/10">{tag.name}</span>{/if}
-      </span>
-    {/if}
-    {#if note.title}
-      <h3 class="mb-1.5 wrap-break-word text-[0.92rem] font-semibold leading-snug">{note.title}</h3>
-    {/if}
-    {#if note.runs.length > 0}
-      <div class="quick-note-preview relative max-h-65 overflow-hidden text-[0.82rem] leading-relaxed">
-        <QuickNoteRichText runs={note.runs} />
-        {#if note.previewTruncated || note.bodyPlainText.length > 1200}
-          <span class="quick-note-fade pointer-events-none absolute inset-x-0 bottom-0 h-12"></span>
+        {#if note.title}
+          <h3 class="mb-1.5 wrap-break-word text-[0.92rem] font-semibold leading-snug">{note.title}</h3>
         {/if}
-      </div>
+        {#if note.runs.length > 0}
+          <div class="quick-note-preview relative max-h-65 overflow-hidden text-[0.82rem] leading-relaxed">
+            <QuickNoteRichText runs={note.runs} />
+            {#if note.previewTruncated || note.bodyPlainText.length > 1200}
+              <span class="quick-note-fade pointer-events-none absolute inset-x-0 bottom-0 h-12"></span>
+            {/if}
+          </div>
+        {/if}
+      </span>
     {/if}
   </button>
   {#if !mobileLayout}

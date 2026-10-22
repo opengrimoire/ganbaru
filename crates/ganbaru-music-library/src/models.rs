@@ -659,7 +659,6 @@ pub struct MusicSoundscapeDefinition {
     pub bundled_identity: Option<String>,
     pub name: String,
     pub icon: String,
-    pub group_id: Option<String>,
     pub availability: MusicSoundscapeAvailability,
     pub local_path: Option<String>,
     pub created_at_ms: i64,
@@ -677,64 +676,69 @@ pub struct MusicSoundscapeWrite {
     pub bundled_identity: Option<String>,
     pub name: String,
     pub icon: String,
-    pub group_id: Option<String>,
-    pub device_id: String,
     pub local_path: Option<String>,
     pub expected_version: Option<i64>,
     pub updated_at_ms: i64,
 }
 
+/// One sound in a preset and the share of the preset level it plays at.
 #[cfg(desktop)]
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct MusicSoundscapeGroup {
+pub struct MusicSoundscapePresetSound {
+    pub soundscape_id: String,
+    /// From 0 (silent) to 1 (full preset level).
+    pub level: f64,
+}
+
+/// A named, ordered mix of soundscape sounds, the only thing a soundscape plays.
+#[cfg(desktop)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MusicSoundscapePreset {
     pub id: String,
     pub name: String,
     pub icon: String,
+    /// Multiplier of the Music volume setting, from 0 (silent) through 1 (equal) to 2 (double).
+    pub level: f64,
+    /// Sounds in playback order; removed sounds leave the preset, so this can be empty.
+    pub sounds: Vec<MusicSoundscapePresetSound>,
     pub created_at_ms: i64,
     pub updated_at_ms: i64,
     pub version: i64,
 }
 
 #[cfg(desktop)]
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct MusicSoundscapeGroupWrite {
+pub struct MusicSoundscapePresetWrite {
     pub id: String,
     pub name: String,
     pub icon: String,
+    pub level: f64,
+    pub sounds: Vec<MusicSoundscapePresetSound>,
     pub expected_version: Option<i64>,
     pub updated_at_ms: i64,
 }
 
 #[cfg(desktop)]
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MusicSoundscapeState {
     /// An automatic selection requires fresh native phase admission after restart.
     pub automatic_intent: bool,
-    pub active_soundscape_id: Option<String>,
-    pub active_ids: Vec<String>,
-    pub multiple_enabled: bool,
-    pub generated_level: Option<f64>,
-    pub local_level: Option<f64>,
+    pub active_preset_id: Option<String>,
     pub desired_playing: bool,
-    pub volume: f64,
     pub updated_at_ms: i64,
     pub version: i64,
 }
 
 #[cfg(desktop)]
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MusicSoundscapeStateWrite {
-    pub active_soundscape_id: Option<String>,
-    pub active_ids: Vec<String>,
-    pub multiple_enabled: bool,
-    pub generated_level: Option<f64>,
-    pub local_level: Option<f64>,
+    pub active_preset_id: Option<String>,
     pub desired_playing: bool,
-    pub volume: f64,
     pub expected_version: i64,
     pub updated_at_ms: i64,
 }

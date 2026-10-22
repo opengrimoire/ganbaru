@@ -3,7 +3,7 @@ use crate::models::{NoteBlockDto, NoteBlockRow, NotePaginatedBlockList};
 use crate::reads;
 use crate::validation::{require_uuid, validate_children_count};
 use sqlx::SqlitePool;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 pub(super) async fn normalize_selection_root_ids(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
@@ -214,6 +214,22 @@ pub(super) async fn load_page_block_subtree_rows_for_copy(
     .await
     .map_err(|e| format!("measure notes page block subtree: {e}"))?;
     load_admitted_copy_blocks(tx, descriptors, budget).await
+}
+
+/// Counts the levels of a loaded subtree whose rows list every parent before its children.
+pub(super) fn copied_subtree_height(rows: &[NoteBlockRow]) -> i64 {
+    let mut depths = HashMap::with_capacity(rows.len());
+    let mut height = 0;
+    for row in rows {
+        let depth = row
+            .parent_block_id
+            .as_deref()
+            .and_then(|parent_id| depths.get(parent_id))
+            .map_or(1, |parent_depth| parent_depth + 1);
+        depths.insert(row.id.as_str(), depth);
+        height = height.max(depth);
+    }
+    height
 }
 
 #[derive(sqlx::FromRow)]

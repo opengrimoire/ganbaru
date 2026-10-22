@@ -49,7 +49,7 @@ fn archive_metadata_keeps_historical_reference_values_and_enforces_constraints()
         // Historical identities survive without their former live task/library.
         sqlx::raw_sql("INSERT INTO calendar_event_archive_task_links VALUES ('older', 'removed-task', 'reference', '2026-05-23T08:00:00Z');
             INSERT INTO calendar_event_archive_music_assignments
-                VALUES ('older', 'event-override', 'short-break', 'play-automatically', 'removed-playlist', 'removed-soundscape', 'copied-project', 'removed-project', 9, 7, 'play-selected');")
+                VALUES ('older', 'event-override', 'short-break', 'play-automatically', 'removed-playlist', 'copied-project', 'removed-project', 9, 7, 'play-selected', 'removed-preset');")
             .execute(&pool).await.unwrap();
         let historical: (String, i64) = sqlx::query_as("SELECT playlist_id, version FROM calendar_event_archive_music_assignments WHERE archive_event_id='older'")
             .fetch_one(&pool).await.unwrap();

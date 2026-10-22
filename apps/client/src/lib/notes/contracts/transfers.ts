@@ -52,6 +52,8 @@ export interface NotesNotionApiImportRequest {
   keep_external_file_references?: boolean | null;
   page_size?: number | null;
   project_id?: string | null;
+  /** Client-chosen ID that `cancelNotesNotionApiImport` uses to stop this import. */
+  import_id?: string | null;
 }
 
 export type NotesNotionApiImportDiagnosticSeverity = "info" | "warning" | "error";
@@ -96,7 +98,6 @@ export interface NotesNotionApiImportResult {
 
 export interface NotesNotionExportImportRequest {
   parent: NotesParent;
-  export_root_path: string;
   source_workspace_id?: string | null;
   keep_external_file_references?: boolean | null;
   copy_local_file_references?: boolean | null;

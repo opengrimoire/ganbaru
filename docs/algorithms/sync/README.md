@@ -9,9 +9,9 @@
 - **Version.** One writer's value of one group of one row. A replica keeps at most one version per writer per group.
 - **Supersession.** A new version removes exactly the versions its causal context covers. The remaining versions of a group are mutually concurrent.
 - **Winner.** The version materialized into the domain table, chosen by the group's merge kind. Versions with equal value hashes are never a conflict.
-- **Causal readiness.** An operation applies only after its writer's previous operation and every operation its context depends on. Validation depends only on the operation's bytes and manifest version, never on local state or arrival order.
+- **Causal readiness.** An operation applies only after its writer's previous operation and every operation its context depends on. Validation depends only on the operation's bytes and the current manifest, never on local state or arrival order. An operation from a newer manifest version is held, and a new version may only add tables and groups or loosen rules, so an operation valid under one version stays valid under later ones.
 
-The hybrid logical clock is 48 bits of Unix milliseconds and a 16-bit counter. A replica adopts remote clocks only up to one minute past its own time. The clock never decides what is superseded or kept, only which concurrent version is displayed.
+The hybrid logical clock is 48 bits of Unix milliseconds and a 16-bit counter. A replica adopts remote clocks only up to one minute past its own time. The clock never decides what is superseded or kept, only which concurrent version is displayed. Clocks are a tiebreak, not authorization, and never cause rejection: a paired writer that advances its clock wins concurrent ties until real time catches up. That is accepted because the writer already holds write authority, its operations are signed and attributable, its device can be revoked, and merges stay deterministic. Refusing far-future clocks at the hub would strand honest writers whose clock was once wrong, since later operations of the writer cannot be admitted past a refused one.
 
 ## Merge kinds
 
@@ -23,11 +23,11 @@ The hybrid logical clock is 48 bits of Unix milliseconds and a 16-bit counter. A
 | Max | Greatest value, then `(clock, writer)`; never a conflict | `updated_at` |
 | Position | Greatest `(clock, writer)` over an order key; rows sort by `(order_key, id)` | Note and tag order |
 | Reference | Greatest `(clock, writer)` over a row key that resolves through redirects | Note tag |
-| Owned children | The parent group's value is a canonical list that replaces the child rows | Body text runs |
+| Owned children | The parent group's value is a canonical list that replaces the child rows | Body text runs, note images |
 
 - A multi-column CHECK always lives inside one coupled register, so every materialized winner satisfies it.
-- A register is surfaced when its concurrent distinct versions are shown to people as a conflict; otherwise it resolves silently. Quick note title and body are surfaced. Color, tag, lifecycle, order, tag names, and tag colors are silent.
-- A group is recoverable when edits to it that a deletion did not see should be offered for recovery. Quick note title, body, color, tag, and lifecycle are recoverable; order, timestamps, and every tag group are not.
+- A register is surfaced when its concurrent distinct versions are shown to people as a conflict; otherwise it resolves silently. Quick note title, body, and images are surfaced. Color, tag, lifecycle, order, tag names, and tag colors are silent.
+- A group is recoverable when edits to it that a deletion did not see should be offered for recovery. Quick note title, body, images, color, tag, and lifecycle are recoverable; order, timestamps, and every tag group are not.
 
 ## Order keys
 

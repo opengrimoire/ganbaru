@@ -7,10 +7,13 @@ use chrono::{DateTime, SecondsFormat, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::{SqliteConnection, SqlitePool};
 
+use super::event_music::{
+    EVENT_MUSIC_SQL, EVENT_MUSIC_TEXT_COLUMNS, EventMusicAssignment, event_music_flags,
+};
 use super::export::ExportBudget;
 use super::{DbCalendarEventRow, DbOverrideRow, DbWindowAttendeeRow};
 use crate::recurrence::canonical::{
-    StoredOverride, StoredTemplate, Template, Window, expand_templates,
+    Occurrence, StoredOverride, StoredTemplate, Template, Window, expand_each_template,
 };
 use crate::work_gate::WorkGate;
 use ganbaru_civil_time as civil_time;
@@ -83,7 +86,8 @@ const EVENTS_SQL: &str = r#"
            NULL AS notifications, NULL AS exceptions, ce.repeat_until,
            ce.all_day, ce.location, ce.transparency, ce.status,
            CASE WHEN ce.url <> '' THEN 1 ELSE 0 END AS has_call_link,
-           ce.meeting_enabled, ce.local_rsvp_status, ce.created_at,
+           ce.meeting_enabled, 0 AS has_music_playlist, 0 AS has_soundscape,
+           ce.local_rsvp_status, ce.created_at,
            NULL AS rdate,
            pc.rhythm_kind, pc.rhythm_source, pc.preset_key,
            pcc.focus_duration_minutes AS count_focus_duration_minutes,
@@ -204,7 +208,7 @@ pub async fn read(
     purpose: WindowPurpose,
     include_total: bool,
 ) -> Result<WindowSource, String> {
-    let include_attendees = matches!(purpose, WindowPurpose::Render);
+    let render = matches!(purpose, WindowPurpose::Render);
     // SQLite treats offset-free labels as UTC, whereas canonical expansion
     // resolves them in their home zone. This prefilter must admit every possible
     // supported offset; native expansion then applies the exact viewport.
@@ -273,7 +277,7 @@ pub async fn read(
     {
         return Err("Calendar override identity is empty or exceeds 1024 bytes".into());
     }
-    let attendees = if !include_attendees {
+    let attendees = if !render {
         Vec::new()
     } else {
         budget
@@ -286,6 +290,23 @@ pub async fn read(
             )
             .await?
     };
+    if render {
+        let assignments: Vec<EventMusicAssignment> = budget
+            .read(connection, &ids, EVENT_MUSIC_SQL, EVENT_MUSIC_TEXT_COLUMNS)
+            .await?;
+        let mut by_event: BTreeMap<&str, Vec<&EventMusicAssignment>> = BTreeMap::new();
+        for row in &assignments {
+            by_event.entry(&row.owner_id).or_default().push(row);
+        }
+        for event in &mut events {
+            let Some(rows) = by_event.get(event.id.as_str()) else {
+                continue;
+            };
+            let flags = event_music_flags(rows.iter().copied(), event.rhythm_kind.is_some());
+            event.has_music_playlist = i64::from(flags.playlist);
+            event.has_soundscape = i64::from(flags.soundscape);
+        }
+    }
     let mut fields: BTreeMap<(String, String), Vec<String>> = BTreeMap::new();
     for (table, field, column) in [
         (
@@ -364,32 +385,7 @@ impl WindowSource {
                 .push(row);
         }
         for (index, event) in self.events.iter().enumerate() {
-            let exclusions = parse_list(event.exceptions.as_deref())?;
-            let additions = parse_list(event.rdate.as_deref())?;
-            let overrides = grouped_overrides
-                .get(event.id.as_str())
-                .into_iter()
-                .flatten()
-                .map(|row| StoredOverride {
-                    recurrence_id: row.recurrence_id.clone(),
-                    start: row.start_time.clone(),
-                    end: row.end_time.clone(),
-                    cancelled: row.status.as_deref() == Some("cancelled"),
-                    this_and_future: row.recurrence_range.as_deref() == Some("this-and-future"),
-                })
-                .collect();
-            match Template::from_stored(StoredTemplate {
-                id: &event.id,
-                start: &event.start_time,
-                end: &event.end_time,
-                home_zone: &event.timezone,
-                all_day: event.all_day == 1,
-                rrule: event.rrule.as_deref(),
-                repeat_until: event.repeat_until.as_deref(),
-                exceptions: &exclusions,
-                rdates: &additions,
-                overrides,
-            }) {
+            match template_for(event, grouped_overrides.get(event.id.as_str())) {
                 Ok(template) => {
                     templates.push(template);
                     indices.push(index);
@@ -403,24 +399,16 @@ impl WindowSource {
         let mut occurrences = Vec::new();
         for (index, expanded) in indices
             .into_iter()
-            .zip(expand_templates(&templates, window)?)
+            .zip(expand_each_template(&templates, window))
         {
             let event = &self.events[index];
             let overrides = grouped_overrides.get(event.id.as_str());
-            for occurrence in expanded {
-                let override_id = occurrence
-                    .override_index
-                    .and_then(|index| overrides.and_then(|values| values.get(index)))
-                    .map(|row| row.id.clone());
-                occurrences.push(NativeOccurrence {
-                    template_id: event.id.clone(),
-                    id: occurrence.id,
-                    recurring_parent_id: occurrence.parent_id,
-                    recurrence_date: occurrence.recurrence_date.to_string(),
-                    start_time: utc(occurrence.start_ms)?,
-                    end_time: utc(occurrence.end_ms)?,
-                    override_id,
-                });
+            match expanded.and_then(|expanded| native_occurrences(event, overrides, expanded)) {
+                Ok(values) => occurrences.extend(values),
+                Err(message) => diagnostics.push(ExpansionDiagnostic {
+                    event_id: event.id.clone(),
+                    message,
+                }),
             }
         }
         occurrences.sort_by(|left, right| {
@@ -439,6 +427,64 @@ impl WindowSource {
         super::export::bound_snapshot_output(&snapshot)?;
         Ok(snapshot)
     }
+}
+
+/// Decodes one stored event and its overrides into a canonical template.
+fn template_for(
+    event: &DbCalendarEventRow,
+    overrides: Option<&Vec<&DbOverrideRow>>,
+) -> Result<Template, String> {
+    let exclusions = parse_list(event.exceptions.as_deref())?;
+    let additions = parse_list(event.rdate.as_deref())?;
+    let overrides = overrides
+        .into_iter()
+        .flatten()
+        .map(|row| StoredOverride {
+            recurrence_id: row.recurrence_id.clone(),
+            start: row.start_time.clone(),
+            end: row.end_time.clone(),
+            cancelled: row.status.as_deref() == Some("cancelled"),
+            this_and_future: row.recurrence_range.as_deref() == Some("this-and-future"),
+        })
+        .collect();
+    Template::from_stored(StoredTemplate {
+        id: &event.id,
+        start: &event.start_time,
+        end: &event.end_time,
+        home_zone: &event.timezone,
+        all_day: event.all_day == 1,
+        rrule: event.rrule.as_deref(),
+        repeat_until: event.repeat_until.as_deref(),
+        exceptions: &exclusions,
+        rdates: &additions,
+        overrides,
+    })
+}
+
+/// Converts one template's expansion into window occurrences linked to their override rows.
+fn native_occurrences(
+    event: &DbCalendarEventRow,
+    overrides: Option<&Vec<&DbOverrideRow>>,
+    expanded: Vec<Occurrence>,
+) -> Result<Vec<NativeOccurrence>, String> {
+    expanded
+        .into_iter()
+        .map(|occurrence| {
+            let override_id = occurrence
+                .override_index
+                .and_then(|index| overrides.and_then(|values| values.get(index)))
+                .map(|row| row.id.clone());
+            Ok(NativeOccurrence {
+                template_id: event.id.clone(),
+                id: occurrence.id,
+                recurring_parent_id: occurrence.parent_id,
+                recurrence_date: occurrence.recurrence_date.to_string(),
+                start_time: utc(occurrence.start_ms)?,
+                end_time: utc(occurrence.end_ms)?,
+                override_id,
+            })
+        })
+        .collect()
 }
 
 fn parse_list(value: Option<&str>) -> Result<Vec<String>, String> {

@@ -14,7 +14,7 @@
   import ChartGantt from "@lucide/svelte/icons/chart-gantt";
   import Copy from "@lucide/svelte/icons/copy";
   import Pencil from "@lucide/svelte/icons/pencil";
-  import Trash2 from "@lucide/svelte/icons/trash-2";
+  import Trash2 from "@lucide/svelte/icons/trash";
   import SlidersHorizontal from "@lucide/svelte/icons/sliders-horizontal";
   import Database from "@lucide/svelte/icons/database";
   import Lock from "@lucide/svelte/icons/lock";

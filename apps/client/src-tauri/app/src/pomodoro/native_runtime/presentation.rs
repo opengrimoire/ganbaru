@@ -11,7 +11,6 @@ use tauri::Manager;
 use crate::pomodoro::overlay::PomodoroOverlayState;
 use crate::sound_effects::{AppSound, AppSoundState};
 
-const MAX_PREFERENCES_BYTES: usize = 4 * 1024 * 1024;
 const IDLE_ALERT_INTERVAL_MS: i64 = 10_000;
 const FOCUS_WARNING_INTERVAL_MS: i64 = 60_000;
 const PAUSED_REMINDER_INTERVAL_MS: i64 = 60_000;
@@ -323,7 +322,7 @@ impl DesktopPresentation {
         if self.preferences_generation != Some(generation) || self.preferences_stale {
             let app = app.clone();
             self.preferences = tauri::async_runtime::spawn_blocking(move || {
-                let raw = crate::vault::read_active_config_bounded(&app, MAX_PREFERENCES_BYTES)?;
+                let raw = crate::vault::read_active_config_bounded(&app)?;
                 let value = serde_json::from_str(&raw)
                     .map_err(|error| format!("Parse native Focus preferences: {error}"))?;
                 Ok::<_, String>(Preferences::parse(&value))

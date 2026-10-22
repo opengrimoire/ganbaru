@@ -105,15 +105,22 @@ pub async fn chat_create_worktree_environment(
     validate_id(&request.environment_id)?;
     validate_label(&request.display_name, "displayName", 240)?;
     validate_ref(&request.branch_name, "branchName")?;
+    git::validate_branch_name(&request.branch_name)?;
     validate_ref(&request.base_reference, "baseReference")?;
     if let Some(remote) = request.remote_name.as_deref() {
         validate_ref(remote, "remoteName")?;
     }
     let pool = chat_pool(&app, db_url).await?;
-    let root = authorized_workspace(&app, &pool, &request.working_folder_id).await?;
+    let root = authorized_workspace(
+        &app,
+        &pool,
+        &request.working_folder_id,
+        WorkingFolderAuthorizationOperation::GitUser,
+    )
+    .await?;
     let _mutation = mutations.try_mutation(&root.canonical_path)?;
     if request.fetch_remote {
-        git::fetch(&root.canonical_path, request.remote_name.as_deref()).await?;
+        git::fetch(root.git_folder(), request.remote_name.as_deref()).await?;
     }
     let path = worktree_path(&app, &request.environment_id)?;
     prepare_worktree_parent(&app)?;
@@ -173,7 +180,7 @@ pub async fn chat_create_worktree_environment(
     })
     .map_err(device_state_error)?;
     if let Err(error) = git::add_worktree(
-        &root.canonical_path,
+        root.git_folder(),
         &path_text,
         &request.branch_name,
         &request.base_reference,
@@ -188,7 +195,7 @@ pub async fn chat_create_worktree_environment(
         mark_environment_failure(&pool, &request.environment_id, &error.message).await?;
         return Err(error);
     }
-    let head = git::head_object_id(&path).await?;
+    let head = git::head_object_id(git::GitFolder::new(&path, root.git_trust)).await?;
     sqlx::query(
         "UPDATE chat_execution_environments SET lifecycle_state = 'available', updated_at = ?
          WHERE id = ?",
@@ -251,7 +258,13 @@ pub async fn chat_remove_worktree_environment(
         ));
     }
     let pool = chat_pool(&app, db_url).await?;
-    let root = authorized_workspace(&app, &pool, &working_folder_id).await?;
+    let root = authorized_workspace(
+        &app,
+        &pool,
+        &working_folder_id,
+        WorkingFolderAuthorizationOperation::Git,
+    )
+    .await?;
     let _mutation = mutations.try_mutation(&root.canonical_path)?;
     let environment = read_environment(&app, &pool, &environment_id).await?;
     if environment.working_folder_id != working_folder_id
@@ -271,7 +284,7 @@ pub async fn chat_remove_worktree_environment(
         .to_str()
         .ok_or_else(|| ChatError::validation("environmentId", "Worktree path is unsupported"))?
         .to_string();
-    let status = git::status(&resolved.canonical_path).await?;
+    let status = git::status(resolved.git_folder()).await?;
     if !status.files.is_empty() {
         sqlx::query(
             "UPDATE chat_worktrees SET cleanup_state = 'dirty', updated_at = ?
@@ -288,7 +301,9 @@ pub async fn chat_remove_worktree_environment(
             true,
         ));
     }
-    git::remove_worktree(&root.canonical_path, &path_text).await?;
+    app.state::<super::terminal::ChatTerminalRegistry>()
+        .shutdown_environment(&environment_id)?;
+    git::remove_worktree(root.git_folder(), &path_text).await?;
     let now = now_timestamp()?;
     sqlx::query(
         "UPDATE chat_execution_environments
@@ -318,6 +333,11 @@ pub async fn chat_remove_worktree_environment(
     .map_err(device_state_error)
 }
 
+/// Resolves an optional execution environment to the folder Git and providers run in.
+///
+/// A worktree keeps the folder's trust digest. The runner recomputes the digest
+/// in the worktree, so worktree configuration that differs from the trusted
+/// folder runs untrusted instead of inheriting the decision.
 pub async fn resolve_environment_workspace(
     app: &tauri::AppHandle,
     pool: &SqlitePool,
@@ -434,14 +454,10 @@ async fn authorized_workspace(
     app: &tauri::AppHandle,
     pool: &SqlitePool,
     working_folder_id: &ProjectWorkingFolderId,
+    operation: WorkingFolderAuthorizationOperation,
 ) -> ChatResult<AuthorizedWorkingFolder> {
-    super::workspace::commands::authorize_working_folder(
-        app,
-        pool,
-        working_folder_id,
-        WorkingFolderAuthorizationOperation::Git,
-    )
-    .await
+    super::workspace::commands::authorize_working_folder(app, pool, working_folder_id, operation)
+        .await
 }
 
 async fn read_environment(
@@ -554,31 +570,40 @@ fn deterministic_worktree_path(local_data_root: &Path, environment_id: &str) -> 
 }
 
 fn prepare_worktree_parent(app: &tauri::AppHandle) -> ChatResult<()> {
-    let root = worktree_root(app)?;
-    if let Err(error) = fs::create_dir_all(&root) {
-        return Err(io_error(error));
-    }
-    let root_metadata = fs::symlink_metadata(&root).map_err(io_error)?;
+    prepare_worktree_parent_at(&worktree_root(app)?)
+}
+
+/// Creates the folder that holds managed worktrees below `root`. Worktrees copy project source,
+/// so on Unix the folder is accessible only by the current user, and an existing folder loses
+/// group and other access.
+fn prepare_worktree_parent_at(root: &Path) -> ChatResult<()> {
+    ganbaru_atomic_files::create_private_directories(root).map_err(io_error)?;
+    let root_metadata = fs::symlink_metadata(root).map_err(io_error)?;
     if path_metadata_is_link_or_reparse(&root_metadata) || !root_metadata.is_dir() {
         return Err(worktree_ownership_error());
     }
     let parent = root.join(WORKTREE_DIRECTORY);
-    match fs::symlink_metadata(&parent) {
-        Ok(metadata) if path_metadata_is_link_or_reparse(&metadata) || !metadata.is_dir() => {
-            Err(worktree_ownership_error())
-        }
-        Ok(_) => Ok(()),
+    let metadata = match fs::symlink_metadata(&parent) {
+        Ok(metadata) => metadata,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            fs::create_dir(&parent).map_err(io_error)?;
-            let metadata = fs::symlink_metadata(&parent).map_err(io_error)?;
-            if path_metadata_is_link_or_reparse(&metadata) || !metadata.is_dir() {
-                Err(worktree_ownership_error())
-            } else {
-                Ok(())
-            }
+            ganbaru_atomic_files::create_private_directory(&parent).map_err(io_error)?;
+            fs::symlink_metadata(&parent).map_err(io_error)?
         }
-        Err(error) => Err(io_error(error)),
+        Err(error) => return Err(io_error(error)),
+    };
+    if path_metadata_is_link_or_reparse(&metadata) || !metadata.is_dir() {
+        return Err(worktree_ownership_error());
     }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = metadata.permissions().mode();
+        if mode & 0o077 != 0 {
+            fs::set_permissions(&parent, fs::Permissions::from_mode(mode & !0o077))
+                .map_err(io_error)?;
+        }
+    }
+    Ok(())
 }
 
 async fn verify_worktree_ownership(
@@ -598,12 +623,12 @@ async fn verify_worktree_ownership(
         return Err(worktree_ownership_error());
     }
     let identity_before = managed_worktree_identity(&local_data_root, candidate)?;
-    let listed = git::worktrees(&authorized.canonical_path).await?;
+    let listed = git::worktrees(authorized.git_folder()).await?;
     if !registered_worktree_matches(&listed, candidate) {
         return Err(worktree_ownership_error());
     }
-    let repository_common = git::common_directory(&authorized.canonical_path).await?;
-    let worktree_common = git::common_directory(candidate).await?;
+    let repository_common = git::common_directory(authorized.git_folder()).await?;
+    let worktree_common = git::common_directory(git::GitFolder::untrusted(candidate)).await?;
     let repository_common = repository_common
         .canonicalize()
         .map_err(|_| worktree_ownership_error())?;
@@ -670,6 +695,10 @@ fn managed_worktree_identity(local_data_root: &Path, candidate: &Path) -> ChatRe
 }
 
 #[cfg(unix)]
+#[allow(
+    unsafe_code,
+    reason = "Retained unsafe boundary; see docs/data/security/unsafe-rust.md."
+)]
 fn open_directory_at(parent: &fs::File, name: impl AsRef<std::ffi::OsStr>) -> ChatResult<fs::File> {
     use std::os::fd::{AsRawFd, FromRawFd};
 
@@ -704,6 +733,10 @@ fn validated_relative_directory_name(name: &std::ffi::OsStr) -> ChatResult<std::
 }
 
 #[cfg(windows)]
+#[allow(
+    unsafe_code,
+    reason = "Retained unsafe boundary; see docs/data/security/unsafe-rust.md."
+)]
 fn managed_worktree_identity(local_data_root: &Path, candidate: &Path) -> ChatResult<(u32, u64)> {
     use std::os::windows::io::AsRawHandle;
     use windows::Win32::Foundation::HANDLE;
@@ -903,6 +936,28 @@ mod tests {
                 .len(),
             24
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_worktree_parent_is_private_to_the_current_user() {
+        use std::os::unix::fs::PermissionsExt;
+        let directory = TestDirectory::new();
+        let root = directory.0.join("local-data");
+        prepare_worktree_parent_at(&root).expect("worktree parent should be prepared");
+        let parent = root.join(WORKTREE_DIRECTORY);
+        let mode = |path: &Path| fs::metadata(path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&root), 0o700);
+        assert_eq!(mode(&parent), 0o700);
+
+        fs::set_permissions(&parent, fs::Permissions::from_mode(0o755)).unwrap();
+        prepare_worktree_parent_at(&root).expect("worktree parent should be prepared again");
+        assert_eq!(mode(&parent), 0o700);
+
+        let linked_root = directory.0.join("linked-data");
+        fs::create_dir(&linked_root).unwrap();
+        std::os::unix::fs::symlink(&directory.0, linked_root.join(WORKTREE_DIRECTORY)).unwrap();
+        assert!(prepare_worktree_parent_at(&linked_root).is_err());
     }
 
     #[test]

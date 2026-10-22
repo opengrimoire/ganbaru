@@ -698,3 +698,42 @@ fn event_kind_present(events: &[CanonicalRuntimeEvent], expected: &str) -> bool 
         _ => false,
     })
 }
+
+#[test]
+fn auto_edit_asks_for_repository_metadata_at_any_depth() {
+    let workspace = TestDirectory::new("metadata-workspace");
+    std::fs::create_dir_all(workspace.path().join(".git/hooks")).unwrap();
+    std::fs::create_dir_all(workspace.path().join("vendor/lib/.git")).unwrap();
+    std::fs::create_dir_all(workspace.path().join(".github/workflows")).unwrap();
+    let edit = |path: &str| {
+        let request = json!({
+            "toolCall": {
+                "toolCallId": "tool-metadata",
+                "kind": "edit",
+                "title": "Metadata edit",
+                "rawInput": { "path": path }
+            },
+            "options": [
+                { "optionId": "allow", "name": "Allow", "kind": "allow_once" },
+                { "optionId": "deny", "name": "Deny", "kind": "reject_once" }
+            ]
+        });
+        let parsed = parse_permission(&request, workspace.path()).unwrap();
+        auto_permission_option(&parsed, SafetyMode::AskForApproval).is_some()
+    };
+    let absolute_config = workspace.path().join(".git/config");
+    for protected in [
+        ".git/config",
+        ".GIT/config",
+        ".git/hooks/pre-commit",
+        "vendor/lib/.git/config",
+        "new/.git/config",
+        ".env",
+        absolute_config.to_string_lossy().as_ref(),
+    ] {
+        assert!(!edit(protected), "{protected} must ask");
+    }
+    for editable in [".github/workflows/ci.yml", ".gitignore", "src/lib.rs"] {
+        assert!(edit(editable), "{editable} must stay auto-approved");
+    }
+}

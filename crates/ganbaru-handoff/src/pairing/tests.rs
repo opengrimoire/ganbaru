@@ -205,6 +205,116 @@ fn revoked_peer_is_remembered_across_restart_and_removed_by_reenrollment() {
 }
 
 #[test]
+fn stored_coordinator_pins_must_use_the_lowercase_fingerprint_format() {
+    let phone_root = TestDirectory::new("coordinator-pin-format-phone");
+    let phone = PairingManager::default();
+    phone
+        .initialize(phone_root.path().to_path_buf(), "device-phone".to_string())
+        .expect("initialize phone");
+    let desktop_root = TestDirectory::new("coordinator-pin-format-desktop");
+    let desktop = PairingManager::default();
+    desktop
+        .initialize(
+            desktop_root.path().to_path_buf(),
+            "device-desktop".to_string(),
+        )
+        .expect("initialize desktop");
+    let invitation = desktop
+        .create_invitation(
+            "127.0.0.1:41000".parse().expect("endpoint"),
+            "vault-1".to_string(),
+            1,
+            crate::protocol::test_compatibility(),
+            100,
+        )
+        .expect("invitation");
+    let (_, desktop_identity) = desktop.identity().expect("desktop identity");
+    phone
+        .record_coordinator(&invitation, desktop_identity.certificate.as_ref(), None)
+        .expect("record coordinator");
+    drop(phone);
+
+    let state_path = phone_root.path().join(PAIRING_STATE_FILE);
+    let mut stored: serde_json::Value =
+        serde_json::from_slice(&fs::read(&state_path).expect("read state")).expect("decode state");
+    stored["coordinator"]["certificateFingerprint"] =
+        serde_json::Value::from(invitation.coordinator_fingerprint.to_ascii_uppercase());
+    fs::write(
+        &state_path,
+        serde_json::to_vec(&stored).expect("encode state"),
+    )
+    .expect("write state");
+
+    let error = PairingManager::default()
+        .initialize(phone_root.path().to_path_buf(), "device-phone".to_string())
+        .expect_err("reject an uppercase coordinator pin");
+    assert!(
+        error.contains("coordinator certificate fingerprint is invalid"),
+        "{error}"
+    );
+}
+
+#[test]
+fn stored_peer_fingerprints_must_equal_the_recomputed_lowercase_digest() {
+    fn uppercase_stored_fingerprint(root: &Path, table: &str) {
+        let state_path = root.join(PAIRING_STATE_FILE);
+        let mut stored: serde_json::Value =
+            serde_json::from_slice(&fs::read(&state_path).expect("read state"))
+                .expect("decode state");
+        let peer = &mut stored[table]["device-phone"]["certificateFingerprint"];
+        let uppercase = peer
+            .as_str()
+            .expect("stored fingerprint")
+            .to_ascii_uppercase();
+        *peer = serde_json::Value::from(uppercase);
+        fs::write(
+            &state_path,
+            serde_json::to_vec(&stored).expect("encode state"),
+        )
+        .expect("write state");
+    }
+    fn restart_error(root: &Path) -> String {
+        PairingManager::default()
+            .initialize(root.to_path_buf(), "device-desktop".to_string())
+            .expect_err("reject a fingerprint that differs from the recomputed digest")
+    }
+
+    for table in ["linkedPeers", "revokedPeers"] {
+        let temporary = TestDirectory::new("peer-fingerprint-format");
+        let manager = PairingManager::default();
+        manager
+            .initialize(temporary.path().to_path_buf(), "device-desktop".to_string())
+            .expect("initialize");
+        let phone = create_identity("device-phone".to_string()).expect("phone identity");
+        let invitation = manager
+            .create_invitation(
+                "127.0.0.1:41000".parse().expect("endpoint"),
+                "vault-1".to_string(),
+                0,
+                crate::protocol::test_compatibility(),
+                100,
+            )
+            .expect("invitation");
+        manager
+            .enroll_peer(enrollment(&invitation, &phone), 101)
+            .expect("enroll phone");
+        if table == "revokedPeers" {
+            manager.unlink_device("device-phone").expect("unlink phone");
+        }
+        drop(manager);
+
+        uppercase_stored_fingerprint(temporary.path(), table);
+        let error = restart_error(temporary.path());
+        let expected = if table == "linkedPeers" {
+            "linked peer certificate fingerprint is inconsistent"
+        } else {
+            "revoked peer certificate fingerprint is inconsistent"
+        };
+        assert!(error.contains(expected), "{table}: {error}");
+    }
+}
+
+#[test]
 fn linked_client_accepts_only_its_existing_coordinator() {
     let phone_root = TestDirectory::new("coordinator-target-phone");
     let phone = PairingManager::default();
@@ -309,6 +419,15 @@ fn linked_client_accepts_only_its_existing_coordinator() {
             .unwrap_err()
             .contains("already linked to another coordinator")
     );
+    let mut uppercase_certificate = refreshed.clone();
+    uppercase_certificate.coordinator_fingerprint =
+        refreshed.coordinator_fingerprint.to_ascii_uppercase();
+    assert!(
+        phone
+            .ensure_enrollment_target(&uppercase_certificate)
+            .unwrap_err()
+            .contains("already linked to another coordinator")
+    );
     assert_eq!(
         phone
             .coordinator_pin()
@@ -399,6 +518,32 @@ fn memberships_belong_to_their_vault_and_a_moved_device_replaces_its_old_one() {
             .is_revoked_certificate(Some(&phone_certificate))
             .expect("moved certificate")
     );
+}
+
+#[test]
+fn memberships_in_two_vaults_survive_restart() {
+    let temporary = TestDirectory::new("two-vault-peers");
+    let manager = PairingManager::default();
+    manager
+        .initialize(temporary.path().to_path_buf(), "device-desktop".to_string())
+        .expect("initialize");
+    let phone = create_identity("device-phone".to_string()).expect("phone identity");
+    let laptop = create_identity("device-laptop".to_string()).expect("laptop identity");
+    enroll_identity(&manager, "vault-old", &phone, "Phone", 100).expect("enroll phone");
+    enroll_identity(&manager, "vault-new", &laptop, "Laptop", 200).expect("enroll laptop");
+
+    let restarted = PairingManager::default();
+    restarted
+        .initialize(temporary.path().to_path_buf(), "device-desktop".to_string())
+        .expect("restart with memberships in two vaults");
+    for (vault_id, device_id) in [
+        ("vault-old", "device-phone"),
+        ("vault-new", "device-laptop"),
+    ] {
+        let peers = restarted.linked_peers_for(vault_id).expect("vault peers");
+        assert_eq!(peers.len(), 1);
+        assert_eq!(peers[0].device_id, device_id);
+    }
 }
 
 #[test]
@@ -816,5 +961,463 @@ fn incoming_transfer_and_completion_survive_restart() {
     assert_eq!(
         acknowledged.requested_upload().expect("cleared request"),
         None
+    );
+}
+
+#[test]
+fn enrollment_rejects_control_and_bidi_labels_without_spending_the_invitation() {
+    let temporary = TestDirectory::new("label-rejection");
+    let manager = PairingManager::default();
+    manager
+        .initialize(temporary.path().to_path_buf(), "device-desktop".to_string())
+        .expect("initialize");
+    let invitation = manager
+        .create_invitation(
+            "127.0.0.1:41000".parse().expect("endpoint"),
+            "vault-1".to_string(),
+            0,
+            crate::protocol::test_compatibility(),
+            100,
+        )
+        .expect("invitation");
+    let phone = create_identity("device-phone".to_string()).expect("phone identity");
+    for label in [
+        "phone\u{0007}",
+        "a\u{202E}b",
+        "a\u{2066}b\u{2069}",
+        "\u{200B}",
+    ] {
+        let error = manager
+            .enroll_peer(
+                Enrollment {
+                    device_label: label,
+                    ..enrollment(&invitation, &phone)
+                },
+                101,
+            )
+            .expect_err("label must be rejected");
+        assert!(error.contains("device label"), "{label:?}: {error}");
+    }
+    let peer = manager
+        .enroll_peer(
+            Enrollment {
+                device_label: "\u{1F469}\u{200D}\u{1F4BB} Phone",
+                ..enrollment(&invitation, &phone)
+            },
+            102,
+        )
+        .expect("joiners stay valid and the invitation is still usable");
+    assert_eq!(peer.device_label, "\u{1F469}\u{200D}\u{1F4BB} Phone");
+}
+
+#[test]
+fn stored_invalid_labels_are_quarantined_on_load_and_keep_the_link() {
+    let temporary = TestDirectory::new("label-quarantine");
+    let manager = PairingManager::default();
+    manager
+        .initialize(temporary.path().to_path_buf(), "device-desktop".to_string())
+        .expect("initialize");
+    enroll_device(&manager, "device-phone", "Phone", 100);
+    enroll_device(&manager, "device-laptop", "Laptop", 200);
+    drop(manager);
+
+    let state_path = temporary.path().join(PAIRING_STATE_FILE);
+    let mut stored: serde_json::Value =
+        serde_json::from_slice(&fs::read(&state_path).expect("read state")).expect("decode state");
+    stored["linkedPeers"]["device-phone"]["deviceLabel"] =
+        serde_json::Value::from("Ph\u{202E}one\u{0007}");
+    stored["linkedPeers"]["device-laptop"]["deviceLabel"] =
+        serde_json::Value::from("\u{202E}\u{0007}");
+    fs::write(
+        &state_path,
+        serde_json::to_vec(&stored).expect("encode state"),
+    )
+    .expect("write state");
+
+    let restarted = PairingManager::default();
+    restarted
+        .initialize(temporary.path().to_path_buf(), "device-desktop".to_string())
+        .expect("an invalid stored label must not block startup");
+    let labels: BTreeMap<String, String> = restarted
+        .linked_peers_for("vault-1")
+        .expect("linked peers")
+        .into_iter()
+        .map(|peer| (peer.device_id, peer.device_label))
+        .collect();
+    assert_eq!(
+        labels.get("device-phone").map(String::as_str),
+        Some("Phone")
+    );
+    assert_eq!(
+        labels.get("device-laptop").map(String::as_str),
+        Some("device-laptop")
+    );
+    let persisted = read_state(&state_path).expect("quarantined state is persisted");
+    assert_eq!(persisted.linked_peers["device-phone"].device_label, "Phone");
+}
+
+#[test]
+fn disabled_linking_reports_why_instead_of_running() {
+    let temporary = TestDirectory::new("linking-disabled");
+    let manager = PairingManager::default();
+    manager
+        .initialize(temporary.path().to_path_buf(), "device-desktop".to_string())
+        .expect("initialize");
+    manager
+        .disable("decode pairing state: broken".to_string())
+        .expect("disable");
+    for error in [
+        manager.identity().map(|_| ()).expect_err("identity"),
+        manager
+            .coordinator_pin()
+            .map(|_| ())
+            .expect_err("coordinator pin"),
+        manager
+            .linked_peers_for("vault-1")
+            .map(|_| ())
+            .expect_err("linked peers"),
+    ] {
+        assert_eq!(
+            error,
+            format!("{LINKING_DISABLED_ERROR}: decode pairing state: broken")
+        );
+    }
+    assert!(!manager.is_linked_for("vault-1").unwrap_or(false));
+}
+
+#[test]
+fn enrollment_verification_persists_nothing_and_returns_the_code_the_device_shows() {
+    let temporary = TestDirectory::new("verify-enrollment");
+    let manager = PairingManager::default();
+    manager
+        .initialize(temporary.path().to_path_buf(), "device-desktop".to_string())
+        .expect("initialize");
+    let create = |now_ms| {
+        manager
+            .create_invitation(
+                "127.0.0.1:41000".parse().expect("endpoint"),
+                "vault-1".to_string(),
+                0,
+                crate::protocol::test_compatibility(),
+                now_ms,
+            )
+            .expect("invitation")
+    };
+    let invitation = create(100);
+    let phone = create_identity("device-phone".to_string()).expect("phone identity");
+    let intruder = create_identity("device-intruder".to_string()).expect("intruder identity");
+    let phone_certificate = decode_certificate(&phone.certificate).expect("phone certificate");
+    let intruder_certificate =
+        decode_certificate(&intruder.certificate).expect("intruder certificate");
+
+    let code = manager
+        .verify_enrollment(&enrollment(&invitation, &phone), 101)
+        .expect("verify phone");
+    assert_eq!(
+        code,
+        enrollment_code(&invitation, phone_certificate.as_ref())
+    );
+    assert_ne!(
+        code,
+        enrollment_code(&invitation, intruder_certificate.as_ref())
+    );
+    assert!(manager.linked_peers().expect("peers").is_empty());
+    let restarted = PairingManager::default();
+    restarted
+        .initialize(temporary.path().to_path_buf(), "device-desktop".to_string())
+        .expect("restart");
+    assert!(
+        restarted
+            .linked_peers()
+            .expect("restarted peers")
+            .is_empty()
+    );
+
+    let mut wrong_secret = enrollment(&invitation, &phone);
+    wrong_secret.secret = "wrong";
+    assert!(
+        manager
+            .verify_enrollment(&wrong_secret, 101)
+            .unwrap_err()
+            .contains("credentials")
+    );
+
+    let replacement = create(200);
+    assert_ne!(
+        enrollment_code(&replacement, phone_certificate.as_ref()),
+        code
+    );
+    assert!(
+        manager
+            .verify_enrollment(&enrollment(&invitation, &phone), 201)
+            .unwrap_err()
+            .contains("unknown")
+    );
+    manager
+        .enroll_peer(enrollment(&replacement, &phone), 202)
+        .expect("approved enrollment links");
+    assert_eq!(manager.linked_peers().expect("peers").len(), 1);
+}
+
+#[test]
+fn a_discarded_invitation_cannot_be_verified_or_enrolled() {
+    let temporary = TestDirectory::new("discard-invitation");
+    let manager = PairingManager::default();
+    manager
+        .initialize(temporary.path().to_path_buf(), "device-desktop".to_string())
+        .expect("initialize");
+    let invitation = manager
+        .create_invitation(
+            "127.0.0.1:41000".parse().expect("endpoint"),
+            "vault-1".to_string(),
+            0,
+            crate::protocol::test_compatibility(),
+            100,
+        )
+        .expect("invitation");
+    let phone = create_identity("device-phone".to_string()).expect("phone identity");
+    manager
+        .discard_invitation(&invitation.invitation_id)
+        .expect("discard");
+    assert!(
+        manager
+            .verify_enrollment(&enrollment(&invitation, &phone), 101)
+            .is_err()
+    );
+    assert!(
+        manager
+            .enroll_peer(enrollment(&invitation, &phone), 101)
+            .is_err()
+    );
+    assert!(manager.linked_peers().expect("peers").is_empty());
+}
+
+/// In-memory stand-in for the operating-system keyring.
+#[derive(Default)]
+struct MemoryKeyStore {
+    keys: Mutex<BTreeMap<String, Vec<u8>>>,
+    refuse_writes: bool,
+    fail_reads: bool,
+    reads: std::sync::atomic::AtomicUsize,
+}
+
+impl MemoryKeyStore {
+    fn key(&self, device_id: &str) -> Option<Vec<u8>> {
+        self.keys.lock().expect("keys").get(device_id).cloned()
+    }
+
+    fn forget(&self, device_id: &str) {
+        self.keys.lock().expect("keys").remove(device_id);
+    }
+}
+
+impl IdentityKeyStore for MemoryKeyStore {
+    fn read(&self, device_id: &str) -> Result<Option<Vec<u8>>, String> {
+        self.reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if self.fail_reads {
+            return Err("keyring is locked".to_string());
+        }
+        Ok(self.key(device_id))
+    }
+
+    fn write(&self, device_id: &str, pkcs8: &[u8]) -> Result<(), String> {
+        if self.refuse_writes {
+            return Err("no keyring service".to_string());
+        }
+        self.keys
+            .lock()
+            .expect("keys")
+            .insert(device_id.to_string(), pkcs8.to_vec());
+        Ok(())
+    }
+
+    fn remove(&self, device_id: &str) -> Result<(), String> {
+        self.forget(device_id);
+        Ok(())
+    }
+}
+
+fn manager_with_store(root: &Path, store: &Arc<MemoryKeyStore>) -> PairingManager {
+    let manager = PairingManager::default();
+    manager
+        .set_identity_key_store(store.clone())
+        .expect("key store");
+    manager
+        .initialize(root.to_path_buf(), "device-desktop".to_string())
+        .expect("initialize");
+    manager
+}
+
+fn state_text(root: &Path) -> String {
+    fs::read_to_string(root.join(PAIRING_STATE_FILE)).expect("pairing state")
+}
+
+fn private_key_bytes(identity: &TlsIdentity) -> Vec<u8> {
+    identity.private_key.secret_der().to_vec()
+}
+
+#[test]
+fn tls_key_moves_into_the_key_store_and_leaves_the_state_file() {
+    let temporary = TestDirectory::new("key-store-move");
+    let store = Arc::new(MemoryKeyStore::default());
+    let manager = manager_with_store(temporary.path(), &store);
+
+    assert_eq!(manager.device_id().expect("device id"), "device-desktop");
+    assert_eq!(
+        store.reads.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "reading the device ID never reaches the key store"
+    );
+
+    let (_, identity) = manager.identity().expect("identity");
+    let key = private_key_bytes(&identity);
+    KeyPair::try_from(key.as_slice()).expect("stored key is a usable PKCS#8 key");
+    assert_eq!(store.key("device-desktop").as_deref(), Some(key.as_slice()));
+    assert!(!state_text(temporary.path()).contains("privateKey"));
+
+    let restarted = manager_with_store(temporary.path(), &store);
+    let (_, reloaded) = restarted.identity().expect("reloaded identity");
+    assert_eq!(private_key_bytes(&reloaded), key);
+    assert_eq!(reloaded.certificate, identity.certificate);
+
+    let reads = store.reads.load(std::sync::atomic::Ordering::SeqCst);
+    restarted.identity().expect("cached identity");
+    assert_eq!(
+        store.reads.load(std::sync::atomic::Ordering::SeqCst),
+        reads,
+        "a loaded key is reused without another key store read"
+    );
+}
+
+#[test]
+fn tls_key_stays_in_the_state_file_when_the_key_store_refuses_it() {
+    let temporary = TestDirectory::new("key-store-refused");
+    let store = Arc::new(MemoryKeyStore {
+        refuse_writes: true,
+        ..MemoryKeyStore::default()
+    });
+    let manager = manager_with_store(temporary.path(), &store);
+
+    let (_, identity) = manager.identity().expect("identity from the state file");
+    assert!(store.key("device-desktop").is_none());
+    assert!(state_text(temporary.path()).contains("privateKey"));
+
+    let without_store = PairingManager::default();
+    without_store
+        .initialize(temporary.path().to_path_buf(), "device-desktop".to_string())
+        .expect("initialize without a key store");
+    let (_, reloaded) = without_store.identity().expect("identity");
+    assert_eq!(private_key_bytes(&reloaded), private_key_bytes(&identity));
+}
+
+#[test]
+fn a_lost_tls_key_blocks_a_linked_device_until_it_is_unlinked() {
+    let temporary = TestDirectory::new("key-store-lost");
+    let store = Arc::new(MemoryKeyStore::default());
+    let manager = manager_with_store(temporary.path(), &store);
+    enroll_device(&manager, "device-phone", "Phone", 100);
+    let (_, original) = manager.identity().expect("identity");
+    store.forget("device-desktop");
+
+    let restarted = manager_with_store(temporary.path(), &store);
+    assert_eq!(
+        restarted.identity().map(|_| ()).unwrap_err(),
+        DEVICE_KEY_MISSING_ERROR
+    );
+    assert_eq!(restarted.linked_peers().expect("linked peers").len(), 1);
+    assert!(!state_text(temporary.path()).contains("privateKey"));
+
+    restarted.unlink().expect("unlink");
+    let (_, replaced) = restarted.identity().expect("fresh identity");
+    assert_ne!(replaced.certificate, original.certificate);
+    assert_eq!(
+        store.key("device-desktop").as_deref(),
+        Some(private_key_bytes(&replaced).as_slice())
+    );
+}
+
+#[test]
+fn an_unreadable_key_store_reports_the_failure_without_replacing_the_identity() {
+    let temporary = TestDirectory::new("key-store-unreadable");
+    let store = Arc::new(MemoryKeyStore::default());
+    let manager = manager_with_store(temporary.path(), &store);
+    let (_, original) = manager.identity().expect("identity");
+    let before = state_text(temporary.path());
+
+    let locked = Arc::new(MemoryKeyStore {
+        fail_reads: true,
+        ..MemoryKeyStore::default()
+    });
+    let restarted = manager_with_store(temporary.path(), &locked);
+    let error = restarted.identity().map(|_| ()).unwrap_err();
+    assert!(error.starts_with(DEVICE_KEY_UNAVAILABLE_ERROR), "{error}");
+    assert_eq!(state_text(temporary.path()), before);
+
+    let unlocked = manager_with_store(temporary.path(), &store);
+    let (_, reloaded) = unlocked.identity().expect("identity after unlock");
+    assert_eq!(reloaded.certificate, original.certificate);
+}
+
+#[test]
+fn stored_identity_keeps_the_private_key_out_of_debug_output() {
+    let identity = StoredIdentity {
+        device_id: "device-desktop".to_string(),
+        certificate: "certificate-b64".to_string(),
+        private_key: Some("pkcs8-private-key-b64".to_string()),
+    };
+    let output = format!("{identity:?}");
+    assert!(!output.contains("pkcs8-private-key-b64"), "{output}");
+    assert!(
+        output.contains("certificate-b64") && output.contains("[REDACTED]"),
+        "{output}"
+    );
+    let serialized = serde_json::to_value(&identity).expect("serialize identity");
+    assert_eq!(serialized["privateKey"], "pkcs8-private-key-b64");
+}
+
+#[cfg(unix)]
+#[test]
+fn handoff_staging_is_private_even_when_it_already_exists() {
+    use std::os::unix::fs::PermissionsExt;
+    let temporary = TestDirectory::new("private-staging");
+    let staging = temporary.path().join(STAGING_DIRECTORY);
+    std::fs::create_dir_all(&staging).expect("existing staging");
+    std::fs::set_permissions(&staging, std::fs::Permissions::from_mode(0o755))
+        .expect("widen staging");
+    PairingManager::default()
+        .initialize(temporary.path().to_path_buf(), "device-desktop".to_string())
+        .expect("initialize");
+    let mode = std::fs::metadata(&staging)
+        .expect("staging metadata")
+        .permissions()
+        .mode();
+    assert_eq!(mode & 0o777, 0o700);
+}
+
+#[test]
+fn device_certificate_subject_names_the_device() {
+    let root = TestDirectory::new("certificate-subject");
+    let manager = PairingManager::default();
+    manager
+        .initialize(
+            root.path().to_path_buf(),
+            "device-subject-check".to_string(),
+        )
+        .expect("initialize device");
+    let (device_id, identity) = manager.identity().expect("device identity");
+    let certificate = identity.certificate.as_ref();
+
+    assert_eq!(device_id, "device-subject-check");
+    assert!(
+        certificate
+            .windows(device_id.len())
+            .any(|window| window == device_id.as_bytes()),
+        "certificate subject should carry the device ID"
+    );
+    assert!(
+        !certificate
+            .windows(b"rcgen self signed cert".len())
+            .any(|window| window == b"rcgen self signed cert"),
+        "certificate should not keep the generator's default subject"
     );
 }

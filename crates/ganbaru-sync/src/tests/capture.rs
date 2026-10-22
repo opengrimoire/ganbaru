@@ -51,7 +51,7 @@ fn inserts_capture_created_rows_with_every_group() {
             captures(&pool).await,
             [
                 (1, "tag-1".to_string(), 31, 1, 0),
-                (2, "note-1".to_string(), 255, 1, 0),
+                (2, "note-1".to_string(), 511, 1, 0),
             ]
         );
     });
@@ -147,7 +147,7 @@ fn updates_merge_into_pending_captures() {
         .await;
         assert_eq!(
             captures(&pool).await,
-            [(2, "note-1".to_string(), 255, 1, 0)]
+            [(2, "note-1".to_string(), 511, 1, 0)]
         );
         clear(&pool).await;
         execute(
@@ -208,7 +208,7 @@ fn deleting_then_recreating_an_unpublished_row_keeps_one_capture() {
         .await;
         assert_eq!(
             captures(&pool).await,
-            [(2, "note-2".to_string(), 255, 1, 0)]
+            [(2, "note-2".to_string(), 511, 1, 0)]
         );
     });
 }

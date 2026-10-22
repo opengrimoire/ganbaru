@@ -42,6 +42,6 @@ Archive is reversible. Permanent deletion first records cleanup work for provide
 
 ## Safety and accessibility
 
-Chat never grants the frontend a generic shell or arbitrary filesystem access. Untrusted provider events and file content are validated and bounded before display. Approval prompts state the requested action and effective authority.
+Chat never grants the frontend a generic shell or arbitrary filesystem access. Untrusted provider events and file content are validated and bounded before display. Approval prompts show what the tool acts on, such as the command and its folder or the path. For Claude, Codex, and OpenCode, "Allow for session" lists what it grants for the rest of the session (rules, folders, or accepting edits) and is withheld when that grant cannot be shown in full; Cursor and Grok offer their own session options under the provider's labels.
 
 All conversation, navigation, composer, request, file, review, and terminal controls are keyboard reachable. Responsive layouts render the same canonical conversation; there is no divergent mobile copy.

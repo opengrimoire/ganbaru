@@ -52,6 +52,70 @@ fn recognizes_protected_desktop_app_and_process_names() {
 }
 
 #[test]
+fn protects_session_services_multiplexers_terminals_and_compositors() {
+    for name in [
+        "systemd",
+        "pipewire",
+        "wireplumber",
+        "pulseaudio",
+        "ssh-agent",
+        "gpg-agent",
+        "sshd",
+        "tmux",
+        "screen",
+        "alacritty",
+        "foot",
+        "gnome-session-binary",
+        "sway",
+        "Hyprland",
+    ] {
+        assert!(super::is_protected_desktop_app_name(name), "{name}");
+    }
+}
+
+#[test]
+fn protects_truncated_comm_names_of_protected_processes() {
+    assert!(super::is_protected_observed_process_name("gnome-terminal-"));
+    assert!(super::is_protected_observed_process_name("gnome-session-b"));
+    assert!(super::is_protected_observed_process_name("xdg-desktop-por"));
+    assert!(super::is_protected_observed_process_name("gnome-terminal"));
+    assert!(!super::is_protected_observed_process_name("gnome-chess"));
+    assert!(!super::is_protected_observed_process_name(
+        "steam-runtime-l"
+    ));
+    assert!(!super::is_protected_observed_process_name("gnome-ter"));
+}
+
+#[test]
+fn trusted_match_names_keep_own_aliases_and_catalog_names_only() {
+    let catalog = vec![
+        "firefox".to_string(),
+        "firefox.desktop".to_string(),
+        "firefox-bin".to_string(),
+    ];
+    let trusted = super::trusted_process_match_names(
+        "Firefox",
+        vec![
+            "firefox".to_string(),
+            "/usr/lib/firefox/firefox-bin".to_string(),
+            "pipewire-media".to_string(),
+            "code".to_string(),
+        ],
+        &catalog,
+    );
+    assert_eq!(trusted, vec!["Firefox", "firefox-bin"]);
+
+    let typed = super::trusted_process_match_names("steam", vec!["steam".to_string()], &[]);
+    assert_eq!(typed, vec!["steam"]);
+    let hidden = super::trusted_process_match_names(
+        "Solitaire",
+        vec!["Solitaire".to_string(), "obsidian".to_string()],
+        &[],
+    );
+    assert_eq!(hidden, vec!["Solitaire"]);
+}
+
+#[test]
 fn desktop_rule_matchers_skip_protected_process_names() {
     let matchers = super::desktop_rule_matchers(vec![
         DistractionsDesktopAppRuleInput {

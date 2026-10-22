@@ -135,6 +135,31 @@ impl OpenCodeHttpClient {
             .await
     }
 
+    /// Confirms that the server rejects a request without credentials on a protected route.
+    ///
+    /// The probe deliberately omits the client's authorization header, so a
+    /// server that would serve it to any local user fails closed.
+    pub async fn require_authentication(&self) -> ChatResult<()> {
+        let mut url = endpoint_url(&self.origin, &["agent"])?;
+        url.query_pairs_mut()
+            .append_pair("directory", &self.workspace);
+        let response = self
+            .http
+            .get(url)
+            .header(ACCEPT, "application/json")
+            .send()
+            .await
+            .map_err(transport_error)?;
+        if response.status() == StatusCode::UNAUTHORIZED {
+            return Ok(());
+        }
+        Err(ChatError::new(
+            ChatErrorCode::Permission,
+            "OpenCode server accepted a request without its password",
+            false,
+        ))
+    }
+
     pub async fn health(&self) -> ChatResult<Value> {
         self.json(
             Method::GET,

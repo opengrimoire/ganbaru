@@ -2,8 +2,12 @@ import { describe, expect, it } from "vitest";
 import {
   applyTerminalOutput,
   boundTerminalContext,
+  sanitizeTerminalPaste,
+  TerminalOutputAcknowledger,
   TerminalPanelRegistry,
   terminalErrorMessage,
+  terminalLinkTarget,
+  terminalOutputByteLength,
   terminalPasteNeedsConfirmation,
 } from "./terminal-model";
 
@@ -33,6 +37,19 @@ describe("Chat terminal model", () => {
     expect(terminalPasteNeedsConfirmation("pnpm test", true)).toBe(false);
     expect(terminalPasteNeedsConfirmation("pnpm test\npnpm check", true)).toBe(true);
     expect(terminalPasteNeedsConfirmation("pnpm test\npnpm check", false)).toBe(false);
+  });
+
+  it("removes escape and control characters from pasted text", () => {
+    expect(sanitizeTerminalPaste("echo safe\x1b[201~rm -rf ~\n")).toEqual({
+      text: "echo safe[201~rm -rf ~\n",
+      removedControls: true,
+    });
+    expect(sanitizeTerminalPaste("a\x1b[20\x1b[201~1~b").text).not.toContain("\x1b");
+    expect(sanitizeTerminalPaste("a\u009b201~b\u0007\u007f").text).toBe("a201~b");
+    expect(sanitizeTerminalPaste("col\tone\r\nnext é")).toEqual({
+      text: "col\tone\r\nnext é",
+      removedControls: false,
+    });
   });
 
   it("bounds UTF-8 context without splitting a code point", () => {
@@ -81,5 +98,51 @@ describe("Chat terminal model", () => {
 
     registry.release(first.id);
     expect(registry.claimAvailable([first, second], "bottom")).toEqual([first, second]);
+  });
+});
+
+describe("terminal output flow control", () => {
+  it("releases acknowledgements only once a batch reaches the interval", () => {
+    const acknowledger = new TerminalOutputAcknowledger(10);
+    expect(acknowledger.record(4)).toBe(0);
+    expect(acknowledger.record(5)).toBe(0);
+    expect(acknowledger.record(3)).toBe(12);
+    expect(acknowledger.record(0)).toBe(0);
+    expect(acknowledger.record(-5)).toBe(0);
+    expect(acknowledger.record(10)).toBe(10);
+  });
+
+  it("measures decoded chunk size for every padding length", () => {
+    for (const text of ["", "a", "ab", "abc", "abcd", "ÿ\u0000\u001b[0m"]) {
+      expect(terminalOutputByteLength(chunk(1, 1, text))).toBe(text.length);
+    }
+  });
+});
+
+describe("terminal hyperlinks", () => {
+  it("opens only credential-free web targets and shows the normalized target", () => {
+    expect(terminalLinkTarget("https://example.com/docs?q=1")).toBe("https://example.com/docs?q=1");
+    expect(terminalLinkTarget("http://localhost:5173")).toBe("http://localhost:5173/");
+    expect(terminalLinkTarget("HTTPS://Example.COM/a")).toBe("https://example.com/a");
+  });
+
+  it("ignores schemes output could use to reach local files, apps, or scripts", () => {
+    for (const uri of [
+      "file:///etc/passwd",
+      "javascript:alert(1)",
+      "vscode://file/home/user/.bashrc",
+      "smb://attacker.example/share",
+      "data:text/html,<script>alert(1)</script>",
+      "ssh://host",
+    ]) {
+      expect(terminalLinkTarget(uri)).toBeNull();
+    }
+  });
+
+  it("ignores targets with embedded credentials or that do not parse", () => {
+    expect(terminalLinkTarget("https://user:token@example.com/")).toBeNull();
+    expect(terminalLinkTarget("https://token@example.com/")).toBeNull();
+    expect(terminalLinkTarget("not a url")).toBeNull();
+    expect(terminalLinkTarget("")).toBeNull();
   });
 });

@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount, tick } from "svelte";
   import Pencil from "@lucide/svelte/icons/pencil";
-  import Trash2 from "@lucide/svelte/icons/trash-2";
+  import Trash2 from "@lucide/svelte/icons/trash";
   import type { EventColor } from "$lib/calendar/types";
   import MoveStepMenuItems from "$lib/components/ui/MoveStepMenuItems.svelte";
   import { FLOATING_WIDTH } from "$lib/components/ui/floating-width";

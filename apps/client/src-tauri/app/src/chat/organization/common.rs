@@ -287,7 +287,7 @@ pub(super) fn parse_participant_kind(value: &str) -> ChatResult<ChatParticipantK
     }
 }
 
-pub(super) fn parse_approval_policy(value: &str) -> ChatResult<ChatApprovalPolicy> {
+pub(crate) fn parse_approval_policy(value: &str) -> ChatResult<ChatApprovalPolicy> {
     match value {
         "ask_for_approval" => Ok(ChatApprovalPolicy::AskForApproval),
         "approve_for_me" => Ok(ChatApprovalPolicy::ApproveForMe),
@@ -297,7 +297,7 @@ pub(super) fn parse_approval_policy(value: &str) -> ChatResult<ChatApprovalPolic
     }
 }
 
-pub(super) fn parse_runtime_approval_policy(value: &str) -> ChatResult<ChatRuntimeApprovalPolicy> {
+pub(crate) fn parse_runtime_approval_policy(value: &str) -> ChatResult<ChatRuntimeApprovalPolicy> {
     match value {
         "ask" => Ok(ChatRuntimeApprovalPolicy::Ask),
         "auto_approve" => Ok(ChatRuntimeApprovalPolicy::AutoApprove),
@@ -349,6 +349,41 @@ pub(super) fn parse_history_boundary(
             lower_ordinal: lower_ordinal.map(u64_value).transpose()?,
         }),
         _ => Err(stored_value_error("history boundary")),
+    }
+}
+
+/// Channel history one teammate membership may read, resolved from the
+/// membership and its access profile revision.
+///
+/// Positions are top-level channel ordinals. A reply thread sits at its root's
+/// position, because reply ordinals count within their thread.
+#[cfg(desktop)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct TeammateHistoryAccess {
+    visible_from: Option<u64>,
+}
+
+#[cfg(desktop)]
+impl TeammateHistoryAccess {
+    /// Resolves effective history access. A `from_grant` boundary without a
+    /// lower ordinal admits nothing.
+    pub(super) fn resolve(read_history: bool, from_grant: bool, from_ordinal: Option<u64>) -> Self {
+        let visible_from = match (read_history, from_grant) {
+            (false, _) => None,
+            (true, true) => from_ordinal,
+            (true, false) => Some(1),
+        };
+        Self { visible_from }
+    }
+
+    /// Returns the lowest readable position, or `None` when no history is readable.
+    pub(super) fn visible_from(self) -> Option<u64> {
+        self.visible_from
+    }
+
+    /// Returns whether the message or reply thread at `position` is readable.
+    pub(super) fn admits_position(self, position: u64) -> bool {
+        self.visible_from.is_some_and(|lower| lower <= position)
     }
 }
 
@@ -404,6 +439,71 @@ pub(super) fn wire_approval_policy(value: ChatApprovalPolicy) -> &'static str {
         ChatApprovalPolicy::ApproveForMe => "approve_for_me",
         ChatApprovalPolicy::FullAccess => "full_access",
         ChatApprovalPolicy::Custom => "custom",
+    }
+}
+
+/// Returns the runtime approval a teammate's approval behavior stands for when no channel,
+/// scratch, or folder override applies.
+#[cfg(desktop)]
+pub(crate) fn teammate_runtime_approval(value: ChatApprovalPolicy) -> ChatRuntimeApprovalPolicy {
+    match value {
+        ChatApprovalPolicy::AskForApproval => ChatRuntimeApprovalPolicy::Ask,
+        ChatApprovalPolicy::ApproveForMe => ChatRuntimeApprovalPolicy::AutoApprove,
+        ChatApprovalPolicy::FullAccess => ChatRuntimeApprovalPolicy::Unattended,
+        ChatApprovalPolicy::Custom => ChatRuntimeApprovalPolicy::ProviderCustom,
+    }
+}
+
+/// Orders runtime approval policies from narrowest to broadest. Provider-custom approval has no
+/// rank because the provider's own configuration decides it.
+#[cfg(desktop)]
+pub(crate) fn runtime_approval_rank(policy: ChatRuntimeApprovalPolicy) -> Option<u8> {
+    match policy {
+        ChatRuntimeApprovalPolicy::Ask => Some(0),
+        ChatRuntimeApprovalPolicy::AutoApprove => Some(1),
+        ChatRuntimeApprovalPolicy::Unattended => Some(2),
+        ChatRuntimeApprovalPolicy::ProviderCustom => None,
+    }
+}
+
+/// Returns the runtime approval that applies to a teammate's work: the narrower of the runtime
+/// approval its approval behavior stands for and the policy resolved from its grants. A Custom
+/// teammate cannot be ranked against a grant, so the grant policy alone governs host tools while
+/// the provider keeps its own configuration; an unranked grant is returned unchanged so native
+/// execution can refuse it.
+#[cfg(desktop)]
+pub(crate) fn effective_runtime_approval(
+    teammate_default: ChatRuntimeApprovalPolicy,
+    granted: ChatRuntimeApprovalPolicy,
+) -> ChatRuntimeApprovalPolicy {
+    match (
+        runtime_approval_rank(teammate_default),
+        runtime_approval_rank(granted),
+    ) {
+        (Some(teammate_rank), Some(granted_rank)) if teammate_rank < granted_rank => {
+            teammate_default
+        }
+        _ => granted,
+    }
+}
+
+/// Returns the provider safety mode a native assignment runs with for a teammate and its frozen
+/// effective runtime approval. Only a Custom teammate runs with the provider's own
+/// configuration; an unranked grant on a ranked teammate falls back to asking.
+#[cfg(desktop)]
+pub(crate) fn native_assignment_safety_mode(
+    teammate: ChatApprovalPolicy,
+    effective: ChatRuntimeApprovalPolicy,
+) -> SafetyMode {
+    if teammate == ChatApprovalPolicy::Custom {
+        return SafetyMode::Custom;
+    }
+    match effective {
+        ChatRuntimeApprovalPolicy::Ask | ChatRuntimeApprovalPolicy::ProviderCustom => {
+            SafetyMode::AskForApproval
+        }
+        ChatRuntimeApprovalPolicy::AutoApprove => SafetyMode::ApproveForMe,
+        ChatRuntimeApprovalPolicy::Unattended => SafetyMode::FullAccess,
     }
 }
 

@@ -3,8 +3,9 @@
 use crate::description::sanitize_calendar_description_html;
 use ganbaru_db::impl_sqlite_from_row;
 use serde::Serialize;
-use sqlx::SqlitePool;
+use sqlx::{AssertSqlSafe, SqlitePool};
 
+pub(crate) mod event_music;
 mod export;
 mod export_preservation;
 pub mod focus_context;
@@ -69,6 +70,8 @@ pub struct DbCalendarEventRow {
     pub(crate) location: String,
     pub(crate) has_call_link: i64,
     pub(crate) meeting_enabled: i64,
+    pub(crate) has_music_playlist: i64,
+    pub(crate) has_soundscape: i64,
     pub(crate) transparency: String,
     pub status: String,
     pub(crate) local_rsvp_status: Option<String>,
@@ -103,6 +106,8 @@ impl_sqlite_from_row!(DbCalendarEventRow {
     location,
     has_call_link,
     meeting_enabled,
+    has_music_playlist,
+    has_soundscape,
     transparency,
     status,
     local_rsvp_status,
@@ -387,7 +392,8 @@ const WINDOW_EVENTS_SQL: &str = r#"
            NULL AS notifications, NULL AS exceptions, ce.repeat_until,
            ce.all_day, ce.location, ce.transparency, ce.status,
            CASE WHEN ce.url <> '' THEN 1 ELSE 0 END AS has_call_link,
-           ce.meeting_enabled, ce.local_rsvp_status, ce.created_at,
+           ce.meeting_enabled, 0 AS has_music_playlist, 0 AS has_soundscape,
+           ce.local_rsvp_status, ce.created_at,
            NULL AS rdate,
            pc.rhythm_kind, pc.rhythm_source, pc.preset_key,
            pcc.focus_duration_minutes AS count_focus_duration_minutes,
@@ -431,7 +437,8 @@ const NOTIFICATION_SCHEDULER_EVENTS_SQL: &str = r#"
            NULL AS notifications, NULL AS exceptions, ce.repeat_until,
            ce.all_day, ce.location, ce.transparency, ce.status,
            CASE WHEN ce.url <> '' THEN 1 ELSE 0 END AS has_call_link,
-           ce.meeting_enabled, ce.local_rsvp_status, ce.created_at,
+           ce.meeting_enabled, 0 AS has_music_playlist, 0 AS has_soundscape,
+           ce.local_rsvp_status, ce.created_at,
            NULL AS rdate,
            pc.rhythm_kind, pc.rhythm_source, pc.preset_key,
            pcc.focus_duration_minutes AS count_focus_duration_minutes,
@@ -692,7 +699,7 @@ pub async fn load_panel_event(
     id: String,
 ) -> Result<CalendarPanelEventRows, String> {
     let query = format!("{FULL_EVENT_SELECT_SQL} WHERE ce.id = ?");
-    let mut event = sqlx::query_as::<_, DbFullEventRow>(&query)
+    let mut event = sqlx::query_as::<_, DbFullEventRow>(AssertSqlSafe(query.as_str()))
         .bind(&id)
         .fetch_optional(pool)
         .await
@@ -716,7 +723,7 @@ pub async fn load_full_event(
     id: String,
 ) -> Result<CalendarFullEventRows, String> {
     let query = format!("{FULL_EVENT_SELECT_SQL} WHERE ce.id = ?");
-    let mut event = sqlx::query_as::<_, DbFullEventRow>(&query)
+    let mut event = sqlx::query_as::<_, DbFullEventRow>(AssertSqlSafe(query.as_str()))
         .bind(&id)
         .fetch_optional(pool)
         .await
@@ -883,7 +890,7 @@ mod tests {
                 ),
             ] {
                 let plan_sql = format!("EXPLAIN QUERY PLAN {sql}");
-                let rows = sqlx::query(&plan_sql)
+                let rows = sqlx::query(sqlx::AssertSqlSafe(plan_sql.as_str()))
                     .bind(bounds[0])
                     .bind(bounds[1])
                     .bind(bounds[2])
@@ -918,7 +925,10 @@ mod tests {
                 let sql = format!(
                     "EXPLAIN QUERY PLAN SELECT event_id FROM {table} WHERE event_id IN ('event-a', 'event-b') ORDER BY event_id, sort_order"
                 );
-                let rows = sqlx::query(&sql).fetch_all(&pool).await.unwrap();
+                let rows = sqlx::query(sqlx::AssertSqlSafe(sql.as_str()))
+                    .fetch_all(&pool)
+                    .await
+                    .unwrap();
                 let details = rows
                     .iter()
                     .map(|row| sqlx::Row::get::<String, _>(row, "detail"))

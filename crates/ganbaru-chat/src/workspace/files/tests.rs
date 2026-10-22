@@ -1,5 +1,7 @@
 use super::*;
+use crate::git::hardened::GitFolderTrust;
 use std::path::PathBuf;
+use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 struct TestDirectory(PathBuf);
@@ -26,6 +28,9 @@ impl TestDirectory {
             repository_kind: kind,
             repository_identity: None,
             repository_storage_identity: None,
+            git_trust: GitFolderTrust::Untrusted,
+            project_configuration:
+                ganbaru_chat_contracts::models::ProjectConfigurationAccess::Restricted,
         }
     }
 }
@@ -37,17 +42,10 @@ impl Drop for TestDirectory {
 }
 
 #[test]
-fn internal_artifact_names_cover_platform_recovery_shapes_only() {
-    let private_token = "01".repeat(32);
-    for name in [
-        ".ganbaru.123.4.567.tmp".to_string(),
-        ".ganbaru.123.4.567.backup".to_string(),
-        ".ganbaru.123.4.567.recovery".to_string(),
-        ".document.ganbaru.123.4.tmp".to_string(),
-        "document.ganbaru.123.4.backup".to_string(),
-        format!(".ganbaru.backup.{private_token}"),
-        format!(".ganbaru.recovery.{private_token}"),
-    ] {
+fn internal_artifact_names_cover_random_platform_names_only() {
+    let token = "0a".repeat(ARTIFACT_TOKEN_BYTES);
+    for kind in ARTIFACT_KINDS {
+        let name = format!(".ganbaru.{kind}.{token}");
         assert!(
             ganbaru_internal_artifact_segment(&name),
             "internal artifact was visible: {name}"
@@ -55,17 +53,84 @@ fn internal_artifact_names_cover_platform_recovery_shapes_only() {
     }
 
     for name in [
-        "document.tmp",
-        "document.ganbaru.notes.backup",
-        ".ganbaru.backup.short",
-        ".ganbaru.recovery.not-hex",
-        ".ganbaru.123.4.tmp.extra",
+        "document.tmp".to_string(),
+        "document.ganbaru.notes.backup".to_string(),
+        ".ganbaru.123.4.567.tmp".to_string(),
+        ".document.ganbaru.123.4.tmp".to_string(),
+        ".ganbaru.backup.short".to_string(),
+        ".ganbaru.recovery.not-hex".to_string(),
+        format!(".ganbaru.notes.{token}"),
+        format!(".ganbaru.tmp.{}", token.to_uppercase()),
+        format!(".ganbaru.tmp.{token}.extra"),
+        format!("document.ganbaru.tmp.{token}"),
     ] {
         assert!(
-            !ganbaru_internal_artifact_segment(name),
+            !ganbaru_internal_artifact_segment(&name),
             "ordinary name was hidden: {name}"
         );
     }
+}
+
+#[test]
+fn private_artifact_names_are_unpredictable_and_hidden() {
+    let fixed = private_artifact_name_with("backup", |random| {
+        random.fill(0xab);
+        Ok(())
+    })
+    .expect("fixture random source should name the artifact");
+    assert_eq!(
+        fixed,
+        format!(".ganbaru.backup.{}", "ab".repeat(ARTIFACT_TOKEN_BYTES))
+    );
+
+    let error = private_artifact_name_with("tmp", |_| Err(std::io::Error::other("no entropy")))
+        .expect_err("a random source failure should stop the save");
+    assert_eq!(error.to_string(), "no entropy");
+
+    #[cfg(not(windows))]
+    {
+        let names = (0..64)
+            .map(|_| private_artifact_name("tmp").expect("system random should name the artifact"))
+            .collect::<HashSet<_>>();
+        assert_eq!(names.len(), 64);
+        assert!(
+            names
+                .iter()
+                .all(|name| ganbaru_internal_artifact_segment(name))
+        );
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn saves_and_deletes_leave_no_artifacts_beside_the_file() {
+    let directory = TestDirectory::new();
+    fs::write(directory.0.join("sample.rs"), "fn before() {}\n").expect("file should write");
+    let authorized = directory.authorized(RepositoryKind::None);
+    let original = preview_workspace_file(&authorized, "sample.rs").expect("text should preview");
+    let revision = original
+        .content_revision
+        .expect("text should have a revision");
+    let saved = save_workspace_file(&authorized, "sample.rs", "fn after() {}\n", &revision)
+        .expect("matching revision should save");
+    let entries = || {
+        fs::read_dir(&directory.0)
+            .expect("directory should list")
+            .map(|entry| entry.expect("entry should read").file_name())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(entries(), vec![std::ffi::OsString::from("sample.rs")]);
+
+    delete_workspace_file(
+        &authorized,
+        "sample.rs",
+        saved
+            .content_revision
+            .as_deref()
+            .expect("saved text should have a revision"),
+    )
+    .expect("matching revision should delete");
+    assert!(entries().is_empty());
 }
 
 #[test]
@@ -200,6 +265,30 @@ fn managed_artifact_reads_binary_bytes_without_following_links() {
         .expect("artifact link should be created");
         assert!(read_managed_artifact_bytes(&directory.0, "artifact-link.bin").is_err());
     }
+}
+
+#[test]
+fn hard_linked_files_preview_and_promote_like_package_store_entries() {
+    let directory = TestDirectory::new();
+    let store = directory.0.join(".store");
+    fs::create_dir(&store).expect("store should be created");
+    fs::write(store.join("index.js"), "module.exports = 1;\n").expect("store file should write");
+    fs::create_dir(directory.0.join("node_modules")).expect("package folder should be created");
+    fs::hard_link(
+        store.join("index.js"),
+        directory.0.join("node_modules").join("index.js"),
+    )
+    .expect("hard link should be created");
+    let authorized = directory.authorized(RepositoryKind::None);
+
+    let preview = preview_workspace_file(&authorized, "node_modules/index.js")
+        .expect("hard-linked package files should preview");
+    assert_eq!(preview.text.as_deref(), Some("module.exports = 1;\n"));
+    assert_eq!(
+        read_managed_artifact_bytes(&directory.0, "node_modules/index.js")
+            .expect("hard-linked artifacts should read"),
+        b"module.exports = 1;\n"
+    );
 }
 
 #[test]
@@ -378,6 +467,78 @@ fn save_rejects_binary_oversized_excluded_and_symbolic_files() {
 
 #[cfg(unix)]
 #[test]
+fn bounded_previews_and_saves_accept_the_caller_limit_and_refuse_one_byte_more() {
+    const LIMIT: u64 = 4 * 1024 * 1024;
+    let directory = TestDirectory::new();
+    fs::write(directory.0.join("limit.md"), vec![b'a'; LIMIT as usize]).expect("file should write");
+    fs::write(directory.0.join("over.md"), vec![b'a'; LIMIT as usize + 1])
+        .expect("file should write");
+    let authorized = directory.authorized(RepositoryKind::None);
+
+    let at_limit = preview_workspace_file_within(&authorized, "limit.md", LIMIT)
+        .expect("file at the limit should preview");
+    assert!(!at_limit.oversized);
+    assert_eq!(at_limit.byte_size, LIMIT);
+    assert!(
+        preview_workspace_file(&authorized, "limit.md")
+            .expect("Chat preview should read metadata")
+            .oversized
+    );
+    assert!(
+        preview_workspace_file_within(&authorized, "over.md", LIMIT)
+            .expect("oversized metadata should read")
+            .oversized
+    );
+
+    let revision = at_limit
+        .content_revision
+        .expect("text should have a revision");
+    let replacement = "b".repeat(LIMIT as usize);
+    let saved = save_workspace_file_within(&authorized, "limit.md", &replacement, &revision, LIMIT)
+        .expect("contents at the limit should save");
+    assert_eq!(saved.byte_size, LIMIT);
+    let revision = saved
+        .content_revision
+        .expect("saved text should have a revision");
+    let error = save_workspace_file_within(
+        &authorized,
+        "limit.md",
+        &"c".repeat(LIMIT as usize + 1),
+        &revision,
+        LIMIT,
+    )
+    .expect_err("contents over the limit should be refused");
+    assert_eq!(error.code, ChatErrorCode::Validation);
+    assert_eq!(
+        fs::read(directory.0.join("limit.md")).expect("file should read"),
+        replacement.as_bytes()
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn bounded_previews_and_saves_refuse_a_symlinked_parent() {
+    let directory = TestDirectory::new();
+    let outside = TestDirectory::new();
+    fs::write(outside.0.join("notes.md"), "outside\n").expect("outside file should write");
+    std::os::unix::fs::symlink(&outside.0, directory.0.join("docs"))
+        .expect("parent symlink should be created");
+    let authorized = directory.authorized(RepositoryKind::None);
+
+    assert!(preview_workspace_file_within(&authorized, "docs/notes.md", 4096).is_err());
+    let revision = workspace_file_revision("docs/notes.md", b"outside\n");
+    assert!(
+        save_workspace_file_within(&authorized, "docs/notes.md", "replaced\n", &revision, 4096)
+            .is_err()
+    );
+    assert_eq!(
+        fs::read_to_string(outside.0.join("notes.md")).expect("outside file should read"),
+        "outside\n"
+    );
+}
+
+#[cfg(unix)]
+#[test]
 fn descriptor_relative_file_open_does_not_follow_a_replaced_parent_path() {
     let directory = TestDirectory::new();
     let original = directory.0.join("original");
@@ -400,4 +561,65 @@ fn descriptor_relative_file_open_does_not_follow_a_replaced_parent_path() {
     file.read_to_string(&mut text)
         .expect("descriptor-relative file should read");
     assert_eq!(text, "original\n");
+}
+
+#[test]
+fn file_tools_refuse_git_and_credential_aliases_but_edit_git_configuration_files() {
+    let directory = TestDirectory::new();
+    fs::create_dir_all(directory.0.join(".git")).expect("git directory should exist");
+    fs::create_dir_all(directory.0.join("sub")).expect("nested folder should exist");
+    fs::write(directory.0.join("sub/.git"), "gitdir: ../.git\n").expect("gitfile should write");
+    fs::create_dir_all(directory.0.join(".github/workflows"))
+        .expect("workflow folder should exist");
+    fs::write(directory.0.join(".github/workflows/ci.yml"), "on: push\n")
+        .expect("workflow should write");
+    fs::write(directory.0.join(".gitignore"), "target\n").expect("ignore file should write");
+    let authorized = directory.authorized(RepositoryKind::Git);
+
+    for path in [
+        ".git/config",
+        ".GIT/config",
+        ".Git/hooks/pre-commit",
+        ".git./config",
+        ".git /config",
+        "GIT~1/config",
+        "sub/.git",
+        "sub/.git/config",
+        ".SSH/id_ed25519",
+        ".g\u{200c}it/config",
+    ] {
+        assert!(
+            create_workspace_artifact(&authorized, path, b"text").is_err(),
+            "{path} must not be created"
+        );
+        assert!(
+            preview_workspace_file(&authorized, path).is_err(),
+            "{path} must not be read"
+        );
+    }
+
+    for path in [".github/workflows/ci.yml", ".gitignore"] {
+        let preview = preview_workspace_file(&authorized, path).expect("file should preview");
+        let revision = preview
+            .content_revision
+            .expect("text files have a revision");
+        save_workspace_file(&authorized, path, "edited\n", &revision)
+            .expect("git configuration files stay editable");
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn descriptor_walk_refuses_the_git_directory_by_identity() {
+    let directory = TestDirectory::new();
+    fs::create_dir_all(directory.0.join(".git/hooks")).expect("git directory should exist");
+    fs::create_dir_all(directory.0.join("src")).expect("source folder should exist");
+
+    for path in [".git/config", ".git/hooks/pre-commit"] {
+        let error = secure_workspace_parent(&directory.0, path)
+            .err()
+            .expect("the git directory must not open as a parent");
+        assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
+    }
+    secure_workspace_parent(&directory.0, "src/main.rs").expect("ordinary parents should open");
 }

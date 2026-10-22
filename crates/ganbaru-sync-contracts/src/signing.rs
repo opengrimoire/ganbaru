@@ -3,6 +3,7 @@
 //! Every digest and signature input starts with a domain string and a zero byte, so bytes
 //! produced for one purpose never verify or collide under another.
 
+use ganbaru_contacts::is_small_order_public_key;
 use ring::rand::SystemRandom;
 use ring::signature::{ED25519, Ed25519KeyPair, KeyPair, UnparsedPublicKey};
 use sha2::{Digest, Sha256};
@@ -76,16 +77,19 @@ impl std::error::Error for WriterKeyError {}
 pub struct WriterPublicKey([u8; WRITER_PUBLIC_KEY_BYTES]);
 
 impl WriterPublicKey {
-    /// Wraps raw key bytes. Invalid curve points fail at verification.
+    /// Wraps raw key bytes. Invalid curve points and small-order keys fail at verification.
     pub fn from_bytes(bytes: [u8; WRITER_PUBLIC_KEY_BYTES]) -> Self {
         Self(bytes)
     }
 
-    /// Parses a raw key from a slice.
+    /// Parses a raw key from a slice, refusing small-order keys.
     pub fn from_slice(bytes: &[u8]) -> Result<Self, WriterKeyError> {
-        <[u8; WRITER_PUBLIC_KEY_BYTES]>::try_from(bytes)
-            .map(Self)
-            .map_err(|_| WriterKeyError::InvalidKey)
+        let bytes = <[u8; WRITER_PUBLIC_KEY_BYTES]>::try_from(bytes)
+            .map_err(|_| WriterKeyError::InvalidKey)?;
+        if is_small_order_public_key(&bytes) {
+            return Err(WriterKeyError::InvalidKey);
+        }
+        Ok(Self(bytes))
     }
 
     /// Raw key bytes.
@@ -93,9 +97,10 @@ impl WriterPublicKey {
         &self.0
     }
 
-    /// Whether `signature` is this writer's signature over the signed envelope bytes.
+    /// Whether `signature` is this writer's signature over the signed envelope bytes. A
+    /// small-order key never verifies.
     pub fn verify_operation(&self, signed_bytes: &[u8], signature: &[u8]) -> bool {
-        if signature.len() != WRITER_SIGNATURE_BYTES {
+        if signature.len() != WRITER_SIGNATURE_BYTES || is_small_order_public_key(&self.0) {
             return false;
         }
         UnparsedPublicKey::new(&ED25519, &self.0)

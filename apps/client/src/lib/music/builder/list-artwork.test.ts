@@ -32,6 +32,12 @@ describe("music list artwork", () => {
     });
   });
 
+  it("refuses sidecar paths from vault data that could leave the source root", () => {
+    for (const path of ["../secret.png", "album/../../secret.png", "/etc/cover.png", "\\\\server\\share\\cover.png", "C:\\cover.png", "album//cover.png", "./cover.png", ""]) {
+      expect(musicListArtworkSource(item({ originalArtworkIdentity: `sidecar:${path}` }), bindings)).toBeNull();
+    }
+  });
+
   it("resolves embedded artwork through the media file", () => {
     expect(musicListArtworkSource(item({ originalArtworkIdentity: "embedded:sha256:cover" }), bindings)).toEqual({
       kind: "embedded",

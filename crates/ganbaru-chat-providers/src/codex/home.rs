@@ -174,7 +174,8 @@ pub fn materialize_codex_shadow_home(layout: &mut CodexHomeLayout) -> ChatResult
     if !layout.shadowed {
         return Ok(());
     }
-    fs::create_dir_all(&layout.effective_home).map_err(|_| shadow_home_error())?;
+    ganbaru_atomic_files::create_private_directories(&layout.effective_home)
+        .map_err(|_| shadow_home_error())?;
     layout.effective_home = fs::canonicalize(&layout.effective_home).map_err(|_| {
         ChatError::validation(
             "providerConfig.shadowHomePath",
@@ -187,8 +188,17 @@ pub fn materialize_codex_shadow_home(layout: &mut CodexHomeLayout) -> ChatResult
             "Codex shadow home resolves to the shared home",
         ));
     }
+    if !ganbaru_atomic_files::is_owned_by_current_user(&layout.effective_home)
+        .map_err(|_| shadow_home_error())?
+    {
+        return Err(ChatError::validation(
+            "providerConfig.shadowHomePath",
+            "Codex shadow home must belong to the current user",
+        ));
+    }
     for directory in SHARED_DIRECTORY_NAMES {
-        fs::create_dir_all(layout.shared_home.join(directory)).map_err(|_| shadow_home_error())?;
+        ganbaru_atomic_files::create_private_directories(&layout.shared_home.join(directory))
+            .map_err(|_| shadow_home_error())?;
     }
     for private in PRIVATE_ENTRY_NAMES {
         reject_symlink(&layout.effective_home.join(private), private)?;
@@ -318,9 +328,14 @@ fn fallback_executable_directories(home: &Path) -> Vec<PathBuf> {
             home.join(".bun").join("bin"),
             home.join(".cargo").join("bin"),
             home.join(".volta").join("bin"),
-            PathBuf::from("/opt/homebrew/bin"),
-            PathBuf::from("/home/linuxbrew/.linuxbrew/bin"),
         ]
+        .into_iter()
+        .chain(
+            crate::executable_search::PLATFORM_EXECUTABLE_DIRECTORIES
+                .iter()
+                .map(PathBuf::from),
+        )
+        .collect()
     }
 }
 
@@ -534,10 +549,10 @@ fn find_on_path(name: &str, environment: &BTreeMap<String, String>) -> Option<Pa
         .1
         .clone();
     let extensions = executable_extensions(name, environment);
-    for directory in std::env::split_paths(OsStr::new(&path)) {
+    for directory in crate::executable_search::path_search_directories(OsStr::new(&path)) {
         for extension in &extensions {
             let candidate = directory.join(format!("{name}{extension}"));
-            if candidate.is_file() && is_executable(&candidate) {
+            if crate::executable_search::is_safe_executable_candidate(&candidate) {
                 return Some(candidate);
             }
         }

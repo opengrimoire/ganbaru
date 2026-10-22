@@ -17,7 +17,8 @@ export type DesktopNetworkAccessState =
   | "notRequired"
   | "authorizationRequired"
   | "granted"
-  | "manualActionRequired";
+  | "manualActionRequired"
+  | "networkConfirmationRequired";
 
 export interface DesktopNetworkAccess {
   state: DesktopNetworkAccessState;
@@ -37,7 +38,18 @@ export interface PairingStatus {
   replicaReady: boolean;
   pendingTransfer: boolean;
   canInvite: boolean;
+  untouchedStarterVault: boolean;
+  /** A device waiting for this coordinator to approve it; absent where linking cannot be hosted. */
+  pendingEnrollment?: PendingEnrollment | null;
   networkAccess?: DesktopNetworkAccess;
+}
+
+/** An enrolling device, shown with the code it also shows so the user can compare them. */
+export interface PendingEnrollment {
+  requestId: string;
+  deviceLabel: string;
+  deviceKind: LinkedDevice["kind"];
+  code: string;
 }
 
 export interface LinkedDevice {
@@ -114,11 +126,37 @@ function parseDesktopNetworkAccess(value: unknown): DesktopNetworkAccess {
       "authorizationRequired",
       "granted",
       "manualActionRequired",
+      "networkConfirmationRequired",
     ].includes(value.state as string)
   ) {
     throw new Error("Invalid desktop network access response");
   }
   return { state: value.state as DesktopNetworkAccessState };
+}
+
+const DEVICE_KINDS: readonly LinkedDevice["kind"][] = ["computer", "phone", "unknown"];
+
+function isDeviceKind(value: unknown): value is LinkedDevice["kind"] {
+  return DEVICE_KINDS.includes(value as LinkedDevice["kind"]);
+}
+
+function parsePendingEnrollment(value: unknown): PendingEnrollment | null {
+  if (value === null) return null;
+  if (
+    !isRecord(value)
+    || typeof value.requestId !== "string"
+    || typeof value.deviceLabel !== "string"
+    || !isDeviceKind(value.deviceKind)
+    || typeof value.code !== "string"
+  ) {
+    throw new Error("Invalid pending enrollment response");
+  }
+  return {
+    requestId: value.requestId,
+    deviceLabel: value.deviceLabel,
+    deviceKind: value.deviceKind,
+    code: value.code,
+  };
 }
 
 function parseStatus(value: unknown): PairingStatus {
@@ -133,6 +171,7 @@ function parseStatus(value: unknown): PairingStatus {
     typeof value.replicaReady !== "boolean" ||
     typeof value.pendingTransfer !== "boolean"
     || typeof value.canInvite !== "boolean"
+    || typeof value.untouchedStarterVault !== "boolean"
   ) {
     throw new Error("Invalid pairing status response");
   }
@@ -143,7 +182,7 @@ function parseStatus(value: unknown): PairingStatus {
       || (device.label !== null && typeof device.label !== "string")
       || typeof device.isOwner !== "boolean"
       || typeof device.isCoordinator !== "boolean"
-      || !["computer", "phone", "unknown"].includes(device.kind as string)
+      || !isDeviceKind(device.kind)
     ) {
       throw new Error(`Invalid linked device ${index + 1} response`);
     }
@@ -152,7 +191,7 @@ function parseStatus(value: unknown): PairingStatus {
       label: device.label as string | null,
       isOwner: device.isOwner,
       isCoordinator: device.isCoordinator,
-      kind: device.kind as LinkedDevice["kind"],
+      kind: device.kind,
     };
   });
   return {
@@ -169,6 +208,10 @@ function parseStatus(value: unknown): PairingStatus {
     replicaReady: value.replicaReady,
     pendingTransfer: value.pendingTransfer,
     canInvite: value.canInvite,
+    untouchedStarterVault: value.untouchedStarterVault,
+    pendingEnrollment: value.pendingEnrollment === undefined
+      ? undefined
+      : parsePendingEnrollment(value.pendingEnrollment),
     networkAccess: value.networkAccess === undefined
       ? undefined
       : parseDesktopNetworkAccess(value.networkAccess),
@@ -235,6 +278,20 @@ export function enrollWithDesktop(
   return invoke("handoff_enroll", { invitation, deviceLabel });
 }
 
+/** Returns the code this device shows while it enrolls; the coordinator shows the same code. */
+export async function readEnrollmentCode(invitation: string): Promise<string> {
+  const value = await invoke<unknown>("handoff_enrollment_code", { invitation });
+  if (typeof value !== "string" || value.length === 0) {
+    throw new Error("Invalid enrollment code response");
+  }
+  return value;
+}
+
+/** Approves or declines the device waiting on this coordinator. */
+export function respondToEnrollment(requestId: string, approve: boolean): Promise<void> {
+  return invoke("handoff_respond_enrollment", { requestId, approve });
+}
+
 /** Returns a stable human-readable label for this device when it enrolls. */
 export async function readSuggestedDeviceLabel(): Promise<string> {
   const value = await invoke<unknown>("handoff_suggested_device_label");
@@ -263,6 +320,11 @@ export async function receiveDesktopBundle(
   return parseReceiveOutcome(
     await invoke<unknown>("handoff_receive_desktop_bundle", { mode }),
   );
+}
+
+/** Records that the user entered the app with the starter vault, so linking keeps a backup of it. */
+export function releaseStarterVault(): Promise<void> {
+  return invoke("vault_release_starter");
 }
 
 /** Cancels the currently streaming desktop bundle, leaving resumable staging. */

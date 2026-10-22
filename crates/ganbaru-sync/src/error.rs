@@ -19,8 +19,6 @@ pub enum SyncError {
     WriterMismatch,
     /// The local writer is no longer active in this space.
     WriterInactive(WriterId),
-    /// Sealing would need more dependency entries than an operation may carry.
-    TooManyWriters,
     /// The sequence reservation could not be made durable.
     Reservation(std::io::Error),
     /// An operation could not be sealed.
@@ -51,7 +49,6 @@ impl fmt::Display for SyncError {
             Self::WriterInactive(writer) => {
                 write!(formatter, "writer {} is not active", writer.to_hex())
             }
-            Self::TooManyWriters => formatter.write_str("too many writers for one operation"),
             Self::Reservation(error) => {
                 write!(formatter, "sequence reservation failed: {error}")
             }

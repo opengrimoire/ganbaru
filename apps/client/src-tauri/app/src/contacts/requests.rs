@@ -8,8 +8,6 @@ use super::store::{
     TrustGrant,
 };
 use super::{ContactsError, contacts_pool};
-#[cfg(desktop)]
-use crate::vault::handoff::coordinator::CoordinatorResponse;
 use crate::vault::handoff::pairing::random_token;
 use crate::vault::handoff::protocol::{
     ContactRequestOutcome, ControlMessage, PROTOCOL_VERSION, unix_time_ms,
@@ -29,9 +27,14 @@ use tauri::{AppHandle, Runtime};
 
 /// How long a request stays pending on both sides.
 pub(crate) const REQUEST_TTL_DAYS: i64 = 7;
-/// Upper bound on pending received requests before the oldest are expired.
+/// Upper bound on pending received requests before the oldest are deleted.
 #[cfg(any(desktop, test))]
 pub(crate) const MAX_PENDING_RECEIVED: i64 = 64;
+/// How long accepted, declined, and expired requests are kept. It outlasts the requester's
+/// pending window, so a status poll still learns the outcome.
+pub(crate) const HANDLED_REQUEST_RETENTION_DAYS: i64 = 30;
+/// Upper bound on accepted, declined, and expired requests kept at once.
+pub(crate) const MAX_HANDLED_REQUESTS: i64 = 512;
 const INITIAL_POLL_DELAY: std::time::Duration = std::time::Duration::from_secs(10);
 const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60);
 const BACKOFF_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5 * 60);
@@ -39,6 +42,8 @@ const BACKOFF_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5 *
 pub(crate) const CARD_REVOKED_CODE: &str = "card_revoked";
 pub(crate) const INVALID_REQUEST_CODE: &str = "invalid_request";
 pub(crate) const RECIPIENT_UNAVAILABLE_CODE: &str = "recipient_unavailable";
+/// The recipient is handling too many contact messages; the requester retries later.
+pub(crate) const RECIPIENT_BUSY_CODE: &str = "recipient_busy";
 
 /// What the coordinator answers to an unauthenticated Contacts message.
 #[cfg(any(desktop, test))]
@@ -85,34 +90,28 @@ impl PeerReply {
         }
     }
 
+    /// The answer when the recipient is handling too many contact messages.
     #[cfg(desktop)]
-    fn into_coordinator_response(self) -> CoordinatorResponse {
-        match self {
-            Self::Received { request_id } => {
-                CoordinatorResponse::ContactRequestReceived { request_id }
-            }
-            Self::State {
-                state,
-                recipient_card,
-            } => CoordinatorResponse::ContactRequestState {
-                state,
-                recipient_card,
-            },
-            Self::Rejected {
-                code,
-                message,
-                retryable,
-            } => CoordinatorResponse::Rejected {
-                code: code.to_string(),
-                message: message.to_string(),
-                retryable,
-            },
+    pub(crate) fn busy() -> Self {
+        Self::Rejected {
+            code: RECIPIENT_BUSY_CODE,
+            message: "the recipient is handling too many contact requests; retry shortly",
+            retryable: true,
         }
     }
 }
 
 fn expires_at(now: DateTime<Utc>) -> DateTime<Utc> {
     now + Duration::days(REQUEST_TTL_DAYS)
+}
+
+/// Applies the retention bounds to handled requests.
+async fn prune_handled<'e, E>(executor: E, now: DateTime<Utc>) -> Result<(), String>
+where
+    E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
+{
+    let cutoff = now - Duration::days(HANDLED_REQUEST_RETENTION_DAYS);
+    store::prune_handled_requests(executor, cutoff, MAX_HANDLED_REQUESTS).await
 }
 
 #[cfg(any(desktop, test))]
@@ -183,8 +182,9 @@ pub(crate) async fn receive_request(
         .map_err(|error| format!("begin contact request transaction: {error}"))?;
     store::delete_pending(&mut *tx, RequestDirection::Received, &public_key).await?;
     if store::pending_received_count(&mut *tx).await? >= MAX_PENDING_RECEIVED {
-        store::expire_oldest_pending_received(&mut *tx, MAX_PENDING_RECEIVED - 1, now).await?;
+        store::delete_oldest_pending_received(&mut *tx, MAX_PENDING_RECEIVED - 1).await?;
     }
+    prune_handled(&mut *tx, now).await?;
     let digest = store::encode_hex(&signed.digest);
     let fingerprint = fingerprint_hex(&signed);
     store::insert_request(
@@ -260,6 +260,8 @@ pub(crate) async fn request_state(
     })
 }
 
+/// The person identity without its key, read from the vault alone. Unauthenticated contact
+/// messages never touch the credential store; only an accepted status reads the key.
 #[cfg(desktop)]
 async fn coordinator_identity<R: Runtime>(
     app: &AppHandle<R>,
@@ -268,76 +270,78 @@ async fn coordinator_identity<R: Runtime>(
     if !crate::vault::ownership::active_status(app)?.can_write {
         return Ok(None);
     }
-    super::identity::load_identity(app, pool).await
+    let Some(row) = super::identity::load_identity_row(pool).await? else {
+        return Ok(None);
+    };
+    super::identity::identity_from_row(row, None).map(Some)
 }
 
 #[cfg(desktop)]
 pub(crate) async fn receive_request_for_coordinator<R: Runtime>(
     app: &AppHandle<R>,
-    recipient_card_nonce: String,
-    requester_card: String,
-    request_id: String,
-    signature: String,
-) -> Result<CoordinatorResponse, String> {
+    recipient_card_nonce: &str,
+    requester_card: &str,
+    request_id: &str,
+    signature: &str,
+) -> Result<PeerReply, String> {
     let pool = contacts_pool(app).await?;
     let Some(identity) = coordinator_identity(app, &pool).await? else {
-        return Ok(PeerReply::unavailable().into_coordinator_response());
+        return Ok(PeerReply::unavailable());
     };
-    let reply = receive_request(
+    receive_request(
         &pool,
         &identity,
         store::now(),
-        &recipient_card_nonce,
-        &requester_card,
-        &request_id,
-        &signature,
+        recipient_card_nonce,
+        requester_card,
+        request_id,
+        signature,
     )
-    .await?;
-    Ok(reply.into_coordinator_response())
+    .await
 }
 
 #[cfg(desktop)]
 pub(crate) async fn request_state_for_coordinator<R: Runtime>(
     app: &AppHandle<R>,
-    request_id: String,
-    requester_public_key: String,
+    request_id: &str,
+    requester_public_key: &str,
     issued_at_ms: i64,
-    signature: String,
-) -> Result<CoordinatorResponse, String> {
+    signature: &str,
+) -> Result<PeerReply, String> {
     let pool = contacts_pool(app).await?;
-    let Some(identity) = coordinator_identity(app, &pool).await? else {
-        return Ok(PeerReply::unavailable().into_coordinator_response());
+    let Some(mut identity) = coordinator_identity(app, &pool).await? else {
+        return Ok(PeerReply::unavailable());
     };
     let outcome = request_state(
         &pool,
-        &request_id,
-        &requester_public_key,
+        request_id,
+        requester_public_key,
         issued_at_ms,
-        &signature,
+        signature,
     )
     .await?;
-    let reply = match outcome {
+    let pending = PeerReply::State {
+        state: ContactRequestOutcome::Pending,
+        recipient_card: None,
+    };
+    Ok(match outcome {
         StatusOutcome::Invalid => PeerReply::invalid(),
-        StatusOutcome::Pending => PeerReply::State {
-            state: ContactRequestOutcome::Pending,
-            recipient_card: None,
-        },
+        StatusOutcome::Pending => pending,
         StatusOutcome::Declined => PeerReply::State {
             state: ContactRequestOutcome::Declined,
             recipient_card: None,
         },
-        StatusOutcome::Accepted => match sign_local_card(app, &identity) {
-            Ok(card) => PeerReply::State {
-                state: ContactRequestOutcome::Accepted,
-                recipient_card: Some(card.text()),
-            },
-            Err(_) => PeerReply::State {
-                state: ContactRequestOutcome::Pending,
-                recipient_card: None,
-            },
-        },
-    };
-    Ok(reply.into_coordinator_response())
+        StatusOutcome::Accepted => {
+            identity.key = super::identity::person_key_matching(app, &identity.public_key).await?;
+            match sign_local_card(app, &identity) {
+                Ok(card) => PeerReply::State {
+                    state: ContactRequestOutcome::Accepted,
+                    recipient_card: Some(card.text()),
+                },
+                Err(_) => pending,
+            }
+        }
+    })
 }
 
 /// Delivers a request to the person whose card text was pasted or scanned, then records it.
@@ -437,7 +441,9 @@ pub(crate) async fn send_request<R: Runtime>(
 fn peer_error(code: &str, message: String) -> ContactsError {
     match code {
         CARD_REVOKED_CODE => ContactsError::CardRevoked(message),
-        RECIPIENT_UNAVAILABLE_CODE => ContactsError::RecipientUnreachable(message),
+        RECIPIENT_UNAVAILABLE_CODE | RECIPIENT_BUSY_CODE => {
+            ContactsError::RecipientUnreachable(message)
+        }
         _ => ContactsError::Failed(message),
     }
 }
@@ -488,7 +494,7 @@ pub(crate) async fn accept_request(
     if !updated {
         return Err(revision_conflict());
     }
-    store::upsert_active_contact(
+    let stored = store::upsert_active_contact(
         &mut *tx,
         NewContact {
             public_key: &row.public_key,
@@ -500,6 +506,9 @@ pub(crate) async fn accept_request(
         now,
     )
     .await?;
+    if !stored {
+        return Err(ContactsError::Failed("this person is blocked".to_string()));
+    }
     store::close_pending_from(
         &mut *tx,
         RequestDirection::Sent,
@@ -596,6 +605,7 @@ pub(crate) async fn poll_sent_requests(
         .map_err(|_| "this device holds no person key".to_string())?;
     let now = store::now();
     store::expire_stale_requests(pool, now).await?;
+    prune_handled(pool, now).await?;
     let mut still_pending = false;
     for row in store::pending_requests(pool, RequestDirection::Sent).await? {
         if row.endpoint_hint.is_empty() || row.coordinator_fingerprint.is_empty() {
@@ -623,7 +633,7 @@ pub(crate) async fn poll_sent_requests(
 }
 
 /// Records one status answer for a sent request. Returns true when the row left `pending`.
-async fn apply_status_response(
+pub(super) async fn apply_status_response(
     pool: &SqlitePool,
     row: &RequestRow,
     response: Result<ControlMessage, String>,
@@ -650,9 +660,20 @@ async fn apply_status_response(
                 .begin()
                 .await
                 .map_err(|error| format!("begin accepted transaction: {error}"))?;
-            store::set_request_state(&mut *tx, &row.id, None, RequestState::Accepted, None, now)
-                .await?;
-            store::upsert_active_contact(
+            let accepted = store::set_request_state(
+                &mut *tx,
+                &row.id,
+                None,
+                RequestState::Accepted,
+                None,
+                now,
+            )
+            .await?;
+            if !accepted {
+                // A local cancel or block closed the request while the poll was in flight.
+                return Ok(true);
+            }
+            let stored = store::upsert_active_contact(
                 &mut *tx,
                 NewContact {
                     public_key: &row.public_key,
@@ -664,6 +685,14 @@ async fn apply_status_response(
                 now,
             )
             .await?;
+            if !stored {
+                tx.rollback()
+                    .await
+                    .map_err(|error| format!("roll back accepted request: {error}"))?;
+                store::set_request_state(pool, &row.id, None, RequestState::Expired, None, now)
+                    .await?;
+                return Ok(true);
+            }
             tx.commit()
                 .await
                 .map_err(|error| format!("commit accepted request: {error}"))?;

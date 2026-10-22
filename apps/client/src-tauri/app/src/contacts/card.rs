@@ -6,12 +6,12 @@ use crate::vault::handoff::pairing::PairingManager;
 use crate::vault::handoff::protocol::{decode_qr_bytes_luma, qr_matrix_for_bytes, unix_time_ms};
 use ganbaru_contacts::{
     CARD_MAGIC, CARD_NONCE_BYTES, ContactCard, MAX_DISPLAY_NAME_BYTES, MAX_ENDPOINT_HINT_BYTES,
-    SignedCard, decode_card, encode_nonce, random_bytes, sign_card,
+    SignedCard, decode_card, encode_nonce, is_disallowed_display_character, random_bytes,
+    sign_card,
 };
 use sqlx::SqlitePool;
 use tauri::{AppHandle, Manager, Runtime};
 
-const MAX_CONFIG_BYTES: usize = 4 * 1024 * 1024;
 const PROFILE_KEY: &str = "profile";
 const DISPLAY_NAME_KEY: &str = "displayName";
 const COLOR_KEY: &str = "color";
@@ -41,16 +41,16 @@ impl DeliveryHint {
 
 /// Reads the profile display name and color from the active vault configuration.
 pub(crate) fn read_profile<R: Runtime>(app: &AppHandle<R>) -> Result<CardProfile, ContactsError> {
-    let raw = crate::vault::read_active_config_bounded(app, MAX_CONFIG_BYTES)?;
+    let raw = crate::vault::read_active_config_bounded(app)?;
     let value: serde_json::Value = serde_json::from_str(&raw)
         .map_err(|error| ContactsError::Failed(format!("parse vault configuration: {error}")))?;
     let profile = value.get(PROFILE_KEY);
     let display_name = profile
         .and_then(|profile| profile.get(DISPLAY_NAME_KEY))
         .and_then(serde_json::Value::as_str)
-        .map(str::trim)
+        .map(shareable_display_name)
         .filter(|name| !name.is_empty())
-        .map(|name| truncate_at_char_boundary(name, MAX_DISPLAY_NAME_BYTES))
+        .map(|name| truncate_at_char_boundary(&name, MAX_DISPLAY_NAME_BYTES))
         .ok_or_else(|| {
             ContactsError::ProfileIncomplete("set a display name in the profile first".to_string())
         })?;
@@ -64,6 +64,16 @@ pub(crate) fn read_profile<R: Runtime>(app: &AppHandle<R>) -> Result<CardProfile
         display_name,
         color,
     })
+}
+
+/// The profile name without characters every card decoder refuses. Profile settings reject them
+/// on entry, so this only matters for a name written some other way, which still gets a card.
+fn shareable_display_name(name: &str) -> String {
+    name.chars()
+        .filter(|character| !is_disallowed_display_character(*character))
+        .collect::<String>()
+        .trim()
+        .to_string()
 }
 
 fn truncate_at_char_boundary(value: &str, max_bytes: usize) -> String {
@@ -86,9 +96,9 @@ pub(crate) fn resolve_delivery_hint<R: Runtime>(app: &AppHandle<R>) -> DeliveryH
         use crate::vault::handoff::pairing::certificate_fingerprint;
         let lifecycle = app.state::<crate::vault::handoff::CoordinatorLifecycle>();
         if let Ok(Some(endpoint)) = lifecycle.endpoint()
-            && let Ok((_, identity)) = manager.identity()
+            && let Ok(certificate) = manager.certificate()
         {
-            let fingerprint = certificate_fingerprint(identity.certificate.as_ref());
+            let fingerprint = certificate_fingerprint(certificate.as_ref());
             return bounded_hint(endpoint.to_string(), &fingerprint);
         }
     }
@@ -96,7 +106,9 @@ pub(crate) fn resolve_delivery_hint<R: Runtime>(app: &AppHandle<R>) -> DeliveryH
 }
 
 fn bounded_hint(endpoint: String, fingerprint_hex: &str) -> DeliveryHint {
-    let Some(fingerprint) = super::store::decode_hex_digest(fingerprint_hex) else {
+    let Some(fingerprint) =
+        ganbaru_handoff::protocol::decode_certificate_fingerprint(fingerprint_hex)
+    else {
         return DeliveryHint::unreachable();
     };
     if endpoint.is_empty() || endpoint.len() > MAX_ENDPOINT_HINT_BYTES {
@@ -190,4 +202,17 @@ pub(crate) fn decode_card_qr(
     let signed =
         decode_card(&payload).map_err(|error| ContactsError::InvalidCard(error.to_string()))?;
     Ok(signed.text())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn profile_names_drop_characters_card_decoders_refuse_and_keep_joiners() {
+        assert_eq!(shareable_display_name(" Ana\u{202E}lia\u{200B} "), "Analia");
+        assert_eq!(shareable_display_name("\u{2066}\u{2069}"), "");
+        assert_eq!(shareable_display_name("👩\u{200D}💻"), "👩\u{200D}💻");
+        assert_eq!(shareable_display_name("می\u{200C}خواهم"), "می\u{200C}خواهم");
+    }
 }

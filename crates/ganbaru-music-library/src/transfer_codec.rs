@@ -219,7 +219,7 @@ pub(super) fn validate_document(document: &MusicInterchangeDocument) -> MusicLib
                 phase: assignment.phase,
                 behavior: assignment.behavior,
                 playlist_id: assignment.playlist_id.clone(),
-                soundscape_id: assignment.soundscape_id.clone(),
+                soundscape_preset_id: assignment.soundscape_preset_id.clone(),
                 soundscape_behavior: assignment.soundscape_behavior,
                 provenance_kind: assignment.provenance_kind,
                 provenance_id: assignment.provenance_id.clone(),

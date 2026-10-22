@@ -42,7 +42,8 @@ pub(crate) async fn list<R: Runtime>(app: &AppHandle<R>) -> Result<Vec<RecoveryE
         .acquire()
         .await
         .map_err(|error| format!("acquire sync connection: {error}"))?;
-    let Some(ctx) = local::space_context(&mut conn, &vault_id)
+    let coordinator = super::service::coordinator_device_id(app, &vault_id)?;
+    let Some(ctx) = local::space_context(&mut conn, &vault_id, &coordinator)
         .await
         .map_err(|error| format!("read sync space: {error}"))?
     else {

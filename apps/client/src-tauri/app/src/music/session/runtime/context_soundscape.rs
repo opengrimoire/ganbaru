@@ -2,23 +2,23 @@
 
 use super::context::ContextActivation;
 use super::*;
-use crate::music::soundscape::{GeneratedNoiseKind, SoundscapeStartRequest};
+use crate::music::soundscape::{GeneratedNoiseKind, SoundscapeLayer, SoundscapeStartRequest};
+use ganbaru_music_library::soundscapes::MAX_SOUNDSCAPE_LAYERS;
 use std::sync::{Arc, LazyLock, atomic::AtomicBool};
 use std::time::Instant;
 
 const DELIVERY_TIMEOUT: Duration = Duration::from_secs(8);
 const MAX_SOUND_SOURCE_ID_BYTES: i64 = 200;
-const MAX_SOUND_PATH_BYTES: i64 = 16_384;
+const MAX_SOUND_PATH_BYTES: usize = 16_384;
 static DELIVERY_GATE: LazyLock<Arc<tokio::sync::Semaphore>> =
     LazyLock::new(|| Arc::new(tokio::sync::Semaphore::new(1)));
 
 #[derive(sqlx::FromRow)]
-struct AcceptedSoundscapeSource {
+struct AcceptedPresetSound {
+    soundscape_id: String,
+    level: f64,
     generated_kind: Option<String>,
-    absolute_path: Option<String>,
-    volume: f64,
-    generated_level: Option<f64>,
-    local_level: Option<f64>,
+    source_kind: String,
 }
 
 pub(super) struct PreparedSoundscape {
@@ -27,12 +27,20 @@ pub(super) struct PreparedSoundscape {
     pub missing: bool,
 }
 
-/// Read only the selected source, with a SQL size predicate before path allocation.
+impl PreparedSoundscape {
+    /// Whether the soundscape effect changed state that must be committed and delivered.
+    pub(super) fn acts(&self) -> bool {
+        self.action.is_some()
+    }
+}
+
+/// Read only the selected preset, with SQL size predicates before path allocation. A preset plays
+/// the sounds still available on this device and reports missing only when none remain.
 pub(super) async fn prepare(
     connection: &mut sqlx::SqliteConnection,
-    device_id: &str,
+    local_paths: &BTreeMap<String, String>,
     behavior: &str,
-    soundscape_id: Option<&str>,
+    preset_id: Option<&str>,
 ) -> MusicLibraryResult<PreparedSoundscape> {
     use ganbaru_music::assignments::MusicSoundscapeBehavior;
     let behavior = MusicSoundscapeBehavior::try_from(behavior)
@@ -46,85 +54,178 @@ pub(super) async fn prepare(
         behavior,
         MusicSoundscapeBehavior::Inherit | MusicSoundscapeBehavior::KeepCurrentSoundscape
     ) {
-        return Ok(empty(false));
+        // A phase that chooses nothing stops a preset an earlier phase or event started, so it
+        // never carries over, and leaves a soundscape the listener started by hand.
+        if !automatic_playing(connection).await? {
+            return Ok(empty(false));
+        }
     }
     let request = if behavior == MusicSoundscapeBehavior::PlaySelected {
-        let Some(id) = soundscape_id else {
+        let Some(preset_id) = preset_id else {
             return Ok(empty(true));
         };
-        let source: Option<AcceptedSoundscapeSource> = sqlx::query_as(
-            "SELECT s.generated_kind, l.absolute_path, st.volume, st.generated_level, st.local_level
-             FROM music_soundscapes s
-             JOIN music_soundscape_state st ON st.singleton = 1
-             LEFT JOIN music_soundscape_locations l ON l.soundscape_id = s.id AND l.device_id = ?
-             WHERE s.id = ? AND length(CAST(s.id AS BLOB)) <= ?
-               AND (l.absolute_path IS NULL OR length(CAST(l.absolute_path AS BLOB)) <= ?)
-               AND CASE WHEN s.source_kind = 'local-loop' THEN l.availability ELSE s.availability END = 'available'",
-        ).bind(device_id).bind(id).bind(MAX_SOUND_SOURCE_ID_BYTES).bind(MAX_SOUND_PATH_BYTES).fetch_optional(&mut *connection).await
-            .map_err(|error| MusicLibraryError::database("read accepted background sound", error))?;
-        let Some(source) = source else {
+        let Some(request) = read_preset(connection, local_paths, preset_id).await? else {
             return Ok(empty(true));
         };
-        let generated_kind = match source.generated_kind.as_deref() {
-            Some("white") => Some(GeneratedNoiseKind::White),
-            Some("pink") => Some(GeneratedNoiseKind::Pink),
-            Some("brown") => Some(GeneratedNoiseKind::Brown),
-            None => None,
-            Some(_) => {
-                return Err(MusicLibraryError::validation(
-                    "soundscape.generatedKind",
-                    "unknown generated noise",
-                ));
-            }
-        };
-        Some(SoundscapeStartRequest {
-            source_id: id.into(),
-            generated_kind,
-            local_path: source.absolute_path,
-            level: if generated_kind.is_some() {
-                source.generated_level
-            } else {
-                source.local_level
-            }
-            .unwrap_or(1.0),
-            extra_sources: Vec::new(),
-            volume: source.volume,
-        })
+        Some((preset_id, request))
     } else {
         None
     };
-    if let Some(request) = &request {
-        sqlx::query("DELETE FROM music_soundscape_active_selections")
-            .execute(&mut *connection)
-            .await
-            .map_err(|error| {
-                MusicLibraryError::database("replace automatic background selection", error)
-            })?;
-        sqlx::query(
-            "INSERT INTO music_soundscape_active_selections(position, soundscape_id) VALUES (0, ?)",
-        )
-        .bind(&request.source_id)
-        .execute(&mut *connection)
-        .await
-        .map_err(|error| MusicLibraryError::database("select accepted background sound", error))?;
-    }
     let version: i64 = sqlx::query_scalar(
         "UPDATE music_soundscape_state
-         SET active_soundscape_id = CASE WHEN ? THEN ? ELSE active_soundscape_id END,
+         SET active_preset_id = CASE WHEN ? THEN ? ELSE active_preset_id END,
              desired_playing = ?, automatic_intent = 1, version = version + 1, updated_at_ms = MAX(updated_at_ms + 1, ?)
          WHERE singleton = 1 RETURNING version",
     )
     .bind(request.is_some())
-    .bind(request.as_ref().map(|request| &request.source_id))
+    .bind(request.as_ref().map(|(preset_id, _)| *preset_id))
     .bind(request.is_some())
     .bind(now_ms())
     .fetch_one(&mut *connection)
     .await
-    .map_err(|error| MusicLibraryError::database("persist accepted background sound", error))?;
+    .map_err(|error| MusicLibraryError::database("persist accepted soundscape", error))?;
     Ok(PreparedSoundscape {
-        action: Some(request),
+        action: Some(request.map(|(_, request)| request)),
         version: Some(version),
         missing: false,
+    })
+}
+
+/// Whether a phase or event started the soundscape and nobody has paused or replaced it since.
+pub(super) async fn automatic_playing(
+    connection: &mut sqlx::SqliteConnection,
+) -> MusicLibraryResult<bool> {
+    sqlx::query_scalar(
+        "SELECT automatic_intent = 1 AND desired_playing = 1
+         FROM music_soundscape_state WHERE singleton = 1",
+    )
+    .fetch_one(connection)
+    .await
+    .map_err(|error| MusicLibraryError::database("read accepted soundscape intent", error))
+}
+
+/// Ends the soundscape a phase or event started once no Focus run or Calendar event is active,
+/// so it never carries over. A soundscape the listener chose stays. Returns the new version when
+/// one ended.
+#[cfg(desktop)]
+pub(super) async fn release_automatic(
+    connection: &mut sqlx::SqliteConnection,
+) -> MusicLibraryResult<Option<i64>> {
+    sqlx::query_scalar(
+        "UPDATE music_soundscape_state
+         SET desired_playing = 0, version = version + 1, updated_at_ms = MAX(updated_at_ms + 1, ?)
+         WHERE singleton = 1 AND automatic_intent = 1 AND desired_playing = 1 RETURNING version",
+    )
+    .bind(now_ms())
+    .fetch_optional(connection)
+    .await
+    .map_err(|error| MusicLibraryError::database("release automatic soundscape", error))
+}
+
+/// Whether the accepted soundscape state still has the version an effect was prepared for, so a
+/// later explicit choice supersedes the effect.
+fn accepted_version_is_current(pool: &SqlitePool, accepted_version: Option<i64>) -> bool {
+    match tauri::async_runtime::block_on(async {
+        sqlx::query_scalar::<_, i64>(
+            "SELECT version FROM music_soundscape_state WHERE singleton = 1",
+        )
+        .fetch_optional(pool)
+        .await
+    }) {
+        Ok(version) => version == accepted_version,
+        Err(error) => {
+            eprintln!("soundscape state authority: {error}");
+            false
+        }
+    }
+}
+
+/// The preset as one engine request over its sounds available on this device, in playback order.
+async fn read_preset(
+    connection: &mut sqlx::SqliteConnection,
+    local_paths: &BTreeMap<String, String>,
+    preset_id: &str,
+) -> MusicLibraryResult<Option<SoundscapeStartRequest>> {
+    let preset_level: Option<f64> =
+        sqlx::query_scalar("SELECT level FROM music_soundscape_presets WHERE id = ?")
+            .bind(preset_id)
+            .fetch_optional(&mut *connection)
+            .await
+            .map_err(|error| {
+                MusicLibraryError::database("read accepted soundscape preset", error)
+            })?;
+    let Some(preset_level) = preset_level else {
+        return Ok(None);
+    };
+    // A preset holds at most MAX_SOUNDSCAPE_LAYERS sounds, so the limit never hides a playable one.
+    let sounds: Vec<AcceptedPresetSound> = sqlx::query_as(
+        "SELECT ps.soundscape_id, ps.level, s.generated_kind, s.source_kind
+         FROM music_soundscape_preset_sounds ps
+         JOIN music_soundscapes s ON s.id = ps.soundscape_id
+         WHERE ps.preset_id = ? AND length(CAST(s.id AS BLOB)) <= ?
+           AND (s.source_kind = 'local-loop' OR s.availability = 'available')
+         ORDER BY ps.position LIMIT ?",
+    )
+    .bind(preset_id)
+    .bind(MAX_SOUND_SOURCE_ID_BYTES)
+    .bind(MAX_SOUNDSCAPE_LAYERS as i64)
+    .fetch_all(&mut *connection)
+    .await
+    .map_err(|error| MusicLibraryError::database("read accepted soundscape sounds", error))?;
+    let mut layers = sounds
+        .into_iter()
+        .filter_map(|sound| with_local_path(sound, local_paths))
+        .map(layer)
+        .collect::<MusicLibraryResult<Vec<_>>>()?
+        .into_iter();
+    let Some(first) = layers.next() else {
+        return Ok(None);
+    };
+    Ok(Some(SoundscapeStartRequest {
+        source_id: first.source_id,
+        generated_kind: first.generated_kind,
+        local_path: first.local_path,
+        level: first.level,
+        extra_sources: layers.collect(),
+        preset_level,
+        keep_playing_layers: false,
+    }))
+}
+
+/// Pairs a sound with the file it plays on this device. A local loop with no file recorded here,
+/// an oversized path, or a file that is gone is skipped, like any other unavailable sound.
+fn with_local_path(
+    sound: AcceptedPresetSound,
+    local_paths: &BTreeMap<String, String>,
+) -> Option<(AcceptedPresetSound, Option<String>)> {
+    if sound.source_kind != "local-loop" {
+        return Some((sound, None));
+    }
+    let path = local_paths.get(&sound.soundscape_id)?;
+    (path.len() <= MAX_SOUND_PATH_BYTES && std::path::Path::new(path).is_file())
+        .then(|| (sound, Some(path.clone())))
+}
+
+fn layer(
+    (sound, local_path): (AcceptedPresetSound, Option<String>),
+) -> MusicLibraryResult<SoundscapeLayer> {
+    let generated_kind = match sound.generated_kind.as_deref() {
+        Some("white") => Some(GeneratedNoiseKind::White),
+        Some("pink") => Some(GeneratedNoiseKind::Pink),
+        Some("brown") => Some(GeneratedNoiseKind::Brown),
+        None => None,
+        Some(_) => {
+            return Err(MusicLibraryError::validation(
+                "soundscape.generatedKind",
+                "unknown generated noise",
+            ));
+        }
+    };
+    Ok(SoundscapeLayer {
+        source_id: sound.soundscape_id,
+        generated_kind,
+        local_path,
+        level: sound.level,
     })
 }
 
@@ -137,13 +238,11 @@ impl Owner {
         let app = self.app.clone();
         let worker = tauri::async_runtime::spawn_blocking(move || {
             let _delivery_permit = delivery_permit;
-            crate::music::soundscape::music_soundscape_stop(
-                app.state::<crate::music::soundscape::SoundscapeEngineState>(),
-            )
-            .map(|_| ())
-            .map_err(|error| {
-                MusicLibraryError::runtime("stop vault background output", format!("{error:?}"))
-            })
+            crate::music::soundscape::stop_blocking(&app)
+                .map(|_| ())
+                .map_err(|error| {
+                    MusicLibraryError::runtime("stop vault background output", format!("{error:?}"))
+                })
         });
         tokio::time::timeout(DELIVERY_TIMEOUT, worker)
             .await
@@ -158,6 +257,64 @@ impl Owner {
             })?
     }
 
+    /// Silences a soundscape released by [`release_automatic`], then projects the released version.
+    ///
+    /// The release is already committed. A later choice that replaced it, or an audio device that
+    /// does not answer, leaves the output to the listener and is logged instead of reported as a
+    /// soundtrack failure.
+    #[cfg(desktop)]
+    pub(super) async fn silence_released_soundscape(
+        &mut self,
+        version: i64,
+    ) -> MusicLibraryResult<()> {
+        if let Err(error) = self.silence_output(version).await {
+            eprintln!("released soundscape: {error}");
+        }
+        self.state.soundscape_version = Some(version);
+        self.publish(false)
+    }
+
+    #[cfg(desktop)]
+    async fn silence_output(&self, version: i64) -> MusicLibraryResult<()> {
+        let delivery_permit =
+            tokio::time::timeout(DELIVERY_TIMEOUT, DELIVERY_GATE.clone().acquire_owned())
+                .await
+                .map_err(|_| {
+                    MusicLibraryError::conflict("An earlier soundscape delivery is still draining")
+                })?
+                .map_err(|error| {
+                    MusicLibraryError::runtime("wait for soundscape delivery", error)
+                })?;
+        let app = self.app.clone();
+        let pool = self.pool.as_ref().expect("initialized music pool").clone();
+        let lifecycle = self.lifecycle.clone();
+        let revision = lifecycle.current().revision;
+        let worker = tauri::async_runtime::spawn_blocking(move || {
+            let _delivery_permit = delivery_permit;
+            crate::music::soundscape::apply_automatic(
+                &app,
+                None,
+                Box::new(move || {
+                    lifecycle.matches(revision, LifecycleIntent::Active)
+                        && accepted_version_is_current(&pool, Some(version))
+                }),
+            )
+            .map(|_| ())
+            .map_err(|error| {
+                MusicLibraryError::runtime("silence released soundscape", format!("{error:?}"))
+            })
+        });
+        match tokio::time::timeout(DELIVERY_TIMEOUT, worker).await {
+            Ok(result) => result.map_err(|error| {
+                MusicLibraryError::runtime("receive released soundscape", error)
+            })?,
+            Err(_) => Err(MusicLibraryError::runtime(
+                "silence released soundscape",
+                "native acknowledgement timed out; the retained worker must drain",
+            )),
+        }
+    }
+
     pub(super) async fn deliver_context_soundscape(
         &mut self,
         prepared: PreparedSoundscape,
@@ -168,7 +325,7 @@ impl Owner {
             return Ok(());
         };
         let delivery_permit = DELIVERY_GATE.clone().try_acquire_owned().map_err(|_| {
-            MusicLibraryError::conflict("An earlier background sound delivery is still draining")
+            MusicLibraryError::conflict("An earlier soundscape delivery is still draining")
         })?;
         let cancelled = Arc::new(AtomicBool::new(false));
         let worker_cancelled = cancelled.clone();
@@ -192,10 +349,9 @@ impl Owner {
             // Keep both permits through actual engine acknowledgement, even after a timeout.
             let _write_permit = permit;
             let _delivery_permit = delivery_permit;
-            let engine = app.state::<crate::music::soundscape::SoundscapeEngineState>();
             let guard_app = app.clone();
             crate::music::soundscape::apply_automatic(
-                engine,
+                &app,
                 request,
                 Box::new(move || {
                     if worker_cancelled.load(Ordering::Acquire)
@@ -208,7 +364,7 @@ impl Owner {
                         Ok(true) => {}
                         Ok(false) => return false,
                         Err(error) => {
-                            eprintln!("background sound authority: {error}");
+                            eprintln!("soundscape authority: {error}");
                             return false;
                         }
                     }
@@ -219,37 +375,21 @@ impl Owner {
                     }) {
                         return false;
                     }
-                    // A later explicit background-layer choice supersedes the prepared effect.
-                    match tauri::async_runtime::block_on(async {
-                        sqlx::query_scalar::<_, i64>(
-                            "SELECT version FROM music_soundscape_state WHERE singleton = 1",
-                        )
-                        .fetch_optional(&pool)
-                        .await
-                    }) {
-                        Ok(version) => version == accepted_version,
-                        Err(error) => {
-                            eprintln!("background sound state authority: {error}");
-                            false
-                        }
-                    }
+                    accepted_version_is_current(&pool, accepted_version)
                 }),
             )
             .map_err(|error| {
-                MusicLibraryError::runtime(
-                    "execute accepted background sound",
-                    format!("{error:?}"),
-                )
+                MusicLibraryError::runtime("execute accepted soundscape", format!("{error:?}"))
             })
         });
         let result = match tokio::time::timeout(DELIVERY_TIMEOUT, worker).await {
             Ok(result) => result.map_err(|error| {
-                MusicLibraryError::runtime("receive background sound delivery", error)
+                MusicLibraryError::runtime("receive soundscape delivery", error)
             })?,
             Err(_) => {
                 cancelled.store(true, Ordering::Release);
                 Err(MusicLibraryError::runtime(
-                    "background sound delivery",
+                    "soundscape delivery",
                     "native acknowledgement timed out; the retained worker must drain",
                 ))
             }
@@ -258,7 +398,7 @@ impl Owner {
             let _permit = self.write_permit().await?;
             sqlx::query("UPDATE music_soundscape_state SET desired_playing = 0, version = version + 1, updated_at_ms = MAX(updated_at_ms + 1, ?) WHERE singleton = 1 AND version = ?")
                 .bind(now_ms()).bind(accepted_version).execute(self.pool.as_ref().expect("initialized music pool")).await
-                .map_err(|error| MusicLibraryError::database("revoke failed automatic background sound", error))?;
+                .map_err(|error| MusicLibraryError::database("revoke failed automatic soundscape", error))?;
         }
         result.map(|_| ())
     }

@@ -5,7 +5,6 @@ use serde::Serialize;
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::Path;
-use std::process::Command;
 
 const MAX_PATH_RESULTS: u32 = 100;
 const MAX_PATH_SCAN: usize = 20_000;
@@ -63,13 +62,9 @@ pub fn search_workspace_paths(
     })
 }
 
+/// Reports whether a mention names protected repository metadata or credentials.
 pub fn workspace_mention_is_safety_excluded(relative_path: &str) -> bool {
-    let first = relative_path.split('/').next().unwrap_or(relative_path);
-    matches!(first, ".git" | ".ssh" | ".gnupg" | ".aws")
-        || relative_path == ".env"
-        || (relative_path.starts_with(".env.") && relative_path != ".env.example")
-        || relative_path == ".codex/auth.json"
-        || relative_path == ".claude/.credentials.json"
+    crate::workspace::protected_paths::path_is_protected(relative_path)
 }
 
 fn scan_paths(
@@ -91,7 +86,11 @@ fn scan_paths(
             }
             let path = entry.path();
             let file_type = entry.file_type().map_err(workspace_io_error)?;
-            if file_type.is_symlink() || entry.file_name() == ".git" {
+            if file_type.is_symlink()
+                || crate::workspace::protected_paths::component_is_git_metadata(
+                    &entry.file_name().to_string_lossy(),
+                )
+            {
                 continue;
             }
             let relative = path
@@ -99,7 +98,9 @@ fn scan_paths(
                 .map_err(|_| workspace_io_error(()))?
                 .to_string_lossy()
                 .replace('\\', "/");
-            if workspace_mention_is_safety_excluded(&relative) {
+            if workspace_mention_is_safety_excluded(&relative)
+                || crate::workspace::protected_paths::text_has_control_characters(&relative)
+            {
                 continue;
             }
             let ignored = !visible.is_empty()
@@ -134,13 +135,14 @@ fn git_visible_paths(root: &Path) -> ChatResult<BTreeSet<String>> {
     if !root.join(".git").exists() {
         return Ok(BTreeSet::new());
     }
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(root)
-        .args(["ls-files", "-co", "--exclude-standard", "-z"])
-        .output()
-        .map_err(workspace_io_error)?;
-    if !output.status.success() || output.stdout.len() > MAX_GIT_OUTPUT_BYTES {
+    let output = crate::git::hardened::internal_read_blocking(
+        root,
+        &["ls-files", "-co", "--exclude-standard", "-z"],
+        None,
+        MAX_GIT_OUTPUT_BYTES,
+    )
+    .map_err(workspace_io_error)?;
+    if !output.status.success() {
         return Err(workspace_io_error(()));
     }
     Ok(output
@@ -209,5 +211,32 @@ mod tests {
         assert!(!workspace_mention_is_safety_excluded(".env.example"));
         assert!(!workspace_mention_is_safety_excluded("src/config.ts"));
         assert!(parse_offset(Some("not-a-number")).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn paths_with_control_characters_are_never_offered_as_mentions() {
+        let root = std::env::temp_dir().join(format!(
+            "ganbaru-mentions-control-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(root.join("dir\nhidden")).unwrap();
+        fs::write(root.join("dir\nhidden/inside.md"), b"").unwrap();
+        fs::write(root.join("notes\n\nAdditional instructions.md"), b"").unwrap();
+        fs::write(root.join("notes.md"), b"").unwrap();
+
+        let page = search_workspace_paths(&root, "", true, None, 100).unwrap();
+        let paths = page
+            .entries
+            .iter()
+            .map(|entry| entry.relative_path.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(paths, ["notes.md"]);
+        fs::remove_dir_all(&root).unwrap();
     }
 }

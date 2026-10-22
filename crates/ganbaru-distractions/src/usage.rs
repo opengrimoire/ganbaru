@@ -9,6 +9,44 @@ use crate::rules::{is_protected_desktop_app_name, normalize_app_candidate_name};
 use sha2::{Digest, Sha256};
 use sqlx::SqlitePool;
 
+/// Days of usage history kept, far beyond the weekly budget window so yearly trends survive.
+pub const USAGE_RETENTION_DAYS: u64 = 400;
+
+/// Days a sample's local date may run ahead of the receiving device's UTC date. Local dates
+/// range from UTC-12 to UTC+14, so a correct clock is at most one calendar day ahead of UTC.
+pub const USAGE_FUTURE_TOLERANCE_DAYS: u64 = 1;
+
+/// Inclusive range of `yyyy-mm-dd` local dates accepted into usage history.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct UsageDateWindow {
+    pub earliest: String,
+    pub latest: String,
+}
+
+impl UsageDateWindow {
+    /// Whether `local_date` is a valid local date inside the window.
+    pub fn contains(&self, local_date: &str) -> bool {
+        is_valid_local_date(local_date)
+            && local_date >= self.earliest.as_str()
+            && local_date <= self.latest.as_str()
+    }
+}
+
+/// Usage history window for a device whose current UTC date is `today_utc`.
+pub fn usage_date_window(today_utc: chrono::NaiveDate) -> UsageDateWindow {
+    let format = |date: chrono::NaiveDate| date.format("%Y-%m-%d").to_string();
+    let earliest = today_utc
+        .checked_sub_days(chrono::Days::new(USAGE_RETENTION_DAYS))
+        .unwrap_or(chrono::NaiveDate::MIN);
+    let latest = today_utc
+        .checked_add_days(chrono::Days::new(USAGE_FUTURE_TOLERANCE_DAYS))
+        .unwrap_or(chrono::NaiveDate::MAX);
+    UsageDateWindow {
+        earliest: format(earliest),
+        latest: format(latest),
+    }
+}
+
 fn now_epoch_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

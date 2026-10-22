@@ -6,6 +6,7 @@
 //! folder under the supplied vault root.
 
 pub mod custom_fields;
+mod defaults;
 pub mod dependency_cascade;
 mod dependency_cascade_graph;
 mod dependency_cascade_plan;
@@ -25,7 +26,6 @@ pub mod task_commands;
 pub mod task_reminders;
 pub mod task_summaries;
 mod task_views;
-mod templates;
 pub mod validation;
 pub mod views;
 pub mod workspace;

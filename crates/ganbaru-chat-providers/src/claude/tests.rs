@@ -19,6 +19,7 @@ use std::sync::{
 };
 use std::time::{Duration, Instant};
 
+mod approvals;
 mod transport;
 
 static NEXT_TEST_DIRECTORY: AtomicU64 = AtomicU64::new(1);
@@ -387,6 +388,7 @@ fn launch_arguments_preserve_native_safety_and_resume_semantics() {
             effort: Some("high"),
             fast_mode: Some(true),
             modes: modes(SafetyMode::FullAccess, InteractionMode::Build),
+            project_configuration: ProjectConfigurationAccess::Trusted,
         },
     )
     .unwrap();
@@ -423,6 +425,7 @@ fn launch_arguments_preserve_native_safety_and_resume_semantics() {
             effort: None,
             fast_mode: None,
             modes: modes(SafetyMode::Custom, InteractionMode::Build),
+            project_configuration: ProjectConfigurationAccess::Trusted,
         },
     )
     .unwrap();
@@ -443,6 +446,7 @@ fn launch_arguments_preserve_native_safety_and_resume_semantics() {
             effort: None,
             fast_mode: None,
             modes: modes(SafetyMode::AskForApproval, InteractionMode::Plan),
+            project_configuration: ProjectConfigurationAccess::Trusted,
         },
     )
     .unwrap();
@@ -464,22 +468,83 @@ fn launch_arguments_preserve_native_safety_and_resume_semantics() {
 }
 
 #[test]
+fn claude_launch_arguments_restrict_project_setting_sources() {
+    let launch = |project_configuration| {
+        launch_arguments(
+            Vec::new(),
+            &[],
+            ClaudeLaunchOptions {
+                fresh_session_uuid: None,
+                resume_session_uuid: None,
+                last_assistant_uuid: None,
+                model: None,
+                effort: None,
+                fast_mode: Some(false),
+                modes: modes(SafetyMode::AskForApproval, InteractionMode::Build),
+                project_configuration,
+            },
+        )
+        .unwrap()
+    };
+    let untrusted = launch(ProjectConfigurationAccess::Restricted);
+    assert!(
+        untrusted
+            .windows(2)
+            .any(|pair| pair == ["--setting-sources", "user"])
+    );
+    assert!(
+        !untrusted
+            .iter()
+            .any(|argument| argument == "--strict-mcp-config"),
+        "the user's own MCP servers stay available"
+    );
+    assert_eq!(
+        untrusted
+            .iter()
+            .filter(|argument| *argument == "--settings")
+            .count(),
+        1
+    );
+
+    let trusted = launch(ProjectConfigurationAccess::Trusted);
+    assert!(
+        !trusted
+            .iter()
+            .any(|argument| argument == "--setting-sources" || argument == "--strict-mcp-config")
+    );
+}
+
+#[test]
 fn protected_transport_arguments_cannot_be_overridden() {
-    let error = launch_arguments(
-        Vec::new(),
-        &["--permission-mode=bypassPermissions".to_string()],
-        ClaudeLaunchOptions {
-            fresh_session_uuid: Some("11111111-1111-4111-8111-111111111111"),
-            resume_session_uuid: None,
-            last_assistant_uuid: None,
-            model: None,
-            effort: None,
-            fast_mode: None,
-            modes: modes(SafetyMode::AskForApproval, InteractionMode::Build),
-        },
-    )
-    .unwrap_err();
-    assert_eq!(error.code, ChatErrorCode::Validation);
+    for argument in [
+        "--permission-mode=bypassPermissions",
+        "--dangerously-skip-permissions",
+        "--output-format=text",
+        "--mcp-config",
+        "--settings",
+        "--continue",
+        "-c",
+        "-r",
+        "--fork-session",
+        "--session-id=11111111-1111-4111-8111-111111111111",
+    ] {
+        let error = launch_arguments(
+            Vec::new(),
+            &[argument.to_string()],
+            ClaudeLaunchOptions {
+                fresh_session_uuid: Some("11111111-1111-4111-8111-111111111111"),
+                resume_session_uuid: None,
+                last_assistant_uuid: None,
+                model: None,
+                effort: None,
+                fast_mode: None,
+                modes: modes(SafetyMode::AskForApproval, InteractionMode::Build),
+                project_configuration: ProjectConfigurationAccess::Trusted,
+            },
+        )
+        .unwrap_err();
+        assert_eq!(error.code, ChatErrorCode::Validation, "{argument}");
+    }
 }
 
 #[test]
@@ -674,4 +739,35 @@ fn resume_not_found_classifier_requires_session_specific_evidence() {
     assert!(!diagnostic_confirms_resume_not_found(
         "Session transport disconnected"
     ));
+}
+
+#[test]
+fn separate_sessions_never_share_event_or_fallback_item_ids() {
+    let mut event_ids = std::collections::BTreeSet::new();
+    let mut item_ids = std::collections::BTreeSet::new();
+    for session in ["session-a", "session-b"] {
+        let normalizer = ClaudeEventNormalizer::new(
+            ProviderInstanceId::new("claude-instance-1".to_string()).unwrap(),
+            ChatThreadId::new("thread-1".to_string()).unwrap(),
+            ProviderSessionId::new(session.to_string()).unwrap(),
+        );
+        let mut state = route_state();
+        state.active_chat_turn_id = Some(ChatTurnId::new("turn-1".to_string()).unwrap());
+        let mut session_items = std::collections::BTreeSet::new();
+        for line in include_str!("fixtures/compatibility.jsonl").lines() {
+            let value: Value = serde_json::from_str(line).unwrap();
+            if value.get("type").and_then(Value::as_str) == Some("control_request") {
+                continue;
+            }
+            for event in normalizer.normalize_message(&mut state, value).unwrap() {
+                assert!(event_ids.insert(event.event_id.as_str().to_string()));
+                if let CanonicalEvent::ContentDelta(delta) = &event.event {
+                    session_items.insert(delta.item_id.clone());
+                }
+            }
+        }
+        assert!(!session_items.is_empty());
+        assert!(session_items.iter().all(|item| !item_ids.contains(item)));
+        item_ids.extend(session_items);
+    }
 }

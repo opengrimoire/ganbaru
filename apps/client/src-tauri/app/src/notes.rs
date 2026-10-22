@@ -1,5 +1,5 @@
 use crate::db::connect_sqlite;
-use tauri::{AppHandle, Runtime};
+use tauri::{AppHandle, Runtime, State};
 
 mod data_source_row_hierarchy;
 mod database_management;
@@ -7,6 +7,7 @@ mod database_management;
 mod export_dialogs;
 pub(crate) mod external_links;
 mod file_assets;
+pub(crate) mod notion_api_import;
 mod page_cover_assets;
 mod page_icon_assets;
 pub(crate) mod project_history;
@@ -27,6 +28,9 @@ pub use page_cover_assets::*;
 pub use page_icon_assets::*;
 #[allow(unused_imports)]
 pub use project_history::*;
+
+#[cfg(desktop)]
+use crate::native_dialogs::on_dialog_thread;
 
 /// Commit one bounded editor operation with its durable retry receipt.
 #[tauri::command]
@@ -294,15 +298,37 @@ pub async fn notes_import_html_page<R: Runtime>(
     project_history::mutation_result(&pool, value).await
 }
 
+/// Imports Notion pages and data sources; a request with `import_id` can be stopped with
+/// `notes_cancel_notion_api_import`, keeping the sources finished before the stop.
 #[tauri::command]
 pub async fn notes_import_notion_api<R: Runtime>(
     app: AppHandle<R>,
+    imports: State<'_, notion_api_import::NotionApiImportCancellations>,
     db_url: String,
     request: NoteNotionApiImportRequest,
 ) -> Result<project_history::NotesMutationResultDto<NoteNotionApiImportDto>, String> {
+    let registered = request
+        .import_id
+        .as_deref()
+        .map(|import_id| imports.register(import_id))
+        .transpose()?;
     let pool = connect_sqlite(app, db_url).await?;
-    let value = transfers::notion_api_import::import_from_api(&pool, request).await?;
+    let unaddressed = transfers::notion_api_import::NotionImportCancellation::new();
+    let cancellation = registered
+        .as_ref()
+        .map_or(&unaddressed, |registered| registered.cancellation());
+    let value = transfers::notion_api_import::import_from_api(&pool, request, cancellation).await?;
+    drop(registered);
     project_history::mutation_result(&pool, value).await
+}
+
+/// Stops a running Notion API import; `false` when no import with that ID is running.
+#[tauri::command]
+pub fn notes_cancel_notion_api_import(
+    imports: State<'_, notion_api_import::NotionApiImportCancellations>,
+    import_id: String,
+) -> Result<bool, String> {
+    imports.cancel(&import_id)
 }
 
 #[cfg(desktop)]
@@ -311,10 +337,9 @@ pub async fn notes_import_notion_export_folder<R: Runtime>(
     app: AppHandle<R>,
     db_url: String,
     request: NoteNotionExportImportRequest,
-) -> Result<project_history::NotesMutationResultDto<NoteNotionExportImportDto>, String> {
+) -> Result<project_history::NotesMutationResultDto<Option<NoteNotionExportImportDto>>, String> {
     let pool = connect_sqlite(app.clone(), db_url).await?;
-    let vault_root = crate::vault::active_writable_vault_path(&app)?;
-    let value = transfers::notion_export_import::import_folder(&pool, &vault_root, request).await?;
+    let value = export_dialogs::pick_and_import_notion_export(&app, &pool, request).await?;
     project_history::mutation_result(&pool, value).await
 }
 

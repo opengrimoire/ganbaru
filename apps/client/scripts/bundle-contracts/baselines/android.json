@@ -8,7 +8,7 @@
         "src/main-mobile.ts",
         "src/MobileApp.svelte"
       ],
-      "maxSourceModules": 144
+      "maxSourceModules": 145
     },
     {
       "name": "calendar",
@@ -23,21 +23,21 @@
         "src/lib/components/projects/ProjectsView.svelte",
         "src/lib/components/projects/list/ProjectListView.svelte"
       ],
-      "maxSourceModules": 299
+      "maxSourceModules": 301
     },
     {
       "name": "notes",
       "roots": [
         "src/lib/components/notes/NotesView.svelte"
       ],
-      "maxSourceModules": 414
+      "maxSourceModules": 415
     },
     {
       "name": "quick-notes",
       "roots": [
         "src/lib/components/quick-notes/QuickNotesPanel.svelte"
       ],
-      "maxSourceModules": 127
+      "maxSourceModules": 134
     },
     {
       "name": "music",
@@ -45,17 +45,17 @@
         "src/lib/components/music/MusicPanel.svelte",
         "src/lib/components/music/MusicPlaybackHost.svelte"
       ],
-      "maxSourceModules": 191
+      "maxSourceModules": 194
     },
     {
       "name": "chat",
       "roots": [
         "src/lib/components/chat/ChatWorkspace.svelte"
       ],
-      "maxSourceModules": 310
+      "maxSourceModules": 314
     }
   ],
-  "maxTotalSourceModules": 1260,
+  "maxTotalSourceModules": 1283,
   "requiredMobileModules": [
     "src/main.ts",
     "src/main-mobile.ts",
@@ -122,7 +122,6 @@
     "src/lib/components/notes/working-markdown/NotesWorkingMarkdownEditor.mobile.svelte",
     "src/lib/components/notes/NotesProjectSettingsPanel.mobile.svelte",
     "src/lib/components/notes/working-markdown/NotesWorkingMarkdownTree.mobile.svelte",
-    "src/lib/components/music/MusicSoundtrackAssignmentEditor.mobile.svelte",
     "src/lib/components/music/builder/MusicItemRepairDialog.mobile.svelte",
     "src/lib/components/music/builder/MusicRelinkWizard.mobile.svelte",
     "src/lib/components/music/soundscape/MusicSoundscapeBuilder.mobile.svelte",

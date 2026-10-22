@@ -258,7 +258,17 @@ export const calendar = {
     removeLinkedTask: (task: string) => `Remove linked task ${task}`,
     taskLinksRecurring: "Task links are available for single events.",
     music: "Music",
-    musicDescription: "Override the project soundtrack for this event. Inherited choices remain visible and every phase boundary starts a fresh track when playback is automatic.",
+    musicPlaylist: "Playlist",
+    musicSound: "Soundscape",
+    musicPhasePlaylist: (phase: string) => `${phase} playlist`,
+    musicPhaseSound: (phase: string) => `${phase} soundscape`,
+    musicPhases: (focus: boolean, shortBreak: boolean, longBreak: boolean) => {
+      if (focus && shortBreak && longBreak) return "Focus, short and long break";
+      if (focus && (shortBreak || longBreak)) return `Focus and ${shortBreak ? "short" : "long"} break`;
+      if (focus) return "Focus only";
+      if (shortBreak && longBreak) return "Breaks only";
+      return shortBreak ? "Short break only" : "Long break only";
+    },
     comingSoon: "Coming soon",
     readOnly: "Read only",
     readOnlyHyphen: "Read-only",
@@ -287,6 +297,8 @@ export const calendar = {
     deleteFailed: (message: string) => `Delete or Undo failed: ${message}`,
     previewFailed: "Could not preview this change",
     historyUnavailable: "The recorded Focus timeline could not be loaded. Try a shorter Calendar range or retry.",
+    eventsUnreadable: (count: number) =>
+      `${count} ${count === 1 ? "event" : "events"} could not be shown in this range because ${count === 1 ? "its" : "their"} saved repetition could not be expanded.`,
     saved: "Saved",
     unknownSaveError: "Unknown save error",
     saveFailed: (message: string) => `Save failed: ${message}`,
@@ -297,6 +309,9 @@ export const calendar = {
     saveAndStopTitle: "Save and stop the focus session?",
     stopAndSave: "Stop and save",
     keepEditing: "Keep editing",
+    meetingMusicTitle: "Save a meeting with music?",
+    meetingMusicMessage: "Music or a soundscape will start automatically when this event begins, which others may hear during the meeting.",
+    saveWithMusic: "Save with music",
     stopFocusSessionTitle: "Stop the focus session?",
     endEventConfirm: "End event",
     keepSession: "Keep session",

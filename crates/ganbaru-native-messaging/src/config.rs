@@ -153,7 +153,9 @@ pub(super) fn read_config(path: &std::path::Path) -> Option<DistractionsConfig> 
     })
 }
 
-const MAX_CONFIG_BYTES: u64 = 1024 * 1024;
+/// Matches the largest `config.json` the app writes, so the browser host reads every saved
+/// configuration.
+const MAX_CONFIG_BYTES: u64 = 4 * 1024 * 1024;
 
 /// Digests the persisted limits so derived budget exhaustion stays bound to that exact configuration.
 pub(super) fn limit_configuration_digest(root: &Value) -> Option<String> {

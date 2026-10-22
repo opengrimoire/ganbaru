@@ -3,6 +3,7 @@ mod helpers;
 mod agent_bridge_export;
 mod backlinks;
 mod block_append;
+mod block_depth;
 mod block_external_and_media;
 mod block_media_files;
 mod block_move_trash_duplicate;

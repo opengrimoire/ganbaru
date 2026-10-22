@@ -15,8 +15,10 @@
     QuickNoteConflictField,
     QuickNoteConflictResolved,
     QuickNoteConflictVersion,
+    QuickNoteImage,
   } from "$lib/quick-notes/types";
   import { formatSyncTime, syncDeviceName } from "$lib/sync/status";
+  import QuickNoteImageMosaic from "./QuickNoteImageMosaic.svelte";
 
   let {
     noteId,
@@ -56,7 +58,13 @@
   }
 
   function fieldLabel(field: QuickNoteConflictField): string {
-    return field === "title" ? t("quickNotes.conflict.titleField") : t("quickNotes.conflict.bodyField");
+    if (field === "title") return t("quickNotes.conflict.titleField");
+    if (field === "images") return t("quickNotes.conflict.imagesField");
+    return t("quickNotes.conflict.bodyField");
+  }
+
+  function imageSummary(images: readonly QuickNoteImage[]): string {
+    return images.length === 0 ? t("quickNotes.conflict.empty") : t("quickNotes.conflict.imageCount", images.length);
   }
 
   function source(version: QuickNoteConflictVersion): string {
@@ -131,7 +139,17 @@
             <span>{source(version)}</span>
             {#if version.displayed}<span>{t("quickNotes.conflict.shown")}</span>{/if}
           </div>
-          <div class="line-clamp-3 whitespace-pre-wrap wrap-break-word">{preview(version)}</div>
+          {#if group.field === "images"}
+            {@const images = version.images ?? []}
+            <div>{imageSummary(images)}</div>
+            {#if images.length > 0}
+              <div class="w-full max-w-56 overflow-hidden rounded-md">
+                <QuickNoteImageMosaic {images} variant="preview" />
+              </div>
+            {/if}
+          {:else}
+            <div class="line-clamp-3 whitespace-pre-wrap wrap-break-word">{preview(version)}</div>
+          {/if}
           <div class="flex flex-wrap items-center gap-1">
             {#if version.displayed}
               <button class={actionClass} type="button" disabled={busy} onclick={() => void resolve(group.field, { kind: "displayed" })}>{t("quickNotes.conflict.keepThis")}</button>

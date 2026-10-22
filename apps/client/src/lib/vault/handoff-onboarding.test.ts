@@ -1,9 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
-  canBootstrapUntouchedVault,
   completeVaultHandoffOnboarding,
   formatPairingCountdown,
-  markIndependentVaultUsed,
   vaultHandoffOnboardingCompleted,
 } from "./handoff-onboarding";
 
@@ -29,19 +27,6 @@ describe("vault handoff onboarding state", () => {
       getItem: (key: string) => key === "ganbaru.vault-handoff-onboarding.v2" ? "complete" : null,
     };
 
-    expect(vaultHandoffOnboardingCompleted(storage, "vault-a")).toBe(false);
-  });
-
-  it("protects the independent vault after onboarding is skipped", () => {
-    const values = new Map<string, string>();
-    const storage = {
-      getItem: (key: string) => values.get(key) ?? null,
-      setItem: (key: string, value: string) => { values.set(key, value); },
-    };
-
-    expect(canBootstrapUntouchedVault(storage)).toBe(true);
-    markIndependentVaultUsed(storage);
-    expect(canBootstrapUntouchedVault(storage)).toBe(false);
     expect(vaultHandoffOnboardingCompleted(storage, "vault-a")).toBe(false);
   });
 

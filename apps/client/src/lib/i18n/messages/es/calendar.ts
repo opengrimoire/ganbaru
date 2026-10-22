@@ -250,7 +250,17 @@ export const calendar = {
     removeLinkedTask: (task: string) => `Quitar tarea vinculada ${task}`,
     taskLinksRecurring: "Los vínculos de tareas están disponibles para eventos individuales.",
     music: "Música",
-    musicDescription: "Modifica la banda sonora del proyecto para este evento. Las opciones heredadas permanecen visibles y cada cambio de fase inicia una pista nueva cuando la reproducción es automática.",
+    musicPlaylist: "Playlist",
+    musicSound: "Sonido ambiental",
+    musicPhasePlaylist: (phase: string) => `Playlist (${phase})`,
+    musicPhaseSound: (phase: string) => `Sonido ambiental (${phase})`,
+    musicPhases: (focus: boolean, shortBreak: boolean, longBreak: boolean) => {
+      if (focus && shortBreak && longBreak) return "Enfoque, descanso corto y largo";
+      if (focus && (shortBreak || longBreak)) return `Enfoque y descanso ${shortBreak ? "corto" : "largo"}`;
+      if (focus) return "Solo enfoque";
+      if (shortBreak && longBreak) return "Solo descansos";
+      return shortBreak ? "Solo descanso corto" : "Solo descanso largo";
+    },
     comingSoon: "Próximamente",
     readOnly: "Solo lectura",
     readOnlyHyphen: "Solo lectura",
@@ -279,6 +289,10 @@ export const calendar = {
     deleteFailed: (message: string) => `Error al eliminar o deshacer: ${message}`,
     previewFailed: "No se pudo previsualizar este cambio",
     historyUnavailable: "No se pudo cargar la línea de tiempo de Focus. Prueba con un intervalo más corto del calendario o reintenta.",
+    eventsUnreadable: (count: number) =>
+      count === 1
+        ? "No se pudo mostrar 1 evento en este intervalo porque su repetición guardada no se pudo expandir."
+        : `No se pudieron mostrar ${count} eventos en este intervalo porque su repetición guardada no se pudo expandir.`,
     saved: "Guardado",
     unknownSaveError: "Error desconocido al guardar",
     saveFailed: (message: string) => `No se pudo guardar: ${message}`,
@@ -289,6 +303,9 @@ export const calendar = {
     saveAndStopTitle: "¿Guardar y detener la sesión de enfoque?",
     stopAndSave: "Detener y guardar",
     keepEditing: "Seguir editando",
+    meetingMusicTitle: "¿Guardar una reunión con música?",
+    meetingMusicMessage: "La música o un sonido ambiental empezará automáticamente cuando comience este evento, y otras personas podrían escucharlo durante la reunión.",
+    saveWithMusic: "Guardar con música",
     stopFocusSessionTitle: "¿Detener la sesión de enfoque?",
     endEventConfirm: "Terminar evento",
     keepSession: "Mantener sesión",

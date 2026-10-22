@@ -23,6 +23,7 @@ fn enabled() -> bool {
 pub(super) fn phase_rules(
     root: &Value,
     phase: Option<&DistractionsRuntimeState>,
+    catalog: &DesktopCatalogIndex,
 ) -> Result<Vec<DistractionsDesktopAppRuleInput>, String> {
     let Some(rules) = root.pointer("/distractions/desktop/blockedApps") else {
         return Ok(Vec::new());
@@ -46,11 +47,13 @@ pub(super) fn phase_rules(
         let identity = DistractionsDesktopRuleIdentity::DesktopApp {
             rule_id: rule.name.clone(),
         };
-        if configured_close_authorization(root, phase, None, &identity).is_ok() {
+        if let Ok(authorization) =
+            configured_close_authorization(root, phase, None, &identity, catalog)
+        {
             result.push(DistractionsDesktopAppRuleInput {
                 rule_identity: identity,
                 name: rule.name,
-                match_names: rule.match_names,
+                match_names: authorization.match_names().to_vec(),
             });
         }
     }
@@ -68,7 +71,12 @@ fn is_safe_entry(entry: &limits::LimitEntry) -> bool {
             .any(|name| is_protected_desktop_app_name(name))
 }
 
-pub(super) fn usage_rules(config: &limits::LimitsConfig) -> Vec<DistractionsDesktopAppRuleInput> {
+/// Close authorization keeps the same trusted names, so these matchers never observe a process the
+/// limit could not close.
+pub(super) fn usage_rules(
+    config: &limits::LimitsConfig,
+    catalog: &DesktopCatalogIndex,
+) -> Vec<DistractionsDesktopAppRuleInput> {
     if !config.enabled {
         return Vec::new();
     }
@@ -81,13 +89,20 @@ pub(super) fn usage_rules(config: &limits::LimitsConfig) -> Vec<DistractionsDesk
                 .entries
                 .iter()
                 .filter(|entry| is_safe_entry(entry))
-                .map(|entry| DistractionsDesktopAppRuleInput {
-                    name: entry.desktop_app_name.clone().unwrap_or_default(),
-                    match_names: entry.desktop_app_match_names.clone(),
-                    rule_identity: DistractionsDesktopRuleIdentity::UsageLimit {
-                        rule_id: limit.id.clone(),
-                        entry_id: entry.id.clone(),
-                    },
+                .map(|entry| {
+                    let name = entry.desktop_app_name.clone().unwrap_or_default();
+                    DistractionsDesktopAppRuleInput {
+                        match_names: trusted_process_match_names(
+                            &name,
+                            entry.desktop_app_match_names.clone(),
+                            catalog.process_names(&name),
+                        ),
+                        name,
+                        rule_identity: DistractionsDesktopRuleIdentity::UsageLimit {
+                            rule_id: limit.id.clone(),
+                            entry_id: entry.id.clone(),
+                        },
+                    }
                 })
         })
         .collect()
@@ -244,7 +259,9 @@ mod tests {
             process_name: "game".into(),
             process_id: 42,
             process_identity: "exact-process".into(),
-            rule_identity: usage_rules(&config)[0].rule_identity.clone(),
+            rule_identity: usage_rules(&config, &DesktopCatalogIndex::default())[0]
+                .rule_identity
+                .clone(),
         };
         let mut another = observed.clone();
         another.process_id = 43;

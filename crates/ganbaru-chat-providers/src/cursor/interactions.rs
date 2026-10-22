@@ -5,6 +5,7 @@ use super::protocol::{
 };
 use crate::events::*;
 use crate::models::*;
+use ganbaru_chat_contracts::protected_paths::path_is_protected;
 use serde_json::{Map, Value, json};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Component, Path};
@@ -107,6 +108,8 @@ pub fn parse_permission(params: &Value, workspace: &Path) -> ChatResult<ParsedPe
             detail,
             allowed_decisions,
             safe_payload: safe_shape(params),
+            subject: None,
+            session_grants: Vec::new(),
         },
         safely_in_workspace_edit: tool_kind == "edit"
             && tool_paths_are_in_workspace(tool, workspace),
@@ -591,6 +594,9 @@ fn tool_paths_are_in_workspace(tool: &Map<String, Value>, workspace: &Path) -> b
             .all(|path| path_is_in_workspace(path, workspace))
 }
 
+/// Reports whether a requested path resolves inside the workspace and names
+/// neither repository metadata nor credentials, so an edit to it may be
+/// approved without asking.
 fn path_is_in_workspace(value: &str, workspace: &Path) -> bool {
     let path = Path::new(value);
     if path.components().any(|component| {
@@ -614,7 +620,30 @@ fn path_is_in_workspace(value: &str, workspace: &Path) -> bool {
         };
         existing = parent;
     }
-    std::fs::canonicalize(existing).is_ok_and(|canonical| canonical.starts_with(workspace))
+    let Ok(canonical) = std::fs::canonicalize(existing) else {
+        return false;
+    };
+    let (Ok(resolved), Ok(missing)) = (
+        canonical.strip_prefix(workspace),
+        candidate.strip_prefix(existing),
+    ) else {
+        return false;
+    };
+    !path_is_protected(&slash_path(&resolved.join(missing)))
+        && candidate
+            .strip_prefix(workspace)
+            .map_or(true, |requested| !path_is_protected(&slash_path(requested)))
+}
+
+/// Joins normal path components with `/` for the protected-path predicate.
+fn slash_path(path: &Path) -> String {
+    path.components()
+        .filter_map(|component| match component {
+            Component::Normal(name) => Some(name.to_string_lossy()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("/")
 }
 
 fn request_kind(kind: &str) -> CanonicalRequestKind {

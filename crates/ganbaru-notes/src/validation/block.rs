@@ -149,11 +149,18 @@ pub fn validate_column_payload(payload: &Value) -> Result<(), String> {
     }
 }
 
+/// Most columns a Notes table supports, shared by validation, column edits, and importers.
+pub const MAX_TABLE_WIDTH: usize = 100;
+
 pub fn validate_table_payload(payload: &Value) -> Result<(), String> {
     match payload.get("table_width") {
-        Some(Value::Number(width)) => match width.as_i64() {
-            Some(value) if (1..=100).contains(&value) => {}
-            _ => return Err("table.table_width must be between 1 and 100".to_string()),
+        Some(Value::Number(width)) => match width.as_u64() {
+            Some(value) if (1..=MAX_TABLE_WIDTH as u64).contains(&value) => {}
+            _ => {
+                return Err(format!(
+                    "table.table_width must be between 1 and {MAX_TABLE_WIDTH}"
+                ));
+            }
         },
         _ => return Err("table.table_width must be an integer".to_string()),
     }
@@ -170,9 +177,11 @@ pub fn validate_table_payload(payload: &Value) -> Result<(), String> {
 
 pub fn validate_table_row_payload(payload: &Value) -> Result<(), String> {
     let cells = match payload.get("cells") {
-        Some(Value::Array(cells)) if (1..=100).contains(&cells.len()) => cells,
+        Some(Value::Array(cells)) if (1..=MAX_TABLE_WIDTH).contains(&cells.len()) => cells,
         Some(Value::Array(_)) => {
-            return Err("table_row.cells must include between 1 and 100 cells".to_string());
+            return Err(format!(
+                "table_row.cells must include between 1 and {MAX_TABLE_WIDTH} cells"
+            ));
         }
         _ => return Err("table_row.cells must be an array".to_string()),
     };

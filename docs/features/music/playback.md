@@ -14,18 +14,18 @@ Key rules:
 - Commands serialize through one bounded owner. Checkpoints, listening outcomes, and action receipts commit together before decoder effects are published. A retried command with the same action identity never executes twice.
 - Snooze and preference changes ask the owner to reconcile the queue; surfaces do not issue their own Next or Pause from a stale snapshot.
 - Automatic soundtrack selection (Calendar and Focus) is native. See [Music automation](automation.md) for precedence and ownership.
-- Automatic background-sound intent is recorded separately from manual intent. Startup shows the actual native output and never replays an automatic selection from a saved flag; only a freshly accepted phase or an explicit manual action can start it.
+- Automatic soundscape intent is recorded separately from manual intent. Startup shows the actual native output and never replays an automatic selection from a saved flag; only a freshly accepted phase or an explicit manual action can start it.
 - Before audible output, source preparation rechecks phase, state version, vault lifecycle revision, and expiry, so obsolete work cannot become audible.
 
 ## Vault lifecycle
 
-Vault changes revoke new playback admission immediately and wait a bounded time for the native owner to pause, stop its backend, and release its database context. Handoff waits for acknowledged shutdown of music and background sounds or reports a timeout. A newer resume always wins over an older queued freeze, and reactivation rereads the authorized vault without resuming playback automatically. Focus and Music share these lifecycle revision rules.
+Vault changes revoke new playback admission immediately and wait a bounded time for the native owner to pause, stop its backend, and release its database context. Handoff waits for acknowledged shutdown of music and soundscapes or reports a timeout. A newer resume always wins over an older queued freeze, and reactivation rereads the authorized vault without resuming playback automatically. Focus and Music share these lifecycle revision rules.
 
 ## Transport and queue
 
 The player supports play, pause, previous, next, seek where the backend supports it, volume, mute, one playback-order control, and playlist repeat. Queue identity stays stable across source transitions so controls never briefly target the previous item. The main player does not expose a speed control; playlist membership rate overrides still apply.
 
-On desktop, the Music volume is an app volume apart from the system volume. On Android, the volume control is the phone's media volume, so it follows the hardware buttons and system controls, and Music plays at full app volume beneath it; mute stays an app control. Devices whose volume apps cannot change keep the app volume.
+On desktop, the Music volume is an app volume apart from the system volume. On Android, the volume control is the phone's media volume, so it follows the hardware buttons and system controls, and Music plays at full app volume beneath it; mute stays an app control. Devices whose volume apps cannot change keep the app volume. Desktop soundscapes play relative to the Music volume; see [Soundscapes](soundscapes.md).
 
 Playback order has three exclusive modes:
 
@@ -47,7 +47,7 @@ The current-track playlist button edits the track's memberships as a draft appli
 
 Playback position, duration, status, queue context, and source generation persist with monotonic ordering, so a late save from an older source cannot overwrite newer state. Source transitions and listening outcomes commit immediately; position is checkpointed periodically.
 
-Checkpoints are keyed by local device identity and contain only portable item and membership identifiers, bounded navigation history, selection, and playback settings. They never contain resolved file paths, Android content URIs, or decoder handles. A copied vault may carry another device's checkpoint, but it never becomes this device's live session; each device restores its own checkpoint paused. A restart is not reported as an interruption, but the first Play reloads the restored selection. Ad hoc path or URL sources are transient and create no portable checkpoint.
+Checkpoints are keyed by local device identity and contain only portable item and membership identifiers, bounded navigation history, selection, and playback settings. They never contain resolved file paths, Android content URIs, or decoder handles. A copied vault may carry another device's checkpoint, but it never becomes this device's live session; each device restores its own checkpoint paused. After an app launch the queue continues on the next track from its start, following the saved playback order and starting the queue or shuffle pass over when it was finished, so returning feels like a fresh start; Previous returns to the track that was playing. Reopening a vault during the same run, such as after a handoff or a vault switch, keeps the saved track and position. A restart is not reported as an interruption, but the first Play reloads the restored selection, including browser sources restored before their host was available. Ad hoc path or URL sources are transient and create no portable checkpoint.
 
 Resume respects membership start and end boundaries, never resumes an ended item as paused, and reports changed or unsupported media as recoverable instead of seeking blindly.
 
@@ -77,7 +77,7 @@ See the [Media3 background playback contract](https://developer.android.com/medi
 
 ## YouTube playback and redesign gap
 
-YouTube plays through an embedded IFrame player served by a local host that supplies the required HTTP embedding context. Embedding failures and owner restrictions are surfaced explicitly. If the queue reaches a browser-owned source while its host is unavailable, the item stays selected and playback pauses; the session does not skip it or promise background YouTube playback.
+YouTube plays through an embedded IFrame player on a host page that supplies the required HTTP embedding context: a token-gated loopback host on desktop, and a separate native WebView on Android. Embedding failures and owner restrictions are surfaced explicitly. If the queue reaches a browser-owned source while its host is unavailable, the item stays selected and playback pauses; the session does not skip it or promise background YouTube playback.
 
 The current presentation disables pointer input on the embedded frame and places a transparent Ganbaru hit target over it. [YouTube Required Minimum Functionality](https://developers.google.com/youtube/terms/required-minimum-functionality) forbids overlays over the embedded player, so this is an unresolved redesign gap and must not be described as compliant. A redesign must keep usable Ganbaru controls without covering required player interaction and be reviewed against the current policy. The gap never justifies scraping, proxying, downloading, or bypassing embedding restrictions.
 

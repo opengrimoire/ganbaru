@@ -30,3 +30,12 @@ Also run the distraction blocker cases in [Android acceptance](android.md#distra
 - Interrupt linked read-only acknowledgement after the accepted cache commits. Totals stay consistent across retries and restart.
 - Cross local midnight during a capture and change the timezone. Old-window totals never authorize a new-window block.
 - Verify fresh journal creation, rejection of unsupported development journal schemas (which require an explicit app-data reset), checkpoint rollback, and cross-process acknowledgement on a real runtime. JVM and Rust tests do not execute Android's SQLite or ContentProvider lifecycle.
+
+## Browser extension
+
+Load the unpacked Chromium extension from `extensions/chromium/`, which requests no host access. Record the browser and version.
+
+- Opening, reloading, and navigating to a blocked site redirects the tab to the block page, which shows the site's favicon.
+- Starting a focus phase redirects already-open matching tabs; ending it restores tabs on the block page to their original addresses.
+- The block page's close action closes its tab, and an exhausted website limit blocks with the limit reason.
+- Focused website time is counted only for the active tab in the focused window.

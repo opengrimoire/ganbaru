@@ -7,14 +7,14 @@
     resolveLazyComponentLoad,
     type LazyComponentLoadState,
   } from "$lib/lazy-component-loader";
-  import FilePlus2 from "@lucide/svelte/icons/file-plus-2";
+  import FilePlus2 from "@lucide/svelte/icons/file-plus-corner";
   import Folder from "@lucide/svelte/icons/folder";
   import FolderInput from "@lucide/svelte/icons/folder-input";
   import FolderOpen from "@lucide/svelte/icons/folder-open";
   import FolderPlus from "@lucide/svelte/icons/folder-plus";
   import Pencil from "@lucide/svelte/icons/pencil";
   import Star from "@lucide/svelte/icons/star";
-  import Trash2 from "@lucide/svelte/icons/trash-2";
+  import Trash2 from "@lucide/svelte/icons/trash";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import ExplorerRowStar from "$lib/components/ui/ExplorerRowStar.svelte";
   import Loading from "$lib/components/ui/Loading.svelte";

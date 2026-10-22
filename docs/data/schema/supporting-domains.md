@@ -9,6 +9,7 @@ Quick notes are structured SQLite data, not loose Markdown files. A note has sta
 - **Order.** Notes and tags sort by `(order_key, id)`. Order keys are variable-length strings compared by bytes, so placing a note writes only that note's key and never rebalances its group. Content updates never move a note; create, pin, unarchive, and restore place it first in its group.
 - **Tags.** Tags have stable identity independent of their name. Names are unique case-insensitively and trimmed to 1 to 40 characters. The nine-tag cap is a local create rule only; replicated merges can leave more tags, which stay visible so rename and delete can fix them. Tags carry a name and an event-palette color that edit independently. Deleting a tag clears it from its notes in the same transaction, and naming a tag that no longer exists leaves the note untagged instead of failing.
 - **Trash.** Reads hide notes trashed more than seven days ago. The `quick_notes_purge_expired_trash` command deletes them and returns the next expiry; a frontend lifecycle job runs it, and read paths never write. The purge is an ordinary deletion, so an edit made elsewhere to a purged note becomes a recovery entry.
+- **Images.** A note holds up to 24 ordered image references in `quick_note_images`: digest, type, byte size, and pixel dimensions. Bytes live in content-addressed files under `assets/quick-notes/images/`, shared by every note that references the same image. A note saves its whole list at once, which syncs as one register, so concurrent edits to a note's images become a conflict rather than a silent mix.
 - **Revision.** The optimistic `revision` is local to each replica and changes only for content and lifecycle changes, never for reordering.
 
 Windows sync through canonical writes and invalidation, and replicated changes from other devices use the same invalidation; a window is never the only copy of a note.
@@ -23,10 +24,11 @@ The active theme ID is portable configuration. Applying it to a webview is runti
 
 Music separates canonical library identity from physical source location and playback state.
 
-- Library items carry playable identity and metadata. Local roots and locations describe user-selected folders or document trees without making an absolute path canonical.
+- Library items carry playable identity and metadata. Local roots and locations describe user-selected folders or document trees without making an absolute path canonical. Original title, artist, and album text is capped at 500 characters in the schema; writers truncate longer source text.
 - Source collections (local collections, YouTube playlists, and other discovery sources) keep refresh generation and failure state. Refresh and relink use staged generations so a failed scan leaves the previous library usable.
 - User playlists and ordered memberships are independent of source collections; removing or refreshing a source never silently destroys a playlist.
-- Related families cover skip ranges, item signals, snoozes, statistics, recent selections, refresh issues, context assignments, and soundscapes.
+- Related families cover skip ranges, item signals, snoozes, statistics, recent selections, refresh issues, context assignments, soundscapes, and soundscape presets.
+- A context assignment that plays a soundscape names exactly one preset; other soundscape behaviors name none. Preset references are not foreign keys, so a removed preset stays an explicit unavailable reference. Preset layer membership cascades when a layer is removed, and an emptied preset is kept. A local layer's file path is device-local app state keyed by vault and layer, never a vault row.
 
 Music bytes stay in the user's library and are never copied into the vault because an item was indexed. Relative identities and platform document handles are revalidated before playback.
 
@@ -34,7 +36,7 @@ Import receipts store the action identity, request hash, and result in the same 
 
 Native session checkpoints are keyed by device ID and hold portable item and membership IDs, playback settings, bounded navigation history, and queue state, never resolved paths, content URIs, or decoder handles. Copying a vault copies these records, not permission to resume another device's playback. Recovery rebuilds the local queue against current rows and bindings and starts paused. Listening counters, checkpoint changes, and action receipts share one transaction.
 
-Background sound state records whether a selection was manual or automatic. An automatic selection restored after restart is displayed but never starts output by itself; a fresh native Focus phase decision is required.
+Soundscape state records whether a selection was manual or automatic. An automatic selection restored after restart is displayed but never starts output by itself; a fresh native Focus phase decision is required.
 
 ## Distraction blocker
 

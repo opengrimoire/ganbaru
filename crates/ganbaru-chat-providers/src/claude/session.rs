@@ -1,5 +1,6 @@
 //! Claude inbound message routing, permission callbacks, structured questions, and pending request state.
 
+use super::approvals::{approval_subject, session_grants, session_permission_updates};
 use super::normalizer::{ClaudeEventNormalizer, ClaudeRouteState};
 use super::protocol::{control_success, protocol_error};
 use super::transport::{ClaudeInboundMessage, ClaudeJsonlClient};
@@ -22,7 +23,7 @@ const MAX_TEXT_BYTES: usize = 64 * 1024;
 pub enum PendingClaudeRequestKind {
     Approval {
         tool_input: Value,
-        permission_suggestions: Option<Value>,
+        session_grants: Vec<SessionPermissionGrant>,
     },
     UserInput {
         questions: Value,
@@ -291,16 +292,13 @@ pub fn route_control_request(
         .and_then(Value::as_str)
         .or_else(|| request.get("decision_reason").and_then(Value::as_str))
         .map(|value| bounded_text(value, MAX_TEXT_BYTES));
+    let session_grants = session_grants(request.get("permission_suggestions"));
     let mut allowed_decisions = vec![approval_option(
         "allow_once",
         "Allow once",
         ApprovalDecisionKind::AllowOnce,
     )];
-    if request
-        .get("permission_suggestions")
-        .and_then(Value::as_array)
-        .is_some_and(|suggestions| !suggestions.is_empty())
-    {
+    if !session_grants.is_empty() {
         allowed_decisions.push(approval_option(
             "allow_session",
             "Allow for session",
@@ -316,7 +314,7 @@ pub fn route_control_request(
         provider_request_id: provider_request_id.clone(),
         kind: PendingClaudeRequestKind::Approval {
             tool_input: tool_input.clone(),
-            permission_suggestions: request.get("permission_suggestions").cloned(),
+            session_grants: session_grants.clone(),
         },
     };
     Ok(RoutedClaudeRequest {
@@ -336,6 +334,8 @@ pub fn route_control_request(
                     "input": tool_input,
                 }),
             },
+            subject: approval_subject(tool_name, &tool_input),
+            session_grants,
         }),
         immediate_response: None,
     })
@@ -453,25 +453,36 @@ pub async fn resolve_approval(
     Ok(())
 }
 
-fn approval_response(
+/// Builds the native approval reply from the tool input Claude sent.
+///
+/// No approval flow edits tool input, so a replacement input that differs from the
+/// pending one is rejected instead of forwarded. Questions answered through
+/// `AskUserQuestion` use [`resolve_user_input`], which builds its input in Rust.
+pub(crate) fn approval_response(
     pending: &PendingClaudeRequest,
     request: &ResolveApprovalRequest,
 ) -> ChatResult<Value> {
     let PendingClaudeRequestKind::Approval {
         tool_input,
-        permission_suggestions,
+        session_grants,
     } = &pending.kind
     else {
         return Err(ChatError::invalid_transition(
             "Claude request expects structured input",
         ));
     };
-    let updated_input = request
+    if request
         .decision
         .updated_tool_input
         .as_ref()
-        .map(|value| value.value.clone())
-        .unwrap_or_else(|| tool_input.clone());
+        .is_some_and(|value| value.value != *tool_input)
+    {
+        return Err(ChatError::validation(
+            "updatedToolInput",
+            "Claude approvals cannot replace the requested tool input",
+        ));
+    }
+    let updated_input = tool_input.clone();
     if !updated_input.is_object() {
         return Err(ChatError::validation(
             "updatedToolInput",
@@ -487,19 +498,15 @@ fn approval_response(
                 ("behavior".to_string(), Value::String("allow".to_string())),
                 ("updatedInput".to_string(), updated_input),
             ]);
-            let Some(suggestions) = permission_suggestions
-                .as_ref()
-                .and_then(Value::as_array)
-                .filter(|suggestions| !suggestions.is_empty())
-            else {
+            if session_grants.is_empty() {
                 return Err(ChatError::validation(
                     "decision",
                     "Claude did not offer a session permission update",
                 ));
-            };
+            }
             response.insert(
                 "updatedPermissions".to_string(),
-                Value::Array(suggestions.clone()),
+                Value::Array(session_permission_updates(session_grants)),
             );
             Value::Object(response)
         }

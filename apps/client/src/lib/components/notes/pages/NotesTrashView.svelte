@@ -11,7 +11,7 @@
   import ArrowLeft from "@lucide/svelte/icons/arrow-left";
   import RotateCcw from "@lucide/svelte/icons/rotate-ccw";
   import Search from "@lucide/svelte/icons/search";
-  import Trash2 from "@lucide/svelte/icons/trash-2";
+  import Trash2 from "@lucide/svelte/icons/trash";
 
   const notes = useNotesWorkspace();
   const localization = getLocalization();

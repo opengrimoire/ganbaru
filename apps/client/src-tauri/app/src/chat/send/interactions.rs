@@ -26,7 +26,8 @@ pub(crate) async fn steer_turn(
     let pool = chat_pool(app.clone(), db_url).await?;
     let owner = app
         .state::<ChatRuntimeRegistry>()
-        .owner(request.thread_id.clone())?;
+        .existing_owner(&request.thread_id)?
+        .ok_or_else(runtime_not_running_error)?;
     let snapshot = owner.snapshot()?;
     if !snapshot.capabilities.supports(ProviderCapability::Steering) {
         return Err(ChatError::new(
@@ -98,7 +99,8 @@ pub(crate) async fn resolve_approval(
     }
     let owner = app
         .state::<ChatRuntimeRegistry>()
-        .owner(request.thread_id.clone())?;
+        .existing_owner(&request.thread_id)?
+        .ok_or_else(runtime_not_running_error)?;
     let session_id = owner
         .snapshot()?
         .session_id
@@ -169,7 +171,8 @@ pub(crate) async fn resolve_user_input(
     .await?;
     let owner = app
         .state::<ChatRuntimeRegistry>()
-        .owner(request.thread_id.clone())?;
+        .existing_owner(&request.thread_id)?
+        .ok_or_else(runtime_not_running_error)?;
     let session_id = owner
         .snapshot()?
         .session_id

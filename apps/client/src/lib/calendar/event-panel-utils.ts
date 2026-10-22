@@ -1,6 +1,7 @@
 import { hasOnlyShortcutModifier, hasShortcutModifier } from "$lib/keyboard-shortcuts";
 import type { CalendarTimeFormat } from "$lib/stores/preference-options";
 import type { ProjectDefaultEventTimeMode } from "$lib/projects/settings/duration";
+import type { EventColor } from "$lib/calendar/types";
 
 export type RovingOrientation = "horizontal" | "vertical" | "grid";
 
@@ -61,6 +62,27 @@ export function projectDefaultEventTitleForSelection(
 ): string {
   if (input.currentTitle.trim()) return input.currentTitle;
   return input.defaultEventName ?? "";
+}
+
+export interface CreatedProjectColorInput {
+  /** Project created from this panel's picker, if any. */
+  createdProjectId: string | undefined;
+  /** Project of the saved event. */
+  projectId: string | undefined;
+  /** Color of the saved event; undefined is the default color. */
+  eventColor: EventColor | undefined;
+  /** Current color of the saved event's project. */
+  projectColor: EventColor | undefined;
+}
+
+/**
+ * The color a project created from the event panel takes when the event is saved: the event's color, as long as it
+ * is not the default and the project has no color yet.
+ */
+export function createdProjectColorForSave(input: CreatedProjectColorInput): EventColor | null {
+  if (!input.createdProjectId || input.projectId !== input.createdProjectId) return null;
+  if (input.eventColor === undefined || input.projectColor !== undefined) return null;
+  return input.eventColor;
 }
 
 function clamp(value: number, min: number, max: number): number {

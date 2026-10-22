@@ -35,6 +35,7 @@ pub mod triggers;
 mod apply;
 mod conflicts;
 mod edges;
+mod hydrate;
 mod log;
 mod materialize;
 mod merge;

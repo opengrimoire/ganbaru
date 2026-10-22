@@ -223,7 +223,7 @@ impl Engine {
                         .group(*group_id)
                         .ok_or_else(|| corrupt("an adapter names an unknown asset group"))?;
                     let mut values = live_group_values(self, conn, table, group).await?;
-                    values.extend(retained_group_values(conn, table.id, group.id).await?);
+                    values.extend(retained_group_values(self, conn, table.id, group.id).await?);
                     for value in values {
                         for asset in self.asset_refs(domain, table, group.id, &value)? {
                             found.insert((asset.class.name, asset.sha256.clone()), asset);

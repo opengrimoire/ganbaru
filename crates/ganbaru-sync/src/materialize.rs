@@ -8,17 +8,19 @@
 //! value. Engine writes run with capture suppressed and foreign keys deferred, so rows of
 //! several tables, including the tables of one reference cycle and rows referencing their own
 //! table, can change in steps and are checked at commit. Registered hooks run after the writes
-//! with the keys of every row that changed.
+//! with the keys of every row that changed. Values elided from a row are stored again before
+//! the row is updated or deleted, see [`crate::hydrate`].
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use ganbaru_sync_contracts::{Field, TableId};
+use ganbaru_sync_contracts::{Field, GroupId, TableId, WriterId};
 use sqlx::{AssertSqlSafe, SqliteConnection};
 
 use crate::Engine;
 use crate::codec::{self, OwnedRow};
 use crate::error::{SyncError, SyncResult, corrupt};
 use crate::hooks::{ChangeNotice, Notices};
+use crate::hydrate::{self, Elision};
 use crate::manifest::{ColumnSpec, GroupSpec, MergeKind, OwnedTable, Resolution, TableSpec};
 use crate::merge::{self, Batch, MergedRows, RowState};
 use crate::sql::{self, ident};
@@ -35,6 +37,8 @@ struct Present {
     columns: Vec<(&'static GroupSpec, Vec<Field>)>,
     owned: Vec<(&'static GroupSpec, &'static OwnedTable, Vec<OwnedRow>)>,
     derived: Vec<(&'static str, Field)>,
+    /// Winning versions whose stored value the materialized row holds and may drop.
+    elisions: Vec<(GroupId, WriterId)>,
 }
 
 /// What a materialization changed: the tables in manifest order and what hooks reported.
@@ -148,7 +152,7 @@ async fn desired(
     }
     let versions = match versions {
         Some(versions) => versions,
-        None => merge::versions(conn, table.id, key).await?,
+        None => merge::versions(engine, conn, table.id, key).await?,
     };
     let winners = merge::winners(engine, table, &versions);
     let detached_parent = table
@@ -160,6 +164,7 @@ async fn desired(
         columns: Vec::new(),
         owned: Vec::new(),
         derived: Vec::new(),
+        elisions: Vec::new(),
     };
     for group in table.groups {
         if table.is_exists_group(group.id) {
@@ -185,7 +190,8 @@ async fn desired(
         if version.value.fields().len() != group.field_count() {
             return Err(corrupt("stored value does not match its group"));
         }
-        let mut fields = version.value.fields()[..group.columns().len()].to_vec();
+        let stored = &version.value.fields()[..group.columns().len()];
+        let mut fields = stored.to_vec();
         let identity = table.has_composite_key() && group.kind == MergeKind::Immutable;
         for (field, reference) in group.reference_columns().filter(|_| !identity) {
             if detached_parent == Some(group.id) {
@@ -197,13 +203,23 @@ async fn desired(
                 fields[field] = resolved;
             }
         }
+        // The domain row holds the winning value exactly when resolution changed no column
+        // and every owned row is kept unchanged, re-encoding to the stored blob.
+        let mut holds_value = !version.elided && table.may_elide(group) && fields == stored;
         present.columns.push((group, fields));
         for (index, owned) in group.owned_tables().iter().enumerate() {
-            let rows = codec::owned_blob(group, &version.value, index)
-                .and_then(|bytes| codec::decode_table(engine, table, owned, bytes))
+            let blob = codec::owned_blob(group, &version.value, index)
+                .map_err(|error| corrupt(format!("stored value: {error}")))?;
+            let rows = codec::decode_table(engine, table, owned, blob)
                 .map_err(|error| corrupt(format!("stored value: {error}")))?;
             let rows = resolve_owned(engine, conn, visibility, owned, rows).await?;
+            holds_value = holds_value
+                && codec::encode_table(engine, table, owned, rows.clone())
+                    .is_ok_and(|encoded| encoded == blob);
             present.owned.push((group, owned, rows));
+        }
+        if holds_value {
+            present.elisions.push((group.id, version.writer));
         }
     }
     Ok(Some(Desired::Present(present)))
@@ -521,6 +537,51 @@ impl Plan {
             .zip(&self.plans)
             .flat_map(|(table, plan)| plan.keys().map(|key| (table.id, key.clone())))
     }
+
+    /// Winning versions whose stored value the materialized rows will hold, leaving out rows
+    /// in `pending`, whose local edits may differ from the merge.
+    pub(crate) fn elisions(&self, engine: &Engine, pending: &BTreeSet<RowRef>) -> Vec<Elision> {
+        let mut elisions = Vec::new();
+        for (table, plan) in engine.manifest().tables.iter().zip(&self.plans) {
+            for (key, desired) in plan {
+                let Some(Desired::Present(present)) = desired else {
+                    continue;
+                };
+                if pending.contains(&(table.id, key.clone())) {
+                    continue;
+                }
+                elisions.extend(
+                    present
+                        .elisions
+                        .iter()
+                        .map(|(group, writer)| (table.id, key.clone(), *group, *writer)),
+                );
+            }
+        }
+        elisions
+    }
+}
+
+/// Groups whose domain columns or owned rows an update writes.
+fn updated_groups(table: &TableSpec, update: &Update) -> BTreeSet<GroupId> {
+    table
+        .groups
+        .iter()
+        .filter(|group| {
+            group.columns().iter().any(|column| {
+                update
+                    .columns
+                    .iter()
+                    .any(|(changed, _)| *changed == column.name)
+            }) || group.owned_tables().iter().any(|owned| {
+                update
+                    .owned
+                    .iter()
+                    .any(|(changed, _)| changed.table == owned.table)
+            })
+        })
+        .map(|group| group.id)
+        .collect()
 }
 
 /// Plans every dirty row and the rows, in any table, whose references a deletion would clear
@@ -588,6 +649,19 @@ pub(crate) async fn execute(
         })
         .collect();
 
+    // Values elided from rows that go absent, or that a deletion clears or cascades to, are
+    // stored again while the domain rows still hold them.
+    for (index, table) in tables.iter().enumerate() {
+        for (key, desired) in &plans[index] {
+            if matches!(desired, Desired::Absent) {
+                hydrate::persist(engine, conn, table, key, None).await?;
+            }
+        }
+        for key in &plan.touched[index] {
+            hydrate::persist(engine, conn, table, key, None).await?;
+        }
+    }
+
     let mut changed: Vec<BTreeSet<String>> = vec![BTreeSet::new(); tables.len()];
     let mut deleted = false;
     for (index, table) in tables.iter().enumerate().rev() {
@@ -642,6 +716,10 @@ pub(crate) async fn execute(
         }
         if updates.is_empty() && inserts.is_empty() {
             continue;
+        }
+        for (key, update) in &updates {
+            let groups = updated_groups(table, update);
+            hydrate::persist(engine, conn, table, key, Some(&groups)).await?;
         }
         move_aside(conn, table, &updates).await?;
         for (key, update) in &updates {

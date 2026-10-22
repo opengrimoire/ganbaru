@@ -97,7 +97,7 @@ pub(crate) async fn unpublished(
     let Some(predicate) = table.publish_when else {
         return Ok(false);
     };
-    let versions = merge::versions(conn, table.id, key).await?;
+    let versions = merge::versions(engine, conn, table.id, key).await?;
     let winners = merge::winners(engine, table, &versions);
     let mut fields = vec![Field::Text(key.to_string())];
     let mut names = vec![table.key_column];

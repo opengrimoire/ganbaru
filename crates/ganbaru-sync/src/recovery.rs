@@ -153,7 +153,7 @@ async fn removal_context(
     let Some(exists) = table.exists_group() else {
         return Ok(None);
     };
-    let versions = merge::versions(conn, table.id, key).await?;
+    let versions = merge::versions(engine, conn, table.id, key).await?;
     let winner = merge::winner(
         engine,
         table,
@@ -367,7 +367,7 @@ async fn newest_unseen(
     (table, key): &RowRef,
 ) -> SyncResult<Option<(Hlc, WriterId)>> {
     let spec = table_spec(engine, *table)?;
-    let versions = merge::versions(conn, *table, key).await?;
+    let versions = merge::versions(engine, conn, *table, key).await?;
     let covering = coverage(engine, conn, batch, visibility, *table, key).await?;
     Ok(unseen(spec, &versions, &covering)
         .map(|version| (version.clock, version.writer))
@@ -465,7 +465,7 @@ impl Engine {
                 continue;
             };
             let spec = table_spec(self, root.0)?;
-            let versions = merge::versions(conn, root.0, &root.1).await?;
+            let versions = merge::versions(self, conn, root.0, &root.1).await?;
             let values = retained_values(self, spec, &versions);
             let presentation = self
                 .adapter(spec)
@@ -507,7 +507,7 @@ impl Engine {
         {
             return Ok(None);
         }
-        let versions = merge::versions(conn, table, key).await?;
+        let versions = merge::versions(self, conn, table, key).await?;
         Ok(Some(retained_values(self, spec, &versions)))
     }
 
@@ -533,7 +533,7 @@ impl Engine {
         let mut found = Vec::new();
         for (table, key) in descendants(self, conn, &mut visibility, &root).await? {
             let spec = table_spec(self, table)?;
-            let versions = merge::versions(conn, table, &key).await?;
+            let versions = merge::versions(self, conn, table, &key).await?;
             found.push(RecoveryDescendant {
                 table,
                 values: retained_values(self, spec, &versions),

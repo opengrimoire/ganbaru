@@ -1,6 +1,7 @@
 mod budgets;
 mod capture;
 mod conformance;
+mod elision;
 mod engine;
 mod fixture;
 mod guards;

@@ -133,6 +133,40 @@ async fn apply_of_a_batch() -> Duration {
     elapsed
 }
 
+/// Retained value bytes of the author and a reader after a Quick notes seed, as stored and with
+/// nothing elided.
+async fn version_bytes_after_a_seed() -> [(usize, usize); 2] {
+    let mut author = Replica::new(0, 10).await;
+    let mut reader = Replica::new(1, 10).await;
+    for id in 0..APPLY_OPS {
+        author
+            .exec(&format!(
+                "{} INSERT INTO quick_note_text_runs (note_id, sort_order, content)
+                     VALUES ({}, 0, {});",
+                insert_note(id, &format!("note {id}")),
+                quoted(&format!("note-{id}")),
+                quoted(&format!("body of note {id}")),
+            ))
+            .await;
+    }
+    author.seal().await.unwrap();
+    deliver(&mut author, &mut reader).await;
+    [
+        author.check_version_values().await,
+        reader.check_version_values().await,
+    ]
+}
+
+#[test]
+fn elision_keeps_at_most_half_of_the_version_values_after_a_seed() {
+    block_on(async {
+        for (stored, full) in version_bytes_after_a_seed().await {
+            println!("retained version values: {stored} bytes stored of {full}");
+            assert!(stored * 2 <= full, "{stored} of {full} bytes stored");
+        }
+    });
+}
+
 #[test]
 #[ignore = "timing budgets are meaningful only in the release profile"]
 fn budgets_hold_for_capture_seal_and_apply() {

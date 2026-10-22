@@ -15,6 +15,7 @@ use ganbaru_image_metadata::{
     ManagedImageKind, ManagedImageMetadataError, parse_display_image_metadata,
     validate_image_dimensions,
 };
+use ganbaru_sync::Engine;
 use ganbaru_sync::assets::AssetRef;
 use ganbaru_sync::domains::quick_notes::{
     ImageError, NoteImage, decode_images, images_blob, validate_image, validate_images,
@@ -484,9 +485,10 @@ async fn referenced_digests(pool: &SqlitePool) -> Result<HashSet<String>, String
             .map_err(|error| format!("load quick note image references: {error}"))?
             .into_iter()
             .collect();
-    let retained = retained_group_values(&mut conn, NOTES_TABLE, note_group::IMAGES)
-        .await
-        .map_err(|error| format!("load retained quick note images: {error}"))?;
+    let retained =
+        retained_group_values(&Engine::vault(), &mut conn, NOTES_TABLE, note_group::IMAGES)
+            .await
+            .map_err(|error| format!("load retained quick note images: {error}"))?;
     for value in retained {
         referenced.extend(
             images_from_value(&value)?

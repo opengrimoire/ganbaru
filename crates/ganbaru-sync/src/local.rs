@@ -1,6 +1,12 @@
 //! Installation-level helpers around the engine: the space context of a vault, retained group
-//! values, the local writer high-water check, snapshot preparation, and carry-forward of
-//! operations across a database replacement.
+//! values, the local writer high-water check, snapshot preparation, carry-forward of operations
+//! across a database replacement, and the restore of device state into that replacement.
+
+mod restore;
+
+pub use restore::{LocalRestoreReport, restore_local_state};
+#[cfg(test)]
+pub(crate) use restore::{read_only_uri, repair_foreign_keys};
 
 use ganbaru_contacts::PersonPublicKey;
 use ganbaru_sync_contracts::{

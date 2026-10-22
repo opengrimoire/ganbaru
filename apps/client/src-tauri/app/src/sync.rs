@@ -22,7 +22,7 @@ pub(crate) use ganbaru_sync_replica::now_ms;
 #[cfg(desktop)]
 pub(crate) use service::sync_hub;
 pub(crate) use service::{
-    SyncRuntime, export_for_replacement, quiesced_sync, resume_after_vault_handoff, seal_quiesced,
+    SyncRuntime, coordinator_device_id, quiesced_sync, resume_after_vault_handoff, seal_quiesced,
     setup, stop_for_vault_handoff, sync_files,
 };
 pub(crate) use status::SyncSubscribers;

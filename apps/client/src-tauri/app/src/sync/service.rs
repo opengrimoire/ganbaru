@@ -800,17 +800,6 @@ async fn seal_quiesced_with<R: Runtime>(
     session.seal_pending(&mut writer, &mut None).await
 }
 
-/// Exports local operations the staged replacement lacks, before the replacement happens.
-pub(crate) async fn export_for_replacement<R: Runtime>(
-    app: &AppHandle<R>,
-    current: &std::path::Path,
-    replacement: &std::path::Path,
-    files: &SyncFiles,
-) -> Result<usize, String> {
-    let coordinator = coordinator_device_id(app, &files.vault_id)?;
-    carry_forward::export(&Engine::vault(), current, replacement, files, &coordinator).await
-}
-
 /// Whether a missing person key may be requested from the coordinator.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum KeyRelease {
@@ -859,8 +848,9 @@ impl<'a, R: Runtime> Session<'a, R> {
         }))
     }
 
-    /// Start order: clear a stale apply flag, import carried operations, check the writer, and
-    /// apply what the import could not apply before local captures were sealed.
+    /// Start order: clear a stale apply flag, import a carry bundle a failed replacement left,
+    /// check the writer, and apply what the import could not apply before local captures were
+    /// sealed.
     async fn start(&self, writer: &mut Option<ActiveWriter>) -> Result<(), String> {
         let imported = {
             let mut conn = acquire(&self.pool).await?;

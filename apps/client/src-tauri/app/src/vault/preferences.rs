@@ -29,9 +29,9 @@ use super::{
     read_active_config_bounded,
 };
 use chrono::SecondsFormat;
+use ganbaru_sync::ChangeNotice;
 use ganbaru_sync::domains::preferences::PREFERENCE_TOPIC;
 use ganbaru_sync::manifest::vault::preferences::DOMAIN_NAME as PREFERENCES_DOMAIN;
-use ganbaru_sync::{ApplyReport, ChangeNotice};
 use registry::{PATH_SEPARATOR, PreferenceSpec, Scope, Shape, Target};
 use serde_json::{Map, Value};
 use sqlx::SqlitePool;
@@ -523,14 +523,10 @@ pub(crate) fn run_preference_effects<R: Runtime>(app: &AppHandle<R>, paths: &[St
     }
 }
 
-/// Reacts to the portable preference rows one sync apply changed, including those its sealing
-/// materialized.
-pub(crate) async fn on_sync_applied<R: Runtime>(app: &AppHandle<R>, report: &ApplyReport) {
-    let notices = report
-        .notices
-        .iter()
-        .chain(report.seal.iter().flat_map(|seal| seal.notices.iter()));
-    on_replicated_keys(app, &replicated_preference_keys(notices)).await;
+/// Reacts to the portable preference rows that a sync apply or seal changed, as `notices`
+/// report them.
+pub(crate) async fn on_sync_notices<R: Runtime>(app: &AppHandle<R>, notices: &[ChangeNotice]) {
+    on_replicated_keys(app, &replicated_preference_keys(notices.iter())).await;
 }
 
 /// The distinct preference keys among sync change notices, in first-seen order.

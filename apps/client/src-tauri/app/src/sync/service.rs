@@ -885,7 +885,7 @@ impl ServiceState {
             return Ok(());
         }
         let applied = session.apply_ready(&mut self.writer).await?;
-        session.report(applied.tables, &applied.notices);
+        session.report(applied.tables, &applied.notices).await;
         self.applied = ApplyMark {
             stored: Some(stored),
             blocked_at: applied.blocked_at,
@@ -1055,9 +1055,14 @@ impl<'a, H: SyncHost> Session<'a, H> {
     }
 
     /// Tells the host which tables changed and what the registered hooks reported.
-    fn report(&self, tables: Vec<String>, notices: &[ChangeNotice]) {
-        self.host.emit_applied(tables);
-        self.host.report_changes(notices);
+    async fn report(&self, tables: Vec<String>, notices: &[ChangeNotice]) {
+        self.host.report_changes(tables, notices).await;
+    }
+
+    /// Tells the host what one seal changed.
+    async fn report_seal(&self, seal: &SealReport) {
+        self.report(table_names(&seal.changed_tables), &seal.notices)
+            .await;
     }
 
     /// Start order: clear a stale apply flag, seed captures of tables that start to replicate,
@@ -1091,7 +1096,7 @@ impl<'a, H: SyncHost> Session<'a, H> {
         }
         if imported.is_some_and(|report| report.pending_captures) {
             let applied = self.apply_ready(writer).await?;
-            self.report(applied.tables, &applied.notices);
+            self.report(applied.tables, &applied.notices).await;
         }
         Ok(())
     }
@@ -1229,7 +1234,7 @@ impl<'a, H: SyncHost> Session<'a, H> {
                     if let Some(seq) = report.last_seq {
                         active.committed(seq)?;
                     }
-                    self.host.report_changes(&report.notices);
+                    self.report_seal(&report).await;
                     return Ok(report);
                 }
                 Err(SyncError::WriterInactive(_)) if attempt == 0 => {
@@ -1264,15 +1269,10 @@ impl<'a, H: SyncHost> Session<'a, H> {
                     .await
                     .map_err(|error| format!("apply sync operations: {error}"))?
             };
-            self.host.on_sync_applied(&report).await;
-            tables.extend(
-                report
-                    .changed_tables
-                    .iter()
-                    .map(|table| (*table).to_string()),
-            );
+            tables.extend(table_names(&report.changed_tables));
             notices.extend(report.notices.iter().cloned());
             if let Some(seal) = report.seal.as_ref() {
+                tables.extend(table_names(&seal.changed_tables));
                 notices.extend(seal.notices.iter().cloned());
             }
             if let (Some(active), Some(seq)) = (
@@ -1308,6 +1308,7 @@ impl<'a, H: SyncHost> Session<'a, H> {
                 if let Some(seq) = resealed.seal.last_seq {
                     active.committed(seq)?;
                 }
+                tables.extend(table_names(&resealed.seal.changed_tables));
                 notices.extend(resealed.seal.notices);
             } else if report.local_writer_frozen {
                 if !self.rotate(writer).await? {
@@ -1359,7 +1360,7 @@ impl<'a, H: SyncHost> Session<'a, H> {
         if let Some(seq) = resealed.seal.last_seq {
             active.committed(seq)?;
         }
-        self.host.report_changes(&resealed.seal.notices);
+        self.report_seal(&resealed.seal).await;
         Ok(true)
     }
 
@@ -1409,7 +1410,7 @@ impl<'a, H: SyncHost> Session<'a, H> {
             if let Some(seq) = report.last_seq {
                 active.committed(seq)?;
             }
-            self.host.report_changes(&report.notices);
+            self.report_seal(&report).await;
         }
         Ok(())
     }
@@ -1453,6 +1454,11 @@ pub(crate) fn coordinator_device_id<H: SyncHost>(
 /// Device-local sync files of a vault.
 pub(crate) fn sync_files<H: SyncHost>(host: &H, vault_id: &str) -> Result<SyncFiles, String> {
     host.sync_files(vault_id)
+}
+
+/// Owned names of engine-reported domain tables.
+fn table_names(tables: &[&str]) -> Vec<String> {
+    tables.iter().map(|table| (*table).to_string()).collect()
 }
 
 async fn acquire(pool: &SqlitePool) -> Result<sqlx::pool::PoolConnection<sqlx::Sqlite>, String> {

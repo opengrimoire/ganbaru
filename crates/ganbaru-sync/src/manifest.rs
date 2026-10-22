@@ -856,15 +856,15 @@ fn tree_problems(table: &TableSpec) -> Vec<String> {
     problems
 }
 
-/// Why a table's acyclic edge declaration is malformed: both ends are distinct identity
-/// references of a derived-key table into the same table.
+/// Why a table's acyclic edge declaration is malformed: the table has a derived key and both
+/// ends are distinct immutable references into the same table.
 fn acyclic_problems(table: &TableSpec) -> Vec<String> {
     let mut problems = Vec::new();
     let Some(acyclic) = table.acyclic else {
         return problems;
     };
     if table.derived_key.is_none() {
-        problems.push("an acyclic edge table has a derived key".to_string());
+        problems.push("an acyclic edge table has no derived key".to_string());
     }
     let end = |column: &str| {
         table

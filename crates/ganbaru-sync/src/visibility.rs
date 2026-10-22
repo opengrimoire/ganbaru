@@ -18,7 +18,7 @@ use sqlx::SqliteConnection;
 use crate::error::{SyncResult, corrupt};
 use crate::manifest::{MergeKind, OnDelete, TableSpec};
 use crate::merge::{self, RowState, table_param};
-use crate::{Engine, repair, tree};
+use crate::{Engine, edges, repair, tree};
 
 /// Longest chain of redirects and duplicate keepers a reference follows.
 pub(crate) const MAX_REDIRECT_DEPTH: usize = 64;
@@ -104,8 +104,8 @@ impl Visibility {
         }
     }
 
-    /// Visibility of the current merge state: hidden duplicates and detached tree rows. Rows
-    /// whose materialization those may change are marked dirty.
+    /// Visibility of the current merge state: hidden duplicates, detached tree rows, and severed
+    /// edges. Rows whose materialization those may change are marked dirty.
     pub(crate) async fn load(
         engine: &Engine,
         conn: &mut SqliteConnection,
@@ -114,6 +114,7 @@ impl Visibility {
         let duplicates = repair::duplicates(engine, conn, dirty).await?;
         let mut visibility = Self::with_duplicates(duplicates);
         visibility.detached = tree::detached(engine, conn, &visibility, dirty).await?;
+        visibility.severed = edges::severed(engine, conn, &visibility, dirty).await?;
         Ok(visibility)
     }
 

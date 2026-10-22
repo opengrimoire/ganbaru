@@ -2,7 +2,8 @@
 //! uses yet runs through the simulation: `Local` tables and columns, every trigger policy, a
 //! cascading reference cycle, a group with several reference columns, an immutable reference,
 //! a reference into its own table, a derived-key table with a composite primary key, and a tree
-//! of nodes with a maximum depth whose parent cascades, with a recoverable label.
+//! of nodes with a maximum depth whose parent cascades, with a recoverable label, and an
+//! acyclic edge set between items.
 //! Fixture table ids start at [`FIXTURE_TABLE_IDS`], above every vault domain.
 
 use std::sync::LazyLock;
@@ -14,9 +15,10 @@ use super::{execute, migrated_pool};
 use crate::domains::vault_adapters;
 use crate::manifest::vault::{VAULT_MANIFEST_VERSION, quick_notes};
 use crate::manifest::{
-    Collation, ColumnSpec, ColumnType, DerivedKey, DeviceTable, DomainManifest, DomainTrigger,
-    GroupSpec, GroupStorage, LocalColumn, Manifest, MergeKind, OnDelete, ReferenceColumn,
-    Resolution, SYNC_KEY_COLUMN, TableIdRange, TableSpec, TreeSpec, TriggerPolicy, group_id,
+    AcyclicSpec, Collation, ColumnSpec, ColumnType, DerivedKey, DeviceTable, DomainManifest,
+    DomainTrigger, GroupSpec, GroupStorage, LocalColumn, Manifest, MergeKind, OnDelete,
+    ReferenceColumn, Resolution, SYNC_KEY_COLUMN, TableIdRange, TableSpec, TreeSpec, TriggerPolicy,
+    group_id,
 };
 use crate::triggers::{self, NOT_APPLYING};
 use crate::{Engine, Hooks};
@@ -453,6 +455,96 @@ pub(super) const NODES: TableSpec = TableSpec {
 /// `fixture_nodes`.
 pub(super) const NODES_TABLE: TableId = TableId(FIXTURE_TABLE_IDS + 5);
 
+/// Prefix of [`EDGES`] keys.
+const EDGE_KEY_PREFIX: &str = "fixture_edge";
+
+/// The `sync_key` of the edge from `from` to `to`.
+pub(super) fn edge_key(from: &str, to: &str) -> String {
+    derived_key(EDGE_KEY_PREFIX, &[from, to])
+        .expect("fixture ids are valid key parts")
+        .into_string()
+}
+
+/// Group ids of [`EDGES`].
+pub(super) mod edge_group {
+    use ganbaru_sync_contracts::GroupId;
+
+    use crate::manifest::group_id;
+
+    /// The primary key columns.
+    pub(in crate::tests) const IDENTITY: GroupId = group_id(0);
+    /// Existence register.
+    pub(in crate::tests) const EXISTS: GroupId = group_id(1);
+}
+
+/// Directed edges between items that never form a cycle, such as task dependencies.
+pub(super) const EDGES: TableSpec = TableSpec {
+    id: EDGES_TABLE,
+    name: "fixture_edges",
+    key_column: SYNC_KEY_COLUMN,
+    groups: &[
+        GroupSpec {
+            id: edge_group::IDENTITY,
+            name: "identity",
+            kind: MergeKind::Immutable,
+            storage: GroupStorage::Columns(&[
+                ColumnSpec {
+                    name: "from_id",
+                    ty: ColumnType::OptionalRowKey,
+                },
+                ColumnSpec {
+                    name: "to_id",
+                    ty: ColumnType::OptionalRowKey,
+                },
+            ]),
+            references: &[
+                ReferenceColumn {
+                    column: "from_id",
+                    table: ITEMS_TABLE,
+                    on_delete: OnDelete::Cascade,
+                },
+                ReferenceColumn {
+                    column: "to_id",
+                    table: ITEMS_TABLE,
+                    on_delete: OnDelete::Cascade,
+                },
+            ],
+            surfaced: false,
+            recoverable: false,
+            bumps_revision: false,
+        },
+        GroupSpec {
+            id: edge_group::EXISTS,
+            name: "exists",
+            kind: MergeKind::Register,
+            storage: GroupStorage::Columns(&[]),
+            references: &[],
+            surfaced: false,
+            recoverable: false,
+            bumps_revision: false,
+        },
+    ],
+    local_columns: &[],
+    derived_columns: &[],
+    revision_column: None,
+    resolutions: &[],
+    redirects: false,
+    adapter: None,
+    triggers: &[],
+    derived_key: Some(DerivedKey {
+        exists_group: edge_group::EXISTS,
+        key_inputs: &[],
+    }),
+    tree: None,
+    acyclic: Some(AcyclicSpec {
+        from_column: "from_id",
+        to_column: "to_id",
+    }),
+};
+
+/// `fixture_edges`.
+pub(super) const EDGES_TABLE: TableId = TableId(FIXTURE_TABLE_IDS + 6);
+
 /// The fixture domain.
 pub(super) const FIXTURE_DOMAIN: DomainManifest = DomainManifest {
     name: "fixture",
@@ -460,7 +552,7 @@ pub(super) const FIXTURE_DOMAIN: DomainManifest = DomainManifest {
         first: FIXTURE_TABLE_IDS,
         last: FIXTURE_TABLE_IDS + 15,
     },
-    tables: &[ITEMS, CYCLE_A, CYCLE_B, LINKS, MEMBERSHIPS, NODES],
+    tables: &[ITEMS, CYCLE_A, CYCLE_B, LINKS, MEMBERSHIPS, NODES, EDGES],
     derived: &["fixture_items_index"],
     local: &[DeviceTable {
         name: "fixture_item_marks",
@@ -532,6 +624,12 @@ fn fixture_schema() -> String {
              parent_id TEXT REFERENCES fixture_nodes(id) ON DELETE CASCADE,
              position TEXT NOT NULL,
              label TEXT NOT NULL CHECK (length(label) <= 40)
+         );
+         CREATE TABLE fixture_edges (
+             from_id TEXT NOT NULL REFERENCES fixture_items(id) ON DELETE CASCADE,
+             to_id TEXT NOT NULL REFERENCES fixture_items(id) ON DELETE CASCADE,
+             sync_key TEXT NOT NULL UNIQUE,
+             PRIMARY KEY (from_id, to_id)
          );
          CREATE TABLE fixture_items_index (
              item_id TEXT PRIMARY KEY,

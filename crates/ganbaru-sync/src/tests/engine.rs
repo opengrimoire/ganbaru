@@ -9,8 +9,8 @@ use ganbaru_sync_contracts::{
 
 use super::block_on;
 use super::fixture::{
-    CYCLE_A_TABLE, CYCLE_B_TABLE, ITEMS_TABLE, LINKS_TABLE, MEMBERSHIPS_TABLE, NODES_TABLE,
-    membership_key,
+    CYCLE_A_TABLE, CYCLE_B_TABLE, EDGES_TABLE, ITEMS_TABLE, LINKS_TABLE, MEMBERSHIPS_TABLE,
+    NODES_TABLE, edge_group, edge_key, membership_key,
 };
 use super::replica::{
     Identity, Replica, START_MS, VAULT_ID, converge, device_id, pair, person, rank,
@@ -1222,6 +1222,107 @@ fn concurrent_moves_that_together_exceed_the_maximum_depth_move_the_deepest_row_
             .await;
             assert_eq!(newest.len(), 2);
             assert_eq!(newest[0], newest[1]);
+        }
+    });
+}
+
+/// Every materialized edge as `from>to`.
+async fn edge_rows(replica: &mut Replica) -> Vec<String> {
+    texts(
+        replica,
+        "SELECT from_id || '>' || to_id FROM fixture_edges ORDER BY from_id, to_id",
+    )
+    .await
+}
+
+/// SQL adding the edge from `from` to `to`.
+fn add_edge(from: &str, to: &str) -> String {
+    format!(
+        "INSERT INTO fixture_edges (from_id, to_id, sync_key) VALUES ('{from}', '{to}', '{}');",
+        edge_key(from, to)
+    )
+}
+
+#[test]
+fn concurrent_edges_that_close_a_cycle_sever_the_newest_until_another_edge_is_removed() {
+    block_on(async {
+        let mut replicas = replicas(3).await;
+        let items: String = ["x", "y", "z"]
+            .iter()
+            .map(|id| {
+                format!(
+                    "INSERT INTO fixture_items (id, created_at, label, label_edits)
+                     VALUES ('{id}', '2027-01-01T00:00:00.000Z', '{id}', 0);"
+                )
+            })
+            .collect();
+        replicas[0].exec(&items).await;
+        converge(&mut replicas).await;
+        let added = [("x", "y"), ("y", "z"), ("z", "x")];
+        let mut ranks = Vec::new();
+        for (replica, (from, to)) in replicas.iter_mut().zip(added) {
+            replica.exec(&add_edge(from, to)).await;
+            replica.seal().await.unwrap();
+            let clock = replica
+                .count(&format!(
+                    "SELECT max(clock) FROM sync_register_versions
+                     WHERE table_id = {} AND row_key = '{}' AND group_id = {}",
+                    EDGES_TABLE.0,
+                    edge_key(from, to),
+                    edge_group::EXISTS.get()
+                ))
+                .await;
+            ranks.push((clock, replica.writer(), (from, to)));
+        }
+        let (severed_from, severed_to) = ranks.iter().max().map(|(_, _, edge)| *edge).unwrap();
+        let severed = format!("{severed_from}>{severed_to}");
+        let kept: Vec<String> = added
+            .iter()
+            .map(|(from, to)| format!("{from}>{to}"))
+            .filter(|edge| *edge != severed)
+            .collect();
+        converge(&mut replicas).await;
+        assert_converged(&mut replicas).await;
+        for replica in &mut replicas {
+            let mut edges = edge_rows(replica).await;
+            edges.sort();
+            assert_eq!(edges, kept);
+            assert_eq!(
+                replica
+                    .engine
+                    .conflicts(&mut replica.conn, EDGES_TABLE)
+                    .await
+                    .unwrap(),
+                vec![ConflictRow {
+                    table: EDGES_TABLE,
+                    row_key: edge_key(severed_from, severed_to),
+                    groups: GroupMask::of(edge_group::EXISTS),
+                }]
+            );
+        }
+        // Removing another edge of the cycle shows the severed edge again.
+        let (from, to) = kept[0].split_once('>').unwrap();
+        replicas[0]
+            .exec(&format!(
+                "DELETE FROM fixture_edges WHERE from_id = '{from}' AND to_id = '{to}'"
+            ))
+            .await;
+        converge(&mut replicas).await;
+        assert_converged(&mut replicas).await;
+        let mut expected = vec![kept[1].clone(), severed.clone()];
+        expected.sort();
+        for replica in &mut replicas {
+            let mut edges = edge_rows(replica).await;
+            edges.sort();
+            assert_eq!(edges, expected);
+            assert!(
+                replica
+                    .engine
+                    .conflicts(&mut replica.conn, EDGES_TABLE)
+                    .await
+                    .unwrap()
+                    .is_empty()
+            );
         }
     });
 }

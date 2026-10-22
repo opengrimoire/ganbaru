@@ -478,7 +478,15 @@ pub(crate) async fn refresh_flags(
                 {
                     roots.insert(root);
                 }
-                (conflict_mask(table, &versions), false)
+                let mut mask = conflict_mask(table, &versions);
+                // A severed edge surfaces as a conflict of its existence group.
+                if let Some(exists) = table
+                    .exists_group()
+                    .filter(|_| visibility.is_severed(table_id, &key))
+                {
+                    mask.insert(exists.id);
+                }
+                (mask, false)
             }
             RowState::Tombstoned => (
                 GroupMask::EMPTY,

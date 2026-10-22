@@ -32,6 +32,7 @@ pub mod triggers;
 
 mod apply;
 mod conflicts;
+mod edges;
 mod log;
 mod materialize;
 mod merge;

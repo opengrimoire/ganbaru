@@ -1,8 +1,9 @@
 use crate::chat::ingestion::{ChatChangeEmitter, ChatEventIngestor};
 use crate::chat::workspace::CreateProjectWorkingFolderRequest;
+#[cfg(unix)]
+use ganbaru_chat::repository::attachments::read_managed_attachment_bytes;
 use ganbaru_chat::repository::attachments::{
-    ChatAttachmentKind, import_attachment, read_managed_attachment_bytes,
-    run_due_attachment_cleanup,
+    ChatAttachmentKind, import_attachment, run_due_attachment_cleanup,
 };
 use ganbaru_chat::repository::drafts::{
     ChatDraftBase, ChatDraftWrite, delete_draft, read_draft, save_draft,

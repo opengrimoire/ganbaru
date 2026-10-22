@@ -479,6 +479,7 @@ impl TestRepository {
     }
 
     /// Trusts the repository's current configuration.
+    #[cfg(unix)]
     fn trusted(&self) -> GitFolderTrust {
         GitFolderTrust::Trusted(self.configuration().git)
     }
@@ -487,6 +488,7 @@ impl TestRepository {
         folder_configuration_blocking(&self.root).expect("configuration should digest")
     }
 
+    #[cfg(unix)]
     fn marker(&self) -> PathBuf {
         self.base().join("marker")
     }

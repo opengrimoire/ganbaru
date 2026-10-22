@@ -9,7 +9,7 @@ use serde::Serialize;
 use std::collections::BTreeMap;
 use std::path::Path;
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 const MAX_DIFF_BYTES: usize = 2 * 1024 * 1024;
 type DiffLineCounts = BTreeMap<String, (Option<u64>, Option<u64>)>;
 
@@ -26,7 +26,7 @@ pub struct ChatChangedFileRead {
     pub git_observed: bool,
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct ChatCheckpointFileDiffRead {
@@ -61,7 +61,7 @@ pub fn diff_files(
     parse_name_status(&status.stdout, &stats)
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 pub(super) fn file_diff(
     folder: GitFolder<'_>,
     pre: &StoredCheckpoint,
@@ -143,7 +143,7 @@ pub(super) fn changed_file_summaries(
         .collect())
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 fn truncate_patch_at_hunk_boundary(patch: &str, maximum_bytes: usize) -> String {
     if patch.len() <= maximum_bytes {
         return patch.to_string();

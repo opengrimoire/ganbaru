@@ -5,12 +5,14 @@ use super::session::{
     merge_checkpoint_changed_files, normalize_changed_file_paths, require_live_authorization,
     reuse_existing_session,
 };
+#[cfg(unix)]
+use super::validation::validate_send_mentions;
 use super::validation::{
-    validate_approval_decision, validate_mentions, validate_model_options,
-    validate_pending_request, validate_send_mentions,
+    validate_approval_decision, validate_mentions, validate_model_options, validate_pending_request,
 };
 use crate::chat::send_commands::SendChatTurnCommand;
 use crate::chat::tests::repository::pool_with_thread;
+#[cfg(unix)]
 use crate::chat::workspace::AuthorizedWorkingFolder;
 use ganbaru_chat::agent_runs::TurnOrigin;
 use ganbaru_chat::repository::workspaces;

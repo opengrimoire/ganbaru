@@ -24,6 +24,7 @@ fn close_request_rejects_pid_reuse_and_tampered_identity() {
     assert!(super::validate_observed_close_process(&tampered, &valid_observed_process()).is_err());
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn close_request_rejects_protected_process_aliases() {
     let request = super::DistractionsCloseDesktopAppRequest {
@@ -43,6 +44,8 @@ fn close_request_rejects_protected_process_aliases() {
 
     assert!(super::validate_observed_close_process(&request, &observed).is_err());
 }
+
+#[cfg(target_os = "linux")]
 fn valid_close_request() -> super::DistractionsCloseDesktopAppRequest {
     super::DistractionsCloseDesktopAppRequest {
         process_id: 42,
@@ -54,6 +57,7 @@ fn valid_close_request() -> super::DistractionsCloseDesktopAppRequest {
     }
 }
 
+#[cfg(target_os = "linux")]
 fn valid_observed_process() -> super::ObservedDesktopProcess {
     super::ObservedDesktopProcess {
         process_name: "steam".to_string(),

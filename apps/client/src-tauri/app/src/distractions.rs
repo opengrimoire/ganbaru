@@ -92,14 +92,17 @@ use limits::is_valid_local_date;
 #[cfg(all(desktop, test))]
 use state_files::{
     clear_enforcement_state_files, extension_status_at, extension_status_from_file_contents,
-    validate_limit_state, validate_state, write_text_file_atomically,
+    validate_limit_state, validate_state,
 };
 
 #[cfg(all(desktop, test))]
-use catalog::{parse_desktop_entry, sort_and_deduplicate_candidates};
+use catalog::sort_and_deduplicate_candidates;
+
+#[cfg(all(desktop, test, unix))]
+use state_files::write_text_file_atomically;
 
 #[cfg(all(desktop, test, target_os = "linux"))]
-use catalog::process_name_from_exec;
+use catalog::{parse_desktop_entry, process_name_from_exec};
 
 #[cfg(all(desktop, test))]
 use authorization::{configured_close_authorization, read_bounded_authorization_config};

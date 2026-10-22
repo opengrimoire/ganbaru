@@ -4,6 +4,7 @@
 //! Value domains mirror the frontend option sets that write them (`preference-options.ts`,
 //! `sidebar-order.ts`, `calendar/types.ts`, and the feature stores).
 
+use ganbaru_sync::domains::preferences::ProfileImage;
 use serde_json::Value;
 
 /// Largest canonical JSON text of one portable value, matching the `vault_preferences` check.
@@ -74,6 +75,9 @@ pub(crate) enum ValueRule {
     },
     /// JSON `null` or a value the inner rule accepts.
     Nullable(&'static ValueRule),
+    /// A profile picture reference, the one value shape the sync engine reads: the managed
+    /// file path and its exact size, as [`ProfileImage`] parses it.
+    ProfileImage,
 }
 
 impl ValueRule {
@@ -106,6 +110,7 @@ impl ValueRule {
                 serde_json::to_vec(value).is_ok_and(|text| text.len() <= *max_bytes)
             }
             Self::Nullable(inner) => value.is_null() || inner.accepts(value),
+            Self::ProfileImage => ProfileImage::from_json(value).is_some(),
         }
     }
 }
@@ -212,7 +217,7 @@ pub(crate) const REGISTRY: &[PreferenceSpec] = &[
     spec("chat", Scope::VaultConfig, LARGE_JSON),
     portable("profile.displayName", LABEL),
     portable("profile.fullName", ValueRule::Text { max_bytes: 512 }),
-    portable("profile.imagePath", LABEL),
+    portable("profile.image", ValueRule::ProfileImage),
     portable("profile.useImage", BOOL),
     portable("profile.color", PALETTE_COLOR),
     portable("profile.imageCrop", SMALL_JSON),
@@ -557,5 +562,13 @@ mod tests {
         let small = ValueRule::Json { max_bytes: 8 };
         assert!(small.accepts(&json!({"a": 12})));
         assert!(!small.accepts(&json!({"a": 123})));
+
+        let path = format!("profile/{}.png", "a".repeat(64));
+        let picture = ValueRule::ProfileImage;
+        assert!(picture.accepts(&json!({"path": path, "byteSize": 10})));
+        assert!(!picture.accepts(&json!({"path": path})));
+        assert!(!picture.accepts(&json!({"path": path, "byteSize": 0})));
+        assert!(!picture.accepts(&json!(path)));
+        assert!(!picture.accepts(&json!(null)));
     }
 }

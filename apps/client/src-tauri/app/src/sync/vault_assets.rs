@@ -10,6 +10,7 @@ use crate::vault;
 use ganbaru_quick_notes::images;
 use ganbaru_sync::Engine;
 use ganbaru_sync::assets::AssetRef;
+use ganbaru_sync::manifest::vault::preferences::PROFILE_CLASS;
 use ganbaru_sync::manifest::vault::quick_notes::IMAGES_CLASS;
 use std::path::PathBuf;
 use tauri::{AppHandle, Runtime};
@@ -32,7 +33,11 @@ impl<R: Runtime> ActiveVaultAssets<R> {
         Ok(Self {
             app: app.clone(),
             files: ContentAddressedStore::new(root.clone())
-                .with_check(&IMAGES_CLASS, images::check_synced_image),
+                .with_check(&IMAGES_CLASS, images::check_synced_image)
+                .with_check(
+                    &PROFILE_CLASS,
+                    crate::profile_images::check_synced_profile_image,
+                ),
             root,
             engine: Engine::vault(),
         })

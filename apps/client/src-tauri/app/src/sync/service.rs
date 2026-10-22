@@ -1121,6 +1121,7 @@ impl<'a, R: Runtime> Session<'a, R> {
                     .await
                     .map_err(|error| format!("apply sync operations: {error}"))?
             };
+            crate::vault::preferences::on_sync_applied(self.app, &report).await;
             tables.extend(
                 report
                     .changed_tables

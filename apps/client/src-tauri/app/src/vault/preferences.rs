@@ -1,9 +1,10 @@
 //! Vault preferences, split by where each one belongs.
 //!
 //! The [registry](registry::REGISTRY) assigns every preference path a scope. Portable values
-//! are rows of `vault_preferences`, shared by every device of the vault and written only by the
-//! owner. Device values live in a file per vault in the app config directory and are written on
-//! every device. `distractions` and `chat` stay in `config.json`, which native features own.
+//! are rows of `vault_preferences`, shared by every device of the vault and written by the owner
+//! and by linked replicas, since the preferences sync domain replicates concurrently. Device
+//! values live in a file per vault in the app config directory and are written on every device.
+//! `distractions` and `chat` stay in `config.json`, which native features own.
 //!
 //! [`PreferencesState`] caches the effective view: the portable rows and device entries
 //! composed into the nested object the frontend and native readers expect. The first load of a
@@ -24,10 +25,13 @@ pub(crate) use view::value_at;
 
 use super::config::{VaultConfigPatch, apply_config_patch, validate_config_patch_path};
 use super::{
-    active_vault_id, active_writable_vault_path, mutate_active_vault_config, now_utc,
+    active_replicated_asset_path, active_vault_id, mutate_active_vault_config, now_utc,
     read_active_config_bounded,
 };
 use chrono::SecondsFormat;
+use ganbaru_sync::domains::preferences::PREFERENCE_TOPIC;
+use ganbaru_sync::manifest::vault::preferences::DOMAIN_NAME as PREFERENCES_DOMAIN;
+use ganbaru_sync::{ApplyReport, ChangeNotice};
 use registry::{PATH_SEPARATOR, PreferenceSpec, Scope, Shape, Target};
 use serde_json::{Map, Value};
 use sqlx::SqlitePool;
@@ -174,8 +178,8 @@ async fn ensure_imported<R: Runtime>(
 }
 
 /// Moves the preferences `config.json` still holds into their stores, in the order and with
-/// the idempotence [`import`] describes. A device that cannot write the vault imports only its
-/// device values and leaves `config.json` unchanged.
+/// the idempotence [`import`] describes. A device that cannot write the preferences domain
+/// imports only its device values, and only the owner strips `config.json`.
 async fn import_vault_config<R: Runtime>(app: &AppHandle<R>, vault_id: &str) -> Result<(), String> {
     let config_app = app.clone();
     let raw = blocking(move || read_active_config_bounded(&config_app)).await?;
@@ -184,9 +188,9 @@ async fn import_vault_config<R: Runtime>(app: &AppHandle<R>, vault_id: &str) -> 
     if !import::has_moved_branches(&config) {
         return Ok(());
     }
-    let can_write = super::ownership::active_status(app)?.can_write;
-    if can_write {
-        let _write_permit = active_writable_vault_path(app)?;
+    let status = super::ownership::active_status(app)?;
+    if status.can_write_domain(PREFERENCES_DOMAIN) {
+        let _write_permit = active_replicated_asset_path(app, PREFERENCES_DOMAIN)?;
         let pool = crate::db::connect_vault(app).await?;
         import::insert_missing_rows(&pool, &import::portable_entries(&config), &timestamp())
             .await?;
@@ -199,7 +203,7 @@ async fn import_vault_config<R: Runtime>(app: &AppHandle<R>, vault_id: &str) -> 
         })
     })
     .await?;
-    if can_write {
+    if status.can_write {
         let strip_app = app.clone();
         blocking(move || {
             mutate_active_vault_config(
@@ -463,7 +467,7 @@ async fn write_plan<R: Runtime>(
     plan: PatchPlan,
 ) -> Result<(), String> {
     if !plan.portable.is_empty() {
-        let _write_permit = active_writable_vault_path(app)?;
+        let _write_permit = active_replicated_asset_path(app, PREFERENCES_DOMAIN)?;
         let pool = crate::db::connect_vault(app).await?;
         apply_portable(&pool, &plan.portable, &timestamp()).await?;
     }
@@ -519,6 +523,41 @@ pub(crate) fn run_preference_effects<R: Runtime>(app: &AppHandle<R>, paths: &[St
     }
 }
 
+/// Reacts to the portable preference rows one sync apply changed, including those its sealing
+/// materialized.
+pub(crate) async fn on_sync_applied<R: Runtime>(app: &AppHandle<R>, report: &ApplyReport) {
+    let notices = report
+        .notices
+        .iter()
+        .chain(report.seal.iter().flat_map(|seal| seal.notices.iter()));
+    on_replicated_keys(app, &replicated_preference_keys(notices)).await;
+}
+
+/// The distinct preference keys among sync change notices, in first-seen order.
+fn replicated_preference_keys<'a>(notices: impl Iterator<Item = &'a ChangeNotice>) -> Vec<String> {
+    let mut keys: Vec<String> = Vec::new();
+    for notice in notices {
+        if notice.topic == PREFERENCE_TOPIC && !keys.contains(&notice.key) {
+            keys.push(notice.key.clone());
+        }
+    }
+    keys
+}
+
+/// Reacts to portable preference rows that sync applied: drops the cached view so the next read
+/// composes the merged rows, and tells the native owners that cache one of `keys`. Holding the
+/// load lock keeps a load that read the rows before the apply from caching them afterwards.
+async fn on_replicated_keys<R: Runtime>(app: &AppHandle<R>, keys: &[String]) {
+    if keys.is_empty() {
+        return;
+    }
+    if let Some(state) = app.try_state::<PreferencesState>() {
+        let _load = state.load.lock().await;
+        state.invalidate_view();
+    }
+    run_preference_effects(app, keys);
+}
+
 /// The view with the vault config branches of `config` added, as `vault_read_config` returns
 /// it. Only registered vault config branches are taken from `config`.
 pub(crate) fn compose_with_vault_config(view: &Value, config: &Value) -> Value {
@@ -559,6 +598,25 @@ pub(crate) mod tests {
 
     const NOW: &str = "2026-10-22T10:51:41.000Z";
     const LATER: &str = "2026-10-23T00:00:00.000Z";
+
+    #[test]
+    fn replicated_preference_keys_are_distinct_and_ignore_other_topics() {
+        let notice = |topic: &'static str, key: &str| ChangeNotice {
+            topic,
+            key: key.to_string(),
+        };
+        let notices = [
+            notice(PREFERENCE_TOPIC, "focus.workMinutes"),
+            notice("quick_notes", "note-1"),
+            notice(PREFERENCE_TOPIC, "profile.image"),
+            notice(PREFERENCE_TOPIC, "focus.workMinutes"),
+        ];
+        assert_eq!(
+            replicated_preference_keys(notices.iter()),
+            ["focus.workMinutes", "profile.image"]
+        );
+        assert!(replicated_preference_keys([notice("quick_notes", "a")].iter()).is_empty());
+    }
 
     /// A migrated in-memory vault database.
     pub(crate) async fn memory_pool() -> SqlitePool {

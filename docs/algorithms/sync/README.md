@@ -42,6 +42,13 @@ When two rows end up with equal keys, which concurrent placement can cause, the 
 - Restoring creates a new row from the winning retained values. Restoring and discarding both seal a tombstone whose context covers every retained version, which closes the entry on every replica.
 - A tombstone can redirect references to a row with a lower key. A reference to a tombstoned row follows the lowest redirect among its tombstones, or resolves to null when there is none. Redirects always point to lower keys, so chains terminate.
 
+## References
+
+- A reference column holds a row key of any replicated table, including its own table and tables listed after it. A reference group holds one such column; register and immutable groups may also declare several, each resolved like a reference group while the group's value merges as a whole.
+- Each reference declares the delete action of its foreign key: clear to null or cascade. An immutable reference cascades, because clearing would change an immutable column. Hiding rows whose cascading reference no longer resolves is not implemented yet; such a row currently keeps a null reference.
+- Tables are listed in dependency order: a table needing another table's rows (a reference, an owned child's foreign key, or a trigger visible to the applier that reads it) comes after it, unless both lie in one strongly connected component, which is listed contiguously. Foreign keys are deferred while the engine applies, so a reference cycle materializes within its component in one batch. Owned and applier-visible dependencies read rows statement by statement, so they never lie on a cycle.
+- Deleting a materialized row rematerializes the rows in every table whose references named it, because the foreign key action clears or cascades them at once.
+
 ## Unique values
 
 Live rows whose winning values collide on a declared unique column set form a class. Only the lowest key is materialized; the others are hidden, and references to them resolve to the kept row. Hiding is a pure function of replicated state, so every replica shows the same rows regardless of arrival order. A replica that can seal also writes repair tombstones for hidden rows that redirect to the kept row; concurrent repairs from several replicas are harmless. While materialization swaps unique values between rows, a value moves aside under a placeholder so the index never fails mid-batch.

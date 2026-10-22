@@ -3,7 +3,8 @@
 //! A live row materializes with the winning value of every group, its references resolved
 //! through redirects and duplicate hiding, and the derived columns its adapter computes. A
 //! tombstoned or hidden row is deleted. Engine writes run with capture suppressed and foreign
-//! keys deferred, so rows of several tables can change in steps.
+//! keys deferred, so rows of several tables, including the tables of one reference cycle and
+//! rows referencing their own table, can change in steps and are checked at commit.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -12,9 +13,7 @@ use sqlx::{AssertSqlSafe, SqliteConnection};
 
 use crate::Engine;
 use crate::error::{SyncResult, corrupt};
-use crate::manifest::{
-    ColumnSpec, GroupSpec, GroupStorage, MergeKind, OwnedTable, Resolution, TableSpec,
-};
+use crate::manifest::{ColumnSpec, GroupSpec, GroupStorage, OwnedTable, Resolution, TableSpec};
 use crate::merge::{self, Batch, MergedRows, RowState, table_param};
 use crate::repair::Hidden;
 use crate::sql::{self, ident};
@@ -139,10 +138,12 @@ async fn desired(
                 if fields.len() != columns.len() {
                     return Err(corrupt("stored value does not match its group"));
                 }
-                if let MergeKind::Reference { table: target } = group.kind
-                    && let [Field::Text(referenced)] = fields.as_slice()
-                {
-                    fields = vec![resolve_reference(conn, hidden, target, referenced).await?];
+                for (field, reference) in group.reference_columns() {
+                    if let Some(Field::Text(referenced)) = fields.get(field) {
+                        let resolved =
+                            resolve_reference(conn, hidden, reference.table, referenced).await?;
+                        fields[field] = resolved;
+                    }
                 }
                 present.columns.push((group, fields));
             }
@@ -178,23 +179,21 @@ async fn domain_referrers(
     key: &str,
 ) -> SyncResult<Vec<String>> {
     let mut keys = Vec::new();
-    for group in referrer.groups {
-        if group.kind != (MergeKind::Reference { table: target }) {
+    for (_, _, reference) in referrer.references() {
+        if reference.table != target {
             continue;
         }
-        for column in group.columns() {
-            let sql = format!(
-                "SELECT {} FROM {} WHERE {} = ?",
-                ident(referrer.key_column),
-                ident(referrer.name),
-                ident(column.name)
-            );
-            let found: Vec<String> = sqlx::query_scalar(AssertSqlSafe(sql.as_str()))
-                .bind(key)
-                .fetch_all(&mut *conn)
-                .await?;
-            keys.extend(found);
-        }
+        let sql = format!(
+            "SELECT {} FROM {} WHERE {} = ?",
+            ident(referrer.key_column),
+            ident(referrer.name),
+            ident(reference.column)
+        );
+        let found: Vec<String> = sqlx::query_scalar(AssertSqlSafe(sql.as_str()))
+            .bind(key)
+            .fetch_all(&mut *conn)
+            .await?;
+        keys.extend(found);
     }
     Ok(keys)
 }
@@ -440,7 +439,8 @@ async fn execute_insert(
     Ok(())
 }
 
-/// Materializes every dirty row and the rows whose references a deletion would clear.
+/// Materializes every dirty row and the rows, in any table, whose references a deletion would
+/// clear or cascade.
 /// Returns the domain tables it changed, in manifest order.
 /// `merged` holds the merge state already read for dirty rows; other rows are read here.
 pub(crate) async fn materialize(
@@ -459,27 +459,37 @@ pub(crate) async fn materialize(
             .ok_or_else(|| corrupt("dirty row of an unknown table"))?;
         worklists[index].insert(key.clone());
     }
-    let mut plans: Vec<BTreeMap<String, Desired>> = Vec::with_capacity(tables.len());
-    for (index, table) in tables.iter().enumerate() {
+    // Planning runs until no table has unplanned work, because a referrer may be listed before
+    // its target, in the same table, or in the same reference cycle.
+    let mut plans: Vec<BTreeMap<String, Option<Desired>>> =
+        (0..tables.len()).map(|_| BTreeMap::new()).collect();
+    while let Some(index) = worklists.iter().position(|keys| !keys.is_empty()) {
+        let table = &tables[index];
         let keys = std::mem::take(&mut worklists[index]);
-        let mut plan = BTreeMap::new();
         for key in keys {
-            let Some(desired) = desired(engine, conn, table, &key, hidden, &mut merged).await?
-            else {
+            if plans[index].contains_key(&key) {
                 continue;
-            };
-            if matches!(desired, Desired::Absent) && domain_exists(conn, table, &key).await? {
-                // Deleting the row clears references to it at once, so referrers must be
-                // materialized again even when their merge state did not change.
-                for (later, referrer) in tables.iter().enumerate().skip(index + 1) {
+            }
+            let desired = desired(engine, conn, table, &key, hidden, &mut merged).await?;
+            if matches!(desired, Some(Desired::Absent)) && domain_exists(conn, table, &key).await? {
+                // Deleting the row clears or cascades references to it at once, so referrers
+                // must be materialized again even when their merge state did not change.
+                for (position, referrer) in tables.iter().enumerate() {
                     let keys = domain_referrers(conn, referrer, table.id, &key).await?;
-                    worklists[later].extend(keys);
+                    worklists[position].extend(keys);
                 }
             }
-            plan.insert(key, desired);
+            plans[index].insert(key, desired);
         }
-        plans.push(plan);
     }
+    let plans: Vec<BTreeMap<String, Desired>> = plans
+        .into_iter()
+        .map(|plan| {
+            plan.into_iter()
+                .filter_map(|(key, desired)| desired.map(|desired| (key, desired)))
+                .collect()
+        })
+        .collect();
 
     let mut changed = vec![false; tables.len()];
     for (index, table) in tables.iter().enumerate().rev() {

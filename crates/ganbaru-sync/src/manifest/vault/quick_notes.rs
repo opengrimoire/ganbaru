@@ -4,8 +4,8 @@ use ganbaru_sync_contracts::{GroupId, TableId};
 
 use crate::manifest::{
     Collation, ColumnSpec, ColumnType, DomainManifest, DomainTrigger, GroupSpec, GroupStorage,
-    LocalColumn, MergeKind, OwnedTable, Resolution, TableIdRange, TableSpec, TriggerPolicy,
-    group_id,
+    LocalColumn, MergeKind, OnDelete, OwnedTable, Resolution, TableIdRange, TableSpec,
+    TriggerPolicy, group_id,
 };
 
 /// Domain name for Quick notes.
@@ -70,6 +70,7 @@ const fn plain(
         name,
         kind,
         storage: GroupStorage::Columns(columns),
+        references: &[],
         surfaced: false,
         recoverable: false,
         bumps_revision: false,
@@ -88,6 +89,7 @@ const fn content(
         name,
         kind,
         storage,
+        references: &[],
         surfaced,
         recoverable: true,
         bumps_revision: true,
@@ -175,7 +177,10 @@ const NOTE_GROUPS: [GroupSpec; 9] = [
     content(
         note_group::TAG,
         "tag",
-        MergeKind::Reference { table: TAGS_TABLE },
+        MergeKind::Reference {
+            table: TAGS_TABLE,
+            on_delete: OnDelete::SetNull,
+        },
         GroupStorage::Columns(&[ColumnSpec {
             name: "tag_id",
             ty: ColumnType::OptionalRowKey,

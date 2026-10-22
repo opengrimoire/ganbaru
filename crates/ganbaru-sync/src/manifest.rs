@@ -13,6 +13,7 @@ use std::fmt::Write as _;
 
 use ganbaru_sync_contracts::{GroupId, GroupMask, TableId};
 
+pub mod order;
 pub mod summary;
 pub mod vault;
 
@@ -43,6 +44,7 @@ pub const SYNC_TABLES: &[&str] = &[
     "sync_ops",
     "sync_rows",
     "sync_register_versions",
+    "sync_version_refs",
     "sync_tombstones",
 ];
 
@@ -132,7 +134,7 @@ pub struct DomainManifest {
     pub name: &'static str,
     /// Table ids reserved for the domain.
     pub table_ids: TableIdRange,
-    /// Replicated tables, parents before the tables that reference them.
+    /// Replicated tables in dependency order (see [`order`]).
     pub tables: &'static [TableSpec],
     /// Derived tables, including virtual tables whose shadow tables follow them.
     pub derived: &'static [&'static str],
@@ -253,12 +255,45 @@ pub enum MergeKind {
     Max,
     /// An order key; greatest `(clock, writer)` wins.
     Position,
-    /// A register holding a row key of another table, resolved through redirects and duplicate
-    /// hiding when materialized.
+    /// A register holding a row key of a replicated table, possibly its own, resolved through
+    /// redirects and duplicate hiding when materialized.
     Reference {
         /// Referenced table.
         table: TableId,
+        /// Action of the domain foreign key when the referenced row is deleted.
+        on_delete: OnDelete,
     },
+}
+
+/// The `ON DELETE` action of a reference column's domain foreign key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OnDelete {
+    /// `ON DELETE SET NULL`.
+    SetNull,
+    /// `ON DELETE CASCADE`.
+    Cascade,
+}
+
+impl OnDelete {
+    /// The action as `pragma_foreign_key_list` reports it.
+    pub const fn sql_name(self) -> &'static str {
+        match self {
+            Self::SetNull => "SET NULL",
+            Self::Cascade => "CASCADE",
+        }
+    }
+}
+
+/// A column of a `Register` or `Immutable` group holding a row key of a replicated table,
+/// resolved like a [`MergeKind::Reference`] group when materialized.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReferenceColumn {
+    /// Column of the group.
+    pub column: &'static str,
+    /// Referenced table.
+    pub table: TableId,
+    /// Action of the domain foreign key when the referenced row is deleted.
+    pub on_delete: OnDelete,
 }
 
 /// One field group of a replicated table.
@@ -272,6 +307,9 @@ pub struct GroupSpec {
     pub kind: MergeKind,
     /// Value location.
     pub storage: GroupStorage,
+    /// Reference columns of a `Register` or `Immutable` group; a [`MergeKind::Reference`]
+    /// group declares its single reference in its kind instead.
+    pub references: &'static [ReferenceColumn],
     /// Whether concurrent differing versions are shown to the user as a conflict.
     pub surfaced: bool,
     /// Whether versions that outlive a deletion are offered for recovery.
@@ -292,6 +330,32 @@ impl GroupSpec {
     /// The group as a single-member mask.
     pub const fn mask(&self) -> GroupMask {
         GroupMask::of(self.id)
+    }
+
+    /// Every reference of the group with the index of its field in the group value: the
+    /// column of a [`MergeKind::Reference`] group, then the declared reference columns.
+    pub fn reference_columns(&self) -> impl Iterator<Item = (usize, ReferenceColumn)> + 'static {
+        let columns = self.columns();
+        let references = self.references;
+        let single = match (self.kind, columns) {
+            (MergeKind::Reference { table, on_delete }, [column]) => Some((
+                0,
+                ReferenceColumn {
+                    column: column.name,
+                    table,
+                    on_delete,
+                },
+            )),
+            _ => None,
+        };
+        single
+            .into_iter()
+            .chain(references.iter().filter_map(move |reference| {
+                columns
+                    .iter()
+                    .position(|column| column.name == reference.column)
+                    .map(|field| (field, *reference))
+            }))
     }
 }
 
@@ -391,6 +455,19 @@ impl TableSpec {
             .flat_map(|group| group.columns())
     }
 
+    /// Every reference of the table with its group and the index of its field in the group
+    /// value.
+    pub fn references(
+        &self,
+    ) -> impl Iterator<Item = (&'static GroupSpec, usize, ReferenceColumn)> + 'static {
+        let groups = self.groups;
+        groups.iter().flat_map(|group| {
+            group
+                .reference_columns()
+                .map(move |(field, reference)| (group, field, reference))
+        })
+    }
+
     /// Local column by name.
     pub fn local_column(&self, name: &str) -> Option<&'static LocalColumn> {
         self.local_columns.iter().find(|column| column.name == name)
@@ -412,7 +489,7 @@ pub struct Manifest {
     pub version: u16,
     /// Domains in dependency order.
     pub domains: &'static [&'static DomainManifest],
-    /// Replicated tables of every domain, parents before the tables that reference them.
+    /// Replicated tables of every domain in dependency order (see [`order`]).
     pub tables: &'static [TableSpec],
     /// Derived tables, including virtual tables whose shadow tables follow them.
     pub derived: &'static [&'static str],
@@ -461,8 +538,9 @@ impl Manifest {
     }
 
     /// Checks the facts the engine relies on: table ids are nonzero, unique, and inside their
-    /// domain's range; domain names are unique and ranges disjoint; and every `Local` column
-    /// declares a SQL literal. Adapter registration is checked by the engine.
+    /// domain's range; domain names are unique and ranges disjoint; every `Local` column
+    /// declares a SQL literal; references are well formed; and tables follow the dependency
+    /// order of their references. Adapter registration is checked by the engine.
     pub fn validate(&self) -> Result<(), String> {
         let mut problems = String::new();
         for (index, domain) in self.domains.iter().enumerate() {
@@ -508,6 +586,14 @@ impl Manifest {
             {
                 let _ = writeln!(problems, "{}: duplicate table id", table.name);
             }
+            for group in table.groups {
+                for problem in reference_problems(group) {
+                    let _ = writeln!(problems, "{}.{}: {problem}", table.name, group.name);
+                }
+            }
+        }
+        for problem in self.order_problems(&self.reference_dependencies()) {
+            let _ = writeln!(problems, "{problem}");
         }
         if problems.is_empty() {
             Ok(())
@@ -564,6 +650,58 @@ impl Manifest {
             Classification::Unconverted
         }
     }
+}
+
+/// Why a group's references are malformed. Every reference is a single optional row key
+/// column, declared once. An immutable reference cascades, because clearing it would change an
+/// immutable column outside apply, which the immutability guard refuses.
+fn reference_problems(group: &GroupSpec) -> Vec<String> {
+    let mut problems = Vec::new();
+    let columns = group.columns();
+    match group.kind {
+        MergeKind::Reference { .. } => {
+            if !matches!(columns, [column] if column.ty == ColumnType::OptionalRowKey) {
+                problems.push("a reference group holds one optional row key column".to_string());
+            }
+            if !group.references.is_empty() {
+                problems.push("a reference group declares no reference columns".to_string());
+            }
+        }
+        MergeKind::Register | MergeKind::Immutable => {}
+        MergeKind::Coupled | MergeKind::Max | MergeKind::Position => {
+            if !group.references.is_empty() {
+                problems.push(
+                    "only register and immutable groups declare reference columns".to_string(),
+                );
+            }
+        }
+    }
+    for (index, reference) in group.references.iter().enumerate() {
+        match columns
+            .iter()
+            .find(|column| column.name == reference.column)
+        {
+            None => problems.push(format!("{} is not a column of the group", reference.column)),
+            Some(column) if column.ty != ColumnType::OptionalRowKey => problems.push(format!(
+                "{} holds a reference but is not an optional row key",
+                reference.column
+            )),
+            Some(_) => {}
+        }
+        if group.references[..index]
+            .iter()
+            .any(|other| other.column == reference.column)
+        {
+            problems.push(format!("{} is declared twice", reference.column));
+        }
+        if group.kind == MergeKind::Immutable && reference.on_delete != OnDelete::Cascade {
+            problems.push(format!(
+                "{} is an immutable reference that does not cascade",
+                reference.column
+            ));
+        }
+    }
+    problems
 }
 
 /// Group id for static manifest tables.

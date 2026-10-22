@@ -302,44 +302,41 @@ pub(crate) async fn apply_change(
                 .await?;
             }
         }
-        let reference = match (spec.kind, group.value.fields()) {
-            (MergeKind::Reference { .. }, [Field::Text(target)]) => Some(target.as_str()),
-            _ => None,
-        };
-        upserts.push((group, reference));
+        upserts.push((group, spec));
     }
     upsert_versions(conn, change, writer, seq, clock, &upserts).await?;
     batch.dirty.insert((change.table, key.to_string()));
     Ok(())
 }
 
-/// Records the versions a change writes in one statement, with their reference targets.
+/// Records the versions a change writes in one statement, then replaces their reference
+/// targets.
 async fn upsert_versions(
     conn: &mut SqliteConnection,
     change: &Change,
     writer: WriterId,
     seq: Seq,
     clock: Hlc,
-    upserts: &[(&GroupValue, Option<&str>)],
+    upserts: &[(&GroupValue, &GroupSpec)],
 ) -> SyncResult<()> {
     if upserts.is_empty() {
         return Ok(());
     }
-    let rows = vec!["(?, ?, ?, ?, ?, ?, ?, ?, ?)"; upserts.len()].join(", ");
+    let rows = vec!["(?, ?, ?, ?, ?, ?, ?, ?)"; upserts.len()].join(", ");
     // A change carries at most one value per group, so the distinct statements stay bounded
     // by the largest group count of the manifest.
     let sql = format!(
         "INSERT INTO sync_register_versions
-            (table_id, row_key, group_id, writer_id, seq, clock, value_hash, value, ref_key)
+            (table_id, row_key, group_id, writer_id, seq, clock, value_hash, value)
          VALUES {rows}
          ON CONFLICT (table_id, row_key, group_id, writer_id) DO UPDATE SET
             seq = excluded.seq, clock = excluded.clock, value_hash = excluded.value_hash,
-            value = excluded.value, ref_key = excluded.ref_key"
+            value = excluded.value"
     );
     let seq = seq_i64(seq)?;
     let clock = log::clamp_ms(clock.as_u64());
     let mut query = sqlx::query(sqlx::AssertSqlSafe(sql.as_str()));
-    for (group, reference) in upserts {
+    for (group, _) in upserts {
         query = query
             .bind(table_param(change.table))
             .bind(change.row.as_str())
@@ -348,8 +345,70 @@ async fn upsert_versions(
             .bind(seq)
             .bind(clock)
             .bind(group.hash.as_slice())
-            .bind(group.value.encode())
-            .bind(*reference);
+            .bind(group.value.encode());
+    }
+    query.execute(&mut *conn).await?;
+    replace_version_refs(conn, change, writer, upserts).await
+}
+
+/// Replaces the reference targets of the versions a change wrote: one row per reference column
+/// holding a row key.
+async fn replace_version_refs(
+    conn: &mut SqliteConnection,
+    change: &Change,
+    writer: WriterId,
+    upserts: &[(&GroupValue, &GroupSpec)],
+) -> SyncResult<()> {
+    let referencing = upserts
+        .iter()
+        .filter(|(_, spec)| spec.reference_columns().next().is_some())
+        .collect::<Vec<_>>();
+    if referencing.is_empty() {
+        return Ok(());
+    }
+    let groups = vec!["?"; referencing.len()].join(", ");
+    let sql = format!(
+        "DELETE FROM sync_version_refs
+         WHERE table_id = ? AND row_key = ? AND writer_id = ? AND group_id IN ({groups})"
+    );
+    let mut query = sqlx::query(sqlx::AssertSqlSafe(sql.as_str()))
+        .bind(table_param(change.table))
+        .bind(change.row.as_str())
+        .bind(writer.as_bytes().as_slice());
+    for (group, _) in &referencing {
+        query = query.bind(i64::from(group.group.get()));
+    }
+    query.execute(&mut *conn).await?;
+
+    let targets = referencing
+        .iter()
+        .flat_map(|(group, spec)| {
+            spec.reference_columns().filter_map(|(field, _)| {
+                match group.value.fields().get(field) {
+                    Some(Field::Text(target)) => Some((group.group, field, target.as_str())),
+                    _ => None,
+                }
+            })
+        })
+        .collect::<Vec<_>>();
+    if targets.is_empty() {
+        return Ok(());
+    }
+    let rows = vec!["(?, ?, ?, ?, ?, ?)"; targets.len()].join(", ");
+    let sql = format!(
+        "INSERT INTO sync_version_refs (table_id, row_key, group_id, writer_id, field, ref_key)
+         VALUES {rows}"
+    );
+    let mut query = sqlx::query(sqlx::AssertSqlSafe(sql.as_str()));
+    for (group, field, target) in targets {
+        let field = i64::try_from(field).map_err(|_| corrupt("reference field out of range"))?;
+        query = query
+            .bind(table_param(change.table))
+            .bind(change.row.as_str())
+            .bind(i64::from(group.get()))
+            .bind(writer.as_bytes().as_slice())
+            .bind(field)
+            .bind(target);
     }
     query.execute(&mut *conn).await?;
     Ok(())

@@ -11,7 +11,7 @@ table 2 quick_notes replicated key id
   group 1 register surfaced recoverable title:text(..=200)
   group 2 register surfaced recoverable owned quick_note_text_runs parent note_id order sort_order columns content,bold,italic,underline
   group 3 register recoverable color:integer(0..=31)
-  group 4 reference 1 recoverable tag_id:optional_row_key
+  group 4 reference 1 set_null recoverable tag_id:optional_row_key
   group 5 coupled recoverable pinned:flag archived:flag trashed_at:optional_timestamp
   group 6 position order_key:order_key
   group 7 max updated_at:timestamp

@@ -191,10 +191,7 @@ fn components_within<'a>(root: &Path, directory: &'a Path) -> io::Result<Vec<&'a
 pub fn create_private_temporary_directory(parent: &Path, prefix: &str) -> io::Result<PathBuf> {
     for _ in 0..PRIVATE_DIRECTORY_ATTEMPTS {
         let path = parent.join(format!("{prefix}{}", random_hex()?));
-        let mut builder = fs::DirBuilder::new();
-        #[cfg(unix)]
-        std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
-        match builder.create(&path) {
+        match private_dir_builder().create(&path) {
             Ok(()) => return Ok(path),
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
             Err(error) => return Err(error),
@@ -219,11 +216,7 @@ pub fn create_private_temporary_directory(parent: &Path, prefix: &str) -> io::Re
 ///
 /// Returns an error when a directory cannot be created or an ancestor is not a directory.
 pub fn create_private_directories(directory: &Path) -> io::Result<()> {
-    let mut builder = fs::DirBuilder::new();
-    builder.recursive(true);
-    #[cfg(unix)]
-    std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
-    builder.create(directory)
+    private_dir_builder().recursive(true).create(directory)
 }
 
 /// Creates the single directory `directory`, accessible only by the current user.
@@ -235,10 +228,22 @@ pub fn create_private_directories(directory: &Path) -> io::Result<()> {
 ///
 /// Returns an error when `directory` already exists or cannot be created.
 pub fn create_private_directory(directory: &Path) -> io::Result<()> {
+    private_dir_builder().create(directory)
+}
+
+/// A directory builder whose new directories get mode 0700.
+#[cfg(unix)]
+fn private_dir_builder() -> fs::DirBuilder {
+    use std::os::unix::fs::DirBuilderExt;
     let mut builder = fs::DirBuilder::new();
-    #[cfg(unix)]
-    std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
-    builder.create(directory)
+    builder.mode(0o700);
+    builder
+}
+
+/// A directory builder whose new directories inherit the access of their parent.
+#[cfg(not(unix))]
+fn private_dir_builder() -> fs::DirBuilder {
+    fs::DirBuilder::new()
 }
 
 /// Creates the new file `path`, readable and writable only by the current user on Unix.

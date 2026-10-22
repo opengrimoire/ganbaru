@@ -1350,7 +1350,7 @@ fn manifests_are_well_formed() {
             .iter()
             .map(|table| table.full_mask().0)
             .collect::<Vec<_>>(),
-        [31, 511, 7, 127]
+        [31, 511, 7, 127, 31, 7, 3]
     );
 }
 
@@ -1694,6 +1694,7 @@ const RECORDED_MANIFESTS: &[(u16, &str)] = &[
     (1, include_str!("fixtures/vault_manifest_v1.txt")),
     (2, include_str!("fixtures/vault_manifest_v2.txt")),
     (3, include_str!("fixtures/vault_manifest_v3.txt")),
+    (4, include_str!("fixtures/vault_manifest_v4.txt")),
 ];
 #[test]
 fn vault_manifest_changes_only_with_a_version_bump() {

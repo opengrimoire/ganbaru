@@ -4,19 +4,21 @@ use std::sync::LazyLock;
 
 use super::{DomainManifest, Manifest};
 
+pub mod contacts;
 pub mod music;
 pub mod preferences;
 pub mod quick_notes;
 pub mod themes;
 
 /// Current vault manifest version.
-pub const VAULT_MANIFEST_VERSION: u16 = 3;
+pub const VAULT_MANIFEST_VERSION: u16 = 4;
 
 /// Registered vault domains in dependency order, one line per domain.
 pub const VAULT_DOMAINS: &[&DomainManifest] = &[
     &quick_notes::DOMAIN,
     &preferences::DOMAIN,
     &themes::DOMAIN,
+    &contacts::DOMAIN,
     &music::DOMAIN,
 ];
 

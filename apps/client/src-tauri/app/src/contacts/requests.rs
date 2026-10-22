@@ -168,13 +168,10 @@ pub(crate) async fn receive_request(
     {
         return Ok(acknowledged);
     }
-    if let Some(existing) = store::request_by_id(pool, request_id).await? {
-        if existing.public_key != public_key {
-            return Ok(PeerReply::invalid());
-        }
-        if RequestState::parse(&existing.state) != Some(RequestState::Pending) {
-            return Ok(acknowledged);
-        }
+    if let Some(existing) = store::received_request_by_peer(pool, &public_key, request_id).await?
+        && RequestState::parse(&existing.state) != Some(RequestState::Pending)
+    {
+        return Ok(acknowledged);
     }
     let mut tx = pool
         .begin()
@@ -187,12 +184,16 @@ pub(crate) async fn receive_request(
     prune_handled(&mut *tx, now).await?;
     let digest = store::encode_hex(&signed.digest);
     let fingerprint = fingerprint_hex(&signed);
+    // The row gets its own id: the requester's id is only unique for that person, and a
+    // deleted row's id must not be reused.
+    let id = random_token("contact-request")?;
     store::insert_request(
         &mut *tx,
         NewRequest {
-            id: request_id,
+            id: &id,
             direction: RequestDirection::Received,
             public_key: &public_key,
+            peer_request_id: Some(request_id),
             display_name: &signed.card.display_name,
             color: signed.card.color,
             card: requester_card,
@@ -240,14 +241,10 @@ pub(crate) async fn request_state(
     if verify(&public_key, &payload, &signature).is_err() {
         return Ok(StatusOutcome::Invalid);
     }
-    let Some(row) = store::request_by_id(pool, request_id).await? else {
+    let Some(row) = store::received_request_by_peer(pool, requester_public_key, request_id).await?
+    else {
         return Ok(StatusOutcome::Pending);
     };
-    if row.public_key != requester_public_key
-        || RequestDirection::parse(&row.direction) != Some(RequestDirection::Received)
-    {
-        return Ok(StatusOutcome::Pending);
-    }
     if let Some(contact) = store::contact_by_key(pool, &row.public_key).await?
         && ContactState::parse(&contact.state) == Some(ContactState::Blocked)
     {
@@ -419,6 +416,7 @@ pub(crate) async fn send_request<R: Runtime>(
             id: &request_id,
             direction: RequestDirection::Sent,
             public_key: &public_key,
+            peer_request_id: None,
             display_name: &recipient.card.display_name,
             color: recipient.card.color,
             card: card_text,
@@ -452,16 +450,20 @@ fn revision_conflict() -> ContactsError {
     ContactsError::RevisionConflict("the request changed since it was last read".to_string())
 }
 
+/// The pending request with this id in the given direction. A request past its deadline
+/// counts as handled even before a poll marks it expired.
 async fn pending_row_in_direction(
     pool: &SqlitePool,
     id: &str,
     direction: RequestDirection,
+    now: DateTime<Utc>,
 ) -> Result<RequestRow, ContactsError> {
     let row = store::request_by_id(pool, id)
         .await?
         .ok_or_else(revision_conflict)?;
     if RequestDirection::parse(&row.direction) != Some(direction)
         || RequestState::parse(&row.state) != Some(RequestState::Pending)
+        || row.expires_at <= store::format_time(now)
     {
         return Err(revision_conflict());
     }
@@ -477,7 +479,7 @@ pub(crate) async fn accept_request(
     message_trust: TrustKind,
     now: DateTime<Utc>,
 ) -> Result<(), ContactsError> {
-    let row = pending_row_in_direction(pool, id, RequestDirection::Received).await?;
+    let row = pending_row_in_direction(pool, id, RequestDirection::Received, now).await?;
     let mut tx = pool
         .begin()
         .await
@@ -531,10 +533,10 @@ pub(crate) async fn close_request(
     direction: RequestDirection,
     state: RequestState,
 ) -> Result<(), ContactsError> {
-    pending_row_in_direction(pool, id, direction).await?;
+    let now = store::now();
+    pending_row_in_direction(pool, id, direction, now).await?;
     let updated =
-        store::set_request_state(pool, id, Some(expected_revision), state, None, store::now())
-            .await?;
+        store::set_request_state(pool, id, Some(expected_revision), state, None, now).await?;
     if updated {
         Ok(())
     } else {
@@ -607,7 +609,7 @@ pub(crate) async fn poll_sent_requests(
     store::expire_stale_requests(pool, now).await?;
     prune_handled(pool, now).await?;
     let mut still_pending = false;
-    for row in store::pending_requests(pool, RequestDirection::Sent).await? {
+    for row in store::pending_requests(pool, RequestDirection::Sent, now).await? {
         if row.endpoint_hint.is_empty() || row.coordinator_fingerprint.is_empty() {
             store::touch_request_attempt(pool, &row.id, now, Some(RECIPIENT_UNAVAILABLE_CODE))
                 .await?;
@@ -770,7 +772,7 @@ async fn poll_once<R: Runtime>(app: &AppHandle<R>) -> Result<(), ()> {
     if identity.key.is_none() {
         return Ok(());
     }
-    let has_pending = store::pending_requests(&pool, RequestDirection::Sent)
+    let has_pending = store::pending_requests(&pool, RequestDirection::Sent, store::now())
         .await
         .map(|rows| !rows.is_empty())
         .unwrap_or(false);

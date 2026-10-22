@@ -21,7 +21,13 @@ import {
   type ContactsSnapshot,
   type ContactTrustChoice,
 } from "$lib/api/contacts";
+import { listenSyncApplied } from "$lib/api/sync";
 import { onActiveVaultIdentityChange } from "$lib/vault/active-vault";
+
+/** Replicated tables whose changes alter the contacts and requests lists. */
+const CONTACT_LIST_TABLES: ReadonlySet<string> = new Set(["contacts", "contact_requests"]);
+/** Replicated table that holds the card nonce and revision. */
+const CONTACT_CARD_TABLE = "contact_card";
 
 let identity = $state<LocalIdentity | null>(null);
 let card = $state<ContactCardData | null>(null);
@@ -33,6 +39,7 @@ let cardLoading = $state(false);
 let error = $state<ContactsError | null>(null);
 let cardError = $state<ContactsError | null>(null);
 let generation = 0;
+let replicationListenerStarted = false;
 
 onActiveVaultIdentityChange(() => {
   generation += 1;
@@ -82,8 +89,27 @@ async function refresh(): Promise<void> {
 }
 
 async function ensureLoaded(): Promise<void> {
+  startContactsReplicationListener();
   if (loaded || loading) return;
   await refresh();
+}
+
+/**
+ * Reload what this window already shows whenever sync applies contacts rows. Lists reload only once loaded, and
+ * the card is signed again only when it is open, so a replica never creates state it has not asked for.
+ */
+function startContactsReplicationListener(): void {
+  if (replicationListenerStarted) return;
+  replicationListenerStarted = true;
+  void listenSyncApplied((tables) => {
+    if (loaded && tables.some((table) => CONTACT_LIST_TABLES.has(table))) void refresh();
+    if (card !== null && tables.includes(CONTACT_CARD_TABLE)) {
+      void runCardCommand(loadLocalCard).catch(() => undefined);
+    }
+  }).catch((error: unknown) => {
+    replicationListenerStarted = false;
+    console.error("Contacts could not listen for sync", error);
+  });
 }
 
 async function runCardCommand(run: () => Promise<Awaited<ReturnType<typeof loadLocalCard>>>): Promise<void> {
@@ -147,6 +173,7 @@ export function getContacts() {
     },
     /** Signs the current card; creates the identity the first time the card is opened. */
     loadCard(): Promise<void> {
+      startContactsReplicationListener();
       return runCardCommand(loadLocalCard);
     },
     regenerateCard(): Promise<void> {

@@ -102,6 +102,17 @@ async fn deliver(
     .unwrap()
 }
 
+/// The requester-chosen ids of stored received rows, newest first.
+async fn peer_ids(pool: &SqlitePool) -> Vec<String> {
+    sqlx::query_scalar(
+        "SELECT peer_request_id FROM contact_requests WHERE peer_request_id IS NOT NULL
+         ORDER BY created_at DESC, id",
+    )
+    .fetch_all(pool)
+    .await
+    .unwrap()
+}
+
 fn received(request_id: &str) -> PeerReply {
     PeerReply::Received {
         request_id: request_id.to_string(),
@@ -238,13 +249,11 @@ async fn newer_request_from_the_same_person_replaces_the_pending_one() {
     deliver(&pool, &recipient, &requester, "contact-first").await;
     deliver(&pool, &recipient, &requester, "contact-second").await;
 
-    let rows = store::list_requests(&pool).await.unwrap();
-    assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0].id, "contact-second");
+    assert_eq!(peer_ids(&pool).await, ["contact-second"]);
 }
 
 #[tokio::test]
-async fn request_id_owned_by_another_person_is_invalid() {
+async fn a_request_id_reused_by_another_person_gets_its_own_row() {
     let pool = migrated_memory_pool().await;
     let recipient = Person::new("Recipient");
     let first = Person::new("First");
@@ -253,16 +262,49 @@ async fn request_id_owned_by_another_person_is_invalid() {
     deliver(&pool, &recipient, &first, "contact-shared").await;
     let reply = deliver(&pool, &recipient, &second, "contact-shared").await;
 
-    assert!(matches!(
-        reply,
-        PeerReply::Rejected {
-            code: INVALID_REQUEST_CODE,
-            ..
-        }
-    ));
+    assert_eq!(reply, received("contact-shared"));
     let rows = store::list_requests(&pool).await.unwrap();
-    assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0].public_key, first.key.public_key().to_text());
+    assert_eq!(rows.len(), 2);
+    assert_ne!(rows[0].id, rows[1].id);
+    assert_eq!(peer_ids(&pool).await, ["contact-shared", "contact-shared"]);
+    for person in [&first, &second] {
+        let row = store::received_request_by_peer(
+            &pool,
+            &person.key.public_key().to_text(),
+            "contact-shared",
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(row.display_name, person.name);
+    }
+}
+
+#[tokio::test]
+async fn a_request_delivered_again_after_its_row_was_deleted_gets_a_fresh_local_row() {
+    let pool = migrated_memory_pool().await;
+    let recipient = Person::new("Recipient");
+    let requester = Person::new("Requester");
+    let key = requester.key.public_key().to_text();
+
+    deliver(&pool, &recipient, &requester, "contact-one").await;
+    let first = store::received_request_by_peer(&pool, &key, "contact-one")
+        .await
+        .unwrap()
+        .unwrap();
+    sqlx::query("DELETE FROM contact_requests")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let reply = deliver(&pool, &recipient, &requester, "contact-one").await;
+
+    assert_eq!(reply, received("contact-one"));
+    let again = store::received_request_by_peer(&pool, &key, "contact-one")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_ne!(again.id, first.id, "a deleted row's id is never reused");
+    assert_eq!(again.state, "pending");
 }
 
 #[tokio::test]
@@ -283,11 +325,14 @@ async fn pending_received_requests_are_capped() {
     let rows = store::list_requests(&pool).await.unwrap();
     assert_eq!(rows.len(), usize::try_from(MAX_PENDING_RECEIVED).unwrap());
     assert!(rows.iter().all(|row| row.state == "pending"));
-    let ids: Vec<&str> = rows.iter().map(|row| row.id.as_str()).collect();
+    let ids = peer_ids(&pool).await;
     let newest = format!("contact-{:03}", total - 1);
-    assert!(ids.contains(&newest.as_str()), "the newest request is kept");
+    assert!(ids.contains(&newest), "the newest request is kept");
     for evicted in ["contact-000", "contact-001", "contact-002"] {
-        assert!(!ids.contains(&evicted), "the oldest requests are deleted");
+        assert!(
+            !ids.iter().any(|id| id == evicted),
+            "the oldest requests are deleted"
+        );
     }
 }
 
@@ -304,7 +349,7 @@ async fn handled_requests_are_deleted_after_the_retention_window() {
         .await
         .unwrap();
     assert!(
-        store::list_pending_requests(&pool)
+        store::list_pending_requests(&pool, start)
             .await
             .unwrap()
             .is_empty(),
@@ -325,9 +370,7 @@ async fn handled_requests_are_deleted_after_the_retention_window() {
     .unwrap();
     assert_eq!(reply, received("contact-new"));
 
-    let rows = store::list_requests(&pool).await.unwrap();
-    let ids: Vec<&str> = rows.iter().map(|row| row.id.as_str()).collect();
-    assert_eq!(ids, ["contact-new"]);
+    assert_eq!(peer_ids(&pool).await, ["contact-new"]);
 }
 
 #[tokio::test]
@@ -338,9 +381,15 @@ async fn handled_requests_are_capped_with_the_oldest_deleted_first() {
     let now = store::now();
     for index in 0..handled {
         let id = format!("contact-{index:03}");
-        deliver(&pool, &recipient, &Person::new("Many"), &id).await;
+        let requester = Person::new("Many");
+        deliver(&pool, &recipient, &requester, &id).await;
+        let row =
+            store::received_request_by_peer(&pool, &requester.key.public_key().to_text(), &id)
+                .await
+                .unwrap()
+                .unwrap();
         assert!(
-            store::set_request_state(&pool, &id, None, RequestState::Declined, None, now)
+            store::set_request_state(&pool, &row.id, None, RequestState::Declined, None, now)
                 .await
                 .unwrap()
         );
@@ -353,13 +402,16 @@ async fn handled_requests_are_capped_with_the_oldest_deleted_first() {
         declined,
         usize::try_from(requests::MAX_HANDLED_REQUESTS).unwrap()
     );
-    let ids: Vec<&str> = rows.iter().map(|row| row.id.as_str()).collect();
-    assert!(ids.contains(&"contact-last"), "the new request is kept");
+    let ids = peer_ids(&pool).await;
+    assert!(
+        ids.iter().any(|id| id == "contact-last"),
+        "the new request is kept"
+    );
     let newest_handled = format!("contact-{:03}", handled - 1);
-    assert!(ids.contains(&newest_handled.as_str()));
+    assert!(ids.contains(&newest_handled));
     for pruned in ["contact-000", "contact-001", "contact-002"] {
         assert!(
-            !ids.contains(&pruned),
+            !ids.iter().any(|id| id == pruned),
             "the oldest handled requests are deleted"
         );
     }
@@ -448,15 +500,19 @@ async fn accepting_creates_an_active_contact_with_the_chosen_trust() {
     let recipient = Person::new("Recipient");
     let requester = Person::new("Requester");
     deliver(&pool, &recipient, &requester, "contact-one").await;
-    let row = store::request_by_id(&pool, "contact-one")
-        .await
-        .unwrap()
-        .unwrap();
+    let row = store::received_request_by_peer(
+        &pool,
+        &requester.key.public_key().to_text(),
+        "contact-one",
+    )
+    .await
+    .unwrap()
+    .unwrap();
     let now = store::now();
 
     requests::accept_request(
         &pool,
-        "contact-one",
+        &row.id,
         row.revision,
         TrustKind::SevenDays,
         TrustKind::UntilRevoked,
@@ -498,14 +554,18 @@ async fn accepting_with_a_stale_revision_is_a_conflict() {
     let recipient = Person::new("Recipient");
     let requester = Person::new("Requester");
     deliver(&pool, &recipient, &requester, "contact-one").await;
-    let row = store::request_by_id(&pool, "contact-one")
-        .await
-        .unwrap()
-        .unwrap();
+    let row = store::received_request_by_peer(
+        &pool,
+        &requester.key.public_key().to_text(),
+        "contact-one",
+    )
+    .await
+    .unwrap()
+    .unwrap();
 
     let error = requests::accept_request(
         &pool,
-        "contact-one",
+        &row.id,
         row.revision + 1,
         TrustKind::Once,
         TrustKind::Once,
@@ -524,14 +584,18 @@ async fn declining_answers_declined_and_cancel_only_touches_sent_rows() {
     let recipient = Person::new("Recipient");
     let requester = Person::new("Requester");
     deliver(&pool, &recipient, &requester, "contact-one").await;
-    let row = store::request_by_id(&pool, "contact-one")
-        .await
-        .unwrap()
-        .unwrap();
+    let row = store::received_request_by_peer(
+        &pool,
+        &requester.key.public_key().to_text(),
+        "contact-one",
+    )
+    .await
+    .unwrap()
+    .unwrap();
 
     let cancel = requests::close_request(
         &pool,
-        "contact-one",
+        &row.id,
         row.revision,
         RequestDirection::Sent,
         RequestState::Expired,
@@ -544,7 +608,7 @@ async fn declining_answers_declined_and_cancel_only_touches_sent_rows() {
 
     requests::close_request(
         &pool,
-        "contact-one",
+        &row.id,
         row.revision,
         RequestDirection::Received,
         RequestState::Declined,
@@ -570,14 +634,18 @@ async fn trust_updates_and_removal_respect_revisions() {
     let recipient = Person::new("Recipient");
     let requester = Person::new("Requester");
     deliver(&pool, &recipient, &requester, "contact-one").await;
-    let row = store::request_by_id(&pool, "contact-one")
-        .await
-        .unwrap()
-        .unwrap();
+    let row = store::received_request_by_peer(
+        &pool,
+        &requester.key.public_key().to_text(),
+        "contact-one",
+    )
+    .await
+    .unwrap()
+    .unwrap();
     let now = store::now();
     requests::accept_request(
         &pool,
-        "contact-one",
+        &row.id,
         row.revision,
         TrustKind::NotAllowed,
         TrustKind::NotAllowed,
@@ -635,14 +703,18 @@ async fn blocking_an_active_contact_clears_trust_and_unblocking_removes_the_row(
     let recipient = Person::new("Recipient");
     let requester = Person::new("Requester");
     deliver(&pool, &recipient, &requester, "contact-one").await;
-    let row = store::request_by_id(&pool, "contact-one")
-        .await
-        .unwrap()
-        .unwrap();
+    let row = store::received_request_by_peer(
+        &pool,
+        &requester.key.public_key().to_text(),
+        "contact-one",
+    )
+    .await
+    .unwrap()
+    .unwrap();
     let now = store::now();
     requests::accept_request(
         &pool,
-        "contact-one",
+        &row.id,
         row.revision,
         TrustKind::UntilRevoked,
         TrustKind::UntilRevoked,
@@ -673,14 +745,51 @@ async fn expired_requests_stop_being_pending() {
     let recipient = Person::new("Recipient");
     let requester = Person::new("Requester");
     deliver(&pool, &recipient, &requester, "contact-one").await;
-
+    let key = requester.key.public_key().to_text();
     let later = store::now() + chrono::Duration::days(requests::REQUEST_TTL_DAYS + 1);
-    store::expire_stale_requests(&pool, later).await.unwrap();
 
-    let row = store::request_by_id(&pool, "contact-one")
+    let pending = store::received_request_by_peer(&pool, &key, "contact-one")
         .await
         .unwrap()
         .unwrap();
+    assert!(
+        store::list_pending_requests(&pool, later)
+            .await
+            .unwrap()
+            .is_empty(),
+        "a request past its deadline is not listed before a poll expires it"
+    );
+    assert!(
+        store::pending_request(&pool, RequestDirection::Received, &key, later)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    let late_accept = requests::accept_request(
+        &pool,
+        &pending.id,
+        pending.revision,
+        TrustKind::Once,
+        TrustKind::Once,
+        later,
+    )
+    .await;
+    assert!(matches!(
+        late_accept,
+        Err(super::ContactsError::RevisionConflict(_))
+    ));
+    assert!(store::list_contacts(&pool).await.unwrap().is_empty());
+
+    store::expire_stale_requests(&pool, later).await.unwrap();
+
+    let row = store::received_request_by_peer(
+        &pool,
+        &requester.key.public_key().to_text(),
+        "contact-one",
+    )
+    .await
+    .unwrap()
+    .unwrap();
     assert_eq!(row.state, "expired");
 }
 
@@ -693,6 +802,7 @@ async fn insert_sent_request(pool: &SqlitePool, recipient: &Person, request_id: 
             id: request_id,
             direction: RequestDirection::Sent,
             public_key: &recipient.key.public_key().to_text(),
+            peer_request_id: None,
             display_name: recipient.name,
             color: 7,
             card: &card.text(),

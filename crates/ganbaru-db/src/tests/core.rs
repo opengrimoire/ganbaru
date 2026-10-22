@@ -61,6 +61,7 @@ fn fresh_database_applies_clean_baseline() {
             "chat_channels",
             "chat_participants",
             "contacts_local_identity",
+            "contact_card",
             "contacts",
             "contact_requests",
             "chat_conversations",

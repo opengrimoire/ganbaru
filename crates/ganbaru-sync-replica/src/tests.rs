@@ -76,8 +76,8 @@ async fn create_vault(registry: &DatabasePoolRegistry, path: &Path) -> sqlx::Sql
     let pool = registry.connect_path(path).await.expect("migrate vault");
     sqlx::query(
         "INSERT INTO contacts_local_identity
-            (singleton, public_key, card_nonce, created_at, updated_at)
-         VALUES (1, ?, 'AAAAAAAAAAAAAAAAAAAAAA', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+            (singleton, public_key, created_at)
+         VALUES (1, ?, '2026-01-01T00:00:00Z')",
     )
     .bind(person().public_key().to_text())
     .execute(&pool)

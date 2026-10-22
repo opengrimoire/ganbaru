@@ -4,7 +4,7 @@
 //! a reference into its own table, a derived-key table with a composite primary key, and a tree
 //! of nodes with a maximum depth whose parent cascades, with a recoverable label, an acyclic
 //! edge set between items, drafts that publish by predicate with parts published with them,
-//! and memos whose deletes can be held.
+//! and memos whose deletes can be held, with lines and derived-key tags that inherit the hold.
 //! Fixture table ids start at [`FIXTURE_TABLE_IDS`], above every vault domain.
 
 use std::sync::LazyLock;
@@ -689,6 +689,112 @@ pub(super) const MEMOS: TableSpec = TableSpec {
 /// `fixture_memos`.
 pub(super) const MEMOS_TABLE: TableId = TableId(FIXTURE_TABLE_IDS + 9);
 
+/// The immutable cascading reference from a memo child to its memo.
+const MEMO_REFERENCE: ColumnSpec = ColumnSpec {
+    name: "memo_id",
+    ty: ColumnType::OptionalRowKey,
+};
+
+/// Lines of a memo, removed with it, so they inherit a hold on its delete.
+pub(super) const MEMO_LINES: TableSpec = TableSpec {
+    id: MEMO_LINES_TABLE,
+    name: "fixture_memo_lines",
+    key_column: "id",
+    groups: &[
+        GroupSpec {
+            id: group_id(0),
+            name: "memo",
+            kind: MergeKind::Immutable,
+            storage: GroupStorage::Columns(&[MEMO_REFERENCE]),
+            references: &[ReferenceColumn {
+                column: "memo_id",
+                table: MEMOS_TABLE,
+                on_delete: OnDelete::Cascade,
+            }],
+            surfaced: false,
+            recoverable: false,
+            bumps_revision: false,
+        },
+        GroupSpec {
+            id: group_id(1),
+            name: "body",
+            kind: MergeKind::Register,
+            storage: GroupStorage::Columns(&[ColumnSpec {
+                name: "body",
+                ty: ColumnType::Text { max_chars: 40 },
+            }]),
+            references: &[],
+            surfaced: false,
+            recoverable: false,
+            bumps_revision: false,
+        },
+    ],
+    holds_deletes: false,
+    ..MEMOS
+};
+
+/// `fixture_memo_lines`.
+pub(super) const MEMO_LINES_TABLE: TableId = TableId(FIXTURE_TABLE_IDS + 10);
+
+/// Prefix of [`MEMO_TAGS`] keys.
+const MEMO_TAG_KEY_PREFIX: &str = "fixture_memo_tag";
+
+/// The `sync_key` of `tag` on `memo`.
+pub(super) fn memo_tag_key(memo: &str, tag: &str) -> String {
+    derived_key(MEMO_TAG_KEY_PREFIX, &[memo, tag])
+        .expect("fixture ids are valid key parts")
+        .into_string()
+}
+
+/// Tags of a memo: a derived-key table removed with the memo, so its removals inherit a hold
+/// on the memo's delete.
+pub(super) const MEMO_TAGS: TableSpec = TableSpec {
+    id: MEMO_TAGS_TABLE,
+    name: "fixture_memo_tags",
+    key_column: SYNC_KEY_COLUMN,
+    groups: &[
+        GroupSpec {
+            id: group_id(0),
+            name: "identity",
+            kind: MergeKind::Immutable,
+            storage: GroupStorage::Columns(&[
+                MEMO_REFERENCE,
+                ColumnSpec {
+                    name: "tag",
+                    ty: ColumnType::Text { max_chars: 20 },
+                },
+            ]),
+            references: &[ReferenceColumn {
+                column: "memo_id",
+                table: MEMOS_TABLE,
+                on_delete: OnDelete::Cascade,
+            }],
+            surfaced: false,
+            recoverable: false,
+            bumps_revision: false,
+        },
+        GroupSpec {
+            id: group_id(1),
+            name: "exists",
+            kind: MergeKind::Register,
+            storage: GroupStorage::Columns(&[]),
+            references: &[],
+            surfaced: false,
+            recoverable: false,
+            bumps_revision: false,
+        },
+    ],
+    derived_key: Some(DerivedKey {
+        exists_group: group_id(1),
+        key_inputs: &[],
+    }),
+    holds_deletes: false,
+    ..MEMOS
+};
+
+/// `fixture_memo_tags`.
+pub(super) const MEMO_TAGS_TABLE: TableId = TableId(FIXTURE_TABLE_IDS + 11);
+
 /// The fixture domain.
 pub(super) const FIXTURE_DOMAIN: DomainManifest = DomainManifest {
     name: "fixture",
@@ -707,6 +813,8 @@ pub(super) const FIXTURE_DOMAIN: DomainManifest = DomainManifest {
         DRAFTS,
         DRAFT_PARTS,
         MEMOS,
+        MEMO_LINES,
+        MEMO_TAGS,
     ],
     derived: &["fixture_items_index"],
     local: &[DeviceTable {
@@ -799,6 +907,17 @@ fn fixture_schema() -> String {
          CREATE TABLE fixture_memos (
              id TEXT PRIMARY KEY CHECK (trim(id) <> ''),
              label TEXT NOT NULL CHECK (length(label) <= 40)
+         );
+         CREATE TABLE fixture_memo_lines (
+             id TEXT PRIMARY KEY CHECK (trim(id) <> ''),
+             memo_id TEXT NOT NULL REFERENCES fixture_memos(id) ON DELETE CASCADE,
+             body TEXT NOT NULL CHECK (length(body) <= 40)
+         );
+         CREATE TABLE fixture_memo_tags (
+             memo_id TEXT NOT NULL REFERENCES fixture_memos(id) ON DELETE CASCADE,
+             tag TEXT NOT NULL CHECK (length(tag) <= 20),
+             sync_key TEXT NOT NULL UNIQUE,
+             PRIMARY KEY (memo_id, tag)
          );
          CREATE TABLE fixture_items_index (
              item_id TEXT PRIMARY KEY,

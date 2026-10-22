@@ -69,7 +69,7 @@ pub fn render(manifest: &Manifest) -> Vec<TriggerSql> {
         triggers.push(value_guard(table, Event::Update));
         triggers.push(immutable_guard(table));
         if table.derived_key.is_none() {
-            triggers.push(recreate_guard(table));
+            triggers.push(recreate_guard(manifest, table));
         }
         triggers.extend(revert_guard(table));
         triggers.push(insert_capture(manifest, table));
@@ -299,7 +299,7 @@ fn pending_glob() -> String {
     format!("'{PENDING_KEY_PREFIX}*'")
 }
 
-fn recreate_guard(table: &TableSpec) -> TriggerSql {
+fn recreate_guard(manifest: &Manifest, table: &TableSpec) -> TriggerSql {
     let name = format!("sync_recreate_{}", table.name);
     let pending = if table.has_composite_key() {
         format!(
@@ -311,7 +311,7 @@ fn recreate_guard(table: &TableSpec) -> TriggerSql {
         String::new()
     };
     // Undo of a held delete inserts the row again.
-    let held = if table.holds_deletes {
+    let held = if manifest.may_hold_deletes(table.id) {
         format!(
             "\n    AND NOT EXISTS (SELECT 1 FROM sync_capture WHERE table_id = {id} AND row_key = NEW.{key} AND held_until_ms IS NOT NULL)",
             id = table.id.0,
@@ -344,7 +344,7 @@ fn published_when(manifest: &Manifest, table: &TableSpec, row: &str) -> String {
 /// capture becomes an ordinary write instead of a create.
 fn insert_capture(manifest: &Manifest, table: &TableSpec) -> TriggerSql {
     let name = format!("sync_capture_{}_insert", table.name);
-    let reinsert = if table.holds_deletes {
+    let reinsert = if manifest.may_hold_deletes(table.id) {
         "created = CASE WHEN held_until_ms IS NULL THEN 1 ELSE created END, deleted = 0,\n        held_until_ms = NULL"
     } else {
         "created = 1, deleted = 0"

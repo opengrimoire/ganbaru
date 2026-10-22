@@ -15,7 +15,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use ganbaru_sync_contracts::{Field, RevokeReason, WriterId};
 
 use super::block_on;
-use super::fixture::{MEMOS_TABLE, NODE_MAX_DEPTH, edge_key, membership_key};
+use super::fixture::{MEMOS_TABLE, NODE_MAX_DEPTH, edge_key, membership_key, memo_tag_key};
 use super::replica::{Replica, START_MS, quoted, rank};
 use crate::error::failpoints;
 use crate::hold::{self, MAX_HOLD_MS};
@@ -640,9 +640,10 @@ impl Sim {
         self.replicas[index].try_exec(&sql).await;
     }
 
-    /// One local edit of fixture memos: create, relabel, delete with a hold the way domain
-    /// code does, or undo a held delete, which inserts the memo again only while
-    /// [`hold::release_hold`] confirms the lease.
+    /// One local edit of fixture memos: create, relabel, add a line or a tag, delete with a
+    /// hold the way domain code does, or undo a held delete, which inserts the memo again only
+    /// while [`hold::release_hold`] confirms the lease. The lines and tags the delete removed
+    /// stay held until the lease expires.
     async fn edit_memos(&mut self, index: usize) {
         let memos = ids(
             &mut self.replicas[index],
@@ -661,7 +662,30 @@ impl Sim {
         .await;
         let memo = self.rng.pick(&memos).cloned();
         let label = self.words();
-        match (self.rng.below(5), memo) {
+        match (self.rng.below(7), memo) {
+            (4, Some(memo)) => {
+                let id = self.next_id("line", index);
+                let sql = format!(
+                    "INSERT INTO fixture_memo_lines (id, memo_id, body) VALUES ({}, {}, {})",
+                    quoted(&id),
+                    quoted(&memo),
+                    quoted(&label)
+                );
+                self.replicas[index].try_exec(&sql).await;
+            }
+            (5, Some(memo)) => {
+                let tag = self.rng.pick(&["red", "green", "blue"]).copied();
+                let Some(tag) = tag else {
+                    return;
+                };
+                let sql = format!(
+                    "INSERT INTO fixture_memo_tags (memo_id, tag, sync_key) VALUES ({}, {}, {})",
+                    quoted(&memo),
+                    quoted(tag),
+                    quoted(&memo_tag_key(&memo, tag))
+                );
+                self.replicas[index].try_exec(&sql).await;
+            }
             (1, Some(memo)) => {
                 let sql = format!(
                     "UPDATE fixture_memos SET label = {} WHERE id = {}",
@@ -673,7 +697,6 @@ impl Sim {
             (2, Some(memo)) => {
                 let lease = 1 + self.rng.next() % (2 * MAX_HOLD_MS);
                 let replica = &mut self.replicas[index];
-                let manifest = replica.engine.manifest();
                 let now = replica.now_ms;
                 let mut tx = sqlx::Connection::begin(&mut replica.conn).await.unwrap();
                 sqlx::query("DELETE FROM fixture_memos WHERE id = ?")
@@ -681,9 +704,16 @@ impl Sim {
                     .execute(&mut *tx)
                     .await
                     .unwrap();
-                hold::hold_deletes(&mut tx, manifest, MEMOS_TABLE, &[&memo], now, now + lease)
-                    .await
-                    .unwrap();
+                hold::hold_deletes(
+                    &replica.engine,
+                    &mut tx,
+                    MEMOS_TABLE,
+                    &[&memo],
+                    now,
+                    now + lease,
+                )
+                .await
+                .unwrap();
                 tx.commit().await.unwrap();
             }
             (3, _) => {

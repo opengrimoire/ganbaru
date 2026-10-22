@@ -449,7 +449,9 @@ pub struct TableSpec {
     /// The predicate table whose row publishes this table's rows.
     pub published_with: Option<PublishedWith>,
     /// Whether domain code may hold local deletes of the table for Undo with
-    /// [`crate::hold::hold_deletes`]. Device behavior, so it is not in the summary.
+    /// [`crate::hold::hold_deletes`]. Rows that the held delete removes through
+    /// `ON DELETE CASCADE` inherit the hold, see [`Manifest::may_hold_deletes`]. Device
+    /// behavior, so it is not in the summary.
     pub holds_deletes: bool,
 }
 
@@ -796,6 +798,36 @@ impl Manifest {
     /// Replicated table by id.
     pub fn table(&self, id: TableId) -> Option<&'static TableSpec> {
         self.tables.iter().find(|table| table.id == id)
+    }
+
+    /// Whether a local delete of `table` can be held: the table holds deletes, or it
+    /// references a table that can with `ON DELETE CASCADE`, so its rows inherit the hold of
+    /// the delete that cascades to them.
+    pub fn may_hold_deletes(&self, table: TableId) -> bool {
+        let mut holding: Vec<TableId> = self
+            .tables
+            .iter()
+            .filter(|spec| spec.holds_deletes)
+            .map(|spec| spec.id)
+            .collect();
+        loop {
+            let inherited: Vec<TableId> = self
+                .tables
+                .iter()
+                .filter(|spec| !holding.contains(&spec.id))
+                .filter(|spec| {
+                    spec.references().any(|(_, _, reference)| {
+                        reference.on_delete == OnDelete::Cascade
+                            && holding.contains(&reference.table)
+                    })
+                })
+                .map(|spec| spec.id)
+                .collect();
+            if inherited.is_empty() {
+                return holding.contains(&table);
+            }
+            holding.extend(inherited);
+        }
     }
 
     /// Replicated table by SQL name.

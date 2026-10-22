@@ -3,7 +3,10 @@
 use sqlx::Connection;
 
 use super::block_on;
-use super::fixture::{ITEMS_TABLE, MEMOS_TABLE, edge_key};
+use super::fixture::{
+    CYCLE_A_TABLE, CYCLE_B_TABLE, ITEMS_TABLE, MEMO_LINES_TABLE, MEMO_TAGS_TABLE, MEMOS_TABLE,
+    TEST_MANIFEST, edge_key, memo_tag_key,
+};
 use super::replica::{Replica, converge, rank};
 use crate::error::failpoints;
 use crate::hold::{self, MAX_HOLD_MS};
@@ -33,16 +36,22 @@ async fn shared_memo() -> Vec<Replica> {
 
 /// Deletes `memo-1` and holds the delete until `until_ms`, in one transaction like domain code.
 async fn delete_held(replica: &mut Replica, until_ms: u64) {
-    let manifest = replica.engine.manifest();
     let now = replica.now_ms;
     let mut tx = replica.conn.begin().await.unwrap();
     sqlx::query("DELETE FROM fixture_memos WHERE id = 'memo-1'")
         .execute(&mut *tx)
         .await
         .unwrap();
-    hold::hold_deletes(&mut tx, manifest, MEMOS_TABLE, &["memo-1"], now, until_ms)
-        .await
-        .unwrap();
+    hold::hold_deletes(
+        &replica.engine,
+        &mut tx,
+        MEMOS_TABLE,
+        &["memo-1"],
+        now,
+        until_ms,
+    )
+    .await
+    .unwrap();
     tx.commit().await.unwrap();
 }
 
@@ -136,11 +145,10 @@ fn an_expired_hold_seals_the_delete_and_refuses_undo() {
 fn holding_refuses_a_table_that_does_not_hold_deletes() {
     block_on(async {
         let mut replica = Replica::new(0, 5).await;
-        let manifest = replica.engine.manifest();
         let now = replica.now_ms;
         let refused = hold::hold_deletes(
+            &replica.engine,
             &mut replica.conn,
-            manifest,
             ITEMS_TABLE,
             &["item-1"],
             now,
@@ -187,6 +195,200 @@ fn a_remote_change_seals_a_held_delete_early() {
         assert_eq!(memo_captures(author).await, 0);
         assert!(!release(author).await, "Undo refuses a sealed hold");
         converge(&mut replicas).await;
+        let first = replicas[0].dump().await;
+        assert_eq!(replicas[1].dump().await, first);
+    });
+}
+
+#[test]
+fn cascade_children_of_a_holding_table_may_hold_deletes() {
+    let manifest = &*TEST_MANIFEST;
+    for table in [MEMOS_TABLE, MEMO_LINES_TABLE, MEMO_TAGS_TABLE] {
+        assert!(manifest.may_hold_deletes(table), "{table:?}");
+    }
+    for table in [ITEMS_TABLE, CYCLE_A_TABLE, CYCLE_B_TABLE] {
+        assert!(!manifest.may_hold_deletes(table), "{table:?}");
+    }
+}
+
+/// SQL inserting `memo-1` with two lines and a derived-key tag.
+fn memo_with_children() -> String {
+    format!(
+        "INSERT INTO fixture_memos (id, label) VALUES ('memo-1', 'One');
+         INSERT INTO fixture_memo_lines (id, memo_id, body) VALUES
+             ('line-1', 'memo-1', 'First'), ('line-2', 'memo-1', 'Second');
+         INSERT INTO fixture_memo_tags (memo_id, tag, sync_key) VALUES ('memo-1', 'red', '{}');",
+        memo_tag_key("memo-1", "red")
+    )
+}
+
+/// Two replicas sharing the sealed `memo-1` with its lines and tag.
+async fn shared_memo_with_children() -> Vec<Replica> {
+    let mut replicas = replicas(2).await;
+    replicas[0].exec(&memo_with_children()).await;
+    replicas[0].seal().await.unwrap();
+    converge(&mut replicas).await;
+    replicas
+}
+
+/// Captured deletes held until `until_ms`.
+async fn held_until(replica: &mut Replica, until_ms: u64) -> i64 {
+    replica
+        .count(&format!(
+            "SELECT count(*) FROM sync_capture WHERE deleted = 1 AND held_until_ms = {until_ms}"
+        ))
+        .await
+}
+
+/// Rows of `memo-1`, its lines, and its tags on `replica`.
+async fn memo_rows(replica: &mut Replica) -> [i64; 3] {
+    [
+        replica.count("SELECT count(*) FROM fixture_memos").await,
+        replica
+            .count("SELECT count(*) FROM fixture_memo_lines")
+            .await,
+        replica
+            .count("SELECT count(*) FROM fixture_memo_tags")
+            .await,
+    ]
+}
+
+#[test]
+fn undo_inside_the_lease_restores_cascade_children_without_tombstones_or_removals() {
+    block_on(async {
+        let mut replicas = shared_memo_with_children().await;
+        let author = &mut replicas[0];
+        let start = author.now_ms;
+        delete_held(author, start + MAX_HOLD_MS).await;
+        assert_eq!(memo_rows(author).await, [0, 0, 0], "the delete cascades");
+        assert_eq!(
+            held_until(author, start + MAX_HOLD_MS).await,
+            4,
+            "the lines and the tag share the memo's lease"
+        );
+        assert_eq!(author.seal().await.unwrap().changes, 0);
+
+        author.now_ms = start + MAX_HOLD_MS - 1;
+        assert!(release(author).await);
+        author.exec(&memo_with_children()).await;
+        assert_eq!(
+            author
+                .count(
+                    "SELECT count(*) FROM sync_capture
+                     WHERE deleted = 1 OR created = 1 OR held_until_ms IS NOT NULL"
+                )
+                .await,
+            0,
+            "the restored rows are ordinary writes"
+        );
+        author.seal().await.unwrap();
+        converge(&mut replicas).await;
+        for replica in &mut replicas {
+            assert_eq!(memo_rows(replica).await, [1, 2, 1]);
+            assert_eq!(
+                replica.count("SELECT count(*) FROM sync_tombstones").await,
+                0
+            );
+        }
+        let first = replicas[0].dump().await;
+        assert_eq!(replicas[1].dump().await, first);
+    });
+}
+
+#[test]
+fn an_expired_hold_seals_cascade_children_with_the_held_row() {
+    block_on(async {
+        let mut replicas = shared_memo_with_children().await;
+        let author = &mut replicas[0];
+        let start = author.now_ms;
+        delete_held(author, start + 1_000).await;
+        author.now_ms = start + 999;
+        assert_eq!(author.seal().await.unwrap().changes, 0);
+
+        author.now_ms = start + 1_000;
+        assert!(!release(author).await, "Undo refuses an expired hold");
+        author.seal().await.unwrap();
+        assert_eq!(
+            author.count("SELECT count(*) FROM sync_capture").await,
+            0,
+            "the whole set seals together"
+        );
+        assert!(
+            !author
+                .try_exec(
+                    "INSERT INTO fixture_memo_lines (id, memo_id, body)
+                     VALUES ('line-1', 'memo-1', 'First')"
+                )
+                .await,
+            "a sealed child delete cannot be undone by inserting the key again"
+        );
+        converge(&mut replicas).await;
+        for replica in &mut replicas {
+            assert_eq!(memo_rows(replica).await, [0, 0, 0]);
+            assert_eq!(
+                replica
+                    .count(&format!(
+                        "SELECT count(*) FROM sync_tombstones
+                         WHERE table_id = {} AND cause_row = 'memo-1'",
+                        MEMO_LINES_TABLE.0
+                    ))
+                    .await,
+                2,
+                "the line tombstones name the memo as their cause"
+            );
+        }
+    });
+}
+
+#[test]
+fn a_remote_change_to_a_cascade_child_seals_the_whole_held_set_early() {
+    block_on(async {
+        let mut replicas = shared_memo_with_children().await;
+        let start = replicas[0].now_ms;
+        delete_held(&mut replicas[0], start + MAX_HOLD_MS).await;
+        replicas[1]
+            .exec("UPDATE fixture_memo_lines SET body = 'Edited' WHERE id = 'line-1'")
+            .await;
+        replicas[1].seal().await.unwrap();
+
+        let known = replicas[0].stored_vector().await;
+        let ops = replicas[1].ops_since(&known).await;
+        let author = &mut replicas[0];
+        author.receive(&ops).await;
+        author.apply_once().await.unwrap();
+        assert_eq!(
+            author.count("SELECT count(*) FROM sync_capture").await,
+            0,
+            "the held memo seals with the line the remote change touched"
+        );
+        assert!(!release(author).await, "Undo refuses a sealed hold");
+        converge(&mut replicas).await;
+        let first = replicas[0].dump().await;
+        assert_eq!(replicas[1].dump().await, first);
+        assert_eq!(memo_rows(&mut replicas[0]).await[0], 0);
+    });
+}
+
+#[test]
+fn undo_of_the_held_row_alone_publishes_the_deletes_of_its_children() {
+    block_on(async {
+        let mut replicas = shared_memo_with_children().await;
+        let author = &mut replicas[0];
+        let start = author.now_ms;
+        delete_held(author, start + MAX_HOLD_MS).await;
+        assert!(release(author).await);
+        author
+            .exec("INSERT INTO fixture_memos (id, label) VALUES ('memo-1', 'One')")
+            .await;
+        // Materializing the restored memo would bring back children that merge state still
+        // holds live, so their held deletes seal with it.
+        author.seal().await.unwrap();
+        assert_eq!(author.count("SELECT count(*) FROM sync_capture").await, 0);
+        assert_eq!(memo_rows(author).await, [1, 0, 0]);
+        converge(&mut replicas).await;
+        for replica in &mut replicas {
+            assert_eq!(memo_rows(replica).await, [1, 0, 0]);
+        }
         let first = replicas[0].dump().await;
         assert_eq!(replicas[1].dump().await, first);
     });

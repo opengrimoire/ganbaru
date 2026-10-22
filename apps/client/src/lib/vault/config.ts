@@ -20,10 +20,12 @@
  */
 
 import { invoke } from "@tauri-apps/api/core";
-import { listenSyncApplied } from "$lib/api/sync";
 import { createVaultChangeChannel } from "$lib/windows/vault-change-channel";
 
 type JsonObject = Record<string, unknown>;
+
+/** Subscribes to the tables sync applied, such as `listenSyncApplied`, and resolves to a function that unsubscribes. */
+export type SyncAppliedListen = (onApplied: (tables: string[]) => void) => Promise<() => void>;
 
 const WRITE_DEBOUNCE_MS = 250;
 /** Replicated table of the portable preferences, as sync names it in applied notices. */
@@ -306,8 +308,10 @@ export function configKeyChanged(keys: ReadonlySet<string>, key: string): boolea
 /**
  * Start receiving config changes from other windows of the vault and preference rows that sync applied. Every window
  * receives the sync notice itself, so nothing is relayed between windows. Idempotent; call once the config is loaded.
+ * The sync subscription is passed in so windows that never call it, such as Focus overlays, do not reach the sync
+ * commands through this module.
  */
-export function startConfigWindowSync(): void {
+export function startConfigWindowSync(listenSyncApplied: SyncAppliedListen): void {
   if (windowSyncStarted) return;
   windowSyncStarted = true;
   const stopWindows = configChanges.listen((keys) => {

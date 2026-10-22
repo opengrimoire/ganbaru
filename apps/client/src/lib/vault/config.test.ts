@@ -408,12 +408,10 @@ describe("refreshConfigFromSync", () => {
 describe("startConfigWindowSync", () => {
   it("refreshes from the view only when sync applied preference rows", async () => {
     let onApplied: ((tables: string[]) => void) | undefined;
-    vi.doMock("$lib/api/sync", () => ({
-      listenSyncApplied: (listener: (tables: string[]) => void) => {
-        onApplied = listener;
-        return Promise.resolve(() => undefined);
-      },
-    }));
+    const listenSyncApplied = (listener: (tables: string[]) => void) => {
+      onApplied = listener;
+      return Promise.resolve(() => undefined);
+    };
     vi.doMock("$lib/windows/vault-change-channel", () => ({
       createVaultChangeChannel: () => ({
         publish: () => undefined,
@@ -427,8 +425,8 @@ describe("startConfigWindowSync", () => {
       await ensureConfigLoaded();
       const listener = vi.fn();
       onConfigChangedElsewhere(listener);
-      startConfigWindowSync();
-      startConfigWindowSync();
+      startConfigWindowSync(listenSyncApplied);
+      startConfigWindowSync(listenSyncApplied);
       setReadResponse(JSON.stringify({ theme: { quickToggleDarkId: "b" } }));
 
       onApplied?.(["quick_notes"]);
@@ -440,7 +438,6 @@ describe("startConfigWindowSync", () => {
       expect(getConfigKey("theme.quickToggleDarkId", "")).toBe("b");
       expect(invokeMock.mock.calls.filter(([cmd]) => cmd === "vault_read_config")).toHaveLength(2);
     } finally {
-      vi.doUnmock("$lib/api/sync");
       vi.doUnmock("$lib/windows/vault-change-channel");
     }
   });

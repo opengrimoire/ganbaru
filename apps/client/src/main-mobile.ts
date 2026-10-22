@@ -1,6 +1,7 @@
 import { Temporal } from "@js-temporal/polyfill";
 import { mount, unmount } from "svelte";
 import { ensureConfigLoaded, flushConfig, startConfigWindowSync } from "$lib/vault/config";
+import { listenSyncApplied } from "$lib/api/sync";
 import { startProfileImageFileSync } from "$lib/stores/profile-image-files.svelte";
 import { getActiveVaultInfo } from "$lib/vault/state";
 import {
@@ -241,7 +242,7 @@ const appPromise = (async () => {
     const activeVault = await getActiveVaultInfo();
     if (!activeVault) return mountMobileVaultSetup(null);
     await ensureConfigLoaded();
-    startConfigWindowSync();
+    startConfigWindowSync(listenSyncApplied);
     startProfileImageFileSync();
     await initializeLocalizationFromConfig();
     await applyPreVaultLanguagePreference();

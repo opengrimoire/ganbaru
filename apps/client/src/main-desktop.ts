@@ -4,6 +4,7 @@ import { mount, tick, unmount } from "svelte";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { ensureConfigLoaded, flushConfig, startConfigWindowSync } from "./lib/vault/config";
+import { listenSyncApplied } from "./lib/api/sync";
 import { startProfileImageFileSync } from "./lib/stores/profile-image-files.svelte";
 import { getActiveVaultInfo } from "./lib/vault/state";
 import {
@@ -153,7 +154,7 @@ const appPromise = (async () => {
         onReady: async (info, preferenceReady) => {
           const appRuntimeReady = preferenceReady.then(async () => {
             await ensureConfigLoaded();
-            startConfigWindowSync();
+            startConfigWindowSync(listenSyncApplied);
             startProfileImageFileSync();
             await initializeLocalizationFromConfig();
             await applyPreVaultLanguagePreference();
@@ -248,7 +249,7 @@ const appPromise = (async () => {
       return await mountVaultSetupView(null);
     }
     await ensureConfigLoaded();
-    startConfigWindowSync();
+    startConfigWindowSync(listenSyncApplied);
     startProfileImageFileSync();
     await initializeLocalizationFromConfig();
     await applyPreVaultLanguagePreference();

@@ -31,6 +31,23 @@ impl Manifest {
                     derived.key_inputs.join(",")
                 );
             }
+            if let Some(tree) = table.tree {
+                let _ = writeln!(
+                    text,
+                    "  tree parent {} position {} depth {}",
+                    tree.parent_group.get(),
+                    tree.position_group.get(),
+                    tree.max_depth
+                        .map_or_else(|| "unbounded".to_string(), |depth| depth.to_string())
+                );
+            }
+            if let Some(acyclic) = table.acyclic {
+                let _ = writeln!(
+                    text,
+                    "  acyclic {}->{}",
+                    acyclic.from_column, acyclic.to_column
+                );
+            }
             for group in table.groups {
                 let mut line = format!("  group {} {}", group.id.get(), kind(group.kind));
                 if group.surfaced {

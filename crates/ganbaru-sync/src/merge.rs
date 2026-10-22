@@ -497,6 +497,11 @@ pub(crate) async fn refresh_flags(
     Ok(merged)
 }
 
+/// Whether an existence register value records a removal.
+pub(crate) fn is_removal(value: Option<&Value>) -> bool {
+    value.is_some_and(|value| value.fields() == [Field::Integer(0)])
+}
+
 /// Surfaced groups whose retained versions hold two or more distinct values.
 pub(crate) fn conflict_mask(table: &TableSpec, versions: &[Version]) -> GroupMask {
     let mut mask = GroupMask::EMPTY;

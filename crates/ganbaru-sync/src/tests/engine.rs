@@ -4,11 +4,13 @@ use ganbaru_contacts::PersonKeyPair;
 use ganbaru_sync_contracts::bounds::{MAX_DEPENDENCIES, MAX_WRITERS_PER_DEVICE};
 use ganbaru_sync_contracts::hlc::CLOCK_WARNING_AHEAD_MS;
 use ganbaru_sync_contracts::{
-    Content, Envelope, Field, GroupMask, RevokeReason, VersionVector, WriterId,
+    Content, Envelope, Field, GroupMask, RevokeReason, TableId, VersionVector, WriterId,
 };
 
 use super::block_on;
-use super::fixture::{MEMBERSHIPS_TABLE, membership_key};
+use super::fixture::{
+    CYCLE_A_TABLE, CYCLE_B_TABLE, ITEMS_TABLE, LINKS_TABLE, MEMBERSHIPS_TABLE, membership_key,
+};
 use super::replica::{Identity, Replica, START_MS, VAULT_ID, converge, device_id, pair, person};
 use crate::error::failpoints;
 use crate::manifest::vault::quick_notes::{NOTES_TABLE, note_group};
@@ -654,8 +656,30 @@ fn a_cascade_reference_cycle_materializes_in_one_component() {
                 .await,
                 ["NULLNULL"]
             );
+            // The cycle deleted together has one root, its lowest row, named by the other.
+            assert_eq!(
+                texts(
+                    replica,
+                    "SELECT row_key || ':' || quote(cause_row) FROM sync_tombstones
+                     WHERE table_id IN (60001, 60002) ORDER BY row_key"
+                )
+                .await,
+                ["a-1:NULL", "b-1:'a-1'"]
+            );
         }
     });
+}
+
+async fn tombstone_causes(replica: &mut Replica, table: TableId) -> Vec<String> {
+    texts(
+        replica,
+        &format!(
+            "SELECT DISTINCT row_key || ':' || quote(cause_row) FROM sync_tombstones
+             WHERE table_id = {} ORDER BY 1",
+            table.0
+        ),
+    )
+    .await
 }
 
 #[test]
@@ -714,10 +738,10 @@ fn duplicates_redirect_every_reference_column_of_a_group() {
     });
 }
 
-/// The referrer's own cascade is hidden in a later step; here it only shows that a deletion
-/// rematerializes referrers in tables listed before the deleted row's table.
+/// The referrer is listed before its target's table, and its cascading reference is written
+/// concurrently with the target's deletion.
 #[test]
-fn a_deleted_target_rematerializes_referrers_listed_before_it() {
+fn a_cascade_into_a_concurrently_deleted_target_hides_the_referrer_with_its_cause() {
     block_on(async {
         let mut replicas = replicas(2).await;
         replicas[0]
@@ -736,17 +760,71 @@ fn a_deleted_target_rematerializes_referrers_listed_before_it() {
         converge(&mut replicas).await;
         assert_converged(&mut replicas).await;
         for replica in &mut replicas {
+            for table in ["fixture_cycle_a", "fixture_cycle_b"] {
+                assert_eq!(
+                    replica
+                        .count(&format!("SELECT count(*) FROM {table}"))
+                        .await,
+                    0,
+                    "{table} on replica {}",
+                    replica.index
+                );
+            }
             assert_eq!(
-                texts(
-                    replica,
-                    "SELECT id || ':' || quote(peer_id) FROM fixture_cycle_a"
-                )
-                .await,
-                ["a-1:NULL"]
+                tombstone_causes(replica, CYCLE_A_TABLE).await,
+                ["a-1:'b-1'"]
+            );
+            assert_eq!(tombstone_causes(replica, CYCLE_B_TABLE).await, ["b-1:NULL"]);
+        }
+    });
+}
+
+#[test]
+fn a_local_cascade_names_its_cause_and_keeps_derived_key_children_live() {
+    block_on(async {
+        let mut replicas = replicas(2).await;
+        replicas[0].exec(MEMBERSHIP_PARENTS).await;
+        replicas[0]
+            .exec(&format!(
+                "INSERT INTO fixture_links (id, owner_id, note) VALUES ('link-1', 'item-1', 'owned');
+                 {};",
+                add_membership("item-1", "a-1", "member")
+            ))
+            .await;
+        converge(&mut replicas).await;
+        replicas[0]
+            .exec("DELETE FROM fixture_items WHERE id = 'item-1'")
+            .await;
+        converge(&mut replicas).await;
+        assert_converged(&mut replicas).await;
+        for replica in &mut replicas {
+            assert_eq!(replica.count("SELECT count(*) FROM fixture_links").await, 0);
+            assert!(memberships(replica).await.is_empty());
+            assert_eq!(
+                tombstone_causes(replica, LINKS_TABLE).await,
+                ["link-1:'item-1'"]
             );
             assert_eq!(
-                replica.count("SELECT count(*) FROM fixture_cycle_b").await,
-                0
+                tombstone_causes(replica, ITEMS_TABLE).await,
+                ["item-1:NULL"]
+            );
+            // The membership is hidden by its deleted item, with no existence write.
+            assert_eq!(
+                membership_rows(
+                    replica,
+                    "SELECT count(*) FROM sync_rows WHERE table_id = {table} AND state = 'live'"
+                )
+                .await,
+                1
+            );
+            assert_eq!(
+                membership_rows(
+                    replica,
+                    "SELECT count(*) FROM sync_register_versions
+                     WHERE table_id = {table} AND group_id = 2"
+                )
+                .await,
+                1
             );
         }
     });

@@ -43,6 +43,7 @@ mod sql;
 mod status;
 mod store;
 mod validate;
+mod visibility;
 
 #[cfg(test)]
 mod tests;

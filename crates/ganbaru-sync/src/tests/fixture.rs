@@ -88,6 +88,8 @@ pub(super) const ITEMS: TableSpec = TableSpec {
         },
     ],
     derived_key: None,
+    tree: None,
+    acyclic: None,
 };
 
 /// `fixture_items`.
@@ -150,6 +152,8 @@ pub(super) const CYCLE_A: TableSpec = TableSpec {
     adapter: None,
     triggers: &[],
     derived_key: None,
+    tree: None,
+    acyclic: None,
 };
 
 /// The other table of the reference cycle with [`CYCLE_A`].
@@ -245,6 +249,8 @@ pub(super) const LINKS: TableSpec = TableSpec {
     adapter: None,
     triggers: &[],
     derived_key: None,
+    tree: None,
+    acyclic: None,
 };
 
 /// Prefix of [`MEMBERSHIPS`] keys.
@@ -356,6 +362,8 @@ pub(super) const MEMBERSHIPS: TableSpec = TableSpec {
         exists_group: membership_group::EXISTS,
         key_inputs: &[],
     }),
+    tree: None,
+    acyclic: None,
 };
 
 /// The fixture domain.

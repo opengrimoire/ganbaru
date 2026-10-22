@@ -435,6 +435,38 @@ pub struct TableSpec {
     /// Whether the row key is a function of the row's content, so a removed row can be added
     /// again under the same key.
     pub derived_key: Option<DerivedKey>,
+    /// Whether rows nest through a reference into the table itself, with cycle and depth
+    /// repair.
+    pub tree: Option<TreeSpec>,
+    /// Whether the rows of a derived-key table are directed edges that never form a cycle.
+    pub acyclic: Option<AcyclicSpec>,
+}
+
+/// A tree: rows nest through a `Reference` group into the table itself and are ordered by a
+/// `Position` group. A cycle among winning parents is broken at the row whose winning parent
+/// version has the greatest `(clock, writer)`, which materializes as a root and keeps its order
+/// key. A root has depth 0 and its children depth 1; every row deeper than `max_depth` also
+/// materializes as a root. Replicas that can seal write those parents as null.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TreeSpec {
+    /// The `Reference` group naming the parent row in the same table.
+    pub parent_group: GroupId,
+    /// The `Position` group ordering siblings.
+    pub position_group: GroupId,
+    /// Greatest depth a row may have, if any.
+    pub max_depth: Option<u8>,
+}
+
+/// A derived-key table whose live rows are directed edges between two reference columns of
+/// its identity group. Edges are taken in ascending `(clock, writer)` of their winning
+/// existence version; an edge that would close a cycle is hidden and surfaced as a conflict of
+/// its existence group, which the user resolves by removing an edge of the cycle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AcyclicSpec {
+    /// Column naming the row an edge starts at.
+    pub from_column: &'static str,
+    /// Column naming the row an edge ends at.
+    pub to_column: &'static str,
 }
 
 /// Key column of a replicated table with a composite primary key: the
@@ -629,7 +661,11 @@ impl Manifest {
                     let _ = writeln!(problems, "{}.{}: {problem}", table.name, group.name);
                 }
             }
-            for problem in derived_key_problems(table) {
+            for problem in derived_key_problems(table)
+                .into_iter()
+                .chain(tree_problems(table))
+                .chain(acyclic_problems(table))
+            {
                 let _ = writeln!(problems, "{}: {problem}", table.name);
             }
         }
@@ -795,6 +831,53 @@ fn derived_key_problems(table: &TableSpec) -> Vec<String> {
         {
             problems.push(format!("key input {input} is not an immutable column"));
         }
+    }
+    problems
+}
+
+/// Why a table's tree declaration is malformed: the parent group references the table itself,
+/// the position group is a `Position` group, and the table has a single row key it never
+/// derives from content.
+fn tree_problems(table: &TableSpec) -> Vec<String> {
+    let mut problems = Vec::new();
+    let Some(tree) = table.tree else {
+        return problems;
+    };
+    match table.group(tree.parent_group).map(|group| group.kind) {
+        Some(MergeKind::Reference { table: target, .. }) if target == table.id => {}
+        _ => problems.push("the tree parent is not a reference group into the table".to_string()),
+    }
+    if table.group(tree.position_group).map(|group| group.kind) != Some(MergeKind::Position) {
+        problems.push("the tree position is not a position group".to_string());
+    }
+    if table.derived_key.is_some() {
+        problems.push("a tree table has no derived key".to_string());
+    }
+    problems
+}
+
+/// Why a table's acyclic edge declaration is malformed: both ends are distinct identity
+/// references of a derived-key table into the same table.
+fn acyclic_problems(table: &TableSpec) -> Vec<String> {
+    let mut problems = Vec::new();
+    let Some(acyclic) = table.acyclic else {
+        return problems;
+    };
+    if table.derived_key.is_none() {
+        problems.push("an acyclic edge table has a derived key".to_string());
+    }
+    let end = |column: &str| {
+        table
+            .references()
+            .find(|(group, _, reference)| {
+                group.kind == MergeKind::Immutable && reference.column == column
+            })
+            .map(|(_, _, reference)| reference.table)
+    };
+    match (end(acyclic.from_column), end(acyclic.to_column)) {
+        (Some(from), Some(to)) if from == to && acyclic.from_column != acyclic.to_column => {}
+        _ => problems
+            .push("acyclic edge ends are not two immutable references into one table".to_string()),
     }
     problems
 }

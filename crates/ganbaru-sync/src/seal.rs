@@ -3,15 +3,15 @@
 //! A sealed operation is applied to the merge state as it is sealed, with the context of
 //! everything applied so far, so local writes supersede every version they were made over.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use ganbaru_sync_contracts::bounds::{
     MAX_CHANGES_PER_OPERATION, MAX_DEPENDENCIES, MAX_HEADER_BYTES, MAX_OPERATION_BYTES,
 };
 use ganbaru_sync_contracts::op::{ENVELOPE_OVERHEAD, GENESIS_PREVIOUS_HASH};
 use ganbaru_sync_contracts::{
-    Change, ChangeAction, Content, Digest32, Field, GroupId, GroupMask, GroupValue, Header, Hlc,
-    HlcClock, Operation, PENDING_KEY_PREFIX, Revocation, RevokeReason, RowKey, Seq,
+    Cause, Change, ChangeAction, Content, Digest32, Field, GroupId, GroupMask, GroupValue, Header,
+    Hlc, HlcClock, Operation, PENDING_KEY_PREFIX, Revocation, RevokeReason, RowKey, Seq,
     SignedCertificate, TableId, Value, VersionVector, WriterId,
 };
 use sqlx::{Connection, Row, SqliteConnection};
@@ -21,6 +21,7 @@ use crate::error::{SyncResult, corrupt, failpoint};
 use crate::log::{self, WriterState, clamp_ms, seq_i64};
 use crate::manifest::{GroupStorage, MergeKind, TableSpec};
 use crate::merge::{self, Batch, RowState, mask_param, table_param};
+use crate::visibility::{RowRef, Visibility};
 use crate::{Engine, LocalWriter, SpaceContext, SyncError, sql, validate};
 
 /// A captured local row that could not be sealed. Its capture is kept.
@@ -800,6 +801,127 @@ fn existence_write(table: &TableSpec, key: &RowKey, exists: GroupId, present: bo
     }
 }
 
+/// The cause of each local deletion that a cascade from another deletion of the same seal
+/// explains. Deleted rows are linked by their cascading references to other deleted rows; the
+/// lowest row of each strongly connected component that links to no other component is a
+/// root, so a reference cycle deleted together has one. Every other deleted row names the
+/// lowest root it reaches.
+async fn local_causes(
+    engine: &Engine,
+    conn: &mut SqliteConnection,
+    deletions: &BTreeMap<RowRef, (usize, Change)>,
+) -> SyncResult<BTreeMap<RowRef, RowRef>> {
+    let visibility = Visibility::default();
+    let rows: Vec<&RowRef> = deletions.keys().collect();
+    let position: BTreeMap<&RowRef, usize> = rows
+        .iter()
+        .enumerate()
+        .map(|(index, row)| (*row, index))
+        .collect();
+    let mut adjacency = Vec::with_capacity(rows.len());
+    for row in &rows {
+        let table = engine
+            .manifest()
+            .table(row.0)
+            .ok_or_else(|| corrupt("capture of an unknown table"))?;
+        let targets: BTreeSet<usize> = visibility
+            .cascade_targets(engine, conn, table, &row.1)
+            .await?
+            .into_iter()
+            .filter_map(|target| position.get(&target.row).copied())
+            .collect();
+        adjacency.push(targets.into_iter().collect::<Vec<_>>());
+    }
+    Ok(sink_roots(&adjacency)
+        .into_iter()
+        .enumerate()
+        .filter_map(|(index, root)| root.map(|root| (rows[index].clone(), rows[root].clone())))
+        .collect())
+}
+
+/// For each node of a directed graph, the lowest node of a sink strongly connected component
+/// that it reaches, a sink component being one with no edge to another component. The lowest
+/// node of a sink component itself has none.
+pub(crate) fn sink_roots(adjacency: &[Vec<usize>]) -> Vec<Option<usize>> {
+    let count = adjacency.len();
+    let unvisited = usize::MAX;
+    let mut index = vec![unvisited; count];
+    let mut low = vec![0; count];
+    let mut on_stack = vec![false; count];
+    let mut stack = Vec::new();
+    let mut component = vec![0; count];
+    // Components in the order Tarjan's algorithm completes them, which lists every component
+    // after the components it reaches.
+    let mut components: Vec<Vec<usize>> = Vec::new();
+    let mut next = 0;
+    for start in 0..count {
+        if index[start] != unvisited {
+            continue;
+        }
+        index[start] = next;
+        low[start] = next;
+        next += 1;
+        stack.push(start);
+        on_stack[start] = true;
+        let mut frames = vec![(start, 0usize)];
+        while let Some(frame) = frames.last_mut() {
+            let (node, edge) = *frame;
+            frame.1 += 1;
+            if let Some(&target) = adjacency[node].get(edge) {
+                if index[target] == unvisited {
+                    index[target] = next;
+                    low[target] = next;
+                    next += 1;
+                    stack.push(target);
+                    on_stack[target] = true;
+                    frames.push((target, 0));
+                } else if on_stack[target] {
+                    low[node] = low[node].min(index[target]);
+                }
+                continue;
+            }
+            frames.pop();
+            if let Some(&(parent, _)) = frames.last() {
+                low[parent] = low[parent].min(low[node]);
+            }
+            if low[node] == index[node] {
+                let mut members = Vec::new();
+                while let Some(member) = stack.pop() {
+                    on_stack[member] = false;
+                    component[member] = components.len();
+                    members.push(member);
+                    if member == node {
+                        break;
+                    }
+                }
+                components.push(members);
+            }
+        }
+    }
+    let mut best: Vec<Option<usize>> = Vec::with_capacity(components.len());
+    for (id, members) in components.iter().enumerate() {
+        let reached = members
+            .iter()
+            .flat_map(|member| adjacency[*member].iter())
+            .map(|target| component[*target])
+            .filter(|target| *target != id)
+            .filter_map(|target| best[target])
+            .min();
+        let sink = members
+            .iter()
+            .flat_map(|member| adjacency[*member].iter())
+            .all(|target| component[*target] == id);
+        best.push(if sink {
+            members.iter().min().copied()
+        } else {
+            reached
+        });
+    }
+    (0..count)
+        .map(|node| best[component[node]].filter(|root| *root != node))
+        .collect()
+}
+
 async fn plan_captures(
     engine: &Engine,
     conn: &mut SqliteConnection,
@@ -841,6 +963,8 @@ async fn plan_captures(
     let mut writes = Vec::new();
     let mut tombstones = Vec::new();
     let mut consumed = Vec::new();
+    // Local deletions of published rows, held back until their causes are known.
+    let mut deletions: BTreeMap<RowRef, (usize, Change)> = BTreeMap::new();
     for capture in captures {
         let invalid = |reason: &'static str| InvalidRow {
             table: TableId(u16::try_from(capture.table).unwrap_or(0)),
@@ -859,6 +983,9 @@ async fn plan_captures(
             continue;
         };
         let domain = read_domain(engine, conn, table, key.as_str()).await?;
+        let deletion = capture.deleted
+            && capture.state == Some(RowState::Live)
+            && matches!(domain, DomainRow::Absent);
         let change = match (capture.state, domain) {
             (_, DomainRow::Invalid(reason)) => {
                 report.invalid_rows.push(invalid(reason));
@@ -938,12 +1065,32 @@ async fn plan_captures(
         consumed.push((capture.table, capture.key.clone()));
         let position = order.get(&table.id).copied().unwrap_or(usize::MAX);
         match change {
+            Some(change) if deletion => {
+                deletions.insert((table.id, capture.key.clone()), (position, change));
+            }
             Some(change) if change.action == ChangeAction::Create => {
                 creates.push((position, change));
             }
             Some(change) if change.action == ChangeAction::Write => writes.push((position, change)),
             Some(change) => tombstones.push((usize::MAX - position, change)),
             None => {}
+        }
+    }
+    let causes = local_causes(engine, conn, &deletions).await?;
+    for (row, (position, mut change)) in deletions {
+        match (causes.get(&row), change.action) {
+            // A derived-key row deleted by cascade stays live in sync state, hidden by its
+            // cause, so restoring the cause shows it again.
+            (Some(_), ChangeAction::Write) => {}
+            (Some(cause), ChangeAction::Tombstone) if change.replaced_by.is_none() => {
+                change.cause = Some(Cause {
+                    table: cause.0,
+                    row: RowKey::new(cause.1.as_str()).map_err(|_| corrupt("stored row key"))?,
+                });
+                tombstones.push((usize::MAX - position, change));
+            }
+            (_, ChangeAction::Write) => writes.push((position, change)),
+            _ => tombstones.push((usize::MAX - position, change)),
         }
     }
     creates.sort_by_key(|(position, _)| *position);

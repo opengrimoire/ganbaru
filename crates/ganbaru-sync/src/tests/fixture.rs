@@ -15,11 +15,12 @@ use ganbaru_sync_contracts::{Field, GroupId, TableId, Value, derived_key};
 use sqlx::{AssertSqlSafe, SqliteConnection, SqlitePool};
 
 use super::{execute, migrated_pool};
+use crate::Engine;
 use crate::adapter::{AdapterError, Adapters, DomainAdapter, Presentation};
 use crate::assets::AssetClass;
-use crate::domains::vault_adapters;
+use crate::domains::{vault_adapters, vault_hooks};
 use crate::hooks::{ChangeSink, HookFuture, MaterializeHook};
-use crate::manifest::vault::{VAULT_MANIFEST_VERSION, quick_notes};
+use crate::manifest::vault::{VAULT_MANIFEST_VERSION, preferences, quick_notes};
 use crate::manifest::{
     AcyclicSpec, Collation, ColumnSpec, ColumnType, DerivedKey, DeviceTable, DomainManifest,
     DomainTrigger, GroupSpec, GroupStorage, KeyDerivedColumn, LocalColumn, Manifest, MergeKind,
@@ -27,7 +28,6 @@ use crate::manifest::{
     Resolution, SYNC_KEY_COLUMN, TableIdRange, TableSpec, TreeSpec, TriggerPolicy, group_id,
 };
 use crate::triggers::{self, NOT_APPLYING};
-use crate::{Engine, Hooks};
 
 /// First table id of the test-only fixture domains; vault domains stay below it.
 pub(super) const FIXTURE_TABLE_IDS: u16 = 60_000;
@@ -1227,7 +1227,8 @@ pub(super) const FIXTURE_DOMAIN: DomainManifest = DomainManifest {
 };
 
 /// The vault domains followed by the fixture domain.
-pub(super) const TEST_DOMAINS: &[&DomainManifest] = &[&quick_notes::DOMAIN, &FIXTURE_DOMAIN];
+pub(super) const TEST_DOMAINS: &[&DomainManifest] =
+    &[&quick_notes::DOMAIN, &preferences::DOMAIN, &FIXTURE_DOMAIN];
 
 /// The manifest of [`TEST_DOMAINS`].
 pub(super) static TEST_MANIFEST: LazyLock<Manifest> =
@@ -1238,12 +1239,13 @@ pub(super) fn test_adapters() -> Adapters {
     vault_adapters().with(Box::new(FixtureAdapter))
 }
 
-/// An engine for [`TEST_MANIFEST`] with [`test_adapters`] and [`FixtureHook`] on lists.
+/// An engine for [`TEST_MANIFEST`] with [`test_adapters`], the vault hooks, and [`FixtureHook`]
+/// on lists.
 pub(super) fn test_engine() -> Engine {
     Engine::with(
         &TEST_MANIFEST,
         test_adapters(),
-        Hooks::new().with(LISTS_TABLE, Box::new(FixtureHook)),
+        vault_hooks().with(LISTS_TABLE, Box::new(FixtureHook)),
     )
     .expect("the test manifest, adapters, and hooks should agree")
 }

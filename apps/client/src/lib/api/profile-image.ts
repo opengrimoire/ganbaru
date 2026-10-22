@@ -1,8 +1,11 @@
 import { invoke } from "@tauri-apps/api/core";
 import { invalidateAssetUrl, loadAssetUrl } from "$lib/api/asset-url-cache";
 
+/** A managed profile picture file that native code saved. */
 export interface ProfileImageAsset {
   relativePath: string;
+  /** Exact file size, which the `profile.image` preference records. */
+  byteSize: number;
 }
 
 /** Loads a managed profile image through the bounded vault-scoped asset cache. */

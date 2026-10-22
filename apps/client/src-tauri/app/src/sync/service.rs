@@ -1264,6 +1264,7 @@ impl<'a, H: SyncHost> Session<'a, H> {
                     .await
                     .map_err(|error| format!("apply sync operations: {error}"))?
             };
+            self.host.on_sync_applied(&report).await;
             tables.extend(
                 report
                     .changed_tables

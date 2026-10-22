@@ -20,11 +20,14 @@
  */
 
 import { invoke } from "@tauri-apps/api/core";
+import { listenSyncApplied } from "$lib/api/sync";
 import { createVaultChangeChannel } from "$lib/windows/vault-change-channel";
 
 type JsonObject = Record<string, unknown>;
 
 const WRITE_DEBOUNCE_MS = 250;
+/** Replicated table of the portable preferences, as sync names it in applied notices. */
+export const PREFERENCES_SYNC_TABLE = "vault_preferences";
 
 let cache: JsonObject = {};
 let loadPromise: Promise<void> | null = null;
@@ -238,6 +241,38 @@ function hasLocalEdit(key: string): boolean {
 export async function refreshConfigKeysFromDisk(keys: Iterable<string>): Promise<void> {
   const fresh = parseConfig(await invoke<string>("vault_read_config"));
   if (fresh === null) throw new Error("vault configuration is not a JSON object");
+  applyFreshKeys(fresh, keys);
+}
+
+/**
+ * Reread the whole view after sync applied preference rows from a linked device, copy every key whose value differs
+ * from the cache into it, and tell subscribers which keys changed. Keys this window is still writing keep the local
+ * value, which reaches the other devices once it is saved.
+ */
+export async function refreshConfigFromSync(): Promise<void> {
+  const fresh = parseConfig(await invoke<string>("vault_read_config"));
+  if (fresh === null) throw new Error("vault configuration is not a JSON object");
+  applyFreshKeys(fresh, changedConfigKeys(cache, fresh));
+}
+
+/**
+ * Dotted keys whose values differ between two views. Objects present on both sides are compared member by member, so
+ * a change deep in a branch names only its own key; any other value is compared whole.
+ */
+export function changedConfigKeys(previous: JsonObject, next: JsonObject, prefix = ""): string[] {
+  const changed: string[] = [];
+  for (const name of new Set([...Object.keys(previous), ...Object.keys(next)])) {
+    const key = prefix ? `${prefix}.${name}` : name;
+    const before = Object.hasOwn(previous, name) ? previous[name] : undefined;
+    const after = Object.hasOwn(next, name) ? next[name] : undefined;
+    if (isPlainObject(before) && isPlainObject(after)) changed.push(...changedConfigKeys(before, after, key));
+    else if (JSON.stringify(before) !== JSON.stringify(after)) changed.push(key);
+  }
+  return changed;
+}
+
+/** Copy `keys` from a fresh view into the cache, except keys with local edits, and tell subscribers. */
+function applyFreshKeys(fresh: JsonObject, keys: Iterable<string>): void {
   const applied = new Set<string>();
   for (const key of new Set(keys)) {
     const parts = splitKey(key);
@@ -268,16 +303,28 @@ export function configKeyChanged(keys: ReadonlySet<string>, key: string): boolea
   return false;
 }
 
-/** Start receiving config changes from other windows of the vault. Idempotent; call once the config is loaded. */
+/**
+ * Start receiving config changes from other windows of the vault and preference rows that sync applied. Every window
+ * receives the sync notice itself, so nothing is relayed between windows. Idempotent; call once the config is loaded.
+ */
 export function startConfigWindowSync(): void {
   if (windowSyncStarted) return;
   windowSyncStarted = true;
-  void configChanges.listen((keys) => {
+  const stopWindows = configChanges.listen((keys) => {
     void refreshConfigKeysFromDisk(keys).catch((error: unknown) => {
       console.error("Config refresh from another window failed", error);
     });
-  }).catch((error: unknown) => {
+  });
+  const stopReplicated = listenSyncApplied((tables) => {
+    if (!tables.includes(PREFERENCES_SYNC_TABLE)) return;
+    void refreshConfigFromSync().catch((error: unknown) => {
+      console.error("Config refresh after sync failed", error);
+    });
+  });
+  void Promise.all([stopWindows, stopReplicated]).catch((error: unknown) => {
     windowSyncStarted = false;
-    console.error("Config could not listen for other windows", error);
+    void stopWindows.then((stop) => stop(), () => undefined);
+    void stopReplicated.then((stop) => stop(), () => undefined);
+    console.error("Config could not listen for other windows or sync", error);
   });
 }

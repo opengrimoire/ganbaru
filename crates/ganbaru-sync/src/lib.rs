@@ -68,7 +68,7 @@ pub use seal::{InvalidRow, MAX_BYTES_PER_SEAL, MAX_OPS_PER_SEAL, SealReport};
 pub use status::{HeldCounts, HeldOp, SyncStatus, WriterSummary};
 pub use store::{HoldReason, StoreOutcome, StoreRefusal};
 
-use domains::vault_adapters;
+use domains::{vault_adapters, vault_hooks};
 pub use hooks::{ChangeNotice, ChangeSink, HookError, HookFuture, Hooks, MaterializeHook};
 use manifest::Manifest;
 use manifest::vault::VAULT_MANIFEST;
@@ -182,9 +182,9 @@ impl Engine {
         })
     }
 
-    /// The engine for the vault manifest with its built-in adapters.
+    /// The engine for the vault manifest with its built-in adapters and hooks.
     pub fn vault() -> Self {
-        Self::with(&VAULT_MANIFEST, vault_adapters(), Hooks::default())
+        Self::with(&VAULT_MANIFEST, vault_adapters(), vault_hooks())
             .expect("the vault manifest and its adapters should agree")
     }
 

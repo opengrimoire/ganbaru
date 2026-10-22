@@ -10,7 +10,7 @@ use crate::vault::handoff::pairing::PairingManager;
 use crate::vault::ownership::VaultOwnershipManager;
 use ganbaru_contacts::{PersonKeyPair, PersonPublicKey};
 use ganbaru_sync::manifest::vault::VAULT_MANIFEST;
-use ganbaru_sync::{ChangeNotice, Engine, Hooks};
+use ganbaru_sync::{ApplyReport, ChangeNotice, Engine, Hooks};
 use sqlx::SqlitePool;
 use std::collections::BTreeSet;
 use std::future::Future;
@@ -24,9 +24,9 @@ use tauri::{AppHandle, Manager, Runtime};
 const SYNC_DIRECTORY: &str = "sync";
 
 /// The materialize hooks every sync engine of the app registers, so the service, a headless
-/// pass, and recovery run the same domain code. No domain registers one yet.
+/// pass, and recovery run the same domain code.
 pub(crate) fn vault_hooks() -> Hooks {
-    Hooks::new()
+    ganbaru_sync::domains::vault_hooks()
 }
 
 /// The vault engine with `hooks`.
@@ -82,6 +82,12 @@ pub(crate) trait SyncHost: Clone + Send + Sync + 'static {
 
     /// Tells views that rows of `tables` changed.
     fn emit_applied(&self, tables: Vec<String>);
+
+    /// Updates process state that caches rows `report` applied, such as the composed preference
+    /// view. A host without such caches does nothing.
+    fn on_sync_applied(&self, _report: &ApplyReport) -> impl Future<Output = ()> + Send {
+        async {}
+    }
 
     /// Tells views about the changes hooks reported, once per topic.
     fn report_changes(&self, notices: &[ChangeNotice]) {
@@ -204,6 +210,10 @@ impl<R: Runtime> SyncHost for AppHandle<R> {
 
     fn emit_applied(&self, tables: Vec<String>) {
         emit_applied(self, tables);
+    }
+
+    async fn on_sync_applied(&self, report: &ApplyReport) {
+        crate::vault::preferences::on_sync_applied(self, report).await;
     }
 }
 

@@ -186,7 +186,7 @@ Every persisted field needs an explicit replication classification before it can
 | Managed assets | Immutable content and metadata | Transfer staging, local availability, caches |
 | Focus | Committed history, explicit controller ownership history | Live presence, local activity sources, native alarms and effects |
 
-Unsent Chat drafts keep their origin and can be explicitly continued on another device. Portable preferences live in the vault table `vault_preferences` so a preference change and its outbound record can commit atomically, and device preferences live in a per-vault file in the app config directory. `config.json` remains for distraction rules and Chat settings. Remove `config.json` and the unused `.yjs` vault directory only after their consumers migrate.
+Unsent Chat drafts keep their origin and can be explicitly continued on another device. Portable preferences live in the vault table `vault_preferences` so a preference change and its outbound record can commit atomically; each key replicates on its own, concurrent edits of one key resolve without a visible conflict, and the profile picture travels as a managed asset named by the `profile.image` value. Device preferences live in a per-vault file in the app config directory. `config.json` remains for distraction rules and Chat settings. Remove `config.json` and the unused `.yjs` vault directory only after their consumers migrate.
 
 ### Transactional operation boundary
 
@@ -249,7 +249,8 @@ Android uses WorkManager for deferred sync and a visible, user-enabled connected
 | Durable mutation and storage boundaries | Partial | Scoped preferences and capture coverage for the remaining domains |
 | Local whole-vault handoff | Partial | Physical multi-device acceptance |
 | Concurrent replication of Quick notes | Implemented | Physical multi-device acceptance |
-| Concurrent replication of other domains | Planned | Preferences, Contacts, Projects, distraction rules and usage counters, Calendar, Focus history, Music library, Chat organizational content, Notes text and tree merging, managed assets, and retiring whole-vault handoff |
+| Concurrent replication of portable preferences and the profile picture | Implemented | Physical multi-device acceptance |
+| Concurrent replication of other domains | Planned | Contacts, Projects, distraction rules and usage counters, Calendar, Focus history, Music library, Chat organizational content, Notes text and tree merging, managed assets, and retiring whole-vault handoff |
 | Concurrent secure local linking | Planned | Anchored authority with admin keys and late changes, LAN peer exchange, operation encryption, key lifecycle, typed bootstrap, and compaction |
 | Delivery beyond the LAN and Android sync | Planned | Encrypted relay or always-on anchor, native background runtime, encrypted backup, measurements, and physical acceptance |
 

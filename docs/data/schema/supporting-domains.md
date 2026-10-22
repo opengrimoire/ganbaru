@@ -58,7 +58,7 @@ Linked-device accounting follows [Sync](../sync.md#distraction-usage-exception).
 
 ## Profile and managed icons
 
-Profile metadata is a set of portable preferences in `vault_preferences`, which stores one canonical JSON value per registered key, or per child of a keyed map such as a sidebar order per project, with bounded key and value sizes. Profile and project-icon bytes use bounded feature-owned asset paths, and rows store managed relative identity, never an absolute or hardcoded vault path. Replacing an image stages validated bytes, updates the relationship atomically, and removes the old asset only after rechecking references.
+Profile metadata is a set of portable preferences in `vault_preferences`, which stores one canonical JSON value per registered key, or per child of a keyed map such as a sidebar order per project, with bounded key and value sizes. Profile and project-icon bytes use bounded feature-owned asset paths, and rows store managed relative identity, never an absolute or hardcoded vault path. The `profile.image` preference is an object of exactly `path` (`profile/{sha256}.{png|jpg|webp}`) and `byteSize`, so sync can fetch and verify the file it names. Replacing an image stages validated bytes, updates the relationship atomically, and removes the old asset only after rechecking references.
 
 ## Contacts
 

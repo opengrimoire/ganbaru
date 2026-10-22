@@ -2065,6 +2065,7 @@ dependencies = [
  "ganbaru-db",
  "ganbaru-sync-contracts",
  "serde",
+ "serde_json",
  "sqlx",
  "tokio",
 ]

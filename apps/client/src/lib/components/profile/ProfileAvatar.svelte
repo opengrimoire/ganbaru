@@ -8,6 +8,7 @@
     profileInitials,
     type ProfileImageCrop,
   } from "$lib/profile/identity";
+  import { profileImageFiles } from "$lib/stores/profile-image-files.svelte";
   import { getTheme } from "$lib/stores/theme.svelte";
 
   let {
@@ -36,6 +37,7 @@
 
   $effect(() => {
     const path = imagePath;
+    void profileImageFiles.revision;
     const requestId = ++imageRequestId;
     imageUrl = null;
     imageSize = { width: 0, height: 0 };

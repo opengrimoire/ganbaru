@@ -5,6 +5,8 @@ pub(crate) mod contact_requests;
 #[cfg(desktop)]
 pub(crate) mod coordinator;
 #[cfg(desktop)]
+mod discovery;
+#[cfg(desktop)]
 pub(crate) mod enrollment_approval;
 #[cfg(desktop)]
 mod key_store;
@@ -51,6 +53,8 @@ struct CoordinatorRuntime {
     port: u16,
     shutdown: tokio::sync::oneshot::Sender<()>,
     requests: coordinator::CoordinatorSender,
+    /// Advertises this coordinator to linked devices until the runtime is dropped.
+    _advertiser: discovery::Advertiser,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -133,7 +137,9 @@ impl CoordinatorLifecycle {
             admission: lan_admission(&app, port)?,
         };
         tauri::async_runtime::spawn(contact_requests::run(app.clone(), contact_receiver));
+        let advertiser_app = app.clone();
         tauri::async_runtime::spawn(coordinator::run(app, manager.clone(), request_receiver));
+        let advertiser_manager = manager.clone();
         tauri::async_runtime::spawn(transport::serve_with_coordinator(
             listener, manager, services, receiver,
         ));
@@ -149,6 +155,7 @@ impl CoordinatorLifecycle {
             port,
             shutdown,
             requests,
+            _advertiser: discovery::Advertiser::spawn(advertiser_app, advertiser_manager, port),
         });
         Ok(port)
     }

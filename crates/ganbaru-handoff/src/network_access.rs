@@ -21,6 +21,7 @@ use std::str::FromStr;
 use crate::dial::{
     DialAddressClass, ipv4_lan_block, ipv4_mask, ipv6_lan_block, ipv6_mask, reportable_address,
 };
+use crate::discovery::MDNS_PORT;
 use crate::protocol::{COORDINATOR_PORT, DEVELOPMENT_COORDINATOR_PORT};
 
 const STATE_FILE: &str = "vault-handoff-network-access.json";
@@ -29,8 +30,6 @@ const RULE_COMMENT: &str = "Ganbaru device linking";
 const MAX_AUTHORIZED_SCOPES: usize = 64;
 /// Networks remembered per scope. Beyond it the oldest is forgotten and asks again.
 const MAX_ALLOWED_NETWORKS: usize = 16;
-/// UDP port of multicast DNS, which device discovery uses.
-const MDNS_PORT: u16 = 5353;
 const MDNS_IPV4_GROUP: Ipv4Addr = Ipv4Addr::new(224, 0, 0, 251);
 const MDNS_IPV6_GROUP: Ipv6Addr = Ipv6Addr::new(0xff02, 0, 0, 0, 0, 0, 0, 0xfb);
 /// Source of IPv6 multicast DNS queries, which hosts send from their link-local address.

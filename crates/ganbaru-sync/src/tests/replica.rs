@@ -11,7 +11,7 @@ use ganbaru_sync_contracts::{
 use sqlx::sqlite::SqliteOwnedBuf;
 use sqlx::{AssertSqlSafe, Connection, SqliteConnection};
 
-use super::fixture::{fixture_pool, test_engine};
+use super::fixture::{NODE_MAX_DEPTH, fixture_pool, test_engine};
 use crate::manifest::Manifest;
 use crate::{
     ApplyReport, Engine, LocalWriter, ResealNeeded, ResealReport, SealReport, SequenceReservation,
@@ -426,6 +426,36 @@ impl Replica {
             "replica {} has a stale fixture index",
             self.index
         );
+        // Nodes reached from a root, with their depth; a node on a cycle is never reached.
+        let reached = "WITH RECURSIVE reached(id, depth) AS (
+                 SELECT id, 0 FROM fixture_nodes WHERE parent_id IS NULL
+                 UNION ALL
+                 SELECT n.id, r.depth + 1 FROM fixture_nodes n JOIN reached r ON n.parent_id = r.id
+             )";
+        let unreached = self
+            .count(&format!(
+                "{reached} SELECT (SELECT count(*) FROM fixture_nodes)
+                     - (SELECT count(*) FROM reached)"
+            ))
+            .await;
+        assert_eq!(unreached, 0, "replica {} has a cycle of nodes", self.index);
+        let too_deep = self
+            .count(&format!(
+                "{reached} SELECT count(*) FROM reached WHERE depth > {NODE_MAX_DEPTH}"
+            ))
+            .await;
+        assert_eq!(too_deep, 0, "replica {} nests nodes too deep", self.index);
+        let closed = self
+            .count(
+                "WITH RECURSIVE path(start, node) AS (
+                     SELECT from_id, to_id FROM fixture_edges
+                     UNION
+                     SELECT p.start, e.to_id FROM path p JOIN fixture_edges e ON e.from_id = p.node
+                 )
+                 SELECT count(*) FROM path WHERE start = node",
+            )
+            .await;
+        assert_eq!(closed, 0, "replica {} has a cycle of edges", self.index);
     }
 
     /// Replicated state in a canonical text form: domain tables without local columns and

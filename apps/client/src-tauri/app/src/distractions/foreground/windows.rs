@@ -32,18 +32,6 @@ fn windows_foreground_process_id(hwnd: ::windows::Win32::Foundation::HWND) -> Op
     validated_window_process_id(thread_id, process_id)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::validated_window_process_id;
-
-    #[test]
-    fn foreground_process_identity_requires_api_success_and_nonzero_output() {
-        assert_eq!(validated_window_process_id(7, 11), Some(11));
-        assert_eq!(validated_window_process_id(0, 11), None);
-        assert_eq!(validated_window_process_id(7, 0), None);
-    }
-}
-
 #[cfg(windows)]
 fn windows_process_image_path(process_id: u32) -> Option<String> {
     use ::windows::Win32::System::Threading::{
@@ -150,4 +138,16 @@ pub(in crate::distractions) fn close_current_foreground_desktop_app(
             .map_err(|e| format!("close foreground window: {e}"))?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validated_window_process_id;
+
+    #[test]
+    fn foreground_process_identity_requires_api_success_and_nonzero_output() {
+        assert_eq!(validated_window_process_id(7, 11), Some(11));
+        assert_eq!(validated_window_process_id(0, 11), None);
+        assert_eq!(validated_window_process_id(7, 0), None);
+    }
 }

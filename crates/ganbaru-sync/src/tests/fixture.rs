@@ -1,7 +1,9 @@
 //! A test-only fixture domain beside the vault domains, so engine behavior that no vault domain
 //! uses yet runs through the simulation: `Local` tables and columns, every trigger policy, a
 //! cascading reference cycle, a group with several reference columns, an immutable reference,
-//! a reference into its own table, and a derived-key table with a composite primary key.
+//! a reference into its own table, a derived-key table with a composite primary key, and a tree
+//! of nodes with a maximum depth whose parent cascades, with a recoverable label, and an
+//! acyclic edge set between items.
 //! Fixture table ids start at [`FIXTURE_TABLE_IDS`], above every vault domain.
 
 use std::sync::LazyLock;
@@ -13,9 +15,10 @@ use super::{execute, migrated_pool};
 use crate::domains::vault_adapters;
 use crate::manifest::vault::{VAULT_MANIFEST_VERSION, quick_notes};
 use crate::manifest::{
-    Collation, ColumnSpec, ColumnType, DerivedKey, DeviceTable, DomainManifest, DomainTrigger,
-    GroupSpec, GroupStorage, LocalColumn, Manifest, MergeKind, OnDelete, ReferenceColumn,
-    Resolution, SYNC_KEY_COLUMN, TableIdRange, TableSpec, TriggerPolicy, group_id,
+    AcyclicSpec, Collation, ColumnSpec, ColumnType, DerivedKey, DeviceTable, DomainManifest,
+    DomainTrigger, GroupSpec, GroupStorage, LocalColumn, Manifest, MergeKind, OnDelete,
+    ReferenceColumn, Resolution, SYNC_KEY_COLUMN, TableIdRange, TableSpec, TreeSpec, TriggerPolicy,
+    group_id,
 };
 use crate::triggers::{self, NOT_APPLYING};
 use crate::{Engine, Hooks};
@@ -88,6 +91,8 @@ pub(super) const ITEMS: TableSpec = TableSpec {
         },
     ],
     derived_key: None,
+    tree: None,
+    acyclic: None,
 };
 
 /// `fixture_items`.
@@ -150,6 +155,8 @@ pub(super) const CYCLE_A: TableSpec = TableSpec {
     adapter: None,
     triggers: &[],
     derived_key: None,
+    tree: None,
+    acyclic: None,
 };
 
 /// The other table of the reference cycle with [`CYCLE_A`].
@@ -245,6 +252,8 @@ pub(super) const LINKS: TableSpec = TableSpec {
     adapter: None,
     triggers: &[],
     derived_key: None,
+    tree: None,
+    acyclic: None,
 };
 
 /// Prefix of [`MEMBERSHIPS`] keys.
@@ -304,7 +313,8 @@ pub(super) const MEMBERSHIP_IDENTITY: GroupSpec = GroupSpec {
     bumps_revision: false,
 };
 
-/// The details group of [`MEMBERSHIPS`].
+/// The details group of [`MEMBERSHIPS`], recoverable so a role edited while its item is
+/// deleted is offered with the item.
 pub(super) const MEMBERSHIP_DETAILS: GroupSpec = GroupSpec {
     id: membership_group::DETAILS,
     name: "details",
@@ -321,7 +331,7 @@ pub(super) const MEMBERSHIP_DETAILS: GroupSpec = GroupSpec {
     ]),
     references: &[],
     surfaced: false,
-    recoverable: false,
+    recoverable: true,
     bumps_revision: false,
 };
 
@@ -356,7 +366,184 @@ pub(super) const MEMBERSHIPS: TableSpec = TableSpec {
         exists_group: membership_group::EXISTS,
         key_inputs: &[],
     }),
+    tree: None,
+    acyclic: None,
 };
+
+/// Group ids of [`NODES`].
+pub(super) mod node_group {
+    use ganbaru_sync_contracts::GroupId;
+
+    use crate::manifest::group_id;
+
+    /// The parent node.
+    pub(in crate::tests) const PARENT: GroupId = group_id(0);
+    /// The position among siblings.
+    pub(in crate::tests) const POSITION: GroupId = group_id(1);
+    /// The recoverable label.
+    pub(in crate::tests) const LABEL: GroupId = group_id(2);
+}
+
+/// Deepest a node may nest: a root has depth 0.
+pub(super) const NODE_MAX_DEPTH: u8 = 2;
+
+/// A tree of nodes whose parent cascades its deletion to their children.
+pub(super) const NODES: TableSpec = TableSpec {
+    id: NODES_TABLE,
+    name: "fixture_nodes",
+    key_column: "id",
+    groups: &[
+        GroupSpec {
+            id: node_group::PARENT,
+            name: "parent",
+            kind: MergeKind::Reference {
+                table: NODES_TABLE,
+                on_delete: OnDelete::Cascade,
+            },
+            storage: GroupStorage::Columns(&[ColumnSpec {
+                name: "parent_id",
+                ty: ColumnType::OptionalRowKey,
+            }]),
+            references: &[],
+            surfaced: false,
+            recoverable: false,
+            bumps_revision: false,
+        },
+        GroupSpec {
+            id: node_group::POSITION,
+            name: "position",
+            kind: MergeKind::Position,
+            storage: GroupStorage::Columns(&[ColumnSpec {
+                name: "position",
+                ty: ColumnType::OrderKey,
+            }]),
+            references: &[],
+            surfaced: false,
+            recoverable: false,
+            bumps_revision: false,
+        },
+        GroupSpec {
+            id: node_group::LABEL,
+            name: "label",
+            kind: MergeKind::Register,
+            storage: GroupStorage::Columns(&[ColumnSpec {
+                name: "label",
+                ty: ColumnType::Text { max_chars: 40 },
+            }]),
+            references: &[],
+            surfaced: false,
+            recoverable: true,
+            bumps_revision: false,
+        },
+    ],
+    local_columns: &[],
+    derived_columns: &[],
+    revision_column: None,
+    resolutions: &[],
+    redirects: false,
+    adapter: None,
+    triggers: &[],
+    derived_key: None,
+    tree: Some(TreeSpec {
+        parent_group: node_group::PARENT,
+        position_group: node_group::POSITION,
+        max_depth: Some(NODE_MAX_DEPTH),
+    }),
+    acyclic: None,
+};
+
+/// `fixture_nodes`.
+pub(super) const NODES_TABLE: TableId = TableId(FIXTURE_TABLE_IDS + 5);
+
+/// Prefix of [`EDGES`] keys.
+const EDGE_KEY_PREFIX: &str = "fixture_edge";
+
+/// The `sync_key` of the edge from `from` to `to`.
+pub(super) fn edge_key(from: &str, to: &str) -> String {
+    derived_key(EDGE_KEY_PREFIX, &[from, to])
+        .expect("fixture ids are valid key parts")
+        .into_string()
+}
+
+/// Group ids of [`EDGES`].
+pub(super) mod edge_group {
+    use ganbaru_sync_contracts::GroupId;
+
+    use crate::manifest::group_id;
+
+    /// The primary key columns.
+    pub(in crate::tests) const IDENTITY: GroupId = group_id(0);
+    /// Existence register.
+    pub(in crate::tests) const EXISTS: GroupId = group_id(1);
+}
+
+/// Directed edges between items that never form a cycle, such as task dependencies.
+pub(super) const EDGES: TableSpec = TableSpec {
+    id: EDGES_TABLE,
+    name: "fixture_edges",
+    key_column: SYNC_KEY_COLUMN,
+    groups: &[
+        GroupSpec {
+            id: edge_group::IDENTITY,
+            name: "identity",
+            kind: MergeKind::Immutable,
+            storage: GroupStorage::Columns(&[
+                ColumnSpec {
+                    name: "from_id",
+                    ty: ColumnType::OptionalRowKey,
+                },
+                ColumnSpec {
+                    name: "to_id",
+                    ty: ColumnType::OptionalRowKey,
+                },
+            ]),
+            references: &[
+                ReferenceColumn {
+                    column: "from_id",
+                    table: ITEMS_TABLE,
+                    on_delete: OnDelete::Cascade,
+                },
+                ReferenceColumn {
+                    column: "to_id",
+                    table: ITEMS_TABLE,
+                    on_delete: OnDelete::Cascade,
+                },
+            ],
+            surfaced: false,
+            recoverable: false,
+            bumps_revision: false,
+        },
+        GroupSpec {
+            id: edge_group::EXISTS,
+            name: "exists",
+            kind: MergeKind::Register,
+            storage: GroupStorage::Columns(&[]),
+            references: &[],
+            surfaced: false,
+            recoverable: false,
+            bumps_revision: false,
+        },
+    ],
+    local_columns: &[],
+    derived_columns: &[],
+    revision_column: None,
+    resolutions: &[],
+    redirects: false,
+    adapter: None,
+    triggers: &[],
+    derived_key: Some(DerivedKey {
+        exists_group: edge_group::EXISTS,
+        key_inputs: &[],
+    }),
+    tree: None,
+    acyclic: Some(AcyclicSpec {
+        from_column: "from_id",
+        to_column: "to_id",
+    }),
+};
+
+/// `fixture_edges`.
+pub(super) const EDGES_TABLE: TableId = TableId(FIXTURE_TABLE_IDS + 6);
 
 /// The fixture domain.
 pub(super) const FIXTURE_DOMAIN: DomainManifest = DomainManifest {
@@ -365,7 +552,7 @@ pub(super) const FIXTURE_DOMAIN: DomainManifest = DomainManifest {
         first: FIXTURE_TABLE_IDS,
         last: FIXTURE_TABLE_IDS + 15,
     },
-    tables: &[ITEMS, CYCLE_A, CYCLE_B, LINKS, MEMBERSHIPS],
+    tables: &[ITEMS, CYCLE_A, CYCLE_B, LINKS, MEMBERSHIPS, NODES, EDGES],
     derived: &["fixture_items_index"],
     local: &[DeviceTable {
         name: "fixture_item_marks",
@@ -431,6 +618,18 @@ fn fixture_schema() -> String {
              created_at TEXT NOT NULL,
              role TEXT NOT NULL CHECK (length(role) <= 20),
              PRIMARY KEY (item_id, end_id)
+         );
+         CREATE TABLE fixture_nodes (
+             id TEXT PRIMARY KEY CHECK (trim(id) <> ''),
+             parent_id TEXT REFERENCES fixture_nodes(id) ON DELETE CASCADE,
+             position TEXT NOT NULL,
+             label TEXT NOT NULL CHECK (length(label) <= 40)
+         );
+         CREATE TABLE fixture_edges (
+             from_id TEXT NOT NULL REFERENCES fixture_items(id) ON DELETE CASCADE,
+             to_id TEXT NOT NULL REFERENCES fixture_items(id) ON DELETE CASCADE,
+             sync_key TEXT NOT NULL UNIQUE,
+             PRIMARY KEY (from_id, to_id)
          );
          CREATE TABLE fixture_items_index (
              item_id TEXT PRIMARY KEY,

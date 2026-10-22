@@ -1,4 +1,4 @@
-//! The signed operation format, version 1.
+//! The signed operation format, versions 1 and 2.
 //!
 //! Envelope, big endian and stable across format versions: magic `GBSO` (4) | format version (1)
 //! | kind (1) | space id (16) | writer id (16) | sequence (8) | previous operation hash (32) |
@@ -13,12 +13,17 @@
 //! dependency count (2) and `(writer id, sequence)` pairs | kind payload. A changes payload is a
 //! change count (2) and, per change, table id (2) | row key length (1) and key | action (1) |
 //! group mask (8) | one value hash (32) per set group in ascending order | for tombstones a
-//! redirect flag (1) and optional row key. A genesis payload is a certificate length (2) and the
+//! successor byte (1): `0` none, `1` followed by the redirect row key, or `2` followed by the
+//! cause's table id (2) and row key. A genesis payload is a certificate length (2) and the
 //! certificate. A revoke payload is target writer (16) | cutoff sequence (8) | reason (1).
 //!
 //! Body: per change and set group, a presence byte (1) and the value: field count (1) and typed
-//! fields, tag `0` null, `1` i64 (8), `2` text with length (4), `3` blob with length (4). Format
-//! version 1 requires every value to be present.
+//! fields, tag `0` null, `1` i64 (8), `2` text with length (4), `3` blob with length (4). Every
+//! value is present.
+//!
+//! Version 2 adds the cause successor and is otherwise version 1. An operation is sealed at
+//! version 2 only when one of its tombstones names a cause, so every other operation stays
+//! readable by version 1 builds, which hold version 2 operations as a newer format.
 
 use crate::bounds::{
     MAX_BLOB_FIELD_BYTES, MAX_CHANGES_PER_OPERATION, MAX_FIELDS_PER_VALUE, MAX_HEADER_BYTES,
@@ -38,8 +43,12 @@ use std::fmt;
 
 /// Leading bytes of every operation.
 pub const OPERATION_MAGIC: &[u8; 4] = b"GBSO";
-/// Operation format this build encodes and fully decodes.
-pub const FORMAT_VERSION: u8 = 1;
+/// Newest operation format this build encodes and fully decodes.
+pub const FORMAT_VERSION: u8 = 2;
+/// Format of operations whose tombstones name no cause.
+pub const BASE_FORMAT_VERSION: u8 = 1;
+/// First format whose tombstones may name a cause.
+pub const CAUSE_FORMAT_VERSION: u8 = 2;
 /// Previous hash of a writer genesis.
 pub const GENESIS_PREVIOUS_HASH: Digest32 = [0u8; DIGEST_BYTES];
 
@@ -48,6 +57,9 @@ const FIELD_NULL: u8 = 0;
 const FIELD_INTEGER: u8 = 1;
 const FIELD_TEXT: u8 = 2;
 const FIELD_BLOB: u8 = 3;
+const SUCCESSOR_NONE: u8 = 0;
+const SUCCESSOR_REDIRECT: u8 = 1;
+const SUCCESSOR_CAUSE: u8 = 2;
 
 /// What an operation does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -61,7 +73,8 @@ pub enum OperationKind {
 }
 
 impl OperationKind {
-    /// Wire value. `3` is reserved for checkpoints.
+    /// Wire value. `3` is reserved for signed acknowledgements and `4` for authorization
+    /// entries; `Revoke` keeps `2` until authorization entries replace it.
     pub const fn as_u8(self) -> u8 {
         match self {
             Self::Changes => 0,
@@ -273,6 +286,18 @@ pub struct Change {
     pub groups: Vec<GroupValue>,
     /// For a tombstone, the row that replaces this one; references follow it.
     pub replaced_by: Option<RowKey>,
+    /// For a tombstone without a redirect, the deleted row whose deletion removed this one
+    /// through a cascading reference.
+    pub cause: Option<Cause>,
+}
+
+/// The row whose deletion a cascade tombstone follows.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Cause {
+    /// Table of the deleted row.
+    pub table: TableId,
+    /// Key of the deleted row.
+    pub row: RowKey,
 }
 
 impl Change {
@@ -295,12 +320,20 @@ impl Change {
         }
         match self.action {
             ChangeAction::Create | ChangeAction::Write => {
-                if self.groups.is_empty() || self.replaced_by.is_some() {
+                if self.groups.is_empty() || self.replaced_by.is_some() || self.cause.is_some() {
                     return Err(CodecError::Malformed("change"));
                 }
             }
             ChangeAction::Tombstone => {
-                if !self.groups.is_empty() || self.replaced_by.as_ref() == Some(&self.row) {
+                let names_itself = self.replaced_by.as_ref() == Some(&self.row)
+                    || self
+                        .cause
+                        .as_ref()
+                        .is_some_and(|cause| cause.table == self.table && cause.row == self.row);
+                if !self.groups.is_empty()
+                    || names_itself
+                    || (self.replaced_by.is_some() && self.cause.is_some())
+                {
                     return Err(CodecError::Malformed("tombstone"));
                 }
             }
@@ -453,6 +486,17 @@ impl Operation {
         }
     }
 
+    /// Format version the operation seals at: [`CAUSE_FORMAT_VERSION`] when a tombstone names
+    /// a cause, [`BASE_FORMAT_VERSION`] otherwise.
+    pub fn format_version(&self) -> u8 {
+        match &self.content {
+            Content::Changes(changes) if changes.iter().any(|change| change.cause.is_some()) => {
+                CAUSE_FORMAT_VERSION
+            }
+            _ => BASE_FORMAT_VERSION,
+        }
+    }
+
     /// Checks every rule of the format that does not depend on the manifest.
     pub fn validate(&self) -> Result<(), OperationError> {
         let genesis = self.kind() == OperationKind::Genesis;
@@ -513,12 +557,17 @@ impl Operation {
                         writer.raw(&group.hash);
                     }
                     if change.action == ChangeAction::Tombstone {
-                        match &change.replaced_by {
-                            Some(target) => {
-                                writer.u8(1);
+                        match (&change.replaced_by, &change.cause) {
+                            (Some(target), _) => {
+                                writer.u8(SUCCESSOR_REDIRECT);
                                 writer.bytes_u8(target.as_str().as_bytes());
                             }
-                            None => writer.u8(0),
+                            (None, Some(cause)) => {
+                                writer.u8(SUCCESSOR_CAUSE);
+                                writer.u16(cause.table.0);
+                                writer.bytes_u8(cause.row.as_str().as_bytes());
+                            }
+                            (None, None) => writer.u8(SUCCESSOR_NONE),
                         }
                     }
                 }
@@ -567,7 +616,7 @@ impl Operation {
         }
         let mut writer = Writer::with_capacity(total);
         writer.raw(OPERATION_MAGIC);
-        writer.u8(FORMAT_VERSION);
+        writer.u8(self.format_version());
         writer.u8(self.kind().as_u8());
         writer.raw(self.space.as_bytes());
         writer.raw(self.writer.as_bytes());
@@ -765,7 +814,9 @@ impl<'a> Envelope<'a> {
             dependencies.push((writer, header.u64()?));
         }
         let payload = match kind {
-            OperationKind::Changes => HeaderPayload::Changes(decode_change_headers(&mut header)?),
+            OperationKind::Changes => {
+                HeaderPayload::Changes(decode_change_headers(&mut header, self.format_version)?)
+            }
             OperationKind::Genesis => {
                 let length = usize::from(header.u16()?);
                 let certificate = SignedCertificate::decode(header.take(length)?)?;
@@ -838,6 +889,7 @@ struct ChangeHeader {
     action: ChangeAction,
     hashes: Vec<(GroupId, Digest32)>,
     replaced_by: Option<RowKey>,
+    cause: Option<Cause>,
 }
 
 fn expect_empty_body(body: &[u8]) -> Result<(), CodecError> {
@@ -854,7 +906,12 @@ fn read_row_key(reader: &mut Reader<'_>) -> Result<RowKey, CodecError> {
     RowKey::new(text).map_err(|_| CodecError::Malformed("row key"))
 }
 
-fn decode_change_headers(header: &mut Reader<'_>) -> Result<Vec<ChangeHeader>, CodecError> {
+/// Decodes the change headers of an envelope of `format_version`, which decides whether a
+/// tombstone may name a cause.
+fn decode_change_headers(
+    header: &mut Reader<'_>,
+    format_version: u8,
+) -> Result<Vec<ChangeHeader>, CodecError> {
     let count = usize::from(header.u16()?);
     if count > MAX_CHANGES_PER_OPERATION {
         return Err(CodecError::Bounds("changes"));
@@ -870,14 +927,19 @@ fn decode_change_headers(header: &mut Reader<'_>) -> Result<Vec<ChangeHeader>, C
         for group in mask.iter() {
             hashes.push((group, header.array::<DIGEST_BYTES>()?));
         }
-        let replaced_by = if action == ChangeAction::Tombstone {
+        let (replaced_by, cause) = if action == ChangeAction::Tombstone {
             match header.u8()? {
-                0 => None,
-                1 => Some(read_row_key(header)?),
-                _ => return Err(CodecError::Malformed("tombstone redirect")),
+                SUCCESSOR_NONE => (None, None),
+                SUCCESSOR_REDIRECT => (Some(read_row_key(header)?), None),
+                SUCCESSOR_CAUSE if format_version >= CAUSE_FORMAT_VERSION => {
+                    let table = TableId(header.u16()?);
+                    let row = read_row_key(header)?;
+                    (None, Some(Cause { table, row }))
+                }
+                _ => return Err(CodecError::Malformed("tombstone successor")),
             }
         } else {
-            None
+            (None, None)
         };
         changes.push(ChangeHeader {
             table,
@@ -885,6 +947,7 @@ fn decode_change_headers(header: &mut Reader<'_>) -> Result<Vec<ChangeHeader>, C
             action,
             hashes,
             replaced_by,
+            cause,
         });
     }
     Ok(changes)
@@ -912,6 +975,7 @@ fn attach_values(headers: Vec<ChangeHeader>, body: &[u8]) -> Result<Vec<Change>,
             action: change.action,
             groups,
             replaced_by: change.replaced_by,
+            cause: change.cause,
         });
     }
     body.finish()?;

@@ -30,6 +30,12 @@ The hybrid logical clock is 48 bits of Unix milliseconds and a 16-bit counter. A
 - A register is surfaced when its concurrent distinct versions are shown to people as a conflict; otherwise it resolves silently. Quick note title, body, and images are surfaced. Color, tag, lifecycle, order, tag names, and tag colors are silent.
 - A group is recoverable when edits to it that a deletion did not see should be offered for recovery. Quick note title, body, images, color, tag, and lifecycle are recoverable; order, timestamps, and every tag group are not.
 
+## Trees and acyclic edge sets
+
+A tree table nests rows through a reference group into the table itself and orders siblings with a position group, so a move writes only the moved row's parent and order key. Because each row has one parent, every cycle among winning parents is a simple loop, broken at the row whose winning parent version has the greatest `(clock, writer)`, with the greater row key breaking a tie within one operation. Then every row deeper than the table's maximum depth is detached, which gives the same result as repeatedly moving the deepest row to the root. A detached row materializes as a root and keeps its order key, and a replica that can seal writes its parent as null. Detaching depends only on merge state, so replicas that cannot seal show the same tree. A replicated move log is not used, because every replica would have to undo and replay moves in one total order.
+
+An acyclic edge set is a derived-key table whose rows are directed edges between two rows of one table, such as dependencies. Edges count while they exist and both ends are shown, taken in ascending `(clock, writer)` of their winning existence version, then row key. An edge whose end already reaches its start through the edges taken before it is severed: it is hidden and surfaced as a conflict of its existence group until an edge of the cycle is removed. Severing seals nothing, so it undoes itself once the cycle is gone.
+
 ## Derived keys
 
 A derived-key table keys each row by its natural identity, such as a membership's two ends, so every device derives the same key for the same row and adding it again must work after a removal. Such a table has a hidden existence register instead of tombstones: a local insert or update writes 1, a delete writes 0, and the domain row is deleted while the winner is 0 and inserted again when it returns to 1. A local insert of a key the space already knows writes every group, immutable ones included, so the re-added row carries its new values. Immutable groups hold only key columns, the re-create guard does not apply, and a derived-key table never redirects or repairs duplicates. A derived-key row whose existence winner is 0 counts as deleted for references to it.
@@ -47,12 +53,15 @@ When two rows end up with equal keys, which concurrent placement can cause, the 
 - A deletion is a tombstone carrying the causal context of its operation. A tombstoned row is deleted from the domain table, its key is never reused, and older operations never resurrect it.
 - The tombstoned row keeps its versions as retained state. A retained version of a recoverable group that no tombstone's context covers is an edit the deletion did not see. Such a row is a recovery entry, regardless of whether the edit arrived before or after the deletion.
 - Restoring creates a new row from the winning retained values. Restoring and discarding both seal a tombstone whose context covers every retained version, which closes the entry on every replica.
+- A live row is hidden by cascade when a cascading reference, followed through cascading references of other live rows, reaches a deleted root: a tombstoned row without a redirect, a removed derived-key row, or a severed edge. A reference cycle hides nothing on its own. Hiding is a pure function of merge state; a replica that can seal also tombstones each hidden row with a cause naming its root, while a hidden derived-key row stays live in merge state.
+- A tombstone naming a cause covers what the cause's deletion covers, because a repair sealed later may have seen edits the user's deletion did not. A row hidden by cascade is checked against its root's coverage, so a child edited concurrently with its parent's deletion is offered for recovery.
+- Recovery groups rows under their root: a row deleted by the user is its own root, and a row deleted or hidden by cascade belongs to the root its cause or its cascade reaches. One entry offers the root with every descendant holding an unseen edit, and restoring or discarding it closes the whole group.
 - A tombstone can redirect references to a row with a lower key. A reference to a tombstoned row follows the lowest redirect among its tombstones, or resolves to null when there is none. Redirects always point to lower keys, so chains terminate.
 
 ## References
 
 - A reference column holds a row key of any replicated table, including its own table and tables listed after it. A reference group holds one such column; register and immutable groups may also declare several, each resolved like a reference group while the group's value merges as a whole.
-- Each reference declares the delete action of its foreign key: clear to null or cascade. An immutable reference cascades, because clearing would change an immutable column. Hiding rows whose cascading reference no longer resolves is not implemented yet; such a row currently keeps a null reference.
+- Each reference declares the delete action of its foreign key: clear to null or cascade. An immutable reference cascades, because clearing would change an immutable column. A row whose cascading reference no longer resolves is hidden by cascade, as described in [Deletion and recovery](#deletion-and-recovery).
 - Tables are listed in dependency order: a table needing another table's rows (a reference, an owned child's foreign key, or a trigger visible to the applier that reads it) comes after it, unless both lie in one strongly connected component, which is listed contiguously. Foreign keys are deferred while the engine applies, so a reference cycle materializes within its component in one batch. Owned and applier-visible dependencies read rows statement by statement, so they never lie on a cycle.
 - Deleting a materialized row rematerializes the rows in every table whose references named it, because the foreign key action clears or cascades them at once.
 
@@ -62,7 +71,7 @@ Live rows whose winning values collide on a declared unique column set form a cl
 
 ## Conflicts
 
-A conflict is a surfaced group of a live row with two or more versions whose values differ. Every replica derives the same conflicts from its merge state. Resolving writes the chosen value with a context that covers every alternative, even when the value is unchanged, so the resolution supersedes all of them and replicates like any edit. Keeping both keeps the displayed value and creates a new row from the alternative.
+A conflict is a surfaced group of a live row with two or more versions whose values differ, or the existence group of a [severed edge](#trees-and-acyclic-edge-sets). Every replica derives the same conflicts from its merge state. Resolving writes the chosen value with a context that covers every alternative, even when the value is unchanged, so the resolution supersedes all of them and replicates like any edit. Keeping both keeps the displayed value and creates a new row from the alternative.
 
 ## Worked examples
 

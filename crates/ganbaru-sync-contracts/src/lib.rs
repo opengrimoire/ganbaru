@@ -28,8 +28,8 @@ pub use ids::{
     WriterId, derived_key,
 };
 pub use op::{
-    Change, ChangeAction, Content, Envelope, Field, GroupValue, Header, Operation, OperationError,
-    OperationKind, PayloadError, Revocation, RevokeReason, SealedOperation, Value,
+    Cause, Change, ChangeAction, Content, Envelope, Field, GroupValue, Header, Operation,
+    OperationError, OperationKind, PayloadError, Revocation, RevokeReason, SealedOperation, Value,
 };
 pub use order_key::{OrderKey, OrderKeyError};
 pub use signing::{Digest32, WriterKeyError, WriterKeyPair, WriterPublicKey};

@@ -1,8 +1,8 @@
 use crate::signing::Digest32;
 use crate::{
-    Change, ChangeAction, Content, Envelope, Field, GroupId, GroupValue, Header, Hlc, Operation,
-    OperationKind, Revocation, RevokeReason, RowKey, SignedCertificate, SpaceId, TableId, Value,
-    WriterCertificate, WriterId, WriterKeyPair, WriterPublicKey, sign_certificate,
+    Cause, Change, ChangeAction, Content, Envelope, Field, GroupId, GroupValue, Header, Hlc,
+    Operation, OperationKind, Revocation, RevokeReason, RowKey, SignedCertificate, SpaceId,
+    TableId, Value, WriterCertificate, WriterId, WriterKeyPair, WriterPublicKey, sign_certificate,
 };
 use ganbaru_contacts::PersonKeyPair;
 
@@ -111,6 +111,7 @@ pub fn changes_operation(previous_hash: Digest32) -> Operation {
                     group_value(1, 3, vec![Field::Text("2026-10-08T12:00:00.000Z".into())]),
                 ],
                 replaced_by: None,
+                cause: None,
             },
             Change {
                 table: TableId(2),
@@ -125,6 +126,7 @@ pub fn changes_operation(previous_hash: Digest32) -> Operation {
                     ),
                 ],
                 replaced_by: None,
+                cause: None,
             },
             Change {
                 table: TableId(1),
@@ -132,9 +134,51 @@ pub fn changes_operation(previous_hash: Digest32) -> Operation {
                 action: ChangeAction::Tombstone,
                 groups: Vec::new(),
                 replaced_by: Some(row("tag-work")),
+                cause: None,
             },
         ]),
     }
+}
+
+/// A tombstone naming its cause beside one without a successor, the version 2 vector.
+pub fn cause_operation(previous_hash: Digest32) -> Operation {
+    Operation {
+        space: space(),
+        writer: writer_id(),
+        seq: 2,
+        previous_hash,
+        header: header(GOLDEN_CREATED_AT_MS as u64 + 1_000, Vec::new()),
+        content: Content::Changes(vec![
+            Change {
+                table: TableId(60_000),
+                row: row("parent-1"),
+                action: ChangeAction::Tombstone,
+                groups: Vec::new(),
+                replaced_by: None,
+                cause: None,
+            },
+            Change {
+                table: TableId(60_001),
+                row: row("child-1"),
+                action: ChangeAction::Tombstone,
+                groups: Vec::new(),
+                replaced_by: None,
+                cause: Some(Cause {
+                    table: TableId(60_000),
+                    row: row("parent-1"),
+                }),
+            },
+        ]),
+    }
+}
+
+/// The version 2 golden operation, sealed after the golden genesis.
+pub fn golden_cause() -> (Operation, Vec<u8>) {
+    let key = writer_key();
+    let genesis = genesis_operation().seal(&key).unwrap();
+    let operation = cause_operation(genesis.hash());
+    let sealed = operation.seal(&key).unwrap();
+    (operation, sealed.into_bytes())
 }
 
 pub fn revoke_operation(previous_hash: Digest32) -> Operation {

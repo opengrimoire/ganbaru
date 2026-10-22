@@ -196,7 +196,7 @@ Valid concurrent operations converge regardless of delivery order; rejecting whi
 
 - Independent fields merge. Concurrent values for one scalar keep alternatives, a deterministic displayed value, and a visible resolution action.
 - Calendar start, end, timezone, and recurrence form one coupled value. A conflict suspends automatic occurrence activation until resolved.
-- Notes and project placement use stable identities and a cycle-safe [replicated tree move algorithm](https://martin.kleppmann.com/papers/move-op.pdf), with stable ordering identifiers instead of floating positions.
+- Notes and project placement use stable identities, a parent reference, and an order key per row. Cycles and rows past a maximum depth are repaired deterministically from merge state, as described in [Trees and acyclic edge sets](../algorithms/sync/README.md#trees-and-acyclic-edge-sets), instead of a [replicated move log](https://martin.kleppmann.com/papers/move-op.pdf) that every replica would have to undo and replay in one order.
 - Deletion creates tombstones. Concurrent edits stay recoverable in Trash or conflict recovery, and old operations never silently restore deleted content.
 - Database property type changes keep incompatible values for resolution.
 - History restore writes a safety version and new operations against current state; it never rewinds causal history.

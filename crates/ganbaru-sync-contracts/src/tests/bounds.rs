@@ -29,6 +29,7 @@ fn tombstone(index: usize) -> Change {
         action: ChangeAction::Tombstone,
         groups: Vec::new(),
         replaced_by: None,
+        cause: None,
     }
 }
 
@@ -39,6 +40,7 @@ fn write(key: &str, fields: Vec<Field>) -> Change {
         action: ChangeAction::Write,
         groups: vec![group_value(2, 0, fields)],
         replaced_by: None,
+        cause: None,
     }
 }
 

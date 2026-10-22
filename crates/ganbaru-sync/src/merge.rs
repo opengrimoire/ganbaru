@@ -18,6 +18,9 @@ use crate::Engine;
 use crate::error::{SyncResult, corrupt};
 use crate::log::{self, ContextCache, seq_i64, stored_u64};
 use crate::manifest::{GroupSpec, MergeKind, TableSpec};
+use crate::materialize;
+use crate::recovery;
+use crate::visibility::Visibility;
 
 /// Merge state of a published row.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -249,14 +252,17 @@ pub(crate) async fn apply_change(
     };
     if change.action == ChangeAction::Tombstone {
         sqlx::query(
-            "INSERT INTO sync_tombstones (table_id, row_key, writer_id, seq, replaced_by)
-             VALUES (?, ?, ?, ?, ?) ON CONFLICT DO NOTHING",
+            "INSERT INTO sync_tombstones
+                (table_id, row_key, writer_id, seq, replaced_by, cause_table, cause_row)
+             VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING",
         )
         .bind(table_param(change.table))
         .bind(key)
         .bind(writer.as_bytes().as_slice())
         .bind(seq_i64(seq)?)
         .bind(change.replaced_by.as_ref().map(|target| target.as_str()))
+        .bind(change.cause.as_ref().map(|cause| table_param(cause.table)))
+        .bind(change.cause.as_ref().map(|cause| cause.row.as_str()))
         .execute(&mut *conn)
         .await?;
         sqlx::query(
@@ -417,15 +423,21 @@ async fn replace_version_refs(
 /// Merge state and retained versions of published rows, keyed by table and row.
 pub(crate) type MergedRows = BTreeMap<(TableId, String), (RowState, Vec<Version>)>;
 
-/// Recomputes the conflict mask of live rows and the recovery flag of tombstoned rows.
-/// Returns the merge state it read for each dirty published row.
+/// Recomputes the conflict mask of live rows and the recovery flag of tombstoned rows,
+/// including the deleted roots of dirty live rows hidden by cascade. A dirty live row missing
+/// from its domain table may have left the group of the root it was hidden under, which is not
+/// known after the change, so every flagged row is then recomputed as well. Returns the merge
+/// state it read for each dirty published row.
 pub(crate) async fn refresh_flags(
     engine: &Engine,
     conn: &mut SqliteConnection,
     batch: &mut Batch,
+    visibility: &mut Visibility,
 ) -> SyncResult<MergedRows> {
     let dirty: Vec<(TableId, String)> = batch.dirty.iter().cloned().collect();
     let mut merged = MergedRows::new();
+    let mut roots = BTreeSet::new();
+    let mut recheck_flagged = false;
     for (table_id, key) in dirty {
         let Some(table) = engine.manifest().table(table_id) else {
             return Err(corrupt("dirty row of an unknown table"));
@@ -463,35 +475,72 @@ pub(crate) async fn refresh_flags(
                 Err(error) => Some(Err(error.into())),
             })
             .collect::<SyncResult<Vec<_>>>()?;
-        let (conflict_mask, recovery) = match state {
-            RowState::Live => (conflict_mask(table, &versions), false),
-            RowState::Tombstoned => {
-                let covering = tombstone_contexts(conn, batch, table_id, &key).await?;
-                let recovery = versions.iter().any(|version| {
-                    table
-                        .group(version.group)
-                        .is_some_and(|group| group.recoverable)
-                        && !covering
-                            .iter()
-                            .any(|context| context.covers(&version.writer, version.seq))
-                });
-                (GroupMask::EMPTY, recovery)
+        let flags = match state {
+            RowState::Live => {
+                if let Some(root) =
+                    recovery::flag_root(engine, conn, visibility, table_id, &key).await?
+                {
+                    roots.insert(root);
+                }
+                // The domain table still holds the state before this batch materializes.
+                if !recheck_flagged && !materialize::domain_exists(conn, table, &key).await? {
+                    recheck_flagged = true;
+                }
+                let mut mask = conflict_mask(table, &versions);
+                // A severed edge surfaces as a conflict of its existence group.
+                if let Some(exists) = table
+                    .exists_group()
+                    .filter(|_| visibility.is_severed(table_id, &key))
+                {
+                    mask.insert(exists.id);
+                }
+                (mask, false)
             }
+            RowState::Tombstoned => (
+                GroupMask::EMPTY,
+                recovery::flagged(engine, conn, batch, visibility, table_id, &key).await?,
+            ),
         };
-        if stored_flags != (mask_param(conflict_mask), recovery) {
-            sqlx::query(
-                "UPDATE sync_rows SET conflict_mask = ?, recovery = ? WHERE table_id = ? AND row_key = ?",
-            )
-            .bind(mask_param(conflict_mask))
-            .bind(i64::from(recovery))
-            .bind(table_param(table_id))
-            .bind(&key)
-            .execute(&mut *conn)
-            .await?;
+        if stored_flags != (mask_param(flags.0), flags.1) {
+            store_flags(conn, table_id, &key, flags).await?;
         }
         merged.insert((table_id, key), (state, versions));
     }
+    if recheck_flagged {
+        roots.extend(recovery::flagged_rows(conn).await?);
+    }
+    for (table_id, key) in roots {
+        if merged.contains_key(&(table_id, key.clone())) {
+            continue;
+        }
+        let recovery = recovery::flagged(engine, conn, batch, visibility, table_id, &key).await?;
+        store_flags(conn, table_id, &key, (GroupMask::EMPTY, recovery)).await?;
+    }
     Ok(merged)
+}
+
+/// Stores the conflict mask and recovery flag of a published row.
+async fn store_flags(
+    conn: &mut SqliteConnection,
+    table: TableId,
+    key: &str,
+    (conflict_mask, recovery): (GroupMask, bool),
+) -> SyncResult<()> {
+    sqlx::query(
+        "UPDATE sync_rows SET conflict_mask = ?, recovery = ? WHERE table_id = ? AND row_key = ?",
+    )
+    .bind(mask_param(conflict_mask))
+    .bind(i64::from(recovery))
+    .bind(table_param(table))
+    .bind(key)
+    .execute(&mut *conn)
+    .await?;
+    Ok(())
+}
+
+/// Whether an existence register value records a removal.
+pub(crate) fn is_removal(value: Option<&Value>) -> bool {
+    value.is_some_and(|value| value.fields() == [Field::Integer(0)])
 }
 
 /// Surfaced groups whose retained versions hold two or more distinct values.
@@ -508,44 +557,6 @@ pub(crate) fn conflict_mask(table: &TableSpec, versions: &[Version]) -> GroupMas
         }
     }
     mask
-}
-
-/// Causal contexts of the operations that tombstoned a row.
-pub(crate) async fn tombstone_contexts(
-    conn: &mut SqliteConnection,
-    batch: &mut Batch,
-    table: TableId,
-    key: &str,
-) -> SyncResult<Vec<VersionVector>> {
-    let rows = sqlx::query(
-        "SELECT writer_id, seq FROM sync_tombstones WHERE table_id = ? AND row_key = ?",
-    )
-    .bind(table_param(table))
-    .bind(key)
-    .fetch_all(&mut *conn)
-    .await?;
-    let mut contexts = Vec::with_capacity(rows.len());
-    for row in rows {
-        let writer: Vec<u8> = row.try_get(0)?;
-        let writer = log::writer_id(&writer)?;
-        let seq = stored_u64(row.try_get(1)?, "tombstone sequence")?;
-        let mut context = batch
-            .contexts
-            .get(conn, batch.space, writer, seq)
-            .await?
-            .clone();
-        // The tombstoning operation covers its own writer's versions up to itself.
-        context.advance(writer, seq);
-        contexts.push(context);
-    }
-    Ok(contexts)
-}
-
-/// Whether a version is retained by a tombstoned row and covered by none of its tombstones.
-pub(crate) fn uncovered(version: &Version, covering: &[VersionVector]) -> bool {
-    !covering
-        .iter()
-        .any(|context| context.covers(&version.writer, version.seq))
 }
 
 /// Records a revocation of `target`: its cutoff only lowers, a fork marking is kept, and its

@@ -4,12 +4,17 @@ use ganbaru_contacts::PersonKeyPair;
 use ganbaru_sync_contracts::bounds::{MAX_DEPENDENCIES, MAX_WRITERS_PER_DEVICE};
 use ganbaru_sync_contracts::hlc::CLOCK_WARNING_AHEAD_MS;
 use ganbaru_sync_contracts::{
-    Content, Envelope, Field, GroupMask, RevokeReason, VersionVector, WriterId,
+    Content, Envelope, Field, GroupMask, RevokeReason, TableId, VersionVector, WriterId,
 };
 
 use super::block_on;
-use super::fixture::{MEMBERSHIPS_TABLE, membership_key};
-use super::replica::{Identity, Replica, START_MS, VAULT_ID, converge, device_id, pair, person};
+use super::fixture::{
+    CYCLE_A_TABLE, CYCLE_B_TABLE, EDGES_TABLE, ITEMS_TABLE, LINKS_TABLE, MEMBERSHIPS_TABLE,
+    NODES_TABLE, edge_group, edge_key, membership_key,
+};
+use super::replica::{
+    Identity, Replica, START_MS, VAULT_ID, converge, device_id, pair, person, rank,
+};
 use crate::error::failpoints;
 use crate::manifest::vault::quick_notes::{NOTES_TABLE, note_group};
 use crate::{
@@ -654,8 +659,30 @@ fn a_cascade_reference_cycle_materializes_in_one_component() {
                 .await,
                 ["NULLNULL"]
             );
+            // The cycle deleted together has one root, its lowest row, named by the other.
+            assert_eq!(
+                texts(
+                    replica,
+                    "SELECT row_key || ':' || quote(cause_row) FROM sync_tombstones
+                     WHERE table_id IN (60001, 60002) ORDER BY row_key"
+                )
+                .await,
+                ["a-1:NULL", "b-1:'a-1'"]
+            );
         }
     });
+}
+
+async fn tombstone_causes(replica: &mut Replica, table: TableId) -> Vec<String> {
+    texts(
+        replica,
+        &format!(
+            "SELECT DISTINCT row_key || ':' || quote(cause_row) FROM sync_tombstones
+             WHERE table_id = {} ORDER BY 1",
+            table.0
+        ),
+    )
+    .await
 }
 
 #[test]
@@ -714,10 +741,10 @@ fn duplicates_redirect_every_reference_column_of_a_group() {
     });
 }
 
-/// The referrer's own cascade is hidden in a later step; here it only shows that a deletion
-/// rematerializes referrers in tables listed before the deleted row's table.
+/// The referrer is listed before its target's table, and its cascading reference is written
+/// concurrently with the target's deletion.
 #[test]
-fn a_deleted_target_rematerializes_referrers_listed_before_it() {
+fn a_cascade_into_a_concurrently_deleted_target_hides_the_referrer_with_its_cause() {
     block_on(async {
         let mut replicas = replicas(2).await;
         replicas[0]
@@ -736,17 +763,71 @@ fn a_deleted_target_rematerializes_referrers_listed_before_it() {
         converge(&mut replicas).await;
         assert_converged(&mut replicas).await;
         for replica in &mut replicas {
+            for table in ["fixture_cycle_a", "fixture_cycle_b"] {
+                assert_eq!(
+                    replica
+                        .count(&format!("SELECT count(*) FROM {table}"))
+                        .await,
+                    0,
+                    "{table} on replica {}",
+                    replica.index
+                );
+            }
             assert_eq!(
-                texts(
-                    replica,
-                    "SELECT id || ':' || quote(peer_id) FROM fixture_cycle_a"
-                )
-                .await,
-                ["a-1:NULL"]
+                tombstone_causes(replica, CYCLE_A_TABLE).await,
+                ["a-1:'b-1'"]
+            );
+            assert_eq!(tombstone_causes(replica, CYCLE_B_TABLE).await, ["b-1:NULL"]);
+        }
+    });
+}
+
+#[test]
+fn a_local_cascade_names_its_cause_and_keeps_derived_key_children_live() {
+    block_on(async {
+        let mut replicas = replicas(2).await;
+        replicas[0].exec(MEMBERSHIP_PARENTS).await;
+        replicas[0]
+            .exec(&format!(
+                "INSERT INTO fixture_links (id, owner_id, note) VALUES ('link-1', 'item-1', 'owned');
+                 {};",
+                add_membership("item-1", "a-1", "member")
+            ))
+            .await;
+        converge(&mut replicas).await;
+        replicas[0]
+            .exec("DELETE FROM fixture_items WHERE id = 'item-1'")
+            .await;
+        converge(&mut replicas).await;
+        assert_converged(&mut replicas).await;
+        for replica in &mut replicas {
+            assert_eq!(replica.count("SELECT count(*) FROM fixture_links").await, 0);
+            assert!(memberships(replica).await.is_empty());
+            assert_eq!(
+                tombstone_causes(replica, LINKS_TABLE).await,
+                ["link-1:'item-1'"]
             );
             assert_eq!(
-                replica.count("SELECT count(*) FROM fixture_cycle_b").await,
-                0
+                tombstone_causes(replica, ITEMS_TABLE).await,
+                ["item-1:NULL"]
+            );
+            // The membership is hidden by its deleted item, with no existence write.
+            assert_eq!(
+                membership_rows(
+                    replica,
+                    "SELECT count(*) FROM sync_rows WHERE table_id = {table} AND state = 'live'"
+                )
+                .await,
+                1
+            );
+            assert_eq!(
+                membership_rows(
+                    replica,
+                    "SELECT count(*) FROM sync_register_versions
+                     WHERE table_id = {table} AND group_id = 2"
+                )
+                .await,
+                1
             );
         }
     });
@@ -863,6 +944,467 @@ fn discarding_an_edit_that_outlived_a_deletion_closes_the_offer_everywhere() {
         assert_no_recovery(&mut replicas).await;
         for replica in &mut replicas {
             assert_eq!(replica.count("SELECT count(*) FROM quick_notes").await, 0);
+        }
+    });
+}
+
+async fn close_group(replica: &mut Replica, table: TableId, key: &str) {
+    replica
+        .engine
+        .close_recovery(
+            &mut replica.conn,
+            &replica.ctx,
+            table,
+            key,
+            &mut replica.identity.local(),
+            replica.now_ms,
+        )
+        .await
+        .unwrap();
+}
+
+/// The single recovery entry of a replica, as table, key, descendants, and device of the
+/// newest unseen edit.
+async fn single_entry(replica: &mut Replica) -> (TableId, String, usize, String) {
+    let entries = replica
+        .engine
+        .recovery_entries(&mut replica.conn, &replica.ctx)
+        .await
+        .unwrap();
+    assert_eq!(entries.len(), 1, "entries on replica {}", replica.index);
+    let entry = entries.into_iter().next().unwrap();
+    (
+        entry.table,
+        entry.row_key,
+        entry.descendants,
+        entry.device_id,
+    )
+}
+
+async fn descendant_keys(replica: &mut Replica, table: TableId, key: &str) -> Vec<String> {
+    replica
+        .engine
+        .recovery_descendants(&mut replica.conn, table, key)
+        .await
+        .unwrap()
+        .unwrap()
+        .into_iter()
+        .map(|descendant| descendant.row_key)
+        .collect()
+}
+
+/// SQL inserting a node under `parent` with a label.
+fn add_node(id: &str, parent: Option<&str>, position: u32, label: &str) -> String {
+    format!(
+        "INSERT INTO fixture_nodes (id, parent_id, position, label) VALUES ('{id}', {}, '{}', '{label}');",
+        parent.map_or_else(|| "NULL".to_string(), |parent| format!("'{parent}'")),
+        rank(position)
+    )
+}
+
+#[test]
+fn a_child_edited_while_its_parent_is_deleted_is_offered_under_the_parent() {
+    block_on(async {
+        let mut replicas = replicas(2).await;
+        replicas[0]
+            .exec(&format!(
+                "{}{}{}",
+                add_node("n-1", None, 0, "root"),
+                add_node("n-2", Some("n-1"), 0, "child"),
+                add_node("n-3", Some("n-2"), 0, "grandchild"),
+            ))
+            .await;
+        converge(&mut replicas).await;
+        replicas[0]
+            .exec("DELETE FROM fixture_nodes WHERE id = 'n-1'")
+            .await;
+        replicas[1]
+            .exec("UPDATE fixture_nodes SET label = 'edited' WHERE id = 'n-3'")
+            .await;
+        converge(&mut replicas).await;
+        assert_converged(&mut replicas).await;
+        for replica in &mut replicas {
+            assert_eq!(replica.count("SELECT count(*) FROM fixture_nodes").await, 0);
+            assert_eq!(
+                single_entry(replica).await,
+                (NODES_TABLE, "n-1".to_string(), 2, "device-1".to_string())
+            );
+            assert_eq!(
+                descendant_keys(replica, NODES_TABLE, "n-1").await,
+                ["n-2", "n-3"]
+            );
+            // A descendant is offered only through its root.
+            assert_eq!(
+                replica
+                    .engine
+                    .recovery_values(&mut replica.conn, NODES_TABLE, "n-3")
+                    .await
+                    .unwrap(),
+                None
+            );
+        }
+        close_group(&mut replicas[0], NODES_TABLE, "n-1").await;
+        converge(&mut replicas).await;
+        assert_converged(&mut replicas).await;
+        assert_no_recovery(&mut replicas).await;
+    });
+}
+
+/// Stores what `from` has and `to` lacks, then applies on `to` without a local writer, so no
+/// repair is sealed and rows hidden by cascade stay live.
+async fn pull_without_writer(to: &mut Replica, from: &mut Replica) {
+    let known = to.stored_vector().await;
+    let ops = from.ops_since(&known).await;
+    to.receive(&ops).await;
+    loop {
+        let report = to
+            .engine
+            .apply(&mut to.conn, &to.ctx, None, to.now_ms)
+            .await
+            .unwrap();
+        if !report.more {
+            return;
+        }
+    }
+}
+
+#[test]
+fn a_root_stops_being_flagged_when_its_edited_hidden_child_is_shown_again() {
+    block_on(async {
+        let mut replicas = replicas(4).await;
+        replicas[0]
+            .exec(&format!(
+                "{}{}",
+                add_node("n-1", None, 0, "root"),
+                add_node("n-2", None, 1, "other"),
+            ))
+            .await;
+        converge(&mut replicas).await;
+        replicas[0]
+            .exec("DELETE FROM fixture_nodes WHERE id = 'n-1'")
+            .await;
+        replicas[0].seal().await.unwrap();
+        replicas[1]
+            .exec("UPDATE fixture_nodes SET parent_id = 'n-1', label = 'edited' WHERE id = 'n-2'")
+            .await;
+        replicas[1].seal().await.unwrap();
+        // Replica 2 sees the move and the edit but not the deletion, and moves the row out.
+        let (mover, editor) = pair(&mut replicas, 2, 1);
+        mover.pull(editor).await;
+        mover
+            .exec("UPDATE fixture_nodes SET parent_id = NULL WHERE id = 'n-2'")
+            .await;
+        mover.seal().await.unwrap();
+
+        let (observer, deleter) = pair(&mut replicas, 3, 0);
+        pull_without_writer(observer, deleter).await;
+        let (observer, editor) = pair(&mut replicas, 3, 1);
+        pull_without_writer(observer, editor).await;
+        let observer = &mut replicas[3];
+        assert!(node_parents(observer).await.is_empty());
+        assert_eq!(
+            single_entry(observer).await,
+            (NODES_TABLE, "n-1".to_string(), 1, "device-1".to_string())
+        );
+
+        let (observer, mover) = pair(&mut replicas, 3, 2);
+        pull_without_writer(observer, mover).await;
+        let observer = &mut replicas[3];
+        assert_eq!(node_parents(observer).await, ["n-2>-"]);
+        assert_eq!(
+            observer
+                .count("SELECT count(*) FROM sync_rows WHERE recovery = 1")
+                .await,
+            0
+        );
+        assert!(
+            observer
+                .engine
+                .recovery_entries(&mut observer.conn, &observer.ctx)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        observer.check_invariants().await;
+
+        converge(&mut replicas).await;
+        assert_converged(&mut replicas).await;
+    });
+}
+
+#[test]
+fn a_hidden_derived_key_child_is_offered_with_its_deleted_parent() {
+    block_on(async {
+        let mut replicas = replicas(2).await;
+        replicas[0].exec(MEMBERSHIP_PARENTS).await;
+        replicas[0]
+            .exec(&add_membership("item-1", "a-1", "member"))
+            .await;
+        converge(&mut replicas).await;
+        replicas[0]
+            .exec("DELETE FROM fixture_items WHERE id = 'item-1'")
+            .await;
+        replicas[1]
+            .exec(&format!(
+                "UPDATE fixture_memberships SET role = 'lead' WHERE sync_key = '{}'",
+                membership_key("item-1", "a-1")
+            ))
+            .await;
+        converge(&mut replicas).await;
+        assert_converged(&mut replicas).await;
+        let key = membership_key("item-1", "a-1");
+        for replica in &mut replicas {
+            assert!(memberships(replica).await.is_empty());
+            assert_eq!(
+                single_entry(replica).await,
+                (ITEMS_TABLE, "item-1".to_string(), 1, "device-1".to_string())
+            );
+            let descendants = replica
+                .engine
+                .recovery_descendants(&mut replica.conn, ITEMS_TABLE, "item-1")
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(descendants.len(), 1);
+            assert_eq!(descendants[0].row_key, key);
+            assert!(descendants[0].values.iter().any(|(group, value)| {
+                *group == super::fixture::membership_group::DETAILS
+                    && value.fields().get(1) == Some(&Field::Text("lead".to_string()))
+            }));
+        }
+        close_group(&mut replicas[1], ITEMS_TABLE, "item-1").await;
+        converge(&mut replicas).await;
+        assert_converged(&mut replicas).await;
+        assert_no_recovery(&mut replicas).await;
+        for replica in &mut replicas {
+            // Closing removes the hidden child instead of tombstoning it.
+            assert_eq!(
+                membership_rows(
+                    replica,
+                    "SELECT count(*) FROM sync_rows WHERE table_id = {table} AND state = 'live'"
+                )
+                .await,
+                1
+            );
+            assert_eq!(
+                membership_rows(
+                    replica,
+                    "SELECT count(*) FROM sync_tombstones WHERE table_id = {table}"
+                )
+                .await,
+                0
+            );
+        }
+    });
+}
+
+/// Every node as `id>parent`, with `-` for a root.
+async fn node_parents(replica: &mut Replica) -> Vec<String> {
+    texts(
+        replica,
+        "SELECT id || '>' || coalesce(parent_id, '-') FROM fixture_nodes ORDER BY id",
+    )
+    .await
+}
+
+#[test]
+fn a_cycle_of_three_concurrent_moves_breaks_at_the_move_of_the_greatest_writer() {
+    block_on(async {
+        let mut replicas = replicas(3).await;
+        replicas[0]
+            .exec(&format!(
+                "{}{}{}",
+                add_node("a", None, 0, "A"),
+                add_node("b", None, 1, "B"),
+                add_node("c", None, 2, "C"),
+            ))
+            .await;
+        converge(&mut replicas).await;
+        let moves = [("a", "b"), ("b", "c"), ("c", "a")];
+        let mut ranks = Vec::new();
+        for (replica, (row, parent)) in replicas.iter_mut().zip(moves) {
+            replica
+                .exec(&format!(
+                    "UPDATE fixture_nodes SET parent_id = '{parent}' WHERE id = '{row}'"
+                ))
+                .await;
+            replica.seal().await.unwrap();
+            let clock = replica
+                .count(&format!(
+                    "SELECT max(clock) FROM sync_register_versions
+                     WHERE table_id = {} AND row_key = '{row}' AND group_id = 0",
+                    NODES_TABLE.0
+                ))
+                .await;
+            ranks.push((clock, replica.writer(), row));
+        }
+        // Every move carries the same clock, so the writer breaks the tie.
+        assert!(ranks.iter().all(|(clock, _, _)| *clock == ranks[0].0));
+        let broken = ranks.iter().max().map(|(_, _, row)| *row).unwrap();
+        let expected: Vec<String> = moves
+            .iter()
+            .map(|(row, parent)| {
+                let parent = if *row == broken { "-" } else { parent };
+                format!("{row}>{parent}")
+            })
+            .collect();
+        converge(&mut replicas).await;
+        assert_converged(&mut replicas).await;
+        for replica in &mut replicas {
+            assert_eq!(node_parents(replica).await, expected);
+        }
+    });
+}
+
+#[test]
+fn concurrent_moves_that_together_exceed_the_maximum_depth_move_the_deepest_row_to_the_root() {
+    block_on(async {
+        let mut replicas = replicas(2).await;
+        replicas[0]
+            .exec(&format!(
+                "{}{}{}{}",
+                add_node("p", None, 0, "P"),
+                add_node("q", None, 1, "Q"),
+                add_node("q-c", Some("q"), 0, "Q child"),
+                add_node("s", None, 2, "S"),
+            ))
+            .await;
+        converge(&mut replicas).await;
+        // Each move alone keeps every node within the maximum depth of 2.
+        replicas[0]
+            .exec("UPDATE fixture_nodes SET parent_id = 'p' WHERE id = 'q'")
+            .await;
+        replicas[1]
+            .exec("UPDATE fixture_nodes SET parent_id = 'q-c' WHERE id = 's'")
+            .await;
+        replicas[0].seal().await.unwrap();
+        replicas[1].seal().await.unwrap();
+        assert_eq!(
+            node_parents(&mut replicas[1]).await,
+            ["p>-", "q>-", "q-c>q", "s>q-c"]
+        );
+        converge(&mut replicas).await;
+        assert_converged(&mut replicas).await;
+        for replica in &mut replicas {
+            assert_eq!(node_parents(replica).await, ["p>-", "q>p", "q-c>q", "s>-"]);
+            // The repair is sealed: the newest parent version of the moved row holds the same
+            // null parent as the root `p`.
+            let newest = texts(
+                replica,
+                &format!(
+                    "SELECT quote(v.value) FROM sync_register_versions v
+                     WHERE v.table_id = {} AND v.group_id = 0 AND v.row_key IN ('p', 's')
+                     AND v.clock = (SELECT max(w.clock) FROM sync_register_versions w
+                         WHERE w.table_id = v.table_id AND w.group_id = 0
+                         AND w.row_key = v.row_key)
+                     ORDER BY v.row_key",
+                    NODES_TABLE.0
+                ),
+            )
+            .await;
+            assert_eq!(newest.len(), 2);
+            assert_eq!(newest[0], newest[1]);
+        }
+    });
+}
+
+/// Every materialized edge as `from>to`.
+async fn edge_rows(replica: &mut Replica) -> Vec<String> {
+    texts(
+        replica,
+        "SELECT from_id || '>' || to_id FROM fixture_edges ORDER BY from_id, to_id",
+    )
+    .await
+}
+
+/// SQL adding the edge from `from` to `to`.
+fn add_edge(from: &str, to: &str) -> String {
+    format!(
+        "INSERT INTO fixture_edges (from_id, to_id, sync_key) VALUES ('{from}', '{to}', '{}');",
+        edge_key(from, to)
+    )
+}
+
+#[test]
+fn concurrent_edges_that_close_a_cycle_sever_the_newest_until_another_edge_is_removed() {
+    block_on(async {
+        let mut replicas = replicas(3).await;
+        let items: String = ["x", "y", "z"]
+            .iter()
+            .map(|id| {
+                format!(
+                    "INSERT INTO fixture_items (id, created_at, label, label_edits)
+                     VALUES ('{id}', '2027-01-01T00:00:00.000Z', '{id}', 0);"
+                )
+            })
+            .collect();
+        replicas[0].exec(&items).await;
+        converge(&mut replicas).await;
+        let added = [("x", "y"), ("y", "z"), ("z", "x")];
+        let mut ranks = Vec::new();
+        for (replica, (from, to)) in replicas.iter_mut().zip(added) {
+            replica.exec(&add_edge(from, to)).await;
+            replica.seal().await.unwrap();
+            let clock = replica
+                .count(&format!(
+                    "SELECT max(clock) FROM sync_register_versions
+                     WHERE table_id = {} AND row_key = '{}' AND group_id = {}",
+                    EDGES_TABLE.0,
+                    edge_key(from, to),
+                    edge_group::EXISTS.get()
+                ))
+                .await;
+            ranks.push((clock, replica.writer(), (from, to)));
+        }
+        let (severed_from, severed_to) = ranks.iter().max().map(|(_, _, edge)| *edge).unwrap();
+        let severed = format!("{severed_from}>{severed_to}");
+        let kept: Vec<String> = added
+            .iter()
+            .map(|(from, to)| format!("{from}>{to}"))
+            .filter(|edge| *edge != severed)
+            .collect();
+        converge(&mut replicas).await;
+        assert_converged(&mut replicas).await;
+        for replica in &mut replicas {
+            let mut edges = edge_rows(replica).await;
+            edges.sort();
+            assert_eq!(edges, kept);
+            assert_eq!(
+                replica
+                    .engine
+                    .conflicts(&mut replica.conn, EDGES_TABLE)
+                    .await
+                    .unwrap(),
+                vec![ConflictRow {
+                    table: EDGES_TABLE,
+                    row_key: edge_key(severed_from, severed_to),
+                    groups: GroupMask::of(edge_group::EXISTS),
+                }]
+            );
+        }
+        // Removing another edge of the cycle shows the severed edge again.
+        let (from, to) = kept[0].split_once('>').unwrap();
+        replicas[0]
+            .exec(&format!(
+                "DELETE FROM fixture_edges WHERE from_id = '{from}' AND to_id = '{to}'"
+            ))
+            .await;
+        converge(&mut replicas).await;
+        assert_converged(&mut replicas).await;
+        let mut expected = vec![kept[1].clone(), severed.clone()];
+        expected.sort();
+        for replica in &mut replicas {
+            let mut edges = edge_rows(replica).await;
+            edges.sort();
+            assert_eq!(edges, expected);
+            assert!(
+                replica
+                    .engine
+                    .conflicts(&mut replica.conn, EDGES_TABLE)
+                    .await
+                    .unwrap()
+                    .is_empty()
+            );
         }
     });
 }

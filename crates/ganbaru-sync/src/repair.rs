@@ -1,23 +1,27 @@
-//! Duplicate repair and reference expansion.
+//! Duplicate repair, cascade repair, and reference expansion.
 //!
 //! Live rows whose winning values collide on a declared unique column set form a class. Only the
 //! lowest key of a class is materialized; the others are hidden, and replicas that can seal
-//! repair them with tombstones redirecting to that key. Hiding is a pure function of the merge
-//! state, so replicas that cannot seal still converge on the same domain rows.
+//! repair them with tombstones redirecting to that key. A live row hidden by cascade from a
+//! deleted root is repaired with a tombstone naming that root as its cause, and a tree row
+//! detached to break a cycle or limit depth with a null write of its parent. Hiding and
+//! detaching are pure functions of the merge state, so replicas that cannot seal still
+//! converge on the same domain rows.
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use ganbaru_sync_contracts::{Change, ChangeAction, Field, GroupId, RowKey, TableId, Value};
+use ganbaru_sync_contracts::{
+    Cause, Change, ChangeAction, Field, GroupId, GroupValue, RowKey, TableId, Value,
+};
 use sqlx::SqliteConnection;
 
 use crate::Engine;
 use crate::error::{SyncResult, corrupt};
-use crate::manifest::{Collation, Resolution, TableSpec};
-use crate::merge::{self, Batch, Version, table_param};
+use crate::manifest::{Collation, Resolution, TableSpec, TreeSpec};
+use crate::materialize;
+use crate::merge::{self, Batch, RowState, Version, table_param};
 use crate::sql;
-
-/// Hidden live rows per table, each with the key of the row it collides with and is kept.
-pub(crate) type Hidden = BTreeMap<TableId, BTreeMap<String, String>>;
+use crate::visibility::{Duplicates, RowRef, Visibility};
 
 /// Where one unique column lives: its group and its field index in the group value.
 #[derive(Debug, Clone, Copy)]
@@ -137,17 +141,16 @@ async fn classes(
     Ok(classes)
 }
 
-/// Hidden rows of every table with a duplicate rule, marking dirty the rows whose
+/// Hidden duplicates of every table with a duplicate rule, marking dirty the rows whose
 /// materialization a dirty row's old or new unique values may change.
-pub(crate) async fn hidden_rows(
+pub(crate) async fn duplicates(
     engine: &Engine,
     conn: &mut SqliteConnection,
-    batch: &mut Batch,
-) -> SyncResult<Hidden> {
-    let mut hidden = Hidden::new();
+    dirty: &mut BTreeSet<RowRef>,
+) -> SyncResult<Duplicates> {
+    let mut hidden = Duplicates::new();
     for table in engine.manifest().tables {
-        let dirty: Vec<String> = batch
-            .dirty
+        let keys: Vec<String> = dirty
             .iter()
             .filter(|(table_id, _)| *table_id == table.id)
             .map(|(_, key)| key.clone())
@@ -161,7 +164,7 @@ pub(crate) async fn hidden_rows(
                 .flat_map(|(class, members)| members.iter().map(move |key| (key.as_str(), class)))
                 .collect();
             let mut affected: BTreeSet<&Vec<u8>> = BTreeSet::new();
-            for key in &dirty {
+            for key in &keys {
                 if let Some(class) = class_of.get(key.as_str()) {
                     affected.insert(class);
                 }
@@ -176,7 +179,7 @@ pub(crate) async fn hidden_rows(
             }
             for class in affected {
                 for key in &classes[class] {
-                    batch.dirty.insert((table.id, key.clone()));
+                    dirty.insert((table.id, key.clone()));
                 }
             }
             for members in classes.values().filter(|members| members.len() > 1) {
@@ -198,97 +201,222 @@ pub(crate) async fn hidden_rows(
     Ok(hidden)
 }
 
+/// Rows whose references in any retained version name a row, directly or through a tombstone
+/// redirecting to it, and rows whose tombstones name it as their cause.
+pub(crate) async fn referrers(
+    engine: &Engine,
+    conn: &mut SqliteConnection,
+    target: TableId,
+    key: &str,
+) -> SyncResult<BTreeSet<RowRef>> {
+    let specs: BTreeSet<(TableId, GroupId, usize)> = engine
+        .manifest()
+        .tables
+        .iter()
+        .flat_map(|table| {
+            table
+                .references()
+                .filter(|(_, _, reference)| reference.table == target)
+                .map(move |(group, field, _)| (table.id, group.id, field))
+        })
+        .collect();
+    let caused: Vec<(i64, String)> = sqlx::query_as(
+        "SELECT DISTINCT table_id, row_key FROM sync_tombstones
+         WHERE cause_table = ? AND cause_row = ?",
+    )
+    .bind(table_param(target))
+    .bind(key)
+    .fetch_all(&mut *conn)
+    .await?;
+    let mut found = caused
+        .into_iter()
+        .map(|(table_id, row_key)| {
+            u16::try_from(table_id)
+                .map(|table| (TableId(table), row_key))
+                .map_err(|_| corrupt("table id out of range"))
+        })
+        .collect::<SyncResult<BTreeSet<RowRef>>>()?;
+    if specs.is_empty() {
+        return Ok(found);
+    }
+    let mut pending = vec![key.to_string()];
+    let mut seen: BTreeSet<String> = pending.iter().cloned().collect();
+    while let Some(key) = pending.pop() {
+        let redirected: Vec<String> = sqlx::query_scalar(
+            "SELECT DISTINCT row_key FROM sync_tombstones WHERE table_id = ? AND replaced_by = ?",
+        )
+        .bind(table_param(target))
+        .bind(&key)
+        .fetch_all(&mut *conn)
+        .await?;
+        for source in redirected {
+            if seen.insert(source.clone()) {
+                pending.push(source);
+            }
+        }
+    }
+    for key in seen {
+        let rows: Vec<(i64, String, i64, i64)> = sqlx::query_as(
+            "SELECT DISTINCT table_id, row_key, group_id, field FROM sync_version_refs
+             WHERE ref_key = ?",
+        )
+        .bind(&key)
+        .fetch_all(&mut *conn)
+        .await?;
+        for (table_id, row_key, group_id, field) in rows {
+            let table_id = u16::try_from(table_id)
+                .map(TableId)
+                .map_err(|_| corrupt("table id out of range"))?;
+            let field =
+                usize::try_from(field).map_err(|_| corrupt("reference field out of range"))?;
+            if specs.contains(&(table_id, merge::group_id(group_id)?, field)) {
+                found.insert((table_id, row_key));
+            }
+        }
+    }
+    Ok(found)
+}
+
+/// Whether the marking continues through a published referrer: it is hidden, so the recovery
+/// state of the rows below it may follow a changed root, or it is shown but missing from the
+/// domain, so materializing it inserts it.
+async fn continues_through(
+    engine: &Engine,
+    conn: &mut SqliteConnection,
+    visibility: &mut Visibility,
+    (table, key): &RowRef,
+) -> SyncResult<bool> {
+    if merge::row_state(conn, *table, key).await?.is_none() {
+        return Ok(false);
+    }
+    if visibility.hidden(engine, conn, *table, key).await? {
+        return Ok(true);
+    }
+    let spec = engine
+        .manifest()
+        .table(*table)
+        .ok_or_else(|| corrupt("dirty row of an unknown table"))?;
+    Ok(!materialize::domain_exists(conn, spec, key).await?)
+}
+
 /// Marks dirty every row whose reference may resolve differently because a referenced row, or
-/// a row redirecting to it, is dirty.
+/// a row redirecting to it, is dirty, and every row whose tombstone names a dirty row as its
+/// cause. The marking continues through referrers that are hidden or become shown, so a
+/// cascade reaches every descendant.
 pub(crate) async fn expand_references(
     engine: &Engine,
     conn: &mut SqliteConnection,
     batch: &mut Batch,
+    visibility: &mut Visibility,
 ) -> SyncResult<()> {
-    for target in engine.manifest().tables {
-        let referrers: BTreeSet<(TableId, GroupId, usize)> = engine
-            .manifest()
-            .tables
-            .iter()
-            .flat_map(|table| {
-                table
-                    .references()
-                    .filter(|(_, _, reference)| reference.table == target.id)
-                    .map(move |(group, field, _)| (table.id, group.id, field))
-            })
-            .collect();
-        if referrers.is_empty() {
-            continue;
-        }
-        let mut pending: Vec<String> = batch
-            .dirty
-            .iter()
-            .filter(|(table_id, _)| *table_id == target.id)
-            .map(|(_, key)| key.clone())
-            .collect();
-        let mut seen: BTreeSet<String> = pending.iter().cloned().collect();
-        while let Some(key) = pending.pop() {
-            let redirected: Vec<String> = sqlx::query_scalar(
-                "SELECT DISTINCT row_key FROM sync_tombstones WHERE table_id = ? AND replaced_by = ?",
-            )
-            .bind(table_param(target.id))
-            .bind(&key)
-            .fetch_all(&mut *conn)
-            .await?;
-            for source in redirected {
-                if seen.insert(source.clone()) {
-                    pending.push(source);
-                }
-            }
-        }
-        for key in seen {
-            let rows: Vec<(i64, String, i64, i64)> = sqlx::query_as(
-                "SELECT DISTINCT table_id, row_key, group_id, field FROM sync_version_refs
-                 WHERE ref_key = ?",
-            )
-            .bind(&key)
-            .fetch_all(&mut *conn)
-            .await?;
-            for (table_id, row_key, group_id, field) in rows {
-                let table_id = u16::try_from(table_id)
-                    .map(TableId)
-                    .map_err(|_| corrupt("table id out of range"))?;
-                let field =
-                    usize::try_from(field).map_err(|_| corrupt("reference field out of range"))?;
-                if referrers.contains(&(table_id, merge::group_id(group_id)?, field)) {
-                    batch.dirty.insert((table_id, row_key));
-                }
+    let mut pending: Vec<RowRef> = batch.dirty.iter().cloned().collect();
+    let mut seen: BTreeSet<RowRef> = pending.iter().cloned().collect();
+    while let Some((table, key)) = pending.pop() {
+        for referrer in referrers(engine, conn, table, &key).await? {
+            batch.dirty.insert(referrer.clone());
+            if seen.insert(referrer.clone())
+                && continues_through(engine, conn, visibility, &referrer).await?
+            {
+                pending.push(referrer);
             }
         }
     }
     Ok(())
 }
 
-/// Tombstones for hidden rows, redirecting to the kept row where the table allows it, with
-/// referencing tables first.
-pub(crate) fn repair_changes(engine: &Engine, hidden: &Hidden) -> SyncResult<Vec<Change>> {
+fn stored_key(key: &str) -> SyncResult<RowKey> {
+    RowKey::new(key).map_err(|_| corrupt("stored row key"))
+}
+
+/// Null writes of the parent group of every detached tree row that is otherwise shown, so the
+/// row stays a root once the repair wins.
+async fn detach_writes(
+    engine: &Engine,
+    conn: &mut SqliteConnection,
+    visibility: &mut Visibility,
+    table: &TableSpec,
+    tree: TreeSpec,
+    changes: &mut Vec<Change>,
+) -> SyncResult<()> {
+    let detached: Vec<String> = visibility
+        .detached
+        .iter()
+        .filter(|(detached, _)| *detached == table.id)
+        .map(|(_, key)| key.clone())
+        .collect();
+    for key in detached {
+        if visibility.hidden(engine, conn, table.id, &key).await? {
+            continue;
+        }
+        let value = Value::new(vec![Field::Null])
+            .map_err(|_| corrupt("null parent value out of bounds"))?;
+        changes.push(Change {
+            table: table.id,
+            row: stored_key(&key)?,
+            action: ChangeAction::Write,
+            groups: vec![GroupValue::new(table.id, tree.parent_group, value)],
+            replaced_by: None,
+            cause: None,
+        });
+    }
+    Ok(())
+}
+
+/// Repairs for the merge state: null parents for detached tree rows, tombstones for hidden
+/// duplicates, redirecting to the kept row where the table allows it, and tombstones naming
+/// their cause for dirty live rows hidden by cascade from a deleted root, with referencing
+/// tables first. Derived-key rows are never tombstoned; a hidden one stays live in sync state.
+pub(crate) async fn repair_changes(
+    engine: &Engine,
+    conn: &mut SqliteConnection,
+    visibility: &mut Visibility,
+    dirty: &BTreeSet<RowRef>,
+) -> SyncResult<Vec<Change>> {
     let mut changes = Vec::new();
     for table in engine.manifest().tables.iter().rev() {
-        // Derived-key rows are never tombstoned; a hidden one stays live in sync state.
         if table.derived_key.is_some() {
             continue;
         }
-        let Some(rows) = hidden.get(&table.id) else {
-            continue;
-        };
-        for (key, keeper) in rows {
-            let row = RowKey::new(key.as_str()).map_err(|_| corrupt("stored row key"))?;
-            let replaced_by = if table.redirects {
-                Some(RowKey::new(keeper.as_str()).map_err(|_| corrupt("stored row key"))?)
-            } else {
-                None
+        let duplicates = visibility
+            .duplicates
+            .get(&table.id)
+            .cloned()
+            .unwrap_or_default();
+        if let Some(tree) = table.tree {
+            detach_writes(engine, conn, visibility, table, tree, &mut changes).await?;
+        }
+        for (key, keeper) in &duplicates {
+            changes.push(Change {
+                table: table.id,
+                row: stored_key(key)?,
+                action: ChangeAction::Tombstone,
+                groups: Vec::new(),
+                replaced_by: table.redirects.then(|| stored_key(keeper)).transpose()?,
+                cause: None,
+            });
+        }
+        for (_, key) in dirty.iter().filter(|(dirty, _)| *dirty == table.id) {
+            if merge::row_state(conn, table.id, key).await? != Some(RowState::Live)
+                || visibility.self_hidden(engine, conn, table.id, key).await?
+            {
+                continue;
+            }
+            let roots = visibility
+                .cascade_roots(engine, conn, table.id, key)
+                .await?;
+            let Some(root) = roots.cause() else {
+                continue;
             };
             changes.push(Change {
                 table: table.id,
-                row,
+                row: stored_key(key)?,
                 action: ChangeAction::Tombstone,
                 groups: Vec::new(),
-                replaced_by,
+                replaced_by: None,
+                cause: Some(Cause {
+                    table: root.table,
+                    row: stored_key(&root.key)?,
+                }),
             });
         }
     }

@@ -18,6 +18,7 @@ use crate::error::{SyncResult, corrupt, failpoint};
 use crate::log::{self, seq_i64, stored_u64};
 use crate::merge::{self, Batch};
 use crate::seal::{SealReport, SealSlot};
+use crate::visibility::Visibility;
 use crate::{Engine, LocalWriter, SpaceContext, materialize, repair, sql, store};
 
 /// Most operations one apply transaction takes.
@@ -490,8 +491,8 @@ fn warn_clock(report: &mut ApplyReport, writer: WriterId, clock: Hlc, now_ms: u6
     }
 }
 
-/// Seals repairs for hidden duplicates, refreshes row flags, and materializes every dirty row.
-/// Returns the domain tables it changed.
+/// Seals repairs for hidden duplicates, detached tree rows, and cascades, refreshes row flags,
+/// and materializes every dirty row. Returns the domain tables it changed.
 pub(crate) async fn finish(
     engine: &Engine,
     conn: &mut SqliteConnection,
@@ -505,16 +506,16 @@ pub(crate) async fn finish(
         return Ok(Vec::new());
     }
     let mut repaired = false;
-    let hidden = loop {
-        let hidden = repair::hidden_rows(engine, conn, batch).await?;
-        repair::expand_references(engine, conn, batch).await?;
-        let repairs = repair::repair_changes(engine, &hidden)?;
+    let mut visibility = loop {
+        let mut visibility = Visibility::load(engine, conn, &mut batch.dirty).await?;
+        repair::expand_references(engine, conn, batch, &mut visibility).await?;
+        let repairs = repair::repair_changes(engine, conn, &mut visibility, &batch.dirty).await?;
         if repaired || repairs.is_empty() {
-            break hidden;
+            break visibility;
         }
         repaired = true;
         let Some((sealer, writer)) = slot.try_open(engine, conn, ctx, batch, now_ms).await? else {
-            break hidden;
+            break visibility;
         };
         sealer
             .seal_changes(
@@ -522,8 +523,8 @@ pub(crate) async fn finish(
             )
             .await?;
     };
-    let merged = merge::refresh_flags(engine, conn, batch).await?;
-    let changed = materialize::materialize(engine, conn, batch, &hidden, merged).await?;
+    let merged = merge::refresh_flags(engine, conn, batch, &mut visibility).await?;
+    let changed = materialize::materialize(engine, conn, batch, &mut visibility, merged).await?;
     batch.dirty.clear();
     Ok(changed)
 }

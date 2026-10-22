@@ -6,14 +6,16 @@
 //! databases keep their invariants; at quiescence every installation holds the same
 //! replicated state.
 //!
-//! `GANBARU_SYNC_SOAK_SEEDS` sets the number of seeds for a soak run; the default keeps the debug
-//! test run near half a minute. A failing run prints its seed, and `GANBARU_SYNC_SEED` replays
+//! `GANBARU_SYNC_SOAK_SEEDS` sets the number of seeds for a soak run; the default debug
+//! test run takes about two minutes. A failing run prints its seed, and `GANBARU_SYNC_SEED` replays
 //! that seed alone.
+
+use std::collections::{BTreeMap, BTreeSet};
 
 use ganbaru_sync_contracts::{Field, RevokeReason, WriterId};
 
 use super::block_on;
-use super::fixture::membership_key;
+use super::fixture::{NODE_MAX_DEPTH, edge_key, membership_key};
 use super::replica::{Replica, START_MS, quoted, rank};
 use crate::error::failpoints;
 use crate::manifest::vault::quick_notes::{NOTES_TABLE, TAGS_TABLE, note_group};
@@ -28,6 +30,12 @@ const WORDS: &[&str] = &[
     "alpha", "beta", "gamma", "delta", "plan", "call", "buy", "read",
 ];
 const ONE_DAY_MS: u64 = 86_400_000;
+/// Local transactions in one burst of node or edge edits.
+const TREE_BURST: usize = 3;
+/// Items and nodes every replica holds before the first step.
+const SHARED_ROWS: usize = 5;
+/// Id prefix of the shared items, created by replica 0 as its own.
+const SHARED_ITEM: &str = "item-0-shared-";
 
 /// SplitMix64: small, fast, and stable across platforms, so a seed always replays the same run.
 struct Rng(u64);
@@ -243,6 +251,59 @@ fn iso_time(ms: u64) -> String {
     format!("strftime('%Y-%m-%dT%H:%M:%fZ', {ms} / 1000.0, 'unixepoch')")
 }
 
+/// The ancestors of `node`, nearest first, in a parent map whose roots map to an empty id.
+fn ancestors<'a>(parents: &'a BTreeMap<String, String>, node: &str) -> Vec<&'a str> {
+    let mut chain = Vec::new();
+    let mut at = parents.get(node);
+    while let Some(parent) = at.filter(|parent| !parent.is_empty()) {
+        // A local tree has no cycle; the bound only stops a broken one.
+        if chain.len() > parents.len() {
+            break;
+        }
+        chain.push(parent.as_str());
+        at = parents.get(parent);
+    }
+    chain
+}
+
+/// Depth of `node`: a root has depth 0.
+fn depth(parents: &BTreeMap<String, String>, node: &str) -> usize {
+    ancestors(parents, node).len()
+}
+
+/// Whether `node` is `ancestor` or lies in its subtree.
+fn is_within(parents: &BTreeMap<String, String>, node: &str, ancestor: &str) -> bool {
+    node == ancestor || ancestors(parents, node).contains(&ancestor)
+}
+
+/// How many levels the subtree of `node` reaches below it.
+fn height(parents: &BTreeMap<String, String>, node: &str) -> usize {
+    let base = depth(parents, node);
+    parents
+        .keys()
+        .filter(|other| is_within(parents, other, node))
+        .map(|other| depth(parents, other) - base)
+        .max()
+        .unwrap_or(0)
+}
+
+/// Whether `start` reaches `goal` through `edges`.
+fn reaches(edges: &[(String, String)], start: &str, goal: &str) -> bool {
+    let mut seen = BTreeSet::from([start]);
+    let mut pending = vec![start];
+    while let Some(row) = pending.pop() {
+        if row == goal {
+            return true;
+        }
+        for (_, to) in edges.iter().filter(|(from, _)| from == row) {
+            if seen.insert(to.as_str()) {
+                pending.push(to.as_str());
+            }
+        }
+    }
+    false
+}
+
 impl Sim {
     async fn new(seed: u64) -> Self {
         let mut rng = Rng(seed);
@@ -326,8 +387,8 @@ impl Sim {
         sql
     }
 
-    /// One local edit of the kind the app makes, in one transaction. Edits that break a domain
-    /// constraint roll back, as a refused app command would.
+    /// One local edit of the kind the app makes, in one transaction, or a burst of node or edge
+    /// edits. Edits that break a domain constraint roll back, as a refused app command would.
     async fn edit(&mut self, index: usize) {
         let notes = ids(
             &mut self.replicas[index],
@@ -343,7 +404,18 @@ impl Sim {
         let note = self.rng.pick(&notes).map(|id| quoted(id));
         let tag = self.rng.pick(&tags).map(|id| quoted(id));
         let touch = format!("updated_at = {now}, revision = revision + 1");
-        let kind = self.rng.below(25);
+        let kind = self.rng.below(37);
+        if kind >= 25 {
+            // Tree and edge edits come in bursts, so concurrent moves and adds meet often.
+            for _ in 0..TREE_BURST {
+                if kind >= 31 {
+                    self.edit_edges(index).await;
+                } else {
+                    self.edit_nodes(index).await;
+                }
+            }
+            return;
+        }
         if kind >= 21 {
             return self.edit_memberships(index, now).await;
         }
@@ -564,6 +636,146 @@ impl Sim {
             _ => format!("{remove} {add}"),
         };
         self.replicas[index].try_exec(&sql).await;
+    }
+
+    /// One local edit of the node tree: create a node, move it, relabel it, or delete it with
+    /// its subtree. Like the app, a replica refuses a move into the node's own subtree or below
+    /// the maximum depth, so cycles and overly deep rows arise only from concurrent moves.
+    async fn edit_nodes(&mut self, index: usize) {
+        let pairs = ids(
+            &mut self.replicas[index],
+            "SELECT id || ' ' || coalesce(parent_id, '') FROM fixture_nodes ORDER BY id",
+        )
+        .await;
+        let parents: BTreeMap<String, String> = pairs
+            .iter()
+            .filter_map(|pair| pair.split_once(' '))
+            .map(|(id, parent)| (id.to_string(), parent.to_string()))
+            .collect();
+        let nodes: Vec<String> = parents.keys().cloned().collect();
+        let node = self.rng.pick(&nodes).cloned();
+        let target = self
+            .rng
+            .pick(&nodes)
+            .cloned()
+            .filter(|_| self.rng.chance(70));
+        let position = quoted(&rank(self.rng.below(8) as u32));
+        // Moves dominate once a few nodes exist, so concurrent moves meet often.
+        let kind = if nodes.len() < 3 {
+            0
+        } else {
+            self.rng.below(6)
+        };
+        let sql = match (kind, node) {
+            (1..=3, Some(node)) => {
+                let fits = target.as_deref().is_none_or(|target| {
+                    !is_within(&parents, target, &node)
+                        && depth(&parents, target) + 1 + height(&parents, &node)
+                            <= usize::from(NODE_MAX_DEPTH)
+                });
+                if !fits {
+                    return;
+                }
+                format!(
+                    "UPDATE fixture_nodes SET parent_id = {}, position = {position}
+                     WHERE id = {}",
+                    target.as_deref().map_or("NULL".to_string(), quoted),
+                    quoted(&node)
+                )
+            }
+            (4, Some(node)) => format!(
+                "UPDATE fixture_nodes SET label = {} WHERE id = {}",
+                quoted(&self.words()),
+                quoted(&node)
+            ),
+            (5, Some(node)) => format!("DELETE FROM fixture_nodes WHERE id = {}", quoted(&node)),
+            _ => {
+                if target
+                    .as_deref()
+                    .is_some_and(|target| depth(&parents, target) >= usize::from(NODE_MAX_DEPTH))
+                {
+                    return;
+                }
+                let id = self.next_id("node", index);
+                format!(
+                    "INSERT INTO fixture_nodes (id, parent_id, position, label)
+                     VALUES ({}, {}, {position}, {})",
+                    quoted(&id),
+                    target.as_deref().map_or("NULL".to_string(), quoted),
+                    quoted(&self.words())
+                )
+            }
+        };
+        self.replicas[index].try_exec(&sql).await;
+    }
+
+    /// One local edit of the acyclic edge set between items: add an edge, possibly with a new
+    /// item, or remove one. Like the app, a replica refuses an edge that closes a cycle in its
+    /// own state, so cycles arise only from concurrent adds.
+    async fn edit_edges(&mut self, index: usize) {
+        let held = ids(
+            &mut self.replicas[index],
+            "SELECT from_id || ' ' || to_id FROM fixture_edges ORDER BY sync_key",
+        )
+        .await;
+        let edges: Vec<(String, String)> = held
+            .iter()
+            .filter_map(|pair| pair.split_once(' '))
+            .map(|(from, to)| (from.to_string(), to.to_string()))
+            .collect();
+        if let Some((from, to)) = self.rng.pick(&edges).cloned()
+            && self.rng.chance(40)
+        {
+            let sql = format!(
+                "DELETE FROM fixture_edges WHERE sync_key = {}",
+                quoted(&edge_key(&from, &to))
+            );
+            self.replicas[index].try_exec(&sql).await;
+            return;
+        }
+        // Joining the shared items makes concurrent adds close cycles often.
+        let ends = ids(
+            &mut self.replicas[index],
+            &format!("SELECT id FROM fixture_items WHERE id LIKE '{SHARED_ITEM}%' ORDER BY id"),
+        )
+        .await;
+        let mut parents = String::new();
+        let (from, to) = match (self.rng.pick(&ends).cloned(), self.rng.pick(&ends).cloned()) {
+            (Some(from), Some(to)) if self.rng.chance(60) => (from, to),
+            _ => {
+                let from = self.member_parent(index, "item", &mut parents).await;
+                let to = self.member_parent(index, "item", &mut parents).await;
+                (from, to)
+            }
+        };
+        if from == to || reaches(&edges, &to, &from) {
+            return;
+        }
+        let sql = format!(
+            "{parents}INSERT INTO fixture_edges (from_id, to_id, sync_key) VALUES ({}, {}, {});",
+            quoted(&from),
+            quoted(&to),
+            quoted(&edge_key(&from, &to))
+        );
+        self.replicas[index].try_exec(&sql).await;
+    }
+
+    /// Items and a flat tree of nodes every replica holds before the first step, so concurrent
+    /// moves and edge adds meet on the same rows.
+    async fn share_rows(&mut self) {
+        let now = iso_time(self.replicas[0].now_ms);
+        let mut sql = String::new();
+        for at in 0..SHARED_ROWS {
+            sql.push_str(&format!(
+                "INSERT INTO fixture_items (id, created_at, label, label_edits)
+                 VALUES ('{SHARED_ITEM}{at}', {now}, 'shared', 0);
+                 INSERT INTO fixture_nodes (id, parent_id, position, label)
+                 VALUES ('node-0-shared-{at}', NULL, {}, 'shared');",
+                quoted(&rank(at as u32))
+            ));
+        }
+        self.replicas[0].exec(&sql).await;
+        self.quiesce().await;
     }
 
     /// An item or end id for a membership: an existing one, or a new one whose insert is
@@ -915,6 +1127,7 @@ impl Sim {
 async fn run(seed: u64) {
     let _guard = SeedGuard(seed);
     let mut sim = Sim::new(seed).await;
+    sim.share_rows().await;
     for _ in 0..STEPS {
         sim.step().await;
     }

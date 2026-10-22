@@ -1,25 +1,49 @@
 //! Explicit Linux firewall access for the private-LAN handoff coordinator.
+//!
+//! The coordinator asks once for every rule it needs: TCP on its listener port from the local
+//! network of each address it reports, for IPv4 and IPv6, and UDP 5353 for device discovery from
+//! the same networks to the multicast DNS groups. Overlay interfaces get a rule qualified by the
+//! interface with the overlay block as source. Rules carry a fixed comment, so the root helper
+//! can also find and remove every rule the app added when the package is removed.
 
-use serde::{Deserialize, Serialize};
+use serde::de::Error as _;
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::ffi::OsStr;
+use std::fmt;
 use std::fs;
-use std::net::{IpAddr, Ipv4Addr};
+use std::io::ErrorKind;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+use std::str::FromStr;
 
-use crate::dial::{ipv4_lan_block, ipv4_mask};
+use crate::dial::{
+    DialAddressClass, ipv4_lan_block, ipv4_mask, ipv6_lan_block, ipv6_mask, reportable_address,
+};
 use crate::protocol::{COORDINATOR_PORT, DEVELOPMENT_COORDINATOR_PORT};
 
 const STATE_FILE: &str = "vault-handoff-network-access.json";
-const STATE_SCHEMA_VERSION: u32 = 2;
+const STATE_SCHEMA_VERSION: u32 = 3;
 const RULE_COMMENT: &str = "Ganbaru device linking";
-const MAX_AUTHORIZED_SCOPES: usize = 32;
+const MAX_AUTHORIZED_SCOPES: usize = 64;
 /// Networks remembered per scope. Beyond it the oldest is forgotten and asks again.
 const MAX_ALLOWED_NETWORKS: usize = 16;
-/// `RTF_UP` and `RTF_GATEWAY` route flags in `/proc/net/route`.
-const ROUTE_UP: u16 = 0x1;
-const ROUTE_GATEWAY: u16 = 0x2;
+/// UDP port of multicast DNS, which device discovery uses.
+const MDNS_PORT: u16 = 5353;
+const MDNS_IPV4_GROUP: Ipv4Addr = Ipv4Addr::new(224, 0, 0, 251);
+const MDNS_IPV6_GROUP: Ipv6Addr = Ipv6Addr::new(0xff02, 0, 0, 0, 0, 0, 0, 0xfb);
+/// Source of IPv6 multicast DNS queries, which hosts send from their link-local address.
+const IPV6_LINK_LOCAL_SOURCE: NetworkPrefix = NetworkPrefix {
+    address: IpAddr::V6(Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 0)),
+    length: 10,
+};
+/// `RTF_UP` and `RTF_GATEWAY` route flags in `/proc/net/route` and `/proc/net/ipv6_route`.
+const ROUTE_UP: u32 = 0x1;
+const ROUTE_GATEWAY: u32 = 0x2;
+/// `RTF_REJECT` and `RTF_LOCAL` route flags, which mark routes that reach no neighbor.
+const ROUTE_REJECT: u32 = 0x200;
+const ROUTE_LOCAL: u32 = 0x8000_0000;
 /// `ATF_COM` flag of a resolved neighbor in `/proc/net/arp`.
 const NEIGHBOR_COMPLETE: u32 = 0x2;
 /// Installed path of the packaged app, the only build that hands rules to the helper.
@@ -41,13 +65,154 @@ enum FirewallKind {
     Firewalld,
 }
 
+impl FirewallKind {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Ufw => "ufw",
+            Self::Firewalld => "firewalld",
+        }
+    }
+}
+
+/// Transport protocol of a rule: TCP for the coordinator listener, UDP for discovery.
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+enum RuleProtocol {
+    Tcp,
+    Udp,
+}
+
+impl RuleProtocol {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Tcp => "tcp",
+            Self::Udp => "udp",
+        }
+    }
+
+    fn parse(value: &str) -> Option<Self> {
+        match value {
+            "tcp" => Some(Self::Tcp),
+            "udp" => Some(Self::Udp),
+            _ => None,
+        }
+    }
+}
+
+/// An aligned network prefix: an address with every bit past `length` cleared. It is written
+/// as `address/length`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct NetworkPrefix {
+    address: IpAddr,
+    length: u8,
+}
+
+impl NetworkPrefix {
+    /// The prefix of `length` bits that holds `address`, or `None` past the family's width.
+    fn containing(address: IpAddr, length: u8) -> Option<Self> {
+        let address = match address {
+            IpAddr::V4(address) if length <= 32 => IpAddr::V4(Ipv4Addr::from(
+                u32::from(address) & ipv4_mask(u32::from(length)),
+            )),
+            IpAddr::V6(address) if length <= 128 => IpAddr::V6(Ipv6Addr::from(
+                u128::from(address) & ipv6_mask(u32::from(length)),
+            )),
+            _ => return None,
+        };
+        Some(Self { address, length })
+    }
+
+    /// The prefix that holds only `address`.
+    fn host(address: IpAddr) -> Self {
+        Self {
+            address,
+            length: match address {
+                IpAddr::V4(_) => 32,
+                IpAddr::V6(_) => 128,
+            },
+        }
+    }
+
+    fn is_host(&self) -> bool {
+        *self == Self::host(self.address)
+    }
+
+    /// Whether `address` lies in this prefix. Addresses of the other family never do.
+    fn contains(&self, address: IpAddr) -> bool {
+        Self::containing(address, self.length) == Some(*self)
+    }
+
+    /// Whether every address of `other` lies in this prefix.
+    fn covers(&self, other: &Self) -> bool {
+        other.length >= self.length && self.contains(other.address)
+    }
+
+    /// The address form for firewall commands: a host as its bare address, the form UFW prints
+    /// and earlier builds wrote, and any other prefix as `address/length`.
+    fn rule_text(&self) -> String {
+        if self.is_host() {
+            self.address.to_string()
+        } else {
+            self.to_string()
+        }
+    }
+
+    /// Parses a rule address that a firewall prints either as a prefix or as a bare host.
+    fn parse_rule_address(value: &str) -> Option<Self> {
+        if value.contains('/') {
+            value.parse().ok()
+        } else {
+            value.parse().ok().map(Self::host)
+        }
+    }
+}
+
+impl fmt::Display for NetworkPrefix {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "{}/{}", self.address, self.length)
+    }
+}
+
+impl FromStr for NetworkPrefix {
+    type Err = String;
+
+    /// Parses `address/length`, refusing an address with bits set past the prefix.
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        let invalid = || format!("the network prefix {value:?} is invalid");
+        let (address, length) = value.split_once('/').ok_or_else(invalid)?;
+        let address = address.parse::<IpAddr>().map_err(|_| invalid())?;
+        let length = length.parse::<u8>().map_err(|_| invalid())?;
+        Self::containing(address, length)
+            .filter(|prefix| prefix.address == address)
+            .ok_or_else(invalid)
+    }
+}
+
+impl Serialize for NetworkPrefix {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_str(self)
+    }
+}
+
+impl<'de> Deserialize<'de> for NetworkPrefix {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        String::deserialize(deserializer)?
+            .parse()
+            .map_err(D::Error::custom)
+    }
+}
+
+/// One firewall rule the app adds: inbound `protocol` traffic on `interface` from `source` to
+/// `destination` and `port`.
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct AuthorizedScope {
     firewall: FirewallKind,
+    protocol: RuleProtocol,
     interface: String,
-    local_address: Ipv4Addr,
-    source_network: String,
+    /// The local network prefix for the listener, or the multicast DNS group for discovery.
+    destination: NetworkPrefix,
+    source: NetworkPrefix,
     port: u16,
     #[serde(default)]
     zone: Option<String>,
@@ -56,8 +221,8 @@ struct AuthorizedScope {
 /// A scope whose firewall rule is in place, and the networks the user allowed it on.
 ///
 /// A rule matches addresses, not networks, so another network that hands out the same
-/// interface, address, and subnet would reach the coordinator through it. The coordinator
-/// therefore admits LAN peers only on networks recorded here; see [`allowed_on`].
+/// interface and prefixes would reach the coordinator through it. The coordinator therefore
+/// admits LAN peers only on networks recorded here; see [`allowed_on`].
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct GrantedScope {
@@ -104,69 +269,132 @@ pub fn not_required() -> NetworkAccessStatus {
     }
 }
 
+/// A local address and the interface that holds it, as the interface list reports them.
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct LanScope {
-    interface: String,
-    local_address: Ipv4Addr,
-    source_network: String,
+pub struct LocalInterfaceAddress {
+    /// Interface name, such as `wlp2s0` or `tailscale0`.
+    pub interface: String,
+    pub address: IpAddr,
+    /// Prefix length the interface assigns with the address.
+    pub prefix_len: u8,
 }
 
-pub fn status(config_dir: &Path, local_address: Ipv4Addr, port: u16) -> NetworkAccessStatus {
-    let Ok(scope) = current_lan_scope(local_address) else {
+/// A scope this device needs now, and the identity of the network its interface reaches.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Candidate {
+    scope: AuthorizedScope,
+    network: Option<String>,
+}
+
+/// The rule addresses for one local address.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct AddressRules {
+    interface: String,
+    listener_destination: NetworkPrefix,
+    listener_source: NetworkPrefix,
+    /// Source of the discovery rule. `None` on an overlay interface, which carries no
+    /// multicast.
+    discovery_source: Option<NetworkPrefix>,
+}
+
+/// An active firewall and whether it filters IPv6 too.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ActiveFirewall {
+    kind: FirewallKind,
+    ipv6: bool,
+}
+
+/// An up route of either route table that reaches a neighbor or gateway.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Route {
+    destination: NetworkPrefix,
+    interface: String,
+    gateway: bool,
+}
+
+/// The firewall access state for peers reaching the coordinator on `addresses` and `port`.
+pub fn status(
+    config_dir: &Path,
+    addresses: &[LocalInterfaceAddress],
+    port: u16,
+) -> NetworkAccessStatus {
+    let Ok(candidates) = candidates(addresses, port) else {
         return NetworkAccessStatus {
             state: NetworkAccessState::ManualActionRequired,
         };
     };
-    let firewalls = active_firewalls(&scope, port);
-    if firewalls.is_empty() {
-        return NetworkAccessStatus {
-            state: NetworkAccessState::NotRequired,
-        };
+    if candidates.is_empty() {
+        return not_required();
     }
     let Ok(stored) = read_state(config_dir) else {
         return NetworkAccessStatus {
             state: NetworkAccessState::ManualActionRequired,
         };
     };
-    let network = current_network(&scope.interface);
     NetworkAccessStatus {
-        state: access_state(&stored, &firewalls, network.as_deref(), || {
-            can_request_authorization(&firewalls)
+        state: access_state(&stored, &candidates, || {
+            let scopes: Vec<AuthorizedScope> = candidates
+                .iter()
+                .map(|candidate| candidate.scope.clone())
+                .collect();
+            can_request_authorization(&scopes)
         }),
     }
 }
 
 /// Whether the coordinator may accept LAN peers that reach it on `local_address` and `port`
-/// now. It refuses them only where [`status`] asks the user to confirm the current network, so
-/// a refusal always comes with an action that lifts it. Firewall scopes are IPv4 only, so an
-/// IPv6 local address has no allowed networks to confirm and admits.
-pub fn admits_lan_peers(config_dir: &Path, local_address: IpAddr, port: u16) -> bool {
-    let IpAddr::V4(local_address) = local_address else {
-        return true;
-    };
-    status(config_dir, local_address, port).state != NetworkAccessState::NetworkConfirmationRequired
+/// now, given the current interface `addresses`. It refuses them only where [`status`] asks the
+/// user to confirm the current network, so a refusal always comes with an action that lifts it.
+/// A local address missing from `addresses` has no rule to confirm and admits.
+pub fn admits_lan_peers(
+    config_dir: &Path,
+    addresses: &[LocalInterfaceAddress],
+    local_address: IpAddr,
+    port: u16,
+) -> bool {
+    let local_address = local_address.to_canonical();
+    let matching: Vec<LocalInterfaceAddress> = addresses
+        .iter()
+        .filter(|address| address.address.to_canonical() == local_address)
+        .cloned()
+        .collect();
+    matching.is_empty()
+        || status(config_dir, &matching, port).state
+            != NetworkAccessState::NetworkConfirmationRequired
 }
 
-/// The access state for the active firewall `candidates` on the network identified by
-/// `network`. Authorization is only checked when a rule is missing, because confirming a
-/// network with every rule in place needs none.
+/// The access state for the scopes this device needs now. Only listener scopes count: a missing
+/// discovery rule degrades discovery but never blocks linking. Authorization is only checked
+/// when a rule is missing, because confirming a network with every rule in place needs none.
 fn access_state(
     stored: &StoredNetworkAccess,
-    candidates: &[AuthorizedScope],
-    network: Option<&str>,
+    candidates: &[Candidate],
     can_request_authorization: impl FnOnce() -> bool,
 ) -> NetworkAccessState {
-    let granted: Option<Vec<&GrantedScope>> = candidates
+    let mut granted = Vec::new();
+    for candidate in candidates
         .iter()
-        .map(|candidate| stored.scopes.iter().find(|saved| &saved.rule == candidate))
-        .collect();
-    match granted {
-        Some(granted) if granted.iter().all(|saved| allowed_on(saved, network)) => {
-            NetworkAccessState::Granted
+        .filter(|candidate| candidate.scope.protocol == RuleProtocol::Tcp)
+    {
+        match stored
+            .scopes
+            .iter()
+            .find(|saved| saved.rule == candidate.scope)
+        {
+            Some(saved) => granted.push((saved, candidate.network.as_deref())),
+            None if can_request_authorization() => {
+                return NetworkAccessState::AuthorizationRequired;
+            }
+            None => return NetworkAccessState::ManualActionRequired,
         }
-        Some(_) => NetworkAccessState::NetworkConfirmationRequired,
-        None if can_request_authorization() => NetworkAccessState::AuthorizationRequired,
-        None => NetworkAccessState::ManualActionRequired,
+    }
+    if granted
+        .iter()
+        .all(|(saved, network)| allowed_on(saved, *network))
+    {
+        NetworkAccessState::Granted
+    } else {
+        NetworkAccessState::NetworkConfirmationRequired
     }
 }
 
@@ -177,32 +405,34 @@ fn allowed_on(scope: &GrantedScope, network: Option<&str>) -> bool {
     network.is_none_or(|network| scope.networks.iter().any(|known| known == network))
 }
 
+/// Adds the rules peers need to reach the coordinator on `addresses` and `port`, and allows the
+/// current networks for the rules already in place.
 pub fn grant(
     config_dir: &Path,
-    local_address: Ipv4Addr,
+    addresses: &[LocalInterfaceAddress],
     port: u16,
 ) -> Result<NetworkAccessStatus, String> {
-    let scope = current_lan_scope(local_address)?;
-    let firewalls = active_firewalls(&scope, port);
-    if firewalls.is_empty() {
-        return Ok(NetworkAccessStatus {
-            state: NetworkAccessState::NotRequired,
-        });
+    let candidates = candidates(addresses, port)?;
+    if candidates.is_empty() {
+        return Ok(not_required());
     }
     let mut stored = read_state(config_dir)?;
-    let missing: Vec<AuthorizedScope> = firewalls
+    let missing: Vec<AuthorizedScope> = candidates
         .iter()
-        .filter(|candidate| !stored.scopes.iter().any(|saved| &saved.rule == *candidate))
-        .cloned()
+        .filter(|candidate| {
+            !stored
+                .scopes
+                .iter()
+                .any(|saved| saved.rule == candidate.scope)
+        })
+        .map(|candidate| candidate.scope.clone())
         .collect();
     if !missing.is_empty() && !can_request_authorization(&missing) {
         return Err("automatic Linux firewall authorization is unavailable".to_string());
     }
-    let network = current_network(&scope.interface);
     grant_scopes(
         &mut stored,
-        firewalls,
-        network.as_deref(),
+        candidates,
         |state| persist_state(config_dir, state),
         |scopes| apply_scopes(scopes, true),
     )?;
@@ -211,8 +441,8 @@ pub fn grant(
     })
 }
 
-/// Applies the rules of `candidates` that `stored` does not hold yet and records `network` as
-/// allowed for every candidate.
+/// Applies the rules of `candidates` that `stored` does not hold yet and records each
+/// candidate's network as allowed.
 ///
 /// Capacity is checked before any rule changes. The missing scopes are persisted as pending,
 /// applied in one authorized call so the flow asks for the administrator password once, and
@@ -221,29 +451,35 @@ pub fn grant(
 /// network, with no firewall change.
 fn grant_scopes(
     stored: &mut StoredNetworkAccess,
-    candidates: Vec<AuthorizedScope>,
-    network: Option<&str>,
+    candidates: Vec<Candidate>,
     mut persist: impl FnMut(&StoredNetworkAccess) -> Result<(), String>,
     apply: impl FnOnce(&[AuthorizedScope]) -> Result<(), String>,
 ) -> Result<(), String> {
-    let (present, missing): (Vec<AuthorizedScope>, Vec<AuthorizedScope>) = candidates
-        .into_iter()
-        .partition(|candidate| stored.scopes.iter().any(|saved| &saved.rule == candidate));
+    let (present, missing): (Vec<Candidate>, Vec<Candidate>) =
+        candidates.into_iter().partition(|candidate| {
+            stored
+                .scopes
+                .iter()
+                .any(|saved| saved.rule == candidate.scope)
+        });
     let new_records: Vec<AuthorizedScope> = missing
         .iter()
-        .filter(|candidate| !stored.pending.contains(candidate))
+        .map(|candidate| &candidate.scope)
+        .filter(|scope| !stored.pending.contains(scope))
         .cloned()
         .collect();
     if stored.scopes.len() + stored.pending.len() + new_records.len() > MAX_AUTHORIZED_SCOPES {
         return Err("too many saved Linux network access scopes".to_string());
     }
     let mut confirmed = false;
-    for saved in stored
-        .scopes
-        .iter_mut()
-        .filter(|saved| present.contains(&saved.rule))
-    {
-        confirmed |= allow_network(saved, network);
+    for candidate in &present {
+        if let Some(saved) = stored
+            .scopes
+            .iter_mut()
+            .find(|saved| saved.rule == candidate.scope)
+        {
+            confirmed |= allow_network(saved, candidate.network.as_deref());
+        }
     }
     if confirmed {
         persist(stored)?;
@@ -255,14 +491,18 @@ fn grant_scopes(
         stored.pending.extend(new_records);
         persist(stored)?;
     }
-    apply(&missing)?;
-    stored.pending.retain(|pending| !missing.contains(pending));
+    let scopes: Vec<AuthorizedScope> = missing
+        .iter()
+        .map(|candidate| candidate.scope.clone())
+        .collect();
+    apply(&scopes)?;
+    stored.pending.retain(|pending| !scopes.contains(pending));
     for candidate in missing {
         let mut granted = GrantedScope {
-            rule: candidate,
+            rule: candidate.scope,
             networks: Vec::new(),
         };
-        allow_network(&mut granted, network);
+        allow_network(&mut granted, candidate.network.as_deref());
         stored.scopes.push(granted);
     }
     persist(stored)
@@ -316,9 +556,164 @@ fn revoke_scopes(
     Ok(())
 }
 
+/// The scopes peers need to reach the coordinator on `addresses` and `port` through the active
+/// firewalls, listener scopes first, each with the identity of its interface's network.
+fn candidates(addresses: &[LocalInterfaceAddress], port: u16) -> Result<Vec<Candidate>, String> {
+    let routes = read_routes()?;
+    let rules: Vec<AddressRules> = addresses
+        .iter()
+        .filter_map(|address| address_rules(address, &routes))
+        .collect();
+    if rules.is_empty() {
+        return Ok(Vec::new());
+    }
+    let firewalls = active_firewalls();
+    if firewalls.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut networks: Vec<(String, Option<String>)> = Vec::new();
+    Ok(rule_scopes(&rules, port, &firewalls, firewalld_zone)
+        .into_iter()
+        .map(|scope| {
+            let network = match networks
+                .iter()
+                .find(|(interface, _)| *interface == scope.interface)
+            {
+                Some((_, network)) => network.clone(),
+                None => {
+                    let network = current_network(&scope.interface);
+                    networks.push((scope.interface.clone(), network.clone()));
+                    network
+                }
+            };
+            Candidate { scope, network }
+        })
+        .collect())
+}
+
+/// The rule addresses for `address`, or `None` when it is not a reportable LAN or overlay
+/// address on a usable interface.
+///
+/// An overlay address (in `100.64.0.0/10`, or unique local on an interface with no default
+/// route) admits the whole overlay block to the address's own prefix, because overlays such
+/// as Tailscale keep their routes outside the main table. A LAN address opens its connected
+/// network, from the longest connected route on its interface or else the interface prefix,
+/// narrowed to its policy block, so a new lease inside the same network needs no new rule.
+fn address_rules(address: &LocalInterfaceAddress, routes: &[Route]) -> Option<AddressRules> {
+    let local = address.address.to_canonical();
+    if !is_valid_interface(&address.interface) {
+        return None;
+    }
+    let class = reportable_address(local).ok()?;
+    let block = lan_block(local)?;
+    let unique_local = matches!(local, IpAddr::V6(local) if local.is_unique_local());
+    if class == DialAddressClass::Overlay
+        || (unique_local && !has_default_route(routes, &address.interface))
+    {
+        return Some(AddressRules {
+            interface: address.interface.clone(),
+            listener_destination: NetworkPrefix::containing(
+                local,
+                address.prefix_len.max(block.length),
+            )?,
+            listener_source: block,
+            discovery_source: None,
+        });
+    }
+    let length = connected_prefix(routes, &address.interface, local)
+        .unwrap_or(address.prefix_len)
+        .max(block.length);
+    let network = NetworkPrefix::containing(local, length)?;
+    Some(AddressRules {
+        interface: address.interface.clone(),
+        listener_destination: network,
+        listener_source: network,
+        discovery_source: Some(match local {
+            IpAddr::V4(_) => network,
+            IpAddr::V6(_) => IPV6_LINK_LOCAL_SOURCE,
+        }),
+    })
+}
+
+/// The policy block that holds `address`, the widest range a rule built from it may open.
+fn lan_block(address: IpAddr) -> Option<NetworkPrefix> {
+    let (network, length) = match address {
+        IpAddr::V4(address) => {
+            ipv4_lan_block(address).map(|(network, length)| (IpAddr::V4(network), length))?
+        }
+        IpAddr::V6(address) => {
+            ipv6_lan_block(address).map(|(network, length)| (IpAddr::V6(network), length))?
+        }
+    };
+    NetworkPrefix::containing(network, u8::try_from(length).ok()?)
+}
+
+/// The multicast DNS group of the family of `address`.
+fn mdns_group(address: IpAddr) -> NetworkPrefix {
+    NetworkPrefix::host(match address {
+        IpAddr::V4(_) => IpAddr::V4(MDNS_IPV4_GROUP),
+        IpAddr::V6(_) => IpAddr::V6(MDNS_IPV6_GROUP),
+    })
+}
+
+/// The scopes for `rules` in each of `firewalls`: every listener scope, then every discovery
+/// scope, once each. A firewall that does not filter IPv6 gets no IPv6 scope, since its rule
+/// would fail and IPv6 already passes it. `zone_of` names the firewalld zone of an interface.
+fn rule_scopes(
+    rules: &[AddressRules],
+    port: u16,
+    firewalls: &[ActiveFirewall],
+    mut zone_of: impl FnMut(&str) -> Option<String>,
+) -> Vec<AuthorizedScope> {
+    let mut zones: Vec<(String, Option<String>)> = Vec::new();
+    let mut zone = |interface: &str| {
+        if let Some((_, zone)) = zones.iter().find(|(known, _)| known == interface) {
+            return zone.clone();
+        }
+        let zone = zone_of(interface);
+        zones.push((interface.to_string(), zone.clone()));
+        zone
+    };
+    let mut scopes: Vec<AuthorizedScope> = Vec::new();
+    for protocol in [RuleProtocol::Tcp, RuleProtocol::Udp] {
+        for rule in rules {
+            let (destination, source, rule_port) = match protocol {
+                RuleProtocol::Tcp => (rule.listener_destination, rule.listener_source, port),
+                RuleProtocol::Udp => {
+                    let Some(source) = rule.discovery_source else {
+                        continue;
+                    };
+                    (mdns_group(source.address), source, MDNS_PORT)
+                }
+            };
+            for firewall in firewalls {
+                if source.address.is_ipv6() && !firewall.ipv6 {
+                    continue;
+                }
+                let scope = AuthorizedScope {
+                    firewall: firewall.kind,
+                    protocol,
+                    interface: rule.interface.clone(),
+                    destination,
+                    source,
+                    port: rule_port,
+                    zone: match firewall.kind {
+                        FirewallKind::Ufw => None,
+                        FirewallKind::Firewalld => zone(&rule.interface),
+                    },
+                };
+                if !scopes.contains(&scope) {
+                    scopes.push(scope);
+                }
+            }
+        }
+    }
+    scopes
+}
+
 /// The identity of the network reached through `interface`: the hardware address of its
-/// default IPv4 gateway. `None` when the interface has no default gateway or the gateway has no
-/// resolved neighbor entry.
+/// default IPv4 gateway. IPv6 scopes on the interface share it. `None` when the interface has no
+/// default gateway or the gateway has no resolved neighbor entry.
 fn current_network(interface: &str) -> Option<String> {
     let route = fs::read_to_string("/proc/net/route").ok()?;
     let gateway = parse_default_gateway(&route, interface)?;
@@ -333,7 +728,7 @@ fn parse_default_gateway(contents: &str, interface: &str) -> Option<Ipv4Addr> {
         if fields.len() < 8 || fields[0] != interface || fields[1] != "00000000" {
             return None;
         }
-        let flags = u16::from_str_radix(fields[3], 16).ok()?;
+        let flags = u32::from_str_radix(fields[3], 16).ok()?;
         if flags & (ROUTE_UP | ROUTE_GATEWAY) != ROUTE_UP | ROUTE_GATEWAY {
             return None;
         }
@@ -384,69 +779,98 @@ fn empty_state() -> StoredNetworkAccess {
     }
 }
 
-fn current_lan_scope(local_address: Ipv4Addr) -> Result<LanScope, String> {
-    let route = fs::read_to_string("/proc/net/route")
-        .map_err(|error| format!("read Linux network route: {error}"))?;
-    let (interface, mask) = parse_local_ipv4_route(&route, local_address)?;
-    lan_scope(interface, local_address, mask)
+/// The routes of the main IPv4 table and of the IPv6 tables. A system without IPv6 has no IPv6
+/// table and no IPv6 address that would need one.
+fn read_routes() -> Result<Vec<Route>, String> {
+    let ipv4 = fs::read_to_string("/proc/net/route")
+        .map_err(|error| format!("read Linux IPv4 routes: {error}"))?;
+    let ipv6 = match fs::read_to_string("/proc/net/ipv6_route") {
+        Ok(contents) => contents,
+        Err(error) if error.kind() == ErrorKind::NotFound => String::new(),
+        Err(error) => return Err(format!("read Linux IPv6 routes: {error}")),
+    };
+    let mut routes = parse_ipv4_routes(&ipv4);
+    routes.extend(parse_ipv6_routes(&ipv6));
+    Ok(routes)
 }
 
-/// The scope of a connected route, narrowed to the private block of `local_address` when the
-/// route is broader, so the opened source never extends past that block.
-fn lan_scope(
-    interface: String,
-    local_address: Ipv4Addr,
-    mask: Ipv4Addr,
-) -> Result<LanScope, String> {
-    let (_, block_prefix) = ipv4_lan_block(local_address)
-        .ok_or_else(|| "this device's address is not on a private network".to_string())?;
-    let prefix = ipv4_prefix(mask)?.max(block_prefix);
-    let network = Ipv4Addr::from(u32::from(local_address) & ipv4_mask(prefix));
-    Ok(LanScope {
-        interface,
-        local_address,
-        source_network: format!("{network}/{prefix}"),
+/// The usable routes in `/proc/net/route` contents. Rows with an unsafe interface name, a
+/// non-contiguous mask, or no up flag are skipped.
+fn parse_ipv4_routes(contents: &str) -> Vec<Route> {
+    contents
+        .lines()
+        .skip(1)
+        .filter_map(|line| {
+            let fields = line.split_whitespace().collect::<Vec<_>>();
+            if fields.len() < 8 || !is_valid_interface(fields[0]) {
+                return None;
+            }
+            let flags = u32::from_str_radix(fields[3], 16).ok()?;
+            let raw_destination = u32::from_str_radix(fields[1], 16).ok()?;
+            let raw_mask = u32::from_str_radix(fields[7], 16).ok()?;
+            let length = ipv4_prefix(Ipv4Addr::from(raw_mask.swap_bytes()))?;
+            route(
+                IpAddr::V4(Ipv4Addr::from(raw_destination.swap_bytes())),
+                length,
+                flags,
+                fields[0],
+            )
+        })
+        .collect()
+}
+
+/// The usable routes in `/proc/net/ipv6_route` contents: destination, prefix length, source,
+/// source length, next hop, metric, reference count, use count, flags, and interface per row.
+fn parse_ipv6_routes(contents: &str) -> Vec<Route> {
+    contents
+        .lines()
+        .filter_map(|line| {
+            let fields = line.split_whitespace().collect::<Vec<_>>();
+            if fields.len() < 10 || fields[0].len() != 32 || !is_valid_interface(fields[9]) {
+                return None;
+            }
+            let destination = Ipv6Addr::from(u128::from_str_radix(fields[0], 16).ok()?);
+            let length = u8::from_str_radix(fields[1], 16).ok()?;
+            let flags = u32::from_str_radix(fields[8], 16).ok()?;
+            route(IpAddr::V6(destination), length, flags, fields[9])
+        })
+        .collect()
+}
+
+/// A route when its flags mark it up and reaching a neighbor or gateway, and its destination
+/// is an aligned prefix.
+fn route(destination: IpAddr, length: u8, flags: u32, interface: &str) -> Option<Route> {
+    if flags & ROUTE_UP == 0 || flags & (ROUTE_REJECT | ROUTE_LOCAL) != 0 {
+        return None;
+    }
+    let prefix = NetworkPrefix::containing(destination, length)?;
+    (prefix.address == destination).then(|| Route {
+        destination: prefix,
+        interface: interface.to_string(),
+        gateway: flags & ROUTE_GATEWAY != 0,
     })
 }
 
-fn parse_local_ipv4_route(
-    contents: &str,
-    local_address: Ipv4Addr,
-) -> Result<(String, Ipv4Addr), String> {
-    let mut selected: Option<(String, Ipv4Addr, u32)> = None;
-    for line in contents.lines().skip(1) {
-        let fields = line.split_whitespace().collect::<Vec<_>>();
-        if fields.len() < 8 || fields[2] != "00000000" {
-            continue;
-        }
-        let flags = u16::from_str_radix(fields[3], 16)
-            .map_err(|_| "Linux default route flags are invalid".to_string())?;
-        if flags & 0x1 == 0 || !is_valid_interface(fields[0]) {
-            continue;
-        }
-        let raw_mask = u32::from_str_radix(fields[7], 16)
-            .map_err(|_| "Linux local route mask is invalid".to_string())?;
-        let raw_destination = u32::from_str_radix(fields[1], 16)
-            .map_err(|_| "Linux local route destination is invalid".to_string())?;
-        let mask = Ipv4Addr::from(raw_mask.swap_bytes());
-        let destination = Ipv4Addr::from(raw_destination.swap_bytes());
-        let prefix = ipv4_prefix(mask)?;
-        if prefix == 0
-            || ipv4_lan_block(destination).is_none()
-            || u32::from(local_address) & u32::from(mask) != u32::from(destination)
-        {
-            continue;
-        }
-        if selected
-            .as_ref()
-            .is_none_or(|(_, _, selected_prefix)| prefix > *selected_prefix)
-        {
-            selected = Some((fields[0].to_string(), mask, prefix));
-        }
-    }
-    selected
-        .map(|(interface, mask, _)| (interface, mask))
-        .ok_or_else(|| "no usable Linux private network route is available".to_string())
+/// The length of the longest connected route on `interface` that holds `address`. A default
+/// route never counts, even without a gateway.
+fn connected_prefix(routes: &[Route], interface: &str, address: IpAddr) -> Option<u8> {
+    routes
+        .iter()
+        .filter(|route| {
+            !route.gateway
+                && route.interface == interface
+                && route.destination.length > 0
+                && route.destination.contains(address)
+        })
+        .map(|route| route.destination.length)
+        .max()
+}
+
+/// Whether `interface` carries a default route of either family.
+fn has_default_route(routes: &[Route], interface: &str) -> bool {
+    routes
+        .iter()
+        .any(|route| route.interface == interface && route.destination.length == 0)
 }
 
 fn is_valid_interface(value: &str) -> bool {
@@ -457,48 +881,41 @@ fn is_valid_interface(value: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.'))
 }
 
-fn ipv4_prefix(mask: Ipv4Addr) -> Result<u32, String> {
+/// The prefix length of a contiguous IPv4 mask.
+fn ipv4_prefix(mask: Ipv4Addr) -> Option<u8> {
     let mask = u32::from(mask);
     let prefix = mask.leading_ones();
-    if mask != u32::MAX.checked_shl(32 - prefix).unwrap_or(0) {
-        return Err("Linux default route has a non-contiguous network mask".to_string());
-    }
-    Ok(prefix)
+    u8::try_from(prefix)
+        .ok()
+        .filter(|_| mask == ipv4_mask(prefix))
 }
 
-fn active_firewalls(scope: &LanScope, port: u16) -> Vec<AuthorizedScope> {
+fn active_firewalls() -> Vec<ActiveFirewall> {
     let mut result = Vec::new();
-    if is_ufw_enabled() {
-        result.push(AuthorizedScope {
-            firewall: FirewallKind::Ufw,
-            interface: scope.interface.clone(),
-            local_address: scope.local_address,
-            source_network: scope.source_network.clone(),
-            port,
-            zone: None,
+    if let Ok(contents) = fs::read_to_string("/etc/ufw/ufw.conf")
+        && config_value_is_yes(&contents, "ENABLED")
+    {
+        result.push(ActiveFirewall {
+            kind: FirewallKind::Ufw,
+            ipv6: fs::read_to_string("/etc/default/ufw")
+                .is_ok_and(|contents| config_value_is_yes(&contents, "IPV6")),
         });
     }
     if is_firewalld_running() {
-        let zone = firewalld_zone(&scope.interface);
-        result.push(AuthorizedScope {
-            firewall: FirewallKind::Firewalld,
-            interface: scope.interface.clone(),
-            local_address: scope.local_address,
-            source_network: scope.source_network.clone(),
-            port,
-            zone,
+        result.push(ActiveFirewall {
+            kind: FirewallKind::Firewalld,
+            ipv6: true,
         });
     }
     result
 }
 
-fn is_ufw_enabled() -> bool {
-    let Ok(contents) = fs::read_to_string("/etc/ufw/ufw.conf") else {
-        return false;
-    };
+/// Whether a `KEY=value` configuration file sets `key` to `yes`, ignoring comments.
+fn config_value_is_yes(contents: &str, key: &str) -> bool {
     contents.lines().any(|line| {
-        line.split_once('=')
-            .is_some_and(|(key, value)| key.trim() == "ENABLED" && value.trim() == "yes")
+        line.split_once('=').is_some_and(|(name, value)| {
+            name.trim() == key && value.trim().trim_matches('"') == "yes"
+        })
     })
 }
 
@@ -556,9 +973,12 @@ fn apply_scopes(scopes: &[AuthorizedScope], grant: bool) -> Result<(), String> {
     })
 }
 
-/// Applies each scope in order. A grant stops at the first failure, since its scopes stay
-/// pending; a revoke attempts every scope so one failure leaves no other rule in place. Returns
-/// the first failure.
+/// Applies each scope in order and returns the first failure that counts.
+///
+/// A grant stops at the first failed listener rule, since its scopes stay pending, and only
+/// logs a failed discovery rule: discovery is then degraded, while linking through reported
+/// addresses still works, and removing the absent rule later succeeds. A revoke attempts every
+/// scope so one failure leaves no other rule in place.
 fn apply_each(
     scopes: &[AuthorizedScope],
     grant: bool,
@@ -567,10 +987,13 @@ fn apply_each(
     let mut first_error = None;
     for scope in scopes {
         if let Err(error) = apply(scope) {
-            if grant {
+            if !grant {
+                first_error.get_or_insert(error);
+            } else if scope.protocol == RuleProtocol::Udp {
+                eprintln!("the device discovery firewall rule was not added: {error}");
+            } else {
                 return Err(error);
             }
-            first_error.get_or_insert(error);
         }
     }
     first_error.map_or(Ok(()), Err)
@@ -616,7 +1039,8 @@ fn apply_with_packaged_helper(
 }
 
 /// The helper arguments that apply every scope in one invocation, so the polkit policy asks for
-/// the administrator password once per flow.
+/// the administrator password once per flow. Each scope is written as its firewall, protocol,
+/// interface, destination, source, port, and zone or `-`.
 fn privileged_helper_arguments(
     scopes: &[AuthorizedScope],
     grant: bool,
@@ -629,21 +1053,14 @@ fn privileged_helper_arguments(
         if grant { "grant" } else { "revoke" }.to_string(),
     ];
     for scope in scopes {
-        if scope.port != COORDINATOR_PORT {
-            return Err(
-                "the packaged Linux network helper supports only the production coordinator port"
-                    .to_string(),
-            );
-        }
+        validate_authorized_scope(scope)?;
         arguments.extend([
-            match scope.firewall {
-                FirewallKind::Ufw => "ufw",
-                FirewallKind::Firewalld => "firewalld",
-            }
-            .to_string(),
+            scope.firewall.name().to_string(),
+            scope.protocol.name().to_string(),
             scope.interface.clone(),
-            scope.local_address.to_string(),
-            scope.source_network.clone(),
+            scope.destination.to_string(),
+            scope.source.to_string(),
+            scope.port.to_string(),
             scope.zone.clone().unwrap_or_else(|| "-".to_string()),
         ]);
     }
@@ -693,8 +1110,8 @@ enum HelperRequest {
         scopes: Vec<AuthorizedScope>,
         grant: bool,
     },
-    /// Removes every production coordinator rule the app added, found by its shape in the
-    /// firewall rather than in per-user state. Package removal runs it as root.
+    /// Removes every rule the app added, found by its shape in the firewall rather than in
+    /// per-user state. Package removal runs it as root.
     RevokeAll,
 }
 
@@ -729,36 +1146,35 @@ fn parse_privileged_helper_scope(
     firewall: &str,
     arguments: &mut impl Iterator<Item = String>,
 ) -> Result<AuthorizedScope, String> {
+    let mut next = |name: &str| {
+        arguments
+            .next()
+            .ok_or_else(|| format!("the Linux network helper {name} is missing"))
+    };
     let firewall = match firewall {
         "ufw" => FirewallKind::Ufw,
         "firewalld" => FirewallKind::Firewalld,
         _ => return Err("the Linux network helper firewall is invalid".to_string()),
     };
-    let interface = arguments
-        .next()
-        .ok_or_else(|| "the Linux network helper interface is missing".to_string())?;
-    let local_address = arguments
-        .next()
-        .ok_or_else(|| "the Linux network helper address is missing".to_string())?
-        .parse::<Ipv4Addr>()
-        .map_err(|_| "the Linux network helper address is invalid".to_string())?;
-    let source_network = arguments
-        .next()
-        .ok_or_else(|| "the Linux network helper source is missing".to_string())?;
-    let zone = match arguments
-        .next()
-        .ok_or_else(|| "the Linux network helper zone is missing".to_string())?
-        .as_str()
-    {
+    let protocol = RuleProtocol::parse(&next("protocol")?)
+        .ok_or_else(|| "the Linux network helper protocol is invalid".to_string())?;
+    let interface = next("interface")?;
+    let destination = next("destination")?.parse::<NetworkPrefix>()?;
+    let source = next("source")?.parse::<NetworkPrefix>()?;
+    let port = next("port")?
+        .parse::<u16>()
+        .map_err(|_| "the Linux network helper port is invalid".to_string())?;
+    let zone = match next("zone")?.as_str() {
         "-" => None,
         value => Some(value.to_string()),
     };
     let scope = AuthorizedScope {
         firewall,
+        protocol,
         interface,
-        local_address,
-        source_network,
-        port: COORDINATOR_PORT,
+        destination,
+        source,
+        port,
         zone,
     };
     validate_authorized_scope(&scope)?;
@@ -791,9 +1207,9 @@ fn apply_scope_privileged(scope: &AuthorizedScope, grant: bool) -> Result<(), St
     }
 }
 
-/// Removes every production coordinator rule carrying the app's shape from UFW and from every
-/// firewalld zone, runtime and permanent. Firewalls that are absent or stopped are skipped, and
-/// a failed removal does not stop the others. Returns the first failure.
+/// Removes every rule carrying the app's shape from UFW and from every firewalld zone, runtime
+/// and permanent. Firewalls that are absent or stopped are skipped, and a failed removal does
+/// not stop the others. Returns the first failure.
 fn revoke_all_privileged() -> Result<(), String> {
     let mut first_error = None;
     let mut record = |result: Result<(), String>| {
@@ -875,8 +1291,9 @@ fn command_stdout(mut command: Command, action: &str) -> Result<String, String> 
     String::from_utf8(output.stdout).map_err(|_| format!("{action}: the output is not UTF-8"))
 }
 
-/// Scopes of the `ufw show added` lines that carry the app comment, allow TCP to the
-/// production coordinator port from a private source, and pass scope validation.
+/// Scopes of the `ufw show added` lines that carry the app comment, allow a listener or
+/// discovery rule of either family, and pass scope validation. Host destinations of earlier
+/// builds parse as /32 or /128 prefixes.
 fn parse_ufw_added_rules(output: &str) -> Vec<AuthorizedScope> {
     output.lines().filter_map(parse_ufw_added_rule).collect()
 }
@@ -906,57 +1323,67 @@ fn parse_ufw_added_rule(line: &str) -> Option<AuthorizedScope> {
         }
         port_follows_destination = key == "to";
     }
-    if protocol? != "tcp" || port?.parse::<u16>().ok()? != COORDINATOR_PORT {
-        return None;
-    }
     let scope = AuthorizedScope {
         firewall: FirewallKind::Ufw,
+        protocol: RuleProtocol::parse(protocol?)?,
         interface,
-        local_address: destination?.parse().ok()?,
-        source_network: source?.to_string(),
-        port: COORDINATOR_PORT,
+        destination: NetworkPrefix::parse_rule_address(destination?)?,
+        source: NetworkPrefix::parse_rule_address(source?)?,
+        port: port?.parse().ok()?,
         zone: None,
     };
     validate_authorized_scope(&scope).ok()?;
     Some(scope)
 }
 
-/// The scope of a firewalld rich rule in exactly the shape the app adds for the production
-/// coordinator port. Rich rules carry no interface, so the scope has none; only its zone,
-/// addresses, and port reach firewalld.
+/// The scope of a firewalld rich rule in exactly the shape the app adds. Rich rules carry no
+/// interface, so the scope has none; only its zone, addresses, protocol, and port reach
+/// firewalld.
 fn parse_firewalld_rich_rule(zone: &str, rule: &str) -> Option<AuthorizedScope> {
-    let rest = rule
-        .trim()
-        .strip_prefix("rule family=\"ipv4\" source address=\"")?;
+    let rest = rule.trim().strip_prefix("rule family=\"")?;
+    let (family, rest) = rest.split_once('"')?;
+    let rest = rest.strip_prefix(" source address=\"")?;
     let (source, rest) = rest.split_once('"')?;
     let rest = rest.strip_prefix(" destination address=\"")?;
     let (destination, rest) = rest.split_once('"')?;
     let rest = rest.strip_prefix(" port port=\"")?;
     let (port, rest) = rest.split_once('"')?;
-    if rest != " protocol=\"tcp\" accept" || port.parse::<u16>().ok()? != COORDINATOR_PORT {
+    let rest = rest.strip_prefix(" protocol=\"")?;
+    let (protocol, rest) = rest.split_once('"')?;
+    if rest != " accept" {
         return None;
     }
-    let local_address: Ipv4Addr = destination
-        .strip_suffix("/32")
-        .unwrap_or(destination)
-        .parse()
-        .ok()?;
-    validate_rule_addresses(local_address, source, COORDINATOR_PORT).ok()?;
+    let source = NetworkPrefix::parse_rule_address(source)?;
+    if family != firewalld_family(source.address) {
+        return None;
+    }
+    let protocol = RuleProtocol::parse(protocol)?;
+    let destination = NetworkPrefix::parse_rule_address(destination)?;
+    let port = port.parse::<u16>().ok()?;
+    validate_rule(protocol, destination, source, port).ok()?;
     is_valid_zone(zone).then(|| AuthorizedScope {
         firewall: FirewallKind::Firewalld,
+        protocol,
         interface: String::new(),
-        local_address,
-        source_network: source.to_string(),
-        port: COORDINATOR_PORT,
+        destination,
+        source,
+        port,
         zone: Some(zone.to_string()),
     })
+}
+
+fn firewalld_family(address: IpAddr) -> &'static str {
+    match address {
+        IpAddr::V4(_) => "ipv4",
+        IpAddr::V6(_) => "ipv6",
+    }
 }
 
 fn validate_authorized_scope(scope: &AuthorizedScope) -> Result<(), String> {
     if !is_valid_interface(&scope.interface) {
         return Err("saved Linux network access scope is invalid".to_string());
     }
-    validate_rule_addresses(scope.local_address, &scope.source_network, scope.port)?;
+    validate_rule(scope.protocol, scope.destination, scope.source, scope.port)?;
     match scope.firewall {
         FirewallKind::Ufw if scope.zone.is_none() => Ok(()),
         FirewallKind::Firewalld if scope.zone.as_deref().is_some_and(is_valid_zone) => Ok(()),
@@ -964,34 +1391,37 @@ fn validate_authorized_scope(scope: &AuthorizedScope) -> Result<(), String> {
     }
 }
 
-/// Checks that a rule opens a coordinator port on a private, link-local, or overlay address to
-/// an aligned source range that holds the address and stays inside its block.
-fn validate_rule_addresses(
-    local_address: Ipv4Addr,
-    source_network: &str,
+/// Checks that a rule has one of the two shapes the app adds: TCP to a coordinator port, or UDP
+/// to the multicast DNS port and group. Either way the source is a private, link-local,
+/// overlay, or on-link global prefix inside its policy block, and a listener destination lies
+/// inside its source.
+fn validate_rule(
+    protocol: RuleProtocol,
+    destination: NetworkPrefix,
+    source: NetworkPrefix,
     port: u16,
 ) -> Result<(), String> {
-    let block = ipv4_lan_block(local_address);
-    if block.is_none() || !matches!(port, COORDINATOR_PORT | DEVELOPMENT_COORDINATOR_PORT) {
-        return Err("saved Linux network access scope is invalid".to_string());
-    }
-    let (network, prefix) = source_network
-        .split_once('/')
-        .ok_or_else(|| "saved Linux network source is invalid".to_string())?;
-    let network = network
-        .parse::<Ipv4Addr>()
-        .map_err(|_| "saved Linux network source is invalid".to_string())?;
-    let prefix = prefix
-        .parse::<u32>()
-        .map_err(|_| "saved Linux network prefix is invalid".to_string())?;
-    if block.is_none_or(|(_, block_prefix)| prefix > 32 || prefix < block_prefix) {
+    let block = lan_block(source.address)
+        .ok_or_else(|| "saved Linux network source is not a local network".to_string())?;
+    if source.length < block.length {
         return Err("saved Linux network source extends past its private block".to_string());
     }
-    let mask = ipv4_mask(prefix);
-    if u32::from(network) & mask != u32::from(network)
-        || u32::from(local_address) & mask != u32::from(network)
-    {
-        return Err("saved Linux network source does not contain its local address".to_string());
+    match protocol {
+        RuleProtocol::Tcp => {
+            if !matches!(port, COORDINATOR_PORT | DEVELOPMENT_COORDINATOR_PORT) {
+                return Err("saved Linux network access port is invalid".to_string());
+            }
+            if !source.covers(&destination) {
+                return Err(
+                    "saved Linux network source does not contain its local network".to_string(),
+                );
+            }
+        }
+        RuleProtocol::Udp => {
+            if port != MDNS_PORT || destination != mdns_group(source.address) {
+                return Err("saved Linux discovery rule is invalid".to_string());
+            }
+        }
     }
     Ok(())
 }
@@ -1015,11 +1445,11 @@ fn ufw_arguments(scope: &AuthorizedScope, grant: bool) -> Vec<String> {
         "on".to_string(),
         scope.interface.clone(),
         "proto".to_string(),
-        "tcp".to_string(),
+        scope.protocol.name().to_string(),
         "from".to_string(),
-        scope.source_network.clone(),
+        scope.source.rule_text(),
         "to".to_string(),
-        scope.local_address.to_string(),
+        scope.destination.rule_text(),
         "port".to_string(),
         scope.port.to_string(),
         "comment".to_string(),
@@ -1041,6 +1471,18 @@ fn apply_firewalld_direct(scope: &AuthorizedScope, grant: bool) -> Result<(), St
     apply_firewalld_commands(scope, grant, |firewall_cmd| Command::new(firewall_cmd))
 }
 
+/// The firewalld rich rule of `scope`.
+fn firewalld_rich_rule(scope: &AuthorizedScope) -> String {
+    format!(
+        "rule family=\"{}\" source address=\"{}\" destination address=\"{}\" port port=\"{}\" protocol=\"{}\" accept",
+        firewalld_family(scope.source.address),
+        scope.source,
+        scope.destination,
+        scope.port,
+        scope.protocol.name()
+    )
+}
+
 fn apply_firewalld_commands(
     scope: &AuthorizedScope,
     grant: bool,
@@ -1057,10 +1499,7 @@ fn apply_firewalld_commands(
     } else {
         "--remove-rich-rule"
     };
-    let rule = format!(
-        "rule family=\"ipv4\" source address=\"{}\" destination address=\"{}/32\" port port=\"{}\" protocol=\"tcp\" accept",
-        scope.source_network, scope.local_address, scope.port
-    );
+    let rule = firewalld_rich_rule(scope);
     for permanent in [false, true] {
         let mut command = command_for(&firewall_cmd);
         command.arg(format!("--zone={zone}"));
@@ -1130,17 +1569,25 @@ fn state_path(config_dir: &Path) -> PathBuf {
     config_dir.join(STATE_FILE)
 }
 
+/// Reads the saved scopes. A file from another schema version is refused rather than
+/// converted; development state from an earlier build is removed by hand, and package removal
+/// removes the rules it described.
 fn read_state(config_dir: &Path) -> Result<StoredNetworkAccess, String> {
     let path = state_path(config_dir);
     if !path.exists() {
         return Ok(empty_state());
     }
     let bytes = fs::read(&path).map_err(|error| format!("read network access state: {error}"))?;
+    let version = serde_json::from_slice::<StateVersion>(&bytes)
+        .map_err(|error| format!("parse network access state: {error}"))?;
+    if version.schema_version != STATE_SCHEMA_VERSION {
+        return Err(format!(
+            "network access state version is unsupported; delete {} from the app config folder",
+            path.display()
+        ));
+    }
     let state: StoredNetworkAccess = serde_json::from_slice(&bytes)
         .map_err(|error| format!("parse network access state: {error}"))?;
-    if state.schema_version != STATE_SCHEMA_VERSION {
-        return Err("network access state version is unsupported".to_string());
-    }
     if state.scopes.len() + state.pending.len() > MAX_AUTHORIZED_SCOPES {
         return Err("network access state has too many scopes".to_string());
     }
@@ -1165,6 +1612,14 @@ fn read_state(config_dir: &Path) -> Result<StoredNetworkAccess, String> {
     Ok(state)
 }
 
+/// The schema version of a saved state file, read before its scopes so that a file of another
+/// version is reported as such.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct StateVersion {
+    schema_version: u32,
+}
+
 fn persist_state(config_dir: &Path, state: &StoredNetworkAccess) -> Result<(), String> {
     let path = state_path(config_dir);
     let bytes = serde_json::to_vec_pretty(state)
@@ -1176,117 +1631,88 @@ fn persist_state(config_dir: &Path, state: &StoredNetworkAccess) -> Result<(), S
 mod tests {
     use super::*;
 
-    #[test]
-    fn connected_route_produces_a_bounded_private_scope() {
-        let route = "Iface Destination Gateway Flags RefCnt Use Metric Mask MTU Window IRTT\n\
-wlp2s0 00000000 FE01A8C0 0003 0 0 600 00000000 0 0 0\n\
-wlp2s0 0001A8C0 00000000 0001 0 0 600 00FFFFFF 0 0 0\n";
-        let address = Ipv4Addr::new(192, 168, 1, 66);
-        let (interface, mask) =
-            parse_local_ipv4_route(route, address).expect("connected private route");
-        assert_eq!(interface, "wlp2s0");
-        assert_eq!(mask, Ipv4Addr::new(255, 255, 255, 0));
-        let network = Ipv4Addr::from(u32::from(address) & u32::from(mask));
-        assert_eq!(
-            format!("{network}/{}", ipv4_prefix(mask).unwrap()),
-            "192.168.1.0/24"
-        );
+    const IPV4_ROUTES: &str = "\
+Iface\tDestination\tGateway \tFlags\tRefCnt\tUse\tMetric\tMask\t\tMTU\tWindow\tIRTT
+wlp2s0\t00000000\tFE01A8C0\t0003\t0\t0\t600\t00000000\t0\t0\t0
+wlp2s0\t0001A8C0\t00000000\t0001\t0\t0\t600\t00FFFFFF\t0\t0\t0
+wlp2s0\tFE01A8C0\t00000000\t0005\t0\t0\t600\tFFFFFFFF\t0\t0\t0
+eth0\t0000000A\t00000000\t0001\t0\t0\t0\t000000FE\t0\t0\t0
+eth1\t0000000A\t00000000\t0001\t0\t0\t0\t00FF00FF\t0\t0\t0
+eth2\t0002A8C0\t00000000\t0000\t0\t0\t0\t00FFFFFF\t0\t0\t0
+bad/if\t0003A8C0\t00000000\t0001\t0\t0\t0\t00FFFFFF\t0\t0\t0
+";
+
+    const IPV6_ROUTES: &str = "\
+2806101e000e89700000000000000000 40 00000000000000000000000000000000 00 00000000000000000000000000000000 00000258 00000001 00000000 00400001   wlp6s0
+fe800000000000000000000000000000 40 00000000000000000000000000000000 00 00000000000000000000000000000000 00000100 00000001 00000000 00000001   wlp6s0
+00000000000000000000000000000000 00 00000000000000000000000000000000 00 fe800000000000000000000000000001 00000258 00000009 00000000 00400003   wlp6s0
+00000000000000000000000000000001 80 00000000000000000000000000000000 00 00000000000000000000000000000000 00000000 0000000b 00000000 80200001       lo
+2806101e000e89704a89e7fffecf5d55 80 00000000000000000000000000000000 00 00000000000000000000000000000000 00000000 00000003 00000000 80200001   wlp6s0
+ff000000000000000000000000000000 08 00000000000000000000000000000000 00 00000000000000000000000000000000 00000100 00000008 00000000 00000001   wlp6s0
+00000000000000000000000000000000 00 00000000000000000000000000000000 00 00000000000000000000000000000000 ffffffff 00000001 00000000 00200200       lo
+fd123456000000000000000000000000 40 00000000000000000000000000000000 00 00000000000000000000000000000000 00000100 00000001 00000000 00000001      wg0
+";
+
+    const HOME: &str = "a4:2b:b0:11:22:33";
+    const CAFE: &str = "f0:9f:c2:44:55:66";
+    const GLOBAL: &str = "2806:101e:e:8970:4a89:e7ff:fecf:5d55";
+
+    fn prefix(value: &str) -> NetworkPrefix {
+        value.parse().expect("network prefix")
     }
 
-    #[test]
-    fn only_root_owned_entries_that_others_cannot_write_are_trusted() {
-        assert!(root_controlled(&Path::new("/").symlink_metadata().unwrap()));
-        assert_ne!(PACKAGED_HELPER_PATH, PACKAGED_APP_PATH);
+    fn host(value: &str) -> NetworkPrefix {
+        NetworkPrefix::host(value.parse().expect("address"))
+    }
 
-        let folder = std::env::temp_dir().join(format!("ganbaru-helper-{}", std::process::id()));
-        fs::create_dir_all(&folder).unwrap();
-        let metadata = folder.symlink_metadata().unwrap();
-        if metadata.uid() != 0 {
-            assert!(!root_controlled(&metadata));
+    fn routes() -> Vec<Route> {
+        let mut routes = parse_ipv4_routes(IPV4_ROUTES);
+        routes.extend(parse_ipv6_routes(IPV6_ROUTES));
+        routes
+    }
+
+    fn local(interface: &str, address: &str, prefix_len: u8) -> LocalInterfaceAddress {
+        LocalInterfaceAddress {
+            interface: interface.to_string(),
+            address: address.parse().expect("address"),
+            prefix_len,
         }
-        fs::remove_dir(&folder).unwrap();
     }
 
-    #[test]
-    fn route_parser_rejects_unsafe_interface_names() {
-        let route = "Iface Destination Gateway Flags RefCnt Use Metric Mask MTU Window IRTT\n\
-bad/interface 0001A8C0 00000000 0001 0 0 600 00FFFFFF 0 0 0\n";
-        assert!(parse_local_ipv4_route(route, Ipv4Addr::new(192, 168, 1, 66)).is_err());
+    fn rules_for(interface: &str, address: &str, prefix_len: u8) -> Option<AddressRules> {
+        address_rules(&local(interface, address, prefix_len), &routes())
     }
 
-    #[test]
-    fn persisted_scopes_cannot_escape_the_private_network_boundary() {
-        let valid = AuthorizedScope {
+    fn tcp(interface: &str, destination: &str, source: &str) -> AuthorizedScope {
+        AuthorizedScope {
             firewall: FirewallKind::Ufw,
-            interface: "wlp2s0".to_string(),
-            local_address: Ipv4Addr::new(192, 168, 1, 66),
-            source_network: "192.168.1.0/24".to_string(),
+            protocol: RuleProtocol::Tcp,
+            interface: interface.to_string(),
+            destination: NetworkPrefix::parse_rule_address(destination).expect("destination"),
+            source: prefix(source),
             port: COORDINATOR_PORT,
             zone: None,
-        };
-        assert!(validate_authorized_scope(&valid).is_ok());
-
-        let mut broad = valid.clone();
-        broad.source_network = "0.0.0.0/0".to_string();
-        assert!(validate_authorized_scope(&broad).is_err());
-
-        let mut unrelated = valid;
-        unrelated.source_network = "192.168.2.0/24".to_string();
-        assert!(validate_authorized_scope(&unrelated).is_err());
-
-        let mut unsupported_port = unrelated;
-        unsupported_port.source_network = "192.168.1.0/24".to_string();
-        unsupported_port.port = 44_000;
-        assert!(validate_authorized_scope(&unsupported_port).is_err());
+        }
     }
 
-    #[test]
-    fn opened_sources_stay_inside_the_private_block_of_the_local_address() {
-        let scope = |local: [u8; 4], source: &str| AuthorizedScope {
-            firewall: FirewallKind::Ufw,
-            interface: "wlp2s0".to_string(),
-            local_address: Ipv4Addr::from(local),
-            source_network: source.to_string(),
-            port: COORDINATOR_PORT,
-            zone: None,
-        };
-        for (local, source) in [
-            ([10, 1, 2, 3], "10.0.0.0/7"),
-            ([192, 168, 1, 66], "192.168.0.0/13"),
-            ([169, 254, 1, 2], "169.254.0.0/15"),
-            ([100, 101, 2, 3], "100.0.0.0/8"),
-        ] {
-            assert!(
-                validate_authorized_scope(&scope(local, source)).is_err(),
-                "{source} must be refused"
-            );
+    fn udp(interface: &str, group: &str, source: &str) -> AuthorizedScope {
+        AuthorizedScope {
+            protocol: RuleProtocol::Udp,
+            destination: host(group),
+            port: MDNS_PORT,
+            ..tcp(interface, group, source)
         }
-        for (local, source) in [
-            ([10, 1, 2, 3], "10.0.0.0/8"),
-            ([172, 20, 1, 2], "172.16.0.0/12"),
-            ([100, 101, 2, 3], "100.64.0.0/10"),
-            ([100, 101, 2, 3], "100.101.2.0/24"),
-        ] {
-            assert!(
-                validate_authorized_scope(&scope(local, source)).is_ok(),
-                "{source} must be accepted"
-            );
-        }
-
-        let mut broad = ["grant", "ufw", "wlp2s0", "10.1.2.3", "10.0.0.0/7", "-"]
-            .into_iter()
-            .map(str::to_string);
-        assert!(parse_privileged_helper_request(&mut broad).is_err());
     }
 
     fn numbered_scope(index: u8) -> AuthorizedScope {
-        AuthorizedScope {
-            firewall: FirewallKind::Ufw,
-            interface: "wlp2s0".to_string(),
-            local_address: Ipv4Addr::new(192, 168, index, 66),
-            source_network: format!("192.168.{index}.0/24"),
-            port: COORDINATOR_PORT,
-            zone: None,
+        let network = format!("192.168.{index}.0/24");
+        tcp("wlp2s0", &network, &network)
+    }
+
+    fn candidate(index: u8, network: Option<&str>) -> Candidate {
+        Candidate {
+            scope: numbered_scope(index),
+            network: network.map(str::to_string),
         }
     }
 
@@ -1305,19 +1731,603 @@ bad/interface 0001A8C0 00000000 0001 0 0 600 00FFFFFF 0 0 0\n";
             .collect()
     }
 
-    const HOME: &str = "a4:2b:b0:11:22:33";
-    const CAFE: &str = "f0:9f:c2:44:55:66";
+    fn helper_request(arguments: &[&str]) -> Result<HelperRequest, String> {
+        parse_privileged_helper_request(&mut arguments.iter().map(|value| value.to_string()))
+    }
+
+    fn scratch_folder(name: &str) -> PathBuf {
+        let folder = std::env::temp_dir().join(format!(
+            "ganbaru-network-access-{name}-{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&folder).unwrap();
+        folder
+    }
+
+    #[test]
+    fn prefixes_are_aligned_and_hosts_print_bare() {
+        assert_eq!(prefix("192.168.1.0/24").to_string(), "192.168.1.0/24");
+        assert_eq!(prefix("fe80::/10").to_string(), "fe80::/10");
+        for invalid in [
+            "192.168.1.66/24",
+            "10.0.0.0/33",
+            "::/129",
+            "fe80::1/10",
+            "192.168.1.0",
+            "192.168.1.0/",
+            "example/24",
+        ] {
+            assert!(invalid.parse::<NetworkPrefix>().is_err(), "{invalid}");
+        }
+        assert_eq!(
+            NetworkPrefix::containing("192.168.1.66".parse().unwrap(), 24),
+            Some(prefix("192.168.1.0/24"))
+        );
+        assert_eq!(
+            NetworkPrefix::containing("10.0.0.1".parse().unwrap(), 33),
+            None
+        );
+
+        assert_eq!(host("192.168.1.66").rule_text(), "192.168.1.66");
+        assert_eq!(host("ff02::fb").rule_text(), "ff02::fb");
+        assert_eq!(prefix("192.168.1.66/32"), host("192.168.1.66"));
+        assert_eq!(prefix("10.0.0.0/8").rule_text(), "10.0.0.0/8");
+        assert_eq!(
+            NetworkPrefix::parse_rule_address("192.168.1.66"),
+            Some(host("192.168.1.66"))
+        );
+        assert_eq!(
+            NetworkPrefix::parse_rule_address("2806:101e:e:8970::/64"),
+            Some(prefix("2806:101e:e:8970::/64"))
+        );
+        assert_eq!(NetworkPrefix::parse_rule_address("192.168.1.66/24"), None);
+
+        assert!(prefix("192.168.0.0/16").covers(&prefix("192.168.1.0/24")));
+        assert!(!prefix("192.168.1.0/24").covers(&prefix("192.168.0.0/16")));
+        assert!(!prefix("0.0.0.0/0").contains("::1".parse().unwrap()));
+
+        let json = serde_json::to_string(&prefix("fc00::/7")).unwrap();
+        assert_eq!(json, "\"fc00::/7\"");
+        assert_eq!(
+            serde_json::from_str::<NetworkPrefix>(&json).unwrap(),
+            prefix("fc00::/7")
+        );
+        assert!(serde_json::from_str::<NetworkPrefix>("\"10.1.0.0/8\"").is_err());
+    }
+
+    #[test]
+    fn route_tables_keep_only_up_routes_that_reach_a_neighbor() {
+        let route = |destination: &str, interface: &str, gateway: bool| Route {
+            destination: prefix(destination),
+            interface: interface.to_string(),
+            gateway,
+        };
+        assert_eq!(
+            parse_ipv4_routes(IPV4_ROUTES),
+            vec![
+                route("0.0.0.0/0", "wlp2s0", true),
+                route("192.168.1.0/24", "wlp2s0", false),
+                route("192.168.1.254/32", "wlp2s0", false),
+                route("10.0.0.0/7", "eth0", false),
+            ],
+            "non-contiguous masks, down routes, and unsafe interface names are skipped"
+        );
+        assert_eq!(
+            parse_ipv6_routes(IPV6_ROUTES),
+            vec![
+                route("2806:101e:e:8970::/64", "wlp6s0", false),
+                route("fe80::/64", "wlp6s0", false),
+                route("::/0", "wlp6s0", true),
+                route("ff00::/8", "wlp6s0", false),
+                route("fd12:3456::/64", "wg0", false),
+            ],
+            "local and reject routes are skipped"
+        );
+        assert!(parse_ipv6_routes("2806101e 40 x\n").is_empty());
+
+        let routes = routes();
+        assert!(has_default_route(&routes, "wlp6s0"));
+        assert!(has_default_route(&routes, "wlp2s0"));
+        assert!(!has_default_route(&routes, "wg0"));
+        assert_eq!(
+            connected_prefix(&routes, "wlp2s0", "192.168.1.66".parse().unwrap()),
+            Some(24)
+        );
+        assert_eq!(
+            connected_prefix(&routes, "wlp2s0", "192.168.1.254".parse().unwrap()),
+            Some(32)
+        );
+        assert_eq!(
+            connected_prefix(&routes, "wlp2s0", "10.1.2.3".parse().unwrap()),
+            None,
+            "a default route is never a connected network"
+        );
+        assert_eq!(
+            connected_prefix(&routes, "wlp6s0", GLOBAL.parse().unwrap()),
+            Some(64)
+        );
+    }
+
+    #[test]
+    fn lan_addresses_open_their_connected_network_within_their_block() {
+        let ipv4 = rules_for("wlp2s0", "192.168.1.66", 24).expect("IPv4 LAN rules");
+        assert_eq!(ipv4.listener_destination, prefix("192.168.1.0/24"));
+        assert_eq!(ipv4.listener_source, prefix("192.168.1.0/24"));
+        assert_eq!(ipv4.discovery_source, Some(prefix("192.168.1.0/24")));
+
+        let wide = rules_for("eth0", "10.1.2.3", 7).expect("wide connected route");
+        assert_eq!(
+            wide.listener_source,
+            prefix("10.0.0.0/8"),
+            "a connected route broader than its private block is narrowed to the block"
+        );
+
+        let global = rules_for("wlp6s0", GLOBAL, 64).expect("global IPv6 rules");
+        assert_eq!(global.listener_destination, prefix("2806:101e:e:8970::/64"));
+        assert_eq!(global.listener_source, prefix("2806:101e:e:8970::/64"));
+        assert_eq!(global.discovery_source, Some(prefix("fe80::/10")));
+
+        let dhcpv6 = rules_for("wlp6s0", "2806:101e:e:8970::1234", 128).expect("DHCPv6");
+        assert_eq!(
+            dhcpv6.listener_source,
+            prefix("2806:101e:e:8970::/64"),
+            "a /128 lease opens the connected route that holds it"
+        );
+
+        let unrouted = rules_for("eth9", "2806:101e:e:8970::1", 48).expect("unrouted");
+        assert_eq!(
+            unrouted.listener_source,
+            prefix("2806:101e:e:8970::/64"),
+            "a global prefix never extends past its on-link /64"
+        );
+
+        let routed_ula = rules_for("wlp6s0", "fd12:3456::1", 64).expect("routed ULA");
+        assert_eq!(routed_ula.listener_source, prefix("fd12:3456::/64"));
+        assert_eq!(routed_ula.discovery_source, Some(prefix("fe80::/10")));
+
+        for (interface, address, prefix_len) in [
+            ("wlp6s0", "fe80::4a89:e7ff:fecf:5d55", 64),
+            ("lo", "127.0.0.1", 8),
+            ("lo", "::1", 128),
+            ("eth0", "8.8.8.8", 24),
+            ("eth0", "2001:db8::1", 64),
+            ("bad/if", "192.168.1.66", 24),
+            ("wlp2s0", "0.0.0.0", 0),
+        ] {
+            assert_eq!(
+                rules_for(interface, address, prefix_len),
+                None,
+                "{address} on {interface}"
+            );
+        }
+    }
+
+    #[test]
+    fn overlay_addresses_admit_their_block_on_their_interface_without_discovery() {
+        let tailscale = rules_for("tailscale0", "100.101.2.3", 32).expect("Tailscale");
+        assert_eq!(tailscale.interface, "tailscale0");
+        assert_eq!(tailscale.listener_destination, host("100.101.2.3"));
+        assert_eq!(tailscale.listener_source, prefix("100.64.0.0/10"));
+        assert_eq!(tailscale.discovery_source, None);
+
+        let tailscale_ipv6 =
+            rules_for("tailscale0", "fd7a:115c:a1e0::4a01:c903", 128).expect("Tailscale IPv6");
+        assert_eq!(
+            tailscale_ipv6.listener_destination,
+            host("fd7a:115c:a1e0::4a01:c903")
+        );
+        assert_eq!(tailscale_ipv6.listener_source, prefix("fc00::/7"));
+        assert_eq!(tailscale_ipv6.discovery_source, None);
+
+        let wireguard = rules_for("wg0", "fd12:3456::1", 64).expect("unique local overlay");
+        assert_eq!(
+            wireguard.listener_destination,
+            prefix("fd12:3456::/64"),
+            "unique local without a default route is an overlay"
+        );
+        assert_eq!(wireguard.listener_source, prefix("fc00::/7"));
+        assert_eq!(wireguard.discovery_source, None);
+    }
+
+    #[test]
+    fn scopes_list_listeners_first_once_each_for_every_active_firewall() {
+        let addresses = [
+            local("wlp2s0", "192.168.1.66", 24),
+            local("wlp6s0", GLOBAL, 64),
+            local("wlp6s0", "2806:101e:e:8970:1c2d:3e4f:5a6b:7c8d", 64),
+            local("tailscale0", "100.101.2.3", 32),
+        ];
+        let routes = routes();
+        let rules: Vec<AddressRules> = addresses
+            .iter()
+            .filter_map(|address| address_rules(address, &routes))
+            .collect();
+        assert_eq!(rules.len(), 4);
+
+        let ipv4_only = rule_scopes(
+            &rules,
+            COORDINATOR_PORT,
+            &[ActiveFirewall {
+                kind: FirewallKind::Ufw,
+                ipv6: false,
+            }],
+            |_| panic!("UFW has no zones"),
+        );
+        assert_eq!(
+            ipv4_only,
+            vec![
+                tcp("wlp2s0", "192.168.1.0/24", "192.168.1.0/24"),
+                tcp("tailscale0", "100.101.2.3", "100.64.0.0/10"),
+                udp("wlp2s0", "224.0.0.251", "192.168.1.0/24"),
+            ],
+            "a UFW without IPv6 filtering gets no IPv6 rule"
+        );
+
+        let mut zone_lookups = Vec::new();
+        let both = rule_scopes(
+            &rules,
+            DEVELOPMENT_COORDINATOR_PORT,
+            &[
+                ActiveFirewall {
+                    kind: FirewallKind::Ufw,
+                    ipv6: true,
+                },
+                ActiveFirewall {
+                    kind: FirewallKind::Firewalld,
+                    ipv6: true,
+                },
+            ],
+            |interface| {
+                zone_lookups.push(interface.to_string());
+                Some("home".to_string())
+            },
+        );
+        assert_eq!(zone_lookups, ["wlp2s0", "wlp6s0", "tailscale0"]);
+        assert_eq!(
+            both.len(),
+            10,
+            "two addresses in one /64 share their scopes"
+        );
+        let tcp_count = both
+            .iter()
+            .take_while(|scope| scope.protocol == RuleProtocol::Tcp)
+            .count();
+        assert_eq!(tcp_count, 6);
+        assert!(
+            both[tcp_count..]
+                .iter()
+                .all(|scope| scope.protocol == RuleProtocol::Udp && scope.port == MDNS_PORT)
+        );
+        assert!(both.contains(&AuthorizedScope {
+            firewall: FirewallKind::Firewalld,
+            zone: Some("home".to_string()),
+            ..udp("wlp6s0", "ff02::fb", "fe80::/10")
+        }));
+        assert!(both.contains(&AuthorizedScope {
+            port: DEVELOPMENT_COORDINATOR_PORT,
+            ..tcp("wlp6s0", "2806:101e:e:8970::/64", "2806:101e:e:8970::/64")
+        }));
+        for scope in &both {
+            assert!(validate_authorized_scope(scope).is_ok(), "{scope:?}");
+        }
+    }
+
+    #[test]
+    fn the_validator_accepts_only_listener_and_discovery_rules_from_local_sources() {
+        for valid in [
+            tcp("wlp2s0", "192.168.1.66", "192.168.1.0/24"),
+            tcp("wlp2s0", "192.168.1.0/24", "192.168.1.0/24"),
+            tcp("eth0", "10.0.0.0/8", "10.0.0.0/8"),
+            tcp("eth0", "172.20.1.0/24", "172.16.0.0/12"),
+            tcp("tailscale0", "100.101.2.3", "100.64.0.0/10"),
+            tcp("tailscale0", "fd7a:115c:a1e0::1", "fc00::/7"),
+            tcp("wlp6s0", "2806:101e:e:8970::/64", "2806:101e:e:8970::/64"),
+            AuthorizedScope {
+                port: DEVELOPMENT_COORDINATOR_PORT,
+                ..tcp("wlp2s0", "192.168.1.0/24", "192.168.1.0/24")
+            },
+            udp("wlp2s0", "224.0.0.251", "192.168.1.0/24"),
+            udp("wlp2s0", "224.0.0.251", "169.254.0.0/16"),
+            udp("wlp6s0", "ff02::fb", "fe80::/10"),
+            udp("wlp6s0", "ff02::fb", "2806:101e:e:8970::/64"),
+        ] {
+            assert!(validate_authorized_scope(&valid).is_ok(), "{valid:?}");
+        }
+
+        let base = tcp("wlp2s0", "192.168.1.0/24", "192.168.1.0/24");
+        let discovery = udp("wlp2s0", "224.0.0.251", "192.168.1.0/24");
+        let invalid = [
+            (
+                "public IPv4 source",
+                tcp("eth0", "8.8.8.0/24", "8.8.8.0/24"),
+            ),
+            ("any source", tcp("eth0", "192.168.1.66", "0.0.0.0/0")),
+            ("any IPv6 source", tcp("eth0", "fd00::1", "::/0")),
+            (
+                "source wider than its block",
+                tcp("eth0", "10.1.2.3", "10.0.0.0/7"),
+            ),
+            (
+                "overlay source wider than its block",
+                tcp("eth0", "100.101.2.3", "100.0.0.0/8"),
+            ),
+            (
+                "global source wider than /64",
+                tcp("eth0", "2806:101e:e::/64", "2806:101e:e::/48"),
+            ),
+            (
+                "documentation source",
+                tcp("eth0", "2001:db8::/64", "2001:db8::/64"),
+            ),
+            ("multicast source", tcp("eth0", "ff02::fb", "ff02::/16")),
+            ("loopback source", tcp("lo", "127.0.0.1", "127.0.0.0/8")),
+            (
+                "destination outside its source",
+                tcp("eth0", "192.168.2.0/24", "192.168.1.0/24"),
+            ),
+            (
+                "destination of another family",
+                tcp("eth0", "fd00::1", "192.168.1.0/24"),
+            ),
+            (
+                "other TCP port",
+                AuthorizedScope {
+                    port: 44_000,
+                    ..base.clone()
+                },
+            ),
+            (
+                "discovery port over TCP",
+                AuthorizedScope {
+                    port: MDNS_PORT,
+                    ..base.clone()
+                },
+            ),
+            (
+                "coordinator port over UDP",
+                AuthorizedScope {
+                    port: COORDINATOR_PORT,
+                    ..discovery.clone()
+                },
+            ),
+            (
+                "UDP to a unicast destination",
+                udp("wlp2s0", "192.168.1.66", "192.168.1.0/24"),
+            ),
+            (
+                "UDP to the other family's group",
+                udp("wlp2s0", "ff02::fb", "192.168.1.0/24"),
+            ),
+            (
+                "UDP from a public source",
+                udp("eth0", "224.0.0.251", "8.8.8.0/24"),
+            ),
+            (
+                "empty interface",
+                AuthorizedScope {
+                    interface: String::new(),
+                    ..base.clone()
+                },
+            ),
+            (
+                "unsafe interface",
+                AuthorizedScope {
+                    interface: "eth0;reboot".to_string(),
+                    ..discovery
+                },
+            ),
+            (
+                "long interface",
+                AuthorizedScope {
+                    interface: "a".repeat(16),
+                    ..base.clone()
+                },
+            ),
+            (
+                "UFW with a zone",
+                AuthorizedScope {
+                    zone: Some("home".to_string()),
+                    ..base.clone()
+                },
+            ),
+            (
+                "firewalld without a zone",
+                AuthorizedScope {
+                    firewall: FirewallKind::Firewalld,
+                    ..base.clone()
+                },
+            ),
+            (
+                "firewalld with an unsafe zone",
+                AuthorizedScope {
+                    firewall: FirewallKind::Firewalld,
+                    zone: Some("home zone".to_string()),
+                    ..base
+                },
+            ),
+        ];
+        for (reason, scope) in invalid {
+            assert!(validate_authorized_scope(&scope).is_err(), "{reason}");
+        }
+    }
+
+    #[test]
+    fn the_helper_parses_only_complete_valid_scopes() {
+        let valid = [
+            "grant",
+            "ufw",
+            "tcp",
+            "wlp2s0",
+            "192.168.1.0/24",
+            "192.168.1.0/24",
+            "43822",
+            "-",
+            "firewalld",
+            "udp",
+            "wlp6s0",
+            "ff02::fb/128",
+            "fe80::/10",
+            "5353",
+            "home",
+        ];
+        let Ok(HelperRequest::Apply { scopes, grant }) = helper_request(&valid) else {
+            panic!("valid helper scopes");
+        };
+        assert!(grant);
+        assert_eq!(
+            scopes,
+            vec![
+                AuthorizedScope {
+                    port: DEVELOPMENT_COORDINATOR_PORT,
+                    ..tcp("wlp2s0", "192.168.1.0/24", "192.168.1.0/24")
+                },
+                AuthorizedScope {
+                    firewall: FirewallKind::Firewalld,
+                    zone: Some("home".to_string()),
+                    ..udp("wlp6s0", "ff02::fb", "fe80::/10")
+                },
+            ]
+        );
+
+        let replace = |index: usize, value: &'static str| {
+            let mut arguments = valid;
+            arguments[index] = value;
+            helper_request(&arguments)
+        };
+        for (index, value) in [
+            (0, "allow"),
+            (1, "iptables"),
+            (2, "icmp"),
+            (2, "TCP"),
+            (3, "wlp2s0;id"),
+            (4, "192.168.1.66/24"),
+            (4, "192.168.1.66"),
+            (5, "0.0.0.0/0"),
+            (5, "8.8.8.0/24"),
+            (6, "22"),
+            (6, "43823"),
+            (6, "5353"),
+            (6, "port"),
+            (7, "home"),
+            (9, "tcp"),
+            (12, "fe80::/9"),
+            (13, "53"),
+            (14, "-"),
+        ] {
+            assert!(
+                replace(index, value).is_err(),
+                "argument {index} as {value}"
+            );
+        }
+        assert!(
+            helper_request(&valid[..valid.len() - 1]).is_err(),
+            "truncated"
+        );
+        let mut extra = valid.to_vec();
+        extra.push("unexpected");
+        assert!(helper_request(&extra).is_err(), "trailing argument");
+        assert!(helper_request(&["grant"]).is_err());
+
+        assert_eq!(
+            helper_request(&["revoke-all"]),
+            Ok(HelperRequest::RevokeAll)
+        );
+        assert!(helper_request(&["revoke-all", "ufw"]).is_err());
+    }
+
+    #[test]
+    fn one_helper_invocation_carries_every_scope_of_a_flow() {
+        let firewalld = AuthorizedScope {
+            firewall: FirewallKind::Firewalld,
+            zone: Some("home".to_string()),
+            ..numbered_scope(1)
+        };
+        let scopes = vec![
+            numbered_scope(1),
+            firewalld,
+            AuthorizedScope {
+                port: DEVELOPMENT_COORDINATOR_PORT,
+                ..tcp("wlp6s0", "2806:101e:e:8970::/64", "2806:101e:e:8970::/64")
+            },
+            udp("wlp6s0", "ff02::fb", "fe80::/10"),
+            tcp("tailscale0", "100.101.2.3", "100.64.0.0/10"),
+        ];
+        for grant in [true, false] {
+            let arguments = privileged_helper_arguments(&scopes, grant).expect("arguments");
+            assert_eq!(arguments[0], PRIVILEGED_HELPER_ARGUMENT);
+            assert_eq!(arguments.len(), 2 + 7 * scopes.len());
+            let request = parse_privileged_helper_request(&mut arguments.into_iter().skip(1));
+            assert_eq!(
+                request,
+                Ok(HelperRequest::Apply {
+                    scopes: scopes.clone(),
+                    grant
+                })
+            );
+        }
+
+        let most: Vec<AuthorizedScope> = (0..MAX_AUTHORIZED_SCOPES)
+            .map(|index| numbered_scope(u8::try_from(index).unwrap()))
+            .collect();
+        let arguments = privileged_helper_arguments(&most, false).expect("bounded arguments");
+        let mut too_many: Vec<String> = arguments.into_iter().skip(1).collect();
+        too_many.extend(too_many[1..8].to_vec());
+        assert!(parse_privileged_helper_request(&mut too_many.into_iter()).is_err());
+        assert!(privileged_helper_arguments(&[], true).is_err());
+        assert!(privileged_helper_arguments(&[most.clone(), most].concat(), true).is_err());
+        let other_port = AuthorizedScope {
+            port: 8080,
+            ..numbered_scope(1)
+        };
+        assert!(privileged_helper_arguments(&[other_port], true).is_err());
+    }
+
+    #[test]
+    fn a_grant_stops_at_a_failed_listener_rule_but_not_at_a_failed_discovery_rule() {
+        let discovery = udp("wlp2s0", "224.0.0.251", "192.168.1.0/24");
+        let scopes = [
+            numbered_scope(1),
+            numbered_scope(2),
+            discovery.clone(),
+            numbered_scope(3),
+        ];
+        let run = |grant: bool, failures: &[AuthorizedScope]| {
+            let mut attempted = Vec::new();
+            let result = apply_each(&scopes, grant, |scope| {
+                attempted.push(scope.clone());
+                if failures.contains(scope) {
+                    Err(format!("failed {}", scope.source))
+                } else {
+                    Ok(())
+                }
+            });
+            (result, attempted)
+        };
+
+        let (result, attempted) = run(true, std::slice::from_ref(&discovery));
+        assert_eq!(result, Ok(()));
+        assert_eq!(attempted, scopes);
+
+        let failures = [numbered_scope(2), discovery];
+        let (result, attempted) = run(true, &failures);
+        assert_eq!(result, Err("failed 192.168.2.0/24".to_string()));
+        assert_eq!(attempted, scopes[..2]);
+
+        let (result, attempted) = run(false, &failures);
+        assert_eq!(result, Err("failed 192.168.2.0/24".to_string()));
+        assert_eq!(attempted, scopes, "a revoke attempts every scope");
+    }
 
     #[test]
     fn a_full_record_refuses_a_grant_before_any_rule_changes() {
+        let last = u8::try_from(MAX_AUTHORIZED_SCOPES).unwrap() - 2;
         let mut stored = empty_state();
-        stored.scopes = (0..30).map(|index| granted(index, &[])).collect();
-        stored.pending = vec![numbered_scope(30)];
+        stored.scopes = (0..last).map(|index| granted(index, &[])).collect();
+        stored.pending = vec![numbered_scope(last)];
         let mut applied = Vec::new();
         let result = grant_scopes(
             &mut stored,
-            vec![numbered_scope(31), numbered_scope(32)],
-            None,
+            vec![candidate(last + 1, None), candidate(last + 2, None)],
             |_| Ok(()),
             |scopes| {
                 applied.extend_from_slice(scopes);
@@ -1326,12 +2336,14 @@ bad/interface 0001A8C0 00000000 0001 0 0 600 00FFFFFF 0 0 0\n";
         );
         assert!(result.is_err());
         assert!(applied.is_empty());
-        assert_eq!(stored.scopes.len() + stored.pending.len(), 31);
+        assert_eq!(
+            stored.scopes.len() + stored.pending.len(),
+            MAX_AUTHORIZED_SCOPES - 1
+        );
 
         let granted = grant_scopes(
             &mut stored,
-            vec![numbered_scope(30), numbered_scope(31)],
-            None,
+            vec![candidate(last, None), candidate(last + 1, None)],
             |_| Ok(()),
             |scopes| {
                 applied.extend_from_slice(scopes);
@@ -1339,7 +2351,10 @@ bad/interface 0001A8C0 00000000 0001 0 0 600 00FFFFFF 0 0 0\n";
             },
         );
         assert!(granted.is_ok());
-        assert_eq!(applied, vec![numbered_scope(30), numbered_scope(31)]);
+        assert_eq!(
+            applied,
+            vec![numbered_scope(last), numbered_scope(last + 1)]
+        );
         assert_eq!(stored.scopes.len(), MAX_AUTHORIZED_SCOPES);
         assert!(stored.pending.is_empty());
     }
@@ -1351,8 +2366,7 @@ bad/interface 0001A8C0 00000000 0001 0 0 600 00FFFFFF 0 0 0\n";
         let mut calls = Vec::new();
         let result = grant_scopes(
             &mut stored,
-            vec![numbered_scope(1), numbered_scope(2)],
-            Some(HOME),
+            vec![candidate(1, Some(HOME)), candidate(2, Some(HOME))],
             |state| {
                 persisted.push((state.scopes.len(), state.pending.len()));
                 Ok(())
@@ -1370,8 +2384,11 @@ bad/interface 0001A8C0 00000000 0001 0 0 600 00FFFFFF 0 0 0\n";
 
         let granted_again = grant_scopes(
             &mut stored,
-            vec![numbered_scope(1), numbered_scope(2), numbered_scope(3)],
-            Some(HOME),
+            vec![
+                candidate(1, Some(HOME)),
+                candidate(2, Some(HOME)),
+                candidate(3, Some(CAFE)),
+            ],
             |state| {
                 persisted.push((state.scopes.len(), state.pending.len()));
                 Ok(())
@@ -1385,7 +2402,15 @@ bad/interface 0001A8C0 00000000 0001 0 0 600 00FFFFFF 0 0 0\n";
         assert_eq!(calls.len(), 2);
         assert_eq!(calls[1].len(), 3);
         assert_eq!(persisted[1..], [(0, 3), (3, 0)]);
-        assert_eq!(rules(&stored).len(), 3);
+        assert_eq!(
+            stored.scopes,
+            vec![
+                granted(1, &[HOME]),
+                granted(2, &[HOME]),
+                granted(3, &[CAFE])
+            ],
+            "each scope records the network of its own interface"
+        );
 
         stored.pending = vec![numbered_scope(4)];
         let mut removals = Vec::new();
@@ -1416,34 +2441,53 @@ bad/interface 0001A8C0 00000000 0001 0 0 600 00FFFFFF 0 0 0\n";
     fn rules_admit_peers_only_on_networks_the_user_confirmed() {
         let mut stored = empty_state();
         stored.scopes = vec![granted(1, &[HOME])];
-        let candidates = [numbered_scope(1)];
-        let no_authorization = || false;
+        let state = |stored: &StoredNetworkAccess, candidates: &[Candidate], can: bool| {
+            access_state(stored, candidates, || can)
+        };
         assert_eq!(
-            access_state(&stored, &candidates, Some(HOME), no_authorization),
+            state(&stored, &[candidate(1, Some(HOME))], false),
             NetworkAccessState::Granted
         );
         assert_eq!(
-            access_state(&stored, &candidates, Some(CAFE), no_authorization),
+            state(&stored, &[candidate(1, Some(CAFE))], false),
             NetworkAccessState::NetworkConfirmationRequired
         );
         assert_eq!(
-            access_state(&stored, &candidates, None, no_authorization),
+            state(&stored, &[candidate(1, None)], false),
             NetworkAccessState::Granted
         );
-        let missing = [numbered_scope(1), numbered_scope(2)];
+        let missing = [candidate(1, Some(HOME)), candidate(2, Some(HOME))];
         assert_eq!(
-            access_state(&stored, &missing, Some(HOME), || true),
+            state(&stored, &missing, true),
             NetworkAccessState::AuthorizationRequired
         );
         assert_eq!(
-            access_state(&stored, &missing, Some(HOME), no_authorization),
+            state(&stored, &missing, false),
             NetworkAccessState::ManualActionRequired
+        );
+        let discovery = Candidate {
+            scope: udp("wlp2s0", "224.0.0.251", "192.168.1.0/24"),
+            network: Some(HOME.to_string()),
+        };
+        assert_eq!(
+            state(&stored, &[candidate(1, Some(HOME)), discovery], true),
+            NetworkAccessState::Granted,
+            "a missing discovery rule never blocks linking"
         );
 
         stored.scopes = vec![granted(1, &[])];
         assert_eq!(
-            access_state(&stored, &candidates, Some(HOME), no_authorization),
+            state(&stored, &[candidate(1, Some(HOME))], false),
             NetworkAccessState::NetworkConfirmationRequired
+        );
+        assert!(
+            admits_lan_peers(
+                Path::new("/nonexistent"),
+                &[local("wlp2s0", "192.168.1.66", 24)],
+                "10.0.0.2".parse().unwrap(),
+                COORDINATOR_PORT
+            ),
+            "a local address without an interface entry has no rule to confirm"
         );
     }
 
@@ -1454,8 +2498,7 @@ bad/interface 0001A8C0 00000000 0001 0 0 600 00FFFFFF 0 0 0\n";
         let mut persisted = 0;
         let confirmed = grant_scopes(
             &mut stored,
-            vec![numbered_scope(1)],
-            Some(CAFE),
+            vec![candidate(1, Some(CAFE))],
             |_| {
                 persisted += 1;
                 Ok(())
@@ -1479,6 +2522,33 @@ bad/interface 0001A8C0 00000000 0001 0 0 600 00FFFFFF 0 0 0\n";
         assert!(!allow_network(&mut saved, Some(&identities[1])));
         assert!(!allow_network(&mut saved, None));
         assert_eq!(saved.networks, identities[1..]);
+    }
+
+    #[test]
+    fn saved_state_of_another_schema_version_is_refused() {
+        let folder = scratch_folder("state");
+        let mut stored = empty_state();
+        stored.scopes = vec![granted(1, &[HOME])];
+        stored.pending = vec![udp("wlp6s0", "ff02::fb", "fe80::/10")];
+        persist_state(&folder, &stored).expect("persist");
+        let restored = read_state(&folder).expect("read");
+        assert_eq!(restored.scopes, stored.scopes);
+        assert_eq!(restored.pending, stored.pending);
+
+        let earlier = r#"{"schemaVersion":2,"scopes":[{"firewall":"ufw","interface":"wlp2s0","localAddress":"192.168.1.66","sourceNetwork":"192.168.1.0/24","port":43821,"networks":[]}],"pending":[]}"#;
+        fs::write(state_path(&folder), earlier).unwrap();
+        let error = read_state(&folder).expect_err("schema version 2");
+        assert!(error.contains("unsupported"), "{error}");
+
+        let broad = serde_json::to_string(&StoredNetworkAccess {
+            schema_version: STATE_SCHEMA_VERSION,
+            scopes: Vec::new(),
+            pending: vec![tcp("eth0", "192.168.1.66", "0.0.0.0/0")],
+        })
+        .unwrap();
+        fs::write(state_path(&folder), broad).unwrap();
+        assert!(read_state(&folder).is_err(), "saved scopes are validated");
+        fs::remove_dir_all(&folder).unwrap();
     }
 
     #[test]
@@ -1527,35 +2597,15 @@ IP address       HW type     Flags       HW address            Mask     Device
     }
 
     #[test]
-    fn a_connected_route_broader_than_its_block_is_narrowed_to_the_block() {
-        let local = Ipv4Addr::new(10, 1, 2, 3);
-        let wide = lan_scope("eth0".to_string(), local, Ipv4Addr::new(254, 0, 0, 0)).unwrap();
-        assert_eq!(wide.source_network, "10.0.0.0/8");
-        let narrow = lan_scope("eth0".to_string(), local, Ipv4Addr::new(255, 255, 255, 0)).unwrap();
-        assert_eq!(narrow.source_network, "10.1.2.0/24");
-        let overlay = Ipv4Addr::new(100, 101, 2, 3);
-        let route = "Iface Destination Gateway Flags RefCnt Use Metric Mask MTU Window IRTT\n\
-tailscale0 00004064 00000000 0001 0 0 0 0000C0FF 0 0 0\n";
-        let (interface, mask) = parse_local_ipv4_route(route, overlay).expect("overlay route");
-        assert_eq!(interface, "tailscale0");
+    fn firewall_commands_name_the_protocol_interface_and_both_prefixes() {
         assert_eq!(
-            lan_scope(interface, overlay, mask).unwrap().source_network,
-            "100.64.0.0/10"
-        );
-    }
-
-    #[test]
-    fn ufw_rule_is_limited_to_the_current_interface_address_and_subnet() {
-        let scope = AuthorizedScope {
-            firewall: FirewallKind::Ufw,
-            interface: "wlp2s0".to_string(),
-            local_address: Ipv4Addr::new(192, 168, 1, 66),
-            source_network: "192.168.1.0/24".to_string(),
-            port: DEVELOPMENT_COORDINATOR_PORT,
-            zone: None,
-        };
-        assert_eq!(
-            ufw_arguments(&scope, true),
+            ufw_arguments(
+                &AuthorizedScope {
+                    port: DEVELOPMENT_COORDINATOR_PORT,
+                    ..tcp("wlp2s0", "192.168.1.0/24", "192.168.1.0/24")
+                },
+                true
+            ),
             [
                 "allow",
                 "in",
@@ -1566,138 +2616,56 @@ tailscale0 00004064 00000000 0001 0 0 0 0000C0FF 0 0 0\n";
                 "from",
                 "192.168.1.0/24",
                 "to",
-                "192.168.1.66",
+                "192.168.1.0/24",
                 "port",
                 "43822",
                 "comment",
                 "Ganbaru device linking",
             ]
         );
+        let discovery = udp("wlp6s0", "ff02::fb", "fe80::/10");
+        assert_eq!(
+            ufw_arguments(&discovery, false)[..12],
+            [
+                "delete",
+                "allow",
+                "in",
+                "on",
+                "wlp6s0",
+                "proto",
+                "udp",
+                "from",
+                "fe80::/10",
+                "to",
+                "ff02::fb",
+                "port",
+            ]
+            .map(str::to_string)
+        );
+        assert_eq!(
+            firewalld_rich_rule(&discovery),
+            "rule family=\"ipv6\" source address=\"fe80::/10\" destination address=\"ff02::fb/128\" port port=\"5353\" protocol=\"udp\" accept"
+        );
     }
 
     #[test]
-    fn ufw_enabled_parser_ignores_comments_and_disabled_values() {
-        assert!(!"# ENABLED=yes\nENABLED=no\n".lines().any(|line| {
-            line.split_once('=')
-                .is_some_and(|(key, value)| key.trim() == "ENABLED" && value.trim() == "yes")
-        }));
+    fn configuration_flags_ignore_comments_and_other_values() {
+        assert!(!config_value_is_yes(
+            "# ENABLED=yes\nENABLED=no\n",
+            "ENABLED"
+        ));
+        assert!(config_value_is_yes("ENABLED=yes\n", "ENABLED"));
+        assert!(config_value_is_yes("IPV6=\"yes\"\n", "IPV6"));
+        assert!(!config_value_is_yes("IPV6=yes\n", "ENABLED"));
+        assert!(!config_value_is_yes("NOIPV6=yes\n", "IPV6"));
     }
 
     #[test]
-    fn privileged_helper_accepts_only_a_bounded_complete_scope() {
-        let mut arguments = [
-            "grant",
-            "ufw",
-            "wlp2s0",
-            "192.168.1.66",
-            "192.168.1.0/24",
-            "-",
-        ]
-        .into_iter()
-        .map(str::to_string);
-        let Ok(HelperRequest::Apply { scopes, grant }) =
-            parse_privileged_helper_request(&mut arguments)
-        else {
-            panic!("valid helper scope");
-        };
-        assert!(grant);
-        assert_eq!(scopes.len(), 1);
-        assert_eq!(scopes[0].firewall, FirewallKind::Ufw);
-        assert_eq!(scopes[0].local_address, Ipv4Addr::new(192, 168, 1, 66));
-
-        let mut broad = ["grant", "ufw", "wlp2s0", "192.168.1.66", "0.0.0.0/0", "-"]
-            .into_iter()
-            .map(str::to_string);
-        assert!(parse_privileged_helper_request(&mut broad).is_err());
-
-        let mut extra = [
-            "grant",
-            "ufw",
-            "wlp2s0",
-            "192.168.1.66",
-            "192.168.1.0/24",
-            "-",
-            "unexpected",
-        ]
-        .into_iter()
-        .map(str::to_string);
-        assert!(parse_privileged_helper_request(&mut extra).is_err());
-
-        let revoke_all = |arguments: &[&str]| {
-            parse_privileged_helper_request(&mut arguments.iter().map(|value| value.to_string()))
-        };
-        assert_eq!(revoke_all(&["revoke-all"]), Ok(HelperRequest::RevokeAll));
-        assert!(revoke_all(&["revoke-all", "ufw"]).is_err());
-        assert!(revoke_all(&["grant"]).is_err());
-    }
-
-    #[test]
-    fn one_helper_invocation_carries_every_scope_of_a_flow() {
-        let firewalld = AuthorizedScope {
-            firewall: FirewallKind::Firewalld,
-            zone: Some("home".to_string()),
-            ..numbered_scope(1)
-        };
-        let scopes = vec![numbered_scope(1), firewalld, numbered_scope(2)];
-        for grant in [true, false] {
-            let arguments = privileged_helper_arguments(&scopes, grant).expect("arguments");
-            assert_eq!(arguments[0], PRIVILEGED_HELPER_ARGUMENT);
-            let request = parse_privileged_helper_request(&mut arguments.into_iter().skip(1));
-            assert_eq!(
-                request,
-                Ok(HelperRequest::Apply {
-                    scopes: scopes.clone(),
-                    grant
-                })
-            );
-        }
-
-        let most: Vec<AuthorizedScope> = (0..MAX_AUTHORIZED_SCOPES)
-            .map(|index| numbered_scope(index as u8))
-            .collect();
-        let arguments = privileged_helper_arguments(&most, false).expect("bounded arguments");
-        let mut too_many: Vec<String> = arguments.into_iter().skip(1).collect();
-        too_many.extend(too_many[1..6].to_vec());
-        assert!(parse_privileged_helper_request(&mut too_many.into_iter()).is_err());
-        assert!(privileged_helper_arguments(&[], true).is_err());
-        assert!(privileged_helper_arguments(&[most.clone(), most].concat(), true).is_err());
-        let development = AuthorizedScope {
-            port: DEVELOPMENT_COORDINATOR_PORT,
-            ..numbered_scope(1)
-        };
-        assert!(privileged_helper_arguments(&[development], true).is_err());
-
-        let mut truncated = privileged_helper_arguments(&scopes, true).expect("arguments");
-        truncated.pop();
-        assert!(parse_privileged_helper_request(&mut truncated.into_iter().skip(1)).is_err());
-    }
-
-    #[test]
-    fn a_grant_stops_at_its_first_failure_while_a_revoke_attempts_every_scope() {
-        let scopes = [1, 2, 3].map(numbered_scope);
-        let fail_second = |attempted: &mut Vec<AuthorizedScope>, scope: &AuthorizedScope| {
-            attempted.push(scope.clone());
-            if scope == &numbered_scope(2) {
-                Err(format!("failed {}", scope.source_network))
-            } else {
-                Ok(())
-            }
-        };
-        let mut attempted = Vec::new();
-        let granted = apply_each(&scopes, true, |scope| fail_second(&mut attempted, scope));
-        assert_eq!(granted, Err("failed 192.168.2.0/24".to_string()));
-        assert_eq!(attempted, scopes[..2]);
-
-        let mut attempted = Vec::new();
-        let revoked = apply_each(&scopes, false, |scope| fail_second(&mut attempted, scope));
-        assert_eq!(revoked, Err("failed 192.168.2.0/24".to_string()));
-        assert_eq!(attempted, scopes);
-    }
-
-    #[test]
-    fn system_commands_resolve_only_to_files_root_controls() {
+    fn only_root_owned_entries_that_others_cannot_write_are_trusted() {
         use std::os::unix::fs::PermissionsExt;
 
+        assert!(root_controlled(&Path::new("/").symlink_metadata().unwrap()));
+        assert_ne!(PACKAGED_HELPER_PATH, PACKAGED_APP_PATH);
         assert!(
             PKEXEC_PATHS
                 .iter()
@@ -1708,76 +2676,113 @@ tailscale0 00004064 00000000 0001 0 0 0 0000C0FF 0 0 0\n";
             Some(PathBuf::from("/usr/bin/env"))
         );
 
-        let folder = std::env::temp_dir().join(format!("ganbaru-command-{}", std::process::id()));
-        fs::create_dir_all(&folder).unwrap();
+        let folder = scratch_folder("command");
         let planted = folder.join("pkexec");
         fs::write(&planted, b"#!/bin/sh\n").unwrap();
         fs::set_permissions(&planted, fs::Permissions::from_mode(0o755)).unwrap();
         if planted.symlink_metadata().unwrap().uid() != 0 {
+            assert!(!root_controlled(&folder.symlink_metadata().unwrap()));
             assert_eq!(command_path(&[planted.to_str().unwrap()]), None);
         }
         fs::remove_dir_all(&folder).unwrap();
     }
 
     #[test]
-    fn package_removal_finds_only_the_app_ufw_rules() {
+    fn package_removal_finds_every_app_ufw_rule_shape() {
         let output = "\
 Added user rules (see 'ufw status' for running firewall):
 ufw allow 22/tcp
 ufw allow in on wlp2s0 from 192.168.1.0/24 to 192.168.1.66 port 43821 proto tcp comment 'Ganbaru device linking'
+ufw allow in on wlp2s0 from 192.168.1.0/24 to 192.168.1.0/24 port 43822 proto tcp comment 'Ganbaru device linking'
+ufw allow in on wlp2s0 from 192.168.1.0/24 to 224.0.0.251 port 5353 proto udp comment 'Ganbaru device linking'
+ufw allow in on wlp6s0 from 2806:101e:e:8970::/64 to 2806:101e:e:8970::/64 port 43821 proto tcp comment 'Ganbaru device linking'
+ufw allow in on wlp6s0 from fe80::/10 to ff02::fb port 5353 proto udp comment 'Ganbaru device linking'
+ufw allow in on tailscale0 from 100.64.0.0/10 to 100.101.2.3 port 43821 proto tcp comment 'Ganbaru device linking'
 ufw allow in on wlp2s0 from 192.168.1.0/24 to 192.168.1.66 port 43821 proto tcp comment 'My own rule'
 ufw allow in on wlp2s0 from 192.168.1.0/24 to 192.168.1.66 port 8080 proto tcp comment 'Ganbaru device linking'
 ufw allow in on wlp2s0 from 0.0.0.0/0 to 192.168.1.66 port 43821 proto tcp comment 'Ganbaru device linking'
+ufw allow in on wlp6s0 from ::/0 to ff02::fb port 5353 proto udp comment 'Ganbaru device linking'
 ufw allow in on wlp2s0 from 192.168.1.0/24 port 43821 to 192.168.1.66 proto tcp comment 'Ganbaru device linking'
 ufw allow in on wlp2s0 from 192.168.1.0/24 to 192.168.1.66 port 43821 proto udp comment 'Ganbaru device linking'
+ufw allow in on wlp2s0 from 192.168.1.0/24 to 192.168.1.66 port 5353 proto udp comment 'Ganbaru device linking'
 ufw deny in on wlp2s0 from 192.168.1.0/24 to 192.168.1.66 port 43821 proto tcp comment 'Ganbaru device linking'
-ufw allow in on eth0 from 10.0.0.0/8 to 10.4.0.2 port 43821 proto tcp comment 'Ganbaru device linking'
+ufw allow from 192.168.1.0/24 to 192.168.1.66 port 43821 proto tcp comment 'Ganbaru device linking'
 ";
-        let scopes = parse_ufw_added_rules(output);
         assert_eq!(
-            scopes,
+            parse_ufw_added_rules(output),
             vec![
+                tcp("wlp2s0", "192.168.1.66", "192.168.1.0/24"),
                 AuthorizedScope {
-                    firewall: FirewallKind::Ufw,
-                    interface: "wlp2s0".to_string(),
-                    local_address: Ipv4Addr::new(192, 168, 1, 66),
-                    source_network: "192.168.1.0/24".to_string(),
-                    port: COORDINATOR_PORT,
-                    zone: None,
+                    port: DEVELOPMENT_COORDINATOR_PORT,
+                    ..tcp("wlp2s0", "192.168.1.0/24", "192.168.1.0/24")
                 },
-                AuthorizedScope {
-                    firewall: FirewallKind::Ufw,
-                    interface: "eth0".to_string(),
-                    local_address: Ipv4Addr::new(10, 4, 0, 2),
-                    source_network: "10.0.0.0/8".to_string(),
-                    port: COORDINATOR_PORT,
-                    zone: None,
-                },
+                udp("wlp2s0", "224.0.0.251", "192.168.1.0/24"),
+                tcp("wlp6s0", "2806:101e:e:8970::/64", "2806:101e:e:8970::/64"),
+                udp("wlp6s0", "ff02::fb", "fe80::/10"),
+                tcp("tailscale0", "100.101.2.3", "100.64.0.0/10"),
             ]
         );
-        assert_eq!(
-            ufw_arguments(&scopes[0], false)[..4],
-            ["delete", "allow", "in", "on"].map(str::to_string)
-        );
+
+        for scope in [
+            tcp("wlp2s0", "192.168.1.66", "192.168.1.0/24"),
+            udp("wlp6s0", "ff02::fb", "fe80::/10"),
+        ] {
+            let line = format!(
+                "ufw {} '{RULE_COMMENT}'",
+                ufw_arguments(&scope, true)[..13].join(" ")
+            );
+            assert_eq!(parse_ufw_added_rules(&line), vec![scope], "{line}");
+        }
     }
 
     #[test]
-    fn package_removal_finds_only_the_app_firewalld_rules() {
-        let app = "rule family=\"ipv4\" source address=\"192.168.1.0/24\" destination address=\"192.168.1.66/32\" port port=\"43821\" protocol=\"tcp\" accept";
-        let scope = parse_firewalld_rich_rule("home", app).expect("app rule");
+    fn package_removal_finds_every_app_firewalld_rule_shape() {
+        let earlier = "rule family=\"ipv4\" source address=\"192.168.1.0/24\" destination address=\"192.168.1.66/32\" port port=\"43821\" protocol=\"tcp\" accept";
+        let scope = parse_firewalld_rich_rule("home", earlier).expect("earlier host rule");
         assert_eq!(scope.zone.as_deref(), Some("home"));
-        assert_eq!(scope.local_address, Ipv4Addr::new(192, 168, 1, 66));
-        assert_eq!(scope.source_network, "192.168.1.0/24");
-        let normalized = app.replace("192.168.1.66/32", "192.168.1.66");
-        assert_eq!(parse_firewalld_rich_rule("home", &normalized), Some(scope));
+        assert_eq!(scope.destination, host("192.168.1.66"));
+        assert_eq!(scope.source, prefix("192.168.1.0/24"));
+        let bare = earlier.replace("192.168.1.66/32", "192.168.1.66");
+        assert_eq!(parse_firewalld_rich_rule("home", &bare), Some(scope));
 
+        let zoned = |scope: AuthorizedScope| AuthorizedScope {
+            firewall: FirewallKind::Firewalld,
+            interface: String::new(),
+            zone: Some("home".to_string()),
+            ..scope
+        };
+        for scope in [
+            zoned(tcp("wlp2s0", "192.168.1.0/24", "192.168.1.0/24")),
+            zoned(udp("wlp2s0", "224.0.0.251", "192.168.1.0/24")),
+            zoned(tcp(
+                "wlp6s0",
+                "2806:101e:e:8970::/64",
+                "2806:101e:e:8970::/64",
+            )),
+            zoned(udp("wlp6s0", "ff02::fb", "fe80::/10")),
+            zoned(tcp("tailscale0", "fd7a:115c:a1e0::1", "fc00::/7")),
+        ] {
+            let rule = firewalld_rich_rule(&scope);
+            assert_eq!(
+                parse_firewalld_rich_rule("home", &rule),
+                Some(scope),
+                "{rule}"
+            );
+        }
+
+        let ipv6 = "rule family=\"ipv6\" source address=\"fe80::/10\" destination address=\"ff02::fb\" port port=\"5353\" protocol=\"udp\" accept";
+        assert!(parse_firewalld_rich_rule("public", ipv6).is_some());
         for foreign in [
-            app.replace("43821", "8080"),
-            app.replace("accept", "reject"),
-            app.replace("\"tcp\"", "\"udp\""),
-            app.replace("192.168.1.0/24", "0.0.0.0/0"),
-            app.replace("ipv4", "ipv6"),
-            format!("{app} log"),
+            earlier.replace("43821", "8080"),
+            earlier.replace("accept", "reject"),
+            earlier.replace("\"tcp\"", "\"udp\""),
+            earlier.replace("192.168.1.0/24", "0.0.0.0/0"),
+            earlier.replace("ipv4", "ipv6"),
+            ipv6.replace("ipv6", "ipv4"),
+            ipv6.replace("ff02::fb", "ff02::1"),
+            ipv6.replace("5353", "43821"),
+            ipv6.replace("fe80::/10", "::/0"),
+            format!("{earlier} log"),
             "rule service name=\"ssh\" accept".to_string(),
         ] {
             assert_eq!(
@@ -1786,6 +2791,6 @@ ufw allow in on eth0 from 10.0.0.0/8 to 10.4.0.2 port 43821 proto tcp comment 'G
                 "{foreign}"
             );
         }
-        assert_eq!(parse_firewalld_rich_rule("bad zone", app), None);
+        assert_eq!(parse_firewalld_rich_rule("bad zone", earlier), None);
     }
 }

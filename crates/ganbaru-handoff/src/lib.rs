@@ -2,7 +2,7 @@
 //! that linked devices and the desktop coordinator exchange, invitation and contact QR encoding,
 //! staged bundle validation, the device-private pairing identity, membership, and transfer
 //! progress, the LAN-only rule for outgoing connection targets, and on Linux the explicit
-//! firewall authorization for the coordinator port with its privileged helper.
+//! firewall authorization for the coordinator port and LAN discovery with its privileged helper.
 
 pub mod dial;
 #[cfg(target_os = "linux")]

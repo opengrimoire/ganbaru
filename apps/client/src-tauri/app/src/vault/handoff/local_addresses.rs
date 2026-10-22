@@ -1,9 +1,12 @@
 //! Local addresses this desktop names to other devices.
 //!
-//! The coordinator listens on every local address, so the address it hands out in invitations,
-//! contact cards, and the Linux firewall rules is chosen separately from the bind.
+//! The coordinator listens on every local address, so the addresses it hands out in invitations,
+//! contact cards, and sync states, and the interfaces the Linux firewall rules open for them, are
+//! chosen separately from the bind.
 
 use ganbaru_handoff::dial::{DialAddressClass, reportable_address};
+#[cfg(target_os = "linux")]
+use ganbaru_handoff::network_access::LocalInterfaceAddress;
 use ganbaru_handoff::protocol::MAX_COORDINATOR_ENDPOINTS;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket};
 use std::sync::Mutex;
@@ -26,14 +29,53 @@ pub(crate) fn preferred_invitation_address() -> Result<IpAddr, String> {
         .ok_or_else(|| NO_LOCAL_NETWORK_ADDRESS.to_string())
 }
 
-/// The IPv4 address this desktop reports for the Linux firewall rules, whose scopes are IPv4
-/// only. `None` when no reportable IPv4 address exists.
+/// The interface addresses behind the endpoints this coordinator reports, which the Linux
+/// firewall rules must open.
 #[cfg(target_os = "linux")]
-pub(crate) fn preferred_ipv4_address() -> Option<Ipv4Addr> {
-    match preferred_invitation_address() {
-        Ok(IpAddr::V4(address)) => Some(address),
-        _ => None,
-    }
+pub(crate) fn reported_interface_addresses() -> Vec<LocalInterfaceAddress> {
+    let interfaces = firewall_interface_addresses();
+    let addresses: Vec<IpAddr> = interfaces.iter().map(|entry| entry.address).collect();
+    select_reported(
+        interfaces,
+        &order_reported_addresses(routed_ipv4_source(), &addresses),
+    )
+}
+
+/// Every address of the interfaces that are not known to be down, with its interface and
+/// prefix length, for deciding which firewall rule a connection arrived through.
+#[cfg(target_os = "linux")]
+pub(crate) fn firewall_interface_addresses() -> Vec<LocalInterfaceAddress> {
+    up_interfaces()
+        .into_iter()
+        .map(|interface| LocalInterfaceAddress {
+            address: interface.ip(),
+            prefix_len: match &interface.addr {
+                if_addrs::IfAddr::V4(address) => address.prefixlen,
+                if_addrs::IfAddr::V6(address) => address.prefixlen,
+            },
+            interface: interface.name,
+        })
+        .collect()
+}
+
+/// The entries of `interfaces` whose address is among `reported`, in reported order. An address
+/// held by several interfaces keeps each entry.
+#[cfg(target_os = "linux")]
+fn select_reported(
+    interfaces: Vec<LocalInterfaceAddress>,
+    reported: &[IpAddr],
+) -> Vec<LocalInterfaceAddress> {
+    let mut selected: Vec<(usize, LocalInterfaceAddress)> = interfaces
+        .into_iter()
+        .filter_map(|entry| {
+            let position = reported
+                .iter()
+                .position(|address| *address == entry.address.to_canonical())?;
+            Some((position, entry))
+        })
+        .collect();
+    selected.sort_by_key(|(position, _)| *position);
+    selected.into_iter().map(|(_, entry)| entry).collect()
 }
 
 /// Picks the invitation address from the routed IPv4 source and the interface addresses.
@@ -164,11 +206,18 @@ fn routed_ipv4_source() -> Option<IpAddr> {
 /// Addresses of the interfaces that are not known to be down. Enumeration failures are logged
 /// and yield no addresses, which leaves the routed source as the only candidate.
 fn interface_addresses() -> Vec<IpAddr> {
+    up_interfaces()
+        .into_iter()
+        .map(|interface| interface.ip())
+        .collect()
+}
+
+/// Interface addresses that are not loopback and not known to be down.
+fn up_interfaces() -> Vec<if_addrs::Interface> {
     match if_addrs::get_if_addrs() {
         Ok(interfaces) => interfaces
             .into_iter()
             .filter(|interface| !interface.is_loopback() && !is_down(&interface.oper_status))
-            .map(|interface| interface.ip())
             .collect(),
         Err(error) => {
             eprintln!("list local network interfaces: {error}");
@@ -304,6 +353,44 @@ mod tests {
         let ordered = order_reported_addresses(None, &many);
         assert_eq!(ordered.len(), MAX_COORDINATOR_ENDPOINTS);
         assert_eq!(ordered, many[..MAX_COORDINATOR_ENDPOINTS]);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn firewall_addresses_follow_the_reported_order_and_keep_every_interface() {
+        let entry = |interface: &str, address: &str, prefix_len: u8| LocalInterfaceAddress {
+            interface: interface.to_string(),
+            address: ip(address),
+            prefix_len,
+        };
+        let interfaces = vec![
+            entry("tailscale0", "100.80.0.4", 32),
+            entry("wlp6s0", "2a00:1450::5", 64),
+            entry("wlp6s0", "fe80::1", 64),
+            entry("wlp2s0", "192.168.1.20", 24),
+            entry("br0", "192.168.1.20", 24),
+            entry("docker0", "172.17.0.1", 16),
+        ];
+        assert_eq!(
+            select_reported(
+                interfaces,
+                &addresses(&["192.168.1.20", "2a00:1450::5", "100.80.0.4"])
+            ),
+            vec![
+                entry("wlp2s0", "192.168.1.20", 24),
+                entry("br0", "192.168.1.20", 24),
+                entry("wlp6s0", "2a00:1450::5", 64),
+                entry("tailscale0", "100.80.0.4", 32),
+            ]
+        );
+        assert_eq!(
+            select_reported(
+                vec![entry("eth0", "::ffff:10.0.0.5", 24)],
+                &addresses(&["10.0.0.5"])
+            ),
+            vec![entry("eth0", "::ffff:10.0.0.5", 24)],
+            "a mapped interface address matches its IPv4 form"
+        );
     }
 
     #[test]

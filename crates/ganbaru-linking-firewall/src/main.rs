@@ -16,7 +16,7 @@ fn main() -> ExitCode {
         }
         None => {
             eprintln!(
-                "usage: ganbaru-linking-firewall --manage-linking-firewall <grant|revoke> (<ufw|firewalld> <interface> <address> <source> <zone|->)..."
+                "usage: ganbaru-linking-firewall --manage-linking-firewall <grant|revoke> (<ufw|firewalld> <tcp|udp> <interface> <destination> <source> <port> <zone|->)..."
             );
             eprintln!("       ganbaru-linking-firewall --manage-linking-firewall revoke-all");
             ExitCode::from(2)

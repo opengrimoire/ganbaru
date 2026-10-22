@@ -394,7 +394,7 @@ pub(crate) async fn handoff_create_pairing_invitation<R: Runtime>(
         endpoint: endpoint.to_string(),
         expires_at_ms: invitation.expires_at_ms,
         #[cfg(target_os = "linux")]
-        network_access: network_access_status_at(&app, endpoint)?,
+        network_access: network_access_status_for_port(&app, port)?,
     })
 }
 
@@ -446,15 +446,19 @@ pub(crate) async fn handoff_grant_network_access<R: Runtime>(
         .state::<CoordinatorLifecycle>()
         .port()?
         .ok_or_else(|| "vault handoff coordinator is not running".to_string())?;
-    let address = local_addresses::preferred_ipv4_address()
-        .ok_or_else(|| "Linux firewall access requires an IPv4 LAN address".to_string())?;
     let config_dir = app
         .path()
         .app_config_dir()
         .map_err(|error| format!("find app config directory: {error}"))?;
-    tauri::async_runtime::spawn_blocking(move || network_access::grant(&config_dir, address, port))
-        .await
-        .map_err(|error| format!("authorize Linux network access: {error}"))?
+    tauri::async_runtime::spawn_blocking(move || {
+        network_access::grant(
+            &config_dir,
+            &local_addresses::reported_interface_addresses(),
+            port,
+        )
+    })
+    .await
+    .map_err(|error| format!("authorize Linux network access: {error}"))?
 }
 
 #[cfg(target_os = "linux")]
@@ -691,30 +695,27 @@ fn status_vault_id(
 fn desktop_network_access_status<R: Runtime>(
     app: &tauri::AppHandle<R>,
 ) -> Result<network_access::NetworkAccessStatus, String> {
-    match app.state::<CoordinatorLifecycle>().reportable_endpoint()? {
-        Some(endpoint) => network_access_status_at(app, endpoint),
+    match app.state::<CoordinatorLifecycle>().port()? {
+        Some(port) => network_access_status_for_port(app, port),
         None => Ok(network_access::not_required()),
     }
 }
 
-/// Firewall status for peers dialing `endpoint`. Firewall scopes are IPv4 only, so an IPv6
-/// endpoint has no rule to confirm.
+/// Firewall status for peers dialing any endpoint this coordinator reports on `port`, over IPv4
+/// and IPv6.
 #[cfg(target_os = "linux")]
-fn network_access_status_at<R: Runtime>(
+fn network_access_status_for_port<R: Runtime>(
     app: &tauri::AppHandle<R>,
-    endpoint: SocketAddr,
+    port: u16,
 ) -> Result<network_access::NetworkAccessStatus, String> {
-    let std::net::IpAddr::V4(address) = endpoint.ip() else {
-        return Ok(network_access::not_required());
-    };
     let config_dir = app
         .path()
         .app_config_dir()
         .map_err(|error| format!("find app config directory: {error}"))?;
     Ok(network_access::status(
         &config_dir,
-        address,
-        endpoint.port(),
+        &local_addresses::reported_interface_addresses(),
+        port,
     ))
 }
 

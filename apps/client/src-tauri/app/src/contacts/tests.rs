@@ -10,7 +10,6 @@ use ganbaru_contacts::{
     CARD_NONCE_BYTES, ContactCard, PersonKeyPair, SignedCard, TrustKind, encode_nonce,
     random_bytes, request_signature_payload, sign_card, status_signature_payload,
 };
-use ganbaru_db::run_migrations;
 use sqlx::SqlitePool;
 
 async fn migrated_memory_pool() -> SqlitePool {
@@ -23,7 +22,9 @@ async fn migrated_memory_pool() -> SqlitePool {
         .execute(&pool)
         .await
         .unwrap();
-    run_migrations(&pool).await.unwrap();
+    ganbaru_db::test_support::apply_migrated_template(&pool)
+        .await
+        .unwrap();
     pool
 }
 

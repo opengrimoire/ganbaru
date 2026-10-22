@@ -30,4 +30,4 @@ tokio = { workspace = true }
 zip = { workspace = true }
 
 [dev-dependencies]
-ganbaru-db = { workspace = true }
+ganbaru-db = { workspace = true, features = ["test-support"] }

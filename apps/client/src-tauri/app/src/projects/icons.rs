@@ -1215,7 +1215,9 @@ mod reference_tests {
             .connect("sqlite::memory:")
             .await
             .unwrap();
-        ganbaru_db::run_migrations(&pool).await.unwrap();
+        ganbaru_db::test_support::apply_migrated_template(&pool)
+            .await
+            .unwrap();
         // Reference rows are seeded without their owning pages and users.
         sqlx::raw_sql("PRAGMA foreign_keys=OFF")
             .execute(&pool)

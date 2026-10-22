@@ -10,7 +10,6 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::{Arc, Mutex};
 
 use crate::notes;
-use ganbaru_db::run_migrations;
 
 const SQLITE_OK: c_int = 0;
 const SQLITE_TRACE_STMT: c_uint = 0x01;
@@ -302,7 +301,7 @@ async fn migrated_empty_pool() -> SqlitePool {
         .execute(&pool)
         .await
         .expect("enable foreign keys");
-    run_migrations(&pool)
+    ganbaru_db::test_support::apply_migrated_template(&pool)
         .await
         .expect("migrate empty first-use fixture");
     pool

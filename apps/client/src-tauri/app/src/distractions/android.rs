@@ -679,7 +679,9 @@ mod tests {
             .execute(&pool)
             .await
             .unwrap();
-        ganbaru_db::run_migrations(&pool).await.unwrap();
+        ganbaru_db::test_support::apply_migrated_template(&pool)
+            .await
+            .unwrap();
         let usage = event("usage-one");
         let mut block = event("block-one");
         block.kind = "block".into();

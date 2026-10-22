@@ -1,5 +1,4 @@
 use super::*;
-use ganbaru_db::run_migrations;
 use std::future::Future;
 
 fn block_on<F: Future>(future: F) -> F::Output {
@@ -20,7 +19,9 @@ async fn migrated_memory_pool() -> SqlitePool {
         .execute(&pool)
         .await
         .unwrap();
-    run_migrations(&pool).await.unwrap();
+    ganbaru_db::test_support::apply_migrated_template(&pool)
+        .await
+        .unwrap();
     pool
 }
 

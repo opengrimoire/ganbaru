@@ -786,7 +786,9 @@ mod tests {
                 .connect("sqlite::memory:")
                 .await
                 .unwrap();
-            ganbaru_db::run_migrations(&pool).await.unwrap();
+            ganbaru_db::test_support::apply_migrated_template(&pool)
+                .await
+                .unwrap();
             let hash = "a".repeat(64);
             let revision = "b".repeat(64);
             let mut tx = pool.begin().await.unwrap();

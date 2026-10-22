@@ -3,7 +3,6 @@ use super::{
     ensure_project_baseline_for_mutation, flush_due_checkpoints, history_schedule,
     initialize_project_history, mark_project_dirty_tx, mutation_result, restore,
 };
-use ganbaru_db::run_migrations;
 use sqlx::SqlitePool;
 
 const PROJECT_ID: &str = "10101010-1010-4010-8010-101010101010";
@@ -22,7 +21,9 @@ async fn migrated_pool() -> SqlitePool {
         .execute(&pool)
         .await
         .unwrap();
-    run_migrations(&pool).await.unwrap();
+    ganbaru_db::test_support::apply_migrated_template(&pool)
+        .await
+        .unwrap();
     pool
 }
 

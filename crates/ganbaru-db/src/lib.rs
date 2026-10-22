@@ -499,6 +499,9 @@ fn hardened_options(options: SqliteConnectOptions) -> SqliteConnectOptions {
         .pragma("cell_size_check", "ON")
 }
 
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_support;
+
 #[doc(hidden)]
 pub mod __private {
     pub use sqlx;

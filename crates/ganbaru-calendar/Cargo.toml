@@ -30,3 +30,4 @@ tokio = { workspace = true }
 
 [dev-dependencies]
 chrono = { workspace = true, features = ["clock"] }
+ganbaru-db = { workspace = true, features = ["test-support"] }

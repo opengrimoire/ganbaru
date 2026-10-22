@@ -55,7 +55,9 @@ mod tests;
 
 pub use adapter::{AdapterError, Adapters, DomainAdapter, Presentation};
 pub use apply::{ApplyReport, ClockWarning, ResealNeeded};
-pub use conflicts::{ConflictDetail, ConflictRow, ConflictVersion, OPEN_CONFLICT_MASK_SQL};
+pub use conflicts::{
+    ConflictDetail, ConflictRow, ConflictVersion, OPEN_CONFLICT_MASK_SQL, OpenConflict,
+};
 pub use devices::{DeviceNames, DeviceRef};
 pub use error::{SyncError, SyncResult};
 pub use local::{CarryReport, LocalRestoreReport, LocalWriterHead};

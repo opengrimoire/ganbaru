@@ -5,13 +5,16 @@ import {
   canRequestSync,
   syncClockAheadLines,
   formatSyncTime,
-  syncConflictTotal,
+  syncConflictLines,
+  syncDescription,
   syncDeviceName,
   syncHeldLines,
   syncLastExchangeLabel,
+  syncRecoveryTotal,
   syncRoleLabel,
   syncStateLabel,
 } from "./status";
+import { SyncPresentationRegistry } from "./presentation-registry";
 
 const t: Translate = ((key, ...args) => translateFromPartialCatalog({}, key, ...args)) as Translate;
 const NOW = Date.UTC(2026, 9, 9, 12, 0);
@@ -46,8 +49,37 @@ describe("sync status presentation", () => {
     ]);
   });
 
-  it("totals conflicts across tables", () => {
-    expect(syncConflictTotal(status({ conflicts: [{ table: "quick_notes", count: 2 }, { table: "quick_note_tags", count: 1 }] })))
+  it("describes conflicts per table in the words of the owning domain", () => {
+    const presentations = new SyncPresentationRegistry().register({
+      label: () => "Notes",
+      tables: { notes: { conflicts: (_t, count) => `${count} notes in conflict` }, note_tags: {} },
+      changed: () => {},
+    });
+    const conflicts = [
+      { table: "notes", count: 2 },
+      { table: "note_tags", count: 0 },
+      { table: "events", count: 1 },
+      { table: "tasks", count: 1 },
+    ];
+    expect(syncConflictLines(t, presentations, status({ conflicts }))).toEqual([
+      { table: "notes", line: "2 notes in conflict" },
+      { table: "events", line: t("sync.conflicts", 1) },
+      { table: "tasks", line: t("sync.conflicts", 1) },
+    ]);
+    expect(syncConflictLines(t, presentations, status({}))).toEqual([]);
+  });
+
+  it("lists the features of every registered domain in the description", () => {
+    const presentations = new SyncPresentationRegistry()
+      .register({ label: () => "Quick notes", tables: { quick_notes: {} }, changed: () => {} });
+    expect(syncDescription(t, "en", presentations)).toBe(t("sync.description", "Quick notes"));
+    presentations.register({ label: () => "Calendar", tables: { events: {} }, changed: () => {} });
+    expect(syncDescription(t, "en", presentations)).toBe(t("sync.description", "Quick notes and Calendar"));
+  });
+
+  it("totals recovery offers across tables", () => {
+    expect(syncRecoveryTotal(status({}))).toBe(0);
+    expect(syncRecoveryTotal(status({ recovery: [{ table: "quick_notes", count: 2 }, { table: "projects", count: 1 }] })))
       .toBe(3);
   });
 

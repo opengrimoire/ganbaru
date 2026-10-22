@@ -1,5 +1,7 @@
 //! Engine state for status reporting, and re-evaluation of held operations after an update.
 
+use std::collections::BTreeMap;
+
 use ganbaru_sync_contracts::hlc::{self, CLOCK_WARNING_AHEAD_MS, Hlc};
 use ganbaru_sync_contracts::{Envelope, Seq, TableId, WriterId};
 use sqlx::{Connection, Row, SqliteConnection};
@@ -80,8 +82,9 @@ pub struct SyncStatus {
     pub pending_captures: usize,
     /// Live rows with surfaced conflicts, per table name, for tables that have any.
     pub conflicts: Vec<(&'static str, usize)>,
-    /// Deleted rows offered for recovery.
-    pub recovery: usize,
+    /// Recovery offers per table name of their root row, for tables that have any. Each
+    /// offer counts once however many deleted descendants it brings back.
+    pub recovery: Vec<(&'static str, usize)>,
 }
 
 fn count(value: i64) -> SyncResult<usize> {
@@ -89,7 +92,8 @@ fn count(value: i64) -> SyncResult<usize> {
 }
 
 impl Engine {
-    /// Summarizes writers, pending operations, captures, conflicts, and recovery offers.
+    /// Summarizes writers, pending operations, captures, conflicts, and recovery offers. Recovery
+    /// offers are counted as `recovery_entries` lists them, so the counts match the list.
     pub async fn status(
         &self,
         conn: &mut SqliteConnection,
@@ -151,11 +155,17 @@ impl Engine {
                 .ok_or_else(|| corrupt("conflict on a row of an unknown table"))?;
             status.conflicts.push((table.name, count(rows)?));
         }
-        status.recovery = count(
-            sqlx::query_scalar("SELECT count(*) FROM sync_rows WHERE recovery = 1")
-                .fetch_one(&mut *conn)
-                .await?,
-        )?;
+        let mut offers: BTreeMap<TableId, usize> = BTreeMap::new();
+        for entry in self.recovery_entries(conn, ctx).await? {
+            *offers.entry(entry.table).or_default() += 1;
+        }
+        for (table, offers) in offers {
+            let table = self
+                .manifest()
+                .table(table)
+                .ok_or_else(|| corrupt("recovery offer on a row of an unknown table"))?;
+            status.recovery.push((table.name, offers));
+        }
         Ok(status)
     }
 

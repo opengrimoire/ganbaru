@@ -1,13 +1,37 @@
 //! Recovery offers of the active vault. Listing reads the engine directly; restoring and
 //! discarding seal with the local writer, so the service runs them inside a pass.
 
+use std::sync::LazyLock;
+
+use ganbaru_sync::manifest::vault::quick_notes;
 use ganbaru_sync::{DeviceRef, Engine, local};
 pub(crate) use ganbaru_sync_replica::recovery::{
-    RecoveryAction, RecoveryChoice, close, recoverable_table,
+    RecoveredRow, RecoveryAction, RecoveryChoice, RecoveryRestorers, RestoreFuture, close,
 };
 use serde::Serialize;
+use sqlx::SqlitePool;
 use tauri::{AppHandle, Runtime};
 use tokio::sync::oneshot;
+
+/// Restorers of the domains whose rows can root a recovery offer, one line per table.
+static RESTORERS: LazyLock<RecoveryRestorers> =
+    LazyLock::new(|| RecoveryRestorers::new().with(&quick_notes::NOTES, restore_quick_note));
+
+/// The recovery restorers of the vault domains.
+pub(crate) fn restorers() -> &'static RecoveryRestorers {
+    &RESTORERS
+}
+
+/// Restores a deleted Quick note as a new note. Notes have no cascade descendants, so a
+/// recovered note that carries some was grouped by a manifest this version does not know.
+fn restore_quick_note(pool: SqlitePool, row: RecoveredRow) -> RestoreFuture {
+    Box::pin(async move {
+        if !row.descendants.is_empty() {
+            return Err("a recovered quick note has deleted descendants".to_string());
+        }
+        ganbaru_quick_notes::restore_recovered(&pool, &row.values).await
+    })
+}
 
 /// A deleted row with edits the deletion did not see.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -18,6 +42,8 @@ pub(crate) struct RecoveryEntryView {
     pub row_key: String,
     pub title: String,
     pub preview: String,
+    /// Deleted descendants that restoring the row brings back with it.
+    pub descendants: usize,
     /// Device of the newest unseen edit.
     pub device: DeviceRef,
     /// When that edit was made, in Unix milliseconds.
@@ -64,6 +90,7 @@ pub(crate) async fn list<R: Runtime>(app: &AppHandle<R>) -> Result<Vec<RecoveryE
                 row_key: entry.row_key,
                 title: entry.presentation.title,
                 preview: entry.presentation.preview,
+                descendants: entry.descendants,
                 device: devices.describe(&entry.device_id),
                 edited_at_ms: entry.clock.physical_ms(),
             })
@@ -76,4 +103,21 @@ pub(crate) async fn list<R: Runtime>(app: &AppHandle<R>) -> Result<Vec<RecoveryE
             .then_with(|| left.row_key.cmp(&right.row_key))
     });
     Ok(views)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sync_recovery_restorers_cover_every_table_that_can_root_an_offer() {
+        let mut roots: Vec<&str> = Engine::vault()
+            .manifest()
+            .recovery_root_tables()
+            .into_iter()
+            .map(|table| table.name)
+            .collect();
+        roots.sort_unstable();
+        assert_eq!(restorers().tables().collect::<Vec<_>>(), roots);
+    }
 }

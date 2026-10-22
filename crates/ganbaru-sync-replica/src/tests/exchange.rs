@@ -9,7 +9,9 @@ use crate::client::{
     ClientSession, Exchange, Exchanged, MAX_EXCHANGE_BYTES, PeerIds, SyncTransport, wait,
 };
 use crate::hub::{HubContact, HubContactSource, HubVault, OpenHubVault, SyncHub};
-use crate::recovery::{RecoveryAction, RecoveryChoice};
+use crate::recovery::{
+    RecoveredRow, RecoveryAction, RecoveryChoice, RecoveryRestorers, RestoreFuture,
+};
 use crate::wire::{asset_to_wire, bytes_to_wire};
 use crate::writer::{ActiveWriter, SuccessorPlan, create_writer};
 use ganbaru_db::DatabasePoolRegistry;
@@ -19,7 +21,7 @@ use ganbaru_handoff::protocol::{
 use ganbaru_quick_notes::images;
 use ganbaru_sync::assets::AssetRef;
 use ganbaru_sync::manifest::vault::quick_notes::IMAGES_CLASS;
-use ganbaru_sync::manifest::vault::quick_notes::NOTES_TABLE;
+use ganbaru_sync::manifest::vault::quick_notes::{NOTES, NOTES_TABLE};
 use ganbaru_sync::{Engine, SpaceContext};
 use ganbaru_sync_contracts::bounds::MAX_WRITERS_PER_DEVICE;
 use ganbaru_sync_contracts::op::RevokeReason;
@@ -977,13 +979,13 @@ fn restoring_an_edit_that_outlived_a_deletion_closes_the_offer_everywhere() {
             &phone.pool,
             &phone.ctx,
             &mut phone.writer,
+            &restorers(),
             &RecoveryChoice {
                 table: NOTES_TABLE,
                 row_key: "note-2".to_string(),
                 action: RecoveryAction::Restore,
             },
             NOW_MS + 1,
-            restore_note(&phone.pool),
         )
         .await
         .expect("restore")
@@ -1027,13 +1029,13 @@ fn discarding_a_recovery_offer_keeps_the_deletion() {
             &hub_replica.pool,
             &hub_replica.ctx,
             &mut hub_replica.writer,
+            &restorers(),
             &RecoveryChoice {
                 table: NOTES_TABLE,
                 row_key: "note-3".to_string(),
                 action: RecoveryAction::Discard,
             },
             NOW_MS + 1,
-            restore_note(&hub_replica.pool),
         )
         .await
         .expect("discard");
@@ -1072,22 +1074,14 @@ fn png(len: usize, seed: u8) -> Vec<u8> {
     bytes
 }
 
-/// The pending restoration of a recovered Quick note.
-type Restoring = std::pin::Pin<Box<dyn Future<Output = Result<String, String>> + Send>>;
-
 /// Restores a recovered Quick note through its domain persistence, as the app does.
-fn restore_note(
-    pool: &SqlitePool,
-) -> impl FnOnce(
-    Vec<(
-        ganbaru_sync_contracts::GroupId,
-        ganbaru_sync_contracts::Value,
-    )>,
-) -> Restoring {
-    let pool = pool.clone();
-    move |values| {
-        Box::pin(async move { ganbaru_quick_notes::restore_recovered(&pool, &values).await })
-    }
+fn restore_note(pool: SqlitePool, row: RecoveredRow) -> RestoreFuture {
+    Box::pin(async move { ganbaru_quick_notes::restore_recovered(&pool, &row.values).await })
+}
+
+/// The Quick notes restorer, registered as the app registers it.
+fn restorers() -> RecoveryRestorers {
+    RecoveryRestorers::new().with(&NOTES, restore_note)
 }
 
 fn reference(bytes: &[u8]) -> AssetRef {

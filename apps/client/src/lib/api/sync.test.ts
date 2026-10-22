@@ -34,7 +34,7 @@ function validStatus(): Record<string, unknown> {
     waiting: 0,
     held: { newerFormat: 0, newerManifest: 1, invalid: 0 },
     conflicts: [{ table: "quick_notes", count: 3 }],
-    recoveryCount: 1,
+    recovery: [{ table: "quick_notes", count: 1 }],
     clockAheadDevices: [{ deviceId: "device-b", deviceLabel: "Laptop", ownDevice: false }],
   };
 }
@@ -52,7 +52,7 @@ describe("sync API boundary", () => {
       waiting: 0,
       held: { newerFormat: 0, newerManifest: 1, invalid: 0 },
       conflicts: [{ table: "quick_notes", count: 3 }],
-      recoveryCount: 1,
+      recovery: [{ table: "quick_notes", count: 1 }],
       clockAheadDevices: [{ deviceId: "device-b", deviceLabel: "Laptop", ownDevice: false }],
     });
   });
@@ -72,6 +72,8 @@ describe("sync API boundary", () => {
     expect(() => mapSyncStatus({ ...validStatus(), lastErrorCode: "diskFull" })).toThrow();
     expect(() => mapSyncStatus({ ...validStatus(), clockAheadDevices: [{ deviceId: "device-b" }] })).toThrow();
     expect(() => mapSyncStatus({ ...validStatus(), held: { newerFormat: 0, newerManifest: 0 } })).toThrow();
+    expect(() => mapSyncStatus({ ...validStatus(), recovery: [{ table: "quick_notes", count: -1 }] })).toThrow();
+    expect(() => mapSyncStatus({ ...validStatus(), recovery: 1 })).toThrow();
   });
 
   it("maps status and applied notices and rejects malformed ones", () => {
@@ -133,6 +135,7 @@ describe("sync API boundary", () => {
         rowKey: "note-1",
         title: "Plan",
         preview: "Start",
+        descendants: 2,
         device: { deviceId: "device-b", deviceLabel: null, ownDevice: false },
         editedAtMs: 2_000,
       },
@@ -143,10 +146,26 @@ describe("sync API boundary", () => {
         rowKey: "note-1",
         title: "Plan",
         preview: "Start",
+        descendants: 2,
         device: { deviceId: "device-b", deviceLabel: null, ownDevice: false },
         editedAtMs: 2_000,
       },
     ]);
+  });
+
+  it("rejects recovery offers without a valid descendant count", async () => {
+    const offer = {
+      table: "quick_notes",
+      rowKey: "note-1",
+      title: "Plan",
+      preview: "Start",
+      device: { deviceId: "device-b", deviceLabel: null, ownDevice: false },
+      editedAtMs: 2_000,
+    };
+    vi.mocked(invoke).mockResolvedValueOnce([offer]);
+    await expect(listSyncRecovery()).rejects.toThrow();
+    vi.mocked(invoke).mockResolvedValueOnce([{ ...offer, descendants: -1 }]);
+    await expect(listSyncRecovery()).rejects.toThrow();
   });
 
   it("sends the recovery target and returns the restored id", async () => {

@@ -109,7 +109,7 @@ async fn close_recovery(
     target: RecoveryTarget,
     action: RecoveryAction,
 ) -> Result<Option<String>, String> {
-    let table = recovery::recoverable_table(&target.table)?;
+    let table = recovery::restorers().table(&target.table)?;
     let reply = runtime.request_recovery(RecoveryChoice {
         table,
         row_key: target.row_key,

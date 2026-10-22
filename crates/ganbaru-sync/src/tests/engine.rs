@@ -10,13 +10,13 @@ use ganbaru_sync_contracts::{
 use super::block_on;
 use super::fixture::{
     CYCLE_A_TABLE, CYCLE_B_TABLE, EDGES_TABLE, ITEMS_TABLE, LINKS_TABLE, MEMBERSHIPS_TABLE,
-    NODES_TABLE, edge_group, edge_key, membership_key,
+    NODES_TABLE, TEST_MANIFEST, edge_group, edge_key, membership_key,
 };
 use super::replica::{
     Identity, Replica, START_MS, VAULT_ID, converge, device_id, pair, person, rank,
 };
 use crate::error::failpoints;
-use crate::manifest::vault::quick_notes::{NOTES_TABLE, note_group};
+use crate::manifest::vault::quick_notes::{NOTES_TABLE, TAGS_TABLE, note_group};
 use crate::{
     ConflictRow, HoldReason, StoreOutcome, StoreRefusal, SyncError, SyncResult, WriterState,
 };
@@ -374,6 +374,22 @@ fn concurrent_titles_surface_a_conflict_that_a_forced_choice_resolves() {
                 .await
                 .unwrap();
             assert_eq!(status.conflicts, vec![("quick_notes", 1)]);
+            let open = replica
+                .engine
+                .open_conflicts(&mut replica.conn, replica.ctx.space, NOTES_TABLE)
+                .await
+                .unwrap();
+            assert_eq!(open.len(), 1);
+            assert_eq!(open[0].row_key, "note-1");
+            assert_eq!(open[0].groups, details);
+            assert!(
+                replica
+                    .engine
+                    .open_conflicts(&mut replica.conn, replica.ctx.space, TAGS_TABLE)
+                    .await
+                    .unwrap()
+                    .is_empty()
+            );
         }
 
         let chosen = hidden.unwrap();
@@ -857,6 +873,12 @@ async fn deleted_while_edited() -> Vec<Replica> {
         assert_eq!(entries[0].row_key, "note-1");
         assert_eq!(entries[0].presentation.title, "Edited");
         assert_eq!(entries[0].device_id, "device-1");
+        let status = replica
+            .engine
+            .status(&mut replica.conn, &replica.ctx)
+            .await
+            .unwrap();
+        assert_eq!(status.recovery, vec![("quick_notes", 1)]);
     }
     replicas
 }
@@ -973,6 +995,13 @@ async fn single_entry(replica: &mut Replica) -> (TableId, String, usize, String)
         .unwrap();
     assert_eq!(entries.len(), 1, "entries on replica {}", replica.index);
     let entry = entries.into_iter().next().unwrap();
+    let status = replica
+        .engine
+        .status(&mut replica.conn, &replica.ctx)
+        .await
+        .unwrap();
+    let root = replica.engine.manifest().table(entry.table).unwrap().name;
+    assert_eq!(status.recovery, vec![(root, 1)], "one offer per root");
     (
         entry.table,
         entry.row_key,
@@ -2255,4 +2284,25 @@ fn asset_tables_name_the_rows_that_hold_a_class() {
         max_bytes: 1,
     };
     assert!(engine.asset_tables(&unregistered).is_empty());
+}
+
+#[test]
+fn recovery_root_tables_follow_cascades_and_leave_out_derived_keys() {
+    let roots: Vec<TableId> = TEST_MANIFEST
+        .recovery_root_tables()
+        .into_iter()
+        .map(|spec| spec.id)
+        .collect();
+    // Memberships are recoverable but derived-key, so their cascade parents root their offers.
+    assert_eq!(
+        roots,
+        vec![
+            NOTES_TABLE,
+            ITEMS_TABLE,
+            CYCLE_A_TABLE,
+            CYCLE_B_TABLE,
+            NODES_TABLE
+        ]
+    );
+    assert!(!roots.contains(&MEMBERSHIPS_TABLE));
 }

@@ -8,12 +8,15 @@
   import {
     canRequestSync,
     syncClockAheadLines,
-    syncConflictTotal,
+    syncConflictLines,
+    syncDescription,
     syncHeldLines,
     syncLastExchangeLabel,
+    syncRecoveryTotal,
     syncRoleLabel,
     syncStateLabel,
   } from "$lib/sync/status";
+  import { syncPresentations } from "$lib/sync/presentations";
   import SyncRecoveryList from "./SyncRecoveryList.svelte";
 
   let {
@@ -36,7 +39,9 @@
   const status = $derived(sync.status);
   const held = $derived(syncHeldLines(t, status));
   const clockAhead = $derived(syncClockAheadLines(t, status));
-  const conflictTotal = $derived(syncConflictTotal(status));
+  const conflictLines = $derived(syncConflictLines(t, syncPresentations, status));
+  const recoveryTotal = $derived(syncRecoveryTotal(status));
+  const description = $derived(syncDescription(t, localization.locale, syncPresentations));
   const stateLabel = $derived(syncStateLabel(t, status.state));
 
   async function requestSync(): Promise<void> {
@@ -78,7 +83,7 @@
 <div class="flex min-w-0 flex-col gap-3">
   <div class="px-1 py-1">
     <div class="text-[0.866667rem] text-foreground">{t("sync.heading")}</div>
-    <div class="mt-0.5 text-[0.8rem] text-muted-foreground">{t("sync.description")}</div>
+    <div class="mt-0.5 text-[0.8rem] text-muted-foreground">{description}</div>
   </div>
 
   {#if status.state !== "off"}
@@ -105,9 +110,7 @@
         <Notice message={t("sync.errorDetail", status.lastError)} />
       {/if}
       {#each clockAhead as line (line)}<Notice message={line} />{/each}
-      {#if conflictTotal > 0}
-        <div class="text-foreground">{t("sync.conflicts", conflictTotal)}</div>
-      {/if}
+      {#each conflictLines as entry (entry.table)}<div class="text-foreground">{entry.line}</div>{/each}
     </div>
 
     {#if held.length > 0}
@@ -141,8 +144,8 @@
       <Notice class="px-1 text-[0.8rem] leading-5" message={actionError} />
     {/if}
 
-    {#if status.recoveryCount > 0}
-      <SyncRecoveryList {buttonClass} {mobileLayout} recoveryCount={status.recoveryCount} {now} />
+    {#if recoveryTotal > 0}
+      <SyncRecoveryList {buttonClass} {mobileLayout} recoveryCount={recoveryTotal} {now} />
     {/if}
   {/if}
 </div>

@@ -1272,15 +1272,14 @@ impl<'a, R: Runtime> Session<'a, R> {
         let Some(active) = writer.as_mut() else {
             return Err("the sync writer is not ready".to_string());
         };
-        let pool = &self.pool;
         super::recovery::close(
             &self.engine,
-            pool,
+            &self.pool,
             &self.ctx,
             active,
+            super::recovery::restorers(),
             &request.choice,
             now_ms()?,
-            |values| async move { ganbaru_quick_notes::restore_recovered(pool, &values).await },
         )
         .await
     }

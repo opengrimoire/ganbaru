@@ -217,7 +217,7 @@ Whole-block replacement is not a collaborative text protocol, and current Notes 
 
 Both enrolling devices show a verification code, and the existing device confirms before releasing vault keys. Direct connections use TLS 1.3 with pinned device identity, operations are signed, records and asset chunks use XChaCha20-Poly1305, and resource-key distribution uses HPKE with X25519 and HKDF-SHA256. Secrets live in native credential storage or Android Keystore wrapping. [HPKE](https://www.rfc-editor.org/rfc/rfc9180.html) alone does not provide authorization, replay protection, or downgrade protection, so the protocol composition needs review before transport is enabled.
 
-Mutual TLS with pinned device certificates is the confidentiality boundary for direct links over any allowed private or overlay range, and it is the only protection operations have today. Record encryption, when it lands, gates only intermediaries that store records, such as the relay or an anchor, never a direct link.
+Mutual TLS with pinned device certificates is the confidentiality boundary for direct links over any allowed private or overlay range, and it is the only confidentiality protection operations have today; their signatures give integrity and authenticity, not secrecy. Record encryption, when it lands, gates only intermediaries that store records, such as the relay or an anchor, never a direct link.
 
 Enrollment and revocation follow the anchor-sequenced authorization log in [Topology and authority](#topology-and-authority). A separate owner recovery identity and recovery kit receive resource-key envelopes. Revocation rotates affected keys and rejects new operations from the removed device; it cannot erase copies that device already holds.
 

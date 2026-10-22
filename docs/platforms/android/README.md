@@ -25,7 +25,8 @@ The current source is substantially implemented but the Android product is not y
 | Selected-app distraction usage limits and Home redirection | Implemented in source; policy and physical acceptance remain |
 | Local multi-device linking, whole-vault ownership handoff, and read-only refresh | Implemented in source; physical multi-device acceptance remains |
 | Browser filtering on Android | Planned |
-| Concurrent sync, remote execution, diary, and sleep alarm | Planned |
+| Concurrent sync of replicated domains, with WorkManager background passes and coordinator discovery through NSD | Implemented in source; Android build and physical multi-device acceptance remain |
+| Concurrent sync of the remaining domains, remote execution, diary, and sleep alarm | Planned |
 
 ## Product boundary
 

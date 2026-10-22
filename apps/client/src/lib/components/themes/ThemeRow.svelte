@@ -18,6 +18,7 @@
     theme,
     isActive,
     isBuiltin,
+    hasConflict = false,
     onApply,
     onOpen,
     onDuplicate,
@@ -32,6 +33,8 @@
     theme: Theme;
     isActive: boolean;
     isBuiltin: boolean;
+    /** Whether linked devices left conflicting versions of this theme to choose from in the editor. */
+    hasConflict?: boolean;
     onApply: () => void;
     onOpen: () => void;
     onDuplicate: () => void;
@@ -98,6 +101,9 @@
           class="shrink-0 text-muted-foreground"
         />
         <span class="truncate">{displayName}</span>
+        {#if hasConflict}
+          <span class="shrink-0 rounded-sm bg-warning/15 px-1 text-[0.733333rem] text-muted-foreground">{t("theme.conflict.badge")}</span>
+        {/if}
         {#if isActive}
           <Check size={13} strokeWidth={2.5} class="shrink-0 text-foreground" />
         {/if}

@@ -948,6 +948,138 @@ fn a_resolved_title_conflict_closes_on_both_replicas() {
     });
 }
 
+/// A user theme write whose live content uses `blend_canvas` and whose seed never varies.
+fn theme_write(id: &str, blend_canvas: &str) -> ganbaru_themes::UserThemeWrite {
+    let palette: Vec<_> = (0..32)
+        .map(|slot| serde_json::json!({ "slot": slot, "value": "#aaaaaa" }))
+        .collect();
+    serde_json::from_value(serde_json::json!({
+        "id": id,
+        "displayName": "Forest",
+        "iconLabel": "dark",
+        "seedIconLabel": "dark",
+        "blendCanvas": blend_canvas,
+        "seedBlendCanvas": "#101010",
+        "derivationEngineVersion": 2,
+        "calendarDefaultMode": "app-canvas",
+        "calendarDefaultCustom": "#202020",
+        "seedCalendarDefaultMode": "app-canvas",
+        "seedCalendarDefaultCustom": "#202020",
+        "tokens": [{ "kind": "source", "key": "canvas", "value": blend_canvas, "isolated": false }],
+        "palette": palette,
+        "seedTokens": [{ "kind": "source", "key": "canvas", "value": "#101010", "isolated": false }],
+        "seedPalette": palette,
+    }))
+    .expect("theme write")
+}
+
+async fn theme_json(replica: &Replica, id: &str) -> serde_json::Value {
+    let theme = ganbaru_themes::load_one(&replica.pool, id)
+        .await
+        .expect("load theme");
+    serde_json::to_value(theme).expect("serialize theme")
+}
+
+#[test]
+fn concurrent_theme_saves_surface_one_conflict_that_closes_on_both_replicas() {
+    block_on(async {
+        let mut hub_replica = Replica::new("theme-hub", HUB_DEVICE).await;
+        let mut phone = Replica::new("theme-phone", PHONE_DEVICE).await;
+        let (transport, _changes) = hub(&hub_replica);
+        ganbaru_themes::insert(&hub_replica.pool, &theme_write("theme-1", "#111111"))
+            .await
+            .expect("insert theme");
+        hub_replica.seal().await;
+        converge(&mut hub_replica, &mut phone, &transport).await;
+
+        ganbaru_themes::replace_content(&hub_replica.pool, &theme_write("theme-1", "#222222"))
+            .await
+            .expect("hub save");
+        ganbaru_themes::record_dismissal(&hub_replica.pool, "theme-1", 5)
+            .await
+            .expect("hub dismissal");
+        hub_replica.seal().await;
+        ganbaru_themes::replace_content(&phone.pool, &theme_write("theme-1", "#333333"))
+            .await
+            .expect("phone save");
+        ganbaru_themes::record_dismissal(&phone.pool, "theme-1", 3)
+            .await
+            .expect("phone dismissal");
+        phone.seal().await;
+        converge(&mut hub_replica, &mut phone, &transport).await;
+
+        let hub_theme = theme_json(&hub_replica, "theme-1").await;
+        let phone_theme = theme_json(&phone, "theme-1").await;
+        assert_eq!(hub_theme["theme"]["has_conflict"], true);
+        assert_eq!(phone_theme["theme"]["has_conflict"], true);
+        assert_eq!(hub_theme["theme"], phone_theme["theme"]);
+        assert_eq!(hub_theme["tokens"], phone_theme["tokens"]);
+        assert_eq!(phone_theme["theme"]["seed_blend_canvas"], "#101010");
+        assert_eq!(phone_theme["seedTokens"][0]["value"], "#101010");
+        for replica in [&hub_replica, &phone] {
+            let dismissals = ganbaru_themes::load_dismissals(&replica.pool)
+                .await
+                .expect("load dismissals");
+            let dismissals = serde_json::to_value(dismissals).expect("serialize dismissals");
+            assert_eq!(dismissals[0]["engine_version"], 5);
+        }
+
+        let conflict = ganbaru_themes::conflict_from_pool(
+            &phone.pool,
+            VAULT_ID,
+            &ganbaru_sync::DeviceNames::new(PHONE_DEVICE, HashMap::new()),
+            "theme-1",
+        )
+        .await
+        .expect("read conflict");
+        let conflict = serde_json::to_value(conflict).expect("serialize conflict");
+        let versions = conflict["versions"].as_array().expect("versions");
+        assert_eq!(versions.len(), 2);
+        let own = versions
+            .iter()
+            .find(|version| version["device"]["ownDevice"] == true)
+            .expect("own version");
+        assert_eq!(own["blendCanvas"], "#333333");
+        assert_eq!(own["palette"].as_array().map(Vec::len), Some(32));
+        let displayed = versions
+            .iter()
+            .find(|version| version["displayed"] == true)
+            .expect("displayed version");
+        assert_eq!(
+            displayed["blendCanvas"],
+            phone_theme["theme"]["blend_canvas"]
+        );
+        let other = versions
+            .iter()
+            .find(|version| version["displayed"] == false)
+            .expect("hidden version");
+
+        let resolution = serde_json::from_value(serde_json::json!({
+            "id": "theme-1",
+            "choice": { "kind": "version", "version": other["version"] },
+        }))
+        .expect("resolution");
+        let resolved =
+            ganbaru_themes::resolve_from_pool(&phone.pool, VAULT_ID, resolution, NOW_MS + 1)
+                .await
+                .expect("resolve conflict");
+        let resolved = serde_json::to_value(resolved).expect("serialize resolution");
+        assert_eq!(resolved["theme"]["blend_canvas"], other["blendCanvas"]);
+        assert_eq!(resolved["theme"]["has_conflict"], false);
+
+        phone.seal().await;
+        converge(&mut hub_replica, &mut phone, &transport).await;
+        for replica in [&hub_replica, &phone] {
+            let theme = theme_json(replica, "theme-1").await;
+            assert_eq!(theme["theme"]["blend_canvas"], other["blendCanvas"]);
+            assert_eq!(theme["tokens"][0]["value"], other["blendCanvas"]);
+            assert_eq!(theme["theme"]["has_conflict"], false);
+        }
+        hub_replica.close().await;
+        phone.close().await;
+    });
+}
+
 #[test]
 fn restoring_an_edit_that_outlived_a_deletion_closes_the_offer_everywhere() {
     block_on(async {

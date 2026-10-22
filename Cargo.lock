@@ -2101,6 +2101,7 @@ dependencies = [
  "ganbaru-quick-notes",
  "ganbaru-sync",
  "ganbaru-sync-contracts",
+ "ganbaru-themes",
  "keyring",
  "serde",
  "serde_json",
@@ -2195,6 +2196,9 @@ name = "ganbaru-themes"
 version = "0.1.0"
 dependencies = [
  "ganbaru-db",
+ "ganbaru-sync",
+ "ganbaru-sync-contracts",
+ "ring",
  "serde",
  "sqlx",
  "tokio",

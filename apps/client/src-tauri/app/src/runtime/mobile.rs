@@ -439,6 +439,8 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
             themes::themes_rename,
             themes::themes_reset_token_to_seed,
             themes::themes_reset_to_seed,
+            themes::themes_conflict,
+            themes::themes_resolve_conflict,
         ])
         .setup(|app| {
             vault::ownership::initialize(app.handle())?;

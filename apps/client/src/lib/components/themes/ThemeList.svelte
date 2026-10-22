@@ -279,6 +279,7 @@
           {theme}
           isActive={theme.id === themeStore.id}
           isBuiltin={themeStore.isBuiltin(theme.id)}
+          hasConflict={themeStore.hasConflict(theme.id)}
           onApply={() => handleApply(theme.id)}
           onOpen={() => handleOpen(theme.id)}
           onDuplicate={() => handleDuplicate(theme.id)}

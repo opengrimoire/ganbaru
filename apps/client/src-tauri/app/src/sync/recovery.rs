@@ -3,7 +3,7 @@
 
 use std::sync::LazyLock;
 
-use ganbaru_sync::manifest::vault::quick_notes;
+use ganbaru_sync::manifest::vault::{quick_notes, themes};
 use ganbaru_sync::{DeviceRef, Engine, local};
 pub(crate) use ganbaru_sync_replica::recovery::{
     RecoveredRow, RecoveryAction, RecoveryChoice, RecoveryRestorers, RestoreFuture, close,
@@ -14,8 +14,11 @@ use tauri::{AppHandle, Runtime};
 use tokio::sync::oneshot;
 
 /// Restorers of the domains whose rows can root a recovery offer, one line per table.
-static RESTORERS: LazyLock<RecoveryRestorers> =
-    LazyLock::new(|| RecoveryRestorers::new().with(&quick_notes::NOTES, restore_quick_note));
+static RESTORERS: LazyLock<RecoveryRestorers> = LazyLock::new(|| {
+    RecoveryRestorers::new()
+        .with(&quick_notes::NOTES, restore_quick_note)
+        .with(&themes::THEMES, restore_theme)
+});
 
 /// The recovery restorers of the vault domains.
 pub(crate) fn restorers() -> &'static RecoveryRestorers {
@@ -30,6 +33,18 @@ fn restore_quick_note(pool: SqlitePool, row: RecoveredRow) -> RestoreFuture {
             return Err("a recovered quick note has deleted descendants".to_string());
         }
         ganbaru_quick_notes::restore_recovered(&pool, &row.values).await
+    })
+}
+
+/// Restores a deleted theme as a new theme. Its token and palette rows are owned by the theme
+/// row rather than cascade descendants, so a recovered theme that carries some was grouped by
+/// a manifest this version does not know.
+fn restore_theme(pool: SqlitePool, row: RecoveredRow) -> RestoreFuture {
+    Box::pin(async move {
+        if !row.descendants.is_empty() {
+            return Err("a recovered theme has deleted descendants".to_string());
+        }
+        ganbaru_themes::restore_recovered(&pool, &row.values).await
     })
 }
 

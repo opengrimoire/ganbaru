@@ -46,4 +46,4 @@ Every other trigger on a converted, local, or engine table declares a policy in 
 
 Connection-scoped guard triggers are created per connection on guarded replicas only and are never part of the vault schema. See [mixed mode](../sync.md#mixed-mode).
 
-Currently replicated: Quick notes and their tags, and portable preferences with the profile picture in the `profile` class. Their schema rules are in [Supporting domains](supporting-domains.md#quick-notes) and [Profile and managed icons](supporting-domains.md#profile-and-managed-icons).
+Currently replicated: Quick notes and their tags, portable preferences with the profile picture in the `profile` class, and user themes with their owned token and palette tables. Their schema rules are in [Supporting domains](supporting-domains.md#quick-notes), [Themes](supporting-domains.md#themes), and [Profile and managed icons](supporting-domains.md#profile-and-managed-icons).

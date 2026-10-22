@@ -1,4 +1,5 @@
 use super::*;
+use ganbaru_sync_contracts::{Field, GroupId, Value};
 use std::future::Future;
 
 fn block_on<F: Future>(future: F) -> F::Output {
@@ -220,7 +221,7 @@ fn insert_rejects_taken_ids_and_invalid_writes_without_partial_rows() {
 }
 
 #[test]
-fn replace_content_rewrites_every_row_and_requires_an_existing_theme() {
+fn replace_content_rewrites_current_rows_keeps_the_seed_and_requires_an_existing_theme() {
     block_on(async {
         let pool = migrated_memory_pool().await;
         insert(&pool, &theme_write("custom")).await.unwrap();
@@ -229,6 +230,7 @@ fn replace_content_rewrites_every_row_and_requires_an_existing_theme() {
         replacement.display_name = "Replaced".to_string();
         replacement.tokens = vec![token("source", "accent", "#555555", false)];
         replacement.seed_tokens = vec![token("source", "accent", "#666666", false)];
+        replacement.seed_blend_canvas = "#999999".to_string();
         replacement.palette = palette("#cccccc");
         replace_content(&pool, &replacement).await.unwrap();
 
@@ -240,9 +242,14 @@ fn replace_content_rewrites_every_row_and_requires_an_existing_theme() {
         );
         assert_eq!(
             token_values(&theme.seed_tokens),
-            [("source", "accent", "#666666", 0)]
+            [
+                ("app", "--background", "#232323", 0),
+                ("source", "canvas", "#222222", 0),
+            ]
         );
+        assert_eq!(theme.theme.seed_blend_canvas, "#202020");
         assert!(theme.palette.iter().all(|row| row.value == "#cccccc"));
+        assert!(theme.seed_palette.iter().all(|row| row.value == "#bbbbbb"));
 
         let error = replace_content(&pool, &theme_write("missing"))
             .await
@@ -319,26 +326,26 @@ fn rename_validates_the_name_and_requires_an_existing_theme() {
 }
 
 #[test]
-fn dismissals_replace_per_version_and_cascade_when_the_theme_is_deleted() {
+fn dismissals_keep_the_highest_version_and_go_with_the_deleted_theme() {
     block_on(async {
         let pool = migrated_memory_pool().await;
         insert(&pool, &theme_write("custom")).await.unwrap();
+        insert(&pool, &theme_write("other")).await.unwrap();
 
         record_dismissal(&pool, "custom", 3).await.unwrap();
         record_dismissal(&pool, "custom", 3).await.unwrap();
         record_dismissal(&pool, "custom", 4).await.unwrap();
+        record_dismissal(&pool, "custom", 2).await.unwrap();
         assert!(record_dismissal(&pool, "custom", -1).await.is_err());
-        let mut versions = load_dismissals(&pool)
+        assert!(record_dismissal(&pool, "missing", 1).await.is_err());
+        let versions = load_dismissals(&pool)
             .await
             .unwrap()
             .into_iter()
             .map(|row| (row.theme_id, row.engine_version))
             .collect::<Vec<_>>();
-        versions.sort();
-        assert_eq!(
-            versions,
-            [("custom".to_string(), 3), ("custom".to_string(), 4)]
-        );
+        assert_eq!(versions, [("custom".to_string(), 4)]);
+        delete(&pool, "other").await.unwrap();
 
         delete(&pool, "custom").await.unwrap();
         delete(&pool, "custom").await.unwrap();
@@ -370,5 +377,191 @@ fn load_all_rejects_stored_rows_that_fail_validation() {
             .err()
             .expect("stored rows that fail validation are rejected");
         assert!(error.contains("theme_seed_tokens"), "{error}");
+    });
+}
+
+/// Pending sync capture masks by row key, then clears them.
+async fn take_captures(pool: &SqlitePool) -> Vec<(String, i64)> {
+    let rows = sqlx::query_as::<_, (String, i64)>(
+        "SELECT row_key, mask FROM sync_capture ORDER BY row_key",
+    )
+    .fetch_all(pool)
+    .await
+    .unwrap();
+    sqlx::query("DELETE FROM sync_capture")
+        .execute(pool)
+        .await
+        .unwrap();
+    rows
+}
+
+const CONTENT_MASK: i64 = 16;
+const NAME_MASK: i64 = 4;
+const DISMISSAL_MASK: i64 = 32;
+
+#[test]
+fn accepts_uuid_ids_and_rejects_overlong_ids() {
+    assert!(validate_theme_id("0f8fad5b-d9cb-469f-a165-70867728950e").is_ok());
+    assert!(validate_theme_id(&"a".repeat(MAX_THEME_ID_CHARS)).is_ok());
+    assert!(validate_theme_id(&"a".repeat(MAX_THEME_ID_CHARS + 1)).is_err());
+}
+
+#[test]
+fn saves_that_change_nothing_capture_nothing() {
+    block_on(async {
+        let pool = migrated_memory_pool().await;
+        insert(&pool, &theme_write("custom")).await.unwrap();
+        take_captures(&pool).await;
+
+        replace_content(&pool, &theme_write("custom"))
+            .await
+            .unwrap();
+        rename(&pool, "custom", "Custom").await.unwrap();
+        record_dismissal(&pool, "custom", 0).await.unwrap();
+        assert_eq!(take_captures(&pool).await, []);
+
+        let mut reordered = theme_write("custom");
+        reordered.tokens.reverse();
+        reordered.palette.reverse();
+        replace_content(&pool, &reordered).await.unwrap();
+        assert_eq!(take_captures(&pool).await, []);
+    });
+}
+
+#[test]
+fn a_rename_through_save_captures_the_name_without_the_content() {
+    block_on(async {
+        let pool = migrated_memory_pool().await;
+        insert(&pool, &theme_write("custom")).await.unwrap();
+        take_captures(&pool).await;
+
+        let mut renamed = theme_write("custom");
+        renamed.display_name = "Renamed".to_string();
+        replace_content(&pool, &renamed).await.unwrap();
+        let captures = take_captures(&pool).await;
+        assert_eq!(captures.len(), 1);
+        assert_eq!(captures[0].1 & (NAME_MASK | CONTENT_MASK), NAME_MASK);
+
+        let mut edited = renamed;
+        edited.palette = palette("#cccccc");
+        replace_content(&pool, &edited).await.unwrap();
+        let captures = take_captures(&pool).await;
+        assert_eq!(captures.len(), 1);
+        assert_eq!(captures[0].1 & (NAME_MASK | CONTENT_MASK), CONTENT_MASK);
+
+        record_dismissal(&pool, "custom", 5).await.unwrap();
+        let captures = take_captures(&pool).await;
+        assert_eq!(captures[0].1, DISMISSAL_MASK);
+    });
+}
+
+#[test]
+fn resets_that_change_nothing_capture_nothing() {
+    block_on(async {
+        let pool = migrated_memory_pool().await;
+        insert(&pool, &theme_write("custom")).await.unwrap();
+        reset_to_seed(&pool, "custom").await.unwrap();
+        take_captures(&pool).await;
+
+        reset_to_seed(&pool, "custom").await.unwrap();
+        reset_token_to_seed(&pool, "custom", "source", "canvas")
+            .await
+            .unwrap();
+        assert_eq!(take_captures(&pool).await, []);
+    });
+}
+
+fn recovered_theme_values(content: Option<&ThemeContent>) -> Vec<(GroupId, Value)> {
+    use ganbaru_sync::domains::themes::{encode_palette, encode_tokens};
+    use ganbaru_sync::manifest::vault::themes::group;
+    let mut values = vec![
+        (
+            group::NAME,
+            Value::new(vec![Field::Text("Forest".to_string())]).unwrap(),
+        ),
+        (
+            group::ICON,
+            Value::new(vec![Field::Text("dark".to_string())]).unwrap(),
+        ),
+    ];
+    if let Some(content) = content {
+        values.push((
+            group::CONTENT,
+            Value::new(vec![
+                Field::Text(content.blend_canvas.clone()),
+                Field::Integer(content.derivation_engine_version),
+                Field::Text(content.calendar_default_mode.clone()),
+                Field::Text(content.calendar_default_custom.clone()),
+                Field::Blob(encode_tokens(&content.tokens).unwrap()),
+                Field::Blob(encode_palette(&content.palette).unwrap()),
+            ])
+            .unwrap(),
+        ));
+    }
+    values
+}
+
+#[test]
+fn restoring_a_recovered_theme_creates_a_new_theme_seeded_with_its_content() {
+    block_on(async {
+        let pool = migrated_memory_pool().await;
+        let content = ThemeContent {
+            blend_canvas: "#0a0a0a".to_string(),
+            derivation_engine_version: 3,
+            calendar_default_mode: "custom".to_string(),
+            calendar_default_custom: "#0b0b0b".to_string(),
+            tokens: vec![ThemeToken {
+                kind: "source".to_string(),
+                key: "canvas".to_string(),
+                value: "#0c0c0c".to_string(),
+                isolated: true,
+            }],
+            palette: vec!["#0d0d0d".to_string(); PALETTE_SIZE],
+        };
+
+        let id = restore_recovered(&pool, &recovered_theme_values(Some(&content)))
+            .await
+            .unwrap();
+        let again = restore_recovered(&pool, &recovered_theme_values(Some(&content)))
+            .await
+            .unwrap();
+        assert_ne!(id, again);
+        validate_theme_id(&id).unwrap();
+
+        let restored = load_one(&pool, &id).await;
+        assert_eq!(restored.theme.display_name, "Forest");
+        assert_eq!(restored.theme.icon_label, "dark");
+        assert_eq!(restored.theme.seed_icon_label, "dark");
+        assert_eq!(restored.theme.blend_canvas, "#0a0a0a");
+        assert_eq!(restored.theme.seed_blend_canvas, "#0a0a0a");
+        assert_eq!(restored.theme.derivation_engine_version, 3);
+        assert_eq!(restored.theme.seed_calendar_default_custom, "#0b0b0b");
+        assert_eq!(
+            token_values(&restored.tokens),
+            [("source", "canvas", "#0c0c0c", 1)]
+        );
+        assert_eq!(
+            token_values(&restored.seed_tokens),
+            token_values(&restored.tokens)
+        );
+        assert_eq!(restored.palette.len(), PALETTE_SIZE);
+        assert!(
+            restored
+                .seed_palette
+                .iter()
+                .all(|row| row.value == "#0d0d0d")
+        );
+    });
+}
+
+#[test]
+fn restoring_a_recovered_theme_without_content_writes_nothing() {
+    block_on(async {
+        let pool = migrated_memory_pool().await;
+        let error = restore_recovered(&pool, &recovered_theme_values(None))
+            .await
+            .unwrap_err();
+        assert!(error.contains("no content"), "{error}");
+        assert_eq!(count_rows(&pool, "themes").await, 0);
     });
 }

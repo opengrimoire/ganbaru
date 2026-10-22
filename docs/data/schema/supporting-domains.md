@@ -20,6 +20,8 @@ Themes and token values live in SQLite so custom themes can be validated, select
 
 The active theme ID is a device preference, and the quick-toggle light and dark pair is a portable preference. A device without a saved active theme uses the quick-toggle theme matching the system color scheme. Applying it to a webview is runtime projection. A missing or invalid selected theme falls back safely without deleting the user's row, so it can still be repaired or exported.
 
+The `themes` table replicates, and its live and seed token and palette tables are owned rows that travel with it. Seed columns and seed rows are immutable after insert. The highest dismissed engine upgrade lives on the theme row as `upgrade_dismissed_engine_version` and merges as a maximum, so it is deleted with the theme. Theme writes skip rows that already hold the requested values, so a save that changes nothing records no operation.
+
 ## Music
 
 Music separates canonical library identity from physical source location and playback state.

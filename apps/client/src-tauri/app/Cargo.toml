@@ -60,12 +60,14 @@ ganbaru-chat-providers = { workspace = true }
 ganbaru-music-player = { workspace = true }
 hyper = { workspace = true }
 hyper-util = { workspace = true }
+if-addrs = { workspace = true }
 keyring = { workspace = true }
 notify = { workspace = true }
 notify-rust = { workspace = true }
 portable-pty = { workspace = true }
 rmcp = { workspace = true }
 rodio = { workspace = true }
+socket2 = { workspace = true }
 tauri = { workspace = true, features = ["tray-icon", "image-png", "unstable"] }
 tauri-plugin-dialog = { workspace = true }
 tauri-plugin-single-instance = { workspace = true }

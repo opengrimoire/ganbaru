@@ -1,5 +1,6 @@
 use super::*;
 use sqlx::{Sqlite, SqlitePool, Transaction};
+use std::path::Path;
 
 pub(super) fn map_database_error(context: &str, error: sqlx::Error) -> MusicLibraryError {
     if error
@@ -572,11 +573,27 @@ pub async fn set_review_state(
     })
 }
 
+/// Sets the metadata overrides of an item. An artwork override must be a managed reference
+/// whose verified file is already stored in `vault_root`; its exact size is stored with it.
 pub async fn set_metadata_overrides(
     pool: &SqlitePool,
+    vault_root: &Path,
     request: MusicMetadataOverrideWrite,
 ) -> MusicLibraryResult<MusicWriteReceipt> {
     validate_metadata_override_write(&request)?;
+    let artwork = match request.artwork_override.clone() {
+        // Reading and describing up to 10 MiB of artwork blocks, so it leaves the async worker.
+        Some(reference) => {
+            let vault_root = vault_root.to_path_buf();
+            let artwork = tokio::task::spawn_blocking(move || {
+                crate::managed_artwork::stored_artwork(&vault_root, &reference)
+            })
+            .await
+            .map_err(|error| MusicLibraryError::runtime("read stored music artwork", error))??;
+            Some(artwork)
+        }
+        None => None,
+    };
     let mut transaction = pool
         .begin()
         .await
@@ -584,13 +601,18 @@ pub async fn set_metadata_overrides(
     let result = sqlx::query(
         "UPDATE music_library_items
          SET title_override = ?, artist_override = ?, album_override = ?, artwork_override = ?,
-             updated_at_ms = ?, version = version + 1
+             artwork_override_byte_size = ?, updated_at_ms = ?, version = version + 1
          WHERE id = ? AND version = ?",
     )
     .bind(request.title_override.as_deref().map(str::trim))
     .bind(request.artist_override.as_deref().map(str::trim))
     .bind(request.album_override.as_deref().map(str::trim))
-    .bind(request.artwork_override.as_deref().map(str::trim))
+    .bind(artwork.as_ref().map(|artwork| artwork.reference.as_str()))
+    .bind(
+        artwork
+            .as_ref()
+            .map(|artwork| i64::from(artwork.asset.byte_size())),
+    )
     .bind(request.updated_at_ms)
     .bind(&request.item_id)
     .bind(request.expected_version)

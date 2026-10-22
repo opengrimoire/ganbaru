@@ -100,6 +100,7 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
             music::music_pick_artwork_file,
             music::music_pick_and_read_interchange_file,
             music::music_artwork_data_url,
+            music::music_artwork_asset_data_url,
             music::music_embedded_artwork_data_url,
             music::media_server::music_retain_hosted_media,
             music::media_server::music_unregister_hosted_media,

@@ -1,13 +1,20 @@
 import { describe, expect, it, vi } from "vitest";
 
-const { musicArtworkDataUrl, musicEmbeddedArtworkDataUrl, musicYouTubeThumbnailDataUrl } = vi.hoisted(() => ({
-  musicArtworkDataUrl: vi.fn(async (path: string) => `file:${path}`),
+const {
+  musicArtworkAssetDataUrl,
+  musicArtworkImageDataUrl,
+  musicEmbeddedArtworkDataUrl,
+  musicYouTubeThumbnailDataUrl,
+} = vi.hoisted(() => ({
+  musicArtworkAssetDataUrl: vi.fn(async (reference: string) => `asset:${reference}`),
+  musicArtworkImageDataUrl: vi.fn(async (path: string) => `file:${path}`),
   musicEmbeddedArtworkDataUrl: vi.fn(async (path: string) => `embedded:${path}`),
   musicYouTubeThumbnailDataUrl: vi.fn(async (videoId: string) => `youtube:${videoId}`),
 }));
 
 vi.mock("$lib/music/library/artwork-cache", () => ({
-  musicArtworkDataUrl,
+  musicArtworkAssetDataUrl,
+  musicArtworkImageDataUrl,
   musicEmbeddedArtworkDataUrl,
   musicYouTubeThumbnailDataUrl,
 }));
@@ -26,6 +33,8 @@ const playlist = (id: string, name: string, orderKey = "a0"): MusicPlaylistSumma
   id, orderKey, name, icon: "lucide:list-music", shuffleEnabled: true, mixEnabled: false, repeatMode: "all", intendedUses: [], totalCount: 0,
   eligibleCount: 0, unavailableCount: 0, snoozedCount: 0, localCount: 0, onlineCount: 0, version: 1,
 });
+
+const managedArtwork = `music/artwork/${"e".repeat(64)}.jpg`;
 
 function detail(sourceKind: "local-file" | "youtube-video"): MusicInspectorDetail {
   return {
@@ -86,9 +95,28 @@ describe("music review helpers", () => {
     expect(await musicReviewArtworkDataUrl(youtubeDetail, [])).toBe("youtube:abcDEF_1234");
     expect(musicYouTubeThumbnailDataUrl).toHaveBeenCalledWith("abcDEF_1234");
 
-    youtubeDetail.item.artworkOverride = "/Music/custom.jpg";
-    expect(await musicReviewArtworkDataUrl(youtubeDetail, [])).toBe("file:/Music/custom.jpg");
-    expect(musicArtworkDataUrl).toHaveBeenCalledWith("/Music/custom.jpg");
+    youtubeDetail.item.artworkOverride = managedArtwork;
+    expect(await musicReviewArtworkDataUrl(youtubeDetail, [])).toBe(`asset:${managedArtwork}`);
+    expect(musicArtworkAssetDataUrl).toHaveBeenCalledWith(managedArtwork);
+  });
+
+  it("plays and shows a managed artwork override from the vault for local items", async () => {
+    const localDetail = detail("local-file");
+    localDetail.item.originalArtworkIdentity = "sidecar:album/cover.jpg";
+    localDetail.item.artworkOverride = managedArtwork;
+    const bindings = [{ rootId: "root", folderPath: "/Music", status: "available" as const }];
+
+    expect(musicReviewSource(localDetail, bindings)).toMatchObject({ artworkPath: managedArtwork });
+    expect(await musicReviewArtworkDataUrl(localDetail, bindings)).toBe(`asset:${managedArtwork}`);
+  });
+
+  it("reads scanner-detected sidecar artwork from the device when no override is set", async () => {
+    const localDetail = detail("local-file");
+    localDetail.item.originalArtworkIdentity = "sidecar:album/cover.jpg";
+
+    expect(await musicReviewArtworkDataUrl(localDetail, [{ rootId: "root", folderPath: "/Music", status: "available" }]))
+      .toBe("file:/Music/album/cover.jpg");
+    expect(musicArtworkImageDataUrl).toHaveBeenCalledWith("/Music/album/cover.jpg");
   });
 
   it("keeps playlist ordering independent from selection while filtering", () => {

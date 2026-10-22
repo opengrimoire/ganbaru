@@ -884,6 +884,7 @@ fn metadata_overrides_preserve_original_values_and_refresh_search() {
         seed_item(&pool, "item-1", "local:item-1").await;
         let receipt = super::writes::set_metadata_overrides(
             &pool,
+            std::path::Path::new("unused-vault"),
             MusicMetadataOverrideWrite {
                 item_id: "item-1".to_string(),
                 title_override: Some("Quiet focus".to_string()),
@@ -909,6 +910,80 @@ fn metadata_overrides_preserve_original_values_and_refresh_search() {
         let window = super::queries::item_window(&pool, request).await.unwrap();
         assert_eq!(window.total_count, 1);
         assert_eq!(window.items[0].title, "Quiet focus");
+    });
+}
+
+#[test]
+fn artwork_overrides_store_managed_references_with_their_verified_size() {
+    crate::test_support::block_on(async {
+        let pool = pool().await;
+        seed_item(&pool, "item-1", "local:item-1").await;
+        let vault = std::env::temp_dir().join(format!(
+            "ganbaru-music-artwork-override-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&vault).unwrap();
+        let bytes = crate::managed_artwork::tests::png(64, 64);
+        let artwork = crate::managed_artwork::import_artwork(&vault, &bytes).unwrap();
+        let write =
+            |artwork_override: Option<String>, expected_version: i64| MusicMetadataOverrideWrite {
+                item_id: "item-1".to_string(),
+                title_override: None,
+                artist_override: None,
+                album_override: None,
+                artwork_override,
+                expected_version,
+                updated_at_ms: 1_700_000_100_000,
+            };
+
+        for (reference, code) in [
+            (
+                "/custom/artwork.png".to_string(),
+                MusicLibraryErrorCode::Validation,
+            ),
+            (
+                format!("music/artwork/{}.png", "b".repeat(64)),
+                MusicLibraryErrorCode::NotFound,
+            ),
+        ] {
+            let error =
+                super::writes::set_metadata_overrides(&pool, &vault, write(Some(reference), 1))
+                    .await
+                    .unwrap_err();
+            assert_eq!(error.code, code);
+        }
+
+        super::writes::set_metadata_overrides(
+            &pool,
+            &vault,
+            write(Some(artwork.reference.clone()), 1),
+        )
+        .await
+        .unwrap();
+        let stored: (Option<String>, Option<i64>) = sqlx::query_as(
+            "SELECT artwork_override, artwork_override_byte_size
+             FROM music_library_items WHERE id = 'item-1'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            stored,
+            (Some(artwork.reference.clone()), Some(bytes.len() as i64))
+        );
+
+        super::writes::set_metadata_overrides(&pool, &vault, write(None, 2))
+            .await
+            .unwrap();
+        let cleared: (Option<String>, Option<i64>) = sqlx::query_as(
+            "SELECT artwork_override, artwork_override_byte_size
+             FROM music_library_items WHERE id = 'item-1'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(cleared, (None, None));
+        std::fs::remove_dir_all(vault).unwrap();
     });
 }
 
@@ -1418,11 +1493,13 @@ fn playlist_reorder_and_playback_projection_share_canonical_memberships() {
         .execute(&pool)
         .await
         .unwrap();
+        let artwork = format!("music/artwork/{}.webp", "d".repeat(64));
         sqlx::query(
             "UPDATE music_library_items
-             SET artwork_override = '/custom/artwork.png'
+             SET artwork_override = ?, artwork_override_byte_size = 2048
              WHERE id = 'item-2'",
         )
+        .bind(&artwork)
         .execute(&pool)
         .await
         .unwrap();
@@ -1452,7 +1529,7 @@ fn playlist_reorder_and_playback_projection_share_canonical_memberships() {
         );
         assert_eq!(
             entries[2].artwork_override.as_deref(),
-            Some("/custom/artwork.png")
+            Some(artwork.as_str())
         );
         assert!(entries[2].snoozed);
         assert_eq!(entries[2].snoozed_until, Some(1_700_000_001_000));

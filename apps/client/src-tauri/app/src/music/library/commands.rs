@@ -299,10 +299,11 @@ pub async fn music_library_set_metadata_overrides(
     db_url: String,
     request: MusicMetadataOverrideWrite,
 ) -> MusicLibraryResult<MusicWriteReceipt> {
+    let vault_root = crate::vault::active_vault_path(&app).map_err(connection_error)?;
     let pool = connect_sqlite(app, db_url)
         .await
         .map_err(connection_error)?;
-    ganbaru_music_library::writes::set_metadata_overrides(&pool, request).await
+    ganbaru_music_library::writes::set_metadata_overrides(&pool, &vault_root, request).await
 }
 
 #[tauri::command]

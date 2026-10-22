@@ -16,6 +16,7 @@ pub mod item_repair;
 #[cfg(desktop)]
 pub mod local_refresh;
 pub mod local_scan;
+pub mod managed_artwork;
 #[cfg(desktop)]
 pub mod media;
 mod models;

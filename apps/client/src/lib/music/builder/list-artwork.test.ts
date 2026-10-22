@@ -18,11 +18,16 @@ function item(patch: Partial<MusicItemListEntry> = {}): MusicItemListEntry {
 const bindings = [{ rootId: "root-1", folderPath: "/Music", status: "available" as const }];
 
 describe("music list artwork", () => {
-  it("prefers an explicit artwork override", () => {
-    expect(musicListArtworkSource(item({ artworkOverride: "/custom/cover.png" }), bindings)).toEqual({
-      kind: "file",
-      path: "/custom/cover.png",
+  it("prefers a managed artwork override from the vault", () => {
+    const reference = `music/artwork/${"b".repeat(64)}.webp`;
+    expect(musicListArtworkSource(item({ artworkOverride: reference }), bindings)).toEqual({
+      kind: "asset",
+      reference,
     });
+  });
+
+  it("never reads an override that is not a managed reference as a device path", () => {
+    expect(musicListArtworkSource(item({ artworkOverride: "/custom/cover.png" }), bindings)).toBeNull();
   });
 
   it("resolves scanner-detected sidecar artwork", () => {

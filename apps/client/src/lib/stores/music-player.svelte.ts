@@ -3,7 +3,8 @@ import type { MusicPlaybackMode, MusicRepeatMode, MusicWeight } from "$lib/music
 import type { MusicActivityPhase, MusicAssignmentBehavior, MusicAssignmentSource } from "$lib/music/context-assignment";
 import { emptyMusicSkipBreakdown, type MusicPlaylistSkipReason, type MusicSavedQueueEntry } from "$lib/music/playlists/playback";
 import { probeLocalMedia, type LocalBackendKind } from "$lib/api/media-player";
-import { confirmLocalMusicSources, pickMediaFolder, registerEmbeddedArtwork, registerMediaFile } from "$lib/api/music";
+import { confirmLocalMusicSources, pickMediaFolder, registerEmbeddedArtwork, registerMediaFile, registerMusicArtworkAsset } from "$lib/api/music";
+import { isManagedMusicArtworkReference } from "$lib/music/managed-artwork";
 import { clampRate, clampVolume, formatVolumePercent, MAX_VOLUME, type PlaybackSnapshot } from "$lib/music/playback";
 import { formatSourceKind, isYouTubeSource, localFileSourceFromPath, parseMusicSourceInput, sourceDisplayLabel, type MusicSource } from "$lib/music/sources";
 import { NativeMusicSessionClient } from "$lib/music/session/native-session-client";
@@ -409,7 +410,11 @@ class MusicPlayerStore {
     if (source.kind !== "local-file") return;
     const hostedGeneration = this.hostedMediaController.nextGeneration();
     this.hostedMediaController.startVisualTransition();
-    const artwork = source.artworkPath ? await registerMediaFile(source.artworkPath, hostedGeneration) : await registerEmbeddedArtwork(source.path, hostedGeneration);
+    const artwork = !source.artworkPath
+      ? await registerEmbeddedArtwork(source.path, hostedGeneration)
+      : isManagedMusicArtworkReference(source.artworkPath)
+        ? await registerMusicArtworkAsset(source.artworkPath, hostedGeneration)
+        : await registerMediaFile(source.artworkPath, hostedGeneration);
     if (this.native?.generation !== generation) {
       if (artwork) await this.hostedMediaController.unregisterGeneration([artwork], hostedGeneration);
       return;
@@ -502,7 +507,10 @@ class MusicPlayerStore {
     } finally { this.sourceActionBusy = false; }
   }
   async loadSource(source: MusicSource, options: LoadSourceOptions = {}): Promise<void> {
-    if (source.kind === "local-file" && !(await confirmLocalMusicSources([source.path, ...(source.artworkPath ? [source.artworkPath] : [])]))) return;
+    const deviceArtworkPaths = source.kind === "local-file" && source.artworkPath && !isManagedMusicArtworkReference(source.artworkPath)
+      ? [source.artworkPath]
+      : [];
+    if (source.kind === "local-file" && !(await confirmLocalMusicSources([source.path, ...deviceArtworkPaths]))) return;
     await this.start({ kind: "sources", sources: [source], selectedIndex: 0, name: source.title }, options.autoplay ?? false, options.resume ?? true);
   }
   async loadReviewItem(itemId: string, autoplay: boolean): Promise<void> { await this.start({ kind: "review-item", itemId }, autoplay); }

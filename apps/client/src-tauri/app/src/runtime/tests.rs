@@ -137,6 +137,7 @@ fn mobile_runtime_excludes_desktop_only_commands() {
         "projects::icons::projects_icon_download_image_url",
         "projects::icons::projects_icon_asset_path",
         "music::music_pick_soundscape_file",
+        "music::media_server::music_register_artwork_asset",
         "music::music_reveal_local_file",
         "music::library::commands::music_library_create_relink_plan",
         "music::library::commands::music_library_preview_item_repair",

@@ -269,10 +269,16 @@ fn source_order_and_artwork_overrides_are_projected_in_library_rows() {
             .await
             .unwrap();
         }
-        sqlx::query("UPDATE music_library_items SET artwork_override = '/art/cover.png' WHERE id = 'item-2'")
-            .execute(&pool)
-            .await
-            .unwrap();
+        let artwork = format!("music/artwork/{}.png", "c".repeat(64));
+        sqlx::query(
+            "UPDATE music_library_items
+             SET artwork_override = ?, artwork_override_byte_size = 1024
+             WHERE id = 'item-2'",
+        )
+        .bind(&artwork)
+        .execute(&pool)
+        .await
+        .unwrap();
 
         let mut request = library_window();
         request.sort = MusicItemSort::SourceOrder;
@@ -293,7 +299,7 @@ fn source_order_and_artwork_overrides_are_projected_in_library_rows() {
         );
         assert_eq!(
             result.items[1].artwork_override.as_deref(),
-            Some("/art/cover.png")
+            Some(artwork.as_str())
         );
     });
 }

@@ -1956,9 +1956,12 @@ dependencies = [
 name = "ganbaru-music-library"
 version = "0.1.0"
 dependencies = [
+ "ganbaru-atomic-files",
  "ganbaru-db",
+ "ganbaru-image-metadata",
  "ganbaru-music",
  "ganbaru-projects",
+ "ganbaru-sync",
  "ganbaru-sync-contracts",
  "jiff",
  "rodio",

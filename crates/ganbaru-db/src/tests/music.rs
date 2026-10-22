@@ -7,8 +7,8 @@ fn repeated_migration_startup_preserves_music_data() {
     super::block_on(async {
         let pool = migrated_memory_pool().await;
         sqlx::query(
-            "INSERT INTO music_playlists (id, name, icon, created_at_ms, updated_at_ms)
-             VALUES ('playlist-1', 'Deep focus', 'emoji:🎧', 1, 1)",
+            "INSERT INTO music_playlists (id, name, icon, order_key, created_at_ms, updated_at_ms)
+             VALUES ('playlist-1', 'Deep focus', 'emoji:🎧', 'a0', 1, 1)",
         )
         .execute(&pool)
         .await
@@ -58,6 +58,11 @@ fn canonical_music_schema_keeps_device_paths_out_of_logical_roots() {
             "idx_music_local_locations_root_availability",
             "idx_music_source_collection_items_order",
             "idx_music_playlist_memberships_order",
+            "idx_music_playlist_memberships_break_item",
+            "idx_music_playlists_order",
+            "idx_music_listening_statistics_item",
+            "music_playlists_order_key_insert",
+            "music_playlist_memberships_order_key_insert",
             "idx_music_snoozes_active_item",
             "idx_music_recent_selections_playlist",
             "idx_music_library_items_review_deferred_until",
@@ -114,8 +119,8 @@ fn canonical_music_schema_enforces_identity_membership_and_snooze_invariants() {
     super::block_on(async {
         let pool = migrated_memory_pool().await;
         sqlx::query(
-            "INSERT INTO music_playlists (id, name, created_at_ms, updated_at_ms)
-             VALUES ('playlist-1', 'Focus', 1700000000000, 1700000000000)",
+            "INSERT INTO music_playlists (id, name, order_key, created_at_ms, updated_at_ms)
+             VALUES ('playlist-1', 'Focus', 'a0', 1700000000000, 1700000000000)",
         )
         .execute(&pool)
         .await
@@ -135,8 +140,8 @@ fn canonical_music_schema_enforces_identity_membership_and_snooze_invariants() {
         .unwrap();
         sqlx::query(
             "INSERT INTO music_playlist_memberships
-                (id, playlist_id, item_id, position, created_at_ms, updated_at_ms)
-             VALUES ('membership-1', 'playlist-1', 'item-1', 0, 1700000000000, 1700000000000)",
+                (id, playlist_id, item_id, order_key, created_at_ms, updated_at_ms)
+             VALUES ('membership-1', 'playlist-1', 'item-1', 'a0', 1700000000000, 1700000000000)",
         )
         .execute(&pool)
         .await
@@ -144,8 +149,8 @@ fn canonical_music_schema_enforces_identity_membership_and_snooze_invariants() {
 
         let duplicate_membership = sqlx::query(
             "INSERT INTO music_playlist_memberships
-                (id, playlist_id, item_id, position, created_at_ms, updated_at_ms)
-             VALUES ('membership-2', 'playlist-1', 'item-1', 1, 1700000000000, 1700000000000)",
+                (id, playlist_id, item_id, order_key, created_at_ms, updated_at_ms)
+             VALUES ('membership-2', 'playlist-1', 'item-1', 'a1', 1700000000000, 1700000000000)",
         )
         .execute(&pool)
         .await;
@@ -192,14 +197,30 @@ fn default_playlists_have_a_complete_order_without_memberships_or_obsolete_resum
                 .fetch_one(&pool)
                 .await
                 .unwrap();
-        let sort_orders: Vec<i64> =
-            sqlx::query_scalar("SELECT sort_order FROM music_playlists ORDER BY sort_order")
+        let order: Vec<(String, String)> =
+            sqlx::query_as("SELECT id, order_key FROM music_playlists ORDER BY order_key, id")
                 .fetch_all(&pool)
                 .await
                 .unwrap();
         assert_eq!(playlists, 11);
         assert_eq!(memberships, 0);
-        assert_eq!(sort_orders, (0..11).collect::<Vec<_>>());
+        assert_eq!(
+            order.first().map(|(id, _)| id.as_str()),
+            Some("playlist-default-start-of-day")
+        );
+        assert_eq!(
+            order.last().map(|(id, _)| id.as_str()),
+            Some("playlist-default-commute")
+        );
+        let keys = order
+            .iter()
+            .map(|(_, key)| key.as_str())
+            .collect::<Vec<_>>();
+        assert!(keys.windows(2).all(|pair| pair[0] < pair[1]));
+        assert!(
+            keys.iter()
+                .all(|key| key.len() == 4 && key.starts_with('c'))
+        );
 
         let obsolete_tables: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'music_playback_states'",
@@ -212,8 +233,8 @@ fn default_playlists_have_a_complete_order_without_memberships_or_obsolete_resum
 fn fresh_vaults_seed_one_rain_preset_per_generated_sound() {
     super::block_on(async {
         let pool = migrated_memory_pool().await;
-        let presets: Vec<(String, String, f64, String, f64)> = sqlx::query_as(
-            "SELECT p.id, p.name, p.level, s.soundscape_id, s.level
+        let presets: Vec<(String, String, i64, String, i64, String)> = sqlx::query_as(
+            "SELECT p.id, p.name, p.level_milli, s.soundscape_id, s.level_milli, s.order_key
              FROM music_soundscape_presets p JOIN music_soundscape_preset_sounds s ON s.preset_id = p.id
              ORDER BY p.id",
         )
@@ -226,23 +247,26 @@ fn fresh_vaults_seed_one_rain_preset_per_generated_sound() {
                 (
                     "preset-generated-brown-noise".into(),
                     "Rain (soft)".into(),
-                    1.25,
+                    1250,
                     "generated-brown-noise".into(),
-                    1.0
+                    1000,
+                    "c000".into()
                 ),
                 (
                     "preset-generated-pink-noise".into(),
                     "Rain (moderate)".into(),
-                    0.75,
+                    750,
                     "generated-pink-noise".into(),
-                    1.0
+                    1000,
+                    "c000".into()
                 ),
                 (
                     "preset-generated-white-noise".into(),
                     "Rain (heavy)".into(),
-                    0.5,
+                    500,
                     "generated-white-noise".into(),
-                    1.0
+                    1000,
+                    "c000".into()
                 ),
             ]
         );
@@ -283,9 +307,10 @@ fn fresh_vaults_seed_one_rain_preset_per_generated_sound() {
         .await;
         assert!(duplicate_generated.is_err());
         for sql in [
-            "UPDATE music_soundscape_presets SET level = 2.1",
-            "UPDATE music_soundscape_preset_sounds SET level = 1.1",
-            "UPDATE music_soundscape_preset_sounds SET level = -0.1",
+            "UPDATE music_soundscape_presets SET level_milli = 2001",
+            "UPDATE music_soundscape_preset_sounds SET level_milli = 1001",
+            "UPDATE music_soundscape_preset_sounds SET level_milli = -1",
+            "UPDATE music_soundscape_preset_sounds SET order_key = ''",
         ] {
             assert!(sqlx::query(sql).execute(&pool).await.is_err(), "{sql}");
         }
@@ -368,5 +393,229 @@ fn preset_mix_migration_turns_sound_choices_into_presets() {
         .await
         .unwrap();
         assert_eq!(removed_columns, 0);
+    });
+}
+
+#[test]
+fn sync_shape_migration_keeps_order_values_breaks_skips_and_statistics() {
+    super::block_on(async {
+        const BEFORE_SYNC_SHAPE: i64 = 20261022061954;
+        let pool = memory_pool_migrated_through(BEFORE_SYNC_SHAPE).await;
+        sqlx::raw_sql(
+            "INSERT INTO music_library_items
+                (id, identity_key, source_kind, availability, review_state, discovered_at_ms, updated_at_ms)
+             VALUES ('item-1', 'local:1', 'local-file', 'available', 'reviewed', 1, 1),
+                    ('item-2', 'local:2', 'local-file', 'available', 'reviewed', 1, 1),
+                    ('item-3', 'local:3', 'local-file', 'available', 'reviewed', 1, 1);
+             INSERT INTO music_playlists (id, name, sort_order, created_at_ms, updated_at_ms)
+             VALUES ('p-b', 'B', 20, 1, 1), ('p-a', 'a', 20, 1, 1);
+             INSERT INTO music_playlist_memberships
+                (id, playlist_id, item_id, position, volume, rate, created_at_ms, updated_at_ms)
+             VALUES ('m1', 'p-a', 'item-1', 1, 0.5, 1.25, 1, 1),
+                    ('m2', 'p-a', 'item-2', 0, NULL, NULL, 1, 1),
+                    ('m3', 'p-b', 'item-1', 0, 0.3333, NULL, 1, 1);
+             INSERT INTO music_membership_break_items
+                (membership_id, item_id, start_ms, end_ms, volume, rate)
+             VALUES ('m1', 'item-3', 1000, 2000, 0.25, 0.75);
+             INSERT INTO music_membership_skip_ranges (id, membership_id, start_ms, end_ms, sort_order)
+             VALUES ('s1', 'm1', 5000, 6000, 0), ('s2', 'm1', 1000, 2000, 1);
+             INSERT INTO music_soundscape_presets (id, name, icon, level, created_at_ms, updated_at_ms)
+             VALUES ('preset-custom', 'Custom', 'lucide:waves', 1.5, 1, 1);
+             INSERT INTO music_soundscape_preset_sounds (preset_id, position, soundscape_id, level)
+             VALUES ('preset-custom', 1, 'generated-white-noise', 0.25),
+                    ('preset-custom', 0, 'generated-pink-noise', 0.8);
+             INSERT INTO music_listening_statistics
+                (item_id, last_played_at_ms, play_count, completion_count, skip_count, updated_at_ms)
+             VALUES ('item-1', 100, 3, 2, 1, 100), ('item-2', NULL, 0, 0, 4, 50);",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        run_migrations(&pool).await.unwrap();
+
+        let playlists: Vec<String> =
+            sqlx::query_scalar("SELECT id FROM music_playlists ORDER BY order_key, id")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            playlists[9..],
+            [
+                "playlist-default-cooking",
+                "playlist-default-commute",
+                "p-a",
+                "p-b"
+            ]
+        );
+        let memberships: Vec<(String, Option<i64>, Option<i64>)> = sqlx::query_as(
+            "SELECT id, volume_milli, rate_milli FROM music_playlist_memberships
+             ORDER BY playlist_id, order_key, id",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            memberships,
+            vec![
+                ("m2".into(), None, None),
+                ("m1".into(), Some(500), Some(1250)),
+                ("m3".into(), Some(333), None),
+            ]
+        );
+        type BreakRow = (
+            String,
+            Option<String>,
+            Option<i64>,
+            Option<i64>,
+            Option<i64>,
+            Option<i64>,
+        );
+        let breaks: Vec<BreakRow> = sqlx::query_as(
+            "SELECT id, break_item_id, break_start_ms, break_end_ms, break_volume_milli, break_rate_milli
+             FROM music_playlist_memberships ORDER BY id",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            breaks[0],
+            (
+                "m1".into(),
+                Some("item-3".into()),
+                Some(1000),
+                Some(2000),
+                Some(250),
+                Some(750)
+            )
+        );
+        assert!(
+            breaks[1..]
+                .iter()
+                .all(|row| row.1.is_none() && row.2.is_none())
+        );
+        let skips: Vec<(i64, i64, i64)> = sqlx::query_as(
+            "SELECT ordinal, start_ms, end_ms FROM music_membership_skip_ranges
+             WHERE membership_id = 'm1' ORDER BY ordinal",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(skips, vec![(0, 1000, 2000), (1, 5000, 6000)]);
+        let preset_level: i64 = sqlx::query_scalar(
+            "SELECT level_milli FROM music_soundscape_presets WHERE id = 'preset-custom'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(preset_level, 1500);
+        let sounds: Vec<(String, i64)> = sqlx::query_as(
+            "SELECT soundscape_id, level_milli FROM music_soundscape_preset_sounds
+             WHERE preset_id = 'preset-custom' ORDER BY order_key",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            sounds,
+            vec![
+                ("generated-pink-noise".into(), 800),
+                ("generated-white-noise".into(), 250)
+            ]
+        );
+        let statistics: Vec<(String, String, Option<i64>, i64, i64, i64)> = sqlx::query_as(
+            "SELECT device_id, item_id, last_played_at_ms, play_count, completion_count, skip_count
+             FROM music_listening_statistics ORDER BY item_id",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            statistics,
+            vec![
+                ("vault".into(), "item-1".into(), Some(100), 3, 2, 1),
+                ("vault".into(), "item-2".into(), None, 0, 0, 4),
+            ]
+        );
+        let foreign_key_errors: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM pragma_foreign_key_check")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(foreign_key_errors, 0);
+        for removed in [
+            "SELECT COUNT(*) FROM pragma_table_info('music_playlists') WHERE name = 'sort_order'",
+            "SELECT COUNT(*) FROM pragma_table_info('music_playlist_memberships')
+             WHERE name IN ('position', 'volume', 'rate')",
+            "SELECT COUNT(*) FROM pragma_table_info('music_membership_skip_ranges')
+             WHERE name IN ('id', 'sort_order')",
+            "SELECT COUNT(*) FROM pragma_table_info('music_soundscape_presets') WHERE name = 'level'",
+            "SELECT COUNT(*) FROM pragma_table_info('music_soundscape_preset_sounds')
+             WHERE name IN ('position', 'level')",
+            "SELECT COUNT(*) FROM sqlite_schema WHERE name = 'music_membership_break_items'",
+        ] {
+            let count: i64 = sqlx::query_scalar(removed).fetch_one(&pool).await.unwrap();
+            assert_eq!(count, 0, "{removed}");
+        }
+
+        sqlx::query("DELETE FROM music_library_items WHERE id = 'item-3'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let cleared: (Option<String>, Option<i64>) = sqlx::query_as(
+            "SELECT break_item_id, break_start_ms FROM music_playlist_memberships WHERE id = 'm1'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(cleared, (None, Some(1000)));
+    });
+}
+
+#[test]
+fn music_sync_shape_rejects_missing_keys_bad_ranges_and_extra_skips() {
+    super::block_on(async {
+        let pool = migrated_memory_pool().await;
+        sqlx::raw_sql(
+            "INSERT INTO music_library_items
+                (id, identity_key, source_kind, availability, review_state, discovered_at_ms, updated_at_ms)
+             VALUES ('item-1', 'local:1', 'local-file', 'available', 'reviewed', 1, 1);
+             INSERT INTO music_playlists (id, name, order_key, created_at_ms, updated_at_ms)
+             VALUES ('p', 'P', 'a0', 1, 1);
+             INSERT INTO music_playlist_memberships
+                (id, playlist_id, item_id, order_key, created_at_ms, updated_at_ms)
+             VALUES ('m', 'p', 'item-1', 'a0', 1, 1);
+             INSERT INTO music_listening_statistics
+                (device_id, item_id, play_count, updated_at_ms)
+             VALUES ('device-a', 'item-1', 2, 1), ('device-b', 'item-1', 3, 1);",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        for sql in [
+            "INSERT INTO music_playlists (id, name, created_at_ms, updated_at_ms) VALUES ('q', 'Q', 1, 1)",
+            "UPDATE music_playlists SET order_key = '' WHERE id = 'p'",
+            "INSERT INTO music_playlist_memberships (id, playlist_id, item_id, created_at_ms, updated_at_ms)
+             VALUES ('n', 'p', 'item-1', 1, 1)",
+            "UPDATE music_playlist_memberships SET order_key = '' WHERE id = 'm'",
+            "UPDATE music_playlist_memberships SET volume_milli = 1001",
+            "UPDATE music_playlist_memberships SET rate_milli = 249",
+            "UPDATE music_playlist_memberships SET break_start_ms = 10, break_end_ms = 5",
+            "UPDATE music_playlist_memberships SET break_rate_milli = 2001",
+            "INSERT INTO music_membership_skip_ranges (membership_id, ordinal, start_ms, end_ms)
+             VALUES ('m', 64, 0, 1)",
+            "INSERT INTO music_listening_statistics (device_id, item_id, updated_at_ms)
+             VALUES (' ', 'item-1', 1)",
+        ] {
+            assert!(sqlx::query(sql).execute(&pool).await.is_err(), "{sql}");
+        }
+        let total: i64 = sqlx::query_scalar(
+            "SELECT SUM(play_count) FROM music_listening_statistics WHERE item_id = 'item-1'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(total, 5);
     });
 }

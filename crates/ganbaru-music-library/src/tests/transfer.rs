@@ -177,7 +177,7 @@ fn music_transfer_shares_database_allowance_across_items_children_and_conflict_r
             .execute(&pool)
             .await
             .unwrap();
-        sqlx::query("WITH RECURSIVE numbers(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM numbers WHERE n<100000) INSERT INTO music_membership_skip_ranges (id, membership_id, start_ms, end_ms, sort_order) SELECT 'range-' || n, (SELECT id FROM music_playlist_memberships LIMIT 1), 10000, 12000, n FROM numbers")
+        sqlx::query("WITH RECURSIVE numbers(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM numbers WHERE n<100000) INSERT INTO music_snoozes (id, item_id, scope, starts_at_ms, created_at_ms) SELECT 'bulk-snooze-' || n, (SELECT item_id FROM music_playlist_memberships LIMIT 1), 'all-playlists', 1700000000000, 1700000000000 FROM numbers")
             .execute(&pool).await.unwrap();
         assert!(
             transfer::export(&pool, &export, &[])

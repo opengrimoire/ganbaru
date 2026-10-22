@@ -82,16 +82,16 @@ async fn seed(pool: &SqlitePool) {
     .await
     .unwrap();
     sqlx::query(
-        "INSERT INTO music_playlists (id, name, created_at_ms, updated_at_ms)
-         VALUES ('playlist-1', 'Focus', 1, 1)",
+        "INSERT INTO music_playlists (id, name, order_key, created_at_ms, updated_at_ms)
+         VALUES ('playlist-1', 'Focus', 'a0', 1, 1)",
     )
     .execute(pool)
     .await
     .unwrap();
     sqlx::query(
         "INSERT INTO music_playlist_memberships
-            (id, playlist_id, item_id, position, created_at_ms, updated_at_ms)
-         VALUES ('membership-1', 'playlist-1', 'item-member', 0, 1, 1)",
+            (id, playlist_id, item_id, order_key, created_at_ms, updated_at_ms)
+         VALUES ('membership-1', 'playlist-1', 'item-member', 'a0', 1, 1)",
     )
     .execute(pool)
     .await

@@ -77,7 +77,6 @@ fn fresh_database_applies_clean_baseline() {
             "music_source_collections",
             "music_source_collection_items",
             "music_playlist_memberships",
-            "music_membership_break_items",
             "music_snoozes",
             "music_listening_statistics",
             "music_recent_selections",
@@ -124,6 +123,10 @@ fn fresh_database_applies_clean_baseline() {
             "music_soundscape_active_selections",
             "music_soundscape_locations",
             "idx_music_soundscape_locations_device",
+            "music_membership_break_items",
+            "idx_music_membership_break_items_item",
+            "idx_music_playlists_sort",
+            "idx_music_listening_statistics_last_played",
         ] {
             let exists: Option<i64> =
                 sqlx::query_scalar("SELECT 1 FROM sqlite_schema WHERE name = ?")

@@ -30,6 +30,9 @@ Music separates canonical library identity from physical source location and pla
 - Built-in playlists exist from the baseline migration; reads never recreate them.
 - Source collections (local collections, YouTube playlists, and other discovery sources) keep refresh generation and failure state. Refresh and relink use staged generations so a failed scan leaves the previous library usable.
 - User playlists and ordered memberships are independent of source collections; removing or refreshing a source never silently destroys a playlist.
+- Playlists, memberships, and preset sounds are ordered by fractional order keys and then id, compared byte-wise, so a move rewrites only the moved rows. A membership's break item and its range are columns of the membership, and its skip ranges are owned rows keyed by membership and ordinal.
+- Volumes, rates, and soundscape levels are stored as integer thousandths so equal values compare exactly across devices; the frontend converts them to multipliers at the command boundary.
+- Listening statistics are kept per device and item, and reads sum counts and take the latest timestamps across devices.
 - Related families cover skip ranges, item signals, snoozes, statistics, recent selections, refresh issues, context assignments, soundscapes, and soundscape presets.
 - A context assignment that plays a soundscape names exactly one preset; other soundscape behaviors name none. Preset references are not foreign keys, so a removed preset stays an explicit unavailable reference. Preset layer membership cascades when a layer is removed, and an emptied preset is kept. A local layer's file path is device-local app state keyed by vault and layer, never a vault row.
 

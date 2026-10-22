@@ -12,7 +12,7 @@ function item(): MusicItemListEntry {
     originalArtworkIdentity: null, artworkOverride: null, durationMs: null, availability: "missing",
     reviewState: "unreviewed", discoveredAtMs: 1, updatedAtMs: 1, version: 1, playlistCount: 0,
     activeSnoozeCount: 0, lastPlayedAtMs: null, playCount: 0, membershipId: null,
-    membershipPosition: null, membershipWeight: null, membershipEnabled: null, membershipVersion: null,
+    membershipOrderKey: null, membershipWeight: null, membershipEnabled: null, membershipVersion: null,
   };
 }
 

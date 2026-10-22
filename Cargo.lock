@@ -1959,6 +1959,7 @@ dependencies = [
  "ganbaru-db",
  "ganbaru-music",
  "ganbaru-projects",
+ "ganbaru-sync-contracts",
  "jiff",
  "rodio",
  "serde",

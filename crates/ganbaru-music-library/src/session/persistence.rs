@@ -281,7 +281,7 @@ pub async fn commit_in_transaction(
         .bind(device_id).bind(&state.session_id).bind(state.revision as i64).bind(encoded).bind(now_ms)
         .execute(&mut *connection).await.map_err(|error| MusicLibraryError::database("save music checkpoint", error))?;
     for update in &transition.listening {
-        record_listening_in_transaction(connection, update).await?;
+        record_listening_in_transaction(connection, device_id, update).await?;
     }
     if let Some((action_id, hash)) = action {
         // The receipt result contains no resolved source data and is never replayed as a live session.

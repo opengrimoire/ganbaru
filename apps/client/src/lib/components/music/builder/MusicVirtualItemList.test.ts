@@ -29,7 +29,7 @@ const item: MusicItemListEntry = {
   lastPlayedAtMs: null,
   playCount: 0,
   membershipId: "membership-1",
-  membershipPosition: 0,
+  membershipOrderKey: "a0",
   membershipWeight: "normal",
   membershipEnabled: true,
   membershipVersion: 1,

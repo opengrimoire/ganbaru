@@ -75,13 +75,12 @@ pub(super) fn membership(index: usize) -> MusicMembershipWrite {
     MusicMembershipWrite {
         playlist_id: "playlist-1".to_string(),
         item_id: format!("item-{index}"),
-        position: index as i64,
         weight: MusicWeight::Normal,
         enabled: true,
         start_ms: None,
         end_ms: None,
-        volume: None,
-        rate: None,
+        volume_milli: None,
+        rate_milli: None,
         expected_version: None,
         updated_at_ms: 1_700_000_000_000,
     }
@@ -183,7 +182,7 @@ fn built_in_music_playlists_exist_after_migrations() {
         let pool = pool().await;
         let seeded: Vec<(String, String, String)> = sqlx::query_as(
             "SELECT id, name, icon FROM music_playlists
-             WHERE id LIKE 'playlist-default-%' ORDER BY sort_order",
+             WHERE id LIKE 'playlist-default-%' ORDER BY order_key, id",
         )
         .fetch_all(&pool)
         .await
@@ -369,13 +368,13 @@ fn row_mapping_rejects_unknown_persisted_enums_with_field_context() {
         id: "membership-1".to_string(),
         playlist_id: "playlist-1".to_string(),
         item_id: "item-1".to_string(),
-        position: 0,
+        order_key: "a0".to_string(),
         weight: "sometimes-ish".to_string(),
         enabled: 1,
         start_ms: None,
         end_ms: None,
-        volume: None,
-        rate: None,
+        volume_milli: None,
+        rate_milli: None,
         created_at_ms: 1_700_000_000_000,
         updated_at_ms: 1_700_000_000_000,
         version: 1,
@@ -589,8 +588,8 @@ fn duplicate_playlist_preserves_membership_details_and_ranges() {
         .remove(0);
         sqlx::query(
             "INSERT INTO music_membership_skip_ranges
-                (id, membership_id, start_ms, end_ms, sort_order)
-             VALUES ('skip-1', ?, 10000, 12000, 0)",
+                (membership_id, ordinal, start_ms, end_ms)
+             VALUES (?, 0, 10000, 12000)",
         )
         .bind(&receipt.id)
         .execute(&pool)
@@ -1005,8 +1004,8 @@ fn advanced_membership_settings_replace_validated_skip_ranges_atomically() {
         let mut updated = initial;
         updated.start_ms = Some(1_000);
         updated.end_ms = Some(90_000);
-        updated.volume = Some(0.6);
-        updated.rate = Some(1.25);
+        updated.volume_milli = Some(600);
+        updated.rate_milli = Some(1_250);
         updated.expected_version = Some(1);
         let receipt = super::writes::save_advanced_membership(
             &pool,
@@ -1029,10 +1028,16 @@ fn advanced_membership_settings_replace_validated_skip_ranges_atomically() {
         assert_eq!(receipt.membership.version, 2);
         let membership_id = crate::identity::membership_id("playlist-1", "item-1");
         assert_eq!(receipt.membership.id, membership_id);
-        assert_eq!(
-            receipt.skip_ranges[1].id,
-            crate::identity::skip_range_id(&membership_id, 1)
-        );
+        assert_eq!(receipt.skip_ranges[1].membership_id, membership_id);
+        assert_eq!(receipt.skip_ranges[1].ordinal, 1);
+        let overrides: (Option<i64>, Option<i64>) = sqlx::query_as(
+            "SELECT volume_milli, rate_milli FROM music_playlist_memberships WHERE id = ?",
+        )
+        .bind(&membership_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(overrides, (Some(600), Some(1_250)));
         let detail = super::queries::inspector_detail(&pool, "item-1")
             .await
             .unwrap();
@@ -1083,15 +1088,15 @@ fn advanced_membership_save_diffs_skip_ranges_and_skips_unchanged_values() {
             .unwrap();
         assert_eq!(trimmed.membership.version, 1);
         assert_eq!(trimmed.skip_ranges.len(), 1);
-        assert_eq!(trimmed.skip_ranges[0].id, first.skip_ranges[0].id);
-        let stored: Vec<(String, i64)> = sqlx::query_as(
-            "SELECT id, end_ms FROM music_membership_skip_ranges WHERE membership_id = ?",
+        assert_eq!(trimmed.skip_ranges[0].ordinal, 0);
+        let stored: Vec<(i64, i64)> = sqlx::query_as(
+            "SELECT ordinal, end_ms FROM music_membership_skip_ranges WHERE membership_id = ?",
         )
         .bind(&first.membership.id)
         .fetch_all(&pool)
         .await
         .unwrap();
-        assert_eq!(stored, vec![(first.skip_ranges[0].id.clone(), 2_500)]);
+        assert_eq!(stored, vec![(0, 2_500)]);
     });
 }
 
@@ -1213,7 +1218,7 @@ fn bulk_membership_edits_preserve_existing_settings_and_commit_as_one_change() {
 }
 
 #[test]
-fn playlist_collection_reorder_persists_all_positions_atomically() {
+fn playlist_collection_reorder_rekeys_only_moved_playlists_atomically() {
     crate::test_support::block_on(async {
         let pool = pool().await;
         super::writes::create_playlist(&pool, playlist("playlist-1"))
@@ -1223,7 +1228,7 @@ fn playlist_collection_reorder_persists_all_positions_atomically() {
             .await
             .unwrap();
         let rows: Vec<(String, i64)> =
-            sqlx::query_as("SELECT id, version FROM music_playlists ORDER BY sort_order, id")
+            sqlx::query_as("SELECT id, version FROM music_playlists ORDER BY order_key, id")
                 .fetch_all(&pool)
                 .await
                 .unwrap();
@@ -1258,8 +1263,25 @@ fn playlist_collection_reorder_persists_all_positions_atomically() {
         .await
         .unwrap();
         assert_eq!(receipts.len(), reordered.len());
+        let versions: Vec<(String, i64)> =
+            sqlx::query_as("SELECT id, version FROM music_playlists ORDER BY order_key, id")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            versions,
+            reordered
+                .iter()
+                .enumerate()
+                .map(|(index, (playlist_id, version))| (
+                    playlist_id.clone(),
+                    if index == 0 { version + 1 } else { *version }
+                ))
+                .collect::<Vec<_>>(),
+            "only the moved playlist takes a new key and version"
+        );
         let stored: Vec<String> =
-            sqlx::query_scalar("SELECT id FROM music_playlists ORDER BY sort_order, id")
+            sqlx::query_scalar("SELECT id FROM music_playlists ORDER BY order_key, id")
                 .fetch_all(&pool)
                 .await
                 .unwrap();
@@ -1268,6 +1290,20 @@ fn playlist_collection_reorder_persists_all_positions_atomically() {
             .map(|(playlist_id, _)| playlist_id.clone())
             .collect::<Vec<_>>();
         assert_eq!(stored, reordered_ids);
+        let stored_keys: Vec<(String, String, i64)> = sqlx::query_as(
+            "SELECT id, order_key, version FROM music_playlists ORDER BY order_key, id",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            receipts
+                .into_iter()
+                .map(|receipt| (receipt.id, receipt.order_key, receipt.version))
+                .collect::<Vec<_>>(),
+            stored_keys,
+            "receipts carry every playlist's stored key and version in the requested order"
+        );
 
         let stale_result = super::playlist_edits::reorder_playlists(
             &pool,
@@ -1285,7 +1321,7 @@ fn playlist_collection_reorder_persists_all_positions_atomically() {
         .await;
         assert!(stale_result.is_err());
         let stored_after_conflict: Vec<String> =
-            sqlx::query_scalar("SELECT id FROM music_playlists ORDER BY sort_order, id")
+            sqlx::query_scalar("SELECT id FROM music_playlists ORDER BY order_key, id")
                 .fetch_all(&pool)
                 .await
                 .unwrap();
@@ -1328,11 +1364,27 @@ fn playlist_reorder_and_playback_projection_share_canonical_memberships() {
         .await
         .unwrap();
         assert_eq!(reordered.item_ids, vec!["item-3", "item-1", "item-2"]);
+        let versions: Vec<(String, i64)> = sqlx::query_as(
+            "SELECT item_id, version FROM music_playlist_memberships
+             WHERE playlist_id = 'playlist-1' ORDER BY order_key, id",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            versions,
+            vec![
+                ("item-3".to_string(), 2),
+                ("item-1".to_string(), 1),
+                ("item-2".to_string(), 1)
+            ],
+            "only the moved membership takes a new key and version"
+        );
 
         sqlx::query(
             "INSERT INTO music_membership_skip_ranges
-                (id, membership_id, start_ms, end_ms, sort_order)
-             VALUES ('skip-1', ?, 1000, 2000, 0)",
+                (membership_id, ordinal, start_ms, end_ms)
+             VALUES (?, 0, 1000, 2000)",
         )
         .bind(crate::identity::membership_id("playlist-1", "item-1"))
         .execute(&pool)

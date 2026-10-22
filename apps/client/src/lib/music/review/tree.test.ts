@@ -21,7 +21,7 @@ function item(id: string, relativePath: string | null, sourceKind: "local-file" 
     id, identityKey: id, sourceKind, mediaKind: "audio", title: id, artist: "", album: "",
     localRootId: sourceKind === "local-file" ? "root-1" : null, relativePath, sourceCollectionIds: [], originalArtworkIdentity: null, artworkOverride: null, durationMs: null, availability: "available", reviewState: "unreviewed",
     discoveredAtMs: 1, updatedAtMs: 1, version: 1, playlistCount: 0, activeSnoozeCount: 0,
-    lastPlayedAtMs: null, playCount: 0, membershipId: null, membershipPosition: null,
+    lastPlayedAtMs: null, playCount: 0, membershipId: null, membershipOrderKey: null,
     membershipWeight: null, membershipEnabled: null, membershipVersion: null,
   };
 }

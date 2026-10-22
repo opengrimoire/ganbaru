@@ -13,6 +13,9 @@ import type {
   MusicReviewState,
 } from "$lib/music/library/contracts";
 
+/** Order key of an optimistic membership: the native write appends it and assigns the real key. */
+const OPTIMISTIC_ORDER_KEY = "";
+
 export class MusicReviewController {
   actionBusy = $state(false);
   creatingPlaylist = $state(false);
@@ -70,8 +73,8 @@ export class MusicReviewController {
         const timestamp = this.now();
         const membership: MusicPlaylistMembership = {
           id: this.id(), playlistId: playlist.id, itemId: detail.item.id,
-          position: playlist.totalCount, weight: "normal", enabled: true,
-          startMs: null, endMs: null, volume: null, rate: null,
+          orderKey: OPTIMISTIC_ORDER_KEY, weight: "normal", enabled: true,
+          startMs: null, endMs: null, volumeMilli: null, rateMilli: null,
           updatedAtMs: timestamp, createdAtMs: timestamp, version: 0,
         };
         const write = { ...membership, expectedVersion: null as number | null };

@@ -171,7 +171,6 @@ fn playlist_window_uses_manual_order_and_returns_membership_state() {
             .await;
             let mut entry = membership(index);
             entry.item_id = format!("item-{index}");
-            entry.position = 2 - index as i64;
             super::writes::upsert_memberships(
                 &pool,
                 MusicBulkMembershipWrite {
@@ -181,9 +180,11 @@ fn playlist_window_uses_manual_order_and_returns_membership_state() {
             .await
             .unwrap();
             sqlx::query(
-                "UPDATE music_playlist_memberships SET created_at_ms = ? WHERE item_id = ?",
+                "UPDATE music_playlist_memberships SET created_at_ms = ?, order_key = ?
+                 WHERE item_id = ?",
             )
             .bind(1_700_000_000_000_i64 + index as i64)
+            .bind(format!("a{}", 2 - index))
             .bind(format!("item-{index}"))
             .execute(&pool)
             .await
@@ -199,9 +200,13 @@ fn playlist_window_uses_manual_order_and_returns_membership_state() {
             result
                 .items
                 .iter()
-                .map(|item| item.membership_position)
+                .map(|item| (item.id.as_str(), item.membership_order_key.as_deref()))
                 .collect::<Vec<_>>(),
-            vec![Some(0), Some(1), Some(2)],
+            vec![
+                ("item-2", Some("a0")),
+                ("item-1", Some("a1")),
+                ("item-0", Some("a2"))
+            ],
         );
         assert!(result.items.iter().all(|item| item.membership_id.is_some()));
 
@@ -429,7 +434,7 @@ fn review_and_membership_queries_use_purpose_built_indexes() {
             "EXPLAIN QUERY PLAN
              SELECT id FROM music_playlist_memberships
              WHERE playlist_id = 'playlist-1'
-             ORDER BY position, id LIMIT 50",
+             ORDER BY order_key, id LIMIT 50",
         )
         .fetch_all(&pool)
         .await

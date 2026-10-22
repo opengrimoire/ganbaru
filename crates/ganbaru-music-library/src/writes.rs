@@ -137,10 +137,12 @@ pub async fn create_playlist(
         .begin()
         .await
         .map_err(|error| MusicLibraryError::database("begin create music playlist", error))?;
+    let tail = super::order::playlist_tail(&mut transaction).await?;
+    let order_key = super::order::key_after(tail.as_deref())?;
     sqlx::query(
         "INSERT INTO music_playlists
-            (id, name, icon, shuffle_enabled, mix_enabled, repeat_mode, sort_order, created_at_ms, updated_at_ms, version)
-         VALUES (?, ?, ?, ?, ?, ?, (SELECT COALESCE(MAX(sort_order), -1) + 1 FROM music_playlists), ?, ?, 1)",
+            (id, name, icon, shuffle_enabled, mix_enabled, repeat_mode, order_key, created_at_ms, updated_at_ms, version)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)",
     )
     .bind(&request.id)
     .bind(request.name.trim())
@@ -148,6 +150,7 @@ pub async fn create_playlist(
     .bind(request.shuffle_enabled)
     .bind(request.mix_enabled)
     .bind(request.repeat_mode.as_ref())
+    .bind(order_key.as_str())
     .bind(request.created_at_ms)
     .bind(request.created_at_ms)
     .execute(&mut *transaction)
@@ -268,10 +271,12 @@ pub async fn duplicate_playlist(
             &request.source_playlist_id,
         ));
     };
+    let tail = super::order::playlist_tail(&mut transaction).await?;
+    let order_key = super::order::key_after(tail.as_deref())?;
     sqlx::query(
         "INSERT INTO music_playlists
-            (id, name, icon, shuffle_enabled, mix_enabled, repeat_mode, sort_order, created_at_ms, updated_at_ms, version)
-         VALUES (?, ?, ?, ?, ?, ?, (SELECT COALESCE(MAX(sort_order), -1) + 1 FROM music_playlists), ?, ?, 1)",
+            (id, name, icon, shuffle_enabled, mix_enabled, repeat_mode, order_key, created_at_ms, updated_at_ms, version)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)",
     )
     .bind(&request.new_playlist_id)
     .bind(request.name.trim())
@@ -279,6 +284,7 @@ pub async fn duplicate_playlist(
     .bind(shuffle_enabled)
     .bind(mix_enabled)
     .bind(repeat_mode)
+    .bind(order_key.as_str())
     .bind(request.created_at_ms)
     .bind(request.created_at_ms)
     .execute(&mut *transaction)
@@ -309,7 +315,8 @@ pub async fn duplicate_playlist(
 }
 
 /// Copies every membership of `source_playlist_id`, with its skip ranges and break item, into
-/// `new_playlist_id` under keys derived from the new playlist.
+/// `new_playlist_id` under row keys derived from the new playlist and fresh rank order keys in
+/// the source order.
 async fn duplicate_memberships(
     transaction: &mut Transaction<'_, Sqlite>,
     source_playlist_id: &str,
@@ -317,66 +324,45 @@ async fn duplicate_memberships(
     created_at_ms: i64,
 ) -> MusicLibraryResult<()> {
     let sources: Vec<(String, String)> = sqlx::query_as(
-        "SELECT id, item_id FROM music_playlist_memberships WHERE playlist_id = ? ORDER BY id",
+        "SELECT id, item_id FROM music_playlist_memberships WHERE playlist_id = ?
+         ORDER BY order_key, id",
     )
     .bind(source_playlist_id)
     .fetch_all(&mut **transaction)
     .await
     .map_err(|error| MusicLibraryError::database("load duplicated memberships", error))?;
-    for (source_id, item_id) in sources {
+    let order_keys = super::order::rank_keys(sources.len())?;
+    for ((source_id, item_id), order_key) in sources.into_iter().zip(order_keys) {
         let copy_id = super::identity::membership_id(new_playlist_id, &item_id);
         sqlx::query(
             "INSERT INTO music_playlist_memberships
-                (id, playlist_id, item_id, position, weight, enabled,
-                 start_ms, end_ms, volume, rate, created_at_ms, updated_at_ms, version)
-             SELECT ?, ?, item_id, position, weight, enabled,
-                    start_ms, end_ms, volume, rate, ?, ?, 1
+                (id, playlist_id, item_id, order_key, weight, enabled, start_ms, end_ms,
+                 volume_milli, rate_milli, break_item_id, break_start_ms, break_end_ms,
+                 break_volume_milli, break_rate_milli, created_at_ms, updated_at_ms, version)
+             SELECT ?, ?, item_id, ?, weight, enabled, start_ms, end_ms,
+                    volume_milli, rate_milli, break_item_id, break_start_ms, break_end_ms,
+                    break_volume_milli, break_rate_milli, ?, ?, 1
              FROM music_playlist_memberships WHERE id = ?",
         )
         .bind(&copy_id)
         .bind(new_playlist_id)
+        .bind(order_key.as_str())
         .bind(created_at_ms)
         .bind(created_at_ms)
         .bind(&source_id)
         .execute(&mut **transaction)
         .await
         .map_err(|error| map_database_error("duplicate playlist membership", error))?;
-        let ranges: Vec<(i64, i64, i64)> = sqlx::query_as(
-            "SELECT start_ms, end_ms, sort_order FROM music_membership_skip_ranges
-             WHERE membership_id = ? ORDER BY sort_order",
-        )
-        .bind(&source_id)
-        .fetch_all(&mut **transaction)
-        .await
-        .map_err(|error| MusicLibraryError::database("load duplicated skip ranges", error))?;
-        for (start_ms, end_ms, sort_order) in ranges {
-            sqlx::query(
-                "INSERT INTO music_membership_skip_ranges
-                    (id, membership_id, start_ms, end_ms, sort_order)
-                 VALUES (?, ?, ?, ?, ?)",
-            )
-            .bind(super::identity::skip_range_id(&copy_id, sort_order))
-            .bind(&copy_id)
-            .bind(start_ms)
-            .bind(end_ms)
-            .bind(sort_order)
-            .execute(&mut **transaction)
-            .await
-            .map_err(|error| {
-                MusicLibraryError::database("duplicate membership skip range", error)
-            })?;
-        }
         sqlx::query(
-            "INSERT INTO music_membership_break_items
-                (membership_id, item_id, start_ms, end_ms, volume, rate)
-             SELECT ?, item_id, start_ms, end_ms, volume, rate
-             FROM music_membership_break_items WHERE membership_id = ?",
+            "INSERT INTO music_membership_skip_ranges (membership_id, ordinal, start_ms, end_ms)
+             SELECT ?, ordinal, start_ms, end_ms
+             FROM music_membership_skip_ranges WHERE membership_id = ?",
         )
         .bind(&copy_id)
         .bind(&source_id)
         .execute(&mut **transaction)
         .await
-        .map_err(|error| MusicLibraryError::database("duplicate membership break item", error))?;
+        .map_err(|error| MusicLibraryError::database("duplicate membership skip ranges", error))?;
     }
     Ok(())
 }
@@ -679,8 +665,9 @@ pub async fn set_item_signals(
     Ok(receipts)
 }
 
-/// Saves one membership matched by playlist and item. A new membership gets the derived key; an
-/// existing one keeps its key. An unchanged save writes nothing and returns the current version.
+/// Saves one membership matched by playlist and item. A new membership gets the derived row key
+/// and is appended to the playlist; an existing one keeps its row key and place. An unchanged
+/// save writes nothing and returns the current version.
 async fn upsert_membership_in_transaction(
     transaction: &mut Transaction<'_, Sqlite>,
     membership: &MusicMembershipWrite,
@@ -698,22 +685,24 @@ async fn upsert_membership_in_transaction(
         if membership.expected_version.is_some() {
             return Err(MusicLibraryError::not_found("playlist membership", &id));
         }
+        let tail = super::order::membership_tail(transaction, &membership.playlist_id).await?;
+        let order_key = super::order::key_after(tail.as_deref())?;
         sqlx::query(
             "INSERT INTO music_playlist_memberships
-                (id, playlist_id, item_id, position, weight, enabled,
-                 start_ms, end_ms, volume, rate, created_at_ms, updated_at_ms, version)
+                (id, playlist_id, item_id, order_key, weight, enabled,
+                 start_ms, end_ms, volume_milli, rate_milli, created_at_ms, updated_at_ms, version)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)",
         )
         .bind(&id)
         .bind(&membership.playlist_id)
         .bind(&membership.item_id)
-        .bind(membership.position)
+        .bind(order_key.as_str())
         .bind(membership.weight.as_ref())
         .bind(membership.enabled)
         .bind(membership.start_ms)
         .bind(membership.end_ms)
-        .bind(membership.volume)
-        .bind(membership.rate)
+        .bind(membership.volume_milli)
+        .bind(membership.rate_milli)
         .bind(membership.updated_at_ms)
         .bind(membership.updated_at_ms)
         .execute(&mut **transaction)
@@ -730,28 +719,26 @@ async fn upsert_membership_in_transaction(
     }
     let updated = sqlx::query(
         "UPDATE music_playlist_memberships
-         SET position = ?, weight = ?, enabled = ?, start_ms = ?, end_ms = ?,
-             volume = ?, rate = ?, updated_at_ms = ?, version = version + 1
+         SET weight = ?, enabled = ?, start_ms = ?, end_ms = ?,
+             volume_milli = ?, rate_milli = ?, updated_at_ms = ?, version = version + 1
          WHERE id = ?
-           AND (position, weight, enabled, start_ms, end_ms, volume, rate)
-               IS NOT (?, ?, ?, ?, ?, ?, ?)",
+           AND (weight, enabled, start_ms, end_ms, volume_milli, rate_milli)
+               IS NOT (?, ?, ?, ?, ?, ?)",
     )
-    .bind(membership.position)
     .bind(membership.weight.as_ref())
     .bind(membership.enabled)
     .bind(membership.start_ms)
     .bind(membership.end_ms)
-    .bind(membership.volume)
-    .bind(membership.rate)
+    .bind(membership.volume_milli)
+    .bind(membership.rate_milli)
     .bind(membership.updated_at_ms)
     .bind(&id)
-    .bind(membership.position)
     .bind(membership.weight.as_ref())
     .bind(membership.enabled)
     .bind(membership.start_ms)
     .bind(membership.end_ms)
-    .bind(membership.volume)
-    .bind(membership.rate)
+    .bind(membership.volume_milli)
+    .bind(membership.rate_milli)
     .execute(&mut **transaction)
     .await
     .map_err(|error| map_database_error("update playlist membership", error))?
@@ -803,16 +790,16 @@ pub async fn save_advanced_membership(
     })
 }
 
-/// Makes the membership's skip ranges equal `ranges` in order, writing only the sort orders whose
+/// Makes the membership's skip ranges equal `ranges` in order, writing only the ordinals whose
 /// bounds changed and deleting the ones past the end.
 pub(super) async fn replace_skip_ranges(
     transaction: &mut Transaction<'_, Sqlite>,
     membership_id: &str,
     ranges: &[MusicMembershipSkipRangeWrite],
 ) -> MusicLibraryResult<Vec<MusicMembershipSkipRange>> {
-    let stored: Vec<(String, i64, i64, i64)> = sqlx::query_as(
-        "SELECT id, start_ms, end_ms, sort_order FROM music_membership_skip_ranges
-         WHERE membership_id = ? ORDER BY sort_order",
+    let stored: Vec<(i64, i64, i64)> = sqlx::query_as(
+        "SELECT ordinal, start_ms, end_ms FROM music_membership_skip_ranges
+         WHERE membership_id = ? ORDER BY ordinal",
     )
     .bind(membership_id)
     .fetch_all(&mut **transaction)
@@ -820,12 +807,12 @@ pub(super) async fn replace_skip_ranges(
     .map_err(|error| MusicLibraryError::database("load membership skip ranges", error))?;
     let stored = stored
         .into_iter()
-        .map(|(id, start_ms, end_ms, sort_order)| (sort_order, (id, start_ms, end_ms)))
+        .map(|(ordinal, start_ms, end_ms)| (ordinal, (start_ms, end_ms)))
         .collect::<std::collections::HashMap<_, _>>();
     let count = i64::try_from(ranges.len())
         .map_err(|error| MusicLibraryError::runtime("count membership skip ranges", error))?;
     sqlx::query(
-        "DELETE FROM music_membership_skip_ranges WHERE membership_id = ? AND sort_order >= ?",
+        "DELETE FROM music_membership_skip_ranges WHERE membership_id = ? AND ordinal >= ?",
     )
     .bind(membership_id)
     .bind(count)
@@ -833,51 +820,28 @@ pub(super) async fn replace_skip_ranges(
     .await
     .map_err(|error| MusicLibraryError::database("remove membership skip ranges", error))?;
     let mut saved = Vec::with_capacity(ranges.len());
-    for (sort_order, range) in (0_i64..).zip(ranges) {
-        let id = match stored.get(&sort_order) {
-            Some((id, start_ms, end_ms))
-                if (*start_ms, *end_ms) == (range.start_ms, range.end_ms) =>
-            {
-                id.clone()
-            }
-            Some((id, _, _)) => {
-                sqlx::query(
-                    "UPDATE music_membership_skip_ranges SET start_ms = ?, end_ms = ? WHERE id = ?",
-                )
-                .bind(range.start_ms)
-                .bind(range.end_ms)
-                .bind(id)
-                .execute(&mut **transaction)
-                .await
-                .map_err(|error| {
-                    MusicLibraryError::database("update membership skip range", error)
-                })?;
-                id.clone()
-            }
-            None => {
-                let id = super::identity::skip_range_id(membership_id, sort_order);
-                sqlx::query(
-                    "INSERT INTO music_membership_skip_ranges
-                        (id, membership_id, start_ms, end_ms, sort_order)
-                     VALUES (?, ?, ?, ?, ?)",
-                )
-                .bind(&id)
-                .bind(membership_id)
-                .bind(range.start_ms)
-                .bind(range.end_ms)
-                .bind(sort_order)
-                .execute(&mut **transaction)
-                .await
-                .map_err(|error| map_database_error("save membership skip range", error))?;
-                id
-            }
-        };
+    for (ordinal, range) in (0_i64..).zip(ranges) {
+        let bounds = (range.start_ms, range.end_ms);
+        if stored.get(&ordinal) != Some(&bounds) {
+            sqlx::query(
+                "INSERT INTO music_membership_skip_ranges (membership_id, ordinal, start_ms, end_ms)
+                 VALUES (?, ?, ?, ?)
+                 ON CONFLICT(membership_id, ordinal)
+                 DO UPDATE SET start_ms = excluded.start_ms, end_ms = excluded.end_ms",
+            )
+            .bind(membership_id)
+            .bind(ordinal)
+            .bind(range.start_ms)
+            .bind(range.end_ms)
+            .execute(&mut **transaction)
+            .await
+            .map_err(|error| MusicLibraryError::database("save membership skip range", error))?;
+        }
         saved.push(MusicMembershipSkipRange {
-            id,
             membership_id: membership_id.to_string(),
+            ordinal,
             start_ms: range.start_ms,
             end_ms: range.end_ms,
-            sort_order,
         });
     }
     Ok(saved)

@@ -22,8 +22,8 @@ import {
 } from "./review";
 import type { MusicInspectorDetail, MusicPlaylistSummary } from "$lib/music/library/contracts";
 
-const playlist = (id: string, name: string): MusicPlaylistSummary => ({
-  id, sortOrder: 0, name, icon: "lucide:list-music", shuffleEnabled: true, mixEnabled: false, repeatMode: "all", intendedUses: [], totalCount: 0,
+const playlist = (id: string, name: string, orderKey = "a0"): MusicPlaylistSummary => ({
+  id, orderKey, name, icon: "lucide:list-music", shuffleEnabled: true, mixEnabled: false, repeatMode: "all", intendedUses: [], totalCount: 0,
   eligibleCount: 0, unavailableCount: 0, snoozedCount: 0, localCount: 0, onlineCount: 0, version: 1,
 });
 
@@ -92,7 +92,7 @@ describe("music review helpers", () => {
   });
 
   it("keeps playlist ordering independent from selection while filtering", () => {
-    expect(sortReviewPlaylists([playlist("a", "Work"), playlist("b", "Reading")], "")
+    expect(sortReviewPlaylists([playlist("a", "Work", "a1"), playlist("b", "Reading", "a0")], "")
       .map((entry) => entry.id)).toEqual(["b", "a"]);
     expect(sortReviewPlaylists([playlist("a", "Work"), playlist("b", "Reading")], "read")
       .map((entry) => entry.id)).toEqual(["b"]);

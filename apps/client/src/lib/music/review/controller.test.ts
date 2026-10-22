@@ -27,7 +27,7 @@ const emptyLibraryApi: MusicLibraryControllerApi = {
 };
 
 const playlist = (): MusicPlaylistSummary => ({
-  id: "playlist", sortOrder: 0, name: "Focus", icon: "lucide:laptop", shuffleEnabled: true, mixEnabled: false, repeatMode: "all",
+  id: "playlist", orderKey: "a0", name: "Focus", icon: "lucide:laptop", shuffleEnabled: true, mixEnabled: false, repeatMode: "all",
   intendedUses: ["focus"], totalCount: 0, eligibleCount: 0, unavailableCount: 0,
   snoozedCount: 0, localCount: 0, onlineCount: 0, version: 1,
 });
@@ -50,7 +50,7 @@ const listItem = (): MusicItemListEntry => ({
   relativePath: "Track.flac", sourceCollectionIds: ["source"], originalArtworkIdentity: null, artworkOverride: null, durationMs: 1_000,
   availability: "available", reviewState: "unreviewed", discoveredAtMs: 1, updatedAtMs: 1, version: 1,
   playlistCount: 0, activeSnoozeCount: 0, lastPlayedAtMs: null, playCount: 0,
-  membershipId: null, membershipPosition: null, membershipWeight: null,
+  membershipId: null, membershipOrderKey: null, membershipWeight: null,
   membershipEnabled: null, membershipVersion: null,
 });
 

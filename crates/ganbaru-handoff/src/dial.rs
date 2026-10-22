@@ -195,6 +195,36 @@ pub fn ipv4_lan_block(address: Ipv4Addr) -> Option<(Ipv4Addr, u32)> {
         .find(|block| block_contains(*block, address))
 }
 
+/// Unique local IPv6 block, as network and prefix length.
+const UNIQUE_LOCAL_IPV6_BLOCK: (Ipv6Addr, u32) = (Ipv6Addr::new(0xfc00, 0, 0, 0, 0, 0, 0, 0), 7);
+/// Link-local IPv6 block, as network and prefix length.
+const LINK_LOCAL_IPV6_BLOCK: (Ipv6Addr, u32) = (Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 0), 10);
+
+/// Network mask of an IPv6 prefix length of at most 128.
+pub fn ipv6_mask(prefix: u32) -> u128 {
+    u128::MAX.checked_shl(128 - prefix.min(128)).unwrap_or(0)
+}
+
+/// The IPv6 range that holds `address` as a LAN peer, as network and prefix length: the unique
+/// local or link-local block, or for global unicast its own on-link prefix, so a range built
+/// from a global address never extends past the local link.
+pub fn ipv6_lan_block(address: Ipv6Addr) -> Option<(Ipv6Addr, u32)> {
+    match classify_ipv6(address).ok()? {
+        DialAddressClass::PrivateLan if address.is_unicast_link_local() => {
+            Some(LINK_LOCAL_IPV6_BLOCK)
+        }
+        DialAddressClass::PrivateLan => Some(UNIQUE_LOCAL_IPV6_BLOCK),
+        DialAddressClass::GlobalIpv6 => {
+            let mask = ipv6_mask(ON_LINK_IPV6_PREFIX_BITS);
+            Some((
+                Ipv6Addr::from(u128::from(address) & mask),
+                ON_LINK_IPV6_PREFIX_BITS,
+            ))
+        }
+        DialAddressClass::Overlay | DialAddressClass::Loopback => None,
+    }
+}
+
 fn classify_ipv4(address: Ipv4Addr) -> Result<DialAddressClass, DialTargetError> {
     if address.octets()[0] == 0 {
         return Err(DialTargetError::Unspecified);
@@ -469,6 +499,28 @@ mod tests {
         for (text, expected) in refused {
             assert_eq!(reportable_address(address(text)), Err(expected), "{text}");
         }
+    }
+
+    #[test]
+    fn ipv6_lan_blocks_stop_at_the_local_link_for_global_addresses() {
+        let block = |text: &str| {
+            ipv6_lan_block(text.parse().expect("address"))
+                .map(|(network, prefix)| format!("{network}/{prefix}"))
+        };
+        assert_eq!(block("fd12:3456::1").as_deref(), Some("fc00::/7"));
+        assert_eq!(
+            block("fe80::1c2d:3eff:fe4f:5a6b").as_deref(),
+            Some("fe80::/10")
+        );
+        assert_eq!(
+            block("2806:101e:e:8970:4a89:e7ff:fecf:5d55").as_deref(),
+            Some("2806:101e:e:8970::/64")
+        );
+        for refused in ["2001:db8::1", "::1", "ff02::fb", "::ffff:192.168.1.2", "::"] {
+            assert_eq!(block(refused), None, "{refused}");
+        }
+        assert_eq!(ipv6_mask(0), 0);
+        assert_eq!(ipv6_mask(128), u128::MAX);
     }
 
     #[test]

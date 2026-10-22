@@ -1,6 +1,6 @@
 //! Network admission for the coordinator listener.
 //!
-//! On Linux the firewall rules for linking match an interface, address, and subnet, so another
+//! On Linux the firewall rules for linking match an interface and network prefixes, so another
 //! network that hands out the same ones would reach the coordinator through rules the user
 //! allowed elsewhere. The listener therefore asks whether the network behind the address a
 //! connection arrived on was confirmed before serving a LAN peer, and closes the connection
@@ -78,7 +78,12 @@ impl LanAdmission {
     #[cfg(target_os = "linux")]
     pub(crate) fn linux_firewall(config_dir: std::path::PathBuf, port: u16) -> Self {
         Self::deciding(move |local| {
-            ganbaru_handoff::network_access::admits_lan_peers(&config_dir, local.ip(), port)
+            ganbaru_handoff::network_access::admits_lan_peers(
+                &config_dir,
+                &crate::vault::handoff::local_addresses::firewall_interface_addresses(),
+                local.ip(),
+                port,
+            )
         })
     }
 

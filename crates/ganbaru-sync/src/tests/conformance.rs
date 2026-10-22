@@ -2,24 +2,27 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use ganbaru_sync_contracts::{Field, OrderKey};
 use sqlx::SqlitePool;
 
 use super::fixture::{
-    CYCLE_A, CYCLE_A_TABLE, CYCLE_B, CYCLE_B_TABLE, FIXTURE_DOMAIN, FIXTURE_TABLE_IDS, ITEMS,
-    ITEMS_TABLE, LINKS, LINKS_TABLE, MEMBERSHIP_DETAILS, MEMBERSHIP_IDENTITY, MEMBERSHIPS,
-    TEST_MANIFEST, fixture_pool, membership_group,
+    CYCLE_A, CYCLE_A_TABLE, CYCLE_B, CYCLE_B_TABLE, FIXTURE_DOMAIN, FIXTURE_TABLE_IDS, FixtureHook,
+    ITEMS, ITEMS_TABLE, LINKS, LINKS_TABLE, LISTS_TABLE, MEMBERSHIP_DETAILS, MEMBERSHIP_IDENTITY,
+    MEMBERSHIPS, TEST_MANIFEST, fixture_pool, membership_group, test_engine,
 };
 use super::{block_on, migrated_pool};
+use crate::codec::{OwnedRow, decode_table, encode_table};
 use crate::domains::vault_adapters;
 use crate::manifest::order::{Dependency, DependencyKind};
 use crate::manifest::vault::quick_notes;
 use crate::manifest::vault::{VAULT_DOMAINS, VAULT_MANIFEST};
 use crate::manifest::{
     Classification, Collation, ColumnSpec, ColumnType, DerivedKey, DomainManifest, GroupSpec,
-    GroupStorage, LocalColumn, Manifest, MergeKind, OnDelete, OwnedCodec, OwnedOrder, OwnedTable,
-    ReferenceColumn, Resolution, SYNC_KEY_COLUMN, SYNC_TABLES, TableIdRange, TableSpec,
-    is_sql_literal,
+    GroupStorage, LocalColumn, MAX_TIMESTAMP_BYTES, Manifest, MergeKind, OnDelete, OwnedCodec,
+    OwnedOrder, OwnedTable, ReferenceColumn, Resolution, SYNC_KEY_COLUMN, SYNC_TABLES,
+    TableIdRange, TableSpec, is_sql_literal,
 };
+use crate::sql::{read_owned, replace_owned};
 use crate::{Adapters, Engine, Hooks, SyncError, triggers};
 
 /// Every manifest under test with a freshly migrated database that holds its schema.
@@ -159,6 +162,21 @@ fn replicated_columns_are_partitioned() {
     });
 }
 
+/// Replicated columns never hold floating point values, whose text and binary forms do not
+/// round-trip exactly through every replica.
+fn assert_no_real(table: &str, columns: &[(String, String, i64)], replicated: &[&str]) {
+    for (name, kind, _) in columns {
+        let affinity = kind.to_uppercase();
+        let real = ["REAL", "FLOA", "DOUB"]
+            .iter()
+            .any(|marker| affinity.contains(marker));
+        assert!(
+            !real || !replicated.contains(&name.as_str()),
+            "{table}.{name}: a replicated column has floating point type {kind}"
+        );
+    }
+}
+
 async fn assert_columns_partitioned(manifest: &Manifest, pool: &SqlitePool) {
     let pool = pool.clone();
     for table in manifest.tables {
@@ -188,6 +206,31 @@ async fn assert_columns_partitioned(manifest: &Manifest, pool: &SqlitePool) {
                 column.name
             );
         }
+        let defaults: Vec<(String, Option<String>)> =
+            sqlx::query_as("SELECT name, dflt_value FROM pragma_table_info(?)")
+                .bind(table.name)
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        for column in table.hook_columns {
+            let nullable = !not_null.iter().any(|name| name == column);
+            let defaulted = defaults
+                .iter()
+                .any(|(name, default)| name == column && default.is_some());
+            assert!(
+                nullable || defaulted,
+                "{}.{column}: materialize inserts rows without hook columns, so they need a \
+                 default or NULL",
+                table.name
+            );
+        }
+        let replicated = table
+            .groups
+            .iter()
+            .flat_map(|group| group.columns())
+            .map(|column| column.name)
+            .collect::<Vec<_>>();
+        assert_no_real(table.name, &columns, &replicated);
         let unique = declared.iter().copied().collect::<BTreeSet<_>>();
         assert_eq!(
             unique.len(),
@@ -219,6 +262,12 @@ async fn assert_columns_partitioned(manifest: &Manifest, pool: &SqlitePool) {
 
         for (group, owned) in table.owned_children() {
             let child_columns = table_columns(&pool, owned.table).await;
+            let data = owned
+                .columns
+                .iter()
+                .map(|column| column.name)
+                .collect::<Vec<_>>();
+            assert_no_real(owned.table, &child_columns, &data);
             let declared = owned.written_columns();
             let unique = declared.iter().copied().collect::<BTreeSet<_>>();
             assert_eq!(
@@ -537,9 +586,11 @@ async fn assert_owned_foreign_keys(
         let target = manifest.table(reference.table).unwrap();
         expected.insert(cascade(reference.column, target.name, target.key_column));
     }
+    // A foreign key between rows of one owned table is replaced with them.
     let actual = foreign_keys(pool, owned.table)
         .await
         .into_iter()
+        .filter(|(_, target, _, _)| target != owned.table)
         .collect::<BTreeSet<_>>();
     assert_eq!(actual, expected, "{} foreign keys", owned.table);
 
@@ -794,14 +845,98 @@ fn unique_and_multi_column_checks_have_resolutions() {
         for (manifest, pool) in cases().await {
             for table in manifest.tables {
                 assert_resolutions(table, &pool).await;
+                for owned in owned_tables(table) {
+                    assert_owned_constraints(owned, &pool).await;
+                }
             }
         }
     });
 }
 
+/// Every owned table of `table`, nested ones included.
+fn owned_tables(table: &TableSpec) -> Vec<&'static OwnedTable> {
+    let mut pending = table
+        .groups
+        .iter()
+        .flat_map(|group| group.owned_tables())
+        .collect::<Vec<_>>();
+    let mut all = Vec::new();
+    while let Some(owned) = pending.pop() {
+        pending.extend(owned.nested);
+        all.push(owned);
+    }
+    all
+}
+
+/// An owned table's unique indexes are its declared unique id columns, compared exactly, and
+/// none of its checks spans several columns, because materialize writes a whole blob at once
+/// and has no repair for owned rows.
+async fn assert_owned_constraints(owned: &OwnedTable, pool: &SqlitePool) {
+    let mut unique = unique_indexes(pool, owned.table).await;
+    unique.sort();
+    let mut declared = owned
+        .unique
+        .iter()
+        .map(|column| {
+            BTreeSet::from([(
+                column.to_lowercase(),
+                Collation::Binary.sql_name().to_string(),
+            )])
+        })
+        .collect::<Vec<_>>();
+    declared.sort();
+    assert_eq!(unique, declared, "{} unique columns", owned.table);
+
+    let sql: String =
+        sqlx::query_scalar("SELECT sql FROM sqlite_schema WHERE type = 'table' AND name = ?")
+            .bind(owned.table)
+            .fetch_one(pool)
+            .await
+            .unwrap();
+    let columns = table_columns(pool, owned.table)
+        .await
+        .into_iter()
+        .map(|(name, _, _)| name.to_lowercase())
+        .collect::<BTreeSet<_>>();
+    let multi_column = check_expressions(&sql)
+        .iter()
+        .map(|expression| referenced_columns(expression, &columns))
+        .filter(|referenced| referenced.len() > 1)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        multi_column,
+        Vec::<BTreeSet<String>>::new(),
+        "{} multi-column checks",
+        owned.table
+    );
+}
+
+/// The unique column set a derived key implies: the row key is a function of its non-empty key
+/// inputs, so two rows with equal inputs are one row and never need duplicate repair.
+fn implied_unique(table: &TableSpec) -> Option<BTreeSet<(String, String)>> {
+    let derived = table.derived_key?;
+    (!derived.key_inputs.is_empty()).then(|| {
+        derived
+            .key_inputs
+            .iter()
+            .map(|column| {
+                (
+                    column.to_lowercase(),
+                    Collation::Binary.sql_name().to_string(),
+                )
+            })
+            .collect()
+    })
+}
+
 async fn assert_resolutions(table: &TableSpec, pool: &SqlitePool) {
     let pool = pool.clone();
-    let mut unique = unique_indexes(&pool, table.name).await;
+    let implied = implied_unique(table);
+    let mut unique = unique_indexes(&pool, table.name)
+        .await
+        .into_iter()
+        .filter(|columns| implied.as_ref() != Some(columns))
+        .collect::<Vec<_>>();
     unique.sort();
     let mut declared = declared_unique(table);
     // A sync_key is derived from the primary key, so it collides only when the key does.
@@ -834,6 +969,200 @@ async fn assert_resolutions(table: &TableSpec, pool: &SqlitePool) {
     let mut declared = declared_checks(table);
     declared.sort();
     assert_eq!(multi_column, declared, "{} check resolutions", table.name);
+}
+
+/// Every owned table codec round-trips through its schema: rows encoded, written by
+/// materialize, read back by capture, and encoded again give the same bytes, so a replica never
+/// seals a value that differs from the one it applied.
+#[test]
+fn owned_codecs_round_trip_through_the_schema() {
+    block_on(async {
+        for ((manifest, pool), engine) in cases()
+            .await
+            .into_iter()
+            .zip([Engine::vault(), test_engine()])
+        {
+            for table in manifest.tables {
+                for owned in table.groups.iter().flat_map(|group| group.owned_tables()) {
+                    for rows in owned_samples(&engine, table, owned) {
+                        assert_owned_round_trip(&engine, &pool, table, owned, rows).await;
+                    }
+                }
+            }
+        }
+    });
+}
+
+/// Row lists that reach an owned table's bounds: generated for the generic codec, from the
+/// domain adapter for a custom one.
+fn owned_samples(engine: &Engine, table: &TableSpec, owned: &OwnedTable) -> Vec<Vec<OwnedRow>> {
+    match owned.codec {
+        OwnedCodec::Generic => {
+            let mut next = 0;
+            [0, 1, owned.max_rows]
+                .into_iter()
+                .map(|count| generated_rows(owned, count, &mut next))
+                .collect()
+        }
+        OwnedCodec::Custom => {
+            let adapter = engine
+                .adapter(table)
+                .expect("a custom codec has an adapter");
+            let samples = adapter.owned_samples(table.id, owned.table);
+            assert!(!samples.is_empty(), "{}: no codec samples", owned.table);
+            samples
+                .into_iter()
+                .map(|rows| rows.into_iter().map(OwnedRow::flat).collect())
+                .collect()
+        }
+    }
+}
+
+/// `count` rows with fields at their column bounds, unique values numbered from `next`, and
+/// nested tables filled the same way.
+fn generated_rows(owned: &OwnedTable, count: usize, next: &mut usize) -> Vec<OwnedRow> {
+    (0..count)
+        .map(|position| {
+            let serial = *next;
+            *next += 1;
+            let fields = owned
+                .columns
+                .iter()
+                .map(|column| {
+                    let unique = owned.unique.contains(&column.name);
+                    generated_field(column.ty, serial, unique)
+                })
+                .collect();
+            let nested = owned
+                .nested
+                .iter()
+                .map(|nested| generated_rows(nested, (position % 2) * nested.max_rows, next))
+                .collect();
+            OwnedRow { fields, nested }
+        })
+        .collect()
+}
+
+/// A field of `ty` at its upper bound for even serials and its lower bound for odd ones,
+/// starting with the serial when it must be unique.
+fn generated_field(ty: ColumnType, serial: usize, unique: bool) -> Field {
+    let low = serial % 2 == 1 && !unique;
+    let text = |min_chars: usize, max_chars: usize, fill: char| {
+        let prefix = if unique {
+            serial.to_string()
+        } else {
+            String::new()
+        };
+        let length = if low { min_chars } else { max_chars };
+        let fill_chars = length.saturating_sub(prefix.chars().count());
+        Field::Text(format!("{prefix}{}", fill.to_string().repeat(fill_chars)))
+    };
+    match ty {
+        ColumnType::Text { max_chars } => text(0, max_chars, 'é'),
+        ColumnType::OptionalText { .. } if low => Field::Null,
+        ColumnType::OptionalText { max_chars } => text(0, max_chars, 'é'),
+        ColumnType::TrimmedText {
+            min_chars,
+            max_chars,
+        } => text(min_chars.max(1), max_chars, 'w'),
+        ColumnType::Integer { min, max } => Field::Integer(if low { min } else { max }),
+        ColumnType::Flag => Field::Integer(i64::from(!low)),
+        ColumnType::Timestamp => Field::Text("9".repeat(MAX_TIMESTAMP_BYTES)),
+        ColumnType::OptionalTimestamp if low => Field::Null,
+        ColumnType::OptionalTimestamp => Field::Text("9".repeat(MAX_TIMESTAMP_BYTES)),
+        ColumnType::OrderKey => Field::Text(
+            OrderKey::rank(u32::try_from(serial).unwrap())
+                .unwrap()
+                .into_string(),
+        ),
+        ColumnType::OptionalRowKey if low => Field::Null,
+        ColumnType::OptionalRowKey => Field::Text(format!("key-{serial}")),
+    }
+}
+
+/// Writes `rows` under a placeholder owner inside a rolled back transaction whose foreign keys
+/// are deferred, reads them back, and compares the encodings.
+async fn assert_owned_round_trip(
+    engine: &Engine,
+    pool: &SqlitePool,
+    table: &TableSpec,
+    owned: &OwnedTable,
+    rows: Vec<OwnedRow>,
+) {
+    const OWNER: &str = "round-trip-owner";
+    let encoded = encode_table(engine, table, owned, rows.clone())
+        .unwrap_or_else(|error| panic!("{}: sample refused: {error}", owned.table));
+    assert_eq!(
+        decode_table(engine, table, owned, &encoded).unwrap(),
+        rows,
+        "{} decode",
+        owned.table
+    );
+    let mut transaction = pool.begin().await.unwrap();
+    sqlx::raw_sql(
+        "PRAGMA defer_foreign_keys = ON;
+         UPDATE sync_apply_state SET applying = 1;",
+    )
+    .execute(&mut *transaction)
+    .await
+    .unwrap();
+    replace_owned(&mut transaction, owned, OWNER, &rows)
+        .await
+        .unwrap_or_else(|error| panic!("{}: schema refused a sample: {error}", owned.table));
+    let read = read_owned(&mut transaction, owned, OWNER)
+        .await
+        .unwrap()
+        .unwrap_or_else(|| panic!("{}: rows did not read back", owned.table));
+    transaction.rollback().await.unwrap();
+    assert_eq!(
+        encode_table(engine, table, owned, read).unwrap(),
+        encoded,
+        "{} round trip",
+        owned.table
+    );
+}
+
+#[test]
+fn a_unique_set_of_derived_key_inputs_needs_no_repair() {
+    const KEYED_BY_INPUTS: TableSpec = TableSpec {
+        name: "fixture_keyed_pairs",
+        key_column: "id",
+        derived_key: Some(DerivedKey {
+            exists_group: membership_group::EXISTS,
+            key_inputs: &["item_id", "end_id"],
+        }),
+        ..MEMBERSHIPS
+    };
+    const ONE_INPUT: TableSpec = TableSpec {
+        derived_key: Some(DerivedKey {
+            exists_group: membership_group::EXISTS,
+            key_inputs: &["item_id"],
+        }),
+        ..KEYED_BY_INPUTS
+    };
+    block_on(async {
+        let pool = fixture_pool().await;
+        sqlx::raw_sql(
+            "CREATE TABLE fixture_keyed_pairs (
+                 id TEXT PRIMARY KEY,
+                 item_id TEXT NOT NULL,
+                 end_id TEXT NOT NULL,
+                 created_at TEXT NOT NULL,
+                 role TEXT NOT NULL CHECK (length(role) <= 20),
+                 UNIQUE (item_id, end_id)
+             )",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        assert_resolutions(&KEYED_BY_INPUTS, &pool).await;
+
+        let unique = unique_indexes(&pool, KEYED_BY_INPUTS.name).await;
+        assert_eq!(unique.first(), implied_unique(&KEYED_BY_INPUTS).as_ref());
+        // A unique set that differs from the key inputs still needs a resolution.
+        assert_ne!(unique.first(), implied_unique(&ONE_INPUT).as_ref());
+        assert_eq!(implied_unique(&MEMBERSHIPS), None);
+    });
 }
 
 #[test]
@@ -901,7 +1230,6 @@ fn assert_well_formed(manifest: &Manifest) {
                         table.name,
                         group.name
                     );
-                    assert!(matches!(group.storage, GroupStorage::Columns(_)));
                 }
                 MergeKind::Coupled => {
                     assert!(
@@ -1249,6 +1577,15 @@ fn engine_construction_checks_adapters_both_ways() {
     assert!(
         matches!(&invalid, Err(SyncError::InvalidManifest(_))),
         "{invalid:?}"
+    );
+    let unknown_hook = Engine::with(
+        &VAULT_MANIFEST,
+        vault_adapters(),
+        Hooks::new().with(LISTS_TABLE, Box::new(FixtureHook)),
+    );
+    assert!(
+        matches!(&unknown_hook, Err(SyncError::InvalidManifest(detail)) if detail.contains("unknown table")),
+        "{unknown_hook:?}"
     );
 }
 

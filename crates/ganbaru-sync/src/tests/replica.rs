@@ -11,7 +11,7 @@ use ganbaru_sync_contracts::{
 use sqlx::sqlite::SqliteOwnedBuf;
 use sqlx::{AssertSqlSafe, Connection, SqliteConnection};
 
-use super::fixture::{NODE_MAX_DEPTH, fixture_pool, test_engine};
+use super::fixture::{NODE_MAX_DEPTH, after_local_edit, fixture_pool, test_engine};
 use crate::manifest::Manifest;
 use crate::publication;
 use crate::{
@@ -244,11 +244,15 @@ impl Replica {
             .unwrap_or_else(|error| panic!("{sql}: {error}"));
     }
 
-    /// Runs SQL in one transaction; returns whether it committed.
+    /// Runs a local edit in one transaction followed by what fixture domain code does after an
+    /// edit; returns whether it committed.
     pub(super) async fn try_exec(&mut self, sql: &str) -> bool {
         let mut tx = self.conn.begin().await.unwrap();
         match sqlx::raw_sql(AssertSqlSafe(sql)).execute(&mut *tx).await {
             Ok(_) => {
+                after_local_edit(&mut tx)
+                    .await
+                    .unwrap_or_else(|error| panic!("after {sql}: {error}"));
                 tx.commit().await.unwrap();
                 true
             }
@@ -457,6 +461,27 @@ impl Replica {
             )
             .await;
         assert_eq!(closed, 0, "replica {} has a cycle of edges", self.index);
+        // The fixture hook output equals a recomputation from the materialized entries.
+        let stale_counts = self
+            .count(
+                "SELECT (SELECT count(*) FROM fixture_lists AS list
+                     WHERE entry_count <> (SELECT count(*) FROM fixture_list_entries
+                         WHERE list_id = list.id))
+                 + (SELECT count(*) FROM (
+                     SELECT id, entry_count FROM fixture_lists
+                     EXCEPT SELECT list_id, entries FROM fixture_list_counts
+                 ))
+                 + (SELECT count(*) FROM (
+                     SELECT list_id, entries FROM fixture_list_counts
+                     EXCEPT SELECT id, entry_count FROM fixture_lists
+                 ))",
+            )
+            .await;
+        assert_eq!(
+            stale_counts, 0,
+            "replica {} has stale list entry counts",
+            self.index
+        );
     }
 
     /// Replicated state in a canonical text form: published rows of domain tables without local

@@ -4,22 +4,26 @@
 //! a reference into its own table, a derived-key table with a composite primary key, and a tree
 //! of nodes with a maximum depth whose parent cascades, with a recoverable label, an acyclic
 //! edge set between items, drafts that publish by predicate with parts published with them,
-//! and memos whose deletes can be held, with lines and derived-key tags that inherit the hold.
+//! and memos whose deletes can be held, with lines and derived-key tags that inherit the hold,
+//! lists with generic owned entries referencing memberships and a hook-maintained entry count,
+//! and boards whose coupled group owns cards with nested checks beside a reference column.
 //! Fixture table ids start at [`FIXTURE_TABLE_IDS`], above every vault domain.
 
 use std::sync::LazyLock;
 
-use ganbaru_sync_contracts::{TableId, derived_key};
-use sqlx::SqlitePool;
+use ganbaru_sync_contracts::{Field, GroupId, TableId, Value, derived_key};
+use sqlx::{AssertSqlSafe, SqliteConnection, SqlitePool};
 
 use super::{execute, migrated_pool};
+use crate::adapter::{AdapterError, Adapters, DomainAdapter, Presentation};
 use crate::domains::vault_adapters;
+use crate::hooks::{ChangeSink, HookFuture, MaterializeHook};
 use crate::manifest::vault::{VAULT_MANIFEST_VERSION, quick_notes};
 use crate::manifest::{
     AcyclicSpec, Collation, ColumnSpec, ColumnType, DerivedKey, DeviceTable, DomainManifest,
-    DomainTrigger, GroupSpec, GroupStorage, LocalColumn, Manifest, MergeKind, OnDelete,
-    PublishedWith, ReferenceColumn, Resolution, SYNC_KEY_COLUMN, TableIdRange, TableSpec, TreeSpec,
-    TriggerPolicy, group_id,
+    DomainTrigger, GroupSpec, GroupStorage, LocalColumn, Manifest, MergeKind, OnDelete, OwnedCodec,
+    OwnedOrder, OwnedReference, OwnedTable, PublishedWith, ReferenceColumn, Resolution,
+    SYNC_KEY_COLUMN, TableIdRange, TableSpec, TreeSpec, TriggerPolicy, group_id,
 };
 use crate::triggers::{self, NOT_APPLYING};
 use crate::{Engine, Hooks};
@@ -802,6 +806,372 @@ pub(super) const MEMO_TAGS: TableSpec = TableSpec {
 /// `fixture_memo_tags`.
 pub(super) const MEMO_TAGS_TABLE: TableId = TableId(FIXTURE_TABLE_IDS + 11);
 
+/// The immutable creation time of a list or board.
+const CREATED: GroupSpec = GroupSpec {
+    id: group_id(0),
+    name: "created",
+    kind: MergeKind::Immutable,
+    storage: GroupStorage::Columns(&[ColumnSpec {
+        name: "created_at",
+        ty: ColumnType::Timestamp,
+    }]),
+    references: &[],
+    surfaced: false,
+    recoverable: false,
+    bumps_revision: false,
+};
+
+/// Most entries of one list.
+pub(super) const MAX_LIST_ENTRIES: usize = 6;
+
+/// Entries of a list on the generic codec. Entry ids are unique data columns that materialize
+/// writes unchanged, and an entry naming a membership that is removed, missing, or not yet
+/// received is left out until the membership exists.
+pub(super) const LIST_ENTRIES: OwnedTable = OwnedTable {
+    table: "fixture_list_entries",
+    parent_column: "list_id",
+    order: OwnedOrder::Ordinal("ordinal"),
+    columns: &[
+        ColumnSpec {
+            name: "entry_id",
+            ty: ColumnType::Text { max_chars: 20 },
+        },
+        ColumnSpec {
+            name: "body",
+            ty: ColumnType::Text { max_chars: 40 },
+        },
+        ColumnSpec {
+            name: "note",
+            ty: ColumnType::OptionalText { max_chars: 20 },
+        },
+        ColumnSpec {
+            name: "member_key",
+            ty: ColumnType::OptionalRowKey,
+        },
+    ],
+    references: &[OwnedReference {
+        column: "member_key",
+        table: MEMBERSHIPS_TABLE,
+    }],
+    unique: &["entry_id"],
+    max_rows: MAX_LIST_ENTRIES,
+    codec: OwnedCodec::Generic,
+    nested: &[],
+};
+
+/// Field groups of [`LISTS`].
+pub(super) mod list_group {
+    use super::{GroupId, group_id};
+
+    /// `title` and the entries.
+    pub const ENTRIES: GroupId = group_id(1);
+}
+
+/// Lists, always published, whose title and entries form one register. `entry_count` is a hook
+/// column the fixture hook keeps equal to the materialized entries.
+pub(super) const LISTS: TableSpec = TableSpec {
+    id: LISTS_TABLE,
+    name: "fixture_lists",
+    key_column: "id",
+    groups: &[
+        CREATED,
+        GroupSpec {
+            id: list_group::ENTRIES,
+            name: "entries",
+            kind: MergeKind::Register,
+            storage: GroupStorage::Owned {
+                columns: &[ColumnSpec {
+                    name: "title",
+                    ty: ColumnType::Text { max_chars: 40 },
+                }],
+                tables: &[LIST_ENTRIES],
+            },
+            references: &[],
+            surfaced: false,
+            recoverable: false,
+            bumps_revision: false,
+        },
+    ],
+    hook_columns: &["entry_count"],
+    holds_deletes: false,
+    ..MEMOS
+};
+
+/// `fixture_lists`.
+pub(super) const LISTS_TABLE: TableId = TableId(FIXTURE_TABLE_IDS + 12);
+
+/// Checks of a board card, nested in the card through its ordinal.
+pub(super) const BOARD_CHECKS: OwnedTable = OwnedTable {
+    table: "fixture_board_checks",
+    parent_column: "board_id",
+    order: OwnedOrder::Nested {
+        parent_ordinal: "card_ordinal",
+        ordinal: "ordinal",
+    },
+    columns: &[
+        ColumnSpec {
+            name: "check_id",
+            ty: ColumnType::Text { max_chars: 20 },
+        },
+        ColumnSpec {
+            name: "done",
+            ty: ColumnType::Flag,
+        },
+    ],
+    references: &[],
+    unique: &["check_id"],
+    max_rows: 3,
+    codec: OwnedCodec::Generic,
+    nested: &[],
+};
+
+/// Cards of a board. A card naming a deleted item is left out with its checks.
+pub(super) const BOARD_CARDS: OwnedTable = OwnedTable {
+    table: "fixture_board_cards",
+    parent_column: "board_id",
+    order: OwnedOrder::Ordinal("ordinal"),
+    columns: &[
+        ColumnSpec {
+            name: "card_id",
+            ty: ColumnType::Text { max_chars: 20 },
+        },
+        ColumnSpec {
+            name: "title",
+            ty: ColumnType::Text { max_chars: 40 },
+        },
+        ColumnSpec {
+            name: "item_id",
+            ty: ColumnType::OptionalRowKey,
+        },
+    ],
+    references: &[OwnedReference {
+        column: "item_id",
+        table: ITEMS_TABLE,
+    }],
+    unique: &["card_id"],
+    max_rows: 4,
+    codec: OwnedCodec::Generic,
+    nested: &[BOARD_CHECKS],
+};
+
+/// Field groups of [`BOARDS`].
+pub(super) mod board_group {
+    use super::{GroupId, group_id};
+
+    /// Owner, stage, and cards.
+    pub const STATE: GroupId = group_id(1);
+}
+
+/// Boards whose owner reference, stage, and cards form one coupled group: a later stage wins
+/// before clocks are compared.
+pub(super) const BOARDS: TableSpec = TableSpec {
+    id: BOARDS_TABLE,
+    name: "fixture_boards",
+    key_column: "id",
+    groups: &[
+        CREATED,
+        GroupSpec {
+            id: board_group::STATE,
+            name: "state",
+            kind: MergeKind::Coupled,
+            storage: GroupStorage::Owned {
+                columns: &[
+                    ColumnSpec {
+                        name: "owner_id",
+                        ty: ColumnType::OptionalRowKey,
+                    },
+                    ColumnSpec {
+                        name: "stage",
+                        ty: ColumnType::Integer {
+                            min: 0,
+                            max: MAX_BOARD_STAGE,
+                        },
+                    },
+                ],
+                tables: &[BOARD_CARDS],
+            },
+            references: &[ReferenceColumn {
+                column: "owner_id",
+                table: ITEMS_TABLE,
+                on_delete: OnDelete::SetNull,
+            }],
+            surfaced: false,
+            recoverable: false,
+            bumps_revision: false,
+        },
+    ],
+    adapter: Some(FIXTURE_ADAPTER),
+    holds_deletes: false,
+    ..MEMOS
+};
+
+/// `fixture_boards`.
+pub(super) const BOARDS_TABLE: TableId = TableId(FIXTURE_TABLE_IDS + 13);
+
+/// Last board stage.
+pub(super) const MAX_BOARD_STAGE: i64 = 2;
+
+/// Name of [`FixtureAdapter`].
+const FIXTURE_ADAPTER: &str = "fixture";
+
+/// Adapter of the fixture domain: a board's stage is its coupled priority.
+#[derive(Debug)]
+pub(super) struct FixtureAdapter;
+
+impl DomainAdapter for FixtureAdapter {
+    fn name(&self) -> &'static str {
+        FIXTURE_ADAPTER
+    }
+
+    fn derived(
+        &self,
+        _table: TableId,
+        _group: GroupId,
+        _value: &Value,
+    ) -> Result<Vec<(&'static str, Field)>, AdapterError> {
+        Ok(Vec::new())
+    }
+
+    fn priority(&self, table: TableId, group: GroupId, value: &Value) -> u8 {
+        match (table, group, value.fields().get(1)) {
+            (BOARDS_TABLE, board_group::STATE, Some(Field::Integer(stage))) => {
+                u8::try_from(*stage).unwrap_or(0)
+            }
+            _ => 0,
+        }
+    }
+
+    fn validate(
+        &self,
+        _table: TableId,
+        _group: GroupId,
+        _value: &Value,
+    ) -> Result<(), AdapterError> {
+        Ok(())
+    }
+
+    fn presentation(&self, _table: TableId, _values: &[(GroupId, Value)]) -> Presentation {
+        Presentation::default()
+    }
+}
+
+/// Topic of the change notices [`FixtureHook`] reports.
+pub(super) const LIST_COUNT_TOPIC: &str = "fixture_list_counts";
+
+/// SQL that recomputes the hook column and count row of every list.
+const RECOMPUTE_LISTS_SQL: &str = "
+    UPDATE fixture_lists SET entry_count =
+        (SELECT count(*) FROM fixture_list_entries WHERE list_id = fixture_lists.id)
+    WHERE entry_count <>
+        (SELECT count(*) FROM fixture_list_entries WHERE list_id = fixture_lists.id);
+    DELETE FROM fixture_list_counts;
+    INSERT INTO fixture_list_counts (list_id, entries) SELECT id, entry_count FROM fixture_lists;";
+
+/// Owned tables whose rows a local delete of a referenced row removes by cascade: the table,
+/// its owner column, and its ordinal column.
+const COMPACTED: &[(&str, &str, &str)] = &[
+    ("fixture_list_entries", "list_id", "ordinal"),
+    ("fixture_board_cards", "board_id", "ordinal"),
+];
+
+/// What fixture domain code does after a local edit, in the edit's transaction: numbers owned
+/// rows from zero again where a cascade left gaps, as materialize writes them, and recomputes
+/// the list entry counts.
+pub(super) async fn after_local_edit(conn: &mut SqliteConnection) -> Result<(), sqlx::Error> {
+    for (table, owner, ordinal) in COMPACTED {
+        let rows: Vec<(String, i64)> = sqlx::query_as(AssertSqlSafe(format!(
+            "SELECT {owner}, {ordinal} FROM {table} ORDER BY {owner}, {ordinal}"
+        )))
+        .fetch_all(&mut *conn)
+        .await?;
+        let mut position = 0;
+        let mut previous: Option<&str> = None;
+        let mut moved = false;
+        for (key, at) in &rows {
+            if previous != Some(key.as_str()) {
+                position = 0;
+                previous = Some(key);
+            }
+            if *at != position {
+                // Moved rows pass through negative ordinals, so no two rows share one.
+                sqlx::query(AssertSqlSafe(format!(
+                    "UPDATE {table} SET {ordinal} = ? WHERE {owner} = ? AND {ordinal} = ?"
+                )))
+                .bind(-1 - position)
+                .bind(key)
+                .bind(at)
+                .execute(&mut *conn)
+                .await?;
+                moved = true;
+            }
+            position += 1;
+        }
+        if moved {
+            sqlx::raw_sql(AssertSqlSafe(format!(
+                "UPDATE {table} SET {ordinal} = -1 - {ordinal} WHERE {ordinal} < 0"
+            )))
+            .execute(&mut *conn)
+            .await?;
+        }
+    }
+    sqlx::raw_sql(RECOMPUTE_LISTS_SQL)
+        .execute(&mut *conn)
+        .await?;
+    Ok(())
+}
+
+/// Recomputes the hook column and count row of each list in `keys`; a deleted list loses its
+/// count row.
+pub(super) async fn recompute_lists(
+    conn: &mut SqliteConnection,
+    keys: &[String],
+) -> Result<(), sqlx::Error> {
+    for key in keys {
+        sqlx::query(
+            "UPDATE fixture_lists SET entry_count =
+                 (SELECT count(*) FROM fixture_list_entries WHERE list_id = ?1)
+             WHERE id = ?1",
+        )
+        .bind(key)
+        .execute(&mut *conn)
+        .await?;
+        sqlx::query("DELETE FROM fixture_list_counts WHERE list_id = ?")
+            .bind(key)
+            .execute(&mut *conn)
+            .await?;
+        sqlx::query(
+            "INSERT INTO fixture_list_counts (list_id, entries)
+             SELECT id, entry_count FROM fixture_lists WHERE id = ?",
+        )
+        .bind(key)
+        .execute(&mut *conn)
+        .await?;
+    }
+    Ok(())
+}
+
+/// The fixture hook: keeps list entry counts and reports each recomputed list.
+#[derive(Debug)]
+pub(super) struct FixtureHook;
+
+impl MaterializeHook for FixtureHook {
+    fn after_materialize<'a>(
+        &'a self,
+        conn: &'a mut SqliteConnection,
+        _table: &'static TableSpec,
+        changed_keys: &'a [String],
+        changes: &'a mut dyn ChangeSink,
+    ) -> HookFuture<'a> {
+        Box::pin(async move {
+            recompute_lists(conn, changed_keys).await?;
+            for key in changed_keys {
+                changes.report(LIST_COUNT_TOPIC, key.clone());
+            }
+            Ok(())
+        })
+    }
+}
+
 /// The fixture domain.
 pub(super) const FIXTURE_DOMAIN: DomainManifest = DomainManifest {
     name: "fixture",
@@ -822,8 +1192,10 @@ pub(super) const FIXTURE_DOMAIN: DomainManifest = DomainManifest {
         MEMOS,
         MEMO_LINES,
         MEMO_TAGS,
+        LISTS,
+        BOARDS,
     ],
-    derived: &["fixture_items_index"],
+    derived: &["fixture_items_index", "fixture_list_counts"],
     local: &[DeviceTable {
         name: "fixture_item_marks",
         triggers: &[DomainTrigger {
@@ -842,10 +1214,19 @@ pub(super) const TEST_DOMAINS: &[&DomainManifest] = &[&quick_notes::DOMAIN, &FIX
 pub(super) static TEST_MANIFEST: LazyLock<Manifest> =
     LazyLock::new(|| Manifest::from_domains(VAULT_MANIFEST_VERSION, TEST_DOMAINS));
 
-/// An engine for [`TEST_MANIFEST`] with the vault adapters.
+/// The vault adapters and [`FixtureAdapter`].
+pub(super) fn test_adapters() -> Adapters {
+    vault_adapters().with(Box::new(FixtureAdapter))
+}
+
+/// An engine for [`TEST_MANIFEST`] with [`test_adapters`] and [`FixtureHook`] on lists.
 pub(super) fn test_engine() -> Engine {
-    Engine::with(&TEST_MANIFEST, vault_adapters(), Hooks::default())
-        .expect("the test manifest and the vault adapters should agree")
+    Engine::with(
+        &TEST_MANIFEST,
+        test_adapters(),
+        Hooks::new().with(LISTS_TABLE, Box::new(FixtureHook)),
+    )
+    .expect("the test manifest, adapters, and hooks should agree")
 }
 
 /// Schema of the fixture domain. `label_edits` has no default, so every insert must name it and
@@ -925,6 +1306,50 @@ fn fixture_schema() -> String {
              tag TEXT NOT NULL CHECK (length(tag) <= 20),
              sync_key TEXT NOT NULL UNIQUE,
              PRIMARY KEY (memo_id, tag)
+         );
+         CREATE TABLE fixture_lists (
+             id TEXT PRIMARY KEY CHECK (trim(id) <> ''),
+             created_at TEXT NOT NULL,
+             title TEXT NOT NULL CHECK (length(title) <= 40),
+             entry_count INTEGER NOT NULL DEFAULT 0
+         );
+         CREATE TABLE fixture_list_entries (
+             list_id TEXT NOT NULL REFERENCES fixture_lists(id) ON DELETE CASCADE,
+             ordinal INTEGER NOT NULL,
+             entry_id TEXT NOT NULL UNIQUE,
+             body TEXT NOT NULL CHECK (length(body) <= 40),
+             note TEXT CHECK (length(note) <= 20),
+             member_key TEXT REFERENCES fixture_memberships(sync_key) ON DELETE CASCADE,
+             PRIMARY KEY (list_id, ordinal)
+         );
+         CREATE TABLE fixture_list_counts (
+             list_id TEXT PRIMARY KEY,
+             entries INTEGER NOT NULL
+         );
+         CREATE TABLE fixture_boards (
+             id TEXT PRIMARY KEY CHECK (trim(id) <> ''),
+             created_at TEXT NOT NULL,
+             owner_id TEXT REFERENCES fixture_items(id) ON DELETE SET NULL,
+             stage INTEGER NOT NULL CHECK (stage BETWEEN 0 AND {MAX_BOARD_STAGE})
+         );
+         CREATE TABLE fixture_board_cards (
+             board_id TEXT NOT NULL REFERENCES fixture_boards(id) ON DELETE CASCADE,
+             ordinal INTEGER NOT NULL,
+             card_id TEXT NOT NULL UNIQUE,
+             title TEXT NOT NULL CHECK (length(title) <= 40),
+             item_id TEXT REFERENCES fixture_items(id) ON DELETE CASCADE,
+             PRIMARY KEY (board_id, ordinal)
+         );
+         CREATE TABLE fixture_board_checks (
+             board_id TEXT NOT NULL,
+             card_ordinal INTEGER NOT NULL,
+             ordinal INTEGER NOT NULL,
+             check_id TEXT NOT NULL UNIQUE,
+             done INTEGER NOT NULL CHECK (done IN (0, 1)),
+             PRIMARY KEY (board_id, card_ordinal, ordinal),
+             FOREIGN KEY (board_id, card_ordinal)
+                 REFERENCES fixture_board_cards(board_id, ordinal)
+                 ON DELETE CASCADE ON UPDATE CASCADE
          );
          CREATE TABLE fixture_items_index (
              item_id TEXT PRIMARY KEY,

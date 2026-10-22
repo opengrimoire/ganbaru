@@ -58,6 +58,19 @@ When two rows end up with equal keys, which concurrent placement can cause, the 
 - Recovery groups rows under their root: a row deleted by the user is its own root, and a row deleted or hidden by cascade belongs to the root its cause or its cascade reaches. One entry offers the root with every descendant holding an unseen edit, and restoring or discarding it closes the whole group.
 - A tombstone can redirect references to a row with a lower key. A reference to a tombstoned row follows the lowest redirect among its tombstones, or resolves to null when there is none. Redirects always point to lower keys, so chains terminate.
 
+## Publication
+
+- A table may declare a publication predicate over its own columns, such as a message that replicates once it is sent. Rows that fail it are drafts: they stay on the device that wrote them and are never captured. The write that first satisfies the predicate captures the row as a create with every group.
+- Publication is monotonic: a guard refuses a local write that makes a published row fail the predicate again. A merged winner that fails it is an invalid row, hidden like a row hidden by cascade.
+- A child table may publish with a predicate table through an immutable cascading reference. Its rows follow the parent: they are drafts while the parent is, they are captured with every group when the parent publishes, and they are hidden while the parent is. Replicated references to a predicate table from any other table are refused, since they could name a draft.
+- Capture seeding treats existing rows the same way: only rows that satisfy the predicate, or whose parent does, are seeded.
+
+## Deletion holds
+
+- A table may hold deletes for domain Undo. Domain code holds a local delete in the transaction that deletes the row, for at most 10 seconds; sealing leaves the delete local until the lease ends.
+- Undo inside the lease checks that the hold still exists, then inserts the row again with its key. The capture becomes an ordinary write, so no tombstone is ever sealed and no recovery entry appears. Undo after the lease refuses, because the delete may already be sealed and published keys are never reused.
+- A held delete seals early whenever a remote operation or a merge would write its row, so merge state and the domain table never disagree about the row. Quiescing before a handoff or backup and revoking the local writer also end every hold.
+
 ## References
 
 - A reference column holds a row key of any replicated table, including its own table and tables listed after it. A reference group holds one such column; register and immutable groups may also declare several, each resolved like a reference group while the group's value merges as a whole.

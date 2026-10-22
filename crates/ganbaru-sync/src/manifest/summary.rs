@@ -2,8 +2,8 @@
 //! and materialize on every replica, and nothing that stays on one device.
 //!
 //! A manifest version is fixed by its summary. Adapter names, hooks, presentation, replica write
-//! flags, `Local` tables and columns, adapter-derived columns, revision bumps, group names, and
-//! domain triggers are device or diagnostic details, so they are left out.
+//! flags, `Local` tables and columns, adapter-derived columns, revision bumps, group names,
+//! delete holds, and domain triggers are device or diagnostic details, so they are left out.
 
 use std::fmt::Write as _;
 
@@ -47,6 +47,12 @@ impl Manifest {
                     "  acyclic {}->{}",
                     acyclic.from_column, acyclic.to_column
                 );
+            }
+            if let Some(predicate) = table.publish_when {
+                let _ = writeln!(text, "  publish when {predicate}");
+            }
+            if let Some(with) = table.published_with {
+                let _ = writeln!(text, "  published with {} {}", with.column, with.parent.0);
             }
             for group in table.groups {
                 let mut line = format!("  group {} {}", group.id.get(), kind(group.kind));

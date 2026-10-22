@@ -2,8 +2,8 @@
 //!
 //! An operation is ready when its writer's previous operation is applied, its causal context is
 //! known and applied, and it is not held. Ready operations apply in clock order within bounded
-//! transactions. Each transaction first seals pending local captures, so a materialized merge
-//! never overwrites a local edit that is not sealed yet.
+//! transactions. Local captures of the rows an operation or a materialization changes are sealed
+//! first, so a materialized merge never overwrites a local edit that is not sealed yet.
 
 use std::collections::BTreeSet;
 
@@ -14,12 +14,12 @@ use ganbaru_sync_contracts::{
 use sqlx::sqlite::SqliteRow;
 use sqlx::{Connection, Row, SqliteConnection};
 
-use crate::error::{SyncResult, corrupt, failpoint};
+use crate::error::{SyncError, SyncResult, corrupt, failpoint};
 use crate::log::{self, seq_i64, stored_u64};
 use crate::merge::{self, Batch};
-use crate::seal::{SealReport, SealSlot};
-use crate::visibility::Visibility;
-use crate::{Engine, LocalWriter, SpaceContext, materialize, repair, sql, store};
+use crate::seal::{self, SealReport, SealSlot};
+use crate::visibility::{RowRef, Visibility};
+use crate::{Engine, LocalWriter, SpaceContext, hold, materialize, repair, sql, store};
 
 /// Most operations one apply transaction takes.
 pub const MAX_OPS_PER_APPLY: usize = 256;
@@ -64,7 +64,8 @@ pub struct ApplyReport {
     /// Revocations of remote writers that cut off operations this replica applied. They stay
     /// stored and block their writer until the conflict is resolved.
     pub blocked_revocations: Vec<OpId>,
-    /// Local captures could not be sealed, so nothing was applied.
+    /// Local captures of rows the call would change could not be sealed, so the operations
+    /// changing them did not apply, or nothing applied when a merge would overwrite them.
     pub pending_captures: bool,
     /// More ready operations remain beyond the transaction budget.
     pub more: bool,
@@ -92,6 +93,91 @@ enum Outcome {
     Revoked,
     Held,
     Blocked,
+    /// It touches rows with local captures and no writer can seal them first.
+    PendingCaptures,
+}
+
+/// What [`apply_one`] needs to seal local captures before a remote operation changes them.
+struct Sealing<'s, 'a, 'k> {
+    slot: &'s mut SealSlot<'a, 'k>,
+    /// Writers whose applied sequence is not written to `sync_writers` yet.
+    advanced: &'s mut BTreeSet<WriterId>,
+    report: &'s mut SealReport,
+    now_ms: u64,
+}
+
+impl Sealing<'_, '_, '_> {
+    /// Seals the captures of `rows`, held deletes included. Returns false when rows are
+    /// captured and no writer can seal them, or they exceed what the call may still seal.
+    async fn seal_rows(
+        &mut self,
+        engine: &Engine,
+        conn: &mut SqliteConnection,
+        ctx: &SpaceContext,
+        batch: &mut Batch,
+        rows: BTreeSet<RowRef>,
+    ) -> SyncResult<bool> {
+        let rows = seal::captured(conn, rows).await?;
+        if rows.is_empty() {
+            return Ok(true);
+        }
+        if !self.slot.admit(engine, conn, &rows).await? {
+            return Ok(false);
+        }
+        let Some((sealer, writer)) = self
+            .slot
+            .try_open(engine, conn, ctx, batch, self.now_ms)
+            .await?
+        else {
+            return Ok(false);
+        };
+        flush_applied(conn, ctx, batch, self.advanced).await?;
+        sealer
+            .seal_rows(
+                engine,
+                conn,
+                ctx,
+                batch,
+                writer,
+                &rows,
+                self.now_ms,
+                self.report,
+            )
+            .await?;
+        Ok(true)
+    }
+
+    /// Seals every capture before the local writer is revoked, so the revocation sees every
+    /// local edit this replica made with it. Holds end here, because a revoked writer can never
+    /// seal a held delete later.
+    async fn seal_all(
+        &mut self,
+        engine: &Engine,
+        conn: &mut SqliteConnection,
+        ctx: &SpaceContext,
+        batch: &mut Batch,
+    ) -> SyncResult<()> {
+        let captured: Option<i64> = sqlx::query_scalar("SELECT 1 FROM sync_capture LIMIT 1")
+            .fetch_optional(&mut *conn)
+            .await?;
+        if captured.is_none() {
+            return Ok(());
+        }
+        let Some((sealer, writer)) = self
+            .slot
+            .try_open(engine, conn, ctx, batch, self.now_ms)
+            .await?
+        else {
+            return Ok(());
+        };
+        flush_applied(conn, ctx, batch, self.advanced).await?;
+        hold::expire_holds(conn).await?;
+        let sealed = sealer
+            .seal_captures(engine, conn, ctx, batch, writer, self.now_ms)
+            .await?;
+        self.report.absorb(sealed);
+        Ok(())
+    }
 }
 
 async fn candidates(conn: &mut SqliteConnection, ctx: &SpaceContext) -> SyncResult<Vec<Candidate>> {
@@ -370,7 +456,7 @@ async fn apply_one(
     conn: &mut SqliteConnection,
     ctx: &SpaceContext,
     batch: &mut Batch,
-    slot: &mut SealSlot<'_, '_>,
+    sealing: &mut Sealing<'_, '_, '_>,
     candidate: &mut Candidate,
     context: &VersionVector,
     report: &mut ApplyReport,
@@ -390,6 +476,18 @@ async fn apply_one(
         Content::Changes(changes) => {
             if !rows_exist(engine, conn, changes).await? {
                 return Ok(Outcome::Held);
+            }
+            // The rows it changes and the rows it names, so a reference never materializes to
+            // a row whose local delete is still held.
+            let touched = changes
+                .iter()
+                .flat_map(|change| {
+                    std::iter::once((change.table, change.row.as_str().to_string()))
+                        .chain(seal::change_dependencies(engine, change))
+                })
+                .collect();
+            if !sealing.seal_rows(engine, conn, ctx, batch, touched).await? {
+                return Ok(Outcome::PendingCaptures);
             }
             for change in changes {
                 let table = engine
@@ -419,10 +517,13 @@ async fn apply_one(
             if !store::may_issue(ctx, &issuer, envelope.kind) {
                 return Ok(Outcome::Blocked);
             }
+            if sealing.slot.local_id() == Some(revocation.writer) {
+                sealing.seal_all(engine, conn, ctx, batch).await?;
+            }
             apply_revoke(
                 conn,
                 batch,
-                slot,
+                sealing.slot,
                 operation.id(),
                 context,
                 revocation,
@@ -491,49 +592,169 @@ fn warn_clock(report: &mut ApplyReport, writer: WriterId, clock: Hlc, now_ms: u6
     }
 }
 
+/// How [`finish`] treats the captures of a table whose constraint reads several rows together
+/// (a unique column set, a tree, or acyclic edges) when the merge changes that table. Repairs
+/// read merge state only, so such captures must be sealed before repairs see the table.
+/// A bounded [`SealSlot`] limits what this sealing may take.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Constrained {
+    /// Seal them before repairs.
+    Seal,
+    /// Leave them, for a local seal: it seals the writes and tombstones of such a table before
+    /// any create of it, so sealed state stays valid for the table.
+    Skip,
+}
+
+/// Tables among `tables` whose constraint reads several rows together.
+fn constrained_tables(engine: &Engine, tables: impl Iterator<Item = TableId>) -> BTreeSet<TableId> {
+    tables
+        .filter(|table| {
+            engine
+                .manifest()
+                .table(*table)
+                .is_some_and(|spec| spec.constrains_rows_together())
+        })
+        .collect()
+}
+
+/// Seals the captures of `rows` for [`finish`]. Returns false when no writer can seal them or
+/// they exceed what a bounded slot may still seal.
+#[allow(clippy::too_many_arguments)]
+async fn seal_for_finish(
+    engine: &Engine,
+    conn: &mut SqliteConnection,
+    ctx: &SpaceContext,
+    batch: &mut Batch,
+    slot: &mut SealSlot<'_, '_>,
+    rows: &BTreeSet<RowRef>,
+    now_ms: u64,
+    report: &mut SealReport,
+) -> SyncResult<bool> {
+    if !slot.admit(engine, conn, rows).await? {
+        return Ok(false);
+    }
+    let Some((sealer, writer)) = slot.try_open(engine, conn, ctx, batch, now_ms).await? else {
+        return Ok(false);
+    };
+    sealer
+        .seal_rows(engine, conn, ctx, batch, writer, rows, now_ms, report)
+        .await?;
+    Ok(true)
+}
+
 /// Seals repairs for hidden duplicates, detached tree rows, and cascades, refreshes row flags,
 /// and materializes every dirty row. Returns the domain tables it changed.
+///
+/// A materialization never overwrites a local edit that is not sealed: captured rows it would
+/// write, or cascade to, are sealed first and the merge is planned again. Captures of dirty
+/// tables are sealed before repairs as `constrained` says. Without a writer that can seal them,
+/// or when they exceed what a bounded slot may still seal, it returns `None` and writes
+/// nothing, so the caller rolls back.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn finish(
     engine: &Engine,
     conn: &mut SqliteConnection,
     ctx: &SpaceContext,
     batch: &mut Batch,
     slot: &mut SealSlot<'_, '_>,
+    constrained: Constrained,
+    now_ms: u64,
+    report: &mut SealReport,
+) -> SyncResult<Option<Vec<&'static str>>> {
+    if batch.dirty.is_empty() {
+        return Ok(Some(Vec::new()));
+    }
+    // Captured rows already sealed once. A capture that stays is an invalid row, which the
+    // merge overwrites as it would without the capture. Captures only shrink inside the
+    // transaction, so the loop ends.
+    let mut attempted = BTreeSet::new();
+    loop {
+        if constrained != Constrained::Skip {
+            let tables = constrained_tables(engine, batch.dirty.iter().map(|(table, _)| *table));
+            let mut rows = seal::captured_in(conn, &tables).await?;
+            rows.retain(|row| !attempted.contains(row));
+            if !rows.is_empty() {
+                if !seal_for_finish(engine, conn, ctx, batch, slot, &rows, now_ms, report).await? {
+                    return Ok(None);
+                }
+                attempted.extend(rows);
+            }
+        }
+        let mut repaired = false;
+        let mut visibility = loop {
+            let mut visibility = Visibility::load(engine, conn, &mut batch.dirty).await?;
+            repair::expand_references(engine, conn, batch, &mut visibility).await?;
+            let repairs =
+                repair::repair_changes(engine, conn, &mut visibility, &batch.dirty).await?;
+            if repaired || repairs.is_empty() {
+                break visibility;
+            }
+            repaired = true;
+            let Some((sealer, writer)) = slot.try_open(engine, conn, ctx, batch, now_ms).await?
+            else {
+                break visibility;
+            };
+            sealer
+                .seal_changes(
+                    engine, conn, ctx, batch, writer, repairs, None, now_ms, report,
+                )
+                .await?;
+        };
+        let merged = merge::refresh_flags(engine, conn, batch, &mut visibility).await?;
+        let plan = materialize::plan(engine, conn, batch, &mut visibility, merged).await?;
+        let mut captured = seal::captured(conn, plan.rows(engine)).await?;
+        if constrained != Constrained::Skip {
+            let tables = constrained_tables(engine, plan.rows(engine).map(|(table, _)| table));
+            captured.extend(seal::captured_in(conn, &tables).await?);
+        }
+        captured.retain(|row| !attempted.contains(row));
+        if captured.is_empty() {
+            let changed = materialize::execute(engine, conn, plan).await?;
+            batch.dirty.clear();
+            return Ok(Some(changed));
+        }
+        if !seal_for_finish(engine, conn, ctx, batch, slot, &captured, now_ms, report).await? {
+            return Ok(None);
+        }
+        attempted.extend(captured);
+    }
+}
+
+/// [`finish`] for a call that seals with its writer, where captured rows left unsealed mean
+/// the writer is no longer active. Its slot is never bounded.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn finish_sealed(
+    engine: &Engine,
+    conn: &mut SqliteConnection,
+    ctx: &SpaceContext,
+    batch: &mut Batch,
+    slot: &mut SealSlot<'_, '_>,
+    constrained: Constrained,
     now_ms: u64,
     report: &mut SealReport,
 ) -> SyncResult<Vec<&'static str>> {
-    if batch.dirty.is_empty() {
-        return Ok(Vec::new());
+    match finish(engine, conn, ctx, batch, slot, constrained, now_ms, report).await? {
+        Some(changed) => Ok(changed),
+        None => Err(match slot.local_id() {
+            Some(writer) => SyncError::WriterInactive(writer),
+            None => corrupt("a sealing call has no writer"),
+        }),
     }
-    let mut repaired = false;
-    let mut visibility = loop {
-        let mut visibility = Visibility::load(engine, conn, &mut batch.dirty).await?;
-        repair::expand_references(engine, conn, batch, &mut visibility).await?;
-        let repairs = repair::repair_changes(engine, conn, &mut visibility, &batch.dirty).await?;
-        if repaired || repairs.is_empty() {
-            break visibility;
-        }
-        repaired = true;
-        let Some((sealer, writer)) = slot.try_open(engine, conn, ctx, batch, now_ms).await? else {
-            break visibility;
-        };
-        sealer
-            .seal_changes(
-                engine, conn, ctx, batch, writer, repairs, None, now_ms, report,
-            )
-            .await?;
-    };
-    let merged = merge::refresh_flags(engine, conn, batch, &mut visibility).await?;
-    let changed = materialize::materialize(engine, conn, batch, &mut visibility, merged).await?;
-    batch.dirty.clear();
-    Ok(changed)
 }
 
 impl Engine {
-    /// Applies ready operations in one bounded transaction, sealing local captures first.
+    /// Applies ready operations in one bounded transaction.
     ///
-    /// Without a local writer, or when it is no longer active, pending captures stop the call
-    /// before anything applies, because materialized merges would overwrite those local edits.
+    /// Local captures of the rows an operation changes, held deletes included, are sealed
+    /// before it applies. Every capture of a changed table whose constraint reads several rows
+    /// together is sealed before repairs, and captures of rows the merge would materialize are
+    /// sealed before the domain tables are written, so a merge never overwrites a local edit
+    /// that is not sealed and every repair sees the local edits it must account for. Other
+    /// captures stay for [`Engine::seal`]. The call seals at most one seal transaction of
+    /// captures. Without a local writer, when it is no longer active, or when the captures
+    /// exceed that bound, an operation that touches captured rows stops the call before it
+    /// applies, and a finish that would seal captured rows rolls the call back. The report then
+    /// says captures are pending, and the caller seals them in batches and applies again.
     pub async fn apply(
         &self,
         conn: &mut SqliteConnection,
@@ -545,29 +766,9 @@ impl Engine {
         log::ensure_space(&mut tx, ctx.space).await?;
         sql::begin_engine_write(&mut tx).await?;
         let mut batch = Batch::load(&mut tx, ctx.space).await?;
-        let mut slot = SealSlot::new(writer);
+        let mut slot = SealSlot::bounded(writer);
         let mut report = ApplyReport::default();
         let mut sealed = SealReport::default();
-        let captures: i64 = sqlx::query_scalar("SELECT count(*) FROM sync_capture")
-            .fetch_one(&mut *tx)
-            .await?;
-        if captures > 0 {
-            match slot
-                .try_open(self, &mut tx, ctx, &mut batch, now_ms)
-                .await?
-            {
-                Some((sealer, writer)) => {
-                    sealed = sealer
-                        .seal_captures(self, &mut tx, ctx, &mut batch, writer, now_ms)
-                        .await?;
-                }
-                None => {
-                    report.pending_captures = true;
-                    report.local_writer_frozen = slot.frozen();
-                    return Ok(report);
-                }
-            }
-        }
         let mut blocked = BTreeSet::new();
         let mut taken = 0usize;
         let mut bytes = 0usize;
@@ -587,12 +788,18 @@ impl Engine {
             }
             taken += 1;
             bytes = bytes.saturating_add(candidate.bytes);
+            let mut sealing = Sealing {
+                slot: &mut slot,
+                advanced: &mut advanced,
+                report: &mut sealed,
+                now_ms,
+            };
             match apply_one(
                 self,
                 &mut tx,
                 ctx,
                 &mut batch,
-                &mut slot,
+                &mut sealing,
                 &mut candidate,
                 &context,
                 &mut report,
@@ -620,19 +827,33 @@ impl Engine {
                 Outcome::Blocked => {
                     blocked.insert(candidate.writer);
                 }
+                Outcome::PendingCaptures => {
+                    report.pending_captures = true;
+                    blocked.insert(candidate.writer);
+                }
             }
         }
         flush_applied(&mut tx, ctx, &batch, &mut advanced).await?;
-        report.changed_tables = finish(
+        let Some(changed) = finish(
             self,
             &mut tx,
             ctx,
             &mut batch,
             &mut slot,
+            Constrained::Seal,
             now_ms,
             &mut sealed,
         )
-        .await?;
+        .await?
+        else {
+            drop(tx);
+            return Ok(ApplyReport {
+                pending_captures: true,
+                local_writer_frozen: slot.frozen(),
+                ..ApplyReport::default()
+            });
+        };
+        report.changed_tables = changed;
         report.local_writer_frozen |= slot.frozen();
         if !sealed.is_empty() {
             report.seal = Some(sealed);

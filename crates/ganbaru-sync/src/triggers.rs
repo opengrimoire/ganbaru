@@ -15,9 +15,15 @@
 //!   `sync_key` that starts with the `pending:` placeholder prefix may change once to a valid
 //!   key, which captures the row as inserted under its final key.
 //! - A published key that is no longer present cannot be inserted again locally, except on
-//!   derived-key tables, where the insert adds the row again, and under a `pending:` key.
+//!   derived-key tables, where the insert adds the row again, under a `pending:` key, and as
+//!   the Undo of a held delete, which turns the held capture into an ordinary write.
+//! - On a table that publishes conditionally, inserts and updates are captured only while the
+//!   row is published. The update that publishes a row captures it as created with every group,
+//!   together with every child row published with it, and a publication guard refuses an
+//!   update that turns a published row back into a draft. Deleting a row that was never
+//!   published or captured records nothing.
 //!
-//! Capture triggers and the immutable and re-create guards are disabled while
+//! Capture triggers and the immutable, re-create, and publication guards are disabled while
 //! `sync_apply_state.applying` is 1; value guards always run.
 
 use std::fmt::Write as _;
@@ -31,6 +37,7 @@ use crate::manifest::{
     ColumnSpec, ColumnType, GroupSpec, GroupStorage, MAX_TIMESTAMP_BYTES, Manifest, MergeKind,
     TableSpec,
 };
+use crate::publication;
 
 /// Trigger condition true outside engine apply transactions.
 pub(crate) const NOT_APPLYING: &str =
@@ -62,11 +69,13 @@ pub fn render(manifest: &Manifest) -> Vec<TriggerSql> {
         triggers.push(value_guard(table, Event::Update));
         triggers.push(immutable_guard(table));
         if table.derived_key.is_none() {
-            triggers.push(recreate_guard(table));
+            triggers.push(recreate_guard(manifest, table));
         }
-        triggers.push(insert_capture(table));
+        triggers.extend(revert_guard(table));
+        triggers.push(insert_capture(manifest, table));
         triggers.push(update_capture(manifest, table));
-        triggers.push(delete_capture(table));
+        triggers.push(delete_capture(manifest, table));
+        let published = publication::condition_in(manifest, table, OWNER_ALIAS);
         for (group, owned) in table.owned_children() {
             let bit = mask_literal(group.mask().0);
             for event in [Event::Insert, Event::Update, Event::Delete] {
@@ -76,6 +85,7 @@ pub fn render(manifest: &Manifest) -> Vec<TriggerSql> {
                     owned.parent_column,
                     &bit,
                     event,
+                    published.as_deref(),
                 ));
             }
         }
@@ -289,7 +299,7 @@ fn pending_glob() -> String {
     format!("'{PENDING_KEY_PREFIX}*'")
 }
 
-fn recreate_guard(table: &TableSpec) -> TriggerSql {
+fn recreate_guard(manifest: &Manifest, table: &TableSpec) -> TriggerSql {
     let name = format!("sync_recreate_{}", table.name);
     let pending = if table.has_composite_key() {
         format!(
@@ -300,10 +310,20 @@ fn recreate_guard(table: &TableSpec) -> TriggerSql {
     } else {
         String::new()
     };
+    // Undo of a held delete inserts the row again.
+    let held = if manifest.may_hold_deletes(table.id) {
+        format!(
+            "\n    AND NOT EXISTS (SELECT 1 FROM sync_capture WHERE table_id = {id} AND row_key = NEW.{key} AND held_until_ms IS NOT NULL)",
+            id = table.id.0,
+            key = table.key_column,
+        )
+    } else {
+        String::new()
+    };
     let mut sql = header(&name, "BEFORE", "INSERT", table.name);
     let _ = write!(
         sql,
-        "WHEN {NOT_APPLYING}{pending}\n    AND EXISTS (SELECT 1 FROM sync_rows WHERE table_id = {id} AND row_key = NEW.{key})\n    AND NOT EXISTS (SELECT 1 FROM {table} WHERE {key} = NEW.{key})\n{}",
+        "WHEN {NOT_APPLYING}{pending}{held}\n    AND EXISTS (SELECT 1 FROM sync_rows WHERE table_id = {id} AND row_key = NEW.{key})\n    AND NOT EXISTS (SELECT 1 FROM {table} WHERE {key} = NEW.{key})\n{}",
         abort_body("A published row key cannot be created again"),
         id = table.id.0,
         key = table.key_column,
@@ -312,17 +332,64 @@ fn recreate_guard(table: &TableSpec) -> TriggerSql {
     TriggerSql { name, sql }
 }
 
-fn insert_capture(table: &TableSpec) -> TriggerSql {
+/// `AND` and the publication condition of the trigger row `row`, or nothing when every row of
+/// the table publishes.
+fn published_when(manifest: &Manifest, table: &TableSpec, row: &str) -> String {
+    publication::condition_over(manifest, table, row)
+        .map(|condition| format!("\n    AND {condition}"))
+        .unwrap_or_default()
+}
+
+/// Captures an inserted row. Inserting a row whose delete is held reinserts it: the held
+/// capture becomes an ordinary write instead of a create.
+fn insert_capture(manifest: &Manifest, table: &TableSpec) -> TriggerSql {
     let name = format!("sync_capture_{}_insert", table.name);
+    let reinsert = if manifest.may_hold_deletes(table.id) {
+        "created = CASE WHEN held_until_ms IS NULL THEN 1 ELSE created END, deleted = 0,\n        held_until_ms = NULL"
+    } else {
+        "created = 1, deleted = 0"
+    };
     let mut sql = header(&name, "AFTER", "INSERT", table.name);
     let _ = write!(
         sql,
-        "WHEN {NOT_APPLYING}\nBEGIN\n    {CAPTURE_INSERT}\n    VALUES ({id}, NEW.{key}, {mask}, 1, 0, {NOW_MS})\n    ON CONFLICT (table_id, row_key) DO UPDATE SET\n        mask = mask | excluded.mask, created = 1, deleted = 0;\nEND",
+        "WHEN {NOT_APPLYING}{published}\nBEGIN\n    {CAPTURE_INSERT}\n    VALUES ({id}, NEW.{key}, {mask}, 1, 0, {NOW_MS})\n    ON CONFLICT (table_id, row_key) DO UPDATE SET\n        mask = mask | excluded.mask, {reinsert};\nEND",
+        published = published_when(manifest, table, "NEW"),
         id = table.id.0,
         key = table.key_column,
         mask = mask_literal(table.full_mask().0),
     );
     TriggerSql { name, sql }
+}
+
+/// Statements of an update that publishes a predicate table row: the row captures as created
+/// with every group, and so does every child row published with it.
+fn publish_statements(manifest: &Manifest, table: &TableSpec) -> String {
+    let Some(was_published) = publication::own_over(table, "OLD") else {
+        return String::new();
+    };
+    let reinsert = "ON CONFLICT (table_id, row_key) DO UPDATE SET\n        mask = mask | excluded.mask, created = 1, deleted = 0;";
+    let mut statements = format!(
+        "\n    {CAPTURE_INSERT}\n    SELECT {id}, NEW.{key}, {mask}, 1, 0, {NOW_MS}\n    WHERE NOT {was_published}\n    {reinsert}",
+        id = table.id.0,
+        key = table.key_column,
+        mask = mask_literal(table.full_mask().0),
+    );
+    for child in manifest.tables {
+        let Some(with) = child.published_with.filter(|with| with.parent == table.id) else {
+            continue;
+        };
+        let _ = write!(
+            statements,
+            "\n    {CAPTURE_INSERT}\n    SELECT {id}, child.{key}, {mask}, 1, 0, {NOW_MS}\n    FROM {name} AS child\n    WHERE child.{column} = NEW.{parent_key} AND NOT {was_published}\n    {reinsert}",
+            id = child.id.0,
+            key = child.key_column,
+            mask = mask_literal(child.full_mask().0),
+            name = child.name,
+            column = with.column,
+            parent_key = table.key_column,
+        );
+    }
+    statements
 }
 
 /// The mask bit of a column group when any of its columns changed. A reference column that
@@ -397,43 +464,97 @@ fn update_capture(manifest: &Manifest, table: &TableSpec) -> TriggerSql {
     let mut sql = header(&name, "AFTER", "UPDATE", table.name);
     let _ = write!(
         sql,
-        "WHEN {NOT_APPLYING}\nBEGIN\n    {CAPTURE_INSERT}\n    SELECT {id}, NEW.{key}, changed.mask, 0, 0, {NOW_MS}\n    FROM (\n        SELECT\n            {terms}\n            AS mask\n    ) AS changed\n    WHERE changed.mask <> 0\n    {MERGE_MASK};{rekey}\nEND",
+        "WHEN {NOT_APPLYING}{published}\nBEGIN\n    {CAPTURE_INSERT}\n    SELECT {id}, NEW.{key}, changed.mask, 0, 0, {NOW_MS}\n    FROM (\n        SELECT\n            {terms}\n            AS mask\n    ) AS changed\n    WHERE changed.mask <> 0\n    {MERGE_MASK};{publish}{rekey}\nEND",
+        published = published_when(manifest, table, "NEW"),
+        publish = publish_statements(manifest, table),
         id = table.id.0,
         key = table.key_column,
     );
     TriggerSql { name, sql }
 }
 
-fn delete_capture(table: &TableSpec) -> TriggerSql {
+/// Captures a deleted row. On a table that publishes conditionally, only a row that was
+/// published or captured is, so deleting a draft records nothing.
+fn delete_capture(manifest: &Manifest, table: &TableSpec) -> TriggerSql {
     let name = format!("sync_capture_{}_delete", table.name);
+    let id = table.id.0;
+    let key = table.key_column;
+    let published = if publication::condition_over(manifest, table, "OLD").is_some() {
+        format!(
+            "\n    AND (EXISTS (SELECT 1 FROM sync_rows WHERE table_id = {id} AND row_key = OLD.{key})\n        OR EXISTS (SELECT 1 FROM sync_capture WHERE table_id = {id} AND row_key = OLD.{key}))"
+        )
+    } else {
+        String::new()
+    };
     let mut sql = header(&name, "AFTER", "DELETE", table.name);
     let _ = write!(
         sql,
-        "WHEN {NOT_APPLYING}\nBEGIN\n    {CAPTURE_INSERT}\n    VALUES ({id}, OLD.{key}, 0, 0, 1, {NOW_MS})\n    ON CONFLICT (table_id, row_key) DO UPDATE SET deleted = 1;\nEND",
-        id = table.id.0,
-        key = table.key_column,
+        "WHEN {NOT_APPLYING}{published}\nBEGIN\n    {CAPTURE_INSERT}\n    VALUES ({id}, OLD.{key}, 0, 0, 1, {NOW_MS})\n    ON CONFLICT (table_id, row_key) DO UPDATE SET deleted = 1;\nEND",
     );
     TriggerSql { name, sql }
 }
 
+/// Refuses a local update that makes a row satisfying its publication predicate fail it, so
+/// a published row never becomes a draft again.
+fn revert_guard(table: &TableSpec) -> Option<TriggerSql> {
+    let old = publication::own_over(table, "OLD")?;
+    let new = publication::own_over(table, "NEW")?;
+    let name = format!("sync_publish_{}", table.name);
+    let mut sql = header(&name, "BEFORE", "UPDATE", table.name);
+    let _ = write!(
+        sql,
+        "WHEN {NOT_APPLYING}\n    AND {old}\n    AND NOT {new}\n{}",
+        abort_body("A published row cannot become a draft again")
+    );
+    Some(TriggerSql { name, sql })
+}
+
+/// Alias of the owning row in the publication condition of an owned child capture.
+const OWNER_ALIAS: &str = "sync_owner";
+
+/// Whether the owning row of `parent_key` is published, for a parent table whose rows publish
+/// when `published` holds over [`OWNER_ALIAS`].
+fn owner_published(parent: &TableSpec, parent_key: &str, published: &str) -> String {
+    format!(
+        "EXISTS (SELECT 1 FROM {table} AS {OWNER_ALIAS} WHERE {OWNER_ALIAS}.{key} = {parent_key} AND {published})",
+        table = parent.name,
+        key = parent.key_column,
+    )
+}
+
+/// Captures the owning row of a changed owned row. While the owning row is a draft, nothing
+/// is captured; the capture that publishes it carries every group.
 fn owned_capture(
     parent: &TableSpec,
     child: &str,
     parent_column: &str,
     bit: &str,
     event: Event,
+    published: Option<&str>,
 ) -> TriggerSql {
     let name = format!("sync_capture_{child}_{}", event.suffix());
     let id = parent.id.0;
-    let body = match event {
-        Event::Insert | Event::Delete => {
+    let body = match (event, published) {
+        (Event::Insert | Event::Delete, None) => {
             let row = if event == Event::Insert { "NEW" } else { "OLD" };
             format!(
                 "    {CAPTURE_INSERT}\n    VALUES ({id}, {row}.{parent_column}, {bit}, 0, 0, {NOW_MS})\n    {MERGE_MASK};"
             )
         }
-        Event::Update => format!(
+        (Event::Insert | Event::Delete, Some(published)) => {
+            let row = if event == Event::Insert { "NEW" } else { "OLD" };
+            let key = format!("{row}.{parent_column}");
+            format!(
+                "    {CAPTURE_INSERT}\n    SELECT {id}, {key}, {bit}, 0, 0, {NOW_MS}\n    WHERE {}\n    {MERGE_MASK};",
+                owner_published(parent, &key, published)
+            )
+        }
+        (Event::Update, None) => format!(
             "    {CAPTURE_INSERT}\n    SELECT {id}, parent.key, {bit}, 0, 0, {NOW_MS}\n    FROM (SELECT NEW.{parent_column} AS key UNION SELECT OLD.{parent_column}) AS parent\n    WHERE true\n    {MERGE_MASK};"
+        ),
+        (Event::Update, Some(published)) => format!(
+            "    {CAPTURE_INSERT}\n    SELECT {id}, parent.key, {bit}, 0, 0, {NOW_MS}\n    FROM (SELECT NEW.{parent_column} AS key UNION SELECT OLD.{parent_column}) AS parent\n    WHERE {}\n    {MERGE_MASK};",
+            owner_published(parent, "parent.key", published)
         ),
     };
     let mut sql = header(&name, "AFTER", event.keyword(), child);

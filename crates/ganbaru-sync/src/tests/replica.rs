@@ -13,6 +13,7 @@ use sqlx::{AssertSqlSafe, Connection, SqliteConnection};
 
 use super::fixture::{NODE_MAX_DEPTH, fixture_pool, test_engine};
 use crate::manifest::Manifest;
+use crate::publication;
 use crate::{
     ApplyReport, Engine, LocalWriter, ResealNeeded, ResealReport, SealReport, SequenceReservation,
     SpaceContext, StoreOutcome, SyncResult,
@@ -458,11 +459,11 @@ impl Replica {
         assert_eq!(closed, 0, "replica {} has a cycle of edges", self.index);
     }
 
-    /// Replicated state in a canonical text form: domain tables without local columns and
-    /// engine merge state without local timestamps.
+    /// Replicated state in a canonical text form: published rows of domain tables without local
+    /// columns and engine merge state without local timestamps.
     pub(super) async fn dump(&mut self) -> Vec<(&'static str, Vec<String>)> {
         let mut dump = Vec::new();
-        for (table, excluded) in dumped(self.engine.manifest()) {
+        for (table, excluded, published) in dumped(self.engine.manifest()) {
             let columns: Vec<String> =
                 sqlx::query_scalar("SELECT name FROM pragma_table_info(?) ORDER BY cid")
                     .bind(table)
@@ -475,8 +476,10 @@ impl Replica {
                 .map(|column| format!("quote(\"{column}\")"))
                 .collect::<Vec<_>>()
                 .join(" || '|' || ");
+            let published = published.unwrap_or_else(|| "1".into());
             let rows: Vec<String> = sqlx::query_scalar(AssertSqlSafe(format!(
-                "SELECT {selected} AS row FROM {table} ORDER BY row"
+                "SELECT {selected} AS row FROM {table} AS {DUMPED_ALIAS} WHERE {published}
+                 ORDER BY row"
             )))
             .fetch_all(&mut self.conn)
             .await
@@ -494,21 +497,30 @@ impl Replica {
     }
 }
 
-/// Tables compared across replicas and the columns each leaves out: every replicated table and
-/// owned child of `manifest` without its `Local` columns, then the engine merge state.
-fn dumped(manifest: &'static Manifest) -> Vec<(&'static str, Vec<&'static str>)> {
+/// Alias of the dumped table, which publication conditions name.
+const DUMPED_ALIAS: &str = "dumped";
+
+/// A table compared across replicas, the columns it leaves out, and the condition its rows
+/// must meet to be compared.
+type Dumped = (&'static str, Vec<&'static str>, Option<String>);
+
+/// Tables compared across replicas: every replicated table and owned child of `manifest`
+/// without its `Local` columns, then the engine merge state. Drafts stay on the replica that
+/// wrote them, so a table that publishes conditionally compares its published rows only.
+fn dumped(manifest: &'static Manifest) -> Vec<Dumped> {
     let mut tables = Vec::new();
     for table in manifest.tables {
         let local = table.local_columns.iter().map(|column| column.name);
-        tables.push((table.name, local.collect()));
+        let published = publication::condition_in(manifest, table, DUMPED_ALIAS);
+        tables.push((table.name, local.collect(), published));
         for (_, owned) in table.owned_children() {
-            tables.push((owned.table, Vec::new()));
+            tables.push((owned.table, Vec::new(), None));
         }
     }
     tables.extend(
         ENGINE_DUMPED
             .iter()
-            .map(|(table, excluded)| (*table, excluded.to_vec())),
+            .map(|(table, excluded)| (*table, excluded.to_vec(), None)),
     );
     tables
 }

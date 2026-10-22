@@ -1,9 +1,10 @@
 //! Which live rows materialize.
 //!
 //! A live row is not materialized while it is a hidden duplicate, its existence register holds
-//! 0, it is an edge severed to break a cycle, or it is hidden by cascade: one of its cascading
-//! references, followed through cascading references of live rows, reaches a root. A root is a
-//! tombstoned row without a redirect, a removed derived-key row, a severed edge, or, through a
+//! 0, it is an edge severed to break a cycle, its merged winners fail its publication
+//! predicate, or it is hidden by cascade: one of its cascading references, followed through
+//! cascading references of live rows, reaches a root. A root is a tombstoned row without a
+//! redirect, a removed derived-key row, a severed edge, an unpublished row, or, through a
 //! composite-key identity reference, a hidden duplicate or a row that was never published.
 //! Cascading references other than identity references follow redirects and duplicate keepers
 //! first, and a reference to a row that was never published is ignored. The walk keeps a
@@ -18,7 +19,7 @@ use sqlx::SqliteConnection;
 use crate::error::{SyncResult, corrupt};
 use crate::manifest::{MergeKind, OnDelete, TableSpec};
 use crate::merge::{self, RowState, table_param};
-use crate::{Engine, edges, repair, tree};
+use crate::{Engine, edges, publication, repair, tree};
 
 /// Longest chain of redirects and duplicate keepers a reference follows.
 pub(crate) const MAX_REDIRECT_DEPTH: usize = 64;
@@ -42,6 +43,8 @@ pub(crate) enum RootKind {
     Severed,
     /// A row named by an identity reference that was never published.
     Missing,
+    /// A live row whose merged winners fail its publication predicate.
+    Unpublished,
 }
 
 impl RootKind {
@@ -181,6 +184,9 @@ impl Visibility {
                 Some(RootKind::Removed)
             }
             Some(RowState::Live) if self.is_severed(*table, key) => Some(RootKind::Severed),
+            Some(RowState::Live) if unpublished(engine, conn, *table, key).await? => {
+                Some(RootKind::Unpublished)
+            }
             Some(RowState::Live) if identity && self.is_duplicate(*table, key) => {
                 Some(RootKind::Duplicate)
             }
@@ -278,7 +284,7 @@ impl Visibility {
     }
 
     /// Whether a row is hidden by its own merge state, before cascade: tombstoned, removed,
-    /// severed, or a hidden duplicate.
+    /// severed, a hidden duplicate, or failing its publication predicate.
     pub(crate) async fn self_hidden(
         &self,
         engine: &Engine,
@@ -293,6 +299,7 @@ impl Visibility {
                 self.is_duplicate(table, key)
                     || self.is_severed(table, key)
                     || removed(engine, conn, table, key).await?
+                    || unpublished(engine, conn, table, key).await?
             }
         })
     }
@@ -326,6 +333,19 @@ pub(crate) async fn lowest_redirect(
     .bind(key)
     .fetch_one(&mut *conn)
     .await?)
+}
+
+/// Whether a live row fails its table's publication predicate.
+async fn unpublished(
+    engine: &Engine,
+    conn: &mut SqliteConnection,
+    table: TableId,
+    key: &str,
+) -> SyncResult<bool> {
+    let Some(spec) = engine.manifest().table(table) else {
+        return Err(corrupt("reference to an unknown table"));
+    };
+    publication::unpublished(engine, conn, spec, key).await
 }
 
 /// Whether the existence register of a derived-key row holds 0. Such a row is deleted for

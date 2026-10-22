@@ -15,9 +15,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use ganbaru_sync_contracts::{Field, RevokeReason, WriterId};
 
 use super::block_on;
-use super::fixture::{NODE_MAX_DEPTH, edge_key, membership_key};
+use super::fixture::{MEMOS_TABLE, NODE_MAX_DEPTH, edge_key, membership_key};
 use super::replica::{Replica, START_MS, quoted, rank};
 use crate::error::failpoints;
+use crate::hold::{self, MAX_HOLD_MS};
 use crate::manifest::vault::quick_notes::{NOTES_TABLE, TAGS_TABLE, note_group};
 use crate::{ApplyReport, StoreOutcome, StoreRefusal, SyncError, SyncResult};
 
@@ -114,8 +115,13 @@ async fn crashing<T>(
     call(replica).await
 }
 
-const SEAL_FAILPOINTS: &[&str] = &["seal.reserve", "seal.before_commit"];
-const APPLY_FAILPOINTS: &[&str] = &["apply.before_commit", "seal.reserve", "seal.before_commit"];
+const SEAL_FAILPOINTS: &[&str] = &["seal.reserve", "seal.before_commit", "hold.before_seal"];
+const APPLY_FAILPOINTS: &[&str] = &[
+    "apply.before_commit",
+    "seal.reserve",
+    "seal.before_commit",
+    "hold.before_seal",
+];
 const RESEAL_FAILPOINTS: &[&str] = &["reseal.before_commit", "seal.reserve"];
 const RECOVERY_FAILPOINTS: &[&str] = &["recovery.before_commit", "seal.reserve"];
 
@@ -332,7 +338,12 @@ impl Sim {
     }
 
     fn advance_clocks(&mut self) {
-        self.clock_ms += 1 + self.rng.next() % 2_000;
+        let elapsed = 1 + self.rng.next() % 2_000;
+        self.advance_clocks_by(elapsed);
+    }
+
+    fn advance_clocks_by(&mut self, elapsed_ms: u64) {
+        self.clock_ms += elapsed_ms;
         self.hub.now_ms = self.clock_ms;
         for (replica, skew) in self.replicas.iter_mut().zip(&self.skew_ms) {
             replica.now_ms = self.clock_ms + skew;
@@ -404,7 +415,13 @@ impl Sim {
         let note = self.rng.pick(&notes).map(|id| quoted(id));
         let tag = self.rng.pick(&tags).map(|id| quoted(id));
         let touch = format!("updated_at = {now}, revision = revision + 1");
-        let kind = self.rng.below(37);
+        let kind = self.rng.below(41);
+        if kind >= 39 {
+            return self.edit_memos(index).await;
+        }
+        if kind >= 37 {
+            return self.edit_drafts(index).await;
+        }
         if kind >= 25 {
             // Tree and edge edits come in bursts, so concurrent moves and adds meet often.
             for _ in 0..TREE_BURST {
@@ -546,6 +563,159 @@ impl Sim {
             }
         };
         self.replicas[index].try_exec(&sql).await;
+    }
+
+    /// One local edit of fixture drafts and their parts: create a draft that may be published
+    /// at once, publish, retitle, add or edit a part, delete a draft, or try to turn a published
+    /// draft back into a draft, which the publication guard refuses.
+    async fn edit_drafts(&mut self, index: usize) {
+        let drafts = ids(
+            &mut self.replicas[index],
+            "SELECT id FROM fixture_drafts ORDER BY id",
+        )
+        .await;
+        let parts = ids(
+            &mut self.replicas[index],
+            "SELECT id FROM fixture_draft_parts ORDER BY id",
+        )
+        .await;
+        let draft = self.rng.pick(&drafts).map(|id| quoted(id));
+        let part = self.rng.pick(&parts).map(|id| quoted(id));
+        let sql = match (self.rng.below(7), draft, part) {
+            (1, Some(draft), _) => {
+                format!("UPDATE fixture_drafts SET published = 1 WHERE id = {draft}")
+            }
+            (2, Some(draft), _) => format!(
+                "UPDATE fixture_drafts SET title = {} WHERE id = {draft}",
+                quoted(&self.words())
+            ),
+            (3, Some(draft), _) => {
+                let id = self.next_id("part", index);
+                format!(
+                    "INSERT INTO fixture_draft_parts (id, draft_id, body) VALUES ({}, {draft}, {})",
+                    quoted(&id),
+                    quoted(&self.words())
+                )
+            }
+            (4, _, Some(part)) => format!(
+                "UPDATE fixture_draft_parts SET body = {} WHERE id = {part}",
+                quoted(&self.words())
+            ),
+            (5, Some(draft), _) => format!("DELETE FROM fixture_drafts WHERE id = {draft}"),
+            (6, Some(draft), _) => {
+                let sql = format!("UPDATE fixture_drafts SET published = 0 WHERE id = {draft}");
+                let replica = &mut self.replicas[index];
+                let published = replica
+                    .count(&format!(
+                        "SELECT count(*) FROM fixture_drafts WHERE id = {draft} AND published = 1"
+                    ))
+                    .await;
+                let reverted = replica.try_exec(&sql).await;
+                assert!(
+                    published == 0 || !reverted,
+                    "replica {index} turned published draft {draft} back into a draft"
+                );
+                return;
+            }
+            _ => {
+                let id = self.next_id("draft", index);
+                let mut sql = format!(
+                    "INSERT INTO fixture_drafts (id, title, published) VALUES ({}, {}, {});",
+                    quoted(&id),
+                    quoted(&self.words()),
+                    u8::from(self.rng.chance(30))
+                );
+                for _ in 0..self.rng.below(3) {
+                    let part = self.next_id("part", index);
+                    sql.push_str(&format!(
+                        "INSERT INTO fixture_draft_parts (id, draft_id, body) VALUES ({}, {}, {});",
+                        quoted(&part),
+                        quoted(&id),
+                        quoted(&self.words())
+                    ));
+                }
+                sql
+            }
+        };
+        self.replicas[index].try_exec(&sql).await;
+    }
+
+    /// One local edit of fixture memos: create, relabel, delete with a hold the way domain
+    /// code does, or undo a held delete, which inserts the memo again only while
+    /// [`hold::release_hold`] confirms the lease.
+    async fn edit_memos(&mut self, index: usize) {
+        let memos = ids(
+            &mut self.replicas[index],
+            "SELECT id FROM fixture_memos ORDER BY id",
+        )
+        .await;
+        let held = ids(
+            &mut self.replicas[index],
+            &format!(
+                "SELECT row_key FROM sync_capture
+                 WHERE table_id = {} AND deleted = 1 AND held_until_ms IS NOT NULL
+                 ORDER BY row_key",
+                MEMOS_TABLE.0
+            ),
+        )
+        .await;
+        let memo = self.rng.pick(&memos).cloned();
+        let label = self.words();
+        match (self.rng.below(5), memo) {
+            (1, Some(memo)) => {
+                let sql = format!(
+                    "UPDATE fixture_memos SET label = {} WHERE id = {}",
+                    quoted(&label),
+                    quoted(&memo)
+                );
+                self.replicas[index].try_exec(&sql).await;
+            }
+            (2, Some(memo)) => {
+                let lease = 1 + self.rng.next() % (2 * MAX_HOLD_MS);
+                let replica = &mut self.replicas[index];
+                let manifest = replica.engine.manifest();
+                let now = replica.now_ms;
+                let mut tx = sqlx::Connection::begin(&mut replica.conn).await.unwrap();
+                sqlx::query("DELETE FROM fixture_memos WHERE id = ?")
+                    .bind(&memo)
+                    .execute(&mut *tx)
+                    .await
+                    .unwrap();
+                hold::hold_deletes(&mut tx, manifest, MEMOS_TABLE, &[&memo], now, now + lease)
+                    .await
+                    .unwrap();
+                tx.commit().await.unwrap();
+            }
+            (3, _) => {
+                let Some(memo) = self.rng.pick(&held).cloned() else {
+                    return;
+                };
+                let replica = &mut self.replicas[index];
+                let now = replica.now_ms;
+                let mut tx = sqlx::Connection::begin(&mut replica.conn).await.unwrap();
+                let live = hold::release_hold(&mut tx, MEMOS_TABLE, &[&memo], now)
+                    .await
+                    .unwrap();
+                if live {
+                    sqlx::query("INSERT INTO fixture_memos (id, label) VALUES (?, ?)")
+                        .bind(&memo)
+                        .bind(&label)
+                        .execute(&mut *tx)
+                        .await
+                        .unwrap();
+                }
+                tx.commit().await.unwrap();
+            }
+            _ => {
+                let id = self.next_id("memo", index);
+                let sql = format!(
+                    "INSERT INTO fixture_memos (id, label) VALUES ({}, {})",
+                    quoted(&id),
+                    quoted(&label)
+                );
+                self.replicas[index].try_exec(&sql).await;
+            }
+        }
     }
 
     /// One local edit of fixture links and their ends: create an end whose label may collide,
@@ -1013,8 +1183,10 @@ impl Sim {
         self.assert_marks_stay_local().await;
     }
 
-    /// Reconnects everyone and exchanges over a reliable network until nothing changes.
+    /// Lets every deletion hold expire, reconnects everyone, and exchanges over a reliable
+    /// network until nothing changes.
     async fn quiesce(&mut self) {
+        self.advance_clocks_by(MAX_HOLD_MS);
         self.offline.fill(false);
         for _ in 0..32 {
             let mut changed = false;

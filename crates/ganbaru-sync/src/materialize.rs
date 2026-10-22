@@ -20,7 +20,7 @@ use crate::manifest::{
 };
 use crate::merge::{self, Batch, MergedRows, RowState};
 use crate::sql::{self, ident};
-use crate::visibility::Visibility;
+use crate::visibility::{RowRef, Visibility};
 
 /// Domain state a row must have.
 enum Desired {
@@ -437,17 +437,34 @@ async fn execute_insert(
     Ok(())
 }
 
-/// Materializes every dirty row and the rows, in any table, whose references a deletion would
-/// clear or cascade.
-/// Returns the domain tables it changed, in manifest order.
+/// The desired state of every row a materialization writes, per manifest table. A row without
+/// sync state is listed with `None`: it is left as it is, though a deletion may cascade to it.
+pub(crate) struct Plan {
+    plans: Vec<BTreeMap<String, Option<Desired>>>,
+}
+
+impl Plan {
+    /// Every row the materialization writes or may cascade to.
+    pub(crate) fn rows(&self, engine: &Engine) -> impl Iterator<Item = RowRef> {
+        engine
+            .manifest()
+            .tables
+            .iter()
+            .zip(&self.plans)
+            .flat_map(|(table, plan)| plan.keys().map(|key| (table.id, key.clone())))
+    }
+}
+
+/// Plans every dirty row and the rows, in any table, whose references a deletion would clear
+/// or cascade, without writing anything.
 /// `merged` holds the merge state already read for dirty rows; other rows are read here.
-pub(crate) async fn materialize(
+pub(crate) async fn plan(
     engine: &Engine,
     conn: &mut SqliteConnection,
     batch: &Batch,
     visibility: &mut Visibility,
     mut merged: MergedRows,
-) -> SyncResult<Vec<&'static str>> {
+) -> SyncResult<Plan> {
     let tables = engine.manifest().tables;
     let mut worklists: Vec<BTreeSet<String>> = vec![BTreeSet::new(); tables.len()];
     for (table_id, key) in &batch.dirty {
@@ -480,7 +497,19 @@ pub(crate) async fn materialize(
             plans[index].insert(key, desired);
         }
     }
-    let plans: Vec<BTreeMap<String, Desired>> = plans
+    Ok(Plan { plans })
+}
+
+/// Writes a [`Plan`] into the domain tables and returns the tables it changed, in manifest
+/// order.
+pub(crate) async fn execute(
+    engine: &Engine,
+    conn: &mut SqliteConnection,
+    plan: Plan,
+) -> SyncResult<Vec<&'static str>> {
+    let tables = engine.manifest().tables;
+    let plans: Vec<BTreeMap<String, Desired>> = plan
+        .plans
         .into_iter()
         .map(|plan| {
             plan.into_iter()

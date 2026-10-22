@@ -25,7 +25,7 @@ use ganbaru_sync_contracts::{
 use sqlx::{Connection, Row, SqliteConnection};
 
 use crate::adapter::Presentation;
-use crate::apply::finish;
+use crate::apply::finish_sealed;
 use crate::error::{SyncResult, corrupt, failpoint};
 use crate::manifest::TableSpec;
 use crate::merge::{self, Batch, RowState, Version, table_param};
@@ -621,7 +621,7 @@ impl Engine {
                 &mut report,
             )
             .await?;
-        report.changed_tables = finish(
+        report.changed_tables = finish_sealed(
             self,
             &mut tx,
             ctx,

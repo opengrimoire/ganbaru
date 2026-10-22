@@ -2,8 +2,9 @@
 //! uses yet runs through the simulation: `Local` tables and columns, every trigger policy, a
 //! cascading reference cycle, a group with several reference columns, an immutable reference,
 //! a reference into its own table, a derived-key table with a composite primary key, and a tree
-//! of nodes with a maximum depth whose parent cascades, with a recoverable label, and an
-//! acyclic edge set between items.
+//! of nodes with a maximum depth whose parent cascades, with a recoverable label, an acyclic
+//! edge set between items, drafts that publish by predicate with parts published with them,
+//! and memos whose deletes can be held.
 //! Fixture table ids start at [`FIXTURE_TABLE_IDS`], above every vault domain.
 
 use std::sync::LazyLock;
@@ -17,8 +18,8 @@ use crate::manifest::vault::{VAULT_MANIFEST_VERSION, quick_notes};
 use crate::manifest::{
     AcyclicSpec, Collation, ColumnSpec, ColumnType, DerivedKey, DeviceTable, DomainManifest,
     DomainTrigger, GroupSpec, GroupStorage, LocalColumn, Manifest, MergeKind, OnDelete,
-    ReferenceColumn, Resolution, SYNC_KEY_COLUMN, TableIdRange, TableSpec, TreeSpec, TriggerPolicy,
-    group_id,
+    PublishedWith, ReferenceColumn, Resolution, SYNC_KEY_COLUMN, TableIdRange, TableSpec, TreeSpec,
+    TriggerPolicy, group_id,
 };
 use crate::triggers::{self, NOT_APPLYING};
 use crate::{Engine, Hooks};
@@ -93,6 +94,9 @@ pub(super) const ITEMS: TableSpec = TableSpec {
     derived_key: None,
     tree: None,
     acyclic: None,
+    publish_when: None,
+    published_with: None,
+    holds_deletes: false,
 };
 
 /// `fixture_items`.
@@ -157,6 +161,9 @@ pub(super) const CYCLE_A: TableSpec = TableSpec {
     derived_key: None,
     tree: None,
     acyclic: None,
+    publish_when: None,
+    published_with: None,
+    holds_deletes: false,
 };
 
 /// The other table of the reference cycle with [`CYCLE_A`].
@@ -254,6 +261,9 @@ pub(super) const LINKS: TableSpec = TableSpec {
     derived_key: None,
     tree: None,
     acyclic: None,
+    publish_when: None,
+    published_with: None,
+    holds_deletes: false,
 };
 
 /// Prefix of [`MEMBERSHIPS`] keys.
@@ -368,6 +378,9 @@ pub(super) const MEMBERSHIPS: TableSpec = TableSpec {
     }),
     tree: None,
     acyclic: None,
+    publish_when: None,
+    published_with: None,
+    holds_deletes: false,
 };
 
 /// Group ids of [`NODES`].
@@ -450,6 +463,9 @@ pub(super) const NODES: TableSpec = TableSpec {
         max_depth: Some(NODE_MAX_DEPTH),
     }),
     acyclic: None,
+    publish_when: None,
+    published_with: None,
+    holds_deletes: false,
 };
 
 /// `fixture_nodes`.
@@ -540,10 +556,138 @@ pub(super) const EDGES: TableSpec = TableSpec {
         from_column: "from_id",
         to_column: "to_id",
     }),
+    publish_when: None,
+    published_with: None,
+    holds_deletes: false,
 };
 
 /// `fixture_edges`.
 pub(super) const EDGES_TABLE: TableId = TableId(FIXTURE_TABLE_IDS + 6);
+
+/// Group ids of [`DRAFTS`].
+pub(super) mod draft_group {
+    use ganbaru_sync_contracts::GroupId;
+
+    use crate::manifest::group_id;
+
+    /// The title.
+    pub(in crate::tests) const TITLE: GroupId = group_id(0);
+    /// The publication flag.
+    pub(in crate::tests) const PUBLISHED: GroupId = group_id(1);
+}
+
+/// Drafts that publish once their flag is set, like a chat message composed before it is sent.
+pub(super) const DRAFTS: TableSpec = TableSpec {
+    id: DRAFTS_TABLE,
+    name: "fixture_drafts",
+    key_column: "id",
+    groups: &[
+        GroupSpec {
+            id: draft_group::TITLE,
+            name: "title",
+            kind: MergeKind::Register,
+            storage: GroupStorage::Columns(&[ColumnSpec {
+                name: "title",
+                ty: ColumnType::Text { max_chars: 40 },
+            }]),
+            references: &[],
+            surfaced: false,
+            recoverable: false,
+            bumps_revision: false,
+        },
+        GroupSpec {
+            id: draft_group::PUBLISHED,
+            name: "published",
+            kind: MergeKind::Register,
+            storage: GroupStorage::Columns(&[ColumnSpec {
+                name: "published",
+                ty: ColumnType::Flag,
+            }]),
+            references: &[],
+            surfaced: false,
+            recoverable: false,
+            bumps_revision: false,
+        },
+    ],
+    local_columns: &[],
+    derived_columns: &[],
+    revision_column: None,
+    resolutions: &[],
+    redirects: false,
+    adapter: None,
+    triggers: &[],
+    derived_key: None,
+    tree: None,
+    acyclic: None,
+    publish_when: Some("published = 1"),
+    published_with: None,
+    holds_deletes: false,
+};
+
+/// `fixture_drafts`.
+pub(super) const DRAFTS_TABLE: TableId = TableId(FIXTURE_TABLE_IDS + 7);
+
+/// Parts of a draft, published with it.
+pub(super) const DRAFT_PARTS: TableSpec = TableSpec {
+    id: DRAFT_PARTS_TABLE,
+    name: "fixture_draft_parts",
+    key_column: "id",
+    groups: &[
+        GroupSpec {
+            id: group_id(0),
+            name: "draft",
+            kind: MergeKind::Immutable,
+            storage: GroupStorage::Columns(&[ColumnSpec {
+                name: "draft_id",
+                ty: ColumnType::OptionalRowKey,
+            }]),
+            references: &[ReferenceColumn {
+                column: "draft_id",
+                table: DRAFTS_TABLE,
+                on_delete: OnDelete::Cascade,
+            }],
+            surfaced: false,
+            recoverable: false,
+            bumps_revision: false,
+        },
+        GroupSpec {
+            id: group_id(1),
+            name: "body",
+            kind: MergeKind::Register,
+            storage: GroupStorage::Columns(&[ColumnSpec {
+                name: "body",
+                ty: ColumnType::Text { max_chars: 40 },
+            }]),
+            references: &[],
+            surfaced: false,
+            recoverable: false,
+            bumps_revision: false,
+        },
+    ],
+    publish_when: None,
+    published_with: Some(PublishedWith {
+        column: "draft_id",
+        parent: DRAFTS_TABLE,
+    }),
+    ..DRAFTS
+};
+
+/// `fixture_draft_parts`.
+pub(super) const DRAFT_PARTS_TABLE: TableId = TableId(FIXTURE_TABLE_IDS + 8);
+
+/// Memos whose local deletes domain Undo can hold.
+pub(super) const MEMOS: TableSpec = TableSpec {
+    id: MEMOS_TABLE,
+    name: "fixture_memos",
+    key_column: "id",
+    groups: &[LABEL],
+    publish_when: None,
+    holds_deletes: true,
+    ..DRAFTS
+};
+
+/// `fixture_memos`.
+pub(super) const MEMOS_TABLE: TableId = TableId(FIXTURE_TABLE_IDS + 9);
 
 /// The fixture domain.
 pub(super) const FIXTURE_DOMAIN: DomainManifest = DomainManifest {
@@ -552,7 +696,18 @@ pub(super) const FIXTURE_DOMAIN: DomainManifest = DomainManifest {
         first: FIXTURE_TABLE_IDS,
         last: FIXTURE_TABLE_IDS + 15,
     },
-    tables: &[ITEMS, CYCLE_A, CYCLE_B, LINKS, MEMBERSHIPS, NODES, EDGES],
+    tables: &[
+        ITEMS,
+        CYCLE_A,
+        CYCLE_B,
+        LINKS,
+        MEMBERSHIPS,
+        NODES,
+        EDGES,
+        DRAFTS,
+        DRAFT_PARTS,
+        MEMOS,
+    ],
     derived: &["fixture_items_index"],
     local: &[DeviceTable {
         name: "fixture_item_marks",
@@ -630,6 +785,20 @@ fn fixture_schema() -> String {
              to_id TEXT NOT NULL REFERENCES fixture_items(id) ON DELETE CASCADE,
              sync_key TEXT NOT NULL UNIQUE,
              PRIMARY KEY (from_id, to_id)
+         );
+         CREATE TABLE fixture_drafts (
+             id TEXT PRIMARY KEY CHECK (trim(id) <> ''),
+             title TEXT NOT NULL CHECK (length(title) <= 40),
+             published INTEGER NOT NULL CHECK (published IN (0, 1))
+         );
+         CREATE TABLE fixture_draft_parts (
+             id TEXT PRIMARY KEY CHECK (trim(id) <> ''),
+             draft_id TEXT NOT NULL REFERENCES fixture_drafts(id) ON DELETE CASCADE,
+             body TEXT NOT NULL CHECK (length(body) <= 40)
+         );
+         CREATE TABLE fixture_memos (
+             id TEXT PRIMARY KEY CHECK (trim(id) <> ''),
+             label TEXT NOT NULL CHECK (length(label) <= 40)
          );
          CREATE TABLE fixture_items_index (
              item_id TEXT PRIMARY KEY,

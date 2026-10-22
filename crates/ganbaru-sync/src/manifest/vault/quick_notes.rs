@@ -242,6 +242,9 @@ pub const TAGS: TableSpec = TableSpec {
     derived_key: None,
     tree: None,
     acyclic: None,
+    publish_when: None,
+    published_with: None,
+    holds_deletes: false,
 };
 
 /// `quick_notes`.
@@ -270,6 +273,9 @@ pub const NOTES: TableSpec = TableSpec {
     derived_key: None,
     tree: None,
     acyclic: None,
+    publish_when: None,
+    published_with: None,
+    holds_deletes: false,
 };
 
 /// A full-text index trigger, which keeps `quick_notes_search_fts` in step with every write.

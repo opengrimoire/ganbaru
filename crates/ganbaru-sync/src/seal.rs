@@ -14,9 +14,10 @@ use ganbaru_sync_contracts::{
     Hlc, HlcClock, Operation, PENDING_KEY_PREFIX, Revocation, RevokeReason, RowKey, Seq,
     SignedCertificate, TableId, Value, VersionVector, WriterId,
 };
-use sqlx::{Connection, Row, SqliteConnection};
+use sqlx::sqlite::SqliteRow;
+use sqlx::{AssertSqlSafe, Connection, Row, SqliteConnection};
 
-use crate::apply::finish;
+use crate::apply::{MAX_BYTES_PER_APPLY, MAX_OPS_PER_APPLY, finish_sealed};
 use crate::error::{SyncResult, corrupt, failpoint};
 use crate::log::{self, WriterState, clamp_ms, seq_i64};
 use crate::manifest::{GroupStorage, MergeKind, TableSpec};
@@ -48,10 +49,13 @@ pub struct SealReport {
     pub invalid_rows: Vec<InvalidRow>,
     /// Domain tables the call changed while materializing merges and repairs.
     pub changed_tables: Vec<&'static str>,
+    /// Captures remain beyond the transaction budget, so the caller seals again.
+    pub more: bool,
 }
 
 impl SealReport {
     pub(crate) fn absorb(&mut self, other: Self) {
+        self.more |= other.more;
         self.sealed_ops += other.sealed_ops;
         self.changes += other.changes;
         self.last_seq = other.last_seq.or(self.last_seq);
@@ -571,7 +575,8 @@ impl Sealer {
         Ok(())
     }
 
-    /// Seals every valid capture and deletes the captures it consumed.
+    /// Seals every valid capture except deletes still held at `now_ms`, and deletes the
+    /// captures it consumed.
     pub(crate) async fn seal_captures(
         &mut self,
         engine: &Engine,
@@ -582,7 +587,97 @@ impl Sealer {
         now_ms: u64,
     ) -> SyncResult<SealReport> {
         let mut report = SealReport::default();
-        let planned = plan_captures(engine, conn, &mut report).await?;
+        let captures = pending_captures(conn, now_ms).await?;
+        let planned = plan_captures(engine, conn, captures, &mut report).await?;
+        self.seal_planned(
+            engine,
+            conn,
+            ctx,
+            batch,
+            writer,
+            planned,
+            now_ms,
+            &mut report,
+        )
+        .await?;
+        Ok(report)
+    }
+
+    /// Like [`Self::seal_captures`], taking one batch of at most [`MAX_OPS_PER_SEAL`]
+    /// operations and [`MAX_BYTES_PER_SEAL`] change bytes. Captures of changes left for the
+    /// next batch stay, and the report says more remain.
+    pub(crate) async fn seal_capture_batch(
+        &mut self,
+        engine: &Engine,
+        conn: &mut SqliteConnection,
+        ctx: &SpaceContext,
+        batch: &mut Batch,
+        writer: &mut LocalWriter<'_>,
+        now_ms: u64,
+    ) -> SyncResult<SealReport> {
+        let mut report = SealReport::default();
+        let captures = pending_captures(conn, now_ms).await?;
+        let mut planned = plan_captures(engine, conn, captures, &mut report).await?;
+        let (selected, rest) = select_batch(engine, std::mem::take(&mut planned.changes));
+        if !rest.is_empty() {
+            let left: BTreeSet<(i64, &str)> = rest
+                .iter()
+                .map(|change| (i64::from(change.table.0), change.row.as_str()))
+                .collect();
+            planned
+                .consumed
+                .retain(|(table, key)| !left.contains(&(*table, key.as_str())));
+            report.more = true;
+        }
+        planned.changes = selected;
+        self.seal_planned(
+            engine,
+            conn,
+            ctx,
+            batch,
+            writer,
+            planned,
+            now_ms,
+            &mut report,
+        )
+        .await?;
+        Ok(report)
+    }
+
+    /// Seals the captures of `rows`, held deletes included, with the captured creates they
+    /// depend on, before a remote operation or a materialization changes those rows.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn seal_rows(
+        &mut self,
+        engine: &Engine,
+        conn: &mut SqliteConnection,
+        ctx: &SpaceContext,
+        batch: &mut Batch,
+        writer: &mut LocalWriter<'_>,
+        rows: &BTreeSet<RowRef>,
+        now_ms: u64,
+        report: &mut SealReport,
+    ) -> SyncResult<()> {
+        let planned = plan_rows(engine, conn, rows, report).await?;
+        self.seal_planned(engine, conn, ctx, batch, writer, planned, now_ms, report)
+            .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn seal_planned(
+        &mut self,
+        engine: &Engine,
+        conn: &mut SqliteConnection,
+        ctx: &SpaceContext,
+        batch: &mut Batch,
+        writer: &mut LocalWriter<'_>,
+        planned: PlannedCaptures,
+        now_ms: u64,
+        report: &mut SealReport,
+    ) -> SyncResult<()> {
+        if planned.held {
+            failpoint!("hold.before_seal");
+        }
         self.seal_changes(
             engine,
             conn,
@@ -592,11 +687,10 @@ impl Sealer {
             planned.changes,
             None,
             now_ms,
-            &mut report,
+            report,
         )
         .await?;
-        delete_captures(conn, &planned.consumed).await?;
-        Ok(report)
+        delete_captures(conn, &planned.consumed).await
     }
 }
 
@@ -758,6 +852,8 @@ struct Capture {
     /// Whether the row was inserted locally since the last seal.
     created: bool,
     deleted: bool,
+    /// Whether the delete is held for Undo, expired or not.
+    held: bool,
     replaced_by: Option<String>,
     /// Sync state of the row when planning started.
     state: Option<RowState>,
@@ -767,6 +863,180 @@ struct Capture {
 struct PlannedCaptures {
     changes: Vec<Change>,
     consumed: Vec<(i64, String)>,
+    /// Whether a held delete is among the captures.
+    held: bool,
+}
+
+/// Most operations one seal transaction commits, matching what one apply transaction takes.
+pub const MAX_OPS_PER_SEAL: usize = MAX_OPS_PER_APPLY;
+/// Most change bytes one seal transaction commits, matching what one apply transaction takes,
+/// so a large first seal reaches other devices in batches they apply whole.
+pub const MAX_BYTES_PER_SEAL: usize = MAX_BYTES_PER_APPLY;
+
+/// Columns of a capture and the sync state of its row.
+const CAPTURE_SELECT: &str = "SELECT c.table_id, c.row_key, c.mask, c.forced_mask, c.deleted, c.replaced_by, r.state, c.created, c.held_until_ms
+     FROM sync_capture c
+     LEFT JOIN sync_rows r ON r.table_id = c.table_id AND r.row_key = c.row_key";
+
+fn capture_from_row(row: &SqliteRow) -> SyncResult<Capture> {
+    let mask: i64 = row.try_get(2)?;
+    let forced: i64 = row.try_get(3)?;
+    Ok(Capture {
+        table: row.try_get(0)?,
+        key: row.try_get(1)?,
+        mask: GroupMask((mask | forced) as u64),
+        created: row.try_get::<i64, _>(7)? != 0,
+        deleted: row.try_get::<i64, _>(4)? != 0,
+        held: row.try_get::<Option<i64>, _>(8)?.is_some(),
+        replaced_by: row.try_get(5)?,
+        state: merge::parse_row_state(row.try_get::<Option<&str>, _>(6)?)?,
+    })
+}
+
+/// Every capture except deletes still held at `now_ms`, in table and key order.
+async fn pending_captures(conn: &mut SqliteConnection, now_ms: u64) -> SyncResult<Vec<Capture>> {
+    let sql = format!(
+        "{CAPTURE_SELECT}
+         WHERE c.held_until_ms IS NULL OR c.held_until_ms <= ?
+         ORDER BY c.table_id, c.row_key"
+    );
+    let rows = sqlx::query(AssertSqlSafe(sql.as_str()))
+        .bind(clamp_ms(now_ms))
+        .fetch_all(&mut *conn)
+        .await?;
+    rows.iter().map(capture_from_row).collect()
+}
+
+/// The captures of `rows`, held deletes included.
+async fn row_captures(
+    conn: &mut SqliteConnection,
+    rows: &BTreeSet<RowRef>,
+) -> SyncResult<Vec<Capture>> {
+    let sql = format!("{CAPTURE_SELECT} WHERE c.table_id = ? AND c.row_key = ?");
+    let mut captures = Vec::new();
+    for (table, key) in rows {
+        let row = sqlx::query(AssertSqlSafe(sql.as_str()))
+            .bind(table_param(*table))
+            .bind(key.as_str())
+            .fetch_optional(&mut *conn)
+            .await?;
+        if let Some(row) = row {
+            captures.push(capture_from_row(&row)?);
+        }
+    }
+    Ok(captures)
+}
+
+/// Captured rows among `rows`.
+pub(crate) async fn captured(
+    conn: &mut SqliteConnection,
+    rows: impl IntoIterator<Item = RowRef>,
+) -> SyncResult<BTreeSet<RowRef>> {
+    let any: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM sync_capture)")
+        .fetch_one(&mut *conn)
+        .await?;
+    let mut found = BTreeSet::new();
+    if !any {
+        return Ok(found);
+    }
+    for (table, key) in rows {
+        let hit: Option<i64> =
+            sqlx::query_scalar("SELECT 1 FROM sync_capture WHERE table_id = ? AND row_key = ?")
+                .bind(table_param(table))
+                .bind(key.as_str())
+                .fetch_optional(&mut *conn)
+                .await?;
+        if hit.is_some() {
+            found.insert((table, key));
+        }
+    }
+    Ok(found)
+}
+
+/// Rows a change depends on: the rows its reference columns name, and the cause and redirect
+/// target of a tombstone. Sealing a change without the create of such a row would materialize
+/// the reference as null or hide the row.
+pub(crate) fn change_dependencies(engine: &Engine, change: &Change) -> Vec<RowRef> {
+    let Some(table) = engine.manifest().table(change.table) else {
+        return Vec::new();
+    };
+    let mut rows = Vec::new();
+    for (group, field, reference) in table.references() {
+        let value = change.groups.iter().find(|value| value.group == group.id);
+        if let Some(Field::Text(key)) = value.and_then(|value| value.value.fields().get(field)) {
+            rows.push((reference.table, key.clone()));
+        }
+    }
+    if let Some(cause) = &change.cause {
+        rows.push((cause.table, cause.row.as_str().to_string()));
+    }
+    if let Some(target) = &change.replaced_by {
+        rows.push((change.table, target.as_str().to_string()));
+    }
+    rows
+}
+
+/// The changes one seal transaction takes, in planned order, within [`MAX_BYTES_PER_SEAL`]
+/// and [`MAX_OPS_PER_SEAL`] full operations, and whether changes remain. A change is taken
+/// together with the planned changes of every row it depends on, so a batch never names a
+/// row that a later batch creates.
+fn select_batch(engine: &Engine, changes: Vec<Change>) -> (Vec<Change>, Vec<Change>) {
+    let index: BTreeMap<RowRef, usize> = changes
+        .iter()
+        .enumerate()
+        .map(|(position, change)| ((change.table, change.row.as_str().to_string()), position))
+        .collect();
+    let mut taken = vec![false; changes.len()];
+    let mut bytes = 0usize;
+    let mut count = 0usize;
+    let max_changes = MAX_OPS_PER_SEAL.saturating_mul(MAX_CHANGES_PER_OPERATION);
+    for start in 0..changes.len() {
+        if taken[start] {
+            continue;
+        }
+        let mut group = vec![start];
+        let mut seen = BTreeSet::from([start]);
+        let mut pending = vec![start];
+        while let Some(position) = pending.pop() {
+            for row in change_dependencies(engine, &changes[position]) {
+                if let Some(&dependency) = index.get(&row)
+                    && !taken[dependency]
+                    && seen.insert(dependency)
+                {
+                    group.push(dependency);
+                    pending.push(dependency);
+                }
+            }
+        }
+        let cost: usize = group
+            .iter()
+            .map(|position| {
+                let (header, body) = change_size(&changes[*position]);
+                header + body
+            })
+            .sum();
+        if count > 0
+            && (bytes.saturating_add(cost) > MAX_BYTES_PER_SEAL
+                || count + group.len() > max_changes)
+        {
+            break;
+        }
+        bytes = bytes.saturating_add(cost);
+        count += group.len();
+        for position in group {
+            taken[position] = true;
+        }
+    }
+    let mut selected = Vec::with_capacity(count);
+    let mut rest = Vec::new();
+    for (change, taken) in changes.into_iter().zip(taken) {
+        if taken {
+            selected.push(change);
+        } else {
+            rest.push(change);
+        }
+    }
+    (selected, rest)
 }
 
 fn tombstone(table: &TableSpec, key: &RowKey, replaced_by: Option<&str>) -> Change {
@@ -930,33 +1200,10 @@ pub(crate) fn sink_roots(adjacency: &[Vec<usize>]) -> Vec<Option<usize>> {
 async fn plan_captures(
     engine: &Engine,
     conn: &mut SqliteConnection,
+    captures: Vec<Capture>,
     report: &mut SealReport,
 ) -> SyncResult<PlannedCaptures> {
-    let rows = sqlx::query(
-        "SELECT c.table_id, c.row_key, c.mask, c.forced_mask, c.deleted, c.replaced_by, r.state,
-                c.created
-         FROM sync_capture c
-         LEFT JOIN sync_rows r ON r.table_id = c.table_id AND r.row_key = c.row_key
-         ORDER BY c.table_id, c.row_key",
-    )
-    .fetch_all(&mut *conn)
-    .await?;
-    let captures = rows
-        .iter()
-        .map(|row| {
-            let mask: i64 = row.try_get(2)?;
-            let forced: i64 = row.try_get(3)?;
-            Ok(Capture {
-                table: row.try_get(0)?,
-                key: row.try_get(1)?,
-                mask: GroupMask((mask | forced) as u64),
-                created: row.try_get::<i64, _>(7)? != 0,
-                deleted: row.try_get::<i64, _>(4)? != 0,
-                replaced_by: row.try_get(5)?,
-                state: merge::parse_row_state(row.try_get::<Option<&str>, _>(6)?)?,
-            })
-        })
-        .collect::<SyncResult<Vec<_>>>()?;
+    let held = captures.iter().any(|capture| capture.held);
     let order: BTreeMap<TableId, usize> = engine
         .manifest()
         .tables
@@ -1107,7 +1354,98 @@ async fn plan_captures(
         .chain(tombstones)
         .map(|(_, change)| change)
         .collect();
-    Ok(PlannedCaptures { changes, consumed })
+    Ok(PlannedCaptures {
+        changes,
+        consumed,
+        held,
+    })
+}
+
+/// Plans the captures of `rows` together with the captured creates their changes depend on,
+/// which have no sync state yet.
+async fn plan_rows(
+    engine: &Engine,
+    conn: &mut SqliteConnection,
+    rows: &BTreeSet<RowRef>,
+    report: &mut SealReport,
+) -> SyncResult<PlannedCaptures> {
+    let mut rows = rows.clone();
+    rows.extend(cascaded_deletions(engine, conn, &rows).await?);
+    loop {
+        let mut attempt = SealReport::default();
+        let captures = row_captures(conn, &rows).await?;
+        let planned = plan_captures(engine, conn, captures, &mut attempt).await?;
+        let mut missing = BTreeSet::new();
+        for change in &planned.changes {
+            for row in change_dependencies(engine, change) {
+                if !rows.contains(&row) && merge::row_state(conn, row.0, &row.1).await?.is_none() {
+                    missing.insert(row);
+                }
+            }
+        }
+        let missing = captured(conn, missing).await?;
+        if missing.is_empty() {
+            report.invalid_rows.extend(attempt.invalid_rows);
+            return Ok(planned);
+        }
+        rows.extend(missing);
+    }
+}
+
+/// Captured deletions linked to a captured deletion among `rows` through cascading references,
+/// in either direction, so a cascade seals whole and its tombstones keep their cause.
+async fn cascaded_deletions(
+    engine: &Engine,
+    conn: &mut SqliteConnection,
+    rows: &BTreeSet<RowRef>,
+) -> SyncResult<BTreeSet<RowRef>> {
+    let deleted: Vec<(i64, String)> =
+        sqlx::query_as("SELECT table_id, row_key FROM sync_capture WHERE deleted = 1")
+            .fetch_all(&mut *conn)
+            .await?;
+    let deleted: BTreeSet<RowRef> = deleted
+        .into_iter()
+        .map(|(table, key)| {
+            u16::try_from(table)
+                .map(|table| (TableId(table), key))
+                .map_err(|_| corrupt("table id out of range"))
+        })
+        .collect::<SyncResult<_>>()?;
+    let mut found: BTreeSet<RowRef> = rows.intersection(&deleted).cloned().collect();
+    if found.is_empty() {
+        return Ok(BTreeSet::new());
+    }
+    let visibility = Visibility::default();
+    let mut edges: BTreeMap<RowRef, BTreeSet<RowRef>> = BTreeMap::new();
+    for row in &deleted {
+        let Some(table) = engine.manifest().table(row.0) else {
+            continue;
+        };
+        if merge::row_state(conn, row.0, &row.1).await?.is_none() {
+            continue;
+        }
+        for target in visibility
+            .cascade_targets(engine, conn, table, &row.1)
+            .await?
+        {
+            if deleted.contains(&target.row) {
+                edges
+                    .entry(row.clone())
+                    .or_default()
+                    .insert(target.row.clone());
+                edges.entry(target.row).or_default().insert(row.clone());
+            }
+        }
+    }
+    let mut pending: Vec<RowRef> = found.iter().cloned().collect();
+    while let Some(row) = pending.pop() {
+        for next in edges.get(&row).into_iter().flatten() {
+            if found.insert(next.clone()) {
+                pending.push(next.clone());
+            }
+        }
+    }
+    Ok(found)
 }
 
 /// Records captures for a local row with `mask` added to its forced groups.
@@ -1137,6 +1475,10 @@ pub(crate) async fn force_capture(
 
 impl Engine {
     /// Seals local captures with the local writer, sealing its genesis first when needed.
+    ///
+    /// One call commits at most [`MAX_OPS_PER_SEAL`] operations and [`MAX_BYTES_PER_SEAL`]
+    /// change bytes; [`SealReport::more`] asks the caller to seal again at once. Deletes held
+    /// past `now_ms` stay captured; [`crate::hold::next_hold_expiry`] says when to seal them.
     pub async fn seal(
         &self,
         conn: &mut SqliteConnection,
@@ -1152,10 +1494,10 @@ impl Engine {
         let mut report = SealReport::default();
         if let Some((sealer, writer)) = slot.open(self, &mut tx, ctx, &mut batch, now_ms).await? {
             report = sealer
-                .seal_captures(self, &mut tx, ctx, &mut batch, writer, now_ms)
+                .seal_capture_batch(self, &mut tx, ctx, &mut batch, writer, now_ms)
                 .await?;
         }
-        report.changed_tables = finish(
+        report.changed_tables = finish_sealed(
             self,
             &mut tx,
             ctx,
@@ -1240,7 +1582,7 @@ impl Engine {
                 &mut report,
             )
             .await?;
-        report.changed_tables = finish(
+        report.changed_tables = finish_sealed(
             self,
             &mut tx,
             ctx,

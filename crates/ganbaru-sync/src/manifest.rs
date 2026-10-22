@@ -46,6 +46,7 @@ pub const SYNC_TABLES: &[&str] = &[
     "sync_register_versions",
     "sync_version_refs",
     "sync_tombstones",
+    "sync_seeded_tables",
 ];
 
 /// What a domain trigger may do, so applying remote changes cannot be broken by it.
@@ -440,6 +441,27 @@ pub struct TableSpec {
     pub tree: Option<TreeSpec>,
     /// Whether the rows of a derived-key table are directed edges that never form a cycle.
     pub acyclic: Option<AcyclicSpec>,
+    /// A SQL condition over the key and group columns that a row satisfies once it is
+    /// published. Rows that fail it are drafts: they are not captured, a local update cannot
+    /// make a published row fail it again, and a merged winner that fails it is not
+    /// materialized.
+    pub publish_when: Option<&'static str>,
+    /// The predicate table whose row publishes this table's rows.
+    pub published_with: Option<PublishedWith>,
+    /// Whether domain code may hold local deletes of the table for Undo with
+    /// [`crate::hold::hold_deletes`]. Device behavior, so it is not in the summary.
+    pub holds_deletes: bool,
+}
+
+/// A child table published together with a row of a predicate table: while that row fails
+/// its predicate, writes to its children are not captured, and the seal that publishes it
+/// captures every child row naming it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PublishedWith {
+    /// Column of an `Immutable` group referencing the parent row with `ON DELETE CASCADE`.
+    pub column: &'static str,
+    /// The predicate table.
+    pub parent: TableId,
 }
 
 /// A tree: rows nest through a `Reference` group into the table itself and are ordered by a
@@ -609,8 +631,9 @@ impl Manifest {
 
     /// Checks the facts the engine relies on: table ids are nonzero, unique, and inside their
     /// domain's range; domain names are unique and ranges disjoint; every `Local` column
-    /// declares a SQL literal; references and derived keys are well formed; and tables follow the dependency
-    /// order of their references. Adapter registration is checked by the engine.
+    /// declares a SQL literal; references, derived keys, trees, edges, and publication are well
+    /// formed; and tables follow the dependency order of their references. Adapter
+    /// registration is checked by the engine.
     pub fn validate(&self) -> Result<(), String> {
         let mut problems = String::new();
         for (index, domain) in self.domains.iter().enumerate() {
@@ -665,6 +688,7 @@ impl Manifest {
                 .into_iter()
                 .chain(tree_problems(table))
                 .chain(acyclic_problems(table))
+                .chain(self.publication_problems(table))
             {
                 let _ = writeln!(problems, "{}: {problem}", table.name);
             }
@@ -677,6 +701,68 @@ impl Manifest {
         } else {
             Err(problems.trim_end().to_string())
         }
+    }
+
+    /// Why a table's publication declarations are malformed. A predicate is one non-blank
+    /// condition. A `published_with` column is an immutable cascading reference into a
+    /// predicate table, and only such a child references a predicate table, because a reference
+    /// from anywhere else could name a draft. Derived-key tables neither publish by predicate
+    /// nor hold deletes, since their deletes are existence writes.
+    fn publication_problems(&self, table: &TableSpec) -> Vec<String> {
+        let mut problems = Vec::new();
+        if let Some(predicate) = table.publish_when
+            && (predicate.trim().is_empty() || predicate.contains(';'))
+        {
+            problems.push("the publication predicate is not one condition".to_string());
+        }
+        if table.derived_key.is_some()
+            && (table.publish_when.is_some()
+                || table.published_with.is_some()
+                || table.holds_deletes)
+        {
+            problems.push(
+                "a derived-key table has no publication predicate, parent publication, or \
+                 delete holds"
+                    .to_string(),
+            );
+        }
+        if let Some(with) = table.published_with {
+            if table.publish_when.is_some() {
+                problems.push("a table publishes by its predicate or with its parent".to_string());
+            }
+            if self.table(with.parent).is_none_or(|parent| {
+                parent.publish_when.is_none() || parent.published_with.is_some()
+            }) {
+                problems.push("the publishing parent is not a predicate table".to_string());
+            }
+            let declared = table.references().any(|(group, _, reference)| {
+                group.kind == MergeKind::Immutable
+                    && reference.column == with.column
+                    && reference.table == with.parent
+                    && reference.on_delete == OnDelete::Cascade
+            });
+            if !declared {
+                problems.push(format!(
+                    "{} is not an immutable cascading reference into the publishing parent",
+                    with.column
+                ));
+            }
+        }
+        for (_, _, reference) in table.references() {
+            let target_publishes = self
+                .table(reference.table)
+                .is_some_and(|target| target.publish_when.is_some());
+            let publishes_with = table.published_with.is_some_and(|with| {
+                with.parent == reference.table && with.column == reference.column
+            });
+            if target_publishes && !publishes_with {
+                problems.push(format!(
+                    "{} references a predicate table without publishing with it",
+                    reference.column
+                ));
+            }
+        }
+        problems
     }
 
     /// Domain of a replicated table or owned child table.

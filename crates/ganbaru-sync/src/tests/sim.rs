@@ -6,8 +6,8 @@
 //! databases keep their invariants; at quiescence every installation holds the same
 //! replicated state.
 //!
-//! `GANBARU_SYNC_SOAK_SEEDS` sets the number of seeds for a soak run; the default keeps the debug
-//! test run near half a minute. A failing run prints its seed, and `GANBARU_SYNC_SEED` replays
+//! `GANBARU_SYNC_SOAK_SEEDS` sets the number of seeds for a soak run; the default debug
+//! test run takes about two minutes. A failing run prints its seed, and `GANBARU_SYNC_SEED` replays
 //! that seed alone.
 
 use std::collections::{BTreeMap, BTreeSet};

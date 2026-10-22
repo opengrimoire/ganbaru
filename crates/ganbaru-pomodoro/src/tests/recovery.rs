@@ -1,6 +1,5 @@
 use super::super::*;
 use super::helpers::*;
-use ganbaru_db::run_migrations;
 use sqlx::Row;
 
 #[test]
@@ -15,7 +14,9 @@ fn close_run_clamps_end_to_the_latest_open_activity_boundary() {
             .execute(&pool)
             .await
             .unwrap();
-        run_migrations(&pool).await.unwrap();
+        ganbaru_db::test_support::apply_migrated_template(&pool)
+            .await
+            .unwrap();
 
         sqlx::query(
             "INSERT INTO calendar_events (id, title, start_time, end_time)

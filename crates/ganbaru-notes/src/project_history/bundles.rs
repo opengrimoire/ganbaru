@@ -319,7 +319,6 @@ pub(super) async fn garbage_collect_bundles_tx(
 #[cfg(test)]
 mod tests {
     use super::{MAX_HISTORY_BUNDLE_BYTES, load_bundle_tx, sha256_hex, store_bundle_tx};
-    use ganbaru_db::run_migrations;
 
     async fn migrated_pool() -> sqlx::SqlitePool {
         let pool = sqlx::sqlite::SqlitePoolOptions::new()
@@ -331,7 +330,9 @@ mod tests {
             .execute(&pool)
             .await
             .unwrap();
-        run_migrations(&pool).await.unwrap();
+        ganbaru_db::test_support::apply_migrated_template(&pool)
+            .await
+            .unwrap();
         pool
     }
 

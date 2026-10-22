@@ -11,7 +11,9 @@ async fn seeded_pool() -> SqlitePool {
         .execute(&pool)
         .await
         .unwrap();
-    ganbaru_db::run_migrations(&pool).await.unwrap();
+    ganbaru_db::test_support::apply_migrated_template(&pool)
+        .await
+        .unwrap();
     sqlx::raw_sql(
         "INSERT INTO music_local_roots (id, name, created_at_ms, updated_at_ms)
          VALUES ('root-1', 'Phone music', 1700000000000, 1700000000000);

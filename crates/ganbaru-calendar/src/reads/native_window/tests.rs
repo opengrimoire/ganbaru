@@ -100,7 +100,9 @@ async fn pool() -> SqlitePool {
         .connect("sqlite::memory:")
         .await
         .unwrap();
-    ganbaru_db::run_migrations(&pool).await.unwrap();
+    ganbaru_db::test_support::apply_migrated_template(&pool)
+        .await
+        .unwrap();
     sqlx::raw_sql("INSERT INTO calendars(id, name, source) VALUES('native-calendar', 'Native', 'local');
         INSERT INTO calendar_events(id, title, start_time, end_time, timezone, calendar_id, rrule)
         VALUES('series', 'Home-zone series', '2024-03-09T14:00:00Z', '2024-03-09T15:00:00Z', 'America/New_York', 'native-calendar', 'FREQ=DAILY;COUNT=3');")

@@ -1,4 +1,3 @@
-use crate::run_migrations;
 use sqlx::{Row, SqlitePool};
 
 pub(super) async fn migrated_memory_pool() -> SqlitePool {
@@ -11,7 +10,9 @@ pub(super) async fn migrated_memory_pool() -> SqlitePool {
         .execute(&pool)
         .await
         .unwrap();
-    run_migrations(&pool).await.unwrap();
+    crate::test_support::apply_migrated_template(&pool)
+        .await
+        .unwrap();
     pool
 }
 

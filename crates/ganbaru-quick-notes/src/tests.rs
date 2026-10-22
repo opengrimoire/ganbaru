@@ -1,5 +1,4 @@
 use super::*;
-use ganbaru_db::run_migrations;
 use sqlx::sqlite::SqlitePoolOptions;
 
 /// Runs persistence tests on a single-thread runtime without platform initialization.
@@ -17,7 +16,9 @@ async fn pool() -> SqlitePool {
         .connect("sqlite::memory:")
         .await
         .unwrap();
-    run_migrations(&pool).await.unwrap();
+    ganbaru_db::test_support::apply_migrated_template(&pool)
+        .await
+        .unwrap();
     pool
 }
 

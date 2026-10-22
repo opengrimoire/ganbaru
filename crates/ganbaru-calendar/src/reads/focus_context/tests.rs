@@ -6,7 +6,9 @@ async fn pool() -> sqlx::SqlitePool {
         .connect("sqlite::memory:")
         .await
         .unwrap();
-    ganbaru_db::run_migrations(&pool).await.unwrap();
+    ganbaru_db::test_support::apply_migrated_template(&pool)
+        .await
+        .unwrap();
     sqlx::raw_sql("INSERT INTO calendars(id, name, source) VALUES('focus-calendar', 'Focus', 'local');
         INSERT INTO calendar_events(id, title, start_time, end_time, timezone, calendar_id, created_at)
         VALUES('long', 'Long', '2024-03-11T09:00:00Z', '2024-03-11T12:00:00Z', 'UTC', 'focus-calendar', '2024-01-01'),

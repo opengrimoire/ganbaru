@@ -64,7 +64,9 @@ async fn pool() -> SqlitePool {
         .execute(&pool)
         .await
         .unwrap();
-    ganbaru_db::run_migrations(&pool).await.unwrap();
+    ganbaru_db::test_support::apply_migrated_template(&pool)
+        .await
+        .unwrap();
     sqlx::query("INSERT INTO calendar_events (id, title, start_time, end_time) VALUES ('focus-event', 'Focus', ?, ?)")
         .bind(persistence::format_timestamp(START).unwrap()).bind(persistence::format_timestamp(START + 20 * MINUTE).unwrap())
         .execute(&pool).await.unwrap();

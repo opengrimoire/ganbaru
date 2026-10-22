@@ -29,4 +29,5 @@ url = { workspace = true }
 rodio = { workspace = true }
 
 [dev-dependencies]
+ganbaru-db = { workspace = true, features = ["test-support"] }
 tokio = { workspace = true }

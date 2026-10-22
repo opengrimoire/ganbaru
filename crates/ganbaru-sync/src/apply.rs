@@ -634,11 +634,21 @@ pub(crate) async fn finish(
         };
         let merged = merge::refresh_flags(engine, conn, batch, &mut visibility).await?;
         let plan = materialize::plan(engine, conn, batch, &mut visibility, merged).await?;
-        let captured: BTreeSet<RowRef> = seal::captured(conn, plan.rows(engine))
-            .await?
-            .into_iter()
-            .filter(|row| !attempted.contains(row))
+        // A constraint over several rows of a table is repaired from merge state only, so every
+        // captured row of a planned table with such a constraint seals with the planned rows.
+        let constrained: BTreeSet<TableId> = plan
+            .rows(engine)
+            .map(|(table, _)| table)
+            .filter(|table| {
+                engine
+                    .manifest()
+                    .table(*table)
+                    .is_some_and(|spec| spec.constrains_rows_together())
+            })
             .collect();
+        let mut captured = seal::captured(conn, plan.rows(engine)).await?;
+        captured.extend(seal::captured_in(conn, &constrained).await?);
+        captured.retain(|row| !attempted.contains(row));
         if captured.is_empty() {
             let changed = materialize::execute(engine, conn, plan).await?;
             batch.dirty.clear();
@@ -678,9 +688,10 @@ impl Engine {
     /// Applies ready operations in one bounded transaction.
     ///
     /// Local captures of the rows an operation changes, held deletes included, are sealed
-    /// before it applies, and captures of rows the merge would materialize are sealed before
+    /// before it applies, and captures of rows the merge would materialize, with every capture
+    /// of a materialized table whose constraint reads several rows together, are sealed before
     /// the domain tables are written, so a merge never overwrites a local edit that is not
-    /// sealed. Other captures stay for [`Engine::seal`]. Without a local writer, or when it is
+    /// sealed and every repair sees the local edits it must account for. Other captures stay for [`Engine::seal`]. Without a local writer, or when it is
     /// no longer active, an operation that touches captured rows stops the call before it
     /// applies, and a materialization that would write captured rows rolls the call back.
     pub async fn apply(

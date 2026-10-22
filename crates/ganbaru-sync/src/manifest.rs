@@ -515,6 +515,17 @@ impl TableSpec {
         self.key_column == SYNC_KEY_COLUMN
     }
 
+    /// Whether a constraint reads several rows of the table together: a unique column set, a
+    /// tree, or acyclic edges.
+    pub fn constrains_rows_together(&self) -> bool {
+        self.tree.is_some()
+            || self.acyclic.is_some()
+            || self
+                .resolutions
+                .iter()
+                .any(|resolution| matches!(resolution, Resolution::DuplicateRepair { .. }))
+    }
+
     /// The existence group of a derived-key table.
     pub fn exists_group(&self) -> Option<&'static GroupSpec> {
         self.derived_key

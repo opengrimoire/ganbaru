@@ -3,8 +3,8 @@
 use sqlx::Connection;
 
 use super::block_on;
-use super::fixture::{ITEMS_TABLE, MEMOS_TABLE};
-use super::replica::{Replica, converge};
+use super::fixture::{ITEMS_TABLE, MEMOS_TABLE, edge_key};
+use super::replica::{Replica, converge, rank};
 use crate::error::failpoints;
 use crate::hold::{self, MAX_HOLD_MS};
 use crate::{MAX_OPS_PER_SEAL, SyncError};
@@ -258,5 +258,90 @@ fn a_large_first_seal_splits_into_batches_and_a_remote_batch_seals_its_rows_firs
                 .await,
             i64::from(LARGE_SEAL_ROWS) + 1
         );
+    });
+}
+
+/// A local edit and a remote edit that together break a constraint over several rows: shared
+/// setup, the unsealed local edit, and the remote edit.
+struct SetCase {
+    name: &'static str,
+    setup: String,
+    local: String,
+    remote: String,
+}
+
+fn set_cases() -> Vec<SetCase> {
+    let edge = |from: &str, to: &str| {
+        format!(
+            "INSERT INTO fixture_edges (from_id, to_id, sync_key) VALUES ('{from}', '{to}', '{}')",
+            edge_key(from, to)
+        )
+    };
+    let node = |id: &str, position: u32| {
+        format!(
+            "INSERT INTO fixture_nodes (id, parent_id, position, label)
+             VALUES ('{id}', NULL, '{}', '{id}');",
+            rank(position)
+        )
+    };
+    vec![
+        SetCase {
+            name: "acyclic edges",
+            setup: "INSERT INTO fixture_items (id, created_at, label, label_edits) VALUES
+                 ('x', '2027-01-01T00:00:00.000Z', 'x', 0),
+                 ('y', '2027-01-01T00:00:00.000Z', 'y', 0)"
+                .to_string(),
+            local: edge("x", "y"),
+            remote: edge("y", "x"),
+        },
+        SetCase {
+            name: "tree",
+            setup: format!("{}{}", node("a", 0), node("b", 1)),
+            local: "UPDATE fixture_nodes SET parent_id = 'b' WHERE id = 'a'".to_string(),
+            remote: "UPDATE fixture_nodes SET parent_id = 'a' WHERE id = 'b'".to_string(),
+        },
+        SetCase {
+            name: "unique label",
+            setup: String::new(),
+            local: "INSERT INTO fixture_cycle_a (id, label) VALUES ('a-2', 'Same')".to_string(),
+            remote: "INSERT INTO fixture_cycle_a (id, label) VALUES ('a-1', 'Same')".to_string(),
+        },
+    ]
+}
+
+#[test]
+fn a_remote_change_first_seals_unsealed_rows_that_a_constraint_over_its_table_reads() {
+    block_on(async {
+        for case in set_cases() {
+            let mut replicas = replicas(2).await;
+            if !case.setup.is_empty() {
+                replicas[0].exec(&case.setup).await;
+                replicas[0].seal().await.unwrap();
+                converge(&mut replicas).await;
+            }
+            replicas[0].exec(&case.local).await;
+            replicas[1].exec(&case.remote).await;
+            replicas[1].seal().await.unwrap();
+
+            let known = replicas[0].stored_vector().await;
+            let ops = replicas[1].ops_since(&known).await;
+            let author = &mut replicas[0];
+            author.receive(&ops).await;
+            author
+                .apply_once()
+                .await
+                .unwrap_or_else(|error| panic!("{}: {error:?}", case.name));
+            author.check_invariants().await;
+            assert_eq!(
+                author.count("SELECT count(*) FROM sync_capture").await,
+                0,
+                "{}: the local edit seals before the merge",
+                case.name
+            );
+            converge(&mut replicas).await;
+            let expected = replicas[0].dump().await;
+            assert_eq!(replicas[1].dump().await, expected, "{}", case.name);
+            replicas[1].check_invariants().await;
+        }
     });
 }

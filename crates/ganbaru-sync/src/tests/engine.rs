@@ -100,6 +100,70 @@ fn sealed_changes_converge_on_every_replica() {
 }
 
 #[test]
+fn a_change_referencing_an_invalid_unsealed_create_stays_captured_until_it_is_fixed() {
+    block_on(async {
+        let mut replicas = replicas(2).await;
+        // Without its value guard, the domain stores an item no device would accept.
+        replicas[0]
+            .exec("DROP TRIGGER sync_values_fixture_items_insert")
+            .await;
+        replicas[0]
+            .exec(
+                "INSERT INTO fixture_items (id, created_at, label, label_edits)
+                     VALUES ('item-1', '2027' || char(0), 'One', 0);
+                 INSERT INTO fixture_links (id, owner_id, note) VALUES ('link-1', 'item-1', 'L');
+                 INSERT INTO fixture_links (id, note, parent_id) VALUES ('link-2', 'M', 'link-1');",
+            )
+            .await;
+        let report = replicas[0].seal().await.unwrap();
+        let mut invalid: Vec<(&str, &str)> = report
+            .invalid_rows
+            .iter()
+            .map(|row| (row.row_key.as_str(), row.reason))
+            .collect();
+        invalid.sort_unstable();
+        assert_eq!(invalid.len(), 3, "{invalid:?}");
+        assert_eq!(
+            invalid[1..],
+            [
+                ("link-1", "invalid dependency"),
+                ("link-2", "invalid dependency")
+            ]
+        );
+        let sealed = "SELECT count(*) FROM sync_rows";
+        let captured = "SELECT count(*) FROM sync_capture";
+        assert_eq!(replicas[0].count(sealed).await, 0);
+        assert_eq!(replicas[0].count(captured).await, 3);
+
+        replicas[0]
+            .exec(
+                "DELETE FROM fixture_items WHERE id = 'item-1';
+                 INSERT INTO fixture_items (id, created_at, label, label_edits)
+                     VALUES ('item-1', '2027-01-01T00:00:00.000Z', 'One', 0);
+                 INSERT INTO fixture_links (id, owner_id, note) VALUES ('link-1', 'item-1', 'L');
+                 UPDATE fixture_links SET parent_id = 'link-1' WHERE id = 'link-2';",
+            )
+            .await;
+        let report = replicas[0].seal().await.unwrap();
+        assert!(report.invalid_rows.is_empty(), "{:?}", report.invalid_rows);
+        assert_eq!(replicas[0].count(captured).await, 0);
+        converge(&mut replicas).await;
+        assert_eq!(
+            replicas[1]
+                .count("SELECT count(*) FROM fixture_links WHERE owner_id = 'item-1'")
+                .await,
+            1
+        );
+        assert_eq!(
+            replicas[1]
+                .count("SELECT count(*) FROM fixture_links WHERE parent_id = 'link-1'")
+                .await,
+            1
+        );
+    });
+}
+
+#[test]
 fn applied_rows_take_local_defaults_and_skip_gated_triggers() {
     block_on(async {
         let mut replicas = replicas(2).await;

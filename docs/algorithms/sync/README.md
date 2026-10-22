@@ -1,6 +1,6 @@
 # Sync merge rules
 
-**Status: Reference.** These rules are implemented in source for Quick notes, the first replicated domain. Delivery, writers, and mixed mode are owned by [Device linking and synchronization](../../data/sync.md); the reasons behind the design are in [Sync engine decisions](../../architecture/decisions/sync-engine.md).
+**Status: Reference.** These rules are implemented in the sync engine for every replicated domain; a test-only fixture domain exercises the shapes no production domain uses yet. Delivery, writers, and mixed mode are owned by [Device linking and synchronization](../../data/sync.md); the reasons behind the design are in [Sync engine decisions](../../architecture/decisions/sync-engine.md).
 
 ## Model
 
@@ -25,8 +25,11 @@ The hybrid logical clock is 48 bits of Unix milliseconds and a 16-bit counter. A
 | Reference | Greatest `(clock, writer)` over a row key that resolves through redirects | Note tag |
 | Owned children | The parent group's value is a canonical list that replaces the child rows | Body text runs, note images |
 | Existence register | Greatest `(clock, writer)` over 1 (present) or 0 (removed) on a derived-key table | None yet |
+| Tree | A reference into its own table and a position, each won as above, then deterministic [cycle and depth repair](#trees-and-acyclic-edge-sets) | None yet |
+| Acyclic edge set | Existence registers of a derived-key edge table; an edge that closes a cycle is severed | None yet |
 
 - A multi-column CHECK always lives inside one coupled register, so every materialized winner satisfies it.
+- There is no counter kind. Usage and statistics are rows keyed by device and bucket, each written by one device and merged with `Max`, so concurrent increments never meet in one version.
 - A register is surfaced when its concurrent distinct versions are shown to people as a conflict; otherwise it resolves silently. Quick note title, body, and images are surfaced. Color, tag, lifecycle, order, tag names, and tag colors are silent.
 - A group is recoverable when edits to it that a deletion did not see should be offered for recovery. Quick note title, body, images, color, tag, and lifecycle are recoverable; order, timestamps, and every tag group are not.
 

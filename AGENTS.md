@@ -119,7 +119,7 @@ crates/
   ganbaru-contacts/: Tauri-free person key pairs, signed contact cards, request signatures, and trust kinds
   ganbaru-handoff/: Tauri-free LAN handoff control protocol, message bounds, LAN-only dial targets, DNS-SD discovery records and hourly member tags, compatibility, QR encoding, staged bundle validation, device pairing identity, membership, and transfer state, and Linux firewall authorization
   ganbaru-sync-contracts/: Tauri-free sync identifiers, clocks, version vectors, writer certificates, order keys, and the signed operation format
-  ganbaru-sync/: Tauri-free sync engine with the replication manifest, capture triggers, sealing, apply and merge, conflicts, recovery, and the simulation harness
+  ganbaru-sync/: Tauri-free sync engine with the domain manifest registry and domain adapters, capture triggers, sealing, apply and merge, conflicts, recovery, and the simulation harness
   ganbaru-sync-replica/: Tauri-free replica sync with guarded vault access, installation writer keys and record, carry-forward, recovery offers, and the LAN hub and client exchange of operations and managed assets
   ganbaru-themes/: Tauri-free user theme persistence, seed resets, upgrade dismissals, row validation, and sync conflict resolution and recovery
   ganbaru-native-messaging/: ganbaru-native-messaging browser host binary

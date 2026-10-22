@@ -118,18 +118,38 @@ async fn crashing<T>(
     call(replica).await
 }
 
-const SEAL_FAILPOINTS: &[&str] = &["seal.reserve", "seal.before_commit", "hold.before_seal"];
+const SEAL_FAILPOINTS: &[&str] = &[
+    "seal.reserve",
+    "seal.before_commit",
+    "hold.before_seal",
+    "elide.before_commit",
+];
 const APPLY_FAILPOINTS: &[&str] = &[
     "apply.before_commit",
     "seal.reserve",
     "seal.before_commit",
     "hold.before_seal",
+    "elide.before_commit",
 ];
-const RESEAL_FAILPOINTS: &[&str] = &["reseal.before_commit", "seal.reserve"];
-const RECOVERY_FAILPOINTS: &[&str] = &["recovery.before_commit", "seal.reserve"];
+const RESEAL_FAILPOINTS: &[&str] = &[
+    "reseal.before_commit",
+    "seal.reserve",
+    "elide.before_commit",
+];
+const RECOVERY_FAILPOINTS: &[&str] = &[
+    "recovery.before_commit",
+    "seal.reserve",
+    "elide.before_commit",
+];
 
 /// Seals pending captures, rotating the writer once when it is no longer active.
 async fn seal(rng: &mut Rng, replica: &mut Replica) {
+    let before = replica.seal_snapshot().await;
+    seal_rotating(rng, replica).await;
+    replica.check_sealed_writes(&before).await;
+}
+
+async fn seal_rotating(rng: &mut Rng, replica: &mut Replica) {
     let result = crashing(rng, replica, SEAL_FAILPOINTS, async |r: &mut Replica| {
         r.seal().await
     })
@@ -1371,7 +1391,8 @@ impl Sim {
     async fn step(&mut self) {
         self.advance_clocks();
         let index = self.rng.below(self.replicas.len());
-        match self.rng.below(100) {
+        let action = self.rng.below(100);
+        match action {
             0..=39 => self.edit(index).await,
             40..=64 => {
                 if !self.offline[index] {
@@ -1388,6 +1409,12 @@ impl Sim {
             replica.check_invariants().await;
         }
         self.hub.check_invariants().await;
+        // Hydrating every version is slow, so only a step that ran the engine checks it, and
+        // only on the replica that acted. Local edits elide nothing and are read back by the
+        // engine step that follows them.
+        if (40..89).contains(&action) || action >= 97 {
+            self.replicas[index].check_version_values().await;
+        }
         self.assert_marks_stay_local().await;
     }
 
@@ -1472,6 +1499,7 @@ impl Sim {
             .iter_mut()
             .chain(std::iter::once(&mut self.hub))
         {
+            replica.check_version_values().await;
             let status = replica
                 .engine
                 .status(&mut replica.conn, &replica.ctx)

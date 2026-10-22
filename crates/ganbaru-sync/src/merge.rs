@@ -17,6 +17,7 @@ use sqlx::{Row, SqliteConnection};
 use crate::Engine;
 use crate::codec;
 use crate::error::{SyncResult, corrupt};
+use crate::hydrate;
 use crate::log::{self, ContextCache, seq_i64, stored_u64};
 use crate::manifest::{GroupSpec, MergeKind, TableSpec};
 use crate::materialize;
@@ -41,6 +42,34 @@ pub(crate) struct Version {
     pub(crate) clock: Hlc,
     pub(crate) hash: Digest32,
     pub(crate) value: Value,
+    /// Whether the stored value is elided and `value` was read back, see [`crate::hydrate`].
+    pub(crate) elided: bool,
+}
+
+/// One retained version as stored, without a value when it is elided.
+#[derive(Debug, Clone)]
+pub(crate) struct Stored {
+    pub(crate) group: GroupId,
+    pub(crate) writer: WriterId,
+    pub(crate) seq: Seq,
+    pub(crate) clock: Hlc,
+    pub(crate) hash: Digest32,
+    pub(crate) value: Option<Value>,
+}
+
+impl Stored {
+    /// The version with its value.
+    pub(crate) fn into_version(self, value: Value, elided: bool) -> Version {
+        Version {
+            group: self.group,
+            writer: self.writer,
+            seq: self.seq,
+            clock: self.clock,
+            hash: self.hash,
+            value,
+            elided,
+        }
+    }
 }
 
 /// Mutable state of one engine transaction.
@@ -106,12 +135,17 @@ pub(crate) fn parse_row_state(state: Option<&str>) -> SyncResult<Option<RowState
     }
 }
 
-/// Retained versions of a row, ordered by group and writer.
+/// Retained versions of a row with elided values read back, ordered by group and writer.
 pub(crate) async fn versions(
+    engine: &Engine,
     conn: &mut SqliteConnection,
     table: TableId,
     key: &str,
 ) -> SyncResult<Vec<Version>> {
+    let spec = engine
+        .manifest()
+        .table(table)
+        .ok_or_else(|| corrupt("versions of an unknown table"))?;
     let rows = sqlx::query(
         "SELECT group_id, writer_id, seq, clock, value_hash, value FROM sync_register_versions
          WHERE table_id = ? AND row_key = ? ORDER BY group_id, writer_id",
@@ -120,22 +154,40 @@ pub(crate) async fn versions(
     .bind(key)
     .fetch_all(&mut *conn)
     .await?;
-    rows.iter().map(|row| version_from_row(row, 0)).collect()
+    let stored = rows
+        .iter()
+        .map(|row| stored_from_row(row, 0))
+        .collect::<SyncResult<Vec<_>>>()?;
+    hydrate::row(engine, conn, spec, key, stored).await
 }
 
-/// A version from the columns `group_id, writer_id, seq, clock, value_hash, value` at `offset`.
-pub(crate) fn version_from_row(row: &SqliteRow, offset: usize) -> SyncResult<Version> {
+/// A stored version from the columns `group_id, writer_id, seq, clock, value_hash, value` at
+/// `offset`.
+pub(crate) fn stored_from_row(row: &SqliteRow, offset: usize) -> SyncResult<Stored> {
     let writer: Vec<u8> = row.try_get(offset + 1)?;
     let hash: Vec<u8> = row.try_get(offset + 4)?;
-    let value: Vec<u8> = row.try_get(offset + 5)?;
-    Ok(Version {
+    let value: Option<Vec<u8>> = row.try_get(offset + 5)?;
+    Ok(Stored {
         group: group_id(row.try_get(offset)?)?,
         writer: log::writer_id(&writer)?,
         seq: stored_u64(row.try_get(offset + 2)?, "version sequence")?,
         clock: Hlc::from_u64(stored_u64(row.try_get(offset + 3)?, "version clock")?),
         hash: log::digest(&hash)?,
-        value: Value::decode(&value).map_err(|_| corrupt("stored value does not decode"))?,
+        value: value
+            .map(|value| Value::decode(&value).map_err(|_| corrupt("stored value does not decode")))
+            .transpose()?,
     })
+}
+
+/// A version of a group read across its whole table, whose winners are never elided, from the
+/// columns [`stored_from_row`] reads.
+pub(crate) fn version_from_row(row: &SqliteRow, offset: usize) -> SyncResult<Version> {
+    let stored = stored_from_row(row, offset)?;
+    let value = stored
+        .value
+        .clone()
+        .ok_or_else(|| corrupt("a group read across its table has an elided value"))?;
+    Ok(stored.into_version(value, false))
 }
 
 fn field_rank(field: &Field) -> u8 {
@@ -472,14 +524,15 @@ pub(crate) async fn refresh_flags(
             stored.try_get::<i64, _>(1)?,
             stored.try_get::<i64, _>(2)? != 0,
         );
-        let versions = rows
+        let stored = rows
             .iter()
             .filter_map(|row| match row.try_get::<Option<i64>, _>(3) {
-                Ok(Some(_)) => Some(version_from_row(row, 3)),
+                Ok(Some(_)) => Some(stored_from_row(row, 3)),
                 Ok(None) => None,
                 Err(error) => Some(Err(error.into())),
             })
             .collect::<SyncResult<Vec<_>>>()?;
+        let versions = hydrate::row(engine, conn, table, &key, stored).await?;
         let flags = match state {
             RowState::Live => {
                 if let Some(root) =

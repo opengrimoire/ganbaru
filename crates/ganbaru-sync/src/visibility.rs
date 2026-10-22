@@ -204,7 +204,7 @@ impl Visibility {
         table: &TableSpec,
         key: &str,
     ) -> SyncResult<Vec<CascadeTarget>> {
-        let versions = merge::versions(conn, table.id, key).await?;
+        let versions = merge::versions(engine, conn, table.id, key).await?;
         let winners = merge::winners(engine, table, &versions);
         let detached_parent = self
             .is_detached(table.id, key)
@@ -362,7 +362,7 @@ pub(crate) async fn removed(
     let Some(exists) = spec.exists_group() else {
         return Ok(false);
     };
-    let versions = merge::versions(conn, table, key).await?;
+    let versions = merge::versions(engine, conn, table, key).await?;
     let winner = merge::winner(
         engine,
         spec,

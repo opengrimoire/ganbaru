@@ -378,9 +378,9 @@ fn undo_of_the_held_row_alone_publishes_the_deletes_of_its_children() {
         delete_held(author, start + MAX_HOLD_MS).await;
         assert!(release(author).await);
         author
-            .exec("INSERT INTO fixture_memos (id, label) VALUES ('memo-1', 'One')")
+            .exec("INSERT INTO fixture_memos (id, label) VALUES ('memo-1', 'Restored')")
             .await;
-        // Materializing the restored memo would bring back children that merge state still
+        // Materializing the changed memo would bring back children that merge state still
         // holds live, so their held deletes seal with it.
         author.seal().await.unwrap();
         assert_eq!(author.count("SELECT count(*) FROM sync_capture").await, 0);
@@ -391,6 +391,28 @@ fn undo_of_the_held_row_alone_publishes_the_deletes_of_its_children() {
         }
         let first = replicas[0].dump().await;
         assert_eq!(replicas[1].dump().await, first);
+    });
+}
+
+#[test]
+fn undo_of_the_held_row_alone_with_its_old_values_seals_nothing_and_keeps_its_children_held() {
+    block_on(async {
+        let mut replicas = shared_memo_with_children().await;
+        let author = &mut replicas[0];
+        let start = author.now_ms;
+        delete_held(author, start + MAX_HOLD_MS).await;
+        assert!(release(author).await);
+        author
+            .exec("INSERT INTO fixture_memos (id, label) VALUES ('memo-1', 'One')")
+            .await;
+        let held = held_until(author, start + MAX_HOLD_MS).await;
+        assert!(held > 0, "the children's deletes stay held");
+        // The restored memo equals its uncontested winner, so nothing is sealed and the
+        // children's deletes wait for their lease.
+        assert_eq!(author.seal().await.unwrap().sealed_ops, 0);
+        assert_eq!(memo_captures(author).await, 0);
+        assert_eq!(held_until(author, start + MAX_HOLD_MS).await, held);
+        assert_eq!(memo_rows(author).await, [1, 0, 0]);
     });
 }
 

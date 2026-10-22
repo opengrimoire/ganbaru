@@ -2,22 +2,24 @@
 //! fixture domains, and the local writer, with helpers that mirror what the app does between
 //! engine calls.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::OnceLock;
 
 use ganbaru_contacts::PersonKeyPair;
 use ganbaru_sync_contracts::{
-    SignedCertificate, VersionVector, WriterCertificate, WriterId, WriterKeyPair, sign_certificate,
+    ChangeAction, Content, Envelope, GroupId, SignedCertificate, TableId, Value, VersionVector,
+    WriterCertificate, WriterId, WriterKeyPair, sign_certificate,
 };
 use sqlx::sqlite::SqliteOwnedBuf;
 use sqlx::{AssertSqlSafe, Connection, SqliteConnection};
 
 use super::fixture::{NODE_MAX_DEPTH, after_local_edit, fixture_pool, test_engine};
 use crate::manifest::Manifest;
-use crate::publication;
 use crate::{
     ApplyReport, Engine, LocalWriter, ResealNeeded, ResealReport, SealReport, SequenceReservation,
     SpaceContext, StoreOutcome, SyncResult,
 };
+use crate::{hydrate, log, publication};
 
 /// Vault id every replica shares.
 pub(super) const VAULT_ID: &str = "vault-sim";
@@ -57,6 +59,17 @@ pub(super) async fn connection_from(bytes: &[u8]) -> SqliteConnection {
         .await
         .unwrap();
     conn
+}
+
+/// What a replica retained and stored before a seal, to check what the seal wrote.
+pub(super) struct SealSnapshot {
+    /// Retained value hashes of each captured row, by table, row key, and group.
+    retained: BTreeMap<(i64, String, i64), BTreeSet<Vec<u8>>>,
+    /// Forced group mask of each captured row, with every group set for a derived-key row
+    /// inserted again, which seals whole unless every group is unchanged.
+    forced: BTreeMap<(i64, String), i64>,
+    /// Stored operations by writer id and sequence.
+    ops: BTreeSet<(Vec<u8>, i64)>,
 }
 
 /// A sequence reservation kept in memory; it survives rolled-back transactions like a durable
@@ -484,6 +497,154 @@ impl Replica {
         );
     }
 
+    /// Asserts that every retained version reads back to a value with its stored hash, elided
+    /// or not. Returns the value bytes stored and the value bytes with nothing elided.
+    pub(super) async fn check_version_values(&mut self) -> (usize, usize) {
+        let (mut stored, mut full) = (0, 0);
+        type StoredVersion = (i64, String, i64, Vec<u8>, i64, Vec<u8>, Option<Vec<u8>>);
+        let versions: Vec<StoredVersion> = sqlx::query_as(
+            "SELECT table_id, row_key, group_id, writer_id, seq, value_hash, value
+             FROM sync_register_versions",
+        )
+        .fetch_all(&mut self.conn)
+        .await
+        .unwrap();
+        for (table, key, group, writer, seq, hash, value) in versions {
+            let table = self
+                .engine
+                .manifest()
+                .table(TableId(u16::try_from(table).unwrap()))
+                .unwrap();
+            let group = GroupId::new(u8::try_from(group).unwrap()).unwrap();
+            let hash = log::digest(&hash).unwrap();
+            let value = match value {
+                Some(value) => {
+                    stored += value.len();
+                    Value::decode(&value).unwrap()
+                }
+                None => hydrate::elided_value(
+                    &self.engine,
+                    &mut self.conn,
+                    table,
+                    &key,
+                    group,
+                    log::writer_id(&writer).unwrap(),
+                    u64::try_from(seq).unwrap(),
+                    &hash,
+                )
+                .await
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "replica {} cannot hydrate {key} group {group:?}: {error:?}",
+                        self.index
+                    )
+                }),
+            };
+            assert_eq!(
+                value.hash(table.id, group),
+                hash,
+                "replica {} reads a version of {key} back to another value",
+                self.index
+            );
+            full += value.encode().len();
+        }
+        (stored, full)
+    }
+
+    /// Retained value hashes per captured row and group, with each captured row's forced
+    /// groups and the operations stored so far, taken before a seal.
+    pub(super) async fn seal_snapshot(&mut self) -> SealSnapshot {
+        let versions: Vec<(i64, String, i64, Vec<u8>)> = sqlx::query_as(
+            "SELECT v.table_id, v.row_key, v.group_id, v.value_hash
+             FROM sync_register_versions v
+             JOIN sync_capture c ON c.table_id = v.table_id AND c.row_key = v.row_key",
+        )
+        .fetch_all(&mut self.conn)
+        .await
+        .unwrap();
+        let mut retained: BTreeMap<(i64, String, i64), BTreeSet<Vec<u8>>> = BTreeMap::new();
+        for (table, key, group, hash) in versions {
+            retained
+                .entry((table, key, group))
+                .or_default()
+                .insert(hash);
+        }
+        let captures: Vec<(i64, String, i64, bool)> =
+            sqlx::query_as("SELECT table_id, row_key, forced_mask, created FROM sync_capture")
+                .fetch_all(&mut self.conn)
+                .await
+                .unwrap();
+        let forced = captures.into_iter().map(|(table, key, mask, created)| {
+            let derived_key = self
+                .engine
+                .manifest()
+                .table(TableId(u16::try_from(table).unwrap()))
+                .is_some_and(|spec| spec.derived_key.is_some());
+            (table, key, if created && derived_key { -1 } else { mask })
+        });
+        let ops: Vec<(Vec<u8>, i64)> = sqlx::query_as("SELECT writer_id, seq FROM sync_ops")
+            .fetch_all(&mut self.conn)
+            .await
+            .unwrap();
+        SealSnapshot {
+            retained,
+            forced: forced
+                .map(|(table, key, mask)| ((table, key), mask))
+                .collect(),
+            ops: ops.into_iter().collect(),
+        }
+    }
+
+    /// Asserts that no write sealed since `before` for a captured row carries a group, other
+    /// than the existence group or a forced one, equal to its uncontested winner at the time.
+    pub(super) async fn check_sealed_writes(&mut self, before: &SealSnapshot) {
+        let ops: Vec<(Vec<u8>, i64)> = sqlx::query_as("SELECT writer_id, seq FROM sync_ops")
+            .fetch_all(&mut self.conn)
+            .await
+            .unwrap();
+        for (writer, seq) in ops {
+            if before.ops.contains(&(writer.clone(), seq)) {
+                continue;
+            }
+            let envelope: Vec<u8> =
+                sqlx::query_scalar("SELECT envelope FROM sync_ops WHERE writer_id = ? AND seq = ?")
+                    .bind(writer.as_slice())
+                    .bind(seq)
+                    .fetch_one(&mut self.conn)
+                    .await
+                    .unwrap();
+            let operation = Envelope::decode(&envelope).unwrap().operation().unwrap();
+            let Content::Changes(changes) = operation.content else {
+                continue;
+            };
+            for change in changes {
+                let table = i64::from(change.table.0);
+                let key = change.row.as_str().to_string();
+                let Some(forced) = before.forced.get(&(table, key.clone())) else {
+                    continue;
+                };
+                if change.action != ChangeAction::Write {
+                    continue;
+                }
+                let spec = self.engine.manifest().table(change.table).unwrap();
+                for value in &change.groups {
+                    let group = i64::from(value.group.get());
+                    if spec.is_exists_group(value.group) || forced & (1 << group) != 0 {
+                        continue;
+                    }
+                    let winner = before.retained.get(&(table, key.clone(), group));
+                    assert!(
+                        winner.is_none_or(|hashes| {
+                            hashes.len() != 1 || !hashes.contains(value.hash.as_slice())
+                        }),
+                        "replica {} sealed group {group} of {key} equal to its uncontested winner",
+                        self.index
+                    );
+                }
+            }
+        }
+    }
+
     /// Replicated state in a canonical text form: published rows of domain tables without local
     /// columns and engine merge state without local timestamps.
     pub(super) async fn dump(&mut self) -> Vec<(&'static str, Vec<String>)> {
@@ -550,12 +711,13 @@ fn dumped(manifest: &'static Manifest) -> Vec<Dumped> {
     tables
 }
 
-/// Engine merge state compared across replicas and its local timestamps.
+/// Engine merge state compared across replicas and its local timestamps. A retained value is
+/// compared by its hash, since whether it is elided depends on local captures.
 const ENGINE_DUMPED: &[(&str, &[&str])] = &[
     ("sync_writers", &["created_at_ms"]),
     ("sync_ops", &["stored_at_ms"]),
     ("sync_rows", &[]),
-    ("sync_register_versions", &[]),
+    ("sync_register_versions", &["value"]),
     ("sync_version_refs", &[]),
     ("sync_tombstones", &[]),
 ];

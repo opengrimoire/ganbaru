@@ -17,7 +17,7 @@ use ganbaru_sync_contracts::{
 use sqlx::sqlite::SqliteRow;
 use sqlx::{AssertSqlSafe, Connection, Row, SqliteConnection};
 
-use crate::apply::{MAX_BYTES_PER_APPLY, MAX_OPS_PER_APPLY, finish_sealed};
+use crate::apply::{Constrained, MAX_BYTES_PER_APPLY, MAX_OPS_PER_APPLY, finish_sealed};
 use crate::error::{SyncResult, corrupt, failpoint};
 use crate::log::{self, WriterState, clamp_ms, seq_i64};
 use crate::manifest::{GroupStorage, MergeKind, TableSpec};
@@ -684,7 +684,7 @@ impl Sealer {
             ctx,
             batch,
             writer,
-            planned.changes,
+            constrained_first(engine, planned.changes),
             None,
             now_ms,
             report,
@@ -699,6 +699,8 @@ pub(crate) struct SealSlot<'a, 'k> {
     writer: Option<&'a mut LocalWriter<'k>>,
     sealer: Option<Sealer>,
     frozen: bool,
+    /// What the call may still seal, when it is bounded.
+    budget: Option<SealBudget>,
 }
 
 impl<'a, 'k> SealSlot<'a, 'k> {
@@ -707,7 +709,32 @@ impl<'a, 'k> SealSlot<'a, 'k> {
             writer,
             sealer: None,
             frozen: false,
+            budget: None,
         }
+    }
+
+    /// A slot whose call seals at most one seal transaction of captures, so a call that would
+    /// seal more leaves them to the batched seal loop.
+    pub(crate) fn bounded(writer: Option<&'a mut LocalWriter<'k>>) -> Self {
+        Self {
+            budget: Some(SealBudget::default()),
+            ..Self::new(writer)
+        }
+    }
+
+    /// Charges the changes that sealing the captures of `rows` plans against the budget of a
+    /// bounded slot. Returns false, charging nothing, when they do not fit what remains.
+    pub(crate) async fn admit(
+        &mut self,
+        engine: &Engine,
+        conn: &mut SqliteConnection,
+        rows: &BTreeSet<RowRef>,
+    ) -> SyncResult<bool> {
+        let Some(budget) = self.budget.as_mut() else {
+            return Ok(true);
+        };
+        let planned = plan_rows(engine, conn, rows, &mut SealReport::default()).await?;
+        Ok(budget.charge(&planned.changes))
     }
 
     /// Writer id of the local writer, sealing or not.
@@ -873,6 +900,39 @@ pub const MAX_OPS_PER_SEAL: usize = MAX_OPS_PER_APPLY;
 /// so a large first seal reaches other devices in batches they apply whole.
 pub const MAX_BYTES_PER_SEAL: usize = MAX_BYTES_PER_APPLY;
 
+/// Most changes one seal transaction commits: [`MAX_OPS_PER_SEAL`] full operations.
+const MAX_CHANGES_PER_SEAL: usize = MAX_OPS_PER_SEAL.saturating_mul(MAX_CHANGES_PER_OPERATION);
+
+/// Encoded bytes of `change` in its operation, header and body.
+fn change_cost(change: &Change) -> usize {
+    let (header, body) = change_size(change);
+    header + body
+}
+
+/// Change bytes and changes one call has sealed, within one seal transaction.
+#[derive(Debug, Default)]
+pub(crate) struct SealBudget {
+    bytes: usize,
+    changes: usize,
+}
+
+impl SealBudget {
+    /// Charges `changes`. Returns false, charging nothing, when they exceed what remains.
+    pub(crate) fn charge(&mut self, changes: &[Change]) -> bool {
+        let bytes = changes
+            .iter()
+            .map(change_cost)
+            .fold(self.bytes, usize::saturating_add);
+        let count = self.changes.saturating_add(changes.len());
+        if bytes > MAX_BYTES_PER_SEAL || count > MAX_CHANGES_PER_SEAL {
+            return false;
+        }
+        self.bytes = bytes;
+        self.changes = count;
+        true
+    }
+}
+
 /// Columns of a capture and the sync state of its row.
 const CAPTURE_SELECT: &str = "SELECT c.table_id, c.row_key, c.mask, c.forced_mask, c.deleted, c.replaced_by, r.state, c.created, c.held_until_ms
      FROM sync_capture c
@@ -995,21 +1055,82 @@ pub(crate) fn change_dependencies(engine: &Engine, change: &Change) -> Vec<RowRe
     rows
 }
 
+/// Positions of the writes and tombstones of tables whose constraint reads several rows
+/// together, by table.
+fn constrained_changes(engine: &Engine, changes: &[Change]) -> BTreeMap<TableId, Vec<usize>> {
+    let mut constrained: BTreeMap<TableId, Vec<usize>> = BTreeMap::new();
+    for (position, change) in changes.iter().enumerate() {
+        let together = engine
+            .manifest()
+            .table(change.table)
+            .is_some_and(TableSpec::constrains_rows_together);
+        if together && change.action != ChangeAction::Create {
+            constrained.entry(change.table).or_default().push(position);
+        }
+    }
+    constrained
+}
+
+/// Positions of planned changes by row.
+fn change_index(changes: &[Change]) -> BTreeMap<RowRef, usize> {
+    changes
+        .iter()
+        .enumerate()
+        .map(|(position, change)| ((change.table, change.row.as_str().to_string()), position))
+        .collect()
+}
+
+/// Planned changes in sealed order: the writes and tombstones of tables whose constraint reads
+/// several rows together, with the changes they depend on, then the rest, each part in planned
+/// order. A receiver may apply a seal over several transactions, and its repairs must see a
+/// rename or delete before a create that reuses the value it frees.
+fn constrained_first(engine: &Engine, changes: Vec<Change>) -> Vec<Change> {
+    let constrained = constrained_changes(engine, &changes);
+    if constrained.is_empty() {
+        return changes;
+    }
+    let index = change_index(&changes);
+    let mut first = vec![false; changes.len()];
+    let mut pending: Vec<usize> = constrained.into_values().flatten().collect();
+    while let Some(position) = pending.pop() {
+        if std::mem::replace(&mut first[position], true) {
+            continue;
+        }
+        pending.extend(
+            change_dependencies(engine, &changes[position])
+                .into_iter()
+                .filter_map(|row| index.get(&row).copied()),
+        );
+    }
+    let (mut ordered, rest): (Vec<_>, Vec<_>) = changes
+        .into_iter()
+        .zip(first)
+        .partition(|(_, first)| *first);
+    ordered.extend(rest);
+    ordered.into_iter().map(|(change, _)| change).collect()
+}
+
 /// The changes one seal transaction takes, in planned order, within [`MAX_BYTES_PER_SEAL`]
 /// and [`MAX_OPS_PER_SEAL`] full operations, and whether changes remain. A change is taken
 /// together with the planned changes of every row it depends on, so a batch never names a
 /// row that a later batch creates.
+///
+/// Writes and tombstones of a table whose constraint reads several rows together seal as one
+/// group ahead of every other change, so a create never seals before the rename or delete that
+/// frees its unique value, tree position, or edge, and repairs never act on the stale value.
 fn select_batch(engine: &Engine, changes: Vec<Change>) -> (Vec<Change>, Vec<Change>) {
-    let index: BTreeMap<RowRef, usize> = changes
-        .iter()
-        .enumerate()
-        .map(|(position, change)| ((change.table, change.row.as_str().to_string()), position))
+    let index = change_index(&changes);
+    let constrained = constrained_changes(engine, &changes);
+    let starts: Vec<usize> = constrained
+        .values()
+        .flatten()
+        .copied()
+        .chain(0..changes.len())
         .collect();
     let mut taken = vec![false; changes.len()];
     let mut bytes = 0usize;
     let mut count = 0usize;
-    let max_changes = MAX_OPS_PER_SEAL.saturating_mul(MAX_CHANGES_PER_OPERATION);
-    for start in 0..changes.len() {
+    for start in starts {
         if taken[start] {
             continue;
         }
@@ -1017,11 +1138,16 @@ fn select_batch(engine: &Engine, changes: Vec<Change>) -> (Vec<Change>, Vec<Chan
         let mut seen = BTreeSet::from([start]);
         let mut pending = vec![start];
         while let Some(position) = pending.pop() {
-            for row in change_dependencies(engine, &changes[position]) {
-                if let Some(&dependency) = index.get(&row)
-                    && !taken[dependency]
-                    && seen.insert(dependency)
-                {
+            let together = constrained
+                .get(&changes[position].table)
+                .into_iter()
+                .flatten()
+                .copied();
+            let dependencies = change_dependencies(engine, &changes[position])
+                .into_iter()
+                .filter_map(|row| index.get(&row).copied());
+            for dependency in together.chain(dependencies) {
+                if !taken[dependency] && seen.insert(dependency) {
                     group.push(dependency);
                     pending.push(dependency);
                 }
@@ -1029,14 +1155,11 @@ fn select_batch(engine: &Engine, changes: Vec<Change>) -> (Vec<Change>, Vec<Chan
         }
         let cost: usize = group
             .iter()
-            .map(|position| {
-                let (header, body) = change_size(&changes[*position]);
-                header + body
-            })
+            .map(|position| change_cost(&changes[*position]))
             .sum();
         if count > 0
             && (bytes.saturating_add(cost) > MAX_BYTES_PER_SEAL
-                || count + group.len() > max_changes)
+                || count + group.len() > MAX_CHANGES_PER_SEAL)
         {
             break;
         }
@@ -1522,6 +1645,7 @@ impl Engine {
             ctx,
             &mut batch,
             &mut slot,
+            Constrained::Skip,
             now_ms,
             &mut report,
         )
@@ -1607,6 +1731,7 @@ impl Engine {
             ctx,
             &mut batch,
             &mut slot,
+            Constrained::Seal,
             now_ms,
             &mut report,
         )

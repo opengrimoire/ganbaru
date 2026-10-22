@@ -108,7 +108,7 @@ struct Sealing<'s, 'a, 'k> {
 
 impl Sealing<'_, '_, '_> {
     /// Seals the captures of `rows`, held deletes included. Returns false when rows are
-    /// captured and no writer can seal them.
+    /// captured and no writer can seal them, or they exceed what the call may still seal.
     async fn seal_rows(
         &mut self,
         engine: &Engine,
@@ -120,6 +120,9 @@ impl Sealing<'_, '_, '_> {
         let rows = seal::captured(conn, rows).await?;
         if rows.is_empty() {
             return Ok(true);
+        }
+        if !self.slot.admit(engine, conn, &rows).await? {
+            return Ok(false);
         }
         let Some((sealer, writer)) = self
             .slot
@@ -589,18 +592,72 @@ fn warn_clock(report: &mut ApplyReport, writer: WriterId, clock: Hlc, now_ms: u6
     }
 }
 
+/// How [`finish`] treats the captures of a table whose constraint reads several rows together
+/// (a unique column set, a tree, or acyclic edges) when the merge changes that table. Repairs
+/// read merge state only, so such captures must be sealed before repairs see the table.
+/// A bounded [`SealSlot`] limits what this sealing may take.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Constrained {
+    /// Seal them before repairs.
+    Seal,
+    /// Leave them, for a local seal: it seals the writes and tombstones of such a table before
+    /// any create of it, so sealed state stays valid for the table.
+    Skip,
+}
+
+/// Tables among `tables` whose constraint reads several rows together.
+fn constrained_tables(engine: &Engine, tables: impl Iterator<Item = TableId>) -> BTreeSet<TableId> {
+    tables
+        .filter(|table| {
+            engine
+                .manifest()
+                .table(*table)
+                .is_some_and(|spec| spec.constrains_rows_together())
+        })
+        .collect()
+}
+
+/// Seals the captures of `rows` for [`finish`]. Returns false when no writer can seal them or
+/// they exceed what a bounded slot may still seal.
+#[allow(clippy::too_many_arguments)]
+async fn seal_for_finish(
+    engine: &Engine,
+    conn: &mut SqliteConnection,
+    ctx: &SpaceContext,
+    batch: &mut Batch,
+    slot: &mut SealSlot<'_, '_>,
+    rows: &BTreeSet<RowRef>,
+    now_ms: u64,
+    report: &mut SealReport,
+) -> SyncResult<bool> {
+    if !slot.admit(engine, conn, rows).await? {
+        return Ok(false);
+    }
+    let Some((sealer, writer)) = slot.try_open(engine, conn, ctx, batch, now_ms).await? else {
+        return Ok(false);
+    };
+    sealer
+        .seal_rows(engine, conn, ctx, batch, writer, rows, now_ms, report)
+        .await?;
+    Ok(true)
+}
+
 /// Seals repairs for hidden duplicates, detached tree rows, and cascades, refreshes row flags,
 /// and materializes every dirty row. Returns the domain tables it changed.
 ///
 /// A materialization never overwrites a local edit that is not sealed: captured rows it would
-/// write, or cascade to, are sealed first and the merge is planned again. Without a writer that
-/// can seal them it returns `None` and writes nothing, so the caller rolls back.
+/// write, or cascade to, are sealed first and the merge is planned again. Captures of dirty
+/// tables are sealed before repairs as `constrained` says. Without a writer that can seal them,
+/// or when they exceed what a bounded slot may still seal, it returns `None` and writes
+/// nothing, so the caller rolls back.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn finish(
     engine: &Engine,
     conn: &mut SqliteConnection,
     ctx: &SpaceContext,
     batch: &mut Batch,
     slot: &mut SealSlot<'_, '_>,
+    constrained: Constrained,
     now_ms: u64,
     report: &mut SealReport,
 ) -> SyncResult<Option<Vec<&'static str>>> {
@@ -612,6 +669,17 @@ pub(crate) async fn finish(
     // transaction, so the loop ends.
     let mut attempted = BTreeSet::new();
     loop {
+        if constrained != Constrained::Skip {
+            let tables = constrained_tables(engine, batch.dirty.iter().map(|(table, _)| *table));
+            let mut rows = seal::captured_in(conn, &tables).await?;
+            rows.retain(|row| !attempted.contains(row));
+            if !rows.is_empty() {
+                if !seal_for_finish(engine, conn, ctx, batch, slot, &rows, now_ms, report).await? {
+                    return Ok(None);
+                }
+                attempted.extend(rows);
+            }
+        }
         let mut repaired = false;
         let mut visibility = loop {
             let mut visibility = Visibility::load(engine, conn, &mut batch.dirty).await?;
@@ -634,48 +702,38 @@ pub(crate) async fn finish(
         };
         let merged = merge::refresh_flags(engine, conn, batch, &mut visibility).await?;
         let plan = materialize::plan(engine, conn, batch, &mut visibility, merged).await?;
-        // A constraint over several rows of a table is repaired from merge state only, so every
-        // captured row of a planned table with such a constraint seals with the planned rows.
-        let constrained: BTreeSet<TableId> = plan
-            .rows(engine)
-            .map(|(table, _)| table)
-            .filter(|table| {
-                engine
-                    .manifest()
-                    .table(*table)
-                    .is_some_and(|spec| spec.constrains_rows_together())
-            })
-            .collect();
         let mut captured = seal::captured(conn, plan.rows(engine)).await?;
-        captured.extend(seal::captured_in(conn, &constrained).await?);
+        if constrained != Constrained::Skip {
+            let tables = constrained_tables(engine, plan.rows(engine).map(|(table, _)| table));
+            captured.extend(seal::captured_in(conn, &tables).await?);
+        }
         captured.retain(|row| !attempted.contains(row));
         if captured.is_empty() {
             let changed = materialize::execute(engine, conn, plan).await?;
             batch.dirty.clear();
             return Ok(Some(changed));
         }
-        let Some((sealer, writer)) = slot.try_open(engine, conn, ctx, batch, now_ms).await? else {
+        if !seal_for_finish(engine, conn, ctx, batch, slot, &captured, now_ms, report).await? {
             return Ok(None);
-        };
-        sealer
-            .seal_rows(engine, conn, ctx, batch, writer, &captured, now_ms, report)
-            .await?;
+        }
         attempted.extend(captured);
     }
 }
 
 /// [`finish`] for a call that seals with its writer, where captured rows left unsealed mean
-/// the writer is no longer active.
+/// the writer is no longer active. Its slot is never bounded.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn finish_sealed(
     engine: &Engine,
     conn: &mut SqliteConnection,
     ctx: &SpaceContext,
     batch: &mut Batch,
     slot: &mut SealSlot<'_, '_>,
+    constrained: Constrained,
     now_ms: u64,
     report: &mut SealReport,
 ) -> SyncResult<Vec<&'static str>> {
-    match finish(engine, conn, ctx, batch, slot, now_ms, report).await? {
+    match finish(engine, conn, ctx, batch, slot, constrained, now_ms, report).await? {
         Some(changed) => Ok(changed),
         None => Err(match slot.local_id() {
             Some(writer) => SyncError::WriterInactive(writer),
@@ -688,12 +746,15 @@ impl Engine {
     /// Applies ready operations in one bounded transaction.
     ///
     /// Local captures of the rows an operation changes, held deletes included, are sealed
-    /// before it applies, and captures of rows the merge would materialize, with every capture
-    /// of a materialized table whose constraint reads several rows together, are sealed before
-    /// the domain tables are written, so a merge never overwrites a local edit that is not
-    /// sealed and every repair sees the local edits it must account for. Other captures stay for [`Engine::seal`]. Without a local writer, or when it is
-    /// no longer active, an operation that touches captured rows stops the call before it
-    /// applies, and a materialization that would write captured rows rolls the call back.
+    /// before it applies. Every capture of a changed table whose constraint reads several rows
+    /// together is sealed before repairs, and captures of rows the merge would materialize are
+    /// sealed before the domain tables are written, so a merge never overwrites a local edit
+    /// that is not sealed and every repair sees the local edits it must account for. Other
+    /// captures stay for [`Engine::seal`]. The call seals at most one seal transaction of
+    /// captures. Without a local writer, when it is no longer active, or when the captures
+    /// exceed that bound, an operation that touches captured rows stops the call before it
+    /// applies, and a finish that would seal captured rows rolls the call back. The report then
+    /// says captures are pending, and the caller seals them in batches and applies again.
     pub async fn apply(
         &self,
         conn: &mut SqliteConnection,
@@ -705,7 +766,7 @@ impl Engine {
         log::ensure_space(&mut tx, ctx.space).await?;
         sql::begin_engine_write(&mut tx).await?;
         let mut batch = Batch::load(&mut tx, ctx.space).await?;
-        let mut slot = SealSlot::new(writer);
+        let mut slot = SealSlot::bounded(writer);
         let mut report = ApplyReport::default();
         let mut sealed = SealReport::default();
         let mut blocked = BTreeSet::new();
@@ -779,6 +840,7 @@ impl Engine {
             ctx,
             &mut batch,
             &mut slot,
+            Constrained::Seal,
             now_ms,
             &mut sealed,
         )

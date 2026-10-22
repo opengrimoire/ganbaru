@@ -25,7 +25,7 @@ use ganbaru_sync_contracts::{
 use sqlx::{Connection, Row, SqliteConnection};
 
 use crate::adapter::Presentation;
-use crate::apply::finish_sealed;
+use crate::apply::{Constrained, finish_sealed};
 use crate::error::{SyncResult, corrupt, failpoint};
 use crate::manifest::TableSpec;
 use crate::merge::{self, Batch, RowState, Version, table_param};
@@ -627,6 +627,7 @@ impl Engine {
             ctx,
             &mut batch,
             &mut slot,
+            Constrained::Seal,
             now_ms,
             &mut report,
         )

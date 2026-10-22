@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use ganbaru_sync_contracts::{Content, Envelope, Operation, Seq, TableId, VersionVector, WriterId};
 use sqlx::{Connection, Row, SqliteConnection};
 
-use crate::apply::finish_sealed;
+use crate::apply::{Constrained, finish_sealed};
 use crate::error::{SyncResult, corrupt, failpoint};
 use crate::log::{self, seq_i64, stored_u64};
 use crate::merge::{Batch, table_param};
@@ -413,6 +413,7 @@ impl Engine {
             ctx,
             &mut batch,
             &mut slot,
+            Constrained::Seal,
             now_ms,
             &mut report.seal,
         )

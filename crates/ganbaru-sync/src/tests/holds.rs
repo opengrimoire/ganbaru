@@ -345,3 +345,168 @@ fn a_remote_change_first_seals_unsealed_rows_that_a_constraint_over_its_table_re
         }
     });
 }
+
+/// Inserts [`LARGE_SEAL_ROWS`] unique labels into `fixture_cycle_a`, more captures than one
+/// seal transaction takes.
+fn large_cycle_a() -> String {
+    format!(
+        "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < {LARGE_SEAL_ROWS})
+         INSERT INTO fixture_cycle_a (id, label)
+         SELECT printf('c-%031d', i), printf('%040d', i) FROM n;"
+    )
+}
+
+#[test]
+fn a_remote_create_sees_an_unsealed_rename_that_frees_its_unique_label() {
+    block_on(async {
+        let mut replicas = replicas(2).await;
+        replicas[0]
+            .exec("INSERT INTO fixture_cycle_a (id, label) VALUES ('a-1', 'A')")
+            .await;
+        replicas[0].seal().await.unwrap();
+        replicas[1]
+            .exec("INSERT INTO fixture_cycle_a (id, label) VALUES ('a-3', 'A')")
+            .await;
+        replicas[1].seal().await.unwrap();
+        replicas[0]
+            .exec("UPDATE fixture_cycle_a SET label = 'B' WHERE id = 'a-1'")
+            .await;
+
+        let known = replicas[0].stored_vector().await;
+        let ops = replicas[1].ops_since(&known).await;
+        let author = &mut replicas[0];
+        author.receive(&ops).await;
+        author.apply_once().await.unwrap();
+        converge(&mut replicas).await;
+        for replica in &mut replicas {
+            assert_eq!(
+                replica.count("SELECT count(*) FROM sync_tombstones").await,
+                0,
+                "the rename seals before the duplicate repair"
+            );
+            assert_eq!(
+                replica.count("SELECT count(*) FROM fixture_cycle_a").await,
+                2
+            );
+        }
+        let expected = replicas[0].dump().await;
+        assert_eq!(replicas[1].dump().await, expected);
+    });
+}
+
+#[test]
+fn a_seal_in_batches_takes_a_rename_before_the_create_that_reuses_its_label() {
+    block_on(async {
+        let mut replicas = replicas(2).await;
+        replicas[0]
+            .exec("INSERT INTO fixture_cycle_a (id, label) VALUES ('a-0', 'Free')")
+            .await;
+        replicas[0].seal().await.unwrap();
+        converge(&mut replicas).await;
+        replicas[0]
+            .exec(&format!(
+                "UPDATE fixture_cycle_a SET label = 'Taken' WHERE id = 'a-0';
+                 INSERT INTO fixture_cycle_a (id, label) VALUES ('b-reuse', 'Free');
+                 {}",
+                large_cycle_a()
+            ))
+            .await;
+        let mut batches = 0;
+        loop {
+            let report = replicas[0].seal().await.unwrap();
+            assert!(report.sealed_ops <= MAX_OPS_PER_SEAL);
+            batches += 1;
+            if !report.more {
+                break;
+            }
+        }
+        assert!(batches >= 2, "the captures exceed one seal transaction");
+        converge(&mut replicas).await;
+        for replica in &mut replicas {
+            assert_eq!(
+                replica.count("SELECT count(*) FROM sync_tombstones").await,
+                0
+            );
+            assert_eq!(
+                replica
+                    .count(
+                        "SELECT count(*) FROM fixture_cycle_a
+                         WHERE (id, label) IN (VALUES ('a-0', 'Taken'), ('b-reuse', 'Free'))"
+                    )
+                    .await,
+                2
+            );
+        }
+        let expected = replicas[0].dump().await;
+        assert_eq!(replicas[1].dump().await, expected);
+    });
+}
+
+#[test]
+fn apply_over_too_many_constrained_captures_waits_for_batched_seals_and_then_progresses() {
+    block_on(async {
+        let mut replicas = replicas(2).await;
+        replicas[0].exec(&large_cycle_a()).await;
+        let remote = |label: &str| {
+            format!("INSERT INTO fixture_cycle_a (id, label) VALUES ('r-{label}', '{label}')")
+        };
+        replicas[1].exec(&remote("first")).await;
+        replicas[1].seal().await.unwrap();
+        let known = replicas[0].stored_vector().await;
+        let ops = replicas[1].ops_since(&known).await;
+        replicas[0].receive(&ops).await;
+
+        let captures = "SELECT count(*) FROM sync_capture";
+        let before = replicas[0].snapshot().await;
+        let report = replicas[0].apply_once().await.unwrap();
+        assert!(
+            report.pending_captures,
+            "one apply cannot seal every capture"
+        );
+        assert!(
+            replicas[0].snapshot().await == before,
+            "an apply over the bound rolls back"
+        );
+
+        // The caller seals one batch and applies again, and a remote operation arrives while
+        // the captures drain. Every round seals captures, so the loop ends.
+        let mut rounds = 0;
+        loop {
+            let report = replicas[0].apply_once().await.unwrap();
+            if !report.pending_captures {
+                break;
+            }
+            let left = replicas[0].count(captures).await;
+            replicas[0].seal().await.unwrap();
+            assert!(
+                replicas[0].count(captures).await < left,
+                "a seal drains captures"
+            );
+            if rounds == 0 {
+                replicas[1].exec(&remote("second")).await;
+                replicas[1].seal().await.unwrap();
+                let known = replicas[0].stored_vector().await;
+                let ops = replicas[1].ops_since(&known).await;
+                replicas[0].receive(&ops).await;
+            }
+            rounds += 1;
+            assert!(rounds < 100, "apply never progressed");
+        }
+        assert!(rounds >= 1);
+        assert_eq!(
+            replicas[0]
+                .count("SELECT count(*) FROM fixture_cycle_a WHERE id IN ('r-first', 'r-second')")
+                .await,
+            2
+        );
+        converge(&mut replicas).await;
+        let expected = replicas[0].dump().await;
+        assert_eq!(replicas[1].dump().await, expected);
+        assert_eq!(
+            replicas[1]
+                .count("SELECT count(*) FROM sync_tombstones")
+                .await,
+            0
+        );
+    });
+}

@@ -1,10 +1,12 @@
 //! Concurrent sync of the active vault: the service that seals local changes and exchanges with
 //! the hub, the paired transport, and the recovery offers and device names the frontend shows.
 //! Replica access, the local writer, carry-forward, and the exchange live in
-//! `ganbaru-sync-replica`.
+//! `ganbaru-sync-replica`. A pass runs through a host, so the app and a headless pass without a
+//! Tauri runtime share it.
 
 pub(crate) mod commands;
 pub(crate) mod devices;
+mod host;
 mod recovery;
 mod service;
 mod status;
@@ -13,7 +15,7 @@ mod vault_assets;
 
 #[cfg(desktop)]
 pub(crate) use ganbaru_sync_replica::hub;
-use ganbaru_sync_replica::{access, assets, carry_forward, client, writer};
+use ganbaru_sync_replica::{assets, carry_forward, client, writer};
 
 #[cfg(test)]
 mod tests;
@@ -22,7 +24,7 @@ pub(crate) use ganbaru_sync_replica::now_ms;
 #[cfg(desktop)]
 pub(crate) use service::sync_hub;
 pub(crate) use service::{
-    SyncRuntime, coordinator_device_id, quiesced_sync, resume_after_vault_handoff, seal_quiesced,
-    setup, stop_for_vault_handoff, sync_files,
+    SyncRuntime, coordinator_device_id, quiesced_sync, release_runtime_handle,
+    resume_after_vault_handoff, seal_quiesced, setup, stop_for_vault_handoff, sync_files,
 };
 pub(crate) use status::SyncSubscribers;

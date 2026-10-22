@@ -87,6 +87,7 @@ Source: `crates/ganbaru-sync-contracts/`, `crates/ganbaru-sync/`, `crates/ganbar
 - When a table starts to replicate, vault open seeds it before the sync service starts: every existing row that satisfies its [publication predicate](../algorithms/sync/README.md#publication) is captured once as a create, and the table is recorded so later opens skip it.
 - A local delete on a table that holds deletes can stay unsealed for at most 10 seconds so domain Undo can restore the row; see [deletion holds](../algorithms/sync/README.md#deletion-holds).
 - Sealing runs only while the vault is linked and a writer exists. A standalone vault keeps coalesced captures, at most one per changed row, and seals them when it first links.
+- A process runs one sync pass at a time, whether the app service, a headless pass, or the seal before a vault transition runs it. A headless pass needs no Tauri runtime: it seals, exchanges, applies, and moves managed assets, then returns without a long poll or a vault refresh. When the app service of the same process is running, the headless pass asks it for a pass and waits up to 60 seconds instead of running a second one, and it refuses to run while a vault handoff this device started is unfinished. The Android background entry that calls it is Planned.
 
 ### Writers
 

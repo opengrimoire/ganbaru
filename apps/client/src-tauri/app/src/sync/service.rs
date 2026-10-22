@@ -2,35 +2,44 @@
 //! current, seals local captures after commits, and exchanges operations and managed asset
 //! files with the hub. On the coordinator it applies what linked devices push and revokes the
 //! writers of unlinked devices.
+//!
+//! A pass runs through a [`SyncHost`], so the app service and a headless pass share it. Passes
+//! of one process run one at a time behind a gate, and a headless pass hands its work to the
+//! app service when one is running.
 
-use super::access::vault_connection_hook;
 use super::assets::{AssetMemory, AssetSession, AssetStore, AssetTransfer, MAX_ASSET_PASS_BYTES};
 use super::carry_forward;
 use super::client::{ClientSession, Exchange, ForkPoint, PeerIds};
+#[cfg(mobile)]
+use super::host::HeadlessHost;
+use super::host::SyncHost;
 #[cfg(desktop)]
 use super::hub::{HubVault, OpenHubVault, SyncHub};
 use super::recovery::{RecoveryChoice, RecoveryRequest};
-use super::status::{
-    SyncErrorCode, SyncRole, SyncState, SyncStatusView, emit_applied, emit_status,
-};
+use super::status::{SyncErrorCode, SyncRole, SyncState, SyncStatusView};
 use super::transport::PairedTransport;
 use super::vault_assets::ActiveVaultAssets;
 use super::writer::{
     ActiveWriter, SuccessorPlan, SyncFiles, WriterCheck, WriterKeyStore, check_writer,
     create_writer, read_stored_writer, remove_retired_keys,
 };
-use crate::db::DatabaseState;
 use crate::vault::handoff::pairing::PairingManager;
 use ganbaru_db::{DatabaseAccessMode, DatabasePoolRegistry};
 use ganbaru_handoff::protocol::SyncRefusalCode;
-use ganbaru_sync::{Engine, SealReport, SpaceContext, SyncError, WriterState, hold, local};
+use ganbaru_sync::{
+    ChangeNotice, Engine, SealReport, SpaceContext, SyncError, WriterState, hold, local,
+};
 use ganbaru_sync_contracts::VersionVector;
 use ganbaru_sync_contracts::op::RevokeReason;
 use ganbaru_sync_replica::now_ms;
 use sqlx::SqlitePool;
 use std::collections::BTreeSet;
+#[cfg(any(mobile, test))]
+use std::future::Future;
+use std::ops::Deref;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, LazyLock, Mutex, Weak};
 use std::time::Duration;
 use tauri::{AppHandle, Manager, Runtime};
 use tokio::sync::{Notify, oneshot, watch};
@@ -48,46 +57,70 @@ const RETRY_DELAYS: [Duration; 4] = [
 ];
 /// How long a stopping service may finish its pass before it is aborted.
 const STOP_TIMEOUT: Duration = Duration::from_secs(10);
+/// How long a headless pass waits for the running app service to finish the pass it asked for.
+#[cfg(mobile)]
+const DELEGATED_PASS_TIMEOUT: Duration = Duration::from_secs(60);
 /// Bound on apply rounds in one pass; each round is one bounded transaction.
 const MAX_APPLY_ROUNDS: usize = 10_000;
 /// Bound on seal rounds in one pass; each round is one bounded transaction.
 const MAX_SEAL_ROUNDS: usize = 10_000;
 /// Fork recoveries one pass may run before it reports an error.
 const MAX_FORK_RECOVERIES: usize = 3;
-/// Directory under the app config directory that holds writer records and carry bundles.
-const SYNC_DIRECTORY: &str = "sync";
+
+/// Lets one sync pass of this process run at a time, whether the app service, a headless pass,
+/// or the seal before a vault transition runs it.
+static PASS_GATE: LazyLock<tokio::sync::Mutex<()>> = LazyLock::new(|| tokio::sync::Mutex::new(()));
+
+/// The service state of the running app, so a headless pass can hand its work to it instead
+/// of running a second pass. Cleared when the app exits.
+static LIVE_RUNTIME: Mutex<Weak<RuntimeState>> = Mutex::new(Weak::new());
 
 /// Managed state of the sync service.
-pub(crate) struct SyncRuntime {
-    /// Signaled after every commit on a writable vault connection.
-    commits: Arc<Notify>,
+#[derive(Clone, Default)]
+pub(crate) struct SyncRuntime(Arc<RuntimeState>);
+
+impl Deref for SyncRuntime {
+    type Target = RuntimeState;
+
+    fn deref(&self) -> &RuntimeState {
+        &self.0
+    }
+}
+
+/// What the sync service and its commands share.
+pub(crate) struct RuntimeState {
     /// Signaled to run a pass now.
     now: Arc<Notify>,
     /// Bumped after each pass, so hub waits recheck the log.
     changes: watch::Sender<u64>,
     /// A pause change waiting for the writer record.
-    pause_request: Arc<Mutex<Option<bool>>>,
+    pause_request: Mutex<Option<bool>>,
     /// Recovery actions waiting for the next pass.
-    recovery: Arc<Mutex<Vec<RecoveryRequest>>>,
-    status: Arc<Mutex<SyncStatusView>>,
+    recovery: Mutex<Vec<RecoveryRequest>>,
+    status: Mutex<SyncStatusView>,
     task: Mutex<Option<ServiceTask>>,
+    /// Number of the latest pass that started.
+    passes_started: AtomicU64,
+    /// Number of the latest pass that finished.
+    passes_done: watch::Sender<u64>,
 }
 
-impl Default for SyncRuntime {
+impl Default for RuntimeState {
     fn default() -> Self {
         Self {
-            commits: Arc::default(),
             now: Arc::default(),
             changes: watch::Sender::new(0),
-            pause_request: Arc::default(),
-            recovery: Arc::default(),
-            status: Arc::default(),
+            pause_request: Mutex::default(),
+            recovery: Mutex::default(),
+            status: Mutex::default(),
             task: Mutex::default(),
+            passes_started: AtomicU64::new(0),
+            passes_done: watch::Sender::new(0),
         }
     }
 }
 
-impl SyncRuntime {
+impl RuntimeState {
     /// The latest status of the active vault.
     pub(crate) fn status(&self) -> Result<SyncStatusView, String> {
         self.status
@@ -132,6 +165,26 @@ impl SyncRuntime {
             .map(|mut requests| std::mem::take(&mut *requests))
             .unwrap_or_default()
     }
+
+    /// Whether the service task is running.
+    #[cfg(any(mobile, test))]
+    fn running(&self) -> Result<bool, String> {
+        self.task
+            .lock()
+            .map(|task| task.is_some())
+            .map_err(|_| "sync service lock is unavailable".to_string())
+    }
+
+    /// Marks the start of a pass and returns its number.
+    fn pass_started(&self) -> u64 {
+        self.passes_started.fetch_add(1, Ordering::SeqCst) + 1
+    }
+
+    /// Marks the end of pass `number`.
+    fn pass_done(&self, number: u64) {
+        self.passes_done
+            .send_modify(|done| *done = (*done).max(number));
+    }
 }
 
 struct ServiceTask {
@@ -139,14 +192,26 @@ struct ServiceTask {
     handle: tauri::async_runtime::JoinHandle<()>,
 }
 
-/// Installs the vault connection hook and starts the service. Runs once at startup, before
-/// the frontend opens the vault.
+/// Registers the service state as the runtime a headless pass hands its work to, and starts
+/// the service. Runs once at startup, before the frontend opens the vault. The vault connection
+/// hook is installed with the process pool registry.
 pub(crate) fn setup<R: Runtime>(app: &AppHandle<R>) {
-    let commits = app.state::<SyncRuntime>().commits.clone();
-    app.state::<DatabaseState>()
-        .set_connection_hook(Some(vault_connection_hook(commits)));
+    let runtime = app.state::<SyncRuntime>();
+    match LIVE_RUNTIME.lock() {
+        Ok(mut live) => *live = Arc::downgrade(&runtime.0),
+        Err(_) => eprintln!("register sync runtime: the runtime lock is unavailable"),
+    }
     if let Err(error) = start(app) {
         eprintln!("start sync service: {error}");
+    }
+}
+
+/// Forgets the running app service, so a later headless pass in this process runs its own
+/// pass. Runs when the app exits.
+pub(crate) fn release_runtime_handle() {
+    match LIVE_RUNTIME.lock() {
+        Ok(mut live) => *live = Weak::new(),
+        Err(_) => eprintln!("release sync runtime: the runtime lock is unavailable"),
     }
 }
 
@@ -163,13 +228,13 @@ pub(crate) fn sync_hub<R: Runtime>(app: &AppHandle<R>) -> SyncHub {
 
 #[cfg(desktop)]
 async fn open_hub_vault<R: Runtime>(app: &AppHandle<R>) -> Result<Option<HubVault>, String> {
-    if !sync_enabled(app)? {
+    if !app.sync_enabled()? {
         return Ok(None);
     }
-    let Some(pool) = crate::db::connect_active_vault_for_sync(app).await? else {
+    let Some(pool) = app.connect_for_sync().await? else {
         return Ok(None);
     };
-    let vault_id = crate::vault::active_vault_id(app)?;
+    let vault_id = app.active_vault_id()?;
     let assets: Arc<dyn AssetStore> = Arc::new(ActiveVaultAssets::open(app, &vault_id)?);
     Ok(Some(HubVault {
         pool,
@@ -179,25 +244,32 @@ async fn open_hub_vault<R: Runtime>(app: &AppHandle<R>) -> Result<Option<HubVaul
     }))
 }
 
-/// Stops the service before a vault transition, letting a running pass finish first.
+/// Stops the service before a vault transition, letting a running pass finish first. A pass
+/// of this process that does not finish in time fails the stop, which keeps the vault.
 pub(crate) async fn stop_for_vault_handoff<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
+    let deadline = tokio::time::Instant::now() + STOP_TIMEOUT;
     let task = app
         .state::<SyncRuntime>()
         .task
         .lock()
         .map_err(|_| "sync service lock is unavailable".to_string())?
         .take();
-    let Some(mut task) = task else {
-        return Ok(());
-    };
-    task.stop.notify_one();
-    if tokio::time::timeout(STOP_TIMEOUT, &mut task.handle)
-        .await
-        .is_err()
-    {
-        task.handle.abort();
+    if let Some(mut task) = task {
+        task.stop.notify_one();
+        if tokio::time::timeout_at(deadline, &mut task.handle)
+            .await
+            .is_err()
+        {
+            task.handle.abort();
+            // The aborted task resolves as cancelled once its pass is dropped, which releases
+            // the pass gate; the cancellation itself is the expected outcome.
+            let _cancelled = task.handle.await;
+        }
     }
-    Ok(())
+    tokio::time::timeout_at(deadline, PASS_GATE.lock())
+        .await
+        .map(drop)
+        .map_err(|_| "a sync pass is still running".to_string())
 }
 
 /// Restarts the service after a vault transition.
@@ -206,7 +278,7 @@ pub(crate) fn resume_after_vault_handoff<R: Runtime>(app: &AppHandle<R>) -> Resu
 }
 
 fn start<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
-    let runtime = app.state::<SyncRuntime>();
+    let runtime = app.state::<SyncRuntime>().inner().clone();
     let mut task = runtime
         .task
         .lock()
@@ -217,12 +289,88 @@ fn start<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
     let stop = Arc::new(Notify::new());
     let signals = Signals {
         stop: stop.clone(),
-        commits: runtime.commits.clone(),
+        commits: crate::db::vault_commits().clone(),
         now: runtime.now.clone(),
     };
-    let handle = tauri::async_runtime::spawn(run(app.clone(), signals));
+    let handle = tauri::async_runtime::spawn(run(app.clone(), runtime.clone(), signals));
     *task = Some(ServiceTask { stop, handle });
     Ok(())
+}
+
+/// What a headless pass did.
+#[cfg(any(mobile, test))]
+#[cfg_attr(mobile, allow(dead_code))]
+pub(crate) struct HeadlessPass {
+    /// The status after the pass.
+    pub(crate) status: SyncStatusView,
+    /// The running app service ran the pass.
+    pub(crate) delegated: bool,
+    /// An exchange stopped at its byte bound, so another pass would continue it.
+    pub(crate) more: bool,
+}
+
+/// Runs one pass for the app config directory `config_dir` without a Tauri runtime: it seals,
+/// exchanges with the hub, applies, and moves managed assets, then returns without waiting for
+/// the hub. When the app service of this process is running, it runs the pass instead.
+#[cfg(mobile)]
+#[allow(dead_code)]
+pub(crate) async fn headless_pass(config_dir: PathBuf) -> Result<HeadlessPass, String> {
+    let open = async move { blocking(move || HeadlessHost::open(&config_dir)).await };
+    headless_pass_with(open, &LIVE_RUNTIME, &PASS_GATE, DELEGATED_PASS_TIMEOUT).await
+}
+
+/// Runs one headless pass with the host `open` builds, or asks the runtime registered in `live`
+/// to run it and waits up to `wait` for it. The host is opened only when no runtime runs.
+#[cfg(any(mobile, test))]
+async fn headless_pass_with<H, F>(
+    open: F,
+    live: &Mutex<Weak<RuntimeState>>,
+    gate: &tokio::sync::Mutex<()>,
+    wait: Duration,
+) -> Result<HeadlessPass, String>
+where
+    H: SyncHost,
+    F: Future<Output = Result<H, String>>,
+{
+    let running = live
+        .lock()
+        .map_err(|_| "sync runtime lock is unavailable".to_string())?
+        .upgrade();
+    if let Some(runtime) = running {
+        return Ok(HeadlessPass {
+            status: delegate_pass(&runtime, wait).await?,
+            delegated: true,
+            more: false,
+        });
+    }
+    let host = open.await?;
+    let runtime = RuntimeState::default();
+    let next = ServiceState::default().pass(&host, &runtime, gate).await;
+    Ok(HeadlessPass {
+        status: runtime.status()?,
+        delegated: false,
+        more: matches!(next, Next::Continue),
+    })
+}
+
+/// Asks the running service for a pass and waits up to `wait` for one that started after the
+/// request to finish. It never runs a pass itself, so a slow service fails the call.
+#[cfg(any(mobile, test))]
+async fn delegate_pass(runtime: &RuntimeState, wait: Duration) -> Result<SyncStatusView, String> {
+    if !runtime.running()? {
+        return Err("the sync service is stopped".to_string());
+    }
+    let mut done = runtime.passes_done.subscribe();
+    let target = runtime.passes_started.load(Ordering::SeqCst) + 1;
+    runtime.sync_now();
+    let finished = tokio::time::timeout(wait, done.wait_for(|done| *done >= target))
+        .await
+        .map(|result| result.is_ok());
+    match finished {
+        Ok(true) => runtime.status(),
+        Ok(false) => Err("the sync service stopped".to_string()),
+        Err(_) => Err("the sync service did not finish a pass in time".to_string()),
+    }
 }
 
 /// What ends a wait between passes.
@@ -301,11 +449,11 @@ async fn sleep_until(deadline: Option<tokio::time::Instant>) {
     }
 }
 
-async fn run<R: Runtime>(app: AppHandle<R>, signals: Signals) {
+async fn run<H: SyncHost>(host: H, runtime: SyncRuntime, signals: Signals) {
     let mut state = ServiceState::default();
     let mut failures = 0usize;
     loop {
-        let next = state.pass(&app).await;
+        let next = state.pass(&host, &runtime, &PASS_GATE).await;
         let hold = state.until_hold_expiry();
         let wake = match next {
             Next::Idle => {
@@ -353,8 +501,8 @@ fn retry_delay(failures: usize) -> Duration {
     RETRY_DELAYS[failures.saturating_sub(1).min(RETRY_DELAYS.len() - 1)]
 }
 
-fn asset_session<'s, R: Runtime>(
-    session: &'s Session<'_, R>,
+fn asset_session<'s, H: SyncHost>(
+    session: &'s Session<'_, H>,
     peer: &'s AssetPeer,
 ) -> AssetSession<'s, PairedTransport> {
     AssetSession {
@@ -408,6 +556,8 @@ impl ApplyMark {
 struct Applied {
     /// Tables whose rows changed.
     tables: Vec<String>,
+    /// Changes the registered hooks reported.
+    notices: Vec<ChangeNotice>,
     /// Local captures left when it stopped on captures that sealing did not drain.
     blocked_at: Option<u64>,
 }
@@ -428,13 +578,24 @@ impl ServiceState {
         (expiry > now).then(|| Duration::from_millis(expiry - now))
     }
 
-    async fn pass<R: Runtime>(&mut self, app: &AppHandle<R>) -> Next {
+    /// Runs one pass once `gate` lets it, then publishes the status and wakes hub waits.
+    async fn pass<H: SyncHost>(
+        &mut self,
+        host: &H,
+        runtime: &RuntimeState,
+        gate: &tokio::sync::Mutex<()>,
+    ) -> Next {
+        let _gate = gate.lock().await;
+        let number = runtime.pass_started();
         let mut view = SyncStatusView {
             last_exchange_at_ms: self.view.last_exchange_at_ms,
             ..SyncStatusView::default()
         };
-        let mut recovery = app.state::<SyncRuntime>().take_recovery_requests();
-        let next = match self.pass_inner(app, &mut view, &mut recovery).await {
+        let mut recovery = runtime.take_recovery_requests();
+        let next = match self
+            .pass_inner(host, runtime, &mut view, &mut recovery)
+            .await
+        {
             Ok(next) => next,
             Err(error) => {
                 eprintln!("sync: {error}");
@@ -448,33 +609,35 @@ impl ServiceState {
                 .reply
                 .send(Err("sync is not ready on this device".to_string()));
         }
-        self.publish(app, view);
-        app.state::<SyncRuntime>()
+        self.publish(host, runtime, view);
+        runtime
             .changes
             .send_modify(|generation| *generation = generation.wrapping_add(1));
+        runtime.pass_done(number);
         next
     }
 
-    async fn pass_inner<R: Runtime>(
+    async fn pass_inner<H: SyncHost>(
         &mut self,
-        app: &AppHandle<R>,
+        host: &H,
+        runtime: &RuntimeState,
         view: &mut SyncStatusView,
         recovery: &mut Vec<RecoveryRequest>,
     ) -> Result<Next, String> {
-        if !sync_enabled(app)? {
+        if !host.sync_enabled()? {
             return Ok(Next::Idle);
         }
-        let Some(pool) = crate::db::connect_active_vault_for_sync(app).await? else {
+        let Some(pool) = host.connect_for_sync().await? else {
             return Ok(Next::Idle);
         };
-        let vault_id = crate::vault::active_vault_id(app)?;
+        let vault_id = host.active_vault_id()?;
         if self.vault_id.as_deref() != Some(vault_id.as_str()) {
             *self = Self {
                 vault_id: Some(vault_id.clone()),
                 ..Self::default()
             };
         }
-        let manager = app.state::<PairingManager>().inner().clone();
+        let manager = host.pairing();
         let peer = crate::vault::handoff::transport::sync_peer(&manager)?
             .filter(|(linked_vault, _)| *linked_vault == vault_id);
         view.role = Some(if peer.is_some() {
@@ -482,14 +645,14 @@ impl ServiceState {
         } else {
             SyncRole::Hub
         });
-        let session = match Session::open(app, pool.clone(), &vault_id, KeyRelease::Request).await?
-        {
-            Some(session) => Some(session),
-            None if create_identity(app, &pool).await? => {
-                Session::open(app, pool, &vault_id, KeyRelease::Request).await?
-            }
-            None => None,
-        };
+        let session =
+            match Session::open(host, pool.clone(), &vault_id, KeyRelease::Request).await? {
+                Some(session) => Some(session),
+                None if host.create_identity(&pool).await? => {
+                    Session::open(host, pool, &vault_id, KeyRelease::Request).await?
+                }
+                None => None,
+            };
         let Some(session) = session else {
             view.state = SyncState::WaitingForIdentity;
             return Ok(Next::Idle);
@@ -506,8 +669,8 @@ impl ServiceState {
         if !session.ensure_writer(&mut self.writer).await? {
             view.state = SyncState::WaitingForIdentity;
         }
-        self.apply_pause_request(app)?;
-        view.paused = self.paused(app)?;
+        self.apply_pause_request(runtime)?;
+        view.paused = self.paused(runtime)?;
         let mut next = Next::Idle;
         let is_hub = peer.is_none();
         let mut asset_peer = None;
@@ -516,7 +679,8 @@ impl ServiceState {
             Some(_) if view.paused => view.state = SyncState::Paused,
             Some((linked_vault, device_id)) => {
                 self.publish(
-                    app,
+                    host,
+                    runtime,
                     SyncStatusView {
                         state: SyncState::Syncing,
                         ..view.clone()
@@ -528,7 +692,7 @@ impl ServiceState {
                         vault_id: linked_vault,
                         device_id,
                     },
-                    assets: Arc::new(ActiveVaultAssets::open(app, &vault_id)?),
+                    assets: Arc::new(ActiveVaultAssets::open(host, &vault_id)?),
                 };
                 let mut transfer = AssetTransfer::default();
                 next = match self.upload_assets(&session, &assets, &mut transfer).await {
@@ -567,7 +731,7 @@ impl ServiceState {
                 }
                 let _ = request.reply.send(result);
             }
-            emit_applied(app, restored.into_iter().collect());
+            host.emit_applied(restored.into_iter().collect());
         }
         if is_hub {
             session
@@ -592,15 +756,16 @@ impl ServiceState {
         if clock_warnings.is_empty() {
             view.clock_ahead_devices.clear();
         } else {
-            view.set_clock_ahead(&status, &clock_warnings, &super::devices::read(app)?);
+            let names = super::devices::read_with(host.device_id()?, &manager);
+            view.set_clock_ahead(&status, &clock_warnings, &names);
         }
         Ok(next)
     }
 
     /// Exchanges with the hub, re-sealing after a fork of this installation's chain.
-    async fn exchange<R: Runtime>(
+    async fn exchange<H: SyncHost>(
         &mut self,
-        session: &Session<'_, R>,
+        session: &Session<'_, H>,
         mut wait: OnlineWait,
         view: &mut SyncStatusView,
     ) -> Result<Next, String> {
@@ -660,9 +825,9 @@ impl ServiceState {
     /// Uploads the managed assets this device holds and the hub lacks, ahead of the operations
     /// that reference them. Only a transport failure is an error; a file that could not be read
     /// is a problem in `transfer`.
-    async fn upload_assets<R: Runtime>(
+    async fn upload_assets<H: SyncHost>(
         &mut self,
-        session: &Session<'_, R>,
+        session: &Session<'_, H>,
         peer: &AssetPeer,
         transfer: &mut AssetTransfer,
     ) -> Result<(), String> {
@@ -674,9 +839,9 @@ impl ServiceState {
     /// Downloads the referenced managed assets this device lacks once operations were applied,
     /// then folds the outcome of both directions into the status and the next wait. Downloads
     /// run only after an exchange that reached the hub.
-    async fn download_assets<R: Runtime>(
+    async fn download_assets<H: SyncHost>(
         &mut self,
-        session: &Session<'_, R>,
+        session: &Session<'_, H>,
         peer: &AssetPeer,
         transfer: &mut AssetTransfer,
         next: Next,
@@ -706,7 +871,7 @@ impl ServiceState {
     /// Applies stored operations once the log grew since the last apply, or local captures
     /// changed since an apply stopped on them. Apply always commits, so applying on every pass
     /// would wake the service again.
-    async fn apply_new<R: Runtime>(&mut self, session: &Session<'_, R>) -> Result<(), String> {
+    async fn apply_new<H: SyncHost>(&mut self, session: &Session<'_, H>) -> Result<(), String> {
         let stored = {
             let mut conn = acquire(&session.pool).await?;
             session
@@ -720,7 +885,7 @@ impl ServiceState {
             return Ok(());
         }
         let applied = session.apply_ready(&mut self.writer).await?;
-        emit_applied(session.app, applied.tables);
+        session.report(applied.tables, &applied.notices);
         self.applied = ApplyMark {
             stored: Some(stored),
             blocked_at: applied.blocked_at,
@@ -728,12 +893,11 @@ impl ServiceState {
         Ok(())
     }
 
-    fn apply_pause_request<R: Runtime>(&mut self, app: &AppHandle<R>) -> Result<(), String> {
+    fn apply_pause_request(&mut self, runtime: &RuntimeState) -> Result<(), String> {
         let Some(active) = self.writer.as_mut() else {
             return Ok(());
         };
-        let request = app
-            .state::<SyncRuntime>()
+        let request = runtime
             .pause_request
             .lock()
             .map_err(|_| "sync pause lock is unavailable".to_string())?
@@ -745,9 +909,8 @@ impl ServiceState {
     }
 
     /// Whether exchanges are paused: the recorded choice, or one waiting for the writer.
-    fn paused<R: Runtime>(&self, app: &AppHandle<R>) -> Result<bool, String> {
-        let pending = *app
-            .state::<SyncRuntime>()
+    fn paused(&self, runtime: &RuntimeState) -> Result<bool, String> {
+        let pending = *runtime
             .pause_request
             .lock()
             .map_err(|_| "sync pause lock is unavailable".to_string())?;
@@ -758,42 +921,16 @@ impl ServiceState {
         }))
     }
 
-    fn publish<R: Runtime>(&mut self, app: &AppHandle<R>, view: SyncStatusView) {
+    fn publish<H: SyncHost>(&mut self, host: &H, runtime: &RuntimeState, view: SyncStatusView) {
         if self.view == view {
             return;
         }
-        if let Ok(mut status) = app.state::<SyncRuntime>().status.lock() {
+        if let Ok(mut status) = runtime.status.lock() {
             status.clone_from(&view);
         }
-        emit_status(app, &view);
+        host.emit_status(&view);
         self.view = view;
     }
-}
-
-/// Creates the person identity the sync space is anchored at when this device generates it:
-/// the writable owner without a coordinator pin. Other devices wait for the row to arrive with
-/// a vault refresh. Returns whether an identity now exists.
-async fn create_identity<R: Runtime>(
-    app: &AppHandle<R>,
-    pool: &SqlitePool,
-) -> Result<bool, String> {
-    match crate::contacts::identity::ensure_identity(app, pool).await {
-        Ok(_) => Ok(true),
-        Err(crate::contacts::ContactsError::IdentityUnavailable(_)) => Ok(false),
-        Err(error) => Err(format!("create person identity: {}", error.into_message())),
-    }
-}
-
-/// Whether this device seals for the active vault: a linked owner, or a guarded replica.
-fn sync_enabled<R: Runtime>(app: &AppHandle<R>) -> Result<bool, String> {
-    let status = crate::vault::ownership::active_status(app)?;
-    if status.linked_replica {
-        return Ok(true);
-    }
-    Ok(status.can_write
-        && app
-            .state::<crate::vault::ownership::VaultOwnershipManager>()
-            .is_linked(&status.vault_id))
 }
 
 /// How a quiesced vault is opened to seal its captures.
@@ -806,12 +943,10 @@ pub(crate) struct QuiescedSync {
 /// Decides, before a vault transition fences writes, whether the vault must be sealed once its
 /// pools close. Sealing depends on the role and links, not on the transfer phase, because
 /// preparing a transfer changes the phase before the seal runs.
-pub(crate) fn quiesced_sync<R: Runtime>(app: &AppHandle<R>) -> Option<QuiescedSync> {
-    let status = crate::vault::ownership::active_status(app).ok()?;
-    let linked = app
-        .state::<crate::vault::ownership::VaultOwnershipManager>()
-        .is_linked(&status.vault_id);
-    if !linked {
+pub(crate) fn quiesced_sync<H: SyncHost>(host: &H) -> Option<QuiescedSync> {
+    let config_dir = host.config_dir().ok()?;
+    let status = crate::vault::ownership::active_status_in(&config_dir, host.ownership()).ok()?;
+    if !host.ownership().is_linked(&status.vault_id) {
         return None;
     }
     let access = if status.can_write {
@@ -821,7 +956,7 @@ pub(crate) fn quiesced_sync<R: Runtime>(app: &AppHandle<R>) -> Option<QuiescedSy
     } else {
         return None;
     };
-    let path = crate::vault::active_database_path(app).ok()?;
+    let path = crate::vault::active_database_path_in(&config_dir).ok()?;
     Some(QuiescedSync {
         vault_id: status.vault_id,
         path,
@@ -830,20 +965,22 @@ pub(crate) fn quiesced_sync<R: Runtime>(app: &AppHandle<R>) -> Option<QuiescedSy
 }
 
 /// Seals pending captures of a quiesced vault through a private pool, because the shared
-/// connection gate is held. Failures are logged: the captures stay and seal later.
-pub(crate) async fn seal_quiesced<R: Runtime>(app: &AppHandle<R>, plan: Option<QuiescedSync>) {
+/// connection gate is held. It waits for any pass of this process to finish first. Failures
+/// are logged: the captures stay and seal later.
+pub(crate) async fn seal_quiesced<H: SyncHost>(host: &H, plan: Option<QuiescedSync>) {
     let Some(plan) = plan else {
         return;
     };
+    let _gate = PASS_GATE.lock().await;
     let registry = DatabasePoolRegistry::default();
-    let result = seal_quiesced_with(app, &registry, &plan).await;
+    let result = seal_quiesced_with(host, &registry, &plan).await;
     if let Err(error) = result.and(registry.close_all().await) {
         eprintln!("seal sync changes before vault transition: {error}");
     }
 }
 
-async fn seal_quiesced_with<R: Runtime>(
-    app: &AppHandle<R>,
+async fn seal_quiesced_with<H: SyncHost>(
+    host: &H,
     registry: &DatabasePoolRegistry,
     plan: &QuiescedSync,
 ) -> Result<(), String> {
@@ -854,7 +991,7 @@ async fn seal_quiesced_with<R: Runtime>(
         },
         _ => registry.connect_path(&plan.path).await?,
     };
-    let Some(session) = Session::open(app, pool, &plan.vault_id, KeyRelease::Skip).await? else {
+    let Some(session) = Session::open(host, pool, &plan.vault_id, KeyRelease::Skip).await? else {
         return Ok(());
     };
     let mut writer = None;
@@ -878,8 +1015,8 @@ enum KeyRelease {
 }
 
 /// One pass over an open vault pool with the space it replicates.
-struct Session<'a, R: Runtime> {
-    app: &'a AppHandle<R>,
+struct Session<'a, H: SyncHost> {
+    host: &'a H,
     pool: SqlitePool,
     engine: Engine,
     files: SyncFiles,
@@ -888,15 +1025,15 @@ struct Session<'a, R: Runtime> {
     key_release: KeyRelease,
 }
 
-impl<'a, R: Runtime> Session<'a, R> {
+impl<'a, H: SyncHost> Session<'a, H> {
     /// Opens a session, or returns `None` while the vault has no person identity.
     async fn open(
-        app: &'a AppHandle<R>,
+        host: &'a H,
         pool: SqlitePool,
         vault_id: &str,
         key_release: KeyRelease,
     ) -> Result<Option<Self>, String> {
-        let coordinator = coordinator_device_id(app, vault_id)?;
+        let coordinator = coordinator_device_id(host, vault_id)?;
         let ctx = {
             let mut conn = acquire(&pool).await?;
             local::space_context(&mut conn, vault_id, &coordinator)
@@ -907,14 +1044,20 @@ impl<'a, R: Runtime> Session<'a, R> {
             return Ok(None);
         };
         Ok(Some(Self {
-            app,
+            host,
             pool,
-            engine: Engine::vault(),
-            files: sync_files(app, vault_id)?,
-            keys: key_store(app)?,
+            engine: host.engine()?,
+            files: host.sync_files(vault_id)?,
+            keys: host.key_store()?,
             ctx,
             key_release,
         }))
+    }
+
+    /// Tells the host which tables changed and what the registered hooks reported.
+    fn report(&self, tables: Vec<String>, notices: &[ChangeNotice]) {
+        self.host.emit_applied(tables);
+        self.host.report_changes(notices);
     }
 
     /// Start order: clear a stale apply flag, seed captures of tables that start to replicate,
@@ -947,7 +1090,8 @@ impl<'a, R: Runtime> Session<'a, R> {
             return Ok(());
         }
         if imported.is_some_and(|report| report.pending_captures) {
-            emit_applied(self.app, self.apply_ready(writer).await?.tables);
+            let applied = self.apply_ready(writer).await?;
+            self.report(applied.tables, &applied.notices);
         }
         Ok(())
     }
@@ -1042,18 +1186,13 @@ impl<'a, R: Runtime> Session<'a, R> {
 
     /// Creates a successor writer, or returns `None` while the person key is unavailable.
     async fn create_successor(&self, plan: SuccessorPlan) -> Result<Option<ActiveWriter>, String> {
-        let person =
-            crate::contacts::identity::person_key_matching(self.app, &self.ctx.anchor).await?;
-        let Some(person) = person else {
+        let Some(person) = self.host.person_key(&self.ctx.anchor).await? else {
             if self.key_release == KeyRelease::Request {
-                let app = self.app.clone();
-                tauri::async_runtime::spawn(async move {
-                    crate::contacts::identity::try_release(&app).await;
-                });
+                self.host.request_person_key();
             }
             return Ok(None);
         };
-        let device_id = crate::vault::ensure_device_id(self.app)?;
+        let device_id = self.host.device_id()?;
         let files = self.files.clone();
         let keys = self.keys.clone();
         let now = now_ms()?;
@@ -1090,6 +1229,7 @@ impl<'a, R: Runtime> Session<'a, R> {
                     if let Some(seq) = report.last_seq {
                         active.committed(seq)?;
                     }
+                    self.host.report_changes(&report.notices);
                     return Ok(report);
                 }
                 Err(SyncError::WriterInactive(_)) if attempt == 0 => {
@@ -1108,10 +1248,13 @@ impl<'a, R: Runtime> Session<'a, R> {
     /// retried after sealing them in batches, while those seals drain captures.
     async fn apply_ready(&self, writer: &mut Option<ActiveWriter>) -> Result<Applied, String> {
         let mut tables = BTreeSet::new();
-        let done = |tables: BTreeSet<String>, blocked_at| Applied {
-            tables: tables.into_iter().collect(),
-            blocked_at,
-        };
+        let mut notices = BTreeSet::new();
+        let done =
+            |tables: BTreeSet<String>, notices: BTreeSet<ChangeNotice>, blocked_at| Applied {
+                tables: tables.into_iter().collect(),
+                notices: notices.into_iter().collect(),
+                blocked_at,
+            };
         for _ in 0..MAX_APPLY_ROUNDS {
             let report = {
                 let mut conn = acquire(&self.pool).await?;
@@ -1127,6 +1270,10 @@ impl<'a, R: Runtime> Session<'a, R> {
                     .iter()
                     .map(|table| (*table).to_string()),
             );
+            notices.extend(report.notices.iter().cloned());
+            if let Some(seal) = report.seal.as_ref() {
+                notices.extend(seal.notices.iter().cloned());
+            }
             if let (Some(active), Some(seq)) = (
                 writer.as_mut(),
                 report.seal.as_ref().and_then(|seal| seal.last_seq),
@@ -1138,10 +1285,10 @@ impl<'a, R: Runtime> Session<'a, R> {
                 if (current == Some(needed.writer) || current.is_none())
                     && !self.rotate(writer).await?
                 {
-                    return Ok(done(tables, None));
+                    return Ok(done(tables, notices, None));
                 }
                 let Some(active) = writer.as_mut() else {
-                    return Ok(done(tables, None));
+                    return Ok(done(tables, notices, None));
                 };
                 let resealed = {
                     let mut conn = acquire(&self.pool).await?;
@@ -1160,19 +1307,20 @@ impl<'a, R: Runtime> Session<'a, R> {
                 if let Some(seq) = resealed.seal.last_seq {
                     active.committed(seq)?;
                 }
+                notices.extend(resealed.seal.notices);
             } else if report.local_writer_frozen {
                 if !self.rotate(writer).await? {
-                    return Ok(done(tables, None));
+                    return Ok(done(tables, notices, None));
                 }
             } else if report.pending_captures {
                 let before = self.pending_captures().await?;
                 self.seal_batches(writer).await?;
                 let after = self.pending_captures().await?;
                 if after >= before {
-                    return Ok(done(tables, Some(after)));
+                    return Ok(done(tables, notices, Some(after)));
                 }
             } else if !report.more {
-                return Ok(done(tables, None));
+                return Ok(done(tables, notices, None));
             }
         }
         Err("sync apply did not finish".to_string())
@@ -1210,6 +1358,7 @@ impl<'a, R: Runtime> Session<'a, R> {
         if let Some(seq) = resealed.seal.last_seq {
             active.committed(seq)?;
         }
+        self.host.report_changes(&resealed.seal.notices);
         Ok(true)
     }
 
@@ -1259,6 +1408,7 @@ impl<'a, R: Runtime> Session<'a, R> {
             if let Some(seq) = report.last_seq {
                 active.committed(seq)?;
             }
+            self.host.report_changes(&report.notices);
         }
         Ok(())
     }
@@ -1285,49 +1435,23 @@ impl<'a, R: Runtime> Session<'a, R> {
     }
 }
 
-fn sync_directory<R: Runtime>(app: &AppHandle<R>) -> Result<PathBuf, String> {
-    let directory = app
-        .path()
-        .app_config_dir()
-        .map_err(|error| format!("find app config directory: {error}"))?
-        .join(SYNC_DIRECTORY);
-    std::fs::create_dir_all(&directory)
-        .map_err(|error| format!("create sync directory: {error}"))?;
-    Ok(directory)
-}
-
 /// Device id of the coordinator whose writers may revoke in `vault_id`: the pinned coordinator
 /// when this device is linked to one for that vault, otherwise this device, which then hosts
 /// the hub or does not sync with others.
-pub(crate) fn coordinator_device_id<R: Runtime>(
-    app: &AppHandle<R>,
+pub(crate) fn coordinator_device_id<H: SyncHost>(
+    host: &H,
     vault_id: &str,
 ) -> Result<String, String> {
-    let pin = app.state::<PairingManager>().coordinator_pin()?;
+    let pin = host.pairing().coordinator_pin()?;
     match pin.filter(|pin| pin.vault_id == vault_id) {
         Some(pin) => Ok(pin.device_id),
-        None => crate::vault::ensure_device_id(app),
+        None => host.device_id(),
     }
 }
 
 /// Device-local sync files of a vault.
-pub(crate) fn sync_files<R: Runtime>(
-    app: &AppHandle<R>,
-    vault_id: &str,
-) -> Result<SyncFiles, String> {
-    SyncFiles::new(sync_directory(app)?, vault_id)
-}
-
-#[cfg(desktop)]
-fn key_store<R: Runtime>(_app: &AppHandle<R>) -> Result<Arc<dyn WriterKeyStore>, String> {
-    Ok(Arc::new(super::writer::KeyringStore))
-}
-
-#[cfg(mobile)]
-fn key_store<R: Runtime>(app: &AppHandle<R>) -> Result<Arc<dyn WriterKeyStore>, String> {
-    Ok(Arc::new(super::writer::FileKeyStore {
-        directory: sync_directory(app)?,
-    }))
+pub(crate) fn sync_files<H: SyncHost>(host: &H, vault_id: &str) -> Result<SyncFiles, String> {
+    host.sync_files(vault_id)
 }
 
 async fn acquire(pool: &SqlitePool) -> Result<sqlx::pool::PoolConnection<sqlx::Sqlite>, String> {
@@ -1337,7 +1461,7 @@ async fn acquire(pool: &SqlitePool) -> Result<sqlx::pool::PoolConnection<sqlx::S
 }
 
 /// Runs key store and record work off the async runtime, because key stores may block.
-async fn blocking<T, F>(work: F) -> Result<T, String>
+pub(super) async fn blocking<T, F>(work: F) -> Result<T, String>
 where
     T: Send + 'static,
     F: FnOnce() -> Result<T, String> + Send + 'static,
@@ -1346,6 +1470,9 @@ where
         .await
         .map_err(|error| format!("sync key worker: {error}"))?
 }
+
+#[cfg(all(test, desktop))]
+mod headless_tests;
 
 #[cfg(test)]
 mod tests {

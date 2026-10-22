@@ -224,7 +224,7 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_opener::init())
         .plugin(navigation_guard::init())
-        .manage(db::DatabaseState::default())
+        .manage(db::vault_pools().clone())
         .manage(updates::PendingUpdate::default())
         .manage(vault::ownership::VaultOwnershipManager::default())
         .manage(vault::preferences::PreferencesState::default())
@@ -963,6 +963,9 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
     let exit_cleanup_state =
         std::sync::Arc::new(std::sync::atomic::AtomicU8::new(EXIT_CLEANUP_IDLE));
     app.run(move |app_handle, event| {
+        if matches!(event, tauri::RunEvent::Exit) {
+            crate::sync::release_runtime_handle();
+        }
         if let tauri::RunEvent::ExitRequested { code, api, .. } = event {
             let cleanup_state = exit_cleanup_state.load(std::sync::atomic::Ordering::Acquire);
             if code != Some(tauri::RESTART_EXIT_CODE) && cleanup_state != EXIT_CLEANUP_COMPLETE {

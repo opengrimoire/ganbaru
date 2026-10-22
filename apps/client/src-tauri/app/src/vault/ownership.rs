@@ -1,6 +1,6 @@
 //! Durable device-local ownership state for single-writer vault handoff.
 
-use super::{active_vault_id, ensure_device_id};
+use super::{active_vault_id, active_vault_id_in, ensure_device_id_in};
 use ganbaru_sync::manifest::vault::VAULT_MANIFEST;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -168,13 +168,17 @@ impl VaultOwnershipStatus {
 
 impl VaultOwnershipManager {
     pub(crate) fn initialize<R: Runtime>(&self, app: &tauri::AppHandle<R>) -> Result<(), String> {
-        let storage_path = app
+        let config_dir = app
             .path()
             .app_config_dir()
-            .map_err(|error| format!("find app config directory: {error}"))?
-            .join(OWNERSHIP_STATE_FILE);
-        let device_id = ensure_device_id(app)?;
-        self.initialize_from_path(storage_path, device_id)
+            .map_err(|error| format!("find app config directory: {error}"))?;
+        self.initialize_in(&config_dir)
+    }
+
+    /// Load the ownership state kept in the app config directory `config_dir`.
+    pub(crate) fn initialize_in(&self, config_dir: &Path) -> Result<(), String> {
+        let device_id = ensure_device_id_in(config_dir)?;
+        self.initialize_from_path(config_dir.join(OWNERSHIP_STATE_FILE), device_id)
     }
 
     pub(crate) fn initialize_from_path(
@@ -1047,6 +1051,14 @@ pub(crate) fn active_status<R: Runtime>(
 ) -> Result<VaultOwnershipStatus, String> {
     let vault_id = active_vault_id(app)?;
     app.state::<VaultOwnershipManager>().status(&vault_id)
+}
+
+/// The ownership status of the active vault of the app config directory `config_dir`.
+pub(crate) fn active_status_in(
+    config_dir: &Path,
+    manager: &VaultOwnershipManager,
+) -> Result<VaultOwnershipStatus, String> {
+    manager.status(&active_vault_id_in(config_dir)?)
 }
 
 #[tauri::command]

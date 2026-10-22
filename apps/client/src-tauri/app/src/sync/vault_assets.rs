@@ -5,8 +5,7 @@
 //! waiting for it load again.
 
 use super::assets::{AssetStore, AssetStoreError, ContentAddressedStore, StagedAsset};
-use super::status::emit_applied;
-use crate::vault;
+use super::host::SyncHost;
 use ganbaru_music_library::managed_artwork;
 use ganbaru_quick_notes::images;
 use ganbaru_sync::Engine;
@@ -14,25 +13,24 @@ use ganbaru_sync::assets::AssetRef;
 use ganbaru_sync::manifest::vault::music::ARTWORK_CLASS;
 use ganbaru_sync::manifest::vault::quick_notes::IMAGES_CLASS;
 use std::path::PathBuf;
-use tauri::{AppHandle, Runtime};
 
-pub(super) struct ActiveVaultAssets<R: Runtime> {
-    app: AppHandle<R>,
+pub(super) struct ActiveVaultAssets<H: SyncHost> {
+    host: H,
     root: PathBuf,
     files: ContentAddressedStore,
     engine: Engine,
 }
 
-impl<R: Runtime> ActiveVaultAssets<R> {
+impl<H: SyncHost> ActiveVaultAssets<H> {
     /// The asset files of the active vault, which must be `vault_id`, with the content checks
     /// of every class that has one.
-    pub(super) fn open(app: &AppHandle<R>, vault_id: &str) -> Result<Self, String> {
-        if vault::active_vault_id(app)? != vault_id {
+    pub(super) fn open(host: &H, vault_id: &str) -> Result<Self, String> {
+        if host.active_vault_id()? != vault_id {
             return Err("the active vault changed during sync".to_string());
         }
-        let root = vault::active_vault_path(app)?;
+        let root = host.active_vault_path()?;
         Ok(Self {
-            app: app.clone(),
+            host: host.clone(),
             files: ContentAddressedStore::new(root.clone())
                 .with_check(&IMAGES_CLASS, images::check_synced_image)
                 .with_check(&ARTWORK_CLASS, managed_artwork::check_synced_artwork),
@@ -42,7 +40,7 @@ impl<R: Runtime> ActiveVaultAssets<R> {
     }
 }
 
-impl<R: Runtime> AssetStore for ActiveVaultAssets<R> {
+impl<H: SyncHost> AssetStore for ActiveVaultAssets<H> {
     fn holds(&self, asset: &AssetRef) -> Result<bool, AssetStoreError> {
         self.files.holds(asset)
     }
@@ -67,7 +65,9 @@ impl<R: Runtime> AssetStore for ActiveVaultAssets<R> {
                 "asset class {class_name} is not registered"
             )));
         };
-        let root = vault::active_replicated_asset_path(&self.app, domain.name)
+        let root = self
+            .host
+            .replicated_asset_path(domain.name)
             .map_err(AssetStoreError::Failed)?;
         if *root != *self.root {
             return Err(AssetStoreError::Failed(
@@ -77,7 +77,8 @@ impl<R: Runtime> AssetStore for ActiveVaultAssets<R> {
         self.files.commit(staged)?;
         drop(root);
         let tables = self.engine.asset_tables(class);
-        emit_applied(&self.app, tables.into_iter().map(str::to_string).collect());
+        self.host
+            .emit_applied(tables.into_iter().map(str::to_string).collect());
         Ok(())
     }
 }

@@ -1,7 +1,10 @@
 use crate::vault;
-use std::path::PathBuf;
+use crate::vault::ownership::{VaultDatabaseAccess, VaultOwnershipManager};
+use ganbaru_db::DatabaseAccessMode;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock, OnceLock};
 use tauri::{AppHandle, Manager, Runtime};
+use tokio::sync::Notify;
 
 pub use ganbaru_db::DatabasePoolRegistry as DatabaseState;
 
@@ -11,6 +14,30 @@ pub(crate) const BENCHMARK_SQLITE_FILE: &str = "benchmark.sqlite";
 const ALLOWED_SQLITE_FILES: &[&str] = &[vault::APP_SQLITE_FILE, BENCHMARK_SQLITE_FILE];
 static VAULT_CONNECTION_GATE: LazyLock<Arc<tokio::sync::RwLock<()>>> =
     LazyLock::new(|| Arc::new(tokio::sync::RwLock::new(())));
+
+/// Signaled after every commit on a writable vault connection of the process registry.
+static VAULT_COMMITS: LazyLock<Arc<Notify>> = LazyLock::new(Arc::default);
+
+/// The pool registry of this process, which the Tauri app manages and a headless sync pass
+/// shares, so the process never holds two pools on one vault database.
+static VAULT_POOLS: LazyLock<DatabaseState> = LazyLock::new(|| {
+    let registry = DatabaseState::default();
+    registry.set_connection_hook(Some(ganbaru_sync_replica::access::vault_connection_hook(
+        vault_commits().clone(),
+    )));
+    registry
+});
+
+/// The process pool registry. Its connection hook, which installs replica guards and signals
+/// commits, is in place before the first pool opens.
+pub(crate) fn vault_pools() -> &'static DatabaseState {
+    &VAULT_POOLS
+}
+
+/// Signaled after every commit on a writable connection of [`vault_pools`].
+pub(crate) fn vault_commits() -> &'static Arc<Notify> {
+    &VAULT_COMMITS
+}
 
 pub(crate) type VaultExclusiveGuard = tokio::sync::OwnedRwLockWriteGuard<()>;
 
@@ -166,22 +193,29 @@ async fn connect_database<R: Runtime>(
     let registry = app.state::<DatabaseState>().inner().clone();
     let access = if is_vault_database {
         let vault_id = vault::active_vault_id(&app)?;
-        app.state::<vault::ownership::VaultOwnershipManager>()
+        app.state::<VaultOwnershipManager>()
             .database_access(&vault_id)?
     } else {
-        vault::ownership::VaultDatabaseAccess::ReadWrite
+        VaultDatabaseAccess::ReadWrite
     };
     drop(app);
     drop(db_url);
+    connect_with_access(&registry, path, access).await
+}
+
+/// Opens `path` in `registry` with the access ownership grants.
+async fn connect_with_access(
+    registry: &DatabaseState,
+    path: PathBuf,
+    access: VaultDatabaseAccess,
+) -> Result<sqlx::SqlitePool, String> {
     match access {
-        vault::ownership::VaultDatabaseAccess::ReadOnly => {
-            registry.connect_path_read_only(path).await
-        }
-        vault::ownership::VaultDatabaseAccess::ReadWrite => registry.connect_path(path).await,
+        VaultDatabaseAccess::ReadOnly => registry.connect_path_read_only(path).await,
+        VaultDatabaseAccess::ReadWrite => registry.connect_path(path).await,
         // A pool opened read-only before the replica was linked stays read-only until the next
         // vault replacement or restart closes it, so readers are never cut off mid-session.
-        vault::ownership::VaultDatabaseAccess::Guarded => {
-            if registry.access(&path).await == Some(ganbaru_db::DatabaseAccessMode::ReadOnly) {
+        VaultDatabaseAccess::Guarded => {
+            if registry.access(&path).await == Some(DatabaseAccessMode::ReadOnly) {
                 registry.connect_path_read_only(path).await
             } else {
                 registry
@@ -199,11 +233,33 @@ async fn connect_database<R: Runtime>(
 pub(crate) async fn connect_active_vault_for_sync<R: Runtime>(
     app: &AppHandle<R>,
 ) -> Result<Option<sqlx::SqlitePool>, String> {
-    let pool = connect_vault(app).await?;
-    let path = resolve_sqlite_path(app, &DatabaseTarget::Vault.url())?;
+    let config_dir = app
+        .path()
+        .app_config_dir()
+        .map_err(|error| format!("find app config directory: {error}"))?;
+    connect_vault_for_sync_in(
+        app.state::<DatabaseState>().inner(),
+        app.state::<VaultOwnershipManager>().inner(),
+        &config_dir,
+    )
+    .await
+}
+
+/// Opens the active vault of the app config directory `config_dir` for sync work through
+/// `registry`, with the access `ownership` grants, as [`connect_active_vault_for_sync`] does
+/// for the app.
+pub(crate) async fn connect_vault_for_sync_in(
+    registry: &DatabaseState,
+    ownership: &VaultOwnershipManager,
+    config_dir: &Path,
+) -> Result<Option<sqlx::SqlitePool>, String> {
+    let _connection_guard = VAULT_CONNECTION_GATE.read().await;
+    let path = vault::active_database_path_in(config_dir)?;
+    let access = ownership.database_access(&vault::active_vault_id_in(config_dir)?)?;
+    let pool = connect_with_access(registry, path.clone(), access).await?;
     let writable = matches!(
-        app.state::<DatabaseState>().access(path).await,
-        Some(ganbaru_db::DatabaseAccessMode::ReadWrite | ganbaru_db::DatabaseAccessMode::Guarded)
+        registry.access(path).await,
+        Some(DatabaseAccessMode::ReadWrite | DatabaseAccessMode::Guarded)
     );
     Ok(writable.then_some(pool))
 }

@@ -12,10 +12,10 @@ use base64::Engine;
 use std::fs;
 use tokio::net::TcpListener;
 
-struct TestDirectory(PathBuf);
+pub(crate) struct TestDirectory(PathBuf);
 
 impl TestDirectory {
-    fn new(label: &str) -> Self {
+    pub(crate) fn new(label: &str) -> Self {
         let path = std::env::temp_dir().join(format!(
             "ganbaru-transport-{label}-{}",
             random_token("test").expect("random test directory")
@@ -24,7 +24,7 @@ impl TestDirectory {
         Self(path)
     }
 
-    fn path(&self) -> &Path {
+    pub(crate) fn path(&self) -> &Path {
         &self.0
     }
 }
@@ -35,7 +35,7 @@ impl Drop for TestDirectory {
     }
 }
 
-struct LocalPair {
+pub(crate) struct LocalPair {
     _desktop_root: TestDirectory,
     _phone_root: TestDirectory,
     desktop: PairingManager,
@@ -50,7 +50,7 @@ impl LocalPair {
         Self::start_with_hub(None).await
     }
 
-    async fn start_with_hub(hub: Option<crate::sync::hub::SyncHub>) -> Self {
+    pub(crate) async fn start_with_hub(hub: Option<crate::sync::hub::SyncHub>) -> Self {
         Self::start_with_limits(hub, server::limits::ConnectionLimits::default()).await
     }
 
@@ -124,7 +124,7 @@ impl LocalPair {
         }
     }
 
-    async fn enroll(&self) {
+    pub(crate) async fn enroll(&self) {
         approving(
             &self.approvals,
             super::enroll(
@@ -206,6 +206,11 @@ impl LocalPair {
             request_receiver,
             contact_receiver,
         )
+    }
+
+    /// The app config directory of the phone, which holds its pairing state.
+    pub(crate) fn phone_config_dir(&self) -> &Path {
+        self._phone_root.path()
     }
 
     fn register_bundle(&self, bytes: &[u8], transfer_id: &str) -> BundleMetadata {

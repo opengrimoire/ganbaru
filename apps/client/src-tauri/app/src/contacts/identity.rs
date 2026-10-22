@@ -17,7 +17,7 @@ use tauri::{AppHandle, Manager, Runtime};
 #[cfg(desktop)]
 const KEYRING_SERVICE: &str = "com.ganbaru.contacts";
 const KEY_REFERENCE_PREFIX: &str = "person-key:";
-#[cfg(mobile)]
+#[cfg(any(mobile, test))]
 const KEY_DIRECTORY: &str = "contacts";
 #[cfg(desktop)]
 const KEY_UNAVAILABLE_CODE: &str = "key_unavailable";
@@ -216,13 +216,35 @@ fn key_path<R: Runtime>(app: &AppHandle<R>, vault_id: &str) -> Result<std::path:
         .path()
         .app_config_dir()
         .map_err(|error| format!("find app config directory: {error}"))?;
-    Ok(directory
-        .join(KEY_DIRECTORY)
-        .join(format!("{}.key", key_reference(vault_id).replace(':', "-"))))
+    Ok(person_key_path_in(&directory, vault_id))
 }
 
-#[cfg(mobile)]
-fn read_key_sync(path: &std::path::Path) -> Result<Option<Vec<u8>>, String> {
+/// The file that holds the device-local person key copy of `vault_id` on Android, inside the
+/// app config directory `config_dir`.
+#[cfg(any(mobile, test))]
+pub(crate) fn person_key_path_in(
+    config_dir: &std::path::Path,
+    vault_id: &str,
+) -> std::path::PathBuf {
+    config_dir
+        .join(KEY_DIRECTORY)
+        .join(format!("{}.key", key_reference(vault_id).replace(':', "-")))
+}
+
+/// The person key stored in the file at `path` when it matches `public_key`. It reads no vault
+/// database, so it is usable while the vault is quiesced.
+#[cfg(any(mobile, test))]
+pub(crate) fn person_key_file_matching(
+    path: &std::path::Path,
+    public_key: &PersonPublicKey,
+) -> Result<Option<PersonKeyPair>, String> {
+    Ok(read_key_file(path)?
+        .and_then(|bytes| PersonKeyPair::from_pkcs8(&bytes).ok())
+        .filter(|key| key.public_key() == *public_key))
+}
+
+#[cfg(any(mobile, test))]
+fn read_key_file(path: &std::path::Path) -> Result<Option<Vec<u8>>, String> {
     match std::fs::read(path) {
         Ok(bytes) => Ok(Some(bytes)),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
@@ -258,7 +280,7 @@ async fn load_key_for_vault<R: Runtime>(
     #[cfg(mobile)]
     let task = {
         let path = key_path(app, &vault_id)?;
-        tauri::async_runtime::spawn_blocking(move || read_key_sync(&path))
+        tauri::async_runtime::spawn_blocking(move || read_key_file(&path))
     };
     task.await
         .map_err(|error| format!("person key task: {error}"))?

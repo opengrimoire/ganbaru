@@ -138,6 +138,7 @@ Planned work without source directories yet includes the self-hosted sync relay,
 ```
 Ganbaru/
   vault.json: folder marker, id, display name, and schema version
+  vault.lock: device-local advisory lock that keeps a second Ganbaru process out of the vault; never archived
   config.json: distraction rules and Chat settings
   ganbaru.sqlite: SQLite source of truth for structured data, portable preferences, Notes, and indexes
   .database-rollbacks/: device-local copies kept by Reset local data, rollback restores, and handoff replacements, bounded and restorable from Settings > Data

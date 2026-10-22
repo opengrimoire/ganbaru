@@ -49,6 +49,8 @@ export const dataFolderError = {
     "Not a Ganbaru folder. Choose your previous app folder.",
   notFound:
     "Folder not found. Choose another or import an existing one.",
+  openElsewhere:
+    "This folder is open in another Ganbaru app. Close that app or choose another folder.",
 } as const;
 
 export const language = {

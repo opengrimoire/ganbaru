@@ -60,6 +60,29 @@ export interface VaultOwnershipStatus {
   transferPhase: VaultTransferPhase;
 }
 
+/**
+ * How this app holds its active vault against other Ganbaru apps: `exclusive` when the vault lock is held, `unsupported` when the file system cannot lock so another app cannot be detected, and `notHeld` before any vault opens.
+ */
+export type VaultLockStatus = "notHeld" | "exclusive" | "unsupported";
+
+const VAULT_LOCK_STATUSES: readonly VaultLockStatus[] = ["notHeld", "exclusive", "unsupported"];
+
+/** Lowercase text of the native error raised when another Ganbaru app holds the vault lock. */
+const VAULT_OPEN_ELSEWHERE_MESSAGE = "this vault is open in another ganbaru app";
+
+/**
+ * Validates the native vault lock status.
+ *
+ * @param value Untrusted command response.
+ * @returns The lock status.
+ * @throws When the response is not a known status.
+ */
+export function parseVaultLockStatus(value: unknown): VaultLockStatus {
+  const status = VAULT_LOCK_STATUSES.find((candidate) => candidate === value);
+  if (!status) throw new Error("vault lock status response is invalid");
+  return status;
+}
+
 /** Sync domain name of Quick notes, as the vault manifest registers it. */
 export const QUICK_NOTES_SYNC_DOMAIN = "quick_notes";
 
@@ -270,6 +293,10 @@ export function formatVaultError(
   const raw = errorMessage(error, t);
   const lower = raw.toLowerCase();
 
+  if (lower.includes(VAULT_OPEN_ELSEWHERE_MESSAGE)) {
+    return t("dataFolderError.openElsewhere");
+  }
+
   if (
     containsAny(lower, [
       "permission denied",
@@ -344,6 +371,15 @@ export function getCachedActiveVaultInfo(): VaultInfo | null | undefined {
 
 export async function getVaultOwnershipStatus(): Promise<VaultOwnershipStatus> {
   return parseVaultOwnershipStatus(await invoke<unknown>("vault_ownership_status"));
+}
+
+/**
+ * Reads how this app holds its active vault against other Ganbaru apps.
+ *
+ * @returns The validated lock status.
+ */
+export async function getVaultLockStatus(): Promise<VaultLockStatus> {
+  return parseVaultLockStatus(await invoke<unknown>("vault_lock_status"));
 }
 
 export async function getDefaultVaultLocation(): Promise<VaultDefaultLocation> {

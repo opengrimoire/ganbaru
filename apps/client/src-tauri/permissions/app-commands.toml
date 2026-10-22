@@ -659,6 +659,7 @@ commands.allow = [
   "vault_database_rollbacks",
   "vault_default_location",
   "vault_dismiss_database_rollback",
+  "vault_lock_status",
   "vault_ownership_status",
   "vault_patch_config",
   "vault_pick_and_read_ics_import",

@@ -10,17 +10,23 @@
 //! start imports it into the open vault, where its operations are already stored.
 
 use super::writer::SyncFiles;
+use ganbaru_atomic_files::{FileAccess, StagedFile, create_directories_within};
 use ganbaru_db::DatabasePoolRegistry;
+use ganbaru_sync::assets::{AssetClass, CONTENT_TYPE_EXTENSIONS, UNKNOWN_EXTENSION, is_sha256_hex};
 use ganbaru_sync::local::{
     self, MAX_BUNDLE_BYTES, decode_bundle, encode_bundle, replacement_vector,
 };
+use ganbaru_sync::manifest::Manifest;
 use ganbaru_sync::{CarryReport, Engine, LocalRestoreReport, SpaceContext};
+use sha2::{Digest as _, Sha256};
 use sqlx::{Connection as _, SqliteConnection};
 use std::io::Read as _;
 use std::path::Path;
 
 /// Error for a carry bundle that is not a regular file within the bundle limit.
 const BUNDLE_TOO_LARGE: &str = "carry-forward bundle is not a file within the size limit";
+/// Bytes read at a time while an asset file is carried into a replacement.
+const CARRY_BUFFER_BYTES: usize = 64 * 1024;
 
 /// Exports the operations of `current` that `replacement` lacks into the carry bundle of the
 /// vault, after any bundle an interrupted replacement left. Returns how many operations the
@@ -219,6 +225,108 @@ fn read_bundle(files: &SyncFiles, ctx: &SpaceContext) -> Result<Option<Vec<Vec<u
         return Err("carry-forward bundle belongs to another sync space".to_string());
     }
     Ok(Some(ops))
+}
+
+/// Copies the managed asset files of `current` that `replacement` lacks into `replacement`,
+/// for every registered class, before a whole-vault replacement, so assets only this device
+/// holds survive until sync sends them. Only regular `{sha256}.{ext}` files within their class
+/// bound whose bytes match their digest are copied; others are left behind. Returns how many
+/// files were copied.
+pub fn carry_assets(
+    manifest: &Manifest,
+    current: &Path,
+    replacement: &Path,
+) -> Result<usize, String> {
+    let mut copied = 0;
+    for class in manifest.asset_classes() {
+        copied += carry_class(class, current, replacement)?;
+    }
+    Ok(copied)
+}
+
+fn carry_class(class: &AssetClass, current: &Path, replacement: &Path) -> Result<usize, String> {
+    let entries = match std::fs::read_dir(class.directory(current)) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(error) => return Err(format!("list {} assets: {error}", class.name)),
+    };
+    let target = class.directory(replacement);
+    let mut copied = 0;
+    for entry in entries {
+        let entry = entry.map_err(|error| format!("list {} assets: {error}", class.name))?;
+        let Some(name) = entry.file_name().to_str().map(str::to_string) else {
+            continue;
+        };
+        let Some(digest) = carried_digest(&name) else {
+            continue;
+        };
+        let metadata = std::fs::symlink_metadata(entry.path())
+            .map_err(|error| format!("inspect {} asset: {error}", class.name))?;
+        if !metadata.is_file() || metadata.len() == 0 || metadata.len() > u64::from(class.max_bytes)
+        {
+            continue;
+        }
+        match std::fs::symlink_metadata(target.join(&name)) {
+            Ok(_) => continue,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(format!("inspect carried {} asset: {error}", class.name)),
+        }
+        create_directories_within(replacement, &target)
+            .map_err(|error| format!("create {} asset directory: {error}", class.name))?;
+        if copy_verified(&entry.path(), &target.join(&name), digest, class.max_bytes)
+            .map_err(|error| format!("carry {} asset: {error}", class.name))?
+        {
+            copied += 1;
+        }
+    }
+    Ok(copied)
+}
+
+/// Digest of an asset file name, when the name is `{sha256}.{ext}` with an extension the
+/// engine names files with.
+fn carried_digest(name: &str) -> Option<&str> {
+    let (digest, extension) = name.split_once('.')?;
+    let known = extension == UNKNOWN_EXTENSION
+        || CONTENT_TYPE_EXTENSIONS
+            .iter()
+            .any(|(_, known)| *known == extension);
+    (is_sha256_hex(digest) && known).then_some(digest)
+}
+
+/// Streams `source` into a temporary file beside `target` while hashing it, and moves it into
+/// place only when the digest matches and the bytes stay within `max_bytes`. Returns whether
+/// the file was copied.
+fn copy_verified(
+    source: &Path,
+    target: &Path,
+    digest: &str,
+    max_bytes: u32,
+) -> std::io::Result<bool> {
+    let mut reader = std::fs::File::open(source)?.take(u64::from(max_bytes) + 1);
+    let mut staged = StagedFile::create(target, FileAccess::Default)?;
+    let mut hasher = Sha256::new();
+    let mut buffer = vec![0u8; CARRY_BUFFER_BYTES];
+    loop {
+        let read = reader.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        staged.write_all(&buffer[..read])?;
+        hasher.update(&buffer[..read]);
+        if staged.written() > u64::from(max_bytes) {
+            return Ok(false);
+        }
+    }
+    let actual: String = hasher
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    if actual != digest {
+        return Ok(false);
+    }
+    staged.commit()?;
+    Ok(true)
 }
 
 fn remove_bundle(files: &SyncFiles) -> Result<(), String> {

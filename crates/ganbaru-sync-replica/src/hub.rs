@@ -2,17 +2,19 @@
 //! and answers long polls when its log grows. Its own service applies what the hub stores.
 
 use super::assets::{
-    ASSET_UNAVAILABLE, INVALID_ASSET, ImageStore, blocking, describe_store_error, partition_held,
+    ASSET_UNAVAILABLE, AssetStore, AssetStoreError, INVALID_ASSET, StagedAsset, blocking,
+    partition_held, write_staged,
 };
 use super::wire::{
-    asset_from_wire, bytes_from_wire, bytes_to_wire, hash_to_wire, ops_from_wire, ops_to_wire,
-    vector_from_wire, vector_to_wire, writer_from_wire,
+    asset_from_wire, asset_key, bytes_from_wire, bytes_to_wire, hash_to_wire, ops_from_wire,
+    ops_to_wire, vector_from_wire, vector_to_wire, writer_from_wire,
 };
 use ganbaru_handoff::protocol::{
-    ControlMessage, SYNC_ASSET_CHUNK_BYTES, SyncAsset, SyncRefusal, SyncRefusalCode,
+    ControlMessage, SYNC_ASSET_CHUNK_BYTES, SyncAsset, SyncAssetKey, SyncRefusal, SyncRefusalCode,
     validate_coordinator_endpoints, validate_discovery_key,
 };
-use ganbaru_quick_notes::images::{QuickNoteImageError, ReferencedImage};
+use ganbaru_sync::assets::AssetRef;
+use ganbaru_sync::manifest::Manifest;
 use ganbaru_sync::{Engine, SpaceContext, StoreOutcome, StoreRefusal, local};
 use ganbaru_sync_contracts::{Envelope, Seq, VersionVector, WriterId};
 use sqlx::SqlitePool;
@@ -27,7 +29,8 @@ use tokio::sync::watch;
 /// control timeout of the transport.
 pub const WAIT_TIMEOUT: Duration = Duration::from_secs(12);
 /// How long a pending upload survives without a new chunk. A peer that disconnected mid-upload
-/// restarts from the beginning, and its received bytes do not stay in memory.
+/// restarts from the beginning, and its temporary file is removed with the next upload request
+/// any peer makes.
 const UPLOAD_IDLE_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 
 /// The vault database the hub serves.
@@ -36,8 +39,8 @@ pub struct HubVault {
     pub vault_id: String,
     /// Device id of the coordinator whose writers may revoke: the hub's own device.
     pub device_id: String,
-    /// The vault's Quick note image files.
-    pub images: Arc<dyn ImageStore>,
+    /// The vault's managed asset files.
+    pub assets: Arc<dyn AssetStore>,
 }
 
 /// Opens the vault the hub serves, or `None` while it cannot replicate.
@@ -100,26 +103,18 @@ pub struct SyncHub {
     changes: watch::Sender<u64>,
     /// The current wait of each peer; a newer wait ends the older one.
     waits: Arc<Mutex<HashMap<String, u64>>>,
-    /// The image each peer is uploading; a peer uploads one at a time.
+    /// The asset each peer is uploading; a peer uploads one at a time.
     uploads: Arc<Mutex<HashMap<String, PendingUpload>>>,
     /// The contact every sync state carries; without it the hub answers no state.
     contact: Option<HubContactSource>,
 }
 
-/// The received prefix of an upload.
+/// The received prefix of an upload, staged in a temporary file beside its final path.
 struct PendingUpload {
-    sha256: String,
-    bytes: Vec<u8>,
+    key: SyncAssetKey,
+    staged: StagedAsset,
     /// When the last chunk arrived.
     touched: Instant,
-}
-
-/// Where an upload chunk leaves the peer's pending upload.
-enum UploadStep {
-    /// Bytes received so far, where the next chunk starts.
-    Partial(u32),
-    /// Every byte arrived and awaits verification.
-    Complete(Vec<u8>),
 }
 
 impl SyncHub {
@@ -193,16 +188,19 @@ impl SyncHub {
                 "the hub vault has no person identity",
             ));
         };
-        let images = vault.images;
+        let assets = vault.assets;
         let hub = HubSession {
             engine: Engine::vault(),
             pool: vault.pool,
             ctx,
         };
+        let manifest = hub.engine.manifest();
         match request {
-            ControlMessage::SyncAssetQuery { assets, .. } => asset_presence(&images, &assets).await,
+            ControlMessage::SyncAssetQuery {
+                assets: queried, ..
+            } => asset_presence(&assets, manifest, &queried).await,
             ControlMessage::SyncAssetGet { asset, offset, .. } => {
-                asset_chunk(&images, &asset, offset).await
+                asset_chunk(&assets, manifest, &asset, offset).await
             }
             ControlMessage::SyncAssetPut {
                 asset,
@@ -210,9 +208,9 @@ impl SyncHub {
                 data,
                 ..
             } => {
-                let image = asset_from_wire(&asset).map_err(invalid)?;
+                let asset = upload_from_wire(&asset, manifest)?;
                 let data = bytes_from_wire(&data).map_err(invalid)?;
-                self.receive(&images, &device_id, &image, offset, data)
+                self.receive(&assets, &device_id, &asset, offset, data)
                     .await
             }
             ControlMessage::SyncHello { probe, .. } => {
@@ -308,147 +306,182 @@ impl SyncHub {
 
     /// Adds an upload chunk of a peer. A chunk at offset 0 starts the upload over; a chunk
     /// that does not continue the pending upload is answered with where it does continue. The
-    /// complete image is verified against its reference before it is stored.
+    /// complete asset is verified against its reference before it is stored.
     async fn receive(
         &self,
-        images: &Arc<dyn ImageStore>,
+        store: &Arc<dyn AssetStore>,
         device_id: &str,
-        image: &ReferencedImage,
+        asset: &AssetRef,
         offset: u32,
         data: Vec<u8>,
     ) -> Result<ControlMessage, HubError> {
-        let size = image.byte_size();
-        if offset == 0 {
+        let size = asset.byte_size();
+        let key = asset_key(asset);
+        let pending = self.take_upload(device_id)?;
+        let pending = if offset == 0 {
+            drop(pending);
             let held = {
-                let image = image.clone();
-                blocking(images, move |store| store.holds(&image)).await
+                let asset = asset.clone();
+                blocking(store, move |store| store.holds(&asset)).await
             }
             .map_err(store_failure)?;
             if held {
-                self.drop_upload(device_id)?;
                 return Ok(ControlMessage::SyncAssetReceived { received: size });
             }
+            let staged = {
+                let asset = asset.clone();
+                blocking(store, move |store| store.stage(&asset)).await
+            }
+            .map_err(store_failure)?;
+            PendingUpload {
+                key,
+                staged,
+                touched: Instant::now(),
+            }
+        } else {
+            match pending {
+                Some(pending) if pending.key == key && pending.staged.received() == offset => {
+                    pending
+                }
+                Some(pending) => {
+                    let received = if pending.key == key {
+                        pending.staged.received()
+                    } else {
+                        0
+                    };
+                    self.keep_upload(device_id, pending)?;
+                    return Ok(ControlMessage::SyncAssetReceived { received });
+                }
+                None => return Ok(ControlMessage::SyncAssetReceived { received: 0 }),
+            }
+        };
+        let staged = match write_staged(pending.staged, data).await {
+            Ok(staged) => staged,
+            Err(AssetStoreError::Mismatch(message)) => return Err(invalid(message)),
+            Err(error) => return Err(store_failure(error)),
+        };
+        if !staged.is_complete() {
+            let received = staged.received();
+            self.keep_upload(
+                device_id,
+                PendingUpload {
+                    key: pending.key,
+                    staged,
+                    touched: Instant::now(),
+                },
+            )?;
+            return Ok(ControlMessage::SyncAssetReceived { received });
         }
-        let step = {
+        match blocking(store, move |store| store.commit(staged)).await {
+            Ok(()) => Ok(ControlMessage::SyncAssetReceived { received: size }),
+            Err(AssetStoreError::Mismatch(message)) => {
+                Err(HubError::rejected(INVALID_ASSET, message))
+            }
+            Err(error) => Err(store_failure(error)),
+        }
+    }
+
+    /// Removes and returns the pending upload of a peer, and removes uploads that went idle.
+    /// Their temporary files are removed outside the lock.
+    fn take_upload(&self, device_id: &str) -> Result<Option<PendingUpload>, HubError> {
+        let now = Instant::now();
+        let (pending, idle) = {
             let mut uploads = self
                 .uploads
                 .lock()
                 .map_err(|_| HubError::failed("sync upload lock is unavailable"))?;
-            let sha256 = image.file().sha256();
-            let now = Instant::now();
-            uploads.retain(|_, pending| now.duration_since(pending.touched) < UPLOAD_IDLE_TIMEOUT);
-            if offset == 0 {
-                uploads.insert(
-                    device_id.to_string(),
-                    PendingUpload {
-                        sha256: sha256.to_string(),
-                        bytes: Vec::with_capacity(size as usize),
-                        touched: now,
-                    },
-                );
-            }
-            match uploads.get_mut(device_id) {
-                Some(pending)
-                    if pending.sha256 == sha256 && pending.bytes.len() == offset as usize =>
-                {
-                    pending.touched = now;
-                    if pending.bytes.len() + data.len() > size as usize {
-                        uploads.remove(device_id);
-                        return Err(invalid("sync asset chunk ends past the asset".to_string()));
-                    }
-                    pending.bytes.extend_from_slice(&data);
-                    if pending.bytes.len() == size as usize {
-                        let bytes = std::mem::take(&mut pending.bytes);
-                        uploads.remove(device_id);
-                        UploadStep::Complete(bytes)
-                    } else {
-                        UploadStep::Partial(pending.bytes.len() as u32)
-                    }
-                }
-                Some(pending) if pending.sha256 == sha256 => {
-                    UploadStep::Partial(pending.bytes.len() as u32)
-                }
-                _ => UploadStep::Partial(0),
-            }
+            let idle_peers: Vec<String> = uploads
+                .iter()
+                .filter(|(_, pending)| now.duration_since(pending.touched) >= UPLOAD_IDLE_TIMEOUT)
+                .map(|(peer, _)| peer.clone())
+                .collect();
+            let idle: Vec<PendingUpload> = idle_peers
+                .iter()
+                .filter_map(|peer| uploads.remove(peer))
+                .collect();
+            (uploads.remove(device_id), idle)
         };
-        let bytes = match step {
-            UploadStep::Partial(received) => {
-                return Ok(ControlMessage::SyncAssetReceived { received });
-            }
-            UploadStep::Complete(bytes) => bytes,
-        };
-        let stored = {
-            let image = image.clone();
-            blocking(images, move |store| store.store(&image, &bytes)).await
-        };
-        match stored {
-            Ok(()) => Ok(ControlMessage::SyncAssetReceived { received: size }),
-            Err(QuickNoteImageError::Failed(message)) => Err(HubError::failed(message)),
-            Err(error) => Err(HubError::rejected(
-                INVALID_ASSET,
-                describe_store_error(error),
-            )),
-        }
+        drop(idle);
+        Ok(pending)
     }
 
-    fn drop_upload(&self, device_id: &str) -> Result<(), HubError> {
-        self.uploads
-            .lock()
-            .map_err(|_| HubError::failed("sync upload lock is unavailable"))?
-            .remove(device_id);
+    /// Keeps the pending upload of a peer for its next chunk. A newer upload the peer started
+    /// meanwhile wins, and this one is removed.
+    fn keep_upload(&self, device_id: &str, pending: PendingUpload) -> Result<(), HubError> {
+        let replaced = {
+            let mut uploads = self
+                .uploads
+                .lock()
+                .map_err(|_| HubError::failed("sync upload lock is unavailable"))?;
+            if uploads.contains_key(device_id) {
+                Some(pending)
+            } else {
+                uploads.insert(device_id.to_string(), pending);
+                None
+            }
+        };
+        drop(replaced);
         Ok(())
     }
 }
 
-/// Digests of the queried images the hub holds.
+/// Reads an uploaded asset reference. Only classes of domains a linked replica may write are
+/// accepted, since no other device can reference the rest.
+fn upload_from_wire(asset: &SyncAsset, manifest: &Manifest) -> Result<AssetRef, HubError> {
+    match manifest.asset_class(&asset.class) {
+        Some((domain, _)) if !domain.replica_writable => Err(invalid(format!(
+            "sync asset class {} is not replica writable",
+            asset.class
+        ))),
+        _ => asset_from_wire(asset, manifest).map_err(invalid),
+    }
+}
+
+/// The queried assets the hub holds.
 async fn asset_presence(
-    images: &Arc<dyn ImageStore>,
+    store: &Arc<dyn AssetStore>,
+    manifest: &Manifest,
     assets: &[SyncAsset],
 ) -> Result<ControlMessage, HubError> {
     let references = assets
         .iter()
-        .map(asset_from_wire)
+        .map(|asset| asset_from_wire(asset, manifest))
         .collect::<Result<Vec<_>, _>>()
         .map_err(invalid)?;
-    let (held, _) = partition_held(images, references)
+    let (held, _) = partition_held(store, references)
         .await
         .map_err(store_failure)?;
     Ok(ControlMessage::SyncAssetPresence {
-        held: held
-            .into_iter()
-            .map(|image| image.file().sha256().to_string())
-            .collect(),
+        held: held.iter().map(asset_key).collect(),
     })
 }
 
-/// A chunk of an image the hub holds. The receiver verifies the assembled bytes.
+/// A chunk of an asset the hub holds. The receiver verifies the assembled bytes.
 async fn asset_chunk(
-    images: &Arc<dyn ImageStore>,
+    store: &Arc<dyn AssetStore>,
+    manifest: &Manifest,
     asset: &SyncAsset,
     offset: u32,
 ) -> Result<ControlMessage, HubError> {
-    let image = asset_from_wire(asset).map_err(invalid)?;
-    let chunk = blocking(images, move |store| {
-        store.read_chunk(&image, offset, SYNC_ASSET_CHUNK_BYTES)
+    let asset = asset_from_wire(asset, manifest).map_err(invalid)?;
+    let chunk = blocking(store, move |store| {
+        store.read_chunk(&asset, offset, SYNC_ASSET_CHUNK_BYTES)
     })
     .await;
     match chunk {
         Ok(chunk) => Ok(ControlMessage::SyncAssetChunk {
             data: bytes_to_wire(&chunk),
         }),
-        Err(QuickNoteImageError::Unavailable) => Err(HubError::rejected(
+        Err(AssetStoreError::Unavailable) => Err(HubError::rejected(
             ASSET_UNAVAILABLE,
-            "the hub does not hold this image",
+            "the hub does not hold this asset",
         )),
         Err(error) => Err(store_failure(error)),
     }
 }
 
-fn store_failure(error: QuickNoteImageError) -> HubError {
-    HubError::failed(format!(
-        "quick note images: {}",
-        describe_store_error(error)
-    ))
+fn store_failure(error: AssetStoreError) -> HubError {
+    HubError::failed(format!("managed assets: {}", error.describe()))
 }
 
 /// One request against the hub vault.

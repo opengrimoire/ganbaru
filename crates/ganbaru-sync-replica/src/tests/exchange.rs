@@ -2,8 +2,8 @@ use super::{
     NOW_MS, TestDirectory, VAULT_ID, acquire, add_note, block_on, context, create_vault, person,
 };
 use crate::assets::{
-    ASSET_UNAVAILABLE, AssetMemory, AssetSession, AssetTransfer, INVALID_ASSET, ImageStore,
-    MAX_ASSET_PASS_BYTES, VaultImages,
+    ASSET_UNAVAILABLE, AssetMemory, AssetSession, AssetStore, AssetTransfer, ContentAddressedStore,
+    INVALID_ASSET, MAX_ASSET_PASS_BYTES,
 };
 use crate::client::{
     ClientSession, Exchange, Exchanged, MAX_EXCHANGE_BYTES, PeerIds, SyncTransport, wait,
@@ -14,9 +14,11 @@ use crate::wire::{asset_to_wire, bytes_to_wire};
 use crate::writer::{ActiveWriter, SuccessorPlan, create_writer};
 use ganbaru_db::DatabasePoolRegistry;
 use ganbaru_handoff::protocol::{
-    ControlMessage, PROTOCOL_VERSION, SYNC_ASSET_CHUNK_BYTES, SyncRefusalCode,
+    ControlMessage, PROTOCOL_VERSION, SYNC_ASSET_CHUNK_BYTES, SyncAsset, SyncRefusalCode,
 };
-use ganbaru_quick_notes::images::{self, ReferencedImage};
+use ganbaru_quick_notes::images;
+use ganbaru_sync::assets::AssetRef;
+use ganbaru_sync::manifest::vault::quick_notes::IMAGES_CLASS;
 use ganbaru_sync::manifest::vault::quick_notes::NOTES_TABLE;
 use ganbaru_sync::{Engine, SpaceContext};
 use ganbaru_sync_contracts::bounds::MAX_WRITERS_PER_DEVICE;
@@ -51,7 +53,8 @@ struct Replica {
     pool: SqlitePool,
     ctx: SpaceContext,
     writer: ActiveWriter,
-    images: Arc<dyn ImageStore>,
+    engine: Engine,
+    assets: Arc<dyn AssetStore>,
 }
 
 impl Replica {
@@ -78,11 +81,13 @@ impl Replica {
             NOW_MS,
         )
         .expect("create writer");
-        let images: Arc<dyn ImageStore> = Arc::new(VaultImages {
-            root: directory.path().to_path_buf(),
-        });
+        let assets: Arc<dyn AssetStore> = Arc::new(
+            ContentAddressedStore::new(directory.path().to_path_buf())
+                .with_check(&IMAGES_CLASS, images::check_synced_image),
+        );
         Self {
-            images,
+            engine: Engine::vault(),
+            assets,
             directory,
             registry,
             pool,
@@ -188,9 +193,9 @@ impl Replica {
     }
 
     /// Stores an image file and adds it to a note, without sealing.
-    async fn add_image(&self, note_id: &str, sort_order: i64, bytes: &[u8]) -> ReferencedImage {
+    async fn add_image(&self, note_id: &str, sort_order: i64, bytes: &[u8]) -> AssetRef {
+        images::import_image(self.directory.path(), bytes).expect("import image");
         let image = reference(bytes);
-        images::store_image(self.directory.path(), &image, bytes).expect("store image");
         sqlx::query(
             "INSERT INTO quick_note_images
                 (note_id, sort_order, sha256, content_type, byte_size, width, height)
@@ -198,8 +203,8 @@ impl Replica {
         )
         .bind(note_id)
         .bind(sort_order)
-        .bind(image.file().sha256())
-        .bind(image.file().content_type())
+        .bind(image.sha256())
+        .bind(image.content_type())
         .bind(image.byte_size())
         .execute(&self.pool)
         .await
@@ -207,8 +212,25 @@ impl Replica {
         image
     }
 
-    fn image_bytes(&self, image: &ReferencedImage) -> Option<Vec<u8>> {
-        images::read_image(self.directory.path(), image.file()).ok()
+    fn asset_bytes(&self, asset: &AssetRef) -> Option<Vec<u8>> {
+        std::fs::read(asset.path(self.directory.path())).ok()
+    }
+
+    /// Names of every entry in the directory of a class, temporary files included.
+    fn class_entries(&self) -> Vec<String> {
+        match std::fs::read_dir(IMAGES_CLASS.directory(self.directory.path())) {
+            Ok(entries) => entries
+                .map(|entry| {
+                    entry
+                        .expect("asset entry")
+                        .file_name()
+                        .to_string_lossy()
+                        .into_owned()
+                })
+                .collect(),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+            Err(error) => panic!("list assets: {error}"),
+        }
     }
 
     async fn upload(
@@ -249,8 +271,9 @@ impl Replica {
         AssetSession {
             transport,
             ids,
+            engine: &self.engine,
             pool: &self.pool,
-            store: &self.images,
+            store: &self.assets,
             max_bytes,
         }
     }
@@ -266,16 +289,16 @@ fn phone_ids() -> PeerIds {
 /// Opens the replica's vault as the vault a hub serves.
 fn open_hub(replica: &Replica) -> OpenHubVault {
     let pool = replica.pool.clone();
-    let images = Arc::clone(&replica.images);
+    let assets = Arc::clone(&replica.assets);
     Arc::new(move || {
         let pool = pool.clone();
-        let images = Arc::clone(&images);
+        let assets = Arc::clone(&assets);
         Box::pin(async move {
             Ok(Some(HubVault {
                 pool,
                 vault_id: VAULT_ID.to_string(),
                 device_id: HUB_DEVICE.to_string(),
-                images,
+                assets,
             }))
         })
     })
@@ -960,6 +983,7 @@ fn restoring_an_edit_that_outlived_a_deletion_closes_the_offer_everywhere() {
                 action: RecoveryAction::Restore,
             },
             NOW_MS + 1,
+            restore_note(&phone.pool),
         )
         .await
         .expect("restore")
@@ -1009,6 +1033,7 @@ fn discarding_a_recovery_offer_keeps_the_deletion() {
                 action: RecoveryAction::Discard,
             },
             NOW_MS + 1,
+            restore_note(&hub_replica.pool),
         )
         .await
         .expect("discard");
@@ -1047,10 +1072,29 @@ fn png(len: usize, seed: u8) -> Vec<u8> {
     bytes
 }
 
-fn reference(bytes: &[u8]) -> ReferencedImage {
+/// The pending restoration of a recovered Quick note.
+type Restoring = std::pin::Pin<Box<dyn Future<Output = Result<String, String>> + Send>>;
+
+/// Restores a recovered Quick note through its domain persistence, as the app does.
+fn restore_note(
+    pool: &SqlitePool,
+) -> impl FnOnce(
+    Vec<(
+        ganbaru_sync_contracts::GroupId,
+        ganbaru_sync_contracts::Value,
+    )>,
+) -> Restoring {
+    let pool = pool.clone();
+    move |values| {
+        Box::pin(async move { ganbaru_quick_notes::restore_recovered(&pool, &values).await })
+    }
+}
+
+fn reference(bytes: &[u8]) -> AssetRef {
     let image = serde_json::to_value(images::describe_image(bytes).expect("describe image"))
         .expect("serialize image");
-    ReferencedImage::new(
+    AssetRef::new(
+        &IMAGES_CLASS,
         image["sha256"].as_str().expect("digest").to_string(),
         image["contentType"]
             .as_str()
@@ -1061,7 +1105,7 @@ fn reference(bytes: &[u8]) -> ReferencedImage {
     .expect("reference image")
 }
 
-fn put(image: &ReferencedImage, offset: u32, bytes: &[u8]) -> ControlMessage {
+fn put(image: &AssetRef, offset: u32, bytes: &[u8]) -> ControlMessage {
     ControlMessage::SyncAssetPut {
         protocol_version: PROTOCOL_VERSION,
         vault_id: VAULT_ID.to_string(),
@@ -1087,7 +1131,7 @@ fn received(response: ControlMessage) -> u32 {
 }
 
 #[test]
-fn images_travel_through_the_hub_ahead_of_the_notes_that_reference_them() {
+fn assets_travel_through_the_hub_ahead_of_the_rows_that_reference_them() {
     block_on(async {
         let hub_replica = Replica::new("images-hub", HUB_DEVICE).await;
         let mut phone = Replica::new("images-phone", PHONE_DEVICE).await;
@@ -1113,7 +1157,7 @@ fn images_travel_through_the_hub_ahead_of_the_notes_that_reference_them() {
             (uploaded.uploaded, uploaded.more, uploaded.problem),
             (2, false, None)
         );
-        assert_eq!(hub_replica.image_bytes(&large_image), Some(large.clone()));
+        assert_eq!(hub_replica.asset_bytes(&large_image), Some(large.clone()));
         done(
             phone
                 .exchange(&transport, &phone_ids())
@@ -1137,14 +1181,14 @@ fn images_travel_through_the_hub_ahead_of_the_notes_that_reference_them() {
                 .expect("exchange"),
         );
         tablet.apply().await;
-        assert_eq!(tablet.image_bytes(&large_image), None);
+        assert_eq!(tablet.asset_bytes(&large_image), None);
         let mut tablet_memory = AssetMemory::default();
         let downloaded = tablet
             .download(&transport, &tablet_ids(), &mut tablet_memory)
             .await;
         assert_eq!((downloaded.downloaded, downloaded.problem), (2, None));
-        assert_eq!(tablet.image_bytes(&large_image), Some(large));
-        assert_eq!(tablet.image_bytes(&small_image), Some(small));
+        assert_eq!(tablet.asset_bytes(&large_image), Some(large));
+        assert_eq!(tablet.asset_bytes(&small_image), Some(small));
         let again = tablet
             .download(&transport, &tablet_ids(), &mut tablet_memory)
             .await;
@@ -1157,7 +1201,7 @@ fn images_travel_through_the_hub_ahead_of_the_notes_that_reference_them() {
 }
 
 #[test]
-fn image_transfers_stop_at_their_byte_bound_and_resume() {
+fn assets_stop_transferring_at_the_pass_byte_bound_and_resume() {
     block_on(async {
         let hub_replica = Replica::new("bound-hub", HUB_DEVICE).await;
         let phone = Replica::new("bound-phone", PHONE_DEVICE).await;
@@ -1177,7 +1221,7 @@ fn image_transfers_stop_at_their_byte_bound_and_resume() {
 }
 
 #[test]
-fn the_hub_verifies_uploads_and_reports_missing_images() {
+fn the_hub_verifies_asset_uploads_and_reports_missing_assets() {
     block_on(async {
         let hub_replica = Replica::new("verify-hub", HUB_DEVICE).await;
         let (transport, _changes) = hub(&hub_replica);
@@ -1204,7 +1248,8 @@ fn the_hub_verifies_uploads_and_reports_missing_images() {
             .await
             .expect("put");
         assert_eq!(error_code(refused), INVALID_ASSET);
-        assert_eq!(hub_replica.image_bytes(&image), None);
+        assert_eq!(hub_replica.asset_bytes(&image), None);
+        assert_eq!(hub_replica.class_entries(), Vec::<String>::new());
 
         // A chunk that does not continue the pending upload learns where to restart.
         let (head, tail) = bytes.split_at(SYNC_ASSET_CHUNK_BYTES);
@@ -1219,7 +1264,7 @@ fn the_hub_verifies_uploads_and_reports_missing_images() {
             .await
             .expect("put");
         assert_eq!(received(stored), image.byte_size());
-        assert_eq!(hub_replica.image_bytes(&image), Some(bytes.clone()));
+        assert_eq!(hub_replica.asset_bytes(&image), Some(bytes.clone()));
         let held = transport.request(put(&image, 0, head)).await.expect("put");
         assert_eq!(received(held), image.byte_size());
         match transport.request(get).await.expect("get") {
@@ -1233,7 +1278,45 @@ fn the_hub_verifies_uploads_and_reports_missing_images() {
 }
 
 #[test]
-fn a_replica_refuses_damaged_image_bytes_from_the_hub() {
+fn the_hub_refuses_assets_outside_their_registered_class_before_staging() {
+    block_on(async {
+        let hub_replica = Replica::new("class-hub", HUB_DEVICE).await;
+        let (transport, _changes) = hub(&hub_replica);
+        let bytes = png(64, 5);
+        let image = reference(&bytes);
+        let put_wire = |asset: SyncAsset| ControlMessage::SyncAssetPut {
+            protocol_version: PROTOCOL_VERSION,
+            vault_id: VAULT_ID.to_string(),
+            device_id: PHONE_DEVICE.to_string(),
+            asset,
+            offset: 0,
+            data: bytes_to_wire(&bytes),
+        };
+
+        let unregistered = SyncAsset {
+            class: "notes/files".to_string(),
+            ..asset_to_wire(&image)
+        };
+        let refused = transport
+            .request(put_wire(unregistered))
+            .await
+            .expect("put");
+        assert_eq!(error_code(refused), "invalid_sync_request");
+
+        let oversized = SyncAsset {
+            byte_size: IMAGES_CLASS.max_bytes + 1,
+            ..asset_to_wire(&image)
+        };
+        let refused = transport.request(put_wire(oversized)).await.expect("put");
+        assert_eq!(error_code(refused), "invalid_sync_request");
+        assert_eq!(hub_replica.class_entries(), Vec::<String>::new());
+        assert_eq!(hub_replica.asset_bytes(&image), None);
+        hub_replica.close().await;
+    });
+}
+
+#[test]
+fn a_replica_refuses_damaged_assets_from_the_hub() {
     block_on(async {
         let mut hub_replica = Replica::new("damaged-hub", HUB_DEVICE).await;
         let mut tablet = Replica::new("damaged-tablet", TABLET_DEVICE).await;
@@ -1241,8 +1324,7 @@ fn a_replica_refuses_damaged_image_bytes_from_the_hub() {
         add_note(&mut *acquire(&hub_replica.pool).await, "note-images").await;
         let image = hub_replica.add_image("note-images", 0, &png(80, 4)).await;
         hub_replica.seal().await;
-        let path =
-            images::image_path(hub_replica.directory.path(), image.file()).expect("image path");
+        let path = image.path(hub_replica.directory.path());
         let mut damaged = std::fs::read(&path).expect("read image");
         *damaged.last_mut().expect("bytes") ^= 0xff;
         std::fs::write(&path, damaged).expect("damage image");
@@ -1266,7 +1348,8 @@ fn a_replica_refuses_damaged_image_bytes_from_the_hub() {
                 .is_some_and(|problem| problem.contains("do not match")),
             "{refused:?}"
         );
-        assert_eq!(tablet.image_bytes(&image), None);
+        assert_eq!(tablet.asset_bytes(&image), None);
+        assert_eq!(tablet.class_entries(), Vec::<String>::new());
         let skipped = tablet
             .download(&transport, &tablet_ids(), &mut memory)
             .await;

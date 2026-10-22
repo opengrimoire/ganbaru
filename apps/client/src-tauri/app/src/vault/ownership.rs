@@ -1227,7 +1227,12 @@ mod tests {
             .unwrap();
         let status = replica.status("vault").unwrap();
         assert!(status.linked_replica && !status.can_write);
-        assert_eq!(status.replica_writable_domains, [QUICK_NOTES]);
+        assert_eq!(
+            status.replica_writable_domains,
+            VAULT_MANIFEST
+                .replica_writable_domains()
+                .collect::<Vec<_>>()
+        );
         assert!(status.can_write_domain(QUICK_NOTES));
         assert!(!status.can_write_domain("projects"));
         assert_eq!(replica.cached_status("vault").unwrap().unwrap(), status);

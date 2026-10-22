@@ -607,6 +607,7 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
             vault::database_rollback::vault_restore_database_rollback,
             vault::database_rollback::vault_dismiss_database_rollback,
             vault::ownership::vault_ownership_status,
+            vault::vault_lock::vault_lock_status,
             vault::handoff::handoff_create_pairing_invitation,
             #[cfg(target_os = "linux")]
             vault::handoff::handoff_grant_network_access,
@@ -967,6 +968,8 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
     app.run(move |app_handle, event| {
         if matches!(event, tauri::RunEvent::Exit) {
             crate::sync::release_runtime_handle();
+            // A restart spawns the next process before this one ends, so it must find the vault free.
+            vault::vault_lock::process_vault_lock().release();
         }
         if let tauri::RunEvent::ExitRequested { code, api, .. } = event {
             let cleanup_state = exit_cleanup_state.load(std::sync::atomic::Ordering::Acquire);

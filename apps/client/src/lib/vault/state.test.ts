@@ -77,6 +77,32 @@ describe("vault state api", () => {
     );
   });
 
+  it("explains a vault another Ganbaru app holds before generic folder guidance", async () => {
+    const { formatVaultError } = await loadModule();
+    const expected =
+      "This folder is open in another Ganbaru app. Close that app or choose another folder.";
+
+    expect(formatVaultError("this vault is open in another Ganbaru app", "change")).toBe(expected);
+    expect(
+      formatVaultError(new Error("this vault is open in another Ganbaru app"), "startup"),
+    ).toBe(expected);
+  });
+
+  it("reads the vault lock status and rejects unknown values", async () => {
+    const { getVaultLockStatus, parseVaultLockStatus } = await loadModule();
+
+    for (const status of ["notHeld", "exclusive", "unsupported"]) {
+      expect(parseVaultLockStatus(status)).toBe(status);
+    }
+    for (const value of ["Exclusive", "", null, undefined, 1, { status: "exclusive" }]) {
+      expect(() => parseVaultLockStatus(value)).toThrow("vault lock status response is invalid");
+    }
+
+    invokeMock.mockResolvedValue("unsupported");
+    await expect(getVaultLockStatus()).resolves.toBe("unsupported");
+    expect(invokeMock).toHaveBeenCalledWith("vault_lock_status");
+  });
+
   it("accepts complete vault info responses", async () => {
     invokeMock.mockResolvedValue({
       path: "/home/user/Documents/Ganbaru",

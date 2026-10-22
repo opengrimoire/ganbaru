@@ -59,6 +59,8 @@ export const dataFolderError = {
     "No es una carpeta de Ganbaru. Elige la de tu instalación anterior.",
   notFound:
     "No se encontró la carpeta. Elige otra o importa una existente.",
+  openElsewhere:
+    "Esta carpeta está abierta en otra app de Ganbaru. Cierra esa app o elige otra carpeta.",
 } as const satisfies MessageShape<typeof enDataFolderError>;
 
 export const language = {

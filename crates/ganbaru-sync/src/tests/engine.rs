@@ -594,6 +594,163 @@ fn deleting_a_tag_clears_concurrent_assignments() {
     });
 }
 
+async fn texts(replica: &mut Replica, sql: &str) -> Vec<String> {
+    sqlx::query_scalar(sqlx::AssertSqlSafe(sql))
+        .fetch_all(&mut replica.conn)
+        .await
+        .unwrap()
+}
+
+#[test]
+fn a_cascade_reference_cycle_materializes_in_one_component() {
+    block_on(async {
+        let mut replicas = replicas(3).await;
+        replicas[0]
+            .exec(
+                "INSERT INTO fixture_cycle_a (id, label) VALUES ('a-1', 'A');
+                 INSERT INTO fixture_cycle_b (id, label, peer_id) VALUES ('b-1', 'B', 'a-1');
+                 UPDATE fixture_cycle_a SET peer_id = 'b-1' WHERE id = 'a-1';
+                 INSERT INTO fixture_links (id, note, left_id, right_id)
+                     VALUES ('link-1', 'ends', 'a-1', 'b-1');",
+            )
+            .await;
+        replicas[0].seal().await.unwrap();
+        converge(&mut replicas).await;
+        assert_converged(&mut replicas).await;
+        for replica in &mut replicas {
+            assert_eq!(
+                texts(
+                    replica,
+                    "SELECT id || '>' || peer_id FROM fixture_cycle_a
+                     UNION ALL SELECT id || '>' || peer_id FROM fixture_cycle_b"
+                )
+                .await,
+                ["a-1>b-1", "b-1>a-1"]
+            );
+        }
+
+        replicas[1]
+            .exec("DELETE FROM fixture_cycle_a WHERE id = 'a-1'")
+            .await;
+        converge(&mut replicas).await;
+        assert_converged(&mut replicas).await;
+        for replica in &mut replicas {
+            for table in ["fixture_cycle_a", "fixture_cycle_b"] {
+                assert_eq!(
+                    replica
+                        .count(&format!("SELECT count(*) FROM {table}"))
+                        .await,
+                    0,
+                    "{table} on replica {}",
+                    replica.index
+                );
+            }
+            assert_eq!(
+                texts(
+                    replica,
+                    "SELECT quote(left_id) || quote(right_id) FROM fixture_links"
+                )
+                .await,
+                ["NULLNULL"]
+            );
+        }
+    });
+}
+
+#[test]
+fn duplicates_redirect_every_reference_column_of_a_group() {
+    block_on(async {
+        let mut replicas = replicas(3).await;
+        replicas[0]
+            .exec("INSERT INTO fixture_cycle_a (id, label) VALUES ('a-1', 'Same')")
+            .await;
+        replicas[1]
+            .exec(
+                "INSERT INTO fixture_cycle_a (id, label) VALUES ('a-2', 'Same');
+                 INSERT INTO fixture_cycle_b (id, label, peer_id) VALUES ('b-1', 'B', 'a-2');
+                 INSERT INTO fixture_links (id, note, left_id, right_id)
+                     VALUES ('link-1', 'ends', 'a-2', 'b-1');
+                 INSERT INTO fixture_links (id, note, left_id, parent_id)
+                     VALUES ('link-2', 'child', 'a-2', 'link-1');",
+            )
+            .await;
+        converge(&mut replicas).await;
+        assert_converged(&mut replicas).await;
+        for replica in &mut replicas {
+            assert_eq!(
+                texts(
+                    replica,
+                    "SELECT id || ':' || quote(left_id) || quote(right_id) || quote(parent_id)
+                     FROM fixture_links ORDER BY id"
+                )
+                .await,
+                ["link-1:'a-1''b-1'NULL", "link-2:'a-1'NULL'link-1'"]
+            );
+            assert_eq!(
+                texts(replica, "SELECT peer_id FROM fixture_cycle_b").await,
+                ["a-1"]
+            );
+        }
+
+        replicas[0]
+            .exec("DELETE FROM fixture_links WHERE id = 'link-1'")
+            .await;
+        replicas[2]
+            .exec("UPDATE fixture_links SET note = 'edited' WHERE id = 'link-2'")
+            .await;
+        converge(&mut replicas).await;
+        assert_converged(&mut replicas).await;
+        for replica in &mut replicas {
+            assert_eq!(
+                texts(
+                    replica,
+                    "SELECT id || ':' || note || ':' || quote(parent_id) FROM fixture_links"
+                )
+                .await,
+                ["link-2:edited:NULL"]
+            );
+        }
+    });
+}
+
+/// The referrer's own cascade is hidden in a later step; here it only shows that a deletion
+/// rematerializes referrers in tables listed before the deleted row's table.
+#[test]
+fn a_deleted_target_rematerializes_referrers_listed_before_it() {
+    block_on(async {
+        let mut replicas = replicas(2).await;
+        replicas[0]
+            .exec(
+                "INSERT INTO fixture_cycle_a (id, label) VALUES ('a-1', 'A');
+                 INSERT INTO fixture_cycle_b (id, label) VALUES ('b-1', 'B');",
+            )
+            .await;
+        converge(&mut replicas).await;
+        replicas[0]
+            .exec("DELETE FROM fixture_cycle_b WHERE id = 'b-1'")
+            .await;
+        replicas[1]
+            .exec("UPDATE fixture_cycle_a SET peer_id = 'b-1' WHERE id = 'a-1'")
+            .await;
+        converge(&mut replicas).await;
+        assert_converged(&mut replicas).await;
+        for replica in &mut replicas {
+            assert_eq!(
+                texts(
+                    replica,
+                    "SELECT id || ':' || quote(peer_id) FROM fixture_cycle_a"
+                )
+                .await,
+                ["a-1:NULL"]
+            );
+            assert_eq!(
+                replica.count("SELECT count(*) FROM fixture_cycle_b").await,
+                0
+            );
+        }
+    });
+}
+
 async fn deleted_while_edited() -> Vec<Replica> {
     let mut replicas = replicas(2).await;
     seed_note(&mut replicas[0]).await;

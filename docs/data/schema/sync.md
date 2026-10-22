@@ -12,7 +12,8 @@
 | `sync_writers` | Every known writer of a space: public key, device, certificate, state (`active`, `retired`, `revoked`, `forked`), revocation cutoff, stored and applied sequences, and the head hash and clock of its chain. |
 | `sync_ops` | Every stored operation as its exact signed envelope, with its full causal context and state (`waiting`, `applied`, `held` with a reason). |
 | `sync_rows` | Merge state for every published row of a replicated table: live or tombstoned, a recovery flag, and a conflict mask. |
-| `sync_register_versions` | Concurrent versions of each group of each published row, at most one per writer, with the decoded value, its hash, and an indexed reference key for reference groups. |
+| `sync_register_versions` | Concurrent versions of each group of each published row, at most one per writer, with the decoded value and its hash. |
+| `sync_version_refs` | The non-null reference values of each retained version, one row per reference column, indexed by referenced key so redirects and deletions find their referrers. |
 | `sync_tombstones` | Tombstones of published rows, keyed by the deleting operation, with an optional redirect. |
 
 ## Invariants
@@ -31,7 +32,7 @@
 
 ## Replicated domain tables
 
-A replicated table carries capture triggers, row key and creation time immutability guards, a re-create guard, and value guards that enforce operation bounds on every local write. All of them are rendered from the manifest and stored as schema objects; a conformance test fails when they differ from the current rendering, when a table or column is unclassified, when a table id falls outside its domain's range, when a UNIQUE index or multi-column CHECK on a replicated table has no declared resolution, or when a foreign key into a replicated table neither cascades nor clears on delete.
+A replicated table carries capture triggers, row key and creation time immutability guards, a re-create guard, and value guards that enforce operation bounds on every local write. All of them are rendered from the manifest and stored as schema objects; a conformance test fails when they differ from the current rendering, when a table or column is unclassified, when a table id falls outside its domain's range, when a UNIQUE index or multi-column CHECK on a replicated table has no declared resolution, when a foreign key into a replicated table neither cascades nor clears on delete, when a replicated table's foreign keys differ from its declared references and their delete actions, or when tables are not listed in [dependency order](../../algorithms/sync/README.md#references).
 
 Every column of a replicated table is a key, a member of exactly one field group, local, or derived. A local column declares the value it takes when the engine materializes a row and when a snapshot copy resets it. The optimistic `revision` column is local: each replica bumps it when it materializes a content change, never for order or `updated_at`.
 

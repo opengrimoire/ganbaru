@@ -342,7 +342,10 @@ impl Sim {
         let note = self.rng.pick(&notes).map(|id| quoted(id));
         let tag = self.rng.pick(&tags).map(|id| quoted(id));
         let touch = format!("updated_at = {now}, revision = revision + 1");
-        let kind = self.rng.below(18);
+        let kind = self.rng.below(21);
+        if kind >= 18 {
+            return self.edit_links(index).await;
+        }
         if kind >= 15 {
             return self.edit_fixture(index, kind - 15, now).await;
         }
@@ -465,6 +468,53 @@ impl Sim {
                     quoted(&self.words())
                 )
             }
+        };
+        self.replicas[index].try_exec(&sql).await;
+    }
+
+    /// One local edit of fixture links and their ends: create an end whose label may collide,
+    /// link ends and a parent link, or delete an end or a link. Deleting clears references to
+    /// it, and colliding ends redirect every reference column of a link.
+    async fn edit_links(&mut self, index: usize) {
+        let ends = ids(
+            &mut self.replicas[index],
+            "SELECT id FROM fixture_cycle_a ORDER BY id",
+        )
+        .await;
+        let links = ids(
+            &mut self.replicas[index],
+            "SELECT id FROM fixture_links ORDER BY id",
+        )
+        .await;
+        let end = self.rng.pick(&ends).map(|id| quoted(id));
+        let link = self.rng.pick(&links).map(|id| quoted(id));
+        let sql = match (self.rng.below(5), end, link) {
+            (0, _, _) => {
+                let id = self.next_id("end", index);
+                format!(
+                    "INSERT INTO fixture_cycle_a (id, label) VALUES ({}, {})",
+                    quoted(&id),
+                    quoted(self.rng.pick(TAG_NAMES).unwrap())
+                )
+            }
+            (1, end, parent) => {
+                let id = self.next_id("link", index);
+                format!(
+                    "INSERT INTO fixture_links (id, note, left_id, parent_id)
+                     VALUES ({}, {}, {}, {})",
+                    quoted(&id),
+                    quoted(&self.words()),
+                    end.unwrap_or("NULL".into()),
+                    parent.unwrap_or("NULL".into())
+                )
+            }
+            (2, end, Some(link)) => format!(
+                "UPDATE fixture_links SET left_id = {} WHERE id = {link}",
+                end.unwrap_or("NULL".into())
+            ),
+            (3, Some(end), _) => format!("DELETE FROM fixture_cycle_a WHERE id = {end}"),
+            (4, _, Some(link)) => format!("DELETE FROM fixture_links WHERE id = {link}"),
+            _ => return,
         };
         self.replicas[index].try_exec(&sql).await;
     }

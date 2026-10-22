@@ -1,5 +1,7 @@
 //! A test-only fixture domain beside the vault domains, so engine behavior that no vault domain
-//! uses yet runs through the simulation: `Local` tables and columns, and every trigger policy.
+//! uses yet runs through the simulation: `Local` tables and columns, every trigger policy, a
+//! cascading reference cycle, a group with several reference columns, an immutable reference,
+//! and a reference into its own table.
 //! Fixture table ids start at [`FIXTURE_TABLE_IDS`], above every vault domain.
 
 use std::sync::LazyLock;
@@ -11,8 +13,9 @@ use super::{execute, migrated_pool};
 use crate::domains::vault_adapters;
 use crate::manifest::vault::{VAULT_MANIFEST_VERSION, quick_notes};
 use crate::manifest::{
-    ColumnSpec, ColumnType, DeviceTable, DomainManifest, DomainTrigger, GroupSpec, GroupStorage,
-    LocalColumn, Manifest, MergeKind, TableIdRange, TableSpec, TriggerPolicy, group_id,
+    Collation, ColumnSpec, ColumnType, DeviceTable, DomainManifest, DomainTrigger, GroupSpec,
+    GroupStorage, LocalColumn, Manifest, MergeKind, OnDelete, ReferenceColumn, Resolution,
+    TableIdRange, TableSpec, TriggerPolicy, group_id,
 };
 use crate::triggers::{self, NOT_APPLYING};
 use crate::{Engine, Hooks};
@@ -21,8 +24,8 @@ use crate::{Engine, Hooks};
 pub(super) const FIXTURE_TABLE_IDS: u16 = 60_000;
 
 /// Replicated fixture items. `label_edits` counts label changes on this device only.
-const ITEMS: TableSpec = TableSpec {
-    id: TableId(FIXTURE_TABLE_IDS),
+pub(super) const ITEMS: TableSpec = TableSpec {
+    id: ITEMS_TABLE,
     name: "fixture_items",
     key_column: "id",
     groups: &[
@@ -34,6 +37,7 @@ const ITEMS: TableSpec = TableSpec {
                 name: "created_at",
                 ty: ColumnType::Timestamp,
             }]),
+            references: &[],
             surfaced: false,
             recoverable: false,
             bumps_revision: false,
@@ -46,6 +50,7 @@ const ITEMS: TableSpec = TableSpec {
                 name: "label",
                 ty: ColumnType::Text { max_chars: 80 },
             }]),
+            references: &[],
             surfaced: false,
             recoverable: false,
             bumps_revision: false,
@@ -84,6 +89,159 @@ const ITEMS: TableSpec = TableSpec {
     ],
 };
 
+/// `fixture_items`.
+pub(super) const ITEMS_TABLE: TableId = TableId(FIXTURE_TABLE_IDS);
+/// `fixture_cycle_a`.
+pub(super) const CYCLE_A_TABLE: TableId = TableId(FIXTURE_TABLE_IDS + 1);
+/// `fixture_cycle_b`.
+pub(super) const CYCLE_B_TABLE: TableId = TableId(FIXTURE_TABLE_IDS + 2);
+/// `fixture_links`.
+pub(super) const LINKS_TABLE: TableId = TableId(FIXTURE_TABLE_IDS + 3);
+
+const LABEL: GroupSpec = GroupSpec {
+    id: group_id(0),
+    name: "label",
+    kind: MergeKind::Register,
+    storage: GroupStorage::Columns(&[ColumnSpec {
+        name: "label",
+        ty: ColumnType::Text { max_chars: 40 },
+    }]),
+    references: &[],
+    surfaced: false,
+    recoverable: false,
+    bumps_revision: false,
+};
+
+/// A group holding one reference column of its own name.
+const fn reference(name: &'static str, table: TableId, on_delete: OnDelete) -> GroupSpec {
+    GroupSpec {
+        id: group_id(1),
+        name,
+        kind: MergeKind::Reference { table, on_delete },
+        storage: GroupStorage::Columns(&[ColumnSpec {
+            name: "peer_id",
+            ty: ColumnType::OptionalRowKey,
+        }]),
+        references: &[],
+        surfaced: false,
+        recoverable: false,
+        bumps_revision: false,
+    }
+}
+
+/// One table of a reference cycle with [`CYCLE_B`]; deleting a row deletes the rows that
+/// reference it. Labels are unique, so duplicates redirect to the lowest key.
+pub(super) const CYCLE_A: TableSpec = TableSpec {
+    id: CYCLE_A_TABLE,
+    name: "fixture_cycle_a",
+    key_column: "id",
+    groups: &[LABEL, reference("peer", CYCLE_B_TABLE, OnDelete::Cascade)],
+    local_columns: &[],
+    derived_columns: &[],
+    revision_column: None,
+    resolutions: &[Resolution::DuplicateRepair {
+        columns: &["label"],
+        collation: Collation::Binary,
+    }],
+    redirects: true,
+    adapter: None,
+    triggers: &[],
+};
+
+/// The other table of the reference cycle with [`CYCLE_A`].
+pub(super) const CYCLE_B: TableSpec = TableSpec {
+    id: CYCLE_B_TABLE,
+    name: "fixture_cycle_b",
+    groups: &[LABEL, reference("peer", CYCLE_A_TABLE, OnDelete::Cascade)],
+    resolutions: &[],
+    redirects: false,
+    ..CYCLE_A
+};
+
+/// Links with an immutable owner item, a register group referencing both cycle tables, and a
+/// parent link in the same table.
+pub(super) const LINKS: TableSpec = TableSpec {
+    id: LINKS_TABLE,
+    name: "fixture_links",
+    key_column: "id",
+    groups: &[
+        GroupSpec {
+            id: group_id(0),
+            name: "owner",
+            kind: MergeKind::Immutable,
+            storage: GroupStorage::Columns(&[ColumnSpec {
+                name: "owner_id",
+                ty: ColumnType::OptionalRowKey,
+            }]),
+            references: &[ReferenceColumn {
+                column: "owner_id",
+                table: ITEMS_TABLE,
+                on_delete: OnDelete::Cascade,
+            }],
+            surfaced: false,
+            recoverable: false,
+            bumps_revision: false,
+        },
+        GroupSpec {
+            id: group_id(1),
+            name: "ends",
+            kind: MergeKind::Register,
+            storage: GroupStorage::Columns(&[
+                ColumnSpec {
+                    name: "note",
+                    ty: ColumnType::Text { max_chars: 40 },
+                },
+                ColumnSpec {
+                    name: "left_id",
+                    ty: ColumnType::OptionalRowKey,
+                },
+                ColumnSpec {
+                    name: "right_id",
+                    ty: ColumnType::OptionalRowKey,
+                },
+            ]),
+            references: &[
+                ReferenceColumn {
+                    column: "left_id",
+                    table: CYCLE_A_TABLE,
+                    on_delete: OnDelete::SetNull,
+                },
+                ReferenceColumn {
+                    column: "right_id",
+                    table: CYCLE_B_TABLE,
+                    on_delete: OnDelete::SetNull,
+                },
+            ],
+            surfaced: false,
+            recoverable: false,
+            bumps_revision: false,
+        },
+        GroupSpec {
+            id: group_id(2),
+            name: "parent",
+            kind: MergeKind::Reference {
+                table: LINKS_TABLE,
+                on_delete: OnDelete::SetNull,
+            },
+            storage: GroupStorage::Columns(&[ColumnSpec {
+                name: "parent_id",
+                ty: ColumnType::OptionalRowKey,
+            }]),
+            references: &[],
+            surfaced: false,
+            recoverable: false,
+            bumps_revision: false,
+        },
+    ],
+    local_columns: &[],
+    derived_columns: &[],
+    revision_column: None,
+    resolutions: &[],
+    redirects: false,
+    adapter: None,
+    triggers: &[],
+};
+
 /// The fixture domain.
 pub(super) const FIXTURE_DOMAIN: DomainManifest = DomainManifest {
     name: "fixture",
@@ -91,7 +249,7 @@ pub(super) const FIXTURE_DOMAIN: DomainManifest = DomainManifest {
         first: FIXTURE_TABLE_IDS,
         last: FIXTURE_TABLE_IDS + 15,
     },
-    tables: &[ITEMS],
+    tables: &[ITEMS, CYCLE_A, CYCLE_B, LINKS],
     derived: &["fixture_items_index"],
     local: &[DeviceTable {
         name: "fixture_item_marks",
@@ -130,6 +288,25 @@ fn fixture_schema() -> String {
          CREATE TABLE fixture_item_marks (
              item_id TEXT PRIMARY KEY REFERENCES fixture_items(id) ON DELETE CASCADE,
              mark INTEGER NOT NULL
+         );
+         CREATE TABLE fixture_cycle_a (
+             id TEXT PRIMARY KEY CHECK (trim(id) <> ''),
+             label TEXT NOT NULL CHECK (length(label) <= 40),
+             peer_id TEXT REFERENCES fixture_cycle_b(id) ON DELETE CASCADE,
+             UNIQUE (label)
+         );
+         CREATE TABLE fixture_cycle_b (
+             id TEXT PRIMARY KEY CHECK (trim(id) <> ''),
+             label TEXT NOT NULL CHECK (length(label) <= 40),
+             peer_id TEXT REFERENCES fixture_cycle_a(id) ON DELETE CASCADE
+         );
+         CREATE TABLE fixture_links (
+             id TEXT PRIMARY KEY CHECK (trim(id) <> ''),
+             owner_id TEXT REFERENCES fixture_items(id) ON DELETE CASCADE,
+             note TEXT NOT NULL CHECK (length(note) <= 40),
+             left_id TEXT REFERENCES fixture_cycle_a(id) ON DELETE SET NULL,
+             right_id TEXT REFERENCES fixture_cycle_b(id) ON DELETE SET NULL,
+             parent_id TEXT REFERENCES fixture_links(id) ON DELETE SET NULL
          );
          CREATE TABLE fixture_items_index (
              item_id TEXT PRIMARY KEY,

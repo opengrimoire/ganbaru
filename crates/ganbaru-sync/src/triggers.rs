@@ -6,7 +6,7 @@
 //! - Capture triggers upsert one `sync_capture` row per changed domain row: inserts set
 //!   `created` and the full mask, updates OR one bit per changed group, and deletes set
 //!   `deleted`. Owned child rows mark their parent's group.
-//! - A reference group change to null is not captured when the old target no longer exists:
+//! - A reference column change to null is not captured when the old target no longer exists:
 //!   that change is the foreign key action of a deletion, which the target's tombstone already
 //!   expresses.
 //! - Value guards enforce the manifest value rules on every write, so every locally valid row
@@ -24,7 +24,8 @@ use ganbaru_sync_contracts::bounds::{
 };
 
 use crate::manifest::{
-    ColumnSpec, ColumnType, GroupStorage, MAX_TIMESTAMP_BYTES, Manifest, MergeKind, TableSpec,
+    ColumnSpec, ColumnType, GroupSpec, GroupStorage, MAX_TIMESTAMP_BYTES, Manifest, MergeKind,
+    TableSpec,
 };
 
 /// Trigger condition true outside engine apply transactions.
@@ -296,32 +297,38 @@ fn insert_capture(table: &TableSpec) -> TriggerSql {
     TriggerSql { name, sql }
 }
 
-fn group_term(
-    manifest: &Manifest,
-    table: &TableSpec,
-    columns: &[ColumnSpec],
-    kind: MergeKind,
-    bit: &str,
-) -> String {
-    let changed = columns
+/// The mask bit of a column group when any of its columns changed. A reference column that
+/// became null while its old target no longer exists is not a change.
+fn group_term(manifest: &Manifest, table: &TableSpec, group: &GroupSpec, bit: &str) -> String {
+    let columns = group.columns();
+    let references = group.reference_columns().collect::<Vec<_>>();
+    let changes = columns
         .iter()
-        .map(column_changed)
-        .collect::<Vec<_>>()
-        .join(" OR ");
-    match kind {
-        MergeKind::Reference { table: target } => {
+        .enumerate()
+        .map(|(field, column)| {
+            let changed = column_changed(column);
+            let Some((_, reference)) = references.iter().find(|(index, _)| *index == field)
+            else {
+                return changed;
+            };
             let target = manifest
-                .table(target)
+                .table(reference.table)
                 .unwrap_or_else(|| panic!("{} references an unknown table", table.name));
-            let column = columns[0].name;
-            format!(
-                "(CASE WHEN {changed}\n                AND NOT (NEW.{column} IS NULL AND NOT EXISTS (SELECT 1 FROM {target_table} WHERE {target_key} = OLD.{column}))\n                THEN {bit} ELSE 0 END)",
+            let change = format!(
+                "{changed}\n                AND NOT (NEW.{name} IS NULL AND NOT EXISTS (SELECT 1 FROM {target_table} WHERE {target_key} = OLD.{name}))",
+                name = column.name,
                 target_table = target.name,
                 target_key = target.key_column,
-            )
-        }
-        _ => format!("(CASE WHEN {changed} THEN {bit} ELSE 0 END)"),
-    }
+            );
+            if columns.len() == 1 {
+                change
+            } else {
+                format!("({change})")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" OR ");
+    format!("(CASE WHEN {changes}\n                THEN {bit} ELSE 0 END)")
 }
 
 fn update_capture(manifest: &Manifest, table: &TableSpec) -> TriggerSql {
@@ -331,11 +338,10 @@ fn update_capture(manifest: &Manifest, table: &TableSpec) -> TriggerSql {
         .iter()
         .filter(|group| group.kind != MergeKind::Immutable)
         .filter_map(|group| match group.storage {
-            GroupStorage::Columns(columns) => Some(group_term(
+            GroupStorage::Columns(_) => Some(group_term(
                 manifest,
                 table,
-                columns,
-                group.kind,
+                group,
                 &mask_literal(group.mask().0),
             )),
             GroupStorage::Owned(_) => None,

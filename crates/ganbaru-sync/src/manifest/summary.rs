@@ -7,7 +7,7 @@
 
 use std::fmt::Write as _;
 
-use super::{ColumnType, GroupStorage, Manifest, MergeKind, Resolution};
+use super::{ColumnType, GroupStorage, Manifest, MergeKind, OnDelete, Resolution};
 
 impl Manifest {
     /// The canonical summary text, one line per table, group, and resolution.
@@ -35,6 +35,18 @@ impl Manifest {
                     GroupStorage::Columns(columns) => {
                         for column in columns {
                             let _ = write!(line, " {}:{}", column.name, column_type(column.ty));
+                            if let Some(reference) = group
+                                .references
+                                .iter()
+                                .find(|reference| reference.column == column.name)
+                            {
+                                let _ = write!(
+                                    line,
+                                    "->{}:{}",
+                                    reference.table.0,
+                                    on_delete(reference.on_delete)
+                                );
+                            }
                         }
                     }
                     GroupStorage::Owned(owned) => {
@@ -75,7 +87,19 @@ fn kind(kind: MergeKind) -> String {
         MergeKind::Coupled => "coupled".to_string(),
         MergeKind::Max => "max".to_string(),
         MergeKind::Position => "position".to_string(),
-        MergeKind::Reference { table } => format!("reference {}", table.0),
+        MergeKind::Reference {
+            table,
+            on_delete: action,
+        } => {
+            format!("reference {} {}", table.0, on_delete(action))
+        }
+    }
+}
+
+const fn on_delete(action: OnDelete) -> &'static str {
+    match action {
+        OnDelete::SetNull => "set_null",
+        OnDelete::Cascade => "cascade",
     }
 }
 

@@ -1,15 +1,18 @@
 //! Domain trigger policies against the triggers installed in each manifest's database.
 //!
 //! Every non-engine trigger on a converted, `Local`, or domain engine table is declared with a
-//! [`TriggerPolicy`], and its SQL is scanned for what the policy allows. Triggers on unconverted
+//! [`TriggerPolicy`], and its SQL is scanned for what the policy allows, including the tables an
+//! `ApplierVisible` trigger reads for the dependency order. Triggers on unconverted
 //! tables that write converted tables must stay quiet while the engine applies.
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use ganbaru_sync_contracts::TableId;
 use sqlx::SqlitePool;
 
 use super::block_on;
 use super::conformance::{Token, cases, tokenize};
+use crate::manifest::order::{Dependency, DependencyKind};
 use crate::manifest::vault::VAULT_MANIFEST;
 use crate::manifest::{Classification, DomainTrigger, Manifest, TriggerPolicy};
 use crate::triggers::NOT_APPLYING;
@@ -367,6 +370,111 @@ fn domain_triggers_keep_their_declared_policies() {
             assert_policies(manifest, &pool).await;
         }
     });
+}
+
+/// The replicated table that owns rows of `name`: the table itself, or the owner of an owned
+/// child table.
+fn row_owner(manifest: &Manifest, name: &str) -> Option<TableId> {
+    manifest.tables.iter().find_map(|table| {
+        let owns =
+            table.name == name || table.owned_children().any(|(_, owned)| owned.table == name);
+        owns.then_some(table.id)
+    })
+}
+
+/// Dependencies of an `ApplierVisible` trigger installed on `table`: one on every replicated
+/// table it names, through owned child tables. A trigger on an owned child table may read its
+/// own owner, whose row materializes before its owned rows.
+fn applier_dependencies(manifest: &Manifest, table: &str, sql: &str) -> Vec<Dependency> {
+    let (Some(from), Some(shape)) = (row_owner(manifest, table), shape(sql)) else {
+        return Vec::new();
+    };
+    let reads_own_owner = |name: &str| manifest.table(from).is_some_and(|spec| spec.name == name);
+    let child = manifest.table(from).is_some_and(|spec| spec.name != table);
+    shape
+        .when
+        .iter()
+        .chain(&shape.body)
+        .filter_map(|token| match token {
+            Token::Word(word) if !(child && reads_own_owner(word)) => row_owner(manifest, word),
+            _ => None,
+        })
+        .map(|to| Dependency {
+            from,
+            to,
+            kind: DependencyKind::ApplierVisible,
+        })
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
+
+/// Owned child tables keep only their parent foreign key, which the conformance tests check,
+/// so references and `ApplierVisible` triggers are the dependencies a manifest has today.
+async fn assert_dependency_order(manifest: &Manifest, pool: &SqlitePool) {
+    let declared = declared_triggers(manifest);
+    let mut dependencies = manifest.reference_dependencies();
+    for (name, table, sql) in installed_triggers(pool).await {
+        if declared
+            .get(name.as_str())
+            .is_some_and(|(trigger, _)| trigger.policy == TriggerPolicy::ApplierVisible)
+        {
+            dependencies.extend(applier_dependencies(manifest, &table, &sql));
+        }
+    }
+    let problems = manifest.order_problems(&dependencies);
+    assert!(problems.is_empty(), "{problems:#?}");
+}
+
+#[test]
+fn tables_are_listed_in_dependency_order() {
+    block_on(async {
+        for (manifest, pool) in cases().await {
+            assert_dependency_order(manifest, &pool).await;
+        }
+    });
+}
+
+#[test]
+fn applier_visible_triggers_depend_on_the_tables_they_read() {
+    use crate::manifest::vault::quick_notes::{NOTES_TABLE, TAGS_TABLE};
+    let dependency = |from, to| Dependency {
+        from,
+        to,
+        kind: DependencyKind::ApplierVisible,
+    };
+    let reads_tags = "CREATE TRIGGER t BEFORE INSERT ON quick_notes
+        WHEN NOT EXISTS (SELECT 1 FROM main.quick_note_tags WHERE id = NEW.tag_id)
+        BEGIN SELECT RAISE(ABORT, 'quick_notes need a tag'); END";
+    assert_eq!(
+        applier_dependencies(&VAULT_MANIFEST, "quick_notes", reads_tags),
+        [dependency(NOTES_TABLE, TAGS_TABLE)]
+    );
+    let reads_itself = "CREATE TRIGGER t BEFORE INSERT ON quick_notes
+        WHEN (SELECT count(*) FROM quick_note_text_runs) > 9
+        BEGIN SELECT RAISE(ABORT, 'full'); END";
+    assert_eq!(
+        applier_dependencies(&VAULT_MANIFEST, "quick_notes", reads_itself),
+        [dependency(NOTES_TABLE, NOTES_TABLE)]
+    );
+    let reads_owner = "CREATE TRIGGER t BEFORE INSERT ON quick_note_text_runs
+        WHEN NOT EXISTS (SELECT 1 FROM quick_notes WHERE id = NEW.note_id)
+        BEGIN SELECT RAISE(ABORT, 'orphan'); END";
+    assert_eq!(
+        applier_dependencies(&VAULT_MANIFEST, "quick_note_text_runs", reads_owner),
+        []
+    );
+    let self_loop = VAULT_MANIFEST.order_problems(&applier_dependencies(
+        &VAULT_MANIFEST,
+        "quick_notes",
+        reads_itself,
+    ));
+    assert!(
+        self_loop
+            .iter()
+            .any(|problem| problem.contains("lies on a cycle")),
+        "{self_loop:?}"
+    );
 }
 
 fn violation(policy: TriggerPolicy, sql: &str) -> Option<String> {

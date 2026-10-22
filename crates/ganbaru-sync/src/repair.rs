@@ -12,7 +12,7 @@ use sqlx::SqliteConnection;
 
 use crate::Engine;
 use crate::error::{SyncResult, corrupt};
-use crate::manifest::{Collation, MergeKind, Resolution, TableSpec};
+use crate::manifest::{Collation, Resolution, TableSpec};
 use crate::merge::{self, Batch, Version, table_param};
 use crate::sql;
 
@@ -206,20 +206,15 @@ pub(crate) async fn expand_references(
     batch: &mut Batch,
 ) -> SyncResult<()> {
     for target in engine.manifest().tables {
-        let referrers: BTreeSet<(TableId, GroupId)> = engine
+        let referrers: BTreeSet<(TableId, GroupId, usize)> = engine
             .manifest()
             .tables
             .iter()
             .flat_map(|table| {
                 table
-                    .groups
-                    .iter()
-                    .filter_map(move |group| match group.kind {
-                        MergeKind::Reference { table: referenced } if referenced == target.id => {
-                            Some((table.id, group.id))
-                        }
-                        _ => None,
-                    })
+                    .references()
+                    .filter(|(_, _, reference)| reference.table == target.id)
+                    .map(move |(group, field, _)| (table.id, group.id, field))
             })
             .collect();
         if referrers.is_empty() {
@@ -247,18 +242,20 @@ pub(crate) async fn expand_references(
             }
         }
         for key in seen {
-            let rows: Vec<(i64, String, i64)> = sqlx::query_as(
-                "SELECT DISTINCT table_id, row_key, group_id FROM sync_register_versions
+            let rows: Vec<(i64, String, i64, i64)> = sqlx::query_as(
+                "SELECT DISTINCT table_id, row_key, group_id, field FROM sync_version_refs
                  WHERE ref_key = ?",
             )
             .bind(&key)
             .fetch_all(&mut *conn)
             .await?;
-            for (table_id, row_key, group_id) in rows {
+            for (table_id, row_key, group_id, field) in rows {
                 let table_id = u16::try_from(table_id)
                     .map(TableId)
                     .map_err(|_| corrupt("table id out of range"))?;
-                if referrers.contains(&(table_id, merge::group_id(group_id)?)) {
+                let field =
+                    usize::try_from(field).map_err(|_| corrupt("reference field out of range"))?;
+                if referrers.contains(&(table_id, merge::group_id(group_id)?, field)) {
                     batch.dirty.insert((table_id, row_key));
                 }
             }

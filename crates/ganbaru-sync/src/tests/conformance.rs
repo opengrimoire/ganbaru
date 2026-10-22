@@ -4,14 +4,19 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use sqlx::SqlitePool;
 
-use super::fixture::{FIXTURE_TABLE_IDS, TEST_MANIFEST, fixture_pool};
+use super::fixture::{
+    CYCLE_A, CYCLE_A_TABLE, CYCLE_B, CYCLE_B_TABLE, FIXTURE_DOMAIN, FIXTURE_TABLE_IDS, ITEMS,
+    ITEMS_TABLE, LINKS, LINKS_TABLE, TEST_MANIFEST, fixture_pool,
+};
 use super::{block_on, migrated_pool};
 use crate::domains::vault_adapters;
+use crate::manifest::order::{Dependency, DependencyKind};
 use crate::manifest::vault::quick_notes;
 use crate::manifest::vault::{VAULT_DOMAINS, VAULT_MANIFEST};
 use crate::manifest::{
-    Classification, Collation, DomainManifest, GroupStorage, LocalColumn, Manifest, MergeKind,
-    Resolution, SYNC_TABLES, TableIdRange, TableSpec, is_sql_literal,
+    Classification, Collation, DomainManifest, GroupSpec, GroupStorage, LocalColumn, Manifest,
+    MergeKind, OnDelete, ReferenceColumn, Resolution, SYNC_TABLES, TableIdRange, TableSpec,
+    is_sql_literal,
 };
 use crate::{Adapters, Engine, Hooks, SyncError, triggers};
 
@@ -278,17 +283,14 @@ async fn assert_foreign_keys(manifest: &Manifest, pool: &SqlitePool) {
     let pool = pool.clone();
     for table in manifest.tables {
         let mut expected = BTreeSet::new();
-        for group in table.groups {
-            if let MergeKind::Reference { table: target } = group.kind {
-                let target = manifest.table(target).unwrap();
-                let column = group.columns()[0].name;
-                expected.insert((
-                    column.to_string(),
-                    target.name.to_string(),
-                    target.key_column.to_string(),
-                    "SET NULL".to_string(),
-                ));
-            }
+        for (_, _, reference) in table.references() {
+            let target = manifest.table(reference.table).unwrap();
+            expected.insert((
+                reference.column.to_string(),
+                target.name.to_string(),
+                target.key_column.to_string(),
+                reference.on_delete.sql_name().to_string(),
+            ));
         }
         let actual = foreign_keys(&pool, table.name)
             .await
@@ -602,7 +604,7 @@ fn check_scanner_ignores_strings_and_comments() {
 
 fn assert_well_formed(manifest: &Manifest) {
     let mut table_ids = BTreeSet::new();
-    for (position, table) in manifest.tables.iter().enumerate() {
+    for table in manifest.tables {
         assert_ne!(table.id.0, 0, "{}: table id 0 is reserved", table.name);
         assert!(
             table_ids.insert(table.id),
@@ -653,20 +655,10 @@ fn assert_well_formed(manifest: &Manifest) {
                         table.name
                     );
                 }
-                MergeKind::Reference { table: target } => {
-                    let target_position = manifest
-                        .tables
-                        .iter()
-                        .position(|candidate| candidate.id == target)
-                        .unwrap_or_else(|| panic!("{}: unknown reference target", table.name));
-                    assert!(
-                        target_position < position,
-                        "{}: parents come first",
-                        table.name
-                    );
-                    assert_eq!(group.columns().len(), 1, "{}.{}", table.name, group.name);
-                }
-                MergeKind::Register | MergeKind::Max | MergeKind::Position => {}
+                MergeKind::Reference { .. }
+                | MergeKind::Register
+                | MergeKind::Max
+                | MergeKind::Position => {}
             }
         }
 
@@ -822,6 +814,130 @@ fn validation_refuses_overlapping_ranges_misplaced_ids_and_bad_literals() {
     assert!(empty.contains("invalid table id range"), "{empty}");
     let literal = validation_error(&[&BAD_LITERAL]);
     assert!(literal.contains("not a SQL literal"), "{literal}");
+}
+
+#[test]
+fn validation_refuses_malformed_references() {
+    const MALFORMED: [GroupSpec; 3] = {
+        let mut groups = [LINKS.groups[0], LINKS.groups[1], LINKS.groups[2]];
+        groups[0].references = &[ReferenceColumn {
+            column: "owner_id",
+            table: ITEMS_TABLE,
+            on_delete: OnDelete::SetNull,
+        }];
+        groups[1].references = &[
+            ReferenceColumn {
+                column: "missing_id",
+                table: CYCLE_A_TABLE,
+                on_delete: OnDelete::SetNull,
+            },
+            ReferenceColumn {
+                column: "note",
+                table: CYCLE_A_TABLE,
+                on_delete: OnDelete::SetNull,
+            },
+        ];
+        groups[2].references = &[ReferenceColumn {
+            column: "parent_id",
+            table: LINKS_TABLE,
+            on_delete: OnDelete::SetNull,
+        }];
+        groups
+    };
+    const BAD_LINKS: TableSpec = TableSpec {
+        groups: &MALFORMED,
+        ..LINKS
+    };
+    const BAD_REFERENCES: DomainManifest = DomainManifest {
+        tables: &[ITEMS, CYCLE_A, CYCLE_B, BAD_LINKS],
+        ..FIXTURE_DOMAIN
+    };
+    let malformed = validation_error(&[&BAD_REFERENCES]);
+    for problem in [
+        "owner_id is an immutable reference that does not cascade",
+        "missing_id is not a column of the group",
+        "note holds a reference but is not an optional row key",
+        "a reference group declares no reference columns",
+    ] {
+        assert!(malformed.contains(problem), "{problem}: {malformed}");
+    }
+}
+
+#[test]
+fn validation_refuses_tables_out_of_dependency_order() {
+    const SPLIT_CYCLE: DomainManifest = DomainManifest {
+        tables: &[ITEMS, CYCLE_A, LINKS, CYCLE_B],
+        ..FIXTURE_DOMAIN
+    };
+    let split = validation_error(&[&quick_notes::DOMAIN, &SPLIT_CYCLE]);
+    assert!(
+        split.contains("fixture_cycle_b: its dependency component is not contiguous"),
+        "{split}"
+    );
+    assert!(
+        split.contains("fixture_links: depends on fixture_cycle_b, which is listed later"),
+        "{split}"
+    );
+    const TARGET_LAST: DomainManifest = DomainManifest {
+        tables: &[CYCLE_A, CYCLE_B, LINKS, ITEMS],
+        ..FIXTURE_DOMAIN
+    };
+    let late = validation_error(&[&quick_notes::DOMAIN, &TARGET_LAST]);
+    assert!(
+        late.contains("fixture_links: depends on fixture_items, which is listed later"),
+        "{late}"
+    );
+    // A reference cycle in either order, and a reference to the row's own table, are allowed.
+    const CYCLE_REVERSED: DomainManifest = DomainManifest {
+        tables: &[ITEMS, CYCLE_B, CYCLE_A, LINKS],
+        ..FIXTURE_DOMAIN
+    };
+    leaked(&[&quick_notes::DOMAIN, &CYCLE_REVERSED])
+        .validate()
+        .unwrap();
+}
+
+#[test]
+fn owned_and_trigger_dependencies_never_lie_on_a_cycle() {
+    let manifest = &*TEST_MANIFEST;
+    let components = manifest.components(&manifest.reference_dependencies());
+    let position = |id| {
+        manifest
+            .tables
+            .iter()
+            .position(|table| table.id == id)
+            .unwrap()
+    };
+    assert_eq!(
+        components[position(CYCLE_A_TABLE)],
+        components[position(CYCLE_B_TABLE)]
+    );
+    assert_ne!(
+        components[position(LINKS_TABLE)],
+        components[position(CYCLE_A_TABLE)]
+    );
+    assert_eq!(components[position(LINKS_TABLE)], position(LINKS_TABLE));
+
+    for kind in [DependencyKind::Owned, DependencyKind::ApplierVisible] {
+        for (from, to) in [(CYCLE_A_TABLE, CYCLE_B_TABLE), (LINKS_TABLE, LINKS_TABLE)] {
+            let mut dependencies = manifest.reference_dependencies();
+            dependencies.push(Dependency { from, to, kind });
+            let problems = manifest.order_problems(&dependencies);
+            assert!(
+                problems
+                    .iter()
+                    .any(|problem| problem.contains("lies on a cycle")),
+                "{kind:?} {from:?} {to:?}: {problems:?}"
+            );
+        }
+        let mut dependencies = manifest.reference_dependencies();
+        dependencies.push(Dependency {
+            from: LINKS_TABLE,
+            to: CYCLE_B_TABLE,
+            kind,
+        });
+        assert_eq!(manifest.order_problems(&dependencies), Vec::<String>::new());
+    }
 }
 
 #[test]

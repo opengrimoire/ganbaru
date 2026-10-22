@@ -489,6 +489,7 @@ const ENGINE_DUMPED: &[(&str, &[&str])] = &[
     ("sync_ops", &["stored_at_ms"]),
     ("sync_rows", &[]),
     ("sync_register_versions", &[]),
+    ("sync_version_refs", &[]),
     ("sync_tombstones", &[]),
 ];
 

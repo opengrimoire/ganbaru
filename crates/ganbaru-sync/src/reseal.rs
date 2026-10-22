@@ -16,7 +16,7 @@ use crate::apply::{Constrained, finish_sealed};
 use crate::error::{SyncResult, corrupt, failpoint};
 use crate::log::{self, seq_i64, stored_u64};
 use crate::merge::{Batch, table_param};
-use crate::seal::{Replay, SealReport, SealSlot};
+use crate::seal::{Advance, Replay, SealReport, SealSlot};
 use crate::{Engine, LocalWriter, SpaceContext, SyncError, sql};
 
 /// Result of a re-seal.
@@ -357,7 +357,23 @@ impl Engine {
                             ctx,
                             &mut batch,
                             writer,
-                            &replay,
+                            Advance::Changes,
+                            Some(&replay),
+                            now_ms,
+                            &mut report.seal,
+                        )
+                        .await?;
+                }
+                Content::Acknowledgement => {
+                    sealer
+                        .seal_advance(
+                            self,
+                            &mut tx,
+                            ctx,
+                            &mut batch,
+                            writer,
+                            Advance::Acknowledgement,
+                            Some(&replay),
                             now_ms,
                             &mut report.seal,
                         )

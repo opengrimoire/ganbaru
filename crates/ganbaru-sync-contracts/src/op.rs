@@ -15,11 +15,12 @@
 //! group mask (8) | one value hash (32) per set group in ascending order | for tombstones a
 //! successor byte (1): `0` none, `1` followed by the redirect row key, or `2` followed by the
 //! cause's table id (2) and row key. A genesis payload is a certificate length (2) and the
-//! certificate. A revoke payload is target writer (16) | cutoff sequence (8) | reason (1).
+//! certificate. A revoke payload is target writer (16) | cutoff sequence (8) | reason (1). An
+//! acknowledgement has no payload.
 //!
 //! Body: per change and set group, a presence byte (1) and the value: field count (1) and typed
 //! fields, tag `0` null, `1` i64 (8), `2` text with length (4), `3` blob with length (4). Every
-//! value is present.
+//! value is present. Every kind other than changes has an empty body.
 //!
 //! Version 2 adds the cause successor and is otherwise version 1. An operation is sealed at
 //! version 2 only when one of its tombstones names a cause, so every other operation stays
@@ -70,16 +71,20 @@ pub enum OperationKind {
     Genesis,
     /// A writer revocation with a cutoff sequence.
     Revoke,
+    /// A signed acknowledgement: no changes, only the dependencies that advance the writer's
+    /// context to what it applied.
+    Acknowledgement,
 }
 
 impl OperationKind {
-    /// Wire value. `3` is reserved for signed acknowledgements and `4` for authorization
-    /// entries; `Revoke` keeps `2` until authorization entries replace it.
+    /// Wire value. `4` is reserved for authorization entries; `Revoke` keeps `2` until
+    /// authorization entries replace it.
     pub const fn as_u8(self) -> u8 {
         match self {
             Self::Changes => 0,
             Self::Genesis => 1,
             Self::Revoke => 2,
+            Self::Acknowledgement => 3,
         }
     }
 
@@ -89,6 +94,7 @@ impl OperationKind {
             0 => Some(Self::Changes),
             1 => Some(Self::Genesis),
             2 => Some(Self::Revoke),
+            3 => Some(Self::Acknowledgement),
             _ => None,
         }
     }
@@ -410,6 +416,9 @@ pub enum Content {
     Genesis(SignedCertificate),
     /// A writer revocation.
     Revoke(Revocation),
+    /// A signed acknowledgement of the writer's context. Acknowledgements of other writers are
+    /// never a reason to seal one, so acknowledgement traffic settles.
+    Acknowledgement,
 }
 
 /// A logical operation before signing or after verification.
@@ -474,6 +483,7 @@ impl Operation {
             Content::Changes(_) => OperationKind::Changes,
             Content::Genesis(_) => OperationKind::Genesis,
             Content::Revoke(_) => OperationKind::Revoke,
+            Content::Acknowledgement => OperationKind::Acknowledgement,
         }
     }
 
@@ -530,6 +540,7 @@ impl Operation {
                     return Err(CodecError::Malformed("revocation target").into());
                 }
             }
+            Content::Acknowledgement => {}
         }
         Ok(())
     }
@@ -582,6 +593,7 @@ impl Operation {
                 writer.u64(revocation.cutoff);
                 writer.u8(revocation.reason.as_u8());
             }
+            Content::Acknowledgement => {}
         }
         writer
     }
@@ -833,6 +845,7 @@ impl<'a> Envelope<'a> {
                     reason,
                 }))
             }
+            OperationKind::Acknowledgement => HeaderPayload::Complete(Content::Acknowledgement),
         };
         header.finish()?;
         let content = match payload {

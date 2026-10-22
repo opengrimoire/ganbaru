@@ -476,7 +476,7 @@ async fn apply_one(
         return Ok(Outcome::Held);
     };
     match &operation.content {
-        Content::Genesis(_) => Ok(Outcome::Applied),
+        Content::Genesis(_) | Content::Acknowledgement => Ok(Outcome::Applied),
         Content::Changes(changes) => {
             if !rows_exist(engine, conn, changes).await? {
                 return Ok(Outcome::Held);

@@ -167,6 +167,24 @@ pub(crate) struct Replay {
     pub(crate) context: VersionVector,
 }
 
+/// The kind of an operation that only advances its dependencies.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Advance {
+    /// An operation without changes, which acknowledges like any other operation.
+    Changes,
+    /// A signed acknowledgement, which never makes another writer acknowledge.
+    Acknowledgement,
+}
+
+impl Advance {
+    fn content(self) -> Content {
+        match self {
+            Self::Changes => Content::Changes(Vec::new()),
+            Self::Acknowledgement => Content::Acknowledgement,
+        }
+    }
+}
+
 /// The local writer's chain position while sealing.
 #[derive(Debug)]
 pub(crate) struct Sealer {
@@ -333,8 +351,8 @@ impl Sealer {
     }
 
     /// Dependencies of the next operation once they fit one header. While more writers
-    /// advanced than a header lists, this seals operations without changes, each taking the
-    /// next [`MAX_DEPENDENCIES`] writers in id order.
+    /// advanced than a header lists, this seals operations of the `advance` kind, each taking
+    /// the next [`MAX_DEPENDENCIES`] writers in id order.
     #[allow(clippy::too_many_arguments)]
     async fn catch_up(
         &mut self,
@@ -343,6 +361,7 @@ impl Sealer {
         ctx: &SpaceContext,
         batch: &mut Batch,
         writer: &mut LocalWriter<'_>,
+        advance: Advance,
         replay: Option<&Replay>,
         now_ms: u64,
         report: &mut SealReport,
@@ -361,7 +380,7 @@ impl Sealer {
                     batch,
                     writer,
                     dependencies,
-                    Content::Changes(Vec::new()),
+                    advance.content(),
                     replay,
                     now_ms,
                 )
@@ -371,8 +390,9 @@ impl Sealer {
         }
     }
 
-    /// Seals an operation without changes that advances to the replay context, replaying one
-    /// such operation of a replaced chain.
+    /// Seals an operation of the `advance` kind that advances to the replay context, or to
+    /// everything applied without one. A replay re-seals one such operation of a replaced
+    /// chain.
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn seal_advance(
         &mut self,
@@ -381,13 +401,15 @@ impl Sealer {
         ctx: &SpaceContext,
         batch: &mut Batch,
         writer: &mut LocalWriter<'_>,
-        replay: &Replay,
+        advance: Advance,
+        replay: Option<&Replay>,
         now_ms: u64,
         report: &mut SealReport,
     ) -> SyncResult<()> {
-        let replay = Some(replay);
         let dependencies = self
-            .catch_up(engine, conn, ctx, batch, writer, replay, now_ms, report)
+            .catch_up(
+                engine, conn, ctx, batch, writer, advance, replay, now_ms, report,
+            )
             .await?;
         let (seq, _, _) = self
             .seal_operation(
@@ -397,7 +419,7 @@ impl Sealer {
                 batch,
                 writer,
                 dependencies,
-                Content::Changes(Vec::new()),
+                advance.content(),
                 replay,
                 now_ms,
             )
@@ -505,7 +527,17 @@ impl Sealer {
         let mut pending = changes.into_iter().peekable();
         while pending.peek().is_some() {
             let dependencies = self
-                .catch_up(engine, conn, ctx, batch, writer, replay, now_ms, report)
+                .catch_up(
+                engine,
+                conn,
+                ctx,
+                batch,
+                writer,
+                Advance::Changes,
+                replay,
+                now_ms,
+                report,
+            )
                 .await?;
             let mut header = header_base(dependencies.len());
             let mut body = 0;
@@ -568,7 +600,17 @@ impl Sealer {
         report: &mut SealReport,
     ) -> SyncResult<()> {
         let dependencies = self
-            .catch_up(engine, conn, ctx, batch, writer, replay, now_ms, report)
+            .catch_up(
+                engine,
+                conn,
+                ctx,
+                batch,
+                writer,
+                Advance::Changes,
+                replay,
+                now_ms,
+                report,
+            )
             .await?;
         let (target, cutoff, reason) = (revocation.writer, revocation.cutoff, revocation.reason);
         let (seq, _, _) = self

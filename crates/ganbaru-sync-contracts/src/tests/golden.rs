@@ -15,7 +15,7 @@ use crate::{
 };
 use std::path::PathBuf;
 
-const VECTOR_NAMES: [&str; 3] = ["genesis", "changes", "revoke"];
+const VECTOR_NAMES: [&str; 4] = ["genesis", "changes", "revoke", "acknowledgement"];
 /// The version 2 vector: a tombstone naming its cause.
 const CAUSE_VECTOR: &str = "changes-cause";
 const BLESS_VARIABLE: &str = "GANBARU_SYNC_BLESS_VECTORS";
@@ -141,7 +141,7 @@ fn unsigned_body_damage_is_reported_apart_from_header_errors() {
         Envelope::decode(&trailing).unwrap().operation(),
         Err(PayloadError::Body(CodecError::Trailing))
     );
-    for index in [0, 2] {
+    for index in [0, 2, 3] {
         let padded = with_body(&chain[index].1, &[1]);
         assert_eq!(
             Envelope::decode(&padded).unwrap().operation(),
@@ -154,6 +154,35 @@ fn unsigned_body_damage_is_reported_apart_from_header_errors() {
         Envelope::decode(&header_damage).unwrap().operation(),
         Err(PayloadError::Invalid(OperationError::Codec(_)))
     ));
+}
+
+#[test]
+fn an_acknowledgement_carries_no_changes_and_seals_at_the_base_format() {
+    let chain = golden_chain();
+    let (operation, bytes) = &chain[3];
+    assert_eq!(operation.kind(), OperationKind::Acknowledgement);
+    assert_eq!(operation.format_version(), BASE_FORMAT_VERSION);
+    let envelope = Envelope::decode(bytes).unwrap();
+    assert_eq!(envelope.kind, 3);
+    assert!(envelope.body.is_empty());
+
+    // A changes payload after the dependencies is trailing header data for kind 3.
+    let mut header = envelope.header.to_vec();
+    header.extend_from_slice(&0u16.to_be_bytes());
+    let with_changes = signed_envelope(BASE_FORMAT_VERSION, 3, &header, b"");
+    assert!(matches!(
+        Envelope::decode(&with_changes).unwrap().operation(),
+        Err(PayloadError::Invalid(OperationError::Codec(_)))
+    ));
+    let with_body = signed_envelope(BASE_FORMAT_VERSION, 3, envelope.header, &[1]);
+    assert_eq!(
+        Envelope::decode(&with_body).unwrap().operation(),
+        Err(PayloadError::Body(CodecError::Malformed("body")))
+    );
+    let plain = signed_envelope(BASE_FORMAT_VERSION, 3, envelope.header, b"");
+    let decoded = Envelope::decode(&plain).unwrap().operation().unwrap();
+    assert_eq!(decoded.content, Content::Acknowledgement);
+    assert_eq!(decoded.header, operation.header);
 }
 
 fn signed_envelope(format_version: u8, kind: u8, header: &[u8], body: &[u8]) -> Vec<u8> {
@@ -183,8 +212,8 @@ fn newer_formats_and_unknown_kinds_verify_but_are_held() {
     assert!(envelope.verify(&public_key));
     assert_eq!(envelope.operation(), Err(PayloadError::NewerFormat));
 
-    let checkpoint = signed_envelope(1, 3, b"checkpoint", b"");
-    let envelope = Envelope::decode(&checkpoint).unwrap();
+    let authorization = signed_envelope(1, 4, b"authorization", b"");
+    let envelope = Envelope::decode(&authorization).unwrap();
     assert!(envelope.verify(&public_key));
     assert_eq!(envelope.operation(), Err(PayloadError::UnknownKind));
     assert_eq!(newer.len(), ENVELOPE_OVERHEAD + 13 + 11);

@@ -185,7 +185,7 @@ fn classify_operation(engine: &Engine, operation: Operation) -> Classified {
                 None
             }
         }
-        Content::Genesis(_) | Content::Revoke(_) => None,
+        Content::Genesis(_) | Content::Revoke(_) | Content::Acknowledgement => None,
     };
     let dependencies = operation.header.dependencies;
     match reason {

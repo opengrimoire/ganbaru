@@ -4,11 +4,17 @@
 //! contact cards, and the Linux firewall rules is chosen separately from the bind.
 
 use ganbaru_handoff::dial::{DialAddressClass, reportable_address};
-use std::net::{IpAddr, Ipv4Addr, UdpSocket};
+use ganbaru_handoff::protocol::MAX_COORDINATOR_ENDPOINTS;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket};
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 /// Documentation address whose route reveals the source address the system prefers. No packet
 /// is sent: connecting a UDP socket only selects a route.
 const ROUTE_PROBE_TARGET: (Ipv4Addr, u16) = (Ipv4Addr::new(192, 0, 2, 1), 9);
+
+/// How long gathered reported endpoints are reused.
+const REPORTED_ENDPOINTS_LIFETIME: Duration = Duration::from_secs(5);
 
 /// Error shown when this desktop has no address another device could reach.
 const NO_LOCAL_NETWORK_ADDRESS: &str = "no local network address is currently available";
@@ -54,6 +60,79 @@ fn choose_invitation_address(routed: Option<IpAddr>, candidates: &[IpAddr]) -> O
                 .copied()
                 .find(|address| is_unique_local(*address) && is_reportable(*address))
         })
+}
+
+/// The listener endpoints this coordinator reports to linked devices in sync states, at most
+/// [`MAX_COORDINATOR_ENDPOINTS`], best first.
+pub(crate) fn reported_endpoints(port: u16) -> Vec<String> {
+    order_reported_addresses(routed_ipv4_source(), &interface_addresses())
+        .into_iter()
+        .map(|address| SocketAddr::new(address, port).to_string())
+        .collect()
+}
+
+/// Orders the reportable addresses for sync states: private IPv4, IPv4 link-local, unique local
+/// IPv6, global IPv6, then overlay, because a LAN path is faster when both work. The routed
+/// source leads its class, so in the common case the first entry is the invitation address.
+/// Duplicates and unreportable addresses are dropped, and the list is capped.
+fn order_reported_addresses(routed: Option<IpAddr>, candidates: &[IpAddr]) -> Vec<IpAddr> {
+    let mut ordered: Vec<(u8, IpAddr)> = Vec::new();
+    for address in routed.into_iter().chain(candidates.iter().copied()) {
+        let address = address.to_canonical();
+        let Some(rank) = report_rank(address) else {
+            continue;
+        };
+        if ordered.iter().all(|(_, known)| *known != address) {
+            ordered.push((rank, address));
+        }
+    }
+    ordered.sort_by_key(|(rank, _)| *rank);
+    ordered
+        .into_iter()
+        .map(|(_, address)| address)
+        .take(MAX_COORDINATOR_ENDPOINTS)
+        .collect()
+}
+
+/// Where a reportable address goes in the reported list, or `None` when it is not reportable.
+fn report_rank(address: IpAddr) -> Option<u8> {
+    match reportable_address(address).ok()? {
+        DialAddressClass::PrivateLan if is_ipv4_link_local(address) => Some(1),
+        DialAddressClass::PrivateLan if address.is_ipv4() => Some(0),
+        DialAddressClass::PrivateLan => Some(2),
+        DialAddressClass::GlobalIpv6 => Some(3),
+        DialAddressClass::Overlay => Some(4),
+        DialAddressClass::Loopback => None,
+    }
+}
+
+/// Keeps the reported endpoints for [`REPORTED_ENDPOINTS_LIFETIME`], so a burst of sync requests
+/// enumerates the interfaces once.
+#[derive(Default)]
+pub(crate) struct ReportedEndpointCache {
+    entry: Mutex<Option<(Instant, Vec<String>)>>,
+}
+
+impl ReportedEndpointCache {
+    /// The cached endpoints when they are fresh at `now`, otherwise the result of `gather`.
+    pub(crate) fn get_or_refresh(
+        &self,
+        now: Instant,
+        gather: impl FnOnce() -> Vec<String>,
+    ) -> Vec<String> {
+        let mut entry = match self.entry.lock() {
+            Ok(entry) => entry,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        if let Some((gathered_at, endpoints)) = entry.as_ref()
+            && now.saturating_duration_since(*gathered_at) < REPORTED_ENDPOINTS_LIFETIME
+        {
+            return endpoints.clone();
+        }
+        let endpoints = gather();
+        *entry = Some((now, endpoints.clone()));
+        endpoints
+    }
 }
 
 fn is_reportable(address: IpAddr) -> bool {
@@ -182,5 +261,63 @@ mod tests {
             None
         );
         assert_eq!(choose_invitation_address(None, &[]), None);
+    }
+
+    #[test]
+    fn reported_addresses_rank_lan_before_global_and_overlay_with_the_route_leading_its_class() {
+        let candidates = addresses(&[
+            "100.80.0.4",
+            "2a00:1450::5",
+            "fd00::5",
+            "169.254.3.4",
+            "10.0.0.5",
+            "192.168.1.20",
+            "fe80::1",
+            "127.0.0.1",
+        ]);
+        assert_eq!(
+            order_reported_addresses(Some(ip("192.168.1.20")), &candidates),
+            addresses(&[
+                "192.168.1.20",
+                "10.0.0.5",
+                "169.254.3.4",
+                "fd00::5",
+                "2a00:1450::5",
+                "100.80.0.4",
+            ])
+        );
+    }
+
+    #[test]
+    fn reported_addresses_drop_duplicates_unreportable_routes_and_extra_entries() {
+        assert_eq!(
+            order_reported_addresses(
+                Some(ip("203.0.113.9")),
+                &addresses(&["::ffff:10.0.0.5", "10.0.0.5", "::1"])
+            ),
+            addresses(&["10.0.0.5"]),
+            "a mapped address is the same IPv4 address"
+        );
+        let many: Vec<IpAddr> = (1..=20)
+            .map(|host| IpAddr::V4(Ipv4Addr::new(10, 0, 0, host)))
+            .collect();
+        let ordered = order_reported_addresses(None, &many);
+        assert_eq!(ordered.len(), MAX_COORDINATOR_ENDPOINTS);
+        assert_eq!(ordered, many[..MAX_COORDINATOR_ENDPOINTS]);
+    }
+
+    #[test]
+    fn reported_endpoint_cache_reuses_entries_until_they_expire() {
+        let cache = ReportedEndpointCache::default();
+        let start = Instant::now();
+        let first = cache.get_or_refresh(start, || vec!["192.168.1.20:1".to_string()]);
+        let cached = cache.get_or_refresh(start + REPORTED_ENDPOINTS_LIFETIME / 2, || {
+            panic!("a fresh entry is reused")
+        });
+        assert_eq!(cached, first);
+        let refreshed = cache.get_or_refresh(start + REPORTED_ENDPOINTS_LIFETIME, || {
+            vec!["10.0.0.5:1".to_string()]
+        });
+        assert_eq!(refreshed, vec!["10.0.0.5:1".to_string()]);
     }
 }

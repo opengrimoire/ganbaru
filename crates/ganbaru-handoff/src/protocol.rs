@@ -9,11 +9,13 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 mod sync;
 
 pub use sync::{
-    MAX_SYNC_ASSET_BYTES, MAX_SYNC_ASSETS, MAX_SYNC_HASHES, SYNC_ASSET_CHUNK_BYTES,
-    SYNC_PAGE_BYTES, SyncAsset, SyncProbe, SyncRefusal, SyncRefusalCode, SyncSeq,
+    DISCOVERY_KEY_BYTES, MAX_COORDINATOR_ENDPOINTS, MAX_SYNC_ASSET_BYTES, MAX_SYNC_ASSETS,
+    MAX_SYNC_HASHES, SYNC_ASSET_CHUNK_BYTES, SYNC_PAGE_BYTES, SyncAsset, SyncProbe, SyncRefusal,
+    SyncRefusalCode, SyncSeq, validate_coordinator_endpoint, validate_coordinator_endpoints,
+    validate_discovery_key,
 };
 
-pub const PROTOCOL_VERSION: u16 = 6;
+pub const PROTOCOL_VERSION: u16 = 7;
 pub const MAX_CONTROL_BYTES: usize = 1024 * 1024;
 /// Frame bound before the peer presents a linked certificate. Enrollment (with its 8 KiB
 /// certificate) and contact requests fit well inside it.
@@ -362,11 +364,15 @@ pub enum ControlMessage {
         stored: Vec<SyncSeq>,
         probe: Option<SyncProbe>,
     },
-    /// The hub's stored operations and its hash at the probed sequence, when it holds it.
+    /// The hub's stored operations and its hash at the probed sequence, when it holds it, plus
+    /// the listener endpoints the coordinator reports now and the vault's discovery key, so a
+    /// linked device follows address changes without relinking.
     SyncState {
         manifest_version: u16,
         stored: Vec<SyncSeq>,
         probe_hash: Option<String>,
+        coordinator_endpoints: Vec<String>,
+        discovery_key: String,
     },
     /// Authenticated: operations the hub lacks, in an order that keeps chains contiguous.
     SyncPush {
@@ -781,11 +787,15 @@ impl ControlMessage {
                 manifest_version: _,
                 stored,
                 probe_hash,
+                coordinator_endpoints,
+                discovery_key,
             } => {
                 sync::validate_vector(stored)?;
                 if let Some(hash) = probe_hash {
                     sync::validate_hashes(std::slice::from_ref(hash))?;
                 }
+                sync::validate_coordinator_endpoints(coordinator_endpoints)?;
+                sync::validate_discovery_key(discovery_key)?;
             }
             Self::SyncPush {
                 protocol_version,
@@ -1691,5 +1701,106 @@ mod tests {
             let error = status(issued_at_ms).validate().unwrap_err();
             assert!(error.contains("replay window"), "{issued_at_ms}: {error}");
         }
+    }
+
+    fn discovery_key_of(bytes: usize) -> String {
+        base64::Engine::encode(
+            &base64::engine::general_purpose::URL_SAFE_NO_PAD,
+            vec![7_u8; bytes],
+        )
+    }
+
+    fn sync_state(endpoints: &[&str], discovery_key: String) -> ControlMessage {
+        ControlMessage::SyncState {
+            manifest_version: 1,
+            stored: vec![SyncSeq {
+                writer: "a".repeat(32),
+                seq: 3,
+            }],
+            probe_hash: Some("c".repeat(64)),
+            coordinator_endpoints: endpoints.iter().map(ToString::to_string).collect(),
+            discovery_key,
+        }
+    }
+
+    fn frame_round_trip(message: &ControlMessage) -> Result<ControlMessage, String> {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .expect("test runtime");
+        runtime.block_on(async {
+            let mut frame = Vec::new();
+            write_control(&mut frame, message).await?;
+            read_control(&mut frame.as_slice()).await
+        })
+    }
+
+    #[test]
+    fn sync_state_round_trips_reported_endpoints_and_discovery_key() {
+        let state = sync_state(
+            &[
+                "192.168.1.20:43821",
+                "[fd00::5]:43821",
+                "[2a01:4f8:10:20::5]:43821",
+                "100.64.3.4:43821",
+            ],
+            discovery_key_of(DISCOVERY_KEY_BYTES),
+        );
+        assert_eq!(frame_round_trip(&state), Ok(state));
+        let empty = sync_state(&[], discovery_key_of(DISCOVERY_KEY_BYTES));
+        assert_eq!(frame_round_trip(&empty), Ok(empty));
+        let full = vec!["192.168.1.20:43821"; MAX_COORDINATOR_ENDPOINTS];
+        assert_eq!(
+            sync_state(&full, discovery_key_of(DISCOVERY_KEY_BYTES)).validate(),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn sync_state_refuses_unreportable_endpoints_and_malformed_keys() {
+        let key = discovery_key_of(DISCOVERY_KEY_BYTES);
+        let nine = vec!["192.168.1.20:43821"; MAX_COORDINATOR_ENDPOINTS + 1];
+        assert!(sync_state(&nine, key.clone()).validate().is_err());
+        for endpoint in [
+            "203.0.113.5:43821",
+            "127.0.0.1:43821",
+            "[::1]:43821",
+            "[fe80::1]:43821",
+            "192.168.1.20:0",
+            "192.168.1.20",
+            "",
+        ] {
+            let state = sync_state(&["10.0.0.4:43821", endpoint], key.clone());
+            assert!(state.validate().is_err(), "{endpoint:?}");
+            assert!(frame_round_trip(&state).is_err(), "{endpoint:?}");
+        }
+        for malformed in [
+            discovery_key_of(DISCOVERY_KEY_BYTES - 1),
+            discovery_key_of(DISCOVERY_KEY_BYTES + 1),
+            format!("{key}="),
+            "!".repeat(key.len()),
+            String::new(),
+        ] {
+            assert!(
+                sync_state(&[], malformed.clone()).validate().is_err(),
+                "{malformed:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn sync_requests_of_the_previous_protocol_ask_for_an_update() {
+        let hello = |protocol_version| ControlMessage::SyncHello {
+            protocol_version,
+            vault_id: "vault-1".to_string(),
+            device_id: "device-phone".to_string(),
+            manifest_version: 1,
+            stored: Vec::new(),
+            probe: None,
+        };
+        assert_eq!(hello(PROTOCOL_VERSION).validate(), Ok(()));
+        assert_eq!(
+            hello(PROTOCOL_VERSION - 1).validate(),
+            Err("handoff protocol version is unsupported".to_string())
+        );
     }
 }

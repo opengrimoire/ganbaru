@@ -438,6 +438,332 @@ fn linked_client_accepts_only_its_existing_coordinator() {
     );
 }
 
+/// A phone linked to a fresh desktop coordinator, with the coordinator's invitation and
+/// certificate.
+fn linked_phone(label: &str) -> (TestDirectory, PairingManager, PairingInvitation, Vec<u8>) {
+    let phone_root = TestDirectory::new(&format!("{label}-phone"));
+    let phone = PairingManager::default();
+    phone
+        .initialize(phone_root.path().to_path_buf(), "device-phone".to_string())
+        .expect("initialize phone");
+    let desktop_root = TestDirectory::new(&format!("{label}-desktop"));
+    let desktop = PairingManager::default();
+    desktop
+        .initialize(
+            desktop_root.path().to_path_buf(),
+            "device-desktop".to_string(),
+        )
+        .expect("initialize desktop");
+    let invitation = desktop
+        .create_invitation(
+            "192.168.1.20:43821".parse().expect("endpoint"),
+            "vault-1".to_string(),
+            1,
+            crate::protocol::test_compatibility(),
+            100,
+        )
+        .expect("invitation");
+    let (_, desktop_identity) = desktop.identity().expect("desktop identity");
+    let certificate = desktop_identity.certificate.as_ref().to_vec();
+    phone
+        .record_coordinator(&invitation, &certificate, None)
+        .expect("record coordinator");
+    (phone_root, phone, invitation, certificate)
+}
+
+fn reported_contact(endpoints: &[&str], discovery_key: &str) -> CoordinatorContact {
+    CoordinatorContact {
+        last_endpoint: None,
+        reported_endpoints: Some(endpoints.iter().map(ToString::to_string).collect()),
+        discovery_key: Some(discovery_key.to_string()),
+    }
+}
+
+fn pin_of(manager: &PairingManager) -> CoordinatorPin {
+    manager
+        .coordinator_pin()
+        .expect("coordinator pin")
+        .expect("coordinator")
+}
+
+#[test]
+fn a_pin_without_contact_fields_loads_as_a_pin_before_its_first_exchange() {
+    let (phone_root, phone, invitation, _) = linked_phone("pin-without-contact");
+    drop(phone);
+    let state_path = phone_root.path().join(PAIRING_STATE_FILE);
+    let mut stored: serde_json::Value =
+        serde_json::from_slice(&fs::read(&state_path).expect("read state")).expect("decode state");
+    let coordinator = stored["coordinator"]
+        .as_object_mut()
+        .expect("stored coordinator");
+    for field in ["lastEndpoint", "reportedEndpoints", "discoveryKey"] {
+        assert!(coordinator.remove(field).is_some(), "{field}");
+    }
+    stored
+        .as_object_mut()
+        .expect("stored state")
+        .remove("discoveryKeys");
+    fs::write(
+        &state_path,
+        serde_json::to_vec(&stored).expect("encode state"),
+    )
+    .expect("write state");
+
+    let restarted = PairingManager::default();
+    restarted
+        .initialize(phone_root.path().to_path_buf(), "device-phone".to_string())
+        .expect("load a pin without contact fields");
+    let pin = pin_of(&restarted);
+    assert_eq!(pin.last_endpoint, None);
+    assert!(pin.reported_endpoints.is_empty());
+    assert_eq!(pin.discovery_key, None);
+    assert_eq!(pin.current_endpoint(), invitation.endpoint);
+}
+
+#[test]
+fn coordinator_contact_writes_only_on_change_and_only_for_the_current_pin() {
+    let (phone_root, phone, invitation, _) = linked_phone("coordinator-contact");
+    let state_path = phone_root.path().join(PAIRING_STATE_FILE);
+    let fingerprint = invitation.coordinator_fingerprint.clone();
+    assert_eq!(
+        pin_of(&phone).last_endpoint.as_deref(),
+        Some(invitation.endpoint.as_str()),
+        "enrollment reached the invitation endpoint"
+    );
+    let key = random_discovery_key().expect("discovery key");
+    let reported = ["192.168.1.30:43821", "[fd00::30]:43821"];
+
+    assert_eq!(
+        phone.record_coordinator_contact(
+            "vault-1",
+            &fingerprint,
+            reported_contact(&reported, &key)
+        ),
+        Ok(true)
+    );
+    fs::remove_file(&state_path).expect("remove state to detect writes");
+    assert_eq!(
+        phone.record_coordinator_contact(
+            "vault-1",
+            &fingerprint,
+            reported_contact(&reported, &key)
+        ),
+        Ok(false)
+    );
+    assert_eq!(
+        phone.record_coordinator_contact(
+            "vault-1",
+            &fingerprint,
+            CoordinatorContact {
+                last_endpoint: Some(invitation.endpoint.clone()),
+                ..CoordinatorContact::default()
+            }
+        ),
+        Ok(false)
+    );
+    for (vault_id, other_fingerprint) in [
+        ("vault-2", fingerprint.clone()),
+        ("vault-1", "c".repeat(64)),
+    ] {
+        assert_eq!(
+            phone.record_coordinator_contact(
+                vault_id,
+                &other_fingerprint,
+                reported_contact(&["10.0.0.9:43821"], &key)
+            ),
+            Ok(false)
+        );
+    }
+    assert!(!state_path.exists(), "an unchanged contact must not write");
+
+    assert!(
+        phone
+            .record_coordinator_contact(
+                "vault-1",
+                &fingerprint,
+                reported_contact(&["203.0.113.5:43821"], &key)
+            )
+            .is_err(),
+        "a public reported endpoint is refused"
+    );
+    assert!(
+        phone
+            .record_coordinator_contact(
+                "vault-1",
+                &fingerprint,
+                CoordinatorContact {
+                    last_endpoint: Some("8.8.8.8:43821".to_string()),
+                    ..CoordinatorContact::default()
+                }
+            )
+            .is_err(),
+        "a public last endpoint is refused"
+    );
+    assert_eq!(
+        phone.record_coordinator_contact(
+            "vault-1",
+            &fingerprint,
+            CoordinatorContact {
+                last_endpoint: Some("192.168.1.30:43821".to_string()),
+                ..CoordinatorContact::default()
+            }
+        ),
+        Ok(true)
+    );
+
+    let restarted = PairingManager::default();
+    restarted
+        .initialize(phone_root.path().to_path_buf(), "device-phone".to_string())
+        .expect("restart");
+    let pin = pin_of(&restarted);
+    assert_eq!(pin.current_endpoint(), "192.168.1.30:43821");
+    assert_eq!(pin.reported_endpoints, reported);
+    assert_eq!(pin.discovery_key.as_deref(), Some(key.as_str()));
+    assert_eq!(pin.endpoint, invitation.endpoint);
+
+    restarted.unlink().expect("unlink");
+    assert_eq!(
+        restarted.record_coordinator_contact(
+            "vault-1",
+            &fingerprint,
+            reported_contact(&reported, &key)
+        ),
+        Ok(false),
+        "an exchange finishing after unlink never resurrects the pin"
+    );
+    assert!(restarted.coordinator_pin().expect("pin").is_none());
+}
+
+#[test]
+fn relinking_to_the_same_coordinator_keeps_its_reported_contact() {
+    let (_phone_root, phone, invitation, certificate) = linked_phone("relink-contact");
+    let key = random_discovery_key().expect("discovery key");
+    phone
+        .record_coordinator_contact(
+            "vault-1",
+            &invitation.coordinator_fingerprint,
+            reported_contact(&["192.168.1.30:43821"], &key),
+        )
+        .expect("record contact");
+    let mut refreshed = invitation.clone();
+    refreshed.endpoint = "192.168.1.40:43821".to_string();
+    refreshed.generation += 1;
+    phone
+        .record_coordinator(&refreshed, &certificate, None)
+        .expect("relink");
+    let pin = pin_of(&phone);
+    assert_eq!(pin.endpoint, refreshed.endpoint);
+    assert_eq!(pin.current_endpoint(), refreshed.endpoint);
+    assert_eq!(pin.generation, refreshed.generation);
+    assert_eq!(pin.reported_endpoints, ["192.168.1.30:43821"]);
+    assert_eq!(pin.discovery_key.as_deref(), Some(key.as_str()));
+}
+
+#[test]
+fn coordinator_discovery_keys_are_created_once_per_vault_and_dropped_with_the_last_peer() {
+    let temporary = TestDirectory::new("discovery-keys");
+    let manager = PairingManager::default();
+    manager
+        .initialize(temporary.path().to_path_buf(), "device-desktop".to_string())
+        .expect("initialize");
+    assert!(
+        manager.discovery_key("vault-1").is_err(),
+        "a vault without linked devices has no key"
+    );
+    let phone = create_identity("device-phone".to_string()).expect("phone identity");
+    let laptop = create_identity("device-laptop".to_string()).expect("laptop identity");
+    let tablet = create_identity("device-tablet".to_string()).expect("tablet identity");
+    enroll_identity(&manager, "vault-1", &phone, "Phone", 100).expect("enroll phone");
+    enroll_identity(&manager, "vault-1", &laptop, "Laptop", 200).expect("enroll laptop");
+    enroll_identity(&manager, "vault-2", &tablet, "Tablet", 300).expect("enroll tablet");
+
+    let first = manager.discovery_key("vault-1").expect("first vault key");
+    crate::protocol::validate_discovery_key(&first).expect("key format");
+    assert_eq!(manager.discovery_key("vault-1"), Ok(first.clone()));
+    let second = manager.discovery_key("vault-2").expect("second vault key");
+    assert_ne!(first, second);
+
+    let restarted = PairingManager::default();
+    restarted
+        .initialize(temporary.path().to_path_buf(), "device-desktop".to_string())
+        .expect("restart");
+    assert_eq!(restarted.discovery_key("vault-1"), Ok(first.clone()));
+
+    restarted
+        .unlink_device("device-phone")
+        .expect("unlink phone");
+    assert_eq!(restarted.discovery_key("vault-1"), Ok(first.clone()));
+    enroll_identity(&restarted, "vault-2", &laptop, "Laptop", 400).expect("move laptop");
+    assert!(
+        !state_text(temporary.path()).contains(&first),
+        "moving the last device away drops the vault key"
+    );
+    assert!(restarted.discovery_key("vault-1").is_err());
+    assert_eq!(restarted.discovery_key("vault-2"), Ok(second.clone()));
+
+    restarted
+        .unlink_device("device-tablet")
+        .expect("unlink tablet");
+    assert_eq!(restarted.discovery_key("vault-2"), Ok(second.clone()));
+    restarted.unlink().expect("unlink all");
+    assert!(!state_text(temporary.path()).contains(&second));
+    assert!(restarted.discovery_key("vault-2").is_err());
+}
+
+#[test]
+fn stored_contact_fields_are_validated_on_load() {
+    let (phone_root, phone, invitation, _) = linked_phone("stored-contact");
+    let key = random_discovery_key().expect("discovery key");
+    phone
+        .record_coordinator_contact(
+            "vault-1",
+            &invitation.coordinator_fingerprint,
+            reported_contact(&["192.168.1.30:43821"], &key),
+        )
+        .expect("record contact");
+    drop(phone);
+    let state_path = phone_root.path().join(PAIRING_STATE_FILE);
+    let original = fs::read(&state_path).expect("read state");
+    for (field, value, expected) in [
+        (
+            "reportedEndpoints",
+            serde_json::json!(["203.0.113.5:43821"]),
+            "coordinator endpoint is refused",
+        ),
+        (
+            "reportedEndpoints",
+            serde_json::json!(vec![
+                "192.168.1.30:43821";
+                crate::protocol::MAX_COORDINATOR_ENDPOINTS + 1
+            ]),
+            "coordinator endpoint list is too large",
+        ),
+        (
+            "lastEndpoint",
+            serde_json::json!("8.8.8.8:43821"),
+            "last coordinator endpoint is refused",
+        ),
+        (
+            "discoveryKey",
+            serde_json::json!(&key[1..]),
+            "discovery key is invalid",
+        ),
+    ] {
+        let mut stored: serde_json::Value =
+            serde_json::from_slice(&original).expect("decode state");
+        stored["coordinator"][field] = value;
+        fs::write(
+            &state_path,
+            serde_json::to_vec(&stored).expect("encode state"),
+        )
+        .expect("write state");
+        let error = PairingManager::default()
+            .initialize(phone_root.path().to_path_buf(), "device-phone".to_string())
+            .expect_err("refuse invalid stored contact");
+        assert!(error.contains(expected), "{field}: {error}");
+    }
+}
+
 #[test]
 fn several_peers_survive_restart_and_can_be_unlinked_individually() {
     let temporary = TestDirectory::new("several-peers");

@@ -90,7 +90,10 @@ fn truncate_at_char_boundary(value: &str, max_bytes: usize) -> String {
 pub(crate) fn resolve_delivery_hint<R: Runtime>(app: &AppHandle<R>) -> DeliveryHint {
     let manager = app.state::<PairingManager>();
     if let Ok(Some(pin)) = manager.coordinator_pin() {
-        return bounded_hint(pin.endpoint, &pin.certificate_fingerprint);
+        return bounded_hint(
+            pin.current_endpoint().to_string(),
+            &pin.certificate_fingerprint,
+        );
     }
     #[cfg(desktop)]
     {

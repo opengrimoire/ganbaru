@@ -4,6 +4,7 @@
 //! which refuses any existing entry, a symlink or dangling symlink included, so a link
 //! planted in a shared folder cannot redirect the bytes. The temporary file is synced and
 //! renamed over the target; the rename replaces a symlinked target instead of following it.
+//! A staged file follows the same steps for content written in chunks over time.
 //! Managed folders also refuse symlinked directories between their root and the target,
 //! because `create_new` only protects the final path component.
 //! Bounded reads open the file once and check its type and size through that handle.
@@ -95,6 +96,97 @@ pub fn write_file_atomically_within(
 ) -> io::Result<()> {
     create_directories_within(root, parent_directory(path)?)?;
     write_file_atomically(path, bytes, access)
+}
+
+/// A replacement of a file written in pieces, for content that arrives in chunks and is only
+/// known to be valid once complete.
+///
+/// The bytes go to a randomly named temporary file created exclusively next to the target, as
+/// in [`write_file_atomically`]. [`StagedFile::commit`] syncs it and renames it over the
+/// target; dropping an uncommitted staged file removes the temporary file, so an abandoned or
+/// refused transfer leaves nothing behind.
+#[derive(Debug)]
+pub struct StagedFile {
+    file: Option<File>,
+    temporary: PathBuf,
+    target: PathBuf,
+    written: u64,
+}
+
+impl StagedFile {
+    /// Starts replacing `path`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the path has no parent or file name, or the temporary file cannot
+    /// be created exclusively.
+    pub fn create(path: &Path, access: FileAccess) -> io::Result<Self> {
+        let parent = parent_directory(path)?;
+        let temporary = temporary_path(parent, path)?;
+        let file = open_temporary(&temporary, access)?;
+        Ok(Self {
+            file: Some(file),
+            temporary,
+            target: path.to_path_buf(),
+            written: 0,
+        })
+    }
+
+    /// The file the staged bytes replace.
+    pub fn target(&self) -> &Path {
+        &self.target
+    }
+
+    /// Bytes written so far.
+    pub fn written(&self) -> u64 {
+        self.written
+    }
+
+    /// Appends `bytes`.
+    ///
+    /// # Errors
+    ///
+    /// Returns the write error; the staged file should then be dropped.
+    pub fn write_all(&mut self, bytes: &[u8]) -> io::Result<()> {
+        let file = self
+            .file
+            .as_mut()
+            .ok_or_else(|| io::Error::other("staged file is already closed"))?;
+        file.write_all(bytes)?;
+        self.written += bytes.len() as u64;
+        Ok(())
+    }
+
+    /// Syncs the staged bytes and renames them over the target.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when syncing or renaming fails. The temporary file is removed and the
+    /// target is left as it was.
+    pub fn commit(mut self) -> io::Result<()> {
+        let file = self
+            .file
+            .take()
+            .ok_or_else(|| io::Error::other("staged file is already closed"))?;
+        file.sync_all()?;
+        drop(file);
+        fs::rename(&self.temporary, &self.target)?;
+        // The temporary path is now the target, so dropping must not remove it.
+        self.temporary = PathBuf::new();
+        if let Ok(parent) = parent_directory(&self.target) {
+            sync_directory(parent);
+        }
+        Ok(())
+    }
+}
+
+impl Drop for StagedFile {
+    fn drop(&mut self) {
+        drop(self.file.take());
+        if !self.temporary.as_os_str().is_empty() {
+            remove_temporary(&self.temporary);
+        }
+    }
 }
 
 /// Creates `directory` and its missing ancestors below `root`, refusing to traverse a

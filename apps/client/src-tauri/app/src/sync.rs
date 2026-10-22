@@ -5,11 +5,11 @@
 
 pub(crate) mod commands;
 pub(crate) mod devices;
-mod images;
 mod recovery;
 mod service;
 mod status;
 mod transport;
+mod vault_assets;
 
 #[cfg(desktop)]
 pub(crate) use ganbaru_sync_replica::hub;

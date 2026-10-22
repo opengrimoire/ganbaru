@@ -4,7 +4,7 @@
 use super::writer::ActiveWriter;
 use ganbaru_sync::manifest::vault::quick_notes::{NOTES, NOTES_TABLE};
 use ganbaru_sync::{Engine, SpaceContext};
-use ganbaru_sync_contracts::TableId;
+use ganbaru_sync_contracts::{GroupId, TableId, Value};
 use serde::Deserialize;
 use sqlx::pool::PoolConnection;
 use sqlx::{Sqlite, SqlitePool};
@@ -37,15 +37,21 @@ pub fn recoverable_table(name: &str) -> Result<TableId, String> {
 }
 
 /// Restores or discards a recovery offer, then closes it with a tombstone that covers every
-/// retained version. Returns the id of the restored row.
-pub async fn close(
+/// retained version. `restore` creates the new row from the retained group values, through the
+/// owning domain's persistence, and returns its id. Returns the id of the restored row.
+pub async fn close<Restore, Restored>(
     engine: &Engine,
     pool: &SqlitePool,
     ctx: &SpaceContext,
     writer: &mut ActiveWriter,
     choice: &RecoveryChoice,
     now_ms: u64,
-) -> Result<Option<String>, String> {
+    restore: Restore,
+) -> Result<Option<String>, String>
+where
+    Restore: FnOnce(Vec<(GroupId, Value)>) -> Restored,
+    Restored: Future<Output = Result<String, String>>,
+{
     let (table, row_key) = (choice.table, choice.row_key.as_str());
     let restored = match choice.action {
         RecoveryAction::Discard => None,
@@ -58,7 +64,7 @@ pub async fn close(
                     .map_err(|error| format!("read recovered values: {error}"))?
             }
             .ok_or_else(|| "the recovery offer is closed".to_string())?;
-            Some(ganbaru_quick_notes::restore_recovered(pool, &values).await?)
+            Some(restore(values).await?)
         }
     };
     let report = {

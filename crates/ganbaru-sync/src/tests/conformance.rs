@@ -11,6 +11,7 @@ use super::fixture::{
     MEMBERSHIPS, TEST_MANIFEST, fixture_pool, membership_group, test_engine,
 };
 use super::{block_on, migrated_pool};
+use crate::assets::{AssetClass, MAX_ASSET_BYTES};
 use crate::codec::{OwnedRow, decode_table, encode_table};
 use crate::domains::vault_adapters;
 use crate::manifest::order::{Dependency, DependencyKind};
@@ -18,9 +19,9 @@ use crate::manifest::vault::quick_notes;
 use crate::manifest::vault::{VAULT_DOMAINS, VAULT_MANIFEST};
 use crate::manifest::{
     Classification, Collation, ColumnSpec, ColumnType, DerivedKey, DomainManifest, GroupSpec,
-    GroupStorage, LocalColumn, MAX_TIMESTAMP_BYTES, Manifest, MergeKind, OnDelete, OwnedCodec,
-    OwnedOrder, OwnedTable, ReferenceColumn, Resolution, SYNC_KEY_COLUMN, SYNC_TABLES,
-    TableIdRange, TableSpec, is_sql_literal,
+    GroupStorage, KeyDerivedColumn, LocalColumn, MAX_TIMESTAMP_BYTES, Manifest, MergeKind,
+    OnDelete, OwnedCodec, OwnedOrder, OwnedTable, ReferenceColumn, Resolution, SYNC_KEY_COLUMN,
+    SYNC_TABLES, TableIdRange, TableSpec, is_sql_literal,
 };
 use crate::sql::{read_owned, replace_owned};
 use crate::{Adapters, Engine, Hooks, SyncError, triggers};
@@ -192,6 +193,7 @@ async fn assert_columns_partitioned(manifest: &Manifest, pool: &SqlitePool) {
         declared.extend(table.local_columns.iter().map(|column| column.name));
         declared.extend(table.derived_columns);
         declared.extend(table.hook_columns);
+        declared.extend(table.key_derived_columns.iter().map(|column| column.name));
         let not_null: Vec<String> =
             sqlx::query_scalar("SELECT name FROM pragma_table_info(?) WHERE \"notnull\" = 1")
                 .bind(table.name)
@@ -929,13 +931,34 @@ fn implied_unique(table: &TableSpec) -> Option<BTreeSet<(String, String)>> {
     })
 }
 
+/// Columns of a unique index, each with its collation.
+type UniqueSet = BTreeSet<(String, String)>;
+
+/// The unique column sets and multi-column CHECKs key-derived columns imply: a column holding
+/// a prefix followed by the row key collides only when the key does, and its CHECK reads the
+/// column and the key.
+fn key_derived_implications(table: &TableSpec) -> (Vec<UniqueSet>, Vec<BTreeSet<String>>) {
+    table
+        .key_derived_columns
+        .iter()
+        .map(|column| {
+            let name = column.name.to_lowercase();
+            (
+                BTreeSet::from([(name.clone(), Collation::Binary.sql_name().to_string())]),
+                BTreeSet::from([name, table.key_column.to_lowercase()]),
+            )
+        })
+        .unzip()
+}
+
 async fn assert_resolutions(table: &TableSpec, pool: &SqlitePool) {
     let pool = pool.clone();
     let implied = implied_unique(table);
+    let (key_unique, key_checks) = key_derived_implications(table);
     let mut unique = unique_indexes(&pool, table.name)
         .await
         .into_iter()
-        .filter(|columns| implied.as_ref() != Some(columns))
+        .filter(|columns| implied.as_ref() != Some(columns) && !key_unique.contains(columns))
         .collect::<Vec<_>>();
     unique.sort();
     let mut declared = declared_unique(table);
@@ -965,6 +988,17 @@ async fn assert_resolutions(table: &TableSpec, pool: &SqlitePool) {
         .map(|expression| referenced_columns(expression, &columns))
         .filter(|referenced| referenced.len() > 1)
         .collect::<Vec<_>>();
+    // Every key-derived column is pinned to the key, so no local write can change it.
+    for check in &key_checks {
+        let position = multi_column.iter().position(|columns| columns == check);
+        let position = position.unwrap_or_else(|| {
+            panic!(
+                "{}: key-derived column {check:?} needs a CHECK against the key",
+                table.name
+            )
+        });
+        multi_column.remove(position);
+    }
     multi_column.sort();
     let mut declared = declared_checks(table);
     declared.sort();
@@ -1355,6 +1389,7 @@ fn validation_refuses_overlapping_ranges_misplaced_ids_and_bad_literals() {
         local: &[],
         engine: &[],
         replica_writable: false,
+        assets: &[],
     };
     const MISPLACED: DomainManifest = DomainManifest {
         table_ids: TableIdRange {
@@ -1397,6 +1432,69 @@ fn validation_refuses_overlapping_ranges_misplaced_ids_and_bad_literals() {
     assert!(empty.contains("invalid table id range"), "{empty}");
     let literal = validation_error(&[&BAD_LITERAL]);
     assert!(literal.contains("not a SQL literal"), "{literal}");
+}
+
+#[test]
+fn validation_refuses_key_derived_columns_naming_the_key_or_on_composite_keys() {
+    const KEY_NAMED: TableSpec = TableSpec {
+        key_derived_columns: &[KeyDerivedColumn {
+            name: "id",
+            prefix: "tag-",
+        }],
+        ..quick_notes::TAGS
+    };
+    const COMPOSITE: TableSpec = TableSpec {
+        key_column: SYNC_KEY_COLUMN,
+        key_derived_columns: &[KeyDerivedColumn {
+            name: "handle",
+            prefix: "note-",
+        }],
+        ..quick_notes::NOTES
+    };
+    const BAD_KEY_DERIVED: DomainManifest = DomainManifest {
+        tables: &[KEY_NAMED, COMPOSITE],
+        ..quick_notes::DOMAIN
+    };
+    let problems = validation_error(&[&BAD_KEY_DERIVED]);
+    for problem in [
+        "quick_note_tags: a key-derived column needs its own name",
+        "quick_notes.handle: a composite-key table has no key-derived columns",
+    ] {
+        assert!(problems.contains(problem), "{problems}");
+    }
+}
+
+#[test]
+fn validation_refuses_repeated_unsafe_and_oversized_asset_classes() {
+    const REPEATED: DomainManifest = DomainManifest {
+        assets: &[quick_notes::IMAGES_CLASS],
+        ..FIXTURE_DOMAIN
+    };
+    let repeated = validation_error(&[&quick_notes::DOMAIN, &REPEATED]);
+    assert!(
+        repeated.contains("quick-notes/images: asset class named twice"),
+        "{repeated}"
+    );
+    const UNSAFE: DomainManifest = DomainManifest {
+        assets: &[
+            AssetClass {
+                name: "../outside",
+                max_bytes: 1,
+            },
+            AssetClass {
+                name: "huge",
+                max_bytes: MAX_ASSET_BYTES + 1,
+            },
+        ],
+        ..FIXTURE_DOMAIN
+    };
+    let unsafe_classes = validation_error(&[&UNSAFE]);
+    for problem in [
+        "asset class ../outside: class name is not a relative path",
+        "asset class huge: class byte bound is outside",
+    ] {
+        assert!(unsafe_classes.contains(problem), "{unsafe_classes}");
+    }
 }
 
 #[test]

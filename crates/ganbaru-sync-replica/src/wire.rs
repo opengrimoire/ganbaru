@@ -2,8 +2,8 @@
 
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use ganbaru_handoff::protocol::{SyncAsset, SyncSeq};
-use ganbaru_quick_notes::images::ReferencedImage;
+use ganbaru_handoff::protocol::{SyncAsset, SyncAssetKey, SyncSeq};
+use ganbaru_sync::assets::AssetRef;
 use ganbaru_sync_contracts::{Digest32, VersionVector, WriterId};
 
 /// Wire entries of a version vector, in writer order.
@@ -60,23 +60,40 @@ pub fn ops_from_wire(ops: &[String]) -> Result<Vec<Vec<u8>>, String> {
         .collect()
 }
 
-pub fn asset_to_wire(image: &ReferencedImage) -> SyncAsset {
+pub fn asset_to_wire(asset: &AssetRef) -> SyncAsset {
     SyncAsset {
-        sha256: image.file().sha256().to_string(),
-        content_type: image.file().content_type().to_string(),
-        byte_size: image.byte_size(),
+        class: asset.class().name.to_string(),
+        sha256: asset.sha256().to_string(),
+        content_type: asset.content_type().to_string(),
+        byte_size: asset.byte_size(),
     }
 }
 
-/// Reads a wire asset as a Quick note image, the only asset kind sync moves.
+/// The class and digest that identify an asset on the wire.
+pub fn asset_key(asset: &AssetRef) -> SyncAssetKey {
+    SyncAssetKey {
+        class: asset.class().name.to_string(),
+        sha256: asset.sha256().to_string(),
+    }
+}
+
+/// Reads a wire asset against the classes the manifest registers, which bound its size and own
+/// its path.
 #[cfg(desktop)]
-pub fn asset_from_wire(asset: &SyncAsset) -> Result<ReferencedImage, String> {
-    ReferencedImage::new(
+pub fn asset_from_wire(
+    asset: &SyncAsset,
+    manifest: &ganbaru_sync::manifest::Manifest,
+) -> Result<AssetRef, String> {
+    let (_, class) = manifest
+        .asset_class(&asset.class)
+        .ok_or_else(|| format!("sync asset class {} is not registered", asset.class))?;
+    AssetRef::new(
+        class,
         asset.sha256.clone(),
         asset.content_type.clone(),
         asset.byte_size,
     )
-    .map_err(|error| format!("sync asset is not a supported image: {error:?}"))
+    .map_err(|error| format!("sync asset is invalid: {error}"))
 }
 
 pub fn bytes_to_wire(bytes: &[u8]) -> String {

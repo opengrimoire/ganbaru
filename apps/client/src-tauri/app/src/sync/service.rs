@@ -1,20 +1,20 @@
 //! The sync service of the active vault: it imports carried operations, keeps the local writer
-//! current, seals local captures after commits, and exchanges operations and Quick note image
+//! current, seals local captures after commits, and exchanges operations and managed asset
 //! files with the hub. On the coordinator it applies what linked devices push and revokes the
 //! writers of unlinked devices.
 
 use super::access::vault_connection_hook;
-use super::assets::{AssetMemory, AssetSession, AssetTransfer, ImageStore, MAX_ASSET_PASS_BYTES};
+use super::assets::{AssetMemory, AssetSession, AssetStore, AssetTransfer, MAX_ASSET_PASS_BYTES};
 use super::carry_forward;
 use super::client::{ClientSession, Exchange, ForkPoint, PeerIds};
 #[cfg(desktop)]
 use super::hub::{HubVault, OpenHubVault, SyncHub};
-use super::images::ActiveVaultImages;
 use super::recovery::{RecoveryChoice, RecoveryRequest};
 use super::status::{
     SyncErrorCode, SyncRole, SyncState, SyncStatusView, emit_applied, emit_status,
 };
 use super::transport::PairedTransport;
+use super::vault_assets::ActiveVaultAssets;
 use super::writer::{
     ActiveWriter, SuccessorPlan, SyncFiles, WriterCheck, WriterKeyStore, check_writer,
     create_writer, read_stored_writer, remove_retired_keys,
@@ -170,12 +170,12 @@ async fn open_hub_vault<R: Runtime>(app: &AppHandle<R>) -> Result<Option<HubVaul
         return Ok(None);
     };
     let vault_id = crate::vault::active_vault_id(app)?;
-    let images: Arc<dyn ImageStore> = Arc::new(ActiveVaultImages::open(app, &vault_id)?);
+    let assets: Arc<dyn AssetStore> = Arc::new(ActiveVaultAssets::open(app, &vault_id)?);
     Ok(Some(HubVault {
         pool,
         device_id: coordinator_device_id(app, &vault_id)?,
         vault_id,
-        images,
+        assets,
     }))
 }
 
@@ -360,8 +360,9 @@ fn asset_session<'s, R: Runtime>(
     AssetSession {
         transport: &peer.transport,
         ids: &peer.ids,
+        engine: &session.engine,
         pool: &session.pool,
-        store: &peer.images,
+        store: &peer.assets,
         max_bytes: MAX_ASSET_PASS_BYTES,
     }
 }
@@ -380,7 +381,7 @@ struct ServiceState {
     hold_expiry: Option<u64>,
     /// When the last apply ran, so the next one waits for something to change.
     applied: ApplyMark,
-    /// Which images the hub holds or lacks, so passes do not ask again.
+    /// Which managed assets the hub holds or lacks, so passes do not ask again.
     assets: AssetMemory,
     view: SyncStatusView,
 }
@@ -411,11 +412,11 @@ struct Applied {
     blocked_at: Option<u64>,
 }
 
-/// The hub and image files of one pass's asset steps.
+/// The hub and managed asset files of one pass's asset steps.
 struct AssetPeer {
     transport: PairedTransport,
     ids: PeerIds,
-    images: Arc<dyn ImageStore>,
+    assets: Arc<dyn AssetStore>,
 }
 
 impl ServiceState {
@@ -527,10 +528,10 @@ impl ServiceState {
                         vault_id: linked_vault,
                         device_id,
                     },
-                    images: Arc::new(ActiveVaultImages::open(app, &vault_id)?),
+                    assets: Arc::new(ActiveVaultAssets::open(app, &vault_id)?),
                 };
                 let mut transfer = AssetTransfer::default();
-                next = match self.upload_images(&session, &assets, &mut transfer).await {
+                next = match self.upload_assets(&session, &assets, &mut transfer).await {
                     Err(error) => {
                         view.state = SyncState::Offline;
                         view.last_error = Some(error);
@@ -551,7 +552,7 @@ impl ServiceState {
         self.apply_new(&session).await?;
         if let Some((assets, mut transfer)) = asset_peer {
             next = self
-                .download_images(&session, &assets, &mut transfer, next, view)
+                .download_assets(&session, &assets, &mut transfer, next, view)
                 .await;
         }
         if !recovery.is_empty() && self.writer.is_some() {
@@ -656,10 +657,10 @@ impl ServiceState {
         Err("sync fork recovery did not settle".to_string())
     }
 
-    /// Uploads the images this device holds and the hub lacks, ahead of the operations that
-    /// reference them. Only a transport failure is an error; a file that could not be read is a
-    /// problem in `transfer`.
-    async fn upload_images<R: Runtime>(
+    /// Uploads the managed assets this device holds and the hub lacks, ahead of the operations
+    /// that reference them. Only a transport failure is an error; a file that could not be read
+    /// is a problem in `transfer`.
+    async fn upload_assets<R: Runtime>(
         &mut self,
         session: &Session<'_, R>,
         peer: &AssetPeer,
@@ -670,10 +671,10 @@ impl ServiceState {
             .await
     }
 
-    /// Downloads the referenced images this device lacks once operations were applied, then
-    /// folds the outcome of both directions into the status and the next wait. Downloads run
-    /// only after an exchange that reached the hub.
-    async fn download_images<R: Runtime>(
+    /// Downloads the referenced managed assets this device lacks once operations were applied,
+    /// then folds the outcome of both directions into the status and the next wait. Downloads
+    /// run only after an exchange that reached the hub.
+    async fn download_assets<R: Runtime>(
         &mut self,
         session: &Session<'_, R>,
         peer: &AssetPeer,
@@ -1271,13 +1272,15 @@ impl<'a, R: Runtime> Session<'a, R> {
         let Some(active) = writer.as_mut() else {
             return Err("the sync writer is not ready".to_string());
         };
+        let pool = &self.pool;
         super::recovery::close(
             &self.engine,
-            &self.pool,
+            pool,
             &self.ctx,
             active,
             &request.choice,
             now_ms()?,
+            |values| async move { ganbaru_quick_notes::restore_recovered(pool, &values).await },
         )
         .await
     }

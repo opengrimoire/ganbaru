@@ -1,4 +1,5 @@
-//! Owned tables, nested owned rows, owned references, and hook columns across replicas.
+//! Owned tables, nested owned rows, owned references, hook columns, and key-derived columns
+//! across replicas.
 
 use super::block_on;
 use super::fixture::{LIST_COUNT_TOPIC, membership_key};
@@ -173,7 +174,8 @@ fn nested_checks_follow_their_card_ordinal_and_keep_their_ids() {
         edit(
             &mut replicas[0],
             &format!(
-                "INSERT INTO fixture_boards (id, created_at, stage) VALUES ('board-1', {CREATED}, 0);
+                "INSERT INTO fixture_boards (id, created_at, stage, handle)
+                     VALUES ('board-1', {CREATED}, 0, 'board:board-1');
                  INSERT INTO fixture_board_cards (board_id, ordinal, card_id, title)
                      VALUES ('board-1', 0, 'c-1', 'First'), ('board-1', 1, 'c-2', 'Second');
                  INSERT INTO fixture_board_checks (board_id, card_ordinal, ordinal, check_id, done)
@@ -183,6 +185,16 @@ fn nested_checks_follow_their_card_ordinal_and_keep_their_ids() {
         )
         .await;
         converge(&mut replicas).await;
+        // Materialize writes the key-derived handle the schema pins to the row key.
+        assert_eq!(
+            texts(&mut replicas[1], "SELECT handle FROM fixture_boards").await,
+            ["board:board-1"]
+        );
+        assert!(
+            !replicas[1]
+                .try_exec("UPDATE fixture_boards SET handle = 'board:other'")
+                .await
+        );
 
         // Swapping the cards moves their checks through the cascading parent ordinal.
         edit(

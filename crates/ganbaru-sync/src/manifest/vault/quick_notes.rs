@@ -2,6 +2,8 @@
 
 use ganbaru_sync_contracts::{GroupId, TableId};
 
+use crate::assets::AssetClass;
+
 use crate::domains::quick_notes::{
     MAX_BODY_CHARS, MAX_CONTENT_TYPE_CHARS, MAX_IMAGE_BYTES, MAX_IMAGE_DIMENSION, MAX_IMAGES,
     MAX_RUNS, SHA256_HEX_CHARS,
@@ -301,6 +303,7 @@ pub const TAGS: TableSpec = TableSpec {
     local_columns: &[],
     derived_columns: &[],
     hook_columns: &[],
+    key_derived_columns: &[],
     revision_column: None,
     resolutions: &[Resolution::DuplicateRepair {
         columns: &["name"],
@@ -329,6 +332,7 @@ pub const NOTES: TableSpec = TableSpec {
     }],
     derived_columns: &["body_plain_text"],
     hook_columns: &[],
+    key_derived_columns: &[],
     revision_column: Some("revision"),
     resolutions: &[Resolution::WithinGroup {
         columns: &["pinned", "archived", "trashed_at"],
@@ -357,6 +361,12 @@ const fn search_trigger(name: &'static str) -> DomainTrigger {
     }
 }
 
+/// Image files that note image lists reference.
+pub const IMAGES_CLASS: AssetClass = AssetClass {
+    name: "quick-notes/images",
+    max_bytes: MAX_IMAGE_BYTES,
+};
+
 /// The Quick notes domain.
 pub const DOMAIN: DomainManifest = DomainManifest {
     name: DOMAIN_NAME,
@@ -366,4 +376,5 @@ pub const DOMAIN: DomainManifest = DomainManifest {
     local: &[],
     engine: &[],
     replica_writable: true,
+    assets: &[IMAGES_CLASS],
 };

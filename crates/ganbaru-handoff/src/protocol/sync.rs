@@ -196,21 +196,45 @@ fn is_lower_hex(text: &str) -> bool {
 pub const SYNC_ASSET_CHUNK_BYTES: usize = SYNC_PAGE_BYTES;
 /// Asset references in one presence query.
 pub const MAX_SYNC_ASSETS: usize = 512;
-/// Largest asset the exchange moves; each domain enforces its own smaller limit.
-pub const MAX_SYNC_ASSET_BYTES: u32 = 32 * 1024 * 1024;
+/// Largest asset the exchange moves, streamed in chunks; each asset class enforces its own
+/// bound up to this one.
+pub const MAX_SYNC_ASSET_BYTES: u32 = 64 * 1024 * 1024;
 /// Base64url length of the largest chunk.
 const MAX_ASSET_CHUNK_TEXT_BYTES: usize = (SYNC_ASSET_CHUNK_BYTES * 4).div_ceil(3);
 /// Length of a media type such as `image/png`.
 const MAX_CONTENT_TYPE_BYTES: usize = 64;
+/// Length of an asset class name such as `quick-notes/images`.
+const MAX_ASSET_CLASS_BYTES: usize = 64;
 
-/// A content-addressed file that sync moves between devices: the SHA-256 of its bytes, its
-/// media type, and its exact size.
+/// A content-addressed file that sync moves between devices: the asset class that stores it,
+/// the SHA-256 of its bytes, its media type, and its exact size. The receiver resolves the
+/// class against the classes it registers and never builds a path from the text.
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SyncAsset {
+    pub class: String,
     pub sha256: String,
     pub content_type: String,
     pub byte_size: u32,
+}
+
+impl SyncAsset {
+    /// The class and digest that identify the asset.
+    pub fn key(&self) -> SyncAssetKey {
+        SyncAssetKey {
+            class: self.class.clone(),
+            sha256: self.sha256.clone(),
+        }
+    }
+}
+
+/// The identity of an asset: its class and the SHA-256 of its bytes. The same bytes in two
+/// classes are two assets.
+#[derive(Clone, Debug, Deserialize, Hash, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncAssetKey {
+    pub class: String,
+    pub sha256: String,
 }
 
 pub(super) fn validate_assets(assets: &[SyncAsset]) -> Result<(), String> {
@@ -221,6 +245,7 @@ pub(super) fn validate_assets(assets: &[SyncAsset]) -> Result<(), String> {
 }
 
 pub(super) fn validate_asset(asset: &SyncAsset) -> Result<(), String> {
+    validate_asset_class(&asset.class)?;
     validate_asset_digest(&asset.sha256)?;
     let content_type = &asset.content_type;
     let well_formed = content_type.len() <= MAX_CONTENT_TYPE_BYTES
@@ -243,13 +268,14 @@ pub(super) fn validate_asset(asset: &SyncAsset) -> Result<(), String> {
     Ok(())
 }
 
-pub(super) fn validate_asset_digests(digests: &[String]) -> Result<(), String> {
-    if digests.len() > MAX_SYNC_ASSETS {
+pub(super) fn validate_asset_keys(keys: &[SyncAssetKey]) -> Result<(), String> {
+    if keys.len() > MAX_SYNC_ASSETS {
         return Err("sync asset list is too large".to_string());
     }
-    digests
-        .iter()
-        .try_for_each(|digest| validate_asset_digest(digest))
+    keys.iter().try_for_each(|key| {
+        validate_asset_class(&key.class)?;
+        validate_asset_digest(&key.sha256)
+    })
 }
 
 /// A chunk at `offset` of `asset`: the offset lies inside the asset, and the text is a
@@ -287,6 +313,23 @@ pub(super) fn validate_asset_data(data: &str) -> Result<(), String> {
 pub(super) fn validate_asset_received(received: u32) -> Result<(), String> {
     if received > MAX_SYNC_ASSET_BYTES {
         return Err("sync asset progress is invalid".to_string());
+    }
+    Ok(())
+}
+
+/// A class name is a relative path of lowercase segments, so no form of it escapes a
+/// directory even before the receiver resolves it against its registered classes.
+fn validate_asset_class(class: &str) -> Result<(), String> {
+    let well_formed = !class.is_empty()
+        && class.len() <= MAX_ASSET_CLASS_BYTES
+        && class.split('/').all(|segment| {
+            !segment.is_empty()
+                && segment
+                    .bytes()
+                    .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+        });
+    if !well_formed {
+        return Err("sync asset class is invalid".to_string());
     }
     Ok(())
 }

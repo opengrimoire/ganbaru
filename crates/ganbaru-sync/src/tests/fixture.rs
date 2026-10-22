@@ -16,14 +16,15 @@ use sqlx::{AssertSqlSafe, SqliteConnection, SqlitePool};
 
 use super::{execute, migrated_pool};
 use crate::adapter::{AdapterError, Adapters, DomainAdapter, Presentation};
+use crate::assets::AssetClass;
 use crate::domains::vault_adapters;
 use crate::hooks::{ChangeSink, HookFuture, MaterializeHook};
 use crate::manifest::vault::{VAULT_MANIFEST_VERSION, quick_notes};
 use crate::manifest::{
     AcyclicSpec, Collation, ColumnSpec, ColumnType, DerivedKey, DeviceTable, DomainManifest,
-    DomainTrigger, GroupSpec, GroupStorage, LocalColumn, Manifest, MergeKind, OnDelete, OwnedCodec,
-    OwnedOrder, OwnedReference, OwnedTable, PublishedWith, ReferenceColumn, Resolution,
-    SYNC_KEY_COLUMN, TableIdRange, TableSpec, TreeSpec, TriggerPolicy, group_id,
+    DomainTrigger, GroupSpec, GroupStorage, KeyDerivedColumn, LocalColumn, Manifest, MergeKind,
+    OnDelete, OwnedCodec, OwnedOrder, OwnedReference, OwnedTable, PublishedWith, ReferenceColumn,
+    Resolution, SYNC_KEY_COLUMN, TableIdRange, TableSpec, TreeSpec, TriggerPolicy, group_id,
 };
 use crate::triggers::{self, NOT_APPLYING};
 use crate::{Engine, Hooks};
@@ -70,6 +71,7 @@ pub(super) const ITEMS: TableSpec = TableSpec {
     }],
     derived_columns: &[],
     hook_columns: &[],
+    key_derived_columns: &[],
     revision_column: None,
     resolutions: &[],
     redirects: false,
@@ -156,6 +158,7 @@ pub(super) const CYCLE_A: TableSpec = TableSpec {
     local_columns: &[],
     derived_columns: &[],
     hook_columns: &[],
+    key_derived_columns: &[],
     revision_column: None,
     resolutions: &[Resolution::DuplicateRepair {
         columns: &["label"],
@@ -260,6 +263,7 @@ pub(super) const LINKS: TableSpec = TableSpec {
     local_columns: &[],
     derived_columns: &[],
     hook_columns: &[],
+    key_derived_columns: &[],
     revision_column: None,
     resolutions: &[],
     redirects: false,
@@ -375,6 +379,7 @@ pub(super) const MEMBERSHIPS: TableSpec = TableSpec {
     local_columns: &[],
     derived_columns: &[],
     hook_columns: &[],
+    key_derived_columns: &[],
     revision_column: None,
     resolutions: &[],
     redirects: false,
@@ -460,6 +465,7 @@ pub(super) const NODES: TableSpec = TableSpec {
     local_columns: &[],
     derived_columns: &[],
     hook_columns: &[],
+    key_derived_columns: &[],
     revision_column: None,
     resolutions: &[],
     redirects: false,
@@ -552,6 +558,7 @@ pub(super) const EDGES: TableSpec = TableSpec {
     local_columns: &[],
     derived_columns: &[],
     hook_columns: &[],
+    key_derived_columns: &[],
     revision_column: None,
     resolutions: &[],
     redirects: false,
@@ -622,6 +629,7 @@ pub(super) const DRAFTS: TableSpec = TableSpec {
     local_columns: &[],
     derived_columns: &[],
     hook_columns: &[],
+    key_derived_columns: &[],
     revision_column: None,
     resolutions: &[],
     redirects: false,
@@ -962,8 +970,11 @@ pub(super) mod board_group {
     pub const STATE: GroupId = group_id(1);
 }
 
+/// Prefix of a board's `handle`, a key-derived column.
+pub(super) const BOARD_HANDLE_PREFIX: &str = "board:";
+
 /// Boards whose owner reference, stage, and cards form one coupled group: a later stage wins
-/// before clocks are compared.
+/// before clocks are compared. `handle` is the row key behind [`BOARD_HANDLE_PREFIX`].
 pub(super) const BOARDS: TableSpec = TableSpec {
     id: BOARDS_TABLE,
     name: "fixture_boards",
@@ -1000,6 +1011,10 @@ pub(super) const BOARDS: TableSpec = TableSpec {
             bumps_revision: false,
         },
     ],
+    key_derived_columns: &[KeyDerivedColumn {
+        name: "handle",
+        prefix: BOARD_HANDLE_PREFIX,
+    }],
     adapter: Some(FIXTURE_ADAPTER),
     holds_deletes: false,
     ..MEMOS
@@ -1205,6 +1220,10 @@ pub(super) const FIXTURE_DOMAIN: DomainManifest = DomainManifest {
     }],
     engine: &[],
     replica_writable: true,
+    assets: &[AssetClass {
+        name: "fixture/files",
+        max_bytes: 1024 * 1024,
+    }],
 };
 
 /// The vault domains followed by the fixture domain.
@@ -1330,7 +1349,8 @@ fn fixture_schema() -> String {
              id TEXT PRIMARY KEY CHECK (trim(id) <> ''),
              created_at TEXT NOT NULL,
              owner_id TEXT REFERENCES fixture_items(id) ON DELETE SET NULL,
-             stage INTEGER NOT NULL CHECK (stage BETWEEN 0 AND {MAX_BOARD_STAGE})
+             stage INTEGER NOT NULL CHECK (stage BETWEEN 0 AND {MAX_BOARD_STAGE}),
+             handle TEXT NOT NULL UNIQUE CHECK (handle = '{BOARD_HANDLE_PREFIX}' || id)
          );
          CREATE TABLE fixture_board_cards (
              board_id TEXT NOT NULL REFERENCES fixture_boards(id) ON DELETE CASCADE,

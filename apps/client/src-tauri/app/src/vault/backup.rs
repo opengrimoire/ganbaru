@@ -1015,7 +1015,7 @@ async fn carry_forward_local_changes<R: Runtime>(
 /// Runs inside snapshot quiescence, before the staged folder is renamed over `target`: stores
 /// and applies the operations of `target` that the staged database lacks, deletes the carry
 /// bundle, copies the `Local` rows and columns of `target` into the staged database, and copies
-/// the Quick note images only this device holds. `target` stays the vault until the rename, so
+/// the managed asset files only this device holds. `target` stays the vault until the rename, so
 /// a failure at any step keeps it whole and a retry repeats the steps harmlessly.
 async fn carry_into_replacement(
     engine: &ganbaru_sync::Engine,
@@ -1042,12 +1042,13 @@ async fn carry_into_replacement(
         .await
         .map_err(|error| format!("keep device state: {error}"))?;
     let (current, replacement) = (target.to_path_buf(), staging.to_path_buf());
+    let manifest = engine.manifest();
     tauri::async_runtime::spawn_blocking(move || {
-        ganbaru_quick_notes::images::carry_images(&current, &replacement)
+        carry_forward::carry_assets(manifest, &current, &replacement)
     })
     .await
-    .map_err(|error| format!("keep local Quick note images: {error}"))?
-    .map_err(|error| format!("keep local Quick note images: {error}"))?;
+    .map_err(|error| format!("keep local managed assets: {error}"))?
+    .map_err(|error| format!("keep local managed assets: {error}"))?;
     failpoints::check("replace.before_rename")
 }
 

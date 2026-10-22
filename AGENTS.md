@@ -146,7 +146,7 @@ Ganbaru/
   diary/morning/, diary/evening/: dated diary entries (planned feature)
   projects/{project-id}/: managed working folder created for every project
   reports/: generated project status reports (planned feature)
-  assets/: managed user assets (profile/, chat/attachments/, chat/browser-artifacts/, notes/page-icons/, notes/page-covers/, notes/files/, project-icons/, quick-notes/images/)
+  assets/: managed user assets (profile/, chat/attachments/, chat/browser-artifacts/, notes/page-icons/, notes/page-covers/, notes/files/, project-icons/, quick-notes/images/, music/artwork/)
   templates/: reserved file-based project and methodology templates
   .yjs/: reserved Yjs document state cache
 ```

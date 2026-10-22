@@ -103,6 +103,7 @@ impl LocalPair {
         tokio::spawn(server::serve_with_limits(
             listener,
             limits,
+            LoopbackPolicy::Allow,
             desktop.clone(),
             CoordinatorServices {
                 hub,
@@ -354,6 +355,46 @@ async fn unanswered_enrollment_times_out_and_keeps_the_invitation() {
 
     pair.enroll().await;
     assert_eq!(pair.desktop.linked_peers().expect("peers").len(), 1);
+}
+
+#[tokio::test]
+async fn peers_outside_the_address_policy_are_closed_before_the_tls_handshake() {
+    let root = TestDirectory::new("address-policy");
+    let desktop = PairingManager::default();
+    desktop
+        .initialize(root.path().to_path_buf(), "device-desktop".to_string())
+        .expect("initialize desktop");
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind coordinator");
+    let endpoint = listener.local_addr().expect("coordinator endpoint");
+    // One pending slot: a refused peer that took it would keep the next connection waiting for
+    // its TLS handshake instead of closing.
+    let limits = server::limits::ConnectionLimits::new(1, 1, 64);
+    let (shutdown, receiver) = tokio::sync::oneshot::channel();
+    tokio::spawn(server::serve_with_limits(
+        listener,
+        limits.clone(),
+        LoopbackPolicy::Reject,
+        desktop,
+        CoordinatorServices::default(),
+        receiver,
+    ));
+
+    for attempt in 0..3 {
+        let mut stream = TcpStream::connect(endpoint).await.expect("connect");
+        let mut byte = [0_u8; 1];
+        let read = tokio::time::timeout(Duration::from_secs(5), stream.read(&mut byte)).await;
+        assert!(
+            matches!(read, Ok(Ok(0) | Err(_))),
+            "attempt {attempt} was not closed before the handshake"
+        );
+    }
+    assert!(
+        limits.admit(IpAddr::from([127, 0, 0, 1])).is_some(),
+        "refused peers never hold a pending slot"
+    );
+    let _ = shutdown.send(());
 }
 
 #[tokio::test]

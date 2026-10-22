@@ -21,6 +21,7 @@ use crate::vault::handoff::protocol::{
 use crate::vault::handoff::{coordinator, protocol, suggested_device_label};
 pub(crate) use admission::LanAdmission;
 use client_verifier::PinnedClientVerifier;
+use ganbaru_handoff::dial::{LoopbackPolicy, admit_inbound_peer};
 use limits::{ConnectionLimits, PendingPermit};
 use rustls::pki_types::CertificateDer;
 use std::fs;
@@ -96,6 +97,7 @@ pub(crate) async fn serve_with_coordinator(
     serve_with_limits(
         listener,
         ConnectionLimits::default(),
+        super::LOOPBACK_PEERS,
         manager,
         services,
         shutdown,
@@ -103,9 +105,11 @@ pub(crate) async fn serve_with_coordinator(
     .await;
 }
 
+/// Serves `listener` until shutdown. `loopback` decides whether loopback peers are admitted.
 pub(super) async fn serve_with_limits(
     listener: TcpListener,
     limits: ConnectionLimits,
+    loopback: LoopbackPolicy,
     manager: PairingManager,
     services: CoordinatorServices,
     shutdown: tokio::sync::oneshot::Receiver<()>,
@@ -115,6 +119,12 @@ pub(super) async fn serve_with_limits(
         || listener.accept(),
         shutdown,
         |socket, source: SocketAddr| {
+            if !admits_peer_address(&socket, source.ip(), loopback) {
+                // Refused before the pending budget so a host outside the local networks never
+                // costs a slot, a task, or a read.
+                drop(socket);
+                return;
+            }
             let Some(permit) = limits.admit(source.ip()) else {
                 // Closing at once keeps a flood from holding descriptors or handshakes.
                 drop(socket);
@@ -139,6 +149,15 @@ pub(super) async fn serve_with_limits(
         },
     )
     .await;
+}
+
+/// Whether the shared address policy admits a peer at `source` on the accepted socket's own
+/// address. A socket whose local address cannot be read is refused, so this gate never fails
+/// open.
+fn admits_peer_address(socket: &TcpStream, source: IpAddr, loopback: LoopbackPolicy) -> bool {
+    socket
+        .local_addr()
+        .is_ok_and(|local| admit_inbound_peer(source, local.ip(), loopback).is_ok())
 }
 
 /// Accepts until shutdown. Accept errors such as descriptor or buffer exhaustion and aborted

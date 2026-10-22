@@ -722,8 +722,9 @@ fn prepare_partial(
     Ok(0)
 }
 
-/// Loopback peers exist only when two development instances link on one machine.
-const LOOPBACK_DIAL: LoopbackPolicy = if cfg!(debug_assertions) {
+/// Loopback peers exist only when two development instances link on one machine, so release
+/// builds neither dial nor admit them.
+const LOOPBACK_PEERS: LoopbackPolicy = if cfg!(debug_assertions) {
     LoopbackPolicy::Allow
 } else {
     LoopbackPolicy::Reject
@@ -736,7 +737,7 @@ fn authorize_endpoint(endpoint: SocketAddr) -> Result<(), String> {
         IpAddr::V6(target) => ipv6_source_for(target),
         IpAddr::V4(_) => None,
     };
-    authorize_dial_target(endpoint, LOOPBACK_DIAL, on_link_source)
+    authorize_dial_target(endpoint, LOOPBACK_PEERS, on_link_source)
         .map_err(|error| format!("refuse device connection: {error}"))
 }
 

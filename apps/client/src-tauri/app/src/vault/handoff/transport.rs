@@ -359,17 +359,8 @@ pub(crate) async fn upload_bundle(
     }
     let (_, archive_path) = manager.outgoing_snapshot_paths(&metadata.transfer_id)?;
     super::protocol::validate_staging_file(&archive_path, &metadata)?;
-    let endpoint = coordinator
-        .endpoint
-        .parse()
-        .map_err(|_| "coordinator endpoint is invalid".to_string())?;
     let (_, identity) = load_tls_identity(manager).await?;
-    let mut stream = connect_pinned(
-        endpoint,
-        &coordinator.certificate_fingerprint,
-        Some(identity),
-    )
-    .await?;
+    let mut stream = connect_coordinator(manager, &coordinator, identity, &[]).await?;
     timeout_control(write_control(
         &mut stream,
         &ControlMessage::UploadBundle {
@@ -539,12 +530,44 @@ pub(crate) fn sync_peer(manager: &PairingManager) -> Result<Option<(String, Stri
     Ok(Some((coordinator.vault_id, device_id)))
 }
 
-/// Sends one sync message to the coordinator over the linked-device identity.
+/// Sends one sync message to the coordinator over the linked-device identity. A sync state
+/// response also refreshes the coordinator endpoints and discovery key this device remembers.
 pub(crate) async fn sync_request(
     manager: &PairingManager,
     message: ControlMessage,
 ) -> Result<ControlMessage, String> {
-    authenticated_exchange(manager, message).await
+    let response = authenticated_exchange(manager, message).await?;
+    if let ControlMessage::SyncState {
+        coordinator_endpoints,
+        discovery_key,
+        ..
+    } = &response
+    {
+        record_reported_contact(manager, coordinator_endpoints, discovery_key);
+    }
+    Ok(response)
+}
+
+/// Remembers the contact a coordinator reported in a sync state. A failure only delays address
+/// refresh until the next exchange, so it is logged instead of failing the sync.
+fn record_reported_contact(manager: &PairingManager, endpoints: &[String], discovery_key: &str) {
+    let recorded = manager.coordinator_pin().and_then(|coordinator| {
+        let Some(coordinator) = coordinator else {
+            return Ok(false);
+        };
+        manager.record_coordinator_contact(
+            &coordinator.vault_id,
+            &coordinator.certificate_fingerprint,
+            super::pairing::CoordinatorContact {
+                last_endpoint: None,
+                reported_endpoints: Some(endpoints.to_vec()),
+                discovery_key: Some(discovery_key.to_string()),
+            },
+        )
+    });
+    if let Err(error) = recorded {
+        eprintln!("record the coordinator contact from a sync state: {error}");
+    }
 }
 
 async fn authenticated_exchange(
@@ -554,17 +577,8 @@ async fn authenticated_exchange(
     let coordinator = manager
         .coordinator_pin()?
         .ok_or_else(|| "this device is not linked to a coordinator".to_string())?;
-    let endpoint = coordinator
-        .endpoint
-        .parse()
-        .map_err(|_| "coordinator endpoint is invalid".to_string())?;
     let (_, identity) = load_tls_identity(manager).await?;
-    let mut stream = connect_pinned(
-        endpoint,
-        &coordinator.certificate_fingerprint,
-        Some(identity),
-    )
-    .await?;
+    let mut stream = connect_coordinator(manager, &coordinator, identity, &[]).await?;
     timeout_control(write_control(&mut stream, &message)).await?;
     read_authenticated_response(manager, &coordinator, &mut stream).await
 }
@@ -611,17 +625,8 @@ async fn download_bundle_inner(
     if coordinator.vault_id != metadata.vault_id {
         return Err("transfer belongs to a different vault".to_string());
     }
-    let endpoint = coordinator
-        .endpoint
-        .parse()
-        .map_err(|_| "coordinator endpoint is invalid".to_string())?;
     let (_, identity) = load_tls_identity(manager).await?;
-    let mut stream = connect_pinned(
-        endpoint,
-        &coordinator.certificate_fingerprint,
-        Some(identity),
-    )
-    .await?;
+    let mut stream = connect_coordinator(manager, &coordinator, identity, &[]).await?;
     timeout_control(write_control(
         &mut stream,
         &ControlMessage::DownloadBundle {
@@ -754,12 +759,26 @@ fn ipv6_source_for(target: Ipv6Addr) -> Option<Ipv6Addr> {
     }
 }
 
+type PinnedStream = tokio_rustls::client::TlsStream<TcpStream>;
+
+/// Connects to one endpoint whose certificate must match `fingerprint`, such as an invitation or
+/// a contact card. Linked devices reach their coordinator through [`connect_coordinator`].
 async fn connect_pinned(
     endpoint: SocketAddr,
     fingerprint: &str,
     identity: Option<TlsIdentity>,
-) -> Result<tokio_rustls::client::TlsStream<TcpStream>, String> {
+) -> Result<PinnedStream, String> {
     authorize_endpoint(endpoint)?;
+    let config = pinned_client_config(fingerprint, identity)?;
+    pinned_handshake(endpoint, config, TLS_HANDSHAKE_TIMEOUT).await
+}
+
+/// TLS 1.3 client configuration that accepts only the certificate with `fingerprint` and
+/// presents `identity` when one is given.
+fn pinned_client_config(
+    fingerprint: &str,
+    identity: Option<TlsIdentity>,
+) -> Result<Arc<rustls::ClientConfig>, String> {
     let verifier = Arc::new(PinnedServerVerifier::new(fingerprint.to_string()));
     let builder = rustls::ClientConfig::builder_with_protocol_versions(&[&rustls::version::TLS13])
         .dangerous()
@@ -770,7 +789,17 @@ async fn connect_pinned(
             .map_err(|error| format!("configure device TLS identity: {error}"))?,
         None => builder.with_no_client_auth(),
     };
-    let socket = tokio::time::timeout(TLS_HANDSHAKE_TIMEOUT, TcpStream::connect(endpoint))
+    Ok(Arc::new(config))
+}
+
+/// Opens a TCP connection to an authorized `endpoint` within `connect_timeout` and completes the
+/// pinned TLS handshake.
+async fn pinned_handshake(
+    endpoint: SocketAddr,
+    config: Arc<rustls::ClientConfig>,
+    connect_timeout: Duration,
+) -> Result<PinnedStream, String> {
+    let socket = tokio::time::timeout(connect_timeout, TcpStream::connect(endpoint))
         .await
         .map_err(|_| "coordinator connection timed out".to_string())?
         .map_err(|error| format!("connect to coordinator: {error}"))?;
@@ -778,11 +807,164 @@ async fn connect_pinned(
         .map_err(|_| "coordinator TLS name is invalid".to_string())?;
     tokio::time::timeout(
         TLS_HANDSHAKE_TIMEOUT,
-        TlsConnector::from(Arc::new(config)).connect(server_name, socket),
+        TlsConnector::from(config).connect(server_name, socket),
     )
     .await
     .map_err(|_| "coordinator TLS handshake timed out".to_string())?
     .map_err(|error| format!("establish pinned TLS connection: {error}"))
+}
+
+/// How long one coordinator candidate gets to accept a TCP connection.
+const COORDINATOR_CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
+/// How long the resolver waits on pending candidates before it also dials the next one.
+const COORDINATOR_DIAL_STAGGER: Duration = Duration::from_millis(250);
+/// Most coordinator candidates one dial considers.
+const MAX_COORDINATOR_CANDIDATES: usize = 12;
+/// Most coordinator candidates dialed at once, kept below the coordinator's pending connection
+/// limit per source address so a race never refuses itself.
+const MAX_CONCURRENT_COORDINATOR_DIALS: usize = 4;
+
+/// Connects to the pinned coordinator over the first candidate endpoint that completes the
+/// pinned handshake, and remembers that endpoint for the next dial.
+///
+/// Candidates are the last endpoint that worked, the endpoints the coordinator reported, the
+/// `discovered` endpoints, and the invitation endpoint, in that order. A new candidate is dialed
+/// whenever the pending ones have not finished within [`COORDINATOR_DIAL_STAGGER`] or one fails,
+/// so a stale address costs a short delay instead of a full timeout.
+async fn connect_coordinator(
+    manager: &PairingManager,
+    coordinator: &CoordinatorPin,
+    identity: TlsIdentity,
+    discovered: &[SocketAddr],
+) -> Result<PinnedStream, String> {
+    let (candidates, mut failures) =
+        coordinator_candidates(coordinator, discovered, authorize_endpoint);
+    let config = pinned_client_config(&coordinator.certificate_fingerprint, Some(identity))?;
+    let (stream, endpoint) = race_coordinator_candidates(candidates, config, &mut failures)
+        .await
+        .ok_or_else(|| coordinator_dial_error(failures))?;
+    let contact = super::pairing::CoordinatorContact {
+        last_endpoint: Some(endpoint.to_string()),
+        ..Default::default()
+    };
+    if let Err(error) = manager.record_coordinator_contact(
+        &coordinator.vault_id,
+        &coordinator.certificate_fingerprint,
+        contact,
+    ) {
+        eprintln!("record the coordinator endpoint that answered: {error}");
+    }
+    Ok(stream)
+}
+
+/// Why one coordinator endpoint was not used.
+#[derive(Debug)]
+struct DialFailure {
+    endpoint: String,
+    error: String,
+}
+
+/// The distinct endpoints worth dialing for `coordinator`, best first, and the reasons the
+/// others were left out. Endpoints `authorize` refuses are never dialed.
+fn coordinator_candidates(
+    coordinator: &CoordinatorPin,
+    discovered: &[SocketAddr],
+    authorize: impl Fn(SocketAddr) -> Result<(), String>,
+) -> (Vec<SocketAddr>, Vec<DialFailure>) {
+    let stored = coordinator
+        .last_endpoint
+        .iter()
+        .chain(&coordinator.reported_endpoints)
+        .map(|endpoint| (endpoint.clone(), endpoint.parse::<SocketAddr>()));
+    let discovered = discovered
+        .iter()
+        .map(|endpoint| (endpoint.to_string(), Ok(*endpoint)));
+    let invitation = std::iter::once((
+        coordinator.endpoint.clone(),
+        coordinator.endpoint.parse::<SocketAddr>(),
+    ));
+    let mut candidates = Vec::new();
+    let mut failures = Vec::new();
+    for (text, parsed) in stored.chain(discovered).chain(invitation) {
+        let Ok(endpoint) = parsed else {
+            failures.push(DialFailure {
+                endpoint: text,
+                error: "coordinator endpoint is invalid".to_string(),
+            });
+            continue;
+        };
+        if candidates.contains(&endpoint) {
+            continue;
+        }
+        if candidates.len() == MAX_COORDINATOR_CANDIDATES {
+            break;
+        }
+        match authorize(endpoint) {
+            Ok(()) => candidates.push(endpoint),
+            Err(error) => failures.push(DialFailure {
+                endpoint: text,
+                error,
+            }),
+        }
+    }
+    (candidates, failures)
+}
+
+/// Dials `candidates` with staggered starts and returns the first pinned stream, or `None` once
+/// every candidate failed, with each failure appended to `failures`. Dropping the pending dials
+/// closes their connections.
+async fn race_coordinator_candidates(
+    candidates: Vec<SocketAddr>,
+    config: Arc<rustls::ClientConfig>,
+    failures: &mut Vec<DialFailure>,
+) -> Option<(PinnedStream, SocketAddr)> {
+    let mut queued = candidates.into_iter();
+    let mut dials = tokio::task::JoinSet::new();
+    loop {
+        if dials.len() < MAX_CONCURRENT_COORDINATOR_DIALS
+            && let Some(endpoint) = queued.next()
+        {
+            let config = config.clone();
+            dials.spawn(async move {
+                let result = pinned_handshake(endpoint, config, COORDINATOR_CONNECT_TIMEOUT).await;
+                (endpoint, result)
+            });
+        }
+        let can_dial_more =
+            !queued.as_slice().is_empty() && dials.len() < MAX_CONCURRENT_COORDINATOR_DIALS;
+        tokio::select! {
+            finished = dials.join_next() => match finished {
+                None => return None,
+                Some(Ok((endpoint, Ok(stream)))) => return Some((stream, endpoint)),
+                Some(Ok((endpoint, Err(error)))) => failures.push(DialFailure {
+                    endpoint: endpoint.to_string(),
+                    error,
+                }),
+                Some(Err(error)) => failures.push(DialFailure {
+                    endpoint: "coordinator dial".to_string(),
+                    error: format!("dial task stopped: {error}"),
+                }),
+            },
+            () = tokio::time::sleep(COORDINATOR_DIAL_STAGGER), if can_dial_more => {}
+        }
+    }
+}
+
+/// The error for a coordinator no candidate reached. A single failure keeps its own message so
+/// callers can still recognize it; several are joined behind a summary.
+fn coordinator_dial_error(mut failures: Vec<DialFailure>) -> String {
+    match failures.len() {
+        0 => "the coordinator has no endpoint to connect to".to_string(),
+        1 => failures.remove(0).error,
+        _ => {
+            let details = failures
+                .iter()
+                .map(|failure| format!("{}: {}", failure.endpoint, failure.error))
+                .collect::<Vec<_>>()
+                .join("; ");
+            format!("could not connect to the coordinator at any known endpoint: {details}")
+        }
+    }
 }
 
 async fn timeout_control<T>(

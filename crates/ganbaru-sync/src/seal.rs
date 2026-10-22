@@ -953,18 +953,20 @@ pub(crate) async fn captured(
     Ok(found)
 }
 
-/// Captured rows of `tables`.
+/// Captured rows of `tables` without a held delete. A held row stays live in merge state, so
+/// repairs already account for it, and it seals early only when a change or plan names it.
 pub(crate) async fn captured_in(
     conn: &mut SqliteConnection,
     tables: &BTreeSet<TableId>,
 ) -> SyncResult<BTreeSet<RowRef>> {
     let mut found = BTreeSet::new();
     for table in tables {
-        let keys: Vec<String> =
-            sqlx::query_scalar("SELECT row_key FROM sync_capture WHERE table_id = ?")
-                .bind(table_param(*table))
-                .fetch_all(&mut *conn)
-                .await?;
+        let keys: Vec<String> = sqlx::query_scalar(
+            "SELECT row_key FROM sync_capture WHERE table_id = ? AND held_until_ms IS NULL",
+        )
+        .bind(table_param(*table))
+        .fetch_all(&mut *conn)
+        .await?;
         found.extend(keys.into_iter().map(|key| (*table, key)));
     }
     Ok(found)

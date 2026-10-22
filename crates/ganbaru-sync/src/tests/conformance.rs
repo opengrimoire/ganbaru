@@ -1,17 +1,29 @@
-//! The vault manifest against a freshly migrated database.
+//! Manifests against their freshly migrated databases.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use sqlx::SqlitePool;
 
+use super::fixture::{FIXTURE_TABLE_IDS, TEST_MANIFEST, fixture_pool};
 use super::{block_on, migrated_pool};
-use crate::manifest::vault::VAULT_MANIFEST;
+use crate::domains::vault_adapters;
+use crate::manifest::vault::quick_notes;
+use crate::manifest::vault::{VAULT_DOMAINS, VAULT_MANIFEST};
 use crate::manifest::{
-    Classification, Collation, GroupStorage, Manifest, MergeKind, Resolution, TableSpec,
+    Classification, Collation, DomainManifest, GroupStorage, LocalColumn, Manifest, MergeKind,
+    Resolution, SYNC_TABLES, TableIdRange, TableSpec, is_sql_literal,
 };
-use crate::triggers;
+use crate::{Adapters, Engine, Hooks, SyncError, triggers};
 
-async fn schema_tables(pool: &SqlitePool) -> Vec<(String, String)> {
+/// Every manifest under test with a freshly migrated database that holds its schema.
+pub(super) async fn cases() -> Vec<(&'static Manifest, SqlitePool)> {
+    vec![
+        (&VAULT_MANIFEST, migrated_pool().await),
+        (&TEST_MANIFEST, fixture_pool().await),
+    ]
+}
+
+pub(super) async fn schema_tables(pool: &SqlitePool) -> Vec<(String, String)> {
     sqlx::query_as(
         "SELECT name, type FROM pragma_table_list
          WHERE schema = 'main' AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\'
@@ -46,219 +58,306 @@ async fn foreign_keys(pool: &SqlitePool, table: &str) -> Vec<(String, String, St
 #[test]
 fn every_schema_table_is_classified() {
     block_on(async {
-        let pool = migrated_pool().await;
-        let tables = schema_tables(&pool).await;
-        let types = tables.iter().cloned().collect::<BTreeMap<_, _>>();
-        let manifest = &VAULT_MANIFEST;
-
-        for table in manifest.tables {
-            assert_eq!(types.get(table.name).map(String::as_str), Some("table"));
-            for (_, owned) in table.owned_children() {
-                let child = owned.table;
-                assert_eq!(types.get(child).map(String::as_str), Some("table"));
-                assert_eq!(manifest.classify(child), Classification::OwnedChildren);
-            }
-            assert_eq!(manifest.classify(table.name), Classification::Replicated);
-        }
-        for derived in manifest.derived {
-            assert!(
-                matches!(
-                    types.get(*derived).map(String::as_str),
-                    Some("table" | "virtual")
-                ),
-                "derived table {derived} is missing"
-            );
-        }
-
-        let engine_tables = tables
-            .iter()
-            .filter(|(name, _)| name.starts_with("sync_"))
-            .map(|(name, _)| name.as_str())
-            .collect::<BTreeSet<_>>();
-        let declared = manifest.engine.iter().copied().collect::<BTreeSet<_>>();
-        assert_eq!(
-            engine_tables, declared,
-            "engine tables must match sync_* tables"
-        );
-
-        // Shadow tables follow their virtual table's classification.
-        let virtual_tables = tables
-            .iter()
-            .filter(|(_, kind)| kind == "virtual")
-            .map(|(name, _)| name.as_str())
-            .collect::<Vec<_>>();
-        for (name, kind) in &tables {
-            if kind == "shadow" {
-                assert!(
-                    virtual_tables
-                        .iter()
-                        .any(|parent| name.starts_with(&format!("{parent}_"))),
-                    "shadow table {name} belongs to no virtual table"
-                );
-            }
+        for (manifest, pool) in cases().await {
+            assert_classified(manifest, &pool).await;
         }
     });
+}
+
+async fn assert_classified(manifest: &Manifest, pool: &SqlitePool) {
+    let tables = schema_tables(pool).await;
+    let types = tables.iter().cloned().collect::<BTreeMap<_, _>>();
+
+    for table in manifest.tables {
+        assert_eq!(types.get(table.name).map(String::as_str), Some("table"));
+        for (_, owned) in table.owned_children() {
+            let child = owned.table;
+            assert_eq!(types.get(child).map(String::as_str), Some("table"));
+            assert_eq!(manifest.classify(child), Classification::OwnedChildren);
+        }
+        assert_eq!(manifest.classify(table.name), Classification::Replicated);
+    }
+    for derived in manifest.derived {
+        assert!(
+            matches!(
+                types.get(*derived).map(String::as_str),
+                Some("table" | "virtual")
+            ),
+            "derived table {derived} is missing"
+        );
+    }
+
+    for local in manifest.local {
+        assert_eq!(
+            types.get(*local).map(String::as_str),
+            Some("table"),
+            "local table {local} is missing"
+        );
+        assert_eq!(manifest.classify(local), Classification::Local);
+    }
+    for engine in manifest.engine {
+        assert_eq!(
+            types.get(*engine).map(String::as_str),
+            Some("table"),
+            "engine table {engine} is missing"
+        );
+        assert_eq!(manifest.classify(engine), Classification::Engine);
+    }
+
+    let sync_tables = tables
+        .iter()
+        .filter(|(name, _)| name.starts_with("sync_"))
+        .map(|(name, _)| name.as_str())
+        .collect::<BTreeSet<_>>();
+    assert_eq!(
+        sync_tables,
+        SYNC_TABLES.iter().copied().collect::<BTreeSet<_>>(),
+        "sync_* tables must match the engine tables every manifest declares"
+    );
+    for domain in manifest.domains {
+        for table in domain.engine {
+            assert!(
+                !table.name.starts_with("sync_"),
+                "{}: domain engine table {} uses the engine prefix",
+                domain.name,
+                table.name
+            );
+        }
+    }
+
+    // Shadow tables follow their virtual table's classification.
+    let virtual_tables = tables
+        .iter()
+        .filter(|(_, kind)| kind == "virtual")
+        .map(|(name, _)| name.as_str())
+        .collect::<Vec<_>>();
+    for (name, kind) in &tables {
+        if kind == "shadow" {
+            assert!(
+                virtual_tables
+                    .iter()
+                    .any(|parent| name.starts_with(&format!("{parent}_"))),
+                "shadow table {name} belongs to no virtual table"
+            );
+        }
+    }
 }
 
 #[test]
 fn replicated_columns_are_partitioned() {
     block_on(async {
-        let pool = migrated_pool().await;
-        for table in VAULT_MANIFEST.tables {
-            let columns = table_columns(&pool, table.name).await;
-            let mut declared = vec![table.key_column];
-            declared.extend(
-                table
-                    .groups
-                    .iter()
-                    .flat_map(|group| group.columns())
-                    .map(|column| column.name),
+        for (manifest, pool) in cases().await {
+            assert_columns_partitioned(manifest, &pool).await;
+        }
+    });
+}
+
+async fn assert_columns_partitioned(manifest: &Manifest, pool: &SqlitePool) {
+    let pool = pool.clone();
+    for table in manifest.tables {
+        let columns = table_columns(&pool, table.name).await;
+        let mut declared = vec![table.key_column];
+        declared.extend(
+            table
+                .groups
+                .iter()
+                .flat_map(|group| group.columns())
+                .map(|column| column.name),
+        );
+        declared.extend(table.local_columns.iter().map(|column| column.name));
+        declared.extend(table.derived_columns);
+        let not_null: Vec<String> =
+            sqlx::query_scalar("SELECT name FROM pragma_table_info(?) WHERE \"notnull\" = 1")
+                .bind(table.name)
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        for column in table.local_columns {
+            assert!(
+                column.materialize != "NULL" || !not_null.iter().any(|name| name == column.name),
+                "{}.{}: a NOT NULL local column needs a non-NULL materialization value",
+                table.name,
+                column.name
             );
-            declared.extend(table.local_columns);
-            declared.extend(table.derived_columns);
+        }
+        let unique = declared.iter().copied().collect::<BTreeSet<_>>();
+        assert_eq!(
+            unique.len(),
+            declared.len(),
+            "{} repeats a column",
+            table.name
+        );
+        let actual = columns
+            .iter()
+            .map(|(name, _, _)| name.as_str())
+            .collect::<BTreeSet<_>>();
+        assert_eq!(actual, unique, "{} columns", table.name);
+
+        let primary_key = columns
+            .iter()
+            .filter(|(_, _, pk)| *pk > 0)
+            .map(|(name, kind, _)| (name.as_str(), kind.as_str()))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            primary_key,
+            [(table.key_column, "TEXT")],
+            "{} key",
+            table.name
+        );
+
+        for (group, owned) in table.owned_children() {
+            let child_columns = table_columns(&pool, owned.table).await;
+            let mut declared = vec![owned.parent_column, owned.order_column];
+            declared.extend(owned.columns);
             let unique = declared.iter().copied().collect::<BTreeSet<_>>();
             assert_eq!(
                 unique.len(),
                 declared.len(),
                 "{} repeats a column",
-                table.name
+                owned.table
             );
-            let actual = columns
+            let actual = child_columns
                 .iter()
                 .map(|(name, _, _)| name.as_str())
                 .collect::<BTreeSet<_>>();
-            assert_eq!(actual, unique, "{} columns", table.name);
-
-            let primary_key = columns
+            assert_eq!(
+                actual, unique,
+                "{}.{} child columns",
+                table.name, group.name
+            );
+            let child_key = child_columns
                 .iter()
                 .filter(|(_, _, pk)| *pk > 0)
-                .map(|(name, kind, _)| (name.as_str(), kind.as_str()))
-                .collect::<Vec<_>>();
+                .map(|(name, _, _)| name.as_str())
+                .collect::<BTreeSet<_>>();
             assert_eq!(
-                primary_key,
-                [(table.key_column, "TEXT")],
+                child_key,
+                BTreeSet::from([owned.parent_column, owned.order_column]),
                 "{} key",
-                table.name
+                owned.table
             );
-
-            for (group, owned) in table.owned_children() {
-                let child_columns = table_columns(&pool, owned.table).await;
-                let mut declared = vec![owned.parent_column, owned.order_column];
-                declared.extend(owned.columns);
-                let unique = declared.iter().copied().collect::<BTreeSet<_>>();
-                assert_eq!(
-                    unique.len(),
-                    declared.len(),
-                    "{} repeats a column",
-                    owned.table
-                );
-                let actual = child_columns
-                    .iter()
-                    .map(|(name, _, _)| name.as_str())
-                    .collect::<BTreeSet<_>>();
-                assert_eq!(
-                    actual, unique,
-                    "{}.{} child columns",
-                    table.name, group.name
-                );
-                let child_key = child_columns
-                    .iter()
-                    .filter(|(_, _, pk)| *pk > 0)
-                    .map(|(name, _, _)| name.as_str())
-                    .collect::<BTreeSet<_>>();
-                assert_eq!(
-                    child_key,
-                    BTreeSet::from([owned.parent_column, owned.order_column]),
-                    "{} key",
-                    owned.table
-                );
-            }
         }
-    });
+    }
 }
 
 #[test]
 fn foreign_keys_follow_references_and_ownership() {
     block_on(async {
-        let pool = migrated_pool().await;
-        let manifest = &VAULT_MANIFEST;
-        for table in manifest.tables {
-            let mut expected = BTreeSet::new();
-            for group in table.groups {
-                if let MergeKind::Reference { table: target } = group.kind {
-                    let target = manifest.table(target).unwrap();
-                    let column = group.columns()[0].name;
-                    expected.insert((
-                        column.to_string(),
-                        target.name.to_string(),
-                        target.key_column.to_string(),
-                        "SET NULL".to_string(),
-                    ));
-                }
-            }
-            let actual = foreign_keys(&pool, table.name)
-                .await
-                .into_iter()
-                .collect::<BTreeSet<_>>();
-            assert_eq!(actual, expected, "{} foreign keys", table.name);
+        for (manifest, pool) in cases().await {
+            assert_foreign_keys(manifest, &pool).await;
+        }
+    });
+}
 
-            for (_, owned) in table.owned_children() {
-                let (child, parent_column) = (owned.table, owned.parent_column);
-                let child_keys = foreign_keys(&pool, child).await;
-                assert_eq!(
-                    child_keys,
-                    [(
-                        parent_column.to_string(),
-                        table.name.to_string(),
-                        table.key_column.to_string(),
-                        "CASCADE".to_string(),
-                    )],
-                    "{child} foreign keys"
-                );
+/// Replicated rows are deleted by apply, so every foreign key into a replicated or owned child
+/// table must clear or cascade instead of blocking the delete.
+#[test]
+fn foreign_keys_into_replicated_tables_cascade_or_clear() {
+    block_on(async {
+        for (manifest, pool) in cases().await {
+            for (table, kind) in schema_tables(&pool).await {
+                if kind != "table" {
+                    continue;
+                }
+                for (column, target, _, on_delete) in foreign_keys(&pool, &table).await {
+                    let converted = matches!(
+                        manifest.classify(&target),
+                        Classification::Replicated | Classification::OwnedChildren
+                    );
+                    assert!(
+                        !converted || on_delete == "CASCADE" || on_delete == "SET NULL",
+                        "{table}.{column} references {target} with ON DELETE {on_delete}"
+                    );
+                }
             }
         }
     });
+}
+
+async fn assert_foreign_keys(manifest: &Manifest, pool: &SqlitePool) {
+    let pool = pool.clone();
+    for table in manifest.tables {
+        let mut expected = BTreeSet::new();
+        for group in table.groups {
+            if let MergeKind::Reference { table: target } = group.kind {
+                let target = manifest.table(target).unwrap();
+                let column = group.columns()[0].name;
+                expected.insert((
+                    column.to_string(),
+                    target.name.to_string(),
+                    target.key_column.to_string(),
+                    "SET NULL".to_string(),
+                ));
+            }
+        }
+        let actual = foreign_keys(&pool, table.name)
+            .await
+            .into_iter()
+            .collect::<BTreeSet<_>>();
+        assert_eq!(actual, expected, "{} foreign keys", table.name);
+
+        for (_, owned) in table.owned_children() {
+            let (child, parent_column) = (owned.table, owned.parent_column);
+            let child_keys = foreign_keys(&pool, child).await;
+            assert_eq!(
+                child_keys,
+                [(
+                    parent_column.to_string(),
+                    table.name.to_string(),
+                    table.key_column.to_string(),
+                    "CASCADE".to_string(),
+                )],
+                "{child} foreign keys"
+            );
+        }
+    }
 }
 
 #[test]
 fn installed_triggers_match_rendering() {
     block_on(async {
-        let pool = migrated_pool().await;
-        let installed: BTreeMap<String, String> = sqlx::query_as(
-            "SELECT name, sql FROM sqlite_schema
-             WHERE type = 'trigger' AND name LIKE 'sync\\_%' ESCAPE '\\'",
-        )
-        .fetch_all(&pool)
-        .await
-        .unwrap()
-        .into_iter()
-        .map(|(name, sql): (String, String)| (name, triggers::normalize(&sql)))
-        .collect();
-        let rendered = triggers::render(&VAULT_MANIFEST);
-        let expected = rendered
-            .iter()
-            .map(|trigger| (trigger.name.clone(), triggers::normalize(&trigger.sql)))
-            .collect::<BTreeMap<_, _>>();
-        if installed != expected {
-            let sql = rendered
-                .iter()
-                .map(|trigger| format!("{};\n", trigger.sql))
-                .collect::<Vec<_>>()
-                .join("\n");
-            panic!("installed sync triggers differ from the manifest; expected:\n\n{sql}");
+        for (manifest, pool) in cases().await {
+            assert_triggers_rendered(manifest, &pool).await;
         }
     });
 }
 
+async fn assert_triggers_rendered(manifest: &Manifest, pool: &SqlitePool) {
+    let pool = pool.clone();
+    let installed: BTreeMap<String, String> = sqlx::query_as(
+        "SELECT name, sql FROM sqlite_schema
+             WHERE type = 'trigger' AND name LIKE 'sync\\_%' ESCAPE '\\'",
+    )
+    .fetch_all(&pool)
+    .await
+    .unwrap()
+    .into_iter()
+    .map(|(name, sql): (String, String)| (name, triggers::normalize(&sql)))
+    .collect();
+    let rendered = triggers::render(manifest);
+    let expected = rendered
+        .iter()
+        .map(|trigger| (trigger.name.clone(), triggers::normalize(&trigger.sql)))
+        .collect::<BTreeMap<_, _>>();
+    if installed != expected {
+        let sql = rendered
+            .iter()
+            .map(|trigger| format!("{};\n", trigger.sql))
+            .collect::<Vec<_>>()
+            .join("\n");
+        panic!("installed sync triggers differ from the manifest; expected:\n\n{sql}");
+    }
+}
+
 /// A token of SQL text outside string literals and comments.
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum Token {
+pub(super) enum Token {
     Word(String),
     Symbol(char),
 }
 
 /// Splits SQL into lowercase words and symbols, dropping string literals and comments.
-fn tokenize(sql: &str) -> Vec<Token> {
+pub(super) fn tokenize(sql: &str) -> Vec<Token> {
     let chars = sql.chars().collect::<Vec<_>>();
     let mut tokens = Vec::new();
     let mut index = 0;
@@ -445,37 +544,42 @@ fn declared_checks(table: &TableSpec) -> Vec<BTreeSet<String>> {
 #[test]
 fn unique_and_multi_column_checks_have_resolutions() {
     block_on(async {
-        let pool = migrated_pool().await;
-        for table in VAULT_MANIFEST.tables {
-            let mut unique = unique_indexes(&pool, table.name).await;
-            unique.sort();
-            let mut declared = declared_unique(table);
-            declared.sort();
-            assert_eq!(unique, declared, "{} unique resolutions", table.name);
+        for (manifest, pool) in cases().await {
+            for table in manifest.tables {
+                assert_resolutions(table, &pool).await;
+            }
+        }
+    });
+}
 
-            let sql: String = sqlx::query_scalar(
-                "SELECT sql FROM sqlite_schema WHERE type = 'table' AND name = ?",
-            )
+async fn assert_resolutions(table: &TableSpec, pool: &SqlitePool) {
+    let pool = pool.clone();
+    let mut unique = unique_indexes(&pool, table.name).await;
+    unique.sort();
+    let mut declared = declared_unique(table);
+    declared.sort();
+    assert_eq!(unique, declared, "{} unique resolutions", table.name);
+
+    let sql: String =
+        sqlx::query_scalar("SELECT sql FROM sqlite_schema WHERE type = 'table' AND name = ?")
             .bind(table.name)
             .fetch_one(&pool)
             .await
             .unwrap();
-            let columns = table_columns(&pool, table.name)
-                .await
-                .into_iter()
-                .map(|(name, _, _)| name.to_lowercase())
-                .collect::<BTreeSet<_>>();
-            let mut multi_column = check_expressions(&sql)
-                .iter()
-                .map(|expression| referenced_columns(expression, &columns))
-                .filter(|referenced| referenced.len() > 1)
-                .collect::<Vec<_>>();
-            multi_column.sort();
-            let mut declared = declared_checks(table);
-            declared.sort();
-            assert_eq!(multi_column, declared, "{} check resolutions", table.name);
-        }
-    });
+    let columns = table_columns(&pool, table.name)
+        .await
+        .into_iter()
+        .map(|(name, _, _)| name.to_lowercase())
+        .collect::<BTreeSet<_>>();
+    let mut multi_column = check_expressions(&sql)
+        .iter()
+        .map(|expression| referenced_columns(expression, &columns))
+        .filter(|referenced| referenced.len() > 1)
+        .collect::<Vec<_>>();
+    multi_column.sort();
+    let mut declared = declared_checks(table);
+    declared.sort();
+    assert_eq!(multi_column, declared, "{} check resolutions", table.name);
 }
 
 #[test]
@@ -568,7 +672,7 @@ fn assert_well_formed(manifest: &Manifest) {
 
         if let Some(revision) = table.revision_column {
             assert!(
-                table.local_columns.contains(&revision),
+                table.local_column(revision).is_some(),
                 "{}: revision is local",
                 table.name
             );
@@ -618,14 +722,19 @@ fn assert_well_formed(manifest: &Manifest) {
             }
         }
     }
-    for engine in manifest.engine {
-        assert!(engine.starts_with("sync_"), "engine table {engine}");
+    for table in SYNC_TABLES {
+        assert!(manifest.engine.contains(table), "engine table {table}");
     }
+    manifest.validate().unwrap();
 }
 
 #[test]
-fn vault_manifest_is_well_formed() {
-    assert_well_formed(&VAULT_MANIFEST);
+fn manifests_are_well_formed() {
+    block_on(async {
+        for (manifest, _) in cases().await {
+            assert_well_formed(manifest);
+        }
+    });
     assert_eq!(
         VAULT_MANIFEST
             .tables
@@ -633,6 +742,142 @@ fn vault_manifest_is_well_formed() {
             .map(|table| table.full_mask().0)
             .collect::<Vec<_>>(),
         [31, 511]
+    );
+}
+
+#[test]
+fn vault_domains_reserve_ids_below_the_fixture_range() {
+    assert_eq!(VAULT_MANIFEST.domains, VAULT_DOMAINS);
+    for domain in VAULT_DOMAINS {
+        assert!(
+            domain.table_ids.last < FIXTURE_TABLE_IDS,
+            "{}: table ids from {FIXTURE_TABLE_IDS} are reserved for test fixtures",
+            domain.name
+        );
+    }
+}
+
+fn leaked(domains: &'static [&'static DomainManifest]) -> &'static Manifest {
+    Box::leak(Box::new(Manifest::from_domains(1, domains)))
+}
+
+fn validation_error(domains: &'static [&'static DomainManifest]) -> String {
+    leaked(domains)
+        .validate()
+        .expect_err("the manifest should be refused")
+}
+
+#[test]
+fn validation_refuses_overlapping_ranges_misplaced_ids_and_bad_literals() {
+    const OVERLAPPING: DomainManifest = DomainManifest {
+        name: "overlapping",
+        table_ids: TableIdRange {
+            first: 10,
+            last: 20,
+        },
+        tables: &[],
+        derived: &[],
+        local: &[],
+        engine: &[],
+        replica_writable: false,
+    };
+    const MISPLACED: DomainManifest = DomainManifest {
+        table_ids: TableIdRange {
+            first: 100,
+            last: 115,
+        },
+        ..quick_notes::DOMAIN
+    };
+    const EMPTY_RANGE: DomainManifest = DomainManifest {
+        name: "empty_range",
+        table_ids: TableIdRange {
+            first: 200,
+            last: 199,
+        },
+        ..OVERLAPPING
+    };
+    const BAD_NOTES: TableSpec = TableSpec {
+        local_columns: &[LocalColumn {
+            name: "revision",
+            materialize: "revision + 1",
+        }],
+        ..quick_notes::NOTES
+    };
+    const BAD_LITERAL: DomainManifest = DomainManifest {
+        tables: &[quick_notes::TAGS, BAD_NOTES],
+        ..quick_notes::DOMAIN
+    };
+
+    let overlap = validation_error(&[&quick_notes::DOMAIN, &OVERLAPPING]);
+    assert!(overlap.contains("ranges overlap"), "{overlap}");
+    let twice = validation_error(&[&quick_notes::DOMAIN, &quick_notes::DOMAIN]);
+    assert!(twice.contains("domain named twice"), "{twice}");
+    assert!(twice.contains("duplicate table id"), "{twice}");
+    let misplaced = validation_error(&[&MISPLACED]);
+    assert!(
+        misplaced.contains("outside the quick_notes range"),
+        "{misplaced}"
+    );
+    let empty = validation_error(&[&EMPTY_RANGE]);
+    assert!(empty.contains("invalid table id range"), "{empty}");
+    let literal = validation_error(&[&BAD_LITERAL]);
+    assert!(literal.contains("not a SQL literal"), "{literal}");
+}
+
+#[test]
+fn local_materialization_values_are_single_literals() {
+    for literal in ["0", "1", "-3", "NULL", "''", "'device'", "'it''s'"] {
+        assert!(is_sql_literal(literal), "{literal}");
+    }
+    for expression in [
+        "",
+        "-",
+        "null",
+        "1 + 1",
+        "now()",
+        "'a' || 'b'",
+        "'open",
+        "'a'b'",
+        "1;",
+        "revision",
+    ] {
+        assert!(!is_sql_literal(expression), "{expression}");
+    }
+}
+
+#[test]
+fn engine_construction_checks_adapters_both_ways() {
+    const TAGS_ONLY: DomainManifest = DomainManifest {
+        tables: &[quick_notes::TAGS],
+        derived: &[],
+        ..quick_notes::DOMAIN
+    };
+    Engine::vault();
+    let named = VAULT_MANIFEST
+        .tables
+        .iter()
+        .filter_map(|table| table.adapter)
+        .collect::<BTreeSet<_>>();
+    assert_eq!(vault_adapters().names().collect::<BTreeSet<_>>(), named);
+
+    let unregistered = Engine::with(&VAULT_MANIFEST, Adapters::new(), Hooks::default());
+    assert!(
+        matches!(&unregistered, Err(SyncError::InvalidManifest(detail)) if detail.contains("is not registered")),
+        "{unregistered:?}"
+    );
+    let unnamed = Engine::with(leaked(&[&TAGS_ONLY]), vault_adapters(), Hooks::default());
+    assert!(
+        matches!(&unnamed, Err(SyncError::InvalidManifest(detail)) if detail.contains("no table names it")),
+        "{unnamed:?}"
+    );
+    let invalid = Engine::with(
+        leaked(&[&quick_notes::DOMAIN, &quick_notes::DOMAIN]),
+        vault_adapters(),
+        Hooks::default(),
+    );
+    assert!(
+        matches!(&invalid, Err(SyncError::InvalidManifest(_))),
+        "{invalid:?}"
     );
 }
 
@@ -652,7 +897,7 @@ fn vault_manifest_changes_only_with_a_version_bump() {
         VAULT_MANIFEST.version
     );
     assert_eq!(
-        format!("{VAULT_MANIFEST:#?}\n"),
+        VAULT_MANIFEST.summary(),
         recorded.replace("\r\n", "\n"),
         "the vault manifest changed without a version bump"
     );

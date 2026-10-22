@@ -3,11 +3,17 @@
 //! A manifest version fixes table ids, group ids, column membership, and value rules, and ids are
 //! never reused. Operations of every version up to the current one validate against the current
 //! manifest, so a new version may only add tables and groups or loosen rules; tightening a rule
-//! needs per-version validation first. A conformance test records each version's manifest, so a
-//! change without a version bump fails.
+//! needs per-version validation first. A conformance test records each version's canonical
+//! [`Manifest::summary`], so a change to the summary without a version bump fails.
+//!
+//! Each domain declares its tables in one [`DomainManifest`]; a manifest flattens a list of
+//! domains in dependency order.
+
+use std::fmt::Write as _;
 
 use ganbaru_sync_contracts::{GroupId, GroupMask, TableId};
 
+pub mod summary;
 pub mod vault;
 
 /// How the engine treats a table in the vault schema.
@@ -19,10 +25,124 @@ pub enum Classification {
     OwnedChildren,
     /// Rows are a projection maintained from replicated rows, such as a search index.
     Derived,
-    /// Engine state in `sync_*` tables.
+    /// Engine state in `sync_*` tables, or a domain's engine-side table.
     Engine,
+    /// Device-bound rows that never replicate, are writable on replicas, and are emptied in
+    /// snapshot copies.
+    Local,
     /// Rows that keep the owner-only whole-vault rules.
     Unconverted,
+}
+
+/// Engine tables every manifest declares.
+pub const SYNC_TABLES: &[&str] = &[
+    "sync_spaces",
+    "sync_apply_state",
+    "sync_capture",
+    "sync_writers",
+    "sync_ops",
+    "sync_rows",
+    "sync_register_versions",
+    "sync_tombstones",
+];
+
+/// What a domain trigger may do, so applying remote changes cannot be broken by it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TriggerPolicy {
+    /// Writes only `Local` or derived columns of the triggering row, and keeps firing during
+    /// apply.
+    SameRow,
+    /// Its `WHEN` clause requires that the engine is not applying.
+    Gated,
+    /// Writes nothing and only aborts, so the applier sees it and never produces the state it
+    /// refuses.
+    ApplierVisible,
+    /// Writes only `Derived` tables and keeps firing during apply.
+    DerivedIndex,
+}
+
+/// A non-engine trigger on a converted, `Local`, or domain engine table.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DomainTrigger {
+    /// Trigger name.
+    pub name: &'static str,
+    /// What the trigger may do.
+    pub policy: TriggerPolicy,
+}
+
+/// A table of a domain that is not replicated, with the domain triggers installed on it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DeviceTable {
+    /// SQL table name.
+    pub name: &'static str,
+    /// Domain triggers on the table.
+    pub triggers: &'static [DomainTrigger],
+}
+
+/// A column of a replicated table kept per device and never replicated.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LocalColumn {
+    /// Column name.
+    pub name: &'static str,
+    /// SQL literal written when materialize inserts a row from a remote create and when a
+    /// snapshot copy is prepared: an integer, `NULL`, or a single-quoted string.
+    pub materialize: &'static str,
+}
+
+/// Whether text is one SQL literal a [`LocalColumn`] may declare.
+pub fn is_sql_literal(text: &str) -> bool {
+    let digits = text.strip_prefix('-').unwrap_or(text);
+    if !digits.is_empty() && digits.bytes().all(|byte| byte.is_ascii_digit()) {
+        return true;
+    }
+    if text == "NULL" {
+        return true;
+    }
+    text.len() >= 2
+        && text.starts_with('\'')
+        && text.ends_with('\'')
+        && !text[1..text.len() - 1].replace("''", "").contains('\'')
+}
+
+/// An inclusive range of table ids reserved for one domain.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TableIdRange {
+    /// First reserved id.
+    pub first: u16,
+    /// Last reserved id.
+    pub last: u16,
+}
+
+impl TableIdRange {
+    /// Whether the range holds an id.
+    pub const fn contains(self, id: TableId) -> bool {
+        self.first <= id.0 && id.0 <= self.last
+    }
+
+    /// Whether two ranges share an id.
+    pub const fn overlaps(self, other: Self) -> bool {
+        self.first <= other.last && other.first <= self.last
+    }
+}
+
+/// One domain's part of a manifest.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DomainManifest {
+    /// Domain name, used by the app to admit replica writes.
+    pub name: &'static str,
+    /// Table ids reserved for the domain.
+    pub table_ids: TableIdRange,
+    /// Replicated tables, parents before the tables that reference them.
+    pub tables: &'static [TableSpec],
+    /// Derived tables, including virtual tables whose shadow tables follow them.
+    pub derived: &'static [&'static str],
+    /// `Local` tables.
+    pub local: &'static [DeviceTable],
+    /// Engine-side tables of the domain outside `sync_*`.
+    pub engine: &'static [DeviceTable],
+    /// Whether a linked replica may write the domain's replicated tables. Otherwise guards keep
+    /// them owner-only on replicas while the engine still applies remote changes to them.
+    pub replica_writable: bool,
 }
 
 /// Largest timestamp text in bytes.
@@ -235,7 +355,7 @@ pub struct TableSpec {
     /// Field groups in id order.
     pub groups: &'static [GroupSpec],
     /// Columns kept per replica and never replicated.
-    pub local_columns: &'static [&'static str],
+    pub local_columns: &'static [LocalColumn],
     /// Columns derived from group values by the domain adapter.
     pub derived_columns: &'static [&'static str],
     /// Local revision column bumped once per materialized row change.
@@ -246,6 +366,8 @@ pub struct TableSpec {
     pub redirects: bool,
     /// Domain adapter for owned values, coupled priorities, derived columns, and recovery.
     pub adapter: Option<&'static str>,
+    /// Domain triggers on the table and its owned child tables.
+    pub triggers: &'static [DomainTrigger],
 }
 
 impl TableSpec {
@@ -269,6 +391,11 @@ impl TableSpec {
             .flat_map(|group| group.columns())
     }
 
+    /// Local column by name.
+    pub fn local_column(&self, name: &str) -> Option<&'static LocalColumn> {
+        self.local_columns.iter().find(|column| column.name == name)
+    }
+
     /// Owned child storage with its group.
     pub fn owned_children(&self) -> impl Iterator<Item = (&'static GroupSpec, OwnedTable)> {
         self.groups.iter().filter_map(|group| match group.storage {
@@ -283,15 +410,129 @@ impl TableSpec {
 pub struct Manifest {
     /// Manifest version carried in operation headers.
     pub version: u16,
-    /// Replicated tables, parents before the tables that reference them.
+    /// Domains in dependency order.
+    pub domains: &'static [&'static DomainManifest],
+    /// Replicated tables of every domain, parents before the tables that reference them.
     pub tables: &'static [TableSpec],
     /// Derived tables, including virtual tables whose shadow tables follow them.
     pub derived: &'static [&'static str],
-    /// Engine tables.
+    /// `Local` tables.
+    pub local: &'static [&'static str],
+    /// Engine tables: [`SYNC_TABLES`] and the domains' engine-side tables.
     pub engine: &'static [&'static str],
 }
 
 impl Manifest {
+    /// The manifest of a domain list. The flattened lists are allocated once and live for the
+    /// rest of the process, so this belongs in a `LazyLock` static.
+    pub fn from_domains(version: u16, domains: &'static [&'static DomainManifest]) -> Self {
+        fn leak<T>(items: Vec<T>) -> &'static [T] {
+            Box::leak(items.into_boxed_slice())
+        }
+        let tables = domains
+            .iter()
+            .flat_map(|domain| domain.tables.iter().copied())
+            .collect();
+        let derived = domains
+            .iter()
+            .flat_map(|domain| domain.derived.iter().copied())
+            .collect();
+        let local = domains
+            .iter()
+            .flat_map(|domain| domain.local.iter().map(|table| table.name))
+            .collect();
+        let engine = SYNC_TABLES
+            .iter()
+            .copied()
+            .chain(
+                domains
+                    .iter()
+                    .flat_map(|domain| domain.engine.iter().map(|table| table.name)),
+            )
+            .collect();
+        Self {
+            version,
+            domains,
+            tables: leak(tables),
+            derived: leak(derived),
+            local: leak(local),
+            engine: leak(engine),
+        }
+    }
+
+    /// Checks the facts the engine relies on: table ids are nonzero, unique, and inside their
+    /// domain's range; domain names are unique and ranges disjoint; and every `Local` column
+    /// declares a SQL literal. Adapter registration is checked by the engine.
+    pub fn validate(&self) -> Result<(), String> {
+        let mut problems = String::new();
+        for (index, domain) in self.domains.iter().enumerate() {
+            let range = domain.table_ids;
+            if range.first == 0 || range.first > range.last {
+                let _ = writeln!(problems, "{}: invalid table id range", domain.name);
+            }
+            for other in &self.domains[index + 1..] {
+                if other.name == domain.name {
+                    let _ = writeln!(problems, "{}: domain named twice", domain.name);
+                }
+                if other.table_ids.overlaps(range) {
+                    let _ = writeln!(
+                        problems,
+                        "{} and {}: table id ranges overlap",
+                        domain.name, other.name
+                    );
+                }
+            }
+            for table in domain.tables {
+                if !range.contains(table.id) {
+                    let _ = writeln!(
+                        problems,
+                        "{}: table id {} is outside the {} range",
+                        table.name, table.id.0, domain.name
+                    );
+                }
+                for column in table.local_columns {
+                    if !is_sql_literal(column.materialize) {
+                        let _ = writeln!(
+                            problems,
+                            "{}.{}: materialization value is not a SQL literal",
+                            table.name, column.name
+                        );
+                    }
+                }
+            }
+        }
+        for (index, table) in self.tables.iter().enumerate() {
+            if self.tables[index + 1..]
+                .iter()
+                .any(|other| other.id == table.id)
+            {
+                let _ = writeln!(problems, "{}: duplicate table id", table.name);
+            }
+        }
+        if problems.is_empty() {
+            Ok(())
+        } else {
+            Err(problems.trim_end().to_string())
+        }
+    }
+
+    /// Domain of a replicated table or owned child table.
+    pub fn domain_of(&self, table: &str) -> Option<&'static DomainManifest> {
+        self.domains.iter().copied().find(|domain| {
+            domain.tables.iter().any(|spec| {
+                spec.name == table || spec.owned_children().any(|(_, owned)| owned.table == table)
+            })
+        })
+    }
+
+    /// Names of the domains a linked replica may write, in domain order.
+    pub fn replica_writable_domains(&self) -> impl Iterator<Item = &'static str> {
+        self.domains
+            .iter()
+            .filter(|domain| domain.replica_writable)
+            .map(|domain| domain.name)
+    }
+
     /// Replicated table by id.
     pub fn table(&self, id: TableId) -> Option<&'static TableSpec> {
         self.tables.iter().find(|table| table.id == id)
@@ -315,6 +556,8 @@ impl Manifest {
             Classification::OwnedChildren
         } else if self.derived.contains(&name) {
             Classification::Derived
+        } else if self.local.contains(&name) {
+            Classification::Local
         } else if self.engine.contains(&name) {
             Classification::Engine
         } else {

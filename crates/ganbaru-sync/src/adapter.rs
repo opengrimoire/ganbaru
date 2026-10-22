@@ -89,6 +89,11 @@ impl Adapters {
         self
     }
 
+    /// Names of the registered adapters.
+    pub fn names(&self) -> impl Iterator<Item = &'static str> + '_ {
+        self.adapters.iter().map(|adapter| adapter.name())
+    }
+
     /// Adapter by name.
     pub fn get(&self, name: &str) -> Option<&dyn DomainAdapter> {
         self.adapters

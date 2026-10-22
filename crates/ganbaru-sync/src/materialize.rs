@@ -405,11 +405,24 @@ async fn execute_insert(
         .chain(present.derived.iter().map(|(column, _)| *column))
         .map(ident)
         .collect();
+    // Local columns take their declared literals; the manifest was validated at engine
+    // construction, so each is a single SQL literal.
+    let local_names = table.local_columns.iter().map(|column| ident(column.name));
+    let local_values = table.local_columns.iter().map(|column| column.materialize);
     let sql = format!(
         "INSERT INTO {} ({}) VALUES ({})",
         ident(table.name),
-        columns.join(", "),
-        vec!["?"; columns.len()].join(", ")
+        columns
+            .iter()
+            .cloned()
+            .chain(local_names)
+            .collect::<Vec<_>>()
+            .join(", "),
+        vec!["?"; columns.len()]
+            .into_iter()
+            .chain(local_values)
+            .collect::<Vec<_>>()
+            .join(", ")
     );
     let mut query = sqlx::query(AssertSqlSafe(sql.as_str())).bind(key);
     for field in present

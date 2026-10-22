@@ -94,15 +94,62 @@ fn writer_head_tracks_the_sealed_chain_and_detects_tampering() {
 }
 
 #[test]
-fn snapshot_copies_drop_unsealed_captures() {
+fn snapshot_copies_drop_unsealed_captures_and_device_state() {
     block_on(async {
         let mut replica = Replica::new(0, 3).await;
         add_note(&mut replica, "note-1", "One").await;
+        replica
+            .exec(
+                "UPDATE quick_notes SET revision = 4 WHERE id = 'note-1';
+                 INSERT INTO fixture_items (id, created_at, label, label_edits)
+                     VALUES ('item-1', '2027-01-01T00:00:00.000Z', 'One', 0);
+                 UPDATE fixture_items SET label = 'Two' WHERE id = 'item-1';",
+            )
+            .await;
+        assert_eq!(
+            replica
+                .count("SELECT count(*) FROM fixture_item_marks")
+                .await,
+            1
+        );
         assert!(has_pending_captures(&mut replica.conn).await.unwrap());
         let mut copy = connection_from(&replica.snapshot().await).await;
-        prepare_snapshot_copy(&mut copy).await.unwrap();
+        prepare_snapshot_copy(&mut copy, replica.engine.manifest())
+            .await
+            .unwrap();
         assert!(!has_pending_captures(&mut copy).await.unwrap());
         assert!(has_pending_captures(&mut replica.conn).await.unwrap());
+        let revision: i64 = sqlx::query_scalar("SELECT revision FROM quick_notes")
+            .fetch_one(&mut copy)
+            .await
+            .unwrap();
+        assert_eq!(revision, 1);
+        let item: (String, i64) = sqlx::query_as("SELECT label, label_edits FROM fixture_items")
+            .fetch_one(&mut copy)
+            .await
+            .unwrap();
+        assert_eq!(item, ("Two".to_owned(), 0));
+        let marks: i64 = sqlx::query_scalar("SELECT count(*) FROM fixture_item_marks")
+            .fetch_one(&mut copy)
+            .await
+            .unwrap();
+        assert_eq!(marks, 0);
+        let indexed: String = sqlx::query_scalar("SELECT label FROM fixture_items_index")
+            .fetch_one(&mut copy)
+            .await
+            .unwrap();
+        assert_eq!(indexed, "Two");
+        let edits: i64 = sqlx::query_scalar("SELECT label_edits FROM fixture_items")
+            .fetch_one(&mut replica.conn)
+            .await
+            .unwrap();
+        assert_eq!(edits, 1);
+        let applying: i64 =
+            sqlx::query_scalar("SELECT applying FROM sync_apply_state WHERE singleton = 1")
+                .fetch_one(&mut copy)
+                .await
+                .unwrap();
+        assert_eq!(applying, 0);
     });
 }
 

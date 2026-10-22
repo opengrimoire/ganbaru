@@ -142,7 +142,8 @@ describe("vault state api", () => {
       generation: 4,
       role: "read-only",
       canWrite: false,
-      replicatedWrites: false,
+      linkedReplica: false,
+      replicaWritableDomains: [],
       transferPhase: { kind: "stable" },
     });
     const { getVaultOwnershipStatus } = await loadModule();
@@ -154,7 +155,8 @@ describe("vault state api", () => {
       generation: 4,
       role: "read-only",
       canWrite: false,
-      replicatedWrites: false,
+      linkedReplica: false,
+      replicaWritableDomains: [],
       transferPhase: { kind: "stable" },
     });
   });
@@ -167,7 +169,8 @@ describe("vault state api", () => {
       generation: 4,
       role: "read-only",
       canWrite: true,
-      replicatedWrites: false,
+      linkedReplica: false,
+      replicaWritableDomains: [],
       transferPhase: { kind: "stable" },
     });
     const { getVaultOwnershipStatus } = await loadModule();
@@ -176,7 +179,8 @@ describe("vault state api", () => {
       "vault ownership response has an inconsistent role",
     );
   });
-  it("accepts replicated writes only on read-only replicas", async () => {
+
+  it("accepts linked replicas and their writable domains only on read-only replicas", async () => {
     const replica = {
       vaultId: "vault-1",
       deviceId: "phone",
@@ -184,19 +188,57 @@ describe("vault state api", () => {
       generation: 4,
       role: "read-only",
       canWrite: false,
-      replicatedWrites: true,
+      linkedReplica: true,
+      replicaWritableDomains: ["quick_notes"],
       transferPhase: { kind: "stable" },
     };
     invokeMock.mockResolvedValueOnce(replica);
     const { getVaultOwnershipStatus } = await loadModule();
-    await expect(getVaultOwnershipStatus()).resolves.toMatchObject({ replicatedWrites: true, canWrite: false });
+    await expect(getVaultOwnershipStatus()).resolves.toMatchObject({
+      linkedReplica: true,
+      replicaWritableDomains: ["quick_notes"],
+      canWrite: false,
+    });
 
     invokeMock.mockResolvedValueOnce({ ...replica, role: "owner", canWrite: true });
-    await expect(getVaultOwnershipStatus()).rejects.toThrow("inconsistent replicated writes");
+    await expect(getVaultOwnershipStatus()).rejects.toThrow("inconsistent linked replica");
 
-    const { replicatedWrites: _omitted, ...withoutFlag } = replica;
+    invokeMock.mockResolvedValueOnce({ ...replica, linkedReplica: false });
+    await expect(getVaultOwnershipStatus()).rejects.toThrow("inconsistent replica writes");
+
+    for (const replicaWritableDomains of [undefined, "quick_notes", ["quick_notes", 3], [" "]]) {
+      invokeMock.mockResolvedValueOnce({ ...replica, replicaWritableDomains });
+      await expect(getVaultOwnershipStatus()).rejects.toThrow("vault ownership response is incomplete");
+    }
+
+    const { linkedReplica: _omitted, ...withoutFlag } = replica;
     invokeMock.mockResolvedValueOnce(withoutFlag);
     await expect(getVaultOwnershipStatus()).rejects.toThrow("vault ownership response is incomplete");
+  });
+
+  it("admits sync domain writes for owners and for linked replicas the domain lets write", async () => {
+    const { QUICK_NOTES_SYNC_DOMAIN, canWriteSyncDomain } = await loadModule();
+    const base = {
+      vaultId: "vault-1",
+      deviceId: "phone",
+      ownerDeviceId: "desktop",
+      generation: 4,
+      transferPhase: { kind: "stable" as const },
+    };
+    const owner = { ...base, role: "owner" as const, canWrite: true, linkedReplica: false, replicaWritableDomains: [] };
+    const replica = {
+      ...base,
+      role: "read-only" as const,
+      canWrite: false,
+      linkedReplica: true,
+      replicaWritableDomains: [QUICK_NOTES_SYNC_DOMAIN],
+    };
+    const unlinked = { ...replica, linkedReplica: false, replicaWritableDomains: [] };
+
+    expect(canWriteSyncDomain(owner, "projects")).toBe(true);
+    expect(canWriteSyncDomain(replica, QUICK_NOTES_SYNC_DOMAIN)).toBe(true);
+    expect(canWriteSyncDomain(replica, "projects")).toBe(false);
+    expect(canWriteSyncDomain(unlinked, QUICK_NOTES_SYNC_DOMAIN)).toBe(false);
   });
 });
 

@@ -6,6 +6,7 @@
 use super::status::emit_applied;
 use crate::vault;
 use ganbaru_quick_notes::images::{self, QuickNoteImageError, ReferencedImage};
+use ganbaru_sync::manifest::vault::quick_notes::DOMAIN_NAME as QUICK_NOTES_DOMAIN;
 use ganbaru_sync_replica::assets::ImageStore;
 use std::path::PathBuf;
 use tauri::{AppHandle, Runtime};
@@ -46,7 +47,7 @@ impl<R: Runtime> ImageStore for ActiveVaultImages<R> {
     }
 
     fn store(&self, image: &ReferencedImage, bytes: &[u8]) -> Result<(), QuickNoteImageError> {
-        let root = vault::active_replicated_asset_path(&self.app)?;
+        let root = vault::active_replicated_asset_path(&self.app, QUICK_NOTES_DOMAIN)?;
         if *root != *self.root {
             return Err(QuickNoteImageError::Failed(
                 "the active vault changed during sync".to_string(),

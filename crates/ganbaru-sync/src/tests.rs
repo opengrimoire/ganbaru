@@ -2,10 +2,12 @@ mod budgets;
 mod capture;
 mod conformance;
 mod engine;
+mod fixture;
 mod guards;
 mod local;
 mod replica;
 mod sim;
+mod trigger_policies;
 mod values;
 
 use sqlx::{AssertSqlSafe, SqlitePool};

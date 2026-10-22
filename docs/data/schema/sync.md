@@ -31,10 +31,12 @@
 
 ## Replicated domain tables
 
-A replicated table carries capture triggers, row key and creation time immutability guards, a re-create guard, and value guards that enforce operation bounds on every local write. All of them are rendered from the manifest and stored as schema objects; a conformance test fails when they differ from the current rendering, when a table or column is unclassified, or when a UNIQUE index or multi-column CHECK on a replicated table has no declared resolution.
+A replicated table carries capture triggers, row key and creation time immutability guards, a re-create guard, and value guards that enforce operation bounds on every local write. All of them are rendered from the manifest and stored as schema objects; a conformance test fails when they differ from the current rendering, when a table or column is unclassified, when a table id falls outside its domain's range, when a UNIQUE index or multi-column CHECK on a replicated table has no declared resolution, or when a foreign key into a replicated table neither cascades nor clears on delete.
 
-Every column of a replicated table is a key, a member of exactly one field group, local, or derived. The optimistic `revision` column is local: each replica bumps it when it materializes a content change, never for order or `updated_at`.
+Every column of a replicated table is a key, a member of exactly one field group, local, or derived. A local column declares the value it takes when the engine materializes a row and when a snapshot copy resets it. The optimistic `revision` column is local: each replica bumps it when it materializes a content change, never for order or `updated_at`.
 
-Connection-scoped guard triggers on unconverted tables are created per connection on guarded replicas only and are never part of the vault schema. See [mixed mode](../sync.md#mixed-mode).
+Every other trigger on a converted, local, or engine table declares a policy in its domain manifest: derived index maintenance, same-row bookkeeping, gated on the engine not applying, or visible to the applier. Conformance fails on an undeclared trigger, a trigger that breaks its policy, and an ungated unconverted trigger that writes a converted table. Quick notes search index triggers are derived index maintenance.
+
+Connection-scoped guard triggers are created per connection on guarded replicas only and are never part of the vault schema. See [mixed mode](../sync.md#mixed-mode).
 
 Currently replicated: Quick notes and their tags. Their schema rules are in [Supporting domains](supporting-domains.md#quick-notes).

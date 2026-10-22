@@ -6,10 +6,11 @@ use ganbaru_contacts::PersonPublicKey;
 use ganbaru_sync_contracts::{
     Envelope, GroupId, Seq, SpaceId, TableId, Value, VersionVector, WriterId, WriterPublicKey,
 };
-use sqlx::{Connection, SqliteConnection};
+use sqlx::{AssertSqlSafe, Connection, SqliteConnection};
 
-use crate::error::{SyncResult, corrupt};
+use crate::error::{SyncError, SyncResult, corrupt};
 use crate::log::{self, WriterState};
+use crate::manifest::Manifest;
 use crate::{Engine, SpaceContext, StoreOutcome, sql};
 
 /// Most operations one carry-forward store transaction takes.
@@ -108,10 +109,41 @@ pub async fn reset_applying(conn: &mut SqliteConnection) -> SyncResult<()> {
     Ok(())
 }
 
-/// Prepares a snapshot copy for another installation: captures belong to the installation
-/// that made them, so the copy drops any that could not be sealed, and the apply flag is clear.
-pub async fn prepare_snapshot_copy(conn: &mut SqliteConnection) -> SyncResult<()> {
+/// Prepares a snapshot copy for another installation in one transaction: `Local` tables are
+/// emptied and every `Local` column is reset to its materialization value, because device state
+/// belongs to the device that wrote it; captures belong to the installation that made them, so
+/// the copy drops any that could not be sealed; and the apply flag is clear.
+///
+/// The resets run with the apply flag set, so gated domain triggers and capture stay quiet.
+pub async fn prepare_snapshot_copy(
+    conn: &mut SqliteConnection,
+    manifest: &Manifest,
+) -> SyncResult<()> {
+    manifest.validate().map_err(SyncError::InvalidManifest)?;
     let mut tx = conn.begin().await?;
+    sql::set_applying(&mut tx, true).await?;
+    for table in manifest.local {
+        sqlx::query(AssertSqlSafe(format!("DELETE FROM {}", sql::ident(table))))
+            .execute(&mut *tx)
+            .await?;
+    }
+    for table in manifest.tables {
+        if table.local_columns.is_empty() {
+            continue;
+        }
+        let assignments = table
+            .local_columns
+            .iter()
+            .map(|column| format!("{} = {}", sql::ident(column.name), column.materialize))
+            .collect::<Vec<_>>()
+            .join(", ");
+        sqlx::query(AssertSqlSafe(format!(
+            "UPDATE {} SET {assignments}",
+            sql::ident(table.name)
+        )))
+        .execute(&mut *tx)
+        .await?;
+    }
     sqlx::query("DELETE FROM sync_capture")
         .execute(&mut *tx)
         .await?;

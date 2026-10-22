@@ -8,6 +8,7 @@
 use base64::{Engine as _, engine::general_purpose};
 use ganbaru_quick_notes::images::{self, MAX_IMAGE_BYTES};
 use ganbaru_quick_notes::{QuickNoteImage, QuickNoteImageError, QuickNoteImageFile};
+use ganbaru_sync::manifest::vault::quick_notes::DOMAIN_NAME as QUICK_NOTES_DOMAIN;
 #[cfg(desktop)]
 use serde::Serialize;
 use tauri::ipc::{InvokeBody, Request, Response};
@@ -31,7 +32,7 @@ pub async fn quick_notes_import_image<R: Runtime>(
     request: Request<'_>,
 ) -> Result<QuickNoteImage, QuickNoteImageError> {
     let bytes = request_bytes(request.body())?;
-    let vault_root = vault::active_replicated_asset_path(&app)?;
+    let vault_root = vault::active_replicated_asset_path(&app, QUICK_NOTES_DOMAIN)?;
     blocking(move || images::import_image(&vault_root, &bytes)).await
 }
 
@@ -54,11 +55,11 @@ pub async fn quick_notes_collect_images<R: Runtime>(
     db_url: String,
 ) -> Result<u64, String> {
     let status = vault::ownership::active_status(&app)?;
-    if !status.can_write && !status.replicated_writes {
+    if !status.can_write_domain(QUICK_NOTES_DOMAIN) {
         return Ok(0);
     }
     let pool = connect_sqlite(app.clone(), db_url).await?;
-    let vault_root = vault::active_replicated_asset_path(&app)?;
+    let vault_root = vault::active_replicated_asset_path(&app, QUICK_NOTES_DOMAIN)?;
     images::collect_unreferenced_images(&pool, &vault_root).await
 }
 
@@ -144,7 +145,7 @@ async fn import_paths<R: Runtime>(
     if paths.is_empty() {
         return Ok(pick);
     }
-    let vault_root = vault::active_replicated_asset_path(app)?;
+    let vault_root = vault::active_replicated_asset_path(app, QUICK_NOTES_DOMAIN)?;
     blocking(move || {
         for path in paths.iter().take(limit) {
             // A file that cannot be read is reported like any other refused file; only a failed
@@ -180,7 +181,7 @@ pub async fn quick_notes_paste_clipboard_image<R: Runtime>(
         rejected: Vec::new(),
         skipped: 0,
     };
-    let vault_root = vault::active_replicated_asset_path(&app)?;
+    let vault_root = vault::active_replicated_asset_path(&app, QUICK_NOTES_DOMAIN)?;
     let imported = match read_clipboard_png(&app).await {
         Ok(None) => return Ok(pick),
         Ok(Some(png)) => blocking(move || images::import_image(&vault_root, &png)).await,

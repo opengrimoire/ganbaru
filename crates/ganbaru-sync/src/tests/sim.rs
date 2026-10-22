@@ -1,5 +1,6 @@
-//! Seeded simulation of installations that edit Quick notes, partly offline, and exchange
-//! operations through a hub over a network that drops, duplicates, and reorders messages.
+//! Seeded simulation of installations that edit Quick notes and the test-only fixture domain,
+//! partly offline, and exchange operations through a hub over a network that drops, duplicates,
+//! and reorders messages.
 //! Engine calls crash at failpoints and must leave no trace, writers are revoked and re-sealed,
 //! and conflicts and recovery offers are resolved along the way. After every step the
 //! databases keep their invariants; at quiescence every installation holds the same
@@ -341,7 +342,10 @@ impl Sim {
         let note = self.rng.pick(&notes).map(|id| quoted(id));
         let tag = self.rng.pick(&tags).map(|id| quoted(id));
         let touch = format!("updated_at = {now}, revision = revision + 1");
-        let kind = self.rng.below(15);
+        let kind = self.rng.below(18);
+        if kind >= 15 {
+            return self.edit_fixture(index, kind - 15, now).await;
+        }
         let kind = if note.is_none() && (3..=11).contains(&kind) {
             0
         } else {
@@ -435,6 +439,53 @@ impl Sim {
             _ => return,
         };
         self.replicas[index].try_exec(&sql).await;
+    }
+
+    /// One local edit of a fixture item: create, relabel, or delete. The fixture domain's
+    /// triggers mark local creates, count label edits, and keep the index in step.
+    async fn edit_fixture(&mut self, index: usize, kind: usize, now: String) {
+        let items = ids(
+            &mut self.replicas[index],
+            "SELECT id FROM fixture_items ORDER BY id",
+        )
+        .await;
+        let item = self.rng.pick(&items).map(|id| quoted(id));
+        let sql = match (kind, item) {
+            (1, Some(item)) => format!(
+                "UPDATE fixture_items SET label = {} WHERE id = {item}",
+                quoted(&self.words())
+            ),
+            (2, Some(item)) => format!("DELETE FROM fixture_items WHERE id = {item}"),
+            _ => {
+                let id = self.next_id("item", index);
+                format!(
+                    "INSERT INTO fixture_items (id, created_at, label, label_edits)
+                     VALUES ({}, {now}, {}, 0)",
+                    quoted(&id),
+                    quoted(&self.words())
+                )
+            }
+        };
+        self.replicas[index].try_exec(&sql).await;
+    }
+
+    /// Fixture marks exist only on the replica that created the marked item, because the gated
+    /// trigger that writes them stays silent while operations apply.
+    async fn assert_marks_stay_local(&mut self) {
+        for replica in self
+            .replicas
+            .iter_mut()
+            .chain(std::iter::once(&mut self.hub))
+        {
+            let prefix = format!("item-{}-", replica.index);
+            for item in ids(replica, "SELECT item_id FROM fixture_item_marks").await {
+                assert!(
+                    item.starts_with(&prefix),
+                    "replica {} marked {item} while applying",
+                    replica.index
+                );
+            }
+        }
     }
 
     /// Exchanges operations between an online replica and the hub over the unreliable network.
@@ -613,6 +664,7 @@ impl Sim {
             replica.check_invariants().await;
         }
         self.hub.check_invariants().await;
+        self.assert_marks_stay_local().await;
     }
 
     /// Reconnects everyone and exchanges over a reliable network until nothing changes.

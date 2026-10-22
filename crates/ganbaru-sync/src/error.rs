@@ -11,8 +11,8 @@ pub enum SyncError {
     Database(sqlx::Error),
     /// Engine state breaks an invariant the engine maintains.
     Corrupt(String),
-    /// The manifest names an adapter that is not registered.
-    UnregisteredAdapter(&'static str),
+    /// The manifest is malformed or does not match the registered adapters.
+    InvalidManifest(String),
     /// A space has no row in `sync_spaces`.
     UnknownSpace,
     /// The local writer cannot seal: its certificate does not match its key or the space anchor.
@@ -39,8 +39,8 @@ impl fmt::Display for SyncError {
         match self {
             Self::Database(error) => write!(formatter, "sync database error: {error}"),
             Self::Corrupt(detail) => write!(formatter, "sync state is inconsistent: {detail}"),
-            Self::UnregisteredAdapter(name) => {
-                write!(formatter, "sync adapter {name} is not registered")
+            Self::InvalidManifest(detail) => {
+                write!(formatter, "sync manifest is invalid: {detail}")
             }
             Self::UnknownSpace => formatter.write_str("sync space is not initialized"),
             Self::WriterMismatch => {

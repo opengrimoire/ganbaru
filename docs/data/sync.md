@@ -68,11 +68,12 @@ Source: `crates/ganbaru-sync-contracts/`, `crates/ganbaru-sync/`, `crates/ganbar
 
 ### Mixed mode
 
-- Every table has an explicit classification in the engine manifest: replicated, owned children, derived, engine, or unconverted. A test fails on any unclassified table or column, and unknown tables are treated as unconverted.
-- Replicated tables are writable on every linked device and travel as operations. Unconverted tables stay owner-only and travel through whole-vault handoff.
-- The owner opens the vault read-write. A linked replica that is not in recovery and has no active transfer opens it guarded: a writable connection whose connection-scoped temporary triggers abort every write to an unconverted table with the normal read-only error, while replicated, derived, and engine tables stay writable. Guards never enter the vault file. Any other replica opens read-only.
+- Every table has an explicit classification in the engine manifest: replicated, owned children, derived, local, engine, or unconverted. A test fails on any unclassified table or column, and unknown tables are treated as unconverted.
+- The manifest is a registry of sync domains. Each domain declares its table id range, replicated, derived, and local tables, the policy of every trigger on its tables, and whether linked replicas may write it.
+- Replicated tables travel as operations and are writable on every linked device when their domain allows replica writes. Unconverted tables stay owner-only and travel through whole-vault handoff. Local tables and local columns hold device state: they never travel as operations, and snapshot copies empty or reset them.
+- The owner opens the vault read-write. A linked replica that is not in recovery and has no active transfer opens it guarded: a writable connection whose connection-scoped temporary triggers abort every write to an unconverted table or to a replicated table of a domain replicas cannot write, with the normal read-only error, while replica-writable, derived, local, and engine tables stay writable. Guards skip writes made while the engine applies remote changes. Guards never enter the vault file. Any other replica opens read-only.
 - A guarded open validates the migration set first. A replica whose schema differs falls back to read-only until both devices run the same app version.
-- Ownership status reports `replicatedWrites` for guarded replicas, so the UI can explain that Quick notes stay editable while the rest of the vault is read-only on that device.
+- Ownership status reports `linkedReplica` and the `replicaWritableDomains` taken from the domain manifests, so the UI can explain that Quick notes stay editable while the rest of the vault is read-only on that device.
 - `config.json` and the distraction usage spool keep their owner-only rules.
 
 ### Capture and sealing
@@ -119,7 +120,7 @@ The coordinator desktop is the hub, and clients never exchange directly. Sync re
 
 Whole-vault refresh, ownership transfer, and backup restore never lose operations:
 
-- The source seals pending captures under the write fence before preparing a snapshot. Snapshots carry the full operation log and engine state; the copy drops pending captures, which stay in the source and seal there.
+- The source seals pending captures under the write fence before preparing a snapshot. Snapshots carry the full operation log and engine state; the copy drops pending captures, which stay in the source and seal there, empties local tables, and resets local columns to their materialization defaults.
 - Before activation replaces the vault, the receiver seals its own captures under the same fence and exports every operation it stores that the staged database lacks into a bounded device-local bundle. Captures that cannot be sealed refuse the replacement with an error that names unsynced Quick notes changes. It also copies the verified Quick note image files the staged vault lacks, so images not yet uploaded survive with the operations that reference them.
 - The sync service imports the bundle into the new database before its writer check, then deletes it. A bundle that is not a regular file within the bundle limit is refused before it is read. Import skips operations already stored, so a crash between replacement and import loses nothing.
 - After a backup restore, the writer check creates a successor writer, and captures in the restored database seal under it.

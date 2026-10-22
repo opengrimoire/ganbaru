@@ -967,16 +967,20 @@ async fn activate_handoff_at_path<R: Runtime>(
     .map_err(|error| format!("handoff activation worker failed: {error}"))?
 }
 
-/// Clears installation-local sync state from a snapshot copy before it leaves this device.
+/// Clears installation-local sync state and device-local rows from a snapshot copy before it
+/// leaves this device.
 async fn prepare_snapshot_copy(snapshot: &Path) -> Result<(), String> {
     use sqlx::Connection;
     let options = sqlx::sqlite::SqliteConnectOptions::new().filename(snapshot);
     let mut conn = sqlx::SqliteConnection::connect_with(&options)
         .await
         .map_err(|error| format!("open handoff snapshot: {error}"))?;
-    let result = ganbaru_sync::local::prepare_snapshot_copy(&mut conn)
-        .await
-        .map_err(|error| format!("prepare handoff snapshot: {error}"));
+    let result = ganbaru_sync::local::prepare_snapshot_copy(
+        &mut conn,
+        &ganbaru_sync::manifest::vault::VAULT_MANIFEST,
+    )
+    .await
+    .map_err(|error| format!("prepare handoff snapshot: {error}"));
     let closed = conn
         .close()
         .await

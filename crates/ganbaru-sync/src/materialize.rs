@@ -461,6 +461,7 @@ async fn execute_insert(
                 .flat_map(|(group, _)| group.columns().iter().map(|column| column.name)),
         )
         .chain(present.derived.iter().map(|(column, _)| *column))
+        .chain(table.key_derived_columns.iter().map(|column| column.name))
         .map(ident)
         .collect();
     // Local columns take their declared literals; the manifest was validated at engine
@@ -490,6 +491,9 @@ async fn execute_insert(
         .chain(present.derived.iter().map(|(_, field)| field))
     {
         query = sql::bind_field(query, field);
+    }
+    for column in table.key_derived_columns {
+        query = query.bind(column.value(key));
     }
     query.execute(&mut *conn).await?;
     for (_, owned, rows) in &present.owned {

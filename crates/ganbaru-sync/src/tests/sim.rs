@@ -16,8 +16,8 @@ use ganbaru_sync_contracts::{Field, RevokeReason, WriterId};
 
 use super::block_on;
 use super::fixture::{
-    BOARD_CARDS, BOARD_CHECKS, MAX_BOARD_STAGE, MAX_LIST_ENTRIES, MEMOS_TABLE, NODE_MAX_DEPTH,
-    edge_key, membership_key, memo_tag_key,
+    BOARD_CARDS, BOARD_CHECKS, BOARD_HANDLE_PREFIX, MAX_BOARD_STAGE, MAX_LIST_ENTRIES, MEMOS_TABLE,
+    NODE_MAX_DEPTH, edge_key, membership_key, memo_tag_key,
 };
 use super::replica::{Replica, START_MS, quoted, rank};
 use crate::error::failpoints;
@@ -915,10 +915,11 @@ impl Sim {
                 let id = self.next_id("board", index);
                 let cards = self.cards_sql(index, &id, &items);
                 format!(
-                    "INSERT INTO fixture_boards (id, created_at, owner_id, stage)
-                     VALUES ({}, {now}, NULL, 0);
+                    "INSERT INTO fixture_boards (id, created_at, owner_id, stage, handle)
+                     VALUES ({}, {now}, NULL, 0, {});
                      {cards}",
-                    quoted(&id)
+                    quoted(&id),
+                    quoted(&format!("{BOARD_HANDLE_PREFIX}{id}"))
                 )
             }
         };

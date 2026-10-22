@@ -303,6 +303,7 @@ pub const TAGS: TableSpec = TableSpec {
     local_columns: &[],
     derived_columns: &[],
     hook_columns: &[],
+    key_derived_columns: &[],
     revision_column: None,
     resolutions: &[Resolution::DuplicateRepair {
         columns: &["name"],
@@ -331,6 +332,7 @@ pub const NOTES: TableSpec = TableSpec {
     }],
     derived_columns: &["body_plain_text"],
     hook_columns: &[],
+    key_derived_columns: &[],
     revision_column: Some("revision"),
     resolutions: &[Resolution::WithinGroup {
         columns: &["pinned", "archived", "trashed_at"],

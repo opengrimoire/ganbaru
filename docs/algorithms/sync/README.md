@@ -32,7 +32,7 @@ The hybrid logical clock is 48 bits of Unix milliseconds and a 16-bit counter. A
 
 ## Trees and acyclic edge sets
 
-A tree table nests rows through a reference group into the table itself and orders siblings with a position group, so a move writes only the moved row's parent and order key. Because each row has one parent, every cycle among winning parents is a simple loop, broken at the row whose winning parent version has the greatest `(clock, writer)`, with the greater row key breaking a tie within one operation. Then every row deeper than the table's maximum depth is detached, which gives the same result as repeatedly moving the deepest row to the root. A detached row materializes as a root and keeps its order key, and a replica that can seal writes its parent as null. Detaching depends only on merge state, so replicas that cannot seal show the same tree. This replaces a replicated move log, which would need every replica to undo and replay moves in a total order.
+A tree table nests rows through a reference group into the table itself and orders siblings with a position group, so a move writes only the moved row's parent and order key. Because each row has one parent, every cycle among winning parents is a simple loop, broken at the row whose winning parent version has the greatest `(clock, writer)`, with the greater row key breaking a tie within one operation. Then every row deeper than the table's maximum depth is detached, which gives the same result as repeatedly moving the deepest row to the root. A detached row materializes as a root and keeps its order key, and a replica that can seal writes its parent as null. Detaching depends only on merge state, so replicas that cannot seal show the same tree. A replicated move log is not used, because every replica would have to undo and replay moves in one total order.
 
 An acyclic edge set is a derived-key table whose rows are directed edges between two rows of one table, such as dependencies. Edges count while they exist and both ends are shown, taken in ascending `(clock, writer)` of their winning existence version, then row key. An edge whose end already reaches its start through the edges taken before it is severed: it is hidden and surfaced as a conflict of its existence group until an edge of the cycle is removed. Severing seals nothing, so it undoes itself once the cycle is gone.
 
@@ -71,7 +71,7 @@ Live rows whose winning values collide on a declared unique column set form a cl
 
 ## Conflicts
 
-A conflict is a surfaced group of a live row with two or more versions whose values differ. Every replica derives the same conflicts from its merge state. Resolving writes the chosen value with a context that covers every alternative, even when the value is unchanged, so the resolution supersedes all of them and replicates like any edit. Keeping both keeps the displayed value and creates a new row from the alternative.
+A conflict is a surfaced group of a live row with two or more versions whose values differ, or the existence group of a [severed edge](#trees-and-acyclic-edge-sets). Every replica derives the same conflicts from its merge state. Resolving writes the chosen value with a context that covers every alternative, even when the value is unchanged, so the resolution supersedes all of them and replicates like any edit. Keeping both keeps the displayed value and creates a new row from the alternative.
 
 ## Worked examples
 

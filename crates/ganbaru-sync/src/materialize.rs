@@ -2,18 +2,23 @@
 //!
 //! A live row materializes with the winning value of every group, its references resolved
 //! through redirects and duplicate hiding, and the derived columns its adapter computes. A
-//! tombstoned or hidden row is deleted. Engine writes run with capture suppressed and foreign
+//! tombstoned or hidden row is deleted, and so is a derived-key row whose existence register
+//! holds 0, which references treat as deleted. A composite-key row's identity references are
+//! never redirected: the row is hidden while one names a row that is not live, hidden, or
+//! removed. Engine writes run with capture suppressed and foreign
 //! keys deferred, so rows of several tables, including the tables of one reference cycle and
 //! rows referencing their own table, can change in steps and are checked at commit.
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use ganbaru_sync_contracts::{Field, TableId};
+use ganbaru_sync_contracts::{Field, TableId, Value};
 use sqlx::{AssertSqlSafe, SqliteConnection};
 
 use crate::Engine;
 use crate::error::{SyncResult, corrupt};
-use crate::manifest::{ColumnSpec, GroupSpec, GroupStorage, OwnedTable, Resolution, TableSpec};
+use crate::manifest::{
+    ColumnSpec, GroupSpec, GroupStorage, MergeKind, OwnedTable, Resolution, TableSpec,
+};
 use crate::merge::{self, Batch, MergedRows, RowState, table_param};
 use crate::repair::Hidden;
 use crate::sql::{self, ident};
@@ -48,9 +53,55 @@ struct Update {
     bump: bool,
 }
 
+/// Whether the existence register of a derived-key row holds 0. Such a row is deleted for
+/// every reference to it, like a tombstone without a redirect.
+async fn removed(
+    engine: &Engine,
+    conn: &mut SqliteConnection,
+    table: TableId,
+    key: &str,
+) -> SyncResult<bool> {
+    let Some(spec) = engine.manifest().table(table) else {
+        return Err(corrupt("reference to an unknown table"));
+    };
+    let Some(exists) = spec.exists_group() else {
+        return Ok(false);
+    };
+    let versions = merge::versions(conn, table, key).await?;
+    let winner = merge::winner(
+        engine,
+        spec,
+        exists,
+        versions.iter().filter(|version| version.group == exists.id),
+    );
+    Ok(is_removal(winner.map(|version| &version.value)))
+}
+
+/// Whether an existence register value records a removal.
+fn is_removal(value: Option<&Value>) -> bool {
+    value.is_some_and(|value| value.fields() == [Field::Integer(0)])
+}
+
+/// Whether a row named by a composite-key identity reference is live, shown, and not removed.
+/// Such references are never redirected: a row whose identity target is gone is hidden.
+async fn identity_target_shown(
+    engine: &Engine,
+    conn: &mut SqliteConnection,
+    hidden: &Hidden,
+    table: TableId,
+    key: &str,
+) -> SyncResult<bool> {
+    let live = merge::row_state(conn, table, key).await? == Some(RowState::Live);
+    let shown = !hidden
+        .get(&table)
+        .is_some_and(|rows| rows.contains_key(key));
+    Ok(live && shown && !removed(engine, conn, table, key).await?)
+}
+
 /// The row a reference resolves to: itself while live and shown, the kept row of a hidden
 /// duplicate, the lowest redirect of a tombstone, or null.
 async fn resolve_reference(
+    engine: &Engine,
     conn: &mut SqliteConnection,
     hidden: &Hidden,
     table: TableId,
@@ -62,6 +113,7 @@ async fn resolve_reference(
             None => return Ok(Field::Null),
             Some(RowState::Live) => match hidden.get(&table).and_then(|rows| rows.get(&current)) {
                 Some(keeper) => current = keeper.clone(),
+                None if removed(engine, conn, table, &current).await? => return Ok(Field::Null),
                 None => return Ok(Field::Text(current)),
             },
             Some(RowState::Tombstoned) => {
@@ -108,6 +160,33 @@ async fn desired(
         None => merge::versions(conn, table.id, key).await?,
     };
     let winners = merge::winners(engine, table, &versions);
+    if let Some(exists) = table.derived_key.map(|key| key.exists_group) {
+        if is_removal(winners.get(&exists).map(|version| &version.value)) {
+            return Ok(Some(Desired::Absent));
+        }
+    }
+    if table.has_composite_key() {
+        for group in table
+            .groups
+            .iter()
+            .filter(|group| group.kind == MergeKind::Immutable)
+        {
+            let version = winners
+                .get(&group.id)
+                .ok_or_else(|| corrupt("a live row lacks a group version"))?;
+            for (field, reference) in group.reference_columns() {
+                let shown = match version.value.fields().get(field) {
+                    Some(Field::Text(target)) => {
+                        identity_target_shown(engine, conn, hidden, reference.table, target).await?
+                    }
+                    _ => false,
+                };
+                if !shown {
+                    return Ok(Some(Desired::Absent));
+                }
+            }
+        }
+    }
     let adapter = engine.adapter(table);
     let mut present = Present {
         columns: Vec::new(),
@@ -115,6 +194,9 @@ async fn desired(
         derived: Vec::new(),
     };
     for group in table.groups {
+        if table.is_exists_group(group.id) {
+            continue;
+        }
         let version = winners
             .get(&group.id)
             .ok_or_else(|| corrupt("a live row lacks a group version"))?;
@@ -138,10 +220,12 @@ async fn desired(
                 if fields.len() != columns.len() {
                     return Err(corrupt("stored value does not match its group"));
                 }
-                for (field, reference) in group.reference_columns() {
+                let identity = table.has_composite_key() && group.kind == MergeKind::Immutable;
+                for (field, reference) in group.reference_columns().filter(|_| !identity) {
                     if let Some(Field::Text(referenced)) = fields.get(field) {
                         let resolved =
-                            resolve_reference(conn, hidden, reference.table, referenced).await?;
+                            resolve_reference(engine, conn, hidden, reference.table, referenced)
+                                .await?;
                         fields[field] = resolved;
                     }
                 }

@@ -11,14 +11,18 @@
 //!   expresses.
 //! - Value guards enforce the manifest value rules on every write, so every locally valid row
 //!   seals into a valid operation.
-//! - Row keys never change, and immutable groups change only while the engine applies.
-//! - A published key that is no longer present cannot be inserted again locally.
+//! - Row keys never change, and immutable groups change only while the engine applies. A
+//!   `sync_key` that starts with the `pending:` placeholder prefix may change once to a valid
+//!   key, which captures the row as inserted under its final key.
+//! - A published key that is no longer present cannot be inserted again locally, except on
+//!   derived-key tables, where the insert adds the row again, and under a `pending:` key.
 //!
 //! Capture triggers and the immutable and re-create guards are disabled while
 //! `sync_apply_state.applying` is 1; value guards always run.
 
 use std::fmt::Write as _;
 
+use ganbaru_sync_contracts::PENDING_KEY_PREFIX;
 use ganbaru_sync_contracts::bounds::{
     MAX_ORDER_KEY_BYTES, MAX_ROW_KEY_BYTES, MAX_TEXT_FIELD_BYTES,
 };
@@ -57,7 +61,9 @@ pub fn render(manifest: &Manifest) -> Vec<TriggerSql> {
         triggers.push(value_guard(table, Event::Insert));
         triggers.push(value_guard(table, Event::Update));
         triggers.push(immutable_guard(table));
-        triggers.push(recreate_guard(table));
+        if table.derived_key.is_none() {
+            triggers.push(recreate_guard(table));
+        }
         triggers.push(insert_capture(table));
         triggers.push(update_capture(manifest, table));
         triggers.push(delete_capture(table));
@@ -252,6 +258,14 @@ fn immutable_guard(table: &TableSpec) -> TriggerSql {
         .collect::<Vec<_>>()
         .join(", ");
     let mut condition = column_changed(&key);
+    if table.has_composite_key() {
+        condition = format!(
+            "({condition}\n        AND (OLD.{name} NOT GLOB {pending} OR ({rule}) IS NOT 1 OR NEW.{name} GLOB {pending}))",
+            name = table.key_column,
+            pending = pending_glob(),
+            rule = row_key_rule(&format!("NEW.{}", table.key_column)),
+        );
+    }
     if !immutable.is_empty() {
         let changed = immutable
             .iter()
@@ -270,12 +284,26 @@ fn immutable_guard(table: &TableSpec) -> TriggerSql {
     TriggerSql { name, sql }
 }
 
+/// GLOB pattern of keys holding the `pending:` placeholder prefix.
+fn pending_glob() -> String {
+    format!("'{PENDING_KEY_PREFIX}*'")
+}
+
 fn recreate_guard(table: &TableSpec) -> TriggerSql {
     let name = format!("sync_recreate_{}", table.name);
+    let pending = if table.has_composite_key() {
+        format!(
+            "\n    AND NEW.{} NOT GLOB {}",
+            table.key_column,
+            pending_glob()
+        )
+    } else {
+        String::new()
+    };
     let mut sql = header(&name, "BEFORE", "INSERT", table.name);
     let _ = write!(
         sql,
-        "WHEN {NOT_APPLYING}\n    AND EXISTS (SELECT 1 FROM sync_rows WHERE table_id = {id} AND row_key = NEW.{key})\n    AND NOT EXISTS (SELECT 1 FROM {table} WHERE {key} = NEW.{key})\n{}",
+        "WHEN {NOT_APPLYING}{pending}\n    AND EXISTS (SELECT 1 FROM sync_rows WHERE table_id = {id} AND row_key = NEW.{key})\n    AND NOT EXISTS (SELECT 1 FROM {table} WHERE {key} = NEW.{key})\n{}",
         abort_body("A published row key cannot be created again"),
         id = table.id.0,
         key = table.key_column,
@@ -338,6 +366,8 @@ fn update_capture(manifest: &Manifest, table: &TableSpec) -> TriggerSql {
         .iter()
         .filter(|group| group.kind != MergeKind::Immutable)
         .filter_map(|group| match group.storage {
+            // The existence group has no column; seals write it from the capture.
+            GroupStorage::Columns([]) => None,
             GroupStorage::Columns(_) => Some(group_term(
                 manifest,
                 table,
@@ -348,10 +378,26 @@ fn update_capture(manifest: &Manifest, table: &TableSpec) -> TriggerSql {
         })
         .collect::<Vec<_>>()
         .join("\n            | ");
+    let terms = if terms.is_empty() {
+        "0".to_string()
+    } else {
+        terms
+    };
+    // A `pending:` key replaced by its final key captures the row as inserted under that key.
+    let rekey = if table.has_composite_key() {
+        format!(
+            "\n    {CAPTURE_INSERT}\n    SELECT {id}, NEW.{key}, {mask}, 1, 0, {NOW_MS}\n    WHERE OLD.{key} IS NOT NEW.{key} COLLATE BINARY\n    ON CONFLICT (table_id, row_key) DO UPDATE SET\n        mask = mask | excluded.mask, created = 1, deleted = 0;",
+            id = table.id.0,
+            key = table.key_column,
+            mask = mask_literal(table.full_mask().0),
+        )
+    } else {
+        String::new()
+    };
     let mut sql = header(&name, "AFTER", "UPDATE", table.name);
     let _ = write!(
         sql,
-        "WHEN {NOT_APPLYING}\nBEGIN\n    {CAPTURE_INSERT}\n    SELECT {id}, NEW.{key}, changed.mask, 0, 0, {NOW_MS}\n    FROM (\n        SELECT\n            {terms}\n            AS mask\n    ) AS changed\n    WHERE changed.mask <> 0\n    {MERGE_MASK};\nEND",
+        "WHEN {NOT_APPLYING}\nBEGIN\n    {CAPTURE_INSERT}\n    SELECT {id}, NEW.{key}, changed.mask, 0, 0, {NOW_MS}\n    FROM (\n        SELECT\n            {terms}\n            AS mask\n    ) AS changed\n    WHERE changed.mask <> 0\n    {MERGE_MASK};{rekey}\nEND",
         id = table.id.0,
         key = table.key_column,
     );

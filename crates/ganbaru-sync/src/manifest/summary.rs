@@ -23,6 +23,14 @@ impl Manifest {
                 table.key_column,
                 if table.redirects { " redirects" } else { "" }
             );
+            if let Some(derived) = table.derived_key {
+                let _ = writeln!(
+                    text,
+                    "  derived key exists {} inputs {}",
+                    derived.exists_group.get(),
+                    derived.key_inputs.join(",")
+                );
+            }
             for group in table.groups {
                 let mut line = format!("  group {} {}", group.id.get(), kind(group.kind));
                 if group.surfaced {

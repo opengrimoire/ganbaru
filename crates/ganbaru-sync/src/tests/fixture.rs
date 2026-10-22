@@ -1,21 +1,21 @@
 //! A test-only fixture domain beside the vault domains, so engine behavior that no vault domain
 //! uses yet runs through the simulation: `Local` tables and columns, every trigger policy, a
 //! cascading reference cycle, a group with several reference columns, an immutable reference,
-//! and a reference into its own table.
+//! a reference into its own table, and a derived-key table with a composite primary key.
 //! Fixture table ids start at [`FIXTURE_TABLE_IDS`], above every vault domain.
 
 use std::sync::LazyLock;
 
-use ganbaru_sync_contracts::TableId;
+use ganbaru_sync_contracts::{TableId, derived_key};
 use sqlx::SqlitePool;
 
 use super::{execute, migrated_pool};
 use crate::domains::vault_adapters;
 use crate::manifest::vault::{VAULT_MANIFEST_VERSION, quick_notes};
 use crate::manifest::{
-    Collation, ColumnSpec, ColumnType, DeviceTable, DomainManifest, DomainTrigger, GroupSpec,
-    GroupStorage, LocalColumn, Manifest, MergeKind, OnDelete, ReferenceColumn, Resolution,
-    TableIdRange, TableSpec, TriggerPolicy, group_id,
+    Collation, ColumnSpec, ColumnType, DerivedKey, DeviceTable, DomainManifest, DomainTrigger,
+    GroupSpec, GroupStorage, LocalColumn, Manifest, MergeKind, OnDelete, ReferenceColumn,
+    Resolution, SYNC_KEY_COLUMN, TableIdRange, TableSpec, TriggerPolicy, group_id,
 };
 use crate::triggers::{self, NOT_APPLYING};
 use crate::{Engine, Hooks};
@@ -87,6 +87,7 @@ pub(super) const ITEMS: TableSpec = TableSpec {
             policy: TriggerPolicy::DerivedIndex,
         },
     ],
+    derived_key: None,
 };
 
 /// `fixture_items`.
@@ -97,6 +98,8 @@ pub(super) const CYCLE_A_TABLE: TableId = TableId(FIXTURE_TABLE_IDS + 1);
 pub(super) const CYCLE_B_TABLE: TableId = TableId(FIXTURE_TABLE_IDS + 2);
 /// `fixture_links`.
 pub(super) const LINKS_TABLE: TableId = TableId(FIXTURE_TABLE_IDS + 3);
+/// `fixture_memberships`.
+pub(super) const MEMBERSHIPS_TABLE: TableId = TableId(FIXTURE_TABLE_IDS + 4);
 
 const LABEL: GroupSpec = GroupSpec {
     id: group_id(0),
@@ -146,6 +149,7 @@ pub(super) const CYCLE_A: TableSpec = TableSpec {
     redirects: true,
     adapter: None,
     triggers: &[],
+    derived_key: None,
 };
 
 /// The other table of the reference cycle with [`CYCLE_A`].
@@ -240,6 +244,118 @@ pub(super) const LINKS: TableSpec = TableSpec {
     redirects: false,
     adapter: None,
     triggers: &[],
+    derived_key: None,
+};
+
+/// Prefix of [`MEMBERSHIPS`] keys.
+const MEMBERSHIP_KEY_PREFIX: &str = "fixture_membership";
+
+/// The `sync_key` of the membership of `item` in `end`.
+pub(super) fn membership_key(item: &str, end: &str) -> String {
+    derived_key(MEMBERSHIP_KEY_PREFIX, &[item, end])
+        .expect("fixture ids are valid key parts")
+        .into_string()
+}
+
+/// Group ids of [`MEMBERSHIPS`].
+pub(super) mod membership_group {
+    use ganbaru_sync_contracts::GroupId;
+
+    use crate::manifest::group_id;
+
+    /// The primary key columns.
+    pub(in crate::tests) const IDENTITY: GroupId = group_id(0);
+    /// Creation time and role.
+    pub(in crate::tests) const DETAILS: GroupId = group_id(1);
+    /// Existence register.
+    pub(in crate::tests) const EXISTS: GroupId = group_id(2);
+}
+
+/// The identity group of [`MEMBERSHIPS`]: its composite primary key, both columns cascading
+/// references that are never redirected.
+pub(super) const MEMBERSHIP_IDENTITY: GroupSpec = GroupSpec {
+    id: membership_group::IDENTITY,
+    name: "identity",
+    kind: MergeKind::Immutable,
+    storage: GroupStorage::Columns(&[
+        ColumnSpec {
+            name: "item_id",
+            ty: ColumnType::OptionalRowKey,
+        },
+        ColumnSpec {
+            name: "end_id",
+            ty: ColumnType::OptionalRowKey,
+        },
+    ]),
+    references: &[
+        ReferenceColumn {
+            column: "item_id",
+            table: ITEMS_TABLE,
+            on_delete: OnDelete::Cascade,
+        },
+        ReferenceColumn {
+            column: "end_id",
+            table: CYCLE_A_TABLE,
+            on_delete: OnDelete::Cascade,
+        },
+    ],
+    surfaced: false,
+    recoverable: false,
+    bumps_revision: false,
+};
+
+/// The details group of [`MEMBERSHIPS`].
+pub(super) const MEMBERSHIP_DETAILS: GroupSpec = GroupSpec {
+    id: membership_group::DETAILS,
+    name: "details",
+    kind: MergeKind::Register,
+    storage: GroupStorage::Columns(&[
+        ColumnSpec {
+            name: "created_at",
+            ty: ColumnType::Timestamp,
+        },
+        ColumnSpec {
+            name: "role",
+            ty: ColumnType::Text { max_chars: 20 },
+        },
+    ]),
+    references: &[],
+    surfaced: false,
+    recoverable: false,
+    bumps_revision: false,
+};
+
+/// Memberships of an item in a cycle row: a composite primary key keyed by `sync_key`, and a
+/// derived key, so a removed membership can be added again.
+pub(super) const MEMBERSHIPS: TableSpec = TableSpec {
+    id: MEMBERSHIPS_TABLE,
+    name: "fixture_memberships",
+    key_column: SYNC_KEY_COLUMN,
+    groups: &[
+        MEMBERSHIP_IDENTITY,
+        MEMBERSHIP_DETAILS,
+        GroupSpec {
+            id: membership_group::EXISTS,
+            name: "exists",
+            kind: MergeKind::Register,
+            storage: GroupStorage::Columns(&[]),
+            references: &[],
+            surfaced: false,
+            recoverable: false,
+            bumps_revision: false,
+        },
+    ],
+    local_columns: &[],
+    derived_columns: &[],
+    revision_column: None,
+    resolutions: &[],
+    redirects: false,
+    adapter: None,
+    triggers: &[],
+    derived_key: Some(DerivedKey {
+        exists_group: membership_group::EXISTS,
+        key_inputs: &[],
+    }),
 };
 
 /// The fixture domain.
@@ -249,7 +365,7 @@ pub(super) const FIXTURE_DOMAIN: DomainManifest = DomainManifest {
         first: FIXTURE_TABLE_IDS,
         last: FIXTURE_TABLE_IDS + 15,
     },
-    tables: &[ITEMS, CYCLE_A, CYCLE_B, LINKS],
+    tables: &[ITEMS, CYCLE_A, CYCLE_B, LINKS, MEMBERSHIPS],
     derived: &["fixture_items_index"],
     local: &[DeviceTable {
         name: "fixture_item_marks",
@@ -307,6 +423,14 @@ fn fixture_schema() -> String {
              left_id TEXT REFERENCES fixture_cycle_a(id) ON DELETE SET NULL,
              right_id TEXT REFERENCES fixture_cycle_b(id) ON DELETE SET NULL,
              parent_id TEXT REFERENCES fixture_links(id) ON DELETE SET NULL
+         );
+         CREATE TABLE fixture_memberships (
+             item_id TEXT NOT NULL REFERENCES fixture_items(id) ON DELETE CASCADE,
+             end_id TEXT NOT NULL REFERENCES fixture_cycle_a(id) ON DELETE CASCADE,
+             sync_key TEXT NOT NULL UNIQUE,
+             created_at TEXT NOT NULL,
+             role TEXT NOT NULL CHECK (length(role) <= 20),
+             PRIMARY KEY (item_id, end_id)
          );
          CREATE TABLE fixture_items_index (
              item_id TEXT PRIMARY KEY,

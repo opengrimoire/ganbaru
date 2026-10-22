@@ -15,8 +15,10 @@
 use std::io;
 
 use ganbaru_contacts::PersonPublicKey;
-use ganbaru_sync_contracts::{SignedCertificate, SpaceId, WriterId, WriterKeyPair};
-use sqlx::SqliteConnection;
+use ganbaru_sync_contracts::{
+    PENDING_KEY_PREFIX, SignedCertificate, SpaceId, WriterId, WriterKeyPair,
+};
+use sqlx::{AssertSqlSafe, SqliteConnection};
 
 pub mod adapter;
 pub mod devices;
@@ -155,12 +157,16 @@ impl Engine {
     }
 
     /// Creates the personal space of a vault if it does not exist and returns its id.
+    ///
+    /// Refuses with [`SyncError::PendingKey`] while a replicated row still holds a `pending:`
+    /// placeholder key.
     pub async fn init_space(
         &self,
         conn: &mut SqliteConnection,
         vault_id: &str,
         now_ms: u64,
     ) -> SyncResult<SpaceId> {
+        self.refuse_pending_keys(conn).await?;
         let space = SpaceId::personal(vault_id);
         sqlx::query(
             "INSERT INTO sync_spaces (space_id, vault_id, created_at_ms) VALUES (?, ?, ?)
@@ -180,5 +186,30 @@ impl Engine {
             Some(bytes) if bytes == space.as_bytes() => Ok(space),
             _ => Err(error::corrupt("sync space does not match the vault id")),
         }
+    }
+
+    /// Refuses when a replicated row holds a `pending:` placeholder key.
+    async fn refuse_pending_keys(&self, conn: &mut SqliteConnection) -> SyncResult<()> {
+        // The prefix range compares bytes, so it uses the key index.
+        let end = PENDING_KEY_PREFIX
+            .strip_suffix(':')
+            .map(|stem| format!("{stem};"))
+            .ok_or_else(|| error::corrupt("pending key prefix ends with a colon"))?;
+        for table in self.manifest().tables {
+            let sql = format!(
+                "SELECT 1 FROM {table} WHERE {key} >= ? AND {key} < ? LIMIT 1",
+                table = sql::ident(table.name),
+                key = sql::ident(table.key_column),
+            );
+            let found: Option<i64> = sqlx::query_scalar(AssertSqlSafe(sql.as_str()))
+                .bind(PENDING_KEY_PREFIX)
+                .bind(&end)
+                .fetch_optional(&mut *conn)
+                .await?;
+            if found.is_some() {
+                return Err(SyncError::PendingKey(table.name));
+            }
+        }
+        Ok(())
     }
 }

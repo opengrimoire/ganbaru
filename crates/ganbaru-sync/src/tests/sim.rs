@@ -13,6 +13,7 @@
 use ganbaru_sync_contracts::{Field, RevokeReason, WriterId};
 
 use super::block_on;
+use super::fixture::membership_key;
 use super::replica::{Replica, START_MS, quoted, rank};
 use crate::error::failpoints;
 use crate::manifest::vault::quick_notes::{NOTES_TABLE, TAGS_TABLE, note_group};
@@ -342,7 +343,10 @@ impl Sim {
         let note = self.rng.pick(&notes).map(|id| quoted(id));
         let tag = self.rng.pick(&tags).map(|id| quoted(id));
         let touch = format!("updated_at = {now}, revision = revision + 1");
-        let kind = self.rng.below(21);
+        let kind = self.rng.below(25);
+        if kind >= 21 {
+            return self.edit_memberships(index, now).await;
+        }
         if kind >= 18 {
             return self.edit_links(index).await;
         }
@@ -517,6 +521,86 @@ impl Sim {
             _ => return,
         };
         self.replicas[index].try_exec(&sql).await;
+    }
+
+    /// One local edit of a derived-key membership of an item in an end: add it, remove it,
+    /// change its role, or remove and add it again. Every device derives the same key for the
+    /// same pair, so devices add and remove one shared row. Edits usually target a membership
+    /// the replica holds; an add may create its item or its end, whose label may collide.
+    async fn edit_memberships(&mut self, index: usize, now: String) {
+        let held = ids(
+            &mut self.replicas[index],
+            "SELECT item_id || ' ' || end_id FROM fixture_memberships ORDER BY sync_key",
+        )
+        .await;
+        let mut parents = String::new();
+        let (item, end) = match self.rng.pick(&held) {
+            Some(pair) if self.rng.chance(60) => {
+                let (item, end) = pair.split_once(' ').expect("membership pairs hold a space");
+                (item.to_string(), end.to_string())
+            }
+            _ => {
+                let item = self.member_parent(index, "item", &mut parents).await;
+                let end = self.member_parent(index, "end", &mut parents).await;
+                (item, end)
+            }
+        };
+        let key = quoted(&membership_key(&item, &end));
+        let add = format!(
+            "{parents}INSERT INTO fixture_memberships (item_id, end_id, sync_key, created_at, role)
+             VALUES ({}, {}, {key}, {now}, {});",
+            quoted(&item),
+            quoted(&end),
+            quoted(self.rng.pick(WORDS).unwrap())
+        );
+        let remove = format!("DELETE FROM fixture_memberships WHERE sync_key = {key};");
+        let sql = match self.rng.below(4) {
+            0 => add,
+            1 => remove,
+            2 => format!(
+                "UPDATE fixture_memberships SET role = {} WHERE sync_key = {key}",
+                quoted(self.rng.pick(WORDS).unwrap())
+            ),
+            _ => format!("{remove} {add}"),
+        };
+        self.replicas[index].try_exec(&sql).await;
+    }
+
+    /// An item or end id for a membership: an existing one, or a new one whose insert is
+    /// appended to `parents`.
+    async fn member_parent(&mut self, index: usize, kind: &str, parents: &mut String) -> String {
+        let table = if kind == "item" {
+            "fixture_items"
+        } else {
+            "fixture_cycle_a"
+        };
+        let existing = ids(
+            &mut self.replicas[index],
+            &format!("SELECT id FROM {table} ORDER BY id"),
+        )
+        .await;
+        if let Some(id) = self.rng.pick(&existing)
+            && self.rng.chance(70)
+        {
+            return id.clone();
+        }
+        let id = self.next_id(kind, index);
+        let now = iso_time(self.replicas[index].now_ms);
+        parents.push_str(&if kind == "item" {
+            format!(
+                "INSERT INTO fixture_items (id, created_at, label, label_edits)
+                 VALUES ({}, {now}, {}, 0);",
+                quoted(&id),
+                quoted(&self.words())
+            )
+        } else {
+            format!(
+                "INSERT INTO fixture_cycle_a (id, label) VALUES ({}, {});",
+                quoted(&id),
+                quoted(self.rng.pick(TAG_NAMES).unwrap())
+            )
+        });
+        id
     }
 
     /// Fixture marks exist only on the replica that created the marked item, because the gated

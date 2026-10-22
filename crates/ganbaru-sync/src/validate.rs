@@ -66,6 +66,12 @@ pub(crate) fn group_value(
     group: &GroupSpec,
     value: &Value,
 ) -> Result<(), Invalid> {
+    if table.is_exists_group(group.id) {
+        return match value.fields() {
+            [Field::Integer(0 | 1)] => Ok(()),
+            _ => Err("existence value"),
+        };
+    }
     match group.storage {
         GroupStorage::Columns(columns) => {
             if value.fields().len() != columns.len() {
@@ -106,15 +112,21 @@ pub(crate) fn change(engine: &Engine, change: &Change) -> Result<(), Invalid> {
             if mask.union(full) != full {
                 return Err("write groups");
             }
+            // A derived-key row added again rewrites every group, its key-only immutable groups
+            // with the values they already hold.
             let immutable = table
                 .groups
                 .iter()
                 .any(|group| group.kind == MergeKind::Immutable && mask.contains(group.id));
-            if immutable {
+            let readd = table.derived_key.is_some() && mask == full;
+            if immutable && !readd {
                 return Err("immutable group write");
             }
         }
         ChangeAction::Tombstone => {
+            if table.derived_key.is_some() {
+                return Err("derived-key tombstone");
+            }
             if let Some(target) = &change.replaced_by {
                 if !table.redirects || target >= &change.row {
                     return Err("tombstone redirect");

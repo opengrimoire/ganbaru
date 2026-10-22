@@ -10,9 +10,9 @@ use ganbaru_sync_contracts::bounds::{
 };
 use ganbaru_sync_contracts::op::{ENVELOPE_OVERHEAD, GENESIS_PREVIOUS_HASH};
 use ganbaru_sync_contracts::{
-    Change, ChangeAction, Content, Digest32, Field, GroupMask, GroupValue, Header, Hlc, HlcClock,
-    Operation, Revocation, RevokeReason, RowKey, Seq, SignedCertificate, TableId, Value,
-    VersionVector, WriterId,
+    Change, ChangeAction, Content, Digest32, Field, GroupId, GroupMask, GroupValue, Header, Hlc,
+    HlcClock, Operation, PENDING_KEY_PREFIX, Revocation, RevokeReason, RowKey, Seq,
+    SignedCertificate, TableId, Value, VersionVector, WriterId,
 };
 use sqlx::{Connection, Row, SqliteConnection};
 
@@ -707,6 +707,10 @@ pub(crate) async fn read_domain(
     let mut values = Vec::with_capacity(table.groups.len());
     for group in table.groups {
         let group_fields: Vec<Field> = match group.storage {
+            // A present derived-key row exists.
+            GroupStorage::Columns(_) if table.is_exists_group(group.id) => {
+                vec![Field::Integer(1)]
+            }
             GroupStorage::Columns(group_columns) => {
                 let slice = &fields[offset..offset + group_columns.len()];
                 offset += group_columns.len();
@@ -749,6 +753,8 @@ struct Capture {
     table: i64,
     key: String,
     mask: GroupMask,
+    /// Whether the row was inserted locally since the last seal.
+    created: bool,
     deleted: bool,
     replaced_by: Option<String>,
     /// Sync state of the row when planning started.
@@ -775,13 +781,30 @@ fn tombstone(table: &TableSpec, key: &RowKey, replaced_by: Option<&str>) -> Chan
     }
 }
 
+/// A write of a derived-key row's existence register, which stands in for its tombstone.
+fn existence_write(table: &TableSpec, key: &RowKey, exists: GroupId, present: bool) -> Change {
+    Change {
+        table: table.id,
+        row: key.clone(),
+        action: ChangeAction::Write,
+        groups: vec![GroupValue::new(
+            table.id,
+            exists,
+            Value::new(vec![Field::Integer(i64::from(present))])
+                .expect("an existence value fits the bounds"),
+        )],
+        replaced_by: None,
+    }
+}
+
 async fn plan_captures(
     engine: &Engine,
     conn: &mut SqliteConnection,
     report: &mut SealReport,
 ) -> SyncResult<PlannedCaptures> {
     let rows = sqlx::query(
-        "SELECT c.table_id, c.row_key, c.mask, c.forced_mask, c.deleted, c.replaced_by, r.state
+        "SELECT c.table_id, c.row_key, c.mask, c.forced_mask, c.deleted, c.replaced_by, r.state,
+                c.created
          FROM sync_capture c
          LEFT JOIN sync_rows r ON r.table_id = c.table_id AND r.row_key = c.row_key
          ORDER BY c.table_id, c.row_key",
@@ -797,6 +820,7 @@ async fn plan_captures(
                 table: row.try_get(0)?,
                 key: row.try_get(1)?,
                 mask: GroupMask((mask | forced) as u64),
+                created: row.try_get::<i64, _>(7)? != 0,
                 deleted: row.try_get::<i64, _>(4)? != 0,
                 replaced_by: row.try_get(5)?,
                 state: merge::parse_row_state(row.try_get::<Option<&str>, _>(6)?)?,
@@ -843,6 +867,11 @@ async fn plan_captures(
                     .push(invalid("tombstoned row is present"));
                 continue;
             }
+            // A placeholder key is never published; the row stays captured until it is rekeyed.
+            (_, DomainRow::Present(_)) if key.as_str().starts_with(PENDING_KEY_PREFIX) => {
+                report.invalid_rows.push(invalid("pending key"));
+                continue;
+            }
             (None | Some(RowState::Tombstoned), DomainRow::Absent) => None,
             (None, DomainRow::Present(groups)) => Some(Change {
                 table: table.id,
@@ -853,14 +882,29 @@ async fn plan_captures(
             }),
             // An absent live row without a local delete is hidden by the merge; its repair is
             // sealed by the engine, not from the capture.
-            (Some(RowState::Live), DomainRow::Absent) => capture
-                .deleted
-                .then(|| tombstone(table, &key, capture.replaced_by.as_deref())),
+            (Some(RowState::Live), DomainRow::Absent) => {
+                capture.deleted.then(|| match table.exists_group() {
+                    Some(exists) => existence_write(table, &key, exists.id, false),
+                    None => tombstone(table, &key, capture.replaced_by.as_deref()),
+                })
+            }
+            // A derived-key row inserted again rewrites every group.
+            (Some(RowState::Live), DomainRow::Present(groups))
+                if capture.created && table.derived_key.is_some() =>
+            {
+                Some(Change {
+                    table: table.id,
+                    row: key.clone(),
+                    action: ChangeAction::Write,
+                    groups,
+                    replaced_by: None,
+                })
+            }
             (Some(RowState::Live), DomainRow::Present(groups)) => {
                 let groups: Vec<GroupValue> = groups
                     .into_iter()
                     .filter(|value| {
-                        capture.mask.contains(value.group)
+                        (capture.mask.contains(value.group) || table.is_exists_group(value.group))
                             && table
                                 .group(value.group)
                                 .is_some_and(|group| group.kind != MergeKind::Immutable)

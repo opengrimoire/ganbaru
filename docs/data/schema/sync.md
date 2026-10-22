@@ -13,7 +13,7 @@
 | `sync_writers` | Every known writer of a space: public key, device, certificate, state (`active`, `retired`, `revoked`, `forked`), revocation cutoff, stored and applied sequences, and the head hash and clock of its chain. |
 | `sync_ops` | Every stored operation as its exact signed envelope, with its full causal context and state (`waiting`, `applied`, `held` with a reason). |
 | `sync_rows` | Merge state for every published row of a replicated table: live or tombstoned, a recovery flag, and a conflict mask. |
-| `sync_register_versions` | Concurrent versions of each group of each published row, at most one per writer, with the decoded value and its hash. |
+| `sync_register_versions` | Concurrent versions of each group of each published row, at most one per writer, with the encoded value and its hash. A winning value that the domain row holds is elided to null; readers take it from the domain row when it matches the hash, otherwise from the operation body, and materialization stores it again before the domain row changes or is deleted. |
 | `sync_version_refs` | The non-null reference values of each retained version, one row per reference column, indexed by referenced key so redirects and deletions find their referrers. |
 | `sync_tombstones` | Tombstones of published rows, keyed by the deleting operation, with an optional redirect or an optional cause (`cause_table`, `cause_row`) naming the deleted root a cascade repair followed. |
 

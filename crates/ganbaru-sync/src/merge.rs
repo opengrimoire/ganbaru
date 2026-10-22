@@ -18,6 +18,7 @@ use crate::Engine;
 use crate::error::{SyncResult, corrupt};
 use crate::log::{self, ContextCache, seq_i64, stored_u64};
 use crate::manifest::{GroupSpec, MergeKind, TableSpec};
+use crate::materialize;
 use crate::recovery;
 use crate::visibility::Visibility;
 
@@ -423,8 +424,10 @@ async fn replace_version_refs(
 pub(crate) type MergedRows = BTreeMap<(TableId, String), (RowState, Vec<Version>)>;
 
 /// Recomputes the conflict mask of live rows and the recovery flag of tombstoned rows,
-/// including the deleted roots of dirty live rows hidden by cascade. Returns the merge state
-/// it read for each dirty published row.
+/// including the deleted roots of dirty live rows hidden by cascade. A dirty live row missing
+/// from its domain table may have left the group of the root it was hidden under, which is not
+/// known after the change, so every flagged row is then recomputed as well. Returns the merge
+/// state it read for each dirty published row.
 pub(crate) async fn refresh_flags(
     engine: &Engine,
     conn: &mut SqliteConnection,
@@ -434,6 +437,7 @@ pub(crate) async fn refresh_flags(
     let dirty: Vec<(TableId, String)> = batch.dirty.iter().cloned().collect();
     let mut merged = MergedRows::new();
     let mut roots = BTreeSet::new();
+    let mut recheck_flagged = false;
     for (table_id, key) in dirty {
         let Some(table) = engine.manifest().table(table_id) else {
             return Err(corrupt("dirty row of an unknown table"));
@@ -478,6 +482,10 @@ pub(crate) async fn refresh_flags(
                 {
                     roots.insert(root);
                 }
+                // The domain table still holds the state before this batch materializes.
+                if !recheck_flagged && !materialize::domain_exists(conn, table, &key).await? {
+                    recheck_flagged = true;
+                }
                 let mut mask = conflict_mask(table, &versions);
                 // A severed edge surfaces as a conflict of its existence group.
                 if let Some(exists) = table
@@ -497,6 +505,9 @@ pub(crate) async fn refresh_flags(
             store_flags(conn, table_id, &key, flags).await?;
         }
         merged.insert((table_id, key), (state, versions));
+    }
+    if recheck_flagged {
+        roots.extend(recovery::flagged_rows(conn).await?);
     }
     for (table_id, key) in roots {
         if merged.contains_key(&(table_id, key.clone())) {

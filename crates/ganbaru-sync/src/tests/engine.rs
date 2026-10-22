@@ -1050,6 +1050,88 @@ fn a_child_edited_while_its_parent_is_deleted_is_offered_under_the_parent() {
     });
 }
 
+/// Stores what `from` has and `to` lacks, then applies on `to` without a local writer, so no
+/// repair is sealed and rows hidden by cascade stay live.
+async fn pull_without_writer(to: &mut Replica, from: &mut Replica) {
+    let known = to.stored_vector().await;
+    let ops = from.ops_since(&known).await;
+    to.receive(&ops).await;
+    loop {
+        let report = to
+            .engine
+            .apply(&mut to.conn, &to.ctx, None, to.now_ms)
+            .await
+            .unwrap();
+        if !report.more {
+            return;
+        }
+    }
+}
+
+#[test]
+fn a_root_stops_being_flagged_when_its_edited_hidden_child_is_shown_again() {
+    block_on(async {
+        let mut replicas = replicas(4).await;
+        replicas[0]
+            .exec(&format!(
+                "{}{}",
+                add_node("n-1", None, 0, "root"),
+                add_node("n-2", None, 1, "other"),
+            ))
+            .await;
+        converge(&mut replicas).await;
+        replicas[0]
+            .exec("DELETE FROM fixture_nodes WHERE id = 'n-1'")
+            .await;
+        replicas[0].seal().await.unwrap();
+        replicas[1]
+            .exec("UPDATE fixture_nodes SET parent_id = 'n-1', label = 'edited' WHERE id = 'n-2'")
+            .await;
+        replicas[1].seal().await.unwrap();
+        // Replica 2 sees the move and the edit but not the deletion, and moves the row out.
+        let (mover, editor) = pair(&mut replicas, 2, 1);
+        mover.pull(editor).await;
+        mover
+            .exec("UPDATE fixture_nodes SET parent_id = NULL WHERE id = 'n-2'")
+            .await;
+        mover.seal().await.unwrap();
+
+        let (observer, deleter) = pair(&mut replicas, 3, 0);
+        pull_without_writer(observer, deleter).await;
+        let (observer, editor) = pair(&mut replicas, 3, 1);
+        pull_without_writer(observer, editor).await;
+        let observer = &mut replicas[3];
+        assert!(node_parents(observer).await.is_empty());
+        assert_eq!(
+            single_entry(observer).await,
+            (NODES_TABLE, "n-1".to_string(), 1, "device-1".to_string())
+        );
+
+        let (observer, mover) = pair(&mut replicas, 3, 2);
+        pull_without_writer(observer, mover).await;
+        let observer = &mut replicas[3];
+        assert_eq!(node_parents(observer).await, ["n-2>-"]);
+        assert_eq!(
+            observer
+                .count("SELECT count(*) FROM sync_rows WHERE recovery = 1")
+                .await,
+            0
+        );
+        assert!(
+            observer
+                .engine
+                .recovery_entries(&mut observer.conn, &observer.ctx)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        observer.check_invariants().await;
+
+        converge(&mut replicas).await;
+        assert_converged(&mut replicas).await;
+    });
+}
+
 #[test]
 fn a_hidden_derived_key_child_is_offered_with_its_deleted_parent() {
     block_on(async {

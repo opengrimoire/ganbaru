@@ -379,20 +379,26 @@ async fn read_visibility(engine: &Engine, conn: &mut SqliteConnection) -> SyncRe
     Visibility::load(engine, conn, &mut BTreeSet::new()).await
 }
 
+/// Every row carrying the recovery flag, by table and key.
+pub(crate) async fn flagged_rows(conn: &mut SqliteConnection) -> SyncResult<Vec<RowRef>> {
+    let rows: Vec<(i64, String)> = sqlx::query_as(
+        "SELECT table_id, row_key FROM sync_rows WHERE recovery = 1 ORDER BY table_id, row_key",
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+    rows.into_iter()
+        .map(|(table, key)| Ok((stored_table(table)?, key)))
+        .collect()
+}
+
 /// Flagged rows grouped by their root.
 async fn recovery_groups(
     engine: &Engine,
     conn: &mut SqliteConnection,
     visibility: &mut Visibility,
 ) -> SyncResult<BTreeMap<RowRef, Vec<RowRef>>> {
-    let rows: Vec<(i64, String)> = sqlx::query_as(
-        "SELECT table_id, row_key FROM sync_rows WHERE recovery = 1 ORDER BY table_id, row_key",
-    )
-    .fetch_all(&mut *conn)
-    .await?;
     let mut groups: BTreeMap<RowRef, Vec<RowRef>> = BTreeMap::new();
-    for (table, key) in rows {
-        let row = (stored_table(table)?, key);
+    for row in flagged_rows(conn).await? {
         let root = group_root(engine, conn, visibility, row.clone()).await?;
         groups.entry(root).or_default().push(row);
     }

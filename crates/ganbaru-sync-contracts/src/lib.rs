@@ -23,7 +23,10 @@ pub use certificate::{
 };
 pub use codec::CodecError;
 pub use hlc::{Hlc, HlcClock};
-pub use ids::{GroupId, GroupMask, OpId, RowKey, Seq, SpaceId, TableId, WriterId};
+pub use ids::{
+    DerivedKeyError, GroupId, GroupMask, OpId, PENDING_KEY_PREFIX, RowKey, Seq, SpaceId, TableId,
+    WriterId, derived_key,
+};
 pub use op::{
     Change, ChangeAction, Content, Envelope, Field, GroupValue, Header, Operation, OperationError,
     OperationKind, PayloadError, Revocation, RevokeReason, SealedOperation, Value,

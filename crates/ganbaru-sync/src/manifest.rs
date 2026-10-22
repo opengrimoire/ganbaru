@@ -432,9 +432,47 @@ pub struct TableSpec {
     pub adapter: Option<&'static str>,
     /// Domain triggers on the table and its owned child tables.
     pub triggers: &'static [DomainTrigger],
+    /// Whether the row key is a function of the row's content, so a removed row can be added
+    /// again under the same key.
+    pub derived_key: Option<DerivedKey>,
+}
+
+/// Key column of a replicated table with a composite primary key: the
+/// [`ganbaru_sync_contracts::derived_key`] of its primary key columns.
+pub const SYNC_KEY_COLUMN: &str = "sync_key";
+
+/// A table whose row key is derived from its content. Its rows are never tombstoned: a
+/// deletion writes 0 to the existence group and an insert of a known key writes 1, so a
+/// removed row can be added again.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DerivedKey {
+    /// The `Register` group with no domain column whose value is `[Integer(1)]` while the row
+    /// exists and `[Integer(0)]` after it is removed.
+    pub exists_group: GroupId,
+    /// Columns besides the primary key that the key is derived from, such as the inputs of a
+    /// domain id formula. `Immutable` groups of the table hold only primary key columns and
+    /// these, because a re-add seals every group again and must write the same values.
+    pub key_inputs: &'static [&'static str],
 }
 
 impl TableSpec {
+    /// Whether the table keys rows by [`SYNC_KEY_COLUMN`] because its primary key is composite.
+    pub fn has_composite_key(&self) -> bool {
+        self.key_column == SYNC_KEY_COLUMN
+    }
+
+    /// The existence group of a derived-key table.
+    pub fn exists_group(&self) -> Option<&'static GroupSpec> {
+        self.derived_key
+            .and_then(|key| self.group(key.exists_group))
+    }
+
+    /// Whether `group` is the existence group of a derived-key table.
+    pub fn is_exists_group(&self, group: GroupId) -> bool {
+        self.derived_key
+            .is_some_and(|key| key.exists_group == group)
+    }
+
     /// Group by id.
     pub fn group(&self, id: GroupId) -> Option<&'static GroupSpec> {
         self.groups.iter().find(|group| group.id == id)
@@ -539,7 +577,7 @@ impl Manifest {
 
     /// Checks the facts the engine relies on: table ids are nonzero, unique, and inside their
     /// domain's range; domain names are unique and ranges disjoint; every `Local` column
-    /// declares a SQL literal; references are well formed; and tables follow the dependency
+    /// declares a SQL literal; references and derived keys are well formed; and tables follow the dependency
     /// order of their references. Adapter registration is checked by the engine.
     pub fn validate(&self) -> Result<(), String> {
         let mut problems = String::new();
@@ -590,6 +628,9 @@ impl Manifest {
                 for problem in reference_problems(group) {
                     let _ = writeln!(problems, "{}.{}: {problem}", table.name, group.name);
                 }
+            }
+            for problem in derived_key_problems(table) {
+                let _ = writeln!(problems, "{}: {problem}", table.name);
             }
         }
         for problem in self.order_problems(&self.reference_dependencies()) {
@@ -699,6 +740,60 @@ fn reference_problems(group: &GroupSpec) -> Vec<String> {
                 "{} is an immutable reference that does not cascade",
                 reference.column
             ));
+        }
+    }
+    problems
+}
+
+/// Why a table's derived key or existence group is malformed. Only the existence group has no
+/// column; it is a plain register the user never sees in a conflict or recovery entry. A
+/// derived-key table never tombstones, so it neither redirects nor repairs duplicates.
+fn derived_key_problems(table: &TableSpec) -> Vec<String> {
+    let mut problems = Vec::new();
+    for group in table.groups {
+        let columnless = matches!(group.storage, GroupStorage::Columns([]));
+        if columnless && !table.is_exists_group(group.id) {
+            problems.push(format!(
+                "{} has no columns and is not the existence group",
+                group.name
+            ));
+        }
+    }
+    let Some(derived) = table.derived_key else {
+        return problems;
+    };
+    match table.group(derived.exists_group) {
+        None => problems.push("the existence group is not a group of the table".to_string()),
+        Some(group) => {
+            if group.kind != MergeKind::Register
+                || !matches!(group.storage, GroupStorage::Columns([]))
+                || !group.references.is_empty()
+                || group.surfaced
+                || group.recoverable
+            {
+                problems.push(format!(
+                    "existence group {} is not a hidden register without columns",
+                    group.name
+                ));
+            }
+        }
+    }
+    if table.redirects {
+        problems.push("a derived-key table never redirects".to_string());
+    }
+    if table
+        .resolutions
+        .iter()
+        .any(|resolution| matches!(resolution, Resolution::DuplicateRepair { .. }))
+    {
+        problems.push("a derived-key table has no duplicate repair".to_string());
+    }
+    for input in derived.key_inputs {
+        if !table
+            .immutable_columns()
+            .any(|column| column.name == *input)
+        {
+            problems.push(format!("key input {input} is not an immutable column"));
         }
     }
     problems

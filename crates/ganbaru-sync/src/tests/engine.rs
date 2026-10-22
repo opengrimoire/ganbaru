@@ -8,6 +8,7 @@ use ganbaru_sync_contracts::{
 };
 
 use super::block_on;
+use super::fixture::{MEMBERSHIPS_TABLE, membership_key};
 use super::replica::{Identity, Replica, START_MS, VAULT_ID, converge, device_id, pair, person};
 use crate::error::failpoints;
 use crate::manifest::vault::quick_notes::{NOTES_TABLE, note_group};
@@ -1440,5 +1441,208 @@ fn merged_versions_with_far_ahead_clocks_name_their_writer_until_local_time_catc
             .await
             .unwrap();
         assert!(caught_up.is_empty());
+    });
+}
+
+const MEMBERSHIP_PARENTS: &str = "INSERT INTO fixture_items (id, created_at, label, label_edits)
+         VALUES ('item-1', '2027-01-01T00:00:00.000Z', 'One', 0);
+     INSERT INTO fixture_cycle_a (id, label) VALUES ('a-1', 'A');";
+
+/// SQL adding the membership of `item` in `end` with `role`.
+fn add_membership(item: &str, end: &str, role: &str) -> String {
+    format!(
+        "INSERT INTO fixture_memberships (item_id, end_id, sync_key, created_at, role)
+         VALUES ('{item}', '{end}', '{}', '2027-01-01T00:00:00.000Z', '{role}')",
+        membership_key(item, end)
+    )
+}
+
+async fn memberships(replica: &mut Replica) -> Vec<String> {
+    texts(
+        replica,
+        "SELECT item_id || '>' || end_id || ':' || role FROM fixture_memberships ORDER BY sync_key",
+    )
+    .await
+}
+
+async fn membership_rows(replica: &mut Replica, sql: &str) -> i64 {
+    replica
+        .count(&sql.replace("{table}", &MEMBERSHIPS_TABLE.0.to_string()))
+        .await
+}
+
+#[test]
+fn a_derived_key_removed_on_one_device_is_added_again_on_another() {
+    block_on(async {
+        let mut replicas = replicas(2).await;
+        replicas[0].exec(MEMBERSHIP_PARENTS).await;
+        replicas[0]
+            .exec(&add_membership("item-1", "a-1", "first"))
+            .await;
+        converge(&mut replicas).await;
+        replicas[0]
+            .exec("DELETE FROM fixture_memberships WHERE item_id = 'item-1'")
+            .await;
+        converge(&mut replicas).await;
+        assert_converged(&mut replicas).await;
+        for replica in &mut replicas {
+            assert!(memberships(replica).await.is_empty());
+        }
+
+        // No recreate guard refuses the published key, and the re-add writes every group.
+        replicas[1]
+            .exec(&add_membership("item-1", "a-1", "again"))
+            .await;
+        converge(&mut replicas).await;
+        assert_converged(&mut replicas).await;
+        for replica in &mut replicas {
+            assert_eq!(memberships(replica).await, ["item-1>a-1:again"]);
+            assert_eq!(
+                membership_rows(
+                    replica,
+                    "SELECT count(*) FROM sync_rows WHERE table_id = {table} AND state = 'live'"
+                )
+                .await,
+                1
+            );
+            assert_eq!(
+                membership_rows(
+                    replica,
+                    "SELECT count(*) FROM sync_tombstones WHERE table_id = {table}"
+                )
+                .await,
+                0
+            );
+        }
+    });
+}
+
+#[test]
+fn a_derived_key_removed_and_edited_concurrently_converges() {
+    block_on(async {
+        let mut replicas = replicas(3).await;
+        replicas[0].exec(MEMBERSHIP_PARENTS).await;
+        replicas[0]
+            .exec(&add_membership("item-1", "a-1", "first"))
+            .await;
+        converge(&mut replicas).await;
+        replicas[0]
+            .exec("DELETE FROM fixture_memberships WHERE item_id = 'item-1'")
+            .await;
+        replicas[1]
+            .exec("UPDATE fixture_memberships SET role = 'edited' WHERE item_id = 'item-1'")
+            .await;
+        replicas[2]
+            .exec(&format!(
+                "DELETE FROM fixture_memberships WHERE item_id = 'item-1'; {}",
+                add_membership("item-1", "a-1", "readded")
+            ))
+            .await;
+        converge(&mut replicas).await;
+        assert_converged(&mut replicas).await;
+        let rows = memberships(&mut replicas[0]).await;
+        assert!(rows.len() <= 1, "{rows:?}");
+    });
+}
+
+#[test]
+fn a_derived_key_row_is_hidden_while_its_identity_target_is_a_hidden_duplicate() {
+    block_on(async {
+        let mut replicas = replicas(2).await;
+        replicas[0]
+            .exec("INSERT INTO fixture_cycle_a (id, label) VALUES ('a-1', 'Same')")
+            .await;
+        replicas[1]
+            .exec(&format!(
+                "INSERT INTO fixture_items (id, created_at, label, label_edits)
+                     VALUES ('item-1', '2027-01-01T00:00:00.000Z', 'One', 0);
+                 INSERT INTO fixture_cycle_a (id, label) VALUES ('a-2', 'Same');
+                 {};",
+                add_membership("item-1", "a-2", "member")
+            ))
+            .await;
+        converge(&mut replicas).await;
+        assert_converged(&mut replicas).await;
+        let key = membership_key("item-1", "a-2");
+        for replica in &mut replicas {
+            // The identity reference is not redirected to the kept duplicate.
+            assert!(memberships(replica).await.is_empty());
+            assert_eq!(
+                replica
+                    .count(&format!(
+                        "SELECT count(*) FROM sync_rows WHERE row_key = '{key}' AND state = 'live'"
+                    ))
+                    .await,
+                1
+            );
+        }
+    });
+}
+
+#[test]
+fn derived_key_pending_placeholders_are_refused_at_startup_and_rekeyed_once() {
+    block_on(async {
+        let mut replicas = replicas(2).await;
+        replicas[0].exec(MEMBERSHIP_PARENTS).await;
+        replicas[0]
+            .exec(
+                "INSERT INTO fixture_memberships (item_id, end_id, sync_key, created_at, role)
+                 VALUES ('item-1', 'a-1', 'pending:1', '2027-01-01T00:00:00.000Z', 'member')",
+            )
+            .await;
+        let replica = &mut replicas[0];
+        let refused = replica
+            .engine
+            .init_space(&mut replica.conn, VAULT_ID, START_MS)
+            .await;
+        assert!(
+            matches!(refused, Err(SyncError::PendingKey("fixture_memberships"))),
+            "{refused:?}"
+        );
+        let report = replica.seal().await.unwrap();
+        assert_eq!(
+            report
+                .invalid_rows
+                .iter()
+                .map(|row| (row.row_key.as_str(), row.reason))
+                .collect::<Vec<_>>(),
+            [("pending:1", "pending key")]
+        );
+        for refused in ["pending:2", ""] {
+            assert!(
+                !replica
+                    .try_exec(&format!(
+                        "UPDATE fixture_memberships SET sync_key = '{refused}'"
+                    ))
+                    .await,
+                "{refused}"
+            );
+        }
+
+        let key = membership_key("item-1", "a-1");
+        replica
+            .exec(&format!(
+                "UPDATE fixture_memberships SET sync_key = '{key}'"
+            ))
+            .await;
+        replica
+            .engine
+            .init_space(&mut replica.conn, VAULT_ID, START_MS)
+            .await
+            .unwrap();
+        assert!(
+            !replica
+                .try_exec("UPDATE fixture_memberships SET sync_key = 'pending:3'")
+                .await
+        );
+        converge(&mut replicas).await;
+        assert_converged(&mut replicas).await;
+        for replica in &mut replicas {
+            assert_eq!(memberships(replica).await, ["item-1>a-1:member"]);
+            assert_eq!(
+                texts(replica, "SELECT sync_key FROM fixture_memberships").await,
+                [key.as_str()]
+            );
+        }
     });
 }

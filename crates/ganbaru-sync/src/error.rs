@@ -29,6 +29,9 @@ pub enum SyncError {
     InvalidRevoke(&'static str),
     /// A request names a row, group, or table the engine cannot act on.
     InvalidRequest(&'static str),
+    /// A replicated row of the named table still holds a `pending:` placeholder key, which a
+    /// domain must replace with its final key before the transaction that inserted it commits.
+    PendingKey(&'static str),
     /// A test failpoint aborted the transaction.
     #[cfg(test)]
     Failpoint(&'static str),
@@ -56,6 +59,10 @@ impl fmt::Display for SyncError {
             Self::InvalidReseal(detail) => write!(formatter, "invalid re-seal: {detail}"),
             Self::InvalidRevoke(detail) => write!(formatter, "invalid revocation: {detail}"),
             Self::InvalidRequest(detail) => write!(formatter, "invalid sync request: {detail}"),
+            Self::PendingKey(table) => write!(
+                formatter,
+                "a replicated row of {table} still holds a pending placeholder key"
+            ),
             #[cfg(test)]
             Self::Failpoint(name) => write!(formatter, "failpoint {name}"),
         }

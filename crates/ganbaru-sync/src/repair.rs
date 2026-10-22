@@ -269,6 +269,10 @@ pub(crate) async fn expand_references(
 pub(crate) fn repair_changes(engine: &Engine, hidden: &Hidden) -> SyncResult<Vec<Change>> {
     let mut changes = Vec::new();
     for table in engine.manifest().tables.iter().rev() {
+        // Derived-key rows are never tombstoned; a hidden one stays live in sync state.
+        if table.derived_key.is_some() {
+            continue;
+        }
         let Some(rows) = hidden.get(&table.id) else {
             continue;
         };

@@ -24,10 +24,17 @@ The hybrid logical clock is 48 bits of Unix milliseconds and a 16-bit counter. A
 | Position | Greatest `(clock, writer)` over an order key; rows sort by `(order_key, id)` | Note and tag order |
 | Reference | Greatest `(clock, writer)` over a row key that resolves through redirects | Note tag |
 | Owned children | The parent group's value is a canonical list that replaces the child rows | Body text runs, note images |
+| Existence register | Greatest `(clock, writer)` over 1 (present) or 0 (removed) on a derived-key table | None yet |
 
 - A multi-column CHECK always lives inside one coupled register, so every materialized winner satisfies it.
 - A register is surfaced when its concurrent distinct versions are shown to people as a conflict; otherwise it resolves silently. Quick note title, body, and images are surfaced. Color, tag, lifecycle, order, tag names, and tag colors are silent.
 - A group is recoverable when edits to it that a deletion did not see should be offered for recovery. Quick note title, body, images, color, tag, and lifecycle are recoverable; order, timestamps, and every tag group are not.
+
+## Derived keys
+
+A derived-key table keys each row by its natural identity, such as a membership's two ends, so every device derives the same key for the same row and adding it again must work after a removal. Such a table has a hidden existence register instead of tombstones: a local insert or update writes 1, a delete writes 0, and the domain row is deleted while the winner is 0 and inserted again when it returns to 1. A local insert of a key the space already knows writes every group, immutable ones included, so the re-added row carries its new values. Immutable groups hold only key columns, the re-create guard does not apply, and a derived-key table never redirects or repairs duplicates. A derived-key row whose existence winner is 0 counts as deleted for references to it.
+
+A table with a composite primary key replicates under a `sync_key` text column derived from the primary key columns, which form its required immutable identity group. A reference in that identity group is never redirected: while its target is hidden as a duplicate or not live, the row is hidden instead.
 
 ## Order keys
 

@@ -6,7 +6,8 @@ use sqlx::SqlitePool;
 
 use super::fixture::{
     CYCLE_A, CYCLE_A_TABLE, CYCLE_B, CYCLE_B_TABLE, FIXTURE_DOMAIN, FIXTURE_TABLE_IDS, ITEMS,
-    ITEMS_TABLE, LINKS, LINKS_TABLE, TEST_MANIFEST, fixture_pool,
+    ITEMS_TABLE, LINKS, LINKS_TABLE, MEMBERSHIP_DETAILS, MEMBERSHIP_IDENTITY, MEMBERSHIPS,
+    TEST_MANIFEST, fixture_pool, membership_group,
 };
 use super::{block_on, migrated_pool};
 use crate::domains::vault_adapters;
@@ -14,9 +15,9 @@ use crate::manifest::order::{Dependency, DependencyKind};
 use crate::manifest::vault::quick_notes;
 use crate::manifest::vault::{VAULT_DOMAINS, VAULT_MANIFEST};
 use crate::manifest::{
-    Classification, Collation, DomainManifest, GroupSpec, GroupStorage, LocalColumn, Manifest,
-    MergeKind, OnDelete, ReferenceColumn, Resolution, SYNC_TABLES, TableIdRange, TableSpec,
-    is_sql_literal,
+    Classification, Collation, ColumnSpec, ColumnType, DerivedKey, DomainManifest, GroupSpec,
+    GroupStorage, LocalColumn, Manifest, MergeKind, OnDelete, ReferenceColumn, Resolution,
+    SYNC_KEY_COLUMN, SYNC_TABLES, TableIdRange, TableSpec, is_sql_literal,
 };
 use crate::{Adapters, Engine, Hooks, SyncError, triggers};
 
@@ -203,12 +204,16 @@ async fn assert_columns_partitioned(manifest: &Manifest, pool: &SqlitePool) {
             .filter(|(_, _, pk)| *pk > 0)
             .map(|(name, kind, _)| (name.as_str(), kind.as_str()))
             .collect::<Vec<_>>();
-        assert_eq!(
-            primary_key,
-            [(table.key_column, "TEXT")],
-            "{} key",
-            table.name
-        );
+        if table.has_composite_key() {
+            assert_composite_key(table, &columns, &not_null);
+        } else {
+            assert_eq!(
+                primary_key,
+                [(table.key_column, "TEXT")],
+                "{} key",
+                table.name
+            );
+        }
 
         for (group, owned) in table.owned_children() {
             let child_columns = table_columns(&pool, owned.table).await;
@@ -243,6 +248,187 @@ async fn assert_columns_partitioned(manifest: &Manifest, pool: &SqlitePool) {
             );
         }
     }
+}
+
+/// A composite primary key is keyed by a `sync_key TEXT NOT NULL UNIQUE` column outside it,
+/// and its columns form one required `Immutable` identity group.
+fn assert_composite_key(table: &TableSpec, columns: &[(String, String, i64)], not_null: &[String]) {
+    let primary_key = columns
+        .iter()
+        .filter(|(_, _, pk)| *pk > 0)
+        .map(|(name, _, _)| name.as_str())
+        .collect::<BTreeSet<_>>();
+    assert!(
+        primary_key.len() > 1,
+        "{}: a sync_key table has a composite primary key",
+        table.name
+    );
+    assert!(
+        columns
+            .iter()
+            .any(|(name, kind, pk)| name == SYNC_KEY_COLUMN && kind == "TEXT" && *pk == 0),
+        "{}: sync_key is a text column outside the primary key",
+        table.name
+    );
+    assert!(
+        not_null.iter().any(|name| name == SYNC_KEY_COLUMN),
+        "{}: sync_key is NOT NULL",
+        table.name
+    );
+    let identity = table
+        .groups
+        .iter()
+        .filter(|group| group.kind == MergeKind::Immutable)
+        .find(|group| {
+            group
+                .columns()
+                .iter()
+                .any(|column| primary_key.contains(column.name))
+        })
+        .unwrap_or_else(|| panic!("{}: no identity group", table.name));
+    assert_eq!(
+        identity
+            .columns()
+            .iter()
+            .map(|column| column.name)
+            .collect::<BTreeSet<_>>(),
+        primary_key,
+        "{}: the identity group holds exactly the primary key",
+        table.name
+    );
+}
+
+/// Problems with the `Immutable` groups of a derived-key table: they hold only primary key
+/// columns and declared key inputs, because adding a removed row again writes every group.
+async fn derived_key_problems(table: &TableSpec, pool: &SqlitePool) -> Vec<String> {
+    let Some(derived) = table.derived_key else {
+        return Vec::new();
+    };
+    let primary_key = table_columns(pool, table.name)
+        .await
+        .into_iter()
+        .filter(|(_, _, pk)| *pk > 0)
+        .map(|(name, _, _)| name)
+        .collect::<BTreeSet<_>>();
+    table
+        .immutable_columns()
+        .filter(|column| {
+            !primary_key.contains(column.name) && !derived.key_inputs.contains(&column.name)
+        })
+        .map(|column| {
+            format!(
+                "{}.{} is in an immutable group but is not a key column",
+                table.name, column.name
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn derived_key_immutable_groups_hold_only_key_columns() {
+    block_on(async {
+        for (manifest, pool) in cases().await {
+            for table in manifest.tables {
+                assert_eq!(
+                    derived_key_problems(table, &pool).await,
+                    Vec::<String>::new()
+                );
+            }
+        }
+    });
+}
+
+#[test]
+fn derived_key_refuses_a_non_key_column_in_an_immutable_group() {
+    const IDENTITY_WITH_TIME: GroupSpec = GroupSpec {
+        storage: GroupStorage::Columns(&[
+            ColumnSpec {
+                name: "item_id",
+                ty: ColumnType::OptionalRowKey,
+            },
+            ColumnSpec {
+                name: "end_id",
+                ty: ColumnType::OptionalRowKey,
+            },
+            ColumnSpec {
+                name: "created_at",
+                ty: ColumnType::Timestamp,
+            },
+        ]),
+        ..MEMBERSHIP_IDENTITY
+    };
+    const ROLE_ONLY: GroupSpec = GroupSpec {
+        storage: GroupStorage::Columns(&[ColumnSpec {
+            name: "role",
+            ty: ColumnType::Text { max_chars: 20 },
+        }]),
+        ..MEMBERSHIP_DETAILS
+    };
+    const TIME_IN_IDENTITY: TableSpec = TableSpec {
+        groups: &[IDENTITY_WITH_TIME, ROLE_ONLY, MEMBERSHIPS.groups[2]],
+        ..MEMBERSHIPS
+    };
+    block_on(async {
+        let pool = fixture_pool().await;
+        assert_eq!(
+            derived_key_problems(&TIME_IN_IDENTITY, &pool).await,
+            ["fixture_memberships.created_at is in an immutable group but is not a key column"]
+        );
+        // Declaring the column a key input admits it.
+        const TIME_AS_INPUT: TableSpec = TableSpec {
+            derived_key: Some(DerivedKey {
+                exists_group: membership_group::EXISTS,
+                key_inputs: &["created_at"],
+            }),
+            ..TIME_IN_IDENTITY
+        };
+        assert_eq!(
+            derived_key_problems(&TIME_AS_INPUT, &pool).await,
+            Vec::<String>::new()
+        );
+    });
+}
+
+#[test]
+fn validation_refuses_malformed_derived_keys() {
+    const IMMUTABLE_EXISTS: GroupSpec = GroupSpec {
+        kind: MergeKind::Immutable,
+        ..MEMBERSHIPS.groups[2]
+    };
+    const BAD_EXISTS: TableSpec = TableSpec {
+        groups: &[MEMBERSHIP_IDENTITY, MEMBERSHIP_DETAILS, IMMUTABLE_EXISTS],
+        redirects: true,
+        derived_key: Some(DerivedKey {
+            exists_group: membership_group::EXISTS,
+            key_inputs: &["role"],
+        }),
+        ..MEMBERSHIPS
+    };
+    const NO_EXISTS: TableSpec = TableSpec {
+        derived_key: None,
+        ..MEMBERSHIPS
+    };
+    const BAD_DERIVED: DomainManifest = DomainManifest {
+        tables: &[ITEMS, CYCLE_A, CYCLE_B, LINKS, BAD_EXISTS],
+        ..FIXTURE_DOMAIN
+    };
+    const COLUMNLESS: DomainManifest = DomainManifest {
+        tables: &[ITEMS, CYCLE_A, CYCLE_B, LINKS, NO_EXISTS],
+        ..FIXTURE_DOMAIN
+    };
+    let bad = validation_error(&[&quick_notes::DOMAIN, &BAD_DERIVED]);
+    for problem in [
+        "existence group exists is not a hidden register without columns",
+        "a derived-key table never redirects",
+        "key input role is not an immutable column",
+    ] {
+        assert!(bad.contains(problem), "{problem}: {bad}");
+    }
+    let columnless = validation_error(&[&quick_notes::DOMAIN, &COLUMNLESS]);
+    assert!(
+        columnless.contains("exists has no columns and is not the existence group"),
+        "{columnless}"
+    );
 }
 
 #[test]
@@ -559,6 +745,13 @@ async fn assert_resolutions(table: &TableSpec, pool: &SqlitePool) {
     let mut unique = unique_indexes(&pool, table.name).await;
     unique.sort();
     let mut declared = declared_unique(table);
+    // A sync_key is derived from the primary key, so it collides only when the key does.
+    if table.has_composite_key() {
+        declared.push(BTreeSet::from([(
+            SYNC_KEY_COLUMN.to_string(),
+            Collation::Binary.sql_name().to_string(),
+        )]));
+    }
     declared.sort();
     assert_eq!(unique, declared, "{} unique resolutions", table.name);
 
@@ -624,7 +817,7 @@ fn assert_well_formed(manifest: &Manifest) {
             match group.storage {
                 GroupStorage::Columns(columns) => {
                     assert!(
-                        !columns.is_empty(),
+                        !columns.is_empty() || table.is_exists_group(group.id),
                         "{}.{}: no columns",
                         table.name,
                         group.name

@@ -239,6 +239,7 @@ pub const TAGS: TableSpec = TableSpec {
     redirects: true,
     adapter: None,
     triggers: &[],
+    derived_key: None,
 };
 
 /// `quick_notes`.
@@ -264,6 +265,7 @@ pub const NOTES: TableSpec = TableSpec {
         search_trigger("quick_notes_search_insert"),
         search_trigger("quick_notes_search_update"),
     ],
+    derived_key: None,
 };
 
 /// A full-text index trigger, which keeps `quick_notes_search_fts` in step with every write.

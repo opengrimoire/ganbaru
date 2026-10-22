@@ -10,12 +10,12 @@ mod sync;
 
 pub use sync::{
     DISCOVERY_KEY_BYTES, MAX_COORDINATOR_ENDPOINTS, MAX_SYNC_ASSET_BYTES, MAX_SYNC_ASSETS,
-    MAX_SYNC_HASHES, SYNC_ASSET_CHUNK_BYTES, SYNC_PAGE_BYTES, SyncAsset, SyncProbe, SyncRefusal,
-    SyncRefusalCode, SyncSeq, validate_coordinator_endpoint, validate_coordinator_endpoints,
-    validate_discovery_key,
+    MAX_SYNC_HASHES, SYNC_ASSET_CHUNK_BYTES, SYNC_PAGE_BYTES, SyncAsset, SyncAssetKey, SyncProbe,
+    SyncRefusal, SyncRefusalCode, SyncSeq, validate_coordinator_endpoint,
+    validate_coordinator_endpoints, validate_discovery_key,
 };
 
-pub const PROTOCOL_VERSION: u16 = 7;
+pub const PROTOCOL_VERSION: u16 = 8;
 pub const MAX_CONTROL_BYTES: usize = 1024 * 1024;
 /// Frame bound before the peer presents a linked certificate. Enrollment (with its 8 KiB
 /// certificate) and contact requests fit well inside it.
@@ -425,9 +425,9 @@ pub enum ControlMessage {
         device_id: String,
         assets: Vec<SyncAsset>,
     },
-    /// Digests of the queried assets the hub holds.
+    /// The queried assets the hub holds.
     SyncAssetPresence {
-        held: Vec<String>,
+        held: Vec<SyncAssetKey>,
     },
     /// Authenticated: a chunk of an asset the hub holds, from `offset`.
     SyncAssetGet {
@@ -855,7 +855,7 @@ impl ControlMessage {
                 validate_sync_peer(*protocol_version, vault_id, device_id)?;
                 sync::validate_assets(assets)?;
             }
-            Self::SyncAssetPresence { held } => sync::validate_asset_digests(held)?,
+            Self::SyncAssetPresence { held } => sync::validate_asset_keys(held)?,
             Self::SyncAssetGet {
                 protocol_version,
                 vault_id,
@@ -1571,6 +1571,7 @@ mod tests {
 
     fn asset(byte_size: u32) -> SyncAsset {
         SyncAsset {
+            class: "quick-notes/images".to_string(),
             sha256: "a".repeat(64),
             content_type: "image/png".to_string(),
             byte_size,
@@ -1622,9 +1623,72 @@ mod tests {
                 .unwrap_err()
                 .contains("too large")
         );
-        let presence = |held: Vec<String>| ControlMessage::SyncAssetPresence { held };
-        presence(vec!["a".repeat(64)]).validate().unwrap();
-        assert!(presence(vec!["../a".to_string()]).validate().is_err());
+        let presence = |held: Vec<SyncAssetKey>| ControlMessage::SyncAssetPresence { held };
+        presence(vec![asset(10).key()]).validate().unwrap();
+        let mut escaping = asset(10).key();
+        escaping.sha256 = "../a".to_string();
+        assert!(presence(vec![escaping]).validate().is_err());
+        assert!(
+            presence(vec![asset(10).key(); MAX_SYNC_ASSETS + 1])
+                .validate()
+                .unwrap_err()
+                .contains("too large")
+        );
+    }
+
+    #[test]
+    fn sync_asset_classes_must_be_relative_lowercase_paths() {
+        let query = |class: &str| {
+            let mut classed = asset(10);
+            classed.class = class.to_string();
+            ControlMessage::SyncAssetQuery {
+                protocol_version: PROTOCOL_VERSION,
+                vault_id: "vault-1".to_string(),
+                device_id: "device-1".to_string(),
+                assets: vec![classed],
+            }
+        };
+        for valid in ["quick-notes/images", "notes", "a/b/c-2"] {
+            query(valid).validate().unwrap();
+        }
+        for invalid in [
+            "",
+            "/quick-notes",
+            "quick-notes/",
+            "quick-notes//images",
+            "../images",
+            "quick-notes/..",
+            ".",
+            "Quick-notes/images",
+            "quick notes",
+            "quick-notes\\images",
+            &"a".repeat(65),
+        ] {
+            assert_eq!(
+                query(invalid).validate(),
+                Err("sync asset class is invalid".to_string()),
+                "{invalid}"
+            );
+            let key = SyncAssetKey {
+                class: invalid.to_string(),
+                sha256: "a".repeat(64),
+            };
+            assert!(
+                ControlMessage::SyncAssetPresence { held: vec![key] }
+                    .validate()
+                    .is_err(),
+                "{invalid}"
+            );
+        }
+    }
+
+    #[test]
+    fn sync_assets_up_to_64_mib_stream_through_the_exchange() {
+        assert_eq!(MAX_SYNC_ASSET_BYTES, 64 * 1024 * 1024);
+        let last = MAX_SYNC_ASSET_BYTES - 3;
+        put(asset(MAX_SYNC_ASSET_BYTES), last, "AAAA".to_string())
+            .validate()
+            .unwrap();
     }
 
     #[test]

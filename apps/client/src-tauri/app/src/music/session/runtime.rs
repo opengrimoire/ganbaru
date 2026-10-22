@@ -1571,22 +1571,15 @@ impl Owner {
         }
     }
 
-    /// Reads an on-by-default Music preference from the vault configuration.
-    async fn music_preference(&self, key: &'static str) -> MusicLibraryResult<bool> {
-        let app = self.app.clone();
-        tauri::async_runtime::spawn_blocking(move || {
-            let raw = crate::vault::vault_read_config(app)
-                .map_err(|error| MusicLibraryError::runtime("read music preference", error))?;
-            let config: serde_json::Value = serde_json::from_str(&raw)
-                .map_err(|error| MusicLibraryError::runtime("decode music preference", error))?;
-            Ok(config
-                .get("preferences")
-                .and_then(|preferences| preferences.get(key))
-                .and_then(serde_json::Value::as_bool)
-                .unwrap_or(true))
-        })
-        .await
-        .map_err(|error| MusicLibraryError::runtime("read music preference", error))?
+    /// Reads an on-by-default Music preference, named by its registry path, from the vault
+    /// preference view.
+    async fn music_preference(&self, path: &'static str) -> MusicLibraryResult<bool> {
+        let view = crate::vault::preferences::effective_view(&self.app)
+            .await
+            .map_err(|error| MusicLibraryError::runtime("read music preference", error))?;
+        Ok(crate::vault::preferences::value_at(&view, path)
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(true))
     }
 
     /// Pauses the soundscape with Music when the listener wants that, and resumes one that a
@@ -1598,7 +1591,10 @@ impl Owner {
     async fn follow_music_with_soundscape(&self, prior: SessionStatus) {
         let playing = |status| matches!(status, SessionStatus::Playing | SessionStatus::Loading);
         if playing(prior) && self.state.status == SessionStatus::Paused {
-            match self.music_preference("musicPauseSoundscapeWithMusic").await {
+            match self
+                .music_preference("preferences.musicPauseSoundscapeWithMusic")
+                .await
+            {
                 Ok(true) => crate::music::soundscape::pause_with_music(&self.app),
                 Ok(false) => {}
                 Err(error) => eprintln!("soundscape follows Music: {error}"),

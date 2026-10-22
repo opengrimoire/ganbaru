@@ -24,7 +24,6 @@ static APP_STATE: std::sync::Mutex<Option<CachedAppState>> = std::sync::Mutex::n
 static CONFIG_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 mod config;
-#[cfg(desktop)]
 pub(crate) use config::read_active_config_bounded;
 mod documents;
 
@@ -36,6 +35,7 @@ pub(crate) mod backup;
 pub(crate) mod database_rollback;
 pub(crate) mod handoff;
 pub(crate) mod ownership;
+pub(crate) mod preferences;
 pub(crate) mod quiescence;
 pub(crate) mod runtime_lifecycle;
 
@@ -648,6 +648,7 @@ fn retain_vault_scopes(state: &mut VaultAppState, known_vault_ids: &BTreeSet<Str
 
 /// Reconciles native execution owners with the newly active, authorized vault.
 pub(crate) fn resume_native_runtimes<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<(), String> {
+    preferences::reset(app);
     let focus = crate::pomodoro::resume_after_vault_handoff(app);
     let music = crate::music::session::resume_after_vault_handoff(app);
     #[cfg(desktop)]

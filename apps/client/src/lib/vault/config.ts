@@ -1,16 +1,18 @@
 /**
- * Frontend bridge to the active vault's root `config.json`.
+ * Frontend bridge to the active vault's configuration.
  *
- * Reads the file once at boot, keeps an in-memory cache, and flushes bounded
- * key-level patches through a debounced write so a burst of edits (dragging a
- * color picker, typing in a name field) coalesces into one IO. Rust applies
- * those patches to the latest file under the same lock used by native Chat
- * settings, so neither side can replace the other's newer branches.
+ * Rust composes one nested view from the portable preferences in the vault
+ * database, this device's preference file, and the `distractions` and `chat`
+ * branches of `config.json`. This module reads that view once at boot, keeps
+ * an in-memory cache, and flushes bounded key-level patches through a
+ * debounced write so a burst of edits (dragging a color picker, typing in a
+ * name field) coalesces into one IO. Rust routes each patch to the store that
+ * owns its key and refuses keys outside the preference registry. A failed
+ * write restores the saved values of its keys and tells subscribers.
  *
  * Consumers go through `getConfigKey` / `setConfigKey` with dotted keys
- * (e.g. `"theme.activeId"`, `"preferences.fontScale"`). Dotted keys map to
- * nested objects on disk so the JSON stays human-readable and orthogonal
- * concerns live under their own branches.
+ * (e.g. `"theme.activeId"`, `"preferences.fontScale"`), which name nested
+ * objects of the view.
  *
  * The vault path itself is owned by the Rust side (see
  * `src-tauri/app/src/vault.rs`). This module only reads cached values and
@@ -121,15 +123,34 @@ async function flushPendingPatches(): Promise<void> {
     await request;
     configChanges.publish(keys);
   } catch (err) {
-    for (const patch of patches) {
-      const key = patch.path.join(".");
-      if (!pendingPatches.has(key)) pendingPatches.set(key, patch);
-    }
-    console.error("vault_patch_config failed", err);
+    console.error("vault_patch_config failed", keys, err);
+    await restoreFailedKeys(keys).catch((error: unknown) => {
+      console.error("Config restore after a failed write failed", keys, error);
+    });
   } finally {
     writeInflight = null;
     for (const key of keys) inflightKeys.delete(key);
   }
+}
+
+/**
+ * Put the saved values back into the cache for keys whose write failed, unless a newer local edit is queued for
+ * them, then tell subscribers which keys changed. Nothing is published to other windows, since nothing was saved.
+ */
+async function restoreFailedKeys(keys: readonly string[]): Promise<void> {
+  const fresh = parseConfig(await invoke<string>("vault_read_config"));
+  if (fresh === null) throw new Error("vault configuration is not a JSON object");
+  const restored = new Set<string>();
+  for (const key of keys) {
+    if ([...pendingPatches.keys()].some((pending) => keysOverlap(key, pending))) continue;
+    const parts = splitKey(key);
+    const value = readPath(fresh, parts);
+    if (value === undefined) deletePath(cache, parts);
+    else writePath(cache, parts, value);
+    restored.add(key);
+  }
+  if (restored.size === 0) return;
+  for (const listener of changeListeners) listener(restored);
 }
 
 function scheduleFlush(): void {
@@ -216,7 +237,7 @@ function hasLocalEdit(key: string): boolean {
  */
 export async function refreshConfigKeysFromDisk(keys: Iterable<string>): Promise<void> {
   const fresh = parseConfig(await invoke<string>("vault_read_config"));
-  if (fresh === null) throw new Error("config.json is not a JSON object");
+  if (fresh === null) throw new Error("vault configuration is not a JSON object");
   const applied = new Set<string>();
   for (const key of new Set(keys)) {
     const parts = splitKey(key);

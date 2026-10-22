@@ -227,6 +227,7 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
         .manage(db::DatabaseState::default())
         .manage(updates::PendingUpdate::default())
         .manage(vault::ownership::VaultOwnershipManager::default())
+        .manage(vault::preferences::PreferencesState::default())
         .manage(vault::handoff::pairing::PairingManager::default())
         .manage(vault::handoff::CoordinatorLifecycle::default())
         .manage(vault::handoff::enrollment_approval::EnrollmentApprovals::default())

@@ -202,6 +202,74 @@ describe("flushConfig", () => {
     );
     expect(writes.length).toBe(1);
   });
+
+  it("restores the saved values of a refused write and tells subscribers", async () => {
+    const saved = JSON.stringify({ theme: { activeId: "light" }, preferences: { fontScale: 1.1 } });
+    invokeMock.mockImplementation(((cmd: string) => {
+      if (cmd === "vault_read_config") return Promise.resolve(saved);
+      if (cmd === "vault_patch_config") return Promise.reject(new Error("preference path is not registered"));
+      return Promise.reject(new Error(`unexpected command: ${cmd}`));
+    }) as unknown as Mock);
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const { ensureConfigLoaded, flushConfig, getConfigKey, onConfigChangedElsewhere, setConfigKey } =
+      await loadModule();
+    try {
+      await ensureConfigLoaded();
+      const listener = vi.fn();
+      onConfigChangedElsewhere(listener);
+      setConfigKey("theme.activeId", "dark");
+      setConfigKey("preferences.fontScale", undefined);
+      setConfigKey("unknown.key", true);
+
+      await flushConfig();
+
+      expect(getConfigKey("theme.activeId", "")).toBe("light");
+      expect(getConfigKey("preferences.fontScale", 1)).toBe(1.1);
+      expect(getConfigKey("unknown.key", null)).toBeNull();
+      expect(listener).toHaveBeenCalledWith(
+        new Set(["theme.activeId", "preferences.fontScale", "unknown.key"]),
+      );
+      const writes = invokeMock.mock.calls.filter(([cmd]) => cmd === "vault_patch_config");
+      expect(writes).toHaveLength(1);
+      expect(errorSpy.mock.calls[0]?.[1]).toEqual(["theme.activeId", "preferences.fontScale", "unknown.key"]);
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
+  it("keeps a newer local edit when an earlier write is refused", async () => {
+    let rejectWrite: (error: Error) => void = () => undefined;
+    let writes = 0;
+    invokeMock.mockImplementation(((cmd: string) => {
+      if (cmd === "vault_read_config") return Promise.resolve(JSON.stringify({ theme: { activeId: "light" } }));
+      if (cmd === "vault_patch_config") {
+        writes += 1;
+        if (writes > 1) return Promise.resolve();
+        return new Promise<void>((_resolve, reject) => {
+          rejectWrite = reject;
+        });
+      }
+      return Promise.reject(new Error(`unexpected command: ${cmd}`));
+    }) as unknown as Mock);
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const { ensureConfigLoaded, flushConfig, getConfigKey, setConfigKey } = await loadModule();
+    try {
+      await ensureConfigLoaded();
+      setConfigKey("theme.activeId", "dark");
+      const first = flushConfig();
+      await vi.waitFor(() => {
+        expect(invokeMock.mock.calls.some(([cmd]) => cmd === "vault_patch_config")).toBe(true);
+      });
+      setConfigKey("theme.activeId", "midnight");
+      rejectWrite(new Error("disk full"));
+      await first;
+
+      expect(getConfigKey("theme.activeId", "")).toBe("midnight");
+      expect(writes).toBe(2);
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
 });
 
 describe("refreshConfigKeysFromDisk", () => {
@@ -266,7 +334,9 @@ describe("refreshConfigKeysFromDisk", () => {
     await ensureConfigLoaded();
     setReadResponse("not json");
 
-    await expect(refreshConfigKeysFromDisk(["distractions"])).rejects.toThrow();
+    await expect(refreshConfigKeysFromDisk(["distractions"])).rejects.toThrow(
+      "vault configuration is not a JSON object",
+    );
 
     expect(getConfigKey("distractions", null)).toEqual({ enabled: true });
   });

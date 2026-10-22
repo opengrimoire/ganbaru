@@ -41,7 +41,7 @@ fn config_error(message: String) -> ganbaru_chat_contracts::models::ChatError {
 }
 
 fn read_chat_config(app: &tauri::AppHandle) -> ChatResult<ChatVaultConfig> {
-    let raw = vault::vault_read_config(app.clone()).map_err(config_error)?;
+    let raw = vault::read_active_config_bounded(app).map_err(config_error)?;
     let root: Value = serde_json::from_str(&raw)
         .map_err(|error| config_error(format!("Chat config is invalid: {error}")))?;
     parse_chat_config_branch(&root)

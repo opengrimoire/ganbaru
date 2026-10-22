@@ -56,9 +56,9 @@ Every theme owns exactly 32 event-color slots with stable numeric identity. Cale
 
 ## Persistence
 
-User themes and their seed snapshots are normalized SQLite records. Built-in light and dark themes are code-pinned, never stored as rows, and their reserved IDs cannot be inserted by import or persistence. First launch and unknown active IDs use the built-in dark theme. Native window and WebView backgrounds follow the active theme surface so no white frame shows before the page paints; Android keeps the last surface for the next launch and, on Android 12 and later, the theme mode for the system launch splash.
+User themes and their seed snapshots are normalized SQLite records. Built-in light and dark themes are code-pinned, never stored as rows, and their reserved IDs cannot be inserted by import or persistence. A device without a saved active theme, or whose saved theme no longer exists, uses the quick-toggle theme matching the system color scheme, without saving it. Native window and WebView backgrounds follow the active theme surface so no white frame shows before the page paints; Android keeps the last surface for the next launch and, on Android 12 and later, the theme mode for the system launch splash.
 
-The active theme ID, quick-toggle light and dark choices, font family, and font scale are portable preferences in active-vault `config.json`; theme content never lives there. Platform bootstraps load configuration and hydrate user themes before mounting the app shell.
+The quick-toggle light and dark choices are portable preferences that follow the vault. The active theme ID, font family, and font scale are device preferences, so switching to dark mode on one device never repaints another. Theme content never lives in preferences. Platform bootstraps load configuration and hydrate user themes before mounting the app shell.
 
 A user theme keeps a seed snapshot for `Reset all to seed`. Duplicating creates a new independent seed, and import uses the imported content as its seed. Seeds are not exported.
 
@@ -70,7 +70,7 @@ Import validates the whole object before registering it and never partially appl
 
 ## Typography and density
 
-Font family and font scale are Appearance preferences, not theme tokens. They apply alongside the active theme but keep their own portable preference identity, so changing themes does not change reading comfort.
+Font family and font scale are Appearance preferences, not theme tokens. They apply alongside the active theme but keep their own device preference identity, so changing themes does not change reading comfort.
 
 Layout density is not a theme dimension. A future density system needs explicit component and accessibility contracts rather than arbitrary spacing tokens in imported color themes.
 

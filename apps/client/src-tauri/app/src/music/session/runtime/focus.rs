@@ -210,7 +210,8 @@ impl Owner {
     }
 
     async fn pause_with_focus(&self) -> MusicLibraryResult<bool> {
-        self.music_preference("musicPauseOnPomodoroPause").await
+        self.music_preference("preferences.musicPauseOnPomodoroPause")
+            .await
     }
 
     pub(super) async fn apply_focus_assignment(

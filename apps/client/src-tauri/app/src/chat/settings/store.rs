@@ -57,7 +57,7 @@ pub(crate) fn mutate_chat_config(
 }
 
 pub(crate) fn read_chat_config(app: &tauri::AppHandle) -> ChatResult<ChatVaultConfig> {
-    let raw = vault::vault_read_config(app.clone()).map_err(config_io_error)?;
+    let raw = vault::read_active_config_bounded(app).map_err(config_io_error)?;
     let root: Value = serde_json::from_str(&raw).map_err(|_| config_shape_error())?;
     parse_chat_config_branch(&root)
 }

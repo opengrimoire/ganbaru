@@ -39,12 +39,17 @@ impl DeliveryHint {
     }
 }
 
-/// Reads the profile display name and color from the active vault configuration.
-pub(crate) fn read_profile<R: Runtime>(app: &AppHandle<R>) -> Result<CardProfile, ContactsError> {
-    let raw = crate::vault::read_active_config_bounded(app)?;
-    let value: serde_json::Value = serde_json::from_str(&raw)
-        .map_err(|error| ContactsError::Failed(format!("parse vault configuration: {error}")))?;
-    let profile = value.get(PROFILE_KEY);
+/// Reads the profile display name and color from the vault preference view.
+pub(crate) async fn read_profile<R: Runtime>(
+    app: &AppHandle<R>,
+) -> Result<CardProfile, ContactsError> {
+    let view = crate::vault::preferences::effective_view(app).await?;
+    profile_from_view(&view)
+}
+
+/// The card profile of a preference view, refused when the display name is missing.
+fn profile_from_view(view: &serde_json::Value) -> Result<CardProfile, ContactsError> {
+    let profile = view.get(PROFILE_KEY);
     let display_name = profile
         .and_then(|profile| profile.get(DISPLAY_NAME_KEY))
         .and_then(serde_json::Value::as_str)
@@ -125,12 +130,12 @@ fn bounded_hint(endpoint: String, fingerprint_hex: &str) -> DeliveryHint {
 }
 
 /// Signs the current card for this identity with the profile and hint as they are right now.
-pub(crate) fn sign_local_card<R: Runtime>(
+pub(crate) async fn sign_local_card<R: Runtime>(
     app: &AppHandle<R>,
     identity: &LocalIdentity,
 ) -> Result<SignedCard, ContactsError> {
+    let profile = read_profile(app).await?;
     let key = identity.signing_key()?;
-    let profile = read_profile(app)?;
     let hint = resolve_delivery_hint(app);
     let card = ContactCard {
         public_key: identity.public_key,
@@ -145,7 +150,7 @@ pub(crate) fn sign_local_card<R: Runtime>(
         .map_err(|error| ContactsError::Failed(format!("sign contact card: {error}")))
 }
 
-pub(crate) fn local_card_view<R: Runtime>(
+pub(crate) async fn local_card_view<R: Runtime>(
     app: &AppHandle<R>,
     identity: &LocalIdentity,
 ) -> Result<LocalCardView, ContactsError> {
@@ -155,7 +160,7 @@ pub(crate) fn local_card_view<R: Runtime>(
             card: None,
         });
     }
-    let signed = sign_local_card(app, identity)?;
+    let signed = sign_local_card(app, identity).await?;
     let qr = qr_matrix_for_bytes(&signed.bytes)?;
     Ok(LocalCardView {
         identity: identity.view(),
@@ -218,5 +223,28 @@ mod tests {
         assert_eq!(shareable_display_name("\u{2066}\u{2069}"), "");
         assert_eq!(shareable_display_name("👩\u{200D}💻"), "👩\u{200D}💻");
         assert_eq!(shareable_display_name("می\u{200C}خواهم"), "می\u{200C}خواهم");
+    }
+
+    #[test]
+    fn preferences_card_profile_reads_the_view_and_defaults_the_color() {
+        let profile = profile_from_view(&serde_json::json!({
+            "profile": { "displayName": " Ada ", "color": 7 },
+        }))
+        .unwrap();
+        assert_eq!((profile.display_name.as_str(), profile.color), ("Ada", 7));
+
+        let profile =
+            profile_from_view(&serde_json::json!({ "profile": { "displayName": "Ada" } })).unwrap();
+        assert_eq!(profile.color, DEFAULT_COLOR);
+
+        for view in [
+            serde_json::json!({}),
+            serde_json::json!({ "profile": { "displayName": "\u{2066}" } }),
+        ] {
+            assert!(matches!(
+                profile_from_view(&view),
+                Err(ContactsError::ProfileIncomplete(_))
+            ));
+        }
     }
 }

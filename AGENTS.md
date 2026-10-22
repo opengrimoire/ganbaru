@@ -74,7 +74,7 @@ apps/
       app/: ganbaru-tauri-app library with Tauri commands, managed state, and platform integrations
         build.rs: emits the `desktop` and `mobile` cfg aliases used for platform gating
         src/runtime.rs, runtime/: desktop and mobile composition roots and handler registration tests
-        src/db.rs, vault.rs, vault/: active-folder authorization, SQLite adapter boundary, vault config, document transfer, Android backup and restore
+        src/db.rs, vault.rs, vault/: active-folder authorization, SQLite adapter boundary, vault config, portable and device preferences, document transfer, Android backup and restore
         src/vault/handoff/: LAN device linking and single-writer whole-vault handoff
         src/calendar.rs, calendar/: Calendar command adapters and the platform device-date source
         src/chat.rs, chat/: Chat command adapters, coordination, access profiles, internal MCP tools, checkpoints, previews, and provider settings
@@ -138,8 +138,8 @@ Planned work without source directories yet includes the self-hosted sync relay,
 ```
 Ganbaru/
   vault.json: folder marker, id, display name, and schema version
-  config.json: folder-local preferences, UI state, and anti-distraction settings
-  ganbaru.sqlite: SQLite source of truth for structured data, Notes, and indexes
+  config.json: distraction rules and Chat settings
+  ganbaru.sqlite: SQLite source of truth for structured data, portable preferences, Notes, and indexes
   .database-rollbacks/: device-local copies kept by Reset local data, rollback restores, and handoff replacements, bounded and restorable from Settings > Data
   notes/daily/, notes/projects/: reserved note document directories
   notes/exports/: derivative Markdown exports (planned, not authoritative)
@@ -153,7 +153,7 @@ Ganbaru/
 
 Music files stay wherever the user keeps them; the vault stores library metadata, source identities, playlists, assignments, and playback state, not media bytes. Desktop backups go to a user-selected path outside the vault. Android portable backups are exported to shared Downloads and restored through the system document picker.
 
-Tauri's platform app config directory stores device-local bootstrap and runtime state only (`app-state.json`, benchmark state and SQLite, anti-distraction runtime snapshots, Chat preview web data per working folder). Production and dev builds keep separate app config directories and therefore separate active-folder pointers.
+Tauri's platform app config directory stores device-local bootstrap and runtime state only (`app-state.json`, benchmark state and SQLite, device preferences per vault, anti-distraction runtime snapshots, Chat preview web data per working folder). Production and dev builds keep separate app config directories and therefore separate active-folder pointers.
 
 ## Key conventions
 

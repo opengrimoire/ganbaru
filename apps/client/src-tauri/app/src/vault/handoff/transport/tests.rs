@@ -358,7 +358,7 @@ async fn unanswered_enrollment_times_out_and_keeps_the_invitation() {
 }
 
 #[tokio::test]
-async fn peers_outside_the_address_policy_are_closed_before_the_pending_budget() {
+async fn peers_outside_the_address_policy_are_closed_before_the_tls_handshake() {
     let root = TestDirectory::new("address-policy");
     let desktop = PairingManager::default();
     desktop

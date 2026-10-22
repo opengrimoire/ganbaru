@@ -1,9 +1,15 @@
 //! Recovery offers: deleted rows that kept edits their deletion did not see. Restoring and
 //! discarding seal with the local writer, so the service runs them inside a pass.
+//!
+//! The owning domain restores a row through its own persistence. The app registers one
+//! restorer per table name that can root an offer, and only registered tables accept a choice.
+
+use std::collections::BTreeMap;
+use std::pin::Pin;
 
 use super::writer::ActiveWriter;
-use ganbaru_sync::manifest::vault::quick_notes::{NOTES, NOTES_TABLE};
-use ganbaru_sync::{Engine, SpaceContext};
+use ganbaru_sync::manifest::TableSpec;
+use ganbaru_sync::{Engine, RecoveryDescendant, SpaceContext};
 use ganbaru_sync_contracts::{GroupId, TableId, Value};
 use serde::Deserialize;
 use sqlx::pool::PoolConnection;
@@ -27,44 +33,93 @@ pub struct RecoveryChoice {
     pub action: RecoveryAction,
 }
 
-/// Table id of a recoverable table name; only Quick notes offer recovery in this version.
-pub fn recoverable_table(name: &str) -> Result<TableId, String> {
-    if name == NOTES.name {
-        Ok(NOTES_TABLE)
-    } else {
-        Err(format!("{name} rows cannot be recovered"))
+/// Retained values of a row offered for recovery and of the deleted descendants that restoring
+/// it brings back, nearest first.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RecoveredRow {
+    /// Winning retained value per group of the root row.
+    pub values: Vec<(GroupId, Value)>,
+    /// Deleted descendants grouped under the root.
+    pub descendants: Vec<RecoveryDescendant>,
+}
+
+/// Future of a restore: the id of the new root row, or why it could not be created.
+pub type RestoreFuture = Pin<Box<dyn Future<Output = Result<String, String>> + Send>>;
+
+/// Creates new rows from a recovered root and its descendants through the owning domain's
+/// persistence, in one transaction of its own.
+pub type Restorer = fn(SqlitePool, RecoveredRow) -> RestoreFuture;
+
+/// Restorers keyed by table name. A table without a restorer accepts no recovery choice.
+#[derive(Default)]
+pub struct RecoveryRestorers {
+    by_name: BTreeMap<&'static str, (TableId, Restorer)>,
+}
+
+impl RecoveryRestorers {
+    /// An empty registry.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Registers the restorer of a table.
+    ///
+    /// # Panics
+    ///
+    /// When the table already has one, which is a composition error.
+    #[must_use]
+    pub fn with(mut self, table: &'static TableSpec, restorer: Restorer) -> Self {
+        let previous = self.by_name.insert(table.name, (table.id, restorer));
+        assert!(
+            previous.is_none(),
+            "{} has two recovery restorers",
+            table.name
+        );
+        self
+    }
+
+    /// Table names that have a restorer, in name order.
+    pub fn tables(&self) -> impl Iterator<Item = &'static str> + '_ {
+        self.by_name.keys().copied()
+    }
+
+    /// Table id of a table name that accepts recovery choices.
+    pub fn table(&self, name: &str) -> Result<TableId, String> {
+        self.by_name
+            .get(name)
+            .map(|(table, _)| *table)
+            .ok_or_else(|| format!("{name} rows cannot be recovered"))
+    }
+
+    fn restorer(&self, table: TableId) -> Result<Restorer, String> {
+        self.by_name
+            .values()
+            .find(|(id, _)| *id == table)
+            .map(|(_, restorer)| *restorer)
+            .ok_or_else(|| format!("table {} rows cannot be recovered", table.0))
     }
 }
 
-/// Restores or discards a recovery offer, then closes it with a tombstone that covers every
-/// retained version. `restore` creates the new row from the retained group values, through the
-/// owning domain's persistence, and returns its id. Returns the id of the restored row.
-pub async fn close<Restore, Restored>(
+/// Restores or discards a recovery offer, then closes it with deletions that cover every
+/// retained version. Restoring runs the table's registered restorer first, in its own
+/// transaction, and closing follows in a second one, so a failed restore leaves the offer
+/// open. Returns the id of the restored row.
+pub async fn close(
     engine: &Engine,
     pool: &SqlitePool,
     ctx: &SpaceContext,
     writer: &mut ActiveWriter,
+    restorers: &RecoveryRestorers,
     choice: &RecoveryChoice,
     now_ms: u64,
-    restore: Restore,
-) -> Result<Option<String>, String>
-where
-    Restore: FnOnce(Vec<(GroupId, Value)>) -> Restored,
-    Restored: Future<Output = Result<String, String>>,
-{
+) -> Result<Option<String>, String> {
     let (table, row_key) = (choice.table, choice.row_key.as_str());
+    let restorer = restorers.restorer(table)?;
     let restored = match choice.action {
         RecoveryAction::Discard => None,
         RecoveryAction::Restore => {
-            let values = {
-                let mut conn = acquire(pool).await?;
-                engine
-                    .recovery_values(&mut conn, table, row_key)
-                    .await
-                    .map_err(|error| format!("read recovered values: {error}"))?
-            }
-            .ok_or_else(|| "the recovery offer is closed".to_string())?;
-            Some(restore(values).await?)
+            let row = recovered(engine, pool, table, row_key).await?;
+            Some(restorer(pool.clone(), row).await?)
         }
     };
     let report = {
@@ -80,8 +135,63 @@ where
     Ok(restored)
 }
 
+/// Retained values of an offered row and its descendants.
+async fn recovered(
+    engine: &Engine,
+    pool: &SqlitePool,
+    table: TableId,
+    row_key: &str,
+) -> Result<RecoveredRow, String> {
+    let mut conn = acquire(pool).await?;
+    let closed = || "the recovery offer is closed".to_string();
+    let values = engine
+        .recovery_values(&mut conn, table, row_key)
+        .await
+        .map_err(|error| format!("read recovered values: {error}"))?
+        .ok_or_else(closed)?;
+    let descendants = engine
+        .recovery_descendants(&mut conn, table, row_key)
+        .await
+        .map_err(|error| format!("read recovered descendants: {error}"))?
+        .ok_or_else(closed)?;
+    Ok(RecoveredRow {
+        values,
+        descendants,
+    })
+}
+
 async fn acquire(pool: &SqlitePool) -> Result<PoolConnection<Sqlite>, String> {
     pool.acquire()
         .await
         .map_err(|error| format!("acquire sync connection: {error}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use ganbaru_sync::manifest::vault::quick_notes::{NOTES, NOTES_TABLE, TAGS};
+
+    use super::*;
+
+    fn refuse(_: SqlitePool, _: RecoveredRow) -> RestoreFuture {
+        Box::pin(async { Err("refused".to_string()) })
+    }
+
+    #[test]
+    fn recovery_choices_resolve_only_registered_tables() {
+        let restorers = RecoveryRestorers::new().with(&NOTES, refuse);
+        assert_eq!(restorers.table("quick_notes"), Ok(NOTES_TABLE));
+        assert!(restorers.table("quick_note_tags").is_err());
+        assert!(restorers.table("missing").is_err());
+        assert!(restorers.restorer(NOTES_TABLE).is_ok());
+        assert!(restorers.restorer(TAGS.id).is_err());
+        assert_eq!(restorers.tables().collect::<Vec<_>>(), vec!["quick_notes"]);
+    }
+
+    #[test]
+    #[should_panic(expected = "two recovery restorers")]
+    fn recovery_restorers_refuse_a_second_restorer_for_a_table() {
+        let _ = RecoveryRestorers::new()
+            .with(&NOTES, refuse)
+            .with(&NOTES, refuse);
+    }
 }

@@ -48,12 +48,25 @@ pub(crate) struct HeldView {
     pub invalid: usize,
 }
 
-/// Rows with an open conflict in one table.
+/// A count for one replicated table, by name, so the frontend presents it through the
+/// registration of the owning domain.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct ConflictCount {
+pub(crate) struct TableCount {
     pub table: String,
     pub count: usize,
+}
+
+impl TableCount {
+    fn list(counts: &[(&'static str, usize)]) -> Vec<Self> {
+        counts
+            .iter()
+            .map(|(table, count)| Self {
+                table: (*table).to_string(),
+                count: *count,
+            })
+            .collect()
+    }
 }
 
 /// A sync problem the interface explains in its own words rather than with `last_error`.
@@ -78,8 +91,10 @@ pub(crate) struct SyncStatusView {
     pub pending_local_changes: usize,
     pub waiting: usize,
     pub held: HeldView,
-    pub conflicts: Vec<ConflictCount>,
-    pub recovery_count: usize,
+    /// Rows with open conflicts, per table.
+    pub conflicts: Vec<TableCount>,
+    /// Recovery offers, per table of their root row.
+    pub recovery: Vec<TableCount>,
     /// Devices whose merged edits carry clocks far ahead of this device, so they win
     /// concurrent edits until the clocks agree.
     pub clock_ahead_devices: Vec<DeviceRef>,
@@ -95,15 +110,8 @@ impl SyncStatusView {
             newer_manifest: status.held.newer_manifest,
             invalid: status.held.invalid,
         };
-        self.conflicts = status
-            .conflicts
-            .iter()
-            .map(|(table, count)| ConflictCount {
-                table: (*table).to_string(),
-                count: *count,
-            })
-            .collect();
-        self.recovery_count = status.recovery;
+        self.conflicts = TableCount::list(&status.conflicts);
+        self.recovery = TableCount::list(&status.recovery);
     }
 
     /// Names the devices of writers with far-ahead clocks, once per device, in device id order.
@@ -284,5 +292,33 @@ mod tests {
 
         view.set_clock_ahead(&status, &[], &devices);
         assert!(view.clock_ahead_devices.is_empty());
+    }
+
+    #[test]
+    fn sync_status_reports_conflict_and_recovery_counts_per_table() {
+        let status = SyncStatus {
+            conflicts: vec![("quick_notes", 2), ("quick_note_tags", 1)],
+            recovery: vec![("quick_notes", 3)],
+            ..SyncStatus::default()
+        };
+        let mut view = SyncStatusView::default();
+        view.set_counts(&status);
+        let count = |table: &str, count| TableCount {
+            table: table.to_string(),
+            count,
+        };
+        assert_eq!(
+            view.conflicts,
+            vec![count("quick_notes", 2), count("quick_note_tags", 1)]
+        );
+        assert_eq!(view.recovery, vec![count("quick_notes", 3)]);
+        let wire = serde_json::to_value(&view).expect("serialize status");
+        assert_eq!(
+            wire["recovery"],
+            serde_json::json!([{ "table": "quick_notes", "count": 3 }])
+        );
+
+        view.set_counts(&SyncStatus::default());
+        assert!(view.conflicts.is_empty() && view.recovery.is_empty());
     }
 }

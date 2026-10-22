@@ -1183,6 +1183,41 @@ impl Manifest {
         }
     }
 
+    /// Tables whose rows can root a recovery offer, in manifest order: tables with a
+    /// recoverable group and, transitively, the tables they reference with `ON DELETE CASCADE`,
+    /// because a cascaded deletion groups its rows under the deleted parent. Derived-key tables
+    /// are left out: a removed derived-key row stays live in merge state, so it never carries
+    /// the recovery flag, and adding the key again is how it comes back.
+    pub fn recovery_root_tables(&self) -> Vec<&'static TableSpec> {
+        let mut roots: Vec<TableId> = self
+            .tables
+            .iter()
+            .filter(|spec| spec.groups.iter().any(|group| group.recoverable))
+            .map(|spec| spec.id)
+            .collect();
+        loop {
+            let parents: Vec<TableId> = self
+                .tables
+                .iter()
+                .filter(|spec| roots.contains(&spec.id))
+                .flat_map(|spec| spec.references())
+                .filter(|(_, _, reference)| reference.on_delete == OnDelete::Cascade)
+                .map(|(_, _, reference)| reference.table)
+                .filter(|table| !roots.contains(table))
+                .collect();
+            if parents.is_empty() {
+                break;
+            }
+            roots.extend(parents);
+            roots.sort_unstable();
+            roots.dedup();
+        }
+        self.tables
+            .iter()
+            .filter(|spec| roots.contains(&spec.id) && spec.derived_key.is_none())
+            .collect()
+    }
+
     /// Replicated table by SQL name.
     pub fn table_named(&self, name: &str) -> Option<&'static TableSpec> {
         self.tables.iter().find(|table| table.name == name)

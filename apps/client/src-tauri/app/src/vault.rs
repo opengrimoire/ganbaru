@@ -122,8 +122,13 @@ where
 }
 
 pub(crate) fn ensure_device_id<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<String, String> {
+    ensure_device_id_in(&app_config_dir(app)?)
+}
+
+/// The device id stored in the app config directory `config_dir`, created on first use.
+pub(crate) fn ensure_device_id_in(config_dir: &Path) -> Result<String, String> {
     // Most calls find the identity already stored; avoid cloning device state for an update.
-    if let Some(device_id) = read_app_state(app)?
+    if let Some(device_id) = read_app_state_in(config_dir)?
         .device_id
         .as_ref()
         .filter(|value| !value.trim().is_empty())
@@ -135,7 +140,7 @@ pub(crate) fn ensure_device_id<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<
         .map_err(|error| format!("create device id timestamp: {error}"))?
         .as_nanos();
     let candidate = format!("device-{timestamp:x}-{:x}", std::process::id());
-    update_app_state(app, |state| {
+    update_app_state_in(config_dir, |state| {
         if let Some(device_id) = state
             .device_id
             .as_ref()
@@ -177,10 +182,12 @@ pub struct VaultDefaultLocation {
     pub development_build: bool,
 }
 
-fn app_state_path<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<PathBuf, String> {
-    let mut path = app.path().app_config_dir().map_err(|e| e.to_string())?;
-    path.push(APP_STATE_FILE);
-    Ok(path)
+fn app_config_dir<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<PathBuf, String> {
+    app.path().app_config_dir().map_err(|e| e.to_string())
+}
+
+fn app_state_path_in(config_dir: &Path) -> PathBuf {
+    config_dir.join(APP_STATE_FILE)
 }
 
 fn read_app_state_from_path(path: &Path) -> Result<VaultAppState, String> {
@@ -295,20 +302,33 @@ fn make_directory_private(path: &Path) -> Result<(), String> {
 pub(crate) fn read_app_state<R: Runtime>(
     app: &tauri::AppHandle<R>,
 ) -> Result<Arc<VaultAppState>, String> {
+    read_app_state_in(&app_config_dir(app)?)
+}
+
+/// The device state stored in the app config directory `config_dir`.
+fn read_app_state_in(config_dir: &Path) -> Result<Arc<VaultAppState>, String> {
     let mut cache = APP_STATE
         .lock()
         .map_err(|_| "app state lock is unavailable".to_string())?;
-    cached_app_state(&mut cache, &app_state_path(app)?)
+    cached_app_state(&mut cache, &app_state_path_in(config_dir))
 }
 
 pub(crate) fn update_app_state<R: Runtime, T>(
     app: &tauri::AppHandle<R>,
     update: impl FnOnce(&mut VaultAppState) -> Result<T, String>,
 ) -> Result<T, String> {
+    update_app_state_in(&app_config_dir(app)?, update)
+}
+
+/// Updates the device state stored in the app config directory `config_dir`.
+fn update_app_state_in<T>(
+    config_dir: &Path,
+    update: impl FnOnce(&mut VaultAppState) -> Result<T, String>,
+) -> Result<T, String> {
     let mut cache = APP_STATE
         .lock()
         .map_err(|_| "app state lock is unavailable".to_string())?;
-    let path = app_state_path(app)?;
+    let path = app_state_path_in(config_dir);
     let current = cached_app_state(&mut cache, &path)?;
     let mut state = VaultAppState::clone(&current);
     let result = update(&mut state)?;
@@ -877,9 +897,20 @@ pub fn active_vault_path<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<PathBu
     active_vault(app).map(|(path, _)| path)
 }
 
+/// The active vault root of the app config directory `config_dir`.
+pub(crate) fn active_vault_path_in(config_dir: &Path) -> Result<PathBuf, String> {
+    active_vault_in(config_dir).map(|(path, _)| path)
+}
+
 /// Resolve the active folder and its validated marker with one marker read.
 fn active_vault<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<(PathBuf, VaultManifest), String> {
-    let Some(path) = read_app_state(app)?.active_vault_path.clone() else {
+    active_vault_in(&app_config_dir(app)?)
+}
+
+/// Resolve the active folder of the app config directory `config_dir` and its validated marker
+/// with one marker read.
+fn active_vault_in(config_dir: &Path) -> Result<(PathBuf, VaultManifest), String> {
+    let Some(path) = read_app_state_in(config_dir)?.active_vault_path.clone() else {
         return Err("no active Ganbaru folder selected".to_string());
     };
     let path = canonical_vault_path(PathBuf::from(path))?;
@@ -963,10 +994,22 @@ pub(crate) fn active_replicated_asset_path<R: Runtime>(
     app: &tauri::AppHandle<R>,
     domain: &str,
 ) -> Result<WritableVaultPath, String> {
-    let (path, manifest) = active_vault(app)?;
-    let permit = app
-        .state::<ownership::VaultOwnershipManager>()
-        .acquire_replicated_asset_write(&manifest.vault_id, domain)?;
+    replicated_asset_path_in(
+        &app_config_dir(app)?,
+        app.state::<ownership::VaultOwnershipManager>().inner(),
+        domain,
+    )
+}
+
+/// [`active_replicated_asset_path`] for the app config directory `config_dir`, with the permit
+/// taken from `ownership`.
+pub(crate) fn replicated_asset_path_in(
+    config_dir: &Path,
+    ownership: &ownership::VaultOwnershipManager,
+    domain: &str,
+) -> Result<WritableVaultPath, String> {
+    let (path, manifest) = active_vault_in(config_dir)?;
+    let permit = ownership.acquire_replicated_asset_write(&manifest.vault_id, domain)?;
     Ok(WritableVaultPath {
         path,
         _permit: permit,
@@ -977,8 +1020,18 @@ pub(crate) fn active_vault_id<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<S
     active_vault(app).map(|(_, manifest)| manifest.vault_id)
 }
 
+/// The active vault id of the app config directory `config_dir`.
+pub(crate) fn active_vault_id_in(config_dir: &Path) -> Result<String, String> {
+    active_vault_in(config_dir).map(|(_, manifest)| manifest.vault_id)
+}
+
 pub fn active_database_path<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<PathBuf, String> {
     Ok(database_path(&active_vault_path(app)?))
+}
+
+/// The active vault database of the app config directory `config_dir`.
+pub(crate) fn active_database_path_in(config_dir: &Path) -> Result<PathBuf, String> {
+    Ok(database_path(&active_vault_path_in(config_dir)?))
 }
 
 fn require_absolute_path(path: &Path) -> Result<(), String> {
@@ -993,6 +1046,37 @@ fn require_absolute_path(path: &Path) -> Result<(), String> {
 fn dialog_path(path: FilePath) -> Result<PathBuf, String> {
     path.into_path()
         .map_err(|e| format!("selected path is not a local file: {e}"))
+}
+
+/// Creates a vault with id `vault_id` in the empty folder `vault_path` and makes it the active
+/// vault of device `device_id` in the app config directory `config_dir`. Returns the path of
+/// its database, which is created empty and migrates on first open.
+#[cfg(test)]
+pub(crate) fn activate_test_vault(
+    config_dir: &Path,
+    vault_path: &Path,
+    vault_id: &str,
+    device_id: &str,
+) -> Result<PathBuf, String> {
+    fs::create_dir_all(vault_path).map_err(|e| format!("create test vault: {e}"))?;
+    let path = canonical_vault_path(vault_path.to_path_buf())?;
+    let manifest = VaultManifest {
+        app: VAULT_APP_MARKER.to_string(),
+        schema_version: VAULT_SCHEMA_VERSION,
+        vault_id: vault_id.to_string(),
+        display_name: display_name_from_path(&path),
+        created_at: now_utc().to_rfc3339_opts(SecondsFormat::Millis, true),
+    };
+    ensure_vault_skeleton(&path)?;
+    let json = serde_json::to_string_pretty(&manifest).map_err(|e| e.to_string())?;
+    write_text_file_atomically(&manifest_path(&path), &json, FileAccess::OwnerOnly)?;
+    let active = path.to_string_lossy().into_owned();
+    update_app_state_in(config_dir, |state| {
+        state.device_id = Some(device_id.to_string());
+        state.active_vault_path = Some(active);
+        Ok(())
+    })?;
+    Ok(database_path(&path))
 }
 
 /// Replace a UTF-8 text file through a synced, exclusively created temporary

@@ -22,7 +22,7 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init());
     let app = builder
-        .manage(db::DatabaseState::default())
+        .manage(db::vault_pools().clone())
         .manage(vault::ownership::VaultOwnershipManager::default())
         .manage(vault::preferences::PreferencesState::default())
         .manage(vault::handoff::pairing::PairingManager::default())
@@ -457,15 +457,18 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
         .build(context)
         .expect("error while building Tauri mobile application");
 
-    app.run(|_app, _event| {
+    app.run(|_app, event| {
+        if matches!(event, tauri::RunEvent::Exit) {
+            crate::sync::release_runtime_handle();
+        }
         #[cfg(target_os = "android")]
-        if matches!(_event, tauri::RunEvent::Resumed) {
+        if matches!(event, tauri::RunEvent::Resumed) {
             vault::handoff::receiver::trigger_coordinator_reconciliation(_app.clone());
             tauri::Manager::state::<crate::sync::SyncRuntime>(_app).sync_now();
             crate::distractions::android::runtime::wake(_app);
         }
         #[cfg(target_os = "android")]
-        if matches!(_event, tauri::RunEvent::Exit) {
+        if matches!(event, tauri::RunEvent::Exit) {
             crate::distractions::android::runtime::stop(_app);
         }
     });

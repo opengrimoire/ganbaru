@@ -610,7 +610,7 @@ pub(crate) async fn download_bundle(
 }
 
 #[cfg(all(test, desktop))]
-mod tests;
+pub(crate) mod tests;
 
 async fn download_bundle_inner(
     manager: &PairingManager,

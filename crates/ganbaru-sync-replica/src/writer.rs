@@ -89,12 +89,10 @@ impl WriterKeyStore for KeyringStore {
 }
 
 /// Key store of one private file per writer, used on Android and in tests.
-#[cfg(any(mobile, test))]
 pub struct FileKeyStore {
     pub directory: PathBuf,
 }
 
-#[cfg(any(mobile, test))]
 impl FileKeyStore {
     fn path(&self, vault_id: &str, writer_id: &str) -> PathBuf {
         self.directory.join(format!(
@@ -104,7 +102,6 @@ impl FileKeyStore {
     }
 }
 
-#[cfg(any(mobile, test))]
 impl WriterKeyStore for FileKeyStore {
     fn read(&self, vault_id: &str, writer_id: &str) -> Result<Option<Vec<u8>>, String> {
         match std::fs::read(self.path(vault_id, writer_id)) {

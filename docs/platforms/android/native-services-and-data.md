@@ -69,4 +69,4 @@ Profile images, project icons, custom emoji, Notes icons, covers, attachments, a
 
 ## Deferrable work
 
-WorkManager is appropriate for deferrable maintenance and future sync. It must not own Pomodoro deadlines, Calendar reminders, active Music playback, or real-time selected-app enforcement.
+WorkManager owns background sync and is appropriate for other deferrable maintenance. Sync work never runs as a foreground service; see [sync](../../data/sync.md#settings-and-android-delivery). WorkManager must not own Pomodoro deadlines, Calendar reminders, active Music playback, or real-time selected-app enforcement.

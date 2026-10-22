@@ -61,6 +61,18 @@ Each entry names the owning modules, why the boundary exists, its key safety inv
 
 **Required validation:** Absent or duplicate registration, invalid IDs, live revocation, panic-on-drop payloads, late acknowledgement, cancellation during SDK execution, delayed source lookup, phase changes, ownership I/O contention, and freeze/resume replacement. ARM64 compilation with export and signature inspection. Physical stalled-thread, slow-provider, service destruction, and vault handoff acceptance is separate.
 
+### Android background sync entry
+
+**Owned module:** `apps/client/src-tauri/app/src/sync/headless.rs`.
+
+**Contract:** A JNI symbol matches Kotlin's static `SyncNative.runPass(String, String?): String?`. The WorkManager sync worker calls it to run a headless sync pass for the app config directory, optionally with discovered coordinator records, and receives a small JSON outcome. It lives in the app crate because it calls the sync service; Tauri's asynchronous plugin bridge cannot reach Rust from a worker whose process has no webview.
+
+**Safety invariants:** The unsafe attribute only fixes the [exported name](https://doc.rust-lang.org/reference/abi.html#the-export_name-attribute); the body is safe Rust over the `jni` crate's transparent wrappers, so the signature matches `(JNIEnv*, jclass, jstring, jstring) -> jstring`. Local references are used only during the call and none are retained. String lengths are checked in UTF-16 units before copying and in bytes after: the config directory is at most 4 KiB and must be an absolute path, and the records JSON is at most 16 KiB and 16 records with bounded fields; invalid input fails without running a pass. Provided records are visible to the dialer only for the duration of the pass. Every panic is contained, the payload is leaked, and the worker treats a `null` result as a failed pass. Shrinker rules preserve the class and method names.
+
+**Replacement trigger:** Tauri offers a supported way to run Rust from Android background work without a webview.
+
+**Required validation:** Config directory and records bounds, invalid record fields, outcome mapping, bounded repeated passes, record scoping, and panic-on-drop payloads, tested on the Linux host through the platform-neutral wrapper. ARM64 compilation with export and signature inspection, and physical background sync acceptance, are separate.
+
 ### Descriptor-relative Unix filesystem operations
 
 **Owned modules:** `crates/ganbaru-chat/src/workspace/files/platform/unix.rs` and `apps/client/src-tauri/app/src/chat/execution_environment.rs`.

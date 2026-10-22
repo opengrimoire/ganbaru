@@ -13,7 +13,7 @@
   import { BUILD_PLATFORM_PROFILE, platformHasCapability } from "$lib/platform";
   import { getMobileBackStack } from "$lib/stores/mobile-back-stack.svelte";
   import { formatHandoffError } from "$lib/vault/handoff-workflow";
-  import { getVaultOwnershipStatus } from "$lib/vault/state";
+  import { QUICK_NOTES_SYNC_DOMAIN, canWriteSyncDomain, getVaultOwnershipStatus } from "$lib/vault/state";
   import {
     beginVaultOwnershipTransition,
     cancelVaultOwnershipTransition,
@@ -41,7 +41,7 @@
     "system.android-back",
   );
   let status = $state<PairingStatus | null>(null);
-  let replicatedWrites = $state(false);
+  let quickNotesWritable = $state(false);
   let dismissed = $state(false);
   let switching = $state(false);
   let replacementConfirmationOpen = $state(false);
@@ -60,7 +60,7 @@
     status?.peerLabel
       ?? t("vaultHandoff.anotherDevice"),
   );
-  const description = $derived(t(replicatedWrites ? "vaultOwnershipPrompt.replicaDescription" : "vaultOwnershipPrompt.description"));
+  const description = $derived(t(quickNotesWritable ? "vaultOwnershipPrompt.replicaDescription" : "vaultOwnershipPrompt.description"));
   const continueLabel = $derived(
     platform === "desktop"
       ? `${t("vaultOwnershipPrompt.continueReadOnly")} (${t("common.escapeKey")})`
@@ -72,7 +72,7 @@
       const next = await readPairingStatus();
       if (previousCanWrite === true && next.canWrite === false) dismissed = false;
       previousCanWrite = next.canWrite;
-      replicatedWrites = shouldPresentVaultOwnershipPrompt(next) && await readReplicatedWrites();
+      quickNotesWritable = shouldPresentVaultOwnershipPrompt(next) && await readQuickNotesWritable();
       status = next;
     } catch (cause) {
       console.warn("Failed to check vault ownership:", cause);
@@ -85,9 +85,9 @@
   }
 
   /** Whether Quick notes stay editable here; the prompt falls back to the read-only copy. */
-  async function readReplicatedWrites(): Promise<boolean> {
+  async function readQuickNotesWritable(): Promise<boolean> {
     try {
-      return (await getVaultOwnershipStatus()).replicatedWrites;
+      return canWriteSyncDomain(await getVaultOwnershipStatus(), QUICK_NOTES_SYNC_DOMAIN);
     } catch (cause) {
       console.warn("Failed to read replicated write access:", cause);
       return false;

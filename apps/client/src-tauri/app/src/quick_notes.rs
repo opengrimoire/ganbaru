@@ -9,6 +9,7 @@ use ganbaru_quick_notes::{
     QuickNoteTagWrite, QuickNoteUpdate, QuickNoteWrite, QuickNoteWriteError, QuickNotesListRequest,
     QuickNotesTrashPurge, QuickNotesWindow, tags,
 };
+use ganbaru_sync::manifest::vault::quick_notes::DOMAIN_NAME as QUICK_NOTES_DOMAIN;
 use tauri::{AppHandle, Runtime};
 
 use crate::db::connect_sqlite;
@@ -45,7 +46,7 @@ pub async fn quick_notes_purge_expired_trash<R: Runtime>(
     db_url: String,
 ) -> Result<QuickNotesTrashPurge, String> {
     let status = crate::vault::ownership::active_status(&app)?;
-    if !status.can_write && !status.replicated_writes {
+    if !status.can_write_domain(QUICK_NOTES_DOMAIN) {
         return Ok(QuickNotesTrashPurge::skipped());
     }
     let pool = connect_sqlite(app, db_url).await?;

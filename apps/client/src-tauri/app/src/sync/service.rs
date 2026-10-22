@@ -725,7 +725,7 @@ async fn create_identity<R: Runtime>(
 /// Whether this device seals for the active vault: a linked owner, or a guarded replica.
 fn sync_enabled<R: Runtime>(app: &AppHandle<R>) -> Result<bool, String> {
     let status = crate::vault::ownership::active_status(app)?;
-    if status.replicated_writes {
+    if status.linked_replica {
         return Ok(true);
     }
     Ok(status.can_write

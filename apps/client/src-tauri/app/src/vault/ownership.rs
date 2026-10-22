@@ -1,6 +1,7 @@
 //! Durable device-local ownership state for single-writer vault handoff.
 
 use super::{active_vault_id, ensure_device_id};
+use ganbaru_sync::manifest::vault::VAULT_MANIFEST;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs;
@@ -148,9 +149,21 @@ pub(crate) struct VaultOwnershipStatus {
     pub generation: u64,
     pub role: &'static str,
     pub can_write: bool,
-    /// Replicated tables accept local writes while the rest of the vault is read-only.
-    pub replicated_writes: bool,
+    /// A stable, linked replica: the database opens guarded and sync runs.
+    pub linked_replica: bool,
+    /// Registered sync domains whose replicated tables accept local writes on this linked
+    /// replica while the rest of the vault stays read-only. Empty unless `linked_replica`.
+    pub replica_writable_domains: Vec<String>,
     pub transfer_phase: TransferPhase,
+}
+
+impl VaultOwnershipStatus {
+    /// Whether this device may write the replicated tables of the sync `domain`: as the owner,
+    /// or as a linked replica that the domain lets write.
+    pub(crate) fn can_write_domain(&self, domain: &str) -> bool {
+        self.can_write
+            || (self.linked_replica && self.replica_writable_domains.iter().any(|d| d == domain))
+    }
 }
 
 impl VaultOwnershipManager {
@@ -214,13 +227,21 @@ impl VaultOwnershipManager {
             .is_some_and(|probe| probe(vault_id))
     }
 
-    /// Marks a stable, linked replica as able to write replicated tables. The probe runs
+    /// Marks a stable, linked replica and lists the sync domains it may write. The probe runs
     /// after the ownership lock is released so it never nests inside it.
-    fn with_replicated_writes(&self, mut status: VaultOwnershipStatus) -> VaultOwnershipStatus {
+    fn with_replica_access(&self, mut status: VaultOwnershipStatus) -> VaultOwnershipStatus {
         let replica = status.role == "read-only"
             && !status.can_write
             && status.transfer_phase == TransferPhase::Stable;
-        status.replicated_writes = replica && self.is_linked(&status.vault_id);
+        status.linked_replica = replica && self.is_linked(&status.vault_id);
+        status.replica_writable_domains = if status.linked_replica {
+            VAULT_MANIFEST
+                .replica_writable_domains()
+                .map(str::to_owned)
+                .collect()
+        } else {
+            Vec::new()
+        };
         status
     }
 
@@ -228,7 +249,7 @@ impl VaultOwnershipManager {
         let status = self.with_record(vault_id, |device_id, record| {
             Ok(status_from_record(device_id, record))
         })?;
-        Ok(self.with_replicated_writes(status))
+        Ok(self.with_replica_access(status))
     }
 
     /// Read known committed authority without materializing a record or accessing storage.
@@ -248,14 +269,14 @@ impl VaultOwnershipManager {
         let device_id = initialized_device_id(&inner)?;
         let status = status_from_record(device_id, record);
         drop(inner);
-        Ok(Some(self.with_replicated_writes(status)))
+        Ok(Some(self.with_replica_access(status)))
     }
 
     pub(crate) fn database_access(&self, vault_id: &str) -> Result<VaultDatabaseAccess, String> {
         let status = self.status(vault_id)?;
         Ok(if status.can_write {
             VaultDatabaseAccess::ReadWrite
-        } else if status.replicated_writes {
+        } else if status.linked_replica {
             VaultDatabaseAccess::Guarded
         } else {
             VaultDatabaseAccess::ReadOnly
@@ -270,11 +291,13 @@ impl VaultOwnershipManager {
         }
     }
 
-    /// Admits the owner and linked stable replicas, which may write replicated domains and
-    /// their verified assets.
-    fn require_replicated_writable(&self, vault_id: &str) -> Result<(), String> {
-        let status = self.status(vault_id)?;
-        if status.can_write || status.replicated_writes {
+    /// Admits the owner, and linked stable replicas when `domain` is one they may write.
+    pub(crate) fn require_replicated_writable(
+        &self,
+        vault_id: &str,
+        domain: &str,
+    ) -> Result<(), String> {
+        if self.status(vault_id)?.can_write_domain(domain) {
             Ok(())
         } else {
             Err(READ_ONLY_ERROR.to_string())
@@ -408,19 +431,23 @@ impl VaultOwnershipManager {
         self.acquire_write_permit(vault_id, Self::require_writable)
     }
 
-    /// A managed write permit for the assets of replicated domains, which linked stable
-    /// replicas may write as well as the owner. Handoff fences it like any managed write.
+    /// A managed write permit for the assets of a replicated `domain`, which linked stable
+    /// replicas may write as well as the owner when the domain allows it. Handoff fences it
+    /// like any managed write.
     pub(crate) fn acquire_replicated_asset_write(
         &self,
         vault_id: &str,
+        domain: &str,
     ) -> Result<ManagedVaultWritePermit, String> {
-        self.acquire_write_permit(vault_id, Self::require_replicated_writable)
+        self.acquire_write_permit(vault_id, |manager, vault_id| {
+            manager.require_replicated_writable(vault_id, domain)
+        })
     }
 
     fn acquire_write_permit(
         &self,
         vault_id: &str,
-        require: fn(&Self, &str) -> Result<(), String>,
+        require: impl Fn(&Self, &str) -> Result<(), String>,
     ) -> Result<ManagedVaultWritePermit, String> {
         require(self, vault_id)?;
         let permit = {
@@ -838,7 +865,8 @@ fn status_from_record(device_id: &str, record: &OwnershipRecord) -> VaultOwnersh
             "read-only"
         },
         can_write: local_owner && stable,
-        replicated_writes: false,
+        linked_replica: false,
+        replica_writable_domains: Vec::new(),
         transfer_phase: record.transfer_phase.clone(),
     }
 }
@@ -1031,6 +1059,7 @@ pub(crate) fn vault_ownership_status<R: Runtime>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ganbaru_sync::manifest::vault::quick_notes::DOMAIN_NAME as QUICK_NOTES;
 
     fn test_path(name: &str) -> PathBuf {
         std::env::temp_dir().join(format!(
@@ -1176,18 +1205,24 @@ mod tests {
             replica.database_access("vault").unwrap(),
             VaultDatabaseAccess::ReadOnly
         );
-        assert!(replica.acquire_replicated_asset_write("vault").is_err());
+        assert!(
+            replica
+                .acquire_replicated_asset_write("vault", QUICK_NOTES)
+                .is_err()
+        );
         replica
             .set_link_probe(Some(Arc::new(|vault_id: &str| vault_id == "vault")))
             .unwrap();
         let status = replica.status("vault").unwrap();
-        assert!(status.replicated_writes && !status.can_write);
+        assert!(status.linked_replica && !status.can_write);
+        assert_eq!(status.replica_writable_domains, [QUICK_NOTES]);
+        assert!(status.can_write_domain(QUICK_NOTES));
+        assert!(!status.can_write_domain("projects"));
+        assert_eq!(replica.cached_status("vault").unwrap().unwrap(), status);
         assert!(
             replica
-                .cached_status("vault")
-                .unwrap()
-                .unwrap()
-                .replicated_writes
+                .acquire_replicated_asset_write("vault", "projects")
+                .is_err()
         );
         assert_eq!(
             replica.database_access("vault").unwrap(),
@@ -1195,16 +1230,28 @@ mod tests {
         );
         assert!(replica.require_writable("vault").is_err());
         assert!(replica.acquire_managed_write("vault").is_err());
-        drop(replica.acquire_replicated_asset_write("vault").unwrap());
+        drop(
+            replica
+                .acquire_replicated_asset_write("vault", QUICK_NOTES)
+                .unwrap(),
+        );
         let fence = replica.fence_managed_writes().unwrap();
-        assert!(replica.acquire_replicated_asset_write("vault").is_err());
+        assert!(
+            replica
+                .acquire_replicated_asset_write("vault", QUICK_NOTES)
+                .is_err()
+        );
         drop(fence);
 
         replica
             .accept_incoming_grant("vault", "transfer".into(), "desktop".into(), 1)
             .unwrap();
-        assert!(!replica.status("vault").unwrap().replicated_writes);
-        assert!(replica.acquire_replicated_asset_write("vault").is_err());
+        assert!(!replica.status("vault").unwrap().linked_replica);
+        assert!(
+            replica
+                .acquire_replicated_asset_write("vault", QUICK_NOTES)
+                .is_err()
+        );
         assert_eq!(
             replica.database_access("vault").unwrap(),
             VaultDatabaseAccess::ReadOnly
@@ -1216,12 +1263,20 @@ mod tests {
             .set_link_probe(Some(Arc::new(|_: &str| true)))
             .unwrap();
         let status = owner.status("vault").unwrap();
-        assert!(status.can_write && !status.replicated_writes);
+        assert!(
+            status.can_write
+                && !status.linked_replica
+                && status.replica_writable_domains.is_empty()
+        );
         assert_eq!(
             owner.database_access("vault").unwrap(),
             VaultDatabaseAccess::ReadWrite
         );
-        assert!(owner.acquire_replicated_asset_write("vault").is_ok());
+        assert!(
+            owner
+                .acquire_replicated_asset_write("vault", QUICK_NOTES)
+                .is_ok()
+        );
         fs::remove_file(path).unwrap();
     }
 

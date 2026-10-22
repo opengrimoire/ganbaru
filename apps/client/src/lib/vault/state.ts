@@ -53,9 +53,25 @@ export interface VaultOwnershipStatus {
   generation: number;
   role: "owner" | "read-only" | "recovery";
   canWrite: boolean;
-  /** A linked replica that can write replicated tables, such as Quick notes, while the rest of the vault is read-only. */
-  replicatedWrites: boolean;
+  /** A stable replica linked to the vault's owner, whose database opens guarded and syncs. */
+  linkedReplica: boolean;
+  /** Sync domains whose replicated tables this linked replica may write while the rest of the vault is read-only. Empty unless `linkedReplica`. */
+  replicaWritableDomains: string[];
   transferPhase: VaultTransferPhase;
+}
+
+/** Sync domain name of Quick notes, as the vault manifest registers it. */
+export const QUICK_NOTES_SYNC_DOMAIN = "quick_notes";
+
+/**
+ * Whether this device may write the replicated tables of a sync domain, as the owner or as a linked replica the domain lets write.
+ *
+ * @param status Ownership status of the active vault.
+ * @param domain Sync domain name from the vault manifest.
+ * @returns True when writes to the domain are accepted on this device.
+ */
+export function canWriteSyncDomain(status: VaultOwnershipStatus, domain: string): boolean {
+  return status.canWrite || (status.linkedReplica && status.replicaWritableDomains.includes(domain));
 }
 
 export type VaultErrorAction =
@@ -77,6 +93,12 @@ function readString(value: unknown): string | null {
 
 function readBoolean(value: unknown): boolean | null {
   return typeof value === "boolean" ? value : null;
+}
+
+function readStringList(value: unknown): string[] | null {
+  if (!Array.isArray(value)) return null;
+  const items = value.map(readString);
+  return items.every((item): item is string => item !== null) ? items : null;
 }
 
 function readNonNegativeInteger(value: unknown): number | null {
@@ -164,7 +186,8 @@ function parseVaultOwnershipStatus(value: unknown): VaultOwnershipStatus {
   const generation = readNonNegativeInteger(value.generation);
   const role = value.role;
   const canWrite = readBoolean(value.canWrite);
-  const replicatedWrites = readBoolean(value.replicatedWrites);
+  const linkedReplica = readBoolean(value.linkedReplica);
+  const replicaWritableDomains = readStringList(value.replicaWritableDomains);
   if (
     !vaultId
     || !deviceId
@@ -172,15 +195,19 @@ function parseVaultOwnershipStatus(value: unknown): VaultOwnershipStatus {
     || generation === null
     || (role !== "owner" && role !== "read-only" && role !== "recovery")
     || canWrite === null
-    || replicatedWrites === null
+    || linkedReplica === null
+    || replicaWritableDomains === null
   ) {
     throw new Error("vault ownership response is incomplete");
   }
   if (canWrite !== (role === "owner")) {
     throw new Error("vault ownership response has an inconsistent role");
   }
-  if (replicatedWrites && role !== "read-only") {
-    throw new Error("vault ownership response has inconsistent replicated writes");
+  if (linkedReplica && role !== "read-only") {
+    throw new Error("vault ownership response has an inconsistent linked replica");
+  }
+  if (!linkedReplica && replicaWritableDomains.length > 0) {
+    throw new Error("vault ownership response has inconsistent replica writes");
   }
   return {
     vaultId,
@@ -189,7 +216,8 @@ function parseVaultOwnershipStatus(value: unknown): VaultOwnershipStatus {
     generation,
     role,
     canWrite,
-    replicatedWrites,
+    linkedReplica,
+    replicaWritableDomains,
     transferPhase: parseTransferPhase(value.transferPhase),
   };
 }

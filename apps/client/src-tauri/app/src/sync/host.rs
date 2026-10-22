@@ -2,11 +2,12 @@
 //! host built from the app config directory runs a pass without a Tauri runtime, such as when
 //! Android wakes the app in the background.
 
-use super::status::{SyncStatusView, emit_applied, emit_status};
+use super::status::{DegradedReasons, SyncRole, SyncStatusView, emit_applied, emit_status};
 use super::writer::{SyncFiles, WriterKeyStore};
 use crate::db::DatabaseState;
 use crate::vault::WritableVaultPath;
 use crate::vault::handoff::pairing::PairingManager;
+use crate::vault::handoff::transport::CoordinatorDialReport;
 use crate::vault::ownership::VaultOwnershipManager;
 use ganbaru_contacts::{PersonKeyPair, PersonPublicKey};
 use ganbaru_sync::manifest::vault::VAULT_MANIFEST;
@@ -102,6 +103,17 @@ pub(crate) trait SyncHost: Clone + Send + Sync + 'static {
             self.refresh_cached(notices).await;
             self.emit_applied(changed.into_iter().collect());
         }
+    }
+
+    /// Adds the degraded reasons the platform probes find for a device in `role`, given what
+    /// its latest coordinator dial found. A host without views probes nothing.
+    fn note_platform_degraded(
+        &self,
+        _role: SyncRole,
+        _dial: Option<&CoordinatorDialReport>,
+        _reasons: &mut DegradedReasons,
+    ) -> impl Future<Output = ()> + Send {
+        async {}
     }
 
     /// This device's id.
@@ -225,6 +237,23 @@ impl<R: Runtime> SyncHost for AppHandle<R> {
 
     async fn refresh_cached(&self, notices: &[ChangeNotice]) {
         crate::vault::preferences::on_sync_notices(self, notices).await;
+    }
+
+    async fn note_platform_degraded(
+        &self,
+        role: SyncRole,
+        dial: Option<&CoordinatorDialReport>,
+        reasons: &mut DegradedReasons,
+    ) {
+        #[cfg(target_os = "linux")]
+        super::connectivity::firewall::note(self, role, dial, reasons).await;
+        #[cfg(target_os = "android")]
+        {
+            let _ = (role, dial);
+            super::connectivity::note_android(self, reasons).await;
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "android")))]
+        let _ = (role, dial, reasons);
     }
 }
 

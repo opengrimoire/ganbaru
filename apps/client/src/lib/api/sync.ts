@@ -19,6 +19,26 @@ export type SyncRole = (typeof SYNC_ROLES)[number];
 export const SYNC_ERROR_CODES = ["writerLimit"] as const;
 export type SyncErrorCode = (typeof SYNC_ERROR_CODES)[number];
 
+/** The kind of network a linked device reached its coordinator over. */
+export const SYNC_CONNECTION_NETWORKS = ["lan", "overlay"] as const;
+export type SyncConnectionNetwork = (typeof SYNC_CONNECTION_NETWORKS)[number];
+
+/** Why this device may sync late or not at all, in the order the native side reports them. */
+export const SYNC_DEGRADED_REASONS = [
+  "backgroundRestricted",
+  "standbyRestricted",
+  "localNetworkDenied",
+  "firewallAuthorizationRequired",
+] as const;
+export type SyncDegradedReason = (typeof SYNC_DEGRADED_REASONS)[number];
+
+/** How a linked device last reached its coordinator in this app run. */
+export interface SyncConnectionView {
+  network: SyncConnectionNetwork;
+  /** The coordinator endpoint, as `address:port`. */
+  address: string;
+}
+
 /** Stored operations this device cannot apply, by reason. */
 export interface SyncHeldCounts {
   newerFormat: number;
@@ -52,6 +72,10 @@ export interface SyncStatusView {
   recovery: SyncTableCount[];
   /** Devices whose edits carry clocks far ahead of this device, so they win concurrent edits. */
   clockAheadDevices: SyncDeviceRef[];
+  /** Kept after a failed dial, so it describes the current link only while idle or syncing. */
+  connection: SyncConnectionView | null;
+  /** Why connectivity is degraded, without repeats. */
+  degraded: SyncDegradedReason[];
 }
 
 export interface SyncDeviceRef {
@@ -92,7 +116,23 @@ export const OFF_SYNC_STATUS: SyncStatusView = {
   conflicts: [],
   recovery: [],
   clockAheadDevices: [],
+  connection: null,
+  degraded: [],
 };
+
+function readConnection(value: unknown, label: string): SyncConnectionView {
+  const row = readRecord(value, label);
+  return {
+    network: readEnum(row.network, SYNC_CONNECTION_NETWORKS, `${label}.network`),
+    address: readString(row.address, `${label}.address`),
+  };
+}
+
+function readDegradedReasons(value: unknown, label: string): SyncDegradedReason[] {
+  const reasons = readArray(value, label, (reason, entryLabel) => readEnum(reason, SYNC_DEGRADED_REASONS, entryLabel));
+  if (new Set(reasons).size !== reasons.length) throw new Error(`${label} must not repeat a reason`);
+  return reasons;
+}
 
 function readHeld(value: unknown, label: string): SyncHeldCounts {
   const row = readRecord(value, label);
@@ -129,6 +169,8 @@ export function mapSyncStatus(value: unknown): SyncStatusView {
     conflicts: readArray(row.conflicts, "sync status.conflicts", readTableCount),
     recovery: readArray(row.recovery, "sync status.recovery", readTableCount),
     clockAheadDevices: readArray(row.clockAheadDevices, "sync status.clockAheadDevices", mapSyncDeviceRef),
+    connection: readNullable(row.connection, "sync status.connection", readConnection),
+    degraded: readDegradedReasons(row.degraded, "sync status.degraded"),
   };
 }
 

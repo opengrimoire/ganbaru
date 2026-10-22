@@ -262,6 +262,18 @@ pub struct NetworkAccessStatus {
     state: NetworkAccessState,
 }
 
+impl NetworkAccessStatus {
+    /// The access state.
+    pub fn state(&self) -> NetworkAccessState {
+        self.state
+    }
+}
+
+/// Whether UFW or firewalld is active on this device. Checking firewalld starts a process.
+pub fn has_active_firewall() -> bool {
+    !active_firewalls().is_empty()
+}
+
 pub fn not_required() -> NetworkAccessStatus {
     NetworkAccessStatus {
         state: NetworkAccessState::NotRequired,

@@ -9,6 +9,9 @@
     canRequestSync,
     syncClockAheadLines,
     syncConflictLines,
+    syncConnectionLabel,
+    syncDegradedRows,
+    type SyncDegradedAction,
     syncDescription,
     syncHeldLines,
     syncLastExchangeLabel,
@@ -17,14 +20,18 @@
     syncStateLabel,
   } from "$lib/sync/status";
   import { syncPresentations } from "$lib/sync/presentations";
+  import { openMobileBackgroundExecutionSettings } from "$lib/scheduling/mobile-background-execution";
   import SyncRecoveryList from "./SyncRecoveryList.svelte";
 
   let {
     buttonClass,
     mobileLayout = false,
+    onAllowNetworkAccess,
   }: {
     buttonClass: string;
     mobileLayout?: boolean;
+    /** Starts allowing the coordinator listener through the firewall, when this device can. */
+    onAllowNetworkAccess?: () => void;
   } = $props();
 
   const CLOCK_TICK_MS = 30_000;
@@ -43,6 +50,25 @@
   const recoveryTotal = $derived(syncRecoveryTotal(status));
   const description = $derived(syncDescription(t, localization.locale, syncPresentations));
   const stateLabel = $derived(syncStateLabel(t, status.state));
+  const connectionLabel = $derived(syncConnectionLabel(t, status));
+  const degradedRows = $derived(syncDegradedRows(t, status));
+
+  /** Whether this section can run `action` here. */
+  function canRunDegradedAction(action: SyncDegradedAction): boolean {
+    return action === "openBatterySettings" ? mobileLayout : onAllowNetworkAccess !== undefined;
+  }
+
+  async function runDegradedAction(action: SyncDegradedAction): Promise<void> {
+    if (action === "allowNetworkAccess") {
+      onAllowNetworkAccess?.();
+      return;
+    }
+    try {
+      await openMobileBackgroundExecutionSettings("battery");
+    } catch (cause: unknown) {
+      console.warn("Android battery settings could not be opened", cause);
+    }
+  }
 
   async function requestSync(): Promise<void> {
     if (requesting) return;
@@ -97,6 +123,9 @@
       {#if status.role}
         <div class="text-muted-foreground">{syncRoleLabel(t, status.role)}</div>
       {/if}
+      {#if connectionLabel}
+        <div class="min-w-0 break-words text-muted-foreground">{connectionLabel}</div>
+      {/if}
       <div class="text-muted-foreground">{syncLastExchangeLabel(t, localization.locale, status, now)}</div>
       {#if status.pendingLocalChanges > 0}
         <div class="text-muted-foreground">{t("sync.pending", status.pendingLocalChanges)}</div>
@@ -109,6 +138,20 @@
       {:else if status.state === "error" && status.lastError}
         <Notice message={t("sync.errorDetail", status.lastError)} />
       {/if}
+      {#each degradedRows as row (row.reason)}
+        {#if row.action && canRunDegradedAction(row.action)}
+          {@const action = row.action}
+          <Notice tone="warning" role="status" copy={false} message={row.label}>
+            {#snippet actions()}
+              <button type="button" class="notice-action-text" onclick={() => void runDegradedAction(action)}>
+                {t(action === "openBatterySettings" ? "sync.degraded.openBatterySettings" : "sync.degraded.allowNetworkAccess")}
+              </button>
+            {/snippet}
+          </Notice>
+        {:else}
+          <Notice tone="warning" role="status" copy={false} message={row.label} />
+        {/if}
+      {/each}
       {#each clockAhead as line (line)}<Notice message={line} />{/each}
       {#each conflictLines as entry (entry.table)}<div class="text-foreground">{entry.line}</div>{/each}
     </div>

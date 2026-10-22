@@ -239,7 +239,9 @@ Vault replacement must fence the generation across processes, not only within on
 
 Onboarding and Settings will show linked devices, connection method, last successful sync, pending changes, unavailable assets, conflicts, recovery status, focus controller, anchor, and relay configuration, with pause, retry, removal, and recovery export.
 
-Android background sync uses WorkManager only and never a foreground service; the app manifest removes the WorkManager foreground service. A background pass runs only while the vault is linked and the active network has a Wi-Fi, Ethernet, or VPN transport, because cellular alone cannot reach a LAN coordinator. Background restriction by the user and the restricted standby bucket must surface as degraded connectivity; battery optimization alone does not, because WorkManager still runs in Doze maintenance windows. Background service availability never establishes focus or idle activity.
+The sync status already carries the network class (local or overlay) and address of the coordinator a linked device last reached in this app run, and the degraded reasons the device can detect: Android background and standby restrictions, a connection refused because local network access is denied, and a Linux firewall that blocks the coordinator listener or, on a linked desktop whose browse found nothing, may block discovery. Settings shows each reason with its recovery action where the app has one.
+
+Android background sync uses WorkManager only and never a foreground service; the app manifest removes the WorkManager foreground service. A background pass runs only while the vault is linked and the active network has a Wi-Fi, Ethernet, or VPN transport, because cellular alone cannot reach a LAN coordinator. Background restriction by the user and the restricted standby bucket surface as degraded connectivity with a link to battery settings; battery optimization alone does not, because WorkManager still runs in Doze maintenance windows. Background service availability never establishes focus or idle activity.
 
 ## Delivery and acceptance
 

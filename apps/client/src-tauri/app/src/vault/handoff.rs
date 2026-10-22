@@ -457,7 +457,7 @@ pub(crate) async fn handoff_grant_network_access<R: Runtime>(
         .path()
         .app_config_dir()
         .map_err(|error| format!("find app config directory: {error}"))?;
-    tauri::async_runtime::spawn_blocking(move || {
+    let status = tauri::async_runtime::spawn_blocking(move || {
         network_access::grant(
             &config_dir,
             &local_addresses::reported_interface_addresses(),
@@ -465,7 +465,9 @@ pub(crate) async fn handoff_grant_network_access<R: Runtime>(
         )
     })
     .await
-    .map_err(|error| format!("authorize Linux network access: {error}"))?
+    .map_err(|error| format!("authorize Linux network access: {error}"))?;
+    crate::sync::firewall_changed(&app);
+    status
 }
 
 #[cfg(target_os = "linux")]
@@ -477,9 +479,11 @@ pub(crate) async fn handoff_revoke_network_access<R: Runtime>(
         .path()
         .app_config_dir()
         .map_err(|error| format!("find app config directory: {error}"))?;
-    tauri::async_runtime::spawn_blocking(move || network_access::revoke(&config_dir))
+    let status = tauri::async_runtime::spawn_blocking(move || network_access::revoke(&config_dir))
         .await
-        .map_err(|error| format!("revoke Linux network access: {error}"))?
+        .map_err(|error| format!("revoke Linux network access: {error}"))?;
+    crate::sync::firewall_changed(&app);
+    status
 }
 
 #[tauri::command]
@@ -699,7 +703,7 @@ fn status_vault_id(
 }
 
 #[cfg(target_os = "linux")]
-fn desktop_network_access_status<R: Runtime>(
+pub(crate) fn desktop_network_access_status<R: Runtime>(
     app: &tauri::AppHandle<R>,
 ) -> Result<network_access::NetworkAccessStatus, String> {
     match app.state::<CoordinatorLifecycle>().port()? {

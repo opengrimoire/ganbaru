@@ -1,7 +1,10 @@
 //! Pinned client transport and shared resumable archive streaming.
 
+mod dial_report;
 #[cfg(desktop)]
 mod server;
+pub(crate) use dial_report::{CoordinatorDialReport, coordinator_dial_report};
+use dial_report::{DialOutcome, record_dial};
 #[cfg(desktop)]
 pub(crate) use server::{
     CoordinatorListener, CoordinatorServices, LanAdmission, serve_with_coordinator,
@@ -770,7 +773,9 @@ async fn connect_pinned(
 ) -> Result<PinnedStream, String> {
     authorize_endpoint(endpoint)?;
     let config = pinned_client_config(fingerprint, identity)?;
-    pinned_handshake(endpoint, config, TLS_HANDSHAKE_TIMEOUT).await
+    pinned_handshake(endpoint, config, TLS_HANDSHAKE_TIMEOUT)
+        .await
+        .map_err(|failure| failure.error)
 }
 
 /// TLS 1.3 client configuration that accepts only the certificate with `fingerprint` and
@@ -798,20 +803,42 @@ async fn pinned_handshake(
     endpoint: SocketAddr,
     config: Arc<rustls::ClientConfig>,
     connect_timeout: Duration,
-) -> Result<PinnedStream, String> {
+) -> Result<PinnedStream, HandshakeFailure> {
     let socket = tokio::time::timeout(connect_timeout, TcpStream::connect(endpoint))
         .await
-        .map_err(|_| "coordinator connection timed out".to_string())?
-        .map_err(|error| format!("connect to coordinator: {error}"))?;
+        .map_err(|_| HandshakeFailure::other("coordinator connection timed out"))?
+        .map_err(|error| HandshakeFailure {
+            local_network_denied: error.kind() == std::io::ErrorKind::PermissionDenied,
+            error: format!("connect to coordinator: {error}"),
+        })?;
     let server_name = ServerName::try_from("ganbaru-coordinator.local")
-        .map_err(|_| "coordinator TLS name is invalid".to_string())?;
+        .map_err(|_| HandshakeFailure::other("coordinator TLS name is invalid"))?;
     tokio::time::timeout(
         TLS_HANDSHAKE_TIMEOUT,
         TlsConnector::from(config).connect(server_name, socket),
     )
     .await
-    .map_err(|_| "coordinator TLS handshake timed out".to_string())?
-    .map_err(|error| format!("establish pinned TLS connection: {error}"))
+    .map_err(|_| HandshakeFailure::other("coordinator TLS handshake timed out"))?
+    .map_err(|error| HandshakeFailure::other(format!("establish pinned TLS connection: {error}")))
+}
+
+/// Why a pinned handshake failed.
+#[derive(Debug)]
+struct HandshakeFailure {
+    error: String,
+    /// The system refused the connection with a permission error, as Android does when the app
+    /// may not reach the local network.
+    local_network_denied: bool,
+}
+
+impl HandshakeFailure {
+    /// A failure that is not a refused local network permission.
+    fn other(error: impl Into<String>) -> Self {
+        Self {
+            error: error.into(),
+            local_network_denied: false,
+        }
+    }
 }
 
 /// How long one coordinator candidate gets to accept a TCP connection.
@@ -833,7 +860,8 @@ const MAX_CONCURRENT_COORDINATOR_DIALS: usize = 4;
 /// so a stale address costs a short delay instead of a full timeout.
 ///
 /// When every candidate fails, it awaits `discover` once and dials the endpoints it returns that
-/// were not tried yet. `discover` does nothing until then.
+/// were not tried yet. `discover` does nothing until then. How the dial ended is recorded for
+/// [`coordinator_dial_report`].
 async fn connect_coordinator(
     manager: &PairingManager,
     coordinator: &CoordinatorPin,
@@ -846,8 +874,10 @@ async fn connect_coordinator(
     let config = pinned_client_config(&coordinator.certificate_fingerprint, Some(identity))?;
     let mut reached =
         race_coordinator_candidates(candidates.clone(), config.clone(), &mut failures).await;
+    let mut discovery_found_nothing = false;
     if reached.is_none() {
         let discovered = discover.await;
+        discovery_found_nothing = discovered.is_empty();
         let untried = untried_discovered_endpoints(
             &discovered,
             &candidates,
@@ -858,6 +888,14 @@ async fn connect_coordinator(
             reached = race_coordinator_candidates(untried, config, &mut failures).await;
         }
     }
+    let outcome = match &reached {
+        Some((_, endpoint)) => DialOutcome::Reached(*endpoint),
+        None => DialOutcome::Failed {
+            local_network_denied: failures.iter().any(|failure| failure.local_network_denied),
+            discovery_found_nothing,
+        },
+    };
+    record_dial(coordinator, outcome);
     finish_coordinator_dial(manager, coordinator, reached, failures)
 }
 
@@ -922,10 +960,7 @@ fn untried_discovered_endpoints(
         }
         match authorize(*endpoint) {
             Ok(()) => untried.push(*endpoint),
-            Err(error) => failures.push(DialFailure {
-                endpoint: endpoint.to_string(),
-                error,
-            }),
+            Err(error) => failures.push(DialFailure::new(endpoint.to_string(), error)),
         }
     }
     untried
@@ -958,6 +993,19 @@ fn finish_coordinator_dial(
 struct DialFailure {
     endpoint: String,
     error: String,
+    /// The system refused the connection with a permission error.
+    local_network_denied: bool,
+}
+
+impl DialFailure {
+    /// A failure of `endpoint` that is not a refused local network permission.
+    fn new(endpoint: impl Into<String>, error: impl Into<String>) -> Self {
+        Self {
+            endpoint: endpoint.into(),
+            error: error.into(),
+            local_network_denied: false,
+        }
+    }
 }
 
 /// The distinct endpoints worth dialing for `coordinator`, best first, and the reasons the
@@ -983,10 +1031,7 @@ fn coordinator_candidates(
     let mut failures = Vec::new();
     for (text, parsed) in stored.chain(discovered).chain(invitation) {
         let Ok(endpoint) = parsed else {
-            failures.push(DialFailure {
-                endpoint: text,
-                error: "coordinator endpoint is invalid".to_string(),
-            });
+            failures.push(DialFailure::new(text, "coordinator endpoint is invalid"));
             continue;
         };
         if candidates.contains(&endpoint) {
@@ -997,10 +1042,7 @@ fn coordinator_candidates(
         }
         match authorize(endpoint) {
             Ok(()) => candidates.push(endpoint),
-            Err(error) => failures.push(DialFailure {
-                endpoint: text,
-                error,
-            }),
+            Err(error) => failures.push(DialFailure::new(text, error)),
         }
     }
     (candidates, failures)
@@ -1032,14 +1074,15 @@ async fn race_coordinator_candidates(
             finished = dials.join_next() => match finished {
                 None => return None,
                 Some(Ok((endpoint, Ok(stream)))) => return Some((stream, endpoint)),
-                Some(Ok((endpoint, Err(error)))) => failures.push(DialFailure {
+                Some(Ok((endpoint, Err(failure)))) => failures.push(DialFailure {
                     endpoint: endpoint.to_string(),
-                    error,
+                    error: failure.error,
+                    local_network_denied: failure.local_network_denied,
                 }),
-                Some(Err(error)) => failures.push(DialFailure {
-                    endpoint: "coordinator dial".to_string(),
-                    error: format!("dial task stopped: {error}"),
-                }),
+                Some(Err(error)) => failures.push(DialFailure::new(
+                    "coordinator dial",
+                    format!("dial task stopped: {error}"),
+                )),
             },
             () = tokio::time::sleep(COORDINATOR_DIAL_STAGGER), if can_dial_more => {}
         }

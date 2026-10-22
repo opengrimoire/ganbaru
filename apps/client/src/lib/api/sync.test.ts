@@ -36,6 +36,8 @@ function validStatus(): Record<string, unknown> {
     conflicts: [{ table: "quick_notes", count: 3 }],
     recovery: [{ table: "quick_notes", count: 1 }],
     clockAheadDevices: [{ deviceId: "device-b", deviceLabel: "Laptop", ownDevice: false }],
+    connection: { network: "lan", address: "192.168.1.20:43821" },
+    degraded: ["localNetworkDenied"],
   };
 }
 
@@ -54,6 +56,8 @@ describe("sync API boundary", () => {
       conflicts: [{ table: "quick_notes", count: 3 }],
       recovery: [{ table: "quick_notes", count: 1 }],
       clockAheadDevices: [{ deviceId: "device-b", deviceLabel: "Laptop", ownDevice: false }],
+      connection: { network: "lan", address: "192.168.1.20:43821" },
+      degraded: ["localNetworkDenied"],
     });
   });
 
@@ -63,6 +67,30 @@ describe("sync API boundary", () => {
 
   it("maps a known error code", () => {
     expect(mapSyncStatus({ ...validStatus(), lastErrorCode: "writerLimit" }).lastErrorCode).toBe("writerLimit");
+  });
+
+  it("maps an overlay connection and every degraded reason", () => {
+    const status = mapSyncStatus({
+      ...validStatus(),
+      connection: { network: "overlay", address: "[fd7a:115c:a1e0::1]:43821" },
+      degraded: ["backgroundRestricted", "standbyRestricted", "localNetworkDenied", "firewallAuthorizationRequired"],
+    });
+    expect(status.connection).toEqual({ network: "overlay", address: "[fd7a:115c:a1e0::1]:43821" });
+    expect(status.degraded).toEqual([
+      "backgroundRestricted",
+      "standbyRestricted",
+      "localNetworkDenied",
+      "firewallAuthorizationRequired",
+    ]);
+  });
+
+  it("rejects malformed connections and degraded reasons", () => {
+    expect(() => mapSyncStatus({ ...validStatus(), connection: { network: "wan", address: "1.2.3.4:1" } })).toThrow();
+    expect(() => mapSyncStatus({ ...validStatus(), connection: { network: "lan" } })).toThrow();
+    expect(() => mapSyncStatus({ ...validStatus(), connection: undefined })).toThrow();
+    expect(() => mapSyncStatus({ ...validStatus(), degraded: ["batteryLow"] })).toThrow();
+    expect(() => mapSyncStatus({ ...validStatus(), degraded: ["localNetworkDenied", "localNetworkDenied"] })).toThrow();
+    expect(() => mapSyncStatus({ ...validStatus(), degraded: undefined })).toThrow();
   });
 
   it("rejects unknown states, roles, and negative counts", () => {

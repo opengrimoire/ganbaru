@@ -1875,10 +1875,7 @@ fn discovery_retries_dial_only_endpoints_not_tried_and_authorized() {
 
 #[test]
 fn a_single_dial_failure_keeps_its_message_and_several_are_summarized() {
-    let failure = |endpoint: &str, error: &str| DialFailure {
-        endpoint: endpoint.to_string(),
-        error: error.to_string(),
-    };
+    let failure = |endpoint: &str, error: &str| DialFailure::new(endpoint, error);
     assert_eq!(
         coordinator_dial_error(vec![failure("10.0.0.5:1", "refuse device connection: x")]),
         "refuse device connection: x"

@@ -8,8 +8,6 @@ use super::{MAX_VAULT_MANIFEST_BYTES, database_path, parse_vault_manifest, vault
 #[cfg(target_os = "android")]
 use super::{default_vault_path, ensure_vault_skeleton, path_to_string};
 #[cfg(target_os = "android")]
-use crate::db;
-#[cfg(target_os = "android")]
 use chrono::{SecondsFormat, Utc};
 #[cfg(target_os = "android")]
 use ganbaru_mobile_documents::MobileDocumentsExt;

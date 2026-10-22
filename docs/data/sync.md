@@ -226,7 +226,7 @@ Contact requests are the only messages the coordinator accepts without a client 
 
 Bootstrap transfers a consistent typed snapshot and causal checkpoint, followed by incremental operations, staged and validated before atomic activation. A phone with a different vault keeps it as a recoverable local vault; combining vaults requires an explicit import preview.
 
-Managed assets use immutable identities, encrypted manifests, authenticated hashes, bounded resumable chunks, and atomic publication. Filenames are metadata and never choose destination paths. Structured data syncs automatically; attachments default to unmetered transfer with explicit download and offline controls.
+Managed assets use immutable identities, encrypted manifests, authenticated hashes, bounded resumable chunks, and atomic publication. Filenames are metadata and never choose destination paths. Structured data syncs automatically; attachments default to unmetered transfer with explicit download and offline controls. Asset classes, content-addressed names, bounded resumable chunks, verification before publication, and atomic publication are implemented for the LAN exchange; encrypted manifests and transfer controls are planned.
 
 Backups capture a consistent database and pinned asset set with authenticated encryption. Restore defaults to an isolated recovery copy; rejoining requires membership reconciliation and a fresh writer generation, and never restores credentials, rewinds acknowledgements, or resurrects tombstones. Compaction requires acknowledged checkpoints, and asset collection respects live references, retained history, pending transfers, and backup pins.
 

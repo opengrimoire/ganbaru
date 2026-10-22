@@ -12,6 +12,7 @@ pub mod hlc;
 pub mod ids;
 pub mod op;
 pub mod order_key;
+pub mod order_placement;
 pub mod signing;
 pub mod vector;
 
@@ -32,5 +33,6 @@ pub use op::{
     OperationKind, PayloadError, Revocation, RevokeReason, SealedOperation, Value,
 };
 pub use order_key::{OrderKey, OrderKeyError};
+pub use order_placement::{OrderPlacementError, OrderedRow};
 pub use signing::{Digest32, WriterKeyError, WriterKeyPair, WriterPublicKey};
 pub use vector::VersionVector;

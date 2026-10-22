@@ -735,15 +735,19 @@
     const previous = orderMusicPlaylists(library.playlistSummaries).map((entry) => ({ ...entry, intendedUses: [...entry.intendedUses] }));
     const byId = new Map(previous.map((entry) => [entry.id, entry]));
     if (playlistIds.length !== previous.length || playlistIds.some((id) => !byId.has(id))) return false;
-    const next = playlistIds.map((id, sortOrder) => ({ ...byId.get(id)!, sortOrder }));
+    // The optimistic order reuses the current keys in their sorted order; the receipts then supply the stored keys.
+    const next = playlistIds.map((id, index) => ({ ...byId.get(id)!, orderKey: previous[index].orderKey }));
     library.playlistSummaries = next;
     try {
       const receipts = await reorderMusicPlaylists({
         playlists: next.map((entry) => ({ playlistId: entry.id, expectedVersion: entry.version })),
         updatedAtMs: Date.now(),
       });
-      const versions = new Map(receipts.map((receipt) => [receipt.id, receipt.version]));
-      library.playlistSummaries = next.map((entry) => ({ ...entry, version: versions.get(entry.id) ?? entry.version }));
+      const stored = new Map(receipts.map((receipt) => [receipt.id, receipt]));
+      library.playlistSummaries = next.map((entry) => {
+        const receipt = stored.get(entry.id);
+        return receipt ? { ...entry, orderKey: receipt.orderKey, version: receipt.version } : entry;
+      });
       playlist.clear();
       return true;
     } catch {

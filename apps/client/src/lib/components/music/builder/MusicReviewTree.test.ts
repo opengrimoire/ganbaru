@@ -10,7 +10,7 @@ function item(id: string, title: string, relativePath: string): MusicItemListEnt
     id, identityKey: id, sourceKind: "local-file", mediaKind: "audio", title, artist: "", album: "",
     localRootId: "root-1", relativePath, sourceCollectionIds: ["source-1"], originalArtworkIdentity: null, artworkOverride: null, durationMs: null, availability: "available", reviewState: "unreviewed",
     discoveredAtMs: 1, updatedAtMs: 1, version: 1, playlistCount: 0, activeSnoozeCount: 0,
-    lastPlayedAtMs: null, playCount: 0, membershipId: null, membershipPosition: null,
+    lastPlayedAtMs: null, playCount: 0, membershipId: null, membershipOrderKey: null,
     membershipWeight: null, membershipEnabled: null, membershipVersion: null,
   };
 }

@@ -27,7 +27,7 @@ vi.mock("$lib/api/music-library", () => ({
 }));
 
 const summary = (id: string): MusicPlaylistSummary => ({
-  id, sortOrder: 0, name: id, icon: "lucide:list-music", shuffleEnabled: true, mixEnabled: false, repeatMode: "all", intendedUses: [],
+  id, orderKey: "a0", name: id, icon: "lucide:list-music", shuffleEnabled: true, mixEnabled: false, repeatMode: "all", intendedUses: [],
   totalCount: 0, eligibleCount: 0, unavailableCount: 0, snoozedCount: 0, localCount: 0,
   onlineCount: 0, version: 1,
 });

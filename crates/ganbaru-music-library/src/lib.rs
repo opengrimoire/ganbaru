@@ -19,6 +19,7 @@ pub mod local_scan;
 #[cfg(desktop)]
 pub mod media;
 mod models;
+mod order;
 mod playback;
 pub use playback::record_listening_in_transaction;
 pub mod playlist_edits;
@@ -51,7 +52,7 @@ pub use transfer::{
     MusicTransferSource,
 };
 pub(crate) use validation::*;
-pub use validation::{MAX_ITEM_DESCRIPTION_CHARS, bounded_item_description};
+pub use validation::{MAX_ITEM_DESCRIPTION_CHARS, bounded_item_description, from_thousandths};
 
 #[cfg(test)]
 mod tests;

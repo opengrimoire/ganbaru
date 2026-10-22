@@ -6,6 +6,8 @@ use super::{MusicLibraryError, MusicLibraryResult, search};
 pub(crate) const DENSE_MUSIC_FIXTURE_PROFILE: &str = "dense-music-v1";
 const FIXTURE_PREFIX: &str = "benchmark-music-";
 const SEEDED_AT: i64 = 1_720_000_000_000;
+/// Device bucket that holds the seeded listening statistics.
+const FIXTURE_DEVICE_ID: &str = "benchmark-music-device";
 const LOCAL_ROOT_COUNT: usize = 4;
 const YOUTUBE_COLLECTION_COUNT: usize = 3;
 const LOCAL_ITEM_COUNT: usize = 5_400;
@@ -172,17 +174,19 @@ async fn seed_playlists(transaction: &mut Transaction<'_, Sqlite>) -> MusicLibra
         "general",
     ];
 
-    for (index, name) in NAMES.into_iter().enumerate() {
+    let tail = super::order::playlist_tail(transaction).await?;
+    let keys = super::order::keys_after(tail.as_deref(), NAMES.len())?;
+    for ((index, name), key) in NAMES.into_iter().enumerate().zip(keys) {
         sqlx::query(
             "INSERT INTO music_playlists
-                (id, name, icon, shuffle_enabled, repeat_mode, sort_order, created_at_ms, updated_at_ms)
+                (id, name, icon, shuffle_enabled, repeat_mode, order_key, created_at_ms, updated_at_ms)
              VALUES (?, ?, ?, ?, 'all', ?, ?, ?)",
         )
         .bind(playlist_id(index))
         .bind(name)
         .bind("lucide:list-music")
         .bind(i64::from(index.is_multiple_of(2)))
-        .bind(index as i64)
+        .bind(key.as_str())
         .bind(SEEDED_AT)
         .bind(SEEDED_AT)
         .execute(&mut **transaction)
@@ -412,11 +416,12 @@ async fn seed_memberships(transaction: &mut Transaction<'_, Sqlite>) -> MusicLib
             .filter(|item_index| (item_index * 3 + playlist_index * 5) % 11 < 4)
             .collect::<Vec<_>>();
         total += included.len();
+        let keys = super::order::rank_keys(included.len())?;
         for (chunk_index, chunk) in included.chunks(INSERT_BATCH_SIZE).enumerate() {
             let mut query = QueryBuilder::<Sqlite>::new(
                 "INSERT INTO music_playlist_memberships
-                    (id, playlist_id, item_id, position, weight, enabled,
-                     start_ms, end_ms, volume, rate, created_at_ms, updated_at_ms) ",
+                    (id, playlist_id, item_id, order_key, weight, enabled,
+                     start_ms, end_ms, volume_milli, rate_milli, created_at_ms, updated_at_ms) ",
             );
             query.push_values(chunk.iter().enumerate(), |mut row, (offset, item_index)| {
                 let position = chunk_index * INSERT_BATCH_SIZE + offset;
@@ -425,13 +430,13 @@ async fn seed_memberships(transaction: &mut Transaction<'_, Sqlite>) -> MusicLib
                 ))
                 .push_bind(playlist_id(playlist_index))
                 .push_bind(item_id(*item_index))
-                .push_bind(position as i64)
+                .push_bind(keys[position].as_str().to_owned())
                 .push_bind(weights[(item_index + playlist_index) % weights.len()])
                 .push_bind(i64::from(!(item_index + playlist_index).is_multiple_of(19)))
                 .push_bind(item_index.is_multiple_of(97).then_some(5_000_i64))
                 .push_bind(item_index.is_multiple_of(97).then_some(85_000_i64))
-                .push_bind(item_index.is_multiple_of(43).then_some(0.82_f64))
-                .push_bind(item_index.is_multiple_of(71).then_some(1.05_f64))
+                .push_bind(item_index.is_multiple_of(43).then_some(820_i64))
+                .push_bind(item_index.is_multiple_of(71).then_some(1_050_i64))
                 .push_bind(SEEDED_AT + position as i64)
                 .push_bind(SEEDED_AT + position as i64);
             });
@@ -504,11 +509,13 @@ async fn seed_signals_statistics_and_history(
     for chunk in statistic_indices.chunks(INSERT_BATCH_SIZE) {
         let mut query = QueryBuilder::<Sqlite>::new(
             "INSERT INTO music_listening_statistics
-                (item_id, last_played_at_ms, play_count, completion_count, skip_count, updated_at_ms) ",
+                (device_id, item_id, last_played_at_ms, play_count, completion_count, skip_count,
+                 updated_at_ms) ",
         );
         query.push_values(chunk.iter().copied(), |mut row, index| {
             let plays = (index % 31 + 1) as i64;
-            row.push_bind(item_id(index))
+            row.push_bind(FIXTURE_DEVICE_ID)
+                .push_bind(item_id(index))
                 .push_bind(SEEDED_AT - index as i64 * 10_000)
                 .push_bind(plays)
                 .push_bind((plays - (index % 5) as i64).max(0))

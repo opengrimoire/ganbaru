@@ -367,7 +367,7 @@ class MusicPlayerStore {
         sourceKind: entry.source.kind === "local-file" ? "local-file" : "youtube-video", availability: entry.availability,
         youtubeResolutionState: entry.embeddingBlocked ? "embedding-blocked" : null, weight: entry.weight, enabled: entry.enabled,
         snoozedUntil: entry.snoozedUntil, snoozedIndefinitely: entry.snoozedIndefinitely,
-        skipRanges: entry.skipRanges.map((range, index) => ({ ...range, id: String(entry.membershipId) + ":" + index, membershipId: entry.membershipId ?? "", sortOrder: index })),
+        skipRanges: entry.skipRanges.map((range, ordinal) => ({ ...range, membershipId: entry.membershipId ?? "", ordinal })),
         volume: entry.volume, rate: entry.rate,
       })) : [];
     }

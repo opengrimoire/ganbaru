@@ -67,11 +67,6 @@ pub fn membership_id(playlist_id: &str, item_id: &str) -> String {
     stable_id("membership", &[playlist_id, item_id])
 }
 
-/// Key of the skip range at `sort_order` within one membership.
-pub fn skip_range_id(membership_id: &str, sort_order: i64) -> String {
-    stable_id("skip-range", &[membership_id, &sort_order.to_string()])
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -133,7 +128,6 @@ mod tests {
             "music-import-item-4ca95b8c1fb675c8ba7cc15d3accf03f303d8127c419590992ca97aad4b01ff3"
         );
         assert_eq!(youtube_item_id("dQw4w9WgXcQ"), "music-youtube-dQw4w9WgXcQ");
-        assert_ne!(skip_range_id("m", 0), skip_range_id("m", 1));
     }
 
     #[test]
@@ -144,7 +138,6 @@ mod tests {
             collection_id("c"),
             membership_id("p", "i"),
             import_item_id("k"),
-            skip_range_id("m", i64::MAX),
         ]
         .into_iter()
         .map(|id| id.len())

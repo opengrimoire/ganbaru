@@ -1815,9 +1815,9 @@ mod tests {
             "INSERT INTO quick_notes (id, title, body_plain_text, order_key) VALUES ('handoff-quick-note', 'Portable quick note', 'Portable quick-note body', 'a0')",
             "INSERT INTO themes (id, display_name, blend_canvas, seed_blend_canvas, derivation_engine_version, created_at_ms, updated_at_ms, icon_label, seed_icon_label) VALUES ('handoff-theme', 'Portable theme', '{}', '{}', 1, 1, 1, 'dark', 'dark')",
             "INSERT INTO distractions_usage_samples (id, source_type, source_key, display_name, started_at_ms, elapsed_seconds, local_date, created_at_ms) VALUES ('handoff-usage', 'mobile-app', 'app.example', 'Portable usage', 1, 45, '2026-09-14', 1)",
-            "INSERT INTO music_playlists (id, name, created_at_ms, updated_at_ms) VALUES ('handoff-playlist', 'Portable playlist', 1, 1)",
+            "INSERT INTO music_playlists (id, name, order_key, created_at_ms, updated_at_ms) VALUES ('handoff-playlist', 'Portable playlist', 'a0', 1, 1)",
             "INSERT INTO music_library_items (id, identity_key, source_kind, original_title, discovered_at_ms, updated_at_ms) VALUES ('handoff-track', 'local:portable-track', 'local-file', 'Portable track', 1, 1)",
-            "INSERT INTO music_playlist_memberships (id, playlist_id, item_id, position, created_at_ms, updated_at_ms) VALUES ('handoff-membership', 'handoff-playlist', 'handoff-track', 0, 1, 1)",
+            "INSERT INTO music_playlist_memberships (id, playlist_id, item_id, order_key, created_at_ms, updated_at_ms) VALUES ('handoff-membership', 'handoff-playlist', 'handoff-track', 'a0', 1, 1)",
         ] {
             sqlx::query(statement).execute(&source_pool).await.unwrap();
         }

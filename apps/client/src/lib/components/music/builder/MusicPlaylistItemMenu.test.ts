@@ -18,7 +18,7 @@ const item: MusicItemListEntry = {
   sourceCollectionIds: [], originalArtworkIdentity: null, artworkOverride: null, durationMs: null,
   availability: "available", reviewState: "reviewed", discoveredAtMs: 1, updatedAtMs: 1, version: 1,
   playlistCount: 1, activeSnoozeCount: 1, lastPlayedAtMs: null, playCount: 0,
-  membershipId: "membership", membershipPosition: 0, membershipWeight: "normal",
+  membershipId: "membership", membershipOrderKey: "a0", membershipWeight: "normal",
   membershipEnabled: true, membershipVersion: 1,
 };
 

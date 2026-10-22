@@ -232,18 +232,18 @@ async fn native_music_background_preset_layers_available_sounds_in_order_with_th
     .unwrap();
     sqlx::query("INSERT INTO music_soundscapes (id, source_kind, name, availability, created_at_ms, updated_at_ms, version) VALUES ('local-storm', 'local-loop', 'Storm', 'missing', 1, 1, 1)")
         .execute(&pool).await.unwrap();
-    sqlx::query("INSERT INTO music_soundscape_presets (id, name, icon, level, created_at_ms, updated_at_ms) VALUES ('preset', 'Desk', 'lucide:cloud', 1.5, 1, 1), ('empty', 'Empty', 'lucide:cloud', 0.5, 1, 1)")
+    sqlx::query("INSERT INTO music_soundscape_presets (id, name, icon, level_milli, created_at_ms, updated_at_ms) VALUES ('preset', 'Desk', 'lucide:cloud', 1500, 1, 1), ('empty', 'Empty', 'lucide:cloud', 500, 1, 1)")
         .execute(&pool).await.unwrap();
     for (position, (id, level)) in [
-        (&ids[1], 0.8),
-        (&"local-storm".to_string(), 1.0),
-        (&ids[0], 0.3),
+        (&ids[1], 800),
+        (&"local-storm".to_string(), 1_000),
+        (&ids[0], 300),
     ]
     .into_iter()
     .enumerate()
     {
-        sqlx::query("INSERT INTO music_soundscape_preset_sounds (preset_id, position, soundscape_id, level) VALUES ('preset', ?, ?, ?)")
-            .bind(position as i64).bind(id).bind(level).execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO music_soundscape_preset_sounds (preset_id, order_key, soundscape_id, level_milli) VALUES ('preset', ?, ?, ?)")
+            .bind(format!("a{position}")).bind(id).bind(level).execute(&pool).await.unwrap();
     }
     let mut transaction = pool.begin().await.unwrap();
     for preset in ["empty", "deleted"] {
@@ -297,9 +297,9 @@ async fn native_music_background_local_loop_plays_only_from_this_devices_recorde
     std::fs::write(&file, b"loop").unwrap();
     sqlx::query("INSERT INTO music_soundscapes (id, source_kind, name, availability, created_at_ms, updated_at_ms, version) VALUES ('local-storm', 'local-loop', 'Storm', 'available', 1, 1, 1)")
         .execute(&pool).await.unwrap();
-    sqlx::query("INSERT INTO music_soundscape_presets (id, name, icon, level, created_at_ms, updated_at_ms) VALUES ('storm', 'Storm', 'lucide:cloud', 1.0, 1, 1)")
+    sqlx::query("INSERT INTO music_soundscape_presets (id, name, icon, level_milli, created_at_ms, updated_at_ms) VALUES ('storm', 'Storm', 'lucide:cloud', 1000, 1, 1)")
         .execute(&pool).await.unwrap();
-    sqlx::query("INSERT INTO music_soundscape_preset_sounds (preset_id, position, soundscape_id, level) VALUES ('storm', 0, 'local-storm', 0.7)")
+    sqlx::query("INSERT INTO music_soundscape_preset_sounds (preset_id, order_key, soundscape_id, level_milli) VALUES ('storm', 'a0', 'local-storm', 700)")
         .execute(&pool).await.unwrap();
     let recorded = BTreeMap::from([(
         "local-storm".to_string(),

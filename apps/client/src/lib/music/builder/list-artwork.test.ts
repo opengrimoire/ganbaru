@@ -9,7 +9,7 @@ function item(patch: Partial<MusicItemListEntry> = {}): MusicItemListEntry {
     originalArtworkIdentity: null, artworkOverride: null, durationMs: null, availability: "available",
     reviewState: "reviewed", discoveredAtMs: 1, updatedAtMs: 1, version: 1, playlistCount: 1,
     activeSnoozeCount: 0, lastPlayedAtMs: null, playCount: 0, membershipId: "membership-1",
-    membershipPosition: 0, membershipWeight: "normal", membershipEnabled: true, membershipVersion: 1,
+    membershipOrderKey: "a0", membershipWeight: "normal", membershipEnabled: true, membershipVersion: 1,
     ...patch,
     sourceCollectionIds: patch.sourceCollectionIds ?? [],
   };

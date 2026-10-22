@@ -24,6 +24,8 @@ export type MusicGroupBy = "none" | "source-kind" | "review-state" | "availabili
 export type LocalRootBindingStatus = "available" | "missing" | "needs-relink";
 
 export interface MusicWriteReceipt { id: string; version: number }
+/** A row's place after a reorder, so lists can sort by `(orderKey, id)` without a reload. */
+export interface MusicOrderReceipt { id: string; orderKey: string; version: number }
 export interface MusicPlaylistDeleteImpact {
   membershipCount: number;
   projectFocusAssignmentCount: number;
@@ -82,13 +84,14 @@ export interface MusicMetadataOverrideWrite {
 export interface MusicMembershipWrite {
   playlistId: string;
   itemId: string;
-  position: number;
   weight: MusicWeight;
   enabled: boolean;
   startMs: number | null;
   endMs: number | null;
-  volume: number | null;
-  rate: number | null;
+  /** Thousandths of full volume, from 0 to 1000. */
+  volumeMilli: number | null;
+  /** Thousandths of normal speed, from 250 to 2000. */
+  rateMilli: number | null;
   expectedVersion: number | null;
   updatedAtMs: number;
 }
@@ -119,13 +122,14 @@ export interface MusicPlaylistPlaybackEntry {
   availability: MusicItemAvailability;
   rootId: string | null;
   relativePath: string | null;
-  position: number;
+  /** Entries sort by `(orderKey, membershipId)` compared by code unit, never by locale. */
+  orderKey: string;
   weight: MusicWeight;
   enabled: boolean;
   startMs: number | null;
   endMs: number | null;
-  volume: number | null;
-  rate: number | null;
+  volumeMilli: number | null;
+  rateMilli: number | null;
   snoozed: boolean;
   snoozedUntil: number | null;
   snoozedIndefinitely: boolean;
@@ -167,8 +171,9 @@ export interface MusicBulkSnoozeWrite {
   createdAtMs: number;
 }
 export interface MusicMembershipRemove { membershipIds: string[] }
-export interface MusicMembershipSkipRange { id: string; membershipId: string; startMs: number; endMs: number; sortOrder: number }
-/** One skip range in an advanced membership save; its sort order is its index. */
+/** A stored skip range; `ordinal` is its index in `(startMs, endMs)` order, from 0 to 63. */
+export interface MusicMembershipSkipRange { membershipId: string; ordinal: number; startMs: number; endMs: number }
+/** One skip range in an advanced membership save; ranges must not overlap and are stored in start order. */
 export interface MusicMembershipSkipRangeWrite { startMs: number; endMs: number }
 export interface MusicAdvancedMembershipWrite { membership: MusicMembershipWrite; skipRanges: MusicMembershipSkipRangeWrite[] }
 export interface MusicAdvancedMembershipReceipt { membership: MusicWriteReceipt; skipRanges: MusicMembershipSkipRange[] }
@@ -264,7 +269,7 @@ export interface MusicItemListEntry {
   lastPlayedAtMs: number | null;
   playCount: number;
   membershipId: string | null;
-  membershipPosition: number | null;
+  membershipOrderKey: string | null;
   membershipWeight: MusicWeight | null;
   membershipEnabled: boolean | null;
   membershipVersion: number | null;
@@ -285,7 +290,8 @@ export interface MusicPlaylistSummary {
   mixEnabled: boolean;
   repeatMode: MusicRepeatMode;
   intendedUses: MusicIntendedUse[];
-  sortOrder: number;
+  /** Playlists sort by `(orderKey, id)` compared by code unit, never by locale. */
+  orderKey: string;
   totalCount: number;
   eligibleCount: number;
   unavailableCount: number;
@@ -428,6 +434,8 @@ export interface MusicLocalLocation {
 }
 export interface MusicPlaylistMembership extends Omit<MusicMembershipWrite, "expectedVersion"> {
   id: string;
+  /** Memberships sort within their playlist by `(orderKey, id)` compared by code unit. */
+  orderKey: string;
   createdAtMs: number;
   version: number;
 }
@@ -533,7 +541,8 @@ export interface MusicPlaylist {
   mixEnabled: boolean;
   repeatMode: MusicRepeatMode;
   intendedUses: MusicIntendedUse[];
-  sortOrder: number;
+  /** Playlists sort by `(orderKey, id)` compared by code unit, never by locale. */
+  orderKey: string;
   createdAtMs: number;
   updatedAtMs: number;
   version: number;
@@ -574,10 +583,6 @@ function number(value: unknown, label: string): number {
   if (typeof value !== "number" || !Number.isSafeInteger(value)) throw new Error(`${label} must be a safe integer`);
   return value;
 }
-function finite(value: unknown, label: string): number {
-  if (typeof value !== "number" || !Number.isFinite(value)) throw new Error(`${label} must be finite`);
-  return value;
-}
 function boolean(value: unknown, label: string): boolean {
   if (typeof value !== "boolean") throw new Error(`${label} must be a boolean`);
   return value;
@@ -596,6 +601,14 @@ function enumeration<const T extends readonly string[]>(value: unknown, values: 
 
 export function parseWriteReceipt(value: unknown, label = "music write receipt"): MusicWriteReceipt {
   const row = object(value, label); return { id: string(row.id, `${label}.id`), version: number(row.version, `${label}.version`) };
+}
+export function parseOrderReceipts(value: unknown, label = "music order receipts"): MusicOrderReceipt[] {
+  return array(value, (entry, entryLabel) => {
+    const row = object(entry, entryLabel);
+    const orderKey = string(row.orderKey, `${entryLabel}.orderKey`);
+    if (orderKey.length === 0) throw new Error(`${entryLabel}.orderKey must not be empty`);
+    return { id: string(row.id, `${entryLabel}.id`), orderKey, version: number(row.version, `${entryLabel}.version`) };
+  }, label);
 }
 export function parseAdvancedMembershipReceipt(value: unknown, label = "advanced membership receipt"): MusicAdvancedMembershipReceipt {
   const row = object(value, label);
@@ -662,7 +675,7 @@ function parseItemEntry(value: unknown, label: string): MusicItemListEntry {
     updatedAtMs: number(row.updatedAtMs, `${label}.updatedAtMs`), version: number(row.version, `${label}.version`), playlistCount: number(row.playlistCount, `${label}.playlistCount`),
     activeSnoozeCount: number(row.activeSnoozeCount, `${label}.activeSnoozeCount`), lastPlayedAtMs: nullable(row.lastPlayedAtMs, number, `${label}.lastPlayedAtMs`),
     playCount: number(row.playCount, `${label}.playCount`), membershipId: nullable(row.membershipId, string, `${label}.membershipId`),
-    membershipPosition: nullable(row.membershipPosition, number, `${label}.membershipPosition`),
+    membershipOrderKey: nullable(row.membershipOrderKey, string, `${label}.membershipOrderKey`),
     membershipWeight: row.membershipWeight === null ? null : enumeration(row.membershipWeight, weights, `${label}.membershipWeight`),
     membershipEnabled: nullable(row.membershipEnabled, boolean, `${label}.membershipEnabled`), membershipVersion: nullable(row.membershipVersion, number, `${label}.membershipVersion`),
   };
@@ -679,7 +692,7 @@ function parsePlaylistSummary(value: unknown, label: string): MusicPlaylistSumma
     id: string(row.id, `${label}.id`), name: string(row.name, `${label}.name`), icon: string(row.icon, `${label}.icon`),
     shuffleEnabled: boolean(row.shuffleEnabled, `${label}.shuffleEnabled`), mixEnabled: boolean(row.mixEnabled, `${label}.mixEnabled`), repeatMode: enumeration(row.repeatMode, repeatModes, `${label}.repeatMode`),
     intendedUses: array(row.intendedUses, (entry, entryLabel) => enumeration(entry, intendedUses, entryLabel), `${label}.intendedUses`),
-    sortOrder: number(row.sortOrder, `${label}.sortOrder`),
+    orderKey: string(row.orderKey, `${label}.orderKey`),
     totalCount: number(row.totalCount, `${label}.totalCount`), eligibleCount: number(row.eligibleCount, `${label}.eligibleCount`), unavailableCount: number(row.unavailableCount, `${label}.unavailableCount`),
     snoozedCount: number(row.snoozedCount, `${label}.snoozedCount`), localCount: number(row.localCount, `${label}.localCount`), onlineCount: number(row.onlineCount, `${label}.onlineCount`), version: number(row.version, `${label}.version`),
   };
@@ -710,10 +723,10 @@ function parseLocation(value: unknown, label: string): MusicLocalLocation {
   const row = object(value, label); return { id: string(row.id, `${label}.id`), itemId: string(row.itemId, `${label}.itemId`), rootId: string(row.rootId, `${label}.rootId`), relativePath: string(row.relativePath, `${label}.relativePath`), fileSizeBytes: nullable(row.fileSizeBytes, number, `${label}.fileSizeBytes`), modifiedAtMs: nullable(row.modifiedAtMs, number, `${label}.modifiedAtMs`), lightweightFingerprint: nullable(row.lightweightFingerprint, string, `${label}.lightweightFingerprint`), strongFingerprint: nullable(row.strongFingerprint, string, `${label}.strongFingerprint`), availability: enumeration(row.availability, locationAvailability, `${label}.availability`), lastSeenGeneration: nullable(row.lastSeenGeneration, number, `${label}.lastSeenGeneration`), firstSeenAtMs: number(row.firstSeenAtMs, `${label}.firstSeenAtMs`), updatedAtMs: number(row.updatedAtMs, `${label}.updatedAtMs`) };
 }
 function parseMembership(value: unknown, label: string): MusicPlaylistMembership {
-  const row = object(value, label); return { id: string(row.id, `${label}.id`), playlistId: string(row.playlistId, `${label}.playlistId`), itemId: string(row.itemId, `${label}.itemId`), position: number(row.position, `${label}.position`), weight: enumeration(row.weight, weights, `${label}.weight`), enabled: boolean(row.enabled, `${label}.enabled`), startMs: nullable(row.startMs, number, `${label}.startMs`), endMs: nullable(row.endMs, number, `${label}.endMs`), volume: nullable(row.volume, finite, `${label}.volume`), rate: nullable(row.rate, finite, `${label}.rate`), updatedAtMs: number(row.updatedAtMs, `${label}.updatedAtMs`), createdAtMs: number(row.createdAtMs, `${label}.createdAtMs`), version: number(row.version, `${label}.version`) };
+  const row = object(value, label); return { id: string(row.id, `${label}.id`), playlistId: string(row.playlistId, `${label}.playlistId`), itemId: string(row.itemId, `${label}.itemId`), orderKey: string(row.orderKey, `${label}.orderKey`), weight: enumeration(row.weight, weights, `${label}.weight`), enabled: boolean(row.enabled, `${label}.enabled`), startMs: nullable(row.startMs, number, `${label}.startMs`), endMs: nullable(row.endMs, number, `${label}.endMs`), volumeMilli: nullable(row.volumeMilli, number, `${label}.volumeMilli`), rateMilli: nullable(row.rateMilli, number, `${label}.rateMilli`), updatedAtMs: number(row.updatedAtMs, `${label}.updatedAtMs`), createdAtMs: number(row.createdAtMs, `${label}.createdAtMs`), version: number(row.version, `${label}.version`) };
 }
 function parseMembershipSkipRange(value: unknown, label: string): MusicMembershipSkipRange {
-  const row = object(value, label); return { id: string(row.id, `${label}.id`), membershipId: string(row.membershipId, `${label}.membershipId`), startMs: number(row.startMs, `${label}.startMs`), endMs: number(row.endMs, `${label}.endMs`), sortOrder: number(row.sortOrder, `${label}.sortOrder`) };
+  const row = object(value, label); return { membershipId: string(row.membershipId, `${label}.membershipId`), ordinal: number(row.ordinal, `${label}.ordinal`), startMs: number(row.startMs, `${label}.startMs`), endMs: number(row.endMs, `${label}.endMs`) };
 }
 function parseSnooze(value: unknown, label: string): MusicSnooze {
   const row = object(value, label); return { id: string(row.id, `${label}.id`), itemId: string(row.itemId, `${label}.itemId`), scope: enumeration(row.scope, snoozeScopes, `${label}.scope`), playlistId: nullable(row.playlistId, string, `${label}.playlistId`), startsAtMs: number(row.startsAtMs, `${label}.startsAtMs`), endsAtMs: nullable(row.endsAtMs, number, `${label}.endsAtMs`), reason: string(row.reason, `${label}.reason`), createdAtMs: number(row.createdAtMs, `${label}.createdAtMs`) };
@@ -728,7 +741,7 @@ function parseRoot(value: unknown, label: string): MusicLocalRoot { const row = 
 export const parseRoots = (value: unknown): MusicLocalRoot[] => array(value, parseRoot, "music roots");
 function parseCollection(value: unknown, label: string): MusicSourceCollection { const row = object(value, label); return { id: string(row.id, `${label}.id`), kind: enumeration(row.kind, collectionKinds, `${label}.kind`), identityKey: string(row.identityKey, `${label}.identityKey`), name: string(row.name, `${label}.name`), localRootId: nullable(row.localRootId, string, `${label}.localRootId`), youtubePlaylistId: nullable(row.youtubePlaylistId, string, `${label}.youtubePlaylistId`), refreshState: enumeration(row.refreshState, refreshStates, `${label}.refreshState`), lastSuccessfulRefreshAtMs: nullable(row.lastSuccessfulRefreshAtMs, number, `${label}.lastSuccessfulRefreshAtMs`), previousSuccessfulRefreshAtMs: nullable(row.previousSuccessfulRefreshAtMs, number, `${label}.previousSuccessfulRefreshAtMs`), lastRefreshErrorCode: nullable(row.lastRefreshErrorCode, string, `${label}.lastRefreshErrorCode`), snapshotGeneration: number(row.snapshotGeneration, `${label}.snapshotGeneration`), createdAtMs: number(row.createdAtMs, `${label}.createdAtMs`), updatedAtMs: number(row.updatedAtMs, `${label}.updatedAtMs`), version: number(row.version, `${label}.version`), discoveryEnabled: boolean(row.discoveryEnabled, `${label}.discoveryEnabled`), removedAtMs: nullable(row.removedAtMs, number, `${label}.removedAtMs`) }; }
 export const parseCollections = (value: unknown): MusicSourceCollection[] => array(value, parseCollection, "music collections");
-export function parsePlaylist(value: unknown): MusicPlaylist { const row = object(value, "music playlist"); return { id: string(row.id, "music playlist.id"), name: string(row.name, "music playlist.name"), icon: string(row.icon, "music playlist.icon"), shuffleEnabled: boolean(row.shuffleEnabled, "music playlist.shuffleEnabled"), mixEnabled: boolean(row.mixEnabled, "music playlist.mixEnabled"), repeatMode: enumeration(row.repeatMode, repeatModes, "music playlist.repeatMode"), intendedUses: array(row.intendedUses, (entry, label) => enumeration(entry, intendedUses, label), "music playlist.intendedUses"), sortOrder: number(row.sortOrder, "music playlist.sortOrder"), createdAtMs: number(row.createdAtMs, "music playlist.createdAtMs"), updatedAtMs: number(row.updatedAtMs, "music playlist.updatedAtMs"), version: number(row.version, "music playlist.version") }; }
+export function parsePlaylist(value: unknown): MusicPlaylist { const row = object(value, "music playlist"); return { id: string(row.id, "music playlist.id"), name: string(row.name, "music playlist.name"), icon: string(row.icon, "music playlist.icon"), shuffleEnabled: boolean(row.shuffleEnabled, "music playlist.shuffleEnabled"), mixEnabled: boolean(row.mixEnabled, "music playlist.mixEnabled"), repeatMode: enumeration(row.repeatMode, repeatModes, "music playlist.repeatMode"), intendedUses: array(row.intendedUses, (entry, label) => enumeration(entry, intendedUses, label), "music playlist.intendedUses"), orderKey: string(row.orderKey, "music playlist.orderKey"), createdAtMs: number(row.createdAtMs, "music playlist.createdAtMs"), updatedAtMs: number(row.updatedAtMs, "music playlist.updatedAtMs"), version: number(row.version, "music playlist.version") }; }
 function parseBinding(value: unknown, label: string): LocalRootBinding { const row = object(value, label); return { rootId: string(row.rootId, `${label}.rootId`), folderPath: nullable(row.folderPath, string, `${label}.folderPath`), status: enumeration(row.status, rootStatuses, `${label}.status`) }; }
 export const parseBindings = (value: unknown): LocalRootBinding[] => array(value, parseBinding, "music root bindings");
 export const parseBindingResult = (value: unknown): LocalRootBinding => parseBinding(value, "music root binding");
@@ -747,13 +760,13 @@ function parsePlaylistPlaybackEntry(value: unknown, label: string): MusicPlaylis
     availability: enumeration(row.availability, itemAvailability, `${label}.availability`),
     rootId: nullable(row.rootId, string, `${label}.rootId`),
     relativePath: nullable(row.relativePath, string, `${label}.relativePath`),
-    position: number(row.position, `${label}.position`),
+    orderKey: string(row.orderKey, `${label}.orderKey`),
     weight: enumeration(row.weight, weights, `${label}.weight`),
     enabled: boolean(row.enabled, `${label}.enabled`),
     startMs: nullable(row.startMs, number, `${label}.startMs`),
     endMs: nullable(row.endMs, number, `${label}.endMs`),
-    volume: nullable(row.volume, number, `${label}.volume`),
-    rate: nullable(row.rate, number, `${label}.rate`),
+    volumeMilli: nullable(row.volumeMilli, number, `${label}.volumeMilli`),
+    rateMilli: nullable(row.rateMilli, number, `${label}.rateMilli`),
     snoozed: boolean(row.snoozed, `${label}.snoozed`),
     snoozedUntil: nullable(row.snoozedUntil, number, `${label}.snoozedUntil`),
     snoozedIndefinitely: boolean(row.snoozedIndefinitely, `${label}.snoozedIndefinitely`),

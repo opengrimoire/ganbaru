@@ -16,6 +16,19 @@ const MAX_RELATIVE_PATH_BYTES: usize = 4_096;
 pub(crate) const MAX_ITEM_WINDOW: i64 = 200;
 pub(crate) const MAX_SUMMARY_WINDOW: i64 = 500;
 const MAX_SEARCH_CHARS: usize = 300;
+/// Most skip ranges one membership holds, matching the schema ordinal bound.
+pub(crate) const MAX_SKIP_RANGES: usize = 64;
+/// Membership volume override in thousandths of full volume.
+pub(crate) const MEMBERSHIP_VOLUME_MILLI: std::ops::RangeInclusive<i64> = 0..=1_000;
+/// Membership rate override in thousandths of normal speed.
+pub(crate) const MEMBERSHIP_RATE_MILLI: std::ops::RangeInclusive<i64> = 250..=2_000;
+/// Stored thousandths per whole playback multiplier.
+const THOUSANDTHS_PER_UNIT: f64 = 1_000.0;
+
+/// Stored integer thousandths as the playback multiplier that audio output applies.
+pub fn from_thousandths(value: i64) -> f64 {
+    value as f64 / THOUSANDTHS_PER_UNIT
+}
 /// Longest stored original title, artist, or album, which the schema also enforces. Longer tag or
 /// import text is truncated rather than rejected, so a crafted file never blocks a scan or import.
 pub const MAX_ITEM_DESCRIPTION_CHARS: usize = 500;
@@ -207,18 +220,40 @@ fn validate_unique_intended_uses(uses: &[MusicIntendedUse]) -> MusicLibraryResul
     Ok(())
 }
 
+/// Checks optional membership volume and rate overrides against their thousandths ranges.
+pub(crate) fn validate_membership_volume_rate(
+    volume_milli: Option<i64>,
+    rate_milli: Option<i64>,
+) -> MusicLibraryResult<()> {
+    if volume_milli.is_some_and(|volume| !MEMBERSHIP_VOLUME_MILLI.contains(&volume)) {
+        return Err(MusicLibraryError::validation(
+            "volumeMilli",
+            format!(
+                "must be between {} and {}",
+                MEMBERSHIP_VOLUME_MILLI.start(),
+                MEMBERSHIP_VOLUME_MILLI.end()
+            ),
+        ));
+    }
+    if rate_milli.is_some_and(|rate| !MEMBERSHIP_RATE_MILLI.contains(&rate)) {
+        return Err(MusicLibraryError::validation(
+            "rateMilli",
+            format!(
+                "must be between {} and {}",
+                MEMBERSHIP_RATE_MILLI.start(),
+                MEMBERSHIP_RATE_MILLI.end()
+            ),
+        ));
+    }
+    Ok(())
+}
+
 pub(crate) fn validate_membership_write(
     membership: &MusicMembershipWrite,
 ) -> MusicLibraryResult<()> {
     validate_id(&membership.playlist_id, "playlistId")?;
     validate_id(&membership.item_id, "itemId")?;
     validate_timestamp(membership.updated_at_ms, "updatedAt")?;
-    if membership.position < 0 {
-        return Err(MusicLibraryError::validation(
-            "position",
-            "must be zero or greater",
-        ));
-    }
     if membership.start_ms.is_some_and(|value| value < 0)
         || membership.end_ms.is_some_and(|value| value < 0)
         || matches!((membership.start_ms, membership.end_ms), (Some(start), Some(end)) if end < start)
@@ -228,24 +263,7 @@ pub(crate) fn validate_membership_write(
             "must not be earlier than the non-negative start",
         ));
     }
-    if membership
-        .volume
-        .is_some_and(|volume| !(0.0..=1.0).contains(&volume))
-    {
-        return Err(MusicLibraryError::validation(
-            "volume",
-            "must be between 0 and 1",
-        ));
-    }
-    if membership
-        .rate
-        .is_some_and(|rate| !(0.25..=2.0).contains(&rate))
-    {
-        return Err(MusicLibraryError::validation(
-            "rate",
-            "must be between 0.25 and 2",
-        ));
-    }
+    validate_membership_volume_rate(membership.volume_milli, membership.rate_milli)?;
     if membership
         .expected_version
         .is_some_and(|version| version <= 0)
@@ -631,21 +649,42 @@ pub(crate) fn validate_advanced_membership_write(
     request: &MusicAdvancedMembershipWrite,
 ) -> MusicLibraryResult<()> {
     validate_membership_write(&request.membership)?;
+    validate_skip_ranges(
+        request
+            .skip_ranges
+            .iter()
+            .map(|range| (range.start_ms, range.end_ms)),
+        "skipRanges",
+    )
+}
+
+/// Checks that skip ranges are at most [`MAX_SKIP_RANGES`], non-empty, ordered, and
+/// non-overlapping, so each range's ordinal is its index.
+pub(crate) fn validate_skip_ranges(
+    ranges: impl ExactSizeIterator<Item = (i64, i64)>,
+    field: &str,
+) -> MusicLibraryResult<()> {
+    if ranges.len() > MAX_SKIP_RANGES {
+        return Err(MusicLibraryError::validation(
+            field,
+            format!("must contain at most {MAX_SKIP_RANGES} ranges"),
+        ));
+    }
     let mut previous_end = None;
-    for range in &request.skip_ranges {
-        if range.start_ms < 0 || range.end_ms <= range.start_ms {
+    for (start_ms, end_ms) in ranges {
+        if start_ms < 0 || end_ms <= start_ms {
             return Err(MusicLibraryError::validation(
-                "skipRanges",
+                field,
                 "must contain ranges with endMs greater than a non-negative startMs",
             ));
         }
-        if previous_end.is_some_and(|end| range.start_ms < end) {
+        if previous_end.is_some_and(|end| start_ms < end) {
             return Err(MusicLibraryError::validation(
-                "skipRanges",
+                field,
                 "must be ordered and non-overlapping",
             ));
         }
-        previous_end = Some(range.end_ms);
+        previous_end = Some(end_ms);
     }
     Ok(())
 }

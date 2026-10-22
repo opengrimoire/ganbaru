@@ -290,25 +290,29 @@ pub struct MusicPlaylist {
     pub mix_enabled: bool,
     pub repeat_mode: MusicRepeatMode,
     pub intended_uses: Vec<MusicIntendedUse>,
-    pub sort_order: i64,
+    /// Playlists sort by `(order_key, id)` compared byte-wise.
+    pub order_key: String,
     pub created_at_ms: i64,
     pub updated_at_ms: i64,
     pub version: i64,
 }
 
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MusicPlaylistMembership {
     pub id: String,
     pub playlist_id: String,
     pub item_id: String,
-    pub position: i64,
+    /// Memberships sort within their playlist by `(order_key, id)` compared byte-wise.
+    pub order_key: String,
     pub weight: MusicWeight,
     pub enabled: bool,
     pub start_ms: Option<i64>,
     pub end_ms: Option<i64>,
-    pub volume: Option<f64>,
-    pub rate: Option<f64>,
+    /// Thousandths of full volume, from 0 to 1000.
+    pub volume_milli: Option<i64>,
+    /// Thousandths of normal speed, from 250 to 2000.
+    pub rate_milli: Option<i64>,
     pub created_at_ms: i64,
     pub updated_at_ms: i64,
     pub version: i64,
@@ -523,23 +527,24 @@ pub struct MusicPlaylistsReorder {
     pub updated_at_ms: i64,
 }
 
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+/// Membership save matched by playlist and item. A new membership is appended to the playlist;
+/// an existing one keeps its place.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MusicMembershipWrite {
     pub playlist_id: String,
     pub item_id: String,
-    pub position: i64,
     pub weight: MusicWeight,
     pub enabled: bool,
     pub start_ms: Option<i64>,
     pub end_ms: Option<i64>,
-    pub volume: Option<f64>,
-    pub rate: Option<f64>,
+    pub volume_milli: Option<i64>,
+    pub rate_milli: Option<i64>,
     pub expected_version: Option<i64>,
     pub updated_at_ms: i64,
 }
 
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MusicBulkMembershipWrite {
     pub memberships: Vec<MusicMembershipWrite>,
@@ -601,13 +606,13 @@ pub struct MusicPlaylistPlaybackEntry {
     pub availability: MusicItemAvailability,
     pub root_id: Option<String>,
     pub relative_path: Option<String>,
-    pub position: i64,
+    pub order_key: String,
     pub weight: MusicWeight,
     pub enabled: bool,
     pub start_ms: Option<i64>,
     pub end_ms: Option<i64>,
-    pub volume: Option<f64>,
-    pub rate: Option<f64>,
+    pub volume_milli: Option<i64>,
+    pub rate_milli: Option<i64>,
     pub snoozed: bool,
     pub snoozed_until: Option<i64>,
     pub snoozed_indefinitely: bool,
@@ -677,24 +682,25 @@ pub struct MusicSoundscapeWrite {
 
 /// One sound in a preset and the share of the preset level it plays at.
 #[cfg(desktop)]
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MusicSoundscapePresetSound {
     pub soundscape_id: String,
-    /// From 0 (silent) to 1 (full preset level).
-    pub level: f64,
+    /// Thousandths of the preset level, from 0 (silent) to 1000 (full preset level).
+    pub level_milli: i64,
 }
 
 /// A named, ordered mix of soundscape sounds, the only thing a soundscape plays.
 #[cfg(desktop)]
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MusicSoundscapePreset {
     pub id: String,
     pub name: String,
     pub icon: String,
-    /// Multiplier of the Music volume setting, from 0 (silent) through 1 (equal) to 2 (double).
-    pub level: f64,
+    /// Thousandths of the Music volume setting, from 0 (silent) through 1000 (equal) to 2000
+    /// (double).
+    pub level_milli: i64,
     /// Sounds in playback order; removed sounds leave the preset, so this can be empty.
     pub sounds: Vec<MusicSoundscapePresetSound>,
     pub created_at_ms: i64,
@@ -703,13 +709,13 @@ pub struct MusicSoundscapePreset {
 }
 
 #[cfg(desktop)]
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MusicSoundscapePresetWrite {
     pub id: String,
     pub name: String,
     pub icon: String,
-    pub level: f64,
+    pub level_milli: i64,
     pub sounds: Vec<MusicSoundscapePresetSound>,
     pub expected_version: Option<i64>,
     pub updated_at_ms: i64,
@@ -792,6 +798,15 @@ pub struct MusicWriteReceipt {
     pub version: i64,
 }
 
+/// A row's place after a reorder, so callers can sort by `(order_key, id)` without a reload.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MusicOrderReceipt {
+    pub id: String,
+    pub order_key: String,
+    pub version: i64,
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MusicPlaylistDuplicate {
@@ -868,18 +883,18 @@ pub struct MusicMembershipRemove {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MusicMembershipSkipRange {
-    pub id: String,
     pub membership_id: String,
+    /// Index of the range in `(start_ms, end_ms)` order, from 0 to 63.
+    pub ordinal: i64,
     pub start_ms: i64,
     pub end_ms: i64,
-    pub sort_order: i64,
 }
 
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MusicAdvancedMembershipWrite {
     pub membership: MusicMembershipWrite,
-    /// Ranges in playback order; each range's sort order is its index.
+    /// Non-overlapping ranges, at most 64; they are stored in `(start_ms, end_ms)` order.
     pub skip_ranges: Vec<MusicMembershipSkipRangeWrite>,
 }
 
@@ -949,7 +964,7 @@ pub struct MusicItemListEntry {
     pub last_played_at_ms: Option<i64>,
     pub play_count: i64,
     pub membership_id: Option<String>,
-    pub membership_position: Option<i64>,
+    pub membership_order_key: Option<String>,
     pub membership_weight: Option<MusicWeight>,
     pub membership_enabled: Option<bool>,
     pub membership_version: Option<i64>,
@@ -982,7 +997,7 @@ pub struct MusicPlaylistSummary {
     pub mix_enabled: bool,
     pub repeat_mode: MusicRepeatMode,
     pub intended_uses: Vec<MusicIntendedUse>,
-    pub sort_order: i64,
+    pub order_key: String,
     pub total_count: i64,
     pub eligible_count: i64,
     pub unavailable_count: i64,
@@ -1182,13 +1197,12 @@ pub struct MusicInterchangeSnooze {
 #[serde(rename_all = "camelCase")]
 pub struct MusicInterchangeMembership {
     pub item: MusicInterchangeItem,
-    pub position: i64,
     pub weight: MusicWeight,
     pub enabled: bool,
     pub start_ms: Option<i64>,
     pub end_ms: Option<i64>,
-    pub volume: Option<f64>,
-    pub rate: Option<f64>,
+    pub volume_milli: Option<i64>,
+    pub rate_milli: Option<i64>,
     pub skip_ranges: Vec<MusicInterchangeRange>,
     pub snoozes: Vec<MusicInterchangeSnooze>,
 }
@@ -1203,6 +1217,7 @@ pub struct MusicInterchangePlaylist {
     pub mix_enabled: bool,
     pub repeat_mode: MusicRepeatMode,
     pub intended_uses: Vec<MusicIntendedUse>,
+    /// Memberships in playlist order.
     pub memberships: Vec<MusicInterchangeMembership>,
 }
 

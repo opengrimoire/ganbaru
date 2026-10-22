@@ -27,7 +27,7 @@ function item(patch: Partial<MusicItemListEntry>): MusicItemListEntry {
     lastPlayedAtMs: null,
     playCount: 0,
     membershipId: null,
-    membershipPosition: null,
+    membershipOrderKey: null,
     membershipWeight: null,
     membershipEnabled: null,
     membershipVersion: null,

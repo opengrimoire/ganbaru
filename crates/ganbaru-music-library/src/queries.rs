@@ -60,13 +60,13 @@ pub async fn playlist_playback_entries(
             (SELECT location.relative_path FROM music_local_locations AS location
              WHERE location.item_id = item.id AND location.availability = 'available'
              ORDER BY location.updated_at_ms DESC, location.id LIMIT 1) AS relative_path,
-            membership.position,
+            membership.order_key,
             membership.weight,
             membership.enabled,
             membership.start_ms,
             membership.end_ms,
-            membership.volume,
-            membership.rate,
+            membership.volume_milli,
+            membership.rate_milli,
             EXISTS(
                 SELECT 1 FROM music_snoozes AS snooze
                 WHERE snooze.item_id = item.id
@@ -90,7 +90,7 @@ pub async fn playlist_playback_entries(
          FROM music_playlist_memberships AS membership
          JOIN music_library_items AS item ON item.id = membership.item_id
          WHERE membership.playlist_id = ?
-         ORDER BY membership.position, membership.id",
+         ORDER BY membership.order_key, membership.id",
     )
     .bind(now_ms)
     .bind(now_ms)
@@ -105,28 +105,27 @@ pub async fn playlist_playback_entries(
         .into_iter()
         .map(TryInto::try_into)
         .collect::<MusicLibraryResult<Vec<MusicPlaylistPlaybackEntry>>>()?;
-    let skip_ranges = sqlx::query_as::<_, (String, String, i64, i64, i64)>(
-        "SELECT skip.id, skip.membership_id, skip.start_ms, skip.end_ms, skip.sort_order
+    let skip_ranges = sqlx::query_as::<_, (String, i64, i64, i64)>(
+        "SELECT skip.membership_id, skip.ordinal, skip.start_ms, skip.end_ms
          FROM music_membership_skip_ranges AS skip
          JOIN music_playlist_memberships AS membership ON membership.id = skip.membership_id
          WHERE membership.playlist_id = ?
-         ORDER BY skip.membership_id, skip.sort_order",
+         ORDER BY skip.membership_id, skip.ordinal",
     )
     .bind(playlist_id)
     .fetch_all(pool)
     .await
     .map_err(|error| MusicLibraryError::database("load playlist playback skip ranges", error))?;
     let mut by_membership: HashMap<String, Vec<MusicMembershipSkipRange>> = HashMap::new();
-    for (id, membership_id, start_ms, end_ms, sort_order) in skip_ranges {
+    for (membership_id, ordinal, start_ms, end_ms) in skip_ranges {
         by_membership
             .entry(membership_id.clone())
             .or_default()
             .push(MusicMembershipSkipRange {
-                id,
                 membership_id,
+                ordinal,
                 start_ms,
                 end_ms,
-                sort_order,
             });
     }
     for entry in &mut entries {
@@ -140,7 +139,11 @@ pub async fn playlist_playback_entries(
 fn push_item_from(builder: &mut QueryBuilder<Sqlite>, request: &MusicItemWindowRequest) {
     builder.push(
         " FROM music_library_items AS item
-          LEFT JOIN music_listening_statistics AS stats ON stats.item_id = item.id ",
+          LEFT JOIN (
+              SELECT item_id, MAX(last_played_at_ms) AS last_played_at_ms,
+                     SUM(play_count) AS play_count
+              FROM music_listening_statistics GROUP BY item_id
+          ) AS stats ON stats.item_id = item.id ",
     );
     if request.destination == MusicListDestination::Playlist {
         builder.push(
@@ -244,7 +247,7 @@ fn push_item_order(builder: &mut QueryBuilder<Sqlite>, request: &MusicItemWindow
         MusicItemSort::AddedToPlaylist => "membership.created_at_ms",
         MusicItemSort::LastPlayedAt => "COALESCE(stats.last_played_at_ms, 0)",
         MusicItemSort::PlayCount => "COALESCE(stats.play_count, 0)",
-        MusicItemSort::ManualPosition => "membership.position",
+        MusicItemSort::ManualPosition => "membership.order_key",
     };
     builder.push(expression);
     builder.push(match request.direction {
@@ -349,7 +352,7 @@ pub async fn item_window(
     item_query.push(
         ")) AS active_snooze_count,
             stats.last_played_at_ms, COALESCE(stats.play_count, 0) AS play_count,
-            membership.id AS membership_id, membership.position AS membership_position,
+            membership.id AS membership_id, membership.order_key AS membership_order_key,
             membership.weight AS membership_weight, membership.enabled AS membership_enabled,
             membership.version AS membership_version",
     );
@@ -409,7 +412,7 @@ struct PlaylistSummaryRow {
     mix_enabled: i64,
     repeat_mode: String,
     intended_uses: String,
-    sort_order: i64,
+    order_key: String,
     total_count: i64,
     eligible_count: i64,
     unavailable_count: i64,
@@ -431,7 +434,7 @@ pub async fn playlist_summaries(
     }
     let rows = sqlx::query_as::<_, PlaylistSummaryRow>(
         "SELECT playlist.id, playlist.name, playlist.icon, playlist.shuffle_enabled, playlist.mix_enabled,
-                playlist.repeat_mode, playlist.sort_order,
+                playlist.repeat_mode, playlist.order_key,
                 COALESCE((
                     SELECT group_concat(intended.intended_use, ',')
                     FROM music_playlist_intended_uses AS intended
@@ -461,7 +464,7 @@ pub async fn playlist_summaries(
          LEFT JOIN music_playlist_memberships AS membership ON membership.playlist_id = playlist.id
          LEFT JOIN music_library_items AS item ON item.id = membership.item_id
          GROUP BY playlist.id
-         ORDER BY playlist.sort_order, playlist.name COLLATE NOCASE, playlist.id
+         ORDER BY playlist.order_key, playlist.id
          LIMIT ? OFFSET ?",
     )
     .bind(now_ms)
@@ -511,7 +514,7 @@ pub async fn playlist_summaries(
                         })
                     })
                     .collect::<MusicLibraryResult<Vec<_>>>()?,
-                sort_order: row.sort_order,
+                order_key: row.order_key,
                 total_count: row.total_count,
                 eligible_count: row.eligible_count,
                 unavailable_count: row.unavailable_count,
@@ -785,8 +788,8 @@ pub async fn inspector_detail(
     .map(MusicLocalLocation::try_from)
     .collect::<MusicLibraryResult<Vec<_>>>()?;
     let memberships = sqlx::query_as::<_, MusicMembershipRow>(
-        "SELECT id, playlist_id, item_id, position, weight, enabled,
-                start_ms, end_ms, volume, rate, created_at_ms, updated_at_ms, version
+        "SELECT id, playlist_id, item_id, order_key, weight, enabled,
+                start_ms, end_ms, volume_milli, rate_milli, created_at_ms, updated_at_ms, version
          FROM music_playlist_memberships WHERE item_id = ? ORDER BY playlist_id",
     )
     .bind(item_id)
@@ -796,12 +799,12 @@ pub async fn inspector_detail(
     .into_iter()
     .map(MusicPlaylistMembership::try_from)
     .collect::<MusicLibraryResult<Vec<_>>>()?;
-    let membership_skip_ranges = sqlx::query_as::<_, (String, String, i64, i64, i64)>(
-        "SELECT skip.id, skip.membership_id, skip.start_ms, skip.end_ms, skip.sort_order
+    let membership_skip_ranges = sqlx::query_as::<_, (String, i64, i64, i64)>(
+        "SELECT skip.membership_id, skip.ordinal, skip.start_ms, skip.end_ms
          FROM music_membership_skip_ranges AS skip
          JOIN music_playlist_memberships AS membership ON membership.id = skip.membership_id
          WHERE membership.item_id = ?
-         ORDER BY skip.membership_id, skip.sort_order",
+         ORDER BY skip.membership_id, skip.ordinal",
     )
     .bind(item_id)
     .fetch_all(pool)
@@ -809,12 +812,11 @@ pub async fn inspector_detail(
     .map_err(|error| MusicLibraryError::database("load membership skip ranges", error))?
     .into_iter()
     .map(
-        |(id, membership_id, start_ms, end_ms, sort_order)| MusicMembershipSkipRange {
-            id,
+        |(membership_id, ordinal, start_ms, end_ms)| MusicMembershipSkipRange {
             membership_id,
+            ordinal,
             start_ms,
             end_ms,
-            sort_order,
         },
     )
     .collect();
@@ -844,8 +846,10 @@ pub async fn inspector_detail(
         })
         .collect::<MusicLibraryResult<Vec<_>>>()?;
     let statistics = sqlx::query_as::<_, MusicStatisticsRow>(
-        "SELECT item_id, last_played_at_ms, play_count, completion_count, skip_count, updated_at_ms
-         FROM music_listening_statistics WHERE item_id = ?",
+        "SELECT item_id, MAX(last_played_at_ms) AS last_played_at_ms,
+                SUM(play_count) AS play_count, SUM(completion_count) AS completion_count,
+                SUM(skip_count) AS skip_count, MAX(updated_at_ms) AS updated_at_ms
+         FROM music_listening_statistics WHERE item_id = ? GROUP BY item_id",
     )
     .bind(item_id)
     .fetch_optional(pool)
@@ -974,7 +978,7 @@ pub async fn playlist_detail(
     playlist_id: &str,
 ) -> MusicLibraryResult<MusicPlaylist> {
     let row = sqlx::query_as::<_, MusicPlaylistRow>(
-        "SELECT id, name, icon, shuffle_enabled, mix_enabled, repeat_mode, sort_order,
+        "SELECT id, name, icon, shuffle_enabled, mix_enabled, repeat_mode, order_key,
                 created_at_ms, updated_at_ms, version
          FROM music_playlists WHERE id = ?",
     )

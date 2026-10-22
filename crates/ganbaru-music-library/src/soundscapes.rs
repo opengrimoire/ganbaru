@@ -591,10 +591,10 @@ mod tests {
                     id: "rain-only".into(),
                     name: "Rain".into(),
                     icon: "lucide:cloud-rain".into(),
-                    level: 0.5,
+                    level_milli: 500,
                     sounds: vec![MusicSoundscapePresetSound {
                         soundscape_id: saved.id.clone(),
-                        level: 1.0,
+                        level_milli: 1000,
                     }],
                     expected_version: None,
                     updated_at_ms: 1_700_000_000_001,

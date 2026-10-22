@@ -132,8 +132,8 @@ fn project_settings_and_soundtrack_defaults_commit_atomically() {
         .await
         .unwrap();
         sqlx::query(
-        "INSERT INTO music_playlists (id, name, icon, shuffle_enabled, repeat_mode, created_at_ms, updated_at_ms)
-         VALUES ('playlist-a', 'Focus', 'lucide:laptop', 1, 'off', 1, 1)",
+        "INSERT INTO music_playlists (id, name, icon, shuffle_enabled, repeat_mode, order_key, created_at_ms, updated_at_ms)
+         VALUES ('playlist-a', 'Focus', 'lucide:laptop', 1, 'off', 'a0', 1, 1)",
     )
     .execute(&pool)
     .await

@@ -21,7 +21,7 @@ vi.mock("$lib/api/music-library", async (importOriginal) => ({
 function playlist(id: string, name: string): MusicPlaylistSummary {
   return {
     id, name, icon: "music", shuffleEnabled: false, mixEnabled: false, repeatMode: "off",
-    intendedUses: [], sortOrder: id === "a" ? 0 : 1, totalCount: 0, eligibleCount: 0,
+    intendedUses: [], orderKey: id === "a" ? "a0" : "a1", totalCount: 0, eligibleCount: 0,
     unavailableCount: 0, snoozedCount: 0, localCount: 0, onlineCount: 0, version: 1,
   };
 }

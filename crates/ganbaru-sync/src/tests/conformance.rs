@@ -1100,6 +1100,8 @@ fn generated_field(ty: ColumnType, serial: usize, unique: bool) -> Field {
             max_chars,
         } => text(min_chars.max(1), max_chars, 'w'),
         ColumnType::Integer { min, max } => Field::Integer(if low { min } else { max }),
+        ColumnType::OptionalInteger { .. } if low && serial % 4 == 1 => Field::Null,
+        ColumnType::OptionalInteger { min, max } => Field::Integer(if low { min } else { max }),
         ColumnType::Flag => Field::Integer(i64::from(!low)),
         ColumnType::Timestamp => Field::Text("9".repeat(MAX_TIMESTAMP_BYTES)),
         ColumnType::OptionalTimestamp if low => Field::Null,

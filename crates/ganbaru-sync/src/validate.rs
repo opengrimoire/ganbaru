@@ -48,6 +48,11 @@ pub(crate) fn column_value(ty: ColumnType, field: &Field) -> bool {
         ColumnType::Integer { min, max } => {
             matches!(field, Field::Integer(value) if (min..=max).contains(value))
         }
+        ColumnType::OptionalInteger { min, max } => match field {
+            Field::Null => true,
+            Field::Integer(value) => (min..=max).contains(value),
+            _ => false,
+        },
         ColumnType::Flag => matches!(field, Field::Integer(0 | 1)),
         ColumnType::Timestamp => is_timestamp(field),
         ColumnType::OptionalTimestamp => *field == Field::Null || is_timestamp(field),

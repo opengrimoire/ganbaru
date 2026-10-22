@@ -1,13 +1,14 @@
 //! Value guard triggers and their agreement with the contract types.
 
 use ganbaru_sync_contracts::bounds::{MAX_ORDER_KEY_BYTES, MAX_ROW_KEY_BYTES};
-use ganbaru_sync_contracts::{OrderKey, RowKey};
+use ganbaru_sync_contracts::{Field, OrderKey, RowKey};
 use sqlx::{AssertSqlSafe, SqlitePool};
 
 use super::{block_on, execute, migrated_pool, rejects, set_applying};
 use crate::manifest::vault::VAULT_MANIFEST;
 use crate::manifest::{ColumnType, MAX_TIMESTAMP_BYTES};
 use crate::triggers::{row_key_rule, value_rule};
+use crate::validate::column_value;
 
 async fn rule_accepts(pool: &SqlitePool, rule: &str, value: &str) -> bool {
     let accepted: Option<i64> = sqlx::query_scalar(AssertSqlSafe(format!("SELECT ({rule}) IS 1")))
@@ -201,6 +202,46 @@ fn rules_reject_values_of_other_types() {
     });
 }
 
+#[test]
+fn optional_integer_rule_and_validation_agree() {
+    block_on(async {
+        let pool = migrated_pool().await;
+        let ty = ColumnType::OptionalInteger { min: -5, max: 31 };
+        let rule = value_rule("?1", ty);
+        let samples = [
+            ("NULL", Field::Null, true),
+            ("-5", Field::Integer(-5), true),
+            ("0", Field::Integer(0), true),
+            ("31", Field::Integer(31), true),
+            ("-6", Field::Integer(-6), false),
+            ("32", Field::Integer(32), false),
+            ("'1'", Field::Text("1".to_string()), false),
+            ("x'01'", Field::Blob(vec![1]), false),
+        ];
+        for (sql_value, field, expected) in samples {
+            let sql = format!("SELECT ({}) IS 1", rule.replace("?1", sql_value));
+            let accepted: i64 = sqlx::query_scalar(AssertSqlSafe(sql.as_str()))
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+            assert_eq!(accepted == 1, expected, "trigger rule on {sql_value}");
+            assert_eq!(
+                column_value(ty, &field),
+                expected,
+                "validation of {field:?}"
+            );
+        }
+        for sql_value in ["1.0", "31.5"] {
+            let sql = format!("SELECT ({}) IS 1", rule.replace("?1", sql_value));
+            let accepted: i64 = sqlx::query_scalar(AssertSqlSafe(sql.as_str()))
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+            assert_eq!(accepted, 0, "trigger rule accepted {sql_value}");
+        }
+    });
+}
+
 async fn seed(pool: &SqlitePool) {
     execute(
         pool,
@@ -315,6 +356,9 @@ fn boundary_values(ty: ColumnType) -> Vec<String> {
             quote(&format!(" {} ", "é".repeat(max_chars))),
         ],
         ColumnType::Integer { min, max } => vec![min.to_string(), max.to_string()],
+        ColumnType::OptionalInteger { min, max } => {
+            vec!["NULL".to_string(), min.to_string(), max.to_string()]
+        }
         ColumnType::Flag => vec!["0".to_string(), "1".to_string()],
         ColumnType::Timestamp => vec![quote(&"9".repeat(MAX_TIMESTAMP_BYTES)), quote("x")],
         ColumnType::OptionalTimestamp => {

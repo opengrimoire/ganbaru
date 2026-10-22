@@ -794,7 +794,7 @@ async fn accounting_source_days_at(
 }
 
 fn current_usage_date_window() -> UsageDateWindow {
-    usage_date_window(chrono::Utc::now().date_naive())
+    usage_date_window(crate::vault::now_utc().date_naive())
 }
 
 /// Imports usage samples that `device_id`, the authenticated sender, captured, and prunes usage

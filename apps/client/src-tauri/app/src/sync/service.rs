@@ -378,11 +378,37 @@ struct ServiceState {
     stalled_captures: Option<u64>,
     /// When the earliest delete hold expires, in Unix milliseconds; a pass runs then.
     hold_expiry: Option<u64>,
-    /// The stored vector at the last apply; apply runs again only after the log grows.
-    applied_at: Option<VersionVector>,
+    /// When the last apply ran, so the next one waits for something to change.
+    applied: ApplyMark,
     /// Which images the hub holds or lacks, so passes do not ask again.
     assets: AssetMemory,
     view: SyncStatusView,
+}
+
+/// When the service last applied stored operations.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+struct ApplyMark {
+    /// The stored vector at the last apply.
+    stored: Option<VersionVector>,
+    /// Local captures left when the last apply stopped on captures that sealing did not drain.
+    blocked_at: Option<u64>,
+}
+
+impl ApplyMark {
+    /// Whether an apply is due: the log grew, or local captures changed since an apply
+    /// stopped on them. A capture count that stays the same cannot unblock it.
+    fn due(&self, stored: &VersionVector, pending: u64) -> bool {
+        self.stored.as_ref() != Some(stored)
+            || self.blocked_at.is_some_and(|blocked| blocked != pending)
+    }
+}
+
+/// What [`Session::apply_ready`] did.
+struct Applied {
+    /// Tables whose rows changed.
+    tables: Vec<String>,
+    /// Local captures left when it stopped on captures that sealing did not drain.
+    blocked_at: Option<u64>,
 }
 
 /// The hub and image files of one pass's asset steps.
@@ -623,7 +649,7 @@ impl ServiceState {
                         view.state = SyncState::WaitingForIdentity;
                         return Ok(Next::Idle);
                     }
-                    self.applied_at = None;
+                    self.applied = ApplyMark::default();
                 }
             }
         }
@@ -676,8 +702,9 @@ impl ServiceState {
         }
     }
 
-    /// Applies stored operations once the log grew since the last apply. Apply always commits,
-    /// so applying on every pass would wake the service again.
+    /// Applies stored operations once the log grew since the last apply, or local captures
+    /// changed since an apply stopped on them. Apply always commits, so applying on every pass
+    /// would wake the service again.
     async fn apply_new<R: Runtime>(&mut self, session: &Session<'_, R>) -> Result<(), String> {
         let stored = {
             let mut conn = acquire(&session.pool).await?;
@@ -687,12 +714,16 @@ impl ServiceState {
                 .await
                 .map_err(|error| format!("read sync log: {error}"))?
         };
-        if self.applied_at.as_ref() == Some(&stored) {
+        let pending = session.pending_captures().await?;
+        if !self.applied.due(&stored, pending) {
             return Ok(());
         }
-        let tables = session.apply_ready(&mut self.writer).await?;
-        emit_applied(session.app, tables);
-        self.applied_at = Some(stored);
+        let applied = session.apply_ready(&mut self.writer).await?;
+        emit_applied(session.app, applied.tables);
+        self.applied = ApplyMark {
+            stored: Some(stored),
+            blocked_at: applied.blocked_at,
+        };
         Ok(())
     }
 
@@ -915,7 +946,7 @@ impl<'a, R: Runtime> Session<'a, R> {
             return Ok(());
         }
         if imported.is_some_and(|report| report.pending_captures) {
-            emit_applied(self.app, self.apply_ready(writer).await?);
+            emit_applied(self.app, self.apply_ready(writer).await?.tables);
         }
         Ok(())
     }
@@ -940,6 +971,14 @@ impl<'a, R: Runtime> Session<'a, R> {
         if !self.ensure_writer(writer).await? {
             return Ok(());
         }
+        self.seal_batches(writer).await?;
+        let remaining = self.pending_captures().await?;
+        *stalled = (remaining > 0).then_some(remaining);
+        Ok(())
+    }
+
+    /// Seals pending captures in bounded transactions until no more is ready.
+    async fn seal_batches(&self, writer: &mut Option<ActiveWriter>) -> Result<(), String> {
         let mut invalid = 0;
         for _ in 0..MAX_SEAL_ROUNDS {
             let report = self.seal(writer).await?;
@@ -948,8 +987,6 @@ impl<'a, R: Runtime> Session<'a, R> {
                 break;
             }
         }
-        let remaining = self.pending_captures().await?;
-        *stalled = (remaining > 0).then_some(remaining);
         if invalid > 0 {
             eprintln!("sync: {invalid} local rows cannot be sealed");
         }
@@ -1066,9 +1103,14 @@ impl<'a, R: Runtime> Session<'a, R> {
     }
 
     /// Applies ready operations, re-sealing and rotating the local writer when the space
-    /// requires it. Returns the tables whose rows changed.
-    async fn apply_ready(&self, writer: &mut Option<ActiveWriter>) -> Result<Vec<String>, String> {
+    /// requires it. An apply that stops on local captures it cannot seal in one transaction is
+    /// retried after sealing them in batches, while those seals drain captures.
+    async fn apply_ready(&self, writer: &mut Option<ActiveWriter>) -> Result<Applied, String> {
         let mut tables = BTreeSet::new();
+        let done = |tables: BTreeSet<String>, blocked_at| Applied {
+            tables: tables.into_iter().collect(),
+            blocked_at,
+        };
         for _ in 0..MAX_APPLY_ROUNDS {
             let report = {
                 let mut conn = acquire(&self.pool).await?;
@@ -1095,10 +1137,10 @@ impl<'a, R: Runtime> Session<'a, R> {
                 if (current == Some(needed.writer) || current.is_none())
                     && !self.rotate(writer).await?
                 {
-                    return Ok(tables.into_iter().collect());
+                    return Ok(done(tables, None));
                 }
                 let Some(active) = writer.as_mut() else {
-                    return Ok(tables.into_iter().collect());
+                    return Ok(done(tables, None));
                 };
                 let resealed = {
                     let mut conn = acquire(&self.pool).await?;
@@ -1119,10 +1161,17 @@ impl<'a, R: Runtime> Session<'a, R> {
                 }
             } else if report.local_writer_frozen {
                 if !self.rotate(writer).await? {
-                    return Ok(tables.into_iter().collect());
+                    return Ok(done(tables, None));
                 }
-            } else if report.pending_captures || !report.more {
-                return Ok(tables.into_iter().collect());
+            } else if report.pending_captures {
+                let before = self.pending_captures().await?;
+                self.seal_batches(writer).await?;
+                let after = self.pending_captures().await?;
+                if after >= before {
+                    return Ok(done(tables, Some(after)));
+                }
+            } else if !report.more {
+                return Ok(done(tables, None));
             }
         }
         Err("sync apply did not finish".to_string())
@@ -1294,4 +1343,44 @@ where
     tauri::async_runtime::spawn_blocking(work)
         .await
         .map_err(|error| format!("sync key worker: {error}"))?
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ganbaru_sync_contracts::WriterId;
+
+    fn vector(seq: u64) -> VersionVector {
+        let mut vector = VersionVector::new();
+        vector.set(WriterId::from_bytes([1; 16]), seq);
+        vector
+    }
+
+    #[test]
+    fn apply_runs_once_per_log_growth() {
+        let mut mark = ApplyMark::default();
+        assert!(mark.due(&vector(1), 0), "the first pass applies");
+        mark.stored = Some(vector(1));
+        assert!(!mark.due(&vector(1), 0));
+        assert!(
+            !mark.due(&vector(1), 7),
+            "captures alone do not rerun an apply that finished"
+        );
+        assert!(mark.due(&vector(2), 0), "a grown log applies again");
+    }
+
+    #[test]
+    fn a_blocked_apply_reruns_when_captures_change_and_waits_while_they_stay() {
+        let mark = ApplyMark {
+            stored: Some(vector(1)),
+            blocked_at: Some(5),
+        };
+        assert!(
+            !mark.due(&vector(1), 5),
+            "the same captures would block again"
+        );
+        assert!(mark.due(&vector(1), 2), "sealed captures may unblock it");
+        assert!(mark.due(&vector(1), 9), "new local edits may be sealable");
+        assert!(mark.due(&vector(2), 5), "a grown log applies again");
+    }
 }

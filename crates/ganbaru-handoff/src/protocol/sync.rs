@@ -161,12 +161,7 @@ pub fn validate_coordinator_endpoint(endpoint: &str) -> Result<SocketAddr, Strin
 /// Checks that a discovery key is the unpadded base64url form of exactly
 /// [`DISCOVERY_KEY_BYTES`] bytes.
 pub fn validate_discovery_key(key: &str) -> Result<(), String> {
-    let decoded = base64::Engine::decode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, key)
-        .map_err(|_| "discovery key is invalid".to_string())?;
-    if decoded.len() != DISCOVERY_KEY_BYTES {
-        return Err("discovery key is invalid".to_string());
-    }
-    Ok(())
+    crate::discovery::DiscoveryKey::decode(key).map(|_| ())
 }
 
 pub(super) fn validate_writer(writer: &str) -> Result<(), String> {

@@ -1831,6 +1831,44 @@ fn coordinator_candidates_skip_refused_endpoints_and_stop_at_the_cap() {
 }
 
 #[test]
+fn discovery_retries_dial_only_endpoints_not_tried_and_authorized() {
+    let tried = [
+        socket_address("192.168.1.20:43821"),
+        socket_address("10.0.0.5:43821"),
+    ];
+    let refused = socket_address("[fd00::7]:43821");
+    let discovered = [
+        socket_address("10.0.0.5:43821"),
+        socket_address("192.168.1.30:43821"),
+        refused,
+        socket_address("192.168.1.30:43821"),
+        socket_address("172.16.0.9:43821"),
+    ];
+    let mut failures = Vec::new();
+    let untried = untried_discovered_endpoints(
+        &discovered,
+        &tried,
+        |endpoint| {
+            if endpoint == refused {
+                Err("refuse device connection: test".to_string())
+            } else {
+                Ok(())
+            }
+        },
+        &mut failures,
+    );
+    assert_eq!(
+        untried,
+        vec![
+            socket_address("192.168.1.30:43821"),
+            socket_address("172.16.0.9:43821"),
+        ]
+    );
+    assert_eq!(failures.len(), 1);
+    assert_eq!(failures[0].endpoint, refused.to_string());
+}
+
+#[test]
 fn a_single_dial_failure_keeps_its_message_and_several_are_summarized() {
     let failure = |endpoint: &str, error: &str| DialFailure {
         endpoint: endpoint.to_string(),
@@ -1877,17 +1915,26 @@ async fn a_coordinator_dial_passes_foreign_and_silent_endpoints_and_remembers_th
     let pin = linked_pin(&pair.phone);
     let (_, identity) = load_tls_identity(&pair.phone).await.expect("identity");
     let started = std::time::Instant::now();
+    let browsed = AtomicBool::new(false);
     let mut stream = connect_coordinator(
         &pair.phone,
         &pin,
         identity,
         &[silent.local_addr().expect("silent endpoint")],
+        async {
+            browsed.store(true, Ordering::Release);
+            Vec::new()
+        },
     )
     .await
     .expect("reach the pinned coordinator");
     assert!(
         started.elapsed() < COORDINATOR_CONNECT_TIMEOUT,
         "a silent endpoint must not hold the dial for its full timeout"
+    );
+    assert!(
+        !browsed.load(Ordering::Acquire),
+        "discovery waits until every candidate failed"
     );
     timeout_control(write_control(
         &mut stream,
@@ -1928,7 +1975,15 @@ async fn a_coordinator_dial_that_reaches_no_endpoint_reports_every_attempt() {
         ..linked_pin(&pair.phone)
     };
     let (_, identity) = load_tls_identity(&pair.phone).await.expect("identity");
-    let Err(error) = connect_coordinator(&pair.phone, &pin, identity, &[second]).await else {
+    let Err(error) = connect_coordinator(
+        &pair.phone,
+        &pin,
+        identity,
+        &[second],
+        std::future::ready(vec![first]),
+    )
+    .await
+    else {
         panic!("no endpoint is listening");
     };
     assert!(
@@ -1937,6 +1992,57 @@ async fn a_coordinator_dial_that_reaches_no_endpoint_reports_every_attempt() {
     );
     assert!(error.contains(&first.to_string()), "{error}");
     assert!(error.contains(&second.to_string()), "{error}");
+    assert_eq!(
+        error.matches(&first.to_string()).count(),
+        1,
+        "a discovered endpoint that was already tried is not dialed again: {error}"
+    );
+}
+
+#[tokio::test]
+async fn discovery_reaches_a_coordinator_that_moved_after_every_known_endpoint_failed() {
+    let pair = LocalPair::start().await;
+    pair.enroll().await;
+    let closed = std::net::TcpListener::bind("127.0.0.1:0")
+        .expect("bind")
+        .local_addr()
+        .expect("closed endpoint");
+    let pin = CoordinatorPin {
+        endpoint: closed.to_string(),
+        last_endpoint: None,
+        reported_endpoints: Vec::new(),
+        ..linked_pin(&pair.phone)
+    };
+    let moved = socket_address(&pair.invitation.endpoint);
+    let (_, identity) = load_tls_identity(&pair.phone).await.expect("identity");
+    let mut stream = connect_coordinator(
+        &pair.phone,
+        &pin,
+        identity,
+        &[],
+        std::future::ready(vec![closed, moved]),
+    )
+    .await
+    .expect("reach the coordinator at its discovered endpoint");
+    timeout_control(write_control(
+        &mut stream,
+        &ControlMessage::SyncWait {
+            protocol_version: PROTOCOL_VERSION,
+            vault_id: "vault-1".to_string(),
+            device_id: "device-phone".to_string(),
+            known: Vec::new(),
+        },
+    ))
+    .await
+    .expect("send over the pinned stream");
+    timeout_control(read_control(&mut stream))
+        .await
+        .expect("the coordinator answers over the pinned stream");
+    assert_eq!(
+        linked_pin(&pair.phone).last_endpoint.as_deref(),
+        Some(pair.invitation.endpoint.as_str()),
+        "the discovered endpoint that answered is dialed first next time"
+    );
 }
 
 #[tokio::test]

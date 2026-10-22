@@ -360,7 +360,7 @@ pub(crate) async fn upload_bundle(
     let (_, archive_path) = manager.outgoing_snapshot_paths(&metadata.transfer_id)?;
     super::protocol::validate_staging_file(&archive_path, &metadata)?;
     let (_, identity) = load_tls_identity(manager).await?;
-    let mut stream = connect_coordinator(manager, &coordinator, identity, &[]).await?;
+    let mut stream = dial_coordinator(manager, &coordinator, identity).await?;
     timeout_control(write_control(
         &mut stream,
         &ControlMessage::UploadBundle {
@@ -578,7 +578,7 @@ async fn authenticated_exchange(
         .coordinator_pin()?
         .ok_or_else(|| "this device is not linked to a coordinator".to_string())?;
     let (_, identity) = load_tls_identity(manager).await?;
-    let mut stream = connect_coordinator(manager, &coordinator, identity, &[]).await?;
+    let mut stream = dial_coordinator(manager, &coordinator, identity).await?;
     timeout_control(write_control(&mut stream, &message)).await?;
     read_authenticated_response(manager, &coordinator, &mut stream).await
 }
@@ -626,7 +626,7 @@ async fn download_bundle_inner(
         return Err("transfer belongs to a different vault".to_string());
     }
     let (_, identity) = load_tls_identity(manager).await?;
-    let mut stream = connect_coordinator(manager, &coordinator, identity, &[]).await?;
+    let mut stream = dial_coordinator(manager, &coordinator, identity).await?;
     timeout_control(write_control(
         &mut stream,
         &ControlMessage::DownloadBundle {
@@ -831,18 +831,108 @@ const MAX_CONCURRENT_COORDINATOR_DIALS: usize = 4;
 /// `discovered` endpoints, and the invitation endpoint, in that order. A new candidate is dialed
 /// whenever the pending ones have not finished within [`COORDINATOR_DIAL_STAGGER`] or one fails,
 /// so a stale address costs a short delay instead of a full timeout.
+///
+/// When every candidate fails, it awaits `discover` once and dials the endpoints it returns that
+/// were not tried yet. `discover` does nothing until then.
 async fn connect_coordinator(
     manager: &PairingManager,
     coordinator: &CoordinatorPin,
     identity: TlsIdentity,
     discovered: &[SocketAddr],
+    discover: impl std::future::Future<Output = Vec<SocketAddr>>,
 ) -> Result<PinnedStream, String> {
     let (candidates, mut failures) =
         coordinator_candidates(coordinator, discovered, authorize_endpoint);
     let config = pinned_client_config(&coordinator.certificate_fingerprint, Some(identity))?;
-    let (stream, endpoint) = race_coordinator_candidates(candidates, config, &mut failures)
-        .await
-        .ok_or_else(|| coordinator_dial_error(failures))?;
+    let mut reached =
+        race_coordinator_candidates(candidates.clone(), config.clone(), &mut failures).await;
+    if reached.is_none() {
+        let discovered = discover.await;
+        let untried = untried_discovered_endpoints(
+            &discovered,
+            &candidates,
+            authorize_endpoint,
+            &mut failures,
+        );
+        if !untried.is_empty() {
+            reached = race_coordinator_candidates(untried, config, &mut failures).await;
+        }
+    }
+    finish_coordinator_dial(manager, coordinator, reached, failures)
+}
+
+/// Connects to the pinned coordinator through [`connect_coordinator`] with the endpoints a recent
+/// discovery found, browsing the local network for it when no candidate answers.
+async fn dial_coordinator(
+    manager: &PairingManager,
+    coordinator: &CoordinatorPin,
+    identity: TlsIdentity,
+) -> Result<PinnedStream, String> {
+    let remembered = remembered_discovered_endpoints(coordinator).await;
+    connect_coordinator(
+        manager,
+        coordinator,
+        identity,
+        &remembered,
+        discover_coordinator_endpoints(coordinator),
+    )
+    .await
+}
+
+/// Endpoints a recent discovery found for `coordinator`.
+#[cfg(desktop)]
+async fn remembered_discovered_endpoints(coordinator: &CoordinatorPin) -> Vec<SocketAddr> {
+    super::discovery::remembered_endpoints(coordinator).await
+}
+
+#[cfg(not(desktop))]
+async fn remembered_discovered_endpoints(_coordinator: &CoordinatorPin) -> Vec<SocketAddr> {
+    Vec::new()
+}
+
+/// Browses the local network for `coordinator` when its pin allows it.
+#[cfg(desktop)]
+async fn discover_coordinator_endpoints(coordinator: &CoordinatorPin) -> Vec<SocketAddr> {
+    super::discovery::discover_coordinator(coordinator).await
+}
+
+#[cfg(not(desktop))]
+async fn discover_coordinator_endpoints(_coordinator: &CoordinatorPin) -> Vec<SocketAddr> {
+    Vec::new()
+}
+
+/// The `discovered` endpoints that are not among the `tried` ones, in order and without
+/// repeats. Endpoints `authorize` refuses are recorded in `failures` and never dialed.
+fn untried_discovered_endpoints(
+    discovered: &[SocketAddr],
+    tried: &[SocketAddr],
+    authorize: impl Fn(SocketAddr) -> Result<(), String>,
+    failures: &mut Vec<DialFailure>,
+) -> Vec<SocketAddr> {
+    let mut untried = Vec::new();
+    for endpoint in discovered {
+        if tried.contains(endpoint) || untried.contains(endpoint) {
+            continue;
+        }
+        match authorize(*endpoint) {
+            Ok(()) => untried.push(*endpoint),
+            Err(error) => failures.push(DialFailure {
+                endpoint: endpoint.to_string(),
+                error,
+            }),
+        }
+    }
+    untried
+}
+
+/// Remembers the endpoint that answered for the next dial, or reports why none did.
+fn finish_coordinator_dial(
+    manager: &PairingManager,
+    coordinator: &CoordinatorPin,
+    reached: Option<(PinnedStream, SocketAddr)>,
+    failures: Vec<DialFailure>,
+) -> Result<PinnedStream, String> {
+    let (stream, endpoint) = reached.ok_or_else(|| coordinator_dial_error(failures))?;
     let contact = super::pairing::CoordinatorContact {
         last_endpoint: Some(endpoint.to_string()),
         ..Default::default()

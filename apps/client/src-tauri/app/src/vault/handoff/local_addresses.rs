@@ -107,10 +107,16 @@ fn choose_invitation_address(routed: Option<IpAddr>, candidates: &[IpAddr]) -> O
 /// The listener endpoints this coordinator reports to linked devices in sync states, at most
 /// [`MAX_COORDINATOR_ENDPOINTS`], best first.
 pub(crate) fn reported_endpoints(port: u16) -> Vec<String> {
-    order_reported_addresses(routed_ipv4_source(), &interface_addresses())
+    reported_addresses()
         .into_iter()
         .map(|address| SocketAddr::new(address, port).to_string())
         .collect()
+}
+
+/// The addresses this coordinator reports and advertises, at most
+/// [`MAX_COORDINATOR_ENDPOINTS`], best first.
+pub(crate) fn reported_addresses() -> Vec<IpAddr> {
+    order_reported_addresses(routed_ipv4_source(), &interface_addresses())
 }
 
 /// Orders the reportable addresses for sync states: private IPv4, IPv4 link-local, unique local

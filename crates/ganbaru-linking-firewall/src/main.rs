@@ -56,6 +56,8 @@ mod tests {
         "x11",
         "winit",
     ];
+    /// The desktop mDNS responder and its socket helper, which only the app links for discovery.
+    const MDNS_PACKAGES: &[&str] = &["mdns-sd", "socket-pktinfo"];
 
     /// Maps each package name in `Cargo.lock` to the names it depends on, merging versions.
     fn dependency_graph(lockfile: &str) -> BTreeMap<String, BTreeSet<String>> {
@@ -113,6 +115,21 @@ mod tests {
 
         assert!(helper.contains("ganbaru-handoff"));
         assert_eq!(gui_packages(&helper), Vec::<&String>::new());
+    }
+
+    #[test]
+    fn the_root_helper_links_no_mdns_responder() {
+        let graph = dependency_graph(LOCKFILE);
+        let helper = closure(&graph, env!("CARGO_PKG_NAME"));
+        let app = closure(&graph, "ganbaru");
+
+        for package in MDNS_PACKAGES {
+            assert!(app.contains(*package), "the app links {package}");
+            assert!(
+                !helper.contains(*package),
+                "{package} must stay out of the root helper"
+            );
+        }
     }
 
     #[test]

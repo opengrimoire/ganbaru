@@ -230,6 +230,11 @@ fn initialize_linking<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<(), Strin
     let pairing = app.state::<PairingManager>();
     #[cfg(desktop)]
     pairing.set_identity_key_store(std::sync::Arc::new(key_store::KeyringIdentityKeyStore))?;
+    // On mobile the managed manager is the process one, which a headless sync pass may have
+    // loaded first.
+    #[cfg(mobile)]
+    super::process_managers::process_managers().load_pairing(&config_dir, device_id)?;
+    #[cfg(desktop)]
     pairing.initialize(config_dir, device_id)?;
     if let Some(coordinator) = pairing.coordinator_pin()? {
         app.state::<super::ownership::VaultOwnershipManager>()

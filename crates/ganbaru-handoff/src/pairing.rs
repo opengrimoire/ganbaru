@@ -417,6 +417,13 @@ impl PairingManager {
         Ok(())
     }
 
+    /// Whether [`Self::initialize`] loaded state or [`Self::disable`] turned linking off. A
+    /// loaded manager is the authority for its state file, so it is not loaded again.
+    pub fn is_loaded(&self) -> Result<bool, String> {
+        let inner = self.lock()?;
+        Ok(inner.state.is_some() || inner.disabled_reason.is_some())
+    }
+
     /// Selects where the TLS key is kept. The key moves there on its next load and stays in the
     /// private state file whenever the store refuses it.
     pub fn set_identity_key_store(&self, store: Arc<dyn IdentityKeyStore>) -> Result<(), String> {

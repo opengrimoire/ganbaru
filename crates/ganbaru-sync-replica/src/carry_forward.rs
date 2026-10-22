@@ -148,7 +148,7 @@ async fn export_with(
         .await
         .map_err(|error| format!("read pending sync changes: {error}"))?
     {
-        return Err("local Quick notes changes are not sealed yet".to_string());
+        return Err("local synced changes are not sealed yet".to_string());
     }
     let replacement_pool = registry.connect_path_read_only(replacement).await?;
     let mut replacement_conn = acquire(&replacement_pool).await?;

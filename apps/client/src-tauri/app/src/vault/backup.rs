@@ -1036,7 +1036,7 @@ async fn carry_into_replacement(
         now_ms,
     )
     .await
-    .map_err(|error| format!("keep local Quick notes changes: {error}"))?;
+    .map_err(|error| format!("keep local synced changes: {error}"))?;
     failpoints::check("replace.before_restore")?;
     carry_forward::restore_into_replacement(engine, &current, &replacement)
         .await

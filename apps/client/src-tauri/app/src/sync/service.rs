@@ -311,8 +311,7 @@ pub(crate) struct HeadlessPass {
 
 /// Runs one pass for the app config directory `config_dir` without a Tauri runtime: it seals,
 /// exchanges with the hub, applies, and moves managed assets, then returns without waiting for
-/// the hub. When the app service of this process is running, it runs the pass instead. The
-/// Android background entry is its caller.
+/// the hub. When the app service of this process is running, it runs the pass instead.
 #[cfg(mobile)]
 #[allow(dead_code)]
 pub(crate) async fn headless_pass(config_dir: PathBuf) -> Result<HeadlessPass, String> {

@@ -28,7 +28,8 @@ use crate::manifest::{
 };
 
 /// Trigger condition true outside engine apply transactions.
-const NOT_APPLYING: &str = "(SELECT applying FROM sync_apply_state WHERE singleton = 1) = 0";
+pub(crate) const NOT_APPLYING: &str =
+    "(SELECT applying FROM sync_apply_state WHERE singleton = 1) = 0";
 
 /// Capture time in Unix milliseconds.
 const NOW_MS: &str = "CAST(unixepoch('subsec') * 1000 AS INTEGER)";

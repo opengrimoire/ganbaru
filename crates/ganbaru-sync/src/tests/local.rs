@@ -8,6 +8,7 @@ use crate::local::{
     prepare_snapshot_copy, replacement_vector, space_context,
 };
 use crate::log::WriterState;
+use crate::manifest::vault::VAULT_MANIFEST;
 use ganbaru_sync_contracts::VersionVector;
 
 async fn add_note(replica: &mut Replica, id: &str, title: &str) {
@@ -94,15 +95,31 @@ fn writer_head_tracks_the_sealed_chain_and_detects_tampering() {
 }
 
 #[test]
-fn snapshot_copies_drop_unsealed_captures() {
+fn snapshot_copies_drop_unsealed_captures_and_reset_local_columns() {
     block_on(async {
         let mut replica = Replica::new(0, 3).await;
         add_note(&mut replica, "note-1", "One").await;
+        replica
+            .exec("UPDATE quick_notes SET revision = 4 WHERE id = 'note-1'")
+            .await;
         assert!(has_pending_captures(&mut replica.conn).await.unwrap());
         let mut copy = connection_from(&replica.snapshot().await).await;
-        prepare_snapshot_copy(&mut copy).await.unwrap();
+        prepare_snapshot_copy(&mut copy, &VAULT_MANIFEST)
+            .await
+            .unwrap();
         assert!(!has_pending_captures(&mut copy).await.unwrap());
         assert!(has_pending_captures(&mut replica.conn).await.unwrap());
+        let revision: i64 = sqlx::query_scalar("SELECT revision FROM quick_notes")
+            .fetch_one(&mut copy)
+            .await
+            .unwrap();
+        assert_eq!(revision, 1);
+        let applying: i64 =
+            sqlx::query_scalar("SELECT applying FROM sync_apply_state WHERE singleton = 1")
+                .fetch_one(&mut copy)
+                .await
+                .unwrap();
+        assert_eq!(applying, 0);
     });
 }
 

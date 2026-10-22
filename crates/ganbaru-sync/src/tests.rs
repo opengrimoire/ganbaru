@@ -6,6 +6,7 @@ mod guards;
 mod local;
 mod replica;
 mod sim;
+mod trigger_policies;
 mod values;
 
 use sqlx::{AssertSqlSafe, SqlitePool};

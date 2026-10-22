@@ -3,9 +3,13 @@
 use ganbaru_sync_contracts::{GroupId, TableId};
 
 use crate::manifest::{
-    Collation, ColumnSpec, ColumnType, GroupSpec, GroupStorage, MergeKind, OwnedTable, Resolution,
-    TableSpec, group_id,
+    Collation, ColumnSpec, ColumnType, DomainManifest, DomainTrigger, GroupSpec, GroupStorage,
+    LocalColumn, MergeKind, OwnedTable, Resolution, TableIdRange, TableSpec, TriggerPolicy,
+    group_id,
 };
+
+/// Domain name for Quick notes.
+pub const DOMAIN_NAME: &str = "quick_notes";
 
 /// Domain adapter name for Quick notes.
 pub const ADAPTER: &str = "quick_notes";
@@ -229,6 +233,7 @@ pub const TAGS: TableSpec = TableSpec {
     }],
     redirects: true,
     adapter: None,
+    triggers: &[],
 };
 
 /// `quick_notes`.
@@ -237,7 +242,10 @@ pub const NOTES: TableSpec = TableSpec {
     name: "quick_notes",
     key_column: "id",
     groups: &NOTE_GROUPS,
-    local_columns: &["revision"],
+    local_columns: &[LocalColumn {
+        name: "revision",
+        materialize: "1",
+    }],
     derived_columns: &["body_plain_text"],
     revision_column: Some("revision"),
     resolutions: &[Resolution::WithinGroup {
@@ -246,4 +254,28 @@ pub const NOTES: TableSpec = TableSpec {
     }],
     redirects: false,
     adapter: Some(ADAPTER),
+    triggers: &[
+        search_trigger("quick_notes_search_delete"),
+        search_trigger("quick_notes_search_insert"),
+        search_trigger("quick_notes_search_update"),
+    ],
+};
+
+/// A full-text index trigger, which keeps `quick_notes_search_fts` in step with every write.
+const fn search_trigger(name: &'static str) -> DomainTrigger {
+    DomainTrigger {
+        name,
+        policy: TriggerPolicy::DerivedIndex,
+    }
+}
+
+/// The Quick notes domain.
+pub const DOMAIN: DomainManifest = DomainManifest {
+    name: DOMAIN_NAME,
+    table_ids: TableIdRange { first: 1, last: 15 },
+    tables: &[TAGS, NOTES],
+    derived: &["quick_notes_search_fts"],
+    local: &[],
+    engine: &[],
+    replica_writable: true,
 };

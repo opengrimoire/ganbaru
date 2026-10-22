@@ -1,10 +1,13 @@
 //! Read-only guards on replica connections.
 
+use std::sync::LazyLock;
+
 use sqlx::SqlitePool;
 
-use super::{block_on, execute, migrated_pool};
+use super::{block_on, execute, migrated_pool, set_applying};
 use crate::guards::{guarded_tables, install_guards, is_guard_abort};
-use crate::manifest::vault::VAULT_MANIFEST;
+use crate::manifest::vault::{VAULT_MANIFEST, quick_notes};
+use crate::manifest::{DomainManifest, Manifest};
 
 async fn guard(pool: &SqlitePool) -> usize {
     let mut conn = pool.acquire().await.unwrap();
@@ -89,6 +92,85 @@ fn guards_abort_unconverted_writes_and_allow_replicated_ones() {
             .await
             .unwrap();
         assert_eq!(captures, 2);
+    });
+}
+
+#[test]
+fn guards_let_engine_apply_transactions_write_guarded_tables() {
+    block_on(async {
+        let pool = migrated_pool().await;
+        guard(&pool).await;
+        let insert = "INSERT INTO project_groups (id, name) VALUES ('group-1', 'Group')";
+        let error = refusal(&pool, insert).await;
+        assert!(is_guard_abort(&error), "{error}");
+
+        set_applying(&pool, true).await;
+        execute(&pool, insert).await;
+        execute(
+            &pool,
+            "UPDATE project_groups SET name = 'Renamed' WHERE id = 'group-1'",
+        )
+        .await;
+        set_applying(&pool, false).await;
+
+        let error = refusal(&pool, "DELETE FROM project_groups").await;
+        assert!(is_guard_abort(&error), "{error}");
+        let name: String = sqlx::query_scalar("SELECT name FROM project_groups")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(name, "Renamed");
+    });
+}
+
+#[test]
+fn guards_hold_when_the_apply_state_row_is_missing() {
+    block_on(async {
+        let pool = migrated_pool().await;
+        guard(&pool).await;
+        execute(&pool, "DELETE FROM sync_apply_state").await;
+        let error = refusal(
+            &pool,
+            "INSERT INTO project_groups (id, name) VALUES ('group-1', 'Group')",
+        )
+        .await;
+        assert!(is_guard_abort(&error), "{error}");
+    });
+}
+
+#[test]
+fn replicated_tables_of_domains_that_replicas_cannot_write_are_guarded() {
+    const READ_ONLY: DomainManifest = DomainManifest {
+        replica_writable: false,
+        ..quick_notes::DOMAIN
+    };
+    static DOMAINS: &[&DomainManifest] = &[&READ_ONLY];
+    static MANIFEST: LazyLock<Manifest> = LazyLock::new(|| Manifest::from_domains(1, DOMAINS));
+    block_on(async {
+        let pool = migrated_pool().await;
+        let mut conn = pool.acquire().await.unwrap();
+        let tables = guarded_tables(&mut conn, &MANIFEST).await.unwrap();
+        for guarded in [
+            "quick_notes",
+            "quick_note_tags",
+            "quick_note_text_runs",
+            "quick_note_images",
+        ] {
+            assert!(
+                tables.iter().any(|table| table == guarded),
+                "{guarded} is not guarded"
+            );
+        }
+        assert!(!tables.iter().any(|table| table == "quick_notes_search_fts"));
+        install_guards(&mut conn, &MANIFEST).await.unwrap();
+        drop(conn);
+
+        let insert =
+            "INSERT INTO quick_note_tags (id, name, order_key) VALUES ('tag-1', 'Work', 'a0')";
+        let error = refusal(&pool, insert).await;
+        assert!(is_guard_abort(&error), "{error}");
+        set_applying(&pool, true).await;
+        execute(&pool, insert).await;
     });
 }
 

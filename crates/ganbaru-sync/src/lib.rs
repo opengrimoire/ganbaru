@@ -23,6 +23,7 @@ pub mod devices;
 pub mod domains;
 pub mod error;
 pub mod guards;
+pub mod hooks;
 pub mod local;
 pub mod manifest;
 pub mod triggers;
@@ -57,7 +58,8 @@ pub use seal::{InvalidRow, SealReport};
 pub use status::{HeldCounts, HeldOp, SyncStatus, WriterSummary};
 pub use store::{HoldReason, StoreOutcome, StoreRefusal};
 
-use domains::quick_notes::QuickNotesAdapter;
+use domains::vault_adapters;
+pub use hooks::Hooks;
 use manifest::Manifest;
 use manifest::vault::VAULT_MANIFEST;
 
@@ -107,13 +109,30 @@ pub struct Engine {
 }
 
 impl Engine {
-    /// An engine for a manifest, refusing a manifest that names an unregistered adapter.
-    pub fn new(manifest: &'static Manifest, adapters: Adapters) -> SyncResult<Self> {
+    /// An engine for a manifest, its domain adapters, and its hooks. Refuses a manifest that
+    /// fails [`Manifest::validate`], names an unregistered adapter, or leaves a registered
+    /// adapter unnamed.
+    pub fn with(manifest: &'static Manifest, adapters: Adapters, hooks: Hooks) -> SyncResult<Self> {
+        let Hooks {} = hooks;
+        manifest.validate().map_err(SyncError::InvalidManifest)?;
         for table in manifest.tables {
-            if let Some(name) = table.adapter {
-                if adapters.get(name).is_none() {
-                    return Err(SyncError::UnregisteredAdapter(name));
-                }
+            if let Some(name) = table.adapter
+                && adapters.get(name).is_none()
+            {
+                return Err(SyncError::InvalidManifest(format!(
+                    "adapter {name} is not registered"
+                )));
+            }
+        }
+        for name in adapters.names() {
+            if !manifest
+                .tables
+                .iter()
+                .any(|table| table.adapter == Some(name))
+            {
+                return Err(SyncError::InvalidManifest(format!(
+                    "adapter {name} is registered but no table names it"
+                )));
             }
         }
         Ok(Self { manifest, adapters })
@@ -121,10 +140,8 @@ impl Engine {
 
     /// The engine for the vault manifest with its built-in adapters.
     pub fn vault() -> Self {
-        Self {
-            manifest: &VAULT_MANIFEST,
-            adapters: Adapters::new().with(Box::new(QuickNotesAdapter)),
-        }
+        Self::with(&VAULT_MANIFEST, vault_adapters(), Hooks::default())
+            .expect("the vault manifest and its adapters should agree")
     }
 
     /// The manifest the engine replicates.

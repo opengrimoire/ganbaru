@@ -1,8 +1,8 @@
 //! A test-only fixture domain beside the vault domains, so engine behavior that no vault domain
 //! uses yet runs through the simulation: `Local` tables and columns, every trigger policy, a
 //! cascading reference cycle, a group with several reference columns, an immutable reference,
-//! a reference into its own table, a derived-key table with a composite primary key, and nodes
-//! whose parent cascades with a recoverable label.
+//! a reference into its own table, a derived-key table with a composite primary key, and a tree
+//! of nodes with a maximum depth whose parent cascades, with a recoverable label.
 //! Fixture table ids start at [`FIXTURE_TABLE_IDS`], above every vault domain.
 
 use std::sync::LazyLock;
@@ -16,7 +16,7 @@ use crate::manifest::vault::{VAULT_MANIFEST_VERSION, quick_notes};
 use crate::manifest::{
     Collation, ColumnSpec, ColumnType, DerivedKey, DeviceTable, DomainManifest, DomainTrigger,
     GroupSpec, GroupStorage, LocalColumn, Manifest, MergeKind, OnDelete, ReferenceColumn,
-    Resolution, SYNC_KEY_COLUMN, TableIdRange, TableSpec, TriggerPolicy, group_id,
+    Resolution, SYNC_KEY_COLUMN, TableIdRange, TableSpec, TreeSpec, TriggerPolicy, group_id,
 };
 use crate::triggers::{self, NOT_APPLYING};
 use crate::{Engine, Hooks};
@@ -382,7 +382,10 @@ pub(super) mod node_group {
     pub(in crate::tests) const LABEL: GroupId = group_id(2);
 }
 
-/// Nodes whose parent cascades its deletion to their children.
+/// Deepest a node may nest: a root has depth 0.
+pub(super) const NODE_MAX_DEPTH: u8 = 2;
+
+/// A tree of nodes whose parent cascades its deletion to their children.
 pub(super) const NODES: TableSpec = TableSpec {
     id: NODES_TABLE,
     name: "fixture_nodes",
@@ -439,7 +442,11 @@ pub(super) const NODES: TableSpec = TableSpec {
     adapter: None,
     triggers: &[],
     derived_key: None,
-    tree: None,
+    tree: Some(TreeSpec {
+        parent_group: node_group::PARENT,
+        position_group: node_group::POSITION,
+        max_depth: Some(NODE_MAX_DEPTH),
+    }),
     acyclic: None,
 };
 

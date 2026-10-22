@@ -42,6 +42,7 @@ mod seal;
 mod sql;
 mod status;
 mod store;
+mod tree;
 mod validate;
 mod visibility;
 

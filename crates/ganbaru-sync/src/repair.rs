@@ -3,18 +3,21 @@
 //! Live rows whose winning values collide on a declared unique column set form a class. Only the
 //! lowest key of a class is materialized; the others are hidden, and replicas that can seal
 //! repair them with tombstones redirecting to that key. A live row hidden by cascade from a
-//! deleted root is repaired with a tombstone naming that root as its cause. Hiding is a pure
-//! function of the merge state, so replicas that cannot seal still converge on the same domain
-//! rows.
+//! deleted root is repaired with a tombstone naming that root as its cause, and a tree row
+//! detached to break a cycle or limit depth with a null write of its parent. Hiding and
+//! detaching are pure functions of the merge state, so replicas that cannot seal still
+//! converge on the same domain rows.
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use ganbaru_sync_contracts::{Cause, Change, ChangeAction, Field, GroupId, RowKey, TableId, Value};
+use ganbaru_sync_contracts::{
+    Cause, Change, ChangeAction, Field, GroupId, GroupValue, RowKey, TableId, Value,
+};
 use sqlx::SqliteConnection;
 
 use crate::Engine;
 use crate::error::{SyncResult, corrupt};
-use crate::manifest::{Collation, Resolution, TableSpec};
+use crate::manifest::{Collation, Resolution, TableSpec, TreeSpec};
 use crate::materialize;
 use crate::merge::{self, Batch, RowState, Version, table_param};
 use crate::sql;
@@ -325,10 +328,44 @@ fn stored_key(key: &str) -> SyncResult<RowKey> {
     RowKey::new(key).map_err(|_| corrupt("stored row key"))
 }
 
-/// Repairs for the merge state: tombstones for hidden duplicates, redirecting to the kept row
-/// where the table allows it, and tombstones naming their cause for dirty live rows hidden by
-/// cascade from a deleted root, with referencing tables first. Derived-key rows are never
-/// tombstoned; a hidden one stays live in sync state.
+/// Null writes of the parent group of every detached tree row that is otherwise shown, so the
+/// row stays a root once the repair wins.
+async fn detach_writes(
+    engine: &Engine,
+    conn: &mut SqliteConnection,
+    visibility: &mut Visibility,
+    table: &TableSpec,
+    tree: TreeSpec,
+    changes: &mut Vec<Change>,
+) -> SyncResult<()> {
+    let detached: Vec<String> = visibility
+        .detached
+        .iter()
+        .filter(|(detached, _)| *detached == table.id)
+        .map(|(_, key)| key.clone())
+        .collect();
+    for key in detached {
+        if visibility.hidden(engine, conn, table.id, &key).await? {
+            continue;
+        }
+        let value = Value::new(vec![Field::Null])
+            .map_err(|_| corrupt("null parent value out of bounds"))?;
+        changes.push(Change {
+            table: table.id,
+            row: stored_key(&key)?,
+            action: ChangeAction::Write,
+            groups: vec![GroupValue::new(table.id, tree.parent_group, value)],
+            replaced_by: None,
+            cause: None,
+        });
+    }
+    Ok(())
+}
+
+/// Repairs for the merge state: null parents for detached tree rows, tombstones for hidden
+/// duplicates, redirecting to the kept row where the table allows it, and tombstones naming
+/// their cause for dirty live rows hidden by cascade from a deleted root, with referencing
+/// tables first. Derived-key rows are never tombstoned; a hidden one stays live in sync state.
 pub(crate) async fn repair_changes(
     engine: &Engine,
     conn: &mut SqliteConnection,
@@ -345,6 +382,9 @@ pub(crate) async fn repair_changes(
             .get(&table.id)
             .cloned()
             .unwrap_or_default();
+        if let Some(tree) = table.tree {
+            detach_writes(engine, conn, visibility, table, tree, &mut changes).await?;
+        }
         for (key, keeper) in &duplicates {
             changes.push(Change {
                 table: table.id,

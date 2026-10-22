@@ -1116,6 +1116,116 @@ fn a_hidden_derived_key_child_is_offered_with_its_deleted_parent() {
     });
 }
 
+/// Every node as `id>parent`, with `-` for a root.
+async fn node_parents(replica: &mut Replica) -> Vec<String> {
+    texts(
+        replica,
+        "SELECT id || '>' || coalesce(parent_id, '-') FROM fixture_nodes ORDER BY id",
+    )
+    .await
+}
+
+#[test]
+fn a_cycle_of_three_concurrent_moves_breaks_at_the_move_of_the_greatest_writer() {
+    block_on(async {
+        let mut replicas = replicas(3).await;
+        replicas[0]
+            .exec(&format!(
+                "{}{}{}",
+                add_node("a", None, 0, "A"),
+                add_node("b", None, 1, "B"),
+                add_node("c", None, 2, "C"),
+            ))
+            .await;
+        converge(&mut replicas).await;
+        let moves = [("a", "b"), ("b", "c"), ("c", "a")];
+        let mut ranks = Vec::new();
+        for (replica, (row, parent)) in replicas.iter_mut().zip(moves) {
+            replica
+                .exec(&format!(
+                    "UPDATE fixture_nodes SET parent_id = '{parent}' WHERE id = '{row}'"
+                ))
+                .await;
+            replica.seal().await.unwrap();
+            let clock = replica
+                .count(&format!(
+                    "SELECT max(clock) FROM sync_register_versions
+                     WHERE table_id = {} AND row_key = '{row}' AND group_id = 0",
+                    NODES_TABLE.0
+                ))
+                .await;
+            ranks.push((clock, replica.writer(), row));
+        }
+        // Every move carries the same clock, so the writer breaks the tie.
+        assert!(ranks.iter().all(|(clock, _, _)| *clock == ranks[0].0));
+        let broken = ranks.iter().max().map(|(_, _, row)| *row).unwrap();
+        let expected: Vec<String> = moves
+            .iter()
+            .map(|(row, parent)| {
+                let parent = if *row == broken { "-" } else { parent };
+                format!("{row}>{parent}")
+            })
+            .collect();
+        converge(&mut replicas).await;
+        assert_converged(&mut replicas).await;
+        for replica in &mut replicas {
+            assert_eq!(node_parents(replica).await, expected);
+        }
+    });
+}
+
+#[test]
+fn concurrent_moves_that_together_exceed_the_maximum_depth_move_the_deepest_row_to_the_root() {
+    block_on(async {
+        let mut replicas = replicas(2).await;
+        replicas[0]
+            .exec(&format!(
+                "{}{}{}{}",
+                add_node("p", None, 0, "P"),
+                add_node("q", None, 1, "Q"),
+                add_node("q-c", Some("q"), 0, "Q child"),
+                add_node("s", None, 2, "S"),
+            ))
+            .await;
+        converge(&mut replicas).await;
+        // Each move alone keeps every node within the maximum depth of 2.
+        replicas[0]
+            .exec("UPDATE fixture_nodes SET parent_id = 'p' WHERE id = 'q'")
+            .await;
+        replicas[1]
+            .exec("UPDATE fixture_nodes SET parent_id = 'q-c' WHERE id = 's'")
+            .await;
+        replicas[0].seal().await.unwrap();
+        replicas[1].seal().await.unwrap();
+        assert_eq!(
+            node_parents(&mut replicas[1]).await,
+            ["p>-", "q>-", "q-c>q", "s>q-c"]
+        );
+        converge(&mut replicas).await;
+        assert_converged(&mut replicas).await;
+        for replica in &mut replicas {
+            assert_eq!(node_parents(replica).await, ["p>-", "q>p", "q-c>q", "s>-"]);
+            // The repair is sealed: the newest parent version of the moved row holds the same
+            // null parent as the root `p`.
+            let newest = texts(
+                replica,
+                &format!(
+                    "SELECT quote(v.value) FROM sync_register_versions v
+                     WHERE v.table_id = {} AND v.group_id = 0 AND v.row_key IN ('p', 's')
+                     AND v.clock = (SELECT max(w.clock) FROM sync_register_versions w
+                         WHERE w.table_id = v.table_id AND w.group_id = 0
+                         AND w.row_key = v.row_key)
+                     ORDER BY v.row_key",
+                    NODES_TABLE.0
+                ),
+            )
+            .await;
+            assert_eq!(newest.len(), 2);
+            assert_eq!(newest[0], newest[1]);
+        }
+    });
+}
+
 async fn seal_revoke(
     revoker: &mut Replica,
     target: ganbaru_sync_contracts::WriterId,

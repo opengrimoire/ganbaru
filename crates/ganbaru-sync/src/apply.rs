@@ -491,8 +491,8 @@ fn warn_clock(report: &mut ApplyReport, writer: WriterId, clock: Hlc, now_ms: u6
     }
 }
 
-/// Seals repairs for hidden duplicates and cascades, refreshes row flags, and materializes every
-/// dirty row. Returns the domain tables it changed.
+/// Seals repairs for hidden duplicates, detached tree rows, and cascades, refreshes row flags,
+/// and materializes every dirty row. Returns the domain tables it changed.
 pub(crate) async fn finish(
     engine: &Engine,
     conn: &mut SqliteConnection,
@@ -507,8 +507,7 @@ pub(crate) async fn finish(
     }
     let mut repaired = false;
     let mut visibility = loop {
-        let duplicates = repair::duplicates(engine, conn, &mut batch.dirty).await?;
-        let mut visibility = Visibility::with_duplicates(duplicates);
+        let mut visibility = Visibility::load(engine, conn, &mut batch.dirty).await?;
         repair::expand_references(engine, conn, batch, &mut visibility).await?;
         let repairs = repair::repair_changes(engine, conn, &mut visibility, &batch.dirty).await?;
         if repaired || repairs.is_empty() {

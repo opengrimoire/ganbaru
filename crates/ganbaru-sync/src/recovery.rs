@@ -374,10 +374,9 @@ async fn newest_unseen(
         .max())
 }
 
-/// Visibility for reads outside an apply, with every hidden duplicate.
+/// Visibility for reads outside an apply.
 async fn read_visibility(engine: &Engine, conn: &mut SqliteConnection) -> SyncResult<Visibility> {
-    let duplicates = repair::duplicates(engine, conn, &mut BTreeSet::new()).await?;
-    Ok(Visibility::with_duplicates(duplicates))
+    Visibility::load(engine, conn, &mut BTreeSet::new()).await
 }
 
 /// Flagged rows grouped by their root.

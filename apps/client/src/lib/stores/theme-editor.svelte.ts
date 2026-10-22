@@ -12,7 +12,9 @@ import {
  * serialized theme at session open and lets `cancel` roll back the
  * in-memory edits without writing to disk. For themes created for this
  * session (`createdFresh` is true), cancel discards the in-memory theme
- * entirely so backing out leaves no orphan behind.
+ * entirely so backing out leaves no orphan behind. While a session is open,
+ * theme reloads after sync keep the edited theme's buffer and run again
+ * when the session ends.
  */
 type EditorSession = ThemeEditorSessionState;
 
@@ -45,6 +47,7 @@ export function getThemeEditor() {
         createdFresh: options.createdFresh ?? false,
         previousActiveId: options.previousActiveId,
       };
+      getTheme().setEditingTheme(id);
     },
     /** Flush the in-memory edits to SQLite and end the session. The edited theme stays active. */
     async commit(): Promise<void> {
@@ -52,7 +55,10 @@ export function getThemeEditor() {
       const committingSession = session;
       const { editingId } = committingSession;
       await getTheme().persistThemeToDb(editingId);
-      if (session === committingSession) session = undefined;
+      if (session === committingSession) {
+        session = undefined;
+        getTheme().setEditingTheme(undefined);
+      }
     },
     /**
      * Roll the session back and reinstate the previously active theme. Fresh
@@ -76,6 +82,7 @@ export function getThemeEditor() {
           themeStore.setTheme(previousActiveId);
         }
       }
+      themeStore.setEditingTheme(undefined);
     },
   };
 }

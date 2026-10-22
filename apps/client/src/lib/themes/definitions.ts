@@ -1,7 +1,7 @@
 /**
  * Stable ID identifying a theme. Built-in IDs are "light" and "dark".
- * User themes use generated slug IDs (see `generateThemeId`) to avoid
- * collisions.
+ * User themes use random lowercase UUIDs (see `generateThemeId`), so
+ * themes created or imported on different linked devices never collide.
  */
 export type ThemeId = string;
 

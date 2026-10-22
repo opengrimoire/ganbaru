@@ -6,16 +6,17 @@ import {
   mergeThemePatch,
   nextUniqueDisplayName,
   normalizeDisplayName,
-  themeIdCollisionError,
+  importedTheme,
   toUserThemeSnapshot,
+  withSeedOf,
 } from "./operations";
 import {
   APP_TOKEN_KEYS,
-  BUILTIN_THEME_REGISTRY,
   BASE_APP_TOKENS,
   BASE_CALENDAR_TOKENS,
   CALENDAR_TOKEN_KEYS,
   DERIVATION_ENGINE_VERSION,
+  generateThemeId,
   darkTheme,
   isSemanticSignalAppToken,
   lightTheme,
@@ -331,23 +332,67 @@ describe("toUserThemeSnapshot", () => {
   });
 });
 
-describe("themeIdCollisionError", () => {
-  it("rejects ids that belong to built-in themes", () => {
-    expect(themeIdCollisionError("light", BUILTIN_THEME_REGISTRY)).toBe(
-      "id must not collide with a built-in theme",
-    );
+describe("importedTheme", () => {
+  const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+
+  it("gives a file whose id is already taken a fresh UUID id instead of rejecting it", () => {
+    const existing = makeUserTheme({ id: "focus", displayName: "Focus" });
+    const file = makeUserTheme({ id: "focus", displayName: "Imported" });
+    const imported = importedTheme(file, generateThemeId(), [existing.displayName]);
+    expect(imported.id).toMatch(UUID_PATTERN);
+    expect(imported.id).not.toBe(existing.id);
+    expect(imported.displayName).toBe("Imported");
   });
 
-  it("rejects ids that belong to user themes", () => {
-    const custom = makeUserTheme({ id: "focus" });
-    const registry = { ...BUILTIN_THEME_REGISTRY, [custom.id]: custom };
-    expect(themeIdCollisionError("focus", registry)).toBe(
-      'id "focus" is already used by another theme',
-    );
+  it("imports the same file twice as two separate themes", () => {
+    const file = makeUserTheme({ id: "shared", displayName: "Shared" });
+    const first = importedTheme(file, generateThemeId(), []);
+    const second = importedTheme(file, generateThemeId(), [first.displayName]);
+    expect(second.id).not.toBe(first.id);
+    expect(second.displayName).toBe("Shared 2");
+    expect(second.eventPalette).toEqual(file.eventPalette);
   });
 
-  it("allows ids absent from the current registry", () => {
-    expect(themeIdCollisionError("new-theme", BUILTIN_THEME_REGISTRY)).toBeUndefined();
+  it("keeps the file's content and seed", () => {
+    const file = makeUserTheme({ seedBlendCanvas: "#222222", blendCanvas: "#333333" });
+    const imported = importedTheme(file, generateThemeId(), []);
+    expect(imported.blendCanvas).toBe("#333333");
+    expect(imported.seedBlendCanvas).toBe("#222222");
+  });
+});
+
+describe("withSeedOf", () => {
+  it("takes the live content of the replacement and keeps the current id and seed", () => {
+    const current = makeUserTheme({
+      id: "kept",
+      blendCanvas: "#111111",
+      seedBlendCanvas: "#000000",
+      seedEventPalette: paletteOf("#010101"),
+      seedIconLabel: "dark",
+    });
+    const pasted = makeUserTheme({
+      id: "pasted",
+      displayName: "Pasted",
+      iconLabel: "light",
+      blendCanvas: "#eeeeee",
+      eventPalette: paletteOf("#fefefe"),
+    });
+    const next = withSeedOf(pasted, current);
+    expect(next.id).toBe("kept");
+    expect(next.displayName).toBe("Pasted");
+    expect(next.iconLabel).toBe("light");
+    expect(next.blendCanvas).toBe("#eeeeee");
+    expect(next.eventPalette).toEqual(paletteOf("#fefefe"));
+    expect(next.seedBlendCanvas).toBe("#000000");
+    expect(next.seedEventPalette).toEqual(paletteOf("#010101"));
+    expect(next.seedIconLabel).toBe("dark");
+    expect(next.seedSources).toBe(current.seedSources);
+    expect(next.seedAppTokens).toBe(current.seedAppTokens);
+    expect(next.seedCalendarTokens).toBe(current.seedCalendarTokens);
+    expect(next.seedAppIsolated).toBe(current.seedAppIsolated);
+    expect(next.seedCalendarIsolated).toBe(current.seedCalendarIsolated);
+    expect(next.seedCalendarDefaultMode).toBe(current.seedCalendarDefaultMode);
+    expect(next.seedCalendarDefaultCustom).toBe(current.seedCalendarDefaultCustom);
   });
 });
 

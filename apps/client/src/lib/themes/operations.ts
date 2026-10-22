@@ -118,18 +118,43 @@ export function toUserThemeSnapshot(source: Theme): UserTheme {
 }
 
 /**
- * Return the import-blocking error for a theme id that already belongs to
- * the current registry. New imports must not silently shadow or rename
- * either built-in or user-authored themes.
+ * Prepare an imported theme as a new theme. The file's id is replaced with
+ * `id`, so importing a file never collides with a theme that exists or was
+ * deleted on any linked device, and the name gets a numeric suffix when
+ * another theme already uses it.
  */
-export function themeIdCollisionError(
+export function importedTheme(
+  theme: UserTheme,
   id: ThemeId,
-  registry: Readonly<Record<ThemeId, Theme>>,
-): string | undefined {
-  const existing = registry[id];
-  if (!existing) return undefined;
-  if (existing.kind === "builtin") return "id must not collide with a built-in theme";
-  return `id "${id}" is already used by another theme`;
+  existingNames: Iterable<string>,
+): UserTheme {
+  return {
+    ...theme,
+    id,
+    displayName: nextUniqueDisplayName(theme.displayName, existingNames),
+  };
+}
+
+/**
+ * Replace a theme's live content with `next` while keeping the seed of
+ * `current`. A theme's seed is fixed when it is created, so pasted JSON and
+ * restored editor snapshots change only what the theme looks like now.
+ */
+export function withSeedOf(next: UserTheme, current: UserTheme): UserTheme {
+  return {
+    ...next,
+    id: current.id,
+    seedSources: current.seedSources,
+    seedAppTokens: current.seedAppTokens,
+    seedCalendarTokens: current.seedCalendarTokens,
+    seedAppIsolated: current.seedAppIsolated,
+    seedCalendarIsolated: current.seedCalendarIsolated,
+    seedEventPalette: current.seedEventPalette,
+    seedBlendCanvas: current.seedBlendCanvas,
+    seedCalendarDefaultMode: current.seedCalendarDefaultMode,
+    seedCalendarDefaultCustom: current.seedCalendarDefaultCustom,
+    seedIconLabel: current.seedIconLabel,
+  };
 }
 
 /**

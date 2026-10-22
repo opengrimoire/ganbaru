@@ -23,6 +23,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { THEME_TOKEN_ROW_ORDER } from "$lib/themes";
 import { ensureDbUrl } from "$lib/api/db";
+import { mapSyncDeviceRef, type SyncDeviceRef } from "$lib/api/sync";
 
 export type TokenKind = "source" | "app" | "calendar";
 
@@ -55,12 +56,13 @@ export interface ThemeRow {
   seed_icon_label: "light" | "dark";
   created_at_ms: number;
   updated_at_ms: number;
+  /** Whether concurrent saves on linked devices left content versions to choose from. */
+  has_conflict: boolean;
 }
 
 export interface DismissalRow {
   theme_id: string;
   engine_version: number;
-  dismissed_at_ms: number;
 }
 
 /**
@@ -134,13 +136,17 @@ export async function loadAllUserThemes(): Promise<UserThemeRead[]> {
   const rows = await invoke<UserThemeRead[]>("themes_load_all", {
     dbUrl: await activeDbUrl(),
   });
-  return rows.map((read) => ({
+  return rows.map(sortedRead);
+}
+
+function sortedRead(read: UserThemeRead): UserThemeRead {
+  return {
     theme: read.theme,
     tokens: [...read.tokens].sort(compareTokenRows),
     palette: [...read.palette].sort(comparePaletteRows),
     seedTokens: [...read.seedTokens].sort(compareTokenRows),
     seedPalette: [...read.seedPalette].sort(comparePaletteRows),
-  }));
+  };
 }
 
 export async function insertTheme(write: UserThemeWrite): Promise<void> {
@@ -152,16 +158,14 @@ export async function deleteTheme(id: string): Promise<void> {
 }
 
 /**
- * Replace a theme's full content (every token, palette slot, seed mirror,
- * and blend_canvas) without touching the parent themes row's identity or
- * the `theme_upgrade_dismissals` rows that point at it. Used by the editor
- * commit path so a single Save flushes the in-memory buffer to disk in
- * one shot, and by the JSON-paste replace path.
+ * Replace a theme's live content (name, icon, tokens, palette, blend
+ * canvas, and Calendar defaults) in one transaction. The seed fields of
+ * `write` are ignored because a theme's seed is fixed at creation, and
+ * the parent row keeps its identity, creation time, and upgrade
+ * dismissal. Used by the editor Save and the JSON-paste replace path.
  *
- * Child rows are wiped and re-inserted because the buffer can shift
- * any row's value or isolated flag arbitrarily; reconciling row-by-row
- * would not be cheaper. The parent themes row is updated in place so
- * created_at_ms survives and dismissals are not cascaded.
+ * A save that changes nothing writes nothing, so it does not replicate
+ * to linked devices or open a conflict there.
  */
 export async function replaceThemeContent(write: UserThemeWrite): Promise<void> {
   await invoke<void>("themes_replace_content", {
@@ -221,4 +225,150 @@ export async function loadDismissals(): Promise<DismissalRow[]> {
   return invoke<DismissalRow[]>("themes_load_dismissals", {
     dbUrl: await activeDbUrl(),
   });
+}
+
+/** A conflict read or resolution failure; `resolved` means the conflict or version is gone. */
+export class ThemeConflictError extends Error {
+  constructor(readonly code: "resolved" | "failed", message: string) {
+    super(message);
+    this.name = "ThemeConflictError";
+  }
+}
+
+/** One token of a conflicting version. */
+export interface ThemeConflictToken {
+  kind: TokenKind;
+  key: string;
+  value: string;
+  isolated: boolean;
+}
+
+/** One concurrent version of a theme's content. */
+export interface ThemeConflictVersion {
+  /** Opaque id for choosing this version. */
+  version: string;
+  device: SyncDeviceRef;
+  editedAtMs: number;
+  /** Whether every device shows this version now. */
+  displayed: boolean;
+  blendCanvas: string;
+  derivationEngineVersion: number;
+  calendarDefaultMode: string;
+  calendarDefaultCustom: string;
+  /** Tokens sorted by kind and key. */
+  tokens: ThemeConflictToken[];
+  /** Event palette colors in slot order. */
+  palette: string[];
+}
+
+/** The content versions of a theme, newest first; empty when it has no conflict. */
+export interface ThemeConflict {
+  id: string;
+  versions: ThemeConflictVersion[];
+}
+
+/** Keep the version every device shows, or use another one. */
+export type ThemeConflictChoice =
+  | { kind: "displayed" }
+  | { kind: "version"; version: string };
+
+export interface ThemeConflictResolution {
+  id: string;
+  choice: ThemeConflictChoice;
+}
+
+function record(value: unknown, label: string): Record<string, unknown> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new Error(`${label} must be an object`);
+  }
+  return value as Record<string, unknown>;
+}
+
+function string(value: unknown, label: string): string {
+  if (typeof value !== "string") throw new Error(`${label} must be a string`);
+  return value;
+}
+
+function boolean(value: unknown, label: string): boolean {
+  if (typeof value !== "boolean") throw new Error(`${label} must be a boolean`);
+  return value;
+}
+
+function integer(value: unknown, label: string): number {
+  if (typeof value !== "number" || !Number.isSafeInteger(value)) {
+    throw new Error(`${label} must be an integer`);
+  }
+  return value;
+}
+
+function array(value: unknown, label: string): unknown[] {
+  if (!Array.isArray(value)) throw new Error(`${label} must be an array`);
+  return value;
+}
+
+function tokenKind(value: unknown, label: string): TokenKind {
+  if (value !== "source" && value !== "app" && value !== "calendar") throw new Error(`${label} is invalid`);
+  return value;
+}
+
+function mapConflictToken(value: unknown, label: string): ThemeConflictToken {
+  const row = record(value, label);
+  return {
+    kind: tokenKind(row.kind, `${label}.kind`),
+    key: string(row.key, `${label}.key`),
+    value: string(row.value, `${label}.value`),
+    isolated: boolean(row.isolated, `${label}.isolated`),
+  };
+}
+
+function mapConflictVersion(value: unknown, label: string): ThemeConflictVersion {
+  const row = record(value, label);
+  const editedAtMs = integer(row.editedAtMs, `${label}.editedAtMs`);
+  if (editedAtMs < 0) throw new Error(`${label}.editedAtMs is invalid`);
+  return {
+    version: string(row.version, `${label}.version`),
+    device: mapSyncDeviceRef(row.device, `${label}.device`),
+    editedAtMs,
+    displayed: boolean(row.displayed, `${label}.displayed`),
+    blendCanvas: string(row.blendCanvas, `${label}.blendCanvas`),
+    derivationEngineVersion: integer(row.derivationEngineVersion, `${label}.derivationEngineVersion`),
+    calendarDefaultMode: string(row.calendarDefaultMode, `${label}.calendarDefaultMode`),
+    calendarDefaultCustom: string(row.calendarDefaultCustom, `${label}.calendarDefaultCustom`),
+    tokens: array(row.tokens, `${label}.tokens`).map((token, index) =>
+      mapConflictToken(token, `${label}.tokens[${index}]`)),
+    palette: array(row.palette, `${label}.palette`).map((color, index) =>
+      string(color, `${label}.palette[${index}]`)),
+  };
+}
+
+/** Validates the content conflict of a theme from the native side. */
+export function mapThemeConflict(value: unknown): ThemeConflict {
+  const row = record(value, "theme conflict");
+  return {
+    id: string(row.id, "theme conflict.id"),
+    versions: array(row.versions, "theme conflict.versions").map((version, index) =>
+      mapConflictVersion(version, `theme conflict.versions[${index}]`)),
+  };
+}
+
+async function invokeConflict<T>(command: string, args: Record<string, unknown>): Promise<T> {
+  try {
+    return await invoke<T>(command, { dbUrl: await activeDbUrl(), ...args });
+  } catch (error: unknown) {
+    if (typeof error === "object" && error !== null && "code" in error && "message" in error
+      && (error.code === "resolved" || error.code === "failed") && typeof error.message === "string") {
+      throw new ThemeConflictError(error.code, error.message);
+    }
+    throw error;
+  }
+}
+
+/** Reads the content versions that concurrent saves on linked devices left on a theme. */
+export async function getThemeConflict(id: string): Promise<ThemeConflict> {
+  return mapThemeConflict(await invokeConflict<unknown>("themes_conflict", { id }));
+}
+
+/** Resolves a theme's content conflict on every linked device and returns the theme as it now stands. */
+export async function resolveThemeConflict(resolution: ThemeConflictResolution): Promise<UserThemeRead> {
+  return sortedRead(await invokeConflict<UserThemeRead>("themes_resolve_conflict", { resolution }));
 }

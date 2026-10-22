@@ -43,21 +43,18 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 }
 
 /**
- * Generate a unique slug-style theme ID. Prefix is short and human-friendly,
- * suffix is a 6-char base36 random tail. Pass the existing combined registry
- * to guarantee no collisions with current themes.
+ * Generate an id for a new user theme. Themes are created on every linked
+ * device, so ids are random UUIDs rather than names checked against the
+ * themes this device knows. A UUID is a valid theme id slug.
+ *
+ * @param randomUuid Source of version 4 UUIDs; tests pass a fixed one.
  */
 export function generateThemeId(
-  existing: Readonly<Record<ThemeId, Theme>>,
-  prefix = "theme",
+  randomUuid: () => string = () => crypto.randomUUID(),
 ): ThemeId {
-  const safePrefix = SLUG_RE.test(prefix) ? prefix : "theme";
-  for (let attempt = 0; attempt < 64; attempt++) {
-    const tail = Math.random().toString(36).slice(2, 8);
-    const candidate = `${safePrefix}-${tail}`;
-    if (!Object.hasOwn(existing, candidate)) return candidate;
-  }
-  return `${safePrefix}-${Date.now().toString(36)}`;
+  const id = randomUuid().toLowerCase();
+  if (!SLUG_RE.test(id)) throw new Error("generated theme id is not a slug");
+  return id;
 }
 
 /**

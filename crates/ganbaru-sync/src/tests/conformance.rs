@@ -4,6 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use sqlx::SqlitePool;
 
+use super::fixture::{FIXTURE_TABLE_IDS, TEST_MANIFEST, fixture_pool};
 use super::{block_on, migrated_pool};
 use crate::domains::vault_adapters;
 use crate::manifest::vault::quick_notes;
@@ -14,12 +15,12 @@ use crate::manifest::{
 };
 use crate::{Adapters, Engine, Hooks, SyncError, triggers};
 
-/// First table id of the test-only fixture domains; vault domains stay below it.
-pub(super) const FIXTURE_TABLE_IDS: u16 = 60_000;
-
 /// Every manifest under test with a freshly migrated database that holds its schema.
 pub(super) async fn cases() -> Vec<(&'static Manifest, SqlitePool)> {
-    vec![(&VAULT_MANIFEST, migrated_pool().await)]
+    vec![
+        (&VAULT_MANIFEST, migrated_pool().await),
+        (&TEST_MANIFEST, fixture_pool().await),
+    ]
 }
 
 pub(super) async fn schema_tables(pool: &SqlitePool) -> Vec<(String, String)> {

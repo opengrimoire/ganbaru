@@ -1,5 +1,6 @@
-//! Simulated installations of one vault: an in-memory database, the vault engine, and the
-//! local writer, with helpers that mirror what the app does between engine calls.
+//! Simulated installations of one vault: an in-memory database, an engine for the vault and
+//! fixture domains, and the local writer, with helpers that mirror what the app does between
+//! engine calls.
 
 use std::sync::OnceLock;
 
@@ -10,7 +11,8 @@ use ganbaru_sync_contracts::{
 use sqlx::sqlite::SqliteOwnedBuf;
 use sqlx::{AssertSqlSafe, Connection, SqliteConnection};
 
-use super::migrated_pool;
+use super::fixture::{fixture_pool, test_engine};
+use crate::manifest::Manifest;
 use crate::{
     ApplyReport, Engine, LocalWriter, ResealNeeded, ResealReport, SealReport, SequenceReservation,
     SpaceContext, StoreOutcome, SyncResult,
@@ -28,14 +30,14 @@ pub(super) fn person() -> PersonKeyPair {
     PersonKeyPair::from_seed(&PERSON_SEED).expect("test person seed should be valid")
 }
 
-/// Database bytes of a migrated vault, built once per test binary.
+/// Database bytes of a migrated vault with the fixture domain, built once per test binary.
 static TEMPLATE: OnceLock<Vec<u8>> = OnceLock::new();
 
 async fn template() -> &'static [u8] {
     if let Some(bytes) = TEMPLATE.get() {
         return bytes;
     }
-    let pool = migrated_pool().await;
+    let pool = fixture_pool().await;
     let mut conn = pool.acquire().await.unwrap();
     let bytes = conn.serialize(None).await.unwrap().to_vec();
     drop(conn);
@@ -165,7 +167,7 @@ impl Replica {
         person: PersonKeyPair,
     ) -> Self {
         let mut conn = connection_from(template().await).await;
-        let engine = Engine::vault();
+        let engine = test_engine();
         let space = engine
             .init_space(&mut conn, vault_id, START_MS)
             .await
@@ -200,7 +202,7 @@ impl Replica {
         Self {
             index,
             conn: connection_from(&bytes).await,
-            engine: Engine::vault(),
+            engine: test_engine(),
             ctx: self.ctx.clone(),
             identity: self.identity.duplicate(),
             person: person(),
@@ -408,13 +410,29 @@ impl Replica {
             .count("SELECT applying FROM sync_apply_state WHERE singleton = 1")
             .await;
         assert_eq!(applying, 0, "replica {} left applying set", self.index);
+        let stale_index = self
+            .count(
+                "SELECT (SELECT count(*) FROM (
+                     SELECT id, label FROM fixture_items
+                     EXCEPT SELECT item_id, label FROM fixture_items_index
+                 )) + (SELECT count(*) FROM (
+                     SELECT item_id, label FROM fixture_items_index
+                     EXCEPT SELECT id, label FROM fixture_items
+                 ))",
+            )
+            .await;
+        assert_eq!(
+            stale_index, 0,
+            "replica {} has a stale fixture index",
+            self.index
+        );
     }
 
     /// Replicated state in a canonical text form: domain tables without local columns and
     /// engine merge state without local timestamps.
     pub(super) async fn dump(&mut self) -> Vec<(&'static str, Vec<String>)> {
         let mut dump = Vec::new();
-        for (table, excluded) in DUMPED {
+        for (table, excluded) in dumped(self.engine.manifest()) {
             let columns: Vec<String> =
                 sqlx::query_scalar("SELECT name FROM pragma_table_info(?) ORDER BY cid")
                     .bind(table)
@@ -433,7 +451,7 @@ impl Replica {
             .fetch_all(&mut self.conn)
             .await
             .unwrap();
-            dump.push((*table, rows));
+            dump.push((table, rows));
         }
         dump
     }
@@ -446,11 +464,27 @@ impl Replica {
     }
 }
 
-/// Tables compared across replicas and their local columns.
-const DUMPED: &[(&str, &[&str])] = &[
-    ("quick_note_tags", &[]),
-    ("quick_notes", &["revision"]),
-    ("quick_note_text_runs", &[]),
+/// Tables compared across replicas and the columns each leaves out: every replicated table and
+/// owned child of `manifest` without its `Local` columns, then the engine merge state.
+fn dumped(manifest: &'static Manifest) -> Vec<(&'static str, Vec<&'static str>)> {
+    let mut tables = Vec::new();
+    for table in manifest.tables {
+        let local = table.local_columns.iter().map(|column| column.name);
+        tables.push((table.name, local.collect()));
+        for (_, owned) in table.owned_children() {
+            tables.push((owned.table, Vec::new()));
+        }
+    }
+    tables.extend(
+        ENGINE_DUMPED
+            .iter()
+            .map(|(table, excluded)| (*table, excluded.to_vec())),
+    );
+    tables
+}
+
+/// Engine merge state compared across replicas and its local timestamps.
+const ENGINE_DUMPED: &[(&str, &[&str])] = &[
     ("sync_writers", &["created_at_ms"]),
     ("sync_ops", &["stored_at_ms"]),
     ("sync_rows", &[]),

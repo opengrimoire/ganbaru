@@ -1,4 +1,4 @@
-//! Engine entry points across replicas of the vault manifest.
+//! Engine entry points across replicas of the vault and fixture domains.
 
 use ganbaru_contacts::PersonKeyPair;
 use ganbaru_sync_contracts::bounds::{MAX_DEPENDENCIES, MAX_WRITERS_PER_DEVICE};
@@ -89,6 +89,62 @@ fn sealed_changes_converge_on_every_replica() {
                 .scalar_text("SELECT body_plain_text FROM quick_notes WHERE id = 'note-1'")
                 .await;
             assert_eq!(body.as_deref(), Some("body"));
+        }
+    });
+}
+
+#[test]
+fn applied_rows_take_local_defaults_and_skip_gated_triggers() {
+    block_on(async {
+        let mut replicas = replicas(2).await;
+        replicas[0]
+            .exec(
+                "INSERT INTO fixture_items (id, created_at, label, label_edits)
+                     VALUES ('item-1', '2027-01-01T00:00:00.000Z', 'One', 0);
+                 UPDATE fixture_items SET label = 'Two' WHERE id = 'item-1';
+                 UPDATE fixture_items SET label = 'Three' WHERE id = 'item-1';",
+            )
+            .await;
+        replicas[0].seal().await.unwrap();
+        converge(&mut replicas).await;
+        let edits = "SELECT label_edits FROM fixture_items WHERE id = 'item-1'";
+        let marks = "SELECT count(*) FROM fixture_item_marks";
+        assert_eq!(replicas[0].count(edits).await, 2);
+        assert_eq!(replicas[0].count(marks).await, 1);
+        assert_eq!(replicas[1].count(edits).await, 0);
+        assert_eq!(replicas[1].count(marks).await, 0);
+        let indexed = "SELECT label FROM fixture_items_index WHERE item_id = 'item-1'";
+        assert_eq!(
+            replicas[1].scalar_text(indexed).await.as_deref(),
+            Some("Three")
+        );
+
+        replicas[0]
+            .exec("UPDATE fixture_items SET label = 'Four' WHERE id = 'item-1'")
+            .await;
+        replicas[0].seal().await.unwrap();
+        converge(&mut replicas).await;
+        assert_converged(&mut replicas).await;
+        assert_eq!(replicas[1].count(edits).await, 1);
+        assert_eq!(
+            replicas[1].scalar_text(indexed).await.as_deref(),
+            Some("Four")
+        );
+
+        replicas[1]
+            .exec("DELETE FROM fixture_items WHERE id = 'item-1'")
+            .await;
+        replicas[1].seal().await.unwrap();
+        converge(&mut replicas).await;
+        assert_converged(&mut replicas).await;
+        for replica in &mut replicas {
+            assert_eq!(replica.count(marks).await, 0);
+            assert_eq!(
+                replica
+                    .count("SELECT count(*) FROM fixture_items_index")
+                    .await,
+                0
+            );
         }
     });
 }

@@ -2,6 +2,7 @@ mod budgets;
 mod capture;
 mod conformance;
 mod engine;
+mod fixture;
 mod guards;
 mod local;
 mod replica;

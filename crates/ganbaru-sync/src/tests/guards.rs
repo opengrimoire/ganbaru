@@ -4,6 +4,7 @@ use std::sync::LazyLock;
 
 use sqlx::SqlitePool;
 
+use super::fixture::{TEST_MANIFEST, fixture_pool};
 use super::{block_on, execute, migrated_pool, set_applying};
 use crate::guards::{guarded_tables, install_guards, is_guard_abort};
 use crate::manifest::vault::{VAULT_MANIFEST, quick_notes};
@@ -171,6 +172,36 @@ fn replicated_tables_of_domains_that_replicas_cannot_write_are_guarded() {
         assert!(is_guard_abort(&error), "{error}");
         set_applying(&pool, true).await;
         execute(&pool, insert).await;
+    });
+}
+
+#[test]
+fn local_and_derived_tables_stay_writable_under_guards() {
+    block_on(async {
+        let pool = fixture_pool().await;
+        let mut conn = pool.acquire().await.unwrap();
+        let tables = guarded_tables(&mut conn, &TEST_MANIFEST).await.unwrap();
+        for open in ["fixture_items", "fixture_item_marks", "fixture_items_index"] {
+            assert!(
+                !tables.iter().any(|table| table == open),
+                "{open} is guarded"
+            );
+        }
+        install_guards(&mut conn, &TEST_MANIFEST).await.unwrap();
+        drop(conn);
+        execute(
+            &pool,
+            "INSERT INTO fixture_items (id, created_at, label, label_edits)
+                 VALUES ('item-1', '2027-01-01T00:00:00.000Z', 'One', 0);
+             UPDATE fixture_item_marks SET mark = 2 WHERE item_id = 'item-1';
+             UPDATE fixture_items_index SET label = 'Rebuilt' WHERE item_id = 'item-1';",
+        )
+        .await;
+        let mark: i64 = sqlx::query_scalar("SELECT mark FROM fixture_item_marks")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(mark, 2);
     });
 }
 

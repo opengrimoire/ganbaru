@@ -3,6 +3,7 @@
   import ChevronDown from "@lucide/svelte/icons/chevron-down";
   import ProjectPickerPanels from "$lib/components/projects/pickers/ProjectPickerPanels.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
+  import { compareProjectOrder } from "$lib/projects/order";
   import type { Project } from "$lib/projects/types";
   import { useProjects } from "$lib/stores/projects.svelte";
   import { cn } from "$lib/utils";
@@ -71,10 +72,9 @@
   function compareProjects(left: Project, right: Project): number {
     const leftGroup = projects.groupById(left.groupId);
     const rightGroup = projects.groupById(right.groupId);
-    return (leftGroup?.sortOrder ?? Number.MAX_SAFE_INTEGER)
-      - (rightGroup?.sortOrder ?? Number.MAX_SAFE_INTEGER)
-      || left.sortOrder - right.sortOrder
-      || left.name.localeCompare(right.name);
+    if (leftGroup && rightGroup) return compareProjectOrder(leftGroup, rightGroup) || compareProjectOrder(left, right);
+    if (leftGroup || rightGroup) return leftGroup ? -1 : 1;
+    return compareProjectOrder(left, right);
   }
 
   function panelBounds(): { left: number; right: number; top: number; bottom: number } {

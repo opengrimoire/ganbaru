@@ -14,7 +14,7 @@ function project(overrides: Partial<Project> = {}): Project {
     name: "Project",
     icon: "lucide:folder",
     color: 8,
-    sortOrder: 1000,
+    orderKey: "a0",
     status: "active",
     defaultEventName: null,
     defaultEventTimeMode: "timed",
@@ -95,7 +95,7 @@ describe("projectDraftDirty", () => {
 });
 
 describe("projectUpdateFromDraft", () => {
-  it("builds a trimmed project update and preserves sort order inside the same group", () => {
+  it("builds a trimmed project update and keeps the project in place inside the same group", () => {
     const currentProject = project({ focusPlaylistId: "focus-old" });
     const draft = updateDraft(projectDraftFromProject(currentProject), {
       name: "  Renamed  ",
@@ -108,7 +108,6 @@ describe("projectUpdateFromDraft", () => {
       project: currentProject,
       draft,
       visibleGroupIds: new Set(["group-1"]),
-      nextSortOrderForGroup: () => 5000,
     });
 
     expect(result).toMatchObject({
@@ -117,7 +116,7 @@ describe("projectUpdateFromDraft", () => {
         id: "project-1",
         groupId: "group-1",
         name: "Renamed",
-        sortOrder: 1000,
+        placement: undefined,
         defaultEventName: "Session",
         defaultEventDurationMinutes: 60,
         focusPlaylistId: "focus-new",
@@ -126,7 +125,7 @@ describe("projectUpdateFromDraft", () => {
     });
   });
 
-  it("uses the provided group sort order when the group changes", () => {
+  it("appends the project to the end of a new group", () => {
     const currentProject = project();
     const draft = updateDraft(projectDraftFromProject(currentProject), {
       groupId: "group-2",
@@ -136,12 +135,11 @@ describe("projectUpdateFromDraft", () => {
       project: currentProject,
       draft,
       visibleGroupIds: new Set(["group-1", "group-2"]),
-      nextSortOrderForGroup: () => 5000,
     });
 
     expect(result).toMatchObject({
       ok: true,
-      value: { groupId: "group-2", sortOrder: 5000 },
+      value: { groupId: "group-2", placement: { kind: "end" } },
     });
   });
 
@@ -150,7 +148,7 @@ describe("projectUpdateFromDraft", () => {
       id: "project-routine-eat",
       groupId: "group-routine",
       name: "Comer",
-      sortOrder: 20,
+      orderKey: "a0",
     });
     const draft = updateDraft(projectDraftFromProject(currentProject), {
       name: "Renamed",
@@ -163,7 +161,6 @@ describe("projectUpdateFromDraft", () => {
       project: currentProject,
       draft,
       visibleGroupIds: new Set(["group-routine", "group-2"]),
-      nextSortOrderForGroup: () => 5000,
     });
 
     expect(result).toMatchObject({
@@ -171,7 +168,7 @@ describe("projectUpdateFromDraft", () => {
       value: {
         groupId: "group-routine",
         name: "Comer",
-        sortOrder: 20,
+        placement: undefined,
         icon: "lucide:utensils",
         status: "hidden",
       },
@@ -192,7 +189,6 @@ describe("projectUpdateFromDraft", () => {
       project: currentProject,
       draft,
       visibleGroupIds: new Set(["group-1"]),
-      nextSortOrderForGroup: () => 5000,
     });
 
     expect(result).toMatchObject({
@@ -216,19 +212,16 @@ describe("projectUpdateFromDraft", () => {
       project: currentProject,
       draft: updateDraft(cleanDraft, { name: " " }),
       visibleGroupIds: new Set(["group-1"]),
-      nextSortOrderForGroup: () => 5000,
     })).toEqual({ ok: false, error: "name_required" });
     expect(projectUpdateFromDraft({
       project: currentProject,
       draft: updateDraft(cleanDraft, { groupId: "missing-group" }),
       visibleGroupIds: new Set(["group-1"]),
-      nextSortOrderForGroup: () => 5000,
     })).toEqual({ ok: false, error: "group_required" });
     expect(projectUpdateFromDraft({
       project: currentProject,
       draft: updateDraft(cleanDraft, { defaultEventDurationMinutes: "0" }),
       visibleGroupIds: new Set(["group-1"]),
-      nextSortOrderForGroup: () => 5000,
     })).toEqual({ ok: false, error: "invalid_duration" });
   });
 });

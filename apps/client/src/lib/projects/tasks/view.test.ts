@@ -35,7 +35,7 @@ function status(
   id: string,
   name: string,
   category: ProjectStatus["category"],
-  sortOrder: number,
+  rank: number,
   terminal: boolean,
 ): ProjectStatus {
   return {
@@ -44,7 +44,7 @@ function status(
     name,
     category,
     color: 0,
-    sortOrder,
+    orderKey: String(rank),
     terminal,
     createdAt: "2026-06-01T00:00:00Z",
     updatedAt: "2026-06-01T00:00:00Z",
@@ -55,14 +55,14 @@ function priority(
   id: string,
   name: string,
   color: ProjectPriorityConfig["color"],
-  sortOrder: number,
+  rank: number,
 ): ProjectPriorityConfig {
   return {
     id,
     projectId: "project",
     name,
     color,
-    sortOrder,
+    orderKey: String(rank),
     createdAt: "2026-06-01T00:00:00Z",
     updatedAt: "2026-06-01T00:00:00Z",
   };
@@ -79,8 +79,8 @@ function task(input: Partial<ProjectTask> & Pick<ProjectTask, "id" | "title">): 
     description: input.description ?? "",
     priority: input.priority ?? "normal",
     taskType: input.taskType ?? "task",
-    sectionSortOrder: input.sectionSortOrder ?? 1000,
-    statusSortOrder: input.statusSortOrder ?? 1000,
+    sectionOrderKey: input.sectionOrderKey ?? "1000",
+    statusOrderKey: input.statusOrderKey ?? "1000",
     estimateMinutes: input.estimateMinutes,
     dueDate: input.dueDate,
     dueTime: input.dueTime,
@@ -100,7 +100,7 @@ function customField(input: Pick<ProjectCustomField, "id" | "name" | "fieldType"
   return {
     ...input,
     projectId: "project",
-    sortOrder: 1000,
+    orderKey: "1000",
     icon: null,
     createdAt: "2026-06-01T00:00:00Z",
     updatedAt: "2026-06-01T00:00:00Z",
@@ -108,7 +108,7 @@ function customField(input: Pick<ProjectCustomField, "id" | "name" | "fieldType"
 }
 
 function customFieldOption(
-  input: Pick<ProjectCustomFieldOption, "id" | "fieldId" | "name" | "sortOrder">,
+  input: Pick<ProjectCustomFieldOption, "id" | "fieldId" | "name" | "orderKey">,
 ): ProjectCustomFieldOption {
   return {
     ...input,
@@ -206,10 +206,10 @@ describe("buildProjectTaskView", () => {
   it("sorts due dates by due time before manual fallback", () => {
     const result = view({
       tasks: [
-        task({ id: "late", title: "Late", dueDate: "2026-06-13", dueTime: "16:00", sectionSortOrder: 1000 }),
-        task({ id: "early", title: "Early", dueDate: "2026-06-13", dueTime: "09:00", sectionSortOrder: 2000 }),
-        task({ id: "no-time-a", title: "No time A", dueDate: "2026-06-14", sectionSortOrder: 4000 }),
-        task({ id: "no-time-b", title: "No time B", dueDate: "2026-06-14", sectionSortOrder: 3000 }),
+        task({ id: "late", title: "Late", dueDate: "2026-06-13", dueTime: "16:00", sectionOrderKey: "1000" }),
+        task({ id: "early", title: "Early", dueDate: "2026-06-13", dueTime: "09:00", sectionOrderKey: "2000" }),
+        task({ id: "no-time-a", title: "No time A", dueDate: "2026-06-14", sectionOrderKey: "4000" }),
+        task({ id: "no-time-b", title: "No time B", dueDate: "2026-06-14", sectionOrderKey: "3000" }),
       ],
       sortMode: "due",
     });
@@ -278,7 +278,7 @@ describe("buildProjectTaskView", () => {
       dependencyBlockingTaskIds: new Set(["blocks", "both"]),
       dependencyBlockedTaskIds: new Set(["blocked", "both"]),
       dependencyFilter: "linked",
-    }).tasks.map((entry) => entry.id)).toEqual(["blocked", "both", "blocks"]);
+    }).tasks.map((entry) => entry.id)).toEqual(["blocked", "blocks", "both"]);
 
     expect(view({
       tasks,
@@ -327,7 +327,7 @@ describe("buildProjectTaskView", () => {
       id: "option-build",
       fieldId: stageField.id,
       name: "Build",
-      sortOrder: 1000,
+      orderKey: "1000",
     });
     const tasks = [
       task({ id: "scored", title: "Scored" }),
@@ -338,7 +338,7 @@ describe("buildProjectTaskView", () => {
     const customFieldValuesByTaskField = new Map([
       [
         projectTaskCustomFieldKey("scored", riskField.id),
-        customFieldValue({ taskId: "scored", fieldId: riskField.id, numberValue: 4 }),
+        customFieldValue({ taskId: "scored", fieldId: riskField.id, numberValue: "4" }),
       ],
       [
         projectTaskCustomFieldKey("reviewed", reviewedField.id),
@@ -387,11 +387,11 @@ describe("buildProjectTaskView", () => {
     const customFieldValuesByTaskField = new Map([
       [
         projectTaskCustomFieldKey("low", scoreField.id),
-        customFieldValue({ taskId: "low", fieldId: scoreField.id, numberValue: 2 }),
+        customFieldValue({ taskId: "low", fieldId: scoreField.id, numberValue: "2" }),
       ],
       [
         projectTaskCustomFieldKey("high", scoreField.id),
-        customFieldValue({ taskId: "high", fieldId: scoreField.id, numberValue: 8 }),
+        customFieldValue({ taskId: "high", fieldId: scoreField.id, numberValue: "10.5" }),
       ],
     ]);
 
@@ -407,10 +407,10 @@ describe("buildProjectTaskView", () => {
   it("sorts priority with explicit direction and keeps manual fallback stable", () => {
     const result = view({
       tasks: [
-        task({ id: "normal", title: "Normal", priority: "normal", sectionSortOrder: 1000 }),
-        task({ id: "urgent-a", title: "Urgent A", priority: "urgent", sectionSortOrder: 3000 }),
-        task({ id: "urgent-b", title: "Urgent B", priority: "urgent", sectionSortOrder: 2000 }),
-        task({ id: "low", title: "Low", priority: "low", sectionSortOrder: 4000 }),
+        task({ id: "normal", title: "Normal", priority: "normal", sectionOrderKey: "1000" }),
+        task({ id: "urgent-a", title: "Urgent A", priority: "urgent", sectionOrderKey: "3000" }),
+        task({ id: "urgent-b", title: "Urgent B", priority: "urgent", sectionOrderKey: "2000" }),
+        task({ id: "low", title: "Low", priority: "low", sectionOrderKey: "4000" }),
       ],
       sortMode: "priority",
       sortDirection: "desc",
@@ -517,8 +517,8 @@ describe("buildProjectTaskListGroups", () => {
 
 describe("manualStatusCompare", () => {
   it("uses status order before section order for kanban columns", () => {
-    const first = task({ id: "first", title: "First", statusSortOrder: 1000, sectionSortOrder: 2000 });
-    const second = task({ id: "second", title: "Second", statusSortOrder: 2000, sectionSortOrder: 1000 });
+    const first = task({ id: "first", title: "First", statusOrderKey: "1000", sectionOrderKey: "2000" });
+    const second = task({ id: "second", title: "Second", statusOrderKey: "2000", sectionOrderKey: "1000" });
 
     expect([second, first].sort(manualStatusCompare).map((entry) => entry.id)).toEqual(["first", "second"]);
   });

@@ -90,7 +90,7 @@ interface ProjectGroupRow {
   name: string;
   icon: string;
   color: number | null;
-  sort_order: number;
+  order_key: string;
   collapsed: number;
   hidden_at: string | null;
   archived_at: string | null;
@@ -104,7 +104,7 @@ interface ProjectRow {
   name: string;
   icon: string;
   color: number | null;
-  sort_order: number;
+  order_key: string;
   status: Project["status"];
   default_event_name: string | null;
   default_event_time_mode: Project["defaultEventTimeMode"];
@@ -132,7 +132,7 @@ interface ProjectSectionRow {
   id: string;
   project_id: string;
   name: string;
-  sort_order: number;
+  order_key: string;
   collapsed: number;
   hidden_at: string | null;
   archived_at: string | null;
@@ -146,8 +146,9 @@ interface ProjectStatusRow {
   name: string;
   category: ProjectStatus["category"];
   color: number;
-  sort_order: number;
+  order_key: string;
   terminal: number;
+  deleted_at: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -157,7 +158,8 @@ interface ProjectPriorityRow {
   project_id: string;
   name: string;
   color: number;
-  sort_order: number;
+  order_key: string;
+  deleted_at: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -173,8 +175,8 @@ interface ProjectTaskRow {
   description: string;
   priority: ProjectTask["priority"];
   task_type: ProjectTask["taskType"];
-  section_sort_order: number;
-  status_sort_order: number;
+  section_order_key: string;
+  status_order_key: string;
   estimate_minutes: number | null;
   due_date: string | null;
   due_time: string | null;
@@ -201,7 +203,7 @@ interface ProjectChecklistItemRow {
   task_id: string;
   title: string;
   completed_at: string | null;
-  sort_order: number;
+  order_key: string;
   created_at: string;
   updated_at: string;
 }
@@ -211,7 +213,7 @@ interface ProjectTagRow {
   project_id: string;
   name: string;
   color: number | null;
-  sort_order: number;
+  order_key: string;
   created_at: string;
   updated_at: string;
 }
@@ -228,7 +230,7 @@ interface ProjectCustomFieldRow {
   project_id: string;
   name: string;
   field_type: ProjectCustomField["fieldType"];
-  sort_order: number;
+  order_key: string;
   icon: string | null;
   created_at: string;
   updated_at: string;
@@ -239,7 +241,7 @@ interface ProjectCustomFieldOptionRow {
   id: string;
   field_id: string;
   name: string;
-  sort_order: number;
+  order_key: string;
   created_at: string;
   updated_at: string;
 }
@@ -248,7 +250,7 @@ interface ProjectCustomFieldValueRow {
   task_id: string;
   field_id: string;
   text_value: string | null;
-  number_value: number | null;
+  number_value: string | null;
   date_value: string | null;
   checkbox_value: number | null;
   updated_at: string;
@@ -258,7 +260,6 @@ interface ProjectCustomFieldOptionValueRow {
   task_id: string;
   field_id: string;
   option_id: string;
-  created_at: string;
 }
 
 interface ProjectTaskDependencyRow {
@@ -292,7 +293,7 @@ interface ProjectViewRow {
   project_id: string;
   view_type: string;
   name: string | null;
-  sort_order: number;
+  order_key: string;
   created_at: string;
   updated_at: string;
 }
@@ -309,7 +310,7 @@ interface ProjectCustomEmojiRow {
   id: string;
   name: string;
   asset_path: string;
-  sort_order: number;
+  order_key: string;
   created_at: string;
   updated_at: string;
 }
@@ -478,7 +479,7 @@ function mapGroup(row: ProjectGroupRow): ProjectGroup {
     },
     icon: row.icon,
     color: optionalNumber(row.color),
-    sortOrder: row.sort_order,
+    orderKey: row.order_key,
     collapsed: row.collapsed !== 0,
     hiddenAt: optionalText(row.hidden_at),
     archivedAt: optionalText(row.archived_at),
@@ -497,7 +498,7 @@ function mapProject(row: ProjectRow): Project {
     },
     icon: row.icon,
     color: optionalNumber(row.color),
-    sortOrder: row.sort_order,
+    orderKey: row.order_key,
     status: row.status,
     defaultEventName: row.default_event_name,
     defaultEventTimeMode: row.default_event_time_mode,
@@ -529,7 +530,7 @@ function mapSection(row: ProjectSectionRow): ProjectSection {
     id: row.id,
     projectId: row.project_id,
     name: row.name,
-    sortOrder: row.sort_order,
+    orderKey: row.order_key,
     collapsed: row.collapsed !== 0,
     hiddenAt: optionalText(row.hidden_at),
     archivedAt: optionalText(row.archived_at),
@@ -545,8 +546,9 @@ function mapStatus(row: ProjectStatusRow): ProjectStatus {
     name: row.name,
     category: row.category,
     color: normalizeEventColor(row.color) ?? FALLBACK_COLOR_INDEX,
-    sortOrder: row.sort_order,
+    orderKey: row.order_key,
     terminal: row.terminal !== 0,
+    deletedAt: optionalText(row.deleted_at),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -558,7 +560,8 @@ function mapPriority(row: ProjectPriorityRow): ProjectPriorityConfig {
     projectId: row.project_id,
     name: row.name,
     color: normalizeEventColor(row.color) ?? FALLBACK_COLOR_INDEX,
-    sortOrder: row.sort_order,
+    orderKey: row.order_key,
+    deletedAt: optionalText(row.deleted_at),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -576,8 +579,8 @@ function mapTask(row: ProjectTaskRow): ProjectTask {
     description: row.description,
     priority: row.priority,
     taskType: row.task_type,
-    sectionSortOrder: row.section_sort_order,
-    statusSortOrder: row.status_sort_order,
+    sectionOrderKey: row.section_order_key,
+    statusOrderKey: row.status_order_key,
     estimateMinutes: optionalNumber(row.estimate_minutes),
     dueDate: optionalText(row.due_date),
     dueTime: optionalText(row.due_time),
@@ -616,7 +619,7 @@ function mapChecklistItem(row: ProjectChecklistItemRow): ProjectChecklistItem {
     taskId: row.task_id,
     title: row.title,
     completedAt: optionalText(row.completed_at),
-    sortOrder: row.sort_order,
+    orderKey: row.order_key,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -628,7 +631,7 @@ function mapTag(row: ProjectTagRow): ProjectTag {
     projectId: row.project_id,
     name: row.name,
     color: optionalNumber(row.color),
-    sortOrder: row.sort_order,
+    orderKey: row.order_key,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -649,7 +652,7 @@ function mapCustomField(row: ProjectCustomFieldRow): ProjectCustomField {
     projectId: row.project_id,
     name: row.name,
     fieldType: row.field_type,
-    sortOrder: row.sort_order,
+    orderKey: row.order_key,
     icon: row.icon,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -662,7 +665,7 @@ function mapCustomFieldOption(row: ProjectCustomFieldOptionRow): ProjectCustomFi
     id: row.id,
     fieldId: row.field_id,
     name: row.name,
-    sortOrder: row.sort_order,
+    orderKey: row.order_key,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -673,7 +676,7 @@ function mapCustomFieldValue(row: ProjectCustomFieldValueRow): ProjectCustomFiel
     taskId: row.task_id,
     fieldId: row.field_id,
     textValue: optionalText(row.text_value),
-    numberValue: optionalNumber(row.number_value),
+    numberValue: optionalText(row.number_value),
     dateValue: optionalText(row.date_value),
     checkboxValue: row.checkbox_value === null ? undefined : row.checkbox_value !== 0,
     updatedAt: row.updated_at,
@@ -685,7 +688,6 @@ function mapCustomFieldOptionValue(row: ProjectCustomFieldOptionValueRow): Proje
     taskId: row.task_id,
     fieldId: row.field_id,
     optionId: row.option_id,
-    createdAt: row.created_at,
   };
 }
 
@@ -741,7 +743,7 @@ function mapViews(rows: readonly ProjectViewRow[]): ProjectView[] {
       projectId: row.project_id,
       viewType: row.view_type,
       name: optionalText(row.name),
-      sortOrder: row.sort_order,
+      orderKey: row.order_key,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
     });
@@ -754,7 +756,7 @@ function mapCustomEmoji(row: ProjectCustomEmojiRow): ProjectCustomEmoji {
     id: row.id,
     name: row.name,
     assetPath: row.asset_path,
-    sortOrder: row.sort_order,
+    orderKey: row.order_key,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -1191,9 +1193,9 @@ export async function applyProjectTaskBulk(request: ProjectTaskBulkRequest): Pro
 }
 
 export type ProjectReorderItem =
-  | { kind: "task"; id: string; axis: "section" | "status"; groupId: string; parentTaskId: string | null; expectedOrder: number }
-  | { kind: "custom_field"; id: string; expectedOrder: number }
-  | { kind: "custom_field_option"; id: string; fieldId: string; expectedOrder: number };
+  | { kind: "task"; id: string; axis: "section" | "status"; groupId: string; parentTaskId: string | null; expectedOrderKey: string }
+  | { kind: "custom_field"; id: string; expectedOrderKey: string }
+  | { kind: "custom_field_option"; id: string; fieldId: string; expectedOrderKey: string };
 
 export interface ProjectReorderRequest {
   operationId: string;
@@ -1266,7 +1268,7 @@ function parseCompoundProjectRows(
       section_id: readText(task, "section_id"), status_id: readText(task, "status_id"),
       parent_task_id: readOptionalText(task, "parent_task_id"), title: readText(task, "title"),
       description: readText(task, "description"), priority: readText(task, "priority"), task_type: taskType,
-      section_sort_order: readNumber(task, "section_sort_order"), status_sort_order: readNumber(task, "status_sort_order"),
+      section_order_key: readOrderKey(task, "section_order_key"), status_order_key: readOrderKey(task, "status_order_key"),
       estimate_minutes: readOptionalNumber(task, "estimate_minutes"), due_date: readOptionalText(task, "due_date"),
       due_time: readOptionalText(task, "due_time"), due_reminder_minutes: readOptionalNumber(task, "due_reminder_minutes"),
       start_date: readOptionalText(task, "start_date"),
@@ -1301,9 +1303,9 @@ function parseCompoundProjectRows(
     if (!Number.isSafeInteger(value) || value < 0) throw new Error("Invalid project schema revision");
     return value;
   }
-  function readSortOrder(row: Record<string, unknown>): number {
-    const value = readNumber(row, "sort_order");
-    if (!Number.isSafeInteger(value)) throw new Error("Invalid project schema order");
+  function readOrderKey(row: Record<string, unknown>, key: string): string {
+    const value = readText(row, key);
+    if (!value) throw new Error(`Invalid project bulk result ${key}`);
     return value;
   }
   const customFields = readArray(row.custom_fields, scope.kind === "custom_field" ? taskLimit : 0).map((value): ProjectCustomFieldRow => {
@@ -1311,7 +1313,7 @@ function parseCompoundProjectRows(
     const fieldType = PROJECT_CUSTOM_FIELD_TYPES.find((type) => type === field.field_type);
     if (!fieldType || readText(field, "project_id") !== projectId) throw new Error("Invalid reordered custom field owner or type");
     return { id: readText(field, "id"), revision: readRevision(field), project_id: projectId,
-      name: readText(field, "name"), field_type: fieldType, sort_order: readSortOrder(field), icon: readOptionalText(field, "icon"),
+      name: readText(field, "name"), field_type: fieldType, order_key: readOrderKey(field, "order_key"), icon: readOptionalText(field, "icon"),
       created_at: readText(field, "created_at"), updated_at: readText(field, "updated_at") };
   });
   const customFieldOptions = readArray(row.custom_field_options, scope.kind === "custom_field_option" ? taskLimit : 0).map((value): ProjectCustomFieldOptionRow => {
@@ -1320,7 +1322,7 @@ function parseCompoundProjectRows(
       throw new Error("Invalid reordered option owner");
     }
     return { id: readText(option, "id"), revision: readRevision(option), field_id: scope.fieldId,
-      name: readText(option, "name"), sort_order: readSortOrder(option),
+      name: readText(option, "name"), order_key: readOrderKey(option, "order_key"),
       created_at: readText(option, "created_at"), updated_at: readText(option, "updated_at") };
   });
   for (const rows of [customFields, customFieldOptions]) {

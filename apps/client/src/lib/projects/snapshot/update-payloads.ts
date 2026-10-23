@@ -8,6 +8,7 @@ import type {
   ProjectCustomFieldUpdate,
   ProjectGroup,
   ProjectGroupUpdate,
+  ProjectOrderPlacement,
   ProjectTag,
   ProjectTagUpdate,
   ProjectSection,
@@ -18,7 +19,21 @@ import type {
 } from "$lib/projects/types";
 import { offeredDateReminderMinutes } from "$lib/utils/date-reminders";
 
-export type ProjectTaskUpdatePatch = Partial<ProjectTask> & { changeReason?: string | null };
+/** Task fields to change, a change reason, and optional moves within the section or status order. */
+export type ProjectTaskUpdatePatch = Partial<ProjectTask> & {
+  changeReason?: string | null;
+  sectionPlacement?: ProjectOrderPlacement;
+  statusPlacement?: ProjectOrderPlacement;
+};
+
+/** An optional move of a row within its ordered list; omitted, the row keeps its place. */
+export interface PlacementPatch {
+  placement?: ProjectOrderPlacement;
+}
+
+function placementField(placement: ProjectOrderPlacement | undefined): { placement?: ProjectOrderPlacement } {
+  return placement ? { placement } : {};
+}
 
 /** A task date's reminder: none without the date, and an offset its time still offers. */
 function taskDateReminderMinutes(
@@ -41,8 +56,8 @@ export function taskUpdatePayload(task: ProjectTask, patch: ProjectTaskUpdatePat
     description: merged.description,
     priority: merged.priority,
     taskType: merged.taskType,
-    sectionSortOrder: merged.sectionSortOrder,
-    statusSortOrder: merged.statusSortOrder,
+    ...(patch.sectionPlacement ? { sectionPlacement: patch.sectionPlacement } : {}),
+    ...(patch.statusPlacement ? { statusPlacement: patch.statusPlacement } : {}),
     estimateMinutes: merged.estimateMinutes ?? null,
     dueDate: merged.dueDate ?? null,
     dueTime: merged.dueDate ? merged.dueTime ?? null : null,
@@ -61,58 +76,58 @@ export function taskUpdatePayload(task: ProjectTask, patch: ProjectTaskUpdatePat
 
 export function checklistItemUpdatePayload(
   item: ProjectChecklistItem,
-  patch: Partial<Pick<ProjectChecklistItem, "title" | "completedAt" | "sortOrder">>,
+  patch: Partial<Pick<ProjectChecklistItem, "title" | "completedAt">> & PlacementPatch,
 ): ProjectChecklistItemUpdate {
   const merged = { ...item, ...patch };
   return {
     id: merged.id,
     title: merged.title,
     completed: Boolean(merged.completedAt),
-    sortOrder: merged.sortOrder,
+    ...placementField(patch.placement),
   };
 }
 
 export function tagUpdatePayload(
   tag: ProjectTag,
-  patch: Partial<Pick<ProjectTag, "name" | "color" | "sortOrder">>,
+  patch: Partial<Pick<ProjectTag, "name" | "color">> & PlacementPatch,
 ): ProjectTagUpdate {
   const merged = { ...tag, ...patch };
   return {
     id: merged.id,
     name: merged.name,
     color: merged.color ?? null,
-    sortOrder: merged.sortOrder,
+    ...placementField(patch.placement),
   };
 }
 
 export function customFieldUpdatePayload(
   field: ProjectCustomField,
-  patch: Partial<Pick<ProjectCustomField, "name" | "sortOrder" | "icon">>,
+  patch: Partial<Pick<ProjectCustomField, "name" | "icon">> & PlacementPatch,
 ): ProjectCustomFieldUpdate {
   const merged = { ...field, ...patch };
   return {
     id: merged.id,
     name: merged.name,
-    sortOrder: merged.sortOrder,
+    ...placementField(patch.placement),
     icon: merged.icon,
   };
 }
 
 export function customFieldOptionUpdatePayload(
   option: ProjectCustomFieldOption,
-  patch: Partial<Pick<ProjectCustomFieldOption, "name" | "sortOrder">>,
+  patch: Partial<Pick<ProjectCustomFieldOption, "name">> & PlacementPatch,
 ): ProjectCustomFieldOptionUpdate {
   const merged = { ...option, ...patch };
   return {
     id: merged.id,
     name: merged.name,
-    sortOrder: merged.sortOrder,
+    ...placementField(patch.placement),
   };
 }
 
 export function groupUpdatePayload(
   group: ProjectGroup,
-  patch: Partial<Pick<ProjectGroup, "name" | "icon" | "color" | "sortOrder" | "collapsed">>,
+  patch: Partial<Pick<ProjectGroup, "name" | "icon" | "color" | "collapsed">> & PlacementPatch,
 ): ProjectGroupUpdate {
   const merged = { ...group, ...patch };
   return {
@@ -120,12 +135,12 @@ export function groupUpdatePayload(
     name: merged.name,
     icon: merged.icon,
     color: merged.color ?? null,
-    sortOrder: merged.sortOrder,
+    ...placementField(patch.placement),
     collapsed: merged.collapsed,
   };
 }
 
-export function projectUpdatePayload(project: Project, patch: Partial<Project>): ProjectUpdate {
+export function projectUpdatePayload(project: Project, patch: Partial<Project> & PlacementPatch): ProjectUpdate {
   const merged = { ...project, ...patch };
   return {
     id: merged.id,
@@ -133,7 +148,7 @@ export function projectUpdatePayload(project: Project, patch: Partial<Project>):
     name: merged.name,
     icon: merged.icon,
     color: merged.color ?? null,
-    sortOrder: merged.sortOrder,
+    ...placementField(patch.placement),
     status: merged.status,
     defaultEventName: merged.defaultEventName,
     defaultEventTimeMode: merged.defaultEventTimeMode,
@@ -156,13 +171,13 @@ export function projectUpdatePayload(project: Project, patch: Partial<Project>):
 
 export function sectionUpdatePayload(
   section: ProjectSection,
-  patch: Partial<Pick<ProjectSection, "name" | "sortOrder" | "collapsed" | "hiddenAt" | "archivedAt">>,
+  patch: Partial<Pick<ProjectSection, "name" | "collapsed" | "hiddenAt" | "archivedAt">> & PlacementPatch,
 ): ProjectSectionUpdate {
   const merged = { ...section, ...patch };
   return {
     id: merged.id,
     name: merged.name,
-    sortOrder: merged.sortOrder,
+    ...placementField(patch.placement),
     collapsed: merged.collapsed,
     hiddenAt: merged.hiddenAt ?? null,
     archivedAt: merged.archivedAt ?? null,

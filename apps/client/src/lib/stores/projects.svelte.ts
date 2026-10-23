@@ -14,6 +14,7 @@ import {
   projectViewOptionalDataKinds,
 } from "$lib/projects/snapshot/optional-data";
 import { mergeProjectSnapshot } from "$lib/projects/snapshot/queries";
+import { projectOrderRanks } from "$lib/projects/order";
 import { listenForProjectChanges, publishProjectChanges } from "$lib/projects/window-sync";
 import { applyCalendarEventProjectAssignments } from "$lib/projects/calendar-assignments";
 import { configKeyChanged, onConfigChangedElsewhere } from "$lib/vault/config";
@@ -223,10 +224,11 @@ function isViewStarred(view: ProjectView): boolean {
 
 /** Orders groups or projects by the global Projects sidebar order. */
 function sortedForSidebar<T extends Project | ProjectGroup>(items: readonly T[], starred?: (item: T) => boolean): T[] {
+  const ranks = projectOrderRanks(items);
   return sortSidebarItems(
     items,
     getPreferences().projectsSidebarOrder,
-    (item) => ({ id: item.id, name: item.name, createdAt: item.createdAt, modifiedAt: item.updatedAt, rank: item.sortOrder }),
+    (item) => ({ id: item.id, name: item.name, createdAt: item.createdAt, modifiedAt: item.updatedAt, rank: ranks.get(item.id) }),
     starred,
   );
 }
@@ -759,6 +761,8 @@ function createProjectsStore(pane: ProjectsPane) {
     sectionsForProjectIncludingInactive,
     statusesForProject,
     prioritiesForProject,
+    taskStatusesForProject,
+    taskPrioritiesForProject,
     tasksForProject,
     tasksForProjectIncludingArchived,
     topLevelTasksForSection,
@@ -1017,6 +1021,8 @@ function createProjectsStore(pane: ProjectsPane) {
     sectionsForProjectIncludingInactive,
     statusesForProject,
     prioritiesForProject,
+    taskStatusesForProject,
+    taskPrioritiesForProject,
     tasksForProject,
     tasksForProjectIncludingArchived,
     topLevelTasksForSection,

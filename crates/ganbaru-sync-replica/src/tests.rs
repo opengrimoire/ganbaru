@@ -17,6 +17,7 @@ use std::time::Duration;
 use tokio::sync::Notify;
 
 mod assets;
+mod backup;
 mod exchange;
 
 fn block_on<F: std::future::Future>(future: F) -> F::Output {
@@ -71,9 +72,37 @@ fn person() -> PersonKeyPair {
     PersonKeyPair::from_seed(&[7; 32]).expect("test person seed")
 }
 
+/// Writes a copy of the process-wide migrated template database to `path`, so connecting to it
+/// only validates the applied migrations instead of running the whole chain.
+///
+/// The image is serialized and written directly, since an in-memory connection opens every
+/// `VACUUM INTO` target in memory too.
+async fn write_migrated_database(path: &Path) {
+    let template = sqlx::sqlite::SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .expect("open template copy");
+    ganbaru_db::test_support::apply_migrated_template(&template)
+        .await
+        .expect("load migrated template");
+    let image = acquire(&template)
+        .await
+        .serialize(None)
+        .await
+        .expect("serialize migrated template")
+        .to_vec();
+    template.close().await;
+    std::fs::write(path, image).expect("write migrated database");
+}
+
 /// Creates a migrated vault database at `path` holding the test person identity.
 async fn create_vault(registry: &DatabasePoolRegistry, path: &Path) -> sqlx::SqlitePool {
-    let pool = registry.connect_path(path).await.expect("migrate vault");
+    write_migrated_database(path).await;
+    let pool = registry
+        .connect_path(path)
+        .await
+        .expect("open migrated vault");
     sqlx::query(
         "INSERT INTO contacts_local_identity
             (singleton, public_key, created_at)

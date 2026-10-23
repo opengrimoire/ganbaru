@@ -373,12 +373,23 @@ async fn import_item(
             .await
             .map_err(|error| MusicLibraryError::database("match imported music item", error))?;
     let is_new = existing.is_none();
-    let item_id = existing.unwrap_or_else(|| match &item.youtube_video_id {
-        Some(video_id) if item.source_kind == MusicLibrarySourceKind::YouTubeVideo => {
-            super::identity::youtube_item_id(video_id)
+    let item_id = match existing {
+        Some(item_id) => item_id,
+        None => {
+            let base = match &item.youtube_video_id {
+                Some(video_id) if item.source_kind == MusicLibrarySourceKind::YouTubeVideo => {
+                    super::identity::youtube_item_id(video_id)
+                }
+                _ => super::identity::import_item_id(&item.identity_key),
+            };
+            super::identity::creatable_key(
+                transaction,
+                super::identity::RetirableTable::Items,
+                base,
+            )
+            .await?
         }
-        _ => super::identity::import_item_id(&item.identity_key),
-    });
+    };
     if is_new {
         sqlx::query(
             "INSERT INTO music_library_items
@@ -435,16 +446,19 @@ async fn import_item(
     }
     for location in &item.locations {
         let relative_path = super::identity::normalize_relative_path(&location.relative_path);
+        let location_id = super::identity::creatable_key(
+            transaction,
+            super::identity::RetirableTable::Locations,
+            super::identity::location_id(&location.root_id, &relative_path),
+        )
+        .await?;
         sqlx::query(
             "INSERT INTO music_local_locations
                 (id, item_id, root_id, relative_path, availability, first_seen_at_ms, updated_at_ms)
              VALUES (?, ?, ?, ?, 'missing', ?, ?)
              ON CONFLICT DO NOTHING",
         )
-        .bind(super::identity::location_id(
-            &location.root_id,
-            &relative_path,
-        ))
+        .bind(&location_id)
         .bind(&item_id)
         .bind(&location.root_id)
         .bind(&relative_path)

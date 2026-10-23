@@ -14,7 +14,6 @@ use serde::Serialize;
 use tauri::ipc::{InvokeBody, Request, Response};
 use tauri::{AppHandle, Runtime};
 
-use crate::db::connect_sqlite;
 use crate::vault;
 
 #[cfg(target_os = "linux")]
@@ -45,22 +44,6 @@ pub async fn quick_notes_read_image<R: Runtime>(
     let vault_root = vault::active_vault_path(&app)?;
     let bytes = blocking(move || images::read_image(&vault_root, &file)).await?;
     Ok(Response::new(bytes))
-}
-
-/// Deletes image files that nothing references any more. Devices that cannot write Quick
-/// notes skip the pass.
-#[tauri::command]
-pub async fn quick_notes_collect_images<R: Runtime>(
-    app: AppHandle<R>,
-    db_url: String,
-) -> Result<u64, String> {
-    let status = vault::ownership::active_status(&app)?;
-    if !status.can_write_domain(QUICK_NOTES_DOMAIN) {
-        return Ok(0);
-    }
-    let pool = connect_sqlite(app.clone(), db_url).await?;
-    let vault_root = vault::active_replicated_asset_path(&app, QUICK_NOTES_DOMAIN)?;
-    images::collect_unreferenced_images(&pool, &vault_root).await
 }
 
 /// Images a picker imported, and how many picked files were left out.

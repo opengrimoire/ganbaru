@@ -1304,7 +1304,7 @@ fn assert_well_formed(manifest: &Manifest) {
             match group.kind {
                 MergeKind::Immutable => {
                     assert!(
-                        !group.surfaced && !group.recoverable && !group.bumps_revision,
+                        !group.surfaced && !group.bumps_revision,
                         "{}.{}: immutable groups never change",
                         table.name,
                         group.name
@@ -1396,7 +1396,8 @@ fn manifests_are_well_formed() {
             .map(|table| table.full_mask().0)
             .collect::<Vec<_>>(),
         [
-            31, 511, 7, 127, 31, 7, 3, 7, 511, 7, 127, 31, 63, 15, 63, 3, 2047, 15, 31, 31, 15, 255
+            31, 511, 7, 127, 31, 7, 3, 7, 1023, 7, 127, 31, 63, 15, 63, 3, 2047, 15, 31, 31, 15,
+            255
         ]
     );
 }
@@ -1743,6 +1744,7 @@ const RECORDED_MANIFESTS: &[(u16, &str)] = &[
     (3, include_str!("fixtures/vault_manifest_v3.txt")),
     (4, include_str!("fixtures/vault_manifest_v4.txt")),
     (5, include_str!("fixtures/vault_manifest_v5.txt")),
+    (6, include_str!("fixtures/vault_manifest_v6.txt")),
 ];
 #[test]
 fn vault_manifest_changes_only_with_a_version_bump() {

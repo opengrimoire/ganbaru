@@ -500,7 +500,9 @@ pub struct GroupSpec {
     pub references: &'static [ReferenceColumn],
     /// Whether concurrent differing versions are shown to the user as a conflict.
     pub surfaced: bool,
-    /// Whether versions that outlive a deletion are offered for recovery.
+    /// Whether versions that outlive a deletion are offered for recovery. On an `Immutable`
+    /// group the only version is the insert, so a row created concurrently with the deletion of
+    /// its cascade parent offers that parent for recovery.
     pub recoverable: bool,
     /// Whether materializing a change bumps the table's local revision column.
     pub bumps_revision: bool,

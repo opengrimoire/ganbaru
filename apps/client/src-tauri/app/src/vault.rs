@@ -42,12 +42,12 @@ pub(crate) mod quiescence;
 pub(crate) mod runtime_lifecycle;
 pub(crate) mod vault_lock;
 
-pub const APP_SQLITE_FILE: &str = "ganbaru.sqlite";
+pub const APP_SQLITE_FILE: &str = ganbaru_sync_replica::backup::DATABASE_FILE;
 const PRODUCTION_VAULT_NAME: &str = "Ganbaru";
 const DEVELOPMENT_VAULT_NAME: &str = "Ganbaru Dev";
 const APP_STATE_FILE: &str = "app-state.json";
-const VAULT_MANIFEST_FILE: &str = "vault.json";
-const CONFIG_FILE: &str = "config.json";
+const VAULT_MANIFEST_FILE: &str = ganbaru_sync_replica::backup::VAULT_MANIFEST_FILE;
+const CONFIG_FILE: &str = ganbaru_sync_replica::backup::CONFIG_FILE;
 const VAULT_APP_MARKER: &str = "ganbaru";
 const VAULT_SCHEMA_VERSION: u32 = 1;
 const MAX_RECENT_VAULTS: usize = 8;

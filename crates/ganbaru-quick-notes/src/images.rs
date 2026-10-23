@@ -1,21 +1,20 @@
 //! Note images: ordered rows that reference content-addressed files under
-//! [`IMAGES_DIR`], importing and reading those files, and removing files that nothing
-//! references any more.
+//! [`IMAGES_DIR`], and importing and reading those files. The managed asset sweep of
+//! `ganbaru-sync-replica` removes files that nothing references any more.
 //!
 //! A file is named by the lowercase hex SHA-256 of its bytes and the extension of its type, so
 //! notes on every device share one copy of identical images and a name proves its contents.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::fs;
 use std::io::{ErrorKind, Read, Write};
 use std::path::{Path, PathBuf};
-use std::time::{Duration, SystemTime};
+use std::time::SystemTime;
 
 use ganbaru_image_metadata::{
     ManagedImageKind, ManagedImageMetadataError, parse_display_image_metadata,
     validate_image_dimensions,
 };
-use ganbaru_sync::Engine;
 use ganbaru_sync::assets::AssetRef;
 use ganbaru_sync::domains::quick_notes::{
     ImageError, NoteImage, decode_images, images_blob, validate_image, validate_images,
@@ -23,8 +22,6 @@ use ganbaru_sync::domains::quick_notes::{
 pub use ganbaru_sync::domains::quick_notes::{
     MAX_IMAGE_BYTES, MAX_IMAGE_DIMENSION, MAX_IMAGE_PIXELS, MAX_IMAGES,
 };
-use ganbaru_sync::local::retained_group_values;
-use ganbaru_sync::manifest::vault::quick_notes::{NOTES_TABLE, note_group};
 use ganbaru_sync_contracts::Value;
 use ring::digest::{SHA256, digest};
 use ring::rand::{SecureRandom, SystemRandom};
@@ -36,11 +33,6 @@ pub const IMAGE_EXTENSIONS: [&str; 5] = ["png", "jpg", "jpeg", "webp", "gif"];
 
 /// Vault-relative directory of note image files.
 pub const IMAGES_DIR: &str = "assets/quick-notes/images";
-
-/// How long an unreferenced file survives. A file imported for a note that has not saved yet,
-/// or one that a sync exchange just delivered, is unreferenced for a moment; the grace period
-/// keeps cleanup from racing those writes.
-const UNREFERENCED_GRACE: Duration = Duration::from_secs(24 * 60 * 60);
 
 /// A note's reference to an image file, with the displayed dimensions for layout.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -470,85 +462,4 @@ pub fn check_synced_image(asset: &AssetRef, path: &Path) -> Result<(), String> {
         ));
     }
     Ok(())
-}
-
-/// Digests that a note, an open conflict, or a recovery offer still references.
-async fn referenced_digests(pool: &SqlitePool) -> Result<HashSet<String>, String> {
-    let mut conn = pool
-        .acquire()
-        .await
-        .map_err(|error| format!("open quick note image references: {error}"))?;
-    let mut referenced: HashSet<String> =
-        sqlx::query_scalar("SELECT DISTINCT sha256 FROM quick_note_images")
-            .fetch_all(&mut *conn)
-            .await
-            .map_err(|error| format!("load quick note image references: {error}"))?
-            .into_iter()
-            .collect();
-    let retained =
-        retained_group_values(&Engine::vault(), &mut conn, NOTES_TABLE, note_group::IMAGES)
-            .await
-            .map_err(|error| format!("load retained quick note images: {error}"))?;
-    for value in retained {
-        referenced.extend(
-            images_from_value(&value)?
-                .into_iter()
-                .map(|image| image.sha256),
-        );
-    }
-    Ok(referenced)
-}
-
-/// Deletes image files that nothing references and that are older than the grace period.
-/// Returns how many files were deleted.
-pub async fn collect_unreferenced_images(
-    pool: &SqlitePool,
-    vault_root: &Path,
-) -> Result<u64, String> {
-    collect_unreferenced_images_before(pool, vault_root, SystemTime::now()).await
-}
-
-pub(crate) async fn collect_unreferenced_images_before(
-    pool: &SqlitePool,
-    vault_root: &Path,
-    now: SystemTime,
-) -> Result<u64, String> {
-    let referenced = referenced_digests(pool).await?;
-    let dir = images_dir(vault_root);
-    let entries = match fs::read_dir(&dir) {
-        Ok(entries) => entries,
-        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(0),
-        Err(error) => return Err(format!("list quick note images: {error}")),
-    };
-    let mut deleted = 0;
-    for entry in entries {
-        let entry = entry.map_err(|error| format!("list quick note images: {error}"))?;
-        let name = entry.file_name();
-        let digest = name
-            .to_str()
-            .and_then(|name| name.split_once('.'))
-            .map(|(stem, _)| stem);
-        if digest.is_some_and(|digest| referenced.contains(digest)) {
-            continue;
-        }
-        // Only regular files are removed; links and directories are not the app's to delete.
-        let metadata = fs::symlink_metadata(entry.path())
-            .map_err(|error| format!("inspect quick note image: {error}"))?;
-        if !metadata.is_file() {
-            continue;
-        }
-        let modified = metadata
-            .modified()
-            .map_err(|error| format!("inspect quick note image: {error}"))?;
-        let age = now.duration_since(modified).unwrap_or_default();
-        if age < UNREFERENCED_GRACE {
-            continue;
-        }
-        match fs::remove_file(entry.path()) {
-            Ok(()) => deleted += 1,
-            Err(error) if error.kind() == ErrorKind::NotFound => {}
-            Err(error) => return Err(format!("delete quick note image: {error}")),
-        }
-    }
-    Ok(deleted)
 }

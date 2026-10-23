@@ -693,10 +693,10 @@ async fn prepare_m3u(
             } else {
                 name.to_string()
             },
-            icon: "lucide:list-music".to_string(),
+            icon: DEFAULT_PLAYLIST_ICON.to_string(),
             shuffle_enabled: false,
             mix_enabled: false,
-            repeat_mode: MusicRepeatMode::All,
+            repeat_mode: DEFAULT_PLAYLIST_REPEAT_MODE,
             intended_uses: Vec::new(),
             memberships,
         }],

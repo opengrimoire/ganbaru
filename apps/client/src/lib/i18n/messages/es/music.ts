@@ -175,8 +175,6 @@ export const music = {
     playlistRestoreFailed: "No se pudo restaurar la lista",
     itemUntitled: "Pista sin título",
     itemRecoveryNote: "Esta pista se quitó de la biblioteca en otro dispositivo. Sus ediciones no se pueden restaurar, así que solo se pueden descartar.",
-    itemRestored: "Pista restaurada",
-    itemRestoreFailed: "No se pudo restaurar la pista",
   },
   builder: {
     defaultPlaylist: {

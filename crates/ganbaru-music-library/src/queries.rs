@@ -2,6 +2,38 @@ use super::*;
 use sqlx::{QueryBuilder, Sqlite, SqlitePool};
 use std::collections::HashMap;
 
+/// SQL predicate over `item` that matches the native queue policy: a local file plays when this
+/// device observed it available, and a YouTube video plays unless its replicated resolution state
+/// is `embedding-blocked` or `unavailable`. Device availability of a YouTube video is never used,
+/// so every device counts a synced video the same way.
+macro_rules! item_playable_sql {
+    () => {
+        "(CASE WHEN item.source_kind = 'youtube-video'
+              THEN COALESCE(item.youtube_resolution_state, '') NOT IN ('embedding-blocked', 'unavailable')
+              ELSE item.availability = 'available' END)"
+    };
+}
+
+/// SQL predicate over `item` for items that need review attention: a local file by its device
+/// availability, and a YouTube video by its replicated resolution state. A timed-out video is an
+/// issue to review but still attempts playback.
+macro_rules! item_issue_sql {
+    () => {
+        "(CASE WHEN item.source_kind = 'youtube-video'
+              THEN COALESCE(item.youtube_resolution_state, '') IN ('embedding-blocked', 'unavailable', 'timed-out')
+              ELSE item.availability IN ('missing', 'ambiguous', 'unavailable') END)"
+    };
+}
+
+/// SQL predicate over `item` for items that cannot play here, counted as unavailable.
+macro_rules! item_unavailable_sql {
+    () => {
+        "(CASE WHEN item.source_kind = 'youtube-video'
+              THEN COALESCE(item.youtube_resolution_state, '') IN ('embedding-blocked', 'unavailable')
+              ELSE item.availability = 'unavailable' END)"
+    };
+}
+
 pub async fn membership_matrix(
     pool: &SqlitePool,
     item_ids: Vec<String>,
@@ -433,7 +465,7 @@ pub async fn playlist_summaries(
     if now_ms <= 0 {
         return Err(MusicLibraryError::validation("nowMs", "must be positive"));
     }
-    let rows = sqlx::query_as::<_, PlaylistSummaryRow>(
+    let rows = sqlx::query_as::<_, PlaylistSummaryRow>(concat!(
         "SELECT playlist.id, playlist.name, playlist.icon, playlist.shuffle_enabled, playlist.mix_enabled,
                 playlist.repeat_mode, playlist.order_key,
                 COALESCE((
@@ -443,14 +475,18 @@ pub async fn playlist_summaries(
                     ORDER BY intended.intended_use
                 ), '') AS intended_uses,
                 COUNT(membership.id) AS total_count,
-                SUM(CASE WHEN membership.enabled = 1 AND item.availability = 'available'
+                SUM(CASE WHEN membership.enabled = 1 AND ",
+        item_playable_sql!(),
+        "
                     AND NOT EXISTS (
                         SELECT 1 FROM music_snoozes AS snooze
                         WHERE snooze.item_id = item.id AND snooze.starts_at_ms <= ?
                           AND (snooze.ends_at_ms IS NULL OR snooze.ends_at_ms > ?)
                           AND (snooze.scope = 'all-playlists' OR snooze.playlist_id = playlist.id)
                     ) THEN 1 ELSE 0 END) AS eligible_count,
-                SUM(CASE WHEN item.id IS NOT NULL AND item.availability <> 'available'
+                SUM(CASE WHEN item.id IS NOT NULL AND NOT ",
+        item_playable_sql!(),
+        "
                     THEN 1 ELSE 0 END) AS unavailable_count,
                 SUM(CASE WHEN item.id IS NOT NULL AND EXISTS (
                         SELECT 1 FROM music_snoozes AS snooze
@@ -467,7 +503,7 @@ pub async fn playlist_summaries(
          GROUP BY playlist.id
          ORDER BY playlist.order_key, playlist.id
          LIMIT ? OFFSET ?",
-    )
+    ))
     .bind(now_ms)
     .bind(now_ms)
     .bind(now_ms)
@@ -560,7 +596,7 @@ pub async fn source_summaries(
     if now_ms <= 0 {
         return Err(MusicLibraryError::validation("nowMs", "must be positive"));
     }
-    let rows = sqlx::query_as::<_, SourceSummaryRow>(
+    let rows = sqlx::query_as::<_, SourceSummaryRow>(concat!(
         "SELECT source.id, source.kind, source.name, source.refresh_state,
                 source.last_successful_refresh_at_ms, source.local_root_id,
                 source.youtube_playlist_id,
@@ -570,7 +606,9 @@ pub async fn source_summaries(
                               AND source_item.first_discovered_at_ms >= COALESCE(source.previous_successful_refresh_at_ms, 0)
                     THEN 1 ELSE 0 END) AS new_count,
                 SUM(CASE WHEN item.review_state = 'unreviewed' THEN 1 ELSE 0 END) AS unreviewed_count,
-                SUM(CASE WHEN item.availability = 'unavailable' THEN 1 ELSE 0 END) AS unavailable_count,
+                SUM(CASE WHEN ",
+        item_unavailable_sql!(),
+        " THEN 1 ELSE 0 END) AS unavailable_count,
                 SUM(CASE WHEN item.availability = 'ambiguous' THEN 1 ELSE 0 END) AS ambiguous_count,
                 ((SELECT COUNT(*) FROM music_refresh_job_issues AS refresh_issue
                   JOIN music_refresh_jobs AS refresh_job ON refresh_job.id = refresh_issue.job_id
@@ -587,7 +625,9 @@ pub async fn source_summaries(
                     AND relink_plan.state IN ('ready', 'applied')
                     AND relink_entry.match_kind IN ('ambiguous', 'missing')
                     AND relink_entry.resolved_at_ms IS NULL) +
-                 SUM(CASE WHEN item.availability IN ('missing', 'unavailable', 'ambiguous')
+                 SUM(CASE WHEN ",
+        item_issue_sql!(),
+        "
                      THEN 1 ELSE 0 END)) AS open_issue_count,
                 source.discovery_enabled,
                 source.version
@@ -598,7 +638,7 @@ pub async fn source_summaries(
          GROUP BY source.id
          ORDER BY source.name COLLATE NOCASE, source.id
          LIMIT ? OFFSET ?",
-    )
+    ))
     .bind(limit)
     .bind(offset)
     .fetch_all(pool)
@@ -671,7 +711,7 @@ pub async fn issues(
     limit: i64,
 ) -> MusicLibraryResult<Vec<MusicIssue>> {
     validate_summary_window(offset, limit)?;
-    let rows = sqlx::query_as::<_, MusicIssueRow>(
+    let rows = sqlx::query_as::<_, MusicIssueRow>(concat!(
         "SELECT id, issue_kind, item_id, playlist_id, collection_id, root_id,
                 relative_path, action_required, message, created_at_ms
              FROM (
@@ -692,14 +732,17 @@ pub async fn issues(
                      WHERE location.item_id = item.id ORDER BY location.root_id, location.relative_path LIMIT 1)
                         AS relative_path,
                     1 AS action_required,
-                    CASE item.availability
-                        WHEN 'missing' THEN 'The local media location is missing.'
-                        WHEN 'ambiguous' THEN 'The media identity needs confirmation.'
-                        ELSE 'The online media is unavailable.'
+                    CASE
+                        WHEN item.source_kind = 'youtube-video' THEN 'The online media is unavailable.'
+                        WHEN item.availability = 'missing' THEN 'The local media location is missing.'
+                        WHEN item.availability = 'ambiguous' THEN 'The media identity needs confirmation.'
+                        ELSE 'The local media is unavailable.'
                     END AS message,
                     item.updated_at_ms AS created_at_ms
                 FROM music_library_items AS item
-                WHERE item.availability IN ('missing', 'ambiguous', 'unavailable')
+                WHERE ",
+        item_issue_sql!(),
+        "
                 UNION ALL
                 SELECT refresh_issue.id, refresh_issue.issue_code, refresh_issue.item_id, NULL,
                     refresh_job.source_collection_id, refresh_job.local_root_id,
@@ -732,7 +775,7 @@ pub async fn issues(
              )
              ORDER BY created_at_ms DESC, id
              LIMIT ? OFFSET ?",
-    )
+    ))
     .bind(limit)
     .bind(offset)
     .fetch_all(pool)

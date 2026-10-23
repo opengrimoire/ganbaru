@@ -2102,6 +2102,7 @@ dependencies = [
  "ganbaru-contacts",
  "ganbaru-db",
  "ganbaru-handoff",
+ "ganbaru-music-library",
  "ganbaru-quick-notes",
  "ganbaru-sync",
  "ganbaru-sync-contracts",
@@ -2112,6 +2113,7 @@ dependencies = [
  "sha2 0.10.9",
  "sqlx",
  "tokio",
+ "zip",
 ]
 
 [[package]]

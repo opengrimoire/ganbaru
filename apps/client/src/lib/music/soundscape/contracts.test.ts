@@ -51,7 +51,7 @@ describe("soundscape boundary contracts", () => {
     expect(orderedGeneratedSounds(parseMusicSoundscapes(definitions)).map((entry) => entry.generatedKind)).toEqual(["brown", "pink", "white"]);
   });
 
-  it("parses preset mixes in stored order, keeps emptied presets, and rejects repeats and out-of-range levels", () => {
+  it("parses preset mixes in stored order, keeps emptied presets, keeps layers merged past the cap, and rejects repeats and out-of-range levels", () => {
     const preset = { id: "evening", name: "Evening", icon: "lucide:moon", levelMilli: 500, sounds: [{ soundscapeId: "rain", levelMilli: 1000 }, { soundscapeId: "fire", levelMilli: 300 }], createdAtMs: 1, updatedAtMs: 1, version: 1 };
     const parsed = parseMusicSoundscapePresets([preset])[0];
     expect(parsed.level).toBe(0.5);
@@ -59,7 +59,8 @@ describe("soundscape boundary contracts", () => {
     expect(parseMusicSoundscapePresets([{ ...preset, sounds: [] }])[0].sounds).toEqual([]);
     expect(parseMusicSoundscapePresets([{ ...preset, levelMilli: 2000 }])[0].level).toBe(2);
     expect(() => parseMusicSoundscapePresets([{ ...preset, sounds: [preset.sounds[0], preset.sounds[0]] }])).toThrow("repeats");
-    expect(() => parseMusicSoundscapePresets([{ ...preset, sounds: Array.from({ length: 17 }, (_, index) => ({ soundscapeId: `sound-${index}`, levelMilli: 1000 })) }])).toThrow("sounds");
+    const merged = Array.from({ length: 17 }, (_, index) => ({ soundscapeId: `sound-${index}`, levelMilli: 1000 }));
+    expect(parseMusicSoundscapePresets([{ ...preset, sounds: merged }])[0].sounds.map((sound) => sound.soundscapeId)).toEqual(merged.map((sound) => sound.soundscapeId));
     expect(() => parseMusicSoundscapePresets([{ ...preset, levelMilli: 2001 }])).toThrow("levelMilli");
     expect(() => parseMusicSoundscapePresets([{ ...preset, levelMilli: -1 }])).toThrow("levelMilli");
     expect(() => parseMusicSoundscapePresets([{ ...preset, sounds: [{ soundscapeId: "rain", levelMilli: 1001 }] }])).toThrow("levelMilli");

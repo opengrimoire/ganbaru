@@ -1,12 +1,22 @@
-use super::TestDirectory;
-use crate::assets::{AssetStore, AssetStoreError, ContentAddressedStore, STALE_STAGING_AGE};
+use super::{TestDirectory, acquire, add_note, block_on, create_vault};
+use crate::assets::{
+    AssetStore, AssetStoreError, AssetSweep, ContentAddressedStore, InFlightAssets,
+    STALE_STAGING_AGE, collect_unreferenced_assets,
+};
+use crate::backup::ArchiveGate;
 use crate::carry_forward::carry_assets;
+use ganbaru_db::DatabasePoolRegistry;
 use ganbaru_handoff::protocol::SYNC_ASSET_CHUNK_BYTES;
 use ganbaru_sync::Engine;
 use ganbaru_sync::assets::{AssetClass, AssetRef, MAX_ASSET_BYTES};
-use ganbaru_sync::manifest::vault::quick_notes::IMAGES_CLASS;
+use ganbaru_sync::domains::quick_notes::{NoteImage, encode_images};
+use ganbaru_sync::manifest::vault::preferences::PROFILE_CLASS;
+use ganbaru_sync::manifest::vault::quick_notes::{IMAGES_CLASS, NOTES_TABLE, note_group};
+use ganbaru_sync_contracts::{Field, Value};
 use sha2::{Digest as _, Sha256};
+use sqlx::SqlitePool;
 use std::path::Path;
+use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 /// A class at the largest asset bound, larger than the bound of every class the vault registers.
@@ -340,4 +350,262 @@ fn replacements_keep_the_verified_assets_only_this_device_holds() {
         carry_assets(manifest, empty.path(), replacement.path()),
         Ok(0)
     );
+}
+
+/// Grace the collection tests sweep with; files they age are older than it.
+const SWEEP_GRACE: Duration = Duration::from_secs(60 * 60);
+
+/// A vault database under a test directory, whose root holds the asset class directories.
+struct SweepVault {
+    directory: TestDirectory,
+    _registry: DatabasePoolRegistry,
+    pool: SqlitePool,
+}
+
+impl SweepVault {
+    async fn new(label: &str) -> Self {
+        let directory = TestDirectory::new(label);
+        let registry = DatabasePoolRegistry::default();
+        let pool = create_vault(&registry, &directory.path().join("ganbaru.sqlite")).await;
+        Self {
+            directory,
+            _registry: registry,
+            pool,
+        }
+    }
+
+    fn root(&self) -> &Path {
+        self.directory.path()
+    }
+
+    /// Writes `contents` as a PNG asset of `class`, last modified before the sweep grace, and
+    /// returns its file name.
+    fn aged_file(&self, class: &AssetClass, contents: &[u8]) -> String {
+        let name = format!("{}.png", digest(contents));
+        self.aged_entry(class, &name, contents);
+        name
+    }
+
+    /// Writes an entry named `name` in the directory of `class`, last modified before the
+    /// sweep grace.
+    fn aged_entry(&self, class: &AssetClass, name: &str, contents: &[u8]) {
+        store_file(self.root(), class, name, contents);
+        age(
+            &class.directory(self.root()).join(name),
+            SystemTime::now() - SWEEP_GRACE * 2,
+        );
+    }
+
+    /// Adds a note whose image list references `contents`.
+    async fn reference_note_image(&self, note_id: &str, contents: &[u8]) {
+        let mut conn = acquire(&self.pool).await;
+        add_note(&mut conn, note_id).await;
+        sqlx::query(
+            "INSERT INTO quick_note_images
+                 (note_id, sort_order, sha256, content_type, byte_size, width, height)
+             VALUES (?, 0, ?, 'image/png', ?, 4, 4)",
+        )
+        .bind(note_id)
+        .bind(digest(contents))
+        .bind(i64::try_from(contents.len()).expect("image size"))
+        .execute(&mut *conn)
+        .await
+        .expect("insert note image");
+    }
+
+    /// Keeps a retained version of a deleted note whose image list references `contents`, as
+    /// an open conflict or recovery offer does.
+    async fn retain_note_image(&self, contents: &[u8]) {
+        let image = NoteImage {
+            sha256: digest(contents),
+            content_type: "image/png".to_string(),
+            byte_size: u32::try_from(contents.len()).expect("image size"),
+            width: 4,
+            height: 4,
+        };
+        let encoded = encode_images(&[image]).expect("encode images");
+        let value = Value::new(vec![Field::Blob(encoded)]).expect("image value");
+        sqlx::query(
+            "INSERT INTO sync_rows (table_id, row_key, state) VALUES (?, 'gone', 'tombstoned')",
+        )
+        .bind(i64::from(NOTES_TABLE.0))
+        .execute(&self.pool)
+        .await
+        .expect("insert tombstone");
+        sqlx::query(
+            "INSERT INTO sync_register_versions
+                 (table_id, row_key, group_id, writer_id, seq, clock, value_hash, value)
+             VALUES (?, 'gone', ?, zeroblob(16), 1, 0, zeroblob(32), ?)",
+        )
+        .bind(i64::from(NOTES_TABLE.0))
+        .bind(i64::from(note_group::IMAGES.get()))
+        .bind(value.encode())
+        .execute(&self.pool)
+        .await
+        .expect("insert retained version");
+    }
+
+    /// Sets the profile picture preference to `contents`.
+    async fn set_profile_image(&self, contents: &[u8]) {
+        let value = format!(
+            r#"{{"path":"profile/{}.png","byteSize":{}}}"#,
+            digest(contents),
+            contents.len()
+        );
+        sqlx::query(
+            "INSERT INTO vault_preferences (key, value, updated_at)
+             VALUES ('profile.image', ?, '2026-01-01T00:00:00.000Z')
+             ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+        )
+        .bind(value)
+        .execute(&self.pool)
+        .await
+        .expect("set profile image");
+    }
+
+    /// Runs one sweep over the classes `admit` accepts.
+    async fn sweep(
+        &self,
+        in_flight: &Arc<InFlightAssets>,
+        now: SystemTime,
+        admit: impl FnMut(&'static AssetClass) -> Option<()>,
+    ) -> Result<usize, String> {
+        let engine = Engine::vault();
+        collect_unreferenced_assets(
+            &ArchiveGate::default(),
+            AssetSweep {
+                engine: &engine,
+                pool: &self.pool,
+                vault_root: self.root(),
+                in_flight,
+                grace: SWEEP_GRACE,
+                now,
+            },
+            admit,
+        )
+        .await
+    }
+}
+
+fn admit_all(_: &'static AssetClass) -> Option<()> {
+    Some(())
+}
+
+#[test]
+fn assets_sweep_removes_unreferenced_files_of_every_class_and_keeps_referenced_ones() {
+    block_on(async {
+        let vault = SweepVault::new("assets-collect").await;
+        let [live, retained, orphan, profile, replaced, unregistered] =
+            [20, 21, 22, 23, 24, 25].map(|seed| bytes(64, seed));
+        let live_name = vault.aged_file(&IMAGES_CLASS, &live);
+        let retained_name = vault.aged_file(&IMAGES_CLASS, &retained);
+        let orphan_name = vault.aged_file(&IMAGES_CLASS, &orphan);
+        let profile_name = vault.aged_file(&PROFILE_CLASS, &profile);
+        vault.aged_file(&PROFILE_CLASS, &replaced);
+        let unregistered_name = vault.aged_file(&LARGE_CLASS, &unregistered);
+        let staged = format!(".{orphan_name}.{}.tmp", "a".repeat(32));
+        for name in [staged.as_str(), "notes.txt"] {
+            vault.aged_entry(&IMAGES_CLASS, name, b"partial");
+        }
+        vault.reference_note_image("note", &live).await;
+        vault.retain_note_image(&retained).await;
+        vault.set_profile_image(&replaced).await;
+        vault.set_profile_image(&profile).await;
+
+        let in_flight = Arc::new(InFlightAssets::default());
+        assert_eq!(
+            vault.sweep(&in_flight, SystemTime::now(), admit_all).await,
+            Ok(2),
+            "the orphaned note image and the replaced profile picture go"
+        );
+        let mut images = vec![live_name, retained_name, staged, "notes.txt".to_string()];
+        images.sort();
+        assert_eq!(entries(vault.root(), &IMAGES_CLASS), images);
+        assert_eq!(entries(vault.root(), &PROFILE_CLASS), vec![profile_name]);
+        assert_eq!(
+            entries(vault.root(), &LARGE_CLASS),
+            vec![unregistered_name],
+            "a directory no manifest class names stays"
+        );
+        assert_eq!(
+            vault.sweep(&in_flight, SystemTime::now(), admit_all).await,
+            Ok(0)
+        );
+    });
+}
+
+#[test]
+fn assets_sweep_spares_recent_touched_and_refused_files() {
+    block_on(async {
+        let vault = SweepVault::new("assets-spare").await;
+        let [touched, recent, refused] = [30, 31, 32].map(|seed| bytes(64, seed));
+        let touched_name = vault.aged_file(&IMAGES_CLASS, &touched);
+        let recent_name = format!("{}.png", digest(&recent));
+        store_file(vault.root(), &IMAGES_CLASS, &recent_name, &recent);
+        let refused_name = vault.aged_file(&PROFILE_CLASS, &refused);
+        let in_flight = Arc::new(InFlightAssets::default());
+        in_flight.touch(&reference(&IMAGES_CLASS, &touched));
+        let refuse_profiles =
+            |class: &'static AssetClass| (class.name != PROFILE_CLASS.name).then_some(());
+
+        let now = SystemTime::now();
+        assert_eq!(vault.sweep(&in_flight, now, refuse_profiles).await, Ok(0));
+        let mut images = vec![touched_name, recent_name];
+        images.sort();
+        assert_eq!(entries(vault.root(), &IMAGES_CLASS), images);
+        assert_eq!(entries(vault.root(), &PROFILE_CLASS), vec![refused_name]);
+
+        assert_eq!(
+            vault.sweep(&in_flight, now, admit_all).await,
+            Ok(1),
+            "an admitted class loses its aged orphan"
+        );
+        assert!(entries(vault.root(), &PROFILE_CLASS).is_empty());
+
+        let untouched = Arc::new(InFlightAssets::default());
+        assert_eq!(
+            vault
+                .sweep(&untouched, now + SWEEP_GRACE * 2, admit_all)
+                .await,
+            Ok(2),
+            "past the grace, files no transfer touched go"
+        );
+        assert!(entries(vault.root(), &IMAGES_CLASS).is_empty());
+    });
+}
+
+#[test]
+fn assets_sweep_waits_for_an_archive_in_progress() {
+    block_on(async {
+        let vault = SweepVault::new("assets-gate").await;
+        vault.aged_file(&IMAGES_CLASS, &bytes(64, 40));
+        let gate = ArchiveGate::default();
+        let in_flight = Arc::new(InFlightAssets::default());
+        let engine = Engine::vault();
+        let sweep = || {
+            collect_unreferenced_assets(
+                &gate,
+                AssetSweep {
+                    engine: &engine,
+                    pool: &vault.pool,
+                    vault_root: vault.root(),
+                    in_flight: &in_flight,
+                    grace: SWEEP_GRACE,
+                    now: SystemTime::now(),
+                },
+                admit_all,
+            )
+        };
+
+        let archive = gate.lock().await;
+        assert!(
+            tokio::time::timeout(Duration::from_millis(200), sweep())
+                .await
+                .is_err(),
+            "the sweep waits while an archive holds the gate"
+        );
+        assert_eq!(entries(vault.root(), &IMAGES_CLASS).len(), 1);
+        drop(archive);
+        assert_eq!(sweep().await, Ok(1));
+    });
 }

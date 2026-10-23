@@ -60,7 +60,6 @@ fn mobile_runtime_registers_portable_core_commands() {
         "quick_notes::quick_notes_import_image",
         "quick_notes::quick_notes_read_image",
         "quick_notes::quick_notes_download_image",
-        "quick_notes::quick_notes_collect_images",
         "crate::sync::commands::sync_status",
         "crate::sync::commands::sync_subscribe",
         "crate::sync::commands::sync_unsubscribe",

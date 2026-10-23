@@ -6,7 +6,8 @@
 //! waiting for it load again.
 
 use super::assets::{
-    AssetStore, AssetStoreError, ContentAddressedStore, STALE_STAGING_AGE, StagedAsset,
+    AssetStore, AssetStoreError, ContentAddressedStore, InFlightAssets, STALE_STAGING_AGE,
+    StagedAsset,
 };
 use super::host::SyncHost;
 use ganbaru_music_library::managed_artwork;
@@ -35,6 +36,7 @@ impl<H: SyncHost> ActiveVaultAssets<H> {
         let root = host.active_vault_path()?;
         let engine = Engine::vault();
         let files = ContentAddressedStore::new(root.clone())
+            .with_in_flight(InFlightAssets::process())
             .with_check(&IMAGES_CLASS, images::check_synced_image)
             .with_check(&ARTWORK_CLASS, managed_artwork::check_synced_artwork)
             .with_check(

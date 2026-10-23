@@ -2,7 +2,9 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use ganbaru_sync_contracts::{Change, ChangeAction, Field, GroupValue, OrderKey, RowKey, Value};
+use ganbaru_sync_contracts::{
+    Change, ChangeAction, Field, GroupValue, OrderKey, RowKey, TableId, Value,
+};
 use sqlx::SqlitePool;
 
 use super::fixture::{
@@ -22,7 +24,7 @@ use crate::manifest::{
     Classification, Collation, ColumnSpec, ColumnType, DerivedKey, DomainManifest, GroupSpec,
     GroupStorage, KeyDerivedColumn, LocalColumn, MAX_TIMESTAMP_BYTES, Manifest, MergeKind,
     OnDelete, OwnedCodec, OwnedOrder, OwnedTable, ReferenceColumn, Resolution, SYNC_KEY_COLUMN,
-    SYNC_TABLES, TableIdRange, TableSpec, TreeSpec, is_sql_literal,
+    SYNC_TABLES, TableIdRange, TableSpec, TreeSpec, group_id, is_sql_literal,
 };
 use crate::sql::{read_owned, replace_owned};
 use crate::{Adapters, Engine, Hooks, SyncError, triggers, validate};
@@ -575,6 +577,7 @@ async fn assert_foreign_keys(manifest: &Manifest, pool: &SqlitePool) {
         let actual = foreign_keys(&pool, table.name)
             .await
             .into_iter()
+            .filter(|foreign_key| !is_key_foreign_key(manifest, table, foreign_key))
             .collect::<BTreeSet<_>>();
         assert_eq!(actual, expected, "{} foreign keys", table.name);
 
@@ -587,6 +590,28 @@ async fn assert_foreign_keys(manifest: &Manifest, pool: &SqlitePool) {
             }
         }
     }
+}
+
+/// Whether a foreign key ties a row to an earlier replicated row of the same key: a table keyed
+/// by its parent's key holds at most one row per parent, and that row cascades with it. The key
+/// is not a group column, so no reference declares it, and the parent materializes first.
+fn is_key_foreign_key(
+    manifest: &Manifest,
+    table: &TableSpec,
+    (from, target, to, on_delete): &(String, String, String, String),
+) -> bool {
+    let Some(parent) = manifest.tables.iter().position(|spec| spec.name == *target) else {
+        return false;
+    };
+    let child = manifest
+        .tables
+        .iter()
+        .position(|spec| spec.name == table.name);
+    from == table.key_column
+        && !table.has_composite_key()
+        && *to == manifest.tables[parent].key_column
+        && on_delete == "CASCADE"
+        && child.is_some_and(|child| parent < child)
 }
 
 /// An owned table cascades from its owner row, or from its parent owned row through the parent
@@ -992,6 +1017,17 @@ fn key_derived_implications(table: &TableSpec) -> (Vec<UniqueSet>, Vec<BTreeSet<
         .unzip()
 }
 
+/// Whether a unique set holds the row key of a table keyed by one column. The key is unique on
+/// its own, so a set holding it collides only when the key does, and an index on it exists only
+/// for foreign keys that target the set.
+fn contains_key(table: &TableSpec, columns: &UniqueSet) -> bool {
+    !table.has_composite_key()
+        && columns.len() > 1
+        && columns
+            .iter()
+            .any(|(column, _)| *column == table.key_column.to_lowercase())
+}
+
 /// The multi-column CHECK a tree implies: a parent that differs from the row's key. A row naming
 /// itself is a cycle of length 1, which tree repair breaks before the row materializes.
 fn tree_implication(table: &TableSpec) -> Option<BTreeSet<String>> {
@@ -1012,7 +1048,11 @@ async fn assert_resolutions(table: &TableSpec, pool: &SqlitePool) {
     let mut unique = unique_indexes(&pool, table.name)
         .await
         .into_iter()
-        .filter(|columns| implied.as_ref() != Some(columns) && !key_unique.contains(columns))
+        .filter(|columns| {
+            implied.as_ref() != Some(columns)
+                && !key_unique.contains(columns)
+                && !contains_key(table, columns)
+        })
         .collect::<Vec<_>>();
     unique.sort();
     let mut declared = declared_unique(table);
@@ -1257,6 +1297,88 @@ fn a_unique_set_of_derived_key_inputs_needs_no_repair() {
         // A unique set that differs from the key inputs still needs a resolution.
         assert_ne!(unique.first(), implied_unique(&ONE_INPUT).as_ref());
         assert_eq!(implied_unique(&MEMBERSHIPS), None);
+    });
+}
+
+#[test]
+fn a_row_keyed_by_its_parent_cascades_and_unique_sets_holding_the_key_need_no_repair() {
+    const ITEM_NOTES: TableSpec = TableSpec {
+        id: TableId(FIXTURE_TABLE_IDS + 15),
+        name: "fixture_item_notes",
+        key_column: "item_id",
+        groups: &[GroupSpec {
+            id: group_id(0),
+            name: "note",
+            kind: MergeKind::Register,
+            storage: GroupStorage::Columns(&[ColumnSpec {
+                name: "note",
+                ty: ColumnType::Text { max_chars: 40 },
+            }]),
+            references: &[],
+            surfaced: false,
+            recoverable: false,
+            bumps_revision: false,
+        }],
+        local_columns: &[],
+        triggers: &[],
+        ..ITEMS
+    };
+    const PARENT_FIRST: DomainManifest = DomainManifest {
+        tables: &[ITEMS, ITEM_NOTES],
+        ..FIXTURE_DOMAIN
+    };
+    const CHILD_FIRST: DomainManifest = DomainManifest {
+        tables: &[ITEM_NOTES, ITEMS],
+        ..FIXTURE_DOMAIN
+    };
+    block_on(async {
+        let pool = fixture_pool().await;
+        sqlx::raw_sql(
+            "CREATE TABLE fixture_item_notes (
+                 item_id TEXT PRIMARY KEY REFERENCES fixture_items(id) ON DELETE CASCADE,
+                 note TEXT NOT NULL CHECK (length(note) <= 40),
+                 UNIQUE (item_id, note)
+             )",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let parent_first = leaked(&[&PARENT_FIRST]);
+        assert_foreign_keys(parent_first, &pool).await;
+        assert_resolutions(&ITEM_NOTES, &pool).await;
+
+        let key_foreign_key = foreign_keys(&pool, ITEM_NOTES.name).await.remove(0);
+        assert!(is_key_foreign_key(
+            parent_first,
+            &ITEM_NOTES,
+            &key_foreign_key
+        ));
+        // The parent must materialize first, and the child must leave with it.
+        let child_first = leaked(&[&CHILD_FIRST]);
+        assert!(!is_key_foreign_key(
+            child_first,
+            &ITEM_NOTES,
+            &key_foreign_key
+        ));
+        let (from, target, to, _) = key_foreign_key.clone();
+        let clearing = (from, target, to, "SET NULL".to_string());
+        assert!(!is_key_foreign_key(parent_first, &ITEM_NOTES, &clearing));
+        let (_, target, to, on_delete) = key_foreign_key;
+        let from_other = ("note".to_string(), target, to, on_delete);
+        assert!(!is_key_foreign_key(parent_first, &ITEM_NOTES, &from_other));
+
+        let binary = || Collation::Binary.sql_name().to_string();
+        let with_key = BTreeSet::from([
+            ("item_id".to_string(), binary()),
+            ("note".to_string(), binary()),
+        ]);
+        assert!(contains_key(&ITEM_NOTES, &with_key));
+        // A unique set without the key can collide between distinct rows.
+        assert!(!contains_key(
+            &ITEM_NOTES,
+            &BTreeSet::from([("note".to_string(), binary())])
+        ));
+        assert!(!contains_key(&MEMBERSHIPS, &with_key));
     });
 }
 

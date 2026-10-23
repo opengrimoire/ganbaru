@@ -4,6 +4,7 @@
   import FolderOpen from "@lucide/svelte/icons/folder-open";
   import LoaderCircle from "@lucide/svelte/icons/loader-circle";
   import DatabaseRollbacks from "$lib/components/vault/DatabaseRollbacks.svelte";
+  import VaultLockWarning from "$lib/components/vault/VaultLockWarning.svelte";
   import VaultHandoffPanel from "$lib/components/vault/handoff/VaultHandoffPanel.svelte";
   import Loading from "$lib/components/ui/Loading.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
@@ -92,6 +93,8 @@
 </script>
 
 <div class="flex flex-col gap-6">
+  <VaultLockWarning class="px-1 text-[0.8rem]" />
+
   <VaultHandoffPanel platform="desktop" onActivated={restartApp} />
 
   <div class="h-px shrink-0 scale-y-50 bg-border" aria-hidden="true"></div>

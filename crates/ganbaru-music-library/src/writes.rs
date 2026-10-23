@@ -344,7 +344,7 @@ async fn duplicate_memberships(
     .map_err(|error| MusicLibraryError::database("load duplicated memberships", error))?;
     let order_keys = super::order::rank_keys(sources.len())?;
     for ((source_id, item_id), order_key) in sources.into_iter().zip(order_keys) {
-        let copy_id = super::identity::membership_id(new_playlist_id, &item_id);
+        let copy_id = super::identity::membership_id(new_playlist_id, &item_id)?;
         sqlx::query(
             "INSERT INTO music_playlist_memberships
                 (id, playlist_id, item_id, order_key, weight, enabled, start_ms, end_ms,
@@ -713,7 +713,7 @@ async fn upsert_membership_in_transaction(
     .await
     .map_err(|error| MusicLibraryError::database("load playlist membership", error))?;
     let Some((id, version)) = existing else {
-        let id = super::identity::membership_id(&membership.playlist_id, &membership.item_id);
+        let id = super::identity::membership_id(&membership.playlist_id, &membership.item_id)?;
         if membership.expected_version.is_some() {
             return Err(MusicLibraryError::not_found("playlist membership", &id));
         }

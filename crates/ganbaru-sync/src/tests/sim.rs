@@ -6,9 +6,10 @@
 //! databases keep their invariants; at quiescence every installation holds the same
 //! replicated state.
 //!
+//! Seeds are split across four test functions that the harness runs in parallel.
 //! `GANBARU_SYNC_SOAK_SEEDS` sets the number of seeds for a soak run; the default debug
-//! test run takes about two minutes. A failing run prints its seed, and `GANBARU_SYNC_SEED` replays
-//! that seed alone.
+//! test run takes about one minute. A failing run prints its seed, and `GANBARU_SYNC_SEED` replays
+//! that seed alone in the shard that owns it.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -28,6 +29,8 @@ use crate::{ApplyReport, StoreOutcome, StoreRefusal, SyncError, SyncResult};
 const DEFAULT_SEEDS: u64 = 48;
 const SEEDS_VARIABLE: &str = "GANBARU_SYNC_SOAK_SEEDS";
 const SEED_VARIABLE: &str = "GANBARU_SYNC_SEED";
+/// Test functions the seeds are split across, so the test harness runs them in parallel.
+const SHARDS: u64 = 4;
 const STEPS: usize = 60;
 const TAG_NAMES: &[&str] = &["Work", "work", "Home", "Ideas", "IDEAS", "Errands"];
 const WORDS: &[&str] = &[
@@ -1552,18 +1555,40 @@ fn number(variable: &str) -> Option<u64> {
     )
 }
 
-fn seeds() -> std::ops::Range<u64> {
-    if let Some(seed) = number(SEED_VARIABLE) {
-        return seed..seed + 1;
-    }
-    0..number(SEEDS_VARIABLE).unwrap_or(DEFAULT_SEEDS)
+/// The seeds of one shard: every seed whose remainder by `SHARDS` is `shard`, so the shards
+/// together run each seed exactly once and share the seeds' uneven costs.
+fn seeds(shard: u64) -> impl Iterator<Item = u64> {
+    let all = match number(SEED_VARIABLE) {
+        Some(seed) => seed..seed + 1,
+        None => 0..number(SEEDS_VARIABLE).unwrap_or(DEFAULT_SEEDS),
+    };
+    all.filter(move |seed| seed % SHARDS == shard)
 }
 
-#[test]
-fn seeded_runs_converge_after_partitions_crashes_and_revocations() {
+fn run_shard(shard: u64) {
     block_on(async {
-        for seed in seeds() {
+        for seed in seeds(shard) {
             run(seed).await;
         }
     });
+}
+
+#[test]
+fn seeded_runs_converge_after_partitions_crashes_and_revocations_shard_0() {
+    run_shard(0);
+}
+
+#[test]
+fn seeded_runs_converge_after_partitions_crashes_and_revocations_shard_1() {
+    run_shard(1);
+}
+
+#[test]
+fn seeded_runs_converge_after_partitions_crashes_and_revocations_shard_2() {
+    run_shard(2);
+}
+
+#[test]
+fn seeded_runs_converge_after_partitions_crashes_and_revocations_shard_3() {
+    run_shard(3);
 }

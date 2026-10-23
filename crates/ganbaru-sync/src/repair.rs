@@ -1,8 +1,9 @@
 //! Duplicate repair, cascade repair, and reference expansion.
 //!
-//! Live rows whose winning values collide on a declared unique column set form a class. Only the
-//! lowest key of a class is materialized; the others are hidden, and replicas that can seal
-//! repair them with tombstones redirecting to that key. A live row hidden by cascade from a
+//! Live rows whose winning values collide on a declared unique column set form a class. Rows
+//! hidden for another reason are left out, and the remaining rows are taken in key order: a row
+//! that collides under any rule with a row already shown is hidden behind the lowest such row,
+//! and replicas that can seal repair it with a tombstone redirecting to that row. A live row hidden by cascade from a
 //! deleted root is repaired with a tombstone naming that root as its cause, and a tree row
 //! detached to break a cycle or limit depth with a null write of its parent. Hiding and
 //! detaching are pure functions of the merge state, so replicas that cannot seal still
@@ -141,21 +142,25 @@ async fn classes(
     Ok(classes)
 }
 
-/// Hidden duplicates of every table with a duplicate rule, marking dirty the rows whose
+/// Colliding classes of live rows per table: every class of two or more rows under any duplicate
+/// rule of the table.
+pub(crate) type Contested = BTreeMap<TableId, Vec<BTreeSet<String>>>;
+
+/// Colliding classes of every table with a duplicate rule, marking dirty the rows whose
 /// materialization a dirty row's old or new unique values may change.
-pub(crate) async fn duplicates(
+pub(crate) async fn contested(
     engine: &Engine,
     conn: &mut SqliteConnection,
     dirty: &mut BTreeSet<RowRef>,
-) -> SyncResult<Duplicates> {
-    let mut hidden = Duplicates::new();
+) -> SyncResult<Contested> {
+    let mut contested = Contested::new();
     for table in engine.manifest().tables {
         let keys: Vec<String> = dirty
             .iter()
             .filter(|(table_id, _)| *table_id == table.id)
             .map(|(_, key)| key.clone())
             .collect();
-        let mut table_hidden = BTreeMap::new();
+        let mut table_classes = Vec::new();
         for (columns, collation) in rules(table) {
             let locations = locate(table, columns)?;
             let classes = classes(engine, conn, table, &locations, collation).await?;
@@ -182,23 +187,52 @@ pub(crate) async fn duplicates(
                     dirty.insert((table.id, key.clone()));
                 }
             }
-            for members in classes.values().filter(|members| members.len() > 1) {
-                let mut members = members.iter();
-                let Some(keeper) = members.next() else {
-                    continue;
-                };
-                for member in members {
-                    table_hidden
-                        .entry(member.clone())
-                        .or_insert_with(|| keeper.clone());
+            table_classes.extend(classes.into_values().filter(|members| members.len() > 1));
+        }
+        if !table_classes.is_empty() {
+            contested.insert(table.id, table_classes);
+        }
+    }
+    Ok(contested)
+}
+
+/// Hidden duplicates of the contested classes, each mapped to a shown row it collides with.
+/// Excluded rows are hidden for other reasons, so they neither keep a class nor count as
+/// duplicates. The other rows are taken in key order: a row that collides under any rule with a
+/// row already shown is hidden behind the lowest such row, and every other row is shown. A row
+/// is therefore never hidden behind a row that is itself hidden, even when several unique rules
+/// chain rows together.
+pub(crate) fn keepers(contested: &Contested, excluded: &BTreeSet<RowRef>) -> Duplicates {
+    let mut hidden = Duplicates::new();
+    for (table, classes) in contested {
+        let mut member_of: BTreeMap<&String, Vec<usize>> = BTreeMap::new();
+        for (index, members) in classes.iter().enumerate() {
+            for key in members {
+                member_of.entry(key).or_default().push(index);
+            }
+        }
+        let mut kept: Vec<Option<&String>> = vec![None; classes.len()];
+        let mut table_hidden = BTreeMap::new();
+        for (key, indices) in member_of {
+            if excluded.contains(&(*table, key.clone())) {
+                continue;
+            }
+            match indices.iter().filter_map(|index| kept[*index]).min() {
+                Some(keeper) => {
+                    table_hidden.insert(key.clone(), keeper.clone());
+                }
+                None => {
+                    for index in indices {
+                        kept[index] = Some(key);
+                    }
                 }
             }
         }
         if !table_hidden.is_empty() {
-            hidden.insert(table.id, table_hidden);
+            hidden.insert(*table, table_hidden);
         }
     }
-    Ok(hidden)
+    hidden
 }
 
 /// Rows whose references in any retained version name a row, directly or through a tombstone

@@ -13,6 +13,7 @@ mod tests;
 
 use crate::vault::handoff::protocol::QrMatrix;
 use ganbaru_contacts::TrustKind;
+use ganbaru_sync::manifest::vault::contacts::DOMAIN_NAME as CONTACTS_DOMAIN;
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
 use store::{ContactState, RequestDirection, RequestState};
@@ -233,7 +234,7 @@ async fn ensure_card_endpoint<R: Runtime>(app: &AppHandle<R>) {
 
 fn require_writable<R: Runtime>(app: &AppHandle<R>) -> Result<(), ContactsError> {
     let status = crate::vault::ownership::active_status(app)?;
-    if status.can_write {
+    if status.can_write_domain(CONTACTS_DOMAIN) {
         Ok(())
     } else {
         Err(ContactsError::ReadOnly(
@@ -254,7 +255,7 @@ async fn snapshot<R: Runtime>(
         .into_iter()
         .map(store::ContactRow::view)
         .collect::<Result<Vec<_>, _>>()?;
-    let requests = store::list_pending_requests(pool)
+    let requests = store::list_pending_requests(pool, store::now())
         .await?
         .iter()
         .map(store::RequestRow::view)
@@ -307,9 +308,10 @@ pub async fn contacts_parse_card<R: Runtime>(
     let identity = identity::load_identity(&app, &pool).await?;
     let public_key = signed.card.public_key.to_text();
     let existing = store::contact_by_key(&pool, &public_key).await?;
-    let pending_sent = store::pending_request(&pool, RequestDirection::Sent, &public_key)
-        .await?
-        .is_some();
+    let pending_sent =
+        store::pending_request(&pool, RequestDirection::Sent, &public_key, store::now())
+            .await?
+            .is_some();
     Ok(ParsedCardView {
         display_name: signed.card.display_name.clone(),
         color: signed.card.color,
@@ -546,7 +548,7 @@ async fn remove_contact_in_state(
     expected_revision: i64,
     state: ContactState,
 ) -> Result<(), ContactsError> {
-    let removed = store::delete_contact(pool, id, expected_revision, state).await?;
+    let removed = store::remove_contact(pool, id, expected_revision, state, store::now()).await?;
     if removed {
         Ok(())
     } else {

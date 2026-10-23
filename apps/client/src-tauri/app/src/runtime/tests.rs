@@ -27,6 +27,7 @@ fn mobile_runtime_registers_portable_core_commands() {
     for command in [
         "vault::vault_use_default",
         "vault::vault_pick_open",
+        "vault::vault_lock::vault_lock_status",
         "calendar::reads::calendar_load_window",
         "calendar::reads::calendar_load_notification_scheduler_window",
         "projects::workspace::projects_load_workspace",

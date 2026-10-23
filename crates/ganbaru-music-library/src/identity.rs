@@ -3,9 +3,10 @@
 //! Two devices that discover the same file, follow the same YouTube playlist, or add the same item
 //! to the same playlist compute the same key, so concurrent creation converges on one row. Roots,
 //! playlists, presets, user soundscapes, and snoozes are user decisions and keep random keys.
-//! Rows created before these rules keep their stored keys; writers match by identity key first.
-//! Tables with composite primary keys carry a derived `sync_key` from
-//! [`ganbaru_music::sync_keys`], and [`rekey_pending`] converts their migration placeholders.
+//! Rows created before these rules keep their stored keys and writers match by identity key
+//! first, except playlist memberships, whose key the sync manifest checks. Tables with composite
+//! primary keys carry a derived `sync_key` from [`ganbaru_music::sync_keys`], and
+//! [`rekey_pending`] converts their migration placeholders and older membership keys.
 
 use crate::{MusicLibraryError, MusicLibraryResult};
 use ganbaru_music::sync_keys::{self, CompositeKeyTable};
@@ -68,19 +69,21 @@ pub fn collection_id(identity_key: &str) -> String {
     stable_id("collection", &[identity_key])
 }
 
-/// Key of the membership of `item_id` in `playlist_id`, unique per pair.
-pub fn membership_id(playlist_id: &str, item_id: &str) -> String {
-    stable_id("membership", &[playlist_id, item_id])
+/// Key of the membership of `item_id` in `playlist_id`, unique per pair. It is the derived row
+/// key the sync manifest checks, so it fails only for a part holding a NUL byte.
+pub fn membership_id(playlist_id: &str, item_id: &str) -> MusicLibraryResult<String> {
+    sync_keys::membership_key(playlist_id, item_id)
 }
 
 /// Replaces every `pending:` placeholder `sync_key` of the Music tables with composite primary
-/// keys by its derived key, the value writers compute for the same row. Returns how many rows
-/// it rekeyed.
+/// keys by its derived key, the value writers compute for the same row, and moves every playlist
+/// membership whose `id` predates derived keys to its derived key. Returns how many rows it
+/// rekeyed.
 ///
 /// The capture migration fills existing rows with placeholders because SQL cannot compute the
 /// key. This pass runs when a read-write vault opens, after migrations and before any writer or
-/// sync start, so no capture or operation names a placeholder. Each rekey captures the row as
-/// created under its final key, and a second run changes nothing.
+/// sync start, so no capture or operation names a placeholder or an older membership key. Each
+/// rekey captures the row as created under its final key, and a second run changes nothing.
 pub async fn rekey_pending(connection: &mut SqliteConnection) -> MusicLibraryResult<u64> {
     let mut transaction = connection
         .begin()
@@ -90,6 +93,7 @@ pub async fn rekey_pending(connection: &mut SqliteConnection) -> MusicLibraryRes
     for table in sync_keys::COMPOSITE_KEY_TABLES {
         rekeyed += rekey_table(&mut transaction, &table).await?;
     }
+    rekeyed += rekey_memberships(&mut transaction).await?;
     transaction
         .commit()
         .await
@@ -134,6 +138,108 @@ async fn rekey_table(
             .map_err(|error| MusicLibraryError::database("rekey music row", error))?;
     }
     Ok(rows.len() as u64)
+}
+
+/// Moves each playlist membership whose `id` is not the derived key of its playlist and item to
+/// that key, with its skip ranges. The immutable key trigger refuses a changed `id`, so the rows
+/// are copied aside, deleted, and inserted again under their derived keys.
+///
+/// Older keys exist only in vaults written before Music replicated, whose memberships have never
+/// been captured or published, so their removal runs with the apply flag set and leaves no
+/// capture, while the insert captures each row as created. Session checkpoints name memberships
+/// inside their payload, so a pass that moves any membership drops them, losing at most one resume
+/// position.
+async fn rekey_memberships(transaction: &mut Transaction<'_, Sqlite>) -> MusicLibraryResult<u64> {
+    let rows: Vec<(String, String, String)> =
+        sqlx::query_as("SELECT id, playlist_id, item_id FROM music_playlist_memberships")
+            .fetch_all(&mut **transaction)
+            .await
+            .map_err(|error| MusicLibraryError::database("read music membership keys", error))?;
+    let mut moved = Vec::new();
+    for (id, playlist_id, item_id) in rows {
+        let derived = membership_id(&playlist_id, &item_id)?;
+        if id != derived {
+            moved.push((id, derived));
+        }
+    }
+    if moved.is_empty() {
+        return Ok(0);
+    }
+    run_rekey_statements(
+        transaction,
+        &[
+            "CREATE TEMP TABLE music_membership_rekey_rows AS
+                SELECT * FROM music_playlist_memberships WHERE 0",
+            "CREATE TEMP TABLE music_membership_rekey_skips AS
+                SELECT * FROM music_membership_skip_ranges WHERE 0",
+        ],
+        &[],
+    )
+    .await?;
+    for (old, new) in &moved {
+        run_rekey_statements(
+            transaction,
+            &[
+                "INSERT INTO temp.music_membership_rekey_rows
+                    SELECT * FROM music_playlist_memberships WHERE id = ?1",
+                "UPDATE temp.music_membership_rekey_rows SET id = ?2 WHERE id = ?1",
+                "INSERT INTO temp.music_membership_rekey_skips
+                    SELECT * FROM music_membership_skip_ranges WHERE membership_id = ?1",
+                "UPDATE temp.music_membership_rekey_skips SET membership_id = ?2
+                    WHERE membership_id = ?1",
+            ],
+            &[old, new],
+        )
+        .await?;
+    }
+    run_rekey_statements(
+        transaction,
+        &["UPDATE sync_apply_state SET applying = 1 WHERE singleton = 1"],
+        &[],
+    )
+    .await?;
+    for (old, _) in &moved {
+        run_rekey_statements(
+            transaction,
+            &["DELETE FROM music_playlist_memberships WHERE id = ?1"],
+            &[old],
+        )
+        .await?;
+    }
+    run_rekey_statements(
+        transaction,
+        &[
+            "UPDATE sync_apply_state SET applying = 0 WHERE singleton = 1",
+            "INSERT INTO music_playlist_memberships SELECT * FROM temp.music_membership_rekey_rows",
+            "INSERT INTO music_membership_skip_ranges
+                SELECT * FROM temp.music_membership_rekey_skips",
+            "DROP TABLE temp.music_membership_rekey_rows",
+            "DROP TABLE temp.music_membership_rekey_skips",
+            "DELETE FROM music_session_checkpoints",
+        ],
+        &[],
+    )
+    .await?;
+    Ok(moved.len() as u64)
+}
+
+/// Runs fixed membership rekey statements in order, binding `parameters` to each.
+async fn run_rekey_statements(
+    transaction: &mut Transaction<'_, Sqlite>,
+    statements: &[&'static str],
+    parameters: &[&String],
+) -> MusicLibraryResult<()> {
+    for statement in statements {
+        let mut query = sqlx::query(*statement);
+        for parameter in parameters {
+            query = query.bind(parameter.as_str());
+        }
+        query
+            .execute(&mut **transaction)
+            .await
+            .map_err(|error| MusicLibraryError::database("rekey music memberships", error))?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -185,13 +291,16 @@ mod tests {
             "music-collection-b340de7f2cec6f37f126f7933ef29463ff3bb4d1de69ae49f84adc8e044cbb2c"
         );
         assert_eq!(
-            membership_id("playlist-1", "item-1"),
-            "music-membership-68a9cb5e741a46357c216fbd5f6781003c432cb851c3712fd66265868b6939bf"
+            membership_id("playlist-1", "item-1").unwrap(),
+            ganbaru_sync_contracts::derived_key("music-membership", &["playlist-1", "item-1"])
+                .unwrap()
+                .into_string()
         );
         assert_ne!(
-            membership_id("playlist-1", "item-1"),
-            membership_id("item-1", "playlist-1")
+            membership_id("playlist-1", "item-1").unwrap(),
+            membership_id("item-1", "playlist-1").unwrap()
         );
+        assert!(membership_id("playlist\0", "item-1").is_err());
         assert_eq!(
             import_item_id("local-file:sha256:abc"),
             "music-import-item-4ca95b8c1fb675c8ba7cc15d3accf03f303d8127c419590992ca97aad4b01ff3"
@@ -200,12 +309,39 @@ mod tests {
     }
 
     #[test]
+    fn identity_writer_keys_use_the_prefixes_and_inputs_the_manifest_checks() {
+        use ganbaru_sync::manifest::vault::music;
+        let composite = [
+            (&music::SIGNALS, sync_keys::SIGNALS),
+            (&music::STATISTICS, sync_keys::STATISTICS),
+            (&music::COLLECTION_ITEMS, sync_keys::COLLECTION_ITEMS),
+            (&music::INTENDED_USES, sync_keys::INTENDED_USES),
+            (&music::PRESET_SOUNDS, sync_keys::PRESET_SOUNDS),
+            (&music::ASSIGNMENTS, sync_keys::ASSIGNMENTS),
+        ];
+        assert_eq!(composite.len(), sync_keys::COMPOSITE_KEY_TABLES.len());
+        for (spec, table) in composite {
+            let derived = spec
+                .derived_key
+                .expect("composite tables derive their keys");
+            assert_eq!(spec.name, table.table);
+            assert_eq!(derived.prefix, Some(table.prefix), "{}", table.table);
+            assert_eq!(derived.key_inputs, table.columns, "{}", table.table);
+        }
+        let memberships = music::MEMBERSHIPS
+            .derived_key
+            .expect("memberships derive their keys");
+        assert_eq!(memberships.prefix, Some(sync_keys::MEMBERSHIP_PREFIX));
+        assert_eq!(memberships.key_inputs, ["playlist_id", "item_id"]);
+    }
+
+    #[test]
     fn identity_derived_keys_fit_the_id_limit() {
         let longest = [
             local_item_id("r", "p"),
             location_id("r", "p"),
             collection_id("c"),
-            membership_id("p", "i"),
+            membership_id("p", "i").unwrap(),
             import_item_id("k"),
         ]
         .into_iter()
@@ -328,6 +464,87 @@ mod tests {
             for (table, rows) in sync_keys::COMPOSITE_KEY_TABLES.iter().zip(expected) {
                 assert_eq!(stored_and_derived(&pool, table).await, rows);
             }
+
+            let captures = capture_count(&pool).await;
+            let mut connection = pool.acquire().await.unwrap();
+            assert_eq!(rekey_pending(&mut connection).await.unwrap(), 0);
+            drop(connection);
+            assert_eq!(capture_count(&pool).await, captures);
+        });
+    }
+
+    /// Every membership with its skip ranges, keyed by playlist and item and holding each
+    /// stored key.
+    async fn memberships(pool: &sqlx::SqlitePool) -> Vec<(String, String, String, String, i64)> {
+        sqlx::query_as(
+            "SELECT m.playlist_id, m.item_id, m.id, m.order_key,
+                (SELECT COUNT(*) FROM music_membership_skip_ranges WHERE membership_id = m.id)
+             FROM music_playlist_memberships AS m ORDER BY m.playlist_id, m.item_id",
+        )
+        .fetch_all(pool)
+        .await
+        .unwrap()
+    }
+
+    #[test]
+    fn identity_rekey_moves_older_membership_keys_with_skip_ranges_and_captures_only_new_keys() {
+        crate::test_support::block_on(async {
+            let pool = seeded_pool().await;
+            let first: String = sqlx::query_scalar(
+                "SELECT id FROM music_playlist_memberships ORDER BY playlist_id, item_id LIMIT 1",
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            sqlx::query(
+                "INSERT INTO music_membership_skip_ranges (membership_id, ordinal, start_ms, end_ms)
+                 VALUES (?1, 0, 1000, 2000), (?1, 1, 3000, 4000)",
+            )
+            .bind(&first)
+            .execute(&pool)
+            .await
+            .unwrap();
+            let expected = memberships(&pool).await;
+            // Rows keep their `id` under the immutable trigger, so they are recreated under the
+            // older `music-membership-{hash}` form with the apply flag set.
+            crate::test_support::execute_as_sync_apply(
+                &pool,
+                &[
+                    "CREATE TEMP TABLE staged AS SELECT * FROM music_playlist_memberships",
+                    "CREATE TEMP TABLE staged_skips AS SELECT * FROM music_membership_skip_ranges",
+                    "UPDATE staged_skips SET membership_id = 'music-membership-older-' || membership_id",
+                    "UPDATE staged SET id = 'music-membership-older-' || id",
+                    "DELETE FROM music_playlist_memberships",
+                    "INSERT INTO music_playlist_memberships SELECT * FROM staged",
+                    "INSERT INTO music_membership_skip_ranges SELECT * FROM staged_skips",
+                    "DROP TABLE staged",
+                    "DROP TABLE staged_skips",
+                    "DELETE FROM sync_capture",
+                ],
+            )
+            .await;
+
+            let mut connection = pool.acquire().await.unwrap();
+            assert_eq!(
+                rekey_pending(&mut connection).await.unwrap(),
+                expected.len() as u64
+            );
+            drop(connection);
+            assert_eq!(memberships(&pool).await, expected);
+            let (created, older): (i64, i64) = sqlx::query_as(
+                "SELECT
+                    COUNT(*) FILTER (WHERE created = 1 AND deleted = 0),
+                    COUNT(*) FILTER (WHERE row_key GLOB 'music-membership-older-*')
+                 FROM sync_capture WHERE table_id = ?",
+            )
+            .bind(i64::from(
+                ganbaru_sync::manifest::vault::music::MEMBERSHIPS.id.0,
+            ))
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            assert_eq!(created, expected.len() as i64);
+            assert_eq!(older, 0);
 
             let captures = capture_count(&pool).await;
             let mut connection = pool.acquire().await.unwrap();

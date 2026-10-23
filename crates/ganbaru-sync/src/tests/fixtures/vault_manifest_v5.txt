@@ -36,6 +36,20 @@ table 17 themes replicated key id
     owned theme_event_palette parent theme_id key slot rows 32 codec custom slot:integer(0..=31) value:text(..=9)
   group 5 max upgrade_dismissed_engine_version:integer(0..=9223372036854775807)
   group 6 max updated_at_ms:integer(0..=9223372036854775807)
+table 32 contacts replicated key public_key
+  derived key exists 4 inputs 
+  group 0 register created_at:timestamp
+  group 1 register display_name:trimmed_text(1..=160) color:integer(0..=31)
+  group 2 coupled state:text(..=7) accepted_at:optional_timestamp blocked_at:optional_timestamp invite_trust:text(..=13) invite_trust_expires_at:optional_timestamp message_trust:text(..=13) message_trust_expires_at:optional_timestamp
+  group 3 max updated_at:timestamp
+  group 4 register
+table 33 contact_requests replicated key id
+  group 0 immutable direction:text(..=8) public_key:text(..=43) peer_request_id:optional_text(..=160) display_name:trimmed_text(1..=160) color:integer(0..=31) card:text(..=1024) card_digest:text(..=64) endpoint_hint:text(..=64) coordinator_fingerprint:text(..=64) expires_at:timestamp created_at:timestamp
+  group 1 coupled state:text(..=8) invite_trust:text(..=13) message_trust:text(..=13)
+  group 2 max updated_at:timestamp
+table 34 contact_card replicated key key
+  group 0 coupled card_nonce:text(..=22) card_revision:integer(1..=9223372036854775807)
+  group 1 max updated_at:timestamp
 table 48 music_local_roots replicated key id
   group 0 immutable created_at_ms:integer(1..=9223372036854775807)
   group 1 register name:trimmed_text(1..=200)
@@ -55,12 +69,12 @@ table 49 music_library_items replicated key id redirects
   check source_kind,youtube_video_id within 0
   check artwork_override,artwork_override_byte_size within 6
 table 50 music_item_signals replicated key sync_key
-  derived key exists 2 inputs 
+  derived key exists 2 inputs item_id,signal prefix music-signal
   group 0 immutable item_id:optional_row_key->49:cascade signal:text(..=32)
   group 1 register created_at_ms:integer(1..=9223372036854775807)
   group 2 register
 table 51 music_listening_statistics replicated key sync_key
-  derived key exists 6 inputs 
+  derived key exists 6 inputs device_id,item_id prefix music-statistics
   group 0 immutable device_id:trimmed_text(1..=128) item_id:optional_row_key->49:cascade
   group 1 max last_played_at_ms:optional_integer(-9223372036854775808..=9223372036854775807)
   group 2 max play_count:integer(0..=9223372036854775807)
@@ -87,7 +101,7 @@ table 53 music_source_collections replicated key id redirects
   unique youtube_playlist_id binary
   check kind,identity_key,local_root_id,youtube_playlist_id within 0
 table 54 music_source_collection_items replicated key sync_key
-  derived key exists 3 inputs 
+  derived key exists 3 inputs collection_id,item_id prefix music-collection-item
   group 0 immutable collection_id:optional_row_key->53:cascade item_id:optional_row_key->49:cascade
   group 1 register first_discovered_at_ms:integer(1..=9223372036854775807)
   group 2 register source_position:optional_integer(0..=9223372036854775807)
@@ -100,11 +114,11 @@ table 55 music_playlists replicated key id
   group 4 position order_key:order_key
   group 5 max updated_at_ms:integer(-9223372036854775808..=9223372036854775807)
 table 56 music_playlist_intended_uses replicated key sync_key
-  derived key exists 1 inputs 
+  derived key exists 1 inputs playlist_id,intended_use prefix music-intended-use
   group 0 immutable playlist_id:optional_row_key->55:cascade intended_use:text(..=32)
   group 1 register
 table 57 music_playlist_memberships replicated key id
-  derived key exists 10 inputs playlist_id,item_id
+  derived key exists 10 inputs playlist_id,item_id prefix music-membership
   group 0 immutable playlist_id:optional_row_key->55:cascade item_id:optional_row_key->49:cascade
   group 1 register created_at_ms:integer(1..=9223372036854775807)
   group 2 position order_key:order_key
@@ -140,13 +154,13 @@ table 60 music_soundscape_presets replicated key id
   group 3 register level_milli:integer(0..=2000)
   group 4 max updated_at_ms:integer(1..=9223372036854775807)
 table 61 music_soundscape_preset_sounds replicated key sync_key
-  derived key exists 3 inputs 
+  derived key exists 3 inputs preset_id,soundscape_id prefix music-preset-sound
   group 0 immutable preset_id:optional_row_key->60:cascade soundscape_id:optional_row_key->59:cascade
   group 1 position order_key:order_key
   group 2 register level_milli:integer(0..=1000)
   group 3 register
 table 62 music_context_assignments replicated key sync_key
-  derived key exists 7 inputs 
+  derived key exists 7 inputs owner_kind,owner_id,phase prefix music-assignment
   group 0 immutable owner_kind:text(..=32) owner_id:trimmed_text(1..=128) phase:text(..=32)
   group 1 register behavior:text(..=32)
   group 2 register playlist_id:optional_text(..=128)

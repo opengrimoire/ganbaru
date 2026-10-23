@@ -661,7 +661,8 @@ pub const SIGNALS: TableSpec = TableSpec {
     ],
     derived_key: Some(DerivedKey {
         exists_group: signal_group::EXISTS,
-        key_inputs: &[],
+        prefix: Some("music-signal"),
+        key_inputs: &["item_id", "signal"],
     }),
     ..BASE
 };
@@ -713,7 +714,8 @@ pub const STATISTICS: TableSpec = TableSpec {
     ],
     derived_key: Some(DerivedKey {
         exists_group: statistics_group::EXISTS,
-        key_inputs: &[],
+        prefix: Some("music-statistics"),
+        key_inputs: &["device_id", "item_id"],
     }),
     ..BASE
 };
@@ -883,7 +885,8 @@ pub const COLLECTION_ITEMS: TableSpec = TableSpec {
     ],
     derived_key: Some(DerivedKey {
         exists_group: collection_item_group::EXISTS,
-        key_inputs: &[],
+        prefix: Some("music-collection-item"),
+        key_inputs: &["collection_id", "item_id"],
     }),
     ..BASE
 };
@@ -958,7 +961,8 @@ pub const INTENDED_USES: TableSpec = TableSpec {
     ],
     derived_key: Some(DerivedKey {
         exists_group: intended_use_group::EXISTS,
-        key_inputs: &[],
+        prefix: Some("music-intended-use"),
+        key_inputs: &["playlist_id", "intended_use"],
     }),
     ..BASE
 };
@@ -1091,6 +1095,7 @@ pub const MEMBERSHIPS: TableSpec = TableSpec {
     ],
     derived_key: Some(DerivedKey {
         exists_group: membership_group::EXISTS,
+        prefix: Some("music-membership"),
         key_inputs: &["playlist_id", "item_id"],
     }),
     ..BASE
@@ -1275,7 +1280,8 @@ pub const PRESET_SOUNDS: TableSpec = TableSpec {
     ],
     derived_key: Some(DerivedKey {
         exists_group: preset_sound_group::EXISTS,
-        key_inputs: &[],
+        prefix: Some("music-preset-sound"),
+        key_inputs: &["preset_id", "soundscape_id"],
     }),
     ..BASE
 };
@@ -1341,7 +1347,8 @@ pub const ASSIGNMENTS: TableSpec = TableSpec {
     local_columns: &[VERSION],
     derived_key: Some(DerivedKey {
         exists_group: assignment_group::EXISTS,
-        key_inputs: &[],
+        prefix: Some("music-assignment"),
+        key_inputs: &["owner_kind", "owner_id", "phase"],
     }),
     ..BASE
 };

@@ -1,6 +1,6 @@
 # Sync merge rules
 
-**Status: Reference.** These rules are implemented in source for Quick notes, the first replicated domain. Delivery, writers, and mixed mode are owned by [Device linking and synchronization](../../data/sync.md); the reasons behind the design are in [Sync engine decisions](../../architecture/decisions/sync-engine.md).
+**Status: Reference.** These rules are implemented in the sync engine for every replicated domain; a test-only fixture domain exercises the shapes no production domain uses yet. Delivery, writers, and mixed mode are owned by [Device linking and synchronization](../../data/sync.md); the reasons behind the design are in [Sync engine decisions](../../architecture/decisions/sync-engine.md).
 
 ## Model
 
@@ -25,8 +25,11 @@ The hybrid logical clock is 48 bits of Unix milliseconds and a 16-bit counter. A
 | Reference | Greatest `(clock, writer)` over a row key that resolves through redirects | Note tag |
 | Owned children | The parent group's value is a canonical list that replaces the child rows | Body text runs, note images |
 | Existence register | Greatest `(clock, writer)` over 1 (present) or 0 (removed) on a derived-key table | None yet |
+| Tree | A reference into its own table and a position, each won as above, then deterministic [cycle and depth repair](#trees-and-acyclic-edge-sets) | None yet |
+| Acyclic edge set | Existence registers of a derived-key edge table; an edge that closes a cycle is severed | None yet |
 
 - A multi-column CHECK always lives inside one coupled register, so every materialized winner satisfies it.
+- There is no counter kind. Usage and statistics are rows keyed by device and bucket, each written by one device and merged with `Max`, so concurrent increments never meet in one version.
 - A register is surfaced when its concurrent distinct versions are shown to people as a conflict; otherwise it resolves silently. Quick note title, body, and images are surfaced. Color, tag, lifecycle, order, tag names, and tag colors are silent.
 - A group is recoverable when edits to it that a deletion did not see should be offered for recovery. Quick note title, body, images, color, tag, and lifecycle are recoverable; order, timestamps, and every tag group are not.
 
@@ -38,7 +41,7 @@ An acyclic edge set is a derived-key table whose rows are directed edges between
 
 ## Derived keys
 
-A derived-key table keys each row by its natural identity, such as a membership's two ends, so every device derives the same key for the same row and adding it again must work after a removal. Such a table has a hidden existence register instead of tombstones: a local insert or update writes 1, a delete writes 0, and the domain row is deleted while the winner is 0 and inserted again when it returns to 1. A local insert of a key the space already knows writes every group, immutable ones included, so the re-added row carries its new values. Immutable groups hold only key columns, the re-create guard does not apply, and a derived-key table never redirects or repairs duplicates. A derived-key row whose existence winner is 0 counts as deleted for references to it.
+A derived-key table keys each row by its natural identity, such as a membership's two ends, so every device derives the same key for the same row and adding it again must work after a removal. The manifest names the key prefix and the input columns in derivation order, and a change that writes every group of such a row is invalid unless its key equals the key derived from those values; a table keyed by a fixed natural key, such as preferences, declares no prefix and no inputs. Such a table has a hidden existence register instead of tombstones: a local insert or update writes 1, a delete writes 0, and the domain row is deleted while the winner is 0 and inserted again when it returns to 1. A local insert of a key the space already knows writes every group, immutable ones included, so the re-added row carries its new values. Immutable groups hold only key columns, the re-create guard does not apply, and a derived-key table never redirects or repairs duplicates. A derived-key row whose existence winner is 0 counts as deleted for references to it.
 
 A table with a composite primary key replicates under a `sync_key` text column derived from the primary key columns, which form its required immutable identity group. A reference in that identity group is never redirected: while its target is hidden as a duplicate or not live, the row is hidden instead.
 
@@ -93,7 +96,7 @@ A domain may register a hook for a replicated table. It runs in the engine trans
 
 ## Unique values
 
-A unique column set equal to the non-empty inputs of a derived key needs no resolution, because the row key already makes those values unique. Live rows whose winning values collide on any other declared unique column set form a class. Only the lowest key is materialized; the others are hidden, and references to them resolve to the kept row. Hiding is a pure function of replicated state, so every replica shows the same rows regardless of arrival order. A replica that can seal also writes repair tombstones for hidden rows that redirect to the kept row; concurrent repairs from several replicas are harmless. While materialization swaps unique values between rows, a value moves aside under a placeholder so the index never fails mid-batch.
+A unique column set equal to the non-empty inputs of a derived key needs no resolution, because the row key already makes those values unique. Live rows whose winning values collide on any other declared unique column set form a class. Rows hidden for another reason (by cascade, severing, removal, or publication) never keep a class, so a deleted or hidden row cannot take a surviving row down with it. The remaining rows are taken in key order: a row that collides under any rule with a row already shown is hidden behind the lowest such row, and every other row is shown, so a table with several unique rules never hides a row behind a hidden one. References to a hidden duplicate resolve to its kept row. Because the rows hidden for other reasons can depend on the duplicates, the choice repeats until they settle, and falls back to ignoring them after a fixed number of rounds. Hiding is a pure function of replicated state, so every replica shows the same rows regardless of arrival order. A replica that can seal also writes repair tombstones for hidden rows that redirect to the kept row; concurrent repairs from several replicas are harmless. While materialization swaps unique values between rows, a value moves aside under a placeholder so the index never fails mid-batch.
 
 ## Conflicts
 

@@ -36,8 +36,11 @@ pub(crate) mod database_rollback;
 pub(crate) mod handoff;
 pub(crate) mod ownership;
 pub(crate) mod preferences;
+#[cfg(any(mobile, test))]
+pub(crate) mod process_managers;
 pub(crate) mod quiescence;
 pub(crate) mod runtime_lifecycle;
+pub(crate) mod vault_lock;
 
 pub const APP_SQLITE_FILE: &str = "ganbaru.sqlite";
 const PRODUCTION_VAULT_NAME: &str = "Ganbaru";
@@ -492,19 +495,23 @@ const MANAGED_VAULT_DIRECTORIES: &[&str] = &["assets", "projects"];
 /// the user can write. The vault root itself may be reached through a link.
 fn reject_symlinked_vault_entries(path: &Path) -> Result<(), String> {
     let database = APP_SQLITE_FILE.to_string();
-    let entries = [VAULT_MANIFEST_FILE.to_string(), CONFIG_FILE.to_string()]
-        .into_iter()
-        .chain(
-            DATABASE_COMPANION_SUFFIXES
-                .iter()
-                .map(|suffix| format!("{database}{suffix}")),
-        )
-        .chain(std::iter::once(database.clone()))
-        .chain(
-            MANAGED_VAULT_DIRECTORIES
-                .iter()
-                .map(|name| name.to_string()),
-        );
+    let entries = [
+        VAULT_MANIFEST_FILE.to_string(),
+        CONFIG_FILE.to_string(),
+        vault_lock::VAULT_LOCK_FILE.to_string(),
+    ]
+    .into_iter()
+    .chain(
+        DATABASE_COMPANION_SUFFIXES
+            .iter()
+            .map(|suffix| format!("{database}{suffix}")),
+    )
+    .chain(std::iter::once(database.clone()))
+    .chain(
+        MANAGED_VAULT_DIRECTORIES
+            .iter()
+            .map(|name| name.to_string()),
+    );
     for entry in entries {
         ganbaru_atomic_files::reject_symlink(&path.join(&entry))
             .map_err(|error| format!("check Ganbaru folder entry '{entry}': {error}"))?;
@@ -605,12 +612,15 @@ async fn select_reserved_vault<R: Runtime>(
     .map_err(|error| format!("vault selection worker failed: {error}"))?
 }
 
-/// Persists selection while the caller retains the native and write barriers.
+/// Persists selection while the caller retains the native and write barriers. The selected
+/// vault is fenced first, which releases the previous vault's lock, so a folder another Ganbaru
+/// process has open is refused before it becomes active.
 fn select_quiesced_vault<R: Runtime>(
     app: &tauri::AppHandle<R>,
     info: &VaultInfo,
     _quiescence: &quiescence::SnapshotQuiescence,
 ) -> Result<(), String> {
+    vault_lock::process_vault_lock().acquire(Path::new(&info.path))?;
     update_app_state(app, |state| {
         state.active_vault_path = Some(info.path.clone());
         state
@@ -1251,6 +1261,7 @@ mod tests {
             "config.json",
             "ganbaru.sqlite",
             "ganbaru.sqlite-wal",
+            "vault.lock",
             "assets",
         ] {
             let vault = unique_path("symlinked-entry");

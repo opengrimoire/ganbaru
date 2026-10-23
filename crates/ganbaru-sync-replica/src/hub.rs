@@ -2,8 +2,8 @@
 //! and answers long polls when its log grows. Its own service applies what the hub stores.
 
 use super::assets::{
-    ASSET_UNAVAILABLE, AssetStore, AssetStoreError, INVALID_ASSET, StagedAsset, blocking,
-    partition_held, write_staged,
+    ASSET_UNAVAILABLE, AssetStore, AssetStoreError, INVALID_ASSET, STALE_STAGING_AGE, StagedAsset,
+    blocking, partition_held, write_staged,
 };
 use super::wire::{
     asset_from_wire, asset_key, bytes_from_wire, bytes_to_wire, hash_to_wire, ops_from_wire,
@@ -32,6 +32,10 @@ pub const WAIT_TIMEOUT: Duration = Duration::from_secs(12);
 /// restarts from the beginning, and its temporary file is removed with the next upload request
 /// any peer makes.
 const UPLOAD_IDLE_TIMEOUT: Duration = Duration::from_secs(5 * 60);
+const _: () = assert!(
+    STALE_STAGING_AGE.as_secs() > UPLOAD_IDLE_TIMEOUT.as_secs(),
+    "a sweep of stale staged assets must spare uploads the hub still waits for"
+);
 
 /// The vault database the hub serves.
 pub struct HubVault {

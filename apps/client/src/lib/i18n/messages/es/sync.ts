@@ -33,6 +33,7 @@ export const sync = {
     `${count} ${count === 1 ? "cambio se rechazó por no ser válido" : "cambios se rechazaron por no ser válidos"}`,
   conflicts: (count: number) =>
     `${count} ${count === 1 ? "elemento se editó" : "elementos se editaron"} en dos dispositivos. ${count === 1 ? "Ábrelo" : "Ábrelos"} para elegir qué conservar.`,
+  lockUnsupported: "La unidad de esta carpeta no puede saber si otra app de Ganbaru la tiene abierta. No la abras desde dos apps a la vez o tus datos pueden dañarse.",
   syncNow: "Sincronizar ahora",
   syncNowFailed: "No se pudo iniciar la sincronización",
   pause: "Pausar sincronización",

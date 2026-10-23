@@ -1453,6 +1453,7 @@ async fn plan_captures(
     captures: Vec<Capture>,
     report: &mut SealReport,
 ) -> SyncResult<PlannedCaptures> {
+    let invalid_from = report.invalid_rows.len();
     let held = captures.iter().any(|capture| capture.held);
     let order: BTreeMap<TableId, usize> = engine
         .manifest()
@@ -1604,17 +1605,74 @@ async fn plan_captures(
     creates.sort_by_key(|(position, _)| *position);
     writes.sort_by_key(|(position, _)| *position);
     tombstones.sort_by_key(|(position, _)| *position);
-    let changes = creates
+    let mut changes = creates
         .into_iter()
         .chain(writes)
         .chain(tombstones)
         .map(|(_, change)| change)
         .collect();
+    hold_invalid_dependents(
+        engine,
+        conn,
+        &mut changes,
+        &mut consumed,
+        report,
+        invalid_from,
+    )
+    .await?;
     Ok(PlannedCaptures {
         changes,
         consumed,
         held,
     })
+}
+
+/// Holds back every planned change that depends on a row with no sync state whose capture was
+/// found invalid from `report.invalid_rows[invalid_from..]`, and the changes depending on those
+/// in turn. Sealing such a change would publish a reference to a row no device can receive.
+/// A held change keeps its capture and is reported as invalid, so it seals once its dependency
+/// is fixed.
+async fn hold_invalid_dependents(
+    engine: &Engine,
+    conn: &mut SqliteConnection,
+    changes: &mut Vec<Change>,
+    consumed: &mut Vec<(i64, String)>,
+    report: &mut SealReport,
+    invalid_from: usize,
+) -> SyncResult<()> {
+    let mut invalid: BTreeSet<RowRef> = report.invalid_rows[invalid_from..]
+        .iter()
+        .map(|row| (row.table, row.row_key.clone()))
+        .collect();
+    if invalid.is_empty() {
+        return Ok(());
+    }
+    loop {
+        let mut held = Vec::new();
+        for (index, change) in changes.iter().enumerate() {
+            for row in change_dependencies(engine, change) {
+                if invalid.contains(&row) && merge::row_state(conn, row.0, &row.1).await?.is_none()
+                {
+                    held.push(index);
+                    break;
+                }
+            }
+        }
+        if held.is_empty() {
+            return Ok(());
+        }
+        for index in held.into_iter().rev() {
+            let change = changes.remove(index);
+            let key = change.row.as_str().to_string();
+            consumed.retain(|(table, row)| !(*table == i64::from(change.table.0) && *row == key));
+            report.invalid_rows.push(InvalidRow {
+                table: change.table,
+                row_key: key.clone(),
+                reason: "invalid dependency",
+            });
+            invalid.insert((change.table, key));
+        }
+    }
 }
 
 /// Plans the captures of `rows` together with the captured creates their changes depend on,

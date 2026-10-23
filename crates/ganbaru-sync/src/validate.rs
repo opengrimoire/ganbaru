@@ -5,11 +5,13 @@
 //! A test compares both forms on the same samples.
 
 use ganbaru_sync_contracts::bounds::{MAX_ROW_KEY_BYTES, MAX_TEXT_FIELD_BYTES};
-use ganbaru_sync_contracts::{Change, ChangeAction, Field, OrderKey, RowKey, Value};
+use ganbaru_sync_contracts::{Change, ChangeAction, Field, OrderKey, RowKey, Value, derived_key};
 
 use crate::Engine;
 use crate::codec::{decode_table, owned_blob};
-use crate::manifest::{ColumnType, GroupSpec, MAX_TIMESTAMP_BYTES, MergeKind, TableSpec};
+use crate::manifest::{
+    ColumnType, DerivedKey, GroupSpec, MAX_TIMESTAMP_BYTES, MergeKind, TableSpec,
+};
 
 /// Why a value or change breaks the manifest.
 pub(crate) type Invalid = &'static str;
@@ -148,5 +150,47 @@ pub(crate) fn change(engine: &Engine, change: &Change) -> Result<(), Invalid> {
         let group = table.group(value.group).ok_or("group")?;
         group_value(engine, table, group, &value.value)?;
     }
+    let writes_every_group = match change.action {
+        ChangeAction::Create => true,
+        ChangeAction::Write => mask == full,
+        ChangeAction::Tombstone => false,
+    };
+    if let Some(derived) = table.derived_key.filter(|_| writes_every_group) {
+        derived_row_key(table, derived, change)?;
+    }
     Ok(())
 }
+
+/// Checks that a change writing every group of a derived-key row names the key its key inputs
+/// derive, so no writer can file content under a key that content does not produce. Text
+/// inputs are parts as they are, integers in decimal, and any other field never matches.
+fn derived_row_key(table: &TableSpec, derived: DerivedKey, change: &Change) -> Result<(), Invalid> {
+    let Some(prefix) = derived.prefix else {
+        return Ok(());
+    };
+    let mut parts = Vec::with_capacity(derived.key_inputs.len());
+    for input in derived.key_inputs {
+        let field = table.groups.iter().find_map(|group| {
+            let index = group
+                .columns()
+                .iter()
+                .position(|column| column.name == *input)?;
+            let value = change.groups.iter().find(|value| value.group == group.id)?;
+            value.value.fields().get(index)
+        });
+        parts.push(match field {
+            Some(Field::Text(text)) => text.clone(),
+            Some(Field::Integer(integer)) => integer.to_string(),
+            _ => return Err(DERIVED_KEY_MISMATCH),
+        });
+    }
+    let parts: Vec<&str> = parts.iter().map(String::as_str).collect();
+    match derived_key(prefix, &parts) {
+        Ok(key) if key == change.row => Ok(()),
+        _ => Err(DERIVED_KEY_MISMATCH),
+    }
+}
+
+/// Why a create or re-add of a derived-key row is refused when its key is not the one its key
+/// inputs derive.
+pub(crate) const DERIVED_KEY_MISMATCH: Invalid = "derived key mismatch";

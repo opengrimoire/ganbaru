@@ -1,7 +1,9 @@
 use super::*;
 use crate::sync::host::HeadlessHost;
 use crate::sync::hub::{HubContact, HubVault};
+use crate::vault::handoff::pairing::CoordinatorContact;
 use crate::vault::handoff::transport::tests::{LocalPair, TestDirectory};
+use crate::vault::process_managers::ProcessManagers;
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use ganbaru_contacts::PersonKeyPair;
@@ -49,8 +51,8 @@ impl MaterializeHook for CountingHook {
 async fn insert_identity(pool: &SqlitePool, person: &PersonKeyPair) {
     sqlx::query(
         "INSERT INTO contacts_local_identity
-            (singleton, public_key, card_nonce, created_at, updated_at)
-         VALUES (1, ?, 'AAAAAAAAAAAAAAAAAAAAAA', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+            (singleton, public_key, created_at)
+         VALUES (1, ?, '2026-01-01T00:00:00Z')",
     )
     .bind(person.public_key().to_text())
     .execute(pool)
@@ -215,7 +217,7 @@ async fn headless_pass_converges_with_the_hub_and_runs_hooks() {
 
     let materialized = Arc::new(AtomicUsize::new(0));
     let counter = Arc::clone(&materialized);
-    let host = HeadlessHost::open(&config_dir)
+    let host = HeadlessHost::open_with(&config_dir, &ProcessManagers::default())
         .expect("open headless host")
         .with_hooks(move || {
             Hooks::new().with(NOTES_TABLE, Box::new(CountingHook(Arc::clone(&counter))))
@@ -264,7 +266,8 @@ async fn headless_pass_converges_with_the_hub_and_runs_hooks() {
 #[tokio::test]
 async fn headless_pass_waits_for_the_pass_gate() {
     let config = TestDirectory::new("headless-gate");
-    let host = HeadlessHost::open(config.path()).expect("open headless host");
+    let host = HeadlessHost::open_with(config.path(), &ProcessManagers::default())
+        .expect("open headless host");
     let live = Mutex::new(Weak::new());
     let gate = tokio::sync::Mutex::new(());
     let held = gate.lock().await;
@@ -284,6 +287,79 @@ async fn headless_pass_waits_for_the_pass_gate() {
         pass.status.state,
         SyncState::Error,
         "a device without an active vault reports why it cannot sync"
+    );
+}
+
+#[tokio::test]
+async fn the_headless_host_never_resurrects_a_pin_the_runtime_unlinked() {
+    let pair = LocalPair::start_with_hub(None).await;
+    pair.enroll().await;
+    let config_dir = pair.phone_config_dir();
+    crate::vault::activate_test_vault(
+        config_dir,
+        &config_dir.join("vault"),
+        VAULT_ID,
+        PHONE_DEVICE,
+    )
+    .expect("activate phone vault");
+    // App startup loads the process managers before a headless pass opens its host on them.
+    let managers = ProcessManagers::default();
+    managers
+        .load_pairing(config_dir, PHONE_DEVICE.to_string())
+        .expect("load pairing");
+    managers.load_ownership(config_dir).expect("load ownership");
+    let host = HeadlessHost::open_with(config_dir, &managers).expect("open headless host");
+    let pin = host
+        .pairing()
+        .coordinator_pin()
+        .expect("read pin")
+        .expect("the phone is enrolled");
+
+    managers
+        .pairing()
+        .unlink()
+        .expect("unlink through the runtime");
+
+    assert!(
+        host.pairing()
+            .coordinator_pin()
+            .expect("read pin")
+            .is_none(),
+        "the host sees the unlink"
+    );
+    let recorded = host
+        .pairing()
+        .record_coordinator_contact(
+            &pin.vault_id,
+            &pin.certificate_fingerprint,
+            CoordinatorContact {
+                last_endpoint: Some(pin.endpoint.clone()),
+                ..Default::default()
+            },
+        )
+        .expect("record coordinator contact");
+    assert!(!recorded, "the host has no pin left to save");
+    assert!(
+        managers
+            .load_pairing(config_dir, PHONE_DEVICE.to_string())
+            .is_ok()
+            && managers
+                .pairing()
+                .coordinator_pin()
+                .expect("read pin")
+                .is_none(),
+        "a later load keeps the shared state"
+    );
+    let reloaded = PairingManager::default();
+    reloaded
+        .initialize(config_dir.to_path_buf(), PHONE_DEVICE.to_string())
+        .expect("reload pairing");
+    assert!(
+        reloaded
+            .coordinator_pin()
+            .expect("read saved pin")
+            .is_none(),
+        "the saved state keeps the unlink"
     );
 }
 

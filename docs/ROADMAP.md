@@ -17,7 +17,7 @@ The repository has a substantial local desktop and Android foundation:
 - Local Music libraries and playlists with desktop and Android playback, plus YouTube integration.
 - Chromium website blocking, desktop application blocking, and consented Android application enforcement.
 - An adaptive Android shell covering the main features, portable backup and restore, and notifications.
-- Private-LAN device linking with single-writer whole-vault handoff between one person's desktop and Android devices, plus concurrent Quick notes sync through the coordinator desktop, including Android background passes (physical multi-device acceptance pending).
+- Private-LAN device linking with single-writer whole-vault handoff between one person's desktop and Android devices, plus concurrent sync of Quick notes, portable preferences, user themes, and contacts through the coordinator desktop, including Android background passes, coordinator address refresh, DNS-SD discovery, and overlay networks such as Tailscale (physical multi-device acceptance pending).
 
 Implemented does not mean release-complete on every platform. The [feature index](features/README.md) and [Android platform document](platforms/android/README.md) identify partial areas and platform limits.
 
@@ -33,7 +33,7 @@ See [Calendar](features/calendar/README.md) and [Pomodoro](features/pomodoro/REA
 
 ### Concurrent device synchronization
 
-The sync engine, signed operation log, installation writers, and LAN hub transport exist, with Quick notes as the first concurrently synced domain while the rest of the vault keeps single-writer handoff. Remaining work: physical multi-device acceptance, converting the other domains, collaborative text, compaction, anchored authority with LAN peer exchange, end-to-end operation encryption and enrollment, and delivery beyond the LAN through an optional user-hosted relay or always-on anchor. See [Device linking and synchronization](data/sync.md).
+The sync engine, signed operation log, installation writers, and LAN hub transport exist, with Quick notes, portable preferences with the profile picture, user themes, and contacts synced concurrently while the rest of the vault keeps single-writer handoff. Remaining work: physical multi-device acceptance, converting the other domains, collaborative text, compaction, anchored authority with LAN peer exchange, end-to-end operation encryption and enrollment, and delivery beyond the LAN through an optional user-hosted relay or always-on anchor. See [Device linking and synchronization](data/sync.md).
 
 ### Android release readiness
 

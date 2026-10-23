@@ -18,7 +18,7 @@ use ganbaru_sync::domains::themes::{
 use ganbaru_sync::manifest::vault::themes::THEMES_TABLE;
 use serde::{Deserialize, Serialize};
 use sqlx::sqlite::SqliteQueryResult;
-use sqlx::{Row, Sqlite, SqliteConnection, SqlitePool, Transaction};
+use sqlx::{Connection, Row, Sqlite, SqliteConnection, SqlitePool, Transaction};
 
 mod conflicts;
 mod recovery;
@@ -259,9 +259,16 @@ pub async fn load_one(pool: &SqlitePool, id: &str) -> Result<UserThemeRead, Stri
 /// Insert a new user theme with its current and seed rows in one transaction. Fails when the id
 /// is already taken, including by a theme a linked device deleted.
 pub async fn insert(pool: &SqlitePool, write: &UserThemeWrite) -> Result<(), String> {
+    let mut conn = pool.acquire().await.map_err(|e| format!("acquire: {e}"))?;
+    insert_on(&mut conn, write).await
+}
+
+/// Insert a new user theme on `conn`. Inside an open transaction the insert joins it as a
+/// savepoint, so the caller decides when it commits.
+async fn insert_on(conn: &mut SqliteConnection, write: &UserThemeWrite) -> Result<(), String> {
     validate_theme_write(write)?;
     let now = now_ms()?;
-    let mut tx = pool.begin().await.map_err(|e| format!("begin: {e}"))?;
+    let mut tx = conn.begin().await.map_err(|e| format!("begin: {e}"))?;
 
     let existing = sqlx::query_scalar::<_, i64>("SELECT 1 FROM themes WHERE id = ? LIMIT 1")
         .bind(&write.id)

@@ -757,7 +757,8 @@ fn finish_retained_replacement(
 
 /// Moves entries outside the vault layout from the replaced folder `rollback`
 /// into its replacement `target`, then removes `rollback`. Bundles never carry
-/// such entries, so they are files this device kept in its vault folder. When
+/// such entries, so they are files this device kept in its vault folder. The
+/// vault lock file stays behind, since the replacement carries its own. When
 /// one cannot move, `rollback` is kept as a visible sibling instead.
 fn finish_replacement(target: &Path, rollback: &Path) -> Result<(), String> {
     let mut stranded = SkippedEntries::default();
@@ -770,7 +771,10 @@ fn finish_replacement(target: &Path, rollback: &Path) -> Result<(), String> {
                 };
                 let name = PathBuf::from(child.file_name());
                 let directory = child.file_type().is_ok_and(|kind| kind.is_dir());
-                if is_bundle_layout_entry(&name, directory) || is_database_sidecar(&name) {
+                if is_bundle_layout_entry(&name, directory)
+                    || is_database_sidecar(&name)
+                    || name == Path::new(super::vault_lock::VAULT_LOCK_FILE)
+                {
                     continue;
                 }
                 let destination = target.join(&name);
@@ -949,11 +953,13 @@ async fn activate_handoff_at_path<R: Runtime>(
             return Err("active vault changed while preparing handoff activation".to_string());
         }
         if staging.exists() {
-            if preserve_previous {
-                replace_vault_preserving_previous(&staging, &target, &rollback)?;
-            } else {
-                replace_vault_flagging(&staging, &target, &rollback, flagged)?;
-            }
+            super::vault_lock::process_vault_lock().replace_with(&staging, &target, || {
+                if preserve_previous {
+                    replace_vault_preserving_previous(&staging, &target, &rollback)
+                } else {
+                    replace_vault_flagging(&staging, &target, &rollback, flagged)
+                }
+            })?;
         }
         let info = vault_info_from_path(&target)?;
         if info.vault_id != expected_vault_id {
@@ -1036,7 +1042,7 @@ async fn carry_into_replacement(
         now_ms,
     )
     .await
-    .map_err(|error| format!("keep local Quick notes changes: {error}"))?;
+    .map_err(|error| format!("keep local synced changes: {error}"))?;
     failpoints::check("replace.before_restore")?;
     carry_forward::restore_into_replacement(engine, &current, &replacement)
         .await
@@ -1259,7 +1265,9 @@ pub async fn vault_pick_and_restore_backup(
                 );
             }
             ensure_vault_skeleton(&staging)?;
-            replace_vault(&staging, &target, &rollback)?;
+            super::vault_lock::process_vault_lock().replace_with(&staging, &target, || {
+                replace_vault(&staging, &target, &rollback)
+            })?;
             let info = vault_info_from_path(&target)?;
             select_quiesced_vault(&activation_app, &info, &quiescence)?;
             quiescence.finish()?;
@@ -1372,6 +1380,7 @@ mod tests {
         fs::write(root.join("vault.json"), b"vault").unwrap();
         fs::write(root.join(APP_SQLITE_FILE), b"live database").unwrap();
         fs::write(root.join("ganbaru.sqlite-wal"), b"wal").unwrap();
+        fs::write(root.join(super::super::vault_lock::VAULT_LOCK_FILE), b"").unwrap();
         fs::write(root.join("notes/page.md"), b"note").unwrap();
         fs::write(&snapshot, b"snapshot database").unwrap();
 
@@ -1386,6 +1395,11 @@ mod tests {
             .unwrap();
         assert_eq!(database, "snapshot database");
         assert!(archive.by_name("ganbaru.sqlite-wal").is_err());
+        assert!(
+            archive
+                .by_name(super::super::vault_lock::VAULT_LOCK_FILE)
+                .is_err()
+        );
 
         let _ = fs::remove_dir_all(root);
         let _ = fs::remove_file(snapshot);
@@ -1542,6 +1556,7 @@ mod tests {
             ("README.md", false),
             ("notes", false),
             ("vault.json", true),
+            (super::super::vault_lock::VAULT_LOCK_FILE, false),
             ("projects/stray-file", false),
             ("unknown/file.txt", false),
         ] {
@@ -1559,6 +1574,29 @@ mod tests {
         assert!(is_database_sidecar(Path::new("ganbaru.sqlite-journal")));
         assert!(!is_database_sidecar(Path::new(APP_SQLITE_FILE)));
         assert!(!is_database_sidecar(Path::new("ganbaru.sqlite.bak")));
+    }
+
+    #[test]
+    fn replacement_discards_the_previous_vault_lock_file() {
+        let parent = unique_test_path("lock-file");
+        let target = parent.join("Ganbaru");
+        let rollback = parent.join(".ganbaru.rollback");
+        let lock_file = super::super::vault_lock::VAULT_LOCK_FILE;
+        fs::create_dir_all(&target).unwrap();
+        fs::create_dir_all(&rollback).unwrap();
+        fs::write(target.join(lock_file), b"").unwrap();
+        fs::write(rollback.join(lock_file), b"").unwrap();
+        fs::write(rollback.join("vault.json"), b"old").unwrap();
+
+        finish_replacement(&target, &rollback).unwrap();
+
+        assert!(!rollback.exists());
+        assert_eq!(
+            fs::read_dir(&parent).unwrap().count(),
+            1,
+            "only the replacement should remain"
+        );
+        let _ = fs::remove_dir_all(parent);
     }
 
     #[test]

@@ -60,6 +60,17 @@ pub(crate) async fn begin_vault_exclusive() -> VaultExclusiveGuard {
     VAULT_CONNECTION_GATE.clone().write_owned().await
 }
 
+/// Holds the process vault lock of the vault whose database is `database_path` before a pool
+/// opens on it, so another Ganbaru process never shares the vault. Closing pools keeps the lock,
+/// which only a vault switch, a replacement, or app exit releases.
+fn hold_vault_lock(database_path: &Path) -> Result<(), String> {
+    let root = database_path
+        .parent()
+        .ok_or_else(|| "Ganbaru database has no vault folder".to_string())?;
+    vault::vault_lock::process_vault_lock().acquire(root)?;
+    Ok(())
+}
+
 fn resolve_sqlite_path<R: Runtime>(app: &AppHandle<R>, db_url: &str) -> Result<PathBuf, String> {
     let file_name = db_url
         .strip_prefix("sqlite:")
@@ -206,6 +217,7 @@ async fn connect_database<R: Runtime>(
     let path = resolve_sqlite_path(&app, &db_url)?;
     let registry = app.state::<DatabaseState>().inner().clone();
     let access = if is_vault_database {
+        hold_vault_lock(&path)?;
         let vault_id = vault::active_vault_id(&app)?;
         app.state::<VaultOwnershipManager>()
             .database_access(&vault_id)?
@@ -269,6 +281,7 @@ pub(crate) async fn connect_vault_for_sync_in(
 ) -> Result<Option<sqlx::SqlitePool>, String> {
     let _connection_guard = VAULT_CONNECTION_GATE.read().await;
     let path = vault::active_database_path_in(config_dir)?;
+    hold_vault_lock(&path)?;
     let access = ownership.database_access(&vault::active_vault_id_in(config_dir)?)?;
     let pool = connect_with_access(registry, path.clone(), access).await?;
     let writable = matches!(
@@ -290,7 +303,9 @@ pub(crate) async fn connect_active_vault_read_only<R: Runtime>(
     let path_app = app.clone();
     let path = tauri::async_runtime::spawn_blocking(move || {
         let _work_permit = work_permit;
-        resolve_sqlite_path(&path_app, &format!("sqlite:{}", vault::APP_SQLITE_FILE))
+        let path = resolve_sqlite_path(&path_app, &format!("sqlite:{}", vault::APP_SQLITE_FILE))?;
+        hold_vault_lock(&path)?;
+        Ok::<_, String>(path)
     })
     .await
     .map_err(|error| format!("Read-only vault database path worker: {error}"))??;

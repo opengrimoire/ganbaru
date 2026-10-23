@@ -27,6 +27,7 @@ export const sync = {
     `${count} ${count === 1 ? "change was" : "changes were"} rejected because ${count === 1 ? "it was" : "they were"} invalid`,
   conflicts: (count: number) =>
     `${count} ${count === 1 ? "item was" : "items were"} edited on two devices. Open ${count === 1 ? "it" : "them"} to choose what to keep.`,
+  lockUnsupported: "This folder's drive can't tell whether another Ganbaru app has it open. Don't open it from two apps at once, or your data can be damaged.",
   syncNow: "Sync now",
   syncNowFailed: "Sync could not start",
   pause: "Pause sync",

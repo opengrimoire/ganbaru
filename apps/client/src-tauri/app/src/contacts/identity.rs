@@ -63,9 +63,14 @@ pub(crate) struct IdentityRow {
     pub card_revision: i64,
 }
 
+/// The person identity with the current card state. An identity whose card row is missing reads
+/// as no identity; creation always writes both rows together.
 pub(crate) async fn load_identity_row(pool: &SqlitePool) -> Result<Option<IdentityRow>, String> {
     sqlx::query_as(
-        "SELECT public_key, card_nonce, card_revision FROM contacts_local_identity WHERE singleton = 1",
+        "SELECT i.public_key, c.card_nonce, c.card_revision
+         FROM contacts_local_identity i
+         JOIN contact_card c ON c.key = 'card'
+         WHERE i.singleton = 1",
     )
     .fetch_optional(pool)
     .await
@@ -116,6 +121,32 @@ pub(crate) async fn load_identity<R: Runtime>(
     identity_from_row(row, key.as_deref()).map(Some)
 }
 
+/// Writes the identity and its first card in one transaction.
+async fn insert_identity(
+    pool: &SqlitePool,
+    public_key: &str,
+    card_nonce: &str,
+    now: &str,
+) -> Result<(), sqlx::Error> {
+    let mut tx = pool.begin().await?;
+    sqlx::query(
+        "INSERT INTO contacts_local_identity (singleton, public_key, created_at) VALUES (1, ?, ?)",
+    )
+    .bind(public_key)
+    .bind(now)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "INSERT INTO contact_card (key, card_nonce, card_revision, updated_at)
+         VALUES ('card', ?, 1, ?)",
+    )
+    .bind(card_nonce)
+    .bind(now)
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await
+}
+
 /// Loads the identity, creating it on the first writable use of a vault that has none.
 pub(crate) async fn ensure_identity<R: Runtime>(
     app: &AppHandle<R>,
@@ -149,15 +180,12 @@ pub(crate) async fn ensure_identity<R: Runtime>(
     let public_key = key.public_key();
     store_key(app, pkcs8).await?;
     let now = super::store::format_time(super::store::now());
-    let inserted = sqlx::query(
-        "INSERT INTO contacts_local_identity (singleton, public_key, card_nonce, created_at, updated_at)
-         VALUES (1, ?, ?, ?, ?)",
+    let inserted = insert_identity(
+        pool,
+        &public_key.to_text(),
+        &encode_nonce(&card_nonce),
+        &now,
     )
-    .bind(public_key.to_text())
-    .bind(encode_nonce(&card_nonce))
-    .bind(&now)
-    .bind(&now)
-    .execute(pool)
     .await;
     if let Err(error) = inserted {
         let _ = remove_key(app).await;

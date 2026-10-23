@@ -15,7 +15,7 @@ use ganbaru_sync::manifest::vault::music::{
 };
 use ganbaru_sync_contracts::{Field, GroupId, Value};
 use ring::rand::{SecureRandom, SystemRandom};
-use sqlx::{Sqlite, SqlitePool, Transaction};
+use sqlx::{Connection, Sqlite, SqliteConnection, Transaction};
 
 use crate::writes::{commit, insert_intended_use, map_database_error};
 use crate::{MusicLibraryError, MusicLibraryResult, validate_icon, validate_name};
@@ -67,7 +67,7 @@ fn new_playlist_id() -> MusicLibraryResult<String> {
 /// Creates a new playlist from the retained values of a deleted playlist and its deleted
 /// descendants, in one transaction, and returns its id.
 pub async fn restore_recovered_playlist(
-    pool: &SqlitePool,
+    conn: &mut SqliteConnection,
     values: &[(GroupId, Value)],
     descendants: &[RecoveryDescendant],
     now_ms: i64,
@@ -99,7 +99,7 @@ pub async fn restore_recovered_playlist(
     }
     memberships.sort_by(|left, right| left.order_key.cmp(&right.order_key));
 
-    let mut transaction = pool
+    let mut transaction = conn
         .begin()
         .await
         .map_err(|error| MusicLibraryError::database("begin restore music playlist", error))?;
@@ -303,7 +303,7 @@ async fn insert_membership(
     } else {
         [None; 4]
     };
-    let id = crate::identity::membership_id(playlist_id, item_id);
+    let id = crate::identity::membership_id(playlist_id, item_id)?;
     let [start_ms, end_ms, volume_milli, rate_milli] = membership.range;
     let [
         break_start_ms,
@@ -448,9 +448,14 @@ mod tests {
                 intended_use("focus"),
                 intended_use("reading"),
             ];
-            let id = restore_recovered_playlist(&pool, &playlist_values(), &descendants, 42)
-                .await
-                .unwrap();
+            let id = restore_recovered_playlist(
+                &mut pool.acquire().await.unwrap(),
+                &playlist_values(),
+                &descendants,
+                42,
+            )
+            .await
+            .unwrap();
             assert_ne!(id, "deleted-playlist");
 
             let playlist: (String, String, i64, String, i64, i64) = sqlx::query_as(
@@ -503,7 +508,7 @@ mod tests {
             .unwrap();
             let expected = |item: &str, break_item: Option<&str>, break_start: Option<i64>| {
                 (
-                    crate::identity::membership_id(&id, item),
+                    crate::identity::membership_id(&id, item).unwrap(),
                     item.to_string(),
                     "more-often".to_string(),
                     0,
@@ -524,7 +529,7 @@ mod tests {
                 "SELECT ordinal, start_ms, end_ms FROM music_membership_skip_ranges
                  WHERE membership_id = ? ORDER BY ordinal",
             )
-            .bind(crate::identity::membership_id(&id, "item-b"))
+            .bind(crate::identity::membership_id(&id, "item-b").unwrap())
             .fetch_all(&pool)
             .await
             .unwrap();
@@ -541,9 +546,14 @@ mod tests {
                 .filter(|(group, _)| *group != playlist_group::NAME)
                 .collect();
             assert!(
-                restore_recovered_playlist(&pool, &without_name, &[], 42)
-                    .await
-                    .is_err()
+                restore_recovered_playlist(
+                    &mut pool.acquire().await.unwrap(),
+                    &without_name,
+                    &[],
+                    42
+                )
+                .await
+                .is_err()
             );
             let foreign = RecoveryDescendant {
                 table: PLAYLISTS_TABLE,
@@ -551,9 +561,14 @@ mod tests {
                 values: Vec::new(),
             };
             assert!(
-                restore_recovered_playlist(&pool, &playlist_values(), &[foreign], 42)
-                    .await
-                    .is_err()
+                restore_recovered_playlist(
+                    &mut pool.acquire().await.unwrap(),
+                    &playlist_values(),
+                    &[foreign],
+                    42
+                )
+                .await
+                .is_err()
             );
             let count: i64 =
                 sqlx::query_scalar("SELECT COUNT(*) FROM music_playlists WHERE name = 'Deep work'")

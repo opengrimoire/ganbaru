@@ -9,8 +9,8 @@ use ganbaru_sync_contracts::{
 
 use super::block_on;
 use super::fixture::{
-    CYCLE_A_TABLE, CYCLE_B_TABLE, EDGES_TABLE, ITEMS_TABLE, LINKS_TABLE, MEMBERSHIPS_TABLE,
-    NODES_TABLE, TEST_MANIFEST, edge_group, edge_key, membership_key,
+    CYCLE_A_TABLE, CYCLE_B_TABLE, EDGES_TABLE, HANDLES_TABLE, ITEMS_TABLE, LINKS_TABLE,
+    MEMBERSHIPS_TABLE, NODES_TABLE, TEST_MANIFEST, edge_group, edge_key, membership_key,
 };
 use super::replica::{
     Identity, Replica, START_MS, VAULT_ID, converge, device_id, pair, person, rank,
@@ -96,6 +96,70 @@ fn sealed_changes_converge_on_every_replica() {
                 .await;
             assert_eq!(body.as_deref(), Some("body"));
         }
+    });
+}
+
+#[test]
+fn a_change_referencing_an_invalid_unsealed_create_stays_captured_until_it_is_fixed() {
+    block_on(async {
+        let mut replicas = replicas(2).await;
+        // Without its value guard, the domain stores an item no device would accept.
+        replicas[0]
+            .exec("DROP TRIGGER sync_values_fixture_items_insert")
+            .await;
+        replicas[0]
+            .exec(
+                "INSERT INTO fixture_items (id, created_at, label, label_edits)
+                     VALUES ('item-1', '2027' || char(0), 'One', 0);
+                 INSERT INTO fixture_links (id, owner_id, note) VALUES ('link-1', 'item-1', 'L');
+                 INSERT INTO fixture_links (id, note, parent_id) VALUES ('link-2', 'M', 'link-1');",
+            )
+            .await;
+        let report = replicas[0].seal().await.unwrap();
+        let mut invalid: Vec<(&str, &str)> = report
+            .invalid_rows
+            .iter()
+            .map(|row| (row.row_key.as_str(), row.reason))
+            .collect();
+        invalid.sort_unstable();
+        assert_eq!(invalid.len(), 3, "{invalid:?}");
+        assert_eq!(
+            invalid[1..],
+            [
+                ("link-1", "invalid dependency"),
+                ("link-2", "invalid dependency")
+            ]
+        );
+        let sealed = "SELECT count(*) FROM sync_rows";
+        let captured = "SELECT count(*) FROM sync_capture";
+        assert_eq!(replicas[0].count(sealed).await, 0);
+        assert_eq!(replicas[0].count(captured).await, 3);
+
+        replicas[0]
+            .exec(
+                "DELETE FROM fixture_items WHERE id = 'item-1';
+                 INSERT INTO fixture_items (id, created_at, label, label_edits)
+                     VALUES ('item-1', '2027-01-01T00:00:00.000Z', 'One', 0);
+                 INSERT INTO fixture_links (id, owner_id, note) VALUES ('link-1', 'item-1', 'L');
+                 UPDATE fixture_links SET parent_id = 'link-1' WHERE id = 'link-2';",
+            )
+            .await;
+        let report = replicas[0].seal().await.unwrap();
+        assert!(report.invalid_rows.is_empty(), "{:?}", report.invalid_rows);
+        assert_eq!(replicas[0].count(captured).await, 0);
+        converge(&mut replicas).await;
+        assert_eq!(
+            replicas[1]
+                .count("SELECT count(*) FROM fixture_links WHERE owner_id = 'item-1'")
+                .await,
+            1
+        );
+        assert_eq!(
+            replicas[1]
+                .count("SELECT count(*) FROM fixture_links WHERE parent_id = 'link-1'")
+                .await,
+            1
+        );
     });
 }
 
@@ -753,6 +817,99 @@ fn duplicates_redirect_every_reference_column_of_a_group() {
                 .await,
                 ["link-2:edited:NULL"]
             );
+        }
+    });
+}
+
+/// Redirect targets of the tombstones of a table, as `row:target`.
+async fn redirects(replica: &mut Replica, table: TableId) -> Vec<String> {
+    texts(
+        replica,
+        &format!(
+            "SELECT DISTINCT row_key || ':' || replaced_by FROM sync_tombstones
+             WHERE table_id = {} AND replaced_by IS NOT NULL ORDER BY 1",
+            table.0
+        ),
+    )
+    .await
+}
+
+/// The replica that holds the surviving duplicate learns in one pass that the lower key is
+/// hidden by cascade, so that row must not keep the class.
+#[test]
+fn a_duplicate_hidden_by_cascade_does_not_hide_the_row_it_collides_with() {
+    block_on(async {
+        let mut replicas = replicas(3).await;
+        replicas[0]
+            .exec(
+                "INSERT INTO fixture_cycle_b (id, label) VALUES ('b-1', 'B');
+                 INSERT INTO fixture_cycle_a (id, label) VALUES ('a-1', 'Same');",
+            )
+            .await;
+        replicas[0].seal_rotating().await.unwrap();
+        let (to, from) = pair(&mut replicas, 1, 0);
+        to.pull(from).await;
+        replicas[0]
+            .exec("DELETE FROM fixture_cycle_b WHERE id = 'b-1'")
+            .await;
+        replicas[1]
+            .exec("UPDATE fixture_cycle_a SET peer_id = 'b-1' WHERE id = 'a-1'")
+            .await;
+        replicas[2]
+            .exec("INSERT INTO fixture_cycle_a (id, label) VALUES ('a-2', 'Same')")
+            .await;
+        for replica in &mut replicas {
+            replica.seal_rotating().await.unwrap();
+        }
+        for source in [0, 1] {
+            let (to, from) = pair(&mut replicas, 2, source);
+            let known = to.stored_vector().await;
+            let ops = from.ops_since(&known).await;
+            to.receive(&ops).await;
+        }
+        replicas[2].apply_all().await.unwrap();
+        converge(&mut replicas).await;
+        assert_converged(&mut replicas).await;
+        for replica in &mut replicas {
+            assert_eq!(
+                texts(replica, "SELECT id FROM fixture_cycle_a ORDER BY id").await,
+                ["a-2"]
+            );
+            assert_eq!(
+                tombstone_causes(replica, CYCLE_A_TABLE).await,
+                ["a-1:'b-1'"]
+            );
+            assert_eq!(
+                redirects(replica, CYCLE_A_TABLE).await,
+                Vec::<String>::new()
+            );
+        }
+    });
+}
+
+/// `h-2` collides with `h-1` on its label and with `h-3` on its code. Hidden behind `h-1`, it
+/// must not take `h-3` down with it.
+#[test]
+fn a_row_hidden_under_one_unique_rule_keeps_no_class_under_another() {
+    block_on(async {
+        let mut replicas = replicas(2).await;
+        replicas[0]
+            .exec(
+                "INSERT INTO fixture_handles (id, label, code) VALUES ('h-1', 'L', 'X');
+                 INSERT INTO fixture_handles (id, label, code) VALUES ('h-3', 'N', 'C');",
+            )
+            .await;
+        replicas[1]
+            .exec("INSERT INTO fixture_handles (id, label, code) VALUES ('h-2', 'L', 'C')")
+            .await;
+        converge(&mut replicas).await;
+        assert_converged(&mut replicas).await;
+        for replica in &mut replicas {
+            assert_eq!(
+                texts(replica, "SELECT id FROM fixture_handles ORDER BY id").await,
+                ["h-1", "h-3"]
+            );
+            assert_eq!(redirects(replica, HANDLES_TABLE).await, ["h-2:h-1"]);
         }
     });
 }
@@ -2267,6 +2424,43 @@ fn referenced_assets_cover_live_rows_and_retained_versions() {
                 ("quick-notes/images", format!("{}.png", digest('a')), 10),
                 ("quick-notes/images", format!("{}.jpg", digest('b')), 20),
                 ("quick-notes/images", format!("{}.webp", digest('c')), 30),
+            ]
+        );
+    });
+}
+
+#[test]
+fn referenced_assets_keep_references_that_disagree_on_one_digest() {
+    block_on(async {
+        let mut replica = Replica::new(0, 1).await;
+        // Whichever row is read last must not hide the other description of the digest.
+        replica
+            .exec(&format!(
+                "INSERT INTO quick_notes (id, order_key) VALUES ('note-1', 'a0'), ('note-2', 'a1'),
+                     ('note-3', 'a2');
+                 {}{}{}",
+                image_row("note-1", 0, 'a', "image/png", 10),
+                image_row("note-2", 0, 'a', "image/png", 11),
+                image_row("note-3", 0, 'a', "image/jpeg", 10),
+            ))
+            .await;
+
+        let referenced = replica
+            .engine
+            .referenced_assets(&mut replica.conn)
+            .await
+            .unwrap();
+        let names = referenced
+            .iter()
+            .map(|asset| (asset.file_name(), asset.byte_size()))
+            .collect::<Vec<_>>();
+        let digest = "a".repeat(64);
+        assert_eq!(
+            names,
+            [
+                (format!("{digest}.jpg"), 10),
+                (format!("{digest}.png"), 10),
+                (format!("{digest}.png"), 11),
             ]
         );
     });

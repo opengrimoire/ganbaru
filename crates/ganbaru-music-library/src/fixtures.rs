@@ -441,6 +441,15 @@ async fn seed_memberships(transaction: &mut Transaction<'_, Sqlite>) -> MusicLib
         total += included.len();
         let keys = super::order::rank_keys(included.len())?;
         for (chunk_index, chunk) in included.chunks(INSERT_BATCH_SIZE).enumerate() {
+            let ids = chunk
+                .iter()
+                .map(|item_index| {
+                    super::identity::membership_id(
+                        &playlist_id(playlist_index),
+                        &item_id(*item_index),
+                    )
+                })
+                .collect::<MusicLibraryResult<Vec<_>>>()?;
             let mut query = QueryBuilder::<Sqlite>::new(
                 "INSERT INTO music_playlist_memberships
                     (id, playlist_id, item_id, order_key, weight, enabled,
@@ -448,20 +457,18 @@ async fn seed_memberships(transaction: &mut Transaction<'_, Sqlite>) -> MusicLib
             );
             query.push_values(chunk.iter().enumerate(), |mut row, (offset, item_index)| {
                 let position = chunk_index * INSERT_BATCH_SIZE + offset;
-                row.push_bind(format!(
-                    "{FIXTURE_PREFIX}membership-{playlist_index:02}-{item_index:06}"
-                ))
-                .push_bind(playlist_id(playlist_index))
-                .push_bind(item_id(*item_index))
-                .push_bind(keys[position].as_str().to_owned())
-                .push_bind(weights[(item_index + playlist_index) % weights.len()])
-                .push_bind(i64::from(!(item_index + playlist_index).is_multiple_of(19)))
-                .push_bind(item_index.is_multiple_of(97).then_some(5_000_i64))
-                .push_bind(item_index.is_multiple_of(97).then_some(85_000_i64))
-                .push_bind(item_index.is_multiple_of(43).then_some(820_i64))
-                .push_bind(item_index.is_multiple_of(71).then_some(1_050_i64))
-                .push_bind(SEEDED_AT + position as i64)
-                .push_bind(SEEDED_AT + position as i64);
+                row.push_bind(ids[offset].clone())
+                    .push_bind(playlist_id(playlist_index))
+                    .push_bind(item_id(*item_index))
+                    .push_bind(keys[position].as_str().to_owned())
+                    .push_bind(weights[(item_index + playlist_index) % weights.len()])
+                    .push_bind(i64::from(!(item_index + playlist_index).is_multiple_of(19)))
+                    .push_bind(item_index.is_multiple_of(97).then_some(5_000_i64))
+                    .push_bind(item_index.is_multiple_of(97).then_some(85_000_i64))
+                    .push_bind(item_index.is_multiple_of(43).then_some(820_i64))
+                    .push_bind(item_index.is_multiple_of(71).then_some(1_050_i64))
+                    .push_bind(SEEDED_AT + position as i64)
+                    .push_bind(SEEDED_AT + position as i64);
             });
             query
                 .build()
@@ -748,7 +755,8 @@ mod tests {
             let counts = sqlx::query(
             "SELECT
                 (SELECT COUNT(*) FROM music_library_items WHERE id LIKE 'benchmark-music-%') AS items,
-                (SELECT COUNT(*) FROM music_playlist_memberships WHERE id LIKE 'benchmark-music-%') AS memberships,
+                (SELECT COUNT(*) FROM music_playlist_memberships
+                    WHERE playlist_id LIKE 'benchmark-music-%') AS memberships,
                 (SELECT COUNT(DISTINCT review_state) FROM music_library_items
                     WHERE id LIKE 'benchmark-music-%') AS review_states,
                 (SELECT COUNT(DISTINCT item_id) FROM music_source_collection_items

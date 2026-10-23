@@ -483,7 +483,7 @@ async fn import_membership(
             membership_id
         }
         None => {
-            let membership_id = super::identity::membership_id(playlist_id, item_id);
+            let membership_id = super::identity::membership_id(playlist_id, item_id)?;
             let tail = super::order::membership_tail(transaction, playlist_id).await?;
             let order_key = super::order::key_after(tail.as_deref())?;
             sqlx::query(

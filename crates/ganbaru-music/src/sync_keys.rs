@@ -99,6 +99,19 @@ impl CompositeKeyTable {
     }
 }
 
+/// Derived key prefix of playlist memberships. Their `id` column is the row key, derived from
+/// the playlist and the item in that order.
+pub const MEMBERSHIP_PREFIX: &str = "music-membership";
+
+/// The `id` of the membership of `item_id` in `playlist_id`.
+pub fn membership_key(playlist_id: &str, item_id: &str) -> MusicLibraryResult<String> {
+    derived_key(MEMBERSHIP_PREFIX, &[playlist_id, item_id])
+        .map(ganbaru_sync_contracts::RowKey::into_string)
+        .map_err(|error| {
+            MusicLibraryError::validation("id", format!("music_playlist_memberships key: {error}"))
+        })
+}
+
 /// The `sync_key` of an item signal.
 pub fn signal_key(item_id: &str, signal: &str) -> MusicLibraryResult<String> {
     SIGNALS.key(&[item_id, signal])

@@ -13,8 +13,8 @@ export const syncMessages = {
         : `${count} tareas se editaron en dos dispositivos. Ábrelas para elegir qué conservar.`,
     checklistConflicts: (count: number) =>
       count === 1
-        ? "1 elemento de lista de comprobación se editó en dos dispositivos. Abre la tarea para elegir qué conservar."
-        : `${count} elementos de lista de comprobación se editaron en dos dispositivos. Abre la tarea para elegir qué conservar.`,
+        ? "1 elemento de lista de verificación se editó en dos dispositivos. Abre la tarea para elegir qué conservar."
+        : `${count} elementos de lista de verificación se editaron en dos dispositivos. Abre la tarea para elegir qué conservar.`,
     dependencyConflicts: (count: number) =>
       count === 1
         ? "1 dependencia se quitó para romper un ciclo. Abre la tarea para mantenerla quitada o volver a añadirla."
@@ -36,7 +36,7 @@ export const syncMessages = {
     statusRestored: "Estado restaurado",
     statusRestoreFailed: "No se pudo restaurar el estado",
     taskUntitled: "Tarea sin título",
-    taskRecoveryNote: "Al restaurarla se crea la tarea de nuevo en su proyecto, con su lista de comprobación y las dependencias que siguen vigentes.",
+    taskRecoveryNote: "Al restaurarla se crea la tarea de nuevo en su proyecto, con su lista de verificación y las dependencias que siguen vigentes.",
     taskRestored: "Tarea restaurada",
     taskRestoreFailed: "No se pudo restaurar la tarea",
   },

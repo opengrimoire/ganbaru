@@ -769,7 +769,13 @@ const actions = createProjectStoreActions({
   ensureProjectData,
   ensureTaskDetailData,
   refreshTaskDetail,
-  onCommitted: (mutation) => publishProjectChanges(mutation, shownProjectIds()),
+  onCommitted: (mutation) => {
+    // Adding or removing a dependency changes whether a hidden one can be added back without a cycle.
+    if (mutation.changed.dependencies.length > 0 || mutation.removals.some((removal) => removal.kind === "dependency")) {
+      projectConflicts.invalidate();
+    }
+    publishProjectChanges(mutation, shownProjectIds());
+  },
   canWrite: canWriteProjects,
 });
 

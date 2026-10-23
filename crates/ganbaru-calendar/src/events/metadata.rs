@@ -50,6 +50,40 @@ pub(super) struct Metadata {
     preservation: Preservation,
 }
 
+/// Excludes one occurrence date of a source event, refusing an exclusion that would push its
+/// timing value over the sync bound. The row id derives from the source and the date, as on a
+/// retained deletion, so the same exclusion made twice is one row.
+pub(super) async fn add_exdate(
+    connection: &mut SqliteConnection,
+    event_id: &str,
+    occurrence_date: &str,
+) -> Result<(), String> {
+    let metadata = Metadata::read(connection, event_id, &mut ReadBudget::default()).await?;
+    if metadata
+        .exdates
+        .iter()
+        .any(|row| row.occurrence_date == occurrence_date)
+    {
+        return Ok(());
+    }
+    let sort_order = match metadata.exdates.iter().map(|row| row.sort_order).max() {
+        Some(last) => last
+            .checked_add(1)
+            .ok_or("Calendar exception order overflow")?,
+        None => 0,
+    };
+    let row = Exdate {
+        id: copy::copied_id(event_id, "exdate", occurrence_date)?,
+        event_id: event_id.to_string(),
+        occurrence_date: occurrence_date.to_string(),
+        sort_order,
+    };
+    let mut size = metadata.timing_size();
+    size.add_date_row(Some(&row.id), &row.occurrence_date);
+    size.check()?;
+    row.insert(connection).await
+}
+
 impl Metadata {
     pub(super) fn preservation_revision(&self) -> Result<String, String> {
         self.preservation.validate()?;

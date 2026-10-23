@@ -54,12 +54,13 @@ impl Event {
 // derived key column computed from the row at insert, so a row copied to another owner never
 // carries its source's key.
 macro_rules! stored_row {
-    ($name:ident, $table:literal, $selection:literal, ($($key:ident),+), { $($field:ident: $kind:ty),+ $(,)? } $(, keyed $key_column:expr => $key_fn:path)?) => {
+    ($(#[$insert_attr:meta])* $name:ident, $table:literal, $selection:literal, ($($key:ident),+), { $($field:ident: $kind:ty),+ $(,)? } $(, keyed $key_column:expr => $key_fn:path)?) => {
         #[derive(Clone, Debug, PartialEq, Serialize)]
         pub(super) struct $name { $(pub(super) $field: $kind,)+ }
         impl_sqlite_from_row!($name { $($field),+ });
         impl $name {
             /// Insert an exact prepared row in the caller's transaction.
+            $(#[$insert_attr])*
             pub(super) async fn insert(&self, connection: &mut SqliteConnection) -> Result<(), String> {
                 #[allow(unused_mut)]
                 let mut columns = vec![$(stringify!($field)),+];
@@ -236,7 +237,7 @@ stored_row!(SequenceStep, "calendar_event_pomodoro_config_sequence_steps", "even
     break_duration_minutes: i64,
 });
 
-stored_row!(MusicAssignment, "music_context_assignments", "owner_id = ?1 AND owner_kind IN ('event-snapshot', 'event-override')", (owner_kind, phase), {
+stored_row!(#[expect(dead_code, reason = "edits write assignments through `upsert` so unchanged rows stay untouched")] MusicAssignment, "music_context_assignments", "owner_id = ?1 AND owner_kind IN ('event-snapshot', 'event-override')", (owner_kind, phase), {
     owner_kind: String,
     owner_id: String,
     phase: String,
@@ -249,6 +250,79 @@ stored_row!(MusicAssignment, "music_context_assignments", "owner_id = ?1 AND own
     soundscape_behavior: String,
     soundscape_preset_id: Option<String>,
 }, keyed ganbaru_music::sync_keys::SYNC_KEY_COLUMN => music_assignment_key);
+
+impl MusicAssignment {
+    /// Writes the row in place of the stored row with the same owner and phase, leaving an
+    /// unchanged row untouched so replication captures nothing for it.
+    pub(super) async fn upsert(&self, connection: &mut SqliteConnection) -> Result<(), String> {
+        sqlx::query(
+            "INSERT INTO music_context_assignments (owner_kind, owner_id, phase, behavior,
+                playlist_id, provenance_kind, provenance_id, updated_at_ms, version,
+                soundscape_behavior, soundscape_preset_id, sync_key)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             ON CONFLICT (owner_kind, owner_id, phase) DO UPDATE SET
+                behavior = excluded.behavior,
+                playlist_id = excluded.playlist_id,
+                provenance_kind = excluded.provenance_kind,
+                provenance_id = excluded.provenance_id,
+                updated_at_ms = excluded.updated_at_ms,
+                version = excluded.version,
+                soundscape_behavior = excluded.soundscape_behavior,
+                soundscape_preset_id = excluded.soundscape_preset_id
+             WHERE behavior IS NOT excluded.behavior
+                OR playlist_id IS NOT excluded.playlist_id
+                OR provenance_kind IS NOT excluded.provenance_kind
+                OR provenance_id IS NOT excluded.provenance_id
+                OR updated_at_ms IS NOT excluded.updated_at_ms
+                OR version IS NOT excluded.version
+                OR soundscape_behavior IS NOT excluded.soundscape_behavior
+                OR soundscape_preset_id IS NOT excluded.soundscape_preset_id",
+        )
+        .bind(&self.owner_kind)
+        .bind(&self.owner_id)
+        .bind(&self.phase)
+        .bind(&self.behavior)
+        .bind(&self.playlist_id)
+        .bind(&self.provenance_kind)
+        .bind(&self.provenance_id)
+        .bind(self.updated_at_ms)
+        .bind(self.version)
+        .bind(&self.soundscape_behavior)
+        .bind(&self.soundscape_preset_id)
+        .bind(music_assignment_key(self)?)
+        .execute(connection)
+        .await
+        .map_err(|error| format!("write Calendar music assignment: {error}"))?;
+        Ok(())
+    }
+
+    /// Removes the event's stored assignments whose owner kind and phase are not among `kept`.
+    pub(super) async fn remove_stale(
+        connection: &mut SqliteConnection,
+        event_id: &str,
+        kept: &[Self],
+    ) -> Result<(), String> {
+        let kept = kept
+            .iter()
+            .map(|row| [row.owner_kind.as_str(), row.phase.as_str()])
+            .collect::<Vec<_>>();
+        let kept = serde_json::to_string(&kept)
+            .map_err(|error| format!("encode kept Calendar music assignments: {error}"))?;
+        sqlx::query(
+            "DELETE FROM music_context_assignments
+             WHERE owner_id = ?1 AND owner_kind IN ('event-snapshot', 'event-override')
+               AND NOT EXISTS (SELECT 1 FROM json_each(?2) AS kept
+                   WHERE json_extract(kept.value, '$[0]') = owner_kind
+                     AND json_extract(kept.value, '$[1]') = phase)",
+        )
+        .bind(event_id)
+        .bind(kept)
+        .execute(connection)
+        .await
+        .map_err(|error| format!("clear stale Calendar music assignments: {error}"))?;
+        Ok(())
+    }
+}
 
 /// Derived sync key of a Music assignment under its current owner.
 fn music_assignment_key(row: &MusicAssignment) -> Result<String, String> {

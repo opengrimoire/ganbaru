@@ -146,6 +146,7 @@ impl Metadata {
         existing: bool,
     ) -> Result<PreparedMutation, String> {
         self.reserve_deletion_copies(1)?;
+        self.check_timing_bound()?;
         let id = self
             .events
             .first()

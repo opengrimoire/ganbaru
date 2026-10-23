@@ -1178,3 +1178,64 @@ fn large_preserved_metadata_and_history_fanout_fail_before_any_writes() {
         tx.rollback().await.unwrap();
     });
 }
+
+#[test]
+fn an_edit_that_keeps_music_leaves_stored_assignments_untouched() {
+    crate::test_support::block_on(async {
+        let pool = super::metadata::seed().await;
+        sqlx::raw_sql(
+            "CREATE TABLE music_writes (action TEXT NOT NULL, phase TEXT NOT NULL);
+             CREATE TRIGGER log_music_insert AFTER INSERT ON music_context_assignments
+                BEGIN INSERT INTO music_writes VALUES ('insert', NEW.phase); END;
+             CREATE TRIGGER log_music_update AFTER UPDATE ON music_context_assignments
+                BEGIN INSERT INTO music_writes VALUES ('update', NEW.phase); END;
+             CREATE TRIGGER log_music_delete AFTER DELETE ON music_context_assignments
+                BEGIN INSERT INTO music_writes VALUES ('delete', OLD.phase); END;",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let assignments = || async {
+            sqlx::query_as::<_, (String, String, String, String)>(
+                "SELECT owner_kind, phase, behavior, sync_key FROM music_context_assignments
+                 WHERE owner_id = 'source' ORDER BY owner_kind, phase",
+            )
+            .fetch_all(&pool)
+            .await
+            .unwrap()
+        };
+        let before = assignments().await;
+        assert!(!before.is_empty());
+        let now = clock("2099-05-08T00:00:00Z");
+        let draft = json!({"fields":[{"field":"title","value":"Renamed"}]});
+        let (_, revision) = review(&pool, draft.clone(), EditScope::All, now).await;
+        let mut tx = pool.begin().await.unwrap();
+        prepare_rows(
+            read_snapshot(&mut tx, "source").await.unwrap(),
+            parse_date("2099-05-10").unwrap(),
+            EditScope::All,
+            now,
+            serde_json::from_value(draft).unwrap(),
+            "save-1",
+            &revision,
+        )
+        .unwrap()
+        .write(&mut tx)
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+
+        let title: String =
+            sqlx::query_scalar("SELECT title FROM calendar_events WHERE id = 'source'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(title, "Renamed");
+        let writes: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM music_writes")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(writes, 0);
+        assert_eq!(assignments().await, before);
+    });
+}

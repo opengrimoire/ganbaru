@@ -116,7 +116,12 @@ impl PreparedSide {
                 .execute(&mut *connection)
                 .await
                 .map_err(|error| format!("clear prepared Calendar focus_configs: {error}"))?;
-            sqlx::query("DELETE FROM music_context_assignments WHERE owner_id = ?1 AND owner_kind IN ('event-snapshot', 'event-override')").bind(&event.id).execute(&mut *connection).await.map_err(|error| format!("clear prepared Calendar music_assignments: {error}"))?;
+            super::rows::MusicAssignment::remove_stale(
+                connection,
+                &event.id,
+                &metadata.music_assignments,
+            )
+            .await?;
             sqlx::query("DELETE FROM project_task_event_links WHERE event_id = ?1")
                 .bind(&event.id)
                 .execute(&mut *connection)
@@ -165,7 +170,7 @@ impl PreparedSide {
             row.insert(connection).await?;
         }
         for row in &metadata.music_assignments {
-            row.insert(connection).await?;
+            row.upsert(connection).await?;
         }
         for row in &metadata.task_links {
             row.insert(connection).await?;

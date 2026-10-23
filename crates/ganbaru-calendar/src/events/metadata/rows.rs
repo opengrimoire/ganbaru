@@ -78,7 +78,7 @@ macro_rules! stored_row {
             #[allow(dead_code, reason = "only rows of groups that own rows are charged")]
             pub(super) fn charge(&self, size: &mut ValueSize) {
                 size.row();
-                $(size.field(&self.$field);)+
+                $(size.named_field(stringify!($field), &self.$field);)+
             }
             pub(super) async fn read(connection: &mut SqliteConnection, id: &str, budget: &mut ReadBudget) -> Result<Vec<Self>, String> {
                 let columns = &[$(stringify!($field)),+];

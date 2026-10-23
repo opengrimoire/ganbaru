@@ -449,7 +449,12 @@ impl Metadata {
             });
         }
         for row in &self.override_properties {
-            size.add_override_property(Some(&row.id), &row.property_key, &row.property_value);
+            size.add_override_property(
+                Some(&row.id),
+                &row.override_id,
+                &row.property_key,
+                &row.property_value,
+            );
         }
         size
     }

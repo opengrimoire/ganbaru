@@ -134,6 +134,187 @@ fn edit_with_a_few_changed_occurrences_still_saves() {
     });
 }
 
+/// Charges every stored row of `table` under `parent_column = parent` the way a stored row is
+/// charged, leaving out the parent column, which the sync value does not carry.
+async fn charge_table(
+    pool: &sqlx::SqlitePool,
+    table: &str,
+    parent_column: &str,
+    parent: &str,
+) -> crate::value_bound::ValueSize {
+    use sqlx::{Column, Row, TypeInfo, ValueRef};
+    let sql = format!("SELECT * FROM {table} WHERE {parent_column} = ?");
+    let rows = sqlx::query(sqlx::AssertSqlSafe(sql.as_str()))
+        .bind(parent)
+        .fetch_all(pool)
+        .await
+        .unwrap();
+    let mut size = crate::value_bound::ValueSize::default();
+    for row in &rows {
+        size.row();
+        for column in row.columns() {
+            let name = column.name();
+            if name == parent_column {
+                continue;
+            }
+            let raw = row.try_get_raw(column.ordinal()).unwrap();
+            if raw.is_null() {
+                size.field(&None::<String>);
+            } else if raw.type_info().name() == "TEXT" {
+                size.named_field(name, &row.get::<String, _>(column.ordinal()));
+            } else {
+                size.integer();
+            }
+        }
+    }
+    size
+}
+
+#[test]
+fn every_archive_value_fits_within_the_live_value_it_copies() {
+    use super::fixtures::{CalendarEventMutationTarget, archive_calendar_event_tx};
+    crate::test_support::block_on(async {
+        let pool = super::metadata::seed().await;
+        sqlx::raw_sql(
+            "INSERT INTO calendar_event_exdates (id, event_id, occurrence_date)
+                 VALUES ('x', 'source', '2099-05-11');
+             INSERT INTO calendar_event_rdates (id, event_id, occurrence_start)
+                 VALUES ('r', 'source', '2099-06-01T10:00:00Z');",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let source = read_source(&pool).await;
+        let groups = source.group_sizes();
+        let live = |name: &str| {
+            groups
+                .iter()
+                .find(|(group, _)| *group == name)
+                .map(|(_, size)| size.bytes())
+                .unwrap()
+        };
+        let timing = source.timing_size().bytes();
+        let mut tx = pool.begin().await.unwrap();
+        archive_calendar_event_tx(
+            &mut tx,
+            &CalendarEventMutationTarget {
+                id: "source".into(),
+            },
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+
+        let archive =
+            |table: &'static str| charge_table(&pool, table, "archive_event_id", "source");
+        let mut overrides = archive("calendar_event_archive_overrides").await;
+        overrides.absorb(&archive("calendar_event_archive_override_extended_properties").await);
+        let mut focus = archive("calendar_event_archive_pomodoro_configs").await;
+        focus.absorb(&archive("calendar_event_archive_pomodoro_config_count_rhythms").await);
+        focus.absorb(&archive("calendar_event_archive_pomodoro_config_sequence_steps").await);
+        let pairs = [
+            (
+                archive("calendar_event_archive_alarms").await,
+                live("alarms"),
+            ),
+            (
+                archive("calendar_event_archive_attendees").await,
+                live("attendees"),
+            ),
+            (
+                archive("calendar_event_archive_organizers").await,
+                live("organizer"),
+            ),
+            (
+                archive("calendar_event_archive_categories").await,
+                live("categories"),
+            ),
+            (
+                archive("calendar_event_archive_notifications").await,
+                live("notifications"),
+            ),
+            (
+                archive("calendar_event_archive_extended_properties").await,
+                live("extended properties"),
+            ),
+            (focus, live("Focus settings")),
+            (
+                archive("calendar_event_archive_music_assignments").await,
+                live("music assignments"),
+            ),
+            (
+                archive("calendar_event_archive_task_links").await,
+                live("task links"),
+            ),
+            (archive("calendar_event_archive_exdates").await, timing),
+            (archive("calendar_event_archive_rdates").await, timing),
+            (overrides, timing),
+        ];
+        for (index, (archived, live)) in pairs.iter().enumerate() {
+            assert!(
+                archived.bytes() > crate::value_bound::ValueSize::default().bytes(),
+                "{index}"
+            );
+            assert!(
+                archived.bytes() <= *live,
+                "{index}: {} > {live}",
+                archived.bytes()
+            );
+        }
+    });
+}
+
+/// Copied import graphs keep every component's graph value within its original's charge.
+#[test]
+fn archived_component_graphs_fit_within_their_originals() {
+    use super::fixtures::{CalendarEventMutationTarget, archive_calendar_event_tx};
+    crate::test_support::block_on(async {
+        let pool = super::metadata::seed().await;
+        async fn graphs(pool: &sqlx::SqlitePool, original: bool) -> Vec<usize> {
+            let ids: Vec<String> = sqlx::query_scalar(if original {
+                "SELECT id FROM icalendar_components WHERE object_id = 'object'"
+            } else {
+                "SELECT id FROM icalendar_components WHERE object_id <> 'object'"
+            })
+            .fetch_all(pool)
+            .await
+            .unwrap();
+            let mut sizes = Vec::new();
+            for id in &ids {
+                let mut size = crate::value_bound::ValueSize::default();
+                for table in [
+                    "icalendar_component_projection_warnings",
+                    "icalendar_component_properties",
+                    "icalendar_property_parameters",
+                    "icalendar_value_nodes",
+                ] {
+                    size.absorb(&charge_table(pool, table, "component_id", id).await);
+                }
+                sizes.push(size.bytes());
+            }
+            sizes.sort_unstable_by(|a, b| b.cmp(a));
+            sizes
+        }
+        let originals = graphs(&pool, true).await;
+        let mut tx = pool.begin().await.unwrap();
+        archive_calendar_event_tx(
+            &mut tx,
+            &CalendarEventMutationTarget {
+                id: "source".into(),
+            },
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+        let copies = graphs(&pool, false).await;
+        assert!(!copies.is_empty());
+        assert!(copies.len() <= originals.len());
+        for (copy, original) in copies.iter().zip(&originals) {
+            assert!(copy <= original, "{copy} > {original}");
+        }
+    });
+}
+
 async fn read_source(pool: &sqlx::SqlitePool) -> crate::events::metadata::Metadata {
     let mut connection = pool.acquire().await.unwrap();
     crate::events::metadata::Metadata::read(

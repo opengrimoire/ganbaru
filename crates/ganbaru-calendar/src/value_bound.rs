@@ -63,11 +63,20 @@ pub(crate) struct OverrideColumns<'a> {
 pub trait ChargedField {
     /// Charges this field to `size`.
     fn charge_to(&self, size: &mut ValueSize);
+
+    /// Charges this field as an identifier column (see [`ValueSize::id`]).
+    fn charge_id_to(&self, size: &mut ValueSize) {
+        self.charge_to(size);
+    }
 }
 
 impl ChargedField for str {
     fn charge_to(&self, size: &mut ValueSize) {
         size.text(self);
+    }
+
+    fn charge_id_to(&self, size: &mut ValueSize) {
+        size.id(self);
     }
 }
 
@@ -75,12 +84,26 @@ impl ChargedField for String {
     fn charge_to(&self, size: &mut ValueSize) {
         size.text(self);
     }
+
+    fn charge_id_to(&self, size: &mut ValueSize) {
+        size.id(self);
+    }
 }
 
 impl ChargedField for Option<String> {
     fn charge_to(&self, size: &mut ValueSize) {
         size.optional_text(self.as_deref());
     }
+
+    fn charge_id_to(&self, size: &mut ValueSize) {
+        size.optional_id(self.as_deref());
+    }
+}
+
+/// Whether a column holds a row identifier or a reference to one, which a copy or an archive
+/// may replace with a derived id.
+pub fn is_id_column(column: &str) -> bool {
+    column == "id" || column.ends_with("_id")
 }
 
 impl ChargedField for i64 {
@@ -141,6 +164,32 @@ impl ValueSize {
         value.charge_to(self);
     }
 
+    /// Charges one field of the named column, as an identifier when [`is_id_column`] says so.
+    pub fn named_field<F: ChargedField + ?Sized>(&mut self, column: &str, value: &F) {
+        if is_id_column(column) {
+            value.charge_id_to(self);
+        } else {
+            value.charge_to(self);
+        }
+    }
+
+    /// Charges one identifier field at no less than the generated id allowance.
+    ///
+    /// A copied source or an archive replaces row identifiers and their references with ids
+    /// derived up to that length, so charging the longer of the two keeps every copy of a value
+    /// within the bound its source passed.
+    pub fn id(&mut self, value: &str) {
+        self.charge(TEXT_FIELD_OVERHEAD_BYTES + value.len().max(GENERATED_ID_ALLOWANCE_BYTES));
+    }
+
+    /// Charges one optional identifier field.
+    pub fn optional_id(&mut self, value: Option<&str>) {
+        match value {
+            Some(value) => self.id(value),
+            None => self.charge(NULL_FIELD_BYTES),
+        }
+    }
+
     /// Charges one owned row's structure; its fields are charged separately.
     pub fn row(&mut self) {
         self.charge(ROW_OVERHEAD_BYTES);
@@ -190,7 +239,7 @@ impl ValueSize {
     /// Charges one excluded date or added date row; `id` is the stored identifier when known.
     pub(crate) fn add_date_row(&mut self, id: Option<&str>, value: &str) {
         self.row();
-        self.text(id.unwrap_or(&"x".repeat(GENERATED_ID_ALLOWANCE_BYTES)));
+        self.id(id.unwrap_or_default());
         self.text(value);
         self.integer();
     }
@@ -199,7 +248,7 @@ impl ValueSize {
     /// allowance.
     pub(crate) fn add_override(&mut self, columns: &OverrideColumns<'_>) {
         self.row();
-        self.text(columns.id);
+        self.id(columns.id);
         self.text(columns.recurrence_id);
         self.optional_text(columns.recurrence_range);
         self.optional_text(columns.title);
@@ -212,14 +261,22 @@ impl ValueSize {
         self.optional_text(columns.status);
         self.optional_text(columns.transparency);
         self.optional_text(columns.visibility);
-        self.optional_text(columns.icalendar_component_id);
+        self.optional_id(columns.icalendar_component_id);
         self.charge(2 * (TEXT_FIELD_OVERHEAD_BYTES + TIMESTAMP_ALLOWANCE_BYTES));
     }
 
-    /// Charges one override extended property row; `id` is the stored identifier when known.
-    pub(crate) fn add_override_property(&mut self, id: Option<&str>, key: &str, value: &str) {
+    /// Charges one override extended property row; `id` is the stored identifier when known and
+    /// `override_id` the id of its override.
+    pub(crate) fn add_override_property(
+        &mut self,
+        id: Option<&str>,
+        override_id: &str,
+        key: &str,
+        value: &str,
+    ) {
         self.row();
-        self.text(id.unwrap_or(&"x".repeat(GENERATED_ID_ALLOWANCE_BYTES)));
+        self.id(id.unwrap_or_default());
+        self.id(override_id);
         self.text(key);
         self.text(value);
         self.integer();
@@ -288,12 +345,20 @@ mod tests {
     }
 
     #[test]
-    fn generated_ids_are_charged_at_the_allowance() {
-        let mut known = ValueSize::default();
-        known.add_date_row(Some("short"), "2026-01-01");
+    fn ids_are_charged_at_no_less_than_the_generated_allowance() {
+        let mut short = ValueSize::default();
+        short.add_date_row(Some("short"), "2026-01-01");
         let mut generated = ValueSize::default();
         generated.add_date_row(None, "2026-01-01");
-        assert!(generated.bytes() > known.bytes());
+        assert_eq!(generated.bytes(), short.bytes());
+        let mut long = ValueSize::default();
+        long.add_date_row(
+            Some(&"x".repeat(GENERATED_ID_ALLOWANCE_BYTES + 1)),
+            "2026-01-01",
+        );
+        assert_eq!(long.bytes(), generated.bytes() + 1);
+        assert!(is_id_column("id") && is_id_column("icalendar_component_id"));
+        assert!(!is_id_column("source_uid") && !is_id_column("icalendar_property_index"));
     }
 
     #[test]
@@ -400,6 +465,25 @@ mod tests {
             largest.1, largest.0
         );
         assert!(largest.1 < MAX_VALUE_BYTES / 64);
+    }
+
+    /// An archive copies its event's task links, which Projects bounds per event, so the copy
+    /// fits with room for links other devices add before the deletion reaches them.
+    #[test]
+    fn the_most_task_links_an_event_keeps_fit_a_quarter_of_the_bound() {
+        use ganbaru_projects::relationship_commands::{
+            MAX_TASK_EVENT_LINK_ID_BYTES, MAX_TASK_LINKS_PER_EVENT,
+        };
+        let id = "x".repeat(MAX_TASK_EVENT_LINK_ID_BYTES);
+        let mut size = ValueSize::default();
+        for _ in 0..MAX_TASK_LINKS_PER_EVENT {
+            size.row();
+            size.id(&id);
+            size.id(&id);
+            size.text("reference");
+            size.generated_timestamp();
+        }
+        assert!(size.bytes() <= MAX_VALUE_BYTES / 4, "{}", size.bytes());
     }
 
     #[test]

@@ -253,7 +253,7 @@ pub(super) fn timing_refusal(event: &CalendarImportEvent) -> Option<String> {
             })
             .unwrap_or_default();
         for (key, value) in &properties {
-            size.add_override_property(None, key, value);
+            size.add_override_property(None, &row.id, key, value);
         }
     }
     size.check()
@@ -275,9 +275,9 @@ pub(super) fn value_refusal(event: &CalendarImportEvent) -> Option<String> {
     let mut alarms = ValueSize::default();
     for alarm in &event.alarms {
         alarms.row();
-        alarms.text(&alarm.id);
+        alarms.id(&alarm.id);
         alarms.generated_id();
-        alarms.optional_text(alarm.icalendar_component_id.as_deref());
+        alarms.optional_id(alarm.icalendar_component_id.as_deref());
         alarms.text(&alarm.action);
         alarms.text(&alarm.trigger_type);
         alarms.text(&alarm.trigger_value);
@@ -287,9 +287,9 @@ pub(super) fn value_refusal(event: &CalendarImportEvent) -> Option<String> {
     let mut attendees = ValueSize::default();
     for attendee in &event.attendees {
         attendees.row();
-        attendees.text(&attendee.id);
+        attendees.id(&attendee.id);
         attendees.generated_id();
-        attendees.optional_text(attendee.icalendar_component_id.as_deref());
+        attendees.optional_id(attendee.icalendar_component_id.as_deref());
         attendees.optional_integer(attendee.icalendar_property_index);
         attendees.optional_text(attendee.name.as_deref());
         attendees.text(&attendee.email);

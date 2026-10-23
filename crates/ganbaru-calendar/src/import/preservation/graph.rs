@@ -223,7 +223,7 @@ fn plan_value_node(rows: &mut Vec<ValueNodeRow>, value: &Value, place: NodePlace
 fn charge_message(size: &mut ValueSize, owner_id: &str, message: &str) {
     size.row();
     size.generated_id();
-    size.text(owner_id);
+    size.id(owner_id);
     size.text(message);
     size.integer();
 }
@@ -240,26 +240,26 @@ fn charge_reserved_message(size: &mut ValueSize, owner_id: &str) {
 fn charge_property(size: &mut ValueSize, component_id: &str, planned: &PlannedProperty) {
     let row = &planned.property;
     size.row();
-    size.text(&row.id);
-    size.text(component_id);
+    size.id(&row.id);
+    size.id(component_id);
     size.text(&row.name);
     size.text(&row.value_type);
     size.integer();
     for parameter in &planned.parameters {
         size.row();
-        size.text(&parameter.id);
-        size.text(component_id);
-        size.text(&parameter.property_id);
+        size.id(&parameter.id);
+        size.id(component_id);
+        size.id(&parameter.property_id);
         size.text(&parameter.name);
         size.integer();
     }
     for node in &planned.values {
         size.row();
-        size.text(&node.id);
-        size.text(component_id);
-        size.text(&node.property_id);
-        size.optional_text(node.parameter_id.as_deref());
-        size.optional_text(node.parent_node_id.as_deref());
+        size.id(&node.id);
+        size.id(component_id);
+        size.id(&node.property_id);
+        size.optional_id(node.parameter_id.as_deref());
+        size.optional_id(node.parent_node_id.as_deref());
         size.integer();
         size.text(node.value_kind);
         size.optional_text(node.object_key.as_deref());
@@ -443,7 +443,7 @@ mod tests {
         let planned = plan_graph("c", &jcal(&values)).unwrap();
         let bounded = bound_graph("c", Vec::new(), planned);
         assert!(bounded.properties.len() < 100);
-        assert!(bounded.properties.len() > 50);
+        assert!(bounded.properties.len() * 4_000 > MAX_VALUE_BYTES / 2);
         assert!(graph_size("c", &bounded).fits());
         let dropped = 100 - bounded.properties.len();
         assert!(bounded.warnings[0].contains(&format!(" {dropped} ")));

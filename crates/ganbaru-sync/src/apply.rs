@@ -228,6 +228,11 @@ fn candidate_from_row(row: &SqliteRow) -> SyncResult<Candidate> {
     if state != "waiting" {
         return Err(corrupt("an operation past the applied sequence is applied"));
     }
+    // Compaction only drops bodies of applied operations, so a waiting one without a body is
+    // corrupt state rather than an invalid operation to hold.
+    if row.try_get::<i64, _>(5)? == 0 {
+        return Err(corrupt("a waiting operation has no body"));
+    }
     let writer: Vec<u8> = row.try_get(0)?;
     let context: Vec<u8> = row.try_get(3)?;
     Ok(Candidate {
@@ -246,14 +251,18 @@ async fn envelope_bytes(
     writer: WriterId,
     seq: Seq,
 ) -> SyncResult<Vec<u8>> {
-    Ok(sqlx::query_scalar(
+    let bytes: Vec<u8> = sqlx::query_scalar(
         "SELECT envelope FROM sync_ops WHERE space_id = ? AND writer_id = ? AND seq = ?",
     )
     .bind(ctx.space.as_bytes().as_slice())
     .bind(writer.as_bytes().as_slice())
     .bind(seq_i64(seq)?)
     .fetch_one(&mut *conn)
-    .await?)
+    .await?;
+    if bytes.is_empty() {
+        return Err(corrupt("a waiting operation has no body"));
+    }
+    Ok(bytes)
 }
 
 async fn hold_invalid(

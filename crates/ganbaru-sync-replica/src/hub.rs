@@ -15,7 +15,7 @@ use ganbaru_handoff::protocol::{
 };
 use ganbaru_sync::assets::AssetRef;
 use ganbaru_sync::manifest::Manifest;
-use ganbaru_sync::{Engine, SpaceContext, StoreOutcome, StoreRefusal, local};
+use ganbaru_sync::{Engine, SpaceContext, StoreOutcome, StoreRefusal, SyncError, local};
 use ganbaru_sync_contracts::{Envelope, Seq, VersionVector, WriterId};
 use sqlx::SqlitePool;
 use std::collections::HashMap;
@@ -36,6 +36,10 @@ const _: () = assert!(
     STALE_STAGING_AGE.as_secs() > UPLOAD_IDLE_TIMEOUT.as_secs(),
     "a sweep of stale staged assets must spare uploads the hub still waits for"
 );
+
+/// Error code of a pull the hub can no longer answer because it compacted operations the peer
+/// lacks. The peer stops pulling until it bootstraps from a fresh copy of the vault.
+pub const BOOTSTRAP_REQUIRED: &str = "bootstrap_required";
 
 /// The vault database the hub serves.
 pub struct HubVault {
@@ -276,15 +280,16 @@ impl SyncHub {
                 self.receive(&assets, &device_id, &asset, offset, data)
                     .await
             }
-            ControlMessage::SyncHello { probe, .. } => {
+            ControlMessage::SyncHello { probe, stored, .. } => {
                 let probe = match probe {
                     Some(probe) => {
                         Some((writer_from_wire(&probe.writer).map_err(invalid)?, probe.seq))
                     }
                     None => None,
                 };
+                let peer = vector_from_wire(&stored).map_err(invalid)?;
                 let report = self.report(&vault_id)?;
-                hub.state(probe, report).await
+                hub.state(&peer, probe, report).await
             }
             ControlMessage::SyncPush { ops, .. } => {
                 let ops = ops_from_wire(&ops).map_err(invalid)?;
@@ -343,6 +348,7 @@ impl SyncHub {
         self.changes.send_modify(|generation| *generation += 1);
         changes.borrow_and_update();
         let deadline = tokio::time::Instant::now() + WAIT_TIMEOUT;
+        let bootstrap_required = hub.bootstrap_required(known).await?;
         let result = loop {
             let stored = hub.stored().await?;
             let superseded = self
@@ -352,11 +358,13 @@ impl SyncHub {
                 .get(device_id)
                 != Some(&token);
             if superseded || !known.dominates(&stored) {
-                break Ok(hub.state_message(&stored, None, report));
+                break Ok(hub.state_message(&stored, None, bootstrap_required, report));
             }
             match tokio::time::timeout_at(deadline, changes.changed()).await {
                 Ok(Ok(())) => {}
-                Ok(Err(_)) | Err(_) => break Ok(hub.state_message(&stored, None, report)),
+                Ok(Err(_)) | Err(_) => {
+                    break Ok(hub.state_message(&stored, None, bootstrap_required, report));
+                }
             }
         };
         if let Ok(mut waits) = self.waits.lock()
@@ -563,10 +571,25 @@ impl HubSession {
             .map_err(|error| HubError::failed(format!("read sync log: {error}")))
     }
 
+    /// Whether the hub compacted operations that a peer holding `peer` still lacks, which no
+    /// pull can deliver any more.
+    async fn bootstrap_required(&self, peer: &VersionVector) -> Result<bool, HubError> {
+        Ok(!peer.dominates(&self.compacted_vector().await?))
+    }
+
+    async fn compacted_vector(&self) -> Result<VersionVector, HubError> {
+        let mut conn = acquire(&self.pool).await?;
+        self.engine
+            .compacted_vector(&mut conn, &self.ctx)
+            .await
+            .map_err(|error| HubError::failed(format!("read sync log: {error}")))
+    }
+
     fn state_message(
         &self,
         stored: &VersionVector,
         probe_hash: Option<String>,
+        bootstrap_required: bool,
         report: StateReport,
     ) -> ControlMessage {
         let mut stable = report.stable;
@@ -578,16 +601,19 @@ impl HubSession {
             coordinator_endpoints: report.contact.endpoints,
             discovery_key: report.contact.discovery_key,
             stable: vector_to_wire(&stable),
-            bootstrap_required: false,
+            bootstrap_required,
         }
     }
 
-    /// The hub's stored vector and its hash at the probed operation, when it holds it.
+    /// The hub's stored vector and its hash at the probed operation, when it holds it, for a
+    /// peer holding `peer`.
     async fn state(
         &self,
+        peer: &VersionVector,
         probe: Option<(WriterId, u64)>,
         report: StateReport,
     ) -> Result<ControlMessage, HubError> {
+        let bootstrap_required = self.bootstrap_required(peer).await?;
         let stored = self.stored().await?;
         let probe_hash = match probe {
             Some((writer, seq)) => {
@@ -602,7 +628,7 @@ impl HubSession {
             }
             None => None,
         };
-        Ok(self.state_message(&stored, probe_hash, report))
+        Ok(self.state_message(&stored, probe_hash, bootstrap_required, report))
     }
 
     /// Stores pushed operations up to the first refusal. A genesis of a writer the hub does not
@@ -631,7 +657,13 @@ impl HubSession {
                 StoreOutcome::Refused(store_refusal) => {
                     refusal = Some(match Envelope::decode(op) {
                         Ok(envelope) => {
-                            refusal_to_wire(*store_refusal, envelope.writer, envelope.seq)
+                            let compacted = self.compacted_vector().await?;
+                            refusal_to_wire(
+                                *store_refusal,
+                                envelope.writer,
+                                envelope.seq,
+                                &compacted,
+                            )
                         }
                         Err(_) => invalid_refusal(),
                     });
@@ -659,7 +691,12 @@ impl HubSession {
             .engine
             .ops_after(&mut conn, &self.ctx, known, max_bytes)
             .await
-            .map_err(|error| HubError::failed(format!("read sync operations: {error}")))?;
+            .map_err(|error| match error {
+                SyncError::Compacted { .. } => {
+                    HubError::rejected(BOOTSTRAP_REQUIRED, error.to_string())
+                }
+                error => HubError::failed(format!("read sync operations: {error}")),
+            })?;
         Ok(ControlMessage::SyncOps {
             ops: ops_to_wire(&page.ops),
             more: page.more,
@@ -732,8 +769,18 @@ fn invalid_refusal() -> SyncRefusal {
 }
 
 /// The wire refusal of an engine store refusal of `(writer, seq)`.
-fn refusal_to_wire(refusal: StoreRefusal, writer: WriterId, seq: Seq) -> SyncRefusal {
+/// The wire refusal of a pushed operation. A fork inside the operations the hub compacted
+/// cannot be re-sealed against bodies the hub dropped, so the peer is told to bootstrap.
+pub(crate) fn refusal_to_wire(
+    refusal: StoreRefusal,
+    writer: WriterId,
+    seq: Seq,
+    compacted: &VersionVector,
+) -> SyncRefusal {
     let (code, seq) = match refusal {
+        StoreRefusal::Fork { seq } if compacted.covers(&writer, seq) => {
+            (SyncRefusalCode::BootstrapRequired, seq)
+        }
         StoreRefusal::Fork { seq } => (SyncRefusalCode::Fork, seq),
         StoreRefusal::Gap { expected } => (SyncRefusalCode::Gap, expected),
         StoreRefusal::Revoked => (SyncRefusalCode::Revoked, seq),

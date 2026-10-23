@@ -36,6 +36,7 @@ function validStatus(): Record<string, unknown> {
     conflicts: [{ table: "quick_notes", count: 3 }],
     recovery: [{ table: "quick_notes", count: 1 }],
     clockAheadDevices: [{ deviceId: "device-b", deviceLabel: "Laptop", ownDevice: false }],
+    uncountedDevices: [{ device: { deviceId: "device-c", deviceLabel: "Old phone", ownDevice: false }, standing: "dormant" }],
     connection: { network: "lan", address: "192.168.1.20:43821" },
     degraded: ["localNetworkDenied"],
   };
@@ -56,6 +57,7 @@ describe("sync API boundary", () => {
       conflicts: [{ table: "quick_notes", count: 3 }],
       recovery: [{ table: "quick_notes", count: 1 }],
       clockAheadDevices: [{ deviceId: "device-b", deviceLabel: "Laptop", ownDevice: false }],
+      uncountedDevices: [{ device: { deviceId: "device-c", deviceLabel: "Old phone", ownDevice: false }, standing: "dormant" }],
       connection: { network: "lan", address: "192.168.1.20:43821" },
       degraded: ["localNetworkDenied"],
     });
@@ -67,6 +69,19 @@ describe("sync API boundary", () => {
 
   it("maps a known error code", () => {
     expect(mapSyncStatus({ ...validStatus(), lastErrorCode: "writerLimit" }).lastErrorCode).toBe("writerLimit");
+    expect(mapSyncStatus({ ...validStatus(), lastErrorCode: "bootstrapRequired" }).lastErrorCode).toBe("bootstrapRequired");
+  });
+
+  it("maps every device standing and rejects malformed uncounted devices", () => {
+    const device = { deviceId: "device-c", deviceLabel: null, ownDevice: false };
+    const status = mapSyncStatus({
+      ...validStatus(),
+      uncountedDevices: [{ device, standing: "dormant" }, { device, standing: "relinkRequired" }],
+    });
+    expect(status.uncountedDevices.map((entry) => entry.standing)).toEqual(["dormant", "relinkRequired"]);
+    expect(() => mapSyncStatus({ ...validStatus(), uncountedDevices: [{ device, standing: "counted" }] })).toThrow();
+    expect(() => mapSyncStatus({ ...validStatus(), uncountedDevices: [{ standing: "dormant" }] })).toThrow();
+    expect(() => mapSyncStatus({ ...validStatus(), uncountedDevices: undefined })).toThrow();
   });
 
   it("maps an overlay connection and every degraded reason", () => {

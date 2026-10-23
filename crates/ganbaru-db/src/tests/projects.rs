@@ -3,6 +3,7 @@ use crate::run_migrations;
 
 const ICON_FILE: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.png";
 const BEFORE_ORDER_KEYS: i64 = 20261022191859;
+const BEFORE_FOLDER_TRIGGERS: i64 = 20261022234248;
 
 #[test]
 fn schema_creates_project_custom_emojis() {
@@ -642,4 +643,102 @@ async fn insert_legacy_project_with_task(pool: &sqlx::SqlitePool) {
     .execute(pool)
     .await
     .unwrap();
+}
+
+async fn chat_row_count(pool: &sqlx::SqlitePool) -> i64 {
+    sqlx::query_scalar(
+        "SELECT (SELECT count(*) FROM chat_channels)
+              + (SELECT count(*) FROM chat_execution_environments)",
+    )
+    .fetch_one(pool)
+    .await
+    .unwrap()
+}
+
+async fn primary_row(pool: &sqlx::SqlitePool, project_id: &str) -> Option<(String, i64, String)> {
+    sqlx::query_as(
+        "SELECT working_folder_id, revision, created_at
+         FROM project_primary_working_folders WHERE project_id = ?",
+    )
+    .bind(project_id)
+    .fetch_optional(pool)
+    .await
+    .unwrap()
+}
+
+#[test]
+fn projects_folder_triggers_migration_keeps_primary_rows_and_stops_creating_chat_rows() {
+    super::block_on(async {
+        let pool = memory_pool_migrated_through(BEFORE_FOLDER_TRIGGERS).await;
+        sqlx::raw_sql(
+            "INSERT INTO project_groups (id, name, order_key) VALUES ('group-folders', 'Folders', 'a0');
+             INSERT INTO projects (id, group_id, name, order_key)
+             VALUES ('project-folders', 'group-folders', 'Folders', 'a0');
+             INSERT INTO project_working_folders
+                 (id, project_id, display_name, kind, managed_relative_path)
+             VALUES ('working-folder:project-folders', 'project-folders', 'Folders', 'managed',
+                     'projects/project-folders');",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let before = primary_row(&pool, "project-folders").await;
+        assert!(before.is_some());
+
+        run_migrations(&pool).await.unwrap();
+
+        let triggers: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM sqlite_master WHERE type = 'trigger' AND name IN (
+                'chat_channels_create_project_general',
+                'project_working_folders_create_chat_environment',
+                'project_primary_working_folder_prevent_archive',
+                'project_primary_working_folder_active_insert',
+                'project_primary_working_folder_active_update'
+             )",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(triggers, 0);
+        let parents: Vec<String> = sqlx::query_scalar(
+            "SELECT DISTINCT \"table\" FROM pragma_foreign_key_list('project_primary_working_folders')",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(parents, vec!["projects".to_string()]);
+        assert_eq!(primary_row(&pool, "project-folders").await, before);
+
+        let chat_rows_before = chat_row_count(&pool).await;
+        sqlx::raw_sql(
+            "INSERT INTO projects (id, group_id, name, order_key)
+             VALUES ('project-replicated', 'group-folders', 'Replicated', 'a1');
+             INSERT INTO project_primary_working_folders
+                 (project_id, working_folder_id, created_at, updated_at)
+             VALUES ('project-replicated', 'working-folder:not-yet-arrived',
+                     '2026-10-23T00:00:00.000Z', '2026-10-23T00:00:00.000Z');
+             INSERT INTO project_working_folders
+                 (id, project_id, display_name, kind, managed_relative_path)
+             VALUES ('working-folder:project-replicated', 'project-replicated', 'Replicated',
+                     'managed', 'projects/project-replicated');
+             INSERT INTO project_working_folders (id, project_id, display_name, kind)
+             VALUES ('working-folder:external', 'project-folders', 'External', 'external');
+             UPDATE project_primary_working_folders
+             SET working_folder_id = 'working-folder:external'
+             WHERE project_id = 'project-folders';
+             UPDATE project_working_folders
+             SET archived_at = '2026-10-23T00:00:00.000Z'
+             WHERE id = 'working-folder:external';",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        assert_eq!(chat_row_count(&pool).await, chat_rows_before);
+
+        sqlx::query("DELETE FROM projects WHERE id = 'project-replicated'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert_eq!(primary_row(&pool, "project-replicated").await, None);
+    });
 }

@@ -17,6 +17,7 @@ pub mod driver_operations;
 pub mod git;
 #[cfg(feature = "native-runtime")]
 pub mod ingestion;
+pub mod project_defaults;
 #[cfg(feature = "native-runtime")]
 pub mod repository;
 #[cfg(feature = "native-runtime")]

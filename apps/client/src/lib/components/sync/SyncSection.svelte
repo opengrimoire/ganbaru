@@ -18,6 +18,7 @@
     syncRecoveryTotal,
     syncRoleLabel,
     syncStateLabel,
+    syncUncountedDeviceLines,
   } from "$lib/sync/status";
   import { syncPresentations } from "$lib/sync/presentations";
   import { openMobileBackgroundExecutionSettings } from "$lib/scheduling/mobile-background-execution";
@@ -46,6 +47,7 @@
   const status = $derived(sync.status);
   const held = $derived(syncHeldLines(t, status));
   const clockAhead = $derived(syncClockAheadLines(t, status));
+  const uncountedDevices = $derived(syncUncountedDeviceLines(t, status));
   const conflictLines = $derived(syncConflictLines(t, syncPresentations, status));
   const recoveryTotal = $derived(syncRecoveryTotal(status));
   const description = $derived(syncDescription(t, localization.locale, syncPresentations));
@@ -135,6 +137,8 @@
       {/if}
       {#if status.state === "error" && status.lastErrorCode === "writerLimit"}
         <Notice message={t("sync.writerLimit")} />
+      {:else if status.state === "error" && status.lastErrorCode === "bootstrapRequired"}
+        <Notice tone="warning" role="status" copy={false} message={t("sync.bootstrapRequired")} />
       {:else if status.state === "error" && status.lastError}
         <Notice message={t("sync.errorDetail", status.lastError)} />
       {/if}
@@ -153,6 +157,9 @@
         {/if}
       {/each}
       {#each clockAhead as line (line)}<Notice message={line} />{/each}
+      {#each uncountedDevices as entry (entry.deviceId)}
+        <Notice tone="warning" role="status" copy={false} message={entry.line} />
+      {/each}
       {#each conflictLines as entry (entry.table)}<div class="text-foreground">{entry.line}</div>{/each}
     </div>
 

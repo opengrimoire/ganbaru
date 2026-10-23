@@ -29,6 +29,8 @@ mod common;
 mod context;
 #[cfg(desktop)]
 mod dispatch;
+#[cfg(desktop)]
+mod primary_folder;
 mod reads;
 mod scheduling;
 mod teammate_lifecycle;
@@ -228,30 +230,8 @@ pub async fn chat_read_project_primary_working_folder(
     db_url: String,
     project_id: String,
 ) -> ChatResult<ChatProjectPrimaryWorkingFolderRead> {
-    let row = sqlx::query(
-        "SELECT project_id, working_folder_id, revision
-         FROM project_primary_working_folders WHERE project_id = ?",
-    )
-    .bind(&project_id)
-    .fetch_optional(&chat_pool(app, db_url).await?)
-    .await
-    .map_err(persistence_error)?
-    .ok_or_else(|| {
-        ChatError::new(
-            ChatErrorCode::NotFound,
-            "Primary working folder was not found",
-            true,
-        )
-    })?;
-    Ok(ChatProjectPrimaryWorkingFolderRead {
-        project_id: row.try_get("project_id").map_err(persistence_error)?,
-        working_folder_id: ProjectWorkingFolderId::new(
-            row.try_get::<String, _>("working_folder_id")
-                .map_err(persistence_error)?,
-        )
-        .map_err(identifier_error)?,
-        revision: u64_value(row.try_get("revision").map_err(persistence_error)?)?,
-    })
+    let pool = chat_pool(app, db_url).await?;
+    primary_folder::read_effective_primary_working_folder(&pool, &project_id).await
 }
 
 #[tauri::command]
@@ -263,28 +243,15 @@ pub async fn chat_set_project_primary_working_folder(
     working_folder_id: ProjectWorkingFolderId,
     expected_revision: u64,
 ) -> ChatResult<ChatProjectPrimaryWorkingFolderRead> {
-    let pool = chat_pool(app.clone(), db_url.clone()).await?;
-    let now = now_timestamp()?;
-    let updated = sqlx::query(
-        "UPDATE project_primary_working_folders
-         SET working_folder_id = ?, revision = revision + 1, updated_at = ?
-         WHERE project_id = ? AND revision = ?",
+    let pool = chat_pool(app, db_url).await?;
+    primary_folder::set_primary_working_folder(
+        &pool,
+        &project_id,
+        &working_folder_id,
+        expected_revision,
+        &now_timestamp()?,
     )
-    .bind(working_folder_id.as_str())
-    .bind(now.as_str())
-    .bind(&project_id)
-    .bind(i64_value(expected_revision)?)
-    .execute(&pool)
     .await
-    .map_err(persistence_error)?;
-    if updated.rows_affected() != 1 {
-        return Err(ChatError::new(
-            ChatErrorCode::StaleRevision,
-            "The primary working folder changed before the update",
-            true,
-        ));
-    }
-    chat_read_project_primary_working_folder(app, db_url, project_id).await
 }
 
 #[tauri::command]

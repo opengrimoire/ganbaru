@@ -11,6 +11,9 @@ use super::{
     MAX_CHANNEL_CONTEXT_MESSAGES, MAX_THREAD_CONTEXT_REPLIES, i64_value, identifier_error,
     persistence_error, u64_value,
 };
+use ganbaru_chat::project_defaults::{
+    current_folder_environment_id, ensure_working_folder_chat_defaults,
+};
 use ganbaru_chat_contracts::models::*;
 use sqlx::{Row, Sqlite, Transaction};
 
@@ -241,6 +244,7 @@ pub(super) async fn freeze_context_package(
             grants: &grants,
             referenced_folder_ids: &referenced_folder_ids,
             referenced_execution_environments: &referenced_execution_environments,
+            now,
         },
     )
     .await?;
@@ -498,6 +502,7 @@ struct ResolveExecutionTargetInput<'a> {
     grants: &'a [FolderGrant],
     referenced_folder_ids: &'a [String],
     referenced_execution_environments: &'a [ReferencedExecutionEnvironment],
+    now: &'a UtcTimestamp,
 }
 
 struct ChannelDisclosureInput<'a> {
@@ -793,6 +798,7 @@ async fn resolve_execution_target(
         grants,
         referenced_folder_ids,
         referenced_execution_environments,
+        now,
     } = input;
     let referenced_execution_environment =
         unique_referenced_execution_environment(referenced_execution_environments)?;
@@ -807,6 +813,7 @@ async fn resolve_execution_target(
                     transaction,
                     working_folder_id.as_str(),
                     execution_environment_id.as_str(),
+                    now,
                 )
                 .await?;
                 Ok(ResolvedExecutionTarget {
@@ -859,6 +866,7 @@ async fn resolve_execution_target(
                 transaction,
                 &environment.working_folder_id,
                 &environment.execution_environment_id,
+                now,
             )
             .await?;
             return Ok(ResolvedExecutionTarget {
@@ -889,9 +897,14 @@ async fn resolve_execution_target(
             .map(|grant| grant.working_folder_id.clone())
     };
     if let Some(working_folder_id) = selected {
-        let execution_environment_id = format!("current-folder:{working_folder_id}");
-        verify_folder_environment(transaction, &working_folder_id, &execution_environment_id)
-            .await?;
+        let execution_environment_id = current_folder_environment_id(&working_folder_id);
+        verify_folder_environment(
+            transaction,
+            &working_folder_id,
+            &execution_environment_id,
+            now,
+        )
+        .await?;
         return Ok(ResolvedExecutionTarget {
             execution_environment_id: Some(execution_environment_id),
             working_folder_id: Some(working_folder_id),
@@ -964,11 +977,17 @@ async fn verify_explicit_scratch(
     }
 }
 
+/// Verifies that `execution_environment_id` is an available environment of the working folder,
+/// first creating the folder's Chat defaults when the id is its current-folder environment.
 async fn verify_folder_environment(
     transaction: &mut Transaction<'_, Sqlite>,
     working_folder_id: &str,
     execution_environment_id: &str,
+    now: &UtcTimestamp,
 ) -> ChatResult<()> {
+    if execution_environment_id == current_folder_environment_id(working_folder_id) {
+        ensure_working_folder_chat_defaults(transaction, working_folder_id, now).await?;
+    }
     let valid: bool = sqlx::query_scalar(
         "SELECT EXISTS(
            SELECT 1 FROM chat_execution_environments

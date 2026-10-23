@@ -113,6 +113,8 @@ pub async fn set_workspace_repository(
     require_updated(pool, id, result.rows_affected()).await
 }
 
+/// Archives or restores a working folder. The stored primary folder of its project cannot be
+/// archived; another folder must be promoted first.
 pub async fn set_workspace_archived(
     pool: &SqlitePool,
     id: &ProjectWorkingFolderId,
@@ -120,6 +122,11 @@ pub async fn set_workspace_archived(
     expected_revision: u64,
     now: &UtcTimestamp,
 ) -> ChatResult<ProjectWorkingFolder> {
+    if archived && is_stored_primary(pool, id).await? {
+        return Err(primary_folder_error(
+            "Promote another working folder before archiving the primary folder",
+        ));
+    }
     let result = sqlx::query(
         "UPDATE project_working_folders SET archived_at = ?, revision = revision + 1, updated_at = ?
          WHERE id = ? AND revision = ?",
@@ -134,10 +141,24 @@ pub async fn set_workspace_archived(
     require_updated(pool, id, result.rows_affected()).await
 }
 
+/// Removes an external working folder. Managed folders and the stored primary folder of the
+/// project cannot be removed.
 pub async fn remove_external_working_folder(
     pool: &SqlitePool,
     id: &ProjectWorkingFolderId,
 ) -> ChatResult<()> {
+    let folder = read_workspace(pool, id).await?;
+    if folder.kind == WorkingFolderKind::Managed {
+        return Err(ChatError::validation(
+            "workingFolderId",
+            "Managed project working folders cannot be removed",
+        ));
+    }
+    if is_stored_primary(pool, id).await? {
+        return Err(primary_folder_error(
+            "Promote another working folder before removing the primary folder",
+        ));
+    }
     let result =
         sqlx::query("DELETE FROM project_working_folders WHERE id = ? AND kind = 'external'")
             .bind(id.as_str())
@@ -145,17 +166,31 @@ pub async fn remove_external_working_folder(
             .await
             .map_err(persistence_error)?;
     if result.rows_affected() == 1 {
-        return Ok(());
-    }
-    let folder = read_workspace(pool, id).await?;
-    Err(if folder.kind == WorkingFolderKind::Managed {
-        ChatError::validation(
-            "workingFolderId",
-            "Managed project working folders cannot be removed",
-        )
+        Ok(())
     } else {
-        not_found_error()
-    })
+        Err(not_found_error())
+    }
+}
+
+/// Returns whether `id` is the stored primary folder of its own project.
+async fn is_stored_primary(pool: &SqlitePool, id: &ProjectWorkingFolderId) -> ChatResult<bool> {
+    sqlx::query_scalar(
+        "SELECT EXISTS(
+           SELECT 1 FROM project_primary_working_folders primary_folder
+           JOIN project_working_folders folder
+             ON folder.id = primary_folder.working_folder_id
+            AND folder.project_id = primary_folder.project_id
+           WHERE folder.id = ?
+         )",
+    )
+    .bind(id.as_str())
+    .fetch_one(pool)
+    .await
+    .map_err(persistence_error)
+}
+
+fn primary_folder_error(message: &str) -> ChatError {
+    ChatError::new(ChatErrorCode::Conflict, message, true)
 }
 
 async fn require_updated(

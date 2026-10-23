@@ -8,7 +8,9 @@ use crate::assets::{
 use crate::client::{
     ClientSession, Exchange, Exchanged, MAX_EXCHANGE_BYTES, PeerIds, SyncTransport, wait,
 };
-use crate::hub::{HubContact, HubContactSource, HubStability, HubVault, OpenHubVault, SyncHub};
+use crate::hub::{
+    BOOTSTRAP_REQUIRED, HubContact, HubContactSource, HubStability, HubVault, OpenHubVault, SyncHub,
+};
 use crate::recovery::{
     RecoveredRow, RecoveryAction, RecoveryChoice, RecoveryRestorers, RestoreFuture,
 };
@@ -16,7 +18,8 @@ use crate::wire::{asset_to_wire, bytes_to_wire};
 use crate::writer::{ActiveWriter, SuccessorPlan, create_writer};
 use ganbaru_db::DatabasePoolRegistry;
 use ganbaru_handoff::protocol::{
-    ControlMessage, PROTOCOL_VERSION, SYNC_ASSET_CHUNK_BYTES, SyncAsset, SyncRefusalCode,
+    ControlMessage, PROTOCOL_VERSION, SYNC_ASSET_CHUNK_BYTES, SYNC_PAGE_BYTES, SyncAsset,
+    SyncRefusalCode,
 };
 use ganbaru_quick_notes::images;
 use ganbaru_sync::assets::AssetRef;
@@ -139,6 +142,18 @@ impl Replica {
             .stored_vector(&mut *acquire(&self.pool).await, &self.ctx)
             .await
             .expect("stored vector")
+    }
+
+    /// Compacts every applied operation below each writer's head, and returns how many bodies
+    /// it dropped.
+    async fn compact(&self) -> usize {
+        let limit = self.stored().await;
+        let mut conn = acquire(&self.pool).await;
+        Engine::vault()
+            .compact(&mut conn, &self.ctx, &limit)
+            .await
+            .expect("compact")
+            .compacted
     }
 
     async fn has_note(&self, id: &str) -> bool {
@@ -574,6 +589,135 @@ fn sync_states_report_the_published_stability_within_what_the_hub_stores() {
         hub_replica.close().await;
         phone.close().await;
     });
+}
+
+#[test]
+fn a_matching_probe_confirms_the_head_of_the_active_writer() {
+    block_on(async {
+        let hub_replica = Replica::new("hub-confirm", HUB_DEVICE).await;
+        let mut phone = Replica::new("phone-confirm", PHONE_DEVICE).await;
+        let (transport, _changes) = hub(&hub_replica);
+        let sealed = phone.seal_note("note-phone").await;
+        let first = done(
+            phone
+                .exchange(&transport, &phone_ids())
+                .await
+                .expect("exchange"),
+        );
+        assert_eq!(first.confirmed, None, "the hub held nothing at the probe");
+        let second = done(
+            phone
+                .exchange(&transport, &phone_ids())
+                .await
+                .expect("exchange"),
+        );
+        assert_eq!(second.confirmed, Some((phone.writer.id(), sealed)));
+        hub_replica.close().await;
+        phone.close().await;
+    });
+}
+
+#[test]
+fn a_device_behind_compacted_operations_bootstraps_and_keeps_pushing() {
+    block_on(async {
+        let mut hub_replica = Replica::new("hub-compacted", HUB_DEVICE).await;
+        let mut phone = Replica::new("phone-compacted", PHONE_DEVICE).await;
+        let mut tablet = Replica::new("tablet-compacted", TABLET_DEVICE).await;
+        let (transport, _changes) = hub(&hub_replica);
+        hub_replica.seal_note("note-1").await;
+        hub_replica.seal_note("note-2").await;
+        done(
+            tablet
+                .exchange(&transport, &tablet_ids())
+                .await
+                .expect("exchange"),
+        );
+        hub_replica.seal_note("note-3").await;
+        assert!(hub_replica.compact().await > 0);
+
+        // The tablet holds every compacted operation, so it pulls the rest as before.
+        let caught_up = done(
+            tablet
+                .exchange(&transport, &tablet_ids())
+                .await
+                .expect("exchange"),
+        );
+        assert!(!caught_up.bootstrap_required);
+        assert_eq!(caught_up.problem, None);
+        assert_eq!(tablet.stored().await, hub_replica.stored().await);
+
+        // The phone lacks them: it still pushes its own work but pulls nothing.
+        phone.seal_note("note-phone").await;
+        let behind = done(
+            phone
+                .exchange(&transport, &phone_ids())
+                .await
+                .expect("exchange"),
+        );
+        assert!(behind.bootstrap_required);
+        assert!(behind.pushed > 0);
+        assert_eq!(behind.pulled, 0);
+        hub_replica.apply().await;
+        assert!(hub_replica.has_note("note-phone").await);
+        tablet.apply().await;
+
+        // A pull that ignores the signal is refused with the bootstrap code.
+        let pull = ControlMessage::SyncPull {
+            protocol_version: PROTOCOL_VERSION,
+            vault_id: VAULT_ID.to_string(),
+            device_id: PHONE_DEVICE.to_string(),
+            known: crate::wire::vector_to_wire(&phone.stored().await),
+            max_bytes: u32::try_from(SYNC_PAGE_BYTES).expect("page size fits"),
+        };
+        match transport.request(pull).await.expect("pull answer") {
+            ControlMessage::Error {
+                code, retryable, ..
+            } => {
+                assert_eq!(code, BOOTSTRAP_REQUIRED);
+                assert!(!retryable);
+            }
+            other => panic!("expected a bootstrap refusal, got {other:?}"),
+        }
+
+        // The hub's wait answers carry the same signal for the phone only.
+        for (ids, known, expected) in [
+            (phone_ids(), phone.stored().await, true),
+            (tablet_ids(), tablet.stored().await, false),
+        ] {
+            let request = ControlMessage::SyncWait {
+                protocol_version: PROTOCOL_VERSION,
+                vault_id: VAULT_ID.to_string(),
+                device_id: ids.device_id.clone(),
+                known: crate::wire::vector_to_wire(&known),
+            };
+            match transport.request(request).await.expect("wait answer") {
+                ControlMessage::SyncState {
+                    bootstrap_required, ..
+                } => assert_eq!(bootstrap_required, expected, "{}", ids.device_id),
+                other => panic!("expected a sync state, got {other:?}"),
+            }
+        }
+        hub_replica.close().await;
+        phone.close().await;
+        tablet.close().await;
+    });
+}
+
+#[test]
+fn a_fork_inside_compacted_operations_is_refused_as_a_bootstrap() {
+    let writer = WriterId::from_bytes([4; ganbaru_sync_contracts::ids::ID_BYTES]);
+    let compacted: VersionVector = [(writer, 5)].into_iter().collect();
+    let refusal = |seq| {
+        crate::hub::refusal_to_wire(
+            ganbaru_sync::StoreRefusal::Fork { seq },
+            writer,
+            seq,
+            &compacted,
+        )
+        .code
+    };
+    assert_eq!(refusal(5), SyncRefusalCode::BootstrapRequired);
+    assert_eq!(refusal(6), SyncRefusalCode::Fork);
 }
 
 #[test]

@@ -8,7 +8,9 @@ pub use managed_folder::{
     validate_managed_folder_name,
 };
 
-const MAX_IDENTIFIER_BYTES: usize = 1_024;
+/// Folder ids become sync row keys, so they stay short. Managed folder ids are
+/// `working-folder:{project id}` and client folder ids are `working-folder:{uuid}`.
+const MAX_IDENTIFIER_BYTES: usize = 64;
 
 /// Stable identifier for a project working folder.
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -228,6 +230,10 @@ mod tests {
             "workspace-1"
         );
         assert!(ProjectWorkingFolderId::new("workspace\n1").is_err());
+        let client_id = format!("working-folder:{}", "0".repeat(36));
+        assert!(ProjectWorkingFolderId::new(client_id).is_ok());
+        assert!(ProjectWorkingFolderId::new("w".repeat(MAX_IDENTIFIER_BYTES)).is_ok());
+        assert!(ProjectWorkingFolderId::new("w".repeat(MAX_IDENTIFIER_BYTES + 1)).is_err());
         assert!(UtcTimestamp::new("2026-07-20T12:00:00-06:00").is_err());
         assert_eq!(
             UtcTimestamp::new("2026-07-20T18:00:00Z").unwrap().as_str(),

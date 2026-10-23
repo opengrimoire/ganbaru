@@ -43,6 +43,12 @@ export const sync = {
   clockAhead: (device: string) =>
     `El reloj de ${device} va adelantado respecto a este dispositivo. Sus ediciones ganan los cambios en conflicto hasta que los relojes coincidan, así que revisa su fecha y hora.`,
   clockAheadOwn: "Algunas ediciones de este dispositivo se hicieron con su reloj adelantado. Ganan los cambios en conflicto hasta que pase esa hora.",
+  bootstrapRequired: "Este dispositivo estuvo fuera demasiado tiempo para ponerse al día. Tus cambios aquí siguen llegando a tu dispositivo principal, pero para volver a recibir cambios, vuelve a vincular este dispositivo o transfiérele la bóveda.",
+  uncounted: {
+    dormant: (device: string) =>
+      `La sincronización ya no espera a ${device}, que lleva mucho tiempo sin sincronizarse. Cuando vuelva, vincúlalo de nuevo o transfiérele la bóveda.`,
+    relinkRequired: (device: string) => `Vuelve a vincular ${device} para que pueda sincronizarse.`,
+  },
   connection: {
     lan: (address: string) => `Conectado por la red local en ${address}`,
     overlay: (address: string) => `Conectado por la red superpuesta en ${address}`,

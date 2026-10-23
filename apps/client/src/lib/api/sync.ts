@@ -16,8 +16,21 @@ export const SYNC_ROLES = ["hub", "client"] as const;
 export type SyncRole = (typeof SYNC_ROLES)[number];
 
 /** Sync problems the interface explains in its own words. */
-export const SYNC_ERROR_CODES = ["writerLimit"] as const;
+export const SYNC_ERROR_CODES = ["writerLimit", "bootstrapRequired"] as const;
 export type SyncErrorCode = (typeof SYNC_ERROR_CODES)[number];
+
+/**
+ * Why the coordinator does not count a linked device toward stability: it stored nothing for
+ * long enough, or its link record has no valid time and it must be linked again.
+ */
+export const SYNC_DEVICE_STANDINGS = ["dormant", "relinkRequired"] as const;
+export type SyncDeviceStanding = (typeof SYNC_DEVICE_STANDINGS)[number];
+
+/** A linked device the coordinator does not count, with the reason. */
+export interface SyncUncountedDevice {
+  device: SyncDeviceRef;
+  standing: SyncDeviceStanding;
+}
 
 /** The kind of network a linked device reached its coordinator over. */
 export const SYNC_CONNECTION_NETWORKS = ["lan", "overlay"] as const;
@@ -72,6 +85,8 @@ export interface SyncStatusView {
   recovery: SyncTableCount[];
   /** Devices whose edits carry clocks far ahead of this device, so they win concurrent edits. */
   clockAheadDevices: SyncDeviceRef[];
+  /** On the coordinator, linked devices it does not count toward stability, in device id order. */
+  uncountedDevices: SyncUncountedDevice[];
   /** Kept after a failed dial, so it describes the current link only while idle or syncing. */
   connection: SyncConnectionView | null;
   /** Why connectivity is degraded, without repeats. */
@@ -116,6 +131,7 @@ export const OFF_SYNC_STATUS: SyncStatusView = {
   conflicts: [],
   recovery: [],
   clockAheadDevices: [],
+  uncountedDevices: [],
   connection: null,
   degraded: [],
 };
@@ -151,6 +167,14 @@ function readTableCount(value: unknown, label: string): SyncTableCount {
   };
 }
 
+function readUncountedDevice(value: unknown, label: string): SyncUncountedDevice {
+  const row = readRecord(value, label);
+  return {
+    device: mapSyncDeviceRef(row.device, `${label}.device`),
+    standing: readEnum(row.standing, SYNC_DEVICE_STANDINGS, `${label}.standing`),
+  };
+}
+
 /** Validates a sync status from the native side. */
 export function mapSyncStatus(value: unknown): SyncStatusView {
   const row = readRecord(value, "sync status");
@@ -169,6 +193,7 @@ export function mapSyncStatus(value: unknown): SyncStatusView {
     conflicts: readArray(row.conflicts, "sync status.conflicts", readTableCount),
     recovery: readArray(row.recovery, "sync status.recovery", readTableCount),
     clockAheadDevices: readArray(row.clockAheadDevices, "sync status.clockAheadDevices", mapSyncDeviceRef),
+    uncountedDevices: readArray(row.uncountedDevices, "sync status.uncountedDevices", readUncountedDevice),
     connection: readNullable(row.connection, "sync status.connection", readConnection),
     degraded: readDegradedReasons(row.degraded, "sync status.degraded"),
   };

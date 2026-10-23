@@ -4,8 +4,10 @@
 //! A device acknowledges the context of the newest stored operation with a known context of
 //! its newest active writer, with that writer's own entry raised to the operation. A device
 //! without an active writer, or whose writer has no operation with a known context,
-//! acknowledges nothing. Retired, revoked, and forked writers never acknowledge, and a dormant
-//! device is not counted. Nothing here is stored: the coordinator recomputes it every pass.
+//! acknowledges nothing. Retired, revoked, and forked writers never acknowledge. A dormant
+//! device is not counted, and neither is a device whose link time is unknown: it must be linked
+//! again before it holds stability. Nothing here is stored: the coordinator recomputes it every
+//! pass.
 
 use ganbaru_sync_contracts::{Seq, VersionVector, WriterId};
 use sqlx::{Connection, Row, SqliteConnection};
@@ -18,14 +20,27 @@ use crate::{Engine, SpaceContext};
 /// it, so a device that went away cannot hold stability back forever.
 pub const DORMANCY_MS: u64 = 90 * 24 * 60 * 60 * 1000;
 
-/// A linked device the coordinator counts unless it is dormant.
+/// A linked device the coordinator counts unless it is dormant or its link time is unknown.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CountedDevice {
     /// Device id its writers' certificates name.
     pub device_id: String,
-    /// When the device joined: its link time, or when the coordinator first saw it when the
-    /// link time is unknown. Dormancy counts from here while the device has no operation.
-    pub since_ms: u64,
+    /// When the device was linked, or `None` when the link record has no valid time. Dormancy
+    /// counts from here while the device has no operation.
+    pub linked_at_ms: Option<u64>,
+}
+
+/// Whether the coordinator counts a linked device toward stability.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeviceStanding {
+    /// The device is counted.
+    Counted,
+    /// The device stored nothing for longer than [`DORMANCY_MS`] and is not counted until it
+    /// returns.
+    Dormant,
+    /// The link record has no valid time, which is unsupported state: the device is neither
+    /// counted nor dormant until it is linked again.
+    RelinkRequired,
 }
 
 /// What one counted device acknowledges.
@@ -37,8 +52,8 @@ pub struct DeviceAcknowledgement {
     pub acknowledged: VersionVector,
     /// When the newest operation of any of the device's writers was stored here.
     pub last_stored_ms: Option<u64>,
-    /// Whether the device is dormant and therefore not counted.
-    pub dormant: bool,
+    /// Whether the device is counted.
+    pub standing: DeviceStanding,
 }
 
 /// Stability of the space at one moment.
@@ -52,7 +67,7 @@ pub struct Stability {
 
 impl Engine {
     /// Computes stability on the coordinator: the meet of its applied vector and what every
-    /// counted device that is not dormant acknowledged.
+    /// counted device acknowledged.
     pub async fn stability(
         &self,
         conn: &mut SqliteConnection,
@@ -66,7 +81,7 @@ impl Engine {
         let mut acknowledgements = Vec::with_capacity(devices.len());
         for device in devices {
             let acknowledgement = device_acknowledgement(&mut tx, ctx, device, now_ms).await?;
-            if !acknowledgement.dormant {
+            if acknowledgement.standing == DeviceStanding::Counted {
                 stable.meet(&acknowledgement.acknowledged);
             }
             acknowledgements.push(acknowledgement);
@@ -96,8 +111,17 @@ async fn device_acknowledgement(
     let last_stored_ms = last_stored
         .map(|at| stored_u64(at, "operation storage time"))
         .transpose()?;
-    let active_since = last_stored_ms.unwrap_or(device.since_ms);
-    let dormant = now_ms.saturating_sub(active_since) > DORMANCY_MS;
+    let standing = match device.linked_at_ms {
+        None => DeviceStanding::RelinkRequired,
+        Some(linked_at_ms) => {
+            let active_since = last_stored_ms.unwrap_or(linked_at_ms);
+            if now_ms.saturating_sub(active_since) > DORMANCY_MS {
+                DeviceStanding::Dormant
+            } else {
+                DeviceStanding::Counted
+            }
+        }
+    };
     let acknowledged = match newest_active_writer(conn, ctx, &device.device_id).await? {
         Some(writer) => writer_acknowledgement(conn, ctx, writer).await?,
         None => VersionVector::new(),
@@ -106,7 +130,7 @@ async fn device_acknowledgement(
         device_id: device.device_id.clone(),
         acknowledged,
         last_stored_ms,
-        dormant,
+        standing,
     })
 }
 

@@ -14,7 +14,7 @@ The library stores a stable root plus relative location and file metadata to det
 
 The folder chosen for a root is device-local state, not vault data. A source whose root has no folder on this device, or whose folder is gone, shows that state with a choose-folder action instead of an empty list, and Refresh offers the same action rather than skipping it silently. A root that was never linked on this device is bound directly and scanned; a moved folder goes through relink, which also binds the replacement folder. Folders, replacement files, and background audio files come from the native picker on this device; a typed or pasted local file plays after one native confirmation.
 
-On linked devices the library, sources, and playlists replicate, while folder bindings and availability stay per device. A root added on another device appears here unbound until this device chooses its folder. When synced changes bring new or changed locations for a root that is bound on this desktop, the app refreshes that root shortly after so availability catches up; on Android availability catches up at the next refresh of that source.
+On linked devices the library, sources, and playlists replicate, while folder bindings and availability stay per device. A root added on another device appears here unbound until this device chooses its folder: Sources and the item inspector show it as Not on this device with a Choose folder action, and its tracks are listed but do not play here. When synced changes bring new or changed locations for a root that is bound on this desktop, the app refreshes that root shortly after so availability catches up; on Android availability catches up at the next refresh of that source.
 
 ## Local sources on Android
 

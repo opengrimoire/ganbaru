@@ -186,6 +186,9 @@ fn classify_operation(engine: &Engine, operation: Operation) -> Classified {
             }
         }
         Content::Genesis(_) | Content::Revoke(_) | Content::Acknowledgement => None,
+        // The engine does not apply the authorization log yet, so it holds these as a format
+        // it cannot act on.
+        Content::Authorization(_) => Some(HoldReason::NewerFormat),
     };
     let dependencies = operation.header.dependencies;
     match reason {

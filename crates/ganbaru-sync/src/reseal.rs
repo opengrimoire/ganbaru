@@ -417,6 +417,9 @@ impl Engine {
                 Content::Genesis(_) => {
                     return Err(corrupt("a genesis follows the start of a chain"));
                 }
+                Content::Authorization(_) => {
+                    return Err(corrupt("an own authorization operation cannot be resealed"));
+                }
             }
             let replacement = report
                 .seal

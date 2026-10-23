@@ -1,3 +1,4 @@
+mod authorization;
 mod acknowledgements;
 mod budgets;
 mod capture;

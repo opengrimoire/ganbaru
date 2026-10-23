@@ -134,3 +134,111 @@ fn compaction_migration_starts_writers_uncompacted_and_adds_the_stable_vector() 
         assert_eq!(stable, 0, "the stable vector goes with its space");
     });
 }
+
+/// Last migration before the sync authorization log.
+const BEFORE_AUTHORIZATION_LOG: i64 = 20261023071334;
+
+#[test]
+fn authorization_log_migration_keeps_writers_and_operations_and_constrains_devices() {
+    super::block_on(async {
+        let pool = memory_pool_migrated_through(BEFORE_AUTHORIZATION_LOG).await;
+        sqlx::raw_sql(
+            "INSERT INTO sync_spaces (space_id, vault_id, created_at_ms)
+             VALUES (zeroblob(16), 'vault-a', 1);
+             INSERT INTO sync_writers
+                 (space_id, writer_id, public_key, device_id, certificate, state, stored_seq,
+                  applied_seq, head_hash, head_clock, created_at_ms)
+             VALUES (zeroblob(16), zeroblob(16), zeroblob(32), 'device-a', x'00', 'active', 2,
+                     2, zeroblob(32), 9, 1);
+             INSERT INTO sync_ops
+                 (space_id, writer_id, seq, kind, hash, clock, context, envelope, state,
+                  stored_at_ms)
+             VALUES (zeroblob(16), zeroblob(16), 1, 1, zeroblob(32), 1, x'', x'01', 'applied', 1),
+                    (zeroblob(16), zeroblob(16), 2, 4, zeroblob(32), 2, x'', x'02', 'applied', 1);",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        run_migrations(&pool).await.unwrap();
+
+        let ops: Vec<(i64, i64)> =
+            sqlx::query_as("SELECT seq, authorization_revision FROM sync_ops ORDER BY seq")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        assert_eq!(ops, [(1, 0), (2, 0)], "the writer rebuild keeps its operations");
+        sqlx::query("UPDATE sync_writers SET state = 'revoked', cutoff_seq = 0")
+            .execute(&pool)
+            .await
+            .expect("a removed writer the anchor never stored keeps nothing");
+
+        let entry = "INSERT INTO sync_auth_entries
+                (space_id, writer_id, seq, epoch, revision, previous_hash, entry_hash, entry_kind,
+                 proposal_hash, selected)
+             VALUES (zeroblob(16), zeroblob(16), ?, 0, 1, zeroblob(32), zeroblob(32), 1,
+                     zeroblob(32), 1)";
+        sqlx::query(entry).bind(2).execute(&pool).await.unwrap();
+        sqlx::query(entry)
+            .bind(1)
+            .execute(&pool)
+            .await
+            .expect_err("one selected entry per revision");
+        sqlx::query(entry)
+            .bind(3)
+            .execute(&pool)
+            .await
+            .expect_err("an entry names a stored operation");
+
+        let device = "INSERT INTO sync_devices
+                (space_id, device_id, device_key, tls_fingerprint, kind, role, admin_key,
+                 enrolled_revision)
+             VALUES (zeroblob(16), ?, zeroblob(32), zeroblob(32), ?, ?, ?, 0)";
+        let admin_key = Some(vec![0_u8; 32]);
+        sqlx::query(device)
+            .bind("device-a")
+            .bind("desktop")
+            .bind("admin")
+            .bind(&admin_key)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query(device)
+            .bind("device-b")
+            .bind("mobile")
+            .bind("admin")
+            .bind(&admin_key)
+            .execute(&pool)
+            .await
+            .expect_err("only desktops can be admins");
+        sqlx::query(device)
+            .bind("device-c")
+            .bind("desktop")
+            .bind("member")
+            .bind(&admin_key)
+            .execute(&pool)
+            .await
+            .expect_err("only admins have an admin key");
+        sqlx::query(device)
+            .bind("device-d")
+            .bind("desktop")
+            .bind("admin")
+            .bind(None::<Vec<u8>>)
+            .execute(&pool)
+            .await
+            .expect_err("every admin has an admin key");
+
+        sqlx::query("DELETE FROM sync_spaces")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let left: i64 = sqlx::query_scalar(
+            "SELECT (SELECT COUNT(*) FROM sync_ops) + (SELECT COUNT(*) FROM sync_auth_entries)
+                 + (SELECT COUNT(*) FROM sync_devices)",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(left, 0, "the log and its devices go with their space");
+    });
+}

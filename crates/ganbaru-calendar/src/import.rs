@@ -1258,6 +1258,47 @@ mod tests {
     }
 
     #[test]
+    fn every_object_of_one_import_shares_an_import_id_that_differs_between_imports() {
+        crate::test_support::block_on(async {
+            let pool = in_memory_pool().await;
+            let mut tx = pool.begin().await.unwrap();
+            let multiple = CalendarImportPreservation {
+                objects: vec![preserved_object("object-1"), preserved_object("object-2")],
+                ..preservation_payload("first.ics")
+            };
+            let other = CalendarImportPreservation {
+                objects: vec![preserved_object("object-3")],
+                ..preservation_payload("second.ics")
+            };
+            for payload in [&multiple, &other] {
+                replace_preservation(
+                    &mut tx,
+                    "local",
+                    "2026-05-09 10:00:00",
+                    payload,
+                    &PreservationOutcome::default(),
+                )
+                .await
+                .unwrap();
+            }
+            tx.commit().await.unwrap();
+
+            let imports: Vec<String> =
+                sqlx::query_scalar("SELECT import_id FROM icalendar_objects ORDER BY id")
+                    .fetch_all(&pool)
+                    .await
+                    .unwrap();
+            assert_eq!(imports.len(), 3);
+            assert_eq!(imports[0], imports[1], "one import command, one import id");
+            assert_ne!(imports[0], imports[2], "each import command takes a new id");
+            sqlx::query("UPDATE icalendar_objects SET import_id = 'changed'")
+                .execute(&pool)
+                .await
+                .expect_err("an import id never changes");
+        });
+    }
+
+    #[test]
     fn linked_import_rows_reference_preserved_components() {
         crate::test_support::block_on(async {
             let pool = in_memory_pool().await;

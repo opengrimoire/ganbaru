@@ -4,7 +4,7 @@ use super::helpers::{
 use crate::run_migrations;
 
 /// Last migration before Calendar tables replicate.
-const BEFORE_CALENDAR_REPLICATION: i64 = 20261023120329;
+const BEFORE_CALENDAR_REPLICATION: i64 = 20261023162759;
 
 #[test]
 fn schema_creates_normalized_calendar_archive_tables() {

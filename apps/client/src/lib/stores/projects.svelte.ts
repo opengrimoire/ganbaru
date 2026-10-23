@@ -15,7 +15,8 @@ import {
 } from "$lib/projects/snapshot/optional-data";
 import { mergeProjectSnapshot } from "$lib/projects/snapshot/queries";
 import { projectOrderRanks } from "$lib/projects/order";
-import { listenForProjectChanges, publishProjectChanges } from "$lib/projects/window-sync";
+import { listenForProjectChanges, projectsStillLoaded, publishProjectChanges } from "$lib/projects/window-sync";
+import { invalidateProjectTaskReminderSchedule } from "$lib/projects/task-reminder-schedule.svelte";
 import { applyCalendarEventProjectAssignments } from "$lib/projects/calendar-assignments";
 import { configKeyChanged, onConfigChangedElsewhere } from "$lib/vault/config";
 import {
@@ -683,12 +684,14 @@ function listenForOtherWindows(): void {
 }
 
 /**
- * Show what another window committed. Changed projects no pane shows reload when next selected; the shown ones
- * reload quietly once local commands settle, and again if this window commits while they read.
+ * Show what another window committed or sync applied. Changed projects no pane shows reload when next selected; the
+ * shown ones reload quietly once local commands settle, and again if this window commits while they read. Task
+ * reminders reschedule from the changed dates.
  */
 function refreshFromOtherWindow(projectIds: ReadonlySet<string>): Promise<void> {
-  const shown = new Set(shownProjectIds());
-  loadedProjectIds = loadedProjectIds.filter((projectId) => shown.has(projectId) || !projectIds.has(projectId));
+  const shown = new Set(shownProjectIds().filter((projectId): projectId is string => Boolean(projectId)));
+  loadedProjectIds = projectsStillLoaded(loadedProjectIds, shown, projectIds);
+  invalidateProjectTaskReminderSchedule();
   if (otherWindowRefresh) {
     otherWindowRefreshQueued = true;
     return otherWindowRefresh;

@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import type { ProjectMutation, ProjectsSnapshot, ProjectTask, ProjectView } from "$lib/projects/types";
-import { projectMutationChangeKeys, PROJECTS_WORKSPACE_CHANGE_KEY } from "./window-sync";
+import {
+  projectMutationChangeKeys, projectsStillLoaded, PROJECTS_SYNC_CHANGE_KEY, PROJECTS_WORKSPACE_CHANGE_KEY,
+} from "./window-sync";
 
 vi.mock("$lib/windows/vault-change-channel", () => ({
   createVaultChangeChannel: () => ({ publish: vi.fn(), listen: vi.fn() }),
@@ -34,5 +36,21 @@ describe("projectMutationChangeKeys", () => {
 
   it("uses the workspace key when no pane shows a project", () => {
     expect(projectMutationChangeKeys(mutation({}), [null])).toEqual([PROJECTS_WORKSPACE_CHANGE_KEY]);
+  });
+});
+
+describe("projectsStillLoaded", () => {
+  const loaded = ["shown", "changed", "kept"];
+
+  it("drops changed projects that no pane shows", () => {
+    expect(projectsStillLoaded(loaded, new Set(["shown"]), new Set(["shown", "changed"]))).toEqual(["shown", "kept"]);
+  });
+
+  it("keeps every loaded project for a workspace change", () => {
+    expect(projectsStillLoaded(loaded, new Set(), new Set([PROJECTS_WORKSPACE_CHANGE_KEY]))).toEqual(loaded);
+  });
+
+  it("drops every project no pane shows when sync applied Projects rows", () => {
+    expect(projectsStillLoaded(loaded, new Set(["shown"]), new Set([PROJECTS_SYNC_CHANGE_KEY]))).toEqual(["shown"]);
   });
 });

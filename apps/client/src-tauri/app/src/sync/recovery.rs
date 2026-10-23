@@ -83,7 +83,9 @@ fn refuse_music_item(_: &mut SqliteConnection, _: RecoveredRow) -> RestoreFuture
 /// Refuses to restore a deleted Projects row, which keeps its offer discardable. Restoring a
 /// project with its retained subtree belongs to the Projects recovery presentation.
 fn refuse_projects_row(_: &mut SqliteConnection, _: RecoveredRow) -> RestoreFuture<'_> {
-    Box::pin(async { Err("restoring deleted Projects rows is not available yet".to_string()) })
+    Box::pin(async {
+        Err("deleted Projects rows cannot be restored from the recovery list".to_string())
+    })
 }
 
 /// A deleted row with edits the deletion did not see.

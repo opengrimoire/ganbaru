@@ -22,7 +22,9 @@ pub fn vault_adapters() -> Adapters {
         .with(Box::new(projects::ProjectsAdapter))
 }
 
-/// The hooks of the vault manifest's tables, one line per hooked table.
+/// The hooks of the vault manifest's tables, one line per hooked table or domain.
 pub fn vault_hooks() -> Hooks {
-    Hooks::new().with(PREFERENCES_TABLE, Box::new(preferences::PreferencesHook))
+    projects::with_hooks(
+        Hooks::new().with(PREFERENCES_TABLE, Box::new(preferences::PreferencesHook)),
+    )
 }

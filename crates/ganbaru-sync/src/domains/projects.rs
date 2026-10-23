@@ -2,15 +2,19 @@
 //! checking values the column types cannot express.
 
 use ganbaru_sync_contracts::{Field, GroupId, TableId, Value};
+use sqlx::SqliteConnection;
 
 use crate::adapter::{AdapterError, DomainAdapter, Presentation};
 use crate::codec;
+use crate::hooks::{ChangeSink, HookFuture, Hooks, MaterializeHook};
+use crate::manifest::TableSpec;
 use crate::manifest::vault::projects::{
-    ADAPTER, CHANGE_EVENTS_TABLE, CHECKLIST_TABLE, DEPENDENCIES_TABLE, EMOJIS_TABLE, FIELDS_TABLE,
-    FOLDERS_TABLE, GROUPS_TABLE, OPTION_VALUES, PRIORITIES_TABLE, PROJECTS_TABLE, STATUSES_TABLE,
-    TAG_LINKS_TABLE, TASKS_TABLE, VALUES_TABLE, VIEW_PREFERENCES_TABLE, change_event_group,
-    dependency_group, emoji_group, field_group, folder_group, group_group, priority_group,
-    project_group, status_group, tag_link_group, task_group, value_group, view_preference_group,
+    ADAPTER, CHANGE_EVENTS_TABLE, CHECKLIST_TABLE, DEPENDENCIES_TABLE, DOMAIN, EMOJIS_TABLE,
+    FIELDS_TABLE, FOLDERS_TABLE, GROUPS_TABLE, OPTION_VALUES, PRIORITIES_TABLE, PROJECTS_TABLE,
+    STATUSES_TABLE, TAG_LINKS_TABLE, TASKS_TABLE, VALUES_TABLE, VIEW_PREFERENCES_TABLE,
+    change_event_group, dependency_group, emoji_group, field_group, folder_group, group_group,
+    priority_group, project_group, status_group, tag_link_group, task_group, value_group,
+    view_preference_group,
 };
 
 /// Characters in an enumerated column.
@@ -535,6 +539,36 @@ impl DomainAdapter for ProjectsAdapter {
         }
         presentation
     }
+}
+
+/// Reports every Projects row a materialization changed, with its table name as the topic and
+/// its row key as the key, so the app refreshes open Projects views and task reminders. It
+/// rebuilds nothing.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct ProjectsHook;
+
+impl MaterializeHook for ProjectsHook {
+    fn after_materialize<'a>(
+        &'a self,
+        _conn: &'a mut SqliteConnection,
+        table: &'static TableSpec,
+        changed_keys: &'a [String],
+        changes: &'a mut dyn ChangeSink,
+    ) -> HookFuture<'a> {
+        Box::pin(async move {
+            for key in changed_keys {
+                changes.report(table.name, key.clone());
+            }
+            Ok(())
+        })
+    }
+}
+
+/// `hooks` with [`ProjectsHook`] registered for every Projects table.
+pub fn with_hooks(hooks: Hooks) -> Hooks {
+    DOMAIN.tables.iter().fold(hooks, |hooks, table| {
+        hooks.with(table.id, Box::new(ProjectsHook))
+    })
 }
 
 #[cfg(test)]

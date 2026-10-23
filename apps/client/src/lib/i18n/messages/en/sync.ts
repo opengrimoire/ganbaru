@@ -37,6 +37,12 @@ export const sync = {
   clockAhead: (device: string) =>
     `The clock on ${device} is ahead of this device. Its edits win conflicting changes until the clocks agree, so check its date and time.`,
   clockAheadOwn: "Some edits from this device were made while its clock was ahead. They win conflicting changes until that time passes.",
+  bootstrapRequired: "This device was away too long to catch up. Your changes here still reach your main device, but to receive changes again, link this device again or transfer the vault to it.",
+  uncounted: {
+    dormant: (device: string) =>
+      `Sync no longer waits for ${device}, which has not synced for a long time. When it returns, link it again or transfer the vault to it.`,
+    relinkRequired: (device: string) => `Link ${device} again so it can sync.`,
+  },
   connection: {
     lan: (address: string) => `Connected over local network at ${address}`,
     overlay: (address: string) => `Connected over overlay network at ${address}`,

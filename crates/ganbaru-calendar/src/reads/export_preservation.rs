@@ -108,7 +108,7 @@ struct Node {
     value_kind: String,
     object_key: Option<String>,
     text_value: Option<String>,
-    number_value: Option<f64>,
+    number_value: Option<String>,
     boolean_value: Option<i64>,
 }
 impl_sqlite_from_row!(Node {
@@ -389,9 +389,13 @@ impl ExportPreservation {
                 Ok(Value::Object(object))
             }
             "text" => self.string(node.text_value.as_deref().unwrap_or_default()),
-            "number" => serde_json::Number::from_f64(node.number_value.unwrap_or(0.0))
-                .map(Value::Number)
-                .ok_or_else(|| "Invalid iCalendar number in Calendar export".to_string()),
+            "number" => node
+                .number_value
+                .as_deref()
+                .ok_or("Missing iCalendar number in Calendar export")
+                .map_err(str::to_string)
+                .and_then(crate::stored_number::parse)
+                .map(Value::Number),
             "boolean" => Ok(Value::Bool(node.boolean_value.unwrap_or(0) != 0)),
             "null" => Ok(Value::Null),
             kind => Err(format!("Unsupported Calendar export value kind: {kind}")),

@@ -2293,6 +2293,11 @@ fn recovery_root_tables_follow_cascades_and_leave_out_derived_keys() {
             crate::manifest::vault::projects::SECTIONS_TABLE,
             crate::manifest::vault::projects::STATUSES_TABLE,
             crate::manifest::vault::projects::TASKS_TABLE,
+            // Calendars, objects, components, and events carry recoverable groups.
+            crate::manifest::vault::calendar::CALENDARS_TABLE,
+            crate::manifest::vault::calendar::OBJECTS_TABLE,
+            crate::manifest::vault::calendar::COMPONENTS_TABLE,
+            crate::manifest::vault::calendar::EVENTS_TABLE,
             ITEMS_TABLE,
             CYCLE_A_TABLE,
             CYCLE_B_TABLE,

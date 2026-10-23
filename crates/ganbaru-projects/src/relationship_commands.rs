@@ -229,14 +229,16 @@ pub(super) async fn link_task_event_with_project_assignment(
                 .map_err(|e| format!("assign calendar event project: {e}"))?;
         }
     }
+    let sync_key = crate::keys::task_event_key(&link.task_id, &link.event_id)?;
     sqlx::query(
-        "INSERT INTO project_task_event_links (task_id, event_id, link_kind)
-         VALUES (?, ?, ?)
+        "INSERT INTO project_task_event_links (task_id, event_id, link_kind, sync_key)
+         VALUES (?, ?, ?, ?)
          ON CONFLICT(task_id, event_id) DO UPDATE SET link_kind = excluded.link_kind",
     )
     .bind(&link.task_id)
     .bind(&link.event_id)
     .bind(&link.link_kind)
+    .bind(&sync_key)
     .execute(&mut **tx)
     .await
     .map_err(|e| format!("link project task event: {e}"))?;

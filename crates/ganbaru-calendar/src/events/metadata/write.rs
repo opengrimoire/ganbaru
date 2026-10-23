@@ -106,6 +106,13 @@ impl PreparedSide {
                 .execute(&mut *connection)
                 .await
                 .map_err(|error| format!("clear prepared Calendar overrides: {error}"))?;
+            sqlx::query(
+                "DELETE FROM calendar_event_override_extended_properties WHERE event_id = ?1",
+            )
+            .bind(&event.id)
+            .execute(&mut *connection)
+            .await
+            .map_err(|error| format!("clear prepared Calendar override properties: {error}"))?;
             sqlx::query("DELETE FROM calendar_event_rdates WHERE event_id = ?1")
                 .bind(&event.id)
                 .execute(&mut *connection)
@@ -116,6 +123,20 @@ impl PreparedSide {
                 .execute(&mut *connection)
                 .await
                 .map_err(|error| format!("clear prepared Calendar focus_configs: {error}"))?;
+            sqlx::query(
+                "DELETE FROM calendar_event_pomodoro_config_count_rhythms WHERE event_id = ?1",
+            )
+            .bind(&event.id)
+            .execute(&mut *connection)
+            .await
+            .map_err(|error| format!("clear prepared Calendar focus rhythms: {error}"))?;
+            sqlx::query(
+                "DELETE FROM calendar_event_pomodoro_config_sequence_steps WHERE event_id = ?1",
+            )
+            .bind(&event.id)
+            .execute(&mut *connection)
+            .await
+            .map_err(|error| format!("clear prepared Calendar focus steps: {error}"))?;
             super::rows::MusicAssignment::remove_stale(
                 connection,
                 &event.id,

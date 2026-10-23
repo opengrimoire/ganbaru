@@ -25,13 +25,13 @@ fn copying_task_links_rejects_a_target_without_the_matching_project() {
 }
 
 #[test]
-fn non_finite_imported_numbers_cannot_collapse_into_the_same_review_hash() {
+fn malformed_imported_numbers_cannot_collapse_into_the_same_review_hash() {
     crate::test_support::block_on(async {
         let pool = seed().await;
         let mut tx = pool.begin().await.unwrap();
-        sqlx::query("UPDATE icalendar_value_nodes SET value_kind = 'number', text_value = NULL, number_value = 1e999 WHERE id = 'value'").execute(&mut *tx).await.unwrap();
+        sqlx::query("UPDATE icalendar_value_nodes SET value_kind = 'number', text_value = NULL, number_value = 'not-a-number' WHERE id = 'value'").execute(&mut *tx).await.unwrap();
         let error = capture(&mut tx).await.revision().unwrap_err();
-        assert!(error.contains("non-finite"), "{error}");
+        assert!(error.contains("invalid numeric"), "{error}");
         tx.rollback().await.unwrap();
     });
 }
@@ -55,9 +55,9 @@ pub(super) async fn seed() -> sqlx::SqlitePool {
         INSERT INTO project_statuses (id, project_id, name, category, order_key) VALUES ('status', 'project', 'Open', 'not_started', 'a1');
         INSERT INTO project_tasks (id, project_id, section_id, status_id, title, section_order_key, status_order_key) VALUES ('task', 'project', 'section', 'status', 'Task', 'a1', 'a1');
         UPDATE calendar_events SET project_id = 'project';
-        INSERT INTO project_task_event_links (task_id, event_id) VALUES ('task', 'source');
-        INSERT INTO icalendar_objects (id, calendar_id, source_kind, source_fingerprint, method, created_at, updated_at)
-            VALUES ('object', 'local', 'import-file', 'original', 'request', 'now', 'now');
+        INSERT INTO project_task_event_links (task_id, event_id, sync_key) VALUES ('task', 'source', 'link');
+        INSERT INTO icalendar_objects (id, calendar_id, source_kind, source_fingerprint, method, created_at, updated_at, import_id)
+            VALUES ('object', 'local', 'import-file', 'original', 'request', 'now', 'now', 'import');
         INSERT INTO icalendar_components (id, object_id, parent_component_id, calendar_id, component_type, preservation_status, created_at, updated_at)
             VALUES ('root', 'object', NULL, 'local', 'vcalendar', 'lossless', 'now', 'now'),
                    ('event', 'object', 'root', 'local', 'vevent', 'lossless', 'now', 'now'),
@@ -69,8 +69,8 @@ pub(super) async fn seed() -> sqlx::SqlitePool {
         UPDATE calendar_events SET icalendar_component_id = 'event', source_uid = 'original-uid' WHERE id = 'source';
         INSERT INTO calendar_event_overrides (id, parent_event_id, recurrence_id, title, icalendar_component_id)
             VALUES ('override', 'source', '2099-05-10', 'Different', 'override-component');
-        INSERT INTO calendar_event_override_extended_properties (id, override_id, property_key, property_value)
-            VALUES ('override-property', 'override', 'X-EXTRA', 'override data');
+        INSERT INTO calendar_event_override_extended_properties (id, event_id, override_id, property_key, property_value)
+            VALUES ('override-property', 'source', 'override', 'X-EXTRA', 'override data');
         INSERT INTO calendar_event_attendees (id, event_id, name, email, status, icalendar_component_id, icalendar_property_index)
             VALUES ('attendee', 'source', 'Guest', 'guest@example.test', 'accepted', 'event', 3);
         INSERT INTO calendar_event_alarms (id, event_id, trigger_value, description, icalendar_component_id)
@@ -87,12 +87,12 @@ pub(super) async fn seed() -> sqlx::SqlitePool {
         INSERT INTO icalendar_component_properties (id, component_id, name, value_type)
             VALUES ('property', 'event', 'x-preserved', 'text'), ('zone-property', 'zone', 'tzid', 'text'),
                    ('alarm-property', 'alarm-component', 'x-alarm', 'unknown');
-        INSERT INTO icalendar_property_parameters (id, property_id, name) VALUES ('parameter', 'property', 'x-param');
-        INSERT INTO icalendar_value_nodes (id, property_id, parameter_id, value_kind, text_value)
-            VALUES ('value', 'property', NULL, 'text', 'preserved'), ('parameter-value', 'property', 'parameter', 'text', 'kept'),
-                   ('zone-value', 'zone-property', NULL, 'text', 'Custom/Zone'), ('array', 'alarm-property', NULL, 'array', NULL);
-        INSERT INTO icalendar_value_nodes (id, property_id, parent_node_id, sort_order, value_kind, text_value)
-            VALUES ('child', 'alarm-property', 'array', 0, 'text', 'nested');
+        INSERT INTO icalendar_property_parameters (id, component_id, property_id, name) VALUES ('parameter', 'event', 'property', 'x-param');
+        INSERT INTO icalendar_value_nodes (id, component_id, property_id, parameter_id, value_kind, text_value)
+            VALUES ('value', 'event', 'property', NULL, 'text', 'preserved'), ('parameter-value', 'event', 'property', 'parameter', 'text', 'kept'),
+                   ('zone-value', 'zone', 'zone-property', NULL, 'text', 'Custom/Zone'), ('array', 'alarm-component', 'alarm-property', NULL, 'array', NULL);
+        INSERT INTO icalendar_value_nodes (id, component_id, property_id, parent_node_id, sort_order, value_kind, text_value)
+            VALUES ('child', 'alarm-component', 'alarm-property', 'array', 0, 'text', 'nested');
         INSERT INTO icalendar_component_projection_warnings (id, component_id, message) VALUES ('warning', 'event', 'Review source');
         INSERT INTO icalendar_object_diagnostics (id, object_id, message) VALUES ('diagnostic', 'object', 'Original import');
     "#).execute(&pool).await.unwrap();
@@ -112,6 +112,11 @@ fn review_revision_covers_children_configurations_and_imported_values_without_pa
         let mut tx = pool.begin().await.unwrap();
         let original = capture(&mut tx).await.revision().unwrap();
         assert_eq!(original, capture(&mut tx).await.revision().unwrap());
+        // Imported components are write once; the trigger is dropped to stage a changed graph.
+        sqlx::query("DROP TRIGGER sync_immutable_icalendar_components")
+            .execute(&mut *tx)
+            .await
+            .unwrap();
         for change in [
             "UPDATE calendar_event_alarms SET trigger_value = '-PT11M'",
             "UPDATE calendar_event_attendees SET icalendar_property_index = 4",
@@ -245,9 +250,14 @@ fn malformed_import_graphs_fail_before_copying() {
             "UPDATE icalendar_components SET parent_component_id = 'alarm-component' WHERE id = 'event'",
             "UPDATE icalendar_value_nodes SET parent_node_id = 'child' WHERE id = 'array'",
             "UPDATE icalendar_value_nodes SET parent_node_id = 'value' WHERE id = 'child'",
-            "UPDATE icalendar_value_nodes SET property_id = NULL WHERE id = 'child'",
+            "UPDATE icalendar_value_nodes SET property_id = 'zone-property' WHERE id = 'child'",
         ] {
             let mut tx = pool.begin().await.unwrap();
+            // Imported components are write once; the trigger is dropped to stage a malformed graph.
+            sqlx::query("DROP TRIGGER sync_immutable_icalendar_components")
+                .execute(&mut *tx)
+                .await
+                .unwrap();
             sqlx::query(change).execute(&mut *tx).await.unwrap();
             let error = copy_event_metadata(&mut tx, "source", "target")
                 .await
@@ -255,7 +265,8 @@ fn malformed_import_graphs_fail_before_copying() {
             assert!(
                 error.contains("cycle")
                     || error.contains("crosses property owners")
-                    || error.contains("uncaptured child owner"),
+                    || error.contains("uncaptured child owner")
+                    || error.contains("invalid owner"),
                 "{error}"
             );
             let copies: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM icalendar_objects")

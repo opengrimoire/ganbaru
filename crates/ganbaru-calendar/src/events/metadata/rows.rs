@@ -106,8 +106,8 @@ stored_row!(Event, "calendar_events", "id = ?1", (id), {
     source_uid: Option<String>,
     visibility: String,
     priority: Option<i64>,
-    geo_lat: Option<f64>,
-    geo_lng: Option<f64>,
+    geo_lat: Option<i64>,
+    geo_lng: Option<i64>,
     sequence: i64,
     guest_can_modify: i64,
     guest_can_invite_others: i64,
@@ -150,11 +150,10 @@ stored_row!(Category, "calendar_event_categories", "event_id = ?1", (id), {
     sort_order: i64,
 });
 
-stored_row!(Exdate, "calendar_event_exdates", "event_id = ?1", (id), {
+stored_row!(Exdate, "calendar_event_exdates", "event_id = ?1", (occurrence_date), {
     id: String,
     event_id: String,
     occurrence_date: String,
-    sort_order: i64,
 });
 
 stored_row!(Property, "calendar_event_extended_properties", "event_id = ?1", (id), {
@@ -198,19 +197,19 @@ stored_row!(Override, "calendar_event_overrides", "parent_event_id = ?1", (id), 
     recurrence_range: Option<String>,
 });
 
-stored_row!(OverrideProperty, "calendar_event_override_extended_properties", "override_id IN (SELECT id FROM calendar_event_overrides WHERE parent_event_id = ?1)", (id), {
+stored_row!(OverrideProperty, "calendar_event_override_extended_properties", "event_id = ?1", (id), {
     id: String,
+    event_id: String,
     override_id: String,
     property_key: String,
     property_value: String,
     sort_order: i64,
 });
 
-stored_row!(Rdate, "calendar_event_rdates", "event_id = ?1", (id), {
+stored_row!(Rdate, "calendar_event_rdates", "event_id = ?1", (occurrence_start), {
     id: String,
     event_id: String,
     occurrence_start: String,
-    sort_order: i64,
 });
 
 stored_row!(FocusConfig, "calendar_event_pomodoro_configs", "event_id = ?1", (event_id), {
@@ -335,7 +334,12 @@ stored_row!(TaskLink, "project_task_event_links", "event_id = ?1", (task_id), {
     event_id: String,
     link_kind: String,
     created_at: String,
-});
+}, keyed "sync_key" => task_link_key);
+
+/// Derived sync key of a task link under its current event.
+fn task_link_key(row: &TaskLink) -> Result<String, String> {
+    ganbaru_projects::keys::task_event_key(&row.task_id, &row.event_id)
+}
 
 stored_row!(Component, "icalendar_components", "id IN (SELECT value FROM json_each(?1))", (id), {
     id: String,
@@ -364,23 +368,25 @@ stored_row!(ComponentProperty, "icalendar_component_properties", "component_id I
     sort_order: i64,
 });
 
-stored_row!(Parameter, "icalendar_property_parameters", "property_id IN (SELECT value FROM json_each(?1))", (id), {
+stored_row!(Parameter, "icalendar_property_parameters", "component_id IN (SELECT value FROM json_each(?1))", (id), {
     id: String,
+    component_id: String,
     property_id: String,
     name: String,
     sort_order: i64,
 });
 
-stored_row!(Node, "icalendar_value_nodes", "property_id IN (SELECT value FROM json_each(?1)) OR parameter_id IN (SELECT id FROM icalendar_property_parameters WHERE property_id IN (SELECT value FROM json_each(?1)))", (id), {
+stored_row!(Node, "icalendar_value_nodes", "component_id IN (SELECT value FROM json_each(?1))", (id), {
     id: String,
-    property_id: Option<String>,
+    component_id: String,
+    property_id: String,
     parameter_id: Option<String>,
     parent_node_id: Option<String>,
     sort_order: i64,
     value_kind: String,
     object_key: Option<String>,
     text_value: Option<String>,
-    number_value: Option<f64>,
+    number_value: Option<String>,
     boolean_value: Option<i64>,
 });
 
@@ -393,6 +399,7 @@ stored_row!(Warning, "icalendar_component_projection_warnings", "component_id IN
 
 stored_row!(Object, "icalendar_objects", "id IN (SELECT value FROM json_each(?1))", (id), {
     id: String,
+    import_id: String,
     calendar_id: String,
     source_kind: String,
     source_name: String,

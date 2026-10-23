@@ -227,8 +227,7 @@ impl Metadata {
         metadata.exdates = side
             .exceptions
             .iter()
-            .enumerate()
-            .map(|(index, date)| {
+            .map(|date| {
                 let existing = self.exdates.iter().find(|row| row.occurrence_date == *date);
                 Ok(Exdate {
                     id: existing
@@ -236,7 +235,6 @@ impl Metadata {
                         .unwrap_or_else(|| copied_id(&id, "exdate", date))?,
                     event_id: id.clone(),
                     occurrence_date: date.clone(),
-                    sort_order: index as i64,
                 })
             })
             .collect::<Result<_, String>>()?;
@@ -535,13 +533,11 @@ impl Metadata {
             .fields
             .exceptions
             .iter()
-            .enumerate()
-            .map(|(index, date)| {
+            .map(|date| {
                 Ok(Exdate {
                     id: copied_id(target, "exdate", date)?,
                     event_id: source.id.clone(),
                     occurrence_date: date.clone(),
-                    sort_order: index as i64,
                 })
             })
             .collect::<Result<_, String>>()?;
@@ -549,13 +545,11 @@ impl Metadata {
             .fields
             .rdates
             .iter()
-            .enumerate()
-            .map(|(index, value)| {
+            .map(|value| {
                 Ok(Rdate {
                     id: copied_id(target, "rdate", value)?,
                     event_id: source.id.clone(),
                     occurrence_start: value.clone(),
-                    sort_order: index as i64,
                 })
             })
             .collect::<Result<_, String>>()?;

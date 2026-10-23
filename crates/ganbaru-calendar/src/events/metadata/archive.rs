@@ -149,7 +149,7 @@ impl PreparedArchive {
         });
         let id = &row.id;
         for row in &self.metadata.preservation.objects {
-            archive_row!(tx, "calendar_event_archive_import_objects", {archive_event_id: id, object_id: &row.id});
+            archive_row!(tx, "calendar_event_archive_import_objects", {archive_event_id: id, object_id: &row.id, sync_key: crate::keys::archive_import_object_key(id, &row.id)?});
         }
         for row in &self.metadata.alarms {
             archive_row!(tx, "calendar_event_archive_alarms", {id: &row.id, archive_event_id: id, source_alarm_id: self.original_child(&row.id)?, action: &row.action, trigger_type: &row.trigger_type, trigger_value: &row.trigger_value, description: &row.description, sort_order: row.sort_order, icalendar_component_id: &row.icalendar_component_id});
@@ -160,11 +160,11 @@ impl PreparedArchive {
         for row in &self.metadata.categories {
             archive_row!(tx, "calendar_event_archive_categories", {id: &row.id, archive_event_id: id, category: &row.category, sort_order: row.sort_order});
         }
-        for row in &self.metadata.exdates {
-            archive_row!(tx, "calendar_event_archive_exdates", {id: &row.id, archive_event_id: id, occurrence_date: &row.occurrence_date, sort_order: row.sort_order});
+        for (sort_order, row) in (0_i64..).zip(&self.metadata.exdates) {
+            archive_row!(tx, "calendar_event_archive_exdates", {id: &row.id, archive_event_id: id, occurrence_date: &row.occurrence_date, sort_order: sort_order});
         }
-        for row in &self.metadata.rdates {
-            archive_row!(tx, "calendar_event_archive_rdates", {id: &row.id, archive_event_id: id, occurrence_start: &row.occurrence_start, sort_order: row.sort_order});
+        for (sort_order, row) in (0_i64..).zip(&self.metadata.rdates) {
+            archive_row!(tx, "calendar_event_archive_rdates", {id: &row.id, archive_event_id: id, occurrence_start: &row.occurrence_start, sort_order: sort_order});
         }
         for row in &self.metadata.properties {
             archive_row!(tx, "calendar_event_archive_extended_properties", {id: &row.id, archive_event_id: id, property_key: &row.property_key, property_value: &row.property_value, sort_order: row.sort_order});
@@ -176,10 +176,10 @@ impl PreparedArchive {
             archive_row!(tx, "calendar_event_archive_organizers", {archive_event_id: id, name: &row.name, email: &row.email});
         }
         for row in &self.metadata.overrides {
-            archive_row!(tx, "calendar_event_archive_overrides", {id: &row.id, archive_event_id: id, source_override_id: self.original_child(&row.id)?, recurrence_id: &row.recurrence_id, title: &row.title, start_time: &row.start_time, end_time: &row.end_time, description: &row.description, location: &row.location, url: &row.url, color: row.color, status: &row.status, transparency: &row.transparency, visibility: &row.visibility, created_at: &row.created_at, updated_at: &row.updated_at, icalendar_component_id: &row.icalendar_component_id, recurrence_range: &row.recurrence_range});
+            archive_row!(tx, "calendar_event_archive_overrides", {archive_event_id: id, source_override_id: self.original_child(&row.id)?, recurrence_id: &row.recurrence_id, title: &row.title, start_time: &row.start_time, end_time: &row.end_time, description: &row.description, location: &row.location, url: &row.url, color: row.color, status: &row.status, transparency: &row.transparency, visibility: &row.visibility, created_at: &row.created_at, updated_at: &row.updated_at, icalendar_component_id: &row.icalendar_component_id, recurrence_range: &row.recurrence_range});
         }
         for row in &self.metadata.override_properties {
-            archive_row!(tx, "calendar_event_archive_override_extended_properties", {id: &row.id, archive_override_id: &row.override_id, property_key: &row.property_key, property_value: &row.property_value, sort_order: row.sort_order});
+            archive_row!(tx, "calendar_event_archive_override_extended_properties", {id: &row.id, archive_event_id: id, source_override_id: self.original_child(&row.override_id)?, property_key: &row.property_key, property_value: &row.property_value, sort_order: row.sort_order});
         }
         for row in &self.metadata.focus_configs {
             archive_row!(tx, "calendar_event_archive_pomodoro_configs", {archive_event_id: id, rhythm_kind: &row.rhythm_kind, rhythm_source: &row.rhythm_source, preset_key: &row.preset_key, idle_timeout_minutes: row.idle_timeout_minutes});

@@ -66,17 +66,10 @@ pub(super) async fn add_exdate(
     {
         return Ok(());
     }
-    let sort_order = match metadata.exdates.iter().map(|row| row.sort_order).max() {
-        Some(last) => last
-            .checked_add(1)
-            .ok_or("Calendar exception order overflow")?,
-        None => 0,
-    };
     let row = Exdate {
         id: copy::copied_id(event_id, "exdate", occurrence_date)?,
         event_id: event_id.to_string(),
         occurrence_date: occurrence_date.to_string(),
-        sort_order,
     };
     let mut size = metadata.timing_size();
     size.add_date_row(Some(&row.id), &row.occurrence_date);
@@ -209,14 +202,6 @@ impl Metadata {
     /// This is a review revision, not permission to replay a client-supplied plan.
     pub(super) fn revision(&self) -> Result<String, String> {
         self.preservation.validate()?;
-        if self.events.iter().any(|row| {
-            row.geo_lat
-                .into_iter()
-                .chain(row.geo_lng)
-                .any(|value| !value.is_finite())
-        }) {
-            return Err("Calendar metadata contains non-finite coordinates".into());
-        }
         revision(self)
     }
 }

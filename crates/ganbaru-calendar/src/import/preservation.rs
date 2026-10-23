@@ -30,6 +30,12 @@ pub(super) async fn replace_preservation(
     outcome: &PreservationOutcome,
 ) -> Result<(), String> {
     let projections = &outcome.projections;
+    // One random id per import command groups the objects it wrote, so export can tell one
+    // multi-calendar import apart from the same source imported again on another replica.
+    let import_id: String = sqlx::query_scalar("SELECT lower(hex(randomblob(16)))")
+        .fetch_one(&mut **tx)
+        .await
+        .map_err(|e| format!("generate iCalendar import id: {e}"))?;
     sqlx::query(
         "DELETE FROM icalendar_objects
          WHERE calendar_id = ? AND source_kind = ? AND source_name = ?",
@@ -45,8 +51,8 @@ pub(super) async fn replace_preservation(
         sqlx::query(
             "INSERT INTO icalendar_objects
                 (id, calendar_id, source_kind, source_name, source_fingerprint,
-                 prodid, version, method, calendar_scale, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                 prodid, version, method, calendar_scale, created_at, updated_at, import_id)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&object.id)
         .bind(target_calendar_id)
@@ -59,6 +65,7 @@ pub(super) async fn replace_preservation(
         .bind(&object.calendar_scale)
         .bind(now)
         .bind(now)
+        .bind(&import_id)
         .execute(&mut **tx)
         .await
         .map_err(|e| format!("insert iCalendar object preservation: {e}"))?;
@@ -279,9 +286,10 @@ async fn store_jcal_component(
                 let parameter_id = format!("{property_id}:parameter:{param_index}");
                 sqlx::query(
                     "INSERT INTO icalendar_property_parameters
-                        (id, property_id, name, sort_order)
-                     VALUES (?, ?, ?, ?)",
+                        (component_id, id, property_id, name, sort_order)
+                     VALUES (?, ?, ?, ?, ?)",
                 )
+                .bind(component_id)
                 .bind(&parameter_id)
                 .bind(&property_id)
                 .bind(param_name)
@@ -293,7 +301,8 @@ async fn store_jcal_component(
                     tx,
                     param_value,
                     ValueNodeInsert {
-                        property_id: Some(&property_id),
+                        component_id,
+                        property_id: &property_id,
                         parameter_id: Some(&parameter_id),
                         parent_node_id: None,
                         sort_order: 0,
@@ -310,7 +319,8 @@ async fn store_jcal_component(
                 tx,
                 property_value,
                 ValueNodeInsert {
-                    property_id: Some(&property_id),
+                    component_id,
+                    property_id: &property_id,
                     parameter_id: None,
                     parent_node_id: None,
                     sort_order: value_index as i64,
@@ -325,7 +335,8 @@ async fn store_jcal_component(
 }
 
 struct ValueNodeInsert<'a> {
-    property_id: Option<&'a str>,
+    component_id: &'a str,
+    property_id: &'a str,
     parameter_id: Option<&'a str>,
     parent_node_id: Option<String>,
     sort_order: i64,
@@ -343,7 +354,12 @@ fn store_value_node<'a>(
             Value::Array(_) => ("array", None, None, None),
             Value::Object(_) => ("object", None, None, None),
             Value::String(text) => ("text", Some(text.as_str()), None, None),
-            Value::Number(number) => ("number", None, number.as_f64(), None),
+            Value::Number(number) => (
+                "number",
+                None,
+                Some(crate::stored_number::encode(number)),
+                None,
+            ),
             Value::Bool(boolean) => (
                 "boolean",
                 None,
@@ -354,10 +370,11 @@ fn store_value_node<'a>(
         };
         sqlx::query(
             "INSERT INTO icalendar_value_nodes
-                (id, property_id, parameter_id, parent_node_id, sort_order,
+                (component_id, id, property_id, parameter_id, parent_node_id, sort_order,
                  value_kind, object_key, text_value, number_value, boolean_value)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
+        .bind(target.component_id)
         .bind(&target.node_id)
         .bind(target.property_id)
         .bind(target.parameter_id)
@@ -378,6 +395,7 @@ fn store_value_node<'a>(
                     tx,
                     child,
                     ValueNodeInsert {
+                        component_id: target.component_id,
                         property_id: target.property_id,
                         parameter_id: target.parameter_id,
                         parent_node_id: Some(target.node_id.clone()),
@@ -395,6 +413,7 @@ fn store_value_node<'a>(
                     tx,
                     child,
                     ValueNodeInsert {
+                        component_id: target.component_id,
                         property_id: target.property_id,
                         parameter_id: target.parameter_id,
                         parent_node_id: Some(target.node_id.clone()),

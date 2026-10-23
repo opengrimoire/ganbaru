@@ -147,4 +147,17 @@ mod tests {
         ];
         assert_eq!(manifest, crate_keys);
     }
+
+    #[test]
+    fn calendar_sync_key_prefixes_match_their_writer_crates() {
+        use ganbaru_sync::manifest::vault::calendar;
+        assert_eq!(
+            calendar::TASK_EVENT_KEY_PREFIX,
+            ganbaru_projects::keys::TASK_EVENT_KEY_PREFIX
+        );
+        assert_eq!(
+            calendar::ARCHIVE_OBJECT_KEY_PREFIX,
+            ganbaru_calendar::keys::ARCHIVE_IMPORT_OBJECT_KEY_PREFIX
+        );
+    }
 }

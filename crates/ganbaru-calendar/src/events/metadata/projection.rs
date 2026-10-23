@@ -80,9 +80,9 @@ impl Metadata {
         let mut notifications: Vec<_> = self.notifications.iter().collect();
         notifications.sort_by_key(|row| (row.sort_order, &row.id));
         let mut exdates: Vec<_> = self.exdates.iter().collect();
-        exdates.sort_by_key(|row| (row.sort_order, &row.id));
+        exdates.sort_by(|a, b| a.occurrence_date.cmp(&b.occurrence_date));
         let mut rdates: Vec<_> = self.rdates.iter().collect();
-        rdates.sort_by_key(|row| (row.sort_order, &row.id));
+        rdates.sort_by(|a, b| a.occurrence_start.cmp(&b.occurrence_start));
         let sequence_steps = if self.sequence_steps.is_empty() {
             None
         } else {

@@ -16,8 +16,8 @@ async fn pool() -> SqlitePool {
 async fn seed(pool: &SqlitePool) {
     sqlx::raw_sql(r#"
         INSERT INTO calendars (id, name, source) VALUES ('export', 'Current name', 'local'), ('other', 'Other', 'local');
-        INSERT INTO icalendar_objects (id, calendar_id, source_kind, source_fingerprint, method, created_at, updated_at)
-            VALUES ('object', 'export', 'import-file', 'source', 'request', 'now', 'now');
+        INSERT INTO icalendar_objects (id, calendar_id, source_kind, source_fingerprint, method, created_at, updated_at, import_id)
+            VALUES ('object', 'export', 'import-file', 'source', 'request', 'now', 'now', 'import');
         INSERT INTO icalendar_components (id, object_id, parent_component_id, calendar_id, component_type, preservation_status, created_at, updated_at)
             VALUES ('root', 'object', NULL, 'export', 'vcalendar', 'lossless', 'now', 'now'),
                    ('live', 'object', 'root', 'export', 'vevent', 'lossless', 'now', 'now'),
@@ -43,15 +43,15 @@ async fn seed(pool: &SqlitePool) {
         INSERT INTO calendar_event_organizers (event_id, name, email) VALUES ('event', 'Organizer', 'owner@example.test');
         INSERT INTO calendar_event_overrides (id, parent_event_id, recurrence_id, title, icalendar_component_id)
             VALUES ('override', 'event', '2026-10-05', 'Moved', 'exception');
-        INSERT INTO calendar_event_override_extended_properties (id, override_id, property_key, property_value)
-            VALUES ('override-extension', 'override', 'X-OVERRIDE', 'yes');
+        INSERT INTO calendar_event_override_extended_properties (id, event_id, override_id, property_key, property_value)
+            VALUES ('override-extension', 'event', 'override', 'X-OVERRIDE', 'yes');
         INSERT INTO icalendar_component_properties (id, component_id, name, value_type)
             VALUES ('property', 'live', 'x-preserved', 'text'), ('todo-property', 'todo', 'summary', 'text'),
                    ('zone-property', 'zone', 'tzid', 'text');
-        INSERT INTO icalendar_property_parameters (id, property_id, name) VALUES ('parameter', 'property', 'x-param');
-        INSERT INTO icalendar_value_nodes (id, property_id, parameter_id, value_kind, text_value)
-            VALUES ('text', 'property', NULL, 'text', 'original'), ('param-text', 'property', 'parameter', 'text', 'kept'),
-                   ('todo-text', 'todo-property', NULL, 'text', 'Task'), ('zone-text', 'zone-property', NULL, 'text', 'Custom/Zone');
+        INSERT INTO icalendar_property_parameters (id, component_id, property_id, name) VALUES ('parameter', 'live', 'property', 'x-param');
+        INSERT INTO icalendar_value_nodes (id, component_id, property_id, parameter_id, value_kind, text_value)
+            VALUES ('text', 'live', 'property', NULL, 'text', 'original'), ('param-text', 'live', 'property', 'parameter', 'text', 'kept'),
+                   ('todo-text', 'todo', 'todo-property', NULL, 'text', 'Task'), ('zone-text', 'zone', 'zone-property', NULL, 'text', 'Custom/Zone');
         INSERT INTO icalendar_component_projection_warnings (id, component_id, message) VALUES ('warning', 'live', 'Preserved extension');
     "#).execute(pool).await.unwrap();
 }
@@ -66,10 +66,10 @@ fn archive_storage_custody_does_not_publish_its_components_or_method_in_local_ex
                     (id, source_event_id, archived_at, title, start_time, end_time, calendar_id, icalendar_component_id, created_at, updated_at)
                     SELECT id, id, '2026-10-02T10:00:00Z', title, start_time, end_time, calendar_id, icalendar_component_id, created_at, updated_at
                     FROM calendar_events WHERE id = 'event';
-                INSERT INTO calendar_event_archive_import_objects (archive_event_id, object_id) VALUES ('event', 'object');
+                INSERT INTO calendar_event_archive_import_objects (archive_event_id, object_id, sync_key) VALUES ('event', 'object', 'archive-object');
                 DELETE FROM calendar_events WHERE id = 'event';
-                INSERT INTO icalendar_objects (id, calendar_id, source_kind, source_fingerprint, method, created_at, updated_at)
-                    VALUES ('standalone', 'local', 'import-file', 'standalone', 'publish', 'now', 'now');
+                INSERT INTO icalendar_objects (id, import_id, calendar_id, source_kind, source_fingerprint, method, created_at, updated_at)
+                    VALUES ('standalone', 'standalone', 'local', 'import-file', 'standalone', 'publish', 'now', 'now');
                 INSERT INTO icalendar_components (id, object_id, parent_component_id, calendar_id, component_type, preservation_status, created_at, updated_at)
                     VALUES ('standalone-root', 'standalone', NULL, 'local', 'vcalendar', 'lossless', 'now', 'now'),
                            ('standalone-journal', 'standalone', 'standalone-root', 'local', 'vjournal', 'unsupported', 'now', 'now');
@@ -271,6 +271,7 @@ fn export_snapshot_holds_one_revision_while_another_connection_commits() {
             UPDATE calendar_events SET title = 'After' WHERE id = 'event';
             UPDATE calendar_event_attendees SET email = 'after@example.test' WHERE id = 'attendee';
             UPDATE icalendar_value_nodes SET text_value = 'after' WHERE id = 'text';
+            DROP TRIGGER sync_immutable_icalendar_objects;
             UPDATE icalendar_objects SET method = 'PUBLISH' WHERE id = 'object'; COMMIT;",
         )
         .execute(&pool)

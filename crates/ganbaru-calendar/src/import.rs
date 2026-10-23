@@ -12,6 +12,7 @@ use crate::description::{
 mod preservation;
 mod validation;
 
+use crate::geo::parse_geo;
 use preservation::{PreservationOutcome, ProjectedRow, preservation_link_id, replace_preservation};
 use validation::{require_non_empty, skip_reason, timing_refusal, validate_payload};
 
@@ -165,12 +166,6 @@ struct CalendarImportOverride {
     transparency: Option<String>,
     visibility: Option<String>,
     extended_properties: Option<String>,
-}
-
-#[derive(Deserialize)]
-struct CalendarGeoPayload {
-    lat: f64,
-    lng: f64,
 }
 
 #[derive(Deserialize)]
@@ -537,8 +532,8 @@ async fn insert_event(
     .bind(&event.source_uid)
     .bind(&event.visibility)
     .bind(event.priority)
-    .bind(geo.map(|value| value.0))
-    .bind(geo.map(|value| value.1))
+    .bind(geo.map(|value| value.lat))
+    .bind(geo.map(|value| value.lng))
     .bind(event.sequence)
     .bind(if event.meeting_enabled { 1_i64 } else { 0_i64 })
     .bind(if event.guest_can_modify { 1_i64 } else { 0_i64 })
@@ -606,8 +601,8 @@ async fn update_event(
     .bind(&event.status)
     .bind(&event.visibility)
     .bind(event.priority)
-    .bind(geo.map(|value| value.0))
-    .bind(geo.map(|value| value.1))
+    .bind(geo.map(|value| value.lat))
+    .bind(geo.map(|value| value.lng))
     .bind(event.sequence)
     .bind(if event.meeting_enabled { 1_i64 } else { 0_i64 })
     .bind(if event.guest_can_modify { 1_i64 } else { 0_i64 })
@@ -698,6 +693,7 @@ async fn replace_child_rows(
         "DELETE FROM calendar_event_attendees WHERE event_id = ?",
         "DELETE FROM calendar_event_alarms WHERE event_id = ?",
         "DELETE FROM calendar_event_overrides WHERE parent_event_id = ?",
+        "DELETE FROM calendar_event_override_extended_properties WHERE event_id = ?",
     ] {
         sqlx::query(query)
             .bind(event_id)
@@ -795,17 +791,41 @@ async fn insert_child_rows(
         .execute(&mut **tx)
         .await
         .map_err(|e| format!("insert imported override: {e}"))?;
-        replace_extended_properties(
+        insert_override_properties(
             tx,
+            event_id,
             &override_row.id,
-            "calendar_event_override_extended_properties",
-            "override_id",
             parse_string_map(
                 &override_row.extended_properties,
                 "override.extended_properties",
             )?,
         )
         .await?;
+    }
+    Ok(())
+}
+
+/// Inserts the extended properties of a freshly inserted override under its parent event.
+async fn insert_override_properties(
+    tx: &mut Transaction<'_, Sqlite>,
+    event_id: &str,
+    override_id: &str,
+    values: Vec<(String, String)>,
+) -> Result<(), String> {
+    for (sort_order, (key, value)) in values.into_iter().enumerate() {
+        sqlx::query(
+            "INSERT INTO calendar_event_override_extended_properties
+                (id, event_id, override_id, property_key, property_value, sort_order)
+             VALUES (lower(hex(randomblob(16))), ?, ?, ?, ?, ?)",
+        )
+        .bind(event_id)
+        .bind(override_id)
+        .bind(key)
+        .bind(value)
+        .bind(sort_order as i64)
+        .execute(&mut **tx)
+        .await
+        .map_err(|e| format!("insert calendar override property: {e}"))?;
     }
     Ok(())
 }
@@ -833,18 +853,6 @@ fn parse_string_map(value: &Option<String>, field: &str) -> Result<Vec<(String, 
     let map = serde_json::from_str::<std::collections::BTreeMap<String, String>>(json)
         .map_err(|e| format!("{field} is not a valid string map: {e}"))?;
     Ok(map.into_iter().collect())
-}
-
-fn parse_geo(value: &Option<String>) -> Result<Option<(f64, f64)>, String> {
-    let Some(json) = value else {
-        return Ok(None);
-    };
-    let geo = serde_json::from_str::<CalendarGeoPayload>(json)
-        .map_err(|e| format!("geo is not valid coordinates: {e}"))?;
-    if !geo.lat.is_finite() || !geo.lng.is_finite() {
-        return Err("geo coordinates must be finite".to_string());
-    }
-    Ok(Some((geo.lat, geo.lng)))
 }
 
 fn parse_organizer(value: &Option<String>) -> Result<Option<CalendarOrganizerPayload>, String> {
@@ -899,20 +907,43 @@ async fn replace_string_list(
         .execute(&mut **tx)
         .await
         .map_err(|e| format!("clear calendar {table}: {e}"))?;
-    let insert = format!(
-        "INSERT INTO {table} (id, event_id, {column}, sort_order)
-         VALUES (lower(hex(randomblob(16))), ?, ?, ?)"
-    );
+    let insert = string_list_insert(table, column);
     for (sort_order, value) in values.into_iter().enumerate() {
-        sqlx::query(AssertSqlSafe(insert.as_str()))
+        let query = sqlx::query(AssertSqlSafe(insert.as_str()))
             .bind(event_id)
-            .bind(value)
-            .bind(sort_order as i64)
+            .bind(value);
+        let query = if is_date_set(table) {
+            query
+        } else {
+            query.bind(sort_order as i64)
+        };
+        query
             .execute(&mut **tx)
             .await
             .map_err(|e| format!("insert calendar {table}: {e}"))?;
     }
     Ok(())
+}
+
+/// Whether a list table is a date set keyed by its date, which repeats at most once and has no
+/// stored order.
+pub(crate) fn is_date_set(table: &str) -> bool {
+    matches!(table, "calendar_event_exdates" | "calendar_event_rdates")
+}
+
+/// Insert statement for one value of a list table. A date set ignores a repeated date.
+pub(crate) fn string_list_insert(table: &str, column: &str) -> String {
+    if is_date_set(table) {
+        format!(
+            "INSERT INTO {table} (id, event_id, {column})
+             VALUES (lower(hex(randomblob(16))), ?, ?) ON CONFLICT DO NOTHING"
+        )
+    } else {
+        format!(
+            "INSERT INTO {table} (id, event_id, {column}, sort_order)
+             VALUES (lower(hex(randomblob(16))), ?, ?, ?)"
+        )
+    }
 }
 
 async fn replace_extended_properties(

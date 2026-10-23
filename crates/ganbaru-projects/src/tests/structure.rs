@@ -15,8 +15,8 @@ fn delete_group_cascades_projects_and_keeps_calendar_events() {
         .await
         .unwrap();
         sqlx::query(
-            "INSERT INTO project_task_event_links (task_id, event_id)
-             VALUES ('task-a', 'event-a')",
+            "INSERT INTO project_task_event_links (task_id, event_id, sync_key)
+             VALUES ('task-a', 'event-a', 'link-a')",
         )
         .execute(&pool)
         .await

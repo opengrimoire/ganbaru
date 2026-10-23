@@ -315,7 +315,7 @@ pub(super) const LINKS: TableSpec = TableSpec {
 };
 
 /// Prefix of [`MEMBERSHIPS`] keys.
-const MEMBERSHIP_KEY_PREFIX: &str = "fixture_membership";
+pub(super) const MEMBERSHIP_KEY_PREFIX: &str = "fixture_membership";
 
 /// The `sync_key` of the membership of `item` in `end`.
 pub(super) fn membership_key(item: &str, end: &str) -> String {
@@ -424,7 +424,8 @@ pub(super) const MEMBERSHIPS: TableSpec = TableSpec {
     triggers: &[],
     derived_key: Some(DerivedKey {
         exists_group: membership_group::EXISTS,
-        key_inputs: &[],
+        prefix: Some(MEMBERSHIP_KEY_PREFIX),
+        key_inputs: &["item_id", "end_id"],
     }),
     tree: None,
     acyclic: None,
@@ -603,7 +604,8 @@ pub(super) const EDGES: TableSpec = TableSpec {
     triggers: &[],
     derived_key: Some(DerivedKey {
         exists_group: edge_group::EXISTS,
-        key_inputs: &[],
+        prefix: Some(EDGE_KEY_PREFIX),
+        key_inputs: &["from_id", "to_id"],
     }),
     tree: None,
     acyclic: Some(AcyclicSpec {
@@ -842,7 +844,8 @@ pub(super) const MEMO_TAGS: TableSpec = TableSpec {
     ],
     derived_key: Some(DerivedKey {
         exists_group: group_id(1),
-        key_inputs: &[],
+        prefix: Some(MEMO_TAG_KEY_PREFIX),
+        key_inputs: &["memo_id", "tag"],
     }),
     holds_deletes: false,
     ..MEMOS

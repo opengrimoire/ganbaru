@@ -15,7 +15,7 @@ use ganbaru_sync_contracts::bounds::{
     MAX_BLOB_FIELD_BYTES, MAX_FIELDS_PER_VALUE, MAX_ORDER_KEY_BYTES, MAX_ROW_KEY_BYTES,
     MAX_TEXT_FIELD_BYTES,
 };
-use ganbaru_sync_contracts::{GroupId, GroupMask, TableId};
+use ganbaru_sync_contracts::{GroupId, GroupMask, TableId, derived_key};
 
 use crate::assets::AssetClass;
 
@@ -721,9 +721,15 @@ pub struct DerivedKey {
     /// The `Register` group with no domain column whose value is `[Integer(1)]` while the row
     /// exists and `[Integer(0)]` after it is removed.
     pub exists_group: GroupId,
-    /// Columns besides the primary key that the key is derived from, such as the inputs of a
-    /// domain id formula. `Immutable` groups of the table hold only primary key columns and
-    /// these, because a re-add seals every group again and must write the same values.
+    /// Prefix of [`ganbaru_sync_contracts::derived_key`] when the row key is that function of
+    /// [`Self::key_inputs`]. `None` only for a natural key with no key inputs, such as a
+    /// preference name. A composite-key table always declares one.
+    pub prefix: Option<&'static str>,
+    /// Columns the key is derived from, in derivation order: the primary key columns of a
+    /// composite-key table, or the inputs of a domain id formula. Every create and every re-add
+    /// is checked to carry the key these values derive. `Immutable` groups of the table hold
+    /// only primary key columns and these, because a re-add seals every group again and must
+    /// write the same values.
     pub key_inputs: &'static [&'static str],
 }
 
@@ -1483,8 +1489,31 @@ fn derived_key_problems(table: &TableSpec) -> Vec<String> {
             problems.push(format!("key input {input} is not an immutable column"));
         }
     }
+    match derived.prefix {
+        Some(prefix) => {
+            if derived_key(prefix, &[KEY_PREFIX_PROBE]).is_err() {
+                problems.push(format!(
+                    "key prefix {prefix} is not a valid derived key prefix"
+                ));
+            }
+            if derived.key_inputs.is_empty() {
+                problems.push("a key prefix needs key inputs".to_string());
+            }
+        }
+        None => {
+            if !derived.key_inputs.is_empty() {
+                problems.push("key inputs need a key prefix".to_string());
+            }
+            if table.has_composite_key() {
+                problems.push("a composite-key table derives its key with a prefix".to_string());
+            }
+        }
+    }
     problems
 }
+
+/// A valid key part, used to check a declared prefix through the only key encoder.
+const KEY_PREFIX_PROBE: &str = "probe";
 
 /// Why a table's tree declaration is malformed: the parent group references the table itself,
 /// the position group is a `Position` group, and the table has a single row key it never

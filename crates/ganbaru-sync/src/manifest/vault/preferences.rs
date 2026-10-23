@@ -90,6 +90,7 @@ pub const PREFERENCES: TableSpec = TableSpec {
     triggers: &[],
     derived_key: Some(DerivedKey {
         exists_group: group::EXISTS,
+        prefix: None,
         key_inputs: &[],
     }),
     tree: None,

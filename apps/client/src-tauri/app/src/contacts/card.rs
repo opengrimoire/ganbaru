@@ -185,9 +185,9 @@ pub(crate) async fn rotate_card(
         .map_err(|error| ContactsError::Failed(format!("generate card nonce: {error}")))?;
     let now = super::store::format_time(super::store::now());
     let revision: i64 = sqlx::query_scalar(
-        "UPDATE contacts_local_identity
+        "UPDATE contact_card
          SET card_nonce = ?, card_revision = card_revision + 1, updated_at = ?
-         WHERE singleton = 1
+         WHERE key = 'card'
          RETURNING card_revision",
     )
     .bind(encode_nonce(&card_nonce))

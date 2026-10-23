@@ -34,6 +34,10 @@ fn guarded_set_excludes_replicated_owned_derived_and_engine_tables() {
             "quick_note_text_runs",
             "quick_notes_search_fts",
             "quick_notes_search_fts_data",
+            "contacts",
+            "contact_requests",
+            "contact_card",
+            "contacts_local_identity",
             "sync_ops",
             "sync_capture",
             "_sqlx_migrations",
@@ -43,12 +47,10 @@ fn guarded_set_excludes_replicated_owned_derived_and_engine_tables() {
                 "{excluded} is guarded"
             );
         }
-        for guarded in ["projects", "contacts_local_identity"] {
-            assert!(
-                tables.iter().any(|table| table == guarded),
-                "{guarded} is not guarded"
-            );
-        }
+        assert!(
+            tables.iter().any(|table| table == "projects"),
+            "projects is not guarded"
+        );
     });
 }
 

@@ -32,9 +32,8 @@ fn space_context_needs_the_person_identity() {
         replica
             .exec(&format!(
                 "INSERT INTO contacts_local_identity
-                    (singleton, public_key, card_nonce, created_at, updated_at)
-                 VALUES (1, '{}', 'AAAAAAAAAAAAAAAAAAAAAA', '2026-01-01T00:00:00Z',
-                    '2026-01-01T00:00:00Z')",
+                    (singleton, public_key, created_at)
+                 VALUES (1, '{}', '2026-01-01T00:00:00Z')",
                 person().public_key().to_text()
             ))
             .await;

@@ -20,7 +20,7 @@ use crate::adapter::{AdapterError, Adapters, DomainAdapter, Presentation};
 use crate::assets::AssetClass;
 use crate::domains::{vault_adapters, vault_hooks};
 use crate::hooks::{ChangeSink, HookFuture, MaterializeHook};
-use crate::manifest::vault::{VAULT_MANIFEST_VERSION, preferences, quick_notes, themes};
+use crate::manifest::vault::{VAULT_MANIFEST_VERSION, contacts, preferences, quick_notes, themes};
 use crate::manifest::{
     AcyclicSpec, Collation, ColumnSpec, ColumnType, DerivedKey, DeviceTable, DomainManifest,
     DomainTrigger, GroupSpec, GroupStorage, KeyDerivedColumn, LocalColumn, Manifest, MergeKind,
@@ -1272,6 +1272,7 @@ pub(super) const TEST_DOMAINS: &[&DomainManifest] = &[
     &quick_notes::DOMAIN,
     &preferences::DOMAIN,
     &themes::DOMAIN,
+    &contacts::DOMAIN,
     &FIXTURE_DOMAIN,
 ];
 

@@ -96,20 +96,26 @@ fn conversion_rewrites_placeholder_keys_and_icon_sizes_and_a_second_pass_changes
 }
 
 #[test]
-fn conversion_assert_refuses_a_dependency_whose_id_alone_is_still_a_placeholder() {
+fn conversion_assert_refuses_a_placeholder_dependency_until_converted() {
     block_on(async {
         let pool = migrated_memory_pool().await;
         insert_project_graph_fixture(&pool).await;
         sqlx::query(
             "INSERT INTO project_task_dependencies (id, sync_key, blocking_task_id, blocked_task_id, dependency_type)
-             VALUES ('pending:9', ?, 'task-a', 'task-b', 'blocks')",
+             VALUES ('pending:9', 'pending:9', 'task-a', 'task-b', 'blocks')",
         )
-        .bind(dependency_key("task-a", "task-b").unwrap())
         .execute(&pool)
         .await
         .unwrap();
         assert!(assert_converted(&pool).await.is_err());
         convert(&pool, &std::env::temp_dir()).await.unwrap();
         assert_converted(&pool).await.unwrap();
+        let key = dependency_key("task-a", "task-b").unwrap();
+        let row: (String, String) =
+            sqlx::query_as("SELECT id, sync_key FROM project_task_dependencies")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(row, (key.clone(), key));
     });
 }

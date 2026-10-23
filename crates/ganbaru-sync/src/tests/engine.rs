@@ -2287,6 +2287,12 @@ fn recovery_root_tables_follow_cascades_and_leave_out_derived_keys() {
             crate::manifest::vault::themes::THEMES_TABLE,
             crate::manifest::vault::music::ITEMS_TABLE,
             crate::manifest::vault::music::PLAYLISTS_TABLE,
+            // Groups, sections, and statuses cascade into projects and tasks.
+            crate::manifest::vault::projects::GROUPS_TABLE,
+            crate::manifest::vault::projects::PROJECTS_TABLE,
+            crate::manifest::vault::projects::SECTIONS_TABLE,
+            crate::manifest::vault::projects::STATUSES_TABLE,
+            crate::manifest::vault::projects::TASKS_TABLE,
             ITEMS_TABLE,
             CYCLE_A_TABLE,
             CYCLE_B_TABLE,

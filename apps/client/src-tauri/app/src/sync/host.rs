@@ -239,6 +239,7 @@ impl<R: Runtime> SyncHost for AppHandle<R> {
 
     async fn refresh_cached(&self, notices: &[ChangeNotice]) {
         crate::vault::preferences::on_sync_notices(self, notices).await;
+        crate::projects::sync::on_sync_notices(self, notices);
         #[cfg(desktop)]
         crate::music::sync::on_sync_notices(self, notices).await;
     }

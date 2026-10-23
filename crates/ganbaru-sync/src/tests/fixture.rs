@@ -21,7 +21,7 @@ use crate::assets::AssetClass;
 use crate::domains::{vault_adapters, vault_hooks};
 use crate::hooks::{ChangeSink, HookFuture, MaterializeHook};
 use crate::manifest::vault::{
-    VAULT_MANIFEST_VERSION, contacts, music, preferences, quick_notes, themes,
+    VAULT_MANIFEST_VERSION, contacts, music, preferences, projects, quick_notes, themes,
 };
 use crate::manifest::{
     AcyclicSpec, Collation, ColumnSpec, ColumnType, DerivedKey, DeviceTable, DomainManifest,
@@ -514,7 +514,7 @@ pub(super) const NODES: TableSpec = TableSpec {
     derived_key: None,
     tree: Some(TreeSpec {
         parent_group: node_group::PARENT,
-        position_group: node_group::POSITION,
+        position_group: Some(node_group::POSITION),
         max_depth: Some(NODE_MAX_DEPTH),
     }),
     acyclic: None,
@@ -1276,6 +1276,7 @@ pub(super) const TEST_DOMAINS: &[&DomainManifest] = &[
     &themes::DOMAIN,
     &contacts::DOMAIN,
     &music::DOMAIN,
+    &projects::DOMAIN,
     &FIXTURE_DOMAIN,
 ];
 
@@ -1349,7 +1350,8 @@ fn fixture_schema() -> String {
          );
          CREATE TABLE fixture_nodes (
              id TEXT PRIMARY KEY CHECK (trim(id) <> ''),
-             parent_id TEXT REFERENCES fixture_nodes(id) ON DELETE CASCADE,
+             parent_id TEXT REFERENCES fixture_nodes(id) ON DELETE CASCADE
+                 CHECK (parent_id IS NULL OR parent_id <> id),
              position TEXT NOT NULL,
              label TEXT NOT NULL CHECK (length(label) <= 40)
          );

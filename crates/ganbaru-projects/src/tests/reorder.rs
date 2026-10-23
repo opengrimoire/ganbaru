@@ -177,7 +177,7 @@ fn reorder_subtasks_includes_siblings_in_other_sections() {
     block_on(async {
         let pool = migrated_memory_pool().await;
         seed(&pool).await;
-        sqlx::raw_sql("INSERT INTO project_sections (id, project_id, name, order_key) VALUES ('section-b', 'project-a', 'Another', 'b0');
+        sqlx::raw_sql("INSERT INTO project_sections (id, project_id, name, order_key) VALUES ('section-b', 'project-a', 'Another', 'a2');
             UPDATE project_tasks SET parent_task_id = 'task-c' WHERE id IN ('task-a', 'task-b');
             UPDATE project_tasks SET section_id = 'section-b' WHERE id = 'task-b';")
             .execute(&pool).await.unwrap();

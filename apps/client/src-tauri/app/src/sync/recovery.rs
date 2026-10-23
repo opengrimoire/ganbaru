@@ -3,7 +3,7 @@
 
 use std::sync::LazyLock;
 
-use ganbaru_sync::manifest::vault::{music, quick_notes, themes};
+use ganbaru_sync::manifest::vault::{music, projects, quick_notes, themes};
 use ganbaru_sync::{DeviceRef, Engine, local};
 pub(crate) use ganbaru_sync_replica::recovery::{
     RecoveredRow, RecoveryAction, RecoveryChoice, RecoveryRestorers, RestoreFuture, close,
@@ -20,6 +20,11 @@ static RESTORERS: LazyLock<RecoveryRestorers> = LazyLock::new(|| {
         .with(&themes::THEMES, restore_theme)
         .with(&music::PLAYLISTS, restore_music_playlist)
         .with(&music::ITEMS, refuse_music_item)
+        .with(&projects::GROUPS, refuse_projects_row)
+        .with(&projects::PROJECTS, refuse_projects_row)
+        .with(&projects::SECTIONS, refuse_projects_row)
+        .with(&projects::STATUSES, refuse_projects_row)
+        .with(&projects::TASKS, refuse_projects_row)
 });
 
 /// The recovery restorers of the vault domains.
@@ -72,6 +77,14 @@ fn restore_music_playlist(conn: &mut SqliteConnection, row: RecoveredRow) -> Res
 fn refuse_music_item(_: &mut SqliteConnection, _: RecoveredRow) -> RestoreFuture<'_> {
     Box::pin(async {
         Err("a deleted Music library item comes back by adding its source again".to_string())
+    })
+}
+
+/// Refuses to restore a deleted Projects row, which keeps its offer discardable. Restoring a
+/// project with its retained subtree belongs to the Projects recovery presentation.
+fn refuse_projects_row(_: &mut SqliteConnection, _: RecoveredRow) -> RestoreFuture<'_> {
+    Box::pin(async {
+        Err("deleted Projects rows cannot be restored from the recovery list".to_string())
     })
 }
 

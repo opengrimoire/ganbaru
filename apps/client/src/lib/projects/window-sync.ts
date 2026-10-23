@@ -43,6 +43,11 @@ export function publishProjectChanges(mutation: ProjectMutation, shownProjectIds
   projectChanges.publish(projectMutationChangeKeys(mutation, shownProjectIds));
 }
 
+/** Tell other windows of this vault that sync recovery changed Projects rows, so every project reloads. */
+export function publishProjectsSyncChange(): void {
+  projectChanges.publish([PROJECTS_SYNC_CHANGE_KEY]);
+}
+
 /** Receive the project ids (or the workspace key) other windows changed, gathered per pause in their editing. */
 export function listenForProjectChanges(onChange: (keys: ReadonlySet<string>) => void): Promise<() => void> {
   return projectChanges.listen(onChange);

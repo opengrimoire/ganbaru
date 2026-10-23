@@ -15,7 +15,9 @@ import {
 } from "$lib/projects/snapshot/optional-data";
 import { mergeProjectSnapshot } from "$lib/projects/snapshot/queries";
 import { projectOrderRanks } from "$lib/projects/order";
-import { listenForProjectChanges, projectsStillLoaded, publishProjectChanges } from "$lib/projects/window-sync";
+import { PROJECTS_SYNC_CHANGE_KEY, listenForProjectChanges, projectsStillLoaded, publishProjectChanges } from "$lib/projects/window-sync";
+import { onProjectsSyncChanged } from "$lib/projects/sync-events";
+import { projectConflicts } from "./project-conflicts.svelte";
 import { invalidateProjectTaskReminderSchedule } from "$lib/projects/task-reminder-schedule.svelte";
 import { applyCalendarEventProjectAssignments } from "$lib/projects/calendar-assignments";
 import { configKeyChanged, onConfigChangedElsewhere } from "$lib/vault/config";
@@ -673,7 +675,19 @@ async function refreshTaskDetail(projectId: string, taskId: string): Promise<Pro
   return detail.task;
 }
 
+let listeningForSyncRecovery = false;
+
+/** Reload what sync recovery restored or discarded from this window's settings, as for any other window's change. */
+function listenForSyncRecovery(): void {
+  if (listeningForSyncRecovery) return;
+  listeningForSyncRecovery = true;
+  onProjectsSyncChanged(() => {
+    void refreshFromOtherWindow(new Set([PROJECTS_SYNC_CHANGE_KEY]));
+  });
+}
+
 function listenForOtherWindows(): void {
+  listenForSyncRecovery();
   if (listeningForOtherWindows) return;
   listeningForOtherWindows = true;
   void listenForProjectChanges((projectIds) => {
@@ -692,6 +706,7 @@ function listenForOtherWindows(): void {
 function refreshFromOtherWindow(projectIds: ReadonlySet<string>): Promise<void> {
   const shown = new Set(shownProjectIds().filter((projectId): projectId is string => Boolean(projectId)));
   loadedProjectIds = projectsStillLoaded(loadedProjectIds, shown, projectIds);
+  projectConflicts.invalidate();
   invalidateProjectTaskReminderSchedule();
   if (otherWindowRefresh) {
     otherWindowRefreshQueued = true;
@@ -754,7 +769,13 @@ const actions = createProjectStoreActions({
   ensureProjectData,
   ensureTaskDetailData,
   refreshTaskDetail,
-  onCommitted: (mutation) => publishProjectChanges(mutation, shownProjectIds()),
+  onCommitted: (mutation) => {
+    // Adding or removing a dependency changes whether a hidden one can be added back without a cycle.
+    if (mutation.changed.dependencies.length > 0 || mutation.removals.some((removal) => removal.kind === "dependency")) {
+      projectConflicts.invalidate();
+    }
+    publishProjectChanges(mutation, shownProjectIds());
+  },
   canWrite: canWriteProjects,
 });
 

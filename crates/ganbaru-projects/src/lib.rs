@@ -5,6 +5,7 @@
 //! Callers supply an authorized vault pool. Project creation also creates the managed working
 //! folder under the supplied vault root.
 
+pub mod conflicts;
 pub mod conversion;
 pub mod custom_fields;
 mod defaults;

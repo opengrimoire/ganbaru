@@ -21,7 +21,7 @@ use crate::error::{SyncResult, corrupt};
 use crate::manifest::{MergeKind, OnDelete, TableSpec};
 use crate::merge::{self, RowState, table_param};
 use crate::repair::Contested;
-use crate::{Engine, edges, publication, repair, sql, tree};
+use crate::{Engine, edges, exclusion, publication, repair, sql, tree};
 
 /// Longest chain of redirects and duplicate keepers a reference follows.
 pub(crate) const MAX_REDIRECT_DEPTH: usize = 64;
@@ -50,6 +50,8 @@ pub(crate) enum RootKind {
     Missing,
     /// A live row whose merged winners fail its publication predicate.
     Unpublished,
+    /// A live row hidden as a late change of a removed device.
+    Late,
 }
 
 impl RootKind {
@@ -101,6 +103,8 @@ pub(crate) struct Visibility {
     pub(crate) severed: BTreeSet<RowRef>,
     /// Roots per row; a shown row maps to no roots.
     cascade: HashMap<RowRef, Roots>,
+    /// No late change is recorded, so no row is hidden as one. Unknown unless loaded.
+    no_late: bool,
 }
 
 impl Visibility {
@@ -158,6 +162,7 @@ impl Visibility {
         dirty: &mut BTreeSet<RowRef>,
     ) -> SyncResult<Self> {
         let mut visibility = Self::with_duplicates(duplicates);
+        visibility.no_late = !exclusion::any_late(conn).await?;
         visibility.detached = tree::detached(engine, conn, &visibility, dirty).await?;
         visibility.severed = edges::severed(engine, conn, &visibility, dirty).await?;
         Ok(visibility)
@@ -181,6 +186,7 @@ impl Visibility {
                 if self.is_severed(*table, key)
                     || removed(engine, conn, *table, key).await?
                     || unpublished(engine, conn, *table, key).await?
+                    || self.late(engine, conn, *table, key).await?
                     || self.cascade_roots(engine, conn, *table, key).await?.hides()
                 {
                     hidden.insert((*table, key.clone()));
@@ -288,6 +294,9 @@ impl Visibility {
             Some(RowState::Live) if unpublished(engine, conn, *table, key).await? => {
                 Some(RootKind::Unpublished)
             }
+            Some(RowState::Live) if self.late(engine, conn, *table, key).await? => {
+                Some(RootKind::Late)
+            }
             Some(RowState::Live) if identity && self.is_duplicate(*table, key) => {
                 Some(RootKind::Duplicate)
             }
@@ -385,7 +394,7 @@ impl Visibility {
     }
 
     /// Whether a row is hidden by its own merge state, before cascade: tombstoned, removed,
-    /// severed, a hidden duplicate, or failing its publication predicate.
+    /// severed, a hidden duplicate, failing its publication predicate, or a late change.
     pub(crate) async fn self_hidden(
         &self,
         engine: &Engine,
@@ -401,8 +410,37 @@ impl Visibility {
                     || self.is_severed(table, key)
                     || removed(engine, conn, table, key).await?
                     || unpublished(engine, conn, table, key).await?
+                    || self.late(engine, conn, table, key).await?
             }
         })
+    }
+
+    /// Whether a live row is hidden as a late change of a removed device.
+    async fn late(
+        &self,
+        engine: &Engine,
+        conn: &mut SqliteConnection,
+        table: TableId,
+        key: &str,
+    ) -> SyncResult<bool> {
+        if self.no_late {
+            return Ok(false);
+        }
+        exclusion::hides(engine, conn, table, key).await
+    }
+
+    /// Whether a row without merge state was created by a removed device's excluded operation,
+    /// so a domain row left from applying that operation before the removal goes away.
+    pub(crate) async fn late_created(
+        &self,
+        conn: &mut SqliteConnection,
+        table: TableId,
+        key: &str,
+    ) -> SyncResult<bool> {
+        if self.no_late {
+            return Ok(false);
+        }
+        exclusion::created_late(conn, table, key).await
     }
 
     /// Whether a published row is not materialized.

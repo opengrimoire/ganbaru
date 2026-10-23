@@ -1,9 +1,9 @@
 //! Seeded simulation of installations that edit Quick notes and the test-only fixture domain,
 //! partly offline, and exchange operations through a hub over a network that drops, duplicates,
 //! and reorders messages.
-//! Engine calls crash at failpoints and must leave no trace, the hub removes spare devices and
-//! refuses what they write afterwards, and conflicts and recovery offers are resolved along the way. Exchanges sometimes end with
-//! the hub and the exchanging replica compacting what is stable, except one replica that never
+//! Engine calls crash at failpoints and must leave no trace, the hub removes spare devices while
+//! they edit and excludes what they write past the cutoff, and conflicts and recovery offers are
+//! resolved along the way. Exchanges sometimes end with the hub and the exchanging replica compacting what is stable, except one replica that never
 //! compacts; compaction never changes domain rows. After every step the databases keep their
 //! invariants; at quiescence every installation holds the same replicated state.
 //!
@@ -14,7 +14,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use ganbaru_sync_contracts::{Field, VersionVector, WriterId};
+use ganbaru_sync_contracts::{Envelope, Field, VersionVector, WriterId};
 
 use super::block_on;
 use super::fixture::{
@@ -27,7 +27,9 @@ use crate::error::failpoints;
 use crate::hold::{self, MAX_HOLD_MS};
 use crate::manifest::vault::quick_notes::{NOTES_TABLE, TAGS_TABLE, note_group};
 use crate::stability::{CountedDevice, DeviceStanding};
-use crate::{ApplyReport, StoreOutcome, StoreRefusal, SyncError, SyncResult, compaction_limit};
+use crate::{
+    ApplyReport, HoldReason, StoreOutcome, StoreRefusal, SyncError, SyncResult, compaction_limit,
+};
 
 const DEFAULT_SEEDS: u64 = 48;
 const SEEDS_VARIABLE: &str = "GANBARU_SYNC_SOAK_SEEDS";
@@ -205,10 +207,23 @@ async fn deliver(rng: &mut Rng, to: &mut Replica, ops: &[Vec<u8>]) -> bool {
     .await
     .unwrap_or_else(|error| panic!("replica {} failed to store: {error:?}", to.index));
     let mut stored = false;
-    for outcome in outcomes {
+    for (op, outcome) in ops.iter().zip(outcomes) {
         match outcome {
             StoreOutcome::Stored { held } => {
-                assert_eq!(held, None, "replica {} held an operation", to.index);
+                // Only an operation of a removed device past its cutoff is held.
+                if held.is_some() {
+                    assert_eq!(held, Some(HoldReason::Invalid));
+                    let operation = Envelope::decode(op).unwrap().operation().unwrap();
+                    let excluded = to
+                        .count(&format!(
+                            "SELECT count(*) FROM sync_ops WHERE writer_id = x'{}' AND seq = {}
+                                AND excluded_revision IS NOT NULL",
+                            operation.writer.to_hex(),
+                            operation.seq
+                        ))
+                        .await;
+                    assert_eq!(excluded, 1, "replica {} held an operation", to.index);
+                }
                 stored = true;
             }
             StoreOutcome::Duplicate
@@ -1425,9 +1440,11 @@ impl Sim {
         }
     }
 
-    /// A spare enrolled device catches up with the hub, writes an item the hub stores, and is
-    /// removed by the hub, which refuses what the device writes afterwards. The spare leaves the
-    /// run; its stored writes stay in every replica.
+    /// A spare enrolled device catches up with the hub, writes an item the hub stores, then
+    /// creates another and edits the first while the hub removes it. The hub stores those late
+    /// operations but excludes them, offering them as late changes. The spare leaves the run;
+    /// its writes before the cutoff stay in every replica, and every replica derives the same
+    /// late changes.
     async fn remove_spare(&mut self) {
         let index = self.replicas.len() + 1 + self.spares;
         if index >= ENROLLED_DEVICES {
@@ -1445,10 +1462,30 @@ impl Sim {
             )
         };
         let now = iso_time(spare.now_ms);
-        let sql = insert(self.next_id("item", index), self.words(), &now);
+        let kept = self.next_id("item", index);
+        let sql = insert(kept.clone(), self.words(), &now);
         assert!(spare.try_exec(&sql).await);
         seal(&mut self.rng, &mut spare).await;
         send(&mut self.rng, &mut spare, &mut self.hub, true).await;
+        let kept_label = self
+            .hub
+            .scalar_text(&format!(
+                "SELECT label FROM fixture_items WHERE id = {}",
+                quoted(&kept)
+            ))
+            .await;
+
+        // Edits the spare makes while the hub removes it arrive past its cutoff.
+        let late = self.next_id("item", index);
+        let sql = insert(late.clone(), self.words(), &now);
+        assert!(spare.try_exec(&sql).await);
+        let sql = format!(
+            "UPDATE fixture_items SET label = {} WHERE id = {}",
+            quoted(&self.words()),
+            quoted(&kept)
+        );
+        assert!(spare.try_exec(&sql).await);
+        seal(&mut self.rng, &mut spare).await;
 
         let device = spare.device_id.clone();
         let hub = &mut self.hub;
@@ -1462,12 +1499,40 @@ impl Sim {
         .unwrap_or_else(|error| panic!("hub failed to remove {device}: {error:?}"));
         assert!(revision > 0);
 
-        let sql = insert(self.next_id("item", index), self.words(), &now);
-        assert!(spare.try_exec(&sql).await);
-        seal(&mut self.rng, &mut spare).await;
+        // The hub stores the late operations but excludes them: the created item stays hidden
+        // and the kept item keeps its label.
+        send(&mut self.rng, &mut spare, &mut self.hub, true).await;
+        let hidden = self
+            .hub
+            .count(&format!(
+                "SELECT count(*) FROM fixture_items WHERE id = {}",
+                quoted(&late)
+            ))
+            .await;
+        assert_eq!(
+            hidden, 0,
+            "a late item of removed device {device} is visible"
+        );
+        let label = self
+            .hub
+            .scalar_text(&format!(
+                "SELECT label FROM fixture_items WHERE id = {}",
+                quoted(&kept)
+            ))
+            .await;
         assert!(
-            !send(&mut self.rng, &mut spare, &mut self.hub, true).await,
-            "the hub stored an operation of removed device {device}"
+            kept_label.is_none() || label == kept_label,
+            "a late edit of removed device {device} applied"
+        );
+        assert!(
+            self.hub
+                .engine
+                .late_changes(&mut self.hub.conn, &self.hub.ctx)
+                .await
+                .unwrap()
+                .iter()
+                .any(|change| change.row_key == late),
+            "the late item of removed device {device} is not offered"
         );
     }
 

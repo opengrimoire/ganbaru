@@ -130,9 +130,11 @@ fn remap(
     Ok(remapped)
 }
 
-/// Removes the versions and tombstones of the old writer's operations past `keep_through`,
-/// revives rows left without tombstones, and marks every touched row dirty.
-async fn remove_effects(
+/// Removes the versions and tombstones of a writer's operations past `keep_through`, revives
+/// rows left without tombstones, and marks every touched row dirty. A re-seal replaces what it
+/// removes; a removal cutoff leaves rows its excluded operations created without merge state,
+/// which late changes keep hidden.
+pub(crate) async fn remove_effects(
     conn: &mut SqliteConnection,
     batch: &mut Batch,
     old: WriterId,
@@ -162,8 +164,7 @@ async fn remove_effects(
         let table = u16::try_from(table_id)
             .map(TableId)
             .map_err(|_| corrupt("merge state of a table id out of range"))?;
-        // Replacements re-create every removed version and tombstone, so a row is never left
-        // without merge state once the re-seal commits.
+        // A row whose every tombstone was removed is live again.
         sqlx::query(
             "UPDATE sync_rows SET state = 'live', recovery = 0
              WHERE table_id = ? AND row_key = ? AND state = 'tombstoned'

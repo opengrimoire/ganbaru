@@ -14,7 +14,7 @@ use super::replica::{
     ANCHOR_DEVICE_ID, Identity, Replica, anchor_admin, device_id, device_key, enroll_entry, person,
     proposal,
 };
-use crate::{AuthorizationView, StoreOutcome, StoreRefusal};
+use crate::{AuthorizationView, HoldReason, LateChange, StoreOutcome, StoreRefusal};
 
 const STORED: StoreOutcome = StoreOutcome::Stored { held: None };
 
@@ -298,21 +298,33 @@ fn store_admits_only_writers_of_enrolled_devices_with_their_enrolled_key() {
         observer.pull(&mut hub).await;
         assert_eq!(observer.stored_vector().await.get(&newcomer.writer()), 2);
 
-        // A removal stops the device's writers at the cutoff and refuses its new writers.
+        // A removal excludes the device's operations past the cutoff, which are still stored.
+        // A writer of the removed device the hub never stored has a cutoff of zero, so its
+        // chain is stored and excluded from the genesis on.
         hub.pull(&mut member).await;
         let removed = hub.remove(&member.device_id).await.unwrap();
         tag(&mut member, "tag-late").await;
         let late = member.own_ops().await;
         assert_eq!(
             hub.receive(&late[2..]).await,
-            vec![StoreOutcome::Refused(StoreRefusal::Revoked)]
+            vec![StoreOutcome::Stored {
+                held: Some(HoldReason::Invalid)
+            }]
         );
         member.rotate();
         tag(&mut member, "tag-rotated").await;
         let rotated = member.own_ops().await;
         assert_eq!(
             hub.receive(&rotated[..1]).await,
-            vec![StoreOutcome::Refused(StoreRefusal::Revoked)]
+            vec![StoreOutcome::Stored {
+                held: Some(HoldReason::Invalid)
+            }]
+        );
+        let impostor = Identity::new([34; 32], &device_key(&person(), 2), &member.device_id, None);
+        assert_eq!(
+            hub.receive(&[genesis_of(&rotated[0], &impostor)]).await,
+            vec![StoreOutcome::Refused(StoreRefusal::Untrusted)],
+            "a removed device id under another device key is untrusted"
         );
         observer.pull(&mut hub).await;
         let removal = view(&mut observer).await;
@@ -508,6 +520,370 @@ fn a_handover_supersedes_the_old_epoch_and_equal_epoch_handovers_take_the_lower_
                 .unwrap(),
             Err(ProposalRejection::NotAnchor)
         );
+    });
+}
+
+/// Selected head, entries with their selected flag, and operation states with exclusions.
+type Settled = (
+    (u32, u64, Digest32),
+    Vec<(Vec<u8>, i64, i64)>,
+    Vec<(Vec<u8>, i64, String, Option<i64>)>,
+);
+
+async fn settled(replica: &mut Replica) -> Settled {
+    let head = head(replica).await;
+    let entries = sqlx::query_as(
+        "SELECT writer_id, seq, selected FROM sync_auth_entries ORDER BY writer_id, seq",
+    )
+    .fetch_all(&mut replica.conn)
+    .await
+    .unwrap();
+    let ops = sqlx::query_as(
+        "SELECT writer_id, seq, state, excluded_revision FROM sync_ops ORDER BY writer_id, seq",
+    )
+    .fetch_all(&mut replica.conn)
+    .await
+    .unwrap();
+    (head, entries, ops)
+}
+
+async fn late_changes(replica: &mut Replica) -> Vec<LateChange> {
+    replica
+        .engine
+        .late_changes(&mut replica.conn, &replica.ctx)
+        .await
+        .unwrap()
+}
+
+async fn tags(replica: &mut Replica) -> Vec<String> {
+    sqlx::query_scalar("SELECT id FROM quick_note_tags ORDER BY id")
+        .fetch_all(&mut replica.conn)
+        .await
+        .unwrap()
+}
+
+#[test]
+fn two_admins_removing_each_other_settle_the_same_whatever_order_their_chains_arrive_in() {
+    block_on(async {
+        let mut hub = Replica::anchor(0, 71).await;
+        for index in [20, 21] {
+            hub.sequence(admin_entry(index)).await.unwrap().unwrap();
+        }
+        let mut contenders = Vec::new();
+        for index in [20, 21] {
+            let mut contender = Replica::new(index, 71).await;
+            contender.pull(&mut hub).await;
+            tag(&mut contender, &format!("tag-{index}")).await;
+            contenders.push(contender);
+        }
+        let (left, right) = contenders.split_at_mut(1);
+        left[0].pull(&mut right[0]).await;
+        right[0].pull(&mut left[0]).await;
+
+        // Each admin takes over the anchor and removes the other, then keeps writing. Observers
+        // already hold what both wrote before.
+        let mut shared = Vec::new();
+        let mut chains = Vec::new();
+        for (contender, (index, other)) in contenders.iter_mut().zip([(20, 21), (21, 20)]) {
+            let before = contender.own_ops().await;
+            let (record, bytes) = forge_handover(contender, index).await;
+            assert_eq!(contender.receive(&[bytes]).await, vec![STORED]);
+            contender.apply_all().await.unwrap();
+            assert_eq!(view(contender).await.anchor_device_id, device_id(index));
+            let removal = proposal(
+                contender.ctx.space,
+                &device_admin(index),
+                contender.now_ms,
+                remove_entry(&device_id(other)),
+            );
+            contender.sequence_signed(&removal).await.unwrap().unwrap();
+            tag(contender, &format!("late-{index}")).await;
+            let after = contender.own_ops().await;
+            chains.push((record, after[before.len()..].to_vec()));
+            shared.extend(before);
+        }
+        let (winner, loser) = if chains[0].0.hash() < chains[1].0.hash() {
+            (20, 21)
+        } else {
+            (21, 20)
+        };
+
+        let mut observers = vec![Replica::new(2, 71).await, Replica::new(3, 71).await];
+        for (position, observer) in observers.iter_mut().enumerate() {
+            observer.pull(&mut hub).await;
+            observer.receive(&shared).await;
+            observer.apply_all().await.unwrap();
+            for offset in 0..chains.len() {
+                let (_, ops) = &chains[(position + offset) % chains.len()];
+                observer.receive(ops).await;
+                observer.apply_all().await.unwrap();
+            }
+        }
+
+        let expected = settled(&mut observers[0]).await;
+        assert_eq!(settled(&mut observers[1]).await, expected);
+        let selected = view(&mut observers[0]).await;
+        assert_eq!(selected.anchor_device_id, device_id(winner));
+        let removed = |index: usize| {
+            selected
+                .devices
+                .iter()
+                .find(|device| device.device_id == device_id(index))
+                .unwrap()
+                .removed_revision
+        };
+        assert!(removed(loser).is_some());
+        assert_eq!(removed(winner), None);
+        let unselected = expected.1.iter().filter(|entry| entry.2 == 0).count();
+        assert_eq!(unselected, 2, "the losing handover and its removal");
+        for observer in &mut observers {
+            assert_eq!(view(observer).await, selected);
+            assert_devices_replay_the_selected_chain(observer).await;
+            assert_eq!(
+                tags(observer).await,
+                vec![
+                    format!("late-{winner}"),
+                    "tag-20".to_owned(),
+                    "tag-21".to_owned()
+                ]
+            );
+            assert_eq!(
+                late_changes(observer).await.len(),
+                1,
+                "the loser's tag after its cutoff"
+            );
+        }
+    });
+}
+
+/// Devices of a space whose epoch 0 goes on after admin 20 took the anchor over in epoch 1.
+struct Superseded {
+    /// The epoch 0 anchor, which enrolled devices 22 and 23 after the handover point.
+    hub: Replica,
+    /// Admin 20, anchor of epoch 1.
+    contender: Replica,
+    /// Member 1. Its last operation is sealed against epoch 0's last revision, which epoch 1
+    /// never reaches.
+    member: Replica,
+    /// Device 22, enrolled only in epoch 0.
+    dropout: Replica,
+}
+
+async fn superseded(salt: u64) -> Superseded {
+    let mut hub = Replica::anchor(0, salt).await;
+    hub.sequence(admin_entry(20)).await.unwrap().unwrap();
+    let mut member = Replica::new(1, salt).await;
+    member.pull(&mut hub).await;
+    tag(&mut member, "tag-1a").await;
+    let mut contender = Replica::new(20, salt).await;
+    contender.pull(&mut hub).await;
+    contender.pull(&mut member).await;
+    tag(&mut contender, "tag-20").await;
+
+    for index in [22, 23] {
+        hub.sequence(enroll_entry(&person(), index, DeviceRole::Member))
+            .await
+            .unwrap()
+            .unwrap();
+    }
+    let mut dropout = Replica::new(22, salt).await;
+    dropout.pull(&mut hub).await;
+    tag(&mut dropout, "tag-22a").await;
+    member.pull(&mut hub).await;
+    tag(&mut member, "tag-1b").await;
+
+    let (_, bytes) = forge_handover(&mut contender, 20).await;
+    assert_eq!(contender.receive(&[bytes]).await, vec![STORED]);
+    contender.apply_all().await.unwrap();
+    Superseded {
+        hub,
+        contender,
+        member,
+        dropout,
+    }
+}
+
+/// Authorization revision `bytes` was sealed against.
+fn stamp(bytes: &[u8]) -> u64 {
+    Envelope::decode(bytes)
+        .unwrap()
+        .operation()
+        .unwrap()
+        .header
+        .authorization_revision
+}
+
+#[test]
+fn an_operation_sealed_against_a_superseded_entry_still_applies() {
+    block_on(async {
+        let mut space = superseded(81).await;
+        let mut observer = Replica::new(2, 81).await;
+        observer.pull(&mut space.hub).await;
+        let ops = space.member.own_ops().await;
+        let (seen, last) = ops.split_at(ops.len() - 1);
+        observer.receive(seen).await;
+        observer.receive(&space.contender.own_ops().await).await;
+        observer.apply_all().await.unwrap();
+        let selected = view(&mut observer).await;
+        assert_eq!(selected.anchor_device_id, device_id(20));
+
+        assert!(stamp(&last[0]) > selected.revision);
+        observer.receive(last).await;
+        observer.apply_all().await.unwrap();
+        assert_eq!(
+            observer.applied_vector().await.get(&space.member.writer()),
+            u64::try_from(ops.len()).unwrap()
+        );
+        assert!(tags(&mut observer).await.contains(&"tag-1b".to_owned()));
+    });
+}
+
+#[test]
+fn excluding_an_operation_admitted_against_a_superseded_entry_equals_never_applying_it() {
+    block_on(async {
+        let mut space = superseded(82).await;
+        let removal = proposal(
+            space.contender.ctx.space,
+            &device_admin(20),
+            space.contender.now_ms,
+            remove_entry(&device_id(1)),
+        );
+        space
+            .contender
+            .sequence_signed(&removal)
+            .await
+            .unwrap()
+            .unwrap();
+        let chain = space.contender.own_ops().await;
+        let member = space.member.own_ops().await;
+
+        // The first observer applies the member's last operation before it learns of the
+        // removal; the second learns of the removal first and never applies it.
+        let mut applied = Replica::new(2, 82).await;
+        applied.pull(&mut space.hub).await;
+        applied.receive(&chain[..chain.len() - 1]).await;
+        applied.receive(&member).await;
+        applied.apply_all().await.unwrap();
+        assert!(tags(&mut applied).await.contains(&"tag-1b".to_owned()));
+        applied.receive(&chain).await;
+        applied.apply_all().await.unwrap();
+
+        let mut never = Replica::new(3, 82).await;
+        never.pull(&mut space.hub).await;
+        never.receive(&chain).await;
+        never.apply_all().await.unwrap();
+        never.receive(&member).await;
+        never.apply_all().await.unwrap();
+
+        let expected = settled(&mut never).await;
+        assert!(
+            expected
+                .2
+                .iter()
+                .any(|op| op.0 == space.member.writer().as_bytes().to_vec()
+                    && op.2 == "held"
+                    && op.3.is_some()),
+            "the member's operation past its cutoff is excluded"
+        );
+        assert_eq!(settled(&mut applied).await, expected);
+        assert!(!tags(&mut never).await.contains(&"tag-1b".to_owned()));
+        assert_eq!(tags(&mut applied).await, tags(&mut never).await);
+        let listed = late_changes(&mut never).await;
+        assert_eq!(listed.len(), 1);
+        assert_eq!(late_changes(&mut applied).await, listed);
+        for replica in [&mut applied, &mut never] {
+            replica.check_invariants().await;
+        }
+    });
+}
+
+#[test]
+fn reselecting_a_chain_without_the_removal_reverts_its_exclusions() {
+    block_on(async {
+        let mut space = superseded(84).await;
+        // Epoch 0 goes on to remove the member; the epoch 1 chain forked before the removal.
+        space
+            .hub
+            .sequence(remove_entry(&device_id(1)))
+            .await
+            .unwrap()
+            .unwrap();
+        let member = space.member.own_ops().await;
+        let chain = space.contender.own_ops().await;
+        let member_tags = ["tag-1a".to_owned(), "tag-1b".to_owned()];
+
+        let mut reverted = Replica::new(2, 84).await;
+        reverted.pull(&mut space.hub).await;
+        reverted.receive(&member).await;
+        reverted.apply_all().await.unwrap();
+        assert_eq!(
+            view(&mut reverted).await.anchor_device_id,
+            space.hub.device_id
+        );
+        let excluded = reverted
+            .count("SELECT count(*) FROM sync_ops WHERE excluded_revision IS NOT NULL")
+            .await;
+        assert_eq!(excluded, i64::try_from(member.len()).unwrap());
+        let before = tags(&mut reverted).await;
+        assert!(member_tags.iter().all(|id| !before.contains(id)));
+
+        reverted.receive(&chain).await;
+        reverted.apply_all().await.unwrap();
+        assert_eq!(view(&mut reverted).await.anchor_device_id, device_id(20));
+        let after = tags(&mut reverted).await;
+        assert!(member_tags.iter().all(|id| after.contains(id)));
+        assert!(late_changes(&mut reverted).await.is_empty());
+
+        let mut direct = Replica::new(3, 84).await;
+        direct.pull(&mut space.hub).await;
+        direct.receive(&chain).await;
+        direct.receive(&member).await;
+        direct.apply_all().await.unwrap();
+        assert_eq!(settled(&mut reverted).await, settled(&mut direct).await);
+        assert_eq!(tags(&mut direct).await, after);
+        for replica in [&mut reverted, &mut direct] {
+            replica.check_invariants().await;
+        }
+    });
+}
+
+#[test]
+fn a_device_left_unenrolled_by_reselection_keeps_what_applied_and_its_new_operations_wait() {
+    block_on(async {
+        let mut space = superseded(83).await;
+        let mut observer = Replica::new(2, 83).await;
+        observer.pull(&mut space.hub).await;
+        observer.pull(&mut space.dropout).await;
+        assert!(tags(&mut observer).await.contains(&"tag-22a".to_owned()));
+
+        observer.receive(&space.member.own_ops().await).await;
+        observer.receive(&space.contender.own_ops().await).await;
+        observer.apply_all().await.unwrap();
+        let selected = view(&mut observer).await;
+        assert!(
+            !selected
+                .devices
+                .iter()
+                .any(|device| device.device_id == device_id(22))
+        );
+        assert!(tags(&mut observer).await.contains(&"tag-22a".to_owned()));
+        let applied = observer.applied_vector().await.get(&space.dropout.writer());
+
+        tag(&mut space.dropout, "tag-22b").await;
+        observer.pull(&mut space.dropout).await;
+        assert!(!tags(&mut observer).await.contains(&"tag-22b".to_owned()));
+        assert_eq!(
+            observer.applied_vector().await.get(&space.dropout.writer()),
+            applied
+        );
+        let waiting: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM sync_ops WHERE writer_id = ? AND state = 'waiting'",
+        )
+        .bind(space.dropout.writer().as_bytes().as_slice())
+        .fetch_one(&mut observer.conn)
+        .await
+        .unwrap();
+        assert_eq!(waiting, 1);
     });
 }
 

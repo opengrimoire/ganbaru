@@ -1091,6 +1091,7 @@ const ENGINE_DUMPED: &[(&str, &[&str])] = &[
     ("sync_tombstones", &[]),
     ("sync_auth_entries", &[]),
     ("sync_devices", &[]),
+    ("sync_late_changes", &[]),
 ];
 
 pub(super) fn device_id(index: usize) -> String {

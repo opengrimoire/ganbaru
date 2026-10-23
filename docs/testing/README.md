@@ -90,7 +90,7 @@ The contracts crate owns golden operation vectors, mutation tests, and order key
 
 The engine simulation replays seeded runs of several installations that edit Quick notes, partly offline, through a hub over a network that drops, duplicates, and reorders messages, with crash failpoints, clock skew, and revocations. It checks database invariants after every step and identical replicated state at quiescence. Normal validation runs 48 seeds of 60 steps. `GANBARU_SYNC_SOAK_SEEDS` sets a larger seed count for a soak run, and `GANBARU_SYNC_SEED` replays the single seed that a failing run prints. The simulation keeps one replica set in memory at a time, so a soak run stays within the single-thread memory budget.
 
-The engine's desktop performance budgets (capture overhead per write, seal of 100 changed notes, apply of a 256-operation batch) are an ignored test that asserts only in the release profile, on the median of several runs: `cargo test -p ganbaru-sync --lib --release -j 1 budgets -- --ignored --nocapture --test-threads=1`.
+The engine's desktop performance budgets (capture overhead per write, seal of 100 changed notes, apply of a 256-operation batch, a removal excluding 1,024 applied operations, and the apply cost of retaining displaced versions) are ignored tests that assert only in the release profile, on the median of several runs: `cargo test -p ganbaru-sync --lib --release -j 1 budgets -- --ignored --nocapture --test-threads=1`.
 
 Use the native messaging binary only for binary-local tests:
 

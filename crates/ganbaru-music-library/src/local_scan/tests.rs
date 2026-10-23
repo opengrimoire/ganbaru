@@ -182,3 +182,58 @@ fn unseen_locations_become_missing_without_portable_writes() {
         assert_eq!(restored.2, before.2);
     });
 }
+
+/// Records `key` of `table` in the sync row registry, as publishing its creation does.
+async fn publish(pool: &SqlitePool, table: &ganbaru_sync::manifest::TableSpec, key: &str) {
+    sqlx::query("INSERT INTO sync_rows (table_id, row_key, state) VALUES (?, ?, 'live')")
+        .bind(i64::from(table.id.0))
+        .bind(key)
+        .execute(pool)
+        .await
+        .unwrap();
+}
+
+#[test]
+fn a_file_found_again_after_a_published_deletion_takes_successor_keys() {
+    use ganbaru_sync::manifest::vault::music::{ITEMS, LOCATIONS};
+    crate::test_support::block_on(async {
+        let pool = seeded_pool().await;
+        persist(&pool, &values("Song", 100), 1, 1_700_000_000_000).await;
+        let item = crate::identity::local_item_id("root-1", "Album/Song.mp3");
+        let location = crate::identity::location_id("root-1", "Album/Song.mp3");
+        publish(&pool, &ITEMS, &item).await;
+        publish(&pool, &LOCATIONS, &location).await;
+        sqlx::query("DELETE FROM music_local_locations WHERE id = ?")
+            .bind(&location)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM music_library_items WHERE id = ?")
+            .bind(&item)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let refused = sqlx::query(
+            "INSERT INTO music_library_items
+                (id, identity_key, source_kind, media_kind, original_title,
+                 discovered_at_ms, updated_at_ms)
+             VALUES (?, 'local:refused', 'local-file', 'audio', 'Song', 1, 1)",
+        )
+        .bind(&item)
+        .execute(&pool)
+        .await
+        .expect_err("sync refuses a published key created again");
+        assert!(refused.to_string().contains("cannot be created again"));
+
+        assert_eq!(
+            persist(&pool, &values("Song", 100), 2, 1_700_000_100_000).await,
+            LocalScanOutcome::Written
+        );
+        let found = stored(&pool).await;
+        assert_eq!(found.0, format!("{item}-2"));
+        assert_eq!(found.3, format!("{location}-2"));
+
+        persist(&pool, &values("Song", 200), 3, 1_700_000_200_000).await;
+        assert_eq!(stored(&pool).await.0, format!("{item}-2"));
+    });
+}

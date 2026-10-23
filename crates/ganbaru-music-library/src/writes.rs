@@ -969,7 +969,12 @@ pub async fn upsert_source_collection(
             }
         }
         None => {
-            let id = super::identity::collection_id(&identity_key);
+            let id = super::identity::creatable_key(
+                &mut transaction,
+                super::identity::RetirableTable::Collections,
+                super::identity::collection_id(&identity_key),
+            )
+            .await?;
             sqlx::query(
                 "INSERT INTO music_source_collections
                     (id, kind, identity_key, name, local_root_id, youtube_playlist_id,

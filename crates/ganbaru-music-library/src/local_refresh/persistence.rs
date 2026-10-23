@@ -767,7 +767,13 @@ async fn resolve_item_identity(
             return Ok((item_id, None, false));
         }
     }
-    Ok((new_item_id(request, media), None, false))
+    let item_id = crate::identity::creatable_key(
+        transaction,
+        crate::identity::RetirableTable::Items,
+        new_item_id(request, media),
+    )
+    .await?;
+    Ok((item_id, None, false))
 }
 
 fn scan_values<'a>(

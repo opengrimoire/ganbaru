@@ -198,7 +198,7 @@ function levelFromMilli(value: unknown, max: number, label: string): number {
   return fromThousandths(milli);
 }
 function presetSounds(value: unknown, label: string): MusicSoundscapePresetSound[] {
-  if (!Array.isArray(value) || value.length > MAX_SOUNDSCAPE_LAYERS) throw new Error(`${label} is invalid`);
+  if (!Array.isArray(value)) throw new Error(`${label} is invalid`);
   const sounds = value.map((entry, index) => {
     const sound = record(entry, `${label}[${index}]`);
     return {

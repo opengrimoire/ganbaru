@@ -569,3 +569,88 @@ fn search_rebuild_repairs_stale_rows_and_incremental_membership_metadata() {
         );
     });
 }
+
+#[test]
+fn youtube_counts_and_issues_follow_the_replicated_resolution_state_not_device_availability() {
+    crate::test_support::block_on(async {
+        let pool = pool().await;
+        super::writes::create_playlist(&pool, playlist("playlist-1"))
+            .await
+            .unwrap();
+        let videos = [
+            ("item-0", Some("ready"), "unknown"),
+            ("item-1", Some("resolving"), "unknown"),
+            ("item-2", None, "unknown"),
+            ("item-3", Some("timed-out"), "available"),
+            ("item-4", Some("unavailable"), "available"),
+            ("item-5", Some("embedding-blocked"), "available"),
+        ];
+        for (id, state, availability) in videos {
+            sqlx::query(
+                "INSERT INTO music_library_items
+                    (id, identity_key, source_kind, youtube_video_id, original_title,
+                     youtube_resolution_state, availability, review_state,
+                     discovered_at_ms, updated_at_ms)
+                 VALUES (?, ?, 'youtube-video', ?, ?, ?, ?, 'unreviewed',
+                     1700000000000, 1700000000000)",
+            )
+            .bind(id)
+            .bind(format!("youtube:{id}"))
+            .bind(id)
+            .bind(id)
+            .bind(state)
+            .bind(availability)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+        seed_item(&pool, "item-6", "local:item-6").await;
+        sqlx::query("UPDATE music_library_items SET availability = 'unknown' WHERE id = 'item-6'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        super::writes::upsert_memberships(
+            &pool,
+            MusicBulkMembershipWrite {
+                memberships: (0..7).map(membership).collect(),
+            },
+        )
+        .await
+        .unwrap();
+
+        let summary = super::queries::playlist_summaries(&pool, 1_700_000_100_000, 0, 20)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|playlist| playlist.id == "playlist-1")
+            .unwrap();
+        assert_eq!(summary.total_count, 7);
+        assert_eq!(summary.eligible_count, 4);
+        assert_eq!(summary.unavailable_count, 3);
+
+        let mut issues = super::queries::issues(&pool, 0, 20)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|issue| (issue.id, issue.issue_kind))
+            .collect::<Vec<_>>();
+        issues.sort();
+        assert_eq!(
+            issues,
+            vec![
+                (
+                    "availability:item-3".to_string(),
+                    "youtube-timed-out".to_string()
+                ),
+                (
+                    "availability:item-4".to_string(),
+                    "youtube-unavailable".to_string()
+                ),
+                (
+                    "availability:item-5".to_string(),
+                    "youtube-embedding-blocked".to_string()
+                ),
+            ]
+        );
+    });
+}

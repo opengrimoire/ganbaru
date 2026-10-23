@@ -45,7 +45,13 @@ pub async fn upsert_video(
         .await
         .map_err(|error| MusicLibraryError::database("begin YouTube video save", error))?;
     let item_id = canonical_youtube_item_id(&mut transaction, &request.video_id).await?;
-    upsert_video_row(&mut transaction, &item_id, &request).await?;
+    upsert_video_row(
+        &mut transaction,
+        &item_id,
+        &request,
+        VideoWriteOrigin::Video,
+    )
+    .await?;
     super::search::refresh_item(&mut transaction, &item_id).await?;
     let version: i64 = sqlx::query_scalar("SELECT version FROM music_library_items WHERE id = ?")
         .bind(&item_id)
@@ -114,6 +120,7 @@ pub async fn apply_playlist_snapshot(
                 },
                 resolved_at_ms: request.resolved_at_ms,
             },
+            VideoWriteOrigin::PlaylistSnapshot,
         )
         .await?;
         sqlx::query(
@@ -247,12 +254,47 @@ pub async fn report_source_failure(
         .map_err(|error| MusicLibraryError::database("commit YouTube source failure", error))
 }
 
+/// What asks for a YouTube video row to be written.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum VideoWriteOrigin {
+    /// A save for one video: playback starting or reporting its metadata or failure, or the user
+    /// adding it. It records the resolution it carries, except that `resolving` never replaces
+    /// `ready`.
+    Video,
+    /// A playlist refresh naming the video. It never replaces a resolution already recorded;
+    /// only playing the video resolves it again.
+    PlaylistSnapshot,
+}
+
+/// The resolution state a write leaves, or `None` when the stored one stays.
+fn next_resolution_state(
+    origin: VideoWriteOrigin,
+    stored: Option<&str>,
+    requested: MusicYouTubeResolutionState,
+) -> Option<MusicYouTubeResolutionState> {
+    let stored_resolving =
+        stored.is_none_or(|state| state == MusicYouTubeResolutionState::Resolving.as_ref());
+    let keeps_stored = match origin {
+        VideoWriteOrigin::Video => {
+            requested == MusicYouTubeResolutionState::Resolving
+                && stored == Some(MusicYouTubeResolutionState::Ready.as_ref())
+        }
+        VideoWriteOrigin::PlaylistSnapshot => !stored_resolving,
+    };
+    (!keeps_stored).then_some(requested)
+}
+
 async fn upsert_video_row(
     transaction: &mut Transaction<'_, Sqlite>,
     item_id: &str,
     request: &MusicYouTubeVideoWrite,
+    origin: VideoWriteOrigin,
 ) -> MusicLibraryResult<()> {
     let supplied_title = request.title.trim();
+    // Metadata is resolved once a ready video supplies its own title; a placeholder named by
+    // its video id loses to it when devices write both concurrently.
+    let supplies_metadata = request.resolution_state == MusicYouTubeResolutionState::Ready
+        && !supplied_title.is_empty();
     let stored_title = if supplied_title.is_empty() {
         request.video_id.as_str()
     } else {
@@ -265,21 +307,23 @@ async fn upsert_video_row(
         | MusicYouTubeResolutionState::EmbeddingBlocked
         | MusicYouTubeResolutionState::TimedOut => "unavailable",
     };
-    let existing = sqlx::query_as::<_, (String, String, String, Option<i64>, Option<String>)>(
-        "SELECT id, original_title, original_artist, duration_ms, youtube_resolution_state
+    let existing =
+        sqlx::query_as::<_, (String, String, String, Option<i64>, Option<String>, bool)>(
+            "SELECT id, original_title, original_artist, duration_ms, youtube_resolution_state,
+                metadata_resolved
          FROM music_library_items WHERE youtube_video_id = ?",
-    )
-    .bind(&request.video_id)
-    .fetch_optional(&mut **transaction)
-    .await
-    .map_err(|error| MusicLibraryError::database("load canonical YouTube video", error))?;
-    let Some((existing_id, title, artist, duration_ms, state)) = existing else {
+        )
+        .bind(&request.video_id)
+        .fetch_optional(&mut **transaction)
+        .await
+        .map_err(|error| MusicLibraryError::database("load canonical YouTube video", error))?;
+    let Some((existing_id, title, artist, duration_ms, state, metadata_resolved)) = existing else {
         sqlx::query(
             "INSERT INTO music_library_items
                 (id, identity_key, source_kind, media_kind, youtube_video_id,
-                 original_title, original_artist, duration_ms, availability,
+                 original_title, original_artist, duration_ms, metadata_resolved, availability,
                  youtube_resolution_state, discovered_at_ms, updated_at_ms)
-             VALUES (?, ?, 'youtube-video', 'video', ?, ?, ?, ?, ?, ?, ?, ?)",
+             VALUES (?, ?, 'youtube-video', 'video', ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(item_id)
         .bind(format!("youtube:video:{}", request.video_id))
@@ -287,6 +331,7 @@ async fn upsert_video_row(
         .bind(stored_title)
         .bind(request.channel.trim())
         .bind(request.duration_ms)
+        .bind(supplies_metadata)
         .bind(availability)
         .bind(request.resolution_state.as_ref())
         .bind(request.resolved_at_ms)
@@ -296,9 +341,8 @@ async fn upsert_video_row(
         .map_err(|error| MusicLibraryError::database("save canonical YouTube video", error))?;
         return Ok(());
     };
-    // A video already resolved elsewhere keeps its resolution while a playlist snapshot only names it.
-    let keeps_resolution = request.resolution_state == MusicYouTubeResolutionState::Resolving
-        && state.as_deref() == Some(MusicYouTubeResolutionState::Ready.as_ref());
+    let resolution = next_resolution_state(origin, state.as_deref(), request.resolution_state);
+    let next_metadata_resolved = metadata_resolved || supplies_metadata;
     let next_title = if supplied_title.is_empty() {
         title.as_str()
     } else {
@@ -311,33 +355,32 @@ async fn upsert_video_row(
         supplied_artist
     };
     let next_duration = request.duration_ms.or(duration_ms);
-    let next_state = if keeps_resolution {
-        state.as_deref()
-    } else {
-        Some(request.resolution_state.as_ref())
-    };
+    let next_state = resolution.map_or(state, |resolution| Some(resolution.as_ref().to_string()));
     sqlx::query(
         "UPDATE music_library_items
-         SET original_title = ?, original_artist = ?, duration_ms = ?, youtube_resolution_state = ?,
-             updated_at_ms = ?, version = version + 1
+         SET original_title = ?, original_artist = ?, duration_ms = ?, metadata_resolved = ?,
+             youtube_resolution_state = ?, updated_at_ms = ?, version = version + 1
          WHERE id = ?
-           AND (original_title, original_artist, duration_ms, youtube_resolution_state)
-               IS NOT (?, ?, ?, ?)",
+           AND (original_title, original_artist, duration_ms, metadata_resolved,
+                youtube_resolution_state)
+               IS NOT (?, ?, ?, ?, ?)",
     )
     .bind(next_title)
     .bind(next_artist)
     .bind(next_duration)
-    .bind(next_state)
+    .bind(next_metadata_resolved)
+    .bind(next_state.as_deref())
     .bind(request.resolved_at_ms)
     .bind(&existing_id)
     .bind(next_title)
     .bind(next_artist)
     .bind(next_duration)
-    .bind(next_state)
+    .bind(next_metadata_resolved)
+    .bind(next_state.as_deref())
     .execute(&mut **transaction)
     .await
     .map_err(|error| MusicLibraryError::database("save canonical YouTube video", error))?;
-    if !keeps_resolution {
+    if resolution.is_some() {
         // Availability is observed by this device, so it changes without advancing the item.
         sqlx::query(
             "UPDATE music_library_items SET availability = ?
@@ -419,7 +462,12 @@ async fn ensure_collection(
             id
         }
         None => {
-            let id = collection_id(&identity_key);
+            let id = crate::identity::creatable_key(
+                transaction,
+                crate::identity::RetirableTable::Collections,
+                collection_id(&identity_key),
+            )
+            .await?;
             sqlx::query(
                 "INSERT INTO music_source_collections
                     (id, kind, identity_key, name, youtube_playlist_id, created_at_ms, updated_at_ms)
@@ -614,7 +662,17 @@ async fn canonical_youtube_item_id(
             .fetch_optional(&mut **transaction)
             .await
             .map_err(|error| MusicLibraryError::database("match canonical YouTube video", error))?;
-    Ok(existing.unwrap_or_else(|| youtube_item_id(video_id)))
+    match existing {
+        Some(item_id) => Ok(item_id),
+        None => {
+            crate::identity::creatable_key(
+                transaction,
+                crate::identity::RetirableTable::Items,
+                youtube_item_id(video_id),
+            )
+            .await
+        }
+    }
 }
 
 fn failure_message(state: MusicYouTubeResolutionState) -> &'static str {
@@ -862,6 +920,73 @@ mod tests {
     }
 
     #[test]
+    fn playlist_refresh_keeps_terminal_states_and_resolved_metadata_flags() {
+        crate::test_support::block_on(async {
+            let pool = pool().await;
+            let video = |video_id: &str, title: &str, state| MusicYouTubeVideoWrite {
+                video_id: video_id.to_string(),
+                title: title.to_string(),
+                channel: String::new(),
+                duration_ms: None,
+                resolution_state: state,
+                resolved_at_ms: 1_700_000_000_000,
+            };
+            upsert_video(
+                &pool,
+                video("abcDEF_1234", "", MusicYouTubeResolutionState::Unavailable),
+            )
+            .await
+            .unwrap();
+            upsert_video(
+                &pool,
+                video("xyzXYZ_5678", "Known", MusicYouTubeResolutionState::Ready),
+            )
+            .await
+            .unwrap();
+            apply_playlist_snapshot(&pool, snapshot(vec!["abcDEF_1234", "xyzXYZ_5678"]))
+                .await
+                .unwrap();
+            let stored = |video_id: &'static str| {
+                let pool = pool.clone();
+                async move {
+                    sqlx::query_as::<_, (String, bool)>(
+                        "SELECT youtube_resolution_state, metadata_resolved
+                         FROM music_library_items WHERE youtube_video_id = ?",
+                    )
+                    .bind(video_id)
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap()
+                }
+            };
+            assert_eq!(
+                stored("abcDEF_1234").await,
+                ("unavailable".to_string(), false)
+            );
+            assert_eq!(stored("xyzXYZ_5678").await, ("ready".to_string(), true));
+
+            // Playback asks to resolve again; only an explicit request leaves a terminal state.
+            upsert_video(
+                &pool,
+                video("abcDEF_1234", "", MusicYouTubeResolutionState::Resolving),
+            )
+            .await
+            .unwrap();
+            assert_eq!(
+                stored("abcDEF_1234").await,
+                ("resolving".to_string(), false)
+            );
+            upsert_video(
+                &pool,
+                video("xyzXYZ_5678", "", MusicYouTubeResolutionState::Resolving),
+            )
+            .await
+            .unwrap();
+            assert_eq!(stored("xyzXYZ_5678").await, ("ready".to_string(), true));
+        });
+    }
+
+    #[test]
     fn youtube_ids_and_failure_states_are_strictly_validated() {
         assert!(validate_video_id("short", "videoId").is_err());
         assert!(validate_playlist_snapshot(&snapshot(vec![])).is_ok());
@@ -885,6 +1010,45 @@ mod tests {
                 .await
                 .unwrap();
             assert_eq!(item_count, 0);
+        });
+    }
+
+    #[test]
+    fn a_playlist_and_video_added_again_after_published_deletions_take_successor_keys() {
+        use ganbaru_sync::manifest::vault::music::{COLLECTIONS, ITEMS};
+        crate::test_support::block_on(async {
+            let pool = pool().await;
+            let first = apply_playlist_snapshot(&pool, snapshot(vec!["abcDEF_1234"]))
+                .await
+                .unwrap();
+            let item = youtube_item_id("abcDEF_1234");
+            for (table, key) in [(&COLLECTIONS, &first.collection_id), (&ITEMS, &item)] {
+                sqlx::query(
+                    "INSERT INTO sync_rows (table_id, row_key, state) VALUES (?, ?, 'live')",
+                )
+                .bind(i64::from(table.id.0))
+                .bind(key)
+                .execute(&pool)
+                .await
+                .unwrap();
+            }
+            sqlx::raw_sql(
+                "DELETE FROM music_source_collections;
+                 DELETE FROM music_library_items;",
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+
+            let mut again = snapshot(vec!["abcDEF_1234"]);
+            again.resolved_at_ms += 1;
+            let second = apply_playlist_snapshot(&pool, again).await.unwrap();
+            assert_eq!(second.collection_id, format!("{}-2", first.collection_id));
+            let items: Vec<String> = sqlx::query_scalar("SELECT id FROM music_library_items")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+            assert_eq!(items, [format!("{item}-2")]);
         });
     }
 }

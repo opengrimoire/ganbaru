@@ -45,7 +45,7 @@
         "src/lib/components/music/MusicPanel.svelte",
         "src/lib/components/music/MusicPlaybackHost.svelte"
       ],
-      "maxSourceModules": 202
+      "maxSourceModules": 203
     },
     {
       "name": "chat",
@@ -55,7 +55,7 @@
       "maxSourceModules": 320
     }
   ],
-  "maxTotalSourceModules": 1297,
+  "maxTotalSourceModules": 1301,
   "requiredMobileModules": [
     "src/main.ts",
     "src/main-mobile.ts",

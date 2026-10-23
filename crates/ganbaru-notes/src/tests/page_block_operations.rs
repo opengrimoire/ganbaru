@@ -429,17 +429,21 @@ fn duplicate_blocks_can_copy_a_note_into_itself_without_copying_the_new_graph() 
 fn duplicate_blocks_adopts_destination_project_and_preserves_page_properties_on_undo_updates() {
     crate::test_block_on(async {
         let pool = migrated_memory_pool().await;
-        sqlx::query("INSERT INTO project_groups (id, name) VALUES ('group', 'Group')")
+        sqlx::query(
+            "INSERT INTO project_groups (id, name, order_key) VALUES ('group', 'Group', 'a1')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        for id in ["source-project", "destination-project"] {
+            sqlx::query(
+                "INSERT INTO projects (id, group_id, name, order_key) VALUES (?, 'group', ?, 'a1')",
+            )
+            .bind(id)
+            .bind(id)
             .execute(&pool)
             .await
             .unwrap();
-        for id in ["source-project", "destination-project"] {
-            sqlx::query("INSERT INTO projects (id, group_id, name) VALUES (?, 'group', ?)")
-                .bind(id)
-                .bind(id)
-                .execute(&pool)
-                .await
-                .unwrap();
         }
         for (id, first_block, project, parent) in [
             (

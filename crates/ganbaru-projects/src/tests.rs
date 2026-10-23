@@ -29,40 +29,43 @@ pub(super) async fn migrated_memory_pool() -> SqlitePool {
 
 pub(super) async fn insert_project_graph_fixture(pool: &SqlitePool) {
     sqlx::query(
-        "INSERT INTO project_groups (id, name, icon, sort_order)
-         VALUES ('group-a', 'Group A', 'lucide:folder', 100)",
+        "INSERT INTO project_groups (id, name, icon, order_key)
+         VALUES ('group-a', 'Group A', 'lucide:folder', 'a1')",
     )
     .execute(pool)
     .await
     .unwrap();
     sqlx::query(
-        "INSERT INTO projects (id, group_id, name, icon, sort_order)
-         VALUES ('project-a', 'group-a', 'Project A', 'lucide:folder', 100)",
+        "INSERT INTO projects (id, group_id, name, icon, order_key)
+         VALUES ('project-a', 'group-a', 'Project A', 'lucide:folder', 'a1')",
     )
     .execute(pool)
     .await
     .unwrap();
     sqlx::query(
-        "INSERT INTO project_sections (id, project_id, name, sort_order)
-         VALUES ('section-a', 'project-a', 'General', 100)",
+        "INSERT INTO project_sections (id, project_id, name, order_key)
+         VALUES ('section-a', 'project-a', 'General', 'a1')",
     )
     .execute(pool)
     .await
     .unwrap();
     sqlx::query(
-        "INSERT INTO project_statuses (id, project_id, name, category, sort_order, terminal)
-         VALUES ('status-a', 'project-a', 'To do', 'not_started', 100, 0)",
+        "INSERT INTO project_statuses (id, project_id, name, category, order_key, terminal)
+         VALUES ('status-a', 'project-a', 'To do', 'not_started', 'a1', 0)",
     )
     .execute(pool)
     .await
     .unwrap();
-    for task_id in ["task-a", "task-b", "task-c"] {
+    for (task_id, order_key) in [("task-a", "a1"), ("task-b", "a2"), ("task-c", "a3")] {
         sqlx::query(
-            "INSERT INTO project_tasks (id, project_id, section_id, status_id, title)
-             VALUES (?, 'project-a', 'section-a', 'status-a', ?)",
+            "INSERT INTO project_tasks
+                (id, project_id, section_id, status_id, title, section_order_key, status_order_key)
+             VALUES (?, 'project-a', 'section-a', 'status-a', ?, ?, ?)",
         )
         .bind(task_id)
         .bind(task_id)
+        .bind(order_key)
+        .bind(order_key)
         .execute(pool)
         .await
         .unwrap();
@@ -79,8 +82,8 @@ pub(super) fn task_update_from_row(task: &ProjectTaskRow) -> ProjectTaskUpdate {
         description: task.description.clone(),
         priority: task.priority.clone(),
         task_type: task.task_type.clone(),
-        section_sort_order: task.section_sort_order,
-        status_sort_order: task.status_sort_order,
+        section_placement: None,
+        status_placement: None,
         estimate_minutes: task.estimate_minutes,
         due_date: task.due_date.clone(),
         due_time: task.due_time.clone(),
@@ -97,6 +100,7 @@ pub(super) fn task_update_from_row(task: &ProjectTaskRow) -> ProjectTaskUpdate {
     }
 }
 
+mod conversion;
 mod custom_fields;
 mod dependency_cascade;
 mod emojis;
@@ -106,6 +110,7 @@ mod relationships;
 mod reorder;
 mod routine;
 mod structure;
+mod sync_keys;
 mod task_bulk;
 mod task_lifecycle;
 mod task_reminders;

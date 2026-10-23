@@ -101,7 +101,8 @@ fn guards_let_engine_apply_transactions_write_guarded_tables() {
     block_on(async {
         let pool = migrated_pool().await;
         guard(&pool).await;
-        let insert = "INSERT INTO project_groups (id, name) VALUES ('group-1', 'Group')";
+        let insert =
+            "INSERT INTO project_groups (id, name, order_key) VALUES ('group-1', 'Group', 'a1')";
         let error = refusal(&pool, insert).await;
         assert!(is_guard_abort(&error), "{error}");
 
@@ -116,10 +117,11 @@ fn guards_let_engine_apply_transactions_write_guarded_tables() {
 
         let error = refusal(&pool, "DELETE FROM project_groups").await;
         assert!(is_guard_abort(&error), "{error}");
-        let name: String = sqlx::query_scalar("SELECT name FROM project_groups")
-            .fetch_one(&pool)
-            .await
-            .unwrap();
+        let name: String =
+            sqlx::query_scalar("SELECT name FROM project_groups WHERE id = 'group-1'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
         assert_eq!(name, "Renamed");
     });
 }
@@ -132,7 +134,7 @@ fn guards_hold_when_the_apply_state_row_is_missing() {
         execute(&pool, "DELETE FROM sync_apply_state").await;
         let error = refusal(
             &pool,
-            "INSERT INTO project_groups (id, name) VALUES ('group-1', 'Group')",
+            "INSERT INTO project_groups (id, name, order_key) VALUES ('group-1', 'Group', 'a1')",
         )
         .await;
         assert!(is_guard_abort(&error), "{error}");
@@ -268,7 +270,7 @@ fn a_guarded_vault_pool_installs_guards_on_its_connection() {
         .await;
         let error = refusal(
             &pool,
-            "INSERT INTO project_groups (id, name) VALUES ('group-1', 'Group')",
+            "INSERT INTO project_groups (id, name, order_key) VALUES ('group-1', 'Group', 'a1')",
         )
         .await;
         assert!(is_guard_abort(&error), "{error}");

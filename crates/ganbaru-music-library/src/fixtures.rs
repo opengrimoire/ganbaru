@@ -558,17 +558,17 @@ async fn seed_assignment_references(
     transaction: &mut Transaction<'_, Sqlite>,
 ) -> MusicLibraryResult<()> {
     sqlx::query(
-        "INSERT INTO project_groups (id, name, icon, sort_order)
-         VALUES ('benchmark-music-group', 'Music benchmark projects', 'music', 9000)",
+        "INSERT INTO project_groups (id, name, icon, order_key)
+         VALUES ('benchmark-music-group', 'Music benchmark projects', 'music', 'czzz')",
     )
     .execute(&mut **transaction)
     .await
     .map_err(fixture_database_error)?;
     sqlx::query(
         "INSERT INTO projects
-            (id, group_id, name, icon, sort_order, focus_playlist_id, break_playlist_id)
+            (id, group_id, name, icon, order_key, focus_playlist_id, break_playlist_id)
          VALUES ('benchmark-music-project', 'benchmark-music-group',
-                 'Dense music workflow', 'music', 9000, ?, ?)",
+                 'Dense music workflow', 'music', 'a1', ?, ?)",
     )
     .bind(playlist_id(0))
     .bind(playlist_id(8))

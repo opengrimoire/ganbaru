@@ -9,8 +9,8 @@ fn dependency_cycle_detection_rejects_reverse_chain() {
         insert_project_graph_fixture(&pool).await;
         sqlx::query(
             "INSERT INTO project_task_dependencies
-                (id, blocking_task_id, blocked_task_id, dependency_type)
-             VALUES ('dependency-a-b', 'task-a', 'task-b', 'blocks')",
+                (id, sync_key, blocking_task_id, blocked_task_id, dependency_type)
+             VALUES ('dependency-a-b', 'dependency-a-b', 'task-a', 'task-b', 'blocks')",
         )
         .execute(&pool)
         .await
@@ -30,8 +30,8 @@ fn dependency_cycle_detection_allows_forward_chain() {
         insert_project_graph_fixture(&pool).await;
         sqlx::query(
             "INSERT INTO project_task_dependencies
-                (id, blocking_task_id, blocked_task_id, dependency_type)
-             VALUES ('dependency-a-b', 'task-a', 'task-b', 'blocks')",
+                (id, sync_key, blocking_task_id, blocked_task_id, dependency_type)
+             VALUES ('dependency-a-b', 'dependency-a-b', 'task-a', 'task-b', 'blocks')",
         )
         .execute(&pool)
         .await
@@ -50,36 +50,36 @@ fn task_tag_link_rejects_tags_from_another_project() {
         let pool = migrated_memory_pool().await;
         insert_project_graph_fixture(&pool).await;
         sqlx::query(
-            "INSERT INTO projects (id, group_id, name, icon, sort_order)
-             VALUES ('project-b', 'group-a', 'Project B', 'lucide:folder', 200)",
+            "INSERT INTO projects (id, group_id, name, icon, order_key)
+             VALUES ('project-b', 'group-a', 'Project B', 'lucide:folder', 'a2')",
         )
         .execute(&pool)
         .await
         .unwrap();
         sqlx::query(
-            "INSERT INTO project_sections (id, project_id, name, sort_order)
-             VALUES ('section-b', 'project-b', 'General', 100)",
+            "INSERT INTO project_sections (id, project_id, name, order_key)
+             VALUES ('section-b', 'project-b', 'General', 'a1')",
         )
         .execute(&pool)
         .await
         .unwrap();
         sqlx::query(
-            "INSERT INTO project_statuses (id, project_id, name, category, sort_order, terminal)
-             VALUES ('status-b', 'project-b', 'To do', 'not_started', 100, 0)",
+            "INSERT INTO project_statuses (id, project_id, name, category, order_key, terminal)
+             VALUES ('status-b', 'project-b', 'To do', 'not_started', 'a1', 0)",
         )
         .execute(&pool)
         .await
         .unwrap();
         sqlx::query(
-            "INSERT INTO project_tasks (id, project_id, section_id, status_id, title)
-             VALUES ('task-other', 'project-b', 'section-b', 'status-b', 'Other task')",
+            "INSERT INTO project_tasks (id, project_id, section_id, status_id, title, section_order_key, status_order_key)
+             VALUES ('task-other', 'project-b', 'section-b', 'status-b', 'Other task', 'a0', 'a0')",
         )
         .execute(&pool)
         .await
         .unwrap();
         sqlx::query(
-            "INSERT INTO project_tags (id, project_id, name, sort_order)
-             VALUES ('tag-a', 'project-a', 'Backend', 100)",
+            "INSERT INTO project_tags (id, project_id, name, order_key)
+             VALUES ('tag-a', 'project-a', 'Backend', 'a1')",
         )
         .execute(&pool)
         .await
@@ -156,8 +156,8 @@ fn task_event_link_rejects_event_from_another_project() {
         let pool = migrated_memory_pool().await;
         insert_project_graph_fixture(&pool).await;
         sqlx::query(
-            "INSERT INTO projects (id, group_id, name, icon, sort_order)
-             VALUES ('project-b', 'group-a', 'Project B', 'lucide:folder', 200)",
+            "INSERT INTO projects (id, group_id, name, icon, order_key)
+             VALUES ('project-b', 'group-a', 'Project B', 'lucide:folder', 'a2')",
         )
         .execute(&pool)
         .await

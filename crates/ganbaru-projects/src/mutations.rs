@@ -6,6 +6,7 @@ use super::models::{
     ProjectTaskDependencyRow, ProjectTaskEventLinkRow, ProjectTaskRow, ProjectTaskTagLinkRow,
     ProjectViewPreferenceRow, ProjectsMutationRows,
 };
+use super::order::OrderGroup;
 
 macro_rules! define_mutation_loader {
     ($name:ident, $field:ident, $row:ty, $table:literal) => {
@@ -39,12 +40,25 @@ define_mutation_loader!(
     ProjectStatusRow,
     "project_statuses"
 );
-define_mutation_loader!(
-    priority_mutation,
-    priorities,
-    ProjectPriorityRow,
-    "project_priorities"
-);
+/// Priority ids are unique only within their project, so the loader takes both.
+pub(super) async fn priority_mutation(
+    pool: &sqlx::SqlitePool,
+    project_id: &str,
+    id: &str,
+) -> Result<ProjectsMutationRows, String> {
+    let row = sqlx::query_as::<_, ProjectPriorityRow>(
+        "SELECT * FROM project_priorities WHERE project_id = ? AND id = ?",
+    )
+    .bind(project_id)
+    .bind(id)
+    .fetch_one(pool)
+    .await
+    .map_err(|e| format!("load mutation result from project_priorities: {e}"))?;
+    Ok(ProjectsMutationRows {
+        priorities: vec![row],
+        ..ProjectsMutationRows::default()
+    })
+}
 define_mutation_loader!(task_mutation_base, tasks, ProjectTaskRow, "project_tasks");
 define_mutation_loader!(
     checklist_item_mutation_base,
@@ -194,24 +208,28 @@ pub(super) async fn view_preference_mutation(
     Ok(mutation)
 }
 
+/// Marks a status deleted. The project keeps at least one live status, and a status still used by a task stays.
+/// Deleted statuses remain readable so tasks synced from another device still show them.
 pub(super) async fn delete_unused_status(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     status_id: &str,
 ) -> Result<(), String> {
-    let project_id =
-        sqlx::query_scalar::<_, String>("SELECT project_id FROM project_statuses WHERE id = ?")
-            .bind(status_id)
-            .fetch_optional(&mut **tx)
-            .await
-            .map_err(|e| format!("load project status: {e}"))?
-            .ok_or_else(|| "project status not found".to_string())?;
+    let project_id = sqlx::query_scalar::<_, String>(
+        "SELECT project_id FROM project_statuses WHERE id = ? AND deleted_at IS NULL",
+    )
+    .bind(status_id)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(|e| format!("load project status: {e}"))?
+    .ok_or_else(|| "project status not found".to_string())?;
 
-    let status_count: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM project_statuses WHERE project_id = ?")
-            .bind(&project_id)
-            .fetch_one(&mut **tx)
-            .await
-            .map_err(|e| format!("count project statuses: {e}"))?;
+    let status_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM project_statuses WHERE project_id = ? AND deleted_at IS NULL",
+    )
+    .bind(&project_id)
+    .fetch_one(&mut **tx)
+    .await
+    .map_err(|e| format!("count project statuses: {e}"))?;
     if status_count <= 1 {
         return Err("project must keep at least one task status".to_string());
     }
@@ -226,24 +244,28 @@ pub(super) async fn delete_unused_status(
         return Err("move or delete tasks before deleting this task status".to_string());
     }
 
-    let result = sqlx::query("DELETE FROM project_statuses WHERE id = ?")
-        .bind(status_id)
-        .execute(&mut **tx)
-        .await
-        .map_err(|e| format!("delete project status: {e}"))?;
-    if result.rows_affected() == 0 {
-        return Err("project status not found".to_string());
-    }
+    sqlx::query(
+        "UPDATE project_statuses
+         SET deleted_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
+             updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+         WHERE id = ?",
+    )
+    .bind(status_id)
+    .execute(&mut **tx)
+    .await
+    .map_err(|e| format!("delete project status: {e}"))?;
     Ok(())
 }
 
+/// Marks a priority deleted. The project keeps at least one live priority, and a priority still used by a task stays.
 pub(super) async fn delete_unused_priority(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     project_id: &str,
     priority_id: &str,
 ) -> Result<(), String> {
     let priority_exists: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM project_priorities WHERE project_id = ? AND id = ?",
+        "SELECT COUNT(*) FROM project_priorities
+         WHERE project_id = ? AND id = ? AND deleted_at IS NULL",
     )
     .bind(project_id)
     .bind(priority_id)
@@ -254,12 +276,13 @@ pub(super) async fn delete_unused_priority(
         return Err("project priority not found".to_string());
     }
 
-    let priority_count: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM project_priorities WHERE project_id = ?")
-            .bind(project_id)
-            .fetch_one(&mut **tx)
-            .await
-            .map_err(|e| format!("count project priorities: {e}"))?;
+    let priority_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM project_priorities WHERE project_id = ? AND deleted_at IS NULL",
+    )
+    .bind(project_id)
+    .fetch_one(&mut **tx)
+    .await
+    .map_err(|e| format!("count project priorities: {e}"))?;
     if priority_count <= 1 {
         return Err("project must keep at least one task priority".to_string());
     }
@@ -276,36 +299,140 @@ pub(super) async fn delete_unused_priority(
         return Err("move or delete tasks before deleting this task priority".to_string());
     }
 
-    let result = sqlx::query("DELETE FROM project_priorities WHERE project_id = ? AND id = ?")
-        .bind(project_id)
-        .bind(priority_id)
-        .execute(&mut **tx)
-        .await
-        .map_err(|e| format!("delete project priority: {e}"))?;
-    if result.rows_affected() == 0 {
-        return Err("project priority not found".to_string());
-    }
+    sqlx::query(
+        "UPDATE project_priorities
+         SET deleted_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
+             updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+         WHERE project_id = ? AND id = ?",
+    )
+    .bind(project_id)
+    .bind(priority_id)
+    .execute(&mut **tx)
+    .await
+    .map_err(|e| format!("delete project priority: {e}"))?;
     Ok(())
 }
 
-pub(super) async fn next_task_sort_order(
+/// Section order of a task: top-level tasks order within their section, subtasks within their parent.
+pub(super) fn task_section_order<'a>(
+    project_id: &'a str,
+    section_id: &'a str,
+    parent_task_id: Option<&'a str>,
+) -> OrderGroup<'a> {
+    let group = OrderGroup::new("project_tasks", "section_order_key");
+    match parent_task_id {
+        Some(parent_task_id) => group.filter("parent_task_id", Some(parent_task_id)),
+        None => group
+            .filter("project_id", Some(project_id))
+            .filter("section_id", Some(section_id))
+            .filter("parent_task_id", None),
+    }
+}
+
+/// Status order of a task: tasks order within their status, separately for top-level tasks and each parent.
+pub(super) fn task_status_order<'a>(
+    project_id: &'a str,
+    status_id: &'a str,
+    parent_task_id: Option<&'a str>,
+) -> OrderGroup<'a> {
+    OrderGroup::new("project_tasks", "status_order_key")
+        .filter("project_id", Some(project_id))
+        .filter("status_id", Some(status_id))
+        .filter("parent_task_id", parent_task_id)
+}
+
+/// Refuses a status that was deleted, so only live statuses are newly assigned.
+pub(super) async fn ensure_status_is_live(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
-    owner_column: &'static str,
+    status_id: &str,
+) -> Result<(), String> {
+    let deleted: Option<Option<String>> =
+        sqlx::query_scalar("SELECT deleted_at FROM project_statuses WHERE id = ?")
+            .bind(status_id)
+            .fetch_optional(&mut **tx)
+            .await
+            .map_err(|e| format!("check project status: {e}"))?;
+    match deleted {
+        None => Err("project status not found".to_string()),
+        Some(Some(_)) => Err("task status was deleted".to_string()),
+        Some(None) => Ok(()),
+    }
+}
+
+/// Refuses a priority that was deleted, so only live priorities are newly assigned.
+pub(super) async fn ensure_priority_is_live(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     project_id: &str,
-    owner_id: &str,
-    sort_column: &'static str,
-) -> Result<f64, String> {
+    priority_id: &str,
+) -> Result<(), String> {
+    let deleted: Option<Option<String>> = sqlx::query_scalar(
+        "SELECT deleted_at FROM project_priorities WHERE project_id = ? AND id = ?",
+    )
+    .bind(project_id)
+    .bind(priority_id)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(|e| format!("check project priority: {e}"))?;
+    match deleted {
+        Some(Some(_)) => Err("task priority was deleted".to_string()),
+        _ => Ok(()),
+    }
+}
+
+/// Rows whose names are unique within a scope.
+#[derive(Clone, Copy)]
+pub(super) enum UniqueName<'a> {
+    /// Tags within the project with this id.
+    Tag(&'a str),
+    /// Custom fields within the project with this id.
+    CustomField(&'a str),
+    /// Options within the custom field with this id.
+    CustomFieldOption(&'a str),
+}
+
+/// Refuses a name already used by another row of the same scope, compared case-insensitively. The check is local:
+/// rows merged from another device may still share a name.
+pub(super) async fn ensure_name_is_unique(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    unique: UniqueName<'_>,
+    name: &str,
+    except_id: Option<&str>,
+) -> Result<(), String> {
+    let (table, scope_column, scope_id, message) = match unique {
+        UniqueName::Tag(project_id) => (
+            "project_tags",
+            "project_id",
+            project_id,
+            "a tag with this name already exists",
+        ),
+        UniqueName::CustomField(project_id) => (
+            "project_custom_fields",
+            "project_id",
+            project_id,
+            "a custom field with this name already exists",
+        ),
+        UniqueName::CustomFieldOption(field_id) => (
+            "project_custom_field_options",
+            "field_id",
+            field_id,
+            "an option with this name already exists",
+        ),
+    };
     let sql = format!(
-        "SELECT CAST(COALESCE(MAX({sort_column}), 0) + 1000 AS REAL)
-         FROM project_tasks
-         WHERE project_id = ? AND {owner_column} = ?"
+        "SELECT COUNT(*) FROM {table}
+         WHERE {scope_column} = ? AND lower(name) = lower(?) AND id IS NOT ?"
     );
-    sqlx::query_scalar::<_, f64>(sqlx::AssertSqlSafe(sql.as_str()))
-        .bind(project_id)
-        .bind(owner_id)
+    let count: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(sql))
+        .bind(scope_id)
+        .bind(name.trim())
+        .bind(except_id)
         .fetch_one(&mut **tx)
         .await
-        .map_err(|e| format!("load next task sort order: {e}"))
+        .map_err(|e| format!("check {table} name: {e}"))?;
+    if count > 0 {
+        return Err(message.to_string());
+    }
+    Ok(())
 }
 
 pub(super) async fn ensure_section_and_status_match_project(
@@ -540,11 +667,12 @@ pub(super) async fn tag_for_task_tag_link(
     .ok_or_else(|| "tag must belong to the task project".to_string())
 }
 
+/// Name of the linked tag, or `None` when the link is already gone.
 pub(super) async fn tag_for_existing_task_tag_link(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     task_id: &str,
     tag_id: &str,
-) -> Result<String, String> {
+) -> Result<Option<String>, String> {
     sqlx::query_scalar(
         "SELECT pl.name
          FROM project_task_tag_links ptl
@@ -555,8 +683,7 @@ pub(super) async fn tag_for_existing_task_tag_link(
     .bind(tag_id.trim())
     .fetch_optional(&mut **tx)
     .await
-    .map_err(|e| format!("load project task tag link: {e}"))?
-    .ok_or_else(|| "project task tag link not found".to_string())
+    .map_err(|e| format!("load project task tag link: {e}"))
 }
 
 pub(super) async fn delete_tag_with_history(

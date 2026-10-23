@@ -1,10 +1,24 @@
 use super::*;
+use crate::order::rank_key;
 use crate::reorder::{ProjectReorderRequest, ReorderItem, TaskOrderAxis, reorder_item};
+
+fn key(index: usize) -> String {
+    rank_key(index).unwrap().into_string()
+}
 
 async fn seed(pool: &SqlitePool) {
     insert_project_graph_fixture(pool).await;
-    sqlx::query("UPDATE project_tasks SET section_sort_order = CASE id WHEN 'task-a' THEN 1000 WHEN 'task-b' THEN 2000 ELSE 3000 END, status_sort_order = 5000, created_at = '2026-10-02T00:00:00Z'")
-        .execute(pool).await.unwrap();
+    for (index, id) in ["task-a", "task-b", "task-c"].iter().enumerate() {
+        sqlx::query(
+            "UPDATE project_tasks SET section_order_key = ?, status_order_key = ? WHERE id = ?",
+        )
+        .bind(key(index + 1))
+        .bind(key(5))
+        .bind(id)
+        .execute(pool)
+        .await
+        .unwrap();
+    }
 }
 
 fn request() -> ProjectReorderRequest {
@@ -17,57 +31,66 @@ fn request() -> ProjectReorderRequest {
             axis: TaskOrderAxis::Section,
             group_id: "section-a".into(),
             parent_task_id: None,
-            expected_order: 1000.0,
+            expected_order_key: key(1),
         },
     }
 }
 
-async fn order(pool: &SqlitePool) -> Vec<(String, f64)> {
-    sqlx::query_as("SELECT id, section_sort_order FROM project_tasks ORDER BY section_sort_order, created_at, id")
-        .fetch_all(pool).await.unwrap()
+async fn order(pool: &SqlitePool) -> Vec<String> {
+    sqlx::query_scalar("SELECT id FROM project_tasks ORDER BY section_order_key, id")
+        .fetch_all(pool)
+        .await
+        .unwrap()
+}
+
+async fn task_versions(pool: &SqlitePool) -> Vec<(String, i64, String)> {
+    sqlx::query_as("SELECT id, revision, updated_at FROM project_tasks ORDER BY id")
+        .fetch_all(pool)
+        .await
+        .unwrap()
 }
 
 #[test]
-fn reorder_selects_an_unloaded_sibling_and_preserves_unrelated_native_fields() {
+fn reorder_writes_one_order_key_and_keeps_revisions_and_unrelated_fields() {
     block_on(async {
         let pool = migrated_memory_pool().await;
         seed(&pool).await;
         sqlx::query("UPDATE project_tasks SET title = 'Newer title', completed_at = '2026-10-01T10:00:00Z' WHERE id = 'task-b'")
             .execute(&pool).await.unwrap();
+        let before = task_versions(&pool).await;
         let result = reorder_item(&pool, &request()).await.unwrap();
+        assert_eq!(order(&pool).await, ["task-b", "task-a", "task-c"]);
+        assert_eq!(result.tasks.len(), 1);
+        assert_eq!(result.tasks[0].id, "task-a");
+        assert!(result.tasks[0].section_order_key > key(2));
+        assert!(result.tasks[0].section_order_key < key(3));
+        assert_eq!(result.tasks[0].status_order_key, key(5));
+        assert_eq!(task_versions(&pool).await, before);
+        let sibling: (String, Option<String>) =
+            sqlx::query_as("SELECT title, completed_at FROM project_tasks WHERE id = 'task-b'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
         assert_eq!(
-            order(&pool).await,
-            vec![
-                ("task-b".into(), 1000.0),
-                ("task-a".into(), 2000.0),
-                ("task-c".into(), 3000.0)
-            ]
+            sibling,
+            (
+                "Newer title".to_string(),
+                Some("2026-10-01T10:00:00Z".to_string())
+            )
         );
-        assert_eq!(result.tasks.len(), 2);
-        let sibling = result
-            .tasks
-            .iter()
-            .find(|task| task.id == "task-b")
-            .unwrap();
-        assert_eq!(sibling.title, "Newer title");
-        assert_eq!(
-            sibling.completed_at.as_deref(),
-            Some("2026-10-01T10:00:00Z")
-        );
-        assert_eq!(sibling.status_sort_order, 5000.0);
     });
 }
 
 #[test]
-fn reorder_rolls_back_both_ranks_and_receipt_when_the_second_write_fails() {
+fn reorder_rolls_back_the_order_key_and_receipt_when_the_write_fails() {
     block_on(async {
         let pool = migrated_memory_pool().await;
         seed(&pool).await;
         let before = order(&pool).await;
-        sqlx::raw_sql("CREATE TRIGGER fail_reorder BEFORE UPDATE ON project_tasks WHEN NEW.id = 'task-b' BEGIN SELECT RAISE(ABORT, 'injected second write'); END;")
+        sqlx::raw_sql("CREATE TRIGGER fail_reorder BEFORE UPDATE ON project_tasks WHEN NEW.id = 'task-a' BEGIN SELECT RAISE(ABORT, 'injected write failure'); END;")
             .execute(&pool).await.unwrap();
         let error = reorder_item(&pool, &request()).await.err().unwrap();
-        assert!(error.contains("injected second write"), "{error}");
+        assert!(error.contains("injected write failure"), "{error}");
         assert_eq!(order(&pool).await, before);
         let receipts: i64 = sqlx::query_scalar("SELECT count(*) FROM project_reorder_receipts")
             .fetch_one(&pool)
@@ -78,14 +101,16 @@ fn reorder_rolls_back_both_ranks_and_receipt_when_the_second_write_fails() {
 }
 
 #[test]
-fn reorder_normalizes_tied_ranks_in_complete_sibling_order() {
+fn reorder_order_key_ties_resolve_by_id_before_the_move() {
     block_on(async {
         let pool = migrated_memory_pool().await;
         seed(&pool).await;
-        sqlx::query("UPDATE project_tasks SET section_sort_order = 1000 WHERE id = 'task-c'")
+        sqlx::query("UPDATE project_tasks SET section_order_key = ? WHERE id = 'task-c'")
+            .bind(key(1))
             .execute(&pool)
             .await
             .unwrap();
+        assert_eq!(order(&pool).await, ["task-a", "task-c", "task-b"]);
         let mut intent = request();
         intent.direction = -1;
         intent.item = ReorderItem::Task {
@@ -93,17 +118,10 @@ fn reorder_normalizes_tied_ranks_in_complete_sibling_order() {
             axis: TaskOrderAxis::Section,
             group_id: "section-a".into(),
             parent_task_id: None,
-            expected_order: 2000.0,
+            expected_order_key: key(2),
         };
         reorder_item(&pool, &intent).await.unwrap();
-        assert_eq!(
-            order(&pool).await,
-            vec![
-                ("task-a".into(), 1000.0),
-                ("task-b".into(), 2000.0),
-                ("task-c".into(), 3000.0)
-            ]
-        );
+        assert_eq!(order(&pool).await, ["task-a", "task-b", "task-c"]);
     });
 }
 
@@ -123,8 +141,9 @@ fn reorder_rejects_changed_placement_and_never_moves_into_another_parent() {
                 .iter()
                 .map(|task| task.id.as_str())
                 .collect::<Vec<_>>(),
-            vec!["task-a", "task-c"]
+            ["task-a"]
         );
+        assert!(changed.tasks[0].section_order_key > key(3));
         let mut stale = request();
         stale.operation_id = "another-operation".into();
         assert!(
@@ -141,7 +160,7 @@ fn reorder_rejects_changed_placement_and_never_moves_into_another_parent() {
             axis: TaskOrderAxis::Section,
             group_id: "section-a".into(),
             parent_task_id: None,
-            expected_order: 2000.0,
+            expected_order_key: key(2),
         };
         assert!(
             reorder_item(&pool, &foreign)
@@ -158,7 +177,7 @@ fn reorder_subtasks_includes_siblings_in_other_sections() {
     block_on(async {
         let pool = migrated_memory_pool().await;
         seed(&pool).await;
-        sqlx::raw_sql("INSERT INTO project_sections (id, project_id, name, sort_order) VALUES ('section-b', 'project-a', 'Another', 200);
+        sqlx::raw_sql("INSERT INTO project_sections (id, project_id, name, order_key) VALUES ('section-b', 'project-a', 'Another', 'b0');
             UPDATE project_tasks SET parent_task_id = 'task-c' WHERE id IN ('task-a', 'task-b');
             UPDATE project_tasks SET section_id = 'section-b' WHERE id = 'task-b';")
             .execute(&pool).await.unwrap();
@@ -168,20 +187,12 @@ fn reorder_subtasks_includes_siblings_in_other_sections() {
             axis: TaskOrderAxis::Section,
             group_id: "section-a".into(),
             parent_task_id: Some("task-c".into()),
-            expected_order: 1000.0,
+            expected_order_key: key(1),
         };
         let changed = reorder_item(&pool, &intent).await.unwrap();
-        assert_eq!(changed.tasks.len(), 2);
-        assert_eq!(order(&pool).await[0], ("task-b".into(), 1000.0));
-        assert_eq!(
-            changed
-                .tasks
-                .iter()
-                .find(|task| task.id == "task-b")
-                .unwrap()
-                .section_id,
-            "section-b"
-        );
+        assert_eq!(changed.tasks.len(), 1);
+        assert_eq!(order(&pool).await[0], "task-b");
+        assert_eq!(changed.tasks[0].section_id, "section-a");
     });
 }
 
@@ -192,6 +203,7 @@ fn reorder_receipt_recovers_lost_response_without_repeating_the_move() {
         seed(&pool).await;
         let original =
             serde_json::to_value(reorder_item(&pool, &request()).await.unwrap()).unwrap();
+        let moved = order(&pool).await;
         sqlx::query("UPDATE project_tasks SET title = 'Later edit' WHERE id = 'task-a'")
             .execute(&pool)
             .await
@@ -200,6 +212,7 @@ fn reorder_receipt_recovers_lost_response_without_repeating_the_move() {
             serde_json::to_value(reorder_item(&pool, &request()).await.unwrap()).unwrap(),
             original
         );
+        assert_eq!(order(&pool).await, moved);
         let current: String =
             sqlx::query_scalar("SELECT title FROM project_tasks WHERE id = 'task-a'")
                 .fetch_one(&pool)
@@ -219,53 +232,47 @@ fn reorder_receipt_recovers_lost_response_without_repeating_the_move() {
 }
 
 #[test]
-fn reorder_fields_and_options_commit_together_and_track_later_renames() {
+fn reorder_fields_and_options_write_one_order_key_without_revision_bumps() {
     block_on(async {
         let pool = migrated_memory_pool().await;
         seed(&pool).await;
-        sqlx::raw_sql("INSERT INTO project_custom_fields (id, project_id, name, field_type, sort_order) VALUES ('field-a', 'project-a', 'A', 'select', 1000), ('field-b', 'project-a', 'B', 'text', 2000);
-            INSERT INTO project_custom_field_options (id, field_id, name, sort_order) VALUES ('option-a', 'field-a', 'A', 1000), ('option-b', 'field-a', 'B', 2000);")
-            .execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO project_custom_fields (id, project_id, name, field_type, order_key) VALUES ('field-a', 'project-a', 'A', 'select', ?), ('field-b', 'project-a', 'B', 'text', ?)")
+            .bind(key(1)).bind(key(2)).execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO project_custom_field_options (id, field_id, name, order_key) VALUES ('option-a', 'field-a', 'A', ?), ('option-b', 'field-a', 'B', ?)")
+            .bind(key(1)).bind(key(2)).execute(&pool).await.unwrap();
         let mut field = request();
         field.item = ReorderItem::CustomField {
             id: "field-a".into(),
-            expected_order: 1000,
+            expected_order_key: key(1),
         };
         let moved = reorder_item(&pool, &field).await.unwrap();
-        assert_eq!(moved.custom_fields.len(), 2);
-        assert!(moved.custom_fields.iter().all(|field| field.revision == 1));
-        sqlx::query("UPDATE project_custom_fields SET name = 'Renamed' WHERE id = 'field-a'")
-            .execute(&pool)
-            .await
-            .unwrap();
-        let current_revision: i64 =
-            sqlx::query_scalar("SELECT revision FROM project_custom_fields WHERE id = 'field-a'")
-                .fetch_one(&pool)
-                .await
-                .unwrap();
-        assert_eq!(current_revision, 2);
+        assert_eq!(moved.custom_fields.len(), 1);
+        assert_eq!(moved.custom_fields[0].id, "field-a");
+        assert_eq!(moved.custom_fields[0].revision, 0);
+        assert!(moved.custom_fields[0].order_key > key(2));
         let replay = reorder_item(&pool, &field).await.unwrap();
-        assert!(replay.custom_fields.iter().all(|field| field.revision == 1));
+        assert_eq!(
+            replay.custom_fields[0].order_key,
+            moved.custom_fields[0].order_key
+        );
+
         let mut option = request();
         option.operation_id = "option-operation".into();
         option.item = ReorderItem::CustomFieldOption {
-            id: "option-a".into(),
+            id: "option-b".into(),
             field_id: "field-a".into(),
-            expected_order: 1000,
+            expected_order_key: key(2),
         };
+        option.direction = -1;
         let moved = reorder_item(&pool, &option).await.unwrap();
-        assert_eq!(moved.custom_field_options.len(), 2);
-        assert!(
-            moved
-                .custom_field_options
-                .iter()
-                .all(|option| option.revision == 1)
-        );
+        assert_eq!(moved.custom_field_options.len(), 1);
+        assert_eq!(moved.custom_field_options[0].revision, 0);
+        assert!(moved.custom_field_options[0].order_key < key(1));
         option.operation_id = "wrong-field-operation".into();
         option.item = ReorderItem::CustomFieldOption {
             id: "option-a".into(),
             field_id: "field-b".into(),
-            expected_order: 2000,
+            expected_order_key: key(1),
         };
         assert!(
             reorder_item(&pool, &option)

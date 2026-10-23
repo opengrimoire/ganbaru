@@ -85,6 +85,9 @@ async fn hub_vault(
         .connect_path(directory.join("ganbaru.sqlite"))
         .await
         .expect("migrate hub vault");
+    ganbaru_projects::conversion::convert(&pool, directory)
+        .await
+        .expect("convert hub projects");
     insert_identity(&pool, person).await;
     let now = now_ms().expect("clock");
     let mut conn = acquire(&pool).await.expect("hub connection");
@@ -159,6 +162,9 @@ async fn phone_vault(config_dir: &Path, person: &PersonKeyPair, person_pkcs8: &[
         .connect_path(&database)
         .await
         .expect("migrate phone vault");
+    ganbaru_projects::conversion::convert(&pool, database.parent().expect("phone vault folder"))
+        .await
+        .expect("convert phone projects");
     insert_identity(&pool, person).await;
     insert_note(&pool, "note-phone").await;
     drop(pool);

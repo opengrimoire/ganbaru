@@ -8,6 +8,7 @@ use ganbaru_projects::{
 use tauri::{AppHandle, Runtime};
 
 use crate::db::connect_sqlite;
+use crate::vault;
 
 #[tauri::command]
 pub async fn projects_create_group<R: Runtime>(
@@ -15,8 +16,9 @@ pub async fn projects_create_group<R: Runtime>(
     db_url: String,
     group: ProjectGroupCreate,
 ) -> Result<ProjectsMutationRows, String> {
-    let pool = connect_sqlite(app, db_url).await?;
-    structure_commands::create_group(&pool, group).await
+    let pool = connect_sqlite(app.clone(), db_url).await?;
+    let vault_root = vault::active_writable_vault_path(&app)?;
+    structure_commands::create_group(&pool, &vault_root, group).await
 }
 
 #[tauri::command]
@@ -25,8 +27,9 @@ pub async fn projects_update_group<R: Runtime>(
     db_url: String,
     group: ProjectGroupUpdate,
 ) -> Result<ProjectsMutationRows, String> {
-    let pool = connect_sqlite(app, db_url).await?;
-    structure_commands::update_group(&pool, group).await
+    let pool = connect_sqlite(app.clone(), db_url).await?;
+    let vault_root = vault::active_writable_vault_path(&app)?;
+    structure_commands::update_group(&pool, &vault_root, group).await
 }
 
 #[tauri::command]

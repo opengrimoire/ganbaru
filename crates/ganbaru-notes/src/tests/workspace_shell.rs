@@ -165,10 +165,10 @@ fn workspace_shell_can_include_cross_project_navigation_metadata() {
     crate::test_block_on(async {
         let pool = migrated_memory_pool().await;
         sqlx::raw_sql(
-            "INSERT INTO project_groups (id, name) VALUES ('notes-navigation-test-group', 'Test group');
-             INSERT INTO projects (id, group_id, name)
-             VALUES ('notes-navigation-project-a', 'notes-navigation-test-group', 'Project A'),
-                    ('notes-navigation-project-b', 'notes-navigation-test-group', 'Project B');",
+            "INSERT INTO project_groups (id, name, order_key) VALUES ('notes-navigation-test-group', 'Test group', 'a1');
+             INSERT INTO projects (id, group_id, name, order_key)
+             VALUES ('notes-navigation-project-a', 'notes-navigation-test-group', 'Project A', 'a1'),
+                    ('notes-navigation-project-b', 'notes-navigation-test-group', 'Project B', 'a2');",
         )
         .execute(&pool)
         .await

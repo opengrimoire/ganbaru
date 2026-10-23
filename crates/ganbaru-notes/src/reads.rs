@@ -288,7 +288,7 @@ pub async fn page_project_group_project_ids(
          FROM projects AS owner
          JOIN projects AS peer ON peer.group_id = owner.group_id
          WHERE owner.id = ? AND (peer.status = 'active' OR peer.id = owner.id)
-         ORDER BY peer.sort_order, peer.name, peer.id",
+         ORDER BY peer.order_key, peer.name, peer.id",
     )
     .bind(project_id)
     .fetch_all(pool)

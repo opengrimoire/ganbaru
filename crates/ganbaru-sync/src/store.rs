@@ -7,11 +7,11 @@
 use ganbaru_sync_contracts::bounds::{MAX_WRITERS_PER_DEVICE, MAX_WRITERS_PER_SPACE};
 use ganbaru_sync_contracts::op::FORMAT_VERSION;
 use ganbaru_sync_contracts::{
-    Content, Envelope, Hlc, Operation, OperationError, OperationKind, PayloadError, Seq,
-    VersionVector, WriterId,
+    Content, Envelope, Hlc, Operation, OperationError, PayloadError, Seq, VersionVector, WriterId,
 };
 use sqlx::{Connection, SqliteConnection};
 
+use crate::authorization::{self, Enrollment};
 use crate::error::{SyncResult, corrupt, failpoint};
 use crate::log::{self, WriterRow, clamp_ms, seq_i64};
 use crate::{Engine, SpaceContext, validate};
@@ -74,17 +74,19 @@ pub enum StoreRefusal {
     NewerFormatGenesis,
     /// The writer key did not sign the operation.
     BadSignature,
-    /// The writer is not certified by the space anchor.
+    /// The genesis certificate names an enrolled device but not its enrolled device key.
     Untrusted,
+    /// The genesis names a device the selected authorization chain has not enrolled, or the
+    /// space has no charter yet. The writer may be accepted once its enrollment arrives.
+    Unenrolled,
     /// A different operation is stored at `seq` in the writer's chain.
     Fork {
         /// First sequence where the stored chain and the offered chain differ.
         seq: Seq,
     },
-    /// The writer was revoked, forked, or re-sealed and the operation is above its cutoff.
+    /// The writer was revoked, forked, or re-sealed and the operation is above its cutoff, or
+    /// the genesis names a removed device.
     Revoked,
-    /// A revocation issued by a writer of a device other than the coordinator.
-    UnauthorizedRevoke,
     /// The genesis would exceed the writers its device or the space may have.
     WriterLimit,
     /// Earlier operations of the writer are missing.
@@ -101,6 +103,8 @@ pub(crate) enum Classified {
     Waiting {
         clock: Hlc,
         dependencies: Vec<(WriterId, Seq)>,
+        /// Authorization revision the operation was sealed against.
+        revision: u64,
     },
     /// Held, with the signed header fields when they could be read.
     Held {
@@ -118,12 +122,21 @@ impl Classified {
             Self::Waiting {
                 clock,
                 dependencies,
+                ..
             } => Some((*clock, dependencies)),
             Self::Held {
                 header: Some((clock, dependencies)),
                 ..
             } => Some((*clock, dependencies)),
             Self::Held { header: None, .. } | Self::Malformed => None,
+        }
+    }
+
+    /// Authorization revision of a waiting operation; 0 for one that is held or malformed.
+    pub(crate) fn revision(&self) -> u64 {
+        match self {
+            Self::Waiting { revision, .. } => *revision,
+            Self::Held { .. } | Self::Malformed => 0,
         }
     }
 
@@ -185,11 +198,9 @@ fn classify_operation(engine: &Engine, operation: Operation) -> Classified {
                 None
             }
         }
-        Content::Genesis(_) | Content::Revoke(_) | Content::Acknowledgement => None,
-        // The engine does not apply the authorization log yet, so it holds these as a format
-        // it cannot act on.
-        Content::Authorization(_) => Some(HoldReason::NewerFormat),
+        Content::Genesis(_) | Content::Acknowledgement | Content::Authorization(_) => None,
     };
+    let revision = operation.header.authorization_revision;
     let dependencies = operation.header.dependencies;
     match reason {
         Some(reason) => Classified::Held {
@@ -199,6 +210,7 @@ fn classify_operation(engine: &Engine, operation: Operation) -> Classified {
         None => Classified::Waiting {
             clock,
             dependencies,
+            revision,
         },
     }
 }
@@ -231,6 +243,7 @@ async fn insert_op(
     envelope: &Envelope<'_>,
     bytes: &[u8],
     clock: Hlc,
+    revision: u64,
     context: Option<&VersionVector>,
     held: Option<HoldReason>,
     now_ms: u64,
@@ -238,9 +251,9 @@ async fn insert_op(
     let state = if held.is_some() { "held" } else { "waiting" };
     sqlx::query(
         "INSERT INTO sync_ops
-            (space_id, writer_id, seq, kind, hash, clock, context, envelope, state, hold_reason,
-             stored_at_ms)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (space_id, writer_id, seq, kind, hash, clock, authorization_revision, context,
+             envelope, state, hold_reason, stored_at_ms)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(ctx.space.as_bytes().as_slice())
     .bind(envelope.writer.as_bytes().as_slice())
@@ -248,6 +261,7 @@ async fn insert_op(
     .bind(i64::from(envelope.kind))
     .bind(envelope.hash().as_slice())
     .bind(clamp_ms(clock.as_u64()))
+    .bind(seq_i64(revision)?)
     .bind(log::encode_context(context))
     .bind(bytes)
     .bind(state)
@@ -278,14 +292,17 @@ async fn store_genesis(
         }
         Err(_) => return Ok(StoreOutcome::Refused(StoreRefusal::Malformed)),
     };
-    if certificate.certificate.person_key != ctx.anchor {
-        return Ok(StoreOutcome::Refused(StoreRefusal::Untrusted));
+    let cert = &certificate.certificate;
+    match authorization::enrollment(conn, ctx.space, &cert.device_id, &cert.device_key).await? {
+        Enrollment::Enrolled => {}
+        Enrollment::WrongKey => return Ok(StoreOutcome::Refused(StoreRefusal::Untrusted)),
+        Enrollment::Removed => return Ok(StoreOutcome::Refused(StoreRefusal::Revoked)),
+        Enrollment::Absent => return Ok(StoreOutcome::Refused(StoreRefusal::Unenrolled)),
     }
     let clock = operation.header.clock;
     if !storable_clock(clock) {
         return Ok(StoreOutcome::Refused(StoreRefusal::Malformed));
     }
-    let cert = &certificate.certificate;
     if !within_writer_limits(conn, ctx, &cert.device_id).await? {
         return Ok(StoreOutcome::Refused(StoreRefusal::WriterLimit));
     }
@@ -315,19 +332,13 @@ async fn store_genesis(
         envelope,
         bytes,
         clock,
+        operation.header.authorization_revision,
         Some(&VersionVector::new()),
         None,
         now_ms,
     )
     .await?;
     Ok(StoreOutcome::Stored { held: None })
-}
-
-/// Whether `writer` may issue an operation of wire `kind`. Only writers of the coordinator device
-/// revoke, because the coordinator alone decides which devices stay linked. Wire kind 2 stays
-/// reserved for revocations in every format, so the check needs no payload decoding.
-pub(crate) fn may_issue(ctx: &SpaceContext, writer: &WriterRow, kind: u8) -> bool {
-    kind != OperationKind::Revoke.as_u8() || writer.device_id == ctx.coordinator_device_id
 }
 
 async fn store_next(
@@ -371,9 +382,6 @@ async fn store_next(
             seq: writer.stored,
         }));
     }
-    if !may_issue(ctx, writer, envelope.kind) {
-        return Ok(StoreOutcome::Refused(StoreRefusal::UnauthorizedRevoke));
-    }
     let classified = classify(engine, envelope);
     if matches!(classified, Classified::Malformed) {
         return Ok(StoreOutcome::Refused(StoreRefusal::Malformed));
@@ -395,6 +403,7 @@ async fn store_next(
         envelope,
         bytes,
         clock,
+        classified.revision(),
         context.as_ref(),
         held,
         now_ms,

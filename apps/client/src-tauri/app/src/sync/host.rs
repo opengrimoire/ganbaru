@@ -3,7 +3,7 @@
 //! Android wakes the app in the background.
 
 use super::status::{DegradedReasons, SyncRole, SyncStatusView, emit_applied, emit_status};
-use super::writer::{SyncFiles, WriterKeyStore};
+use super::writer::{SyncFiles, SyncKeyStore};
 use crate::db::DatabaseState;
 use crate::vault::WritableVaultPath;
 use crate::vault::handoff::pairing::PairingManager;
@@ -58,7 +58,7 @@ pub(crate) trait SyncHost: Clone + Send + Sync + 'static {
     fn ownership(&self) -> &VaultOwnershipManager;
 
     /// Where writer keys are kept.
-    fn key_store(&self) -> Result<Arc<dyn WriterKeyStore>, String>;
+    fn key_store(&self) -> Result<Arc<dyn SyncKeyStore>, String>;
 
     /// The engine a pass seals and applies with, with the registered hooks.
     fn engine(&self) -> Result<Engine, String>;
@@ -190,12 +190,12 @@ impl<R: Runtime> SyncHost for AppHandle<R> {
     }
 
     #[cfg(desktop)]
-    fn key_store(&self) -> Result<Arc<dyn WriterKeyStore>, String> {
+    fn key_store(&self) -> Result<Arc<dyn SyncKeyStore>, String> {
         Ok(Arc::new(super::writer::KeyringStore))
     }
 
     #[cfg(mobile)]
-    fn key_store(&self) -> Result<Arc<dyn WriterKeyStore>, String> {
+    fn key_store(&self) -> Result<Arc<dyn SyncKeyStore>, String> {
         Ok(Arc::new(super::writer::FileKeyStore {
             directory: self.sync_directory()?,
         }))
@@ -352,7 +352,7 @@ impl SyncHost for HeadlessHost {
         &self.0.ownership
     }
 
-    fn key_store(&self) -> Result<Arc<dyn WriterKeyStore>, String> {
+    fn key_store(&self) -> Result<Arc<dyn SyncKeyStore>, String> {
         Ok(Arc::new(super::writer::FileKeyStore {
             directory: self.sync_directory()?,
         }))

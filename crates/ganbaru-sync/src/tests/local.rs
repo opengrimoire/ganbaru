@@ -1,7 +1,7 @@
 //! Installation helpers: space context, writer high-water check, snapshot copies, and
 //! carry-forward across a database replacement.
 
-use super::replica::{COORDINATOR_INDEX, Replica, VAULT_ID, connection_from, device_id, person};
+use super::replica::{Replica, VAULT_ID, connection_from, person};
 use super::{block_on, migrated_pool};
 use crate::local::{
     self, LocalWriterHead, decode_bundle, encode_bundle, has_pending_captures,
@@ -24,7 +24,7 @@ fn space_context_needs_the_person_identity() {
     block_on(async {
         let mut replica = Replica::new(0, 1).await;
         assert!(
-            space_context(&mut replica.conn, VAULT_ID, &device_id(COORDINATOR_INDEX))
+            space_context(&mut replica.conn, VAULT_ID)
                 .await
                 .unwrap()
                 .is_none()
@@ -37,7 +37,7 @@ fn space_context_needs_the_person_identity() {
                 person().public_key().to_text()
             ))
             .await;
-        let ctx = space_context(&mut replica.conn, VAULT_ID, &device_id(COORDINATOR_INDEX))
+        let ctx = space_context(&mut replica.conn, VAULT_ID)
             .await
             .unwrap()
             .unwrap();

@@ -8,8 +8,8 @@ use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 
 use ganbaru_sync_contracts::{
-    Change, ChangeAction, Digest32, Field, GroupId, GroupMask, GroupValue, Hlc, RevokeReason, Seq,
-    SpaceId, TableId, Value, VersionVector, WriterId,
+    Change, ChangeAction, Digest32, Field, GroupId, GroupMask, GroupValue, Hlc, Seq, SpaceId,
+    TableId, Value, VersionVector, WriterId,
 };
 use sqlx::sqlite::SqliteRow;
 use sqlx::{Row, SqliteConnection};
@@ -615,46 +615,4 @@ pub(crate) fn conflict_mask(table: &TableSpec, versions: &[Version]) -> GroupMas
         }
     }
     mask
-}
-
-/// Records a revocation of `target`: its cutoff only lowers, a fork marking is kept, and its
-/// stored operations past the cutoff that are not applied are held as invalid. Returns how many
-/// operations it held.
-pub(crate) async fn revoke_effects(
-    conn: &mut SqliteConnection,
-    space: SpaceId,
-    target: WriterId,
-    cutoff: Seq,
-    reason: RevokeReason,
-) -> SyncResult<u64> {
-    let cutoff = seq_i64(cutoff)?;
-    let updated = sqlx::query(
-        "UPDATE sync_writers SET
-            cutoff_seq = CASE WHEN cutoff_seq IS NULL OR cutoff_seq > ? THEN ? ELSE cutoff_seq END,
-            state = CASE WHEN state = 'forked' OR ? THEN 'forked' ELSE 'revoked' END
-         WHERE space_id = ? AND writer_id = ?",
-    )
-    .bind(cutoff)
-    .bind(cutoff)
-    .bind(reason == RevokeReason::Forked)
-    .bind(space.as_bytes().as_slice())
-    .bind(target.as_bytes().as_slice())
-    .execute(&mut *conn)
-    .await?;
-    if updated.rows_affected() != 1 {
-        return Err(corrupt("revocation of an unknown writer reached apply"));
-    }
-    let held = sqlx::query(
-        "UPDATE sync_ops SET state = 'held', hold_reason = 'invalid'
-         WHERE space_id = ? AND writer_id = ? AND state = 'waiting' AND seq > (
-            SELECT cutoff_seq FROM sync_writers WHERE space_id = ? AND writer_id = ?
-         )",
-    )
-    .bind(space.as_bytes().as_slice())
-    .bind(target.as_bytes().as_slice())
-    .bind(space.as_bytes().as_slice())
-    .bind(target.as_bytes().as_slice())
-    .execute(&mut *conn)
-    .await?;
-    Ok(held.rows_affected())
 }

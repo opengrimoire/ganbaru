@@ -3,10 +3,9 @@ use crate::{
     AdminKeyPair, AuthorizationRecord, Cause, Change, ChangeAction, Charter, Content,
     DeviceKeyPair, DeviceKind, DeviceRole, Enroll, Entry, Envelope, Field, GroupId, GroupValue,
     Handover, Header, Hlc, LateResolution, LateRow, Operation, OperationKind, Proposal,
-    RecoverySeed, Remove, ResolveLate, Revocation, RevokeReason, RowKey, Sequencing, SetRole,
-    SignedCertificate, SignedCertificateV2, SignedCharter, SignedProposal, SpaceId, TableId, Value,
-    WriterCertificate, WriterCertificateV2, WriterId, WriterKeyPair, WriterPublicKey,
-    sign_certificate, sign_certificate_v2, sign_charter, sign_proposal,
+    RecoverySeed, Remove, ResolveLate, RowKey, Sequencing, SetRole, SignedCertificate,
+    SignedCharter, SignedProposal, SpaceId, TableId, Value, WriterCertificate, WriterId,
+    WriterKeyPair, WriterPublicKey, sign_certificate, sign_charter, sign_proposal,
 };
 use ganbaru_contacts::PersonKeyPair;
 
@@ -44,12 +43,12 @@ pub fn space() -> SpaceId {
 pub fn certificate_for(key: &WriterPublicKey, predecessor: Option<WriterId>) -> SignedCertificate {
     let certificate = WriterCertificate {
         writer_key: *key,
-        person_key: person().public_key(),
         device_id: GOLDEN_DEVICE_ID.to_string(),
+        device_key: device_key().public_key(),
         created_at_ms: GOLDEN_CREATED_AT_MS,
         predecessor,
     };
-    sign_certificate(&certificate, &person()).unwrap()
+    sign_certificate(&certificate, &device_key()).unwrap()
 }
 
 pub fn header(clock_ms: u64, dependencies: Vec<(WriterId, u64)>) -> Header {
@@ -185,26 +184,11 @@ pub fn golden_cause() -> (Operation, Vec<u8>) {
     (operation, sealed.into_bytes())
 }
 
-pub fn revoke_operation(previous_hash: Digest32) -> Operation {
-    Operation {
-        space: space(),
-        writer: writer_id(),
-        seq: 3,
-        previous_hash,
-        header: header(GOLDEN_CREATED_AT_MS as u64 + 2_000, Vec::new()),
-        content: Content::Revoke(Revocation {
-            writer: other_writer_id(),
-            cutoff: 41,
-            reason: RevokeReason::Forked,
-        }),
-    }
-}
-
 pub fn acknowledgement_operation(previous_hash: Digest32) -> Operation {
     Operation {
         space: space(),
         writer: writer_id(),
-        seq: 4,
+        seq: 3,
         previous_hash,
         header: header(
             GOLDEN_CREATED_AT_MS as u64 + 3_000,
@@ -214,21 +198,18 @@ pub fn acknowledgement_operation(previous_hash: Digest32) -> Operation {
     }
 }
 
-/// The four golden operations as a chain: genesis, changes, revoke, acknowledgement.
+/// The three golden operations as a chain: genesis, changes, acknowledgement.
 pub fn golden_chain() -> Vec<(Operation, Vec<u8>)> {
     let key = writer_key();
     let genesis = genesis_operation();
     let genesis_sealed = genesis.seal(&key).unwrap();
     let changes = changes_operation(genesis_sealed.hash());
     let changes_sealed = changes.seal(&key).unwrap();
-    let revoke = revoke_operation(changes_sealed.hash());
-    let revoke_sealed = revoke.seal(&key).unwrap();
-    let acknowledgement = acknowledgement_operation(revoke_sealed.hash());
+    let acknowledgement = acknowledgement_operation(changes_sealed.hash());
     let acknowledgement_sealed = acknowledgement.seal(&key).unwrap();
     vec![
         (genesis, genesis_sealed.into_bytes()),
         (changes, changes_sealed.into_bytes()),
-        (revoke, revoke_sealed.into_bytes()),
         (acknowledgement, acknowledgement_sealed.into_bytes()),
     ]
 }
@@ -268,25 +249,12 @@ pub fn golden_charter() -> SignedCharter {
         anchor_device_id: GOLDEN_DEVICE_ID.to_string(),
         anchor_device_key: device_key().public_key(),
         anchor_tls_fingerprint: [0xa1; 32],
+        anchor_admin_key: admin_key().public_key(),
         recovery_admin_key: recovery_seed().recovery_admin_key().unwrap().public_key(),
         discovery_key: [0xd1; 32],
         created_at_ms: GOLDEN_CREATED_AT_MS,
     };
     sign_charter(&charter, &person()).unwrap()
-}
-
-pub fn certificate_v2_for(
-    key: &WriterPublicKey,
-    predecessor: Option<WriterId>,
-) -> SignedCertificateV2 {
-    let certificate = WriterCertificateV2 {
-        writer_key: *key,
-        device_id: GOLDEN_DEVICE_ID.to_string(),
-        device_key: device_key().public_key(),
-        created_at_ms: GOLDEN_CREATED_AT_MS,
-        predecessor,
-    };
-    sign_certificate_v2(&certificate, &device_key()).unwrap()
 }
 
 pub fn proposal(entry: Entry, created_at_offset_ms: i64) -> SignedProposal {

@@ -647,6 +647,7 @@ mod tests {
             vault_id: vault_id.to_string(),
             certificate: String::new(),
             certificate_fingerprint: String::new(),
+            sync_device_key: String::new(),
             linked_at_ms: 0,
         }
     }

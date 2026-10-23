@@ -1,8 +1,8 @@
 //! Seeded simulation of installations that edit Quick notes and the test-only fixture domain,
 //! partly offline, and exchange operations through a hub over a network that drops, duplicates,
 //! and reorders messages.
-//! Engine calls crash at failpoints and must leave no trace, writers are revoked and re-sealed,
-//! and conflicts and recovery offers are resolved along the way. Exchanges sometimes end with
+//! Engine calls crash at failpoints and must leave no trace, the hub removes spare devices and
+//! refuses what they write afterwards, and conflicts and recovery offers are resolved along the way. Exchanges sometimes end with
 //! the hub and the exchanging replica compacting what is stable, except one replica that never
 //! compacts; compaction never changes domain rows. After every step the databases keep their
 //! invariants; at quiescence every installation holds the same replicated state.
@@ -14,14 +14,14 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use ganbaru_sync_contracts::{Field, RevokeReason, VersionVector, WriterId};
+use ganbaru_sync_contracts::{Field, VersionVector, WriterId};
 
 use super::block_on;
 use super::fixture::{
     BOARD_CARDS, BOARD_CHECKS, BOARD_HANDLE_PREFIX, MAX_BOARD_STAGE, MAX_LIST_ENTRIES, MEMOS_TABLE,
     NODE_MAX_DEPTH, edge_key, membership_key, memo_tag_key,
 };
-use super::replica::{Replica, START_MS, device_id, quoted, rank};
+use super::replica::{ENROLLED_DEVICES, Replica, START_MS, device_id, quoted, rank};
 use crate::acknowledge::{ACKNOWLEDGEMENT_INTERVAL_MS, KEEPALIVE_INTERVAL_MS};
 use crate::error::failpoints;
 use crate::hold::{self, MAX_HOLD_MS};
@@ -91,6 +91,8 @@ struct Sim {
     skew_ms: Vec<u64>,
     clock_ms: u64,
     created: usize,
+    /// Devices enrolled beyond the replicas and the hub that a removal used up.
+    spares: usize,
 }
 
 /// Runs `call`, first crashing it at a random failpoint now and then. A crashed call must leave
@@ -137,11 +139,7 @@ const APPLY_FAILPOINTS: &[&str] = &[
     "hold.before_seal",
     "elide.before_commit",
 ];
-const RESEAL_FAILPOINTS: &[&str] = &[
-    "reseal.before_commit",
-    "seal.reserve",
-    "elide.before_commit",
-];
+const SEQUENCE_FAILPOINTS: &[&str] = &["sequence.before_commit", "seal.reserve"];
 const RECOVERY_FAILPOINTS: &[&str] = &[
     "recovery.before_commit",
     "seal.reserve",
@@ -174,7 +172,7 @@ async fn seal_rotating(rng: &mut Rng, replica: &mut Replica) {
     }
 }
 
-/// Applies until nothing ready remains, re-sealing and rotating like the app.
+/// Applies until nothing ready remains, rotating like the app while the device stays enrolled.
 async fn apply_all(rng: &mut Rng, replica: &mut Replica) {
     for _ in 0..1_000 {
         let report: ApplyReport =
@@ -183,20 +181,7 @@ async fn apply_all(rng: &mut Rng, replica: &mut Replica) {
             })
             .await
             .unwrap_or_else(|error| panic!("replica {} failed to apply: {error:?}", replica.index));
-        assert!(
-            report.blocked_revocations.is_empty(),
-            "replica {} blocked a revocation",
-            replica.index
-        );
-        if let Some(needed) = report.reseal_needed {
-            crashing(rng, replica, RESEAL_FAILPOINTS, async |r: &mut Replica| {
-                r.reseal(needed).await
-            })
-            .await
-            .unwrap_or_else(|error| {
-                panic!("replica {} failed to re-seal: {error:?}", replica.index)
-            });
-        } else if report.local_writer_frozen {
+        if report.local_writer_frozen && !replica.device_removed().await {
             replica.rotate();
         } else if !report.more {
             return;
@@ -411,7 +396,7 @@ impl Sim {
         let mut replicas = Vec::with_capacity(count);
         let mut skew_ms = Vec::with_capacity(count);
         for index in 0..count {
-            replicas.push(Replica::new(index, seed).await.coordinated_by(count));
+            replicas.push(Replica::new(index, seed).await);
             // Clocks run up to a day ahead of the hub's.
             skew_ms.push(if rng.chance(30) {
                 rng.next() % ONE_DAY_MS
@@ -419,7 +404,7 @@ impl Sim {
                 0
             });
         }
-        let hub = Replica::new(count, seed).await.coordinated_by(count);
+        let hub = Replica::anchor(count, seed).await;
         Self {
             rng,
             replicas,
@@ -428,6 +413,7 @@ impl Sim {
             skew_ms,
             clock_ms: START_MS,
             created: 0,
+            spares: 0,
         }
     }
 
@@ -1439,30 +1425,50 @@ impl Sim {
         }
     }
 
-    /// The hub unlinks a replica's current writer at the last operation it applied.
-    async fn revoke(&mut self, index: usize) {
-        let target: WriterId = self.replicas[index].writer();
-        let applied = self.hub.applied_vector().await.get(&target);
-        if applied == 0 {
+    /// A spare enrolled device catches up with the hub, writes an item the hub stores, and is
+    /// removed by the hub, which refuses what the device writes afterwards. The spare leaves the
+    /// run; its stored writes stay in every replica.
+    async fn remove_spare(&mut self) {
+        let index = self.replicas.len() + 1 + self.spares;
+        if index >= ENROLLED_DEVICES {
             return;
         }
-        let hub = &mut self.hub;
-        let result = hub
-            .engine
-            .seal_revoke(
-                &mut hub.conn,
-                &hub.ctx,
-                target,
-                applied,
-                RevokeReason::Revoked,
-                &mut hub.identity.local(),
-                hub.now_ms,
+        self.spares += 1;
+        let mut spare = Replica::new(index, self.rng.next()).await;
+        spare.now_ms = self.hub.now_ms;
+        let insert = |id: String, label: String, now: &str| {
+            format!(
+                "INSERT INTO fixture_items (id, created_at, label, label_edits)
+                 VALUES ({}, {now}, {}, 0)",
+                quoted(&id),
+                quoted(&label)
             )
-            .await;
-        match result {
-            Ok(_) | Err(SyncError::InvalidRevoke(_)) => {}
-            Err(error) => panic!("hub failed to revoke: {error:?}"),
-        }
+        };
+        let now = iso_time(spare.now_ms);
+        let sql = insert(self.next_id("item", index), self.words(), &now);
+        assert!(spare.try_exec(&sql).await);
+        seal(&mut self.rng, &mut spare).await;
+        send(&mut self.rng, &mut spare, &mut self.hub, true).await;
+
+        let device = spare.device_id.clone();
+        let hub = &mut self.hub;
+        let revision = crashing(
+            &mut self.rng,
+            hub,
+            SEQUENCE_FAILPOINTS,
+            async |r: &mut Replica| r.remove(&device).await,
+        )
+        .await
+        .unwrap_or_else(|error| panic!("hub failed to remove {device}: {error:?}"));
+        assert!(revision > 0);
+
+        let sql = insert(self.next_id("item", index), self.words(), &now);
+        assert!(spare.try_exec(&sql).await);
+        seal(&mut self.rng, &mut spare).await;
+        assert!(
+            !send(&mut self.rng, &mut spare, &mut self.hub, true).await,
+            "the hub stored an operation of removed device {device}"
+        );
     }
 
     async fn step(&mut self) {
@@ -1480,7 +1486,7 @@ impl Sim {
             75..=81 => self.resolve(index).await,
             82..=88 => self.recover(index).await,
             89..=96 => self.offline[index] = !self.offline[index],
-            _ => self.revoke(index).await,
+            _ => self.remove_spare().await,
         }
         // Only exchanges change what the hub or a replica acknowledged or applied.
         if (40..65).contains(&action) {

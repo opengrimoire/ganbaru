@@ -27,12 +27,12 @@ mod tests;
 #[cfg(target_os = "linux")]
 pub(crate) use connectivity::firewall::changed as firewall_changed;
 pub(crate) use ganbaru_sync_replica::now_ms;
-#[cfg(desktop)]
-pub(crate) use service::sync_hub;
 pub(crate) use service::{
-    SyncRuntime, coordinator_device_id, quiesced_sync, release_runtime_handle,
+    SyncRuntime, ensure_device_key, quiesced_sync, release_runtime_handle,
     resume_after_vault_handoff, seal_quiesced, setup, stop_for_vault_handoff, sync_files,
 };
+#[cfg(desktop)]
+pub(crate) use service::{enrollment_sealer, sync_hub};
 pub(crate) use status::SyncSubscribers;
 #[cfg(desktop)]
 pub(crate) use status::emit_applied;

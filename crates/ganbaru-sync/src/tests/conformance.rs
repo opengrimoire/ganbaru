@@ -24,7 +24,7 @@ use crate::manifest::{
     Classification, Collation, ColumnSpec, ColumnType, DerivedKey, DomainManifest, GroupSpec,
     GroupStorage, KeyDerivedColumn, LocalColumn, MAX_TIMESTAMP_BYTES, Manifest, MergeKind,
     OnDelete, OwnedCodec, OwnedOrder, OwnedTable, ReferenceColumn, Resolution, SYNC_KEY_COLUMN,
-    SYNC_TABLES, TableIdRange, TableSpec, TreeSpec, group_id, is_sql_literal,
+    SYNC_LOCAL_TABLES, SYNC_TABLES, TableIdRange, TableSpec, TreeSpec, group_id, is_sql_literal,
 };
 use crate::sql::{read_owned, replace_owned};
 use crate::{Adapters, Engine, Hooks, SyncError, triggers, validate};
@@ -125,9 +125,16 @@ async fn assert_classified(manifest: &Manifest, pool: &SqlitePool) {
         .collect::<BTreeSet<_>>();
     assert_eq!(
         sync_tables,
-        SYNC_TABLES.iter().copied().collect::<BTreeSet<_>>(),
+        SYNC_TABLES
+            .iter()
+            .chain(SYNC_LOCAL_TABLES)
+            .copied()
+            .collect::<BTreeSet<_>>(),
         "sync_* tables must match the engine tables every manifest declares"
     );
+    for table in SYNC_LOCAL_TABLES {
+        assert_eq!(manifest.classify(table), Classification::Local, "{table}");
+    }
     for domain in manifest.domains {
         for table in domain.engine {
             assert!(

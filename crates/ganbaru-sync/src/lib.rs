@@ -35,6 +35,7 @@ pub mod stability;
 pub mod triggers;
 
 mod apply;
+mod authorization;
 mod compact;
 mod conflicts;
 mod edges;
@@ -58,7 +59,8 @@ mod visibility;
 mod tests;
 
 pub use adapter::{AdapterError, Adapters, DomainAdapter, Presentation};
-pub use apply::{ApplyReport, ClockWarning, ResealNeeded};
+pub use apply::{ApplyReport, ClockWarning};
+pub use authorization::{AuthorizationView, EnrolledDevice};
 pub use compact::{
     COMPACTION_BATCH_OPS, COMPACTION_TIME_BUDGET, CompactionReport, compaction_limit,
 };
@@ -80,18 +82,13 @@ pub use hooks::{ChangeNotice, ChangeSink, HookError, HookFuture, Hooks, Material
 use manifest::Manifest;
 use manifest::vault::VAULT_MANIFEST;
 
-/// The space an engine call works in, the person key every writer must be certified by, and the
-/// device allowed to revoke writers.
+/// The space an engine call works in and the person key that signs its charter.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SpaceContext {
     /// Replication space of the vault.
     pub space: SpaceId,
-    /// Trust anchor: the person key of the vault owner.
-    pub anchor: PersonPublicKey,
-    /// Device id of the coordinator, the only device whose writers may issue revocations.
-    /// A linked replica uses its pinned coordinator; the coordinator and an unlinked vault use
-    /// their own device id.
-    pub coordinator_device_id: String,
+    /// Person key of the vault owner, which signs the space charter.
+    pub person_key: PersonPublicKey,
 }
 
 /// Makes a writer sequence durable before an operation with it is signed, so a restored or
@@ -105,7 +102,7 @@ pub trait SequenceReservation: Send {
 pub struct LocalWriter<'a> {
     /// Writer signing key.
     pub key: &'a WriterKeyPair,
-    /// Certificate binding the key to the space anchor.
+    /// Certificate binding the key to an enrolled device key.
     pub certificate: &'a SignedCertificate,
     /// Durable sequence reservation of the writer record.
     pub reservation: &'a mut dyn SequenceReservation,

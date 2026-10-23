@@ -6,17 +6,23 @@
 
 | Table | Holds |
 | --- | --- |
-| `sync_spaces` | The vault's replication spaces. One personal space per vault, whose id derives from the vault id. |
+| `sync_spaces` | The vault's replication spaces. One personal space per vault, whose id derives from the vault id. `charter` holds the person-signed space charter, revision 0 of the authorization log; a space without one stores no remote writers. |
 | `sync_apply_state` | A singleton `applying` flag that suppresses capture while the engine materializes remote changes. |
 | `sync_capture` | Local changes not yet sealed: one row per changed domain row with its changed group mask, groups forced by a conflict resolution, created and deleted flags, and `held_until_ms`, the end of a [deletion hold](../../algorithms/sync/README.md#deletion-holds) that keeps a delete, and the deletes it cascaded to, unsealed. |
 | `sync_seeded_tables` | Replicated tables whose existing rows capture seeding has captured. The baseline records the tables that replicated from the start. |
 | `sync_writers` | Every known writer of a space: public key, device, certificate, state (`active`, `retired`, `revoked`, `forked`), revocation cutoff, stored, applied, and compacted sequences, and the head hash and clock of its chain. |
-| `sync_ops` | Every stored operation as its exact signed envelope, with its full causal context and state (`waiting`, `applied`, `held` with a reason). An operation at or below its writer's `compacted_seq` may have an empty envelope; above it, an empty envelope is corruption. |
+| `sync_ops` | Every stored operation as its exact signed envelope, with its full causal context and state (`waiting`, `applied`, `held` with a reason). `authorization_revision` copies the revision from the signed header, and `excluded_revision` names the removal that excludes the operation. An operation at or below its writer's `compacted_seq` may have an empty envelope; above it, an empty envelope is corruption. |
 | `sync_stable` | On a client, the stable vector it last received from the coordinator, which bounds its compaction. |
 | `sync_rows` | Merge state for every published row of a replicated table: live or tombstoned, a recovery flag, and a conflict mask. |
 | `sync_register_versions` | Concurrent versions of each group of each published row, at most one per writer, with the encoded value and its hash. A winning value that the domain row holds is elided to null; readers take it from the domain row when it matches the hash, otherwise from the operation body, and materialization stores it again before the domain row changes or is deleted. |
 | `sync_version_refs` | The non-null reference values of each retained version, one row per reference column, indexed by referenced key so redirects and deletions find their referrers. |
 | `sync_tombstones` | Tombstones of published rows, keyed by the deleting operation, with an optional redirect or an optional cause (`cause_table`, `cause_row`) naming the deleted root a cascade repair followed. |
+| `sync_auth_entries` | One row per applied authorization log entry (kind `4`), with its revision, chain hash, and whether chain selection chose it. Unselected entries stay stored and forwarded. |
+| `sync_devices` | Devices the selected chain enrolls: device key, TLS fingerprint, kind, role and admin key, label, and the revisions that enrolled and removed the device. |
+| `sync_displaced_versions` | Versions an operation past the anchor mark superseded, kept until the anchor confirms it so excluding it can restore them. |
+| `sync_late_changes` | Rows a removed device changed past its cutoff, per removal, until an admin restores or discards them. |
+| `sync_fork_evidence` | Two signed operations of one writer at one sequence with different hashes. |
+| `sync_anchor_marks` | Per writer, the highest sequence the anchor confirmed storing. Device-local; never replicates. |
 
 ## Invariants
 

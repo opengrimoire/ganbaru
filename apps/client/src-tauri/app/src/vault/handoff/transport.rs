@@ -7,7 +7,8 @@ pub(crate) use dial_report::{CoordinatorDialReport, coordinator_dial_report};
 use dial_report::{DialOutcome, record_dial};
 #[cfg(desktop)]
 pub(crate) use server::{
-    CoordinatorListener, CoordinatorServices, LanAdmission, serve_with_coordinator,
+    CoordinatorListener, CoordinatorServices, EnrollmentSealer, LanAdmission,
+    serve_with_coordinator,
 };
 
 use super::pairing::{
@@ -166,6 +167,7 @@ pub(crate) async fn enroll(
     invitation: &PairingInvitation,
     device_label: String,
     device_kind: super::protocol::DeviceKind,
+    sync_device_key: &ganbaru_sync_contracts::DevicePublicKey,
 ) -> Result<(), String> {
     invitation.validate(unix_time_ms())?;
     let endpoint = invitation
@@ -185,6 +187,7 @@ pub(crate) async fn enroll(
             device_label,
             device_kind,
             device_certificate: encode_certificate(&identity.certificate),
+            sync_device_key: super::protocol::encode_sync_device_key(sync_device_key),
         },
     ))
     .await?;

@@ -154,7 +154,7 @@ fn backup_snapshot_archive_leaves_installation_sync_state_behind() {
         std::fs::create_dir_all(&root).expect("create vault root");
         let registry = DatabasePoolRegistry::default();
         let pool = create_vault(&registry, &root.join(DATABASE_FILE)).await;
-        context(&mut *acquire(&pool).await, "device-hub").await;
+        context(&mut *acquire(&pool).await).await;
         add_note(&mut *acquire(&pool).await, "handed-off").await;
         let pending: i64 = sqlx::query_scalar("SELECT count(*) FROM sync_capture")
             .fetch_one(&pool)

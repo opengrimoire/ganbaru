@@ -1,6 +1,6 @@
 //! Re-sealing a local writer's operations with a new writer.
 //!
-//! When a revocation or a fork cuts off operations this replica sealed and applied, the
+//! When a fork cuts off operations this replica sealed and applied, the
 //! installation replaces its writer. Every operation of the old writer past the kept sequence is
 //! removed with its merge effects and sealed again by the new writer with its original clock,
 //! manifest version, and causal context, where removed operations of the old writer are renamed
@@ -182,15 +182,12 @@ async fn remove_effects(
 }
 
 /// Removes the old writer's operations past `keep_through` and makes `keep_through` its head.
-/// After a revocation the writer is retired and its cutoff is lowered to it, so another copy of
-/// the removed operations is refused before the revocation applies. After a fork its state and
-/// cutoff stay, so the other copy of the chain past the divergence can be stored.
+/// Its state and cutoff stay, so the other copy of the chain past the divergence can be stored.
 async fn truncate_chain(
     conn: &mut SqliteConnection,
     ctx: &SpaceContext,
     old: WriterId,
     keep_through: Seq,
-    cause: ResealCause,
 ) -> SyncResult<()> {
     let keep = seq_i64(keep_through)?;
     let (head_hash, head_clock): (Vec<u8>, i64) = sqlx::query_as(
@@ -210,10 +207,7 @@ async fn truncate_chain(
         .await?;
     sqlx::query(
         "UPDATE sync_writers SET stored_seq = ?1, applied_seq = ?1, head_hash = ?2,
-            head_clock = ?3,
-            cutoff_seq = CASE WHEN ?6 AND (cutoff_seq IS NULL OR cutoff_seq > ?1) THEN ?1
-                ELSE cutoff_seq END,
-            state = CASE WHEN ?6 AND state = 'active' THEN 'retired' ELSE state END
+            head_clock = ?3
          WHERE space_id = ?4 AND writer_id = ?5",
     )
     .bind(keep)
@@ -221,83 +215,24 @@ async fn truncate_chain(
     .bind(head_clock)
     .bind(ctx.space.as_bytes().as_slice())
     .bind(old.as_bytes().as_slice())
-    .bind(cause == ResealCause::Revocation)
     .execute(&mut *conn)
     .await?;
     Ok(())
 }
 
-/// Why the old writer's operations are re-sealed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ResealCause {
-    /// A revocation cut the chain off at its cutoff.
-    Revocation,
-    /// Another copy of the chain diverges from this one after the kept sequence.
-    Fork,
-}
-
 impl Engine {
-    /// Replaces the old local writer's operations past `keep_through` with operations of a new
-    /// writer that merge the same way, then seals pending captures with it. The old writer is
-    /// retired unless it is already revoked or forked, and its cutoff is lowered to
-    /// `keep_through`.
-    ///
-    /// `keep_through` is the revocation cutoff from [`crate::ResealNeeded`]. The new writer must
-    /// not have sealed anything but its genesis.
-    pub async fn reseal(
-        &self,
-        conn: &mut SqliteConnection,
-        ctx: &SpaceContext,
-        old: WriterId,
-        keep_through: Seq,
-        writer: &mut LocalWriter<'_>,
-        now_ms: u64,
-    ) -> SyncResult<ResealReport> {
-        self.reseal_after(
-            conn,
-            ctx,
-            old,
-            keep_through,
-            ResealCause::Revocation,
-            writer,
-            now_ms,
-        )
-        .await
-    }
-
-    /// Re-seals the local writer's operations past `keep_through`, the last sequence another
-    /// copy of the chain shares with this one, like [`Engine::reseal`]. The old writer keeps its
-    /// state and cutoff, so the other copy's operations past the divergence can be stored and
-    /// applied afterwards. Only operations that never left this replica may be re-sealed this way.
+    /// Replaces the old local writer's operations past `keep_through`, the last sequence another
+    /// copy of the chain shares with this one, with operations of a new writer that merge the same
+    /// way, then seals pending captures with it. The new writer must not have sealed anything but
+    /// its genesis. The old writer keeps its state and cutoff, so the other copy's operations
+    /// past the divergence can be stored and applied afterwards. Only operations that never left
+    /// this replica may be re-sealed this way.
     pub async fn reseal_fork(
         &self,
         conn: &mut SqliteConnection,
         ctx: &SpaceContext,
         old: WriterId,
         keep_through: Seq,
-        writer: &mut LocalWriter<'_>,
-        now_ms: u64,
-    ) -> SyncResult<ResealReport> {
-        self.reseal_after(
-            conn,
-            ctx,
-            old,
-            keep_through,
-            ResealCause::Fork,
-            writer,
-            now_ms,
-        )
-        .await
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    async fn reseal_after(
-        &self,
-        conn: &mut SqliteConnection,
-        ctx: &SpaceContext,
-        old: WriterId,
-        keep_through: Seq,
-        cause: ResealCause,
         writer: &mut LocalWriter<'_>,
         now_ms: u64,
     ) -> SyncResult<ResealReport> {
@@ -334,7 +269,7 @@ impl Engine {
         ensure_unseen(&mut tx, &mut batch, old, keep_through).await?;
         let replaced = replaced_ops(&mut tx, ctx, old, keep_through).await?;
         remove_effects(&mut tx, &mut batch, old, keep_through).await?;
-        truncate_chain(&mut tx, ctx, old, keep_through, cause).await?;
+        truncate_chain(&mut tx, ctx, old, keep_through).await?;
         batch.applied.set(old, keep_through);
         batch.contexts.clear();
         let mut report = ResealReport {
@@ -393,21 +328,6 @@ impl Engine {
                             &mut batch,
                             writer,
                             changes,
-                            Some(&replay),
-                            now_ms,
-                            &mut report.seal,
-                        )
-                        .await?;
-                }
-                Content::Revoke(revocation) => {
-                    sealer
-                        .seal_revoke(
-                            self,
-                            &mut tx,
-                            ctx,
-                            &mut batch,
-                            writer,
-                            revocation,
                             Some(&replay),
                             now_ms,
                             &mut report.seal,

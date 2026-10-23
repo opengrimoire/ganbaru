@@ -26,7 +26,9 @@ use limits::{ConnectionLimits, PendingPermit};
 pub(crate) use listener::CoordinatorListener;
 use rustls::pki_types::CertificateDer;
 use std::fs;
+use std::future::Future;
 use std::net::{IpAddr, SocketAddr};
+use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -79,12 +81,20 @@ impl ServerConfigCache {
     }
 }
 
+/// Seals the sync enrollment of linked devices. The listener runs it after linking an approved
+/// device and before replying, so the vault bundle the device downloads next already enrolls it.
+/// A failure leaves the enrollment to the next sync pass.
+pub(crate) type EnrollmentSealer =
+    Arc<dyn Fn() -> Pin<Box<dyn Future<Output = Result<(), String>> + Send>> + Send + Sync>;
+
 /// Optional coordinator features a listener dispatches to, and the approvals enrollment asks.
 #[derive(Clone, Default)]
 pub(crate) struct CoordinatorServices {
     pub coordinator: Option<coordinator::CoordinatorSender>,
     pub contacts: Option<ContactSender>,
     pub hub: Option<SyncHub>,
+    /// Records the enrollment of a device that was just linked, before it is told so.
+    pub enrollment_sealer: Option<EnrollmentSealer>,
     pub approvals: EnrollmentApprovals,
     /// Whether the network behind each local address may reach the listener at all.
     pub admission: LanAdmission,
@@ -220,6 +230,7 @@ async fn handle_connection(
                 coordinator,
                 contacts,
                 hub,
+                enrollment_sealer,
                 approvals,
                 admission: _,
             },
@@ -302,6 +313,7 @@ async fn handle_connection(
             device_label,
             device_kind,
             device_certificate,
+            sync_device_key,
             ..
         } => {
             if peer_certificate.is_some() {
@@ -321,6 +333,7 @@ async fn handle_connection(
                 device_label: &device_label,
                 device_kind,
                 certificate_b64: &device_certificate,
+                sync_device_key: &sync_device_key,
             };
             // The invitation is checked when the request arrives, so time spent waiting for the
             // user does not expire it.
@@ -358,6 +371,11 @@ async fn handle_connection(
             }
             if let Err(error) = manager.enroll_peer(enrollment, requested_at_ms) {
                 return send_error(&mut stream, "enrollment_rejected", &error, false).await;
+            }
+            if let Some(seal) = enrollment_sealer.as_ref()
+                && let Err(error) = seal().await
+            {
+                eprintln!("sync: enroll the linked device: {error}");
             }
             let coordinator_device_id = manager.device_id()?;
             let coordinator_device_label = suggested_device_label();

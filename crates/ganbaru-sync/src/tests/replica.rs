@@ -3,12 +3,14 @@
 //! engine calls.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 
 use ganbaru_contacts::PersonKeyPair;
 use ganbaru_sync_contracts::{
-    ChangeAction, Content, Envelope, GroupId, SignedCertificate, TableId, Value, VersionVector,
-    WriterCertificate, WriterId, WriterKeyPair, sign_certificate,
+    AdminKeyPair, ChangeAction, Charter, Content, DeviceKeyPair, DeviceKind, DeviceRole, Enroll,
+    Entry, Envelope, GroupId, Proposal, ProposalRejection, Remove, SignedCertificate,
+    SignedCharter, SignedProposal, SpaceId, TableId, Value, VersionVector, WriterCertificate,
+    WriterId, WriterKeyPair, sign_certificate, sign_charter, sign_proposal,
 };
 use sqlx::sqlite::SqliteOwnedBuf;
 use sqlx::{AssertSqlSafe, Connection, SqliteConnection};
@@ -16,8 +18,8 @@ use sqlx::{AssertSqlSafe, Connection, SqliteConnection};
 use super::fixture::{NODE_MAX_DEPTH, after_local_edit, fixture_pool, test_engine};
 use crate::manifest::Manifest;
 use crate::{
-    ApplyReport, CompactionReport, Engine, LocalWriter, ResealNeeded, ResealReport, SealReport,
-    SequenceReservation, SpaceContext, StoreOutcome, SyncResult,
+    ApplyReport, CompactionReport, Engine, LocalWriter, SealReport, SequenceReservation,
+    SpaceContext, StoreOutcome, SyncResult,
 };
 use crate::{hydrate, log, publication};
 
@@ -86,6 +88,101 @@ impl SequenceReservation for Reservation {
     }
 }
 
+/// Device id of the anchor every test space is chartered with.
+pub(super) const ANCHOR_DEVICE_ID: &str = "device-anchor";
+/// Devices `device_id(0)` through `device_id(ENROLLED_DEVICES - 1)` are enrolled in every test
+/// space before any replica starts.
+pub(super) const ENROLLED_DEVICES: usize = 16;
+/// Purposes a test key seed is derived for.
+const DEVICE_PURPOSE: u8 = 1;
+const ADMIN_PURPOSE: u8 = 2;
+const RECOVERY_PURPOSE: u8 = 3;
+const AUTHORITY_PURPOSE: u8 = 4;
+/// Index the anchor device's keys derive from, outside the enrolled range.
+const ANCHOR_KEY_INDEX: u64 = u64::MAX;
+
+/// A deterministic seed for a key of `person`'s spaces, distinct per purpose and index.
+fn key_seed(person: &PersonKeyPair, purpose: u8, index: u64) -> [u8; 32] {
+    let mut seed = *person.public_key().as_bytes();
+    seed[0] ^= purpose;
+    for (byte, index_byte) in seed[1..9].iter_mut().zip(index.to_le_bytes()) {
+        *byte ^= index_byte;
+    }
+    seed
+}
+
+/// The device key of replica device `index` in `person`'s spaces.
+pub(super) fn device_key(person: &PersonKeyPair, index: usize) -> DeviceKeyPair {
+    DeviceKeyPair::from_seed(&key_seed(person, DEVICE_PURPOSE, index as u64))
+        .expect("test device seed should be valid")
+}
+
+fn anchor_device_key(person: &PersonKeyPair) -> DeviceKeyPair {
+    DeviceKeyPair::from_seed(&key_seed(person, DEVICE_PURPOSE, ANCHOR_KEY_INDEX))
+        .expect("test device seed should be valid")
+}
+
+/// The admin key the anchor signs proposals with in `person`'s spaces.
+pub(super) fn anchor_admin(person: &PersonKeyPair) -> AdminKeyPair {
+    AdminKeyPair::from_seed(&key_seed(person, ADMIN_PURPOSE, ANCHOR_KEY_INDEX))
+        .expect("test admin seed should be valid")
+}
+
+/// The recovery admin key of `person`'s spaces.
+pub(super) fn recovery_admin(person: &PersonKeyPair) -> AdminKeyPair {
+    AdminKeyPair::from_seed(&key_seed(person, RECOVERY_PURPOSE, 0))
+        .expect("test admin seed should be valid")
+}
+
+/// The charter of `space`, owned by `person`, with the anchor device as first anchor.
+pub(super) fn test_charter(person: &PersonKeyPair, space: SpaceId) -> SignedCharter {
+    sign_charter(
+        &Charter {
+            space,
+            anchor_device_id: ANCHOR_DEVICE_ID.to_owned(),
+            anchor_device_key: anchor_device_key(person).public_key(),
+            anchor_tls_fingerprint: [1; 32],
+            anchor_admin_key: anchor_admin(person).public_key(),
+            recovery_admin_key: recovery_admin(person).public_key(),
+            discovery_key: [2; 32],
+            created_at_ms: START_MS as i64,
+        },
+        person,
+    )
+    .expect("test charter should sign")
+}
+
+/// A proposal of `entry` for `space` signed by `admin`.
+pub(super) fn proposal(
+    space: SpaceId,
+    admin: &AdminKeyPair,
+    created_at_ms: u64,
+    entry: Entry,
+) -> SignedProposal {
+    sign_proposal(
+        &Proposal {
+            space,
+            author: admin.public_key(),
+            created_at_ms: created_at_ms as i64,
+            entry,
+        },
+        admin,
+    )
+    .expect("test proposal should sign")
+}
+
+/// An enrollment of replica device `index` as a desktop with `role`.
+pub(super) fn enroll_entry(person: &PersonKeyPair, index: usize, role: DeviceRole) -> Entry {
+    Entry::Enroll(Enroll {
+        device_id: device_id(index),
+        device_key: device_key(person, index).public_key(),
+        tls_fingerprint: [3; 32],
+        label: format!("Device {index}"),
+        device_kind: DeviceKind::Desktop,
+        role,
+    })
+}
+
 /// A local writer: key, certificate, and reservation.
 pub(super) struct Identity {
     seed: [u8; 32],
@@ -97,7 +194,7 @@ pub(super) struct Identity {
 impl Identity {
     pub(super) fn new(
         seed: [u8; 32],
-        person: &PersonKeyPair,
+        device: &DeviceKeyPair,
         device_id: &str,
         predecessor: Option<WriterId>,
     ) -> Self {
@@ -105,12 +202,12 @@ impl Identity {
         let certificate = sign_certificate(
             &WriterCertificate {
                 writer_key: key.public_key(),
-                person_key: person.public_key(),
                 device_id: device_id.to_owned(),
+                device_key: device.public_key(),
                 created_at_ms: START_MS as i64,
                 predecessor,
             },
-            person,
+            device,
         )
         .expect("test certificate should sign");
         Self {
@@ -144,6 +241,73 @@ impl Identity {
     }
 }
 
+/// Database bytes of each test space once its charter is installed and the anchor enrolled
+/// every test device, by vault id and person public key.
+static SPACES: Mutex<BTreeMap<(String, String), Vec<u8>>> = Mutex::new(BTreeMap::new());
+
+fn spaces() -> std::sync::MutexGuard<'static, BTreeMap<(String, String), Vec<u8>>> {
+    SPACES
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// What every space template of `person` holds: the authority writer's genesis and one
+/// enrollment for each pre-enrolled device.
+pub(super) fn template_vector(person: &PersonKeyPair) -> VersionVector {
+    let ops = u64::try_from(1 + ENROLLED_DEVICES).unwrap();
+    [(authority(person).id(), ops)].into_iter().collect()
+}
+
+/// The first writer of the anchor device in `person`'s spaces.
+fn authority(person: &PersonKeyPair) -> Identity {
+    Identity::new(
+        key_seed(person, AUTHORITY_PURPOSE, 0),
+        &anchor_device_key(person),
+        ANCHOR_DEVICE_ID,
+        None,
+    )
+}
+
+async fn space_template(vault_id: &str, person: &PersonKeyPair) -> Vec<u8> {
+    let key = (vault_id.to_owned(), person.public_key().to_text());
+    if let Some(bytes) = spaces().get(&key) {
+        return bytes.clone();
+    }
+    let mut conn = connection_from(template().await).await;
+    let engine = test_engine();
+    let space = engine
+        .init_space(&mut conn, vault_id, START_MS)
+        .await
+        .unwrap();
+    let ctx = SpaceContext {
+        space,
+        person_key: person.public_key(),
+    };
+    engine
+        .install_charter(&mut conn, &ctx, &test_charter(person, space))
+        .await
+        .unwrap();
+    let mut authority = authority(person);
+    let admin = anchor_admin(person);
+    for index in 0..ENROLLED_DEVICES {
+        let entry = enroll_entry(person, index, DeviceRole::Member);
+        engine
+            .sequence_proposal(
+                &mut conn,
+                &ctx,
+                &proposal(space, &admin, START_MS, entry),
+                [0; 32],
+                &mut authority.local(),
+                START_MS,
+            )
+            .await
+            .unwrap()
+            .unwrap();
+    }
+    let bytes = conn.serialize(None).await.unwrap().to_vec();
+    spaces().entry(key).or_insert(bytes).clone()
+}
+
 fn writer_seed(salt: u64, replica: usize, generation: u32) -> [u8; 32] {
     let mut seed = [0u8; 32];
     seed[..8].copy_from_slice(&salt.to_le_bytes());
@@ -161,6 +325,9 @@ pub(super) struct Replica {
     pub(super) ctx: SpaceContext,
     pub(super) identity: Identity,
     pub(super) person: PersonKeyPair,
+    /// Device the replica's writers belong to.
+    pub(super) device_id: String,
+    device_seed: [u8; 32],
     /// Local wall clock passed to engine calls.
     pub(super) now_ms: u64,
     salt: u64,
@@ -173,6 +340,16 @@ impl Replica {
         Self::with_space(index, salt, VAULT_ID, person()).await
     }
 
+    /// A fresh installation of the shared vault on the anchor device, which sequences
+    /// authorization changes.
+    pub(super) async fn anchor(index: usize, salt: u64) -> Self {
+        let mut replica = Self::new(index, salt).await;
+        replica.identity = authority(&replica.person);
+        replica.device_id = ANCHOR_DEVICE_ID.to_owned();
+        replica.device_seed = key_seed(&replica.person, DEVICE_PURPOSE, ANCHOR_KEY_INDEX);
+        replica
+    }
+
     /// A fresh installation of `vault_id` owned by `person`.
     pub(super) async fn with_space(
         index: usize,
@@ -180,7 +357,7 @@ impl Replica {
         vault_id: &str,
         person: PersonKeyPair,
     ) -> Self {
-        let mut conn = connection_from(template().await).await;
+        let mut conn = connection_from(&space_template(vault_id, &person).await).await;
         let engine = test_engine();
         let space = engine
             .init_space(&mut conn, vault_id, START_MS)
@@ -188,12 +365,11 @@ impl Replica {
             .unwrap();
         let ctx = SpaceContext {
             space,
-            anchor: person.public_key(),
-            coordinator_device_id: device_id(COORDINATOR_INDEX),
+            person_key: person.public_key(),
         };
         let identity = Identity::new(
             writer_seed(salt, index, 0),
-            &person,
+            &device_key(&person, index),
             &device_id(index),
             None,
         );
@@ -203,6 +379,8 @@ impl Replica {
             engine,
             ctx,
             identity,
+            device_id: device_id(index),
+            device_seed: key_seed(&person, DEVICE_PURPOSE, index as u64),
             person,
             now_ms: START_MS,
             salt,
@@ -210,16 +388,20 @@ impl Replica {
         }
     }
 
-    /// A clone of this installation's database and writer, as a restored backup would be.
+    /// A clone of this installation's database and writer, as a restored backup would be. Its
+    /// later writers belong to the device of replica `index`.
     pub(super) async fn clone_installation(&mut self, index: usize) -> Self {
         let bytes = self.snapshot().await;
+        let person = person();
         Self {
             index,
             conn: connection_from(&bytes).await,
             engine: test_engine(),
             ctx: self.ctx.clone(),
             identity: self.identity.duplicate(),
-            person: person(),
+            device_id: device_id(index),
+            device_seed: key_seed(&person, DEVICE_PURPOSE, index as u64),
+            person,
             now_ms: self.now_ms,
             salt: self.salt,
             generation: self.generation,
@@ -230,23 +412,74 @@ impl Replica {
         self.identity.id()
     }
 
-    /// Makes the device of replica `index` the coordinator this replica accepts revocations from.
-    pub(super) fn coordinated_by(mut self, index: usize) -> Self {
-        self.ctx.coordinator_device_id = device_id(index);
-        self
-    }
-
     /// Replaces the local writer with a new one, as the app does when its writer stops being
     /// active.
     pub(super) fn rotate(&mut self) {
         let old = self.identity.id();
         self.generation += 1;
+        let device =
+            DeviceKeyPair::from_seed(&self.device_seed).expect("test device seed should be valid");
         self.identity = Identity::new(
             writer_seed(self.salt, self.index, self.generation),
-            &self.person,
-            &device_id(self.index),
+            &device,
+            &self.device_id,
             Some(old),
         );
+    }
+
+    /// Sequences `entry` as the anchor, signed with the anchor admin key at the local clock.
+    pub(super) async fn sequence(
+        &mut self,
+        entry: Entry,
+    ) -> SyncResult<Result<u64, ProposalRejection>> {
+        let signed = proposal(
+            self.ctx.space,
+            &anchor_admin(&self.person),
+            self.now_ms,
+            entry,
+        );
+        self.sequence_signed(&signed).await
+    }
+
+    /// Sequences a signed proposal as the anchor.
+    pub(super) async fn sequence_signed(
+        &mut self,
+        signed: &SignedProposal,
+    ) -> SyncResult<Result<u64, ProposalRejection>> {
+        self.engine
+            .sequence_proposal(
+                &mut self.conn,
+                &self.ctx,
+                signed,
+                [5; 32],
+                &mut self.identity.local(),
+                self.now_ms,
+            )
+            .await
+    }
+
+    /// Removes `device_id` from the space as the anchor.
+    pub(super) async fn remove(&mut self, device_id: &str) -> SyncResult<u64> {
+        let entry = Entry::Remove(Remove {
+            device_id: device_id.to_owned(),
+        });
+        Ok(self
+            .sequence(entry)
+            .await?
+            .unwrap_or_else(|rejection| panic!("removal of {device_id} rejected: {rejection:?}")))
+    }
+
+    /// Whether the selected authorization chain removed this replica's device.
+    pub(super) async fn device_removed(&mut self) -> bool {
+        let view = self
+            .engine
+            .authorization(&mut self.conn, &self.ctx)
+            .await
+            .unwrap()
+            .expect("test spaces have a charter");
+        view.devices
+            .iter()
+            .any(|device| device.device_id == self.device_id && device.removed_revision.is_some())
     }
 
     /// Runs SQL that must succeed.
@@ -312,37 +545,16 @@ impl Replica {
             .await
     }
 
-    /// Re-seals the local writer after a revocation, rotating first unless that already
-    /// happened in an attempt that rolled back.
-    pub(super) async fn reseal(&mut self, needed: ResealNeeded) -> SyncResult<ResealReport> {
-        if self.identity.id() == needed.writer {
-            self.rotate();
-        }
-        self.engine
-            .reseal(
-                &mut self.conn,
-                &self.ctx,
-                needed.writer,
-                needed.keep_through,
-                &mut self.identity.local(),
-                self.now_ms,
-            )
-            .await
-    }
-
-    /// Applies until nothing ready remains, re-sealing and rotating the local writer the way
-    /// the app does. Returns every apply report.
+    /// Applies until nothing ready remains, rotating the local writer the way the app does
+    /// while its device stays enrolled. Returns every apply report.
     pub(super) async fn apply_all(&mut self) -> SyncResult<Vec<ApplyReport>> {
         let mut reports = Vec::new();
         for _ in 0..10_000 {
             let report = self.apply_once().await?;
-            let reseal = report.reseal_needed;
             let frozen = report.local_writer_frozen;
             let more = report.more;
             reports.push(report);
-            if let Some(needed) = reseal {
-                self.reseal(needed).await?;
-            } else if frozen {
+            if frozen && !self.device_removed().await {
                 self.rotate();
             } else if !more {
                 return Ok(reports);
@@ -395,6 +607,22 @@ impl Replica {
                 return ops;
             }
         }
+    }
+
+    /// Every stored operation of this replica's own writer, leaving out the authorization log
+    /// every space template holds.
+    pub(super) async fn own_ops(&mut self) -> Vec<Vec<u8>> {
+        let writer = self.writer();
+        self.ops_since(&VersionVector::new())
+            .await
+            .into_iter()
+            .filter(|bytes| {
+                ganbaru_sync_contracts::Envelope::decode(bytes)
+                    .unwrap()
+                    .writer
+                    == writer
+            })
+            .collect()
     }
 
     pub(super) async fn receive(&mut self, ops: &[Vec<u8>]) -> Vec<StoreOutcome> {
@@ -760,6 +988,69 @@ impl Replica {
     }
 }
 
+/// Index of the replica that seals geneses for other installations.
+const MINTER_INDEX: usize = 9;
+
+/// Writers other installations created: the enrollments of their devices the anchor sealed
+/// and the writers' geneses.
+pub(super) struct Minted {
+    pub(super) enrollments: Vec<Vec<u8>>,
+    pub(super) geneses: Vec<Vec<u8>>,
+}
+
+impl Minted {
+    /// Stores and applies the enrollments on `replica`, so that it accepts the geneses.
+    pub(super) async fn enroll(&self, replica: &mut Replica) {
+        replica.receive(&self.enrollments).await;
+        replica.apply_all().await.unwrap();
+    }
+}
+
+/// The device of minted writer `writer` when writers fill devices outside the enrolled range in
+/// turn, up to the writer limit of each.
+pub(super) fn spread_devices(writer: usize) -> usize {
+    ENROLLED_DEVICES + writer / ganbaru_sync_contracts::bounds::MAX_WRITERS_PER_DEVICE
+}
+
+/// Geneses of new writers numbered `writers`, each on the device of replica `device(writer)`,
+/// as other installations would seal them, with the enrollments of devices outside the enrolled
+/// range. One space takes one mint, since each mint extends the anchor's chain from the same
+/// start.
+pub(super) async fn mint_writers(
+    writers: std::ops::Range<usize>,
+    device: impl Fn(usize) -> usize,
+) -> Minted {
+    let mut minter = Replica::anchor(MINTER_INDEX, 1).await;
+    let start = minter.stored_vector().await;
+    let devices: BTreeSet<usize> = writers.clone().map(&device).collect();
+    for index in devices
+        .into_iter()
+        .filter(|index| *index >= ENROLLED_DEVICES)
+    {
+        let entry = enroll_entry(&minter.person, index, DeviceRole::Member);
+        minter.sequence(entry).await.unwrap().unwrap();
+    }
+    let enrollments = minter.ops_since(&start).await;
+    let enrolled = minter.stored_vector().await;
+    for writer in writers {
+        let mut seed = [0u8; 32];
+        seed[..8].copy_from_slice(&(writer as u64).to_le_bytes());
+        seed[31] = 2;
+        let index = device(writer);
+        minter.identity = Identity::new(
+            seed,
+            &device_key(&minter.person, index),
+            &device_id(index),
+            None,
+        );
+        minter.seal().await.unwrap();
+    }
+    Minted {
+        enrollments,
+        geneses: minter.ops_since(&enrolled).await,
+    }
+}
+
 /// Alias of the dumped table, which publication conditions name.
 const DUMPED_ALIAS: &str = "dumped";
 
@@ -798,10 +1089,9 @@ const ENGINE_DUMPED: &[(&str, &[&str])] = &[
     ("sync_register_versions", &["value"]),
     ("sync_version_refs", &[]),
     ("sync_tombstones", &[]),
+    ("sync_auth_entries", &[]),
+    ("sync_devices", &[]),
 ];
-
-/// Index of the replica whose device coordinates every test space.
-pub(super) const COORDINATOR_INDEX: usize = 0;
 
 pub(super) fn device_id(index: usize) -> String {
     format!("device-{index}")

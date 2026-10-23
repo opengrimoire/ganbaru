@@ -1,12 +1,40 @@
 //! Restoring a theme that a linked device deleted while another device still edited it.
 
-use ganbaru_sync::domains::themes::{ThemeContent, ThemeToken};
+use std::collections::HashSet;
+
+use ganbaru_sync::domains::themes::{ThemeContent, ThemeToken, is_display_name};
 use ganbaru_sync::manifest::vault::themes::group;
 use ganbaru_sync_contracts::{Field, GroupId, Value};
 use ring::rand::{SecureRandom, SystemRandom};
 use sqlx::SqliteConnection;
 
 use super::{ThemePaletteWrite, ThemeTokenWrite, UserThemeWrite, insert_on};
+
+/// Exclusive upper bound of the numeric suffix tried for a unique display name, matching the
+/// frontend rule for duplicated and imported themes.
+const NAME_SUFFIX_CAP: u32 = 999;
+
+/// `base` when no other theme uses it, ignoring case, or else `base` followed by the lowest free
+/// numeric suffix from 2, as the frontend names duplicated and imported themes. A suffixed name
+/// that would exceed the display name limit is skipped; `base` is kept when no suffix fits.
+fn unique_display_name<'a>(base: &str, existing: impl IntoIterator<Item = &'a str>) -> String {
+    let taken: HashSet<String> = existing.into_iter().map(str::to_lowercase).collect();
+    if !taken.contains(&base.to_lowercase()) {
+        return base.to_string();
+    }
+    (2..NAME_SUFFIX_CAP)
+        .map(|suffix| format!("{base} {suffix}"))
+        .find(|candidate| is_display_name(candidate) && !taken.contains(&candidate.to_lowercase()))
+        .unwrap_or_else(|| base.to_string())
+}
+
+/// The display names of every stored theme.
+async fn stored_display_names(conn: &mut SqliteConnection) -> Result<Vec<String>, String> {
+    sqlx::query_scalar::<_, String>("SELECT display_name FROM themes")
+        .fetch_all(&mut *conn)
+        .await
+        .map_err(|e| format!("read theme names: {e}"))
+}
 
 /// A random version 4 UUID, the form the frontend gives new user themes.
 fn new_theme_id() -> Result<String, String> {
@@ -51,7 +79,8 @@ fn palette_writes(palette: &[String]) -> Vec<ThemePaletteWrite> {
 
 /// Creates a new theme from the retained values of a deleted theme offered for recovery and
 /// returns its id. The recovered content also becomes the new theme's seed, as it does for an
-/// imported theme, so the restored theme starts with a seed of its own. Inside an open
+/// imported theme, so the restored theme starts with a seed of its own, and its name gets a
+/// numeric suffix when another theme already uses it. Inside an open
 /// transaction on `conn` the insert joins it as a savepoint, so the caller decides when it
 /// commits.
 pub async fn restore_recovered(
@@ -72,6 +101,8 @@ pub async fn restore_recovered(
         }
     }
     let display_name = display_name.ok_or("a recovered theme has no name")?;
+    let existing = stored_display_names(conn).await?;
+    let display_name = unique_display_name(&display_name, existing.iter().map(String::as_str));
     let icon_label = icon_label.ok_or("a recovered theme has no icon")?;
     let content = content.ok_or("a recovered theme has no content")?;
     let tokens = token_writes(&content.tokens);

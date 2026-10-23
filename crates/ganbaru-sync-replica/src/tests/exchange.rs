@@ -8,7 +8,7 @@ use crate::assets::{
 use crate::client::{
     ClientSession, Exchange, Exchanged, MAX_EXCHANGE_BYTES, PeerIds, SyncTransport, wait,
 };
-use crate::hub::{HubContact, HubContactSource, HubVault, OpenHubVault, SyncHub};
+use crate::hub::{HubContact, HubContactSource, HubStability, HubVault, OpenHubVault, SyncHub};
 use crate::recovery::{
     RecoveredRow, RecoveryAction, RecoveryChoice, RecoveryRestorers, RestoreFuture,
 };
@@ -521,6 +521,58 @@ fn sync_states_carry_the_coordinator_contact_from_its_source() {
             "a contact outside the wire bounds fails the request, not the frame"
         );
         hub_replica.close().await;
+    });
+}
+
+#[test]
+fn sync_states_report_the_published_stability_within_what_the_hub_stores() {
+    block_on(async {
+        let mut hub_replica = Replica::new("hub-stable", HUB_DEVICE).await;
+        let phone = Replica::new("phone-stable", PHONE_DEVICE).await;
+        let sealed = hub_replica.seal_note("note-hub").await;
+        let stability = HubStability::default();
+        let transport = DirectTransport(
+            SyncHub::new(open_hub(&hub_replica), watch::Sender::new(0))
+                .with_contact(contact_source(test_contact()))
+                .with_stability(stability.clone()),
+        );
+
+        let unpublished = done(
+            phone
+                .exchange(&transport, &phone_ids())
+                .await
+                .expect("exchange"),
+        );
+        assert!(unpublished.stable.is_empty());
+        assert!(!unpublished.bootstrap_required);
+
+        let hub_writer = hub_replica.writer.id();
+        let unknown = WriterId::from_bytes([9; ganbaru_sync_contracts::ids::ID_BYTES]);
+        stability.publish(
+            VAULT_ID,
+            [(hub_writer, sealed + 5), (unknown, 3)]
+                .into_iter()
+                .collect(),
+        );
+        let published = done(
+            phone
+                .exchange(&transport, &phone_ids())
+                .await
+                .expect("exchange"),
+        );
+        let expected: VersionVector = [(hub_writer, sealed)].into_iter().collect();
+        assert_eq!(
+            published.stable, expected,
+            "stability never exceeds what the hub stores"
+        );
+
+        stability.publish("other-vault", expected.clone());
+        assert!(stability.stable(VAULT_ID).is_empty());
+        stability.publish(VAULT_ID, expected);
+        stability.clear();
+        assert!(stability.stable(VAULT_ID).is_empty());
+        hub_replica.close().await;
+        phone.close().await;
     });
 }
 

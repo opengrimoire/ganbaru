@@ -65,6 +65,48 @@ pub struct HubContact {
 /// Reports the coordinator's contact for the vault with the given ID.
 pub type HubContactSource = Arc<dyn Fn(&str) -> Result<HubContact, String> + Send + Sync>;
 
+/// Stability the coordinator service last computed, published for the sync states the hub
+/// answers. A vault without a published value reports an empty stable vector, which every
+/// device holds.
+#[derive(Clone, Debug, Default)]
+pub struct HubStability(Arc<Mutex<Option<(String, VersionVector)>>>);
+
+impl HubStability {
+    /// Publishes the stable vector of `vault_id`, replacing what any vault published before.
+    pub fn publish(&self, vault_id: &str, stable: VersionVector) {
+        if let Ok(mut published) = self.0.lock() {
+            *published = Some((vault_id.to_string(), stable));
+        }
+    }
+
+    /// Forgets the published value, as when the coordinator switches vaults.
+    pub fn clear(&self) {
+        if let Ok(mut published) = self.0.lock() {
+            *published = None;
+        }
+    }
+
+    /// The stable vector published for `vault_id`, or the empty vector.
+    pub fn stable(&self, vault_id: &str) -> VersionVector {
+        self.0
+            .lock()
+            .ok()
+            .and_then(|published| {
+                published
+                    .as_ref()
+                    .filter(|(published, _)| published == vault_id)
+                    .map(|(_, stable)| stable.clone())
+            })
+            .unwrap_or_default()
+    }
+}
+
+/// What every sync state reports besides the stored vector.
+struct StateReport {
+    contact: HubContact,
+    stable: VersionVector,
+}
+
 /// A failed hub request, answered as a protocol error.
 #[derive(Debug, PartialEq, Eq)]
 pub struct HubError {
@@ -111,6 +153,8 @@ pub struct SyncHub {
     uploads: Arc<Mutex<HashMap<String, PendingUpload>>>,
     /// The contact every sync state carries; without it the hub answers no state.
     contact: Option<HubContactSource>,
+    /// The stable vector every sync state carries.
+    stability: HubStability,
 }
 
 /// The received prefix of an upload, staged in a temporary file beside its final path.
@@ -129,6 +173,7 @@ impl SyncHub {
             waits: Arc::default(),
             uploads: Arc::default(),
             contact: None,
+            stability: HubStability::default(),
         }
     }
 
@@ -136,6 +181,20 @@ impl SyncHub {
     pub fn with_contact(mut self, contact: HubContactSource) -> Self {
         self.contact = Some(contact);
         self
+    }
+
+    /// Sets where the hub reads the stable vector that each sync state reports.
+    pub fn with_stability(mut self, stability: HubStability) -> Self {
+        self.stability = stability;
+        self
+    }
+
+    /// The contact and stable vector of `vault_id` that a sync state reports.
+    fn report(&self, vault_id: &str) -> Result<StateReport, HubError> {
+        Ok(StateReport {
+            contact: self.contact(vault_id)?,
+            stable: self.stability.stable(vault_id),
+        })
     }
 
     /// The coordinator contact for `vault_id`, checked against the wire bounds so a bad source
@@ -224,8 +283,8 @@ impl SyncHub {
                     }
                     None => None,
                 };
-                let contact = self.contact(&vault_id)?;
-                hub.state(probe, contact).await
+                let report = self.report(&vault_id)?;
+                hub.state(probe, report).await
             }
             ControlMessage::SyncPush { ops, .. } => {
                 let ops = ops_from_wire(&ops).map_err(invalid)?;
@@ -243,8 +302,8 @@ impl SyncHub {
             }
             ControlMessage::SyncWait { known, .. } => {
                 let known = vector_from_wire(&known).map_err(invalid)?;
-                let contact = self.contact(&vault_id)?;
-                self.wait(&hub, &device_id, &known, contact).await
+                let report = self.report(&vault_id)?;
+                self.wait(&hub, &device_id, &known, report).await
             }
             ControlMessage::SyncHashes {
                 writer,
@@ -269,7 +328,7 @@ impl SyncHub {
         hub: &HubSession,
         device_id: &str,
         known: &VersionVector,
-        contact: HubContact,
+        report: StateReport,
     ) -> Result<ControlMessage, HubError> {
         let token = {
             let mut waits = self
@@ -293,11 +352,11 @@ impl SyncHub {
                 .get(device_id)
                 != Some(&token);
             if superseded || !known.dominates(&stored) {
-                break Ok(hub.state_message(&stored, None, contact));
+                break Ok(hub.state_message(&stored, None, report));
             }
             match tokio::time::timeout_at(deadline, changes.changed()).await {
                 Ok(Ok(())) => {}
-                Ok(Err(_)) | Err(_) => break Ok(hub.state_message(&stored, None, contact)),
+                Ok(Err(_)) | Err(_) => break Ok(hub.state_message(&stored, None, report)),
             }
         };
         if let Ok(mut waits) = self.waits.lock()
@@ -508,14 +567,18 @@ impl HubSession {
         &self,
         stored: &VersionVector,
         probe_hash: Option<String>,
-        contact: HubContact,
+        report: StateReport,
     ) -> ControlMessage {
+        let mut stable = report.stable;
+        stable.meet(stored);
         ControlMessage::SyncState {
             manifest_version: self.engine.manifest().version,
             stored: vector_to_wire(stored),
             probe_hash,
-            coordinator_endpoints: contact.endpoints,
-            discovery_key: contact.discovery_key,
+            coordinator_endpoints: report.contact.endpoints,
+            discovery_key: report.contact.discovery_key,
+            stable: vector_to_wire(&stable),
+            bootstrap_required: false,
         }
     }
 
@@ -523,7 +586,7 @@ impl HubSession {
     async fn state(
         &self,
         probe: Option<(WriterId, u64)>,
-        contact: HubContact,
+        report: StateReport,
     ) -> Result<ControlMessage, HubError> {
         let stored = self.stored().await?;
         let probe_hash = match probe {
@@ -539,7 +602,7 @@ impl HubSession {
             }
             None => None,
         };
-        Ok(self.state_message(&stored, probe_hash, contact))
+        Ok(self.state_message(&stored, probe_hash, report))
     }
 
     /// Stores pushed operations up to the first refusal. A genesis of a writer the hub does not

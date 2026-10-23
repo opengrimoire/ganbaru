@@ -18,6 +18,7 @@ use ganbaru_contacts::PersonPublicKey;
 use ganbaru_sync_contracts::{SignedCertificate, SpaceId, WriterId, WriterKeyPair};
 use sqlx::SqliteConnection;
 
+pub mod acknowledge;
 pub mod adapter;
 pub mod assets;
 pub mod codec;
@@ -30,6 +31,7 @@ pub mod hooks;
 pub mod local;
 pub mod manifest;
 pub mod seed;
+pub mod stability;
 pub mod triggers;
 
 mod apply;

@@ -48,6 +48,15 @@ impl VersionVector {
         }
     }
 
+    /// Lowers every entry to the minimum of both vectors, so the result includes only what
+    /// both include.
+    pub fn meet(&mut self, other: &Self) {
+        self.0.retain(|writer, seq| {
+            *seq = (*seq).min(other.get(writer));
+            *seq > 0
+        });
+    }
+
     /// Whether every operation included in `other` is included here.
     pub fn dominates(&self, other: &Self) -> bool {
         other

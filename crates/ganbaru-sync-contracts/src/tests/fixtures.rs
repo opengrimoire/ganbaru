@@ -196,7 +196,21 @@ pub fn revoke_operation(previous_hash: Digest32) -> Operation {
     }
 }
 
-/// The three golden operations as a chain: genesis, changes, revoke.
+pub fn acknowledgement_operation(previous_hash: Digest32) -> Operation {
+    Operation {
+        space: space(),
+        writer: writer_id(),
+        seq: 4,
+        previous_hash,
+        header: header(
+            GOLDEN_CREATED_AT_MS as u64 + 3_000,
+            vec![(other_writer_id(), 42)],
+        ),
+        content: Content::Acknowledgement,
+    }
+}
+
+/// The four golden operations as a chain: genesis, changes, revoke, acknowledgement.
 pub fn golden_chain() -> Vec<(Operation, Vec<u8>)> {
     let key = writer_key();
     let genesis = genesis_operation();
@@ -205,10 +219,13 @@ pub fn golden_chain() -> Vec<(Operation, Vec<u8>)> {
     let changes_sealed = changes.seal(&key).unwrap();
     let revoke = revoke_operation(changes_sealed.hash());
     let revoke_sealed = revoke.seal(&key).unwrap();
+    let acknowledgement = acknowledgement_operation(revoke_sealed.hash());
+    let acknowledgement_sealed = acknowledgement.seal(&key).unwrap();
     vec![
         (genesis, genesis_sealed.into_bytes()),
         (changes, changes_sealed.into_bytes()),
         (revoke, revoke_sealed.into_bytes()),
+        (acknowledgement, acknowledgement_sealed.into_bytes()),
     ]
 }
 

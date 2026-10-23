@@ -20,10 +20,12 @@ use super::fixture::{
     BOARD_CARDS, BOARD_CHECKS, BOARD_HANDLE_PREFIX, MAX_BOARD_STAGE, MAX_LIST_ENTRIES, MEMOS_TABLE,
     NODE_MAX_DEPTH, edge_key, membership_key, memo_tag_key,
 };
-use super::replica::{Replica, START_MS, quoted, rank};
+use super::replica::{Replica, START_MS, device_id, quoted, rank};
+use crate::acknowledge::{ACKNOWLEDGEMENT_INTERVAL_MS, KEEPALIVE_INTERVAL_MS};
 use crate::error::failpoints;
 use crate::hold::{self, MAX_HOLD_MS};
 use crate::manifest::vault::quick_notes::{NOTES_TABLE, TAGS_TABLE, note_group};
+use crate::stability::CountedDevice;
 use crate::{ApplyReport, StoreOutcome, StoreRefusal, SyncError, SyncResult};
 
 const DEFAULT_SEEDS: u64 = 48;
@@ -233,7 +235,38 @@ async fn deliver(rng: &mut Rng, to: &mut Replica, ops: &[Vec<u8>]) -> bool {
         }
     }
     apply_all(rng, to).await;
+    acknowledge(rng, to).await;
     stored
+}
+
+const ACKNOWLEDGE_FAILPOINTS: &[&str] = &["acknowledge.before_commit", "seal.reserve"];
+
+/// Seals the writer's genesis and any due acknowledgement, rotating the writer once like the
+/// app. Most calls seal nothing, so only some of them may crash: the snapshots a crash
+/// compares would otherwise double the run time.
+async fn acknowledge(rng: &mut Rng, replica: &mut Replica) {
+    let failpoints = if rng.chance(10) {
+        ACKNOWLEDGE_FAILPOINTS
+    } else {
+        &[]
+    };
+    let mut call = async |r: &mut Replica| {
+        r.engine
+            .acknowledge(&mut r.conn, &r.ctx, &mut r.identity.local(), r.now_ms)
+            .await
+    };
+    match crashing(rng, replica, failpoints, &mut call).await {
+        Ok(_) => {}
+        Err(SyncError::WriterInactive(_)) => {
+            replica.rotate();
+            crashing(rng, replica, failpoints, call)
+                .await
+                .unwrap_or_else(|error| {
+                    panic!("replica {} failed to acknowledge: {error:?}", replica.index)
+                });
+        }
+        Err(error) => panic!("replica {} failed to acknowledge: {error:?}", replica.index),
+    }
 }
 
 /// The operations of a message after the network dropped, duplicated, or reordered some.
@@ -363,8 +396,14 @@ impl Sim {
         }
     }
 
+    /// Advances every clock by up to two seconds, and now and then by long enough for
+    /// acknowledgements or keepalives to fall due again.
     fn advance_clocks(&mut self) {
-        let elapsed = 1 + self.rng.next() % 2_000;
+        let elapsed = if self.rng.chance(3) {
+            ACKNOWLEDGEMENT_INTERVAL_MS + self.rng.next() % KEEPALIVE_INTERVAL_MS
+        } else {
+            1 + self.rng.next() % 2_000
+        };
         self.advance_clocks_by(elapsed);
     }
 
@@ -1412,6 +1451,10 @@ impl Sim {
             replica.check_invariants().await;
         }
         self.hub.check_invariants().await;
+        // Only exchanges change what the hub or a replica acknowledged or applied.
+        if (40..65).contains(&action) {
+            self.assert_stability().await;
+        }
         // Hydrating every version is slow, so only a step that ran the engine checks it, and
         // only on the replica that acted. Local edits elide nothing and are read back by the
         // engine step that follows them.
@@ -1419,6 +1462,67 @@ impl Sim {
             self.replicas[index].check_version_values().await;
         }
         self.assert_marks_stay_local().await;
+    }
+
+    /// Stability the hub computes over every replica stays within what each replica and the
+    /// hub applied, and no replica counts as dormant while the run lasts.
+    async fn assert_stability(&mut self) {
+        let devices: Vec<CountedDevice> = (0..self.replicas.len())
+            .map(|index| CountedDevice {
+                device_id: device_id(index),
+                since_ms: START_MS,
+            })
+            .collect();
+        let hub = &mut self.hub;
+        let stability = hub
+            .engine
+            .stability(&mut hub.conn, &hub.ctx, &devices, hub.now_ms)
+            .await
+            .unwrap();
+        assert!(hub.applied_vector().await.dominates(&stability.stable));
+        for (replica, device) in self.replicas.iter_mut().zip(&stability.devices) {
+            assert!(!device.dormant, "replica {} is dormant", replica.index);
+            assert!(
+                replica.applied_vector().await.dominates(&stability.stable),
+                "replica {} lacks a stable operation",
+                replica.index
+            );
+        }
+    }
+
+    /// Each writer's acknowledgements are at least the acknowledgement interval apart, and
+    /// the hub stored some.
+    async fn assert_acknowledgements_bounded(&mut self) {
+        for replica in &mut self.replicas {
+            let sql = format!(
+                "SELECT hex(o.writer_id) || ' ' || o.stored_at_ms FROM sync_ops o
+                 JOIN sync_writers w ON w.space_id = o.space_id AND w.writer_id = o.writer_id
+                 WHERE w.device_id = {} AND o.kind = 3 ORDER BY o.writer_id, o.seq",
+                quoted(&device_id(replica.index))
+            );
+            let rows = ids(replica, &sql).await;
+            let mut previous: Option<(String, u64)> = None;
+            for row in rows {
+                let (writer, at) = row.split_once(' ').unwrap();
+                let at: u64 = at.parse().unwrap();
+                if let Some((last_writer, last_at)) = &previous
+                    && last_writer == writer
+                {
+                    assert!(
+                        at - last_at >= ACKNOWLEDGEMENT_INTERVAL_MS,
+                        "replica {} acknowledged twice within the interval",
+                        replica.index
+                    );
+                }
+                previous = Some((writer.to_string(), at));
+            }
+        }
+        let hub_acknowledgements = ids(
+            &mut self.hub,
+            "SELECT CAST(seq AS TEXT) FROM sync_ops WHERE kind = 3",
+        )
+        .await;
+        assert!(!hub_acknowledgements.is_empty(), "nobody acknowledged");
     }
 
     /// Lets every deletion hold expire, reconnects everyone, and exchanges over a reliable
@@ -1544,6 +1648,7 @@ async fn run(seed: u64) {
     }
     sim.quiesce().await;
     sim.assert_converged().await;
+    sim.assert_acknowledgements_bounded().await;
 }
 
 fn number(variable: &str) -> Option<u64> {

@@ -230,14 +230,14 @@ impl Replica {
         self.identity.id()
     }
 
-    /// Replaces the local writer with a new one, as the app does when its writer stops being
-    /// active.
     /// Makes the device of replica `index` the coordinator this replica accepts revocations from.
     pub(super) fn coordinated_by(mut self, index: usize) -> Self {
         self.ctx.coordinator_device_id = device_id(index);
         self
     }
 
+    /// Replaces the local writer with a new one, as the app does when its writer stops being
+    /// active.
     pub(super) fn rotate(&mut self) {
         let old = self.identity.id();
         self.generation += 1;

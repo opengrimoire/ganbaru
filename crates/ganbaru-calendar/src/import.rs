@@ -14,7 +14,7 @@ mod validation;
 
 use crate::geo::parse_geo;
 use preservation::{PreservationOutcome, ProjectedRow, preservation_link_id, replace_preservation};
-use validation::{require_non_empty, skip_reason, timing_refusal, validate_payload};
+use validation::{require_non_empty, skip_reason, timing_refusal, validate_payload, value_refusal};
 
 const PALETTE_SIZE: i64 = 32;
 
@@ -337,7 +337,7 @@ fn plan_events<'a>(
             plan.warnings.push(format!("Event skipped: {reason}."));
             continue;
         }
-        if let Some(refusal) = timing_refusal(event) {
+        if let Some(refusal) = timing_refusal(event).or_else(|| value_refusal(event)) {
             plan.warnings.push(refusal.clone());
             plan.oversized.push((event, refusal));
             continue;
@@ -1008,7 +1008,7 @@ mod tests {
     use super::preservation::{PreservationOutcome, replace_preservation};
     use super::validation::{
         timing_refusal, validate_color, validate_enum, validate_event, validate_json_option,
-        validate_payload, validate_preservation, validate_priority,
+        validate_payload, validate_preservation, validate_priority, value_refusal,
     };
     use super::{
         CalendarBulkImportPayload, CalendarImportAlarm, CalendarImportAttendee,
@@ -1719,7 +1719,7 @@ mod tests {
             assert_eq!(summary.added, 1);
             assert_eq!(summary.warnings.len(), 1, "{:?}", summary.warnings);
             assert!(
-                summary.warnings[0].starts_with(crate::timing_bound::TIMING_TOO_LARGE_CODE),
+                summary.warnings[0].starts_with(crate::value_bound::TIMING_TOO_LARGE_CODE),
                 "{:?}",
                 summary.warnings
             );
@@ -1752,6 +1752,65 @@ mod tests {
             .unwrap();
             assert_eq!(diagnostics.len(), 1);
             assert!(diagnostics[0].contains("UID big"));
+        });
+    }
+
+    #[test]
+    fn import_leaves_an_event_with_oversized_categories_unprojected_and_imports_the_rest() {
+        crate::test_support::block_on(async {
+            let pool = in_memory_pool().await;
+            let mut oversized = import_event("big", "");
+            let categories = vec!["c".repeat(1_000); 300];
+            oversized.categories = Some(serde_json::to_string(&categories).unwrap());
+            let summary = bulk_import(
+                &pool,
+                bulk_payload(vec![import_event("normal", ""), oversized]),
+            )
+            .await
+            .unwrap();
+
+            assert_eq!(summary.added, 1);
+            assert_eq!(summary.warnings.len(), 1, "{:?}", summary.warnings);
+            assert!(
+                summary.warnings[0].starts_with(crate::value_bound::VALUE_TOO_LARGE_CODE),
+                "{:?}",
+                summary.warnings
+            );
+            assert!(summary.warnings[0].contains("UID big"));
+            assert!(summary.warnings[0].contains("categories"));
+            let stored: Vec<String> =
+                sqlx::query_scalar("SELECT source_uid FROM calendar_events ORDER BY source_uid")
+                    .fetch_all(&pool)
+                    .await
+                    .unwrap();
+            assert_eq!(stored, ["normal"]);
+        });
+    }
+
+    #[test]
+    fn imported_rows_are_charged_at_least_as_much_as_stored_rows() {
+        crate::test_support::block_on(async {
+            let pool = in_memory_pool().await;
+            let mut event = import_event("charged", "");
+            let fits = |categories: usize| {
+                let mut event = import_event("charged", "");
+                event.categories =
+                    Some(serde_json::to_string(&vec!["c".repeat(500); categories]).unwrap());
+                value_refusal(&event).is_none()
+            };
+            let largest = (1..).take_while(|count| fits(*count)).last().unwrap();
+            event.categories =
+                Some(serde_json::to_string(&vec!["c".repeat(500); largest]).unwrap());
+            bulk_import(&pool, bulk_payload(vec![event])).await.unwrap();
+            let id: String =
+                sqlx::query_scalar("SELECT id FROM calendar_events WHERE source_uid = 'charged'")
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+            let mut connection = pool.acquire().await.unwrap();
+            crate::events::check_stored_value_bounds(&mut connection, &id)
+                .await
+                .unwrap();
         });
     }
 

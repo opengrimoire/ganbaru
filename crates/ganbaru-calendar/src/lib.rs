@@ -13,7 +13,7 @@ pub mod keys;
 pub mod reads;
 pub mod recurrence;
 mod stored_number;
-pub mod timing_bound;
+pub mod value_bound;
 pub mod work_gate;
 
 #[cfg(test)]

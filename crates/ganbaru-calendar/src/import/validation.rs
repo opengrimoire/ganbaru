@@ -8,7 +8,7 @@ use super::{
 use crate::recurrence::canonical::{
     override_date, parse_date, stored_time, validate_override_times,
 };
-use crate::timing_bound::{OverrideColumns, TIMING_TOO_LARGE_CODE, TimingSize};
+use crate::value_bound::{OverrideColumns, TIMING_TOO_LARGE_CODE, VALUE_TOO_LARGE_CODE, ValueSize};
 use ganbaru_civil_time as civil_time;
 use jiff::tz::TimeZone;
 
@@ -214,7 +214,7 @@ pub(super) fn skip_reason(event: &CalendarImportEvent) -> Option<String> {
 /// [`TIMING_TOO_LARGE_CODE`] the client localizes. The event is then not imported or projected, and
 /// preservation keeps its full source.
 pub(super) fn timing_refusal(event: &CalendarImportEvent) -> Option<String> {
-    let mut size = TimingSize::default();
+    let mut size = ValueSize::default();
     size.add_event(
         &event.start_time,
         &event.end_time,
@@ -259,6 +259,83 @@ pub(super) fn timing_refusal(event: &CalendarImportEvent) -> Option<String> {
     size.check()
         .is_err()
         .then(|| format!("{TIMING_TOO_LARGE_CODE}: {}", event_label(event)))
+}
+
+/// Names the event and its first group of rows whose sync value is over the bound, led by the
+/// stable [`VALUE_TOO_LARGE_CODE`]. The event is then not imported or projected, and preservation
+/// keeps its full source. Each row is charged at least as much as Calendar charges the stored
+/// row, with generated identifiers at their allowance, so an imported event never fails a later
+/// edit's check on rows it did not change. Malformed lists are left to the field validation.
+pub(super) fn value_refusal(event: &CalendarImportEvent) -> Option<String> {
+    fn owned_row(size: &mut ValueSize) {
+        size.row();
+        size.generated_id();
+        size.generated_id();
+    }
+    let mut alarms = ValueSize::default();
+    for alarm in &event.alarms {
+        alarms.row();
+        alarms.text(&alarm.id);
+        alarms.generated_id();
+        alarms.optional_text(alarm.icalendar_component_id.as_deref());
+        alarms.text(&alarm.action);
+        alarms.text(&alarm.trigger_type);
+        alarms.text(&alarm.trigger_value);
+        alarms.optional_text(alarm.description.as_deref());
+        alarms.integer();
+    }
+    let mut attendees = ValueSize::default();
+    for attendee in &event.attendees {
+        attendees.row();
+        attendees.text(&attendee.id);
+        attendees.generated_id();
+        attendees.optional_text(attendee.icalendar_component_id.as_deref());
+        attendees.optional_integer(attendee.icalendar_property_index);
+        attendees.optional_text(attendee.name.as_deref());
+        attendees.text(&attendee.email);
+        attendees.text(&attendee.role);
+        attendees.text(&attendee.status);
+        attendees.integer();
+        attendees.integer();
+    }
+    let mut organizer = ValueSize::default();
+    if let Ok(Some(row)) = super::parse_organizer(&event.organizer) {
+        owned_row(&mut organizer);
+        organizer.optional_text(row.name.as_deref());
+        organizer.text(&row.email);
+    }
+    let mut categories = ValueSize::default();
+    for category in super::parse_string_list(&event.categories, "categories").unwrap_or_default() {
+        owned_row(&mut categories);
+        categories.text(&category);
+        categories.integer();
+    }
+    let mut notifications = ValueSize::default();
+    for _ in super::parse_i64_list(&event.notifications, "notifications").unwrap_or_default() {
+        owned_row(&mut notifications);
+        notifications.integer();
+        notifications.integer();
+    }
+    let mut properties = ValueSize::default();
+    for (key, value) in super::parse_string_map(&event.extended_properties, "extended_properties")
+        .unwrap_or_default()
+    {
+        owned_row(&mut properties);
+        properties.text(&key);
+        properties.text(&value);
+        properties.integer();
+    }
+    [
+        ("alarms", alarms),
+        ("attendees", attendees),
+        ("organizer", organizer),
+        ("categories", categories),
+        ("notifications", notifications),
+        ("extended properties", properties),
+    ]
+    .into_iter()
+    .find(|(_, size)| !size.fits())
+    .map(|(group, _)| format!("{VALUE_TOO_LARGE_CODE}: {} ({group})", event_label(event)))
 }
 
 /// Decodes a validated JSON date list; a non-list value is left to Calendar windows to report.

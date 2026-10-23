@@ -7,7 +7,7 @@ use super::copy::copied_id;
 use super::rows::*;
 use super::{Metadata, revision};
 use crate::recurrence::canonical::{EditGeometryPlan, EditKind, PlannedSeries};
-use crate::timing_bound::{OverrideColumns, TimingSize};
+use crate::value_bound::{OverrideColumns, ValueSize};
 use chrono::{DateTime, SecondsFormat};
 use serde::Serialize;
 
@@ -37,7 +37,7 @@ impl PreparedMutation {
     /// Task scheduling shares the complete aggregate creation budget.
     pub(in crate::events) fn creations(metadata: Vec<Metadata>) -> Result<Self, String> {
         for source in &metadata {
-            source.check_timing_bound()?;
+            source.check_value_bounds()?;
         }
         if metadata.iter().map(Metadata::record_count).sum::<usize>() > MAX_WRITE_ROWS {
             return Err("Calendar creation exceeds its row budget".into());
@@ -146,7 +146,7 @@ impl Metadata {
         existing: bool,
     ) -> Result<PreparedMutation, String> {
         self.reserve_deletion_copies(1)?;
-        self.check_timing_bound()?;
+        self.check_value_bounds()?;
         let id = self
             .events
             .first()
@@ -241,7 +241,7 @@ impl Metadata {
         metadata
             .rdates
             .retain(|row| side.rdates.contains(&row.occurrence_start));
-        metadata.check_timing_bound()?;
+        metadata.check_value_bounds()?;
         Ok(PreparedMutation {
             sides: vec![PreparedSide {
                 metadata,
@@ -406,15 +406,15 @@ impl Metadata {
             return Err("Prepared Calendar write exceeds its aggregate row budget".into());
         }
         for side in &result.sides {
-            side.metadata.check_timing_bound()?;
+            side.metadata.check_value_bounds()?;
         }
         Ok(result)
     }
 
     /// Upper bound of this source event's encoded timing value: its timing columns, excluded
     /// and added dates, and every override row with its extended properties.
-    pub(crate) fn timing_size(&self) -> TimingSize {
-        let mut size = TimingSize::default();
+    pub(crate) fn timing_size(&self) -> ValueSize {
+        let mut size = ValueSize::default();
         if let Some(event) = self.events.first() {
             size.add_event(
                 &event.start_time,
@@ -454,9 +454,52 @@ impl Metadata {
         size
     }
 
-    /// Refuses a source whose timing value is over the sync bound.
-    pub(crate) fn check_timing_bound(&self) -> Result<(), String> {
-        self.timing_size().check()
+    /// Refuses a source whose timing value, or any other value it replicates as one group of
+    /// rows, is over the sync bound. Archive groups copy these rows, so they stay within it too.
+    pub(crate) fn check_value_bounds(&self) -> Result<(), String> {
+        self.timing_size().check()?;
+        for (name, size) in self.group_sizes() {
+            size.check_group(name)?;
+        }
+        Ok(())
+    }
+
+    /// Upper bounds of every value this source replicates as one group of rows apart from its
+    /// timing, by group name. Music assignments and task links are archived as groups.
+    pub(crate) fn group_sizes(&self) -> [(&'static str, ValueSize); 9] {
+        fn sized<'a, R: 'a>(
+            rows: impl IntoIterator<Item = &'a R>,
+            charge: impl Fn(&R, &mut ValueSize),
+        ) -> ValueSize {
+            let mut size = ValueSize::default();
+            for row in rows {
+                charge(row, &mut size);
+            }
+            size
+        }
+        let mut focus = sized(&self.focus_configs, FocusConfig::charge);
+        focus.absorb(&sized(&self.count_rhythms, CountRhythm::charge));
+        focus.absorb(&sized(&self.sequence_steps, SequenceStep::charge));
+        [
+            ("alarms", sized(&self.alarms, Alarm::charge)),
+            ("attendees", sized(&self.attendees, Attendee::charge)),
+            ("organizer", sized(&self.organizers, Organizer::charge)),
+            ("categories", sized(&self.categories, Category::charge)),
+            (
+                "notifications",
+                sized(&self.notifications, Notification::charge),
+            ),
+            (
+                "extended properties",
+                sized(&self.properties, Property::charge),
+            ),
+            ("Focus settings", focus),
+            (
+                "music assignments",
+                sized(&self.music_assignments, MusicAssignment::charge),
+            ),
+            ("task links", sized(&self.task_links, TaskLink::charge)),
+        ]
     }
 
     fn prepare_side(

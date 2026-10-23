@@ -1,10 +1,11 @@
-//! Edits refuse an event whose timing value (timing plus every override) is over the bound.
+//! Edits refuse an event whose timing value (timing plus every override), or any other value it
+//! replicates as one group of rows, is over the bound.
 
 use crate::events::commit::prepare_rows;
 use crate::events::edit::prepare;
 use crate::events::scope::read_snapshot;
 use crate::recurrence::canonical::{EditScope, ScopeClock, parse_date};
-use crate::timing_bound::{MAX_TIMING_VALUE_BYTES, TIMING_TOO_LARGE_CODE};
+use crate::value_bound::{MAX_VALUE_BYTES, TIMING_TOO_LARGE_CODE, VALUE_TOO_LARGE_CODE};
 use serde_json::{Value, json};
 
 fn now() -> ScopeClock {
@@ -67,10 +68,60 @@ fn edit_with_many_changed_occurrences_is_refused_with_the_localizable_code() {
         add_overrides(&pool, 300, 1_000).await;
         let error = save(&pool, EditScope::All).await.unwrap_err();
         assert!(error.starts_with(TIMING_TOO_LARGE_CODE), "{error}");
-        assert!(
-            error.contains(&MAX_TIMING_VALUE_BYTES.to_string()),
-            "{error}"
-        );
+        assert!(error.contains(&MAX_VALUE_BYTES.to_string()), "{error}");
+    });
+}
+
+async fn add_categories(pool: &sqlx::SqlitePool, count: usize, bytes: usize) {
+    let category = "c".repeat(bytes);
+    let mut tx = pool.begin().await.unwrap();
+    for index in 0..count {
+        sqlx::query(
+            "INSERT INTO calendar_event_categories (id, event_id, category, sort_order)
+             VALUES (?, 'source', ?, ?)",
+        )
+        .bind(format!("bulk-{index}"))
+        .bind(&category)
+        .bind(index as i64)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    }
+    tx.commit().await.unwrap();
+}
+
+#[test]
+fn edit_with_oversized_categories_is_refused_with_the_value_code() {
+    crate::test_support::block_on(async {
+        let pool = super::metadata::seed().await;
+        add_categories(&pool, 300, 1_000).await;
+        let error = save(&pool, EditScope::All).await.unwrap_err();
+        assert!(error.starts_with(VALUE_TOO_LARGE_CODE), "{error}");
+        assert!(error.contains("categories"), "{error}");
+        let error = read_source(&pool)
+            .await
+            .prepare_restore(true)
+            .err()
+            .unwrap();
+        assert!(error.starts_with(VALUE_TOO_LARGE_CODE), "{error}");
+    });
+}
+
+#[test]
+fn every_group_estimate_grows_with_its_rows() {
+    crate::test_support::block_on(async {
+        let pool = super::metadata::seed().await;
+        let before = read_source(&pool).await.group_sizes();
+        add_categories(&pool, 1, 10).await;
+        let after = read_source(&pool).await.group_sizes();
+        for ((name, before), (_, after)) in before.iter().zip(&after) {
+            if *name == "categories" {
+                assert!(after.bytes() >= before.bytes() + 10, "{name}");
+            } else {
+                assert_eq!(after.bytes(), before.bytes(), "{name}");
+            }
+        }
+        assert!(read_source(&pool).await.check_value_bounds().is_ok());
     });
 }
 
@@ -124,13 +175,13 @@ fn excluding_one_occurrence_is_refused_when_its_date_row_crosses_the_bound() {
         .execute(&pool)
         .await
         .unwrap();
-        let free = MAX_TIMING_VALUE_BYTES - timing_bytes(&pool).await;
+        let free = MAX_VALUE_BYTES - timing_bytes(&pool).await;
         sqlx::query("UPDATE calendar_event_overrides SET title = ? WHERE id = 'filler'")
             .bind("t".repeat(free - 40))
             .execute(&pool)
             .await
             .unwrap();
-        assert_eq!(MAX_TIMING_VALUE_BYTES - timing_bytes(&pool).await, 40);
+        assert_eq!(MAX_VALUE_BYTES - timing_bytes(&pool).await, 40);
         let before = exdate_count(&pool).await;
 
         let error = add_exdate(&pool, "2099-05-09").await.unwrap_err();

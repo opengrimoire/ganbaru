@@ -609,7 +609,7 @@ async fn relink_location(
         .await
         .map_err(|error| MusicLibraryError::database("remove prior relink location", error))?;
     let relinked_id = crate::identity::creatable_key(
-        &mut **transaction,
+        transaction,
         crate::identity::RetirableTable::Locations,
         crate::identity::location_id(root_id, relative_path),
     )

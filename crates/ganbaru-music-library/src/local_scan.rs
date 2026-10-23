@@ -152,7 +152,7 @@ pub async fn persist_scanned_file(
         return Ok(LocalScanOutcome::Unchanged);
     }
     let item_id = creatable_key(
-        &mut **transaction,
+        transaction,
         RetirableTable::Items,
         crate::identity::local_item_id(root_id, values.relative_path),
     )
@@ -278,7 +278,7 @@ pub async fn upsert_scanned_location(
     updated_at_ms: i64,
 ) -> MusicLibraryResult<()> {
     let location_id = creatable_key(
-        &mut **transaction,
+        transaction,
         RetirableTable::Locations,
         crate::identity::location_id(root_id, values.relative_path),
     )

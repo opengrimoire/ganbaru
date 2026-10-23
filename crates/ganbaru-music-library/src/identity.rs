@@ -254,7 +254,9 @@ async fn rekey_memberships(transaction: &mut Transaction<'_, Sqlite>) -> MusicLi
         let registered: bool = sqlx::query_scalar(
             "SELECT EXISTS (SELECT 1 FROM sync_rows WHERE table_id = ? AND row_key = ?)",
         )
-        .bind(i64::from(ganbaru_sync::manifest::vault::music::MEMBERSHIPS.id.0))
+        .bind(i64::from(
+            ganbaru_sync::manifest::vault::music::MEMBERSHIPS.id.0,
+        ))
         .bind(old)
         .fetch_one(&mut **transaction)
         .await

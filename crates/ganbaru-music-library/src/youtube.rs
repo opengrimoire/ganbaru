@@ -463,7 +463,7 @@ async fn ensure_collection(
         }
         None => {
             let id = crate::identity::creatable_key(
-                &mut **transaction,
+                transaction,
                 crate::identity::RetirableTable::Collections,
                 collection_id(&identity_key),
             )

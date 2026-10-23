@@ -36,6 +36,10 @@ iCalendar import is staged: parsing and validation produce a bounded plan before
 
 Preservation data is not a second editable event model. Editing an imported event updates the canonical projection while keeping enough provenance to export source values according to the interoperability policy.
 
+Every iCalendar value node carries the `property_id` of the property it belongs to, including nodes of a parameter, and every component written for an event, alarm, or override is projected (`projected_kind`, `projected_id`) in the same transaction that inserts it.
+
+An event's timing value (start, end, zone, recurrence rule, excluded and added dates, every override and its extended properties) is bounded to 256 KiB by a deterministic upper-bound estimate (`ganbaru-calendar::timing_bound`), so sync can carry it as one coupled value. An edit over the bound is refused with a "too many changed occurrences" error. An import of such an event does not project it: the iCalendar object keeps the full source and a diagnostic names the event.
+
 Import deduplication uses source identities and explicit replacement behavior; titles, timestamps, or display order are not identity. A failed import leaves the previous calendar intact.
 
 ## Notifications

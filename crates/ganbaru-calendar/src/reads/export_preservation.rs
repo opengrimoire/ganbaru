@@ -291,7 +291,7 @@ impl ExportPreservationRows {
                     .entry(property.clone())
                     .or_default()
                     .push(row.id.clone());
-            } else if let (None, Some(parameter)) = (&row.property_id, &row.parameter_id) {
+            } else if let Some(parameter) = &row.parameter_id {
                 result
                     .parameter_roots
                     .entry(parameter.clone())

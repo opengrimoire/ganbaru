@@ -149,7 +149,7 @@ async fn load_root_values(
     let (query, bind_value) = if let Some(property_id) = property_id {
         (
             "SELECT id FROM icalendar_value_nodes
-             WHERE property_id = ? AND parent_node_id IS NULL
+             WHERE property_id = ? AND parameter_id IS NULL AND parent_node_id IS NULL
              ORDER BY sort_order ASC",
             property_id,
         )

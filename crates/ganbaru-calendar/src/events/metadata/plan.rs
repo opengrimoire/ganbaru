@@ -7,6 +7,7 @@ use super::copy::copied_id;
 use super::rows::*;
 use super::{Metadata, revision};
 use crate::recurrence::canonical::{EditGeometryPlan, EditKind, PlannedSeries};
+use crate::timing_bound::{OverrideColumns, TimingSize};
 use chrono::{DateTime, SecondsFormat};
 use serde::Serialize;
 
@@ -35,6 +36,9 @@ impl PreparedMutation {
 
     /// Task scheduling shares the complete aggregate creation budget.
     pub(in crate::events) fn creations(metadata: Vec<Metadata>) -> Result<Self, String> {
+        for source in &metadata {
+            source.check_timing_bound()?;
+        }
         if metadata.iter().map(Metadata::record_count).sum::<usize>() > MAX_WRITE_ROWS {
             return Err("Calendar creation exceeds its row budget".into());
         }
@@ -238,6 +242,7 @@ impl Metadata {
         metadata
             .rdates
             .retain(|row| side.rdates.contains(&row.occurrence_start));
+        metadata.check_timing_bound()?;
         Ok(PreparedMutation {
             sides: vec![PreparedSide {
                 metadata,
@@ -401,7 +406,58 @@ impl Metadata {
         {
             return Err("Prepared Calendar write exceeds its aggregate row budget".into());
         }
+        for side in &result.sides {
+            side.metadata.check_timing_bound()?;
+        }
         Ok(result)
+    }
+
+    /// Upper bound of this source event's encoded timing value: its timing columns, excluded
+    /// and added dates, and every override row with its extended properties.
+    pub(crate) fn timing_size(&self) -> TimingSize {
+        let mut size = TimingSize::default();
+        if let Some(event) = self.events.first() {
+            size.add_event(
+                &event.start_time,
+                &event.end_time,
+                &event.timezone,
+                event.rrule.as_deref(),
+                event.repeat_until.as_deref(),
+            );
+        }
+        for row in &self.exdates {
+            size.add_date_row(Some(&row.id), &row.occurrence_date);
+        }
+        for row in &self.rdates {
+            size.add_date_row(Some(&row.id), &row.occurrence_start);
+        }
+        for row in &self.overrides {
+            size.add_override(&OverrideColumns {
+                id: &row.id,
+                recurrence_id: &row.recurrence_id,
+                recurrence_range: row.recurrence_range.as_deref(),
+                title: row.title.as_deref(),
+                start_time: row.start_time.as_deref(),
+                end_time: row.end_time.as_deref(),
+                description: row.description.as_deref(),
+                location: row.location.as_deref(),
+                url: row.url.as_deref(),
+                color: row.color,
+                status: row.status.as_deref(),
+                transparency: row.transparency.as_deref(),
+                visibility: row.visibility.as_deref(),
+                icalendar_component_id: row.icalendar_component_id.as_deref(),
+            });
+        }
+        for row in &self.override_properties {
+            size.add_override_property(Some(&row.id), &row.property_key, &row.property_value);
+        }
+        size
+    }
+
+    /// Refuses a source whose timing value is over the sync bound.
+    pub(crate) fn check_timing_bound(&self) -> Result<(), String> {
+        self.timing_size().check()
     }
 
     fn prepare_side(

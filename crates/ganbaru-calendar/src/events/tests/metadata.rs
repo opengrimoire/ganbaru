@@ -89,7 +89,7 @@ pub(super) async fn seed() -> sqlx::SqlitePool {
                    ('alarm-property', 'alarm-component', 'x-alarm', 'unknown');
         INSERT INTO icalendar_property_parameters (id, property_id, name) VALUES ('parameter', 'property', 'x-param');
         INSERT INTO icalendar_value_nodes (id, property_id, parameter_id, value_kind, text_value)
-            VALUES ('value', 'property', NULL, 'text', 'preserved'), ('parameter-value', NULL, 'parameter', 'text', 'kept'),
+            VALUES ('value', 'property', NULL, 'text', 'preserved'), ('parameter-value', 'property', 'parameter', 'text', 'kept'),
                    ('zone-value', 'zone-property', NULL, 'text', 'Custom/Zone'), ('array', 'alarm-property', NULL, 'array', NULL);
         INSERT INTO icalendar_value_nodes (id, property_id, parent_node_id, sort_order, value_kind, text_value)
             VALUES ('child', 'alarm-property', 'array', 0, 'text', 'nested');

@@ -11,8 +11,8 @@ use ganbaru_sync_contracts::PENDING_KEY_PREFIX;
 use sqlx::{AssertSqlSafe, SqliteConnection, SqlitePool};
 
 use crate::icons::{
-    MISSING_ICON_FALLBACK, PROJECT_ICON_REFERENCE_PREFIX, icon_asset_path, is_project_icon_path,
-    project_icon_byte_size,
+    IconFile, MISSING_ICON_FALLBACK, PROJECT_ICON_REFERENCE_PREFIX, icon_asset_path,
+    inspect_project_icon, is_project_icon_path, project_icon_byte_size,
 };
 use crate::keys::{
     custom_field_value_key, dependency_key, priority_key, task_tag_key, view_preference_key,
@@ -243,7 +243,7 @@ async fn size_icons(
 }
 
 /// Fills custom emoji sizes, removing emojis whose path is not a managed icon file or whose file cannot be stored.
-/// Returns the sized and removed counts.
+/// Logs each removal with the emoji id and the reason. Returns the sized and removed counts.
 async fn size_emojis(conn: &mut SqliteConnection, vault_root: &Path) -> Result<(u64, u64), String> {
     let rows = sqlx::query_as::<_, (String, String)>(
         "SELECT id, asset_path FROM project_custom_emojis WHERE asset_byte_size IS NULL ORDER BY id",
@@ -253,13 +253,13 @@ async fn size_emojis(conn: &mut SqliteConnection, vault_root: &Path) -> Result<(
     .map_err(|error| format!("load custom emoji sizes: {error}"))?;
     let (mut sized, mut removed) = (0, 0);
     for (id, asset_path) in rows {
-        let size = if is_project_icon_path(&asset_path) {
-            project_icon_byte_size(vault_root, &asset_path)?
+        let file = if is_project_icon_path(&asset_path) {
+            inspect_project_icon(vault_root, &asset_path)?
         } else {
-            None
+            IconFile::Unusable("the path is not a managed project icon file")
         };
-        let result = match size {
-            Some(size) => {
+        let result = match file {
+            IconFile::Sized(size) => {
                 sized += 1;
                 sqlx::query("UPDATE project_custom_emojis SET asset_byte_size = ? WHERE id = ?")
                     .bind(size)
@@ -267,8 +267,9 @@ async fn size_emojis(conn: &mut SqliteConnection, vault_root: &Path) -> Result<(
                     .execute(&mut *conn)
                     .await
             }
-            None => {
+            IconFile::Unusable(reason) => {
                 removed += 1;
+                eprintln!("removed custom emoji {id} while converting Projects: {reason}");
                 sqlx::query("DELETE FROM project_custom_emojis WHERE id = ?")
                     .bind(&id)
                     .execute(&mut *conn)

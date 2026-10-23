@@ -167,7 +167,11 @@ fn authorization_log_migration_keeps_writers_and_operations_and_constrains_devic
                 .fetch_all(&pool)
                 .await
                 .unwrap();
-        assert_eq!(ops, [(1, 0), (2, 0)], "the writer rebuild keeps its operations");
+        assert_eq!(
+            ops,
+            [(1, 0), (2, 0)],
+            "the writer rebuild keeps its operations"
+        );
         sqlx::query("UPDATE sync_writers SET state = 'revoked', cutoff_seq = 0")
             .execute(&pool)
             .await

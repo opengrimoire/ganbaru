@@ -11,8 +11,8 @@ use ganbaru_sync_contracts::{
 
 use super::block_on;
 use super::replica::{
-    ANCHOR_DEVICE_ID, Identity, Replica, anchor_admin, device_id, device_key, enroll_entry,
-    person, proposal,
+    ANCHOR_DEVICE_ID, Identity, Replica, anchor_admin, device_id, device_key, enroll_entry, person,
+    proposal,
 };
 use crate::{AuthorizationView, StoreOutcome, StoreRefusal};
 
@@ -82,7 +82,11 @@ async fn head(replica: &mut Replica) -> (u32, u64, Digest32) {
 /// The next operation of the replica's own writer with `content`, sealed outside the engine so
 /// a test can carry what the engine would never seal. The replica's own log does not hold it.
 async fn forge(replica: &mut Replica, content: Content, authorization_revision: u64) -> Vec<u8> {
-    let last = replica.own_ops().await.pop().expect("the replica has sealed");
+    let last = replica
+        .own_ops()
+        .await
+        .pop()
+        .expect("the replica has sealed");
     let envelope = Envelope::decode(&last).unwrap();
     let previous = envelope.operation().unwrap();
     Operation {
@@ -168,6 +172,9 @@ async fn forge_handover(replica: &mut Replica, index: usize) -> (AuthorizationRe
 /// A device row: key, role, admin key, enrolled revision, removed revision.
 type DeviceRow = (Vec<u8>, String, Option<Vec<u8>>, i64, Option<i64>);
 
+/// A `sync_devices` row as stored: device id, then the columns of [`DeviceRow`].
+type StoredDevice = (String, Vec<u8>, String, Option<Vec<u8>>, i64, Option<i64>);
+
 /// Replays the selected entries from the charter and checks `sync_devices` holds exactly what
 /// they leave.
 async fn assert_devices_replay_the_selected_chain(replica: &mut Replica) {
@@ -236,7 +243,7 @@ async fn assert_devices_replay_the_selected_chain(replica: &mut Replica) {
             _ => {}
         }
     }
-    let rows: Vec<(String, Vec<u8>, String, Option<Vec<u8>>, i64, Option<i64>)> = sqlx::query_as(
+    let rows: Vec<StoredDevice> = sqlx::query_as(
         "SELECT device_id, device_key, role, admin_key, enrolled_revision, removed_revision
          FROM sync_devices ORDER BY device_id",
     )
@@ -350,7 +357,11 @@ fn entries_are_taken_only_from_the_anchor_and_unknown_kinds_are_kept_but_ignored
         assert_eq!(hub.receive(&member_ops).await, vec![STORED; 3]);
         hub.apply_all().await.unwrap();
         assert_eq!(view(&mut hub).await, before);
-        let held = hub.engine.held_ops(&mut hub.conn, &hub.ctx, 10).await.unwrap();
+        let held = hub
+            .engine
+            .held_ops(&mut hub.conn, &hub.ctx, 10)
+            .await
+            .unwrap();
         assert_eq!((held[0].writer, held[0].seq), (member.writer(), 3));
 
         // An entry kind this build does not know is stored, forwarded, and chained, and changes
@@ -482,13 +493,15 @@ fn a_handover_supersedes_the_old_epoch_and_equal_epoch_handovers_take_the_lower_
             assert_devices_replay_the_selected_chain(observer).await;
         }
         assert_devices_replay_the_selected_chain(&mut hub).await;
-        let unselected: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM sync_auth_entries WHERE selected = 0",
-        )
-        .fetch_one(&mut hub.conn)
-        .await
-        .unwrap();
-        assert_eq!(unselected, 2, "the losing handover and the superseded enrollment");
+        let unselected: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM sync_auth_entries WHERE selected = 0")
+                .fetch_one(&mut hub.conn)
+                .await
+                .unwrap();
+        assert_eq!(
+            unselected, 2,
+            "the losing handover and the superseded enrollment"
+        );
         assert_eq!(
             hub.sequence(enroll_entry(&person(), 23, DeviceRole::Member))
                 .await

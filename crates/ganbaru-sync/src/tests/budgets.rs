@@ -285,7 +285,13 @@ async fn fork_excluding_applied_operations() -> Duration {
         .unwrap();
     let outcome = member
         .engine
-        .store_fork_evidence(&mut member.conn, &member.ctx, &first, &second, member.now_ms)
+        .store_fork_evidence(
+            &mut member.conn,
+            &member.ctx,
+            &first,
+            &second,
+            member.now_ms,
+        )
         .await
         .unwrap();
     assert_eq!(outcome, crate::EvidenceOutcome::Stored);

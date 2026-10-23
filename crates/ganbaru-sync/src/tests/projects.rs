@@ -252,7 +252,7 @@ fn projects_concurrent_dependencies_that_close_a_cycle_hide_the_newest_as_a_conf
         for replica in &mut replicas {
             assert_eq!(
                 texts(replica, "SELECT id FROM project_task_dependencies").await,
-                [kept.clone()]
+                std::slice::from_ref(&kept)
             );
             assert_eq!(
                 replica

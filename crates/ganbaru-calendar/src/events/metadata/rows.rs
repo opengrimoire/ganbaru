@@ -337,7 +337,7 @@ fn music_assignment_key(row: &MusicAssignment) -> Result<String, String> {
         .map_err(|error| format!("derive Calendar music assignment key: {error}"))
 }
 
-stored_row!(TaskLink, "project_task_event_links", "event_id = ?1", (task_id), {
+stored_row!(#[cfg_attr(not(test), expect(dead_code, reason = "edits write task links through `upsert` so unchanged links stay untouched"))] TaskLink, "project_task_event_links", "event_id = ?1", (task_id), {
     task_id: String,
     event_id: String,
     link_kind: String,

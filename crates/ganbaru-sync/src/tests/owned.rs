@@ -1,10 +1,13 @@
 //! Owned tables, nested owned rows, owned references, hook columns, and key-derived columns
 //! across replicas.
 
+use ganbaru_sync_contracts::bounds::MAX_BLOB_FIELD_BYTES;
+
 use super::block_on;
-use super::fixture::{LIST_COUNT_TOPIC, membership_key};
+use super::fixture::{LIST_COUNT_TOPIC, SCROLL_PAGES, TEST_MANIFEST, membership_key};
 use super::replica::{Replica, converge, pair};
 use crate::ChangeNotice;
+use crate::manifest::{OwnedBound, OwnedTable, owned_table_problems};
 
 const CREATED: &str = "'2027-01-01T00:00:00.000Z'";
 
@@ -230,5 +233,73 @@ fn nested_checks_follow_their_card_ordinal_and_keep_their_ids() {
                 ["c-2:0:k-3:0", "c-1:0:k-1:0", "c-1:1:k-2:1"]
             );
         }
+    });
+}
+
+#[test]
+fn only_a_domain_bound_lets_an_owned_table_exceed_the_static_blob_bound() {
+    assert!(SCROLL_PAGES.max_encoded_bytes() > MAX_BLOB_FIELD_BYTES);
+    assert!(owned_table_problems(&SCROLL_PAGES, false).is_empty());
+    let static_pages = OwnedTable {
+        bound: OwnedBound::Static,
+        ..SCROLL_PAGES
+    };
+    assert_eq!(
+        owned_table_problems(&static_pages, false),
+        ["the largest encoding exceeds the blob field bound"]
+    );
+    assert!(TEST_MANIFEST.validate().is_ok());
+    assert!(TEST_MANIFEST.summary().contains(
+        "owned fixture_scroll_pages parent scroll_id ordinal ordinal rows 4 codec generic \
+         body:text(..=262144) bound domain"
+    ));
+}
+
+#[test]
+fn an_oversized_domain_bounded_value_stays_captured_and_is_never_published() {
+    block_on(async {
+        let mut replicas = replicas(2).await;
+        let page = MAX_BLOB_FIELD_BYTES / 2;
+        edit(
+            &mut replicas[0],
+            &format!(
+                "INSERT INTO fixture_scrolls (id, created_at) VALUES ('scroll-1', {CREATED});
+                 INSERT INTO fixture_scroll_pages (scroll_id, ordinal, body)
+                     VALUES ('scroll-1', 0, printf('%.*c', {page}, 'a')),
+                            ('scroll-1', 1, printf('%.*c', {page}, 'b'));"
+            ),
+        )
+        .await;
+        let report = replicas[0].seal().await.unwrap();
+        assert_eq!(
+            report
+                .invalid_rows
+                .iter()
+                .map(|row| (row.row_key.as_str(), row.reason))
+                .collect::<Vec<_>>(),
+            [("scroll-1", "value bounds")]
+        );
+        assert_eq!(report.changes, 0);
+        assert_eq!(replicas[0].count("SELECT count(*) FROM sync_rows").await, 0);
+        assert_eq!(
+            replicas[0].count("SELECT count(*) FROM sync_capture").await,
+            1
+        );
+
+        // Within the bound, the same row publishes and reaches the other replica.
+        edit(
+            &mut replicas[0],
+            "DELETE FROM fixture_scroll_pages WHERE ordinal = 1",
+        )
+        .await;
+        let report = replicas[0].seal().await.unwrap();
+        assert!(report.invalid_rows.is_empty(), "{:?}", report.invalid_rows);
+        converge(&mut replicas).await;
+        assert_eq!(
+            replicas[1]
+                .count("SELECT length(body) FROM fixture_scroll_pages WHERE scroll_id = 'scroll-1'")
+                .await,
+            i64::try_from(page).unwrap()
+        );
     });
 }

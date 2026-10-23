@@ -2391,4 +2391,5 @@ fn duplicate_pending_requests_both_survive_and_a_concurrent_delete_beats_an_answ
     });
 }
 
+mod projects_conflicts;
 mod projects_recovery;

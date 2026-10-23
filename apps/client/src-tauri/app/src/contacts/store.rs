@@ -233,13 +233,15 @@ where
     E: Executor<'e, Database = Sqlite>,
 {
     sqlx::query_as(AssertSqlSafe(format!(
-        "SELECT {CONTACT_COLUMNS} FROM contacts ORDER BY state, lower(display_name), id"
+        "SELECT {CONTACT_COLUMNS} FROM contacts WHERE state <> 'removed'
+         ORDER BY state, lower(display_name), id"
     )))
     .fetch_all(executor)
     .await
     .map_err(|error| db_error("list contacts", error))
 }
 
+/// The active or blocked contact for a person. A removed row counts as no contact.
 pub(crate) async fn contact_by_key<'e, E>(
     executor: E,
     public_key: &str,
@@ -248,7 +250,7 @@ where
     E: Executor<'e, Database = Sqlite>,
 {
     sqlx::query_as(AssertSqlSafe(format!(
-        "SELECT {CONTACT_COLUMNS} FROM contacts WHERE public_key = ?"
+        "SELECT {CONTACT_COLUMNS} FROM contacts WHERE public_key = ? AND state <> 'removed'"
     )))
     .bind(public_key)
     .fetch_optional(executor)
@@ -403,23 +405,36 @@ where
     Ok(result.rows_affected() == 1)
 }
 
-/// Deletes a contact row in the given state. Returns false on a revision or state mismatch.
-pub(crate) async fn delete_contact<'e, E>(
+/// Removes a contact in the given state by giving it the removed standing with no trust.
+/// Returns false on a revision or state mismatch.
+///
+/// The row stays so a removal merges with concurrent edits on linked devices as a standing:
+/// a concurrent block still wins, and a concurrent accept or trust change cannot revive the
+/// contact. Readers treat a removed row as no contact.
+pub(crate) async fn remove_contact<'e, E>(
     executor: E,
     id: &str,
     expected_revision: i64,
     state: ContactState,
+    now: DateTime<Utc>,
 ) -> Result<bool, String>
 where
     E: Executor<'e, Database = Sqlite>,
 {
-    let result = sqlx::query("DELETE FROM contacts WHERE id = ? AND revision = ? AND state = ?")
-        .bind(id)
-        .bind(expected_revision)
-        .bind(state.as_str())
-        .execute(executor)
-        .await
-        .map_err(|error| db_error("delete contact", error))?;
+    let result = sqlx::query(
+        "UPDATE contacts
+         SET state = 'removed', invite_trust = 'not_allowed', invite_trust_expires_at = NULL,
+             message_trust = 'not_allowed', message_trust_expires_at = NULL, accepted_at = NULL,
+             blocked_at = NULL, updated_at = ?
+         WHERE id = ? AND revision = ? AND state = ?",
+    )
+    .bind(format_time(now))
+    .bind(id)
+    .bind(expected_revision)
+    .bind(state.as_str())
+    .execute(executor)
+    .await
+    .map_err(|error| db_error("remove contact", error))?;
     Ok(result.rows_affected() == 1)
 }
 
@@ -436,8 +451,9 @@ where
     .map_err(|error| db_error("list contact requests", error))
 }
 
-/// Pending requests in both directions, newest first. Handled requests and pending ones past
-/// their deadline are never listed.
+/// Pending requests in both directions, newest first, one per direction and person. Linked
+/// devices can each store a pending row for the same person, so only the newest is listed.
+/// Handled requests and pending ones past their deadline are never listed.
 pub(crate) async fn list_pending_requests<'e, E>(
     executor: E,
     now: DateTime<Utc>,
@@ -446,8 +462,14 @@ where
     E: Executor<'e, Database = Sqlite>,
 {
     sqlx::query_as(AssertSqlSafe(format!(
-        "SELECT {REQUEST_COLUMNS} FROM contact_requests
-         WHERE state = 'pending' AND expires_at > ?
+        "SELECT {REQUEST_COLUMNS} FROM (
+            SELECT *, row_number() OVER (
+                PARTITION BY direction, public_key ORDER BY created_at DESC, id
+            ) AS newest
+            FROM contact_requests
+            WHERE state = 'pending' AND expires_at > ?
+         )
+         WHERE newest = 1
          ORDER BY created_at DESC, id"
     )))
     .bind(format_time(now))
@@ -470,6 +492,21 @@ where
     .fetch_optional(executor)
     .await
     .map_err(|error| db_error("load contact request", error))
+}
+
+/// The card text and digest stored with a request.
+pub(crate) async fn request_card<'e, E>(
+    executor: E,
+    id: &str,
+) -> Result<Option<(String, String)>, String>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    sqlx::query_as("SELECT card, card_digest FROM contact_requests WHERE id = ?")
+        .bind(id)
+        .fetch_optional(executor)
+        .await
+        .map_err(|error| db_error("load contact request card", error))
 }
 
 /// The newest unexpired pending request in one direction with a person. Linked devices may

@@ -174,7 +174,9 @@ const CONTACT_GROUPS: [GroupSpec; 5] = [
 ];
 
 /// `contacts`, keyed by the person public key, so removing a contact on one device and adding
-/// the same person on another settle on one row. A block outranks a concurrent accept.
+/// the same person on another settle on one row. Removal keeps the row with the `removed`
+/// standing, so a block outranks a concurrent removal and a removal outranks a concurrent
+/// accept or trust widening.
 pub const CONTACTS: TableSpec = TableSpec {
     id: CONTACTS_TABLE,
     name: "contacts",
@@ -316,7 +318,8 @@ const CARD_GROUPS: [GroupSpec; 2] = [
 ];
 
 /// `contact_card`, the single row `card` holding the nonce every issued card carries. Any
-/// device that may write contacts can rotate it; the higher revision wins.
+/// device that may write contacts can rotate it; the higher revision wins while revisions stay
+/// below 255, and past that concurrent rotations fall back to the clock.
 pub const CARD: TableSpec = TableSpec {
     id: CARD_TABLE,
     name: "contact_card",

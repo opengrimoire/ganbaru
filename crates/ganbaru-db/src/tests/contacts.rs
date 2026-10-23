@@ -1,4 +1,7 @@
-use super::helpers::migrated_memory_pool;
+use super::helpers::{memory_pool_migrated_through, migrated_memory_pool};
+use crate::run_migrations;
+
+const BEFORE_CONTACTS_REPLICATION: i64 = 20261022191859;
 
 const PUBLIC_KEY: &str = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
 const OTHER_KEY: &str = "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB";
@@ -128,6 +131,14 @@ fn contacts_enforce_derived_ids_trust_kinds_state_and_revision_bumps() {
             .execute(&pool)
             .await;
         assert!(bad_state.is_err());
+        for state in ["removed", "blocked", "active"] {
+            sqlx::query("UPDATE contacts SET state = ? WHERE id = ?")
+                .bind(state)
+                .bind(CONTACT_ID)
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
         sqlx::query(
             "UPDATE contacts SET message_trust = 'seven_days', message_trust_expires_at = ?
              WHERE id = ?",
@@ -142,7 +153,7 @@ fn contacts_enforce_derived_ids_trust_kinds_state_and_revision_bumps() {
             .fetch_one(&pool)
             .await
             .unwrap();
-        assert_eq!(revision, 2, "updates bump the revision");
+        assert_eq!(revision, 5, "updates bump the revision");
     });
 }
 
@@ -217,5 +228,50 @@ fn contact_requests_allow_duplicate_pending_rows_from_concurrent_devices() {
                 .await
                 .unwrap();
         assert_eq!(revision, 2);
+    });
+}
+
+#[test]
+fn replication_migration_rekeys_received_requests_whose_ids_exceed_a_row_key() {
+    super::block_on(async {
+        let pool = memory_pool_migrated_through(BEFORE_CONTACTS_REPLICATION).await;
+        let long_id = "r".repeat(150);
+        for (id, key) in [(long_id.as_str(), PUBLIC_KEY), ("short-id", OTHER_KEY)] {
+            sqlx::query(
+                "INSERT INTO contact_requests
+                 (id, direction, public_key, display_name, card, card_digest, expires_at,
+                  created_at, updated_at)
+                 VALUES (?, 'received', ?, 'Ana', 'Y2FyZA', ?, ?, ?, ?)",
+            )
+            .bind(id)
+            .bind(key)
+            .bind("0".repeat(64))
+            .bind(NOW)
+            .bind(NOW)
+            .bind(NOW)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+
+        run_migrations(&pool).await.unwrap();
+
+        let rows: Vec<(String, String)> = sqlx::query_as(
+            "SELECT id, peer_request_id FROM contact_requests ORDER BY length(peer_request_id)",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0], ("short-id".to_owned(), "short-id".to_owned()));
+        let (rekeyed, peer) = &rows[1];
+        assert_eq!(peer, &long_id, "status polls still find the requester id");
+        assert!(rekeyed.starts_with("contact-request-"));
+        assert!(rekeyed.len() <= 128, "every id fits a sync row key");
+        let too_long = sqlx::query("UPDATE contact_requests SET id = ? WHERE id = 'short-id'")
+            .bind(&long_id)
+            .execute(&pool)
+            .await;
+        assert!(too_long.is_err());
     });
 }

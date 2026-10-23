@@ -1603,6 +1603,13 @@ fn a_block_outranks_a_concurrent_accept_and_trust_edit() {
     });
 }
 
+/// Gives the peer the removed standing, as removing or unblocking a contact does.
+const REMOVE_CONTACT: &str = "UPDATE contacts
+     SET state = 'removed', invite_trust = 'not_allowed', invite_trust_expires_at = NULL,
+         message_trust = 'not_allowed', message_trust_expires_at = NULL, accepted_at = NULL,
+         blocked_at = NULL, updated_at = ?2
+     WHERE public_key = ?1";
+
 #[test]
 fn removing_and_adding_one_person_on_two_devices_settles_on_one_row() {
     block_on(async {
@@ -1613,13 +1620,20 @@ fn removing_and_adding_one_person_on_two_devices_settles_on_one_row() {
         hub_replica.seal().await;
         converge(&mut hub_replica, &mut phone, &transport).await;
 
-        hub_replica
-            .edit("DELETE FROM contacts WHERE public_key = ?", PEER_KEY)
-            .await;
+        update_contact(&hub_replica, REMOVE_CONTACT).await;
+        hub_replica.seal().await;
         converge(&mut hub_replica, &mut phone, &transport).await;
-        assert_eq!(contact_standing(&phone).await, None);
+        assert_eq!(
+            contact_standing(&phone).await,
+            Some(("removed".to_string(), "not_allowed".to_string()))
+        );
 
-        insert_contact(&phone, "active").await;
+        update_contact(
+            &phone,
+            "UPDATE contacts SET state = 'active', accepted_at = ?2, updated_at = ?2
+             WHERE public_key = ?1",
+        )
+        .await;
         phone.seal().await;
         converge(&mut hub_replica, &mut phone, &transport).await;
         for replica in [&hub_replica, &phone] {
@@ -1628,6 +1642,104 @@ fn removing_and_adding_one_person_on_two_devices_settles_on_one_row() {
                 .await
                 .expect("count contacts");
             assert_eq!(count, 1, "the person comes back as the same row");
+            assert_eq!(
+                contact_standing(replica).await,
+                Some(("active".to_string(), "not_allowed".to_string())),
+                "an add made after the removal arrived revives the contact"
+            );
+        }
+
+        update_contact(&hub_replica, REMOVE_CONTACT).await;
+        hub_replica.seal().await;
+        update_contact(
+            &phone,
+            "UPDATE contacts SET invite_trust = 'until_revoked', updated_at = ?2
+             WHERE public_key = ?1",
+        )
+        .await;
+        phone.seal().await;
+        converge(&mut hub_replica, &mut phone, &transport).await;
+        for replica in [&hub_replica, &phone] {
+            assert_eq!(
+                contact_standing(replica).await,
+                Some(("removed".to_string(), "not_allowed".to_string())),
+                "a concurrent trust edit never revives a removed contact"
+            );
+        }
+        hub_replica.close().await;
+        phone.close().await;
+    });
+}
+
+#[test]
+fn a_block_survives_a_concurrent_removal() {
+    block_on(async {
+        let mut hub_replica = Replica::new("contacts-block-remove-hub", HUB_DEVICE).await;
+        let mut phone = Replica::new("contacts-block-remove-phone", PHONE_DEVICE).await;
+        let (transport, _changes) = hub(&hub_replica);
+        insert_contact(&hub_replica, "active").await;
+        hub_replica.seal().await;
+        converge(&mut hub_replica, &mut phone, &transport).await;
+
+        update_contact(&hub_replica, REMOVE_CONTACT).await;
+        hub_replica.seal().await;
+        update_contact(
+            &phone,
+            "UPDATE contacts SET state = 'blocked', blocked_at = ?2, updated_at = ?2
+             WHERE public_key = ?1",
+        )
+        .await;
+        phone.seal().await;
+        converge(&mut hub_replica, &mut phone, &transport).await;
+        for replica in [&hub_replica, &phone] {
+            assert_eq!(
+                contact_standing(replica).await,
+                Some(("blocked".to_string(), "not_allowed".to_string())),
+                "a removal on one device never drops a block made on another"
+            );
+        }
+        hub_replica.close().await;
+        phone.close().await;
+    });
+}
+
+#[test]
+fn a_concurrent_trust_narrowing_beats_a_widening() {
+    block_on(async {
+        let mut hub_replica = Replica::new("contacts-narrow-hub", HUB_DEVICE).await;
+        let mut phone = Replica::new("contacts-narrow-phone", PHONE_DEVICE).await;
+        let (transport, _changes) = hub(&hub_replica);
+        insert_contact(&hub_replica, "active").await;
+        update_contact(
+            &hub_replica,
+            "UPDATE contacts SET invite_trust = 'seven_days', updated_at = ?2
+             WHERE public_key = ?1",
+        )
+        .await;
+        hub_replica.seal().await;
+        converge(&mut hub_replica, &mut phone, &transport).await;
+
+        update_contact(
+            &hub_replica,
+            "UPDATE contacts SET invite_trust = 'until_revoked', updated_at = ?2
+             WHERE public_key = ?1",
+        )
+        .await;
+        hub_replica.seal().await;
+        update_contact(
+            &phone,
+            "UPDATE contacts SET invite_trust = 'not_allowed', updated_at = ?2
+             WHERE public_key = ?1",
+        )
+        .await;
+        phone.seal().await;
+        converge(&mut hub_replica, &mut phone, &transport).await;
+        for replica in [&hub_replica, &phone] {
+            assert_eq!(
+                contact_standing(replica).await,
+                Some(("active".to_string(), "not_allowed".to_string())),
+                "a revocation made while another device widened trust stands"
+            );
         }
         hub_replica.close().await;
         phone.close().await;

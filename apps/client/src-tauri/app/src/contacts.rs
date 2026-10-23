@@ -548,7 +548,7 @@ async fn remove_contact_in_state(
     expected_revision: i64,
     state: ContactState,
 ) -> Result<(), ContactsError> {
-    let removed = store::delete_contact(pool, id, expected_revision, state).await?;
+    let removed = store::remove_contact(pool, id, expected_revision, state, store::now()).await?;
     if removed {
         Ok(())
     } else {

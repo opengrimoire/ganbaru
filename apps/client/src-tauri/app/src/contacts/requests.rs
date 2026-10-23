@@ -17,11 +17,11 @@ use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use chrono::{DateTime, Duration, Utc};
 use ganbaru_contacts::{
-    PersonPublicKey, TrustKind, decode_card_text, encode_nonce, request_signature_payload,
-    status_signature_payload,
+    PersonPublicKey, SignedCard, TrustKind, decode_card_text, encode_nonce,
+    request_signature_payload, status_signature_payload,
 };
 #[cfg(any(desktop, test))]
-use ganbaru_contacts::{SIGNATURE_BYTES, SignedCard, decode_nonce, nonces_match, verify};
+use ganbaru_contacts::{SIGNATURE_BYTES, decode_nonce, nonces_match, verify};
 use sqlx::SqlitePool;
 use tauri::{AppHandle, Runtime};
 
@@ -168,8 +168,11 @@ pub(crate) async fn receive_request(
     {
         return Ok(acknowledged);
     }
-    if let Some(existing) = store::received_request_by_peer(pool, &public_key, request_id).await?
-        && RequestState::parse(&existing.state) != Some(RequestState::Pending)
+    // A repeated delivery of a stored request writes nothing: a pending row keeps its id, so
+    // linked devices see no churn, and an answered row keeps its answer.
+    if store::received_request_by_peer(pool, &public_key, request_id)
+        .await?
+        .is_some()
     {
         return Ok(acknowledged);
     }
@@ -470,6 +473,23 @@ async fn pending_row_in_direction(
     Ok(row)
 }
 
+/// The signed card a received request carries, checked again before it grants trust. A
+/// request row may arrive from a linked device, so its stored columns are not proof that the
+/// card was ever verified here.
+async fn verified_request_card(pool: &SqlitePool, row: &RequestRow) -> Result<SignedCard, String> {
+    let (card_text, card_digest) = store::request_card(pool, &row.id)
+        .await?
+        .ok_or_else(|| "the contact request has no stored card".to_string())?;
+    let signed = decode_card_text(&card_text)
+        .map_err(|error| format!("the stored contact card is invalid: {error}"))?;
+    if signed.card.public_key.to_text() != row.public_key
+        || store::encode_hex(&signed.digest) != card_digest
+    {
+        return Err("the stored contact card does not match its request".to_string());
+    }
+    Ok(signed)
+}
+
 /// Accepts a received request: the row becomes accepted and the person an active contact.
 pub(crate) async fn accept_request(
     pool: &SqlitePool,
@@ -480,6 +500,9 @@ pub(crate) async fn accept_request(
     now: DateTime<Utc>,
 ) -> Result<(), ContactsError> {
     let row = pending_row_in_direction(pool, id, RequestDirection::Received, now).await?;
+    let card = verified_request_card(pool, &row)
+        .await
+        .map_err(ContactsError::Failed)?;
     let mut tx = pool
         .begin()
         .await
@@ -500,8 +523,8 @@ pub(crate) async fn accept_request(
         &mut *tx,
         NewContact {
             public_key: &row.public_key,
-            display_name: &row.display_name,
-            color: store::color_from_row(row.color),
+            display_name: &card.card.display_name,
+            color: card.card.color,
         },
         &TrustGrant::new(invite_trust, now),
         &TrustGrant::new(message_trust, now),
@@ -695,6 +718,14 @@ pub(super) async fn apply_status_response(
                     .await?;
                 return Ok(true);
             }
+            store::close_pending_from(
+                &mut *tx,
+                RequestDirection::Sent,
+                &row.public_key,
+                RequestState::Expired,
+                now,
+            )
+            .await?;
             tx.commit()
                 .await
                 .map_err(|error| format!("commit accepted request: {error}"))?;
@@ -704,8 +735,25 @@ pub(super) async fn apply_status_response(
             state: ContactRequestOutcome::Declined,
             ..
         }) => {
-            store::set_request_state(pool, &row.id, None, RequestState::Declined, None, now)
+            // Linked devices may each hold a pending row for this person; the answer closes
+            // them all so no duplicate keeps polling.
+            let mut tx = pool
+                .begin()
+                .await
+                .map_err(|error| format!("begin declined transaction: {error}"))?;
+            store::set_request_state(&mut *tx, &row.id, None, RequestState::Declined, None, now)
                 .await?;
+            store::close_pending_from(
+                &mut *tx,
+                RequestDirection::Sent,
+                &row.public_key,
+                RequestState::Expired,
+                now,
+            )
+            .await?;
+            tx.commit()
+                .await
+                .map_err(|error| format!("commit declined request: {error}"))?;
             Ok(true)
         }
         Ok(ControlMessage::ContactRequestState { .. }) => {

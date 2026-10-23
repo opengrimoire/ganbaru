@@ -685,20 +685,47 @@ async fn trust_updates_and_removal_respect_revisions() {
     assert_eq!(updated.invite_trust, "thirty_days");
     assert_eq!(updated.revision, contact.revision + 1);
 
-    let wrong_state =
-        store::delete_contact(&pool, &contact.id, updated.revision, ContactState::Blocked)
-            .await
-            .unwrap();
-    let removed = store::delete_contact(&pool, &contact.id, updated.revision, ContactState::Active)
-        .await
-        .unwrap();
+    let wrong_state = store::remove_contact(
+        &pool,
+        &contact.id,
+        updated.revision,
+        ContactState::Blocked,
+        now,
+    )
+    .await
+    .unwrap();
+    let removed = store::remove_contact(
+        &pool,
+        &contact.id,
+        updated.revision,
+        ContactState::Active,
+        now,
+    )
+    .await
+    .unwrap();
     assert!(!wrong_state);
     assert!(removed);
     assert!(store::list_contacts(&pool).await.unwrap().is_empty());
+    assert!(
+        store::contact_by_key(&pool, &contact.public_key)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    let kept = store::contact_by_id(&pool, &contact.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(kept.state, "removed");
+    assert_eq!(
+        (kept.invite_trust.as_str(), kept.message_trust.as_str()),
+        ("not_allowed", "not_allowed")
+    );
+    assert!(kept.accepted_at.is_none());
 }
 
 #[tokio::test]
-async fn blocking_an_active_contact_clears_trust_and_unblocking_removes_the_row() {
+async fn blocking_an_active_contact_clears_trust_and_unblocking_removes_the_contact() {
     let pool = migrated_memory_pool().await;
     let recipient = Person::new("Recipient");
     let requester = Person::new("Requester");
@@ -731,12 +758,37 @@ async fn blocking_an_active_contact_clears_trust_and_unblocking_removes_the_row(
     assert_eq!(blocked.message_trust, "not_allowed");
     assert!(blocked.blocked_at.is_some());
 
-    let removed =
-        store::delete_contact(&pool, &blocked.id, blocked.revision, ContactState::Blocked)
-            .await
-            .unwrap();
+    let removed = store::remove_contact(
+        &pool,
+        &blocked.id,
+        blocked.revision,
+        ContactState::Blocked,
+        now,
+    )
+    .await
+    .unwrap();
     assert!(removed);
     assert!(store::contact_by_key(&pool, &key).await.unwrap().is_none());
+
+    // A removed person can send a new request and be accepted again.
+    deliver(&pool, &recipient, &requester, "contact-two").await;
+    let again = store::received_request_by_peer(&pool, &key, "contact-two")
+        .await
+        .unwrap()
+        .unwrap();
+    requests::accept_request(
+        &pool,
+        &again.id,
+        again.revision,
+        TrustKind::Once,
+        TrustKind::NotAllowed,
+        now,
+    )
+    .await
+    .unwrap();
+    let readded = store::contact_by_key(&pool, &key).await.unwrap().unwrap();
+    assert_eq!(readded.state, "active");
+    assert!(readded.blocked_at.is_none());
 }
 
 #[tokio::test]
@@ -899,4 +951,148 @@ async fn an_accepted_poll_never_clears_a_block() {
         .unwrap()
         .unwrap();
     assert_eq!(row.state, "expired");
+}
+
+#[tokio::test]
+async fn a_repeated_delivery_of_a_pending_request_writes_nothing() {
+    let pool = migrated_memory_pool().await;
+    let recipient = Person::new("Recipient");
+    let requester = Person::new("Requester");
+    let key = requester.key.public_key().to_text();
+
+    deliver(&pool, &recipient, &requester, "contact-one").await;
+    let first = store::received_request_by_peer(&pool, &key, "contact-one")
+        .await
+        .unwrap()
+        .unwrap();
+    let reply = deliver(&pool, &recipient, &requester, "contact-one").await;
+
+    assert_eq!(reply, received("contact-one"));
+    let rows = store::list_requests(&pool).await.unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].id, first.id, "the pending row keeps its id");
+    assert_eq!(rows[0].revision, first.revision);
+}
+
+#[tokio::test]
+async fn duplicate_pending_sent_rows_list_once_and_an_answer_closes_them_all() {
+    for (outcome, answered) in [
+        (ContactRequestOutcome::Declined, "declined"),
+        (ContactRequestOutcome::Accepted, "accepted"),
+    ] {
+        let pool = migrated_memory_pool().await;
+        let recipient = Person::new("Recipient");
+        insert_sent_request(&pool, &recipient, "contact-one").await;
+        insert_sent_request(&pool, &recipient, "contact-two").await;
+
+        let listed = store::list_pending_requests(&pool, store::now())
+            .await
+            .unwrap();
+        assert_eq!(listed.len(), 1, "one pending row per direction and person");
+
+        let first = store::request_by_id(&pool, "contact-one")
+            .await
+            .unwrap()
+            .unwrap();
+        let recipient_card =
+            matches!(outcome, ContactRequestOutcome::Accepted).then(|| recipient.card().text());
+        let response = Ok(ControlMessage::ContactRequestState {
+            state: outcome,
+            recipient_card,
+        });
+        let resolved = requests::apply_status_response(&pool, &first, response, store::now())
+            .await
+            .unwrap();
+
+        assert!(resolved);
+        let states: Vec<(String, String)> =
+            sqlx::query_as("SELECT id, state FROM contact_requests ORDER BY id")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            states,
+            [
+                ("contact-one".to_owned(), answered.to_owned()),
+                ("contact-two".to_owned(), "expired".to_owned()),
+            ]
+        );
+        assert!(
+            store::list_pending_requests(&pool, store::now())
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
+}
+
+#[tokio::test]
+async fn accepting_rechecks_the_stored_card_before_granting_trust() {
+    let pool = migrated_memory_pool().await;
+    let requester = Person::new("Requester");
+    let impostor = Person::new("Impostor");
+    let key = requester.key.public_key().to_text();
+    let genuine = requester.card();
+    let foreign = impostor.card();
+    // Rows as a linked device could replicate them: another person's card, a card that does
+    // not decode, and the right card with a digest that does not match it.
+    let tampered = [
+        (
+            "contact-foreign",
+            foreign.text(),
+            store::encode_hex(&foreign.digest),
+        ),
+        (
+            "contact-garbage",
+            "not-a-card".to_owned(),
+            store::encode_hex(&genuine.digest),
+        ),
+        (
+            "contact-digest",
+            genuine.text(),
+            store::encode_hex(&[1u8; 32]),
+        ),
+    ];
+    let now = store::now();
+    for (id, card, digest) in &tampered {
+        store::insert_request(
+            &pool,
+            store::NewRequest {
+                id,
+                direction: RequestDirection::Received,
+                public_key: &key,
+                peer_request_id: Some(id),
+                display_name: "Someone else",
+                color: 3,
+                card,
+                card_digest: digest,
+                endpoint_hint: "",
+                coordinator_fingerprint: "",
+                invite_trust: TrustKind::NotAllowed,
+                message_trust: TrustKind::NotAllowed,
+                expires_at: now + chrono::Duration::days(requests::REQUEST_TTL_DAYS),
+            },
+            now,
+        )
+        .await
+        .unwrap();
+    }
+
+    for (id, _, _) in &tampered {
+        let row = store::request_by_id(&pool, id).await.unwrap().unwrap();
+        let accepted = requests::accept_request(
+            &pool,
+            id,
+            row.revision,
+            TrustKind::UntilRevoked,
+            TrustKind::UntilRevoked,
+            now,
+        )
+        .await;
+
+        assert!(accepted.is_err(), "{id} must not be accepted");
+        assert!(store::contact_by_key(&pool, &key).await.unwrap().is_none());
+        let unchanged = store::request_by_id(&pool, id).await.unwrap().unwrap();
+        assert_eq!(unchanged.state, "pending");
+    }
 }

@@ -4,7 +4,9 @@
 -- device as the anchor of the sync space. Contacts are keyed by the person public key, with
 -- the id derived from it. Contact requests keep a local id; a received request records the id
 -- the requester chose in peer_request_id, and duplicate pending rows from concurrent devices
--- are allowed.
+-- are allowed. A request id must fit a sync row key, so a longer requester-chosen id copied from
+-- an older received row gets a fresh local id and stays in peer_request_id. A removed contact
+-- keeps its row with the removed standing so removal merges against concurrent edits.
 CREATE TABLE contact_card (
     key TEXT PRIMARY KEY NOT NULL CHECK (key = 'card'),
     card_nonce TEXT NOT NULL CHECK (length(card_nonce) = 22),
@@ -44,7 +46,7 @@ CREATE TABLE contacts_next (
     id TEXT NOT NULL CHECK (id = 'contact-' || public_key),
     display_name TEXT NOT NULL CHECK (length(trim(display_name)) BETWEEN 1 AND 160),
     color INTEGER NOT NULL DEFAULT 30 CHECK (color BETWEEN 0 AND 31),
-    state TEXT NOT NULL DEFAULT 'active' CHECK (state IN ('active', 'blocked')),
+    state TEXT NOT NULL DEFAULT 'active' CHECK (state IN ('active', 'removed', 'blocked')),
     invite_trust TEXT NOT NULL DEFAULT 'not_allowed' CHECK (
         invite_trust IN ('not_allowed', 'once', 'seven_days', 'thirty_days', 'until_revoked')
     ),
@@ -85,7 +87,7 @@ BEGIN
 END;
 
 CREATE TABLE contact_requests_next (
-    id TEXT PRIMARY KEY NOT NULL CHECK (length(id) BETWEEN 1 AND 160),
+    id TEXT PRIMARY KEY NOT NULL CHECK (length(CAST(id AS BLOB)) BETWEEN 1 AND 128),
     direction TEXT NOT NULL CHECK (direction IN ('sent', 'received')),
     public_key TEXT NOT NULL CHECK (length(public_key) = 43),
     peer_request_id TEXT CHECK (
@@ -121,7 +123,11 @@ INSERT INTO contact_requests_next (
     last_attempt_at, last_error_code, revision, created_at, updated_at
 )
 SELECT
-    id, direction, public_key, CASE direction WHEN 'received' THEN id END, display_name, color,
+    CASE
+        WHEN length(CAST(id AS BLOB)) <= 128 THEN id
+        ELSE 'contact-request-' || lower(hex(randomblob(16)))
+    END,
+    direction, public_key, CASE direction WHEN 'received' THEN id END, display_name, color,
     card, card_digest, endpoint_hint, coordinator_fingerprint, invite_trust, message_trust,
     state, expires_at, last_attempt_at, last_error_code, revision, created_at, updated_at
 FROM contact_requests;

@@ -31,11 +31,12 @@ pub const MAX_ENDPOINT_HINT_CHARS: usize = 64;
 /// Characters of an encoded card nonce.
 pub const CARD_NONCE_CHARS: usize = 22;
 
-/// Contact standings, lowest priority first.
-pub const CONTACT_STATES: [&str; 2] = ["active", "blocked"];
+/// Contact standings, lowest priority first. A removed contact keeps its row, so a removal
+/// merges against concurrent edits as a standing rather than as a deletion.
+pub const CONTACT_STATES: [&str; 3] = ["active", "removed", "blocked"];
 /// Characters of the longest contact standing.
 pub const MAX_CONTACT_STATE_CHARS: usize = 7;
-/// Trust kinds a contact or request may carry.
+/// Trust kinds a contact or request may carry, narrowest first.
 pub const TRUST_KINDS: [&str; 5] = [
     "not_allowed",
     "once",
@@ -236,6 +237,30 @@ fn rank(field: Option<&Field>, ranked: &[&str]) -> u8 {
         .unwrap_or(0)
 }
 
+/// Weight of one standing rank above any sum of trust narrowness.
+const STANDING_RANK_WEIGHT: u8 = 16;
+
+/// How narrow a trust kind is: `until_revoked` is 0 and `not_allowed` is the widest gap.
+fn narrowness(field: Option<&Field>) -> u8 {
+    let Some(Field::Text(text)) = field else {
+        return 0;
+    };
+    TRUST_KINDS
+        .iter()
+        .rev()
+        .position(|candidate| candidate == text)
+        .and_then(|position| u8::try_from(position).ok())
+        .unwrap_or(0)
+}
+
+/// Priority of a standing value: the standing rank first, then the summed narrowness of the
+/// invite and message trust, so a concurrent narrowing beats a concurrent widening.
+fn standing_priority(fields: &[Field]) -> u8 {
+    let state = rank(fields.first(), &CONTACT_STATES);
+    let narrow = narrowness(fields.get(3)) + narrowness(fields.get(5));
+    state * STANDING_RANK_WEIGHT + narrow
+}
+
 /// Adapter of the contacts domain.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct ContactsAdapter;
@@ -254,13 +279,15 @@ impl DomainAdapter for ContactsAdapter {
         Ok(Vec::new())
     }
 
-    /// Blocked outranks active, an answered request outranks a pending one with acceptance
-    /// highest, and a card outranks every card with a lower revision. Revisions past
-    /// `u8::MAX` share the top priority and fall back to the clock.
+    /// Blocked outranks removed, which outranks active; within one standing the narrower
+    /// trust wins, so concurrent edits never widen what a person may do. An answered request
+    /// outranks a pending one with acceptance highest, and a card outranks every card with a
+    /// lower revision. Revisions past `u8::MAX` share the top priority and fall back to the
+    /// clock.
     fn priority(&self, table: TableId, group: GroupId, value: &Value) -> u8 {
         let first = value.fields().first();
         if table == CONTACTS_TABLE && group == contact_group::STANDING {
-            rank(first, &CONTACT_STATES)
+            standing_priority(value.fields())
         } else if table == REQUESTS_TABLE && group == request_group::STATE {
             rank(first, &REQUEST_STATES)
         } else if table == CARD_TABLE && group == card_group::CARD {
@@ -350,7 +377,34 @@ mod tests {
         let adapter = ContactsAdapter;
         let standing_priority =
             |state| adapter.priority(CONTACTS_TABLE, contact_group::STANDING, &standing(state));
-        assert!(standing_priority("blocked") > standing_priority("active"));
+        assert!(standing_priority("blocked") > standing_priority("removed"));
+        assert!(standing_priority("removed") > standing_priority("active"));
+
+        let trusted = |state: &str, invite: &str, message: &str| {
+            let value = value(vec![
+                t(state),
+                Field::Null,
+                Field::Null,
+                t(invite),
+                Field::Null,
+                t(message),
+                Field::Null,
+            ]);
+            adapter.priority(CONTACTS_TABLE, contact_group::STANDING, &value)
+        };
+        assert!(
+            trusted("active", "not_allowed", "seven_days")
+                > trusted("active", "until_revoked", "seven_days")
+        );
+        assert!(trusted("active", "once", "once") > trusted("active", "thirty_days", "once"));
+        assert!(
+            trusted("removed", "until_revoked", "until_revoked")
+                > trusted("active", "not_allowed", "not_allowed")
+        );
+        assert!(
+            trusted("blocked", "until_revoked", "until_revoked")
+                > trusted("removed", "not_allowed", "not_allowed")
+        );
 
         let answer =
             |state| adapter.priority(REQUESTS_TABLE, request_group::STATE, &request_state(state));

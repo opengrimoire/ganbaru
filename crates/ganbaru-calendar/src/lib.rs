@@ -9,6 +9,7 @@ pub mod events;
 pub mod import;
 pub mod reads;
 pub mod recurrence;
+pub mod timing_bound;
 pub mod work_gate;
 
 #[cfg(test)]

@@ -1,14 +1,35 @@
+use std::collections::HashMap;
+
 use serde_json::Value;
 use sqlx::{Sqlite, Transaction};
 
 use super::{CalendarImportPreservation, CalendarImportPreservedComponent};
 
+/// Calendar row a preserved component projects into, written with the component itself.
+pub(super) struct ProjectedRow {
+    pub(super) kind: &'static str,
+    pub(super) id: String,
+}
+
+/// What the import decided about the preserved components before they are stored.
+#[derive(Default)]
+pub(super) struct PreservationOutcome {
+    /// Projected row by component id.
+    pub(super) projections: HashMap<String, ProjectedRow>,
+    /// Extra diagnostics by preserved object id, appended after the source diagnostics.
+    pub(super) diagnostics: HashMap<String, Vec<String>>,
+}
+
+/// Replaces the preserved objects of one source, writing each component's projection and each
+/// object's extra diagnostics in the same inserts.
 pub(super) async fn replace_preservation(
     tx: &mut Transaction<'_, Sqlite>,
     target_calendar_id: &str,
     now: &str,
     preservation: &CalendarImportPreservation,
+    outcome: &PreservationOutcome,
 ) -> Result<(), String> {
+    let projections = &outcome.projections;
     sqlx::query(
         "DELETE FROM icalendar_objects
          WHERE calendar_id = ? AND source_kind = ? AND source_name = ?",
@@ -42,7 +63,11 @@ pub(super) async fn replace_preservation(
         .await
         .map_err(|e| format!("insert iCalendar object preservation: {e}"))?;
 
-        let diagnostics = parse_string_vec(&object.diagnostics, "preservation.object.diagnostics")?;
+        let mut diagnostics =
+            parse_string_vec(&object.diagnostics, "preservation.object.diagnostics")?;
+        if let Some(extra) = outcome.diagnostics.get(&object.id) {
+            diagnostics.extend(extra.iter().cloned());
+        }
         for (sort_order, message) in diagnostics.iter().enumerate() {
             sqlx::query(
                 "INSERT INTO icalendar_object_diagnostics
@@ -73,6 +98,7 @@ pub(super) async fn replace_preservation(
             None,
             None,
             "lossless",
+            None,
             &[],
             &object.raw_jcal,
         )
@@ -84,6 +110,7 @@ pub(super) async fn replace_preservation(
             &object.id,
             Some(root_component_id),
             &object.components,
+            projections,
         )
         .await?;
     }
@@ -97,6 +124,7 @@ async fn insert_preserved_components(
     object_id: &str,
     root_component_id: Option<String>,
     components: &[CalendarImportPreservedComponent],
+    projections: &HashMap<String, ProjectedRow>,
 ) -> Result<(), String> {
     let mut stack: Vec<(Option<String>, i64, &CalendarImportPreservedComponent)> = components
         .iter()
@@ -125,6 +153,7 @@ async fn insert_preserved_components(
             component.sequence,
             component.dtstart_key.as_deref(),
             &component.preservation_status,
+            projections.get(&component.id),
             &warnings,
             &component.raw_jcal,
         )
@@ -153,6 +182,7 @@ async fn insert_preserved_component_row(
     sequence: Option<i64>,
     dtstart_key: Option<&str>,
     preservation_status: &str,
+    projection: Option<&ProjectedRow>,
     projection_warnings: &[String],
     raw_jcal: &str,
 ) -> Result<(), String> {
@@ -162,7 +192,7 @@ async fn insert_preserved_component_row(
              uid, recurrence_id, recurrence_id_value_type, sequence, dtstart_key,
              projected_kind, projected_id, preservation_status, sort_order,
              created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?, ?, ?)",
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(component_id)
     .bind(object_id)
@@ -174,6 +204,8 @@ async fn insert_preserved_component_row(
     .bind(recurrence_id_value_type)
     .bind(sequence)
     .bind(dtstart_key)
+    .bind(projection.map(|row| row.kind))
+    .bind(projection.map(|row| row.id.as_str()))
     .bind(preservation_status)
     .bind(sort_order)
     .bind(now)
@@ -261,7 +293,7 @@ async fn store_jcal_component(
                     tx,
                     param_value,
                     ValueNodeInsert {
-                        property_id: None,
+                        property_id: Some(&property_id),
                         parameter_id: Some(&parameter_id),
                         parent_node_id: None,
                         sort_order: 0,
@@ -383,31 +415,6 @@ pub(super) fn preservation_link_id(value: &Option<String>, apply: bool) -> Optio
         return None;
     }
     value.as_deref().filter(|id| !id.trim().is_empty())
-}
-
-pub(super) async fn link_preserved_component(
-    tx: &mut Transaction<'_, Sqlite>,
-    component_id: Option<&str>,
-    projected_kind: &str,
-    projected_id: &str,
-    now: &str,
-) -> Result<(), String> {
-    let Some(component_id) = component_id else {
-        return Ok(());
-    };
-    sqlx::query(
-        "UPDATE icalendar_components
-            SET projected_kind = ?, projected_id = ?, updated_at = ?
-          WHERE id = ?",
-    )
-    .bind(projected_kind)
-    .bind(projected_id)
-    .bind(now)
-    .bind(component_id)
-    .execute(&mut **tx)
-    .await
-    .map_err(|e| format!("link iCalendar component projection: {e}"))?;
-    Ok(())
 }
 
 fn parse_string_vec(value: &str, field: &str) -> Result<Vec<String>, String> {

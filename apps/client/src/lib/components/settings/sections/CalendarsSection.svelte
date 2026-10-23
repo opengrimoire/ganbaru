@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
+  import { timingTooLargeImportLabel } from "$lib/calendar/timing-bound-error";
   import Upload from "@lucide/svelte/icons/upload";
   import Download from "@lucide/svelte/icons/download";
   import Trash2 from "@lucide/svelte/icons/trash";
@@ -114,7 +115,12 @@
   }
 
   function visibleImportWarnings(warnings: string[]): string[] {
-    const uniqueWarnings = Array.from(new Set(warnings));
+    const uniqueWarnings = Array.from(new Set(warnings)).map((warning) => {
+      const label = timingTooLargeImportLabel(warning);
+      return label === null
+        ? warning
+        : t("settings.calendars.eventTooManyChangedOccurrences", label);
+    });
     const visibleWarnings = uniqueWarnings.slice(0, MAX_VISIBLE_IMPORT_WARNINGS);
     const hiddenCount = uniqueWarnings.length - visibleWarnings.length;
     if (hiddenCount > 0) {

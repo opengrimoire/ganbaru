@@ -8,6 +8,7 @@ use super::{
 use crate::recurrence::canonical::{
     override_date, parse_date, stored_time, validate_override_times,
 };
+use crate::timing_bound::{OverrideColumns, TIMING_TOO_LARGE_CODE, TimingSize};
 use ganbaru_civil_time as civil_time;
 use jiff::tz::TimeZone;
 
@@ -207,6 +208,57 @@ pub(super) fn skip_reason(event: &CalendarImportEvent) -> Option<String> {
         .chain(rdates.iter().map(String::as_str))
         .find_map(|value| readable(value).err())
         .map(|error| format!("{} has an unreadable time ({error})", event_label(event)))
+}
+
+/// Names the event when its timing value is over the sync bound, led by the stable
+/// [`TIMING_TOO_LARGE_CODE`] the client localizes. The event is then not imported or projected, and
+/// preservation keeps its full source.
+pub(super) fn timing_refusal(event: &CalendarImportEvent) -> Option<String> {
+    let mut size = TimingSize::default();
+    size.add_event(
+        &event.start_time,
+        &event.end_time,
+        &event.timezone,
+        event.rrule.as_deref(),
+        event.repeat_until.as_deref(),
+    );
+    for date in date_list(&event.exceptions)
+        .iter()
+        .chain(date_list(&event.rdate).iter())
+    {
+        size.add_date_row(None, date);
+    }
+    for row in &event.overrides {
+        size.add_override(&OverrideColumns {
+            id: &row.id,
+            recurrence_id: &row.recurrence_id,
+            recurrence_range: row.recurrence_range.as_deref(),
+            title: row.title.as_deref(),
+            start_time: row.start_time.as_deref(),
+            end_time: row.end_time.as_deref(),
+            description: row.description.as_deref(),
+            location: row.location.as_deref(),
+            url: row.url.as_deref(),
+            color: row.color,
+            status: row.status.as_deref(),
+            transparency: row.transparency.as_deref(),
+            visibility: row.visibility.as_deref(),
+            icalendar_component_id: row.icalendar_component_id.as_deref(),
+        });
+        let properties = row
+            .extended_properties
+            .as_deref()
+            .and_then(|json| {
+                serde_json::from_str::<std::collections::BTreeMap<String, String>>(json).ok()
+            })
+            .unwrap_or_default();
+        for (key, value) in &properties {
+            size.add_override_property(None, key, value);
+        }
+    }
+    size.check()
+        .is_err()
+        .then(|| format!("{TIMING_TOO_LARGE_CODE}: {}", event_label(event)))
 }
 
 /// Decodes a validated JSON date list; a non-list value is left to Calendar windows to report.

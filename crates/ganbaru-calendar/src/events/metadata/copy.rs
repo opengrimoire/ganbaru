@@ -279,6 +279,12 @@ impl Metadata {
             row.property_id = property_ids[&row.property_id].clone();
             result.parameters.push(row);
         }
+        let parameter_owners: BTreeMap<&str, &str> = self
+            .preservation
+            .parameters
+            .iter()
+            .map(|row| (row.id.as_str(), row.property_id.as_str()))
+            .collect();
         let mut pending = nodes;
         let mut inserted = BTreeSet::new();
         while !pending.is_empty() {
@@ -295,6 +301,14 @@ impl Metadata {
                 }
                 let mut row = source.clone();
                 row.id = node_ids[&row.id].clone();
+                if row.property_id.is_none()
+                    && let Some(owner) = row
+                        .parameter_id
+                        .as_deref()
+                        .and_then(|parameter| parameter_owners.get(parameter))
+                {
+                    row.property_id = Some((*owner).to_string());
+                }
                 row.property_id = mapped(&property_ids, &row.property_id)?;
                 row.parameter_id = mapped(&parameter_ids, &row.parameter_id)?;
                 row.parent_node_id = mapped(&node_ids, &row.parent_node_id)?;

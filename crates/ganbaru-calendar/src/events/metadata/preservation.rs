@@ -144,9 +144,13 @@ impl Preservation {
             }
             let property = row.property_id.as_deref();
             let parameter = row.parameter_id.as_deref();
-            if property.is_some() == parameter.is_some()
+            let parameter_owner = parameter.and_then(|id| parameters.get(id));
+            if property.is_none() && parameter.is_none()
                 || property.is_some_and(|id| !properties.contains(id))
-                || parameter.is_some_and(|id| !parameters.contains_key(id))
+                || parameter.is_some() && parameter_owner.is_none()
+                || property
+                    .zip(parameter_owner)
+                    .is_some_and(|(property, owner)| property != *owner)
             {
                 return Err("Calendar preservation value has an invalid owner".into());
             }

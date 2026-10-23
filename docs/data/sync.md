@@ -182,7 +182,7 @@ Every persisted field needs an explicit replication classification before it can
 | Notes, Projects, Calendar, Quick notes | Content, relationships, templates, archive, Trash, retained history, favorites | Recents, current selection, navigation, viewport layout |
 | Preferences | Profile, themes, quick-toggle theme pair, language, time format, rhythm defaults, favorites, sidebar orders | Active theme, font family and scale, Calendar view mode, title bar, Notes notification delivery, update check time, recents, selection, and collapsed sidebar state |
 | Distraction blocker | Rule definitions and device-attributed history | Permissions, application bindings, enforcement state |
-| Music | Library identities, playlists, assignments, portable preferences | Source bindings, media bytes, current playback, volume, routing |
+| Music | Library items and metadata, roots, locations, source collections, playlists and memberships, snoozes, soundscapes and presets, assignments, artwork, and listening statistics per device | Root bindings, availability and file observations, media bytes, sessions and checkpoints, refresh jobs, current playback, volume, routing |
 | Chat | Organizational content, portable review history, origin-attributed drafts | Execution processes, credentials, provider homes, terminals, native trust, paths, caches |
 | Managed assets | Immutable content and metadata | Transfer staging, local availability, caches |
 | Focus | Committed history, explicit controller ownership history | Live presence, local activity sources, native alarms and effects |
@@ -259,8 +259,9 @@ Android background sync uses WorkManager only and never a foreground service; th
 | Concurrent replication of portable preferences and the profile picture | Implemented | Physical multi-device acceptance |
 | Concurrent replication of user themes | Implemented | Physical multi-device acceptance |
 | Concurrent replication of contacts | Implemented | Physical multi-device acceptance |
+| Concurrent replication of the Music library | Partial | Unbound root status and YouTube eligibility in the frontend, Android root refresh after apply, and physical multi-device acceptance |
 | Connectivity: address refresh, DNS-SD discovery, overlay networks, firewall scopes, and Android background sync | Implemented | Physical multi-device acceptance, including the first Android build of the background sync module |
-| Concurrent replication of other domains | Planned | Projects, distraction rules and usage counters, Calendar, Focus history, Music library, Chat organizational content, Notes text and tree merging, managed assets, and retiring whole-vault handoff |
+| Concurrent replication of other domains | Planned | Projects, distraction rules and usage counters, Calendar, Focus history, Chat organizational content, Notes text and tree merging, managed assets, and retiring whole-vault handoff |
 | Concurrent secure local linking | Planned | Anchored authority with admin keys and late changes, LAN peer exchange, operation encryption, key lifecycle, typed bootstrap, and compaction |
 | Delivery beyond the LAN | Planned | Encrypted relay or always-on anchor, encrypted backup, measurements, and physical acceptance |
 

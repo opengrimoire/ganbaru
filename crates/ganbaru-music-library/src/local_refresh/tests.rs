@@ -654,6 +654,13 @@ async fn stored_scan_rows(pool: &SqlitePool) -> Vec<StoredScanRow> {
     .unwrap()
 }
 
+async fn capture_count(pool: &SqlitePool) -> i64 {
+    sqlx::query_scalar("SELECT COUNT(*) FROM sync_capture")
+        .fetch_one(pool)
+        .await
+        .unwrap()
+}
+
 #[test]
 fn unchanged_rescan_writes_only_device_observations() {
     crate::test_support::block_on(async {
@@ -676,11 +683,22 @@ fn unchanged_rescan_writes_only_device_observations() {
             crate::identity::location_id("root-1", "first.mp3")
         );
 
+        assert!(capture_count(&pool).await > 0);
+        sqlx::query("DELETE FROM sync_capture")
+            .execute(&pool)
+            .await
+            .unwrap();
+
         fs::remove_file(root.join("second.mp3")).unwrap();
         let second = request("incremental-2", &root, 1_700_000_100_000);
         prepare(&pool, &second).await.unwrap();
         let completed = run_prepared(&pool, second).await.unwrap();
         assert_eq!(completed.processed_count, 1);
+        assert_eq!(
+            capture_count(&pool).await,
+            0,
+            "device observations are local and capture nothing"
+        );
         let after = stored_scan_rows(&pool).await;
         let portable = |row: &StoredScanRow| {
             (

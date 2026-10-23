@@ -33,3 +33,5 @@ pub(crate) use service::{
     resume_after_vault_handoff, seal_quiesced, setup, stop_for_vault_handoff, sync_files,
 };
 pub(crate) use status::SyncSubscribers;
+#[cfg(desktop)]
+pub(crate) use status::emit_applied;

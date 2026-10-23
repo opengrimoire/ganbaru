@@ -240,6 +240,7 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
         .manage(pomodoro::overlay::PomodoroOverlayState::default())
         .manage(music::player::MediaPlayerState::default())
         .manage(music::soundscape::SoundscapeEngineState::default())
+        .manage(music::sync::RootRefreshScheduler::default())
         .manage(chat::settings_commands::ChatSettingsState::default())
         .manage(chat::provider_files::ProviderFileState::default())
         .manage(chat::internal_mcp::InternalMcpRegistry::default())

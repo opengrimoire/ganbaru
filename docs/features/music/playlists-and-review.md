@@ -6,6 +6,8 @@ A playlist has a stable identity, a localized or user-authored name, an icon or 
 
 Fresh vaults provide starter playlists for focus, breaks, meditation, exercise, hygiene, chores, cooking, and commute. Built-in playlists have localized names and icons and cannot be renamed or deleted, but their membership and order are the user's. Custom playlists can be created, renamed, reordered, and deleted. Deleting a playlist never deletes library items or media files.
 
+On linked devices, playlists and memberships merge without a visible conflict: the same track added to one playlist on two devices becomes one membership, a removed membership can be added again anywhere, and concurrent moves settle on one order. A playlist deleted on one device while another edits it is deleted everywhere, and the edits are offered in sync recovery, where restoring brings the playlist back as a new playlist with those memberships. Listening counts are kept per device and summed in the library.
+
 ## Membership settings
 
 A membership connects one canonical media item to one playlist and can define:

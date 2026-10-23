@@ -36,6 +36,7 @@ pub mod soundscape_presets;
 #[cfg(desktop)]
 pub mod soundscapes;
 pub mod source_lifecycle;
+pub mod sync_apply;
 pub mod transfer;
 mod transfer_codec;
 mod transfer_export;

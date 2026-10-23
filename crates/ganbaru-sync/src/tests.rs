@@ -7,6 +7,7 @@ mod fixture;
 mod guards;
 mod holds;
 mod local;
+mod music;
 mod owned;
 mod preferences;
 mod publication;

@@ -72,6 +72,12 @@ pub async fn chat_list_execution_environments(
     working_folder_id: ProjectWorkingFolderId,
 ) -> ChatResult<Vec<ChatExecutionEnvironmentRead>> {
     let pool = chat_pool(&app, db_url).await?;
+    crate::chat::channels::ensure_chat_defaults(
+        &app,
+        &pool,
+        crate::chat::channels::ChatDefaultsScope::WorkingFolder(working_folder_id.as_str()),
+    )
+    .await?;
     let paths = read_active_device_scope(&app)
         .map_err(device_state_error)?
         .execution_environment_paths;

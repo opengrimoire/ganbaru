@@ -426,3 +426,69 @@ fn music_playlist_rename_against_icon_change_keeps_both() {
         }
     });
 }
+
+fn insert_collection(id: &str, playlist: &str) -> String {
+    format!(
+        "INSERT INTO music_source_collections
+            (id, kind, identity_key, name, youtube_playlist_id, created_at_ms, updated_at_ms)
+         VALUES ({id}, 'youtube-playlist', {identity}, 'Followed', {playlist}, {NOW_MS}, {NOW_MS});",
+        id = quoted(id),
+        identity = quoted(&format!("youtube-playlist:{playlist}")),
+        playlist = quoted(playlist),
+    )
+}
+
+#[test]
+fn music_rows_deleted_on_one_device_are_added_again_under_one_successor_key() {
+    block_on(async {
+        let collection = "music-collection-shared";
+        let setup = format!(
+            "{}{}",
+            insert_item(ITEM, "Song"),
+            insert_collection(collection, "PLshared")
+        );
+        let mut replicas = shared(2, &setup).await;
+        replicas[0]
+            .exec(&format!(
+                "DELETE FROM music_source_collections;
+                 DELETE FROM music_library_items WHERE id = {};",
+                quoted(ITEM)
+            ))
+            .await;
+        converge(&mut replicas).await;
+        assert!(
+            !replicas[1].try_exec(&insert_item(ITEM, "Song")).await,
+            "a published key stays retired"
+        );
+        assert!(
+            !replicas[1]
+                .try_exec(&insert_collection(collection, "PLshared"))
+                .await
+        );
+
+        // The successor key `creatable_key` in the Music library derives for both rows.
+        let successor = format!("{ITEM}-2");
+        let collection_successor = format!("{collection}-2");
+        for replica in &mut replicas {
+            replica
+                .exec(&format!(
+                    "{}{}",
+                    insert_item(&successor, "Song"),
+                    insert_collection(&collection_successor, "PLshared")
+                ))
+                .await;
+        }
+        converge(&mut replicas).await;
+        assert_converged(&mut replicas).await;
+        for replica in &mut replicas {
+            assert_eq!(
+                texts(replica, "SELECT id FROM music_library_items").await,
+                [successor.as_str()]
+            );
+            assert_eq!(
+                texts(replica, "SELECT id FROM music_source_collections").await,
+                [collection_successor.as_str()]
+            );
+        }
+    });
+}

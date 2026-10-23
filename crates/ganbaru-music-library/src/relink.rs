@@ -608,13 +608,19 @@ async fn relink_location(
         .execute(&mut **transaction)
         .await
         .map_err(|error| MusicLibraryError::database("remove prior relink location", error))?;
+    let relinked_id = crate::identity::creatable_key(
+        &mut **transaction,
+        crate::identity::RetirableTable::Locations,
+        crate::identity::location_id(root_id, relative_path),
+    )
+    .await?;
     sqlx::query(
         "INSERT INTO music_local_locations
             (id, item_id, root_id, relative_path, file_size_bytes, lightweight_fingerprint,
              availability, first_seen_at_ms, updated_at_ms)
          VALUES (?, ?, ?, ?, ?, ?, 'available', ?, ?)",
     )
-    .bind(crate::identity::location_id(root_id, relative_path))
+    .bind(&relinked_id)
     .bind(item_id)
     .bind(root_id)
     .bind(relative_path)

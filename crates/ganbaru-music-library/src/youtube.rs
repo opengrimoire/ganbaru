@@ -419,7 +419,12 @@ async fn ensure_collection(
             id
         }
         None => {
-            let id = collection_id(&identity_key);
+            let id = crate::identity::creatable_key(
+                &mut **transaction,
+                crate::identity::RetirableTable::Collections,
+                collection_id(&identity_key),
+            )
+            .await?;
             sqlx::query(
                 "INSERT INTO music_source_collections
                     (id, kind, identity_key, name, youtube_playlist_id, created_at_ms, updated_at_ms)
@@ -614,7 +619,17 @@ async fn canonical_youtube_item_id(
             .fetch_optional(&mut **transaction)
             .await
             .map_err(|error| MusicLibraryError::database("match canonical YouTube video", error))?;
-    Ok(existing.unwrap_or_else(|| youtube_item_id(video_id)))
+    match existing {
+        Some(item_id) => Ok(item_id),
+        None => {
+            crate::identity::creatable_key(
+                transaction,
+                crate::identity::RetirableTable::Items,
+                youtube_item_id(video_id),
+            )
+            .await
+        }
+    }
 }
 
 fn failure_message(state: MusicYouTubeResolutionState) -> &'static str {
@@ -885,6 +900,45 @@ mod tests {
                 .await
                 .unwrap();
             assert_eq!(item_count, 0);
+        });
+    }
+
+    #[test]
+    fn a_playlist_and_video_added_again_after_published_deletions_take_successor_keys() {
+        use ganbaru_sync::manifest::vault::music::{COLLECTIONS, ITEMS};
+        crate::test_support::block_on(async {
+            let pool = pool().await;
+            let first = apply_playlist_snapshot(&pool, snapshot(vec!["abcDEF_1234"]))
+                .await
+                .unwrap();
+            let item = youtube_item_id("abcDEF_1234");
+            for (table, key) in [(&COLLECTIONS, &first.collection_id), (&ITEMS, &item)] {
+                sqlx::query(
+                    "INSERT INTO sync_rows (table_id, row_key, state) VALUES (?, ?, 'live')",
+                )
+                .bind(i64::from(table.id.0))
+                .bind(key)
+                .execute(&pool)
+                .await
+                .unwrap();
+            }
+            sqlx::raw_sql(
+                "DELETE FROM music_source_collections;
+                 DELETE FROM music_library_items;",
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+
+            let mut again = snapshot(vec!["abcDEF_1234"]);
+            again.resolved_at_ms += 1;
+            let second = apply_playlist_snapshot(&pool, again).await.unwrap();
+            assert_eq!(second.collection_id, format!("{}-2", first.collection_id));
+            let items: Vec<String> = sqlx::query_scalar("SELECT id FROM music_library_items")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+            assert_eq!(items, [format!("{item}-2")]);
         });
     }
 }

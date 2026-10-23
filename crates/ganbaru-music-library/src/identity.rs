@@ -69,6 +69,83 @@ pub fn collection_id(identity_key: &str) -> String {
     stable_id("collection", &[identity_key])
 }
 
+/// A Music table whose rows take content-derived keys without a sync existence register, so a
+/// published deletion retires the key: sync refuses to create a row under it again.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RetirableTable {
+    /// `music_library_items`.
+    Items,
+    /// `music_local_locations`.
+    Locations,
+    /// `music_source_collections`.
+    Collections,
+}
+
+impl RetirableTable {
+    fn spec(self) -> &'static ganbaru_sync::manifest::TableSpec {
+        use ganbaru_sync::manifest::vault::music;
+        match self {
+            Self::Items => &music::ITEMS,
+            Self::Locations => &music::LOCATIONS,
+            Self::Collections => &music::COLLECTIONS,
+        }
+    }
+}
+
+/// Successor generations tried before a create is refused. Each one needs a published create
+/// and deletion of the previous key, so reaching the bound means a writer is looping.
+const MAX_SUCCESSOR_GENERATION: u32 = 1_000;
+
+/// Returns the key a writer creates a row of `table` under when its content derives `base`:
+/// `base` itself unless a published deletion retired it, and otherwise the first successor
+/// `{base}-{generation}` from generation 2 that is not retired.
+///
+/// A key is retired when the sync row registry knows it and the domain table holds no row under
+/// it, the condition of the recreate guard trigger, and no held deletion of it awaits Undo.
+/// Successors are deterministic, so devices that saw the same deletions re-add the same content
+/// under the same key and concurrent re-adds converge on one row; the table's unique identity
+/// columns settle devices that disagree.
+pub async fn creatable_key(
+    connection: &mut SqliteConnection,
+    table: RetirableTable,
+    base: String,
+) -> MusicLibraryResult<String> {
+    let spec = table.spec();
+    let sql = format!(
+        "SELECT EXISTS (SELECT 1 FROM sync_rows WHERE table_id = ?1 AND row_key = ?2)
+            AND NOT EXISTS (SELECT 1 FROM {name} WHERE {key} = ?2)
+            AND NOT EXISTS (
+                SELECT 1 FROM sync_capture
+                WHERE table_id = ?1 AND row_key = ?2 AND held_until_ms IS NOT NULL
+            )",
+        name = spec.name,
+        key = spec.key_column,
+    );
+    let mut candidate = base.clone();
+    for generation in 2..=MAX_SUCCESSOR_GENERATION + 1 {
+        let retired: bool = sqlx::query_scalar(AssertSqlSafe(sql.as_str()))
+            .bind(i64::from(spec.id.0))
+            .bind(&candidate)
+            .fetch_one(&mut *connection)
+            .await
+            .map_err(|error| MusicLibraryError::database("check retired music key", error))?;
+        if !retired {
+            return Ok(candidate);
+        }
+        candidate = format!("{base}-{generation}");
+        if candidate.len() > crate::validation::MAX_ID_BYTES {
+            return Err(MusicLibraryError::conflict(format!(
+                "{} key {base} is retired and has no successor within the id limit",
+                spec.name
+            )));
+        }
+    }
+    Err(MusicLibraryError::conflict(format!(
+        "{} key {base} was deleted and recreated too many times",
+        spec.name
+    )))
+}
+
 /// Key of the membership of `item_id` in `playlist_id`, unique per pair. It is the derived row
 /// key the sync manifest checks, so it fails only for a part holding a NUL byte.
 pub fn membership_id(playlist_id: &str, item_id: &str) -> MusicLibraryResult<String> {
@@ -410,6 +487,52 @@ mod tests {
                 (row.get(0), table.key(&parts).unwrap())
             })
             .collect()
+    }
+
+    #[test]
+    fn identity_creatable_key_skips_only_retired_keys() {
+        crate::test_support::block_on(async {
+            let pool = crate::tests::pool().await;
+            let base = collection_id("youtube-playlist:PLretired");
+            let mut connection = pool.acquire().await.unwrap();
+            assert_eq!(
+                creatable_key(&mut connection, RetirableTable::Collections, base.clone())
+                    .await
+                    .unwrap(),
+                base
+            );
+            for key in [base.clone(), format!("{base}-2")] {
+                sqlx::query(
+                    "INSERT INTO sync_rows (table_id, row_key, state) VALUES (?, ?, 'tombstoned')",
+                )
+                .bind(i64::from(
+                    ganbaru_sync::manifest::vault::music::COLLECTIONS_TABLE.0,
+                ))
+                .bind(&key)
+                .execute(&mut *connection)
+                .await
+                .unwrap();
+            }
+            assert_eq!(
+                creatable_key(&mut connection, RetirableTable::Collections, base.clone())
+                    .await
+                    .unwrap(),
+                format!("{base}-3")
+            );
+            sqlx::query(
+                "INSERT INTO music_source_collections
+                    (id, kind, identity_key, name, youtube_playlist_id, created_at_ms, updated_at_ms)
+                 VALUES (?, 'youtube-playlist', 'youtube-playlist:PLretired', 'Live', 'PLretired', 1, 1)",
+            )
+            .bind(format!("{base}-2"))
+            .execute(&mut *connection)
+            .await
+            .expect_err("sync refuses a retired successor");
+            let other = creatable_key(&mut connection, RetirableTable::Items, base.clone())
+                .await
+                .unwrap();
+            assert_eq!(other, base, "retirement is per table");
+        });
     }
 
     async fn capture_count(pool: &sqlx::SqlitePool) -> i64 {

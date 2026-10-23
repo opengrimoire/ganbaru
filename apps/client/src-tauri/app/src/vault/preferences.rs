@@ -24,6 +24,7 @@ mod view;
 pub(crate) use view::value_at;
 
 use super::config::{VaultConfigPatch, apply_config_patch, validate_config_patch_path};
+use super::ownership::VaultOwnershipStatus;
 use super::{
     active_replicated_asset_path, active_vault_id, mutate_active_vault_config, now_utc,
     read_active_config_bounded,
@@ -177,9 +178,17 @@ async fn ensure_imported<R: Runtime>(
     generation
 }
 
+/// Whether a device with `status` imports the portable values of `config.json` and then strips
+/// the moved keys from it. Only the owner does both. A linked replica may write the preferences
+/// domain, but it never strips its `config.json`, so importing from it would insert stale values
+/// again at every open and resurrect preferences reset since; it imports its device values only.
+fn imports_portable_values(status: &VaultOwnershipStatus) -> bool {
+    status.can_write
+}
+
 /// Moves the preferences `config.json` still holds into their stores, in the order and with
-/// the idempotence [`import`] describes. A device that cannot write the preferences domain
-/// imports only its device values, and only the owner strips `config.json`.
+/// the idempotence [`import`] describes. Every device imports its device values; see
+/// [`imports_portable_values`] for the portable values and the strip of `config.json`.
 async fn import_vault_config<R: Runtime>(app: &AppHandle<R>, vault_id: &str) -> Result<(), String> {
     let config_app = app.clone();
     let raw = blocking(move || read_active_config_bounded(&config_app)).await?;
@@ -189,7 +198,8 @@ async fn import_vault_config<R: Runtime>(app: &AppHandle<R>, vault_id: &str) -> 
         return Ok(());
     }
     let status = super::ownership::active_status(app)?;
-    if status.can_write_domain(PREFERENCES_DOMAIN) {
+    let owner_import = imports_portable_values(&status);
+    if owner_import {
         let _write_permit = active_replicated_asset_path(app, PREFERENCES_DOMAIN)?;
         let pool = crate::db::connect_vault(app).await?;
         import::insert_missing_rows(&pool, &import::portable_entries(&config), &timestamp())
@@ -203,7 +213,7 @@ async fn import_vault_config<R: Runtime>(app: &AppHandle<R>, vault_id: &str) -> 
         })
     })
     .await?;
-    if status.can_write {
+    if owner_import {
         let strip_app = app.clone();
         blocking(move || {
             mutate_active_vault_config(
@@ -839,6 +849,38 @@ pub(crate) mod tests {
                 "chat": { "schemaVersion": 1 },
             })
         );
+    }
+
+    fn ownership_status(can_write: bool, linked_replica: bool) -> VaultOwnershipStatus {
+        VaultOwnershipStatus {
+            vault_id: "vault".to_owned(),
+            device_id: "device".to_owned(),
+            owner_device_id: if can_write { "device" } else { "owner" }.to_owned(),
+            generation: 1,
+            role: if can_write { "owner" } else { "replica" },
+            can_write,
+            linked_replica,
+            replica_writable_domains: if linked_replica {
+                vec![PREFERENCES_DOMAIN.to_owned()]
+            } else {
+                Vec::new()
+            },
+            transfer_phase: super::super::ownership::TransferPhase::Stable,
+        }
+    }
+
+    #[test]
+    fn preferences_portable_import_runs_only_on_the_owner() {
+        let owner = ownership_status(true, false);
+        assert!(imports_portable_values(&owner));
+
+        // A linked replica writes the preferences domain but keeps a stale `config.json`.
+        let replica = ownership_status(false, true);
+        assert!(replica.can_write_domain(PREFERENCES_DOMAIN));
+        assert!(!imports_portable_values(&replica));
+
+        let unlinked = ownership_status(false, false);
+        assert!(!imports_portable_values(&unlinked));
     }
 
     #[tokio::test]

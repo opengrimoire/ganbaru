@@ -1,5 +1,5 @@
 use super::*;
-use crate::mutations::{delete_tag_with_history, delete_unused_status};
+use crate::mutations::{delete_tag_with_history, delete_unused_priority, delete_unused_status};
 use crate::structure_commands::{delete_project_group, reorder_group_projects, reorder_groups};
 
 #[test]
@@ -144,6 +144,89 @@ fn delete_status_rejects_last_project_status() {
             result,
             Err("project must keep at least one task status".to_string())
         );
+    });
+}
+
+async fn insert_priorities(pool: &SqlitePool, rows: &[(&str, Option<&str>)]) {
+    for (index, (priority_id, deleted_at)) in rows.iter().enumerate() {
+        sqlx::query(
+            "INSERT INTO project_priorities
+                (id, project_id, name, color, order_key, deleted_at, sync_key)
+             VALUES (?1, 'project-a', ?1, 1, ?2, ?3, 'priority-key-' || ?1)",
+        )
+        .bind(priority_id)
+        .bind(format!("a{index}"))
+        .bind(deleted_at)
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+}
+
+async fn priority_deleted_at(pool: &SqlitePool, priority_id: &str) -> Option<String> {
+    sqlx::query_scalar("SELECT deleted_at FROM project_priorities WHERE id = ?")
+        .bind(priority_id)
+        .fetch_one(pool)
+        .await
+        .unwrap()
+}
+
+#[test]
+fn delete_priority_rejects_priority_used_by_a_task() {
+    block_on(async {
+        let pool = migrated_memory_pool().await;
+        insert_project_graph_fixture(&pool).await;
+        insert_priorities(&pool, &[("priority-high", None), ("priority-low", None)]).await;
+        sqlx::query("UPDATE project_tasks SET priority = 'priority-high' WHERE id = 'task-a'")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let mut tx = pool.begin().await.unwrap();
+        let result = delete_unused_priority(&mut tx, "project-a", "priority-high").await;
+        drop(tx);
+
+        assert_eq!(
+            result,
+            Err("move or delete tasks before deleting this task priority".to_string())
+        );
+        assert_eq!(priority_deleted_at(&pool, "priority-high").await, None);
+    });
+}
+
+#[test]
+fn delete_priority_soft_deletes_an_unused_priority_and_keeps_the_last_live_one() {
+    block_on(async {
+        let pool = migrated_memory_pool().await;
+        insert_project_graph_fixture(&pool).await;
+        insert_priorities(
+            &pool,
+            &[
+                ("priority-high", None),
+                ("priority-low", None),
+                ("priority-retired", Some("2026-10-23T00:00:00.000Z")),
+            ],
+        )
+        .await;
+
+        let mut tx = pool.begin().await.unwrap();
+        delete_unused_priority(&mut tx, "project-a", "priority-low")
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        assert!(priority_deleted_at(&pool, "priority-low").await.is_some());
+
+        let mut tx = pool.begin().await.unwrap();
+        let last = delete_unused_priority(&mut tx, "project-a", "priority-high").await;
+        let retired = delete_unused_priority(&mut tx, "project-a", "priority-retired").await;
+        drop(tx);
+
+        assert_eq!(
+            last,
+            Err("project must keep at least one task priority".to_string())
+        );
+        assert_eq!(retired, Err("project priority not found".to_string()));
+        assert_eq!(priority_deleted_at(&pool, "priority-high").await, None);
     });
 }
 

@@ -103,4 +103,4 @@ Creating a project or a working folder creates no Chat rows; Chat creates its de
 
 External folders use the same logical identity but resolve through a device-local binding; absolute paths and filesystem fingerprints never enter the database. Chat authority over a project does not imply access to its folders; grants are governed by [Chat access control](../access-control.md).
 
-Deleting a project must account for managed files, linked Notes, tasks, calendar events, Chat history, and external bindings. Filesystem removal is never an automatic foreign-key cascade.
+Deleting a project must account for managed files, linked Notes, tasks, calendar events, Chat history, and external bindings. Filesystem removal is never an automatic foreign-key cascade. A task's section and status are cascading foreign keys, so deleting either row removes its tasks on every replica; commands still refuse deleting a status or priority a task uses and soft delete it otherwise.

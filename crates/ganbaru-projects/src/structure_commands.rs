@@ -143,16 +143,23 @@ pub async fn update_group(
     group_mutation(pool, &group.id).await
 }
 
+/// Returns the ids of the projects in a group, which deleting the group removes with it.
+pub async fn group_project_ids(pool: &SqlitePool, group_id: &str) -> Result<Vec<String>, String> {
+    sqlx::query_scalar::<_, String>("SELECT id FROM projects WHERE group_id = ?")
+        .bind(group_id.trim())
+        .fetch_all(pool)
+        .await
+        .map_err(|e| format!("load group projects: {e}"))
+}
+
+/// Deletes a group and, through cascading foreign keys, its projects with their tasks,
+/// working folders, and Chat rows. Files those rows name are left to the caller.
 pub async fn delete_group(
     pool: &SqlitePool,
     group_id: String,
 ) -> Result<ProjectsMutationRows, String> {
     let normalized_group_id = group_id.trim();
-    let project_ids = sqlx::query_scalar::<_, String>("SELECT id FROM projects WHERE group_id = ?")
-        .bind(normalized_group_id)
-        .fetch_all(pool)
-        .await
-        .map_err(|e| format!("load deleted group projects: {e}"))?;
+    let project_ids = group_project_ids(pool, normalized_group_id).await?;
     delete_project_group(pool, normalized_group_id).await?;
     let mut mutation = ProjectsMutationRows::default();
     mutation.removals.push(ProjectMutationRemoval::Group {

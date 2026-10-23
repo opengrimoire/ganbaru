@@ -1141,6 +1141,8 @@ fn generated_field(ty: ColumnType, serial: usize, unique: bool) -> Field {
             max_chars,
         } => text(min_chars.max(1), max_chars, 'w'),
         ColumnType::Integer { min, max } => Field::Integer(if low { min } else { max }),
+        ColumnType::OptionalInteger { .. } if low && serial % 4 == 1 => Field::Null,
+        ColumnType::OptionalInteger { min, max } => Field::Integer(if low { min } else { max }),
         ColumnType::Flag => Field::Integer(i64::from(!low)),
         ColumnType::Timestamp => Field::Text("9".repeat(MAX_TIMESTAMP_BYTES)),
         ColumnType::OptionalTimestamp if low => Field::Null,
@@ -1393,7 +1395,9 @@ fn manifests_are_well_formed() {
             .iter()
             .map(|table| table.full_mask().0)
             .collect::<Vec<_>>(),
-        [31, 511, 7, 127, 31, 7, 3]
+        [
+            31, 511, 7, 127, 31, 7, 3, 7, 511, 7, 127, 31, 63, 15, 63, 3, 2047, 15, 31, 31, 15, 255
+        ]
     );
 }
 
@@ -1738,6 +1742,7 @@ const RECORDED_MANIFESTS: &[(u16, &str)] = &[
     (2, include_str!("fixtures/vault_manifest_v2.txt")),
     (3, include_str!("fixtures/vault_manifest_v3.txt")),
     (4, include_str!("fixtures/vault_manifest_v4.txt")),
+    (5, include_str!("fixtures/vault_manifest_v5.txt")),
 ];
 #[test]
 fn vault_manifest_changes_only_with_a_version_bump() {

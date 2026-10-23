@@ -187,8 +187,8 @@
     showInactiveSections ? allProjectSections : projects.sectionsForProject(selectedProjectId)
   );
   const visibleSectionIds = $derived.by(() => new Set(sections.map((section) => section.id)));
-  const statuses = $derived(projects.statusesForProject(selectedProjectId));
-  const priorities = $derived(projects.prioritiesForProject(selectedProjectId));
+  const statuses = $derived(projects.taskStatusesForProject(selectedProjectId));
+  const priorities = $derived(projects.taskPrioritiesForProject(selectedProjectId));
   const activeProjectTasks = $derived.by(() =>
     projects.tasksForProject(selectedProjectId).filter((task) => visibleSectionIds.has(task.sectionId))
   );

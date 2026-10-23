@@ -251,7 +251,9 @@ export function mergeThemePatch(
 /**
  * Pick a display name that does not collide with any name in `existing`.
  * Comparison is case-insensitive (matches what users perceive). Falls back
- * to the unsuffixed base after a sanity-bound number of attempts.
+ * to the unsuffixed base after a sanity-bound number of attempts. Suffixed
+ * candidates longer than the stored name limit (counted in code points, as
+ * the native store counts them) are skipped.
  */
 export function nextUniqueDisplayName(
   base: string,
@@ -262,6 +264,7 @@ export function nextUniqueDisplayName(
   if (!taken.has(base.toLowerCase())) return base;
   for (let i = 2; i < NAME_SUFFIX_CAP; i++) {
     const candidate = `${base} ${i}`;
+    if ([...candidate].length > MAX_DISPLAY_NAME_LENGTH) continue;
     if (!taken.has(candidate.toLowerCase())) return candidate;
   }
   return base;

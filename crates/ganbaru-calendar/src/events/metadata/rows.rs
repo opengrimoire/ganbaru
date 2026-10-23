@@ -50,18 +50,24 @@ impl Event {
 }
 
 // Each declaration fixes its table, selection and complete column set in source.
-// No caller can supply SQL, table names or column names.
+// No caller can supply SQL, table names or column names. A `keyed` declaration also writes a
+// derived key column computed from the row at insert, so a row copied to another owner never
+// carries its source's key.
 macro_rules! stored_row {
-    ($name:ident, $table:literal, $selection:literal, ($($key:ident),+), { $($field:ident: $kind:ty),+ $(,)? }) => {
+    ($name:ident, $table:literal, $selection:literal, ($($key:ident),+), { $($field:ident: $kind:ty),+ $(,)? } $(, keyed $key_column:expr => $key_fn:path)?) => {
         #[derive(Clone, Debug, PartialEq, Serialize)]
         pub(super) struct $name { $(pub(super) $field: $kind,)+ }
         impl_sqlite_from_row!($name { $($field),+ });
         impl $name {
             /// Insert an exact prepared row in the caller's transaction.
             pub(super) async fn insert(&self, connection: &mut SqliteConnection) -> Result<(), String> {
-                let columns = &[$(stringify!($field)),+];
+                #[allow(unused_mut)]
+                let mut columns = vec![$(stringify!($field)),+];
+                $(columns.push($key_column);)?
                 let sql = format!("INSERT INTO {} ({}) VALUES ({})", $table, columns.join(", "), vec!["?"; columns.len()].join(", "));
-                sqlx::query(sqlx::AssertSqlSafe(sql.as_str()))$(.bind(&self.$field))+.execute(connection).await
+                let query = sqlx::query(sqlx::AssertSqlSafe(sql.as_str()))$(.bind(&self.$field))+;
+                $(let query = query.bind($key_fn(self)?);)?
+                query.execute(connection).await
                     .map_err(|error| format!("write Calendar {}: {error}", $table))?;
                 Ok(())
             }
@@ -242,7 +248,13 @@ stored_row!(MusicAssignment, "music_context_assignments", "owner_id = ?1 AND own
     version: i64,
     soundscape_behavior: String,
     soundscape_preset_id: Option<String>,
-});
+}, keyed ganbaru_music::sync_keys::SYNC_KEY_COLUMN => music_assignment_key);
+
+/// Derived sync key of a Music assignment under its current owner.
+fn music_assignment_key(row: &MusicAssignment) -> Result<String, String> {
+    ganbaru_music::sync_keys::assignment_key(&row.owner_kind, &row.owner_id, &row.phase)
+        .map_err(|error| format!("derive Calendar music assignment key: {error}"))
+}
 
 stored_row!(TaskLink, "project_task_event_links", "event_id = ?1", (task_id), {
     task_id: String,

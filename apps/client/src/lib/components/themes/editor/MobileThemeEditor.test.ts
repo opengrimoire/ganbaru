@@ -12,8 +12,14 @@ const state = vi.hoisted(() => {
     cancel: vi.fn(async () => {
       editor.editingId = undefined;
     }),
-    commit: vi.fn(async () => {
+    conflictOnce: false,
+    commit: vi.fn(async (_choice?: "overwrite" | "copy"): Promise<{ kind: "saved" } | { kind: "conflict"; groups: string[] }> => {
+      if (editor.conflictOnce) {
+        editor.conflictOnce = false;
+        return { kind: "conflict", groups: ["content"] };
+      }
       editor.editingId = undefined;
+      return { kind: "saved" };
     }),
   };
   return {
@@ -90,6 +96,7 @@ describe("MobileThemeEditor", () => {
     state.layers.splice(0);
     state.editor.editingId = "custom";
     state.editor.hasUnsavedChanges = true;
+    state.editor.conflictOnce = false;
     state.editor.cancel.mockClear();
     state.editor.commit.mockClear();
   });
@@ -161,5 +168,51 @@ describe("MobileThemeEditor", () => {
     await unmount(component);
     component = undefined;
     expect(state.editor.cancel).not.toHaveBeenCalled();
+  });
+
+  it("asks how to settle a remote change and saves with the chosen action", async () => {
+    state.editor.conflictOnce = true;
+    target = document.createElement("div");
+    document.body.append(target);
+    component = mount(MobileThemeEditor, { target });
+    await flushEffects();
+
+    [...target.querySelectorAll<HTMLButtonElement>("button")]
+      .find((button) => button.textContent?.includes("Save and apply"))
+      ?.click();
+    await flushEffects();
+    expect(target.querySelector(".confirm-dialog")?.textContent).toContain("This theme changed on another device");
+
+    const overwrite = [...target.querySelectorAll<HTMLButtonElement>(".confirm-dialog button")]
+      .find((button) => button.textContent?.trim() === "Overwrite");
+    overwrite?.click();
+    await flushEffects();
+    expect(state.editor.commit).toHaveBeenLastCalledWith("overwrite");
+    expect(target.querySelector(".confirm-dialog")).toBeNull();
+
+    await unmount(component);
+    component = undefined;
+    expect(state.editor.cancel).not.toHaveBeenCalled();
+  });
+
+  it("keeps the session open when the person keeps editing after a remote change", async () => {
+    state.editor.conflictOnce = true;
+    target = document.createElement("div");
+    document.body.append(target);
+    component = mount(MobileThemeEditor, { target });
+    await flushEffects();
+
+    [...target.querySelectorAll<HTMLButtonElement>("button")]
+      .find((button) => button.textContent?.includes("Save and apply"))
+      ?.click();
+    await flushEffects();
+    target.querySelectorAll<HTMLButtonElement>(".confirm-dialog button").item(0).click();
+    await flushEffects();
+    expect(target.querySelector(".confirm-dialog")).toBeNull();
+    expect(state.editor.commit).toHaveBeenCalledOnce();
+
+    await unmount(component);
+    component = undefined;
+    expect(state.editor.cancel).toHaveBeenCalledOnce();
   });
 });

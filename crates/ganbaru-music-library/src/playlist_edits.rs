@@ -19,7 +19,7 @@ async fn append_membership(
          VALUES (?, ?, ?, ?, 'normal', 1, ?, ?, 1)
          ON CONFLICT(playlist_id, item_id) DO NOTHING",
     )
-    .bind(super::identity::membership_id(playlist_id, item_id))
+    .bind(super::identity::membership_id(playlist_id, item_id)?)
     .bind(playlist_id)
     .bind(item_id)
     .bind(order_key.as_str())

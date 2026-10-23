@@ -49,6 +49,57 @@ describe("ConfirmDialog", () => {
     expect(target.textContent).toContain("Yes (Enter)");
   });
 
+  it("offers an alternate action between cancel and confirm that keys never trigger", async () => {
+    target = document.createElement("div");
+    document.body.append(target);
+    const onConfirm = vi.fn();
+    const onAlternate = vi.fn();
+    component = mount(ConfirmDialog, {
+      target,
+      props: {
+        message: "Save the theme?",
+        confirmLabel: "Save as copy",
+        alternateLabel: "Overwrite",
+        cancelLabel: "Keep editing",
+        onConfirm,
+        onCancel: vi.fn(),
+        onAlternate,
+      },
+    });
+    await tick();
+
+    const buttons = target.querySelectorAll<HTMLButtonElement>(".confirm-dialog button");
+    expect([...buttons].map((button) => button.textContent?.trim())).toEqual([
+      "Keep editing (Esc)",
+      "Overwrite",
+      "Save as copy (Enter)",
+    ]);
+    target.querySelector<HTMLElement>(".confirm-dialog")?.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }),
+    );
+    expect(onConfirm).toHaveBeenCalledOnce();
+    expect(onAlternate).not.toHaveBeenCalled();
+
+    buttons.item(1).click();
+    expect(onAlternate).toHaveBeenCalledOnce();
+  });
+
+  it("hides the alternate action without a handler", () => {
+    target = document.createElement("div");
+    document.body.append(target);
+    component = mount(ConfirmDialog, {
+      target,
+      props: {
+        message: "Continue?",
+        alternateLabel: "Other",
+        onConfirm: () => undefined,
+        onCancel: () => undefined,
+      },
+    });
+
+    expect(target.querySelectorAll(".confirm-dialog button")).toHaveLength(2);
+  });
+
   it("separates dismissing the dialog from its explicit cancel action", async () => {
     target = document.createElement("div");
     document.body.append(target);

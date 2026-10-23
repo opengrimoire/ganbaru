@@ -1,5 +1,6 @@
 use sqlx::SqlitePool;
 
+use super::keys::view_preference_key;
 use super::models::{ProjectViewPreferenceUpsert, ProjectsMutationRows};
 use super::mutations::view_preference_mutation;
 use super::validation::validate_view_preference;
@@ -21,8 +22,8 @@ pub async fn upsert_view_preference(
         return Err("project view not found".to_string());
     }
     sqlx::query(
-        "INSERT INTO project_view_preferences (view_id, preference_key, preference_value)
-         VALUES (?, ?, ?)
+        "INSERT INTO project_view_preferences (view_id, preference_key, sync_key, preference_value)
+         VALUES (?, ?, ?, ?)
          ON CONFLICT(view_id, preference_key)
          DO UPDATE SET
             preference_value = excluded.preference_value,
@@ -30,6 +31,7 @@ pub async fn upsert_view_preference(
     )
     .bind(view_id)
     .bind(preference_key)
+    .bind(view_preference_key(view_id, preference_key)?)
     .bind(&preference.preference_value)
     .execute(pool)
     .await

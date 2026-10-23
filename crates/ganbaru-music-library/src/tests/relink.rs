@@ -66,7 +66,7 @@ async fn seed_root(pool: &SqlitePool) {
     sqlx::query(
         "INSERT INTO music_source_collections
             (id, kind, identity_key, name, local_root_id, created_at_ms, updated_at_ms)
-         VALUES ('collection-1', 'local-root', 'root:1', 'Soundtracks', 'root-1', 1, 1)",
+         VALUES ('collection-1', 'local-root', 'local-root:root-1', 'Soundtracks', 'root-1', 1, 1)",
     )
     .execute(pool)
     .await
@@ -111,8 +111,8 @@ async fn seed_location(
     .unwrap();
     sqlx::query(
         "INSERT INTO music_source_collection_items
-            (collection_id, item_id, first_discovered_at_ms)
-         VALUES ('collection-1', ?, 1)",
+            (collection_id, item_id, first_discovered_at_ms, sync_key)
+         VALUES ('collection-1', ?, 1, lower(hex(randomblob(16))))",
     )
     .bind(item_id)
     .execute(pool)

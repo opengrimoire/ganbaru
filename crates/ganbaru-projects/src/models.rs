@@ -1,3 +1,5 @@
+use crate::number::FixedPointNumber;
+use crate::order::OrderPlacement;
 use ganbaru_db::impl_sqlite_from_row;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -58,7 +60,7 @@ pub struct ProjectGroupRow {
     pub(crate) name: String,
     pub(crate) icon: String,
     pub(crate) color: Option<i64>,
-    pub(crate) sort_order: i64,
+    pub(crate) order_key: String,
     pub(crate) collapsed: i64,
     pub(crate) hidden_at: Option<String>,
     pub(crate) archived_at: Option<String>,
@@ -70,7 +72,7 @@ impl_sqlite_from_row!(ProjectGroupRow {
     name,
     icon,
     color,
-    sort_order,
+    order_key,
     collapsed,
     hidden_at,
     archived_at,
@@ -85,7 +87,7 @@ pub struct ProjectRow {
     pub(crate) name: String,
     pub(crate) icon: String,
     pub(crate) color: Option<i64>,
-    pub(crate) sort_order: i64,
+    pub(crate) order_key: String,
     pub(crate) status: String,
     pub(crate) default_event_name: Option<String>,
     pub(crate) default_event_time_mode: String,
@@ -114,7 +116,7 @@ impl_sqlite_from_row!(ProjectRow {
     name,
     icon,
     color,
-    sort_order,
+    order_key,
     status,
     default_event_name,
     default_event_time_mode,
@@ -143,7 +145,7 @@ pub struct ProjectSectionRow {
     pub(crate) id: String,
     pub(crate) project_id: String,
     pub(crate) name: String,
-    pub(crate) sort_order: i64,
+    pub(crate) order_key: String,
     pub(crate) collapsed: i64,
     pub(crate) hidden_at: Option<String>,
     pub(crate) archived_at: Option<String>,
@@ -154,7 +156,7 @@ impl_sqlite_from_row!(ProjectSectionRow {
     id,
     project_id,
     name,
-    sort_order,
+    order_key,
     collapsed,
     hidden_at,
     archived_at,
@@ -169,8 +171,10 @@ pub struct ProjectStatusRow {
     pub(crate) name: String,
     pub(crate) category: String,
     pub(crate) color: i64,
-    pub(crate) sort_order: i64,
+    pub(crate) order_key: String,
     pub(crate) terminal: i64,
+    /// Set when the status is deleted. Deleted statuses stay readable for the tasks that still use them.
+    pub(crate) deleted_at: Option<String>,
     pub(crate) created_at: String,
     pub(crate) updated_at: String,
 }
@@ -180,8 +184,9 @@ impl_sqlite_from_row!(ProjectStatusRow {
     name,
     category,
     color,
-    sort_order,
+    order_key,
     terminal,
+    deleted_at,
     created_at,
     updated_at,
 });
@@ -192,7 +197,9 @@ pub struct ProjectPriorityRow {
     pub(crate) project_id: String,
     pub(crate) name: String,
     pub(crate) color: i64,
-    pub(crate) sort_order: i64,
+    pub(crate) order_key: String,
+    /// Set when the priority is deleted. Deleted priorities stay readable for the tasks that still use them.
+    pub(crate) deleted_at: Option<String>,
     pub(crate) created_at: String,
     pub(crate) updated_at: String,
 }
@@ -201,7 +208,8 @@ impl_sqlite_from_row!(ProjectPriorityRow {
     project_id,
     name,
     color,
-    sort_order,
+    order_key,
+    deleted_at,
     created_at,
     updated_at,
 });
@@ -219,8 +227,8 @@ pub struct ProjectTaskRow {
     pub(crate) description: String,
     pub(crate) priority: String,
     pub(crate) task_type: String,
-    pub(crate) section_sort_order: f64,
-    pub(crate) status_sort_order: f64,
+    pub(crate) section_order_key: String,
+    pub(crate) status_order_key: String,
     pub(crate) estimate_minutes: Option<i64>,
     pub(crate) due_date: Option<String>,
     pub(crate) due_time: Option<String>,
@@ -248,8 +256,8 @@ pub struct ProjectTaskSummaryRow {
     pub(crate) title: String,
     pub(crate) priority: String,
     pub(crate) task_type: String,
-    pub(crate) section_sort_order: f64,
-    pub(crate) status_sort_order: f64,
+    pub(crate) section_order_key: String,
+    pub(crate) status_order_key: String,
     pub(crate) estimate_minutes: Option<i64>,
     pub(crate) due_date: Option<String>,
     pub(crate) due_time: Option<String>,
@@ -273,8 +281,8 @@ impl_sqlite_from_row!(ProjectTaskSummaryRow {
     title,
     priority,
     task_type,
-    section_sort_order,
-    status_sort_order,
+    section_order_key,
+    status_order_key,
     estimate_minutes,
     due_date,
     due_time,
@@ -299,8 +307,8 @@ impl_sqlite_from_row!(ProjectTaskRow {
     description,
     priority,
     task_type,
-    section_sort_order,
-    status_sort_order,
+    section_order_key,
+    status_order_key,
     estimate_minutes,
     due_date,
     due_time,
@@ -323,7 +331,7 @@ pub struct ProjectChecklistItemRow {
     pub(crate) task_id: String,
     pub(crate) title: String,
     pub(crate) completed_at: Option<String>,
-    pub(crate) sort_order: i64,
+    pub(crate) order_key: String,
     pub(crate) created_at: String,
     pub(crate) updated_at: String,
 }
@@ -332,7 +340,7 @@ impl_sqlite_from_row!(ProjectChecklistItemRow {
     task_id,
     title,
     completed_at,
-    sort_order,
+    order_key,
     created_at,
     updated_at,
 });
@@ -343,7 +351,7 @@ pub struct ProjectTagRow {
     pub(crate) project_id: String,
     pub(crate) name: String,
     pub(crate) color: Option<i64>,
-    pub(crate) sort_order: i64,
+    pub(crate) order_key: String,
     pub(crate) created_at: String,
     pub(crate) updated_at: String,
 }
@@ -352,7 +360,7 @@ impl_sqlite_from_row!(ProjectTagRow {
     project_id,
     name,
     color,
-    sort_order,
+    order_key,
     created_at,
     updated_at,
 });
@@ -376,7 +384,7 @@ pub struct ProjectCustomFieldRow {
     pub(crate) project_id: String,
     pub(crate) name: String,
     pub(crate) field_type: String,
-    pub(crate) sort_order: i64,
+    pub(crate) order_key: String,
     /// Chosen `lucide:` icon; `None` shows the field type icon.
     pub(crate) icon: Option<String>,
     pub(crate) created_at: String,
@@ -388,7 +396,7 @@ impl_sqlite_from_row!(ProjectCustomFieldRow {
     project_id,
     name,
     field_type,
-    sort_order,
+    order_key,
     icon,
     created_at,
     updated_at,
@@ -400,7 +408,7 @@ pub struct ProjectCustomFieldOptionRow {
     pub(crate) id: String,
     pub(crate) field_id: String,
     pub(crate) name: String,
-    pub(crate) sort_order: i64,
+    pub(crate) order_key: String,
     pub(crate) created_at: String,
     pub(crate) updated_at: String,
 }
@@ -409,7 +417,7 @@ impl_sqlite_from_row!(ProjectCustomFieldOptionRow {
     id,
     field_id,
     name,
-    sort_order,
+    order_key,
     created_at,
     updated_at,
 });
@@ -419,33 +427,40 @@ pub struct ProjectCustomFieldValueRow {
     pub(crate) task_id: String,
     pub(crate) field_id: String,
     pub(crate) text_value: Option<String>,
-    pub(crate) number_value: Option<f64>,
+    pub(crate) number_value: Option<FixedPointNumber>,
     pub(crate) date_value: Option<String>,
     pub(crate) checkbox_value: Option<i64>,
     pub(crate) updated_at: String,
 }
-impl_sqlite_from_row!(ProjectCustomFieldValueRow {
-    task_id,
-    field_id,
-    text_value,
-    number_value,
-    date_value,
-    checkbox_value,
-    updated_at,
-});
+impl<'r> sqlx::FromRow<'r, sqlx::sqlite::SqliteRow> for ProjectCustomFieldValueRow {
+    fn from_row(row: &'r sqlx::sqlite::SqliteRow) -> Result<Self, sqlx::Error> {
+        use sqlx::Row as _;
+        Ok(Self {
+            task_id: row.try_get("task_id")?,
+            field_id: row.try_get("field_id")?,
+            text_value: row.try_get("text_value")?,
+            number_value: row
+                .try_get::<Option<i64>, _>("number_value")?
+                .map(FixedPointNumber::from_millionths),
+            date_value: row.try_get("date_value")?,
+            checkbox_value: row.try_get("checkbox_value")?,
+            updated_at: row.try_get("updated_at")?,
+        })
+    }
+}
 
+/// One selected option of a select value, in selection order. Read through the value row, so an option of another
+/// field is never reported.
 #[derive(Serialize)]
 pub struct ProjectCustomFieldOptionValueRow {
     pub(crate) task_id: String,
     pub(crate) field_id: String,
     pub(crate) option_id: String,
-    pub(crate) created_at: String,
 }
 impl_sqlite_from_row!(ProjectCustomFieldOptionValueRow {
     task_id,
     field_id,
     option_id,
-    created_at,
 });
 
 #[derive(Serialize)]
@@ -507,7 +522,7 @@ pub struct ProjectViewRow {
     pub(crate) project_id: String,
     pub(crate) view_type: String,
     pub(crate) name: Option<String>,
-    pub(crate) sort_order: i64,
+    pub(crate) order_key: String,
     pub(crate) created_at: String,
     pub(crate) updated_at: String,
 }
@@ -516,7 +531,7 @@ impl_sqlite_from_row!(ProjectViewRow {
     project_id,
     view_type,
     name,
-    sort_order,
+    order_key,
     created_at,
     updated_at,
 });
@@ -543,7 +558,7 @@ pub struct ProjectCustomEmojiRow {
     pub(crate) id: String,
     pub(crate) name: String,
     pub(crate) asset_path: String,
-    pub(crate) sort_order: i64,
+    pub(crate) order_key: String,
     pub(crate) created_at: String,
     pub(crate) updated_at: String,
 }
@@ -551,7 +566,7 @@ impl_sqlite_from_row!(ProjectCustomEmojiRow {
     id,
     name,
     asset_path,
-    sort_order,
+    order_key,
     created_at,
     updated_at,
 });
@@ -810,7 +825,8 @@ pub struct ProjectGroupCreate {
     pub(crate) name: String,
     pub(crate) icon: String,
     pub(crate) color: Option<i64>,
-    pub(crate) sort_order: i64,
+    #[serde(default)]
+    pub(crate) placement: OrderPlacement,
 }
 
 #[derive(Deserialize)]
@@ -820,7 +836,8 @@ pub struct ProjectGroupUpdate {
     pub(crate) name: String,
     pub(crate) icon: String,
     pub(crate) color: Option<i64>,
-    pub(crate) sort_order: i64,
+    #[serde(default)]
+    pub(crate) placement: Option<OrderPlacement>,
     pub(crate) collapsed: bool,
 }
 
@@ -832,7 +849,8 @@ pub struct ProjectCreate {
     pub(crate) name: String,
     pub(crate) icon: String,
     pub(crate) color: Option<i64>,
-    pub(crate) sort_order: i64,
+    #[serde(default)]
+    pub(crate) placement: OrderPlacement,
     pub(crate) default_event_name: Option<String>,
     pub(crate) default_event_time_mode: String,
     pub(crate) default_event_duration_minutes: Option<i64>,
@@ -855,7 +873,8 @@ pub struct ProjectUpdate {
     pub(crate) name: String,
     pub(crate) icon: String,
     pub(crate) color: Option<i64>,
-    pub(crate) sort_order: i64,
+    #[serde(default)]
+    pub(crate) placement: Option<OrderPlacement>,
     pub(crate) status: String,
     pub(crate) default_event_name: Option<String>,
     pub(crate) default_event_time_mode: String,
@@ -884,7 +903,8 @@ pub struct ProjectSectionCreate {
     pub(crate) id: String,
     pub(crate) project_id: String,
     pub(crate) name: String,
-    pub(crate) sort_order: i64,
+    #[serde(default)]
+    pub(crate) placement: OrderPlacement,
 }
 
 #[derive(Deserialize)]
@@ -892,7 +912,8 @@ pub struct ProjectSectionCreate {
 pub struct ProjectSectionUpdate {
     pub(crate) id: String,
     pub(crate) name: String,
-    pub(crate) sort_order: i64,
+    #[serde(default)]
+    pub(crate) placement: Option<OrderPlacement>,
     pub(crate) collapsed: bool,
     pub(crate) hidden_at: Option<String>,
     pub(crate) archived_at: Option<String>,
@@ -906,7 +927,8 @@ pub struct ProjectStatusCreate {
     pub(crate) name: String,
     pub(crate) category: String,
     pub(crate) color: i64,
-    pub(crate) sort_order: i64,
+    #[serde(default)]
+    pub(crate) placement: OrderPlacement,
     pub(crate) terminal: bool,
 }
 
@@ -917,7 +939,8 @@ pub struct ProjectStatusUpdate {
     pub(crate) name: String,
     pub(crate) category: String,
     pub(crate) color: i64,
-    pub(crate) sort_order: i64,
+    #[serde(default)]
+    pub(crate) placement: Option<OrderPlacement>,
     pub(crate) terminal: bool,
 }
 
@@ -928,7 +951,8 @@ pub struct ProjectPriorityCreate {
     pub(crate) project_id: String,
     pub(crate) name: String,
     pub(crate) color: i64,
-    pub(crate) sort_order: i64,
+    #[serde(default)]
+    pub(crate) placement: OrderPlacement,
 }
 
 #[derive(Deserialize)]
@@ -938,7 +962,8 @@ pub struct ProjectPriorityUpdate {
     pub(crate) project_id: String,
     pub(crate) name: String,
     pub(crate) color: i64,
-    pub(crate) sort_order: i64,
+    #[serde(default)]
+    pub(crate) placement: Option<OrderPlacement>,
 }
 
 #[derive(Deserialize)]
@@ -963,8 +988,13 @@ pub struct ProjectTaskUpdate {
     pub(crate) description: String,
     pub(crate) priority: String,
     pub(crate) task_type: String,
-    pub(crate) section_sort_order: f64,
-    pub(crate) status_sort_order: f64,
+    /// Place within the section order. When omitted the task keeps its place, or goes to the end of a new section
+    /// or parent.
+    #[serde(default)]
+    pub(crate) section_placement: Option<OrderPlacement>,
+    /// Place within the status order. When omitted the task keeps its place, or goes to the end of a new status.
+    #[serde(default)]
+    pub(crate) status_placement: Option<OrderPlacement>,
     pub(crate) estimate_minutes: Option<i64>,
     pub(crate) due_date: Option<String>,
     pub(crate) due_time: Option<String>,
@@ -986,7 +1016,6 @@ pub struct ProjectTaskUpdate {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProjectTaskDependencyCreate {
-    pub(crate) id: String,
     pub(crate) blocking_task_id: String,
     pub(crate) blocked_task_id: String,
     pub(crate) dependency_type: String,
@@ -998,7 +1027,8 @@ pub struct ProjectChecklistItemCreate {
     pub(crate) id: String,
     pub(crate) task_id: String,
     pub(crate) title: String,
-    pub(crate) sort_order: i64,
+    #[serde(default)]
+    pub(crate) placement: OrderPlacement,
 }
 
 #[derive(Deserialize)]
@@ -1007,7 +1037,8 @@ pub struct ProjectChecklistItemUpdate {
     pub(crate) id: String,
     pub(crate) title: String,
     pub(crate) completed: bool,
-    pub(crate) sort_order: i64,
+    #[serde(default)]
+    pub(crate) placement: Option<OrderPlacement>,
 }
 
 #[derive(Deserialize)]
@@ -1017,7 +1048,8 @@ pub struct ProjectTagCreate {
     pub(crate) project_id: String,
     pub(crate) name: String,
     pub(crate) color: Option<i64>,
-    pub(crate) sort_order: i64,
+    #[serde(default)]
+    pub(crate) placement: OrderPlacement,
 }
 
 #[derive(Deserialize)]
@@ -1026,7 +1058,8 @@ pub struct ProjectTagUpdate {
     pub(crate) id: String,
     pub(crate) name: String,
     pub(crate) color: Option<i64>,
-    pub(crate) sort_order: i64,
+    #[serde(default)]
+    pub(crate) placement: Option<OrderPlacement>,
 }
 
 #[derive(Deserialize)]
@@ -1043,7 +1076,8 @@ pub struct ProjectCustomFieldCreate {
     pub(crate) project_id: String,
     pub(crate) name: String,
     pub(crate) field_type: String,
-    pub(crate) sort_order: i64,
+    #[serde(default)]
+    pub(crate) placement: OrderPlacement,
     #[serde(default)]
     pub(crate) icon: Option<String>,
     #[serde(default)]
@@ -1056,7 +1090,8 @@ pub struct ProjectCustomFieldCreate {
 pub struct ProjectCustomFieldUpdate {
     pub(crate) id: String,
     pub(crate) name: String,
-    pub(crate) sort_order: i64,
+    #[serde(default)]
+    pub(crate) placement: Option<OrderPlacement>,
     #[serde(default)]
     pub(crate) icon: Option<String>,
 }
@@ -1067,7 +1102,8 @@ pub struct ProjectCustomFieldOptionCreate {
     pub(crate) id: String,
     pub(crate) field_id: String,
     pub(crate) name: String,
-    pub(crate) sort_order: i64,
+    #[serde(default)]
+    pub(crate) placement: OrderPlacement,
 }
 
 #[derive(Deserialize)]
@@ -1075,7 +1111,8 @@ pub struct ProjectCustomFieldOptionCreate {
 pub struct ProjectCustomFieldOptionUpdate {
     pub(crate) id: String,
     pub(crate) name: String,
-    pub(crate) sort_order: i64,
+    #[serde(default)]
+    pub(crate) placement: Option<OrderPlacement>,
 }
 
 #[derive(Deserialize)]
@@ -1084,7 +1121,7 @@ pub struct ProjectCustomFieldValueUpdate {
     pub(crate) task_id: String,
     pub(crate) field_id: String,
     pub(crate) text_value: Option<String>,
-    pub(crate) number_value: Option<f64>,
+    pub(crate) number_value: Option<FixedPointNumber>,
     pub(crate) date_value: Option<String>,
     pub(crate) checkbox_value: Option<bool>,
     pub(crate) option_ids: Vec<String>,
@@ -1153,5 +1190,6 @@ pub struct ProjectCustomEmojiCreate {
     pub(crate) id: String,
     pub(crate) name: String,
     pub(crate) asset_path: String,
-    pub(crate) sort_order: i64,
+    #[serde(default)]
+    pub(crate) placement: OrderPlacement,
 }

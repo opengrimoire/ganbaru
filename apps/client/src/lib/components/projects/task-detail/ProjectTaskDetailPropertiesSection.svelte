@@ -61,7 +61,7 @@
     <span>{t("projects.detail.status")}</span>
     <Select inline appearance="quiet" contentAlign="start" class="w-full" value={statusId}
       ariaLabel={t("projects.detail.status")}
-      options={statuses.map((status) => ({ value: status.id, label: status.name }))}
+      options={statuses.filter((entry) => !entry.deletedAt || entry.id === statusId).map((status) => ({ value: status.id, label: status.name }))}
       onChange={onStatusChange}>
       {#snippet leading(value)}
         {@const status = statuses.find((entry) => entry.id === value)}
@@ -73,7 +73,7 @@
     <span>{t("projects.detail.priority")}</span>
     <Select inline appearance="quiet" contentAlign="start" class="w-full" value={priority}
       ariaLabel={t("projects.detail.priority")}
-      options={priorities.map((entry) => ({ value: entry.id, label: entry.name }))}
+      options={priorities.filter((entry) => !entry.deletedAt || entry.id === priority).map((entry) => ({ value: entry.id, label: entry.name }))}
       onChange={(value) => {
         const option = priorities.find((entry) => entry.id === value);
         if (option) onPriorityChange(option.id);

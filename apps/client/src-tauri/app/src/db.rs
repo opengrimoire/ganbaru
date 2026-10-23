@@ -25,11 +25,25 @@ static VAULT_POOLS: LazyLock<DatabaseState> = LazyLock::new(|| {
     registry.set_connection_hook(Some(ganbaru_sync_replica::access::vault_connection_hook(
         vault_commits().clone(),
     )));
+    registry.set_migrated_hook(Some(Arc::new(|pool| Box::pin(convert_migrated_keys(pool)))));
     registry
 });
 
+/// Replaces the placeholder row keys the Music capture migration writes with their derived
+/// keys, before any writer or sync start can capture a placeholder.
+async fn convert_migrated_keys(pool: sqlx::SqlitePool) -> Result<(), String> {
+    let mut connection = pool
+        .acquire()
+        .await
+        .map_err(|error| format!("acquire key conversion connection: {error}"))?;
+    ganbaru_music_library::identity::rekey_pending(&mut connection)
+        .await
+        .map(|_| ())
+        .map_err(|error| format!("convert music row keys: {error}"))
+}
+
 /// The process pool registry. Its connection hook, which installs replica guards and signals
-/// commits, is in place before the first pool opens.
+/// commits, and its post-migration key conversion are in place before the first pool opens.
 pub(crate) fn vault_pools() -> &'static DatabaseState {
     &VAULT_POOLS
 }
@@ -223,7 +237,14 @@ async fn connect_with_access(
 ) -> Result<sqlx::SqlitePool, String> {
     match access {
         VaultDatabaseAccess::ReadOnly => registry.connect_path_read_only(path).await,
-        VaultDatabaseAccess::ReadWrite => registry.connect_path(path).await,
+        VaultDatabaseAccess::ReadWrite => {
+            let opening = registry.access(&path).await.is_none();
+            let pool = registry.connect_path(&path).await?;
+            if opening {
+                convert_projects(&pool, &path).await?;
+            }
+            Ok(pool)
+        }
         // A pool opened read-only before the replica was linked stays read-only until the next
         // vault replacement or restart closes it, so readers are never cut off mid-session.
         VaultDatabaseAccess::Guarded => {
@@ -237,6 +258,17 @@ async fn connect_with_access(
             }
         }
     }
+}
+
+/// Runs the Projects conversion pass on a writable database the registry just opened, so placeholder keys left by
+/// migrations are rewritten before any command or sync capture reads them. The pass is idempotent, so a concurrent
+/// first open that runs it twice changes nothing the second time.
+async fn convert_projects(pool: &sqlx::SqlitePool, database_path: &Path) -> Result<(), String> {
+    let vault_root = database_path
+        .parent()
+        .ok_or_else(|| format!("database {} has no folder", database_path.display()))?;
+    ganbaru_projects::conversion::convert(pool, vault_root).await?;
+    ganbaru_projects::conversion::assert_converted(pool).await
 }
 
 /// Opens the active vault for sync work and returns the pool only when this device may write

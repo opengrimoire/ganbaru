@@ -28,12 +28,12 @@ async fn migrated_pool() -> SqlitePool {
 }
 
 async fn seed_project(pool: &SqlitePool) {
-    sqlx::query("INSERT INTO project_groups (id, name) VALUES ('group-history', 'History')")
+    sqlx::query("INSERT INTO project_groups (id, name, order_key) VALUES ('group-history', 'History', 'a1')")
         .execute(pool)
         .await
         .unwrap();
     sqlx::query(
-        "INSERT INTO projects (id, group_id, name) VALUES (?, 'group-history', 'Learning')",
+        "INSERT INTO projects (id, group_id, name, order_key) VALUES (?, 'group-history', 'Learning', 'a1')",
     )
     .bind(PROJECT_ID)
     .execute(pool)
@@ -43,12 +43,12 @@ async fn seed_project(pool: &SqlitePool) {
 }
 
 async fn seed_empty_project(pool: &SqlitePool) {
-    sqlx::query("INSERT INTO project_groups (id, name) VALUES ('group-history', 'History')")
+    sqlx::query("INSERT INTO project_groups (id, name, order_key) VALUES ('group-history', 'History', 'a1')")
         .execute(pool)
         .await
         .unwrap();
     sqlx::query(
-        "INSERT INTO projects (id, group_id, name) VALUES (?, 'group-history', 'Learning')",
+        "INSERT INTO projects (id, group_id, name, order_key) VALUES (?, 'group-history', 'Learning', 'a1')",
     )
     .bind(PROJECT_ID)
     .execute(pool)

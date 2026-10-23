@@ -119,8 +119,8 @@ pub async fn apply_playlist_snapshot(
         sqlx::query(
             "INSERT INTO music_source_collection_items
                 (collection_id, item_id, source_position, first_discovered_at_ms,
-                 last_seen_generation, missing_from_latest_snapshot)
-             VALUES (?, ?, ?, ?, ?, 0)
+                 last_seen_generation, missing_from_latest_snapshot, sync_key)
+             VALUES (?, ?, ?, ?, ?, 0, ?)
              ON CONFLICT(collection_id, item_id) DO UPDATE SET
                 source_position = excluded.source_position,
                 last_seen_generation = excluded.last_seen_generation,
@@ -131,6 +131,10 @@ pub async fn apply_playlist_snapshot(
         .bind(position as i64)
         .bind(request.resolved_at_ms)
         .bind(generation)
+        .bind(ganbaru_music::sync_keys::collection_item_key(
+            &collection_id,
+            &item_id,
+        )?)
         .execute(&mut *transaction)
         .await
         .map_err(|error| MusicLibraryError::database("save YouTube playlist order", error))?;

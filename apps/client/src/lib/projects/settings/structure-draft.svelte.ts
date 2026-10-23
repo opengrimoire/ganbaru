@@ -1,7 +1,8 @@
 import type { EventColor } from "$lib/calendar/types";
 import type { getProjects } from "$lib/stores/projects.svelte";
 import type { ProjectSettingsSessionCollections, ProjectSettingsSessionState } from "./session.svelte";
-import type { ProjectCustomField, ProjectCustomFieldOption, ProjectPriorityConfig, ProjectStatus, ProjectStatusCategory, ProjectTag } from "$lib/projects/types";
+import type { MoveDirection, ProjectCustomField, ProjectCustomFieldOption, ProjectOrderPlacement, ProjectPriorityConfig, ProjectStatus, ProjectStatusCategory, ProjectTag } from "$lib/projects/types";
+import { placementBeside } from "$lib/projects/order";
 
 interface DraftCollections {
   statuses: ProjectStatus[];
@@ -11,7 +12,7 @@ interface DraftCollections {
   customFieldOptions: ProjectCustomFieldOption[];
 }
 
-type OrderedEntry = { id: string; sortOrder: number };
+type OrderedEntry = { id: string };
 
 /** Compare visible identity order independently of editable labels and persisted rank values. */
 function sameOrder(left: readonly OrderedEntry[], right: readonly OrderedEntry[]): boolean {
@@ -19,7 +20,7 @@ function sameOrder(left: readonly OrderedEntry[], right: readonly OrderedEntry[]
 }
 
 /** Move one draft row without mutating canonical store objects. */
-function moved<T extends OrderedEntry>(entries: readonly T[], entry: T, direction: -1 | 1): T[] {
+function moved<T extends OrderedEntry>(entries: readonly T[], entry: T, direction: MoveDirection): T[] {
   const index = entries.findIndex((candidate) => candidate.id === entry.id);
   const target = index + direction;
   if (index < 0 || target < 0 || target >= entries.length) return [...entries];
@@ -55,25 +56,25 @@ export function createProjectSettingsStructureDraft(projects: Pick<ReturnType<ty
     };
   }
 
-  /** Allocate a stable draft identity so a failed Save can safely retry creation. */
-  function identity(entries: readonly OrderedEntry[]) {
+  /** Allocate a stable draft identity so a failed Save can safely retry creation. Draft rows show in array order, and native code assigns the order key on save. */
+  function identity() {
     const now = new Date().toISOString();
-    return { id: crypto.randomUUID(), sortOrder: Math.max(0, ...entries.map((entry) => entry.sortOrder)) + 1, createdAt: now, updatedAt: now };
+    return { id: crypto.randomUUID(), orderKey: "", createdAt: now, updatedAt: now };
   }
 
   /** Stage a new status without creating a database row. */
   function addStatus(projectId: string, name: string, category: ProjectStatusCategory, color: EventColor): void {
-    rows.statuses = [...rows.statuses, { ...identity(rows.statuses), projectId, name, category, color, terminal: category === "done" }];
+    rows.statuses = [...rows.statuses, { ...identity(), projectId, name, category, color, terminal: category === "done" }];
   }
 
   /** Stage a new priority without creating a database row. */
   function addPriority(projectId: string, name: string, color: EventColor): void {
-    rows.priorities = [...rows.priorities, { ...identity(rows.priorities), projectId, name, color }];
+    rows.priorities = [...rows.priorities, { ...identity(), projectId, name, color }];
   }
 
   /** Stage a new tag without creating a database row. */
   function addTag(projectId: string, name: string, color: EventColor): void {
-    rows.tags = [...rows.tags, { ...identity(rows.tags), projectId, name, color }];
+    rows.tags = [...rows.tags, { ...identity(), projectId, name, color }];
   }
 
   /** Remove a field and its options from the draft while retaining canonical data. */
@@ -83,7 +84,7 @@ export function createProjectSettingsStructureDraft(projects: Pick<ReturnType<ty
   }
 
   /** Reorder options only within their owning field. */
-  async function moveCustomFieldOption(option: ProjectCustomFieldOption, direction: -1 | 1): Promise<void> {
+  async function moveCustomFieldOption(option: ProjectCustomFieldOption, direction: MoveDirection): Promise<void> {
     const siblings = rows.customFieldOptions.filter((entry) => entry.fieldId === option.fieldId);
     rows.customFieldOptions = [
       ...rows.customFieldOptions.filter((entry) => entry.fieldId !== option.fieldId),
@@ -95,7 +96,7 @@ export function createProjectSettingsStructureDraft(projects: Pick<ReturnType<ty
   async function commit<T extends OrderedEntry>(
     current: readonly T[], baseline: readonly T[], acknowledge: (entries: T[]) => void,
     create: ((entry: T) => Promise<void>) | null,
-    updateOrder: (entry: T, sortOrder: number) => Promise<void>,
+    updateOrder: (entry: T, placement: ProjectOrderPlacement) => Promise<void>,
     remove: (entry: T) => Promise<void>,
     createBeforeRemove = false,
   ): Promise<void> {
@@ -119,17 +120,15 @@ export function createProjectSettingsStructureDraft(projects: Pick<ReturnType<ty
     };
     if (createBeforeRemove) { await createEntries(); await removeEntries(); }
     else { await removeEntries(); await createEntries(); }
-    if (!sameOrder(current, completed)) {
-      for (const [index, entry] of current.entries()) {
-        const rank = index + 1;
-        const original = completed.find((candidate) => candidate.id === entry.id);
-        if (!original || original.sortOrder === rank) continue;
-        await updateOrder(original, rank);
-        entry.sortOrder = rank;
-        completed = completed.map((candidate) => candidate.id === entry.id ? { ...candidate, sortOrder: rank } : candidate);
-        acknowledge(completed);
-      }
-      acknowledge(current.map((entry, index) => ({ ...entry, sortOrder: index + 1 })));
+    for (const [index, entry] of current.entries()) {
+      if (completed[index]?.id === entry.id) continue;
+      const original = completed.find((candidate) => candidate.id === entry.id);
+      const anchor = index === 0 ? completed[0] : current[index - 1];
+      if (!original || !anchor) continue;
+      await updateOrder(original, placementBeside(anchor.id, index === 0 ? "before" : "after"));
+      completed = [...completed.slice(0, index).filter((candidate) => candidate.id !== entry.id), original,
+        ...completed.slice(index).filter((candidate) => candidate.id !== entry.id)];
+      acknowledge(completed);
     }
   }
 
@@ -138,27 +137,27 @@ export function createProjectSettingsStructureDraft(projects: Pick<ReturnType<ty
     await commit(rows.statuses, saved.statuses, (entries) => { saved.statuses = entries; },
       (entry) => projects.addStatus(entry.projectId, state.statusNameDrafts[entry.id] ?? entry.name,
         state.statusCategoryDrafts[entry.id] ?? entry.category, state.statusColorDrafts[entry.id] ?? entry.color, entry),
-      (entry, sortOrder) => projects.updateStatus(entry, { sortOrder }),
+      (entry, placement) => projects.updateStatus(entry, { placement }),
       (entry) => projects.removeStatus(entry.id), true);
     await commit(rows.priorities, saved.priorities, (entries) => { saved.priorities = entries; },
       (entry) => projects.addPriority(entry.projectId, state.priorityNameDrafts[entry.id] ?? entry.name,
         state.priorityColorDrafts[entry.id] ?? entry.color, entry),
-      (entry, sortOrder) => projects.updatePriority(entry, { sortOrder }),
+      (entry, placement) => projects.updatePriority(entry, { placement }),
       (entry) => projects.removePriority(entry), true);
     await commit(rows.tags, saved.tags, (entries) => { saved.tags = entries; },
       async (entry) => { await projects.addTag(entry.projectId, state.tagNameDrafts[entry.id] ?? entry.name,
         state.tagColorDrafts[entry.id] ?? entry.color, entry); },
-      (entry, sortOrder) => projects.updateTag(entry, { sortOrder }),
+      (entry, placement) => projects.updateTag(entry, { placement }),
       (entry) => projects.removeTag(entry.id));
     await commit(rows.customFields, saved.customFields, (entries) => { saved.customFields = entries; }, null,
-      (entry, sortOrder) => projects.updateCustomField(entry, { sortOrder }),
+      (entry, placement) => projects.updateCustomField(entry, { placement }),
       (entry) => projects.removeCustomField(entry.id));
     for (const field of rows.customFields) {
       const siblings = rows.customFieldOptions.filter((entry) => entry.fieldId === field.id);
       const original = saved.customFieldOptions.filter((entry) => entry.fieldId === field.id);
       await commit(siblings, original, (entries) => {
         saved.customFieldOptions = [...saved.customFieldOptions.filter((entry) => entry.fieldId !== field.id), ...entries];
-      }, null, (entry, sortOrder) => projects.updateCustomFieldOption(entry, { sortOrder }),
+      }, null, (entry, placement) => projects.updateCustomFieldOption(entry, { placement }),
       (entry) => projects.removeCustomFieldOption(entry.id));
     }
     saved.customFieldOptions = saved.customFieldOptions.filter((option) => rows.customFields.some((field) => field.id === option.fieldId));
@@ -181,9 +180,9 @@ export function createProjectSettingsStructureDraft(projects: Pick<ReturnType<ty
     removePriority: (id: string) => { rows.priorities = rows.priorities.filter((entry) => entry.id !== id); },
     removeTag: (id: string) => { rows.tags = rows.tags.filter((entry) => entry.id !== id); },
     removeCustomFieldOption: (id: string) => { rows.customFieldOptions = rows.customFieldOptions.filter((entry) => entry.id !== id); },
-    moveStatus: async (entry: ProjectStatus, direction: -1 | 1) => { rows.statuses = moved(rows.statuses, entry, direction); },
-    movePriority: async (entry: ProjectPriorityConfig, direction: -1 | 1) => { rows.priorities = moved(rows.priorities, entry, direction); },
-    moveTag: async (entry: ProjectTag, direction: -1 | 1) => { rows.tags = moved(rows.tags, entry, direction); },
-    moveCustomField: async (entry: ProjectCustomField, direction: -1 | 1) => { rows.customFields = moved(rows.customFields, entry, direction); },
+    moveStatus: async (entry: ProjectStatus, direction: MoveDirection) => { rows.statuses = moved(rows.statuses, entry, direction); },
+    movePriority: async (entry: ProjectPriorityConfig, direction: MoveDirection) => { rows.priorities = moved(rows.priorities, entry, direction); },
+    moveTag: async (entry: ProjectTag, direction: MoveDirection) => { rows.tags = moved(rows.tags, entry, direction); },
+    moveCustomField: async (entry: ProjectCustomField, direction: MoveDirection) => { rows.customFields = moved(rows.customFields, entry, direction); },
   };
 }

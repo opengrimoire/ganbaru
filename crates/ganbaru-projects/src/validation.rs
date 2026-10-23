@@ -76,7 +76,7 @@ pub(super) fn validate_group_create(group: &ProjectGroupCreate) -> Result<(), St
     require_non_empty(&group.name, "name")?;
     validate_project_icon(&group.icon)?;
     validate_color(group.color)?;
-    validate_non_negative(group.sort_order, "sort_order")
+    Ok(())
 }
 
 pub(super) fn validate_group_update(group: &ProjectGroupUpdate) -> Result<(), String> {
@@ -84,7 +84,7 @@ pub(super) fn validate_group_update(group: &ProjectGroupUpdate) -> Result<(), St
     require_non_empty(&group.name, "name")?;
     validate_project_icon(&group.icon)?;
     validate_color(group.color)?;
-    validate_non_negative(group.sort_order, "sort_order")
+    Ok(())
 }
 
 pub(super) fn validate_project_create(project: &ProjectCreate) -> Result<(), String> {
@@ -94,7 +94,6 @@ pub(super) fn validate_project_create(project: &ProjectCreate) -> Result<(), Str
     require_non_empty(&project.name, "name")?;
     validate_project_icon(&project.icon)?;
     validate_color(project.color)?;
-    validate_non_negative(project.sort_order, "sort_order")?;
     validate_optional_text(&project.default_event_name, "default_event_name")?;
     validate_project_event_time_defaults(
         &project.default_event_time_mode,
@@ -121,7 +120,6 @@ pub(super) fn validate_project_update(project: &ProjectUpdate) -> Result<(), Str
     require_non_empty(&project.name, "name")?;
     validate_project_icon(&project.icon)?;
     validate_color(project.color)?;
-    validate_non_negative(project.sort_order, "sort_order")?;
     validate_enum(&project.status, "status", &["active", "hidden", "archived"])?;
     validate_optional_text(&project.default_event_name, "default_event_name")?;
     validate_project_event_time_defaults(
@@ -160,13 +158,13 @@ pub(super) fn validate_section_create(section: &ProjectSectionCreate) -> Result<
     require_non_empty(&section.id, "id")?;
     require_non_empty(&section.project_id, "project_id")?;
     require_non_empty(&section.name, "name")?;
-    validate_non_negative(section.sort_order, "sort_order")
+    Ok(())
 }
 
 pub(super) fn validate_section_update(section: &ProjectSectionUpdate) -> Result<(), String> {
     require_non_empty(&section.id, "id")?;
     require_non_empty(&section.name, "name")?;
-    validate_non_negative(section.sort_order, "sort_order")
+    Ok(())
 }
 
 pub(super) fn validate_status_create(status: &ProjectStatusCreate) -> Result<(), String> {
@@ -176,7 +174,6 @@ pub(super) fn validate_status_create(status: &ProjectStatusCreate) -> Result<(),
         &status.name,
         &status.category,
         status.color,
-        status.sort_order,
         status.terminal,
     )
 }
@@ -187,7 +184,6 @@ pub(super) fn validate_status_update(status: &ProjectStatusUpdate) -> Result<(),
         &status.name,
         &status.category,
         status.color,
-        status.sort_order,
         status.terminal,
     )
 }
@@ -196,7 +192,6 @@ pub(super) fn validate_status_fields(
     name: &str,
     category: &str,
     color: i64,
-    sort_order: i64,
     terminal: bool,
 ) -> Result<(), String> {
     require_non_empty(name, "name")?;
@@ -206,7 +201,6 @@ pub(super) fn validate_status_fields(
         &["not_started", "active", "blocked", "done"],
     )?;
     validate_color(Some(color))?;
-    validate_non_negative(sort_order, "sort_order")?;
     if (category == "done") != terminal {
         return Err(
             "done statuses must be terminal and terminal statuses must use done category"
@@ -219,23 +213,19 @@ pub(super) fn validate_status_fields(
 pub(super) fn validate_priority_create(priority: &ProjectPriorityCreate) -> Result<(), String> {
     require_non_empty(&priority.id, "id")?;
     require_non_empty(&priority.project_id, "project_id")?;
-    validate_priority_fields(&priority.name, priority.color, priority.sort_order)
+    validate_priority_fields(&priority.name, priority.color)
 }
 
 pub(super) fn validate_priority_update(priority: &ProjectPriorityUpdate) -> Result<(), String> {
     require_non_empty(&priority.id, "id")?;
     require_non_empty(&priority.project_id, "project_id")?;
-    validate_priority_fields(&priority.name, priority.color, priority.sort_order)
+    validate_priority_fields(&priority.name, priority.color)
 }
 
-pub(super) fn validate_priority_fields(
-    name: &str,
-    color: i64,
-    sort_order: i64,
-) -> Result<(), String> {
+pub(super) fn validate_priority_fields(name: &str, color: i64) -> Result<(), String> {
     require_non_empty(name, "name")?;
     validate_color(Some(color))?;
-    validate_non_negative(sort_order, "sort_order")
+    Ok(())
 }
 
 pub(super) fn validate_task_create(task: &ProjectTaskCreate) -> Result<(), String> {
@@ -280,12 +270,6 @@ pub(super) fn validate_task_update(task: &ProjectTaskUpdate) -> Result<(), Strin
     )?;
     if task.estimate_minutes.is_some_and(|value| value <= 0) {
         return Err("estimate_minutes must be positive".to_string());
-    }
-    if task.section_sort_order < 0.0 {
-        return Err("section_sort_order must be non-negative".to_string());
-    }
-    if task.status_sort_order < 0.0 {
-        return Err("status_sort_order must be non-negative".to_string());
     }
     validate_optional_task_time(&task.start_time, "start_time")?;
     validate_optional_task_time(&task.due_time, "due_time")?;
@@ -369,7 +353,6 @@ fn validate_optional_task_reminder(
 pub(super) fn validate_task_dependency_create(
     dependency: &ProjectTaskDependencyCreate,
 ) -> Result<(), String> {
-    require_non_empty(&dependency.id, "id")?;
     require_non_empty(&dependency.blocking_task_id, "blocking_task_id")?;
     require_non_empty(&dependency.blocked_task_id, "blocked_task_id")?;
     validate_enum(&dependency.dependency_type, "dependency_type", &["blocks"])?;
@@ -385,7 +368,7 @@ pub(super) fn validate_checklist_item_create(
     require_non_empty(&item.id, "id")?;
     require_non_empty(&item.task_id, "task_id")?;
     require_non_empty(&item.title, "title")?;
-    validate_non_negative(item.sort_order, "sort_order")
+    Ok(())
 }
 
 pub(super) fn validate_checklist_item_update(
@@ -393,7 +376,7 @@ pub(super) fn validate_checklist_item_update(
 ) -> Result<(), String> {
     require_non_empty(&item.id, "id")?;
     require_non_empty(&item.title, "title")?;
-    validate_non_negative(item.sort_order, "sort_order")
+    Ok(())
 }
 
 pub(super) fn validate_tag_create(tag: &ProjectTagCreate) -> Result<(), String> {
@@ -401,14 +384,14 @@ pub(super) fn validate_tag_create(tag: &ProjectTagCreate) -> Result<(), String> 
     require_non_empty(&tag.project_id, "project_id")?;
     require_non_empty(&tag.name, "name")?;
     validate_color(tag.color)?;
-    validate_non_negative(tag.sort_order, "sort_order")
+    Ok(())
 }
 
 pub(super) fn validate_tag_update(tag: &ProjectTagUpdate) -> Result<(), String> {
     require_non_empty(&tag.id, "id")?;
     require_non_empty(&tag.name, "name")?;
     validate_color(tag.color)?;
-    validate_non_negative(tag.sort_order, "sort_order")
+    Ok(())
 }
 
 pub(super) fn validate_task_tag_link_create(link: &ProjectTaskTagLinkCreate) -> Result<(), String> {
@@ -422,14 +405,14 @@ pub(super) fn validate_custom_field_create(field: &ProjectCustomFieldCreate) -> 
     require_non_empty(&field.name, "name")?;
     validate_custom_field_type(&field.field_type)?;
     validate_custom_field_icon(field.icon.as_deref())?;
-    validate_non_negative(field.sort_order, "sort_order")
+    Ok(())
 }
 
 pub(super) fn validate_custom_field_update(field: &ProjectCustomFieldUpdate) -> Result<(), String> {
     require_non_empty(&field.id, "id")?;
     require_non_empty(&field.name, "name")?;
     validate_custom_field_icon(field.icon.as_deref())?;
-    validate_non_negative(field.sort_order, "sort_order")
+    Ok(())
 }
 
 /// Custom field icons are Lucide icons only, so they never reference managed assets.
@@ -447,7 +430,7 @@ pub(super) fn validate_custom_field_option_create(
     require_non_empty(&option.id, "id")?;
     require_non_empty(&option.field_id, "field_id")?;
     require_non_empty(&option.name, "name")?;
-    validate_non_negative(option.sort_order, "sort_order")
+    Ok(())
 }
 
 pub(super) fn validate_custom_field_option_update(
@@ -455,7 +438,7 @@ pub(super) fn validate_custom_field_option_update(
 ) -> Result<(), String> {
     require_non_empty(&option.id, "id")?;
     require_non_empty(&option.name, "name")?;
-    validate_non_negative(option.sort_order, "sort_order")
+    Ok(())
 }
 
 pub(super) fn validate_custom_field_value_update(
@@ -465,9 +448,6 @@ pub(super) fn validate_custom_field_value_update(
     require_non_empty(&value.field_id, "field_id")?;
     for option_id in &value.option_ids {
         require_non_empty(option_id, "option_id")?;
-    }
-    if value.number_value.is_some_and(|number| !number.is_finite()) {
-        return Err("number_value must be finite".to_string());
     }
     if let Some(date_value) = &value.date_value {
         validate_date(date_value, "date_value")?;
@@ -546,7 +526,7 @@ pub(super) fn validate_custom_emoji_create(emoji: &ProjectCustomEmojiCreate) -> 
     require_non_empty(&emoji.id, "id")?;
     require_non_empty(&emoji.name, "name")?;
     validate_project_icon_asset_path(&emoji.asset_path)?;
-    validate_non_negative(emoji.sort_order, "sort_order")
+    Ok(())
 }
 
 fn validate_project_icon_asset_path(asset_path: &str) -> Result<(), String> {
@@ -715,14 +695,6 @@ pub(super) fn validate_enum(value: &str, field: &str, allowed: &[&str]) -> Resul
         Ok(())
     } else {
         Err(format!("{field} has unsupported value '{value}'"))
-    }
-}
-
-pub(super) fn validate_non_negative(value: i64, field: &str) -> Result<(), String> {
-    if value < 0 {
-        Err(format!("{field} must be non-negative"))
-    } else {
-        Ok(())
     }
 }
 

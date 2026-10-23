@@ -22,8 +22,8 @@ function mutation(changed: Partial<ProjectsSnapshot>, removals: ProjectMutation[
 describe("applyProjectMutation", () => {
   it("preserves renamed schema rows when an older reorder receipt arrives", () => {
     const field: ProjectCustomField = { id: "field-1", projectId: "project-1", name: "Renamed",
-      fieldType: "select", sortOrder: 2000, icon: null, revision: 2, createdAt: "same", updatedAt: "same" };
-    const option = { id: "option-1", fieldId: field.id, name: "Renamed option", sortOrder: 2000,
+      fieldType: "select", orderKey: "2000", icon: null, revision: 2, createdAt: "same", updatedAt: "same" };
+    const option = { id: "option-1", fieldId: field.id, name: "Renamed option", orderKey: "2000",
       revision: 2, createdAt: "same", updatedAt: "same" };
     const initial = { ...emptySnapshot(), customFields: [field], customFieldOptions: [option] };
     const next = applyProjectMutation(initial, mutation({
@@ -36,8 +36,8 @@ describe("applyProjectMutation", () => {
   it("keeps newer task revisions when an old command receipt arrives with the same timestamp", () => {
     const task: ProjectTask = {
       id: "task-1", projectId: "project-1", sectionId: "section-1", statusId: "status-1",
-      title: "Newer", description: "", priority: "normal", taskType: "task", sectionSortOrder: 1000,
-      statusSortOrder: 1000, milestone: false, createdAt: "same", updatedAt: "same", revision: 2,
+      title: "Newer", description: "", priority: "normal", taskType: "task", sectionOrderKey: "1000",
+      statusOrderKey: "1000", milestone: false, createdAt: "same", updatedAt: "same", revision: 2,
     };
     const snapshot = { ...emptySnapshot(), tasks: [task] };
     const result = applyProjectMutation(snapshot, mutation({ tasks: [{ ...task, title: "Old", revision: 1 }] }));
@@ -49,7 +49,7 @@ describe("applyProjectMutation", () => {
     const initial = emptySnapshot();
     const result = applyProjectMutation(initial, mutation({
       groups: [{
-        id: "group-1", name: "Work", icon: "lucide:folder", sortOrder: 1000, collapsed: false,
+        id: "group-1", name: "Work", icon: "lucide:folder", orderKey: "1000", collapsed: false,
         createdAt: "created", updatedAt: "updated",
       }],
       taskTagLinks: [{ taskId: "task-1", tagId: "tag-1", createdAt: "created" }],
@@ -66,21 +66,21 @@ describe("applyProjectMutation", () => {
 
   it("applies removals and their local cascade before replacement rows", () => {
     const initial = mutation({
-      groups: [{ id: "group-1", name: "Work", icon: "lucide:folder", sortOrder: 1000, collapsed: false, createdAt: "c", updatedAt: "u" }],
+      groups: [{ id: "group-1", name: "Work", icon: "lucide:folder", orderKey: "1000", collapsed: false, createdAt: "c", updatedAt: "u" }],
       projects: [{
-        id: "project-1", groupId: "group-1", name: "Project", icon: "lucide:folder", sortOrder: 1000,
+        id: "project-1", groupId: "group-1", name: "Project", icon: "lucide:folder", orderKey: "1000",
         status: "active", defaultEventName: null, defaultEventTimeMode: "timed",
         defaultEventDurationMinutes: null, defaultPomodoroMode: "preset", defaultIdleSettingsSource: "global",
         defaultIdlePauseEnabled: true, defaultIdleThresholdMinutes: 5, createdAt: "c", updatedAt: "u",
       }],
       tasks: [{
         id: "task-1", projectId: "project-1", sectionId: "section-1", statusId: "status-1",
-        title: "Task", description: "", priority: "none", taskType: "task", sectionSortOrder: 1000,
-        statusSortOrder: 1000, milestone: false, createdAt: "c", updatedAt: "u",
+        title: "Task", description: "", priority: "none", taskType: "task", sectionOrderKey: "1000",
+        statusOrderKey: "1000", milestone: false, createdAt: "c", updatedAt: "u",
       }],
-      tags: [{ id: "tag-1", projectId: "project-1", name: "Tag", sortOrder: 1000, createdAt: "c", updatedAt: "u" }],
+      tags: [{ id: "tag-1", projectId: "project-1", name: "Tag", orderKey: "1000", createdAt: "c", updatedAt: "u" }],
       taskTagLinks: [{ taskId: "task-1", tagId: "tag-1", createdAt: "c" }],
-      checklistItems: [{ id: "item-1", taskId: "task-1", title: "Item", sortOrder: 1000, createdAt: "c", updatedAt: "u" }],
+      checklistItems: [{ id: "item-1", taskId: "task-1", title: "Item", orderKey: "1000", createdAt: "c", updatedAt: "u" }],
     }).changed;
 
     const result = applyProjectMutation(initial, mutation({}, [{ kind: "group", id: "group-1" }]));
@@ -96,10 +96,10 @@ describe("applyProjectMutation", () => {
   it("clears scalar and option values before applying the authoritative replacement", () => {
     const initial = mutation({
       customFieldValues: [{ taskId: "task-1", fieldId: "field-1", textValue: "old", updatedAt: "old" }],
-      customFieldOptionValues: [{ taskId: "task-1", fieldId: "field-1", optionId: "option-old", createdAt: "old" }],
+      customFieldOptionValues: [{ taskId: "task-1", fieldId: "field-1", optionId: "option-old" }],
     }).changed;
     const result = applyProjectMutation(initial, mutation({
-      customFieldOptionValues: [{ taskId: "task-1", fieldId: "field-1", optionId: "option-new", createdAt: "new" }],
+      customFieldOptionValues: [{ taskId: "task-1", fieldId: "field-1", optionId: "option-new" }],
     }, [{ kind: "custom_field_value", taskId: "task-1", fieldId: "field-1" }]));
 
     expect(result.customFieldValues).toEqual([]);
@@ -108,7 +108,7 @@ describe("applyProjectMutation", () => {
 
   it("drops a removed view with its saved preferences and upserts renamed views by id", () => {
     const view = (id: string, name?: string) => ({ id, projectId: "project-1", viewType: "list" as const,
-      name, sortOrder: 1000, createdAt: "c", updatedAt: "u" });
+      name, orderKey: "1000", createdAt: "c", updatedAt: "u" });
     const preference = (viewId: string) => ({ projectId: "project-1", viewId, preferenceKey: "columns",
       preferenceValue: "[]", updatedAt: "u" });
     const initial = mutation({

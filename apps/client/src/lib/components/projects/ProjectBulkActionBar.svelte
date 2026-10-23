@@ -92,7 +92,7 @@
     <CollectionMenu label={t("projects.list.status")} kind="property" leading={statusIcon} triggerClass={segmentClass}
       disabled={bulkTaskActionPending} dismissOnAction>
       <div class="grid gap-0">
-        {#each statuses as status (status.id)}
+        {#each statuses.filter((entry) => !entry.deletedAt) as status (status.id)}
           <button type="button" class="menu-item justify-between" aria-pressed={sharedStatusId === status.id} onclick={() => onSetStatus(status)}>
             <ProjectStatusBadge {status} theme={theme.current} label={status.name} class="text-[0.733333rem]" />
             {#if sharedStatusId === status.id}<Check class="size-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />{/if}
@@ -105,7 +105,7 @@
     <CollectionMenu label={t("projects.list.priority")} kind="property" leading={priorityIcon} triggerClass={segmentClass}
       disabled={bulkTaskActionPending} dismissOnAction>
       <div class="grid gap-0">
-        {#each priorities as priority (priority.id)}
+        {#each priorities.filter((entry) => !entry.deletedAt) as priority (priority.id)}
           <button type="button" class="menu-item justify-between" aria-pressed={sharedPriority === priority.id} onclick={() => onSetPriority(priority.id)}>
             <span class="flex min-w-0 items-center gap-1.5">
               <PriorityFlagIcon color={priority.color} theme={theme.current} size={12} class="shrink-0" />

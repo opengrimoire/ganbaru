@@ -24,7 +24,7 @@ function project(overrides: Partial<Project> = {}): Project {
     groupId: "group-a",
     name: "Project",
     icon: "lucide:folder",
-    sortOrder: 0,
+    orderKey: "a0",
     status: "active",
     defaultEventName: "Project focus",
     defaultEventTimeMode: "timed",

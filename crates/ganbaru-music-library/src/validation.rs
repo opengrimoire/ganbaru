@@ -75,7 +75,7 @@ fn validate_optional_text(value: &str, field: &str, max_chars: usize) -> MusicLi
     Ok(())
 }
 
-fn validate_name(value: &str) -> MusicLibraryResult<()> {
+pub(crate) fn validate_name(value: &str) -> MusicLibraryResult<()> {
     if value.trim().is_empty() {
         return Err(MusicLibraryError::validation("name", "is required"));
     }

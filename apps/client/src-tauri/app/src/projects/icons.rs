@@ -1244,7 +1244,8 @@ mod reference_tests {
         .await
         .unwrap();
         sqlx::query(
-            "INSERT INTO project_custom_emojis (id, name, asset_path) VALUES ('e', 'e', ?1)",
+            "INSERT INTO project_custom_emojis (id, name, asset_path, order_key, asset_byte_size)
+             VALUES ('e', 'e', ?1, 'a1', 1)",
         )
         .bind(EMOJI_ICON)
         .execute(pool)

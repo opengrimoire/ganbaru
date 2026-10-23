@@ -1,0 +1,244 @@
+//! Projects conversion pass run at vault open, before sync captures are seeded.
+//!
+//! The order keys migration leaves `'pending:' || rowid` placeholders in every `sync_key` and dependency id, and
+//! icon references without the file size they now carry. This pass rewrites each placeholder to the key every device
+//! derives from the same row, and fills icon sizes from the vault files. It is idempotent, so a vault that is
+//! already converted is left unchanged.
+
+use std::path::Path;
+
+use ganbaru_sync_contracts::PENDING_KEY_PREFIX;
+use sqlx::{AssertSqlSafe, SqliteConnection, SqlitePool};
+
+use crate::icons::{
+    MISSING_ICON_FALLBACK, PROJECT_ICON_REFERENCE_PREFIX, icon_asset_path, project_icon_byte_size,
+};
+use crate::keys::{
+    custom_field_value_key, dependency_key, priority_key, task_tag_key, view_preference_key,
+};
+
+/// What one conversion pass changed.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ConversionReport {
+    /// Placeholder keys rewritten to derived keys.
+    pub rekeyed_rows: u64,
+    /// Icon and emoji references that received their file size.
+    pub sized_icons: u64,
+    /// Group and project icons reset because their file is missing or too large.
+    pub reset_icons: u64,
+    /// Custom emojis removed because their file is missing or too large.
+    pub removed_emojis: u64,
+}
+
+/// A table whose placeholder keys are rewritten from two key columns.
+struct KeyedTable {
+    table: &'static str,
+    parts: [&'static str; 2],
+    derive: fn(&str, &str) -> Result<String, String>,
+    /// Whether the `id` column holds the same key as `sync_key`.
+    id_is_key: bool,
+}
+
+const KEYED_TABLES: [KeyedTable; 5] = [
+    KeyedTable {
+        table: "project_priorities",
+        parts: ["project_id", "id"],
+        derive: priority_key,
+        id_is_key: false,
+    },
+    KeyedTable {
+        table: "project_task_dependencies",
+        parts: ["blocking_task_id", "blocked_task_id"],
+        derive: dependency_key,
+        id_is_key: true,
+    },
+    KeyedTable {
+        table: "project_task_tag_links",
+        parts: ["task_id", "tag_id"],
+        derive: task_tag_key,
+        id_is_key: false,
+    },
+    KeyedTable {
+        table: "project_custom_field_values",
+        parts: ["task_id", "field_id"],
+        derive: custom_field_value_key,
+        id_is_key: false,
+    },
+    KeyedTable {
+        table: "project_view_preferences",
+        parts: ["view_id", "preference_key"],
+        derive: view_preference_key,
+        id_is_key: false,
+    },
+];
+
+/// Converts the Projects tables in one transaction. `vault_root` is the active vault folder that holds `assets/`.
+pub async fn convert(pool: &SqlitePool, vault_root: &Path) -> Result<ConversionReport, String> {
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|error| format!("begin projects conversion: {error}"))?;
+    let mut report = ConversionReport::default();
+    for table in &KEYED_TABLES {
+        report.rekeyed_rows += rekey_table(&mut tx, table).await?;
+    }
+    for table in ["project_groups", "projects"] {
+        let (sized, reset) = size_icons(&mut tx, table, vault_root).await?;
+        report.sized_icons += sized;
+        report.reset_icons += reset;
+    }
+    let (sized, removed) = size_emojis(&mut tx, vault_root).await?;
+    report.sized_icons += sized;
+    report.removed_emojis += removed;
+    tx.commit()
+        .await
+        .map_err(|error| format!("commit projects conversion: {error}"))?;
+    Ok(report)
+}
+
+/// Refuses a vault where any Projects key is still a placeholder, so sync never publishes one.
+pub async fn assert_converted(pool: &SqlitePool) -> Result<(), String> {
+    let mut conn = pool
+        .acquire()
+        .await
+        .map_err(|error| format!("acquire projects conversion check: {error}"))?;
+    for table in &KEYED_TABLES {
+        let remaining: i64 = sqlx::query_scalar(AssertSqlSafe(format!(
+            "SELECT count(*) FROM {} WHERE {}",
+            table.table,
+            pending_condition(table)
+        )))
+        .bind(PENDING_KEY_PREFIX)
+        .fetch_one(&mut *conn)
+        .await
+        .map_err(|error| format!("check {} keys: {error}", table.table))?;
+        if remaining > 0 {
+            return Err(format!(
+                "{} still has {remaining} placeholder keys; run the projects conversion first",
+                table.table
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn pending_condition(table: &KeyedTable) -> String {
+    let sync_key = "substr(sync_key, 1, length(?1)) = ?1";
+    if table.id_is_key {
+        format!("({sync_key} OR substr(id, 1, length(?1)) = ?1)")
+    } else {
+        sync_key.to_string()
+    }
+}
+
+async fn rekey_table(conn: &mut SqliteConnection, table: &KeyedTable) -> Result<u64, String> {
+    let rows = sqlx::query_as::<_, (i64, String, String)>(AssertSqlSafe(format!(
+        "SELECT rowid, {}, {} FROM {} WHERE {} ORDER BY rowid",
+        table.parts[0],
+        table.parts[1],
+        table.table,
+        pending_condition(table)
+    )))
+    .bind(PENDING_KEY_PREFIX)
+    .fetch_all(&mut *conn)
+    .await
+    .map_err(|error| format!("load {} placeholder keys: {error}", table.table))?;
+    let set = if table.id_is_key {
+        "sync_key = ?1, id = ?1"
+    } else {
+        "sync_key = ?1"
+    };
+    for (rowid, first, second) in &rows {
+        let key = (table.derive)(first, second)?;
+        sqlx::query(AssertSqlSafe(format!(
+            "UPDATE {} SET {set} WHERE rowid = ?2",
+            table.table
+        )))
+        .bind(&key)
+        .bind(rowid)
+        .execute(&mut *conn)
+        .await
+        .map_err(|error| format!("write {} key: {error}", table.table))?;
+    }
+    Ok(rows.len() as u64)
+}
+
+/// Fills icon sizes of groups or projects, resetting icons whose file cannot be stored. Returns the sized and reset
+/// counts.
+async fn size_icons(
+    conn: &mut SqliteConnection,
+    table: &'static str,
+    vault_root: &Path,
+) -> Result<(u64, u64), String> {
+    let rows = sqlx::query_as::<_, (String, String)>(AssertSqlSafe(format!(
+        "SELECT id, icon FROM {table} WHERE icon_byte_size IS NULL AND substr(icon, 1, ?) = ? ORDER BY id"
+    )))
+    .bind(PROJECT_ICON_REFERENCE_PREFIX.len() as i64)
+    .bind(PROJECT_ICON_REFERENCE_PREFIX)
+    .fetch_all(&mut *conn)
+    .await
+    .map_err(|error| format!("load {table} icons: {error}"))?;
+    let (mut sized, mut reset) = (0, 0);
+    for (id, icon) in rows {
+        let size = match icon_asset_path(&icon) {
+            Some(relative_path) => project_icon_byte_size(vault_root, relative_path)?,
+            None => None,
+        };
+        let result = match size {
+            Some(size) => {
+                sized += 1;
+                sqlx::query(AssertSqlSafe(format!(
+                    "UPDATE {table} SET icon_byte_size = ? WHERE id = ?"
+                )))
+                .bind(size)
+                .bind(&id)
+                .execute(&mut *conn)
+                .await
+            }
+            None => {
+                reset += 1;
+                sqlx::query(AssertSqlSafe(format!(
+                    "UPDATE {table} SET icon = ?, icon_byte_size = NULL WHERE id = ?"
+                )))
+                .bind(MISSING_ICON_FALLBACK)
+                .bind(&id)
+                .execute(&mut *conn)
+                .await
+            }
+        };
+        result.map_err(|error| format!("write {table} icon size: {error}"))?;
+    }
+    Ok((sized, reset))
+}
+
+/// Fills custom emoji sizes, removing emojis whose file cannot be stored. Returns the sized and removed counts.
+async fn size_emojis(conn: &mut SqliteConnection, vault_root: &Path) -> Result<(u64, u64), String> {
+    let rows = sqlx::query_as::<_, (String, String)>(
+        "SELECT id, asset_path FROM project_custom_emojis WHERE asset_byte_size IS NULL ORDER BY id",
+    )
+    .fetch_all(&mut *conn)
+    .await
+    .map_err(|error| format!("load custom emoji sizes: {error}"))?;
+    let (mut sized, mut removed) = (0, 0);
+    for (id, asset_path) in rows {
+        let result = match project_icon_byte_size(vault_root, &asset_path)? {
+            Some(size) => {
+                sized += 1;
+                sqlx::query("UPDATE project_custom_emojis SET asset_byte_size = ? WHERE id = ?")
+                    .bind(size)
+                    .bind(&id)
+                    .execute(&mut *conn)
+                    .await
+            }
+            None => {
+                removed += 1;
+                sqlx::query("DELETE FROM project_custom_emojis WHERE id = ?")
+                    .bind(&id)
+                    .execute(&mut *conn)
+                    .await
+            }
+        };
+        result.map_err(|error| format!("write custom emoji size: {error}"))?;
+    }
+    Ok((sized, removed))
+}

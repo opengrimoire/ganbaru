@@ -176,6 +176,7 @@ fn column_type(ty: ColumnType) -> String {
             max_chars,
         } => format!("trimmed_text({min_chars}..={max_chars})"),
         ColumnType::Integer { min, max } => format!("integer({min}..={max})"),
+        ColumnType::OptionalInteger { min, max } => format!("optional_integer({min}..={max})"),
         ColumnType::Flag => "flag".to_string(),
         ColumnType::Timestamp => "timestamp".to_string(),
         ColumnType::OptionalTimestamp => "optional_timestamp".to_string(),

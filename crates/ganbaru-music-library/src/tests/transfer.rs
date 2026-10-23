@@ -14,6 +14,17 @@ fn source() -> MusicTransferSource {
     }
 }
 
+/// Drops the sync value bounds on updates of `table`, standing in for a vault written by another
+/// tool, so transfer reads can be tested against values larger than any writer stores.
+async fn allow_oversized_updates(pool: &sqlx::SqlitePool, table: &str) {
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        "DROP TRIGGER sync_values_{table}_update"
+    )))
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
 async fn reviewed(
     pool: &sqlx::SqlitePool,
     source: MusicTransferSource,
@@ -94,8 +105,10 @@ fn music_transfer_admits_database_bytes_before_loading_selected_families() {
             let pool = super::pool().await;
             let initial = reviewed(&pool, source(), "initial").await;
             transfer::commit(&pool, initial, &[]).await.unwrap();
-            sqlx::query("INSERT INTO music_context_assignments (owner_kind, owner_id, phase, behavior, playlist_id, provenance_kind, updated_at_ms) VALUES ('project-default', 'project', 'focus', 'play-automatically', 'playlist-1', 'explicit', 1700000000000)")
+            sqlx::query("INSERT INTO music_context_assignments (owner_kind, owner_id, phase, behavior, playlist_id, provenance_kind, updated_at_ms, sync_key) VALUES ('project-default', 'project', 'focus', 'play-automatically', 'playlist-1', 'explicit', 1700000000000, lower(hex(randomblob(16))))")
                 .execute(&pool).await.unwrap();
+            let table = statement.split_whitespace().nth(1).unwrap();
+            allow_oversized_updates(&pool, table).await;
             let changed = sqlx::query(statement)
                 .bind(&oversized)
                 .execute(&pool)
@@ -141,6 +154,8 @@ fn music_transfer_shares_database_allowance_across_items_children_and_conflict_r
         let initial = reviewed(&pool, source(), "initial").await;
         transfer::commit(&pool, initial, &[]).await.unwrap();
         let text = "x".repeat(super::transfer_read::MAX_READ_BYTES / 8);
+        allow_oversized_updates(&pool, "music_library_items").await;
+        allow_oversized_updates(&pool, "music_snoozes").await;
         sqlx::query("UPDATE music_library_items SET title_override=?")
             .bind(&text)
             .execute(&pool)
@@ -301,7 +316,7 @@ fn music_transfer_matches_windows_case_without_changing_portable_identity() {
         let pool = super::pool().await;
         let initial = reviewed(&pool, source(), "initial").await;
         transfer::commit(&pool, initial, &[]).await.unwrap();
-        sqlx::query("UPDATE music_local_locations SET relative_path = 'Album/Café.flac', availability = 'available'").execute(&pool).await.unwrap();
+        crate::test_support::execute_as_sync_apply(&pool, &["UPDATE music_local_locations SET relative_path = 'Album/Café.flac', availability = 'available'"]).await;
         let bindings = vec![TransferBinding {
             root_id: "root-1".to_string(),
             folder_path: "C:\\Music".to_string(),
@@ -363,10 +378,11 @@ fn music_transfer_matches_m3u_paths_literally_through_one_keyed_pass() {
         let pool = super::pool().await;
         let initial = reviewed(&pool, source(), "initial").await;
         transfer::commit(&pool, initial, &[]).await.unwrap();
-        sqlx::query("UPDATE music_local_locations SET relative_path = 'Album\\Mix [live]*?.flac'")
-            .execute(&pool)
-            .await
-            .unwrap();
+        crate::test_support::execute_as_sync_apply(
+            &pool,
+            &["UPDATE music_local_locations SET relative_path = 'Album\\Mix [live]*?.flac'"],
+        )
+        .await;
         sqlx::query("WITH RECURSIVE numbers(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM numbers WHERE n < 20000) INSERT INTO music_library_items (id, identity_key, source_kind, original_title, discovered_at_ms, updated_at_ms) SELECT 'bulk-' || n, 'bulk:' || n, 'local-file', 'Bulk', 1700000000000, 1700000000000 FROM numbers").execute(&pool).await.unwrap();
         sqlx::query("INSERT INTO music_local_locations (id, item_id, root_id, relative_path, first_seen_at_ms, updated_at_ms) SELECT 'location-' || id, id, 'root-1', 'bulk/' || substr(id, 6) || '.flac', 1700000000000, 1700000000000 FROM music_library_items WHERE id LIKE 'bulk-%'").execute(&pool).await.unwrap();
         let mut contents = "Album/Mix [live]*?.flac\nAlbum/Mix XliveX**.flac\n".to_string();

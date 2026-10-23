@@ -1,4 +1,5 @@
 use super::history::{bool_to_string, insert_task_field_change_event};
+use super::keys::custom_field_value_key;
 use super::models::{
     ProjectCustomFieldCreate, ProjectCustomFieldOptionCreate, ProjectCustomFieldOptionRow,
     ProjectCustomFieldOptionUpdate, ProjectCustomFieldOptionValueRow, ProjectCustomFieldRow,
@@ -6,9 +7,11 @@ use super::models::{
     ProjectMutationRemoval, ProjectsMutationRows,
 };
 use super::mutations::{
-    custom_field_mutation, custom_field_option_mutation, ensure_project_exists_in_pool,
-    latest_task_change_events,
+    UniqueName, custom_field_mutation, custom_field_option_mutation, ensure_name_is_unique,
+    ensure_project_exists_in_pool, latest_task_change_events,
 };
+use super::number::FixedPointNumber;
+use super::order::OrderGroup;
 use super::validation::{
     require_non_empty, validate_custom_field_create, validate_custom_field_option_create,
     validate_custom_field_option_update, validate_custom_field_update,
@@ -17,6 +20,27 @@ use super::validation::{
 use sqlx::SqlitePool;
 use std::collections::HashSet;
 
+/// Selected options as `(task_id, field_id, option_id)`, read through their value row. An option whose field
+/// differs from the value's field is ignored. Callers append a `WHERE` clause over `value`, `selected`, or
+/// `field_option` and an order.
+pub(crate) const SELECTED_OPTIONS_SQL: &str =
+    "SELECT value.task_id, value.field_id, selected.option_id
+     FROM project_custom_field_option_values AS selected
+     JOIN project_custom_field_values AS value ON value.sync_key = selected.value_key
+     JOIN project_custom_field_options AS field_option
+        ON field_option.id = selected.option_id AND field_option.field_id = value.field_id";
+
+pub(crate) fn custom_field_order(project_id: &str) -> OrderGroup<'_> {
+    OrderGroup::new("project_custom_fields", "order_key").filter("project_id", Some(project_id))
+}
+
+pub(crate) fn custom_field_option_order(field_id: &str) -> OrderGroup<'_> {
+    OrderGroup::new("project_custom_field_options", "order_key").filter("field_id", Some(field_id))
+}
+
+fn field_accepts_options(field_type: &str) -> bool {
+    matches!(field_type, "select" | "multi_select" | "status")
+}
 async fn custom_field_for_task_value(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     task_id: &str,
@@ -76,7 +100,7 @@ pub(crate) async fn ensure_custom_field_accepts_options_in_pool(
     .await
     .map_err(|e| format!("load project custom field: {e}"))?
     .ok_or_else(|| "project custom field not found".to_string())?;
-    if field_type != "select" && field_type != "multi_select" && field_type != "status" {
+    if !field_accepts_options(&field_type) {
         return Err(
             "custom field options require select, multi-select, or status field".to_string(),
         );
@@ -128,7 +152,7 @@ async fn custom_field_value_label(
         "text" | "url" | "phone" | "email" | "person" | "files" => sqlx::query_scalar::<_, String>(
             "SELECT text_value
              FROM project_custom_field_values
-             WHERE task_id = ? AND field_id = ?",
+             WHERE task_id = ? AND field_id = ? AND text_value IS NOT NULL",
         )
         .bind(task_id)
         .bind(&field.id)
@@ -136,28 +160,22 @@ async fn custom_field_value_label(
         .await
         .map_err(|e| format!("load custom field text value: {e}")),
         "number" => {
-            let value = sqlx::query_scalar::<_, f64>(
+            let value = sqlx::query_scalar::<_, i64>(
                 "SELECT number_value
                  FROM project_custom_field_values
-                 WHERE task_id = ? AND field_id = ?",
+                 WHERE task_id = ? AND field_id = ? AND number_value IS NOT NULL",
             )
             .bind(task_id)
             .bind(&field.id)
             .fetch_optional(&mut **tx)
             .await
             .map_err(|e| format!("load custom field number value: {e}"))?;
-            Ok(value.map(|number| {
-                if number.fract() == 0.0 {
-                    format!("{number:.0}")
-                } else {
-                    number.to_string()
-                }
-            }))
+            Ok(value.map(|millionths| FixedPointNumber::from_millionths(millionths).to_string()))
         }
         "date" => sqlx::query_scalar::<_, String>(
             "SELECT date_value
              FROM project_custom_field_values
-             WHERE task_id = ? AND field_id = ?",
+             WHERE task_id = ? AND field_id = ? AND date_value IS NOT NULL",
         )
         .bind(task_id)
         .bind(&field.id)
@@ -168,7 +186,7 @@ async fn custom_field_value_label(
             let value = sqlx::query_scalar::<_, i64>(
                 "SELECT checkbox_value
                  FROM project_custom_field_values
-                 WHERE task_id = ? AND field_id = ?",
+                 WHERE task_id = ? AND field_id = ? AND checkbox_value IS NOT NULL",
             )
             .bind(task_id)
             .bind(&field.id)
@@ -179,11 +197,13 @@ async fn custom_field_value_label(
         }
         "select" | "multi_select" | "status" => {
             let option_names = sqlx::query_scalar::<_, String>(
-                "SELECT opt.name
-                 FROM project_custom_field_option_values val
-                 JOIN project_custom_field_options opt ON opt.id = val.option_id
-                 WHERE val.task_id = ? AND val.field_id = ?
-                 ORDER BY opt.sort_order ASC, opt.name ASC",
+                "SELECT field_option.name
+                 FROM project_custom_field_option_values AS selected
+                 JOIN project_custom_field_values AS value ON value.sync_key = selected.value_key
+                 JOIN project_custom_field_options AS field_option
+                    ON field_option.id = selected.option_id AND field_option.field_id = value.field_id
+                 WHERE value.task_id = ? AND value.field_id = ?
+                 ORDER BY field_option.order_key ASC, field_option.id ASC",
             )
             .bind(task_id)
             .bind(&field.id)
@@ -283,20 +303,88 @@ fn ensure_custom_field_value_payload_matches_type(
     Ok(())
 }
 
-async fn upsert_scalar_custom_field_value(
+/// The stored form of one task's value for one field. A value row exists only while it holds a scalar or at least
+/// one option; an empty value deletes the row.
+#[derive(Default)]
+struct StoredValue<'a> {
+    text: Option<&'a str>,
+    number: Option<FixedPointNumber>,
+    date: Option<&'a str>,
+    checkbox: Option<i64>,
+    option_ids: Vec<String>,
+}
+
+impl StoredValue<'_> {
+    fn is_empty(&self) -> bool {
+        self.text.is_none()
+            && self.number.is_none()
+            && self.date.is_none()
+            && self.checkbox.is_none()
+            && self.option_ids.is_empty()
+    }
+}
+
+async fn stored_value<'a>(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    field: &ProjectCustomFieldRow,
+    value: &'a ProjectCustomFieldValueUpdate,
+) -> Result<StoredValue<'a>, String> {
+    let non_empty =
+        |text: Option<&'a String>| text.map(|text| text.trim()).filter(|text| !text.is_empty());
+    Ok(match field.field_type.as_str() {
+        "text" | "url" | "phone" | "email" | "person" | "files" => StoredValue {
+            text: non_empty(value.text_value.as_ref()),
+            ..StoredValue::default()
+        },
+        "number" => StoredValue {
+            number: value.number_value,
+            ..StoredValue::default()
+        },
+        "date" => {
+            let date = non_empty(value.date_value.as_ref());
+            if let Some(date) = date {
+                validate_date(date, "date_value")?;
+            }
+            StoredValue {
+                date,
+                ..StoredValue::default()
+            }
+        }
+        "checkbox" => StoredValue {
+            checkbox: value.checkbox_value.map(i64::from),
+            ..StoredValue::default()
+        },
+        "select" | "multi_select" | "status" => StoredValue {
+            option_ids: ensure_options_belong_to_field(tx, &field.id, &value.option_ids).await?,
+            ..StoredValue::default()
+        },
+        _ => return Err("unsupported custom field type".to_string()),
+    })
+}
+
+/// Writes one task's value for one field: an upsert of the value row keyed by its derived `sync_key`, with the
+/// selected options replaced in order, or a delete when the value is empty.
+async fn write_stored_value(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     task_id: &str,
     field_id: &str,
-    text_value: Option<&str>,
-    number_value: Option<f64>,
-    date_value: Option<&str>,
-    checkbox_value: Option<i64>,
+    stored: &StoredValue<'_>,
 ) -> Result<(), String> {
+    if stored.is_empty() {
+        sqlx::query("DELETE FROM project_custom_field_values WHERE task_id = ? AND field_id = ?")
+            .bind(task_id)
+            .bind(field_id)
+            .execute(&mut **tx)
+            .await
+            .map_err(|e| format!("clear custom field value: {e}"))?;
+        return Ok(());
+    }
+    let sync_key = custom_field_value_key(task_id, field_id)?;
     sqlx::query(
         "INSERT INTO project_custom_field_values (
-            task_id, field_id, text_value, number_value, date_value, checkbox_value
+            task_id, field_id, sync_key, text_value, number_value, date_value, checkbox_value
          )
-         VALUES (?, ?, ?, ?, ?, ?)
+         VALUES (?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(task_id, field_id) DO UPDATE SET
             text_value = excluded.text_value,
             number_value = excluded.number_value,
@@ -306,13 +394,41 @@ async fn upsert_scalar_custom_field_value(
     )
     .bind(task_id)
     .bind(field_id)
-    .bind(text_value)
-    .bind(number_value)
-    .bind(date_value)
-    .bind(checkbox_value)
+    .bind(&sync_key)
+    .bind(stored.text)
+    .bind(stored.number.map(FixedPointNumber::millionths))
+    .bind(stored.date)
+    .bind(stored.checkbox)
     .execute(&mut **tx)
     .await
     .map_err(|e| format!("update custom field value: {e}"))?;
+    let value_key: String = sqlx::query_scalar(
+        "SELECT sync_key FROM project_custom_field_values WHERE task_id = ? AND field_id = ?",
+    )
+    .bind(task_id)
+    .bind(field_id)
+    .fetch_one(&mut **tx)
+    .await
+    .map_err(|e| format!("load custom field value key: {e}"))?;
+    sqlx::query("DELETE FROM project_custom_field_option_values WHERE value_key = ?")
+        .bind(&value_key)
+        .execute(&mut **tx)
+        .await
+        .map_err(|e| format!("clear custom field option values: {e}"))?;
+    for (ordinal, option_id) in stored.option_ids.iter().enumerate() {
+        let ordinal =
+            i64::try_from(ordinal).map_err(|_| "too many selected options".to_string())?;
+        sqlx::query(
+            "INSERT INTO project_custom_field_option_values (value_key, ordinal, option_id)
+             VALUES (?, ?, ?)",
+        )
+        .bind(&value_key)
+        .bind(ordinal)
+        .bind(option_id)
+        .execute(&mut **tx)
+        .await
+        .map_err(|e| format!("update custom field option value: {e}"))?;
+    }
     Ok(())
 }
 
@@ -322,104 +438,10 @@ pub(crate) async fn update_custom_field_value_with_history(
 ) -> Result<(), String> {
     let field = custom_field_for_task_value(tx, &value.task_id, &value.field_id).await?;
     ensure_custom_field_value_payload_matches_type(&field.field_type, value)?;
-    let old_value = custom_field_value_label(tx, &value.task_id, &field).await?;
-    sqlx::query("DELETE FROM project_custom_field_values WHERE task_id = ? AND field_id = ?")
-        .bind(value.task_id.trim())
-        .bind(value.field_id.trim())
-        .execute(&mut **tx)
-        .await
-        .map_err(|e| format!("clear custom field value: {e}"))?;
-    sqlx::query(
-        "DELETE FROM project_custom_field_option_values WHERE task_id = ? AND field_id = ?",
-    )
-    .bind(value.task_id.trim())
-    .bind(value.field_id.trim())
-    .execute(&mut **tx)
-    .await
-    .map_err(|e| format!("clear custom field option values: {e}"))?;
-
-    match field.field_type.as_str() {
-        "text" | "url" | "phone" | "email" | "person" | "files" => {
-            if let Some(text) = value.text_value.as_ref().map(|text| text.trim()) {
-                if !text.is_empty() {
-                    upsert_scalar_custom_field_value(
-                        tx,
-                        value.task_id.trim(),
-                        value.field_id.trim(),
-                        Some(text),
-                        None,
-                        None,
-                        None,
-                    )
-                    .await?;
-                }
-            }
-        }
-        "number" => {
-            if let Some(number) = value.number_value {
-                upsert_scalar_custom_field_value(
-                    tx,
-                    value.task_id.trim(),
-                    value.field_id.trim(),
-                    None,
-                    Some(number),
-                    None,
-                    None,
-                )
-                .await?;
-            }
-        }
-        "date" => {
-            if let Some(date) = value.date_value.as_ref().map(|date| date.trim()) {
-                if !date.is_empty() {
-                    validate_date(date, "date_value")?;
-                    upsert_scalar_custom_field_value(
-                        tx,
-                        value.task_id.trim(),
-                        value.field_id.trim(),
-                        None,
-                        None,
-                        Some(date),
-                        None,
-                    )
-                    .await?;
-                }
-            }
-        }
-        "checkbox" => {
-            if let Some(checked) = value.checkbox_value {
-                upsert_scalar_custom_field_value(
-                    tx,
-                    value.task_id.trim(),
-                    value.field_id.trim(),
-                    None,
-                    None,
-                    None,
-                    Some(if checked { 1 } else { 0 }),
-                )
-                .await?;
-            }
-        }
-        "select" | "multi_select" | "status" => {
-            let option_ids =
-                ensure_options_belong_to_field(tx, &field.id, &value.option_ids).await?;
-            for option_id in option_ids {
-                sqlx::query(
-                    "INSERT INTO project_custom_field_option_values (task_id, field_id, option_id)
-                     VALUES (?, ?, ?)",
-                )
-                .bind(value.task_id.trim())
-                .bind(value.field_id.trim())
-                .bind(option_id)
-                .execute(&mut **tx)
-                .await
-                .map_err(|e| format!("update custom field option value: {e}"))?;
-            }
-        }
-        _ => return Err("unsupported custom field type".to_string()),
-    }
-
-    let new_value = custom_field_value_label(tx, &value.task_id, &field).await?;
+    let old_value = custom_field_value_label(tx, value.task_id.trim(), &field).await?;
+    let stored = stored_value(tx, &field, value).await?;
+    write_stored_value(tx, value.task_id.trim(), &field.id, &stored).await?;
+    let new_value = custom_field_value_label(tx, value.task_id.trim(), &field).await?;
     if old_value != new_value {
         insert_task_field_change_event(
             tx,
@@ -435,21 +457,25 @@ pub(crate) async fn update_custom_field_value_with_history(
     Ok(())
 }
 
+async fn tasks_with_field_value(
+    executor: impl sqlx::SqliteExecutor<'_>,
+    field_id: &str,
+) -> Result<Vec<String>, String> {
+    sqlx::query_scalar::<_, String>(
+        "SELECT task_id FROM project_custom_field_values WHERE field_id = ? ORDER BY task_id",
+    )
+    .bind(field_id)
+    .fetch_all(executor)
+    .await
+    .map_err(|e| format!("load custom field task values: {e}"))
+}
+
 pub(crate) async fn delete_custom_field_with_history(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     field_id: &str,
 ) -> Result<(), String> {
     let field = custom_field_by_id(tx, field_id).await?;
-    let task_ids = sqlx::query_scalar::<_, String>(
-        "SELECT task_id FROM project_custom_field_values WHERE field_id = ?
-         UNION
-         SELECT task_id FROM project_custom_field_option_values WHERE field_id = ?",
-    )
-    .bind(field_id)
-    .bind(field_id)
-    .fetch_all(&mut **tx)
-    .await
-    .map_err(|e| format!("load custom field task values: {e}"))?;
+    let task_ids = tasks_with_field_value(&mut **tx, field_id).await?;
     let mut old_values = Vec::new();
     for task_id in task_ids {
         let old_value = custom_field_value_label(tx, &task_id, &field).await?;
@@ -477,18 +503,22 @@ pub(crate) async fn delete_custom_field_with_history(
     Ok(())
 }
 
+/// Deletes an option and the value rows left without any option, returning the tasks whose value row was
+/// deleted.
 pub(crate) async fn delete_custom_field_option_with_history(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     option_id: &str,
-) -> Result<(), String> {
+) -> Result<Vec<String>, String> {
     let (_option, field) = custom_field_option_with_field(tx, option_id).await?;
     let task_ids = sqlx::query_scalar::<_, String>(
-        "SELECT task_id
-         FROM project_custom_field_option_values
-         WHERE option_id = ?
-         ORDER BY created_at ASC",
+        "SELECT DISTINCT value.task_id
+         FROM project_custom_field_option_values AS selected
+         JOIN project_custom_field_values AS value ON value.sync_key = selected.value_key
+         WHERE selected.option_id = ? AND value.field_id = ?
+         ORDER BY value.task_id",
     )
     .bind(option_id)
+    .bind(&field.id)
     .fetch_all(&mut **tx)
     .await
     .map_err(|e| format!("load custom field option tasks: {e}"))?;
@@ -502,6 +532,19 @@ pub(crate) async fn delete_custom_field_option_with_history(
         .execute(&mut **tx)
         .await
         .map_err(|e| format!("delete project custom field option: {e}"))?;
+    let emptied_task_ids = sqlx::query_scalar::<_, String>(
+        "DELETE FROM project_custom_field_values
+         WHERE field_id = ?
+           AND NOT EXISTS (
+             SELECT 1 FROM project_custom_field_option_values AS selected
+             WHERE selected.value_key = project_custom_field_values.sync_key
+           )
+         RETURNING task_id",
+    )
+    .bind(&field.id)
+    .fetch_all(&mut **tx)
+    .await
+    .map_err(|e| format!("delete emptied custom field values: {e}"))?;
     for (task_id, old_value) in old_values {
         let new_value = custom_field_value_label(tx, &task_id, &field).await?;
         if old_value != new_value {
@@ -517,7 +560,7 @@ pub(crate) async fn delete_custom_field_option_with_history(
             .await?;
         }
     }
-    Ok(())
+    Ok(emptied_task_ids)
 }
 
 pub async fn create_custom_field(
@@ -534,46 +577,62 @@ pub(crate) async fn create_custom_field_in_pool(
     field: &ProjectCustomFieldCreate,
 ) -> Result<ProjectsMutationRows, String> {
     validate_custom_field_create(field)?;
-    ensure_project_exists_in_pool(pool, field.project_id.trim()).await?;
+    let project_id = field.project_id.trim();
+    ensure_project_exists_in_pool(pool, project_id).await?;
     let mut tx = pool
         .begin()
         .await
         .map_err(|e| format!("begin custom field creation: {e}"))?;
     if let Some(source_id) = field.duplicate_source_id.as_deref() {
         let source = custom_field_by_id(&mut tx, source_id).await?;
-        if source.project_id != field.project_id.trim()
-            || source.field_type != field.field_type.trim()
-        {
+        if source.project_id != project_id || source.field_type != field.field_type.trim() {
             return Err(
                 "duplicate property must match the source project and field type".to_string(),
             );
         }
     }
+    ensure_name_is_unique(
+        &mut tx,
+        UniqueName::CustomField(project_id),
+        field.name.trim(),
+        None,
+    )
+    .await?;
+    let order_key = custom_field_order(project_id)
+        .place(&mut tx, field.id.trim(), &field.placement)
+        .await?;
     sqlx::query(
-        "INSERT INTO project_custom_fields (id, project_id, name, field_type, sort_order, icon)
+        "INSERT INTO project_custom_fields (id, project_id, name, field_type, order_key, icon)
          VALUES (?, ?, ?, ?, ?, ?)",
     )
     .bind(field.id.trim())
-    .bind(field.project_id.trim())
+    .bind(project_id)
     .bind(field.name.trim())
     .bind(field.field_type.trim())
-    .bind(field.sort_order)
+    .bind(order_key.as_str())
     .bind(field.icon.as_deref().map(str::trim))
     .execute(&mut *tx)
     .await
     .map_err(|e| format!("create project custom field: {e}"))?;
     if let Some(source_id) = field.duplicate_source_id.as_deref() {
-        sqlx::query("INSERT INTO project_custom_field_options (id, field_id, name, sort_order)
-            SELECT lower(hex(randomblob(16))), ?, name, sort_order FROM project_custom_field_options WHERE field_id = ?")
-            .bind(field.id.trim()).bind(source_id.trim()).execute(&mut *tx).await
-            .map_err(|e| format!("copy duplicate property options: {e}"))?;
+        sqlx::query(
+            "INSERT INTO project_custom_field_options (id, field_id, name, order_key)
+             SELECT lower(hex(randomblob(16))), ?, name, order_key
+             FROM project_custom_field_options
+             WHERE field_id = ?",
+        )
+        .bind(field.id.trim())
+        .bind(source_id.trim())
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| format!("copy duplicate property options: {e}"))?;
     }
     tx.commit()
         .await
         .map_err(|e| format!("commit custom field creation: {e}"))?;
     let mut mutation = custom_field_mutation(pool, field.id.trim()).await?;
     mutation.custom_field_options = sqlx::query_as::<_, ProjectCustomFieldOptionRow>(
-        "SELECT * FROM project_custom_field_options WHERE field_id = ? ORDER BY sort_order, id",
+        "SELECT * FROM project_custom_field_options WHERE field_id = ? ORDER BY order_key, id",
     )
     .bind(field.id.trim())
     .fetch_all(pool)
@@ -582,30 +641,43 @@ pub(crate) async fn create_custom_field_in_pool(
     Ok(mutation)
 }
 
+/// Updates a field's definition, bumping its revision, and moves it when a placement is given.
 pub async fn update_custom_field(
     pool: &SqlitePool,
     field: ProjectCustomFieldUpdate,
 ) -> Result<ProjectsMutationRows, String> {
     validate_custom_field_update(&field)?;
-    let result = sqlx::query(
+    let field_id = field.id.trim();
+    let mut tx = pool.begin().await.map_err(|e| format!("begin: {e}"))?;
+    let current = custom_field_by_id(&mut tx, field_id).await?;
+    ensure_name_is_unique(
+        &mut tx,
+        UniqueName::CustomField(&current.project_id),
+        field.name.trim(),
+        Some(field_id),
+    )
+    .await?;
+    sqlx::query(
         "UPDATE project_custom_fields
          SET name = ?,
-             sort_order = ?,
              icon = ?,
+             revision = revision + 1,
              updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
          WHERE id = ?",
     )
     .bind(field.name.trim())
-    .bind(field.sort_order)
     .bind(field.icon.as_deref().map(str::trim))
-    .bind(field.id.trim())
-    .execute(pool)
+    .bind(field_id)
+    .execute(&mut *tx)
     .await
     .map_err(|e| format!("update project custom field: {e}"))?;
-    if result.rows_affected() == 0 {
-        return Err("project custom field not found".to_string());
+    if let Some(placement) = &field.placement {
+        custom_field_order(&current.project_id)
+            .move_row(&mut tx, field_id, placement)
+            .await?;
     }
-    custom_field_mutation(pool, field.id.trim()).await
+    tx.commit().await.map_err(|e| format!("commit: {e}"))?;
+    custom_field_mutation(pool, field_id).await
 }
 
 pub async fn delete_custom_field(
@@ -613,16 +685,7 @@ pub async fn delete_custom_field(
     field_id: String,
 ) -> Result<ProjectsMutationRows, String> {
     require_non_empty(&field_id, "field_id")?;
-    let task_ids = sqlx::query_scalar::<_, String>(
-        "SELECT task_id FROM project_custom_field_values WHERE field_id = ?
-         UNION
-         SELECT task_id FROM project_custom_field_option_values WHERE field_id = ?",
-    )
-    .bind(field_id.trim())
-    .bind(field_id.trim())
-    .fetch_all(pool)
-    .await
-    .map_err(|e| format!("load tasks affected by custom field deletion: {e}"))?;
+    let task_ids = tasks_with_field_value(pool, field_id.trim()).await?;
     let mut tx = pool.begin().await.map_err(|e| format!("begin: {e}"))?;
     delete_custom_field_with_history(&mut tx, field_id.trim()).await?;
     tx.commit().await.map_err(|e| format!("commit: {e}"))?;
@@ -643,43 +706,69 @@ pub async fn create_custom_field_option(
     option: ProjectCustomFieldOptionCreate,
 ) -> Result<ProjectsMutationRows, String> {
     validate_custom_field_option_create(&option)?;
-    ensure_custom_field_accepts_options_in_pool(pool, option.field_id.trim()).await?;
+    let field_id = option.field_id.trim();
+    ensure_custom_field_accepts_options_in_pool(pool, field_id).await?;
+    let mut tx = pool.begin().await.map_err(|e| format!("begin: {e}"))?;
+    ensure_name_is_unique(
+        &mut tx,
+        UniqueName::CustomFieldOption(field_id),
+        option.name.trim(),
+        None,
+    )
+    .await?;
+    let order_key = custom_field_option_order(field_id)
+        .place(&mut tx, option.id.trim(), &option.placement)
+        .await?;
     sqlx::query(
-        "INSERT INTO project_custom_field_options (id, field_id, name, sort_order)
+        "INSERT INTO project_custom_field_options (id, field_id, name, order_key)
          VALUES (?, ?, ?, ?)",
     )
     .bind(option.id.trim())
-    .bind(option.field_id.trim())
+    .bind(field_id)
     .bind(option.name.trim())
-    .bind(option.sort_order)
-    .execute(pool)
+    .bind(order_key.as_str())
+    .execute(&mut *tx)
     .await
     .map_err(|e| format!("create project custom field option: {e}"))?;
+    tx.commit().await.map_err(|e| format!("commit: {e}"))?;
     custom_field_option_mutation(pool, option.id.trim()).await
 }
 
+/// Renames an option, bumping its revision, and moves it when a placement is given.
 pub async fn update_custom_field_option(
     pool: &SqlitePool,
     option: ProjectCustomFieldOptionUpdate,
 ) -> Result<ProjectsMutationRows, String> {
     validate_custom_field_option_update(&option)?;
-    let result = sqlx::query(
+    let option_id = option.id.trim();
+    let mut tx = pool.begin().await.map_err(|e| format!("begin: {e}"))?;
+    let (current, _field) = custom_field_option_with_field(&mut tx, option_id).await?;
+    ensure_name_is_unique(
+        &mut tx,
+        UniqueName::CustomFieldOption(&current.field_id),
+        option.name.trim(),
+        Some(option_id),
+    )
+    .await?;
+    sqlx::query(
         "UPDATE project_custom_field_options
          SET name = ?,
-             sort_order = ?,
+             revision = revision + 1,
              updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
          WHERE id = ?",
     )
     .bind(option.name.trim())
-    .bind(option.sort_order)
-    .bind(option.id.trim())
-    .execute(pool)
+    .bind(option_id)
+    .execute(&mut *tx)
     .await
     .map_err(|e| format!("update project custom field option: {e}"))?;
-    if result.rows_affected() == 0 {
-        return Err("project custom field option not found".to_string());
+    if let Some(placement) = &option.placement {
+        custom_field_option_order(&current.field_id)
+            .move_row(&mut tx, option_id, placement)
+            .await?;
     }
-    custom_field_option_mutation(pool, option.id.trim()).await
+    tx.commit().await.map_err(|e| format!("commit: {e}"))?;
+    custom_field_option_mutation(pool, option_id).await
 }
 
 pub async fn delete_custom_field_option(
@@ -687,21 +776,35 @@ pub async fn delete_custom_field_option(
     option_id: String,
 ) -> Result<ProjectsMutationRows, String> {
     require_non_empty(&option_id, "option_id")?;
+    let mut tx = pool.begin().await.map_err(|e| format!("begin: {e}"))?;
+    let (_option, field) = custom_field_option_with_field(&mut tx, option_id.trim()).await?;
     let task_ids = sqlx::query_scalar::<_, String>(
-        "SELECT task_id FROM project_custom_field_option_values WHERE option_id = ?",
+        "SELECT DISTINCT value.task_id
+         FROM project_custom_field_option_values AS selected
+         JOIN project_custom_field_values AS value ON value.sync_key = selected.value_key
+         WHERE selected.option_id = ?
+         ORDER BY value.task_id",
     )
     .bind(option_id.trim())
-    .fetch_all(pool)
+    .fetch_all(&mut *tx)
     .await
     .map_err(|e| format!("load tasks affected by custom field option deletion: {e}"))?;
-    let mut tx = pool.begin().await.map_err(|e| format!("begin: {e}"))?;
-    delete_custom_field_option_with_history(&mut tx, option_id.trim()).await?;
+    let emptied_task_ids =
+        delete_custom_field_option_with_history(&mut tx, option_id.trim()).await?;
     tx.commit().await.map_err(|e| format!("commit: {e}"))?;
     let mut mutation = ProjectsMutationRows::default();
     for task_id in task_ids {
         mutation
             .task_change_events
             .extend(latest_task_change_events(pool, &task_id).await?);
+    }
+    for task_id in emptied_task_ids {
+        mutation
+            .removals
+            .push(ProjectMutationRemoval::CustomFieldValue {
+                task_id,
+                field_id: field.id.clone(),
+            });
     }
     mutation
         .removals
@@ -738,7 +841,9 @@ pub async fn update_custom_field_value(
         mutation.custom_field_values.push(row);
     }
     mutation.custom_field_option_values = sqlx::query_as::<_, ProjectCustomFieldOptionValueRow>(
-        "SELECT * FROM project_custom_field_option_values WHERE task_id = ? AND field_id = ?",
+        sqlx::AssertSqlSafe(format!(
+            "{SELECTED_OPTIONS_SQL} WHERE value.task_id = ? AND value.field_id = ? ORDER BY selected.ordinal"
+        )),
     )
     .bind(value.task_id.trim())
     .bind(value.field_id.trim())

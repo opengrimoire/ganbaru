@@ -3,7 +3,7 @@
 
 use std::sync::LazyLock;
 
-use ganbaru_sync::manifest::vault::{quick_notes, themes};
+use ganbaru_sync::manifest::vault::{music, quick_notes, themes};
 use ganbaru_sync::{DeviceRef, Engine, local};
 pub(crate) use ganbaru_sync_replica::recovery::{
     RecoveredRow, RecoveryAction, RecoveryChoice, RecoveryRestorers, RestoreFuture, close,
@@ -18,6 +18,8 @@ static RESTORERS: LazyLock<RecoveryRestorers> = LazyLock::new(|| {
     RecoveryRestorers::new()
         .with(&quick_notes::NOTES, restore_quick_note)
         .with(&themes::THEMES, restore_theme)
+        .with(&music::PLAYLISTS, restore_music_playlist)
+        .with(&music::ITEMS, refuse_music_item)
 });
 
 /// The recovery restorers of the vault domains.
@@ -45,6 +47,31 @@ fn restore_theme(conn: &mut SqliteConnection, row: RecoveredRow) -> RestoreFutur
             return Err("a recovered theme has deleted descendants".to_string());
         }
         ganbaru_themes::restore_recovered(conn, &row.values).await
+    })
+}
+
+/// Restores a deleted playlist as a new playlist with copies of its deleted intended uses and
+/// memberships.
+fn restore_music_playlist(conn: &mut SqliteConnection, row: RecoveredRow) -> RestoreFuture<'_> {
+    Box::pin(async move {
+        let now_ms = crate::vault::now_utc().timestamp_millis();
+        ganbaru_music_library::recovery::restore_recovered_playlist(
+            conn,
+            &row.values,
+            &row.descendants,
+            now_ms,
+        )
+        .await
+        .map_err(|error| error.to_string())
+    })
+}
+
+/// Refuses to restore a deleted library item. An item's key is derived from its source, so it
+/// comes back by adding that source again; its offer, which a concurrent membership edit opens,
+/// can only be discarded.
+fn refuse_music_item(_: &mut SqliteConnection, _: RecoveredRow) -> RestoreFuture<'_> {
+    Box::pin(async {
+        Err("a deleted Music library item comes back by adding its source again".to_string())
     })
 }
 

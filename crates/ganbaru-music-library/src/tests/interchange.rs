@@ -255,7 +255,7 @@ fn interchange_replace_keeps_derived_rows_and_removes_absent_memberships() {
             .await
             .unwrap();
         let item_id = crate::identity::import_item_id("local:fingerprint-1");
-        let membership_id = crate::identity::membership_id("playlist-1", &item_id);
+        let membership_id = crate::identity::membership_id("playlist-1", &item_id).unwrap();
         let first: (String, i64, i64) = sqlx::query_as(
             "SELECT id, version, updated_at_ms FROM music_playlist_memberships WHERE item_id = ?",
         )

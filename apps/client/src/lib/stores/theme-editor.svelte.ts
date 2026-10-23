@@ -4,6 +4,7 @@ import {
   themeEditorSessionHasChanges,
   type ThemeEditorSessionState,
 } from "$lib/themes/editor-session";
+import type { ThemeSaveChoice, ThemeSaveOutcome } from "$lib/themes/editor-save";
 
 /**
  * The single active theme editor session. Edits during the session live in
@@ -19,6 +20,10 @@ import {
 type EditorSession = ThemeEditorSessionState;
 
 let session = $state<EditorSession | undefined>(undefined);
+
+type SavedAsCopy = Extract<ThemeSaveOutcome, { kind: "savedAsCopy" }>;
+
+let saveNotice = $state<SavedAsCopy | undefined>(undefined);
 
 export interface OpenEditorOptions {
   snapshot?: string;
@@ -49,16 +54,38 @@ export function getThemeEditor() {
       };
       getTheme().setEditingTheme(id);
     },
-    /** Flush the in-memory edits to SQLite and end the session. The edited theme stays active. */
-    async commit(): Promise<void> {
-      if (!session) return;
+    /**
+     * The copy a save made instead of updating the edited theme, until
+     * {@link takeSaveNotice} reports it.
+     */
+    get saveNotice(): SavedAsCopy | undefined {
+      return saveNotice;
+    },
+    /** Return the pending save notice once and clear it. */
+    takeSaveNotice(): SavedAsCopy | undefined {
+      const notice = saveNotice;
+      saveNotice = undefined;
+      return notice;
+    },
+    /**
+     * Flush the in-memory edits to SQLite and end the session. The saved
+     * theme stays active. A conflict with a remote edit writes nothing and
+     * keeps the session open until a later commit passes a `choice`. A save
+     * that made a copy, because the person chose one or the theme was
+     * deleted meanwhile, leaves a {@link saveNotice}.
+     */
+    async commit(choice?: ThemeSaveChoice): Promise<ThemeSaveOutcome> {
+      if (!session) return { kind: "saved" };
       const committingSession = session;
       const { editingId } = committingSession;
-      await getTheme().persistThemeToDb(editingId);
+      const outcome = await getTheme().persistThemeToDb(editingId, choice);
+      if (outcome.kind === "conflict") return outcome;
+      if (outcome.kind === "savedAsCopy") saveNotice = outcome;
       if (session === committingSession) {
         session = undefined;
         getTheme().setEditingTheme(undefined);
       }
+      return outcome;
     },
     /**
      * Roll the session back and reinstate the previously active theme. Fresh

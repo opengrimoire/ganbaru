@@ -49,11 +49,11 @@ pub(super) async fn seed() -> sqlx::SqlitePool {
         .await;
     }
     sqlx::raw_sql(r#"
-        INSERT INTO project_groups (id, name) VALUES ('group', 'Group');
-        INSERT INTO projects (id, group_id, name) VALUES ('project', 'group', 'Project');
-        INSERT INTO project_sections (id, project_id, name) VALUES ('section', 'project', 'General');
-        INSERT INTO project_statuses (id, project_id, name, category) VALUES ('status', 'project', 'Open', 'not_started');
-        INSERT INTO project_tasks (id, project_id, section_id, status_id, title) VALUES ('task', 'project', 'section', 'status', 'Task');
+        INSERT INTO project_groups (id, name, order_key) VALUES ('group', 'Group', 'a1');
+        INSERT INTO projects (id, group_id, name, order_key) VALUES ('project', 'group', 'Project', 'a1');
+        INSERT INTO project_sections (id, project_id, name, order_key) VALUES ('section', 'project', 'General', 'a1');
+        INSERT INTO project_statuses (id, project_id, name, category, order_key) VALUES ('status', 'project', 'Open', 'not_started', 'a1');
+        INSERT INTO project_tasks (id, project_id, section_id, status_id, title, section_order_key, status_order_key) VALUES ('task', 'project', 'section', 'status', 'Task', 'a1', 'a1');
         UPDATE calendar_events SET project_id = 'project';
         INSERT INTO project_task_event_links (task_id, event_id) VALUES ('task', 'source');
         INSERT INTO icalendar_objects (id, calendar_id, source_kind, source_fingerprint, method, created_at, updated_at)
@@ -82,8 +82,8 @@ pub(super) async fn seed() -> sqlx::SqlitePool {
         INSERT INTO calendar_event_pomodoro_configs (event_id, rhythm_kind, rhythm_source) VALUES ('source', 'sequence', 'custom');
         INSERT INTO calendar_event_pomodoro_config_sequence_steps (event_id, step_index, focus_duration_minutes, break_phase, break_duration_minutes)
             VALUES ('source', 0, 25, 'short_break', 5);
-        INSERT INTO music_context_assignments (owner_kind, owner_id, phase, behavior, provenance_kind, updated_at_ms)
-            VALUES ('event-snapshot', 'source', 'focus', 'keep-current-music', 'explicit', 1);
+        INSERT INTO music_context_assignments (owner_kind, owner_id, phase, behavior, provenance_kind, updated_at_ms, sync_key)
+            VALUES ('event-snapshot', 'source', 'focus', 'keep-current-music', 'explicit', 1, lower(hex(randomblob(16))));
         INSERT INTO icalendar_component_properties (id, component_id, name, value_type)
             VALUES ('property', 'event', 'x-preserved', 'text'), ('zone-property', 'zone', 'tzid', 'text'),
                    ('alarm-property', 'alarm-component', 'x-alarm', 'unknown');

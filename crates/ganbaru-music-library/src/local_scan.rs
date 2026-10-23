@@ -345,8 +345,8 @@ pub async fn link_collection_item(
     sqlx::query(
         "INSERT INTO music_source_collection_items
             (collection_id, item_id, source_position, first_discovered_at_ms,
-             last_seen_generation, missing_from_latest_snapshot)
-         VALUES (?, ?, ?, ?, ?, 0)
+             last_seen_generation, missing_from_latest_snapshot, sync_key)
+         VALUES (?, ?, ?, ?, ?, 0, ?)
          ON CONFLICT(collection_id, item_id) DO UPDATE SET
             source_position = COALESCE(excluded.source_position, source_position),
             last_seen_generation = excluded.last_seen_generation,
@@ -357,6 +357,10 @@ pub async fn link_collection_item(
     .bind(source_position)
     .bind(discovered_at_ms)
     .bind(generation)
+    .bind(ganbaru_music::sync_keys::collection_item_key(
+        collection_id,
+        item_id,
+    )?)
     .execute(&mut **transaction)
     .await
     .map_err(|error| MusicLibraryError::database("save local source provenance", error))?;

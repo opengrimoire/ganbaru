@@ -5,15 +5,15 @@ fn html_import_creates_canonical_blocks_rich_text_tables_media_and_toggles() {
     crate::test_block_on(async {
         let pool = migrated_memory_pool().await;
         sqlx::query(
-            "INSERT INTO project_groups (id, name, icon, sort_order)
-             VALUES ('project-group-a', 'Import destinations', 'lucide:folder', 0)",
+            "INSERT INTO project_groups (id, name, icon, order_key)
+             VALUES ('project-group-a', 'Import destinations', 'lucide:folder', 'a1')",
         )
         .execute(&pool)
         .await
         .unwrap();
         sqlx::query(
-            "INSERT INTO projects (id, group_id, name, icon, sort_order, status)
-             VALUES ('project-a', 'project-group-a', 'Project A', 'lucide:folder', 0, 'active')",
+            "INSERT INTO projects (id, group_id, name, icon, order_key, status)
+             VALUES ('project-a', 'project-group-a', 'Project A', 'lucide:folder', 'a1', 'active')",
         )
         .execute(&pool)
         .await

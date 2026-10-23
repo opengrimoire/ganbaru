@@ -1,3 +1,4 @@
+use super::custom_fields::SELECTED_OPTIONS_SQL;
 use super::models::*;
 use super::mutations::ensure_project_exists_in_pool;
 use super::validation::{require_non_empty, sql_like_contains_pattern, validate_enum};
@@ -9,14 +10,25 @@ const GANTT_LAYOUT_TASK_LIMIT: i64 = 10_000;
 
 const SUMMARY_SELECT: &str =
     "t.id, t.project_id, t.section_id, t.status_id, t.parent_task_id, t.title,
-     t.priority, t.task_type, t.section_sort_order, t.status_sort_order,
+     t.priority, t.task_type, t.section_order_key, t.status_order_key,
      t.estimate_minutes, t.due_date, t.due_time, t.start_date, t.start_time,
      t.target_end_date, t.completed_at, t.archived_at,
      CASE WHEN TRIM(COALESCE(t.blocker_reason, '')) <> '' THEN 1 ELSE 0 END AS blocker_reason_present,
      t.milestone, t.created_at, t.updated_at, t.revision";
+/// Prefix of a subquery that finds a scalar value of task `t`; the caller binds the field id.
+const SCALAR_VALUE_EXISTS: &str = "SELECT 1 FROM project_custom_field_values fv
+     WHERE (fv.text_value IS NOT NULL OR fv.number_value IS NOT NULL
+            OR fv.date_value IS NOT NULL OR fv.checkbox_value IS NOT NULL)
+       AND fv.task_id = t.id AND fv.field_id = ";
+/// Prefix of a subquery that finds a selected option of task `t`, read through its value row and ignoring an
+/// option of another field; the caller binds the field id.
+const SELECTED_OPTION_EXISTS: &str = "SELECT 1 FROM project_custom_field_values ov
+     JOIN project_custom_field_option_values sel ON sel.value_key = ov.sync_key
+     JOIN project_custom_field_options oo ON oo.id = sel.option_id AND oo.field_id = ov.field_id
+     WHERE ov.task_id = t.id AND ov.field_id = ";
 const SUMMARY_COLUMNS: &str =
     "t.id, t.project_id, t.section_id, t.status_id, t.parent_task_id, t.title,
-     t.priority, t.task_type, t.section_sort_order, t.status_sort_order,
+     t.priority, t.task_type, t.section_order_key, t.status_order_key,
      t.estimate_minutes, t.due_date, t.due_time, t.start_date, t.start_time,
      t.target_end_date, t.completed_at, t.archived_at, t.blocker_reason_present,
      t.milestone, t.created_at, t.updated_at, t.revision";
@@ -242,17 +254,21 @@ fn push_base_filters<'a>(
         match filter.mode.as_str() {
             "filled" => {
                 query
-                    .push(" AND (EXISTS(SELECT 1 FROM project_custom_field_values fv WHERE fv.task_id = t.id AND fv.field_id = ")
+                    .push(" AND (EXISTS(")
+                    .push(SCALAR_VALUE_EXISTS)
                     .push_bind(&filter.field_id)
-                    .push(") OR EXISTS(SELECT 1 FROM project_custom_field_option_values ov WHERE ov.task_id = t.id AND ov.field_id = ")
+                    .push(") OR EXISTS(")
+                    .push(SELECTED_OPTION_EXISTS)
                     .push_bind(&filter.field_id)
                     .push("))");
             }
             "empty" => {
                 query
-                    .push(" AND NOT EXISTS(SELECT 1 FROM project_custom_field_values fv WHERE fv.task_id = t.id AND fv.field_id = ")
+                    .push(" AND NOT EXISTS(")
+                    .push(SCALAR_VALUE_EXISTS)
                     .push_bind(&filter.field_id)
-                    .push(") AND NOT EXISTS(SELECT 1 FROM project_custom_field_option_values ov WHERE ov.task_id = t.id AND ov.field_id = ")
+                    .push(") AND NOT EXISTS(")
+                    .push(SELECTED_OPTION_EXISTS)
                     .push_bind(&filter.field_id)
                     .push(")");
             }
@@ -267,9 +283,10 @@ fn push_base_filters<'a>(
             "option" => {
                 if let Some(option_id) = filter.option_id.as_deref() {
                     query
-                        .push(" AND EXISTS(SELECT 1 FROM project_custom_field_option_values ov WHERE ov.task_id = t.id AND ov.field_id = ")
+                        .push(" AND EXISTS(")
+                        .push(SELECTED_OPTION_EXISTS)
                         .push_bind(&filter.field_id)
-                        .push(" AND ov.option_id = ")
+                        .push(" AND sel.option_id = ")
                         .push_bind(option_id)
                         .push(")");
                 }
@@ -306,14 +323,14 @@ fn push_order(
     };
     if kanban || request.sort_mode == "manual" {
         let first = if kanban {
-            "t.status_sort_order"
+            "t.status_order_key"
         } else {
-            "t.section_sort_order"
+            "t.section_order_key"
         };
         let second = if kanban {
-            "t.section_sort_order"
+            "t.section_order_key"
         } else {
-            "t.status_sort_order"
+            "t.status_order_key"
         };
         query
             .push(first)
@@ -331,10 +348,10 @@ fn push_order(
     let expression = match request.sort_mode.as_str() {
         "title" => "LOWER(t.title)",
         "start" => "t.start_date",
-        "status" => "(SELECT sort_order FROM project_statuses ps WHERE ps.id = t.status_id)",
-        "section" => "t.section_sort_order",
+        "status" => "(SELECT order_key FROM project_statuses ps WHERE ps.id = t.status_id)",
+        "section" => "t.section_order_key",
         "priority" => {
-            "(SELECT sort_order FROM project_priorities pp WHERE pp.project_id = t.project_id AND pp.id = t.priority)"
+            "(SELECT order_key FROM project_priorities pp WHERE pp.project_id = t.project_id AND pp.id = t.priority)"
         }
         "due" => "t.due_date",
         "scheduled" => {
@@ -370,9 +387,9 @@ fn push_order(
         }
     }
     if request.sort_mode == "status" {
-        query.push(", t.status_sort_order ASC, t.section_sort_order ASC");
+        query.push(", t.status_order_key ASC, t.section_order_key ASC");
     } else {
-        query.push(", t.section_sort_order ASC, t.status_sort_order ASC");
+        query.push(", t.section_order_key ASC, t.status_order_key ASC");
     }
     query.push(", t.created_at ASC, t.title ASC, t.id ASC");
 }
@@ -381,8 +398,8 @@ fn push_order(
 fn push_custom_column_sort(query: &mut sqlx::QueryBuilder<sqlx::Sqlite>, field_id: &str) {
     query.push("COALESCE((SELECT COALESCE(fv.number_value, fv.checkbox_value, NULLIF(fv.date_value, ''), NULLIF(LOWER(fv.text_value), '')) FROM project_custom_field_values fv WHERE fv.task_id = t.id AND fv.field_id = ")
         .push_bind(field_id)
-        .push(" LIMIT 1), (SELECT GROUP_CONCAT(name, ', ') FROM (SELECT LOWER(o.name) AS name FROM project_custom_field_option_values ov JOIN project_custom_field_options o ON o.id = ov.option_id WHERE ov.task_id = t.id AND ov.field_id = ")
-        .push_bind(field_id).push(" ORDER BY o.sort_order, o.id)))");
+        .push(" LIMIT 1), (SELECT GROUP_CONCAT(name, ', ') FROM (SELECT LOWER(o.name) AS name FROM project_custom_field_values ov JOIN project_custom_field_option_values sel ON sel.value_key = ov.sync_key JOIN project_custom_field_options o ON o.id = sel.option_id AND o.field_id = ov.field_id WHERE ov.task_id = t.id AND ov.field_id = ")
+        .push_bind(field_id).push(" ORDER BY o.order_key, o.id)))");
 }
 
 async fn count_tasks(
@@ -504,13 +521,8 @@ async fn attach_window_relationships(
         &task_ids,
     )
     .await?;
-    page.custom_field_option_values = load_rows_for_task_ids(
-        pool,
-        "SELECT * FROM project_custom_field_option_values",
-        "task_id",
-        &task_ids,
-    )
-    .await?;
+    page.custom_field_option_values =
+        load_rows_for_task_ids(pool, SELECTED_OPTIONS_SQL, "value.task_id", &task_ids).await?;
     if !task_ids.is_empty() {
         let mut dependency_query = sqlx::QueryBuilder::<sqlx::Sqlite>::new(
             "SELECT * FROM project_task_dependencies WHERE blocking_task_id IN (",
@@ -663,11 +675,17 @@ async fn list_column_calculations(
     fields.push(" SELECT f.id AS field_id,
         COUNT(DISTINCT CASE WHEN v.number_value IS NOT NULL OR v.checkbox_value IS NOT NULL
           OR NULLIF(TRIM(v.text_value), '') IS NOT NULL OR NULLIF(TRIM(v.date_value), '') IS NOT NULL
-          OR EXISTS(SELECT 1 FROM project_custom_field_option_values ov WHERE ov.task_id = m.id AND ov.field_id = f.id)
-          THEN m.id END) AS filled, CAST(SUM(v.number_value) AS REAL) AS sum, CAST(AVG(v.number_value) AS REAL) AS average, CAST(MIN(v.number_value) AS REAL) AS minimum, CAST(MAX(v.number_value) AS REAL) AS maximum
+          OR EXISTS(SELECT 1 FROM project_custom_field_option_values sel
+                    JOIN project_custom_field_options oo ON oo.id = sel.option_id AND oo.field_id = f.id
+                    WHERE sel.value_key = v.sync_key)
+          THEN m.id END) AS filled,
+        CASE WHEN COUNT(v.number_value) > 0 THEN TOTAL(v.number_value) / 1000000.0 END AS sum,
+        AVG(v.number_value) / 1000000.0 AS average,
+        MIN(v.number_value) / 1000000.0 AS minimum,
+        MAX(v.number_value) / 1000000.0 AS maximum
         FROM project_custom_fields f LEFT JOIN matched m ON 1 = 1
         LEFT JOIN project_custom_field_values v ON v.task_id = m.id AND v.field_id = f.id
-        WHERE f.project_id = ").push_bind(&request.project_id).push(" GROUP BY f.id ORDER BY f.sort_order, f.id");
+        WHERE f.project_id = ").push_bind(&request.project_id).push(" GROUP BY f.id ORDER BY f.order_key, f.id");
     let custom = fields
         .build_query_as::<CustomColumnAggregateRow>()
         .fetch_all(pool)
@@ -721,14 +739,14 @@ pub async fn load_task_view(
         dependencies: Vec::new(),
         event_links: Vec::new(),
         tags: sqlx::query_as::<_, ProjectTagRow>(
-            "SELECT * FROM project_tags WHERE project_id = ? ORDER BY sort_order, name",
+            "SELECT * FROM project_tags WHERE project_id = ? ORDER BY order_key, id",
         )
         .bind(&request.project_id)
         .fetch_all(pool)
         .await
         .map_err(|e| format!("load project task view tags: {e}"))?,
         custom_fields: sqlx::query_as::<_, ProjectCustomFieldRow>(
-            "SELECT * FROM project_custom_fields WHERE project_id = ? ORDER BY sort_order, name",
+            "SELECT * FROM project_custom_fields WHERE project_id = ? ORDER BY order_key, id",
         )
         .bind(&request.project_id)
         .fetch_all(pool)
@@ -737,7 +755,7 @@ pub async fn load_task_view(
         custom_field_options: sqlx::query_as::<_, ProjectCustomFieldOptionRow>(
             "SELECT o.* FROM project_custom_field_options o
              JOIN project_custom_fields f ON f.id = o.field_id
-             WHERE f.project_id = ? ORDER BY o.field_id, o.sort_order, o.name",
+             WHERE f.project_id = ? ORDER BY o.field_id, o.order_key, o.id",
         )
         .bind(&request.project_id)
         .fetch_all(pool)
@@ -769,7 +787,11 @@ pub async fn load_task_view(
         }
         ProjectViewId::Kanban => {
             let status_ids = sqlx::query_scalar::<_, String>(
-                "SELECT id FROM project_statuses WHERE project_id = ? ORDER BY sort_order, name",
+                "SELECT id FROM project_statuses
+                 WHERE project_id = ?
+                   AND (deleted_at IS NULL
+                        OR EXISTS(SELECT 1 FROM project_tasks t WHERE t.status_id = project_statuses.id))
+                 ORDER BY order_key, id",
             )
             .bind(&request.project_id)
             .fetch_all(pool)
@@ -860,7 +882,7 @@ pub async fn load_task_detail(
            OR EXISTS(SELECT 1 FROM project_task_dependencies d
                      WHERE (d.blocking_task_id = ? AND d.blocked_task_id = t.id)
                         OR (d.blocked_task_id = ? AND d.blocking_task_id = t.id))
-         ) ORDER BY t.section_sort_order, t.created_at LIMIT 200"
+         ) ORDER BY t.section_order_key, t.created_at LIMIT 200"
     )))
     .bind(&project_id)
     .bind(task_id.trim())
@@ -872,14 +894,14 @@ pub async fn load_task_detail(
     .await
     .map_err(|e| format!("load related project task summaries: {e}"))?;
     let checklist_items = sqlx::query_as::<_, ProjectChecklistItemRow>(
-        "SELECT * FROM project_checklist_items WHERE task_id = ? ORDER BY sort_order, created_at",
+        "SELECT * FROM project_checklist_items WHERE task_id = ? ORDER BY order_key, id",
     )
     .bind(task_id.trim())
     .fetch_all(pool)
     .await
     .map_err(|e| format!("load project task checklist detail: {e}"))?;
     let tags = sqlx::query_as::<_, ProjectTagRow>(
-        "SELECT * FROM project_tags WHERE project_id = ? ORDER BY sort_order, name",
+        "SELECT * FROM project_tags WHERE project_id = ? ORDER BY order_key, id",
     )
     .bind(&project_id)
     .fetch_all(pool)
@@ -894,7 +916,7 @@ pub async fn load_task_detail(
     )
     .await?;
     let custom_fields = sqlx::query_as::<_, ProjectCustomFieldRow>(
-        "SELECT * FROM project_custom_fields WHERE project_id = ? ORDER BY sort_order, name",
+        "SELECT * FROM project_custom_fields WHERE project_id = ? ORDER BY order_key, id",
     )
     .bind(&project_id)
     .fetch_all(pool)
@@ -903,7 +925,7 @@ pub async fn load_task_detail(
     let custom_field_options = sqlx::query_as::<_, ProjectCustomFieldOptionRow>(
         "SELECT o.* FROM project_custom_field_options o
          JOIN project_custom_fields f ON f.id = o.field_id
-         WHERE f.project_id = ? ORDER BY o.field_id, o.sort_order, o.name",
+         WHERE f.project_id = ? ORDER BY o.field_id, o.order_key, o.id",
     )
     .bind(&project_id)
     .fetch_all(pool)
@@ -916,13 +938,8 @@ pub async fn load_task_detail(
         &task_ids,
     )
     .await?;
-    let custom_field_option_values = load_rows_for_task_ids(
-        pool,
-        "SELECT * FROM project_custom_field_option_values",
-        "task_id",
-        &task_ids,
-    )
-    .await?;
+    let custom_field_option_values =
+        load_rows_for_task_ids(pool, SELECTED_OPTIONS_SQL, "value.task_id", &task_ids).await?;
     let dependencies = sqlx::query_as::<_, ProjectTaskDependencyRow>(
         "SELECT * FROM project_task_dependencies
          WHERE blocking_task_id = ? OR blocked_task_id = ? ORDER BY created_at",

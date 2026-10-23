@@ -515,7 +515,7 @@ fn guarded_connections_refuse_local_tables_and_signal_commits() {
         assert_eq!(access, DatabaseAccessMode::Guarded);
 
         let refused = sqlx::query(
-            "INSERT INTO projects (id, group_id, name) VALUES ('project-1', 'group-1', 'Project')",
+            "INSERT INTO projects (id, group_id, name, order_key) VALUES ('project-1', 'group-1', 'Project', 'a1')",
         )
         .execute(&pool)
         .await

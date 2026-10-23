@@ -218,13 +218,18 @@ async fn replace_preset_sounds(
         .zip(super::order::keys_after(tail, added.len())?)
     {
         sqlx::query(
-            "INSERT INTO music_soundscape_preset_sounds (preset_id, soundscape_id, order_key, level_milli)
-             VALUES (?, ?, ?, ?)",
+            "INSERT INTO music_soundscape_preset_sounds
+                (preset_id, soundscape_id, order_key, level_milli, sync_key)
+             VALUES (?, ?, ?, ?, ?)",
         )
         .bind(preset_id)
         .bind(&sound.soundscape_id)
         .bind(key.as_str())
         .bind(sound.level_milli)
+        .bind(ganbaru_music::sync_keys::preset_sound_key(
+            preset_id,
+            &sound.soundscape_id,
+        )?)
         .execute(&mut **transaction)
         .await
         .map_err(|error| MusicLibraryError::database("save soundscape preset sound", error))?;

@@ -19,7 +19,7 @@ function result() {
     tasks: [{
       id: "task-1", project_id: "project-1", revision: 7, section_id: "section-1", status_id: "status-1",
       parent_task_id: null, title: "Current native title", description: "Description", priority: "high",
-      task_type: "task", section_sort_order: 1000, status_sort_order: 1000, estimate_minutes: null,
+      task_type: "task", section_order_key: "a1", status_order_key: "a1", estimate_minutes: null,
       due_date: null, due_time: null, due_reminder_minutes: null, start_date: null, start_time: null,
       start_reminder_minutes: null, target_end_date: null,
       completed_at: null, archived_at: null, blocker_reason: null, milestone: 0,
@@ -40,7 +40,7 @@ describe("applyProjectTaskBulk", () => {
 
   it.each([
     { revision: -1 }, { revision: Number.MAX_SAFE_INTEGER + 1 }, { project_id: "other-project" },
-    { task_type: "unknown" }, { title: null }, { status_sort_order: Number.NaN },
+    { task_type: "unknown" }, { title: null }, { status_order_key: Number.NaN },
   ])("rejects malformed native task fields before reconciliation: %j", async (patch) => {
     const response = result();
     vi.mocked(invoke).mockResolvedValue({ ...response, tasks: [{ ...response.tasks[0], ...patch }] });
@@ -59,10 +59,10 @@ describe("applyProjectTaskBulk", () => {
 describe("reorderProjectItem", () => {
   const reorder: ProjectReorderRequest = {
     operationId: "reorder-1", projectId: "project-1", direction: 1,
-    item: { kind: "custom_field_option", id: "option-1", fieldId: "field-1", expectedOrder: 1000 },
+    item: { kind: "custom_field_option", id: "option-1", fieldId: "field-1", expectedOrderKey: "a0" },
   };
   const option = { id: "option-1", field_id: "field-1", revision: 2, name: "Current name",
-    sort_order: 2000, created_at: "created", updated_at: "updated" };
+    order_key: "a1", created_at: "created", updated_at: "updated" };
 
   beforeEach(() => vi.clearAllMocks());
 
@@ -70,10 +70,10 @@ describe("reorderProjectItem", () => {
     vi.mocked(invoke).mockResolvedValue({ ...result(), tasks: [], custom_field_options: [option] });
     const mutation = await reorderProjectItem(reorder);
     expect(invoke).toHaveBeenCalledExactlyOnceWith("projects_reorder_item", { dbUrl: "sqlite:test", request: reorder });
-    expect(mutation.changed.customFieldOptions[0]).toMatchObject({ revision: 2, name: "Current name", sortOrder: 2000 });
+    expect(mutation.changed.customFieldOptions[0]).toMatchObject({ revision: 2, name: "Current name", orderKey: "a1" });
   });
 
-  it.each([{ field_id: "foreign" }, { revision: -1 }, { revision: undefined }, { sort_order: 1.5 }])(
+  it.each([{ field_id: "foreign" }, { revision: -1 }, { revision: undefined }, { order_key: 1.5 }])(
     "rejects invalid native option data: %j", async (patch) => {
       vi.mocked(invoke).mockResolvedValue({ ...result(), tasks: [], custom_field_options: [{ ...option, ...patch }] });
       await expect(reorderProjectItem(reorder)).rejects.toThrow();

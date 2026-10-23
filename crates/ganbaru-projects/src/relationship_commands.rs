@@ -2,6 +2,7 @@ use sqlx::SqlitePool;
 use std::collections::{HashMap, HashSet};
 
 use super::history::insert_task_change_event;
+use super::keys::{dependency_key, task_tag_key};
 use super::models::{
     ProjectLinkableEvent, ProjectLinkableEventRow, ProjectLinkableEventSearch,
     ProjectLinkableEventTask, ProjectLinkableEventTaskRow, ProjectMutationRemoval,
@@ -20,109 +21,116 @@ use super::validation::{
     validate_task_tag_link_create,
 };
 
+/// Creates a dependency whose id and `sync_key` are derived from its two tasks, so creating the same dependency
+/// again, here or on another device, addresses the existing row.
 pub async fn create_task_dependency(
     pool: &SqlitePool,
     dependency: ProjectTaskDependencyCreate,
 ) -> Result<ProjectsMutationRows, String> {
     validate_task_dependency_create(&dependency)?;
+    let blocking_task_id = dependency.blocking_task_id.trim();
+    let blocked_task_id = dependency.blocked_task_id.trim();
+    let id = dependency_key(blocking_task_id, blocked_task_id)?;
     let mut tx = pool.begin().await.map_err(|e| format!("begin: {e}"))?;
-    ensure_dependency_tasks_match_project(
-        &mut tx,
-        &dependency.blocking_task_id,
-        &dependency.blocked_task_id,
-    )
-    .await?;
-    ensure_dependency_has_no_cycle(
-        &mut tx,
-        &dependency.blocking_task_id,
-        &dependency.blocked_task_id,
-    )
-    .await?;
-    sqlx::query(
+    ensure_dependency_tasks_match_project(&mut tx, blocking_task_id, blocked_task_id).await?;
+    ensure_dependency_has_no_cycle(&mut tx, blocking_task_id, blocked_task_id).await?;
+    let inserted = sqlx::query(
         "INSERT INTO project_task_dependencies
-            (id, blocking_task_id, blocked_task_id, dependency_type)
-         VALUES (?, ?, ?, ?)",
+            (id, sync_key, blocking_task_id, blocked_task_id, dependency_type)
+         VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT DO NOTHING",
     )
-    .bind(dependency.id.trim())
-    .bind(&dependency.blocking_task_id)
-    .bind(&dependency.blocked_task_id)
+    .bind(&id)
+    .bind(&id)
+    .bind(blocking_task_id)
+    .bind(blocked_task_id)
     .bind(&dependency.dependency_type)
     .execute(&mut *tx)
     .await
     .map_err(|e| format!("create project task dependency: {e}"))?;
-    insert_task_change_event(
-        &mut tx,
-        &dependency.blocked_task_id,
-        "dependency_added",
-        Some("blocking_task_id"),
-        None,
-        Some(&dependency.blocking_task_id),
-    )
-    .await?;
+    if inserted.rows_affected() > 0 {
+        insert_task_change_event(
+            &mut tx,
+            blocked_task_id,
+            "dependency_added",
+            Some("blocking_task_id"),
+            None,
+            Some(blocking_task_id),
+        )
+        .await?;
+    }
     tx.commit().await.map_err(|e| format!("commit: {e}"))?;
-    dependency_mutation(pool, dependency.id.trim(), &dependency.blocked_task_id).await
+    dependency_mutation(pool, &id, blocked_task_id).await
 }
 
+/// Deletes a dependency. Deleting one that is already gone succeeds and still reports the removal.
 pub async fn delete_task_dependency(
     pool: &SqlitePool,
     dependency_id: String,
 ) -> Result<ProjectsMutationRows, String> {
     require_non_empty(&dependency_id, "dependency_id")?;
+    let dependency_id = dependency_id.trim().to_string();
     let mut tx = pool.begin().await.map_err(|e| format!("begin: {e}"))?;
     let row = sqlx::query_as::<_, ProjectTaskDependencyRow>(
         "SELECT * FROM project_task_dependencies WHERE id = ?",
     )
-    .bind(dependency_id.trim())
+    .bind(&dependency_id)
     .fetch_optional(&mut *tx)
     .await
-    .map_err(|e| format!("load project task dependency: {e}"))?
-    .ok_or_else(|| "project task dependency not found".to_string())?;
-    sqlx::query("DELETE FROM project_task_dependencies WHERE id = ?")
-        .bind(dependency_id.trim())
-        .execute(&mut *tx)
-        .await
-        .map_err(|e| format!("delete project task dependency: {e}"))?;
-    insert_task_change_event(
-        &mut tx,
-        &row.blocked_task_id,
-        "dependency_removed",
-        Some("blocking_task_id"),
-        Some(&row.blocking_task_id),
-        None,
-    )
-    .await?;
+    .map_err(|e| format!("load project task dependency: {e}"))?;
+    if let Some(row) = &row {
+        sqlx::query("DELETE FROM project_task_dependencies WHERE id = ?")
+            .bind(&dependency_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| format!("delete project task dependency: {e}"))?;
+        insert_task_change_event(
+            &mut tx,
+            &row.blocked_task_id,
+            "dependency_removed",
+            Some("blocking_task_id"),
+            Some(&row.blocking_task_id),
+            None,
+        )
+        .await?;
+    }
     tx.commit().await.map_err(|e| format!("commit: {e}"))?;
-    let mut mutation = ProjectsMutationRows {
-        task_change_events: latest_task_change_events(pool, &row.blocked_task_id).await?,
-        ..ProjectsMutationRows::default()
-    };
-    mutation.removals.push(ProjectMutationRemoval::Dependency {
-        id: dependency_id.trim().to_string(),
-    });
+    let mut mutation = ProjectsMutationRows::default();
+    if let Some(row) = &row {
+        mutation.task_change_events = latest_task_change_events(pool, &row.blocked_task_id).await?;
+    }
+    mutation
+        .removals
+        .push(ProjectMutationRemoval::Dependency { id: dependency_id });
     Ok(mutation)
 }
 
+/// Links a tag to a task. The link's `sync_key` is derived from the task and tag.
 pub async fn link_task_tag(
     pool: &SqlitePool,
     link: ProjectTaskTagLinkCreate,
 ) -> Result<ProjectsMutationRows, String> {
     validate_task_tag_link_create(&link)?;
+    let task_id = link.task_id.trim();
+    let tag_id = link.tag_id.trim();
+    let sync_key = task_tag_key(task_id, tag_id)?;
     let mut tx = pool.begin().await.map_err(|e| format!("begin: {e}"))?;
-    let tag_name = tag_for_task_tag_link(&mut tx, &link.task_id, &link.tag_id).await?;
+    let tag_name = tag_for_task_tag_link(&mut tx, task_id, tag_id).await?;
     let result = sqlx::query(
-        "INSERT INTO project_task_tag_links (task_id, tag_id)
-         VALUES (?, ?)
-         ON CONFLICT(task_id, tag_id) DO NOTHING",
+        "INSERT INTO project_task_tag_links (task_id, tag_id, sync_key)
+         VALUES (?, ?, ?)
+         ON CONFLICT DO NOTHING",
     )
-    .bind(link.task_id.trim())
-    .bind(link.tag_id.trim())
+    .bind(task_id)
+    .bind(tag_id)
+    .bind(&sync_key)
     .execute(&mut *tx)
     .await
     .map_err(|e| format!("link project task tag: {e}"))?;
     if result.rows_affected() > 0 {
         insert_task_change_event(
             &mut tx,
-            link.task_id.trim(),
+            task_id,
             "updated",
             Some("tags"),
             None,
@@ -131,9 +139,10 @@ pub async fn link_task_tag(
         .await?;
     }
     tx.commit().await.map_err(|e| format!("commit: {e}"))?;
-    task_tag_link_mutation(pool, link.task_id.trim(), link.tag_id.trim()).await
+    task_tag_link_mutation(pool, task_id, tag_id).await
 }
 
+/// Unlinks a tag from a task. Unlinking a link that is already gone succeeds and still reports the removal.
 pub async fn unlink_task_tag(
     pool: &SqlitePool,
     task_id: String,
@@ -141,34 +150,38 @@ pub async fn unlink_task_tag(
 ) -> Result<ProjectsMutationRows, String> {
     require_non_empty(&task_id, "task_id")?;
     require_non_empty(&tag_id, "tag_id")?;
+    let task_id = task_id.trim();
+    let tag_id = tag_id.trim();
     let mut tx = pool.begin().await.map_err(|e| format!("begin: {e}"))?;
-    let tag_name = tag_for_existing_task_tag_link(&mut tx, task_id.trim(), tag_id.trim()).await?;
-    sqlx::query(
-        "DELETE FROM project_task_tag_links
-         WHERE task_id = ? AND tag_id = ?",
-    )
-    .bind(task_id.trim())
-    .bind(tag_id.trim())
-    .execute(&mut *tx)
-    .await
-    .map_err(|e| format!("unlink project task tag: {e}"))?;
-    insert_task_change_event(
-        &mut tx,
-        task_id.trim(),
-        "updated",
-        Some("tags"),
-        Some(&tag_name),
-        None,
-    )
-    .await?;
+    let tag_name = tag_for_existing_task_tag_link(&mut tx, task_id, tag_id).await?;
+    if let Some(tag_name) = &tag_name {
+        sqlx::query(
+            "DELETE FROM project_task_tag_links
+             WHERE task_id = ? AND tag_id = ?",
+        )
+        .bind(task_id)
+        .bind(tag_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| format!("unlink project task tag: {e}"))?;
+        insert_task_change_event(
+            &mut tx,
+            task_id,
+            "updated",
+            Some("tags"),
+            Some(tag_name),
+            None,
+        )
+        .await?;
+    }
     tx.commit().await.map_err(|e| format!("commit: {e}"))?;
-    let mut mutation = ProjectsMutationRows {
-        task_change_events: latest_task_change_events(pool, task_id.trim()).await?,
-        ..ProjectsMutationRows::default()
-    };
+    let mut mutation = ProjectsMutationRows::default();
+    if tag_name.is_some() {
+        mutation.task_change_events = latest_task_change_events(pool, task_id).await?;
+    }
     mutation.removals.push(ProjectMutationRemoval::TaskTagLink {
-        task_id: task_id.trim().to_string(),
-        tag_id: tag_id.trim().to_string(),
+        task_id: task_id.to_string(),
+        tag_id: tag_id.to_string(),
     });
     Ok(mutation)
 }

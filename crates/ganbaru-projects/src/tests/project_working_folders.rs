@@ -18,7 +18,7 @@ fn project_creation_persists_and_creates_its_managed_working_folder() {
             name: "Created test".to_string(),
             icon: "lucide:folder".to_string(),
             color: None,
-            sort_order: 900,
+            placement: crate::order::OrderPlacement::End,
             default_event_name: None,
             default_event_time_mode: "timed".to_string(),
             default_event_duration_minutes: None,

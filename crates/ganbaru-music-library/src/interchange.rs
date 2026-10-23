@@ -483,7 +483,7 @@ async fn import_membership(
             membership_id
         }
         None => {
-            let membership_id = super::identity::membership_id(playlist_id, item_id);
+            let membership_id = super::identity::membership_id(playlist_id, item_id)?;
             let tail = super::order::membership_tail(transaction, playlist_id).await?;
             let order_key = super::order::key_after(tail.as_deref())?;
             sqlx::query(
@@ -614,8 +614,9 @@ async fn import_assignments(
         sqlx::query(
             "INSERT INTO music_context_assignments
                 (owner_kind, owner_id, phase, behavior, playlist_id, soundscape_preset_id,
-                 soundscape_behavior, provenance_kind, provenance_id, updated_at_ms, version)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+                 soundscape_behavior, provenance_kind, provenance_id, updated_at_ms, version,
+                 sync_key)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
              ON CONFLICT(owner_kind, owner_id, phase) DO UPDATE SET
                 behavior = excluded.behavior, playlist_id = excluded.playlist_id,
                 soundscape_preset_id = excluded.soundscape_preset_id,
@@ -642,6 +643,11 @@ async fn import_assignments(
         .bind(assignment.provenance_kind.as_ref())
         .bind(&assignment.provenance_id)
         .bind(imported_at)
+        .bind(ganbaru_music::sync_keys::assignment_key(
+            assignment.owner_kind.as_ref(),
+            &assignment.owner_id,
+            assignment.phase.as_ref(),
+        )?)
         .execute(&mut **transaction)
         .await
         .map_err(|error| MusicLibraryError::database("import music context assignment", error))?;

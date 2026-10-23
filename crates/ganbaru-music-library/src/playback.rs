@@ -46,8 +46,8 @@ pub async fn record_listening_in_transaction(
     sqlx::query(
         "INSERT INTO music_listening_statistics
             (device_id, item_id, last_played_at_ms, play_count, completion_count, skip_count,
-             updated_at_ms)
-         VALUES (?, ?, ?, ?, ?, ?, ?)
+             updated_at_ms, sync_key)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(device_id, item_id) DO UPDATE SET
             last_played_at_ms = CASE WHEN excluded.play_count > 0
                 THEN excluded.last_played_at_ms ELSE music_listening_statistics.last_played_at_ms END,
@@ -63,6 +63,10 @@ pub async fn record_listening_in_transaction(
     .bind(completion_increment)
     .bind(skip_increment)
     .bind(request.occurred_at)
+    .bind(ganbaru_music::sync_keys::statistics_key(
+        device_id,
+        &request.item_id,
+    )?)
     .execute(&mut *connection)
     .await
     .map_err(|error| MusicLibraryError::database("update listening statistics", error))?;

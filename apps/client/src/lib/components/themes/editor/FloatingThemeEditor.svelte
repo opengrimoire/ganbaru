@@ -14,9 +14,13 @@
     clampPanelRect,
     pickThemeEditorGeometry,
   } from "$lib/utils/responsive";
+  import ConfirmDialog from "$lib/components/ui/ConfirmDialog.svelte";
+  import type { ThemeSaveChoice } from "$lib/themes/editor-save";
   import ThemeEditor from "./ThemeEditor.svelte";
 
   let { onBackToList }: { onBackToList: () => void } = $props();
+
+  let remoteChangeOpen = $state(false);
 
   const themeStore = getTheme();
   const themeEditor = getThemeEditor();
@@ -177,9 +181,20 @@
     onBackToList();
   }
 
-  async function onCommit() {
-    await themeEditor.commit();
+  // A save that collides with a remote edit keeps the editor open and asks
+  // whether to save a copy or overwrite.
+  async function onCommit(choice?: ThemeSaveChoice) {
+    const outcome = await themeEditor.commit(choice);
+    if (outcome.kind === "conflict") {
+      remoteChangeOpen = true;
+      return;
+    }
     onBackToList();
+  }
+
+  function settleRemoteChange(choice: ThemeSaveChoice): void {
+    remoteChangeOpen = false;
+    void onCommit(choice);
   }
 
   function onResetAllToSeed() {
@@ -317,7 +332,7 @@
       </div>
       <button
         type="button"
-        onclick={onCommit}
+        onclick={() => void onCommit()}
         class="flex items-center gap-1.5 rounded-md border border-primary bg-primary px-3 py-1 text-[0.733333rem] font-medium text-primary-foreground transition-colors hover:bg-primary/90"
       >
         <Check size={11} strokeWidth={2.25} />
@@ -329,6 +344,21 @@
       </button>
     </footer>
   </div>
+
+  {#if remoteChangeOpen}
+    <ConfirmDialog
+      title={t("settings.theme.editor.remoteChangeTitle")}
+      message={t("settings.theme.editor.remoteChangeMessage")}
+      confirmLabel={t("settings.theme.editor.saveAsCopy")}
+      alternateLabel={t("settings.theme.editor.overwrite")}
+      cancelLabel={t("settings.theme.editor.keepEditing")}
+      onConfirm={() => settleRemoteChange("copy")}
+      onAlternate={() => settleRemoteChange("overwrite")}
+      onCancel={() => {
+        remoteChangeOpen = false;
+      }}
+    />
+  {/if}
 {/if}
 
 <style>

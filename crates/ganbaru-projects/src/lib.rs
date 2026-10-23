@@ -5,6 +5,7 @@
 //! Callers supply an authorized vault pool. Project creation also creates the managed working
 //! folder under the supplied vault root.
 
+pub mod conversion;
 pub mod custom_fields;
 mod defaults;
 pub mod dependency_cascade;
@@ -12,8 +13,12 @@ mod dependency_cascade_graph;
 mod dependency_cascade_plan;
 pub mod emojis;
 mod history;
+pub mod icons;
+pub mod keys;
 mod models;
 mod mutations;
+mod number;
+mod order;
 pub mod preferences;
 pub mod project_commands;
 pub mod relationship_commands;
@@ -31,10 +36,12 @@ pub mod views;
 pub mod workspace;
 
 pub use models::*;
+pub use number::{FixedPointNumber, NUMBER_DECIMAL_PLACES};
+pub use order::OrderPlacement;
 #[cfg(test)]
 use routine::BUILT_IN_ROUTINE_PROJECTS;
 #[cfg(test)]
-use routine::{ROUTINE_GROUP_ID, ensure_built_in_routine_defaults};
+use routine::ROUTINE_GROUP_ID;
 #[cfg(test)]
 use task_views::{load_task_detail, load_task_view};
 #[cfg(test)]

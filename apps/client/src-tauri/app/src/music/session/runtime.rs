@@ -10,6 +10,7 @@ use super::{
 };
 use crate::vault::runtime_lifecycle::{LifecycleControl, LifecycleIntent};
 use ganbaru_music_library::{MusicLibraryError, MusicLibraryResult};
+use ganbaru_sync::manifest::vault::music::DOMAIN_NAME as MUSIC_DOMAIN;
 use sqlx::SqlitePool;
 use std::{
     collections::BTreeMap,
@@ -643,7 +644,7 @@ impl Owner {
                 let status = ownership.status(&vault_id).map_err(|error| {
                     MusicLibraryError::runtime("read music vault ownership", error)
                 })?;
-                if !status.can_write {
+                if !status.can_write_domain(MUSIC_DOMAIN) {
                     return Err(MusicLibraryError::conflict(
                         "Music playback requires the active writable vault",
                     ));
@@ -1364,7 +1365,7 @@ impl Owner {
         tauri::async_runtime::spawn_blocking(move || {
             let ownership = app.state::<crate::vault::ownership::VaultOwnershipManager>();
             let permit = ownership
-                .acquire_managed_write(&vault_id)
+                .acquire_replicated_write(&vault_id, MUSIC_DOMAIN)
                 .map_err(|error| MusicLibraryError::runtime("authorize music transition", error))?;
             let active_id = crate::vault::active_vault_id(&app)
                 .map_err(|error| MusicLibraryError::runtime("verify music vault", error))?;
@@ -1529,7 +1530,9 @@ impl Owner {
                 .cached_status(vault_id)
                 .ok()
                 .flatten()
-                .is_some_and(|status| status.can_write && status.generation == generation);
+                .is_some_and(|status| {
+                    status.can_write_domain(MUSIC_DOMAIN) && status.generation == generation
+                });
             owner_current
                 && focus.as_ref().is_none_or(|(proof, deadline)| {
                     crate::pomodoro::native_runtime::music_delivery_is_current(

@@ -1,10 +1,10 @@
 import {
   projectListDropPositionFromPoint,
-  projectListDropSortOrder,
+  projectListDropPlacement,
   projectListPointerDragGestureReady,
   projectListSectionDragAllowed,
   projectListSectionDropAllowed,
-  projectListSectionDropSortOrder,
+  projectListSectionDropPlacement,
   projectListTaskDragAllowed,
   projectListTaskDropAllowed,
   type ProjectListDropPosition,
@@ -17,6 +17,7 @@ import type {
   ProjectTaskSortDirection,
   ProjectTaskSortMode,
 } from "$lib/projects/types";
+import type { PlacementPatch, ProjectTaskUpdatePatch } from "$lib/projects/snapshot/update-payloads";
 
 const TASK_DRAG_MIME = "application/x-ganbaru-project-list-task";
 const SECTION_DRAG_MIME = "application/x-ganbaru-project-list-section";
@@ -28,8 +29,8 @@ export interface ProjectListRowDragControllerContext {
   getGroupBy: () => ProjectTaskGroupMode;
   getSortMode: () => ProjectTaskSortMode;
   getSortDirection: () => ProjectTaskSortDirection;
-  updateTask: (task: ProjectTask, patch: Partial<ProjectTask>) => Promise<unknown>;
-  updateSection: (section: ProjectSection, patch: Partial<ProjectSection>) => Promise<unknown>;
+  updateTask: (task: ProjectTask, patch: Pick<ProjectTaskUpdatePatch, "sectionId" | "sectionPlacement">) => Promise<unknown>;
+  updateSection: (section: ProjectSection, patch: Required<PlacementPatch>) => Promise<unknown>;
 }
 
 export class ProjectListRowDragController {
@@ -176,21 +177,21 @@ export class ProjectListRowDragController {
       this.resetTaskTarget();
       return;
     }
-    const nextOrder = projectListDropSortOrder({
+    const sectionPlacement = projectListDropPlacement({
       orderedTasks: this.tasksForSection(section),
       draggedTaskId: dragged.id,
       overTaskId: targetTask?.id,
       position: position ?? (targetTask ? this.dropPosition(event) : undefined),
       sortDirection: this.context.getSortDirection(),
     });
-    if (dragged.sectionId === section.id && dragged.sectionSortOrder === nextOrder) {
+    if (!sectionPlacement) {
       this.resetTaskTarget();
       return;
     }
     this.dropPendingTaskId = dragged.id;
     this.resetTaskTarget();
     try {
-      await this.context.updateTask(dragged, { sectionId: section.id, sectionSortOrder: nextOrder });
+      await this.context.updateTask(dragged, { sectionId: section.id, sectionPlacement });
     } finally {
       this.dropPendingTaskId = null;
       this.draggingTaskId = null;
@@ -209,20 +210,20 @@ export class ProjectListRowDragController {
       this.resetSectionTarget();
       return;
     }
-    const nextOrder = projectListSectionDropSortOrder({
+    const placement = projectListSectionDropPlacement({
       orderedSections: this.context.getSections().filter((item) => !item.archivedAt && !item.hiddenAt),
       draggedSectionId: draggedSection.id,
       overSectionId: section.id,
       position: this.dropPosition(event),
     });
-    if (draggedSection.sortOrder === nextOrder) {
+    if (!placement) {
       this.resetSectionTarget();
       return;
     }
     this.sectionDropPendingId = draggedSection.id;
     this.resetSectionTarget();
     try {
-      await this.context.updateSection(draggedSection, { sortOrder: nextOrder });
+      await this.context.updateSection(draggedSection, { placement });
     } finally {
       this.sectionDropPendingId = null;
       this.draggingSectionId = null;

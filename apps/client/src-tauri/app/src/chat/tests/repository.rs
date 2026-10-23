@@ -85,12 +85,14 @@ pub(crate) async fn pool_with_thread() -> sqlx::SqlitePool {
     ganbaru_db::test_support::apply_migrated_template(&pool)
         .await
         .unwrap();
-    sqlx::query("INSERT INTO project_groups (id, name) VALUES ('group-chat', 'Chat')")
-        .execute(&pool)
-        .await
-        .unwrap();
     sqlx::query(
-        "INSERT INTO projects (id, group_id, name) VALUES ('project-chat', 'group-chat', 'Chat')",
+        "INSERT INTO project_groups (id, name, order_key) VALUES ('group-chat', 'Chat', 'a1')",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO projects (id, group_id, name, order_key) VALUES ('project-chat', 'group-chat', 'Chat', 'a1')",
     )
     .execute(&pool)
     .await

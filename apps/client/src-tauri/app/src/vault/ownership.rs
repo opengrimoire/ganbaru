@@ -449,10 +449,10 @@ impl VaultOwnershipManager {
         self.acquire_write_permit(vault_id, Self::require_writable)
     }
 
-    /// A managed write permit for the assets of a replicated `domain`, which linked stable
-    /// replicas may write as well as the owner when the domain allows it. Handoff fences it
-    /// like any managed write.
-    pub(crate) fn acquire_replicated_asset_write(
+    /// A managed write permit for the tables and assets of a replicated `domain`, which linked
+    /// stable replicas may write as well as the owner when the domain allows it. Handoff fences
+    /// it like any managed write.
+    pub(crate) fn acquire_replicated_write(
         &self,
         vault_id: &str,
         domain: &str,
@@ -1245,7 +1245,7 @@ mod tests {
         );
         assert!(
             replica
-                .acquire_replicated_asset_write("vault", QUICK_NOTES)
+                .acquire_replicated_write("vault", QUICK_NOTES)
                 .is_err()
         );
         replica
@@ -1264,7 +1264,7 @@ mod tests {
         assert_eq!(replica.cached_status("vault").unwrap().unwrap(), status);
         assert!(
             replica
-                .acquire_replicated_asset_write("vault", "projects")
+                .acquire_replicated_write("vault", "projects")
                 .is_err()
         );
         assert_eq!(
@@ -1275,13 +1275,13 @@ mod tests {
         assert!(replica.acquire_managed_write("vault").is_err());
         drop(
             replica
-                .acquire_replicated_asset_write("vault", QUICK_NOTES)
+                .acquire_replicated_write("vault", QUICK_NOTES)
                 .unwrap(),
         );
         let fence = replica.fence_managed_writes().unwrap();
         assert!(
             replica
-                .acquire_replicated_asset_write("vault", QUICK_NOTES)
+                .acquire_replicated_write("vault", QUICK_NOTES)
                 .is_err()
         );
         drop(fence);
@@ -1292,7 +1292,7 @@ mod tests {
         assert!(!replica.status("vault").unwrap().linked_replica);
         assert!(
             replica
-                .acquire_replicated_asset_write("vault", QUICK_NOTES)
+                .acquire_replicated_write("vault", QUICK_NOTES)
                 .is_err()
         );
         assert_eq!(
@@ -1315,11 +1315,7 @@ mod tests {
             owner.database_access("vault").unwrap(),
             VaultDatabaseAccess::ReadWrite
         );
-        assert!(
-            owner
-                .acquire_replicated_asset_write("vault", QUICK_NOTES)
-                .is_ok()
-        );
+        assert!(owner.acquire_replicated_write("vault", QUICK_NOTES).is_ok());
         fs::remove_file(path).unwrap();
     }
 

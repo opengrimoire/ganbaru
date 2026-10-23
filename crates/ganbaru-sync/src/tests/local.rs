@@ -394,14 +394,15 @@ fn restore_copies_device_state_onto_carried_rows_and_drops_orphans() {
         let first = restore_local_state(&mut staged, manifest, &live)
             .await
             .unwrap();
-        assert_eq!(first.local_rows, 2);
+        // Two fixture marks and the Music soundscape state every vault seeds.
+        assert_eq!(first.local_rows, 3);
         assert_eq!(first.repaired, 1);
         // A retry after a failure later in the replacement restores the same rows again.
         let second = restore_local_state(&mut staged, manifest, &live)
             .await
             .unwrap();
         std::fs::remove_file(&live).unwrap();
-        assert_eq!(second.local_rows, 2);
+        assert_eq!(second.local_rows, 3);
 
         let marks: Vec<(String, i64)> =
             sqlx::query_as("SELECT item_id, mark FROM fixture_item_marks ORDER BY item_id")

@@ -148,13 +148,13 @@ fn attached_view_updates_checkpoint_both_projects_and_locked_failures_leave_hist
     crate::test_block_on(async {
         let pool = migrated_memory_pool().await;
         sqlx::query(
-            "INSERT INTO project_groups (id, name) VALUES ('view-history', 'View history')",
+            "INSERT INTO project_groups (id, name, order_key) VALUES ('view-history', 'View history', 'a1')",
         )
         .execute(&pool)
         .await
         .unwrap();
         for project in [SOURCE_PROJECT, SHELL_PROJECT] {
-            sqlx::query("INSERT INTO projects (id, group_id, name) VALUES (?, 'view-history', ?)")
+            sqlx::query("INSERT INTO projects (id, group_id, name, order_key) VALUES (?, 'view-history', ?, 'a1')")
                 .bind(project)
                 .bind(project)
                 .execute(&pool)

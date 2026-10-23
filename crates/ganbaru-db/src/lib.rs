@@ -52,6 +52,17 @@ where
     Arc::new(hook)
 }
 
+/// Future returned by a [`MigratedHook`].
+pub type MigratedHookFuture = Pin<Box<dyn Future<Output = Result<(), String>> + Send>>;
+
+/// Data conversion that runs on every read-write pool after its migrations, before the pool
+/// is returned to any writer.
+///
+/// Conversions that SQL migrations cannot express, such as keys computed in Rust, belong here.
+/// The hook runs on every read-write open, so it must be idempotent and cheap when there is
+/// nothing to convert.
+pub type MigratedHook = Arc<dyn Fn(SqlitePool) -> MigratedHookFuture + Send + Sync>;
+
 struct RegisteredPool {
     access: DatabaseAccessMode,
     /// Whether a guarded request opened this pool read-only because the schema differs.
@@ -67,9 +78,26 @@ struct RegisteredPool {
 pub struct DatabasePoolRegistry {
     pools: Arc<Mutex<HashMap<PathBuf, RegisteredPool>>>,
     hook: Arc<std::sync::RwLock<Option<ConnectionHook>>>,
+    migrated_hook: Arc<std::sync::RwLock<Option<MigratedHook>>>,
 }
 
 impl DatabasePoolRegistry {
+    /// Sets the hook that later read-write opens run after their migrations.
+    pub fn set_migrated_hook(&self, hook: Option<MigratedHook>) {
+        let mut slot = self
+            .migrated_hook
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *slot = hook;
+    }
+
+    fn migrated_hook(&self) -> Option<MigratedHook> {
+        self.migrated_hook
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
     /// Sets the hook that later writable connections run. Open pools keep their connections
     /// until they are closed.
     pub fn set_connection_hook(&self, hook: Option<ConnectionHook>) {
@@ -208,6 +236,9 @@ impl DatabasePoolRegistry {
                     // catalog is checked before migration writes can reach its triggers.
                     validate_schema_catalog(&pool).await?;
                     run_migrations(&pool).await?;
+                    if let Some(hook) = self.migrated_hook() {
+                        hook(pool.clone()).await?;
+                    }
                     sqlx::raw_sql("PRAGMA optimize")
                         .execute(&pool)
                         .await

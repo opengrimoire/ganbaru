@@ -287,6 +287,36 @@ fn fields<'value, const N: usize>(
     value.fields().try_into().map_err(|_| AdapterError(what))
 }
 
+/// YouTube resolution states from lowest to highest merge precedence. `resolving` is lowest
+/// so a device that never resolved a video cannot hide a concurrent resolution; `timed-out`
+/// is the least informative outcome and `ready` the most useful one.
+const RESOLUTION_PRECEDENCE: &[&str] = &[
+    "resolving",
+    "timed-out",
+    "unavailable",
+    "embedding-blocked",
+    "ready",
+];
+
+/// Merge precedence of concurrent item versions in a coupled group. Only concurrent versions
+/// meet here; a later write that saw an earlier one replaces it regardless of rank.
+fn item_priority(group: GroupId, value: &Value) -> u8 {
+    match value.fields() {
+        [.., Field::Integer(1)] if group == item_group::SOURCE => 1,
+        [resolution] if group == item_group::RESOLUTION => {
+            let Field::Text(state) = resolution else {
+                return 0;
+            };
+            RESOLUTION_PRECEDENCE
+                .iter()
+                .position(|candidate| candidate == state)
+                .and_then(|position| u8::try_from(position).ok())
+                .unwrap_or(0)
+        }
+        _ => 0,
+    }
+}
+
 fn validate_item(group: GroupId, value: &Value) -> Result<(), AdapterError> {
     if group == item_group::IDENTITY {
         let [kind, _, video] = fields(value, "music item identity")?;
@@ -301,8 +331,10 @@ fn validate_item(group: GroupId, value: &Value) -> Result<(), AdapterError> {
             _ => Err(AdapterError("music item identity")),
         }
     } else if group == item_group::SOURCE {
-        let [media, _, _, _, _, _, resolution] = fields(value, "music item source")?;
-        one_of(media, allowed::MEDIA_KINDS, "music media kind")?;
+        let [media, _, _, _, _, _, _] = fields(value, "music item source")?;
+        one_of(media, allowed::MEDIA_KINDS, "music media kind")
+    } else if group == item_group::RESOLUTION {
+        let [resolution] = fields(value, "music YouTube resolution")?;
         optional_one_of(
             resolution,
             allowed::YOUTUBE_RESOLUTION_STATES,
@@ -518,8 +550,14 @@ impl DomainAdapter for MusicAdapter {
         Ok(Vec::new())
     }
 
-    fn priority(&self, _table: TableId, _group: GroupId, _value: &Value) -> u8 {
-        0
+    /// Item source metadata from the source outranks a placeholder, and a known YouTube
+    /// resolution outranks `resolving`; see [`item_priority`].
+    fn priority(&self, table: TableId, group: GroupId, value: &Value) -> u8 {
+        if table == ITEMS_TABLE {
+            item_priority(group, value)
+        } else {
+            0
+        }
     }
 
     fn validate(&self, table: TableId, group: GroupId, value: &Value) -> Result<(), AdapterError> {

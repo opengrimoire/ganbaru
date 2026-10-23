@@ -7,7 +7,9 @@ use ganbaru_sync_contracts::derived_key;
 use super::block_on;
 use super::replica::{Replica, converge, device_id, quoted, rank};
 use crate::manifest::TableSpec;
-use crate::manifest::vault::music::{MEMBERSHIPS, PLAYLISTS_TABLE, SIGNALS, STATISTICS};
+use crate::manifest::vault::music::{
+    INTENDED_USES, INTENDED_USES_TABLE, MEMBERSHIPS, PLAYLISTS_TABLE, SIGNALS, STATISTICS,
+};
 
 const ITEM: &str = "music-item-shared";
 const PLAYLIST: &str = "music-playlist-shared";
@@ -63,6 +65,16 @@ fn insert_membership(playlist: &str, item: &str, position: u32, at_ms: i64) -> S
         quoted(playlist),
         quoted(item),
         quoted(&rank(position)),
+    )
+}
+
+fn insert_intended_use(playlist: &str, intended_use: &str) -> String {
+    format!(
+        "INSERT INTO music_playlist_intended_uses (playlist_id, intended_use, sync_key)
+         VALUES ({}, {}, {});",
+        quoted(playlist),
+        quoted(intended_use),
+        quoted(&key(&INTENDED_USES, &[playlist, intended_use])),
     )
 }
 
@@ -489,6 +501,112 @@ fn music_rows_deleted_on_one_device_are_added_again_under_one_successor_key() {
                 texts(replica, "SELECT id FROM music_source_collections").await,
                 [collection_successor.as_str()]
             );
+        }
+    });
+}
+
+#[test]
+fn music_playlist_deleted_while_another_device_adds_an_intended_use_is_offered_with_it() {
+    block_on(async {
+        let mut replicas = shared(2, &insert_playlist(PLAYLIST, "Focus", 10)).await;
+        replicas[0]
+            .exec(&format!(
+                "DELETE FROM music_playlists WHERE id = {}",
+                quoted(PLAYLIST)
+            ))
+            .await;
+        replicas[1]
+            .exec(&insert_intended_use(PLAYLIST, "focus"))
+            .await;
+        converge(&mut replicas).await;
+        assert_converged(&mut replicas).await;
+
+        for replica in &mut replicas {
+            let entries = replica
+                .engine
+                .recovery_entries(&mut replica.conn, &replica.ctx)
+                .await
+                .unwrap();
+            let entry = entries
+                .iter()
+                .find(|entry| entry.table == PLAYLISTS_TABLE && entry.row_key == PLAYLIST)
+                .unwrap_or_else(|| panic!("playlist should be offered: {entries:?}"));
+            assert_eq!(entry.descendants, 1);
+            let descendants = replica
+                .engine
+                .recovery_descendants(&mut replica.conn, PLAYLISTS_TABLE, PLAYLIST)
+                .await
+                .unwrap()
+                .expect("the playlist is offered");
+            assert_eq!(descendants.len(), 1);
+            assert_eq!(descendants[0].table, INTENDED_USES_TABLE);
+        }
+    });
+}
+
+/// A YouTube item as a device writes it: `resolved` items carry fetched metadata and the
+/// `ready` state, unresolved ones the placeholder written while resolution is pending.
+fn insert_video(id: &str, video: &str, resolved: bool) -> String {
+    let (title, flag, state) = if resolved {
+        ("Endless Embrace", 1, "ready")
+    } else {
+        ("", 0, "resolving")
+    };
+    format!(
+        "INSERT INTO music_library_items
+            (id, identity_key, source_kind, youtube_video_id, media_kind, original_title,
+             metadata_resolved, youtube_resolution_state, discovered_at_ms, updated_at_ms)
+         VALUES ({id}, {identity}, 'youtube-video', {video}, 'video', {title}, {flag}, {state},
+                 {NOW_MS}, {NOW_MS});",
+        id = quoted(id),
+        identity = quoted(&format!("youtube:{video}")),
+        video = quoted(video),
+        title = quoted(title),
+        state = quoted(state),
+    )
+}
+
+#[test]
+fn music_resolved_youtube_metadata_and_terminal_states_beat_concurrent_placeholders() {
+    block_on(async {
+        let video = "music-item-video";
+        let id = quoted(video);
+        let mut replicas = replicas(2).await;
+        replicas[0]
+            .exec(&insert_video(video, "abcDEF_1234", true))
+            .await;
+        // The placeholder is written later, so a plain register would let it win.
+        replicas[1]
+            .exec(&insert_video(video, "abcDEF_1234", false))
+            .await;
+        converge(&mut replicas).await;
+        assert_converged(&mut replicas).await;
+        let row = format!(
+            "SELECT original_title || '|' || metadata_resolved || '|' || youtube_resolution_state
+             FROM music_library_items WHERE id = {id}"
+        );
+        for replica in &mut replicas {
+            assert_eq!(texts(replica, &row).await, ["Endless Embrace|1|ready"]);
+        }
+
+        replicas[0]
+            .exec(&format!(
+                "UPDATE music_library_items SET youtube_resolution_state = 'unavailable'
+                 WHERE id = {id}"
+            ))
+            .await;
+        replicas[1]
+            .exec(&format!(
+                "UPDATE music_library_items SET youtube_resolution_state = 'resolving'
+                 WHERE id = {id}"
+            ))
+            .await;
+        converge(&mut replicas).await;
+        assert_converged(&mut replicas).await;
+        let state =
+            format!("SELECT youtube_resolution_state FROM music_library_items WHERE id = {id}");
+        for replica in &mut replicas {
+            assert_eq!(texts(replica, &state).await, ["unavailable"]);
         }
     });
 }

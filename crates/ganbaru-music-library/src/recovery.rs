@@ -179,13 +179,8 @@ fn recovered_playlist(values: &[(GroupId, Value)]) -> MusicLibraryResult<Recover
     }
     let name = name.ok_or_else(|| invalid("a recovered playlist has no name".to_string()))?;
     let icon = icon.unwrap_or_else(|| DEFAULT_PLAYLIST_ICON.to_string());
-    let (shuffle_enabled, repeat_mode, mix_enabled) = playback.unwrap_or_else(|| {
-        (
-            0,
-            DEFAULT_PLAYLIST_REPEAT_MODE.as_ref().to_string(),
-            0,
-        )
-    });
+    let (shuffle_enabled, repeat_mode, mix_enabled) =
+        playback.unwrap_or_else(|| (0, DEFAULT_PLAYLIST_REPEAT_MODE.as_ref().to_string(), 0));
     Ok(RecoveredPlaylist {
         name,
         icon,

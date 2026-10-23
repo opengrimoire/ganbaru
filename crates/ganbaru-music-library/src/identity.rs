@@ -226,6 +226,13 @@ async fn rekey_table(
 /// capture, while the insert captures each row as created. Session checkpoints name memberships
 /// inside their payload, so a pass that moves any membership drops them, losing at most one resume
 /// position.
+///
+/// Invariant: every membership writer stores [`membership_id`] of its playlist and item. Local
+/// writers derive it, the immutable key trigger refuses a changed `id`, `playlist_id`, or
+/// `item_id` outside sync apply, and the manifest derives applied rows' keys from the same two
+/// columns. So after the first pass of an older vault this finds nothing, and an older key the
+/// sync row registry already knows is a writer bug, which debug builds assert, because its
+/// deletion here would never reach other devices.
 async fn rekey_memberships(transaction: &mut Transaction<'_, Sqlite>) -> MusicLibraryResult<u64> {
     let rows: Vec<(String, String, String)> =
         sqlx::query_as("SELECT id, playlist_id, item_id FROM music_playlist_memberships")
@@ -241,6 +248,21 @@ async fn rekey_memberships(transaction: &mut Transaction<'_, Sqlite>) -> MusicLi
     }
     if moved.is_empty() {
         return Ok(0);
+    }
+    #[cfg(debug_assertions)]
+    for (old, _) in &moved {
+        let registered: bool = sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM sync_rows WHERE table_id = ? AND row_key = ?)",
+        )
+        .bind(i64::from(ganbaru_sync::manifest::vault::music::MEMBERSHIPS.id.0))
+        .bind(old)
+        .fetch_one(&mut **transaction)
+        .await
+        .map_err(|error| MusicLibraryError::database("check music membership key", error))?;
+        debug_assert!(
+            !registered,
+            "membership {old} is replicated under a key other than its derived key"
+        );
     }
     run_rekey_statements(
         transaction,

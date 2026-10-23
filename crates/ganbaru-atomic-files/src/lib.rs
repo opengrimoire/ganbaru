@@ -18,6 +18,9 @@ use std::path::{Component, Path, PathBuf};
 /// Random bytes in each temporary file name.
 const TEMPORARY_NONCE_BYTES: usize = 16;
 
+/// Extension that ends each temporary file name.
+const TEMPORARY_SUFFIX: &str = ".tmp";
+
 /// Random names tried before a private directory creation gives up. A collision of
 /// 128-bit names means something else is creating entries, so a few attempts suffice.
 const PRIVATE_DIRECTORY_ATTEMPTS: u32 = 4;
@@ -535,6 +538,27 @@ fn parent_directory(path: &Path) -> io::Result<&Path> {
         })
 }
 
+/// Whether `name` has the shape of a temporary file this crate creates beside a target: a
+/// leading dot, the target's file name, a dot, the random lowercase hex nonce, and `.tmp`.
+/// Sweeps of files left by a crash use it so they never touch other entries.
+pub fn is_temporary_file_name(name: &OsStr) -> bool {
+    let Some(rest) = name
+        .to_str()
+        .and_then(|name| name.strip_prefix('.'))
+        .and_then(|name| name.strip_suffix(TEMPORARY_SUFFIX))
+    else {
+        return false;
+    };
+    let Some((target, nonce)) = rest.rsplit_once('.') else {
+        return false;
+    };
+    !target.is_empty()
+        && nonce.len() == TEMPORARY_NONCE_BYTES * 2
+        && nonce
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
 fn temporary_path(parent: &Path, path: &Path) -> io::Result<PathBuf> {
     let file_name = path.file_name().ok_or_else(|| {
         io::Error::new(
@@ -544,7 +568,7 @@ fn temporary_path(parent: &Path, path: &Path) -> io::Result<PathBuf> {
     })?;
     let mut name = OsString::from(".");
     name.push(file_name);
-    name.push(format!(".{}.tmp", random_hex()?));
+    name.push(format!(".{}{TEMPORARY_SUFFIX}", random_hex()?));
     Ok(parent.join(name))
 }
 

@@ -10,7 +10,9 @@
 
 use super::client::{PeerIds, SyncTransport, answer};
 use super::wire::{asset_key, asset_to_wire, bytes_from_wire, bytes_to_wire};
-use ganbaru_atomic_files::{FileAccess, StagedFile, create_directories_within};
+use ganbaru_atomic_files::{
+    FileAccess, StagedFile, create_directories_within, is_temporary_file_name,
+};
 use ganbaru_handoff::protocol::{
     ControlMessage, MAX_SYNC_ASSETS, PROTOCOL_VERSION, SYNC_ASSET_CHUNK_BYTES, SyncAssetKey,
 };
@@ -23,7 +25,7 @@ use std::fs;
 use std::io::{ErrorKind, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 /// Error code of a request for an asset the hub does not hold.
 pub const ASSET_UNAVAILABLE: &str = "asset_unavailable";
@@ -40,6 +42,10 @@ const UNAVAILABLE_TTL: Duration = Duration::from_secs(2 * 60);
 /// How long an asset the hub sent damaged is not requested again. New operations do not
 /// repair a damaged hub file, so the hub log growing does not end the wait.
 const REFUSED_DOWNLOAD_TTL: Duration = Duration::from_secs(60 * 60);
+/// How long a staged temporary asset file stays unmodified before a store sweep treats it as
+/// left by a stopped process. It exceeds how long the hub waits for the next chunk of an upload,
+/// so a sweep spares every transfer still in progress.
+pub const STALE_STAGING_AGE: Duration = Duration::from_secs(60 * 60);
 /// Times an upload may restart after the hub lost part of it.
 const MAX_UPLOAD_RESTARTS: usize = 2;
 
@@ -247,6 +253,53 @@ impl AssetStore for ContentAddressedStore {
 }
 
 impl ContentAddressedStore {
+    /// Removes the temporary files that transfers into the directories of `classes` left behind
+    /// when the process stopped before it could clean them up, and returns how many it removed.
+    /// Only regular files named like a staged temporary file and unmodified for at least
+    /// `older_than` go, so a transfer still in progress keeps its file and every other entry
+    /// stays.
+    pub fn remove_stale_staging<'a>(
+        &self,
+        classes: impl IntoIterator<Item = &'a AssetClass>,
+        older_than: Duration,
+    ) -> Result<usize, AssetStoreError> {
+        let now = SystemTime::now();
+        let mut removed = 0;
+        for class in classes {
+            let directory = class.directory(&self.root);
+            let entries = match fs::read_dir(&directory) {
+                Ok(entries) => entries,
+                Err(error) if error.kind() == ErrorKind::NotFound => continue,
+                Err(error) => return Err(io_failure("list asset directory", error)),
+            };
+            for entry in entries {
+                let entry = entry.map_err(|error| io_failure("list asset directory", error))?;
+                if !is_temporary_file_name(&entry.file_name()) {
+                    continue;
+                }
+                let path = entry.path();
+                let metadata = match fs::symlink_metadata(&path) {
+                    Ok(metadata) => metadata,
+                    Err(error) if error.kind() == ErrorKind::NotFound => continue,
+                    Err(error) => return Err(io_failure("inspect staged asset", error)),
+                };
+                let modified = metadata
+                    .modified()
+                    .map_err(|error| io_failure("inspect staged asset", error))?;
+                let age = now.duration_since(modified).unwrap_or(Duration::ZERO);
+                if !metadata.is_file() || age < older_than {
+                    continue;
+                }
+                match fs::remove_file(&path) {
+                    Ok(()) => removed += 1,
+                    Err(error) if error.kind() == ErrorKind::NotFound => {}
+                    Err(error) => return Err(io_failure("remove staged asset", error)),
+                }
+            }
+        }
+        Ok(removed)
+    }
+
     /// SHA-256 of the held file of `asset`, read in chunks.
     fn held_digest(&self, asset: &AssetRef) -> Result<String, AssetStoreError> {
         let mut file = fs::File::open(asset.path(&self.root))

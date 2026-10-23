@@ -398,6 +398,74 @@ fn carried_operations_reach_the_replacement_once() {
 }
 
 #[test]
+fn carry_forward_aborts_when_the_replacement_lacks_compacted_operations() {
+    block_on(async {
+        let directory = TestDirectory::new("carry-compacted");
+        let registry = DatabasePoolRegistry::default();
+        let engine = Engine::vault();
+        let files = directory.files();
+        let current_path = directory.path().join("current.sqlite");
+        let behind_path = directory.path().join("behind.sqlite");
+        let caught_up_path = directory.path().join("caught-up.sqlite");
+
+        let current = create_vault(&registry, &current_path).await;
+        create_vault(&registry, &behind_path).await;
+        let mut conn = acquire(&current).await;
+        let ctx = context(&mut conn, DEVICE_ID).await;
+        let mut writer = create_writer(
+            &files,
+            &directory.keys(),
+            SuccessorPlan::default(),
+            &person(),
+            DEVICE_ID,
+            NOW_MS,
+        )
+        .expect("create writer");
+        for id in ["note-1", "note-2", "note-3"] {
+            add_note(&mut conn, id).await;
+            engine
+                .seal(&mut conn, &ctx, &mut writer.local(), NOW_MS)
+                .await
+                .expect("seal");
+        }
+        sqlx::query("VACUUM INTO ?")
+            .bind(caught_up_path.to_string_lossy().into_owned())
+            .execute(&mut *conn)
+            .await
+            .expect("copy the caught-up replacement");
+        add_note(&mut conn, "note-4").await;
+        let last = engine
+            .seal(&mut conn, &ctx, &mut writer.local(), NOW_MS)
+            .await
+            .expect("seal")
+            .last_seq
+            .expect("sealed operations");
+        let stored = engine.stored_vector(&mut conn, &ctx).await.expect("stored");
+        let report = engine
+            .compact(&mut conn, &ctx, &stored)
+            .await
+            .expect("compact");
+        assert_eq!(report.compacted, usize::try_from(last - 2).expect("count"));
+        drop(conn);
+        registry.close_all().await.expect("close pools");
+
+        let refused =
+            carry_forward::export(&engine, &current_path, &behind_path, &files, DEVICE_ID)
+                .await
+                .expect_err("compacted operations cannot be carried");
+        assert!(refused.contains("compacted"), "{refused}");
+        assert!(!files.carry_path().exists());
+
+        let exported =
+            carry_forward::export(&engine, &current_path, &caught_up_path, &files, DEVICE_ID)
+                .await
+                .expect("a replacement holding the compacted operations takes the rest");
+        assert_eq!(exported, 1);
+        registry.close_all().await.expect("close pools");
+    });
+}
+
+#[test]
 fn oversized_carry_bundles_are_refused_before_reading() {
     block_on(async {
         let directory = TestDirectory::new("carry-oversized");

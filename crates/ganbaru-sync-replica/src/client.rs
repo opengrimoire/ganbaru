@@ -1,6 +1,7 @@
 //! The device side of sync: one exchange pushes what the hub lacks, pulls what this replica
 //! lacks, and reports a fork of this installation's writers so the service can re-seal.
 
+use super::hub::BOOTSTRAP_REQUIRED;
 use super::wire::{
     hash_from_wire, hash_to_wire, ops_from_wire, ops_to_wire, vector_from_wire, vector_to_wire,
     writer_from_wire,
@@ -62,8 +63,13 @@ pub struct Exchanged {
     pub more: bool,
     /// Operations the hub reported every counted device holds.
     pub stable: VersionVector,
-    /// The hub reported that it no longer holds operations this device lacks.
+    /// The hub reported that it no longer holds operations this device lacks. Pulling stops
+    /// until the device bootstraps from a fresh copy of the vault; pushing continues.
     pub bootstrap_required: bool,
+    /// The head of the active writer, when the hub confirmed it holds the same operation there.
+    /// A device compacts its own writer no further than this head, so a fork found later can
+    /// still be re-sealed.
+    pub confirmed: Option<(WriterId, Seq)>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -128,10 +134,12 @@ impl<T: SyncTransport> ClientSession<'_, T> {
             },
         )?;
         let mut hub = vector_from_wire(&stored)?;
-        if let (Some((writer, seq, hash)), Some(theirs)) = (probe, probe_hash)
-            && hash_from_wire(&theirs)? != hash
-        {
-            return self.fork_of(writer, seq).await;
+        let mut confirmed = None;
+        if let (Some((writer, seq, hash)), Some(theirs)) = (probe, probe_hash) {
+            if hash_from_wire(&theirs)? != hash {
+                return self.fork_of(writer, seq).await;
+            }
+            confirmed = Some((writer, seq));
         }
         if let Some(writer) = self.writer
             && hub.get(&writer) > local.get(&writer)
@@ -144,12 +152,15 @@ impl<T: SyncTransport> ClientSession<'_, T> {
         let mut exchanged = Exchanged {
             stable: vector_from_wire(&stable)?,
             bootstrap_required,
+            confirmed,
             ..Exchanged::default()
         };
         if let Some(fork) = self.push(&mut hub, &mut exchanged).await? {
             return Ok(Exchange::Fork(fork));
         }
-        if let Some(fork) = self.pull(&mut exchanged).await? {
+        if !exchanged.bootstrap_required
+            && let Some(fork) = self.pull(&mut exchanged).await?
+        {
             return Ok(Exchange::Fork(fork));
         }
         exchanged.known = self.stored().await?;
@@ -196,6 +207,9 @@ impl<T: SyncTransport> ClientSession<'_, T> {
                 }
                 exchanged.problem = Some(describe_refusal("the hub", &refusal));
                 exchanged.refusal = Some(refusal.code);
+                if refusal.code == SyncRefusalCode::BootstrapRequired {
+                    exchanged.bootstrap_required = true;
+                }
                 return Ok(None);
             }
             if !page.more {
@@ -224,14 +238,18 @@ impl<T: SyncTransport> ClientSession<'_, T> {
                 known: vector_to_wire(&known),
                 max_bytes: u32::try_from(self.page_limit(moved)).unwrap_or(u32::MAX),
             };
-            let (ops, more) = answer(
-                self.transport.request(request).await?,
-                "SyncOps",
-                |response| match response {
-                    ControlMessage::SyncOps { ops, more } => Some((ops, more)),
-                    _ => None,
-                },
-            )?;
+            let response = self.transport.request(request).await?;
+            if let ControlMessage::Error { code, message, .. } = &response
+                && code == BOOTSTRAP_REQUIRED
+            {
+                exchanged.bootstrap_required = true;
+                exchanged.problem = Some(format!("{code}: {message}"));
+                return Ok(None);
+            }
+            let (ops, more) = answer(response, "SyncOps", |response| match response {
+                ControlMessage::SyncOps { ops, more } => Some((ops, more)),
+                _ => None,
+            })?;
             if ops.is_empty() {
                 return Ok(None);
             }

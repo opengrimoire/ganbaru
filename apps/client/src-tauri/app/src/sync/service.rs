@@ -27,15 +27,16 @@ use super::writer::{
 use crate::vault::handoff::pairing::PairingManager;
 use ganbaru_db::{DatabaseAccessMode, DatabasePoolRegistry};
 use ganbaru_handoff::protocol::SyncRefusalCode;
-use ganbaru_sync::stability::CountedDevice;
+use ganbaru_sync::stability::{CountedDevice, DeviceStanding};
 use ganbaru_sync::{
-    ChangeNotice, Engine, SealReport, SpaceContext, SyncError, WriterState, hold, local,
+    ChangeNotice, Engine, SealReport, SpaceContext, SyncError, WriterState, compaction_limit, hold,
+    local,
 };
-use ganbaru_sync_contracts::VersionVector;
 use ganbaru_sync_contracts::op::RevokeReason;
+use ganbaru_sync_contracts::{Seq, VersionVector, WriterId};
 use ganbaru_sync_replica::now_ms;
 use sqlx::SqlitePool;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 #[cfg(any(mobile, test))]
 use std::future::Future;
 use std::ops::Deref;
@@ -535,9 +536,9 @@ struct ServiceState {
     applied: ApplyMark,
     /// Which managed assets the hub holds or lacks, so passes do not ask again.
     assets: AssetMemory,
-    /// When this coordinator first saw each linked device whose link time is unknown, so
-    /// dormancy has a start.
-    first_seen: BTreeMap<String, u64>,
+    /// The head of the active writer the hub last confirmed holding with the same hash, which
+    /// bounds compaction of this installation's own writers.
+    confirmed: Option<(WriterId, Seq)>,
     view: SyncStatusView,
 }
 
@@ -749,14 +750,19 @@ impl ServiceState {
             session
                 .revoke_unlinked(&manager, &vault_id, &mut self.writer)
                 .await?;
-            let stable = self.stability(&session, &manager, &vault_id).await?;
-            runtime.stability.publish(&vault_id, stable);
+            let stable = self
+                .stability(host, &session, &manager, &vault_id, view)
+                .await?;
+            runtime.stability.publish(&vault_id, stable.clone());
+            next = Self::compact(&session, &stable, next).await?;
         } else {
             runtime.stability.clear();
             if acknowledged.sealed_ops > 0 && matches!(next, Next::Online(_)) {
                 // The hub learns of the acknowledgement on the next exchange, which runs now.
                 next = Next::Continue;
             }
+            let limit = self.client_compaction_limit(&session).await?;
+            next = Self::compact(&session, &limit, next).await?;
         }
         let (status, clock_warnings) = {
             let mut conn = acquire(&session.pool).await?;
@@ -782,29 +788,26 @@ impl ServiceState {
         Ok(next)
     }
 
-    /// On the coordinator, computes stability over the vault's linked devices. A device whose
-    /// link time is unknown counts its dormancy from this coordinator's first observation.
+    /// On the coordinator, computes stability over the vault's linked devices and names the
+    /// devices it does not count. A device whose link record has no valid time must be linked
+    /// again before it counts.
     async fn stability<H: SyncHost>(
         &mut self,
+        host: &H,
         session: &Session<'_, H>,
         manager: &PairingManager,
         vault_id: &str,
+        view: &mut SyncStatusView,
     ) -> Result<VersionVector, String> {
         let now = now_ms()?;
-        let linked = manager.linked_peers_for(vault_id)?;
-        self.first_seen
-            .retain(|device_id, _| linked.iter().any(|peer| peer.device_id == *device_id));
-        let devices: Vec<CountedDevice> = linked
+        let devices: Vec<CountedDevice> = manager
+            .linked_peers_for(vault_id)?
             .into_iter()
-            .map(|peer| {
-                let since_ms = match u64::try_from(peer.linked_at_ms) {
-                    Ok(linked_at) if linked_at > 0 => linked_at,
-                    _ => *self.first_seen.entry(peer.device_id.clone()).or_insert(now),
-                };
-                CountedDevice {
-                    device_id: peer.device_id,
-                    since_ms,
-                }
+            .map(|peer| CountedDevice {
+                device_id: peer.device_id,
+                linked_at_ms: u64::try_from(peer.linked_at_ms)
+                    .ok()
+                    .filter(|linked_at| *linked_at > 0),
             })
             .collect();
         let mut conn = acquire(&session.pool).await?;
@@ -813,7 +816,56 @@ impl ServiceState {
             .stability(&mut conn, &session.ctx, &devices, now)
             .await
             .map_err(|error| format!("compute sync stability: {error}"))?;
+        if stability
+            .devices
+            .iter()
+            .any(|device| device.standing != DeviceStanding::Counted)
+        {
+            let names = super::devices::read_with(host.device_id()?, manager);
+            view.set_device_standings(&stability.devices, &names);
+        }
         Ok(stability.stable)
+    }
+
+    /// Drops operation bodies below `limit` within one bounded run, and asks for another pass
+    /// when bodies below it remain.
+    async fn compact<H: SyncHost>(
+        session: &Session<'_, H>,
+        limit: &VersionVector,
+        next: Next,
+    ) -> Result<Next, String> {
+        let mut conn = acquire(&session.pool).await?;
+        let report = session
+            .engine
+            .compact(&mut conn, &session.ctx, limit)
+            .await
+            .map_err(|error| format!("compact sync log: {error}"))?;
+        Ok(match next {
+            Next::Idle if report.more => Next::Continue,
+            next => next,
+        })
+    }
+
+    /// On a linked device, the compaction limit: the stable vector the hub last reported, with
+    /// this installation's writers capped at the head the hub last confirmed.
+    async fn client_compaction_limit<H: SyncHost>(
+        &self,
+        session: &Session<'_, H>,
+    ) -> Result<VersionVector, String> {
+        let stable = {
+            let mut conn = acquire(&session.pool).await?;
+            session
+                .engine
+                .stable_vector(&mut conn, &session.ctx)
+                .await
+                .map_err(|error| format!("read sync stability: {error}"))?
+        };
+        let own_writers = self
+            .writer
+            .as_ref()
+            .map(ActiveWriter::own_writers)
+            .unwrap_or_default();
+        Ok(compaction_limit(&stable, &own_writers, self.confirmed))
     }
 
     /// Exchanges with the hub, re-sealing after a fork of this installation's chain.
@@ -849,6 +901,27 @@ impl ServiceState {
                     view.last_exchange_at_ms = Some(now_ms()?);
                     if done.pulled > 0 {
                         self.assets.hub_changed();
+                    }
+                    {
+                        let mut conn = acquire(&session.pool).await?;
+                        session
+                            .engine
+                            .record_stable(&mut conn, &session.ctx, &done.stable)
+                            .await
+                            .map_err(|error| format!("record sync stability: {error}"))?;
+                    }
+                    if done.confirmed.is_some() {
+                        self.confirmed = done.confirmed;
+                    }
+                    if done.bootstrap_required {
+                        // Waiting would return at once, since the hub holds what this device
+                        // cannot pull; local commits and the fallback interval still push.
+                        view.state = SyncState::Error;
+                        view.last_error = done.problem.or_else(|| {
+                            Some("the hub no longer holds operations this device lacks".into())
+                        });
+                        view.last_error_code = Some(SyncErrorCode::BootstrapRequired);
+                        return Ok(Next::Idle);
                     }
                     match done.problem {
                         Some(problem) => {

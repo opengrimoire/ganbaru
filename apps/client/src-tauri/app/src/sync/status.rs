@@ -2,6 +2,7 @@
 //! work in every shell, including Android, which keeps the global event module out of its bundle.
 
 use ganbaru_handoff::dial::{DialAddressClass, validate_dial_endpoint};
+use ganbaru_sync::stability::{DeviceAcknowledgement, DeviceStanding};
 use ganbaru_sync::{ClockWarning, DeviceNames, DeviceRef, SyncStatus};
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
@@ -78,6 +79,27 @@ pub(crate) enum SyncErrorCode {
     /// The hub refused a new writer of this device, which reached the writers a device or the
     /// vault may have.
     WriterLimit,
+    /// The hub compacted operations this device lacks, so it pulls nothing until it receives
+    /// a fresh copy of the vault. Local changes still reach the hub.
+    BootstrapRequired,
+}
+
+/// Why the coordinator does not count a linked device toward stability.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) enum DeviceStandingView {
+    /// The device stored nothing for long enough that compaction no longer waits for it.
+    Dormant,
+    /// The link record has no valid time; the device must be linked again.
+    RelinkRequired,
+}
+
+/// A linked device the coordinator does not count, with the reason.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct UncountedDevice {
+    pub device: DeviceRef,
+    pub standing: DeviceStandingView,
 }
 
 /// The kind of network a linked device reached its coordinator over.
@@ -170,6 +192,9 @@ pub(crate) struct SyncStatusView {
     /// Devices whose merged edits carry clocks far ahead of this device, so they win
     /// concurrent edits until the clocks agree.
     pub clock_ahead_devices: Vec<DeviceRef>,
+    /// On the coordinator, linked devices it does not count toward stability, in device id
+    /// order.
+    pub uncounted_devices: Vec<UncountedDevice>,
     /// How a linked device last reached its coordinator in this app run. It stays after a
     /// failed dial, so the interface pairs it with `state`.
     pub connection: Option<SyncConnectionView>,
@@ -189,6 +214,33 @@ impl SyncStatusView {
         };
         self.conflicts = TableCount::list(&status.conflicts);
         self.recovery = TableCount::list(&status.recovery);
+    }
+
+    /// Names the linked devices the coordinator does not count, with why, in device id order.
+    pub(crate) fn set_device_standings(
+        &mut self,
+        devices: &[DeviceAcknowledgement],
+        names: &DeviceNames,
+    ) {
+        let mut uncounted: Vec<(&str, DeviceStandingView)> = devices
+            .iter()
+            .filter_map(|device| {
+                let standing = match device.standing {
+                    DeviceStanding::Counted => return None,
+                    DeviceStanding::Dormant => DeviceStandingView::Dormant,
+                    DeviceStanding::RelinkRequired => DeviceStandingView::RelinkRequired,
+                };
+                Some((device.device_id.as_str(), standing))
+            })
+            .collect();
+        uncounted.sort();
+        self.uncounted_devices = uncounted
+            .into_iter()
+            .map(|(device_id, standing)| UncountedDevice {
+                device: names.describe(device_id),
+                standing,
+            })
+            .collect();
     }
 
     /// Names the devices of writers with far-ahead clocks, once per device, in device id order.
@@ -221,7 +273,7 @@ impl SyncStatusView {
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub(crate) enum SyncNotice {
     /// The status changed.
-    Status { status: SyncStatusView },
+    Status { status: Box<SyncStatusView> },
     /// Replicated changes rewrote rows of these tables, for frontend invalidation.
     Applied { tables: Vec<String> },
 }
@@ -308,7 +360,7 @@ pub(crate) fn emit_status<R: Runtime>(app: &AppHandle<R>, view: &SyncStatusView)
     notify(
         app,
         &SyncNotice::Status {
-            status: view.clone(),
+            status: Box::new(view.clone()),
         },
     );
 }
@@ -369,6 +421,42 @@ mod tests {
 
         view.set_clock_ahead(&status, &[], &devices);
         assert!(view.clock_ahead_devices.is_empty());
+    }
+
+    #[test]
+    fn uncounted_devices_are_named_in_device_id_order_with_their_standing() {
+        let device = |device_id: &str, standing| DeviceAcknowledgement {
+            device_id: device_id.to_string(),
+            acknowledged: ganbaru_sync_contracts::VersionVector::new(),
+            last_stored_ms: None,
+            standing,
+        };
+        let devices = [
+            device("tablet", DeviceStanding::RelinkRequired),
+            device("laptop", DeviceStanding::Counted),
+            device("phone", DeviceStanding::Dormant),
+        ];
+        let names = DeviceNames::new(
+            "hub",
+            HashMap::from([("phone".to_string(), "Old phone".to_string())]),
+        );
+        let mut view = SyncStatusView::default();
+        view.set_device_standings(&devices, &names);
+        let wire = serde_json::to_value(&view).expect("serialize status");
+        let uncounted = wire["uncountedDevices"]
+            .as_array()
+            .expect("uncounted devices");
+        assert_eq!(uncounted.len(), 2);
+        assert_eq!(uncounted[0]["standing"], "dormant");
+        assert_eq!(uncounted[0]["device"]["deviceLabel"], "Old phone");
+        assert_eq!(uncounted[1]["standing"], "relinkRequired");
+        assert_eq!(
+            serde_json::to_value(SyncErrorCode::BootstrapRequired).expect("serialize code"),
+            "bootstrapRequired"
+        );
+
+        view.set_device_standings(&devices[1..2], &names);
+        assert!(view.uncounted_devices.is_empty());
     }
 
     #[test]

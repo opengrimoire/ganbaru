@@ -93,8 +93,21 @@ fn count(value: i64) -> SyncResult<usize> {
 
 impl Engine {
     /// Summarizes writers, pending operations, captures, conflicts, and recovery offers. Recovery
-    /// offers are counted as `recovery_entries` lists them, so the counts match the list.
+    /// offers are counted as `recovery_entries` lists them, so the counts match the list. Every
+    /// read runs in one transaction, so the counts describe one database state even while a
+    /// pass applies or seals on another connection.
     pub async fn status(
+        &self,
+        conn: &mut SqliteConnection,
+        ctx: &SpaceContext,
+    ) -> SyncResult<SyncStatus> {
+        let mut tx = conn.begin().await?;
+        let status = self.read_status(&mut tx, ctx).await?;
+        tx.commit().await?;
+        Ok(status)
+    }
+
+    async fn read_status(
         &self,
         conn: &mut SqliteConnection,
         ctx: &SpaceContext,

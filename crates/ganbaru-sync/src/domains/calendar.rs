@@ -669,6 +669,8 @@ fn preview_text(text: &str) -> String {
 mod tests {
     use super::*;
     use crate::manifest::vault::calendar::{ARCHIVE_MUSIC, EXDATES, OVERRIDE_PROPERTIES};
+    use ganbaru_calendar::value_bound::ValueSize;
+    use ganbaru_sync_contracts::codec::Writer;
 
     fn text(value: &str) -> Field {
         Field::Text(value.to_owned())
@@ -730,6 +732,79 @@ mod tests {
                     let bytes = encode_rows(owned, rows)
                         .unwrap_or_else(|error| panic!("{}: {error}", owned.table));
                     assert!(bytes.len() <= MAX_BLOB_FIELD_BYTES, "{}", owned.table);
+                }
+            }
+        }
+    }
+
+    /// Charges one field the way Calendar charges the stored column it comes from.
+    fn charge(size: &mut ValueSize, column: &str, field: &Field) {
+        match field {
+            Field::Null => size.field(&None::<String>),
+            Field::Integer(_) => size.integer(),
+            Field::Text(text) => size.named_field(column, text.as_str()),
+            Field::Blob(_) => panic!("{column}: Calendar stores no blob columns"),
+        }
+    }
+
+    /// A plain group field that exercises the column's encoded form.
+    fn plain_field(column: &ColumnSpec) -> Field {
+        match column.ty {
+            ColumnType::Integer { max, .. } | ColumnType::OptionalInteger { max, .. } => {
+                Field::Integer(max)
+            }
+            ColumnType::Flag => Field::Integer(1),
+            ColumnType::Timestamp | ColumnType::OptionalTimestamp => {
+                Field::Text(SAMPLE_TIMESTAMP.to_owned())
+            }
+            ColumnType::Text { .. }
+            | ColumnType::OptionalText { .. }
+            | ColumnType::TrimmedText { .. } => Field::Text("x".repeat(32)),
+            _ => Field::Null,
+        }
+    }
+
+    #[test]
+    fn calendar_estimates_cover_the_real_codec_for_every_group_value() {
+        for table in DOMAIN.tables {
+            for group in table.groups {
+                let owned_tables = group.owned_tables();
+                if owned_tables.is_empty() {
+                    continue;
+                }
+                // Each sample shape fills every owned table of the group at once.
+                for shape in 0..3 {
+                    let mut size = ValueSize::default();
+                    let mut fields = Vec::new();
+                    for column in group.columns() {
+                        let field = plain_field(column);
+                        charge(&mut size, column.name, &field);
+                        fields.push(field);
+                    }
+                    for owned in owned_tables {
+                        let rows = owned_samples(owned).swap_remove(shape);
+                        for row in &rows {
+                            size.row();
+                            for (column, field) in owned.columns.iter().zip(row) {
+                                charge(&mut size, column.name, field);
+                            }
+                        }
+                        let blob = encode_rows(owned, rows)
+                            .unwrap_or_else(|error| panic!("{}: {error}", owned.table));
+                        fields.push(Field::Blob(blob));
+                    }
+                    let mut writer = Writer::with_capacity(0);
+                    Value::new(fields)
+                        .unwrap_or_else(|error| panic!("{}: {error:?}", group.name))
+                        .encode_into(&mut writer);
+                    assert!(
+                        writer.len() <= size.bytes(),
+                        "{} {} shape {shape}: encoded {} over estimate {}",
+                        table.name,
+                        group.name,
+                        writer.len(),
+                        size.bytes()
+                    );
                 }
             }
         }

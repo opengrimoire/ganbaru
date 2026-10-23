@@ -10,12 +10,13 @@ mod sync;
 
 pub use sync::{
     DISCOVERY_KEY_BYTES, MAX_COORDINATOR_ENDPOINTS, MAX_SYNC_ASSET_BYTES, MAX_SYNC_ASSETS,
-    MAX_SYNC_HASHES, SYNC_ASSET_CHUNK_BYTES, SYNC_PAGE_BYTES, SyncAsset, SyncAssetKey, SyncProbe,
-    SyncRefusal, SyncRefusalCode, SyncSeq, decode_sync_device_key, encode_sync_device_key,
-    validate_coordinator_endpoint, validate_coordinator_endpoints, validate_discovery_key,
+    MAX_SYNC_EVIDENCE_OPS, MAX_SYNC_HASHES, SYNC_ASSET_CHUNK_BYTES, SYNC_PAGE_BYTES, SyncAsset,
+    SyncAssetKey, SyncProbe, SyncRefusal, SyncRefusalCode, SyncSeq, decode_sync_device_key,
+    encode_sync_device_key, validate_coordinator_endpoint, validate_coordinator_endpoints,
+    validate_discovery_key,
 };
 
-pub const PROTOCOL_VERSION: u16 = 10;
+pub const PROTOCOL_VERSION: u16 = 11;
 pub const MAX_CONTROL_BYTES: usize = 1024 * 1024;
 /// Frame bound before the peer presents a linked certificate. Enrollment (with its 8 KiB
 /// certificate) and contact requests fit well inside it.
@@ -370,7 +371,8 @@ pub enum ControlMessage {
     /// the listener endpoints the coordinator reports now and the vault's discovery key, so a
     /// linked device follows address changes without relinking. `stable` lists the operations
     /// every counted device holds, and `bootstrap_required` tells the device that the hub no
-    /// longer holds operations it lacks.
+    /// longer holds operations it lacks. `forked` lists the writers the hub holds fork evidence
+    /// for, each with the sequence where its copies differ.
     SyncState {
         manifest_version: u16,
         stored: Vec<SyncSeq>,
@@ -379,6 +381,7 @@ pub enum ControlMessage {
         discovery_key: String,
         stable: Vec<SyncSeq>,
         bootstrap_required: bool,
+        forked: Vec<SyncSeq>,
     },
     /// Authenticated: operations the hub lacks, in an order that keeps chains contiguous.
     SyncPush {
@@ -423,6 +426,21 @@ pub enum ControlMessage {
     /// Consecutive hashes from the requested sequence; fewer when the chain ends.
     SyncHashList {
         hashes: Vec<String>,
+    },
+    /// Authenticated: the fork evidence of `writer`. `evidence` is empty to ask for the hub's
+    /// pair, one operation of `writer` that the hub may hold differently at its sequence, or a
+    /// pair the hub may lack.
+    SyncForkEvidence {
+        protocol_version: u16,
+        vault_id: String,
+        device_id: String,
+        writer: String,
+        evidence: Vec<String>,
+    },
+    /// The two operations proving that the requested writer forked, or none when the hub holds
+    /// no evidence for it.
+    SyncForkPair {
+        evidence: Vec<String>,
     },
     /// Authenticated: which of these assets the hub holds.
     SyncAssetQuery {
@@ -493,6 +511,11 @@ impl ControlMessage {
                 ..
             }
             | Self::SyncHashes {
+                vault_id,
+                device_id,
+                ..
+            }
+            | Self::SyncForkEvidence {
                 vault_id,
                 device_id,
                 ..
@@ -799,9 +822,11 @@ impl ControlMessage {
                 discovery_key,
                 stable,
                 bootstrap_required: _,
+                forked,
             } => {
                 sync::validate_vector(stored)?;
                 sync::validate_vector(stable)?;
+                sync::validate_vector(forked)?;
                 if let Some(hash) = probe_hash {
                     sync::validate_hashes(std::slice::from_ref(hash))?;
                 }
@@ -857,6 +882,18 @@ impl ControlMessage {
                 sync::validate_hash_range(*from_seq, *limit)?;
             }
             Self::SyncHashList { hashes } => sync::validate_hashes(hashes)?,
+            Self::SyncForkEvidence {
+                protocol_version,
+                vault_id,
+                device_id,
+                writer,
+                evidence,
+            } => {
+                validate_sync_peer(*protocol_version, vault_id, device_id)?;
+                sync::validate_writer(writer)?;
+                sync::validate_evidence(evidence, false)?;
+            }
+            Self::SyncForkPair { evidence } => sync::validate_evidence(evidence, true)?,
             Self::SyncAssetQuery {
                 protocol_version,
                 vault_id,
@@ -1844,6 +1881,10 @@ mod tests {
                 seq: 2,
             }],
             bootstrap_required: false,
+            forked: vec![SyncSeq {
+                writer: "b".repeat(32),
+                seq: 3,
+            }],
         }
     }
 
@@ -1945,6 +1986,78 @@ mod tests {
         };
         let encoded = serde_json::to_string(&refusal).expect("refusal encodes");
         assert!(encoded.contains("\"bootstrap_required\""), "{encoded}");
+    }
+
+    #[test]
+    fn sync_state_bounds_its_forked_writers() {
+        let key = discovery_key_of(DISCOVERY_KEY_BYTES);
+        let with_forked = |forked: Vec<SyncSeq>| {
+            let mut state = sync_state(&[], key.clone());
+            if let ControlMessage::SyncState { forked: field, .. } = &mut state {
+                *field = forked;
+            }
+            state
+        };
+        let writers = ganbaru_sync_contracts::bounds::MAX_WRITERS_PER_SPACE;
+        let entry = |index: usize| SyncSeq {
+            writer: format!("{index:032x}"),
+            seq: 2,
+        };
+        let full = with_forked((0..writers).map(entry).collect());
+        assert_eq!(frame_round_trip(&full), Ok(full));
+        assert!(
+            with_forked((0..=writers).map(entry).collect())
+                .validate()
+                .is_err()
+        );
+        for malformed in [
+            SyncSeq {
+                writer: "B".repeat(32),
+                seq: 2,
+            },
+            SyncSeq {
+                writer: "b".repeat(32),
+                seq: 0,
+            },
+        ] {
+            assert!(with_forked(vec![malformed.clone()]).validate().is_err());
+        }
+    }
+
+    #[test]
+    fn fork_evidence_messages_round_trip_and_bound_their_operations() {
+        let op = |byte: u8| {
+            base64::Engine::encode(
+                &base64::engine::general_purpose::URL_SAFE_NO_PAD,
+                vec![byte; 90],
+            )
+        };
+        let request = |evidence: Vec<String>| ControlMessage::SyncForkEvidence {
+            protocol_version: PROTOCOL_VERSION,
+            vault_id: "vault-1".to_string(),
+            device_id: "device-phone".to_string(),
+            writer: "a".repeat(32),
+            evidence,
+        };
+        for evidence in [Vec::new(), vec![op(1)], vec![op(1), op(2)]] {
+            let message = request(evidence);
+            assert_eq!(frame_round_trip(&message), Ok(message.clone()));
+            assert_eq!(message.sync_peer(), Some(("vault-1", "device-phone")));
+        }
+        assert!(request(vec![op(1), op(2), op(3)]).validate().is_err());
+        assert!(request(vec!["not base64!".to_string()]).validate().is_err());
+        let mut foreign = request(Vec::new());
+        if let ControlMessage::SyncForkEvidence { writer, .. } = &mut foreign {
+            *writer = "a".repeat(31);
+        }
+        assert!(foreign.validate().is_err());
+        let pair = |evidence| ControlMessage::SyncForkPair { evidence };
+        for evidence in [Vec::new(), vec![op(1), op(2)]] {
+            let message = pair(evidence);
+            assert_eq!(frame_round_trip(&message), Ok(message));
+        }
+        assert!(pair(vec![op(1)]).validate().is_err());
+        assert!(pair(vec![op(1), op(2), op(3)]).validate().is_err());
     }
 
     #[test]

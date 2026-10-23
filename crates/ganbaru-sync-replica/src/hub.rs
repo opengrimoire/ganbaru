@@ -6,8 +6,8 @@ use super::assets::{
     blocking, partition_held, write_staged,
 };
 use super::wire::{
-    asset_from_wire, asset_key, bytes_from_wire, bytes_to_wire, hash_to_wire, ops_from_wire,
-    ops_to_wire, vector_from_wire, vector_to_wire, writer_from_wire,
+    asset_from_wire, asset_key, bytes_from_wire, bytes_to_wire, forked_to_wire, hash_to_wire,
+    ops_from_wire, ops_to_wire, vector_from_wire, vector_to_wire, writer_from_wire,
 };
 use ganbaru_handoff::protocol::{
     ControlMessage, SYNC_ASSET_CHUNK_BYTES, SyncAsset, SyncAssetKey, SyncRefusal, SyncRefusalCode,
@@ -15,7 +15,9 @@ use ganbaru_handoff::protocol::{
 };
 use ganbaru_sync::assets::AssetRef;
 use ganbaru_sync::manifest::Manifest;
-use ganbaru_sync::{Engine, SpaceContext, StoreOutcome, StoreRefusal, SyncError, local};
+use ganbaru_sync::{
+    Engine, EvidenceOutcome, SpaceContext, StoreOutcome, StoreRefusal, SyncError, local,
+};
 use ganbaru_sync_contracts::{Envelope, Seq, VersionVector, WriterId};
 use sqlx::SqlitePool;
 use std::collections::HashMap;
@@ -317,6 +319,17 @@ impl SyncHub {
                 let writer = writer_from_wire(&writer).map_err(invalid)?;
                 hub.hashes(writer, from_seq, limit).await
             }
+            ControlMessage::SyncForkEvidence {
+                writer, evidence, ..
+            } => {
+                let writer = writer_from_wire(&writer).map_err(invalid)?;
+                let offered = ops_from_wire(&evidence).map_err(invalid)?;
+                let (response, stored) = hub.fork_evidence(writer, &offered).await?;
+                if stored {
+                    self.changes.send_modify(|generation| *generation += 1);
+                }
+                Ok(response)
+            }
             _ => Err(HubError::rejected(
                 "unsupported_message",
                 "the hub only answers sync requests",
@@ -356,12 +369,16 @@ impl SyncHub {
                 .get(device_id)
                 != Some(&token);
             if superseded || !known.dominates(&stored) {
-                break Ok(hub.state_message(&stored, None, bootstrap_required, report));
+                break hub
+                    .state_message(&stored, None, bootstrap_required, report)
+                    .await;
             }
             match tokio::time::timeout_at(deadline, changes.changed()).await {
                 Ok(Ok(())) => {}
                 Ok(Err(_)) | Err(_) => {
-                    break Ok(hub.state_message(&stored, None, bootstrap_required, report));
+                    break hub
+                        .state_message(&stored, None, bootstrap_required, report)
+                        .await;
                 }
             }
         };
@@ -583,16 +600,23 @@ impl HubSession {
             .map_err(|error| HubError::failed(format!("read sync log: {error}")))
     }
 
-    fn state_message(
+    async fn state_message(
         &self,
         stored: &VersionVector,
         probe_hash: Option<String>,
         bootstrap_required: bool,
         report: StateReport,
-    ) -> ControlMessage {
+    ) -> Result<ControlMessage, HubError> {
         let mut stable = report.stable;
         stable.meet(stored);
-        ControlMessage::SyncState {
+        let forked = {
+            let mut conn = acquire(&self.pool).await?;
+            self.engine
+                .forked_writers(&mut conn, &self.ctx)
+                .await
+                .map_err(|error| HubError::failed(format!("read fork evidence: {error}")))?
+        };
+        Ok(ControlMessage::SyncState {
             manifest_version: self.engine.manifest().version,
             stored: vector_to_wire(stored),
             probe_hash,
@@ -600,7 +624,64 @@ impl HubSession {
             discovery_key: report.contact.discovery_key,
             stable: vector_to_wire(&stable),
             bootstrap_required,
+            forked: forked_to_wire(&forked),
+        })
+    }
+
+    /// Stores what a peer offers as fork evidence of `writer` and answers the pair the hub then
+    /// holds. A single operation becomes evidence when the hub holds a different one at its
+    /// sequence. Returns whether the hub stored new evidence.
+    async fn fork_evidence(
+        &self,
+        writer: WriterId,
+        offered: &[Vec<u8>],
+    ) -> Result<(ControlMessage, bool), HubError> {
+        let failed = |error: SyncError| HubError::failed(format!("store fork evidence: {error}"));
+        let mut conn = acquire(&self.pool).await?;
+        let pair = match offered {
+            [first, second] => Some((first.clone(), second.clone())),
+            [operation] => {
+                let envelope = Envelope::decode(operation)
+                    .map_err(|_| invalid("the offered operation is malformed".to_string()))?;
+                if envelope.writer != writer {
+                    return Err(invalid(
+                        "the offered operation names another writer".to_string(),
+                    ));
+                }
+                self.engine
+                    .operation_at(&mut conn, &self.ctx, writer, envelope.seq)
+                    .await
+                    .map_err(failed)?
+                    .filter(|held| held != operation)
+                    .map(|held| (held, operation.clone()))
+            }
+            _ => None,
+        };
+        let mut stored = false;
+        if let Some((first, second)) = pair {
+            let outcome = self
+                .engine
+                .store_fork_evidence(&mut conn, &self.ctx, &first, &second, now_ms()?)
+                .await
+                .map_err(failed)?;
+            match outcome {
+                EvidenceOutcome::Stored => stored = true,
+                EvidenceOutcome::Known => {}
+                EvidenceOutcome::Refused(refusal) => {
+                    return Err(invalid(format!(
+                        "the fork evidence is refused: {refusal:?}"
+                    )));
+                }
+            }
         }
+        let evidence = self
+            .engine
+            .fork_evidence(&mut conn, &self.ctx, writer)
+            .await
+            .map_err(failed)?
+            .map(|evidence| ops_to_wire(&[evidence.first, evidence.second]))
+            .unwrap_or_default();
+        Ok((ControlMessage::SyncForkPair { evidence }, stored))
     }
 
     /// The hub's stored vector and its hash at the probed operation, when it holds it, for a
@@ -626,7 +707,8 @@ impl HubSession {
             }
             None => None,
         };
-        Ok(self.state_message(&stored, probe_hash, bootstrap_required, report))
+        self.state_message(&stored, probe_hash, bootstrap_required, report)
+            .await
     }
 
     /// Stores pushed operations up to the first refusal. A genesis of a writer the hub does not

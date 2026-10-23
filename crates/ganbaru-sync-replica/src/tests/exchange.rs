@@ -25,7 +25,7 @@ use ganbaru_sync::assets::AssetRef;
 use ganbaru_sync::local;
 use ganbaru_sync::manifest::vault::quick_notes::IMAGES_CLASS;
 use ganbaru_sync::manifest::vault::quick_notes::{NOTES, NOTES_TABLE};
-use ganbaru_sync::{Engine, SpaceContext};
+use ganbaru_sync::{Engine, EvidenceOutcome, SpaceContext};
 use ganbaru_sync::{LocalWriter, SequenceReservation};
 use ganbaru_sync_contracts::bounds::MAX_WRITERS_PER_DEVICE;
 use ganbaru_sync_contracts::{
@@ -1136,14 +1136,211 @@ fn a_cloned_installation_is_found_and_resealed_by_a_successor() {
                 .expect("exchange after re-seal"),
         );
         assert_eq!(exchanged.problem, None);
+
+        // The clone's offer gave the hub fork evidence, so it excludes both branches.
+        hub_replica.apply().await;
+        assert!(!hub_replica.has_note("note-original").await);
+        assert!(hub_replica.has_note("note-clone").await);
         assert_eq!(clone.stored().await, hub_replica.stored().await);
 
+        // The original learns the fork from the hub's state and re-seals its own branch.
+        let fork = match original
+            .exchange(&transport, &phone_ids())
+            .await
+            .expect("exchange")
+        {
+            Exchange::Fork(fork) => fork,
+            Exchange::Done(done) => panic!("the reported fork went unnoticed: {done:?}"),
+        };
+        assert_eq!(fork.writer, forked_writer);
+        assert_eq!(fork.keep_through, shared);
+        original.writer = create_writer(
+            &original.directory.files(),
+            &original.directory.keys(),
+            SuccessorPlan::default(),
+            &device_key(PHONE_DEVICE),
+            PHONE_DEVICE,
+            NOW_MS,
+        )
+        .expect("create successor");
+        {
+            let mut conn = acquire(&original.pool).await;
+            let report = Engine::vault()
+                .reseal_fork(
+                    &mut conn,
+                    &original.ctx,
+                    fork.writer,
+                    fork.keep_through,
+                    &mut original.writer.local(),
+                    NOW_MS,
+                )
+                .await
+                .expect("re-seal fork");
+            let seq = report.seal.last_seq.expect("re-sealed operations");
+            original.writer.committed(seq).expect("record commit");
+        }
+        let original_writers = BTreeSet::from([forked_writer, original.writer.id()]);
+        let exchanged = done(
+            original
+                .exchange_with(
+                    &transport,
+                    &phone_ids(),
+                    original.writer.id(),
+                    &original_writers,
+                    MAX_EXCHANGE_BYTES,
+                )
+                .await
+                .expect("exchange after re-seal"),
+        );
+        assert_eq!(exchanged.problem, None);
         hub_replica.apply().await;
         assert!(hub_replica.has_note("note-original").await);
         assert!(hub_replica.has_note("note-clone").await);
         hub_replica.close().await;
         original.close().await;
         clone.close().await;
+    });
+}
+
+#[test]
+fn fork_evidence_travels_between_members_through_the_hub() {
+    block_on(async {
+        let mut hub_replica = Replica::new("hub-evidence", HUB_DEVICE).await;
+        let mut phone = Replica::new("phone-evidence", PHONE_DEVICE).await;
+        let tablet = Replica::new("tablet-evidence", TABLET_DEVICE).await;
+        let (transport, changes) = hub(&hub_replica);
+        let shared = phone.seal_note("note-shared").await;
+        done(
+            phone
+                .exchange(&transport, &phone_ids())
+                .await
+                .expect("exchange"),
+        );
+        done(
+            tablet
+                .exchange(&transport, &tablet_ids())
+                .await
+                .expect("exchange"),
+        );
+
+        // Two copies of the phone's writer seal different operations at the next sequence.
+        let phone_path = phone.directory.path().join("vault.sqlite");
+        drop(phone.pool);
+        phone.registry.close_all().await.expect("close phone");
+        let clone_directory = TestDirectory::new("phone-evidence-clone");
+        let clone_path = clone_directory.path().join("vault.sqlite");
+        copy_database(&phone_path, &clone_path);
+        phone.pool = phone
+            .registry
+            .connect_path(&phone_path)
+            .await
+            .expect("reopen phone");
+        let clone_registry = DatabasePoolRegistry::default();
+        let clone_pool = clone_registry
+            .connect_path(&clone_path)
+            .await
+            .expect("open clone");
+        let forked_seq = phone.seal_note("note-a").await;
+        let mut clone_conn = acquire(&clone_pool).await;
+        add_note(&mut clone_conn, "note-b").await;
+        Engine::vault()
+            .seal(
+                &mut clone_conn,
+                &phone.ctx,
+                &mut phone.writer.local(),
+                NOW_MS,
+            )
+            .await
+            .expect("seal clone");
+        let writer = phone.writer.id();
+        let first = Engine::vault()
+            .operation_at(
+                &mut *acquire(&phone.pool).await,
+                &phone.ctx,
+                writer,
+                forked_seq,
+            )
+            .await
+            .expect("read operation")
+            .expect("phone operation");
+        let second = Engine::vault()
+            .operation_at(&mut clone_conn, &phone.ctx, writer, forked_seq)
+            .await
+            .expect("read operation")
+            .expect("clone operation");
+        drop(clone_conn);
+        clone_pool.close().await;
+        clone_registry.close_all().await.expect("close clone");
+
+        // The tablet holds evidence the hub lacks and offers it.
+        let outcome = Engine::vault()
+            .store_fork_evidence(
+                &mut *acquire(&tablet.pool).await,
+                &tablet.ctx,
+                &first,
+                &second,
+                NOW_MS,
+            )
+            .await
+            .expect("store evidence");
+        assert_eq!(outcome, EvidenceOutcome::Stored);
+        let before = *changes.borrow();
+        let exchanged = done(
+            tablet
+                .exchange(&transport, &tablet_ids())
+                .await
+                .expect("exchange"),
+        );
+        assert_eq!(exchanged.problem, None);
+        assert!(
+            *changes.borrow() > before,
+            "stored evidence wakes waiting peers"
+        );
+        let hub_forked = Engine::vault()
+            .forked_writers(&mut *acquire(&hub_replica.pool).await, &hub_replica.ctx)
+            .await
+            .expect("hub forked writers");
+        assert_eq!(hub_forked, vec![(writer, forked_seq)]);
+        hub_replica.apply().await;
+
+        // Another installation pulls the writer's prefix and then the evidence, in one exchange.
+        let late = Replica::new("tablet-evidence-late", TABLET_DEVICE).await;
+        let exchanged = done(
+            late.exchange(&transport, &tablet_ids())
+                .await
+                .expect("exchange"),
+        );
+        assert_eq!(exchanged.problem, None);
+        let mut conn = acquire(&late.pool).await;
+        let evidence = Engine::vault()
+            .fork_evidence(&mut conn, &late.ctx, writer)
+            .await
+            .expect("read evidence")
+            .expect("forwarded evidence");
+        assert_eq!(evidence.keep_through(), shared);
+        drop(conn);
+        // A second exchange asks for nothing it already holds.
+        let exchanged = done(
+            late.exchange(&transport, &tablet_ids())
+                .await
+                .expect("exchange"),
+        );
+        assert_eq!(exchanged.problem, None);
+
+        // The phone that owns the writer learns its fork the same way.
+        let fork = match phone
+            .exchange(&transport, &phone_ids())
+            .await
+            .expect("exchange")
+        {
+            Exchange::Fork(fork) => fork,
+            Exchange::Done(done) => panic!("the reported fork went unnoticed: {done:?}"),
+        };
+        assert_eq!((fork.writer, fork.keep_through), (writer, shared));
+        hub_replica.close().await;
+        phone.close().await;
+        tablet.close().await;
+        late.close().await;
     });
 }
 

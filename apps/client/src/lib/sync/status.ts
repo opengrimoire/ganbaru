@@ -108,6 +108,19 @@ export function syncClockAheadLines(t: Translate, status: SyncStatusView): strin
   return [...new Set(lines)];
 }
 
+/**
+ * Describes each linked device the coordinator does not count toward stability, keyed by
+ * device id: a dormant device that will need a fresh copy of the vault, or one that must be
+ * linked again.
+ */
+export function syncUncountedDeviceLines(t: Translate, status: SyncStatusView): { deviceId: string; line: string }[] {
+  return status.uncountedDevices.map(({ device, standing }) => {
+    const name = syncDeviceName(device, t("sync.recovery.thisDevice"), t("sync.recovery.otherDevice"));
+    const line = standing === "dormant" ? t("sync.uncounted.dormant", name) : t("sync.uncounted.relinkRequired", name);
+    return { deviceId: device.deviceId, line };
+  });
+}
+
 /** Labels the service state. */
 export function syncStateLabel(t: Translate, state: SyncState): string {
   switch (state) {

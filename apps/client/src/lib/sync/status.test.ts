@@ -15,6 +15,7 @@ import {
   syncRecoveryTotal,
   syncRoleLabel,
   syncStateLabel,
+  syncUncountedDeviceLines,
 } from "./status";
 import { SyncPresentationRegistry } from "./presentation-registry";
 
@@ -108,6 +109,19 @@ describe("sync status presentation", () => {
     expect(lines[0]).toContain("The clock on Laptop is ahead");
     expect(lines[1]).toContain("The clock on another device is ahead");
     expect(lines[2]).toContain("Some edits from this device");
+  });
+
+  it("explains each device the coordinator does not count", () => {
+    expect(syncUncountedDeviceLines(t, status({}))).toEqual([]);
+    const lines = syncUncountedDeviceLines(t, status({
+      uncountedDevices: [
+        { device: { deviceId: "a", deviceLabel: "Old phone", ownDevice: false }, standing: "dormant" },
+        { device: { deviceId: "b", deviceLabel: null, ownDevice: false }, standing: "relinkRequired" },
+      ],
+    }));
+    expect(lines.map((entry) => entry.deviceId)).toEqual(["a", "b"]);
+    expect(lines[0].line).toContain("Sync no longer waits for Old phone");
+    expect(lines[1].line).toBe("Link another device again so it can sync.");
   });
 
   it("names own, labeled, and unknown devices", () => {

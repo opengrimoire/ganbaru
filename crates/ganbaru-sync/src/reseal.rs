@@ -57,6 +57,11 @@ async fn replaced_ops(
                 return Err(corrupt("a replaced operation is not applied"));
             }
             let envelope: Vec<u8> = row.try_get(1)?;
+            if envelope.is_empty() {
+                return Err(SyncError::InvalidReseal(
+                    "a replaced operation was compacted",
+                ));
+            }
             let context: Vec<u8> = row.try_get(2)?;
             let operation = Envelope::decode(&envelope)
                 .ok()

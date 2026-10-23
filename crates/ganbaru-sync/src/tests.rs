@@ -1,6 +1,7 @@
 mod acknowledgements;
 mod budgets;
 mod capture;
+mod compaction;
 mod conformance;
 mod elision;
 mod engine;

@@ -262,7 +262,7 @@ Android background sync uses WorkManager only and never a foreground service; th
 | Concurrent replication of portable preferences and the profile picture | Implemented | Physical multi-device acceptance |
 | Concurrent replication of user themes | Implemented | Physical multi-device acceptance |
 | Concurrent replication of contacts | Implemented | Physical multi-device acceptance |
-| Concurrent replication of the Music library | Partial | Unbound root status and YouTube eligibility in the frontend, Android root refresh after apply, and physical multi-device acceptance |
+| Concurrent replication of the Music library | Implemented | Physical multi-device acceptance |
 | Connectivity: address refresh, DNS-SD discovery, overlay networks, firewall scopes, and Android background sync | Implemented | Physical multi-device acceptance, including the first Android build of the background sync module |
 | Concurrent replication of other domains | Planned | Projects, distraction rules and usage counters, Calendar, Focus history, Chat organizational content, Notes text and tree merging, managed assets, and retiring whole-vault handoff |
 | Concurrent secure local linking | Planned | Anchored authority with admin keys and late changes, LAN peer exchange, operation encryption, key lifecycle, typed bootstrap, and compaction |

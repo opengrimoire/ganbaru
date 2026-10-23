@@ -87,4 +87,17 @@ describe("saved playlist playback policy", () => {
     expect(projection.skipped.offline).toBe(1);
   });
 
+  it("plays a resolved YouTube entry whose replicated availability is unknown on this device", () => {
+    const youtube = (state: MusicPlaylistPlaybackEntry["youtubeResolutionState"], orderKey: string) => entry({
+      membershipId: `video-${state}`, itemId: `video-${state}`, identityKey: "youtube:abc", sourceKind: "youtube-video",
+      youtubeVideoId: "abcdefghijk", youtubeResolutionState: state, availability: "unknown", rootId: null, relativePath: null, orderKey,
+    });
+    const projection = projectMusicPlaylistPlayback([
+      youtube("ready", "a0"), youtube("resolving", "a1"), youtube("timed-out", "a2"), youtube(null, "a3"),
+      youtube("embedding-blocked", "a4"), youtube("unavailable", "a5"),
+    ], [], context);
+    expect(projection.eligibleIndices).toEqual([0, 1, 2, 3]);
+    expect(projection.skipped).toMatchObject({ "embedding-blocked": 1, unavailable: 1 });
+  });
+
 });

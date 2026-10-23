@@ -165,6 +165,16 @@ export const music = {
       removeMessage: (name: string) => `Remove ${name}? Projects and events that use it will show it as unavailable until you pick another soundscape.`,
     },
   },
+  sync: {
+    playlistUntitled: "Untitled playlist",
+    playlistRecoveryNote: "Restoring creates a new playlist with the songs that were added to it on another device.",
+    playlistRestored: "Playlist restored with its new songs",
+    playlistRestoreFailed: "The playlist could not be restored",
+    itemUntitled: "Untitled track",
+    itemRecoveryNote: "This track was removed from the library on another device. Its edits cannot be restored, so they can only be discarded.",
+    itemRestored: "Track restored",
+    itemRestoreFailed: "The track could not be restored",
+  },
   builder: {
     defaultPlaylist: {
       startOfDay: "Start of the day!",
@@ -304,7 +314,8 @@ export const music = {
     addLocalFolderHint: "Add a folder to browse its music here.",
     addYouTubeLinkHint: "Add a video or playlist link to browse it here.",
     noSourceItems: "Nothing here yet",
-    unlinkedSourceFolder: (name: string) => `${name} is not linked to a folder on this device yet.`,
+    notOnThisDevice: "Not on this device",
+    unlinkedSourceFolder: (name: string) => `${name} is not on this device yet. Choose its folder to play it here.`,
     missingSourceFolder: (name: string) => `The folder for ${name} cannot be found on this device.`,
     sourceLocation: "Source location",
     renameSource: "Rename source",

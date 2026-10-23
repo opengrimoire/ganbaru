@@ -332,6 +332,7 @@ pub async fn item_window(
             ), '[]') AS source_collection_ids_json,
             item.original_artwork_identity,
             item.artwork_override,
+            item.youtube_resolution_state,
             item.duration_ms, item.availability, item.review_state,
             item.discovered_at_ms, item.updated_at_ms, item.version,
             (SELECT COUNT(*) FROM music_playlist_memberships AS all_memberships

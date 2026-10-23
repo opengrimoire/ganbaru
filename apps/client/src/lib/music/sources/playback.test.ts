@@ -16,6 +16,7 @@ function item(patch: Partial<MusicItemListEntry>): MusicItemListEntry {
     sourceCollectionIds: [],
     originalArtworkIdentity: null,
     artworkOverride: null,
+    youtubeResolutionState: null,
     durationMs: 60_000,
     availability: "available",
     reviewState: "reviewed",
@@ -53,6 +54,19 @@ describe("music source playback", () => {
     expect(queue[0]?.source).toMatchObject({ kind: "local-file", path: "/Music/Album/Track.flac", artworkPath: "/Music/Album/cover.jpg" });
     expect(queue[1]?.source).toMatchObject({ kind: "youtube-video", videoId: "abc12345678", title: "Video" });
     expect(queue[0]?.snoozed).toBe(false);
+  });
+
+  it("lets resolution state, not device availability, gate YouTube rows", () => {
+    const video = (id: string, youtubeResolutionState: MusicItemListEntry["youtubeResolutionState"]) => item({
+      id, sourceKind: "youtube-video", localRootId: null, relativePath: null, identityKey: "youtube:video:abc12345678",
+      availability: "unknown", youtubeResolutionState,
+    });
+    const queue = projectMusicSourceQueue([
+      video("ready", "ready"), video("resolving", "resolving"), video("timed-out", "timed-out"), video("none", null),
+      video("blocked", "embedding-blocked"), video("gone", "unavailable"),
+      { ...video("missing-but-ready", "ready"), availability: "missing" },
+    ], []);
+    expect(queue.map((entry) => entry.itemId)).toEqual(["ready", "resolving", "timed-out", "none", "missing-but-ready"]);
   });
 
   it("keeps source queue Snooze indicators for playable rows", () => {

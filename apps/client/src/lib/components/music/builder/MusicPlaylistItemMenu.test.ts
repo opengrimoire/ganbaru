@@ -15,7 +15,7 @@ vi.mock("$lib/api/music-library", async (importOriginal) => ({
 const item: MusicItemListEntry = {
   id: "song", identityKey: "local:song", sourceKind: "local-file", mediaKind: "audio",
   title: "Song", artist: "Artist", album: "Album", localRootId: "root", relativePath: "song.flac",
-  sourceCollectionIds: [], originalArtworkIdentity: null, artworkOverride: null, durationMs: null,
+  sourceCollectionIds: [], originalArtworkIdentity: null, artworkOverride: null, youtubeResolutionState: null, durationMs: null,
   availability: "available", reviewState: "reviewed", discoveredAtMs: 1, updatedAtMs: 1, version: 1,
   playlistCount: 1, activeSnoozeCount: 1, lastPlayedAtMs: null, playCount: 0,
   membershipId: "membership", membershipOrderKey: "a0", membershipWeight: "normal",

@@ -36,7 +36,7 @@ function api(overrides: Partial<MusicSourcesControllerApi> = {}): MusicSourcesCo
     pickFile: vi.fn(async () => null),
     createRoot: vi.fn(async (request) => ({ id: rootCollectionId(request.rootId), version: 1 })),
     bindRoot: vi.fn(async (_vaultId, rootId, folderPath) => ({ rootId, folderPath, status: "available" as const })),
-    clearBinding: vi.fn(async (_vaultId, rootId) => ({ rootId, folderPath: null, status: "needs-relink" as const })),
+    clearBinding: vi.fn(async (_vaultId, rootId) => ({ rootId, folderPath: null, status: "unbound" as const })),
     previewItemRepair: vi.fn(async (itemId, filePath) => ({
       itemId, folderPath: filePath, relativePath: "track.flac", title: "Track", artist: "", album: "",
       durationMs: 1, fileSizeBytes: 1, lightweightFingerprint: "sample:1", strongFingerprint: "sha256:1",
@@ -219,13 +219,13 @@ describe("MusicSourcesController", () => {
       localCollection("loading", "loading-root"),
     ];
     controller.bindings = [
-      { rootId: "never-root", folderPath: null, status: "needs-relink" },
+      { rootId: "never-root", folderPath: null, status: "unbound" },
       { rootId: "moved-root", folderPath: "/music/old", status: "missing" },
       { rootId: "ready-root", folderPath: "/music/ready", status: "available" },
     ];
 
     expect(controller.unlinkedLocalSources().map(({ collection, status }) => [collection.id, status])).toEqual([
-      ["never-linked", "needs-relink"],
+      ["never-linked", "unbound"],
       ["moved", "missing"],
     ]);
     expect(controller.unlinkedLocalSources(["moved", "ready"]).map(({ collection }) => collection.id)).toEqual(["moved"]);
@@ -569,7 +569,7 @@ describe("MusicSourcesController", () => {
     const applyItemRepair = vi.fn(async (request: Parameters<MusicSourcesControllerApi["applyItemRepair"]>[0]) => ({ id: "repair-location", version: 1 }));
     const bindRoot = vi.fn(async (_vaultId: string, rootId: string, folderPath: string) => ({ rootId, folderPath, status: "available" as const }));
     const undoItemRepair = vi.fn(async () => undefined);
-    const clearBinding = vi.fn(async (_vaultId: string, rootId: string) => ({ rootId, folderPath: null, status: "needs-relink" as const }));
+    const clearBinding = vi.fn(async (_vaultId: string, rootId: string) => ({ rootId, folderPath: null, status: "unbound" as const }));
     const ids = ["repair-root"];
     const controller = createMusicSourcesController(api({ applyItemRepair, bindRoot, undoItemRepair, clearBinding }), () => 30, () => ids.shift()!, refreshStub());
     controller.setVault("vault-1");

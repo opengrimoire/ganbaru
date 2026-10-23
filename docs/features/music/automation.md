@@ -28,7 +28,7 @@ Assignment sources:
 
 Precedence is event override, then a future work-environment assignment, then the event's project snapshot. This holds even for assignments that only select a soundscape. Missing or deleted playlists and soundscapes produce an explicit unavailable result instead of silently selecting something else.
 
-Deleting a playlist with a replacement rewrites Music phase assignments only. Project and event playlist settings that named it fall back to no playlist; the delete dialog counts them so the user sees that consequence before confirming.
+Deleting a playlist with a replacement rewrites Music phase assignments only. Project and event playlist settings that named it fall back to no playlist; the delete dialog counts them so the user sees that consequence before confirming. On linked devices the replacement applies everywhere; a phase assignment that another device sets to the deleted playlist afterwards reports the playlist as unavailable.
 
 ## Calendar activation (desktop)
 

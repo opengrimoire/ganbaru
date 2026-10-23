@@ -580,7 +580,7 @@
     const collection = collectionById(collectionId);
     if (!collection?.localRootId) return;
     // Without a folder on this device there are no prior locations to match, so the folder is chosen directly.
-    const neverLinked = sources.unlinkedLocalSources([collection.id])[0]?.status === "needs-relink";
+    const neverLinked = sources.unlinkedLocalSources([collection.id])[0]?.status === "unbound";
     if (supportsRootReselection || neverLinked) {
       try {
         if (await sources.reselectLocalRoot(collection)) await library.refreshAfterMutation();
@@ -592,6 +592,11 @@
     if (!supportsRelinkPlans) return;
     sourceSurfaceCollection = collection;
     sourceSurface = "relink";
+  }
+
+  function chooseRootFolder(rootId: string): void {
+    const collection = sources.collections.find((entry) => entry.localRootId === rootId);
+    if (collection) void openRelink(collection.id);
   }
 
   function repairIssue(issue: MusicIssue): void {
@@ -1202,7 +1207,7 @@
             {/if}
           </div>
         {:else}
-          <MusicReviewWorkspace items={reviewItems} totalCount={reviewItems.length} {library} {inspector} {sources} {audition} {review} {bulk} {active} selectedItemIds={reviewTreeViewState.selectedItemIds} selectedFolderIds={reviewTreeViewState.selectedFolderIds} onClearSelection={clearReviewSelection} autoplay={reviewAutoplay} onAutoplayChange={setReviewAutoplay} onOpenPlayer={openPlayerFromBuilder} compactPlayerLabel={mobilePresentation} showPanelButton={layout.contextPanelPresentation === "sheet"} onOpenPanel={() => contextViewState.contextPanelOpen = true} onEditPlaylist={(playlistId) => { void openPlaylistManagementSurface(playlistId, "edit"); }} onDeletePlaylist={(playlistId) => { void openPlaylistManagementSurface(playlistId, "delete"); }} onReorderPlaylists={reorderPlaylistSummaries} issue={activeReviewIssue} repairAvailable={activeReviewIssue ? canRepairIssue(activeReviewIssue) : false} onRepairIssue={repairIssue} bind:viewState={reviewWorkspaceViewState} />
+          <MusicReviewWorkspace items={reviewItems} totalCount={reviewItems.length} {library} {inspector} {sources} {audition} {review} {bulk} {active} selectedItemIds={reviewTreeViewState.selectedItemIds} selectedFolderIds={reviewTreeViewState.selectedFolderIds} onClearSelection={clearReviewSelection} autoplay={reviewAutoplay} onAutoplayChange={setReviewAutoplay} onOpenPlayer={openPlayerFromBuilder} compactPlayerLabel={mobilePresentation} showPanelButton={layout.contextPanelPresentation === "sheet"} onOpenPanel={() => contextViewState.contextPanelOpen = true} onEditPlaylist={(playlistId) => { void openPlaylistManagementSurface(playlistId, "edit"); }} onDeletePlaylist={(playlistId) => { void openPlaylistManagementSurface(playlistId, "delete"); }} onReorderPlaylists={reorderPlaylistSummaries} issue={activeReviewIssue} repairAvailable={activeReviewIssue ? canRepairIssue(activeReviewIssue) : false} onRepairIssue={repairIssue} onChooseFolder={chooseRootFolder} bind:viewState={reviewWorkspaceViewState} />
         {/if}
       {:else if playlistManagementOpen && (destination.kind === "playlists" || destination.kind === "playlist")}
         <div class="min-h-0 flex-1 overflow-y-auto p-3" data-music-scrollable="true"><MusicPlaylistManager bind:this={playlistManager} bind:actionsDisabled={playlistManagerActionsDisabled} playlists={library.playlistSummaries} onEdit={(playlistId) => { void openPlaylistManagementSurface(playlistId, "edit"); }} onDelete={(playlistId) => { void openPlaylistManagementSurface(playlistId, "delete"); }} onReorder={reorderPlaylistSummaries} onDone={() => playlistManagementOpen = false} showHeader={false} /></div>

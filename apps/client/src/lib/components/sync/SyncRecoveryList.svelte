@@ -98,6 +98,9 @@
       <div class="min-w-0 flex-1 basis-48">
         <div class="truncate text-[0.866667rem] font-medium text-foreground">{entry.title || syncPresentations.recoveryUntitled(t, entry.table)}</div>
         {#if entry.preview}<div class="truncate text-[0.8rem] text-muted-foreground">{entry.preview}</div>{/if}
+        {#if syncPresentations.recoveryNote(t, entry.table)}
+          <div class="text-[0.75rem] text-muted-foreground">{syncPresentations.recoveryNote(t, entry.table)}</div>
+        {/if}
         {#if entry.descendants > 0}
           <div class="text-[0.75rem] text-muted-foreground">{t("sync.recovery.descendants", entry.descendants)}</div>
         {/if}
@@ -110,9 +113,11 @@
         </div>
       </div>
       <div class="flex shrink-0 gap-2">
-        <button type="button" class={actionClass} disabled={busyKey !== null} onclick={() => void act(entry, true)}>
-          {t("sync.recovery.restore")}
-        </button>
+        {#if syncPresentations.recoveryRestorable(entry.table)}
+          <button type="button" class={actionClass} disabled={busyKey !== null} onclick={() => void act(entry, true)}>
+            {t("sync.recovery.restore")}
+          </button>
+        {/if}
         <button type="button" class={actionClass} disabled={busyKey !== null} onclick={() => void act(entry, false)}>
           {t("sync.recovery.discard")}
         </button>

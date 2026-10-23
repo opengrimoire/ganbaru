@@ -53,7 +53,7 @@ import {
 /** A local source this device cannot scan until the user chooses its folder. */
 export interface UnlinkedMusicSource {
   collection: MusicSourceCollection;
-  /** `needs-relink` when no folder was chosen on this device, `missing` when the chosen folder is gone. */
+  /** `unbound` when no folder was chosen on this device, `missing` when the chosen folder is gone. */
   status: Exclude<LocalRootBindingStatus, "available">;
 }
 

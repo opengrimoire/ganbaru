@@ -14,7 +14,8 @@ const MAX_ROOT_ID_BYTES: usize = 200;
 pub enum LocalRootBindingStatus {
     Available,
     Missing,
-    NeedsRelink,
+    /// The root exists in the vault but this device has no folder chosen for it.
+    Unbound,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -90,7 +91,7 @@ fn root_bindings_for_vault<'a>(
 #[cfg(desktop)]
 fn binding_status(path: Option<&str>) -> LocalRootBindingStatus {
     match path {
-        None => LocalRootBindingStatus::NeedsRelink,
+        None => LocalRootBindingStatus::Unbound,
         Some(path) if Path::new(path).is_dir() => LocalRootBindingStatus::Available,
         Some(_) => LocalRootBindingStatus::Missing,
     }
@@ -101,7 +102,7 @@ fn binding_status(path: Option<&str>) -> LocalRootBindingStatus {
     match path {
         Some(path) if path.starts_with("content://") => LocalRootBindingStatus::Available,
         Some(_) => LocalRootBindingStatus::Missing,
-        None => LocalRootBindingStatus::NeedsRelink,
+        None => LocalRootBindingStatus::Unbound,
     }
 }
 
@@ -276,7 +277,7 @@ mod tests {
         let app_state = state();
         assert_eq!(
             binding_read(&app_state, "vault-1", "soundtracks").status,
-            LocalRootBindingStatus::NeedsRelink,
+            LocalRootBindingStatus::Unbound,
         );
         assert_eq!(
             binding_status(Some("/a/path/that/does/not/exist")),

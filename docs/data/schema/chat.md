@@ -93,7 +93,9 @@ Canonical organization state commits before process notifications. If process de
 
 Provider sessions, attachments, scratch generations, checkpoints, browser artifacts, and native processes have different retention and cleanup requirements. Cleanup records state the exact logical target, reason, attempt state, and safe retry information without exposing secrets or unnecessary absolute paths.
 
-Deletion of a provider continuation does not cascade into the channel. Archiving a channel does not by itself delete provider-native state. Project deletion must explicitly plan organization history, managed assets, working folders, and user-authored files.
+Deletion of a provider continuation does not cascade into the channel. Archiving a channel does not by itself delete provider-native state.
+
+Chat foreign keys into Projects (projects and project working folders) cascade on delete, so deleting a project removes the same Chat rows on every replica instead of being refused by whichever row a device happens to hold. Removing an external working folder is still refused while Chat references it, through an explicit in-use query. Audit rows (authorization revisions and their sources, scratch generation sources, and scratch promotions) stay immutable while their parents exist and are removed only by that cascade. The command that deletes projects collects their managed attachment and resource paths before the transaction and removes those files after it commits, keeping any path a remaining row still names.
 
 Revocation cleanup has priority over convenience retention. A continuation that materialized restricted context is stopped and discarded or quarantined before reuse, as specified in [Chat access control](../access-control.md).
 

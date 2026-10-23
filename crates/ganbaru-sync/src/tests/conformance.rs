@@ -8,8 +8,8 @@ use sqlx::SqlitePool;
 use super::fixture::{
     CYCLE_A, CYCLE_A_TABLE, CYCLE_B, CYCLE_B_TABLE, FIXTURE_DOMAIN, FIXTURE_TABLE_IDS, FixtureHook,
     ITEMS, ITEMS_TABLE, LINKS, LINKS_TABLE, LISTS_TABLE, MEMBERSHIP_DETAILS, MEMBERSHIP_IDENTITY,
-    MEMBERSHIP_KEY_PREFIX, MEMBERSHIPS, MEMBERSHIPS_TABLE, TEST_MANIFEST, fixture_pool,
-    membership_group, membership_key, test_engine,
+    MEMBERSHIP_KEY_PREFIX, MEMBERSHIPS, MEMBERSHIPS_TABLE, NODES, TEST_MANIFEST, fixture_pool,
+    membership_group, membership_key, node_group, test_engine,
 };
 use super::{block_on, migrated_pool};
 use crate::assets::{AssetClass, MAX_ASSET_BYTES};
@@ -22,7 +22,7 @@ use crate::manifest::{
     Classification, Collation, ColumnSpec, ColumnType, DerivedKey, DomainManifest, GroupSpec,
     GroupStorage, KeyDerivedColumn, LocalColumn, MAX_TIMESTAMP_BYTES, Manifest, MergeKind,
     OnDelete, OwnedCodec, OwnedOrder, OwnedTable, ReferenceColumn, Resolution, SYNC_KEY_COLUMN,
-    SYNC_TABLES, TableIdRange, TableSpec, is_sql_literal,
+    SYNC_TABLES, TableIdRange, TableSpec, TreeSpec, is_sql_literal,
 };
 use crate::sql::{read_owned, replace_owned};
 use crate::{Adapters, Engine, Hooks, SyncError, triggers, validate};
@@ -992,6 +992,19 @@ fn key_derived_implications(table: &TableSpec) -> (Vec<UniqueSet>, Vec<BTreeSet<
         .unzip()
 }
 
+/// The multi-column CHECK a tree implies: a parent that differs from the row's key. A row naming
+/// itself is a cycle of length 1, which tree repair breaks before the row materializes.
+fn tree_implication(table: &TableSpec) -> Option<BTreeSet<String>> {
+    let tree = table.tree?;
+    let [parent] = table.group(tree.parent_group)?.columns() else {
+        return None;
+    };
+    Some(BTreeSet::from([
+        parent.name.to_lowercase(),
+        table.key_column.to_lowercase(),
+    ]))
+}
+
 async fn assert_resolutions(table: &TableSpec, pool: &SqlitePool) {
     let pool = pool.clone();
     let implied = implied_unique(table);
@@ -1039,6 +1052,9 @@ async fn assert_resolutions(table: &TableSpec, pool: &SqlitePool) {
             )
         });
         multi_column.remove(position);
+    }
+    if let Some(implied) = tree_implication(table) {
+        multi_column.retain(|columns| *columns != implied);
     }
     multi_column.sort();
     let mut declared = declared_checks(table);
@@ -1510,6 +1526,62 @@ fn validation_refuses_key_derived_columns_naming_the_key_or_on_composite_keys() 
     ] {
         assert!(problems.contains(problem), "{problems}");
     }
+}
+
+#[test]
+fn a_tree_orders_siblings_by_a_position_group_or_by_none() {
+    const UNORDERED: TableSpec = TableSpec {
+        tree: Some(TreeSpec {
+            position_group: None,
+            ..NODES_TREE
+        }),
+        ..NODES
+    };
+    const MISORDERED: TableSpec = TableSpec {
+        tree: Some(TreeSpec {
+            position_group: Some(node_group::LABEL),
+            ..NODES_TREE
+        }),
+        ..NODES
+    };
+    const UNORDERED_DOMAIN: DomainManifest = DomainManifest {
+        tables: &[UNORDERED],
+        ..FIXTURE_DOMAIN
+    };
+    const MISORDERED_DOMAIN: DomainManifest = DomainManifest {
+        tables: &[MISORDERED],
+        ..FIXTURE_DOMAIN
+    };
+    const NODES_TREE: TreeSpec = match NODES.tree {
+        Some(tree) => tree,
+        None => panic!("the node fixture is a tree"),
+    };
+
+    leaked(&[&UNORDERED_DOMAIN]).validate().unwrap();
+    let misordered = validation_error(&[&MISORDERED_DOMAIN]);
+    assert!(
+        misordered.contains("the tree position is not a position group"),
+        "{misordered}"
+    );
+
+    let summary = leaked(&[&UNORDERED_DOMAIN]).summary();
+    assert!(
+        summary.contains("tree parent 0 position none depth 2"),
+        "{summary}"
+    );
+    let summary = leaked(&[&FIXTURE_DOMAIN]).summary();
+    assert!(
+        summary.contains("tree parent 0 position 1 depth 2"),
+        "{summary}"
+    );
+
+    // The node schema refuses a self parent, a CHECK over the parent and the key that the tree
+    // implies, so it needs no declared resolution.
+    assert_eq!(
+        tree_implication(&NODES),
+        Some(BTreeSet::from(["parent_id".to_string(), "id".to_string()]))
+    );
+    assert_eq!(tree_implication(&quick_notes::NOTES), None);
 }
 
 #[test]

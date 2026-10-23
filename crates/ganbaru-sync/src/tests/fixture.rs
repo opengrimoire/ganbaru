@@ -514,7 +514,7 @@ pub(super) const NODES: TableSpec = TableSpec {
     derived_key: None,
     tree: Some(TreeSpec {
         parent_group: node_group::PARENT,
-        position_group: node_group::POSITION,
+        position_group: Some(node_group::POSITION),
         max_depth: Some(NODE_MAX_DEPTH),
     }),
     acyclic: None,
@@ -1349,7 +1349,8 @@ fn fixture_schema() -> String {
          );
          CREATE TABLE fixture_nodes (
              id TEXT PRIMARY KEY CHECK (trim(id) <> ''),
-             parent_id TEXT REFERENCES fixture_nodes(id) ON DELETE CASCADE,
+             parent_id TEXT REFERENCES fixture_nodes(id) ON DELETE CASCADE
+                 CHECK (parent_id IS NULL OR parent_id <> id),
              position TEXT NOT NULL,
              label TEXT NOT NULL CHECK (length(label) <= 40)
          );

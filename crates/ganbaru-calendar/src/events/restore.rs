@@ -176,9 +176,22 @@ pub(super) async fn restore_archived_event_children(
     sqlx::query("INSERT INTO project_task_event_links (task_id, event_id, link_kind, created_at)
         SELECT task_id, ?1, link_kind, created_at FROM calendar_event_archive_task_links WHERE archive_event_id=?2")
         .bind(source_event_id).bind(archive_event_id).execute(&mut **tx).await.map_err(|error| format!("restore archived task links: {error}"))?;
-    sqlx::query("INSERT INTO music_context_assignments (owner_kind, owner_id, phase, behavior, playlist_id, provenance_kind, provenance_id, updated_at_ms, version, soundscape_behavior, soundscape_preset_id)
-        SELECT owner_kind, ?1, phase, behavior, playlist_id, provenance_kind, provenance_id, updated_at_ms, version, soundscape_behavior, soundscape_preset_id FROM calendar_event_archive_music_assignments WHERE archive_event_id=?2")
-        .bind(source_event_id).bind(archive_event_id).execute(&mut **tx).await.map_err(|error| format!("restore archived Music assignments: {error}"))?;
+    let assignment_keys: Vec<(String, String)> = sqlx::query_as(
+        "SELECT owner_kind, phase FROM calendar_event_archive_music_assignments WHERE archive_event_id = ?",
+    )
+    .bind(archive_event_id)
+    .fetch_all(&mut **tx)
+    .await
+    .map_err(|error| format!("read archived Music assignments: {error}"))?;
+    for (owner_kind, phase) in assignment_keys {
+        let sync_key =
+            ganbaru_music::sync_keys::assignment_key(&owner_kind, source_event_id, &phase)
+                .map_err(|error| format!("restore archived Music assignments: {error}"))?;
+        sqlx::query("INSERT INTO music_context_assignments (owner_kind, owner_id, phase, behavior, playlist_id, provenance_kind, provenance_id, updated_at_ms, version, soundscape_behavior, soundscape_preset_id, sync_key)
+            SELECT owner_kind, ?1, phase, behavior, playlist_id, provenance_kind, provenance_id, updated_at_ms, version, soundscape_behavior, soundscape_preset_id, ?4 FROM calendar_event_archive_music_assignments WHERE archive_event_id = ?2 AND owner_kind = ?3 AND phase = ?5")
+            .bind(source_event_id).bind(archive_event_id).bind(&owner_kind).bind(&sync_key).bind(&phase)
+            .execute(&mut **tx).await.map_err(|error| format!("restore archived Music assignments: {error}"))?;
+    }
     sqlx::query(
         "INSERT INTO calendar_event_pomodoro_configs
             (event_id, rhythm_kind, rhythm_source, preset_key, idle_timeout_minutes)

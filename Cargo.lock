@@ -1957,6 +1957,7 @@ name = "ganbaru-music"
 version = "0.1.0"
 dependencies = [
  "ganbaru-db",
+ "ganbaru-sync-contracts",
  "serde",
  "sqlx",
  "tokio",
@@ -1974,6 +1975,7 @@ dependencies = [
  "ganbaru-sync",
  "ganbaru-sync-contracts",
  "jiff",
+ "ring",
  "rodio",
  "serde",
  "serde_json",

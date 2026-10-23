@@ -4,8 +4,14 @@
 //! to the same playlist compute the same key, so concurrent creation converges on one row. Roots,
 //! playlists, presets, user soundscapes, and snoozes are user decisions and keep random keys.
 //! Rows created before these rules keep their stored keys; writers match by identity key first.
+//! Tables with composite primary keys carry a derived `sync_key` from
+//! [`ganbaru_music::sync_keys`], and [`rekey_pending`] converts their migration placeholders.
 
+use crate::{MusicLibraryError, MusicLibraryResult};
+use ganbaru_music::sync_keys::{self, CompositeKeyTable};
+use ganbaru_sync_contracts::PENDING_KEY_PREFIX;
 use sha2::{Digest, Sha256};
+use sqlx::{AssertSqlSafe, Connection, Row, Sqlite, SqliteConnection, Transaction};
 
 /// Returns `music-{kind}-{hex}`, where `hex` is the SHA-256 of `kind` followed by a zero byte and
 /// each value in order.
@@ -65,6 +71,69 @@ pub fn collection_id(identity_key: &str) -> String {
 /// Key of the membership of `item_id` in `playlist_id`, unique per pair.
 pub fn membership_id(playlist_id: &str, item_id: &str) -> String {
     stable_id("membership", &[playlist_id, item_id])
+}
+
+/// Replaces every `pending:` placeholder `sync_key` of the Music tables with composite primary
+/// keys by its derived key, the value writers compute for the same row. Returns how many rows
+/// it rekeyed.
+///
+/// The capture migration fills existing rows with placeholders because SQL cannot compute the
+/// key. This pass runs when a read-write vault opens, after migrations and before any writer or
+/// sync start, so no capture or operation names a placeholder. Each rekey captures the row as
+/// created under its final key, and a second run changes nothing.
+pub async fn rekey_pending(connection: &mut SqliteConnection) -> MusicLibraryResult<u64> {
+    let mut transaction = connection
+        .begin()
+        .await
+        .map_err(|error| MusicLibraryError::database("begin music key conversion", error))?;
+    let mut rekeyed = 0;
+    for table in sync_keys::COMPOSITE_KEY_TABLES {
+        rekeyed += rekey_table(&mut transaction, &table).await?;
+    }
+    transaction
+        .commit()
+        .await
+        .map_err(|error| MusicLibraryError::database("commit music key conversion", error))?;
+    Ok(rekeyed)
+}
+
+async fn rekey_table(
+    transaction: &mut Transaction<'_, Sqlite>,
+    table: &CompositeKeyTable,
+) -> MusicLibraryResult<u64> {
+    let select = format!(
+        "SELECT rowid, {columns} FROM {name} WHERE {key} GLOB ?",
+        columns = table.columns.join(", "),
+        name = table.table,
+        key = sync_keys::SYNC_KEY_COLUMN,
+    );
+    let rows = sqlx::query(AssertSqlSafe(select))
+        .bind(format!("{PENDING_KEY_PREFIX}*"))
+        .fetch_all(&mut **transaction)
+        .await
+        .map_err(|error| MusicLibraryError::database("read pending music row keys", error))?;
+    let update = format!(
+        "UPDATE {name} SET {key} = ? WHERE rowid = ?",
+        name = table.table,
+        key = sync_keys::SYNC_KEY_COLUMN,
+    );
+    for row in &rows {
+        let rowid: i64 = row
+            .try_get(0)
+            .map_err(|error| MusicLibraryError::database("read pending music row id", error))?;
+        let parts = (1..=table.columns.len())
+            .map(|index| row.try_get::<String, _>(index))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| MusicLibraryError::database("read pending music row key", error))?;
+        let parts = parts.iter().map(String::as_str).collect::<Vec<_>>();
+        sqlx::query(AssertSqlSafe(update.as_str()))
+            .bind(table.key(&parts)?)
+            .bind(rowid)
+            .execute(&mut **transaction)
+            .await
+            .map_err(|error| MusicLibraryError::database("rekey music row", error))?;
+    }
+    Ok(rows.len() as u64)
 }
 
 #[cfg(test)]
@@ -144,5 +213,127 @@ mod tests {
         .max()
         .unwrap_or_default();
         assert!(longest <= crate::validation::MAX_ID_BYTES);
+    }
+
+    /// Seeds every composite key table: the dense fixture covers signals, statistics, source
+    /// provenance, and intended uses, the migration seeds preset sounds, and one project default
+    /// adds context assignments.
+    async fn seeded_pool() -> sqlx::SqlitePool {
+        use ganbaru_music::assignments::{
+            MusicActivityPhase, MusicAssignmentBehavior, MusicAssignmentOwnerKind,
+            MusicAssignmentProvenanceKind, MusicContextAssignmentDraft, MusicSoundscapeBehavior,
+            replace_assignments_in_transaction,
+        };
+        let pool = crate::tests::pool().await;
+        crate::fixtures::seed_dense_music_fixture(&pool)
+            .await
+            .unwrap();
+        let mut transaction = pool.begin().await.unwrap();
+        replace_assignments_in_transaction(
+            &mut transaction,
+            MusicAssignmentOwnerKind::ProjectDefault,
+            "benchmark-music-project",
+            vec![MusicContextAssignmentDraft {
+                phase: MusicActivityPhase::Focus,
+                behavior: MusicAssignmentBehavior::PauseMusic,
+                playlist_id: None,
+                soundscape_preset_id: None,
+                soundscape_behavior: MusicSoundscapeBehavior::Inherit,
+                provenance_kind: MusicAssignmentProvenanceKind::Explicit,
+                provenance_id: None,
+            }],
+            1_700_000_000_000,
+        )
+        .await
+        .unwrap();
+        transaction.commit().await.unwrap();
+        pool
+    }
+
+    /// Returns each row's stored key and the key derived from its composite columns.
+    async fn stored_and_derived(
+        pool: &sqlx::SqlitePool,
+        table: &CompositeKeyTable,
+    ) -> Vec<(String, String)> {
+        let select = format!(
+            "SELECT {key}, {columns} FROM {name} ORDER BY rowid",
+            key = sync_keys::SYNC_KEY_COLUMN,
+            columns = table.columns.join(", "),
+            name = table.table,
+        );
+        let rows = sqlx::query(AssertSqlSafe(select))
+            .fetch_all(pool)
+            .await
+            .unwrap();
+        rows.iter()
+            .map(|row| {
+                let parts = (1..=table.columns.len())
+                    .map(|index| row.get::<String, _>(index))
+                    .collect::<Vec<_>>();
+                let parts = parts.iter().map(String::as_str).collect::<Vec<_>>();
+                (row.get(0), table.key(&parts).unwrap())
+            })
+            .collect()
+    }
+
+    async fn capture_count(pool: &sqlx::SqlitePool) -> i64 {
+        sqlx::query_scalar("SELECT COUNT(*) FROM sync_capture")
+            .fetch_one(pool)
+            .await
+            .unwrap()
+    }
+
+    #[test]
+    fn identity_writers_store_the_derived_key_of_every_composite_row() {
+        crate::test_support::block_on(async {
+            let pool = seeded_pool().await;
+            for table in sync_keys::COMPOSITE_KEY_TABLES {
+                let rows = stored_and_derived(&pool, &table).await;
+                assert!(!rows.is_empty(), "{} has seeded rows", table.table);
+                for (stored, derived) in rows {
+                    assert_eq!(stored, derived, "{} key", table.table);
+                }
+            }
+        });
+    }
+
+    #[test]
+    fn identity_rekey_pending_restores_writer_keys_and_is_idempotent() {
+        crate::test_support::block_on(async {
+            let pool = seeded_pool().await;
+            let mut expected = Vec::new();
+            let mut pending_rows = 0_u64;
+            for table in sync_keys::COMPOSITE_KEY_TABLES {
+                let rows = stored_and_derived(&pool, &table).await;
+                pending_rows += rows.len() as u64;
+                expected.push(rows);
+                // Stored keys never change back to placeholders, so the rows are recreated with
+                // the placeholders the capture migration writes.
+                let name = table.table;
+                let key = sync_keys::SYNC_KEY_COLUMN;
+                let statements = [
+                    format!("CREATE TEMP TABLE staged AS SELECT * FROM {name}"),
+                    format!("UPDATE staged SET {key} = '{PENDING_KEY_PREFIX}' || rowid"),
+                    format!("DELETE FROM {name}"),
+                    format!("INSERT INTO {name} SELECT * FROM staged"),
+                    "DROP TABLE staged".to_string(),
+                ];
+                let statements = statements.iter().map(String::as_str).collect::<Vec<_>>();
+                crate::test_support::execute_as_sync_apply(&pool, &statements).await;
+            }
+
+            let mut connection = pool.acquire().await.unwrap();
+            assert_eq!(rekey_pending(&mut connection).await.unwrap(), pending_rows);
+            drop(connection);
+            for (table, rows) in sync_keys::COMPOSITE_KEY_TABLES.iter().zip(expected) {
+                assert_eq!(stored_and_derived(&pool, table).await, rows);
+            }
+
+            let captures = capture_count(&pool).await;
+            let mut connection = pool.acquire().await.unwrap();
+            assert_eq!(rekey_pending(&mut connection).await.unwrap(), 0);
+            drop(connection);
+            assert_eq!(capture_count(&pool).await, captures);
+        });
     }
 }

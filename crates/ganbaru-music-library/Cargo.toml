@@ -22,6 +22,7 @@ ganbaru-projects = { workspace = true }
 ganbaru-sync = { workspace = true }
 ganbaru-sync-contracts = { workspace = true }
 jiff = { workspace = true }
+ring = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }

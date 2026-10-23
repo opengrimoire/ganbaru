@@ -249,7 +249,7 @@ fn source_order_and_artwork_overrides_are_projected_in_library_rows() {
         sqlx::query(
             "INSERT INTO music_source_collections
                 (id, kind, identity_key, name, youtube_playlist_id, created_at_ms, updated_at_ms)
-             VALUES ('source-1', 'youtube-playlist', 'youtube:list', 'Source', 'list', ?, ?)",
+             VALUES ('source-1', 'youtube-playlist', 'youtube-playlist:list', 'Source', 'list', ?, ?)",
         )
         .bind(1_700_000_000_000_i64)
         .bind(1_700_000_000_000_i64)
@@ -259,8 +259,8 @@ fn source_order_and_artwork_overrides_are_projected_in_library_rows() {
         for (item_id, position) in [("item-0", 2_i64), ("item-1", 0), ("item-2", 1)] {
             sqlx::query(
                 "INSERT INTO music_source_collection_items
-                    (collection_id, item_id, source_position, first_discovered_at_ms)
-                 VALUES ('source-1', ?, ?, ?)",
+                    (collection_id, item_id, source_position, first_discovered_at_ms, sync_key)
+                 VALUES ('source-1', ?, ?, ?, lower(hex(randomblob(16))))",
             )
             .bind(item_id)
             .bind(position)
@@ -340,7 +340,7 @@ fn summaries_issues_and_inspector_return_composed_data_without_row_queries() {
         sqlx::query(
             "INSERT INTO music_source_collections
                 (id, kind, identity_key, name, local_root_id, created_at_ms, updated_at_ms)
-             VALUES ('source-1', 'local-root', 'root:root-1', 'Soundtracks', 'root-1',
+             VALUES ('source-1', 'local-root', 'local-root:root-1', 'Soundtracks', 'root-1',
                  1700000000000, 1700000000000)",
         )
         .execute(&pool)
@@ -348,8 +348,8 @@ fn summaries_issues_and_inspector_return_composed_data_without_row_queries() {
         .unwrap();
         sqlx::query(
             "INSERT INTO music_source_collection_items
-                (collection_id, item_id, first_discovered_at_ms)
-             VALUES ('source-1', 'item-1', 1700000000000)",
+                (collection_id, item_id, first_discovered_at_ms, sync_key)
+             VALUES ('source-1', 'item-1', 1700000000000, lower(hex(randomblob(16))))",
         )
         .execute(&pool)
         .await
@@ -366,8 +366,8 @@ fn summaries_issues_and_inspector_return_composed_data_without_row_queries() {
             assert_eq!(window.groups[0].count, 1);
         }
         sqlx::query(
-            "INSERT INTO music_item_signals (item_id, signal, created_at_ms)
-             VALUES ('item-1', 'calm', 1700000000000)",
+            "INSERT INTO music_item_signals (item_id, signal, created_at_ms, sync_key)
+             VALUES ('item-1', 'calm', 1700000000000, lower(hex(randomblob(16))))",
         )
         .execute(&pool)
         .await

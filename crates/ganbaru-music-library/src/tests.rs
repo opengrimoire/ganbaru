@@ -1476,15 +1476,14 @@ fn playlist_reorder_and_playback_projection_share_canonical_memberships() {
         .execute(&pool)
         .await
         .unwrap();
-        sqlx::query(
-            "UPDATE music_library_items
+        crate::test_support::execute_as_sync_apply(
+            &pool,
+            &["UPDATE music_library_items
              SET source_kind = 'youtube-video', youtube_video_id = 'abcdefghijk',
                  youtube_resolution_state = 'embedding-blocked'
-             WHERE id = 'item-3'",
+             WHERE id = 'item-3'"],
         )
-        .execute(&pool)
-        .await
-        .unwrap();
+        .await;
         sqlx::query(
             "UPDATE music_library_items
              SET original_artwork_identity = 'sidecar:album/cover.jpg'

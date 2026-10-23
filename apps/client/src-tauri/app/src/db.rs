@@ -25,11 +25,25 @@ static VAULT_POOLS: LazyLock<DatabaseState> = LazyLock::new(|| {
     registry.set_connection_hook(Some(ganbaru_sync_replica::access::vault_connection_hook(
         vault_commits().clone(),
     )));
+    registry.set_migrated_hook(Some(Arc::new(|pool| Box::pin(convert_migrated_keys(pool)))));
     registry
 });
 
+/// Replaces the placeholder row keys the Music capture migration writes with their derived
+/// keys, before any writer or sync start can capture a placeholder.
+async fn convert_migrated_keys(pool: sqlx::SqlitePool) -> Result<(), String> {
+    let mut connection = pool
+        .acquire()
+        .await
+        .map_err(|error| format!("acquire key conversion connection: {error}"))?;
+    ganbaru_music_library::identity::rekey_pending(&mut connection)
+        .await
+        .map(|_| ())
+        .map_err(|error| format!("convert music row keys: {error}"))
+}
+
 /// The process pool registry. Its connection hook, which installs replica guards and signals
-/// commits, is in place before the first pool opens.
+/// commits, and its post-migration key conversion are in place before the first pool opens.
 pub(crate) fn vault_pools() -> &'static DatabaseState {
     &VAULT_POOLS
 }

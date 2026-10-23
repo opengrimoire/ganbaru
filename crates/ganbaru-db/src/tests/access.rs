@@ -7,7 +7,8 @@ use sqlx::{SqliteConnection, SqlitePool};
 
 use super::{block_on, registry_test_directory};
 use crate::{
-    ConnectionHook, ConnectionHookFuture, DatabaseAccessMode, DatabasePoolRegistry, connection_hook,
+    ConnectionHook, ConnectionHookFuture, DatabaseAccessMode, DatabasePoolRegistry, MigratedHook,
+    connection_hook,
 };
 
 const GUARD_MESSAGE: &str = "guarded table";
@@ -223,6 +224,53 @@ fn writable_pools_keep_the_database_and_its_journal_files_owner_only() {
         registry.connect_path(&path).await.unwrap();
         assert_eq!(mode(&path), 0o600);
         registry.close_all().await.unwrap();
+        std::fs::remove_dir_all(directory).unwrap();
+    });
+}
+
+#[test]
+fn migrated_hook_runs_after_migrations_on_read_write_opens_only() {
+    block_on(async {
+        let directory = registry_test_directory("migrated-hook");
+        let path = seeded_vault(&directory).await;
+        let migrated = Arc::new(Mutex::new(Vec::new()));
+        let registry = DatabasePoolRegistry::default();
+        let recorded = migrated.clone();
+        let hook: MigratedHook = Arc::new(move |pool: SqlitePool| {
+            let recorded = recorded.clone();
+            Box::pin(async move {
+                let migrations: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM _sqlx_migrations")
+                    .fetch_one(&pool)
+                    .await
+                    .map_err(|error| error.to_string())?;
+                recorded.lock().unwrap().push(migrations);
+                Ok(())
+            })
+        });
+        registry.set_migrated_hook(Some(hook));
+
+        registry.connect_path_read_only(&path).await.unwrap();
+        registry.close_all().await.unwrap();
+        assert!(migrated.lock().unwrap().is_empty());
+        registry.connect_path(&path).await.unwrap();
+        registry.connect_path(&path).await.unwrap();
+        registry.close_all().await.unwrap();
+        registry.connect_path(&path).await.unwrap();
+        let expected = crate::MIGRATOR.iter().count() as i64;
+        assert_eq!(*migrated.lock().unwrap(), vec![expected, expected]);
+
+        registry.close_all().await.unwrap();
+        registry.set_migrated_hook(Some(Arc::new(|_| {
+            Box::pin(async { Err("conversion failed".to_string()) })
+        })));
+        assert!(
+            registry
+                .connect_path(&path)
+                .await
+                .unwrap_err()
+                .contains("conversion failed")
+        );
+        assert_eq!(registry.access(&path).await, None);
         std::fs::remove_dir_all(directory).unwrap();
     });
 }

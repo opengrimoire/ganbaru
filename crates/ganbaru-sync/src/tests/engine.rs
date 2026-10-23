@@ -2299,6 +2299,8 @@ fn recovery_root_tables_follow_cascades_and_leave_out_derived_keys() {
         vec![
             NOTES_TABLE,
             crate::manifest::vault::themes::THEMES_TABLE,
+            crate::manifest::vault::music::ITEMS_TABLE,
+            crate::manifest::vault::music::PLAYLISTS_TABLE,
             ITEMS_TABLE,
             CYCLE_A_TABLE,
             CYCLE_B_TABLE,

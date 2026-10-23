@@ -15,6 +15,7 @@ pub fn vault_adapters() -> Adapters {
         .with(Box::new(quick_notes::QuickNotesAdapter))
         .with(Box::new(preferences::PreferencesAdapter))
         .with(Box::new(themes::ThemesAdapter))
+        .with(Box::new(music::MusicAdapter))
 }
 
 /// The hooks of the vault manifest's tables, one line per hooked table.

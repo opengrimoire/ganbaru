@@ -41,9 +41,14 @@ fn calendar_changed(notices: &[ChangeNotice]) -> bool {
 /// Refreshes Calendar views and the Focus Calendar projection when sync change `notices`
 /// include Calendar rows.
 pub(crate) fn on_sync_notices<R: Runtime>(app: &AppHandle<R>, notices: &[ChangeNotice]) {
-    if !calendar_changed(notices) {
-        return;
+    if calendar_changed(notices) {
+        publish_change(app);
     }
+}
+
+/// Reloads open Calendar windows and marks the native Focus Calendar projection stale after
+/// Calendar rows changed outside the native Focus edit path.
+pub(crate) fn publish_change<R: Runtime>(app: &AppHandle<R>) {
     crate::pomodoro::invalidate_calendar(app);
     let envelope = ChangeEnvelope {
         source_id: SYNC_SOURCE_ID,

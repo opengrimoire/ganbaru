@@ -9,7 +9,7 @@ use ganbaru_sync::manifest::vault::projects::TASKS;
 /// Publishes the built-in Local calendar from the hub. A real vault seeds it as a capture when
 /// Calendar starts to replicate, but these tests never seed, so each replica would keep its own
 /// copy that the engine does not know.
-async fn publish_local_calendar(pair: &mut Pair) {
+pub(super) async fn publish_local_calendar(pair: &mut Pair) {
     for replica in [&pair.hub, &pair.phone] {
         sqlx::raw_sql(
             "UPDATE sync_apply_state SET applying = 1 WHERE singleton = 1;
@@ -29,7 +29,7 @@ async fn publish_local_calendar(pair: &mut Pair) {
 }
 
 /// Event `event_id` in `calendar_id` with alarm `alarm-1`.
-fn event_sql(event_id: &str, calendar_id: &str) -> String {
+pub(super) fn event_sql(event_id: &str, calendar_id: &str) -> String {
     format!(
         "INSERT INTO calendar_events (id, title, start_time, end_time, calendar_id)
          VALUES ('{event_id}', 'Review', '2026-10-24T09:00:00Z', '2026-10-24T10:00:00Z',

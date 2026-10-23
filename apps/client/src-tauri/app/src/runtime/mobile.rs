@@ -191,6 +191,8 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
             calendar::calendars::calendar_add_calendar,
             calendar::calendars::calendar_set_visibility,
             calendar::calendars::calendar_remove_calendar,
+            calendar::conflicts::calendar_conflicts,
+            calendar::conflicts::calendar_resolve_conflict,
             pomodoro::pomodoro_load_segments_for_events,
             pomodoro::native_runtime::focus_snapshot,
             pomodoro::native_runtime::focus_command,

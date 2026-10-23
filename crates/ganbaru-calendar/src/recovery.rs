@@ -31,23 +31,26 @@ use crate::calendars::BUILTIN_LOCAL_CALENDAR_ID;
 const ID: &str = "id";
 
 /// Column every event and override stamps with its last write.
-const UPDATED_AT: &str = "updated_at";
+pub(crate) const UPDATED_AT: &str = "updated_at";
 
 /// Column naming a preserved iCalendar component, on events and their owned rows.
-const COMPONENT_ID: &str = "icalendar_component_id";
+pub(crate) const COMPONENT_ID: &str = "icalendar_component_id";
 
 /// Column of an override property naming its override.
 const OVERRIDE_ID: &str = "override_id";
 
 /// Retained values of one recovered row, split into its columns and its owned row lists.
-struct RetainedRow {
-    columns: Vec<(&'static str, Field)>,
-    owned: Vec<(&'static OwnedTable, Vec<u8>)>,
+pub(crate) struct RetainedRow {
+    pub(crate) columns: Vec<(&'static str, Field)>,
+    pub(crate) owned: Vec<(&'static OwnedTable, Vec<u8>)>,
 }
 
 impl RetainedRow {
     /// Maps retained group values of `spec` to columns and owned lists in manifest order.
-    fn new(spec: &'static TableSpec, values: &[(GroupId, Value)]) -> Result<Self, String> {
+    pub(crate) fn new(
+        spec: &'static TableSpec,
+        values: &[(GroupId, Value)],
+    ) -> Result<Self, String> {
         let mut columns = Vec::new();
         let mut owned = Vec::new();
         for (group_id, value) in values {
@@ -108,7 +111,7 @@ async fn new_id(conn: &mut SqliteConnection) -> Result<String, String> {
 }
 
 /// The current time in the stored timestamp form.
-async fn now(conn: &mut SqliteConnection) -> Result<String, String> {
+pub(crate) async fn now(conn: &mut SqliteConnection) -> Result<String, String> {
     sqlx::query_scalar("SELECT strftime('%Y-%m-%dT%H:%M:%fZ', 'now')")
         .fetch_one(&mut *conn)
         .await
@@ -126,7 +129,7 @@ async fn exists(conn: &mut SqliteConnection, table: &str, key: &str) -> Result<b
 }
 
 /// The referenced id when it still names a row of `table`.
-async fn live_reference(
+pub(crate) async fn live_reference(
     conn: &mut SqliteConnection,
     table: &str,
     field: Option<&Field>,
@@ -137,7 +140,7 @@ async fn live_reference(
     }
 }
 
-fn bind_field<'q>(
+pub(crate) fn bind_field<'q>(
     query: sqlx::query::Query<'q, sqlx::Sqlite, sqlx::sqlite::SqliteArguments>,
     field: Field,
 ) -> sqlx::query::Query<'q, sqlx::Sqlite, sqlx::sqlite::SqliteArguments> {
@@ -150,7 +153,7 @@ fn bind_field<'q>(
 }
 
 /// Inserts `columns` into `table`.
-async fn insert(
+pub(crate) async fn insert(
     conn: &mut SqliteConnection,
     table: &str,
     columns: Vec<(&str, Field)>,

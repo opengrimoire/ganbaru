@@ -30,6 +30,8 @@ fn mobile_runtime_registers_portable_core_commands() {
         "vault::vault_lock::vault_lock_status",
         "calendar::reads::calendar_load_window",
         "calendar::reads::calendar_load_notification_scheduler_window",
+        "calendar::conflicts::calendar_conflicts",
+        "calendar::conflicts::calendar_resolve_conflict",
         "projects::workspace::projects_load_workspace",
         "projects::conflicts::projects_conflicts",
         "projects::conflicts::projects_resolve_conflict",

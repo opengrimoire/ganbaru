@@ -4,6 +4,7 @@
 //! platform services such as the device date are injected by the application.
 
 pub mod calendars;
+pub mod conflicts;
 pub mod conversion;
 pub mod description;
 pub mod events;

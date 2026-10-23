@@ -15,10 +15,8 @@ pub const OPERATION_SIGNATURE_DOMAIN: &[u8] = b"ganbaru-sync/op/v1";
 pub const OPERATION_HASH_DOMAIN: &[u8] = b"ganbaru-sync/op-hash/v1";
 /// Hash of one group value inside an operation.
 pub const VALUE_HASH_DOMAIN: &[u8] = b"ganbaru-sync/value/v1";
-/// Person signature over a writer certificate.
-pub const CERTIFICATE_DOMAIN: &[u8] = b"ganbaru-sync/writer-certificate/v1";
-/// Device signature over a writer certificate v2.
-pub const CERTIFICATE_V2_DOMAIN: &[u8] = b"ganbaru-sync/writer-certificate/v2";
+/// Device signature over a writer certificate.
+pub const CERTIFICATE_DOMAIN: &[u8] = b"ganbaru-sync/writer-certificate/v2";
 /// Person signature over a space charter.
 pub const CHARTER_DOMAIN: &[u8] = b"ganbaru-sync/charter/v1";
 /// Charter hash: the previous entry hash of authorization revision 1.

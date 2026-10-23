@@ -15,7 +15,7 @@
 //! group mask (8) | one value hash (32) per set group in ascending order | for tombstones a
 //! successor byte (1): `0` none, `1` followed by the redirect row key, or `2` followed by the
 //! cause's table id (2) and row key. A genesis payload is a certificate length (2) and the
-//! certificate. A revoke payload is target writer (16) | cutoff sequence (8) | reason (1). An
+//! writer certificate. Wire kind 2 is unassigned and decodes as an unknown kind. An
 //! acknowledgement has no payload. An authorization payload is the entry hash (32) of the record
 //! the body carries.
 //!
@@ -79,9 +79,6 @@ pub enum OperationKind {
     Changes,
     /// The first operation of a writer, carrying its certificate.
     Genesis,
-    /// A writer revocation with a cutoff sequence. Kept until the authorization log replaces
-    /// it.
-    Revoke,
     /// A signed acknowledgement: no changes, only the dependencies that advance the writer's
     /// context to what it applied.
     Acknowledgement,
@@ -95,18 +92,16 @@ impl OperationKind {
         match self {
             Self::Changes => 0,
             Self::Genesis => 1,
-            Self::Revoke => 2,
             Self::Acknowledgement => 3,
             Self::Authorization => 4,
         }
     }
 
-    /// Kind for a wire value known to this build.
+    /// Kind for a wire value known to this build. Value 2 is unassigned.
     pub const fn from_u8(value: u8) -> Option<Self> {
         match value {
             0 => Some(Self::Changes),
             1 => Some(Self::Genesis),
-            2 => Some(Self::Revoke),
             3 => Some(Self::Acknowledgement),
             4 => Some(Self::Authorization),
             _ => None,
@@ -375,44 +370,6 @@ impl Change {
     }
 }
 
-/// Why a writer was revoked. Kept until the authorization log replaces revocations.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum RevokeReason {
-    /// The device was unlinked.
-    Revoked,
-    /// The writer's chain forked, for example after a disk clone.
-    Forked,
-}
-
-impl RevokeReason {
-    const fn as_u8(self) -> u8 {
-        match self {
-            Self::Revoked => 0,
-            Self::Forked => 1,
-        }
-    }
-
-    const fn from_u8(value: u8) -> Option<Self> {
-        match value {
-            0 => Some(Self::Revoked),
-            1 => Some(Self::Forked),
-            _ => None,
-        }
-    }
-}
-
-/// A writer revocation: operations of `writer` above `cutoff` are refused. Kept until the
-/// authorization log replaces it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct Revocation {
-    /// The revoked writer.
-    pub writer: WriterId,
-    /// Highest sequence that stays valid.
-    pub cutoff: Seq,
-    /// Why it was revoked.
-    pub reason: RevokeReason,
-}
-
 /// Header fields shared by every kind.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Header {
@@ -420,8 +377,8 @@ pub struct Header {
     pub clock: Hlc,
     /// Manifest version the changes were sealed under.
     pub manifest_version: u32,
-    /// Authorization revision the operation was sealed against; zero until spaces carry an
-    /// authorization log.
+    /// Authorization revision the operation was sealed against: the sealer's selected revision
+    /// for content, and R minus 1 for the authorization operation creating revision R.
     pub authorization_revision: u64,
     /// Key epoch; zero until operation encryption.
     pub key_epoch: u32,
@@ -438,8 +395,6 @@ pub enum Content {
     Changes(Vec<Change>),
     /// The writer certificate.
     Genesis(SignedCertificate),
-    /// A writer revocation.
-    Revoke(Revocation),
     /// A signed acknowledgement of the writer's context. Acknowledgements of other writers are
     /// never a reason to seal one, so acknowledgement traffic settles.
     Acknowledgement,
@@ -517,7 +472,6 @@ impl Operation {
         match self.content {
             Content::Changes(_) => OperationKind::Changes,
             Content::Genesis(_) => OperationKind::Genesis,
-            Content::Revoke(_) => OperationKind::Revoke,
             Content::Acknowledgement => OperationKind::Acknowledgement,
             Content::Authorization(_) => OperationKind::Authorization,
         }
@@ -571,11 +525,6 @@ impl Operation {
             Content::Genesis(certificate) => {
                 if certificate.certificate.writer_id() != self.writer {
                     return Err(OperationError::WriterMismatch);
-                }
-            }
-            Content::Revoke(revocation) => {
-                if revocation.writer == self.writer {
-                    return Err(CodecError::Malformed("revocation target").into());
                 }
             }
             Content::Acknowledgement => {}
@@ -635,11 +584,6 @@ impl Operation {
                 writer.u16(encoded.len() as u16);
                 writer.raw(&encoded);
             }
-            Content::Revoke(revocation) => {
-                writer.raw(revocation.writer.as_bytes());
-                writer.u64(revocation.cutoff);
-                writer.u8(revocation.reason.as_u8());
-            }
             Content::Acknowledgement => {}
             Content::Authorization(record) => writer.raw(&record.hash()),
         }
@@ -658,7 +602,7 @@ impl Operation {
                 }
             }
             Content::Authorization(record) => writer.raw(&record.encode()),
-            Content::Genesis(_) | Content::Revoke(_) | Content::Acknowledgement => {}
+            Content::Genesis(_) | Content::Acknowledgement => {}
         }
         writer
     }
@@ -856,7 +800,7 @@ impl<'a> Envelope<'a> {
             && key.verify_operation(self.signed, self.signature)
     }
 
-    /// Decodes the header and body. A genesis certificate's person signature and an
+    /// Decodes the header and body. A genesis certificate's device signature and an
     /// authorization proposal's admin signature are verified; the envelope signature is not.
     ///
     /// The header is decoded completely before the body, so [`PayloadError::Body`] means the
@@ -887,17 +831,6 @@ impl<'a> Envelope<'a> {
                 let length = usize::from(header.u16()?);
                 let certificate = SignedCertificate::decode(header.take(length)?)?;
                 HeaderPayload::Complete(Content::Genesis(certificate))
-            }
-            OperationKind::Revoke => {
-                let writer = WriterId::from_bytes(header.array()?);
-                let cutoff = header.u64()?;
-                let reason = RevokeReason::from_u8(header.u8()?)
-                    .ok_or(CodecError::Malformed("revoke reason"))?;
-                HeaderPayload::Complete(Content::Revoke(Revocation {
-                    writer,
-                    cutoff,
-                    reason,
-                }))
             }
             OperationKind::Acknowledgement => HeaderPayload::Complete(Content::Acknowledgement),
             OperationKind::Authorization => {

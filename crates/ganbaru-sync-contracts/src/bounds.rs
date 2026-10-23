@@ -42,10 +42,20 @@ pub const MAX_DEVICE_LABEL_BYTES: usize = 128;
 pub const TLS_FINGERPRINT_BYTES: usize = 32;
 /// Length of a vault discovery key.
 pub const DISCOVERY_KEY_BYTES: usize = 32;
-/// Largest writer certificate encoding: a version 2 certificate with the longest device id and
-/// a predecessor. Version 1 certificates are never larger.
+/// Largest writer certificate encoding: the longest device id and a predecessor.
 pub const MAX_CERTIFICATE_BYTES: usize =
     1 + 32 + (1 + MAX_DEVICE_ID_BYTES) + 32 + 8 + (1 + 16) + 64;
+/// Largest space charter encoding: the longest anchor device id.
+pub const MAX_CHARTER_BYTES: usize = 1
+    + 16
+    + (1 + MAX_DEVICE_ID_BYTES)
+    + 32
+    + TLS_FINGERPRINT_BYTES
+    + 32
+    + 32
+    + DISCOVERY_KEY_BYTES
+    + 8
+    + 64;
 /// Cutoffs one removal lists: one per writer the removed device certified.
 pub const MAX_REMOVAL_CUTOFFS: usize = MAX_WRITERS_PER_DEVICE;
 /// Rows one late change resolution decides.

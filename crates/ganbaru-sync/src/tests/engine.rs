@@ -9,8 +9,8 @@ use ganbaru_sync_contracts::{
 
 use super::block_on;
 use super::fixture::{
-    CYCLE_A_TABLE, CYCLE_B_TABLE, EDGES_TABLE, ITEMS_TABLE, LINKS_TABLE, MEMBERSHIPS_TABLE,
-    NODES_TABLE, TEST_MANIFEST, edge_group, edge_key, membership_key,
+    CYCLE_A_TABLE, CYCLE_B_TABLE, EDGES_TABLE, HANDLES_TABLE, ITEMS_TABLE, LINKS_TABLE,
+    MEMBERSHIPS_TABLE, NODES_TABLE, TEST_MANIFEST, edge_group, edge_key, membership_key,
 };
 use super::replica::{
     Identity, Replica, START_MS, VAULT_ID, converge, device_id, pair, person, rank,
@@ -817,6 +817,99 @@ fn duplicates_redirect_every_reference_column_of_a_group() {
                 .await,
                 ["link-2:edited:NULL"]
             );
+        }
+    });
+}
+
+/// Redirect targets of the tombstones of a table, as `row:target`.
+async fn redirects(replica: &mut Replica, table: TableId) -> Vec<String> {
+    texts(
+        replica,
+        &format!(
+            "SELECT DISTINCT row_key || ':' || replaced_by FROM sync_tombstones
+             WHERE table_id = {} AND replaced_by IS NOT NULL ORDER BY 1",
+            table.0
+        ),
+    )
+    .await
+}
+
+/// The replica that holds the surviving duplicate learns in one pass that the lower key is
+/// hidden by cascade, so that row must not keep the class.
+#[test]
+fn a_duplicate_hidden_by_cascade_does_not_hide_the_row_it_collides_with() {
+    block_on(async {
+        let mut replicas = replicas(3).await;
+        replicas[0]
+            .exec(
+                "INSERT INTO fixture_cycle_b (id, label) VALUES ('b-1', 'B');
+                 INSERT INTO fixture_cycle_a (id, label) VALUES ('a-1', 'Same');",
+            )
+            .await;
+        replicas[0].seal_rotating().await.unwrap();
+        let (to, from) = pair(&mut replicas, 1, 0);
+        to.pull(from).await;
+        replicas[0]
+            .exec("DELETE FROM fixture_cycle_b WHERE id = 'b-1'")
+            .await;
+        replicas[1]
+            .exec("UPDATE fixture_cycle_a SET peer_id = 'b-1' WHERE id = 'a-1'")
+            .await;
+        replicas[2]
+            .exec("INSERT INTO fixture_cycle_a (id, label) VALUES ('a-2', 'Same')")
+            .await;
+        for replica in &mut replicas {
+            replica.seal_rotating().await.unwrap();
+        }
+        for source in [0, 1] {
+            let (to, from) = pair(&mut replicas, 2, source);
+            let known = to.stored_vector().await;
+            let ops = from.ops_since(&known).await;
+            to.receive(&ops).await;
+        }
+        replicas[2].apply_all().await.unwrap();
+        converge(&mut replicas).await;
+        assert_converged(&mut replicas).await;
+        for replica in &mut replicas {
+            assert_eq!(
+                texts(replica, "SELECT id FROM fixture_cycle_a ORDER BY id").await,
+                ["a-2"]
+            );
+            assert_eq!(
+                tombstone_causes(replica, CYCLE_A_TABLE).await,
+                ["a-1:'b-1'"]
+            );
+            assert_eq!(
+                redirects(replica, CYCLE_A_TABLE).await,
+                Vec::<String>::new()
+            );
+        }
+    });
+}
+
+/// `h-2` collides with `h-1` on its label and with `h-3` on its code. Hidden behind `h-1`, it
+/// must not take `h-3` down with it.
+#[test]
+fn a_row_hidden_under_one_unique_rule_keeps_no_class_under_another() {
+    block_on(async {
+        let mut replicas = replicas(2).await;
+        replicas[0]
+            .exec(
+                "INSERT INTO fixture_handles (id, label, code) VALUES ('h-1', 'L', 'X');
+                 INSERT INTO fixture_handles (id, label, code) VALUES ('h-3', 'N', 'C');",
+            )
+            .await;
+        replicas[1]
+            .exec("INSERT INTO fixture_handles (id, label, code) VALUES ('h-2', 'L', 'C')")
+            .await;
+        converge(&mut replicas).await;
+        assert_converged(&mut replicas).await;
+        for replica in &mut replicas {
+            assert_eq!(
+                texts(replica, "SELECT id FROM fixture_handles ORDER BY id").await,
+                ["h-1", "h-3"]
+            );
+            assert_eq!(redirects(replica, HANDLES_TABLE).await, ["h-2:h-1"]);
         }
     });
 }

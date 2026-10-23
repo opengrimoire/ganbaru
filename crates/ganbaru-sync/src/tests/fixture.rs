@@ -185,6 +185,43 @@ pub(super) const CYCLE_B: TableSpec = TableSpec {
     ..CYCLE_A
 };
 
+/// `fixture_handles`.
+pub(super) const HANDLES_TABLE: TableId = TableId(FIXTURE_TABLE_IDS + 14);
+
+/// Handles with two independently unique columns, so one row can collide with a different row
+/// under each rule.
+pub(super) const HANDLES: TableSpec = TableSpec {
+    id: HANDLES_TABLE,
+    name: "fixture_handles",
+    groups: &[
+        LABEL,
+        GroupSpec {
+            id: group_id(1),
+            name: "code",
+            kind: MergeKind::Register,
+            storage: GroupStorage::Columns(&[ColumnSpec {
+                name: "code",
+                ty: ColumnType::Text { max_chars: 40 },
+            }]),
+            references: &[],
+            surfaced: false,
+            recoverable: false,
+            bumps_revision: false,
+        },
+    ],
+    resolutions: &[
+        Resolution::DuplicateRepair {
+            columns: &["label"],
+            collation: Collation::Binary,
+        },
+        Resolution::DuplicateRepair {
+            columns: &["code"],
+            collation: Collation::Binary,
+        },
+    ],
+    ..CYCLE_A
+};
+
 /// Links with an immutable owner item, a register group referencing both cycle tables, and a
 /// parent link in the same table.
 pub(super) const LINKS: TableSpec = TableSpec {
@@ -1198,6 +1235,7 @@ pub(super) const FIXTURE_DOMAIN: DomainManifest = DomainManifest {
         ITEMS,
         CYCLE_A,
         CYCLE_B,
+        HANDLES,
         LINKS,
         MEMBERSHIPS,
         NODES,
@@ -1278,6 +1316,13 @@ fn fixture_schema() -> String {
              id TEXT PRIMARY KEY CHECK (trim(id) <> ''),
              label TEXT NOT NULL CHECK (length(label) <= 40),
              peer_id TEXT REFERENCES fixture_cycle_a(id) ON DELETE CASCADE
+         );
+         CREATE TABLE fixture_handles (
+             id TEXT PRIMARY KEY CHECK (trim(id) <> ''),
+             label TEXT NOT NULL CHECK (length(label) <= 40),
+             code TEXT NOT NULL CHECK (length(code) <= 40),
+             UNIQUE (label),
+             UNIQUE (code)
          );
          CREATE TABLE fixture_links (
              id TEXT PRIMARY KEY CHECK (trim(id) <> ''),

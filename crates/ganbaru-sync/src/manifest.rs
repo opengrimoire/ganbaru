@@ -597,8 +597,10 @@ impl Collation {
 /// How the engine keeps a schema constraint true for every merged state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Resolution {
-    /// A unique column set: among colliding live rows only the lowest key is materialized, and
-    /// replicas seal repair tombstones redirecting the others to it.
+    /// A unique column set: among colliding live rows that are not hidden for another reason,
+    /// the lowest key is materialized, and replicas seal repair tombstones redirecting the others
+    /// to it. A row that collides under several rules is hidden behind the lowest shown row it
+    /// collides with.
     DuplicateRepair {
         /// Columns of the unique constraint.
         columns: &'static [&'static str],

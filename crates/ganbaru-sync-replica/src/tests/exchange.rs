@@ -913,13 +913,26 @@ fn hub_refuses_foreign_geneses_unlinked_writers_and_other_vaults() {
             .remove(PHONE_DEVICE)
             .await
             .expect("remove the phone");
-        phone.seal_note("note-after-unlink").await;
-        let refused = done(
-            phone
-                .exchange(&transport, &phone_ids())
-                .await
-                .expect("exchange"),
-        );
+        // Operations past the cutoff are stored excluded up to the bound and refused beyond it.
+        let bound = ganbaru_sync::MAX_EXCLUDED_PER_WRITER;
+        let mut index = 0;
+        while phone.seal_note(&format!("note-after-unlink-{index}")).await <= cutoff + bound {
+            index += 1;
+        }
+        let mut refused = None;
+        for _ in 0..64 {
+            let exchanged = done(
+                phone
+                    .exchange(&transport, &phone_ids())
+                    .await
+                    .expect("exchange"),
+            );
+            if exchanged.problem.is_some() || !exchanged.more {
+                refused = Some(exchanged);
+                break;
+            }
+        }
+        let refused = refused.expect("the exchange stops");
         assert!(
             refused
                 .problem
@@ -927,7 +940,12 @@ fn hub_refuses_foreign_geneses_unlinked_writers_and_other_vaults() {
                 .is_some_and(|problem| problem.contains("Revoked")),
             "{refused:?}"
         );
-        assert_eq!(hub_replica.stored().await.get(&phone.writer.id()), cutoff);
+        assert_eq!(
+            hub_replica.stored().await.get(&phone.writer.id()),
+            cutoff + bound
+        );
+        hub_replica.apply().await;
+        assert!(!hub_replica.has_note("note-after-unlink-0").await);
         hub_replica.close().await;
         phone.close().await;
     });

@@ -349,17 +349,30 @@ impl Sealer {
 
     /// Every dependency the next operation needs: what the target context, everything applied
     /// unless a replay names one, adds to the head context, in writer id order.
+    ///
+    /// Without a replay the head context joins the target: a removal exclusion can take back
+    /// applied operations the head context saw, and a context never shrinks along a chain.
     fn dependencies(
         &self,
         batch: &Batch,
         replay: Option<&Replay>,
     ) -> SyncResult<Vec<(WriterId, Seq)>> {
-        let mut target =
-            replay.map_or_else(|| batch.applied.clone(), |replay| replay.context.clone());
-        target.set(self.id, 0);
         let mut head = self.head_context.clone();
         head.set(self.id, 0);
-        if !target.dominates(&head) || !batch.applied.dominates(&target) {
+        let mut target = match replay {
+            Some(replay) => replay.context.clone(),
+            None => {
+                let mut target = batch.applied.clone();
+                target.merge(&head);
+                target
+            }
+        };
+        target.set(self.id, 0);
+        let mut bound = batch.applied.clone();
+        if replay.is_none() {
+            bound.merge(&head);
+        }
+        if !target.dominates(&head) || !bound.dominates(&target) {
             return Err(corrupt(
                 "an operation context must lie between its head and the applied state",
             ));
@@ -599,8 +612,10 @@ impl Sealer {
                     .manifest()
                     .table(change.table)
                     .ok_or_else(|| corrupt("sealed change of an unknown table"))?;
-                merge::apply_change(conn, batch, self.id, seq, op_clock, &context, table, change)
-                    .await?;
+                merge::apply_change(
+                    conn, batch, self.id, seq, op_clock, &context, table, change, None,
+                )
+                .await?;
             }
             report.sealed_ops += 1;
             report.changes += count;

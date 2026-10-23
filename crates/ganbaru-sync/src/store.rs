@@ -13,7 +13,8 @@ use sqlx::{Connection, SqliteConnection};
 
 use crate::authorization::{self, Enrollment};
 use crate::error::{SyncResult, corrupt, failpoint};
-use crate::log::{self, WriterRow, clamp_ms, seq_i64};
+use crate::exclusion::{self, MAX_EXCLUDED_PER_WRITER};
+use crate::log::{self, WriterRow, WriterState, clamp_ms, seq_i64};
 use crate::{Engine, SpaceContext, validate};
 
 /// Why a stored operation cannot be applied yet or ever.
@@ -84,8 +85,10 @@ pub enum StoreRefusal {
         /// First sequence where the stored chain and the offered chain differ.
         seq: Seq,
     },
-    /// The writer was revoked, forked, or re-sealed and the operation is above its cutoff, or
-    /// the genesis names a removed device.
+    /// The writer was forked or re-sealed and the operation is above its cutoff, its device was
+    /// removed and the operation is more than
+    /// [`MAX_EXCLUDED_PER_WRITER`](crate::exclusion::MAX_EXCLUDED_PER_WRITER) past the removal's
+    /// cutoff, or the genesis names a removed device.
     Revoked,
     /// The genesis would exceed the writers its device or the space may have.
     WriterLimit,
@@ -246,14 +249,15 @@ async fn insert_op(
     revision: u64,
     context: Option<&VersionVector>,
     held: Option<HoldReason>,
+    excluded: Option<u64>,
     now_ms: u64,
 ) -> SyncResult<()> {
     let state = if held.is_some() { "held" } else { "waiting" };
     sqlx::query(
         "INSERT INTO sync_ops
             (space_id, writer_id, seq, kind, hash, clock, authorization_revision, context,
-             envelope, state, hold_reason, stored_at_ms)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+             envelope, state, hold_reason, stored_at_ms, excluded_revision)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(ctx.space.as_bytes().as_slice())
     .bind(envelope.writer.as_bytes().as_slice())
@@ -267,6 +271,7 @@ async fn insert_op(
     .bind(state)
     .bind(held.map(HoldReason::as_str))
     .bind(clamp_ms(now_ms))
+    .bind(excluded.map(seq_i64).transpose()?)
     .execute(&mut *conn)
     .await?;
     Ok(())
@@ -293,12 +298,24 @@ async fn store_genesis(
         Err(_) => return Ok(StoreOutcome::Refused(StoreRefusal::Malformed)),
     };
     let cert = &certificate.certificate;
-    match authorization::enrollment(conn, ctx.space, &cert.device_id, &cert.device_key).await? {
-        Enrollment::Enrolled => {}
+    // A writer of a removed device that this replica never stored has a removal cutoff of
+    // zero: its chain is stored, excluded, so the late changes other replicas applied before
+    // the removal are derived here too.
+    let removal = match authorization::enrollment(
+        conn,
+        ctx.space,
+        &cert.device_id,
+        &cert.device_key,
+    )
+    .await?
+    {
+        Enrollment::Enrolled => None,
         Enrollment::WrongKey => return Ok(StoreOutcome::Refused(StoreRefusal::Untrusted)),
-        Enrollment::Removed => return Ok(StoreOutcome::Refused(StoreRefusal::Revoked)),
+        Enrollment::Removed => {
+            Some(exclusion::removal_revision(conn, ctx.space, &cert.device_id).await?)
+        }
         Enrollment::Absent => return Ok(StoreOutcome::Refused(StoreRefusal::Unenrolled)),
-    }
+    };
     let clock = operation.header.clock;
     if !storable_clock(clock) {
         return Ok(StoreOutcome::Refused(StoreRefusal::Malformed));
@@ -309,23 +326,41 @@ async fn store_genesis(
     sqlx::query(
         "INSERT INTO sync_writers
             (space_id, writer_id, public_key, device_id, certificate, state, predecessor,
-             cutoff_seq, stored_seq, applied_seq, head_hash, head_clock, created_at_ms)
-         VALUES (?, ?, ?, ?, ?, 'active', ?, NULL, 1, 0, ?, ?, ?)",
+             cutoff_seq, stored_seq, applied_seq, head_hash, head_clock, created_at_ms,
+             removal_cutoff_seq)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 0, ?, ?, ?, ?)",
     )
     .bind(ctx.space.as_bytes().as_slice())
     .bind(envelope.writer.as_bytes().as_slice())
     .bind(cert.writer_key.as_bytes().as_slice())
     .bind(cert.device_id.as_str())
     .bind(certificate.encode())
+    .bind(if removal.is_some() {
+        "revoked"
+    } else {
+        "active"
+    })
     .bind(
         cert.predecessor
             .map(|predecessor| predecessor.as_bytes().to_vec()),
     )
+    .bind(removal.map(|_| 0_i64))
     .bind(envelope.hash().as_slice())
     .bind(clamp_ms(clock.as_u64()))
     .bind(cert.created_at_ms.max(0))
+    .bind(removal.map(|_| 0_i64))
     .execute(&mut *conn)
     .await?;
+    let excluded = match removal {
+        Some(_)
+            if exclusion::local_device(conn, ctx.space).await?.as_deref()
+                == Some(cert.device_id.as_str()) =>
+        {
+            None
+        }
+        removal => removal,
+    };
+    let held = excluded.map(|_| HoldReason::Invalid);
     insert_op(
         conn,
         ctx,
@@ -334,11 +369,12 @@ async fn store_genesis(
         clock,
         operation.header.authorization_revision,
         Some(&VersionVector::new()),
-        None,
+        held,
+        excluded,
         now_ms,
     )
     .await?;
-    Ok(StoreOutcome::Stored { held: None })
+    Ok(StoreOutcome::Stored { held })
 }
 
 async fn store_next(
@@ -369,7 +405,14 @@ async fn store_next(
             _ => StoreOutcome::Duplicate,
         });
     }
-    if writer.cutoff.is_some_and(|cutoff| envelope.seq > cutoff) {
+    // A removed device's writer is revoked at its removal cutoff, but the operations past it are
+    // still stored, up to a bound, so their late changes can be derived and forwarded.
+    let beyond_removal = writer
+        .removal_cutoff
+        .is_some_and(|cutoff| envelope.seq > cutoff.saturating_add(MAX_EXCLUDED_PER_WRITER));
+    let beyond_cutoff = writer.state != WriterState::Revoked
+        && writer.cutoff.is_some_and(|cutoff| envelope.seq > cutoff);
+    if beyond_removal || beyond_cutoff {
         return Ok(StoreOutcome::Refused(StoreRefusal::Revoked));
     }
     if envelope.seq > writer.stored + 1 {
@@ -396,7 +439,32 @@ async fn store_next(
     )
     .await?;
     let clock = header.map_or(Hlc::ZERO, |(clock, _)| clock);
-    let held = classified.hold();
+    let mut held = classified.hold();
+    // The removed device itself never excludes its own operations.
+    let excluded = match writer.removal_cutoff {
+        Some(cutoff)
+            if envelope.seq > cutoff
+                && exclusion::local_device(conn, ctx.space).await?.as_deref()
+                    != Some(writer.device_id.as_str()) =>
+        {
+            let removal = exclusion::removal_revision(conn, ctx.space, &writer.device_id).await?;
+            if let Ok(operation) = envelope.operation() {
+                exclusion::fold(
+                    engine,
+                    conn,
+                    removal,
+                    writer.id,
+                    envelope.seq,
+                    clock,
+                    &operation.content,
+                )
+                .await?;
+            }
+            held = Some(HoldReason::Invalid);
+            Some(removal)
+        }
+        _ => None,
+    };
     insert_op(
         conn,
         ctx,
@@ -406,6 +474,7 @@ async fn store_next(
         classified.revision(),
         context.as_ref(),
         held,
+        excluded,
         now_ms,
     )
     .await?;

@@ -70,6 +70,9 @@ pub struct Exchanged {
     /// A device compacts its own writer no further than this head, so a fork found later can
     /// still be re-sealed.
     pub confirmed: Option<(WriterId, Seq)>,
+    /// The hub's stored vector as of its last answer to a hello or push. When the hub is the
+    /// anchor, it marks what the anchor stores, see `Engine::record_anchor_marks`.
+    pub hub: VersionVector,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -155,7 +158,9 @@ impl<T: SyncTransport> ClientSession<'_, T> {
             confirmed,
             ..Exchanged::default()
         };
-        if let Some(fork) = self.push(&mut hub, &mut exchanged).await? {
+        let pushed = self.push(&mut hub, &mut exchanged).await?;
+        exchanged.hub = hub;
+        if let Some(fork) = pushed {
             return Ok(Exchange::Fork(fork));
         }
         if !exchanged.bootstrap_required

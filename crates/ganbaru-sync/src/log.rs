@@ -64,6 +64,9 @@ pub(crate) struct WriterRow {
     pub(crate) head_clock: u64,
     /// Highest sequence whose body compaction may have dropped.
     pub(crate) compacted: Seq,
+    /// Cutoff the selected removal of the writer's device lists for it; later operations are
+    /// excluded.
+    pub(crate) removal_cutoff: Option<Seq>,
 }
 
 /// Operations a peer does not have, in an order that keeps every writer's chain contiguous.
@@ -137,7 +140,7 @@ pub(crate) async fn ensure_space(conn: &mut SqliteConnection, space: SpaceId) ->
 }
 
 const WRITER_COLUMNS: &str = "writer_id, public_key, device_id, state, cutoff_seq, stored_seq, \
-     applied_seq, head_hash, head_clock, compacted_seq";
+     applied_seq, head_hash, head_clock, compacted_seq, removal_cutoff_seq";
 
 fn writer_row(row: &sqlx::sqlite::SqliteRow) -> SyncResult<WriterRow> {
     let id: Vec<u8> = row.try_get(0)?;
@@ -157,6 +160,10 @@ fn writer_row(row: &sqlx::sqlite::SqliteRow) -> SyncResult<WriterRow> {
         head_hash: digest(&head_hash)?,
         head_clock: stored_u64(row.try_get(8)?, "head clock")?,
         compacted: stored_u64(row.try_get(9)?, "compacted sequence")?,
+        removal_cutoff: row
+            .try_get::<Option<i64>, _>(10)?
+            .map(|seq| stored_u64(seq, "removal cutoff"))
+            .transpose()?,
     })
 }
 

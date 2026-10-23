@@ -17,6 +17,7 @@ use sqlx::{Row, SqliteConnection};
 use crate::Engine;
 use crate::codec;
 use crate::error::{SyncResult, corrupt};
+use crate::exclusion;
 use crate::hydrate;
 use crate::log::{self, ContextCache, seq_i64, stored_u64};
 use crate::manifest::{GroupSpec, MergeKind, TableSpec};
@@ -273,7 +274,94 @@ pub(crate) fn winners<'v>(
         .collect()
 }
 
-/// Records one change of an applied operation in the merge state.
+/// Keeps a version an operation supersedes, with its value read back, until the anchor
+/// confirms storing the operation.
+async fn displace(
+    engine: &Engine,
+    conn: &mut SqliteConnection,
+    table: &TableSpec,
+    key: &str,
+    stored: Stored,
+    writer: WriterId,
+    seq: Seq,
+) -> SyncResult<()> {
+    let value = match stored.value {
+        Some(value) => value,
+        None => {
+            hydrate::elided_value(
+                engine,
+                conn,
+                table,
+                key,
+                stored.group,
+                stored.writer,
+                stored.seq,
+                &stored.hash,
+            )
+            .await?
+        }
+    };
+    sqlx::query(
+        "INSERT INTO sync_displaced_versions
+            (table_id, row_key, group_id, writer_id, seq, clock, value_hash, value,
+             displaced_by_writer, displaced_by_seq)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT DO NOTHING",
+    )
+    .bind(table_param(table.id))
+    .bind(key)
+    .bind(i64::from(stored.group.get()))
+    .bind(stored.writer.as_bytes().as_slice())
+    .bind(seq_i64(stored.seq)?)
+    .bind(log::clamp_ms(stored.clock.as_u64()))
+    .bind(stored.hash.as_slice())
+    .bind(value.encode())
+    .bind(writer.as_bytes().as_slice())
+    .bind(seq_i64(seq)?)
+    .execute(&mut *conn)
+    .await?;
+    Ok(())
+}
+
+/// Puts back a version a removal exclusion restored, with its reference targets.
+pub(crate) async fn restore_version(
+    conn: &mut SqliteConnection,
+    table: &TableSpec,
+    key: &str,
+    stored: &Stored,
+    value: Value,
+) -> SyncResult<()> {
+    let spec = table
+        .group(stored.group)
+        .ok_or_else(|| corrupt("restored version of an unknown group"))?;
+    sqlx::query(
+        "INSERT INTO sync_register_versions
+            (table_id, row_key, group_id, writer_id, seq, clock, value_hash, value)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT (table_id, row_key, group_id, writer_id) DO UPDATE SET
+            seq = excluded.seq, clock = excluded.clock, value_hash = excluded.value_hash,
+            value = excluded.value",
+    )
+    .bind(table_param(table.id))
+    .bind(key)
+    .bind(i64::from(stored.group.get()))
+    .bind(stored.writer.as_bytes().as_slice())
+    .bind(seq_i64(stored.seq)?)
+    .bind(log::clamp_ms(stored.clock.as_u64()))
+    .bind(stored.hash.as_slice())
+    .bind(value.encode())
+    .execute(&mut *conn)
+    .await?;
+    let group = GroupValue {
+        group: stored.group,
+        hash: stored.hash,
+        value,
+    };
+    replace_version_refs(conn, table.id, key, stored.writer, &[(&group, spec)]).await
+}
+
+/// Records one change of an applied operation in the merge state. With `retain`, the versions
+/// it supersedes are kept as displaced until the anchor confirms storing the operation.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn apply_change(
     conn: &mut SqliteConnection,
@@ -284,6 +372,7 @@ pub(crate) async fn apply_change(
     context: &VersionVector,
     table: &TableSpec,
     change: &Change,
+    retain: Option<&Engine>,
 ) -> SyncResult<()> {
     let key = change.row.as_str();
     // Register versions reference their row, so a row created here has none to supersede.
@@ -299,6 +388,15 @@ pub(crate) async fn apply_change(
         .rows_affected()
             == 1
     } else if row_state(conn, change.table, key).await?.is_some() {
+        false
+    } else if exclusion::created_late(conn, change.table, key).await? {
+        // An honest operation that saw a late create of a removed device writes the row, which
+        // stays hidden as a late change until an admin restores it.
+        sqlx::query("INSERT INTO sync_rows (table_id, row_key, state) VALUES (?, ?, 'live')")
+            .bind(table_param(change.table))
+            .bind(key)
+            .execute(&mut *conn)
+            .await?;
         false
     } else {
         return Err(corrupt("change for an unpublished row reached apply"));
@@ -336,19 +434,25 @@ pub(crate) async fn apply_change(
             Vec::new()
         } else {
             sqlx::query(
-                "SELECT writer_id, seq FROM sync_register_versions
+                "SELECT group_id, writer_id, seq, clock, value_hash,
+                    CASE WHEN ? THEN value END
+                 FROM sync_register_versions
                  WHERE table_id = ? AND row_key = ? AND group_id = ?",
             )
+            .bind(retain.is_some())
             .bind(table_param(change.table))
             .bind(key)
             .bind(i64::from(group.group.get()))
             .fetch_all(&mut *conn)
             .await?
         };
+        let mut superseded = false;
         for row in existing {
-            let other: Vec<u8> = row.try_get(0)?;
-            let other_seq = stored_u64(row.try_get(1)?, "version sequence")?;
-            if context.covers(&log::writer_id(&other)?, other_seq) {
+            let other = stored_from_row(&row, 0)?;
+            if context.covers(&other.writer, other.seq) {
+                if let Some(engine) = retain {
+                    displace(engine, conn, table, key, other.clone(), writer, seq).await?;
+                }
                 sqlx::query(
                     "DELETE FROM sync_register_versions
                      WHERE table_id = ? AND row_key = ? AND group_id = ? AND writer_id = ?",
@@ -356,12 +460,25 @@ pub(crate) async fn apply_change(
                 .bind(table_param(change.table))
                 .bind(key)
                 .bind(i64::from(group.group.get()))
-                .bind(other.as_slice())
+                .bind(other.writer.as_bytes().as_slice())
                 .execute(&mut *conn)
                 .await?;
+            } else if (other.writer == writer && other.seq > seq)
+                || (other.clock > clock
+                    && batch
+                        .contexts
+                        .get(conn, batch.space, other.writer, other.seq)
+                        .await?
+                        .covers(&writer, seq))
+            {
+                // An operation applied again after an exclusion was lifted never replaces a
+                // version that saw it or a later version of its own writer.
+                superseded = true;
             }
         }
-        upserts.push((group, spec));
+        if !superseded {
+            upserts.push((group, spec));
+        }
     }
     upsert_versions(conn, change, writer, seq, clock, &upserts).await?;
     batch.dirty.insert((change.table, key.to_string()));
@@ -407,14 +524,15 @@ async fn upsert_versions(
             .bind(group.value.encode());
     }
     query.execute(&mut *conn).await?;
-    replace_version_refs(conn, change, writer, upserts).await
+    replace_version_refs(conn, change.table, change.row.as_str(), writer, upserts).await
 }
 
 /// Replaces the reference targets of the versions a change wrote: one row per reference column
 /// holding a row key, and one per distinct key the owned rows of a blob field reference.
 async fn replace_version_refs(
     conn: &mut SqliteConnection,
-    change: &Change,
+    table: TableId,
+    row: &str,
     writer: WriterId,
     upserts: &[(&GroupValue, &GroupSpec)],
 ) -> SyncResult<()> {
@@ -433,8 +551,8 @@ async fn replace_version_refs(
          WHERE table_id = ? AND row_key = ? AND writer_id = ? AND group_id IN ({groups})"
     );
     let mut query = sqlx::query(sqlx::AssertSqlSafe(sql.as_str()))
-        .bind(table_param(change.table))
-        .bind(change.row.as_str())
+        .bind(table_param(table))
+        .bind(row)
         .bind(writer.as_bytes().as_slice());
     for (group, _) in &referencing {
         query = query.bind(i64::from(group.group.get()));
@@ -466,8 +584,8 @@ async fn replace_version_refs(
     for (group, field, target) in targets {
         let field = i64::try_from(field).map_err(|_| corrupt("reference field out of range"))?;
         query = query
-            .bind(table_param(change.table))
-            .bind(change.row.as_str())
+            .bind(table_param(table))
+            .bind(row)
             .bind(i64::from(group.get()))
             .bind(writer.as_bytes().as_slice())
             .bind(field)

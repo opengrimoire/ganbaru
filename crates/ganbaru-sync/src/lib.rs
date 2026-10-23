@@ -39,6 +39,7 @@ mod authorization;
 mod compact;
 mod conflicts;
 mod edges;
+mod exclusion;
 mod hydrate;
 mod log;
 mod materialize;
@@ -69,6 +70,7 @@ pub use conflicts::{
 };
 pub use devices::{DeviceNames, DeviceRef};
 pub use error::{SyncError, SyncResult};
+pub use exclusion::{LateChange, LateKind, MAX_EXCLUDED_PER_WRITER};
 pub use local::{CarryReport, LocalRestoreReport, LocalWriterHead};
 pub use log::{OpsPage, WriterState};
 pub use recovery::{RecoveryDescendant, RecoveryEntry};

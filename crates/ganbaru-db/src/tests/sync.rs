@@ -246,3 +246,55 @@ fn authorization_log_migration_keeps_writers_and_operations_and_constrains_devic
         assert_eq!(left, 0, "the log and its devices go with their space");
     });
 }
+
+/// Last migration before removal cutoffs exclude operations.
+const BEFORE_REMOVAL_EXCLUSION: i64 = 20261023094450;
+
+#[test]
+fn removal_exclusion_migration_starts_unreached_and_constrains_resolutions() {
+    super::block_on(async {
+        let pool = memory_pool_migrated_through(BEFORE_REMOVAL_EXCLUSION).await;
+        sqlx::raw_sql(
+            "INSERT INTO sync_spaces (space_id, vault_id, created_at_ms)
+             VALUES (zeroblob(16), 'vault-a', 1);
+             INSERT INTO sync_late_changes (removal_revision, table_id, row_key, change)
+             VALUES (2, 1, 'row-a', 'created');",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        run_migrations(&pool).await.unwrap();
+
+        let space: (i64, Option<String>, Option<String>) = sqlx::query_as(
+            "SELECT reachable_revision, anchor_device_id, local_device_id FROM sync_spaces",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(space, (0, None, None));
+        let resolution: Option<String> =
+            sqlx::query_scalar("SELECT resolution FROM sync_late_changes")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(resolution, None, "an existing late change stays unresolved");
+
+        sqlx::query("UPDATE sync_late_changes SET resolution = 'discard', resolved_revision = 3")
+            .execute(&pool)
+            .await
+            .expect("a discard resolves a late change");
+        sqlx::query("UPDATE sync_late_changes SET resolution = 'keep'")
+            .execute(&pool)
+            .await
+            .expect_err("a resolution restores or discards");
+        sqlx::query("UPDATE sync_spaces SET reachable_revision = -1")
+            .execute(&pool)
+            .await
+            .expect_err("a reachable revision is never negative");
+        sqlx::query("UPDATE sync_spaces SET anchor_device_id = ''")
+            .execute(&pool)
+            .await
+            .expect_err("an anchor names a device");
+    });
+}

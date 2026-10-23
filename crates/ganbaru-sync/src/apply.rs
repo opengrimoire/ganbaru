@@ -5,7 +5,7 @@
 //! transactions. Local captures of the rows an operation or a materialization changes are sealed
 //! first, so a materialized merge never overwrites a local edit that is not sealed yet.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use ganbaru_sync_contracts::{
     AuthorizationRecord, Change, ChangeAction, Content, Envelope, Hlc, Seq, TableId, VersionVector,
@@ -15,6 +15,7 @@ use sqlx::sqlite::SqliteRow;
 use sqlx::{Connection, Row, SqliteConnection};
 
 use crate::error::{SyncError, SyncResult, corrupt, failpoint};
+use crate::exclusion::{Excluding, Retention};
 use crate::hooks::ChangeNotice;
 use crate::log::{self, WriterState, seq_i64, stored_u64};
 use crate::materialize::Materialized;
@@ -22,7 +23,8 @@ use crate::merge::{self, Batch};
 use crate::seal::{self, SealReport, SealSlot};
 use crate::visibility::{RowRef, Visibility};
 use crate::{
-    Engine, LocalWriter, SpaceContext, authorization, hydrate, materialize, repair, sql, store,
+    Engine, LocalWriter, SpaceContext, authorization, exclusion, hydrate, materialize, repair, sql,
+    store,
 };
 
 /// Most operations one apply transaction takes.
@@ -138,7 +140,9 @@ impl Sealing<'_, '_, '_> {
 }
 
 /// Waiting operations whose writer's previous operation is applied, that are within their
-/// writer's cutoff, and whose authorization revision is selected.
+/// writer's cutoff, whose writer's device the selected chain enrolls, and whose authorization
+/// revision a stored chain reaches. A device a reselection leaves unenrolled keeps what applied
+/// and its later operations wait until a selected chain enrolls it again.
 async fn candidates(
     conn: &mut SqliteConnection,
     ctx: &SpaceContext,
@@ -150,6 +154,10 @@ async fn candidates(
             ON o.space_id = w.space_id AND o.writer_id = w.writer_id AND o.seq = w.applied_seq + 1
          WHERE w.space_id = ? AND o.state <> 'held' AND o.authorization_revision <= ?
             AND (w.cutoff_seq IS NULL OR o.seq <= w.cutoff_seq)
+            AND EXISTS (
+                SELECT 1 FROM sync_devices d
+                WHERE d.space_id = w.space_id AND d.device_id = w.device_id
+            )
          ORDER BY o.clock, o.writer_id",
     )
     .bind(ctx.space.as_bytes().as_slice())
@@ -160,8 +168,8 @@ async fn candidates(
 }
 
 /// The candidate `seq` of `writer`, when it is stored, not held, within the writer's cutoff,
-/// and sealed against a selected revision. A small envelope is read with it, since the
-/// candidate usually applies next.
+/// of an enrolled device, and sealed against a reachable revision. A small envelope is read
+/// with it, since the candidate usually applies next.
 async fn writer_candidate(
     conn: &mut SqliteConnection,
     ctx: &SpaceContext,
@@ -178,7 +186,11 @@ async fn writer_candidate(
             AND NOT EXISTS (
                 SELECT 1 FROM sync_writers w
                 WHERE w.space_id = o.space_id AND w.writer_id = o.writer_id
-                    AND w.cutoff_seq IS NOT NULL AND o.seq > w.cutoff_seq
+                    AND ((w.cutoff_seq IS NOT NULL AND o.seq > w.cutoff_seq)
+                        OR NOT EXISTS (
+                            SELECT 1 FROM sync_devices d
+                            WHERE d.space_id = w.space_id AND d.device_id = w.device_id
+                        ))
             )",
     )
     .bind(i64::try_from(PREFETCH_ENVELOPE_BYTES).unwrap_or(i64::MAX))
@@ -287,16 +299,19 @@ async fn resolve_context(
 /// candidate, so the list is refreshed per writer instead of read again for every operation.
 struct Heads {
     candidates: Vec<Candidate>,
-    /// Selected authorization revision the candidates were read against.
+    /// Reachable authorization revision the candidates were read against.
     revision: u64,
+    /// Writers whose operations past a removal cutoff are excluded.
+    excluding: BTreeMap<WriterId, Excluding>,
 }
 
 impl Heads {
     async fn load(conn: &mut SqliteConnection, ctx: &SpaceContext) -> SyncResult<Self> {
-        let revision = authorization::selected_revision(conn, ctx.space).await?;
+        let revision = authorization::readiness_revision(conn, ctx.space).await?;
         Ok(Self {
             candidates: candidates(conn, ctx, revision).await?,
             revision,
+            excluding: exclusion::excluding(conn, ctx.space).await?,
         })
     }
 
@@ -332,7 +347,7 @@ impl Heads {
             if candidate
                 .context
                 .as_ref()
-                .is_some_and(|context| batch.applied.dominates(context))
+                .is_some_and(|context| exclusion::ready(&batch.applied, context, &self.excluding))
             {
                 let mut candidate = self.candidates.remove(index);
                 let context = candidate
@@ -386,6 +401,7 @@ async fn rows_exist(
                     && merge::row_state(conn, change.table, change.row.as_str())
                         .await?
                         .is_none()
+                    && !exclusion::created_late(conn, change.table, change.row.as_str()).await?
                 {
                     return Ok(false);
                 }
@@ -404,6 +420,7 @@ async fn apply_one(
     sealing: &mut Sealing<'_, '_, '_>,
     candidate: &mut Candidate,
     context: &VersionVector,
+    retention: &Retention,
     report: &mut ApplyReport,
 ) -> SyncResult<Outcome> {
     let bytes = match candidate.envelope.take() {
@@ -448,13 +465,26 @@ async fn apply_one(
                     context,
                     table,
                     change,
+                    retention
+                        .retains(candidate.writer, candidate.seq)
+                        .then_some(engine),
                 )
                 .await?;
             }
             Ok(Outcome::Applied)
         }
         Content::Authorization(record) => {
-            apply_authorization(conn, ctx, sealing.slot, candidate, record, report).await
+            apply_authorization(
+                engine,
+                conn,
+                ctx,
+                batch,
+                sealing.slot,
+                candidate,
+                record,
+                report,
+            )
+            .await
         }
     }
 }
@@ -462,10 +492,15 @@ async fn apply_one(
 /// Records an authorization entry and selects the chain again. Only a writer of the device the
 /// record names as anchor may carry entries; any other carrier is held. The entry is stored and
 /// forwarded whether or not selection takes it, and the local writer freezes when the selected
-/// chain removes its device.
+/// chain removes its device. Operations the selected removals exclude, or no longer exclude,
+/// change state in the same transaction. Entries of excluded operations, which never get here,
+/// are recorded by [`exclusion::settle`] and at the start of each apply call.
+#[allow(clippy::too_many_arguments)]
 async fn apply_authorization(
+    engine: &Engine,
     conn: &mut SqliteConnection,
     ctx: &SpaceContext,
+    batch: &mut Batch,
     slot: &mut SealSlot<'_, '_>,
     candidate: &Candidate,
     record: &AuthorizationRecord,
@@ -474,11 +509,13 @@ async fn apply_authorization(
     let issuer = log::writer(conn, ctx.space, candidate.writer)
         .await?
         .ok_or_else(|| corrupt("operation of an unknown writer reached apply"))?;
-    if issuer.device_id != record.anchor_device_id || record.validate().is_err() {
+    if !authorization::carries(&issuer.device_id, record) {
         return Ok(Outcome::Held);
     }
     authorization::insert_entry(conn, ctx.space, candidate.writer, candidate.seq, record).await?;
-    authorization::rederive(conn, ctx.space).await?;
+    if let Some(selection) = authorization::rederive(conn, ctx.space).await? {
+        exclusion::settle(engine, conn, ctx, batch, &selection).await?;
+    }
     if let Some(local) = slot.local_id() {
         let active = log::writer(conn, ctx.space, local)
             .await?
@@ -499,6 +536,7 @@ async fn mark_applied(
     batch: &mut Batch,
     candidate: &Candidate,
     context: VersionVector,
+    retention: &mut Retention,
 ) -> SyncResult<()> {
     sqlx::query(
         "UPDATE sync_ops SET state = 'applied', context = ?
@@ -511,6 +549,7 @@ async fn mark_applied(
     .execute(&mut *conn)
     .await?;
     batch.applied.set(candidate.writer, candidate.seq);
+    retention.confirm(candidate.writer, &context);
     batch
         .contexts
         .insert(candidate.writer, candidate.seq, context);
@@ -728,6 +767,18 @@ impl Engine {
         log::ensure_space(&mut tx, ctx.space).await?;
         sql::begin_engine_write(&mut tx).await?;
         let mut batch = Batch::load(&mut tx, ctx.space).await?;
+        if let Some(writer) = &writer {
+            exclusion::note_local_device(
+                self,
+                &mut tx,
+                ctx,
+                &mut batch,
+                &writer.certificate.certificate.device_id,
+            )
+            .await?;
+        }
+        exclusion::admit_excluded_entries(self, &mut tx, ctx, &mut batch).await?;
+        let mut retention = Retention::load(&mut tx, ctx.space).await?;
         let mut slot = SealSlot::bounded(writer);
         let mut report = ApplyReport::default();
         let mut sealed = SealReport::default();
@@ -764,17 +815,28 @@ impl Engine {
                 &mut sealing,
                 &mut candidate,
                 &context,
+                &retention,
                 &mut report,
             )
             .await?
             {
                 outcome @ (Outcome::Applied | Outcome::Authorized) => {
-                    mark_applied(&mut tx, ctx, &mut batch, &candidate, context).await?;
+                    mark_applied(
+                        &mut tx,
+                        ctx,
+                        &mut batch,
+                        &candidate,
+                        context,
+                        &mut retention,
+                    )
+                    .await?;
                     warn_clock(&mut report, candidate.writer, candidate.clock, now_ms);
                     report.applied += 1;
                     advanced.insert(candidate.writer);
                     if matches!(outcome, Outcome::Authorized) {
                         flush_applied(&mut tx, ctx, &batch, &mut advanced).await?;
+                        retention.flush(&mut tx, ctx.space).await?;
+                        retention = Retention::load(&mut tx, ctx.space).await?;
                         heads = Heads::load(&mut tx, ctx).await?;
                     } else {
                         heads
@@ -793,6 +855,7 @@ impl Engine {
             }
         }
         flush_applied(&mut tx, ctx, &batch, &mut advanced).await?;
+        retention.flush(&mut tx, ctx.space).await?;
         let Some(changed) = finish(
             self,
             &mut tx,

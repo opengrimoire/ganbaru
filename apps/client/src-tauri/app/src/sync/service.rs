@@ -922,6 +922,18 @@ impl ServiceState {
                             .record_stable(&mut conn, &session.ctx, &done.stable)
                             .await
                             .map_err(|error| format!("record sync stability: {error}"))?;
+                        if let Some(pin) = wait.transport.0.coordinator_pin()? {
+                            session
+                                .engine
+                                .record_anchor_marks(
+                                    &mut conn,
+                                    &session.ctx,
+                                    &pin.device_id,
+                                    &done.hub,
+                                )
+                                .await
+                                .map_err(|error| format!("record anchor marks: {error}"))?;
+                        }
                     }
                     if done.confirmed.is_some() {
                         self.confirmed = done.confirmed;

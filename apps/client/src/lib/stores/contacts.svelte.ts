@@ -24,8 +24,11 @@ import {
 import { listenSyncApplied } from "$lib/api/sync";
 import { onActiveVaultIdentityChange } from "$lib/vault/active-vault";
 
-/** Replicated tables whose changes alter the contacts and requests lists. */
-const CONTACT_LIST_TABLES: ReadonlySet<string> = new Set(["contacts", "contact_requests"]);
+/**
+ * Replicated tables whose changes alter the contacts snapshot: the lists, and the identity's card revision that the
+ * card table holds.
+ */
+const CONTACT_LIST_TABLES: ReadonlySet<string> = new Set(["contacts", "contact_requests", "contact_card"]);
 /** Replicated table that holds the card nonce and revision. */
 const CONTACT_CARD_TABLE = "contact_card";
 
@@ -95,8 +98,9 @@ async function ensureLoaded(): Promise<void> {
 }
 
 /**
- * Reload what this window already shows whenever sync applies contacts rows. Lists reload only once loaded, and
- * the card is signed again only when it is open, so a replica never creates state it has not asked for.
+ * Reload what this window already shows whenever sync applies contacts rows. The snapshot, with the identity's card
+ * revision, reloads only once loaded, and the card is signed again only when it is open, so a replica never creates
+ * state it has not asked for.
  */
 function startContactsReplicationListener(): void {
   if (replicationListenerStarted) return;

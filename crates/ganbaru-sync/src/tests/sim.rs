@@ -2,7 +2,8 @@
 //! partly offline, and exchange operations through a hub over a network that drops, duplicates,
 //! and reorders messages.
 //! Engine calls crash at failpoints and must leave no trace, the hub removes spare devices while
-//! they edit and excludes what they write past the cutoff, and conflicts and recovery offers are
+//! they edit and excludes what they write past the cutoff, cloned spare installations fork their
+//! writer and re-seal once fork evidence reaches them, and conflicts and recovery offers are
 //! resolved along the way. Exchanges sometimes end with the hub and the exchanging replica compacting what is stable, except one replica that never
 //! compacts; compaction never changes domain rows. After every step the databases keep their
 //! invariants; at quiescence every installation holds the same replicated state.
@@ -28,7 +29,8 @@ use crate::hold::{self, MAX_HOLD_MS};
 use crate::manifest::vault::quick_notes::{NOTES_TABLE, TAGS_TABLE, note_group};
 use crate::stability::{CountedDevice, DeviceStanding};
 use crate::{
-    ApplyReport, HoldReason, StoreOutcome, StoreRefusal, SyncError, SyncResult, compaction_limit,
+    ApplyReport, EvidenceOutcome, HoldReason, StoreOutcome, StoreRefusal, SyncError, SyncResult,
+    compaction_limit,
 };
 
 const DEFAULT_SEEDS: u64 = 48;
@@ -331,15 +333,23 @@ fn unreliable(rng: &mut Rng, ops: Vec<Vec<u8>>) -> Vec<Vec<u8>> {
     delivered
 }
 
-/// Sends what `from` has and `to` lacks. Returns whether `to` stored anything new.
+/// Sends the fork evidence and operations `from` has and `to` lacks, as an exchange does.
+/// Returns whether `to` stored anything new.
 async fn send(rng: &mut Rng, from: &mut Replica, to: &mut Replica, reliable: bool) -> bool {
+    let learned = to
+        .take_evidence(from)
+        .await
+        .contains(&EvidenceOutcome::Stored);
     let known = to.stored_vector().await;
     let ops = from.ops_since(&known).await;
     if ops.is_empty() {
-        return false;
+        if learned {
+            apply_all(rng, to).await;
+        }
+        return learned;
     }
     let ops = if reliable { ops } else { unreliable(rng, ops) };
-    deliver(rng, to, &ops).await
+    deliver(rng, to, &ops).await || learned
 }
 
 async fn ids(replica: &mut Replica, sql: &str) -> Vec<String> {
@@ -1538,6 +1548,99 @@ impl Sim {
         );
     }
 
+    /// A spare enrolled device and a copy of its installation each write an item at the same
+    /// sequence of their shared writer. The hub stores one branch and forwards it to a replica,
+    /// then stores the other as fork evidence and excludes both. Each copy learns of the fork from
+    /// the hub, re-seals its branch with a successor, and sends it again; both copies then leave
+    /// the run. Replicas that applied the first branch exclude it once evidence reaches them.
+    async fn fork_spare(&mut self, index: usize) {
+        let spare_index = self.replicas.len() + 1 + self.spares;
+        if spare_index >= ENROLLED_DEVICES {
+            return;
+        }
+        self.spares += 1;
+        let mut spare = Replica::new(spare_index, self.rng.next()).await;
+        spare.now_ms = self.hub.now_ms;
+        // The copy is made after the genesis, which a fork cannot replace.
+        acknowledge(&mut self.rng, &mut spare).await;
+        let mut copy = spare.clone_device().await;
+        let forked = spare.writer();
+        let now = iso_time(spare.now_ms);
+        let mut items = Vec::new();
+        for installation in [&mut spare, &mut copy] {
+            let item = self.next_id("item", spare_index);
+            let sql = format!(
+                "INSERT INTO fixture_items (id, created_at, label, label_edits)
+                 VALUES ({}, {now}, {}, 0)",
+                quoted(&item),
+                quoted(&self.words())
+            );
+            assert!(installation.try_exec(&sql).await);
+            seal(&mut self.rng, installation).await;
+            items.push(item);
+        }
+        assert_eq!(
+            spare.stored_vector().await.get(&forked),
+            copy.stored_vector().await.get(&forked),
+            "both copies sealed at the same sequence"
+        );
+
+        send(&mut self.rng, &mut spare, &mut self.hub, true).await;
+        if !self.offline[index] {
+            send(
+                &mut self.rng,
+                &mut self.hub,
+                &mut self.replicas[index],
+                true,
+            )
+            .await;
+        }
+        let ops = copy.own_ops().await;
+        let outcomes = self.hub.receive(&ops).await;
+        assert!(
+            outcomes
+                .iter()
+                .any(|outcome| matches!(outcome, StoreOutcome::Refused(StoreRefusal::Fork { .. }))),
+            "the hub did not find the fork of spare {spare_index}"
+        );
+        apply_all(&mut self.rng, &mut self.hub).await;
+        for item in &items {
+            assert_eq!(
+                self.hub
+                    .count(&format!(
+                        "SELECT count(*) FROM fixture_items WHERE id = {}",
+                        quoted(item)
+                    ))
+                    .await,
+                0,
+                "a branch of forked spare {spare_index} is visible"
+            );
+        }
+
+        for installation in [&mut spare, &mut copy] {
+            installation.take_evidence(&mut self.hub).await;
+            apply_all(&mut self.rng, installation).await;
+            assert_ne!(
+                installation.writer(),
+                forked,
+                "a forked copy did not re-seal"
+            );
+            send(&mut self.rng, installation, &mut self.hub, true).await;
+        }
+        for item in &items {
+            assert_eq!(
+                self.hub
+                    .count(&format!(
+                        "SELECT count(*) FROM fixture_items WHERE id = {}",
+                        quoted(item)
+                    ))
+                    .await,
+                1,
+                "a re-sealed item of spare {spare_index} is missing"
+            );
+        }
+    }
+
     async fn step(&mut self) {
         self.advance_clocks();
         let index = self.rng.below(self.replicas.len());
@@ -1553,7 +1656,8 @@ impl Sim {
             75..=81 => self.resolve(index).await,
             82..=88 => self.recover(index).await,
             89..=96 => self.offline[index] = !self.offline[index],
-            _ => self.remove_spare().await,
+            97..=98 => self.remove_spare().await,
+            _ => self.fork_spare(index).await,
         }
         // Only exchanges change what the hub or a replica acknowledged or applied.
         if (40..65).contains(&action) {

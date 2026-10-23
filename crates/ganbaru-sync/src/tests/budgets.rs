@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 use ganbaru_sync_contracts::DeviceRole;
 
 use super::block_on;
+use super::calendar::{calendar_sql, event_sql};
 use super::projects::{project_sql, task_sql};
 use super::replica::{Replica, enroll_entry, person, quoted, rank};
 use crate::authorization;
@@ -31,6 +32,11 @@ const CAPTURE_BUDGET: Duration = Duration::from_micros(200);
 const SEAL_BUDGET: Duration = Duration::from_millis(20);
 const APPLY_BUDGET: Duration = Duration::from_millis(50);
 const REMOVAL_BUDGET: Duration = Duration::from_secs(1);
+/// Imported Calendar events sealed in one batch and applied on a second replica.
+const CALENDAR_EVENTS: u32 = 1000;
+const CALENDAR_SEAL_BUDGET: Duration = Duration::from_secs(3);
+/// The Android apply budget; desktop measurements are recorded against it.
+const CALENDAR_APPLY_BUDGET: Duration = Duration::from_secs(10);
 /// Most a member's apply may take relative to the anchor's, which retains no displaced versions.
 const RETENTION_MARGIN: f64 = 1.1;
 
@@ -427,5 +433,72 @@ fn budgets_hold_for_capture_seal_and_apply() {
         .flatten()
         .collect();
         assert!(failures.is_empty(), "{}", failures.join("; "));
+    });
+}
+
+/// Seals `CALENDAR_EVENTS` imported events with one alarm each on one replica and applies them
+/// on another, returning both durations.
+async fn calendar_import_round() -> (Duration, Duration) {
+    let mut author = Replica::new(0, 13).await;
+    let mut reader = Replica::new(1, 13).await;
+    author.exec(&calendar_sql()).await;
+    author.seal().await.unwrap();
+    // The genesis and the calendar prepare the reader's statements.
+    assert!(deliver(&mut author, &mut reader).await.0 >= 2);
+    let import: String = (0..CALENDAR_EVENTS)
+        .map(|id| event_sql(&format!("event-{id}"), &format!("uid-{id}"), "Imported"))
+        .collect();
+    author.exec(&import).await;
+    // Seal calls continue while captures remain beyond one transaction budget.
+    let started = Instant::now();
+    let mut changes = 0;
+    loop {
+        let report = author.seal().await.unwrap();
+        assert!(report.invalid_rows.is_empty(), "{:?}", report.invalid_rows);
+        changes += report.changes;
+        if !report.more {
+            break;
+        }
+    }
+    let sealed = started.elapsed();
+    assert!(changes >= CALENDAR_EVENTS as usize);
+    let (applied, applying) = deliver(&mut author, &mut reader).await;
+    assert!(applied >= 1);
+    assert_eq!(
+        reader.count("SELECT count(*) FROM calendar_events").await,
+        i64::from(CALENDAR_EVENTS)
+    );
+    (sealed, applying)
+}
+
+/// Prints the median of `runs` against `budget` without asserting it.
+fn record(name: &str, mut runs: Vec<Duration>, budget: Duration) {
+    runs.sort();
+    let measured = runs[runs.len() / 2];
+    println!("{name}: median {measured:?} of {runs:?} (recorded against {budget:?})");
+}
+
+/// The Calendar import budgets are recorded, not enforced: the desktop apply measured here
+/// stands in for the Android budget, which needs a device.
+#[test]
+#[ignore = "timing budgets are meaningful only in the release profile"]
+fn calendar_import_budgets_are_recorded() {
+    block_on(async {
+        let (mut seal, mut apply) = (Vec::new(), Vec::new());
+        for _ in 0..RUNS {
+            let (sealed, applying) = calendar_import_round().await;
+            seal.push(sealed);
+            apply.push(applying);
+        }
+        record(
+            "seal of 1,000 imported Calendar events",
+            seal,
+            CALENDAR_SEAL_BUDGET,
+        );
+        record(
+            "apply of 1,000 imported Calendar events",
+            apply,
+            CALENDAR_APPLY_BUDGET,
+        );
     });
 }

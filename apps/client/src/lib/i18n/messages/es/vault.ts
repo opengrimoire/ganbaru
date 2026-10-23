@@ -78,7 +78,7 @@ export const vaultOwnership = {
 export const vaultOwnershipPrompt = {
   title: (device: string) => `${device} es el dispositivo principal`,
   description: "Solo el dispositivo principal puede hacer cambios.",
-  replicaDescription: "Las notas rápidas siguen editables aquí y se sincronizan con tus dispositivos. Solo el dispositivo principal puede cambiar todo lo demás.",
+  replicaDescription: "Las notas rápidas, las preferencias, los temas, los contactos, la biblioteca de música, los proyectos y el calendario siguen editables aquí y se sincronizan con tus dispositivos. Solo el dispositivo principal puede cambiar todo lo demás.",
   ownerRequiredDescription: "Este cambio también afecta datos que solo el dispositivo principal puede cambiar. Usa este dispositivo como principal para hacerlo.",
   continueReadOnly: "Continuar en solo lectura",
   switching: "Cambiando a este dispositivo...",

@@ -79,4 +79,11 @@ describe("getEventIndicatorState", () => {
     expect(state.hasGenericMeeting).toBe(false);
     expect(state.iconCount).toBe(1);
   });
+
+  it("adds a warning icon for an open sync conflict", () => {
+    const event = makeEvent({ location: "Room A" });
+
+    expect(getEventIndicatorState(event)).toMatchObject({ hasConflict: false, iconCount: 1 });
+    expect(getEventIndicatorState(event, false, true)).toMatchObject({ hasConflict: true, iconCount: 2 });
+  });
 });

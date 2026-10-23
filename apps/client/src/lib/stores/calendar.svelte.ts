@@ -21,6 +21,8 @@ import {
 import type { IcsImportSummary } from "$lib/calendar/ics/types";
 import { mark as perfMark } from "./perf-log.svelte";
 import { getPreferences } from "$lib/stores/preferences.svelte";
+import { onCalendarSyncChanged } from "$lib/calendar/sync-events";
+import { calendarConflicts } from "$lib/stores/calendar-conflicts.svelte";
 import {
   initCalendarWindowSync,
   publishCalendarWindowSync,
@@ -775,8 +777,20 @@ const stores: Record<WorkspacePaneScope, CalendarWindowStore> = {
 registerCalendarEventProjectAssignmentHandler((assignments) =>
   getCalendar().applyProjectAssignments(assignments));
 
+// Sync recovery can restore events and calendars outside the Calendar, so the open windows reload.
+onCalendarSyncChanged(() => {
+  calendarConflicts.invalidate();
+  stores.primary.acceptNativeEdit();
+  stores.primary.refreshCurrentWindow().catch((error: unknown) => {
+    console.warn("[calendar] reload after sync recovery failed", error);
+  });
+});
+
 function storeFor(scope: WorkspacePaneScope): CalendarWindowStore {
-  initCalendarWindowSync(() => refreshPanes(panes[0]));
+  initCalendarWindowSync(() => {
+    calendarConflicts.invalidate();
+    return refreshPanes(panes[0]);
+  });
   return stores[scope];
 }
 

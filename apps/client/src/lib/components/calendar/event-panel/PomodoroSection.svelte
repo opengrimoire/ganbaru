@@ -60,6 +60,7 @@
     expanded,
     readonlyInteractive = false,
     idleDetectionAvailable = true,
+    timingConflict = false,
     onToggle,
     onExpand,
     onChange,
@@ -76,6 +77,8 @@
     expanded: boolean;
     readonlyInteractive?: boolean;
     idleDetectionAvailable?: boolean;
+    /** Whether the event has an open timing conflict, which pauses automatic Focus starts for it. */
+    timingConflict?: boolean;
     onToggle: () => void;
     onExpand: () => void;
     onChange: () => void;
@@ -483,6 +486,9 @@
           <span>{t("calendar.pomodoro.pauseOnInactivity")}</span>
         </button>
       </div>
+      {/if}
+      {#if timingConflict}
+        <div class="mt-1 px-2.5 py-1.5 text-[0.733333rem] text-muted-foreground">{t("calendar.pomodoro.timingConflictNote")}</div>
       {/if}
     </div>
   {/if}

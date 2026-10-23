@@ -302,6 +302,8 @@ export const calendar = {
     saved: "Saved",
     unknownSaveError: "Unknown save error",
     saveFailed: (message: string) => `Save failed: ${message}`,
+    tooManyChangedOccurrences:
+      "This event has too many changed occurrences. Remove some changes to repeated occurrences and try again.",
     changesLost: "Your changes will be lost",
     discardUnsavedTitle: "Discard unsaved changes?",
     discard: "Discard",

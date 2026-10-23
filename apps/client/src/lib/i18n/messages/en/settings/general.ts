@@ -147,6 +147,8 @@ export const general = {
     heading: "Calendars",
     generalHeading: "General",
     importWarnings: "Import warnings",
+    eventTooManyChangedOccurrences: (label: string) =>
+      `${label} was not added to the calendar because it has too many changed occurrences. Its source is kept.`,
     moreWarnings: (count: number) =>
       `${count} more ${count === 1 ? "warning" : "warnings"} not shown.`,
     importCalendar: "Import calendar",

@@ -7,6 +7,7 @@
     getWeekDays, getWorkCycleDays,
     getLocalTimezone,
   } from "$lib/calendar/utils";
+  import { isTimingTooLargeMessage } from "$lib/calendar/timing-bound-error";
   import { useCalendar } from "$lib/stores/calendar.svelte";
   import { getCalendars } from "$lib/stores/calendars.svelte";
   import { useProjects } from "$lib/stores/projects.svelte";
@@ -687,8 +688,9 @@
   }
 
   function saveErrorMessage(error: unknown): string {
-    if (error instanceof Error && error.message.trim()) return error.message;
-    if (typeof error === "string" && error.trim()) return error;
+    const message = error instanceof Error ? error.message : typeof error === "string" ? error : "";
+    if (isTimingTooLargeMessage(message)) return t("calendar.view.tooManyChangedOccurrences");
+    if (message.trim()) return message;
     return t("calendar.view.unknownSaveError");
   }
 

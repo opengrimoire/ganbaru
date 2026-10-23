@@ -296,6 +296,8 @@ export const calendar = {
     saved: "Guardado",
     unknownSaveError: "Error desconocido al guardar",
     saveFailed: (message: string) => `No se pudo guardar: ${message}`,
+    tooManyChangedOccurrences:
+      "Este evento tiene demasiadas ocurrencias modificadas. Quita algunos cambios de las repeticiones e inténtalo de nuevo.",
     changesLost: "Tus cambios se perderán",
     discardUnsavedTitle: "¿Descartar cambios sin guardar?",
     discard: "Descartar",

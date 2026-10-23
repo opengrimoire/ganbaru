@@ -1,6 +1,7 @@
 //! Exact persisted Calendar rows. Projection, sanitization and defaults belong after capture.
 
 use super::super::occurrence::ReadBudget;
+use crate::value_bound::ValueSize;
 use ganbaru_db::impl_sqlite_from_row;
 use serde::Serialize;
 use sqlx::SqliteConnection;
@@ -54,12 +55,13 @@ impl Event {
 // derived key column computed from the row at insert, so a row copied to another owner never
 // carries its source's key.
 macro_rules! stored_row {
-    ($name:ident, $table:literal, $selection:literal, ($($key:ident),+), { $($field:ident: $kind:ty),+ $(,)? } $(, keyed $key_column:expr => $key_fn:path)?) => {
+    ($(#[$insert_attr:meta])* $name:ident, $table:literal, $selection:literal, ($($key:ident),+), { $($field:ident: $kind:ty),+ $(,)? } $(, keyed $key_column:expr => $key_fn:path)?) => {
         #[derive(Clone, Debug, PartialEq, Serialize)]
         pub(super) struct $name { $(pub(super) $field: $kind,)+ }
         impl_sqlite_from_row!($name { $($field),+ });
         impl $name {
             /// Insert an exact prepared row in the caller's transaction.
+            $(#[$insert_attr])*
             pub(super) async fn insert(&self, connection: &mut SqliteConnection) -> Result<(), String> {
                 #[allow(unused_mut)]
                 let mut columns = vec![$(stringify!($field)),+];
@@ -70,6 +72,13 @@ macro_rules! stored_row {
                 query.execute(connection).await
                     .map_err(|error| format!("write Calendar {}: {error}", $table))?;
                 Ok(())
+            }
+            /// Charges the row with every stored column to a sync value estimate. Columns the
+            /// value does not carry, such as the owner, only raise the estimate.
+            #[allow(dead_code, reason = "only rows of groups that own rows are charged")]
+            pub(super) fn charge(&self, size: &mut ValueSize) {
+                size.row();
+                $(size.named_field(stringify!($field), &self.$field);)+
             }
             pub(super) async fn read(connection: &mut SqliteConnection, id: &str, budget: &mut ReadBudget) -> Result<Vec<Self>, String> {
                 let columns = &[$(stringify!($field)),+];
@@ -105,8 +114,8 @@ stored_row!(Event, "calendar_events", "id = ?1", (id), {
     source_uid: Option<String>,
     visibility: String,
     priority: Option<i64>,
-    geo_lat: Option<f64>,
-    geo_lng: Option<f64>,
+    geo_lat: Option<i64>,
+    geo_lng: Option<i64>,
     sequence: i64,
     guest_can_modify: i64,
     guest_can_invite_others: i64,
@@ -149,11 +158,10 @@ stored_row!(Category, "calendar_event_categories", "event_id = ?1", (id), {
     sort_order: i64,
 });
 
-stored_row!(Exdate, "calendar_event_exdates", "event_id = ?1", (id), {
+stored_row!(Exdate, "calendar_event_exdates", "event_id = ?1", (occurrence_date), {
     id: String,
     event_id: String,
     occurrence_date: String,
-    sort_order: i64,
 });
 
 stored_row!(Property, "calendar_event_extended_properties", "event_id = ?1", (id), {
@@ -197,19 +205,19 @@ stored_row!(Override, "calendar_event_overrides", "parent_event_id = ?1", (id), 
     recurrence_range: Option<String>,
 });
 
-stored_row!(OverrideProperty, "calendar_event_override_extended_properties", "override_id IN (SELECT id FROM calendar_event_overrides WHERE parent_event_id = ?1)", (id), {
+stored_row!(OverrideProperty, "calendar_event_override_extended_properties", "event_id = ?1", (id), {
     id: String,
+    event_id: String,
     override_id: String,
     property_key: String,
     property_value: String,
     sort_order: i64,
 });
 
-stored_row!(Rdate, "calendar_event_rdates", "event_id = ?1", (id), {
+stored_row!(Rdate, "calendar_event_rdates", "event_id = ?1", (occurrence_start), {
     id: String,
     event_id: String,
     occurrence_start: String,
-    sort_order: i64,
 });
 
 stored_row!(FocusConfig, "calendar_event_pomodoro_configs", "event_id = ?1", (event_id), {
@@ -236,7 +244,7 @@ stored_row!(SequenceStep, "calendar_event_pomodoro_config_sequence_steps", "even
     break_duration_minutes: i64,
 });
 
-stored_row!(MusicAssignment, "music_context_assignments", "owner_id = ?1 AND owner_kind IN ('event-snapshot', 'event-override')", (owner_kind, phase), {
+stored_row!(#[expect(dead_code, reason = "edits write assignments through `upsert` so unchanged rows stay untouched")] MusicAssignment, "music_context_assignments", "owner_id = ?1 AND owner_kind IN ('event-snapshot', 'event-override')", (owner_kind, phase), {
     owner_kind: String,
     owner_id: String,
     phase: String,
@@ -250,6 +258,79 @@ stored_row!(MusicAssignment, "music_context_assignments", "owner_id = ?1 AND own
     soundscape_preset_id: Option<String>,
 }, keyed ganbaru_music::sync_keys::SYNC_KEY_COLUMN => music_assignment_key);
 
+impl MusicAssignment {
+    /// Writes the row in place of the stored row with the same owner and phase, leaving an
+    /// unchanged row untouched so replication captures nothing for it.
+    pub(super) async fn upsert(&self, connection: &mut SqliteConnection) -> Result<(), String> {
+        sqlx::query(
+            "INSERT INTO music_context_assignments (owner_kind, owner_id, phase, behavior,
+                playlist_id, provenance_kind, provenance_id, updated_at_ms, version,
+                soundscape_behavior, soundscape_preset_id, sync_key)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             ON CONFLICT (owner_kind, owner_id, phase) DO UPDATE SET
+                behavior = excluded.behavior,
+                playlist_id = excluded.playlist_id,
+                provenance_kind = excluded.provenance_kind,
+                provenance_id = excluded.provenance_id,
+                updated_at_ms = excluded.updated_at_ms,
+                version = excluded.version,
+                soundscape_behavior = excluded.soundscape_behavior,
+                soundscape_preset_id = excluded.soundscape_preset_id
+             WHERE behavior IS NOT excluded.behavior
+                OR playlist_id IS NOT excluded.playlist_id
+                OR provenance_kind IS NOT excluded.provenance_kind
+                OR provenance_id IS NOT excluded.provenance_id
+                OR updated_at_ms IS NOT excluded.updated_at_ms
+                OR version IS NOT excluded.version
+                OR soundscape_behavior IS NOT excluded.soundscape_behavior
+                OR soundscape_preset_id IS NOT excluded.soundscape_preset_id",
+        )
+        .bind(&self.owner_kind)
+        .bind(&self.owner_id)
+        .bind(&self.phase)
+        .bind(&self.behavior)
+        .bind(&self.playlist_id)
+        .bind(&self.provenance_kind)
+        .bind(&self.provenance_id)
+        .bind(self.updated_at_ms)
+        .bind(self.version)
+        .bind(&self.soundscape_behavior)
+        .bind(&self.soundscape_preset_id)
+        .bind(music_assignment_key(self)?)
+        .execute(connection)
+        .await
+        .map_err(|error| format!("write Calendar music assignment: {error}"))?;
+        Ok(())
+    }
+
+    /// Removes the event's stored assignments whose owner kind and phase are not among `kept`.
+    pub(super) async fn remove_stale(
+        connection: &mut SqliteConnection,
+        event_id: &str,
+        kept: &[Self],
+    ) -> Result<(), String> {
+        let kept = kept
+            .iter()
+            .map(|row| [row.owner_kind.as_str(), row.phase.as_str()])
+            .collect::<Vec<_>>();
+        let kept = serde_json::to_string(&kept)
+            .map_err(|error| format!("encode kept Calendar music assignments: {error}"))?;
+        sqlx::query(
+            "DELETE FROM music_context_assignments
+             WHERE owner_id = ?1 AND owner_kind IN ('event-snapshot', 'event-override')
+               AND NOT EXISTS (SELECT 1 FROM json_each(?2) AS kept
+                   WHERE json_extract(kept.value, '$[0]') = owner_kind
+                     AND json_extract(kept.value, '$[1]') = phase)",
+        )
+        .bind(event_id)
+        .bind(kept)
+        .execute(connection)
+        .await
+        .map_err(|error| format!("clear stale Calendar music assignments: {error}"))?;
+        Ok(())
+    }
+}
+
 /// Derived sync key of a Music assignment under its current owner.
 fn music_assignment_key(row: &MusicAssignment) -> Result<String, String> {
     ganbaru_music::sync_keys::assignment_key(&row.owner_kind, &row.owner_id, &row.phase)
@@ -261,7 +342,12 @@ stored_row!(TaskLink, "project_task_event_links", "event_id = ?1", (task_id), {
     event_id: String,
     link_kind: String,
     created_at: String,
-});
+}, keyed "sync_key" => task_link_key);
+
+/// Derived sync key of a task link under its current event.
+fn task_link_key(row: &TaskLink) -> Result<String, String> {
+    ganbaru_projects::keys::task_event_key(&row.task_id, &row.event_id)
+}
 
 stored_row!(Component, "icalendar_components", "id IN (SELECT value FROM json_each(?1))", (id), {
     id: String,
@@ -290,23 +376,25 @@ stored_row!(ComponentProperty, "icalendar_component_properties", "component_id I
     sort_order: i64,
 });
 
-stored_row!(Parameter, "icalendar_property_parameters", "property_id IN (SELECT value FROM json_each(?1))", (id), {
+stored_row!(Parameter, "icalendar_property_parameters", "component_id IN (SELECT value FROM json_each(?1))", (id), {
     id: String,
+    component_id: String,
     property_id: String,
     name: String,
     sort_order: i64,
 });
 
-stored_row!(Node, "icalendar_value_nodes", "property_id IN (SELECT value FROM json_each(?1)) OR parameter_id IN (SELECT id FROM icalendar_property_parameters WHERE property_id IN (SELECT value FROM json_each(?1)))", (id), {
+stored_row!(Node, "icalendar_value_nodes", "component_id IN (SELECT value FROM json_each(?1))", (id), {
     id: String,
-    property_id: Option<String>,
+    component_id: String,
+    property_id: String,
     parameter_id: Option<String>,
     parent_node_id: Option<String>,
     sort_order: i64,
     value_kind: String,
     object_key: Option<String>,
     text_value: Option<String>,
-    number_value: Option<f64>,
+    number_value: Option<String>,
     boolean_value: Option<i64>,
 });
 
@@ -319,6 +407,7 @@ stored_row!(Warning, "icalendar_component_projection_warnings", "component_id IN
 
 stored_row!(Object, "icalendar_objects", "id IN (SELECT value FROM json_each(?1))", (id), {
     id: String,
+    import_id: String,
     calendar_id: String,
     source_kind: String,
     source_name: String,
@@ -337,3 +426,116 @@ stored_row!(Diagnostic, "icalendar_object_diagnostics", "object_id IN (SELECT va
     message: String,
     sort_order: i64,
 });
+
+#[cfg(test)]
+mod tests {
+    use super::MusicAssignment;
+
+    async fn pool() -> sqlx::SqlitePool {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        ganbaru_db::test_support::apply_migrated_template(&pool)
+            .await
+            .unwrap();
+        pool
+    }
+
+    fn assignment(owner_kind: &str, phase: &str, behavior: &str) -> MusicAssignment {
+        MusicAssignment {
+            owner_kind: owner_kind.into(),
+            owner_id: "source".into(),
+            phase: phase.into(),
+            behavior: behavior.into(),
+            playlist_id: None,
+            provenance_kind: "explicit".into(),
+            provenance_id: None,
+            updated_at_ms: 1,
+            version: 1,
+            soundscape_behavior: "inherit".into(),
+            soundscape_preset_id: None,
+        }
+    }
+
+    async fn stored(pool: &sqlx::SqlitePool) -> Vec<(String, String, String)> {
+        sqlx::query_as(
+            "SELECT owner_kind, phase, behavior FROM music_context_assignments
+             WHERE owner_id = 'source' ORDER BY owner_kind, phase",
+        )
+        .fetch_all(pool)
+        .await
+        .unwrap()
+    }
+
+    #[test]
+    fn removing_stale_assignments_keeps_listed_phases_and_other_owner_kinds() {
+        crate::test_support::block_on(async {
+            let pool = pool().await;
+            let mut connection = pool.acquire().await.unwrap();
+            let kept = [
+                assignment("event-snapshot", "focus", "keep-current-music"),
+                assignment("event-override", "short-break", "pause-music"),
+            ];
+            for row in kept.iter().chain(&[
+                assignment("event-override", "focus", "pause-music"),
+                assignment("event-snapshot", "short-break", "pause-music"),
+                assignment("project-default", "long-break", "pause-music"),
+            ]) {
+                row.upsert(&mut connection).await.unwrap();
+            }
+
+            MusicAssignment::remove_stale(&mut connection, "source", &kept)
+                .await
+                .unwrap();
+            drop(connection);
+            let expected = |kind: &str, phase: &str, behavior: &str| {
+                (kind.to_string(), phase.to_string(), behavior.to_string())
+            };
+            assert_eq!(
+                stored(&pool).await,
+                vec![
+                    expected("event-override", "short-break", "pause-music"),
+                    expected("event-snapshot", "focus", "keep-current-music"),
+                    expected("project-default", "long-break", "pause-music"),
+                ]
+            );
+
+            let mut connection = pool.acquire().await.unwrap();
+            MusicAssignment::remove_stale(&mut connection, "source", &[])
+                .await
+                .unwrap();
+            drop(connection);
+            assert_eq!(
+                stored(&pool).await,
+                vec![expected("project-default", "long-break", "pause-music")]
+            );
+        });
+    }
+
+    #[test]
+    fn upserting_a_changed_assignment_updates_it_in_place_and_keeps_its_key() {
+        crate::test_support::block_on(async {
+            let pool = pool().await;
+            let mut connection = pool.acquire().await.unwrap();
+            let mut row = assignment("event-snapshot", "focus", "keep-current-music");
+            row.upsert(&mut connection).await.unwrap();
+            let key: String = sqlx::query_scalar(
+                "SELECT sync_key FROM music_context_assignments WHERE owner_id = 'source'",
+            )
+            .fetch_one(&mut *connection)
+            .await
+            .unwrap();
+            row.behavior = "pause-music".into();
+            row.upsert(&mut connection).await.unwrap();
+            let after: (String, String) = sqlx::query_as(
+                "SELECT behavior, sync_key FROM music_context_assignments WHERE owner_id = 'source'",
+            )
+            .fetch_one(&mut *connection)
+            .await
+            .unwrap();
+            assert_eq!(after, ("pause-music".to_string(), key));
+        });
+    }
+}

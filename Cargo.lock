@@ -1775,6 +1775,7 @@ dependencies = [
  "ganbaru-music",
  "ganbaru-pomodoro",
  "ganbaru-projects",
+ "ganbaru-sync-contracts",
  "jiff",
  "serde",
  "serde_json",
@@ -2077,6 +2078,7 @@ dependencies = [
 name = "ganbaru-sync"
 version = "0.1.0"
 dependencies = [
+ "ganbaru-calendar",
  "ganbaru-contacts",
  "ganbaru-db",
  "ganbaru-sync-contracts",

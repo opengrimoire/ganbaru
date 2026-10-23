@@ -15,6 +15,8 @@ pub const TASK_TAG_KEY_PREFIX: &str = "task-tag";
 pub const CUSTOM_FIELD_VALUE_KEY_PREFIX: &str = "custom-field-value";
 /// Prefix of view preference keys, over the view and preference key.
 pub const VIEW_PREFERENCE_KEY_PREFIX: &str = "view-preference";
+/// Prefix of task event link keys, over the task and Calendar event.
+pub const TASK_EVENT_KEY_PREFIX: &str = "task-event";
 
 fn key(prefix: &str, parts: &[&str]) -> Result<String, String> {
     derived_key(prefix, parts)
@@ -45,4 +47,9 @@ pub fn custom_field_value_key(task_id: &str, field_id: &str) -> Result<String, S
 /// Key of a view preference.
 pub fn view_preference_key(view_id: &str, preference_key: &str) -> Result<String, String> {
     key(VIEW_PREFERENCE_KEY_PREFIX, &[view_id, preference_key])
+}
+
+/// Key of a link between a task and a Calendar event.
+pub fn task_event_key(task_id: &str, event_id: &str) -> Result<String, String> {
+    key(TASK_EVENT_KEY_PREFIX, &[task_id, event_id])
 }

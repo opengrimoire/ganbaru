@@ -2,6 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use ganbaru_sync_contracts::bounds::{MAX_BLOB_FIELD_BYTES, MAX_TEXT_FIELD_BYTES};
 use ganbaru_sync_contracts::{
     Change, ChangeAction, Field, GroupValue, OrderKey, RowKey, TableId, Value,
 };
@@ -15,7 +16,7 @@ use super::fixture::{
 };
 use super::{block_on, migrated_pool};
 use crate::assets::{AssetClass, MAX_ASSET_BYTES};
-use crate::codec::{OwnedRow, decode_table, encode_table};
+use crate::codec::{OwnedRow, decode_table, encode, encode_table};
 use crate::domains::vault_adapters;
 use crate::manifest::order::{Dependency, DependencyKind};
 use crate::manifest::vault::quick_notes;
@@ -23,8 +24,9 @@ use crate::manifest::vault::{VAULT_DOMAINS, VAULT_MANIFEST};
 use crate::manifest::{
     Classification, Collation, ColumnSpec, ColumnType, DerivedKey, DomainManifest, GroupSpec,
     GroupStorage, KeyDerivedColumn, LocalColumn, MAX_TIMESTAMP_BYTES, Manifest, MergeKind,
-    OnDelete, OwnedCodec, OwnedOrder, OwnedTable, ReferenceColumn, Resolution, SYNC_KEY_COLUMN,
-    SYNC_LOCAL_TABLES, SYNC_TABLES, TableIdRange, TableSpec, TreeSpec, group_id, is_sql_literal,
+    OnDelete, OwnedBound, OwnedCodec, OwnedOrder, OwnedTable, ReferenceColumn, Resolution,
+    SYNC_KEY_COLUMN, SYNC_LOCAL_TABLES, SYNC_TABLES, TableIdRange, TableSpec, TreeSpec, group_id,
+    is_sql_literal,
 };
 use crate::sql::{read_owned, replace_owned};
 use crate::{Adapters, Engine, Hooks, SyncError, triggers, validate};
@@ -1163,11 +1165,30 @@ fn owned_samples(
 ) -> Vec<Vec<OwnedRow>> {
     match owned.codec {
         OwnedCodec::Generic => {
-            let mut next = 0;
-            [0, 1, owned.max_rows]
-                .into_iter()
-                .map(|count| generated_rows(owned, count, &mut next, required))
-                .collect()
+            let generate = |max_text_chars: usize| -> Vec<Vec<OwnedRow>> {
+                let mut next = 0;
+                [0, 1, owned.max_rows]
+                    .into_iter()
+                    .map(|count| generated_rows(owned, count, &mut next, required, max_text_chars))
+                    .collect()
+            };
+            if owned.bound == OwnedBound::Static {
+                return generate(usize::MAX);
+            }
+            // A domain-bounded table reaches its row limits with the longest texts whose
+            // encoding still fits one blob field, as the domain's write validation keeps it.
+            let mut max_text_chars = MAX_TEXT_FIELD_BYTES;
+            loop {
+                let samples = generate(max_text_chars);
+                let fits = samples.iter().all(|rows| {
+                    encode(owned, rows).is_ok_and(|bytes| bytes.len() <= MAX_BLOB_FIELD_BYTES)
+                });
+                if fits {
+                    return samples;
+                }
+                assert!(max_text_chars > 1, "{}: no sample fits", owned.table);
+                max_text_chars /= 2;
+            }
         }
         OwnedCodec::Custom => {
             let adapter = engine
@@ -1183,13 +1204,14 @@ fn owned_samples(
     }
 }
 
-/// `count` rows with fields at their column bounds, unique values numbered from `next`, and
-/// nested tables filled the same way.
+/// `count` rows with fields at their column bounds, texts at most `max_text_chars` long, unique
+/// values numbered from `next`, and nested tables filled the same way.
 fn generated_rows(
     owned: &OwnedTable,
     count: usize,
     next: &mut usize,
     required: &RequiredColumns,
+    max_text_chars: usize,
 ) -> Vec<OwnedRow> {
     (0..count)
         .map(|position| {
@@ -1201,14 +1223,20 @@ fn generated_rows(
                 .map(|column| {
                     let unique = owned.unique.contains(&column.name);
                     let nullable = !required.contains(&(owned.table, column.name.to_string()));
-                    generated_field(column.ty, serial, unique, nullable)
+                    generated_field(column.ty, serial, unique, nullable, max_text_chars)
                 })
                 .collect();
             let nested = owned
                 .nested
                 .iter()
                 .map(|nested| {
-                    generated_rows(nested, (position % 2) * nested.max_rows, next, required)
+                    generated_rows(
+                        nested,
+                        (position % 2) * nested.max_rows,
+                        next,
+                        required,
+                        max_text_chars,
+                    )
                 })
                 .collect();
             OwnedRow { fields, nested }
@@ -1219,7 +1247,13 @@ fn generated_rows(
 /// A field of `ty` at its upper bound for even serials and its lower bound for odd ones,
 /// starting with the serial when it must be unique, and null at the lower bound only when
 /// `nullable`.
-fn generated_field(ty: ColumnType, serial: usize, unique: bool, nullable: bool) -> Field {
+fn generated_field(
+    ty: ColumnType,
+    serial: usize,
+    unique: bool,
+    nullable: bool,
+    max_text_chars: usize,
+) -> Field {
     let low = serial % 2 == 1 && !unique;
     let text = |min_chars: usize, max_chars: usize, fill: char| {
         let prefix = if unique {
@@ -1227,7 +1261,11 @@ fn generated_field(ty: ColumnType, serial: usize, unique: bool, nullable: bool) 
         } else {
             String::new()
         };
-        let length = if low { min_chars } else { max_chars };
+        let length = if low {
+            min_chars
+        } else {
+            max_chars.min(max_text_chars)
+        };
         let fill_chars = length.saturating_sub(prefix.chars().count());
         Field::Text(format!("{prefix}{}", fill.to_string().repeat(fill_chars)))
     };
@@ -1578,7 +1616,8 @@ fn manifests_are_well_formed() {
             .collect::<Vec<_>>(),
         [
             31, 511, 7, 127, 31, 7, 3, 7, 1023, 7, 127, 31, 63, 15, 63, 3, 2047, 15, 31, 31, 15,
-            255, 127, 65535, 31, 7, 31, 255, 127, 31, 8191, 31, 15, 7, 31, 15, 15, 1, 15, 15, 31
+            255, 127, 65535, 31, 7, 31, 255, 127, 31, 8191, 31, 15, 7, 31, 15, 15, 1, 15, 15, 31,
+            31, 15, 63, 134217727, 65535, 3, 15
         ]
     );
 }
@@ -1983,6 +2022,7 @@ const RECORDED_MANIFESTS: &[(u16, &str)] = &[
     (5, include_str!("fixtures/vault_manifest_v5.txt")),
     (6, include_str!("fixtures/vault_manifest_v6.txt")),
     (7, include_str!("fixtures/vault_manifest_v7.txt")),
+    (8, include_str!("fixtures/vault_manifest_v8.txt")),
 ];
 #[test]
 fn vault_manifest_changes_only_with_a_version_bump() {

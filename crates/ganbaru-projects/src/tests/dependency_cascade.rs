@@ -190,7 +190,7 @@ fn dependency_cascade_protects_archived_completed_and_scheduled_work() {
                 "completed",
             ),
             (
-                "INSERT INTO calendar_events(id, title, start_time, end_time, project_id) VALUES ('event-a', 'Scheduled', '2026-06-11T09:00:00Z', '2026-06-11T10:00:00Z', 'project-a'); INSERT INTO project_task_event_links(task_id, event_id) VALUES ('task-b', 'event-a')",
+                "INSERT INTO calendar_events(id, title, start_time, end_time, project_id) VALUES ('event-a', 'Scheduled', '2026-06-11T09:00:00Z', '2026-06-11T10:00:00Z', 'project-a'); INSERT INTO project_task_event_links(task_id, event_id, sync_key) VALUES ('task-b', 'event-a', 'link-b')",
                 "scheduled",
             ),
         ] {
@@ -260,7 +260,7 @@ fn dependency_cascade_requires_review_after_a_task_or_graph_change() {
             "UPDATE project_tasks SET title = 'Renamed unseen predecessor' WHERE id = 'task-a'",
             "UPDATE project_tasks SET target_end_date = '2026-06-20' WHERE id = 'task-a'",
             "DELETE FROM project_task_dependencies WHERE id = 'edge-b'",
-            "INSERT INTO calendar_events(id, start_time, end_time, project_id) VALUES ('event-a', '2026-06-11T09:00:00Z', '2026-06-11T10:00:00Z', 'project-a'); INSERT INTO project_task_event_links(task_id, event_id) VALUES ('task-b', 'event-a')",
+            "INSERT INTO calendar_events(id, start_time, end_time, project_id) VALUES ('event-a', '2026-06-11T09:00:00Z', '2026-06-11T10:00:00Z', 'project-a'); INSERT INTO project_task_event_links(task_id, event_id, sync_key) VALUES ('task-b', 'event-a', 'link-b')",
         ] {
             let pool = migrated_memory_pool().await;
             dated_graph(&pool).await;

@@ -170,12 +170,18 @@ pub(crate) async fn list<R: Runtime>(app: &AppHandle<R>) -> Result<Vec<RecoveryE
 mod tests {
     use super::*;
 
+    /// Only replica-writable domains have concurrent writers, so only they can open offers.
     #[test]
     fn sync_recovery_restorers_cover_every_table_that_can_root_an_offer() {
-        let mut roots: Vec<&str> = Engine::vault()
-            .manifest()
+        let manifest = Engine::vault().manifest();
+        let mut roots: Vec<&str> = manifest
             .recovery_root_tables()
             .into_iter()
+            .filter(|table| {
+                manifest
+                    .domain_of(table.name)
+                    .is_some_and(|domain| domain.replica_writable)
+            })
             .map(|table| table.name)
             .collect();
         roots.sort_unstable();

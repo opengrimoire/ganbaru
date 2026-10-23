@@ -1,6 +1,7 @@
 mod acknowledgements;
 mod authorization;
 mod budgets;
+mod calendar;
 mod capture;
 mod compaction;
 mod conformance;

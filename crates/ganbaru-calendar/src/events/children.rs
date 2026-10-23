@@ -5,7 +5,9 @@ use crate::description::sanitize_calendar_description_html;
 use super::types::{
     CalendarEventCreate, CalendarEventUpdateField, CalendarPomodoroConfig, CalendarPomodoroRhythm,
 };
-use super::types::{CalendarGeoPayload, CalendarOrganizerPayload};
+pub(super) use crate::geo::parse_geo;
+
+use super::types::CalendarOrganizerPayload;
 use super::validation::require_non_empty;
 #[cfg(test)]
 use super::validation::validate_pomodoro_config;
@@ -50,8 +52,8 @@ pub(super) async fn insert_calendar_event_row(
     .bind(&event.source_uid)
     .bind(&event.visibility)
     .bind(event.priority)
-    .bind(geo.map(|value| value.0))
-    .bind(geo.map(|value| value.1))
+    .bind(geo.map(|value| value.lat))
+    .bind(geo.map(|value| value.lng))
     .bind(event.sequence)
     .bind(if event.meeting_enabled { 1_i64 } else { 0_i64 })
     .bind(&event.local_rsvp_status)
@@ -80,11 +82,19 @@ pub(super) async fn replace_pomodoro_config(
     config: &CalendarPomodoroConfig,
 ) -> Result<(), String> {
     validate_pomodoro_config(config)?;
-    sqlx::query("DELETE FROM calendar_event_pomodoro_configs WHERE event_id = ?")
+    for table in [
+        "calendar_event_pomodoro_configs",
+        "calendar_event_pomodoro_config_count_rhythms",
+        "calendar_event_pomodoro_config_sequence_steps",
+    ] {
+        sqlx::query(sqlx::AssertSqlSafe(format!(
+            "DELETE FROM {table} WHERE event_id = ?"
+        )))
         .bind(event_id)
         .execute(&mut **tx)
         .await
         .map_err(|e| format!("delete previous pomodoro config: {e}"))?;
+    }
     insert_pomodoro_config(tx, event_id, config).await
 }
 #[cfg(test)]
@@ -243,8 +253,8 @@ pub(super) async fn apply_update_field(
         CalendarEventUpdateField::Geo(value) => {
             let geo = parse_geo(value)?;
             sqlx::query("UPDATE calendar_events SET geo_lat = ?, geo_lng = ? WHERE id = ?")
-                .bind(geo.map(|value| value.0))
-                .bind(geo.map(|value| value.1))
+                .bind(geo.map(|value| value.lat))
+                .bind(geo.map(|value| value.lng))
                 .bind(id)
                 .execute(&mut **tx)
                 .await
@@ -340,17 +350,6 @@ pub(super) fn parse_string_map(
         .map_err(|e| format!("{field} is not a valid string map: {e}"))?;
     Ok(map.into_iter().collect())
 }
-pub(super) fn parse_geo(value: &Option<String>) -> Result<Option<(f64, f64)>, String> {
-    let Some(json) = value else {
-        return Ok(None);
-    };
-    let geo = serde_json::from_str::<CalendarGeoPayload>(json)
-        .map_err(|e| format!("geo is not valid coordinates: {e}"))?;
-    if !geo.lat.is_finite() || !geo.lng.is_finite() {
-        return Err("geo coordinates must be finite".to_string());
-    }
-    Ok(Some((geo.lat, geo.lng)))
-}
 pub(super) fn parse_organizer(
     value: &Option<String>,
 ) -> Result<Option<CalendarOrganizerPayload>, String> {
@@ -405,15 +404,17 @@ pub(super) async fn replace_string_list(
         .execute(&mut **tx)
         .await
         .map_err(|e| format!("clear calendar {table}: {e}"))?;
-    let insert = format!(
-        "INSERT INTO {table} (id, event_id, {column}, sort_order)
-         VALUES (lower(hex(randomblob(16))), ?, ?, ?)"
-    );
+    let insert = crate::import::string_list_insert(table, column);
     for (sort_order, value) in values.into_iter().enumerate() {
-        sqlx::query(sqlx::AssertSqlSafe(insert.as_str()))
+        let query = sqlx::query(sqlx::AssertSqlSafe(insert.as_str()))
             .bind(event_id)
-            .bind(value)
-            .bind(sort_order as i64)
+            .bind(value);
+        let query = if crate::import::is_date_set(table) {
+            query
+        } else {
+            query.bind(sort_order as i64)
+        };
+        query
             .execute(&mut **tx)
             .await
             .map_err(|e| format!("insert calendar {table}: {e}"))?;

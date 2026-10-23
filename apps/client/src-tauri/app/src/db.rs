@@ -241,7 +241,7 @@ async fn connect_with_access(
             let opening = registry.access(&path).await.is_none();
             let pool = registry.connect_path(&path).await?;
             if opening {
-                convert_projects(&pool, &path).await?;
+                convert_sync_keys(&pool, &path).await?;
             }
             Ok(pool)
         }
@@ -260,15 +260,17 @@ async fn connect_with_access(
     }
 }
 
-/// Runs the Projects conversion pass on a writable database the registry just opened, so placeholder keys left by
-/// migrations are rewritten before any command or sync capture reads them. The pass is idempotent, so a concurrent
-/// first open that runs it twice changes nothing the second time.
-async fn convert_projects(pool: &sqlx::SqlitePool, database_path: &Path) -> Result<(), String> {
+/// Runs the Projects and Calendar conversion passes on a writable database the registry just opened, so placeholder
+/// keys left by migrations are rewritten before any command or sync capture reads them. The passes are idempotent, so
+/// a concurrent first open that runs them twice changes nothing the second time.
+async fn convert_sync_keys(pool: &sqlx::SqlitePool, database_path: &Path) -> Result<(), String> {
     let vault_root = database_path
         .parent()
         .ok_or_else(|| format!("database {} has no folder", database_path.display()))?;
     ganbaru_projects::conversion::convert(pool, vault_root).await?;
-    ganbaru_projects::conversion::assert_converted(pool).await
+    ganbaru_projects::conversion::assert_converted(pool).await?;
+    ganbaru_calendar::conversion::convert(pool).await?;
+    ganbaru_calendar::conversion::assert_converted(pool).await
 }
 
 /// Opens the active vault for sync work and returns the pool only when this device may write

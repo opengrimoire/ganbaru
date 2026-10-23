@@ -26,8 +26,14 @@ fn string_reservation(value: &str) -> usize {
 // A retained archive envelope is storage custody, not an active import. Include
 // shared envelopes while a live projection uses them and standalone imports
 // with no archive owner. Native archival records every retained object owner.
+//
+// The same file imported on two devices leaves two imports of one source, and
+// duplicate repair links each event to one of them. A standalone object is
+// therefore exported only when no linked object of its source (calendar, kind,
+// and name) belongs to a different import, so the losing import's timezones
+// and other components are not exported twice.
 const EXPORT_OBJECT_SCOPE: &str = r#"
-WITH RECURSIVE export_objects(id) AS (
+WITH RECURSIVE linked_objects(id) AS (
     SELECT object.id FROM icalendar_objects object WHERE object.calendar_id = ?1 AND (
         EXISTS(SELECT 1 FROM icalendar_components component
             JOIN calendar_events event ON event.icalendar_component_id = component.id
@@ -36,10 +42,18 @@ WITH RECURSIVE export_objects(id) AS (
             JOIN calendar_event_overrides override ON override.icalendar_component_id = component.id
             JOIN calendar_events event ON event.id = override.parent_event_id
             WHERE component.object_id = object.id AND event.calendar_id = ?1)
-        OR (
-            NOT EXISTS(SELECT 1 FROM calendar_event_archive_import_objects owner WHERE owner.object_id = object.id)
-        )
     )
+),
+export_objects(id) AS (
+    SELECT id FROM linked_objects
+    UNION
+    SELECT object.id FROM icalendar_objects object WHERE object.calendar_id = ?1
+        AND NOT EXISTS(SELECT 1 FROM calendar_event_archive_import_objects owner WHERE owner.object_id = object.id)
+        AND NOT EXISTS(SELECT 1 FROM linked_objects linked
+            JOIN icalendar_objects sibling ON sibling.id = linked.id
+            WHERE sibling.source_kind = object.source_kind
+                AND sibling.source_name = object.source_name
+                AND sibling.import_id <> object.import_id)
 )
 "#;
 
@@ -108,7 +122,7 @@ struct Node {
     value_kind: String,
     object_key: Option<String>,
     text_value: Option<String>,
-    number_value: Option<f64>,
+    number_value: Option<String>,
     boolean_value: Option<i64>,
 }
 impl_sqlite_from_row!(Node {
@@ -389,9 +403,13 @@ impl ExportPreservation {
                 Ok(Value::Object(object))
             }
             "text" => self.string(node.text_value.as_deref().unwrap_or_default()),
-            "number" => serde_json::Number::from_f64(node.number_value.unwrap_or(0.0))
-                .map(Value::Number)
-                .ok_or_else(|| "Invalid iCalendar number in Calendar export".to_string()),
+            "number" => node
+                .number_value
+                .as_deref()
+                .ok_or("Missing iCalendar number in Calendar export")
+                .map_err(str::to_string)
+                .and_then(crate::stored_number::parse)
+                .map(Value::Number),
             "boolean" => Ok(Value::Bool(node.boolean_value.unwrap_or(0) != 0)),
             "null" => Ok(Value::Null),
             kind => Err(format!("Unsupported Calendar export value kind: {kind}")),

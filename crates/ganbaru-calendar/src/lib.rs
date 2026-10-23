@@ -4,12 +4,16 @@
 //! platform services such as the device date are injected by the application.
 
 pub mod calendars;
+pub mod conversion;
 pub mod description;
 pub mod events;
+pub mod geo;
 pub mod import;
+pub mod keys;
 pub mod reads;
 pub mod recurrence;
-pub mod timing_bound;
+mod stored_number;
+pub mod value_bound;
 pub mod work_gate;
 
 #[cfg(test)]

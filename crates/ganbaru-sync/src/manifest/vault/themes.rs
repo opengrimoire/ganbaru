@@ -8,8 +8,8 @@ use crate::domains::themes::{
     MAX_TOKEN_KEY_CHARS, MAX_TOKEN_KIND_CHARS, MAX_TOKENS, PALETTE_SIZE,
 };
 use crate::manifest::{
-    ColumnSpec, ColumnType, DomainManifest, GroupSpec, GroupStorage, MergeKind, OwnedCodec,
-    OwnedOrder, OwnedTable, TableIdRange, TableSpec, group_id,
+    ColumnSpec, ColumnType, DomainManifest, GroupSpec, GroupStorage, MergeKind, OwnedBound,
+    OwnedCodec, OwnedOrder, OwnedTable, TableIdRange, TableSpec, group_id,
 };
 
 /// Domain name for user themes.
@@ -119,6 +119,7 @@ const fn tokens(table: &'static str) -> OwnedTable {
         max_rows: MAX_TOKENS,
         codec: OwnedCodec::Custom,
         nested: &[],
+        bound: OwnedBound::Static,
     }
 }
 
@@ -133,6 +134,7 @@ const fn palette(table: &'static str) -> OwnedTable {
         max_rows: PALETTE_SIZE,
         codec: OwnedCodec::Custom,
         nested: &[],
+        bound: OwnedBound::Static,
     }
 }
 

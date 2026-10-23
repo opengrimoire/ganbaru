@@ -798,6 +798,56 @@ fn excluding_an_operation_admitted_against_a_superseded_entry_equals_never_apply
 }
 
 #[test]
+fn reselecting_a_chain_without_the_removal_reverts_its_exclusions() {
+    block_on(async {
+        let mut space = superseded(84).await;
+        // Epoch 0 goes on to remove the member; the epoch 1 chain forked before the removal.
+        space
+            .hub
+            .sequence(remove_entry(&device_id(1)))
+            .await
+            .unwrap()
+            .unwrap();
+        let member = space.member.own_ops().await;
+        let chain = space.contender.own_ops().await;
+        let member_tags = ["tag-1a".to_owned(), "tag-1b".to_owned()];
+
+        let mut reverted = Replica::new(2, 84).await;
+        reverted.pull(&mut space.hub).await;
+        reverted.receive(&member).await;
+        reverted.apply_all().await.unwrap();
+        assert_eq!(
+            view(&mut reverted).await.anchor_device_id,
+            space.hub.device_id
+        );
+        let excluded = reverted
+            .count("SELECT count(*) FROM sync_ops WHERE excluded_revision IS NOT NULL")
+            .await;
+        assert_eq!(excluded, i64::try_from(member.len()).unwrap());
+        let before = tags(&mut reverted).await;
+        assert!(member_tags.iter().all(|id| !before.contains(id)));
+
+        reverted.receive(&chain).await;
+        reverted.apply_all().await.unwrap();
+        assert_eq!(view(&mut reverted).await.anchor_device_id, device_id(20));
+        let after = tags(&mut reverted).await;
+        assert!(member_tags.iter().all(|id| after.contains(id)));
+        assert!(late_changes(&mut reverted).await.is_empty());
+
+        let mut direct = Replica::new(3, 84).await;
+        direct.pull(&mut space.hub).await;
+        direct.receive(&chain).await;
+        direct.receive(&member).await;
+        direct.apply_all().await.unwrap();
+        assert_eq!(settled(&mut reverted).await, settled(&mut direct).await);
+        assert_eq!(tags(&mut direct).await, after);
+        for replica in [&mut reverted, &mut direct] {
+            replica.check_invariants().await;
+        }
+    });
+}
+
+#[test]
 fn a_device_left_unenrolled_by_reselection_keeps_what_applied_and_its_new_operations_wait() {
     block_on(async {
         let mut space = superseded(83).await;

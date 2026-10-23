@@ -292,6 +292,7 @@ struct Node {
 }
 
 /// The selected chain: its head state and the operations of its entries in revision order.
+#[derive(Clone)]
 pub(crate) struct Selection {
     pub(crate) state: AuthState,
     path: Vec<(WriterId, Seq)>,
@@ -302,6 +303,18 @@ pub(crate) struct Selection {
 }
 
 impl Selection {
+    /// This chain extended by `node`, which its head state admits.
+    fn extended(mut self, node: &Node) -> Self {
+        self.state.advance(&node.record, node.hash);
+        self.path.push((node.writer, node.seq));
+        if let Entry::ResolveLate(resolve) = &node.record.proposal.proposal.entry {
+            self.resolutions
+                .push((node.record.revision, resolve.clone()));
+        }
+        self.reachable = 0;
+        self
+    }
+
     /// Device id of the selected anchor.
     pub(crate) fn anchor(&self) -> &str {
         &self.state.anchor_device_id
@@ -401,39 +414,27 @@ pub(crate) async fn select(
     }];
     while let Some(selection) = stack.pop() {
         reachable = reachable.max(selection.state.revision);
-        let mut extended = false;
-        for index in children
+        let valid: Vec<&Node> = children
             .get(&selection.state.entry_hash)
             .into_iter()
             .flatten()
-        {
-            let node = &nodes[*index];
-            if selection.state.check(&node.record).is_err() {
-                continue;
-            }
-            let mut state = selection.state.clone();
-            state.advance(&node.record, node.hash);
-            let mut path = selection.path.clone();
-            path.push((node.writer, node.seq));
-            let mut resolutions = selection.resolutions.clone();
-            if let Entry::ResolveLate(resolve) = &node.record.proposal.proposal.entry {
-                resolutions.push((node.record.revision, resolve.clone()));
-            }
-            stack.push(Selection {
-                state,
-                path,
-                resolutions,
-                reachable: 0,
-            });
-            extended = true;
-        }
-        if !extended
-            && best
+            .map(|index| &nodes[*index])
+            .filter(|node| selection.state.check(&node.record).is_ok())
+            .collect();
+        let Some((last, forks)) = valid.split_last() else {
+            if best
                 .as_ref()
                 .is_none_or(|best| selection.state.rank() > best.state.rank())
-        {
-            best = Some(selection);
+            {
+                best = Some(selection);
+            }
+            continue;
+        };
+        // Only forks copy the state, so a chain without forks is walked in linear time.
+        for node in forks {
+            stack.push(selection.clone().extended(node));
         }
+        stack.push(selection.extended(last));
     }
     Ok(best.map(|best| Selection { reachable, ..best }))
 }

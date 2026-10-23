@@ -7,8 +7,12 @@
 
 use std::time::{Duration, Instant};
 
+use ganbaru_sync_contracts::DeviceRole;
+
 use super::block_on;
-use super::replica::{Replica, quoted, rank};
+use super::replica::{Replica, enroll_entry, person, quoted, rank};
+use crate::authorization;
+use crate::exclusion::MAX_EXCLUDED_PER_WRITER;
 
 /// Domain writes timed for the capture overhead.
 const CAPTURE_WRITES: u32 = 500;
@@ -19,9 +23,15 @@ const APPLY_OPS: u32 = 256;
 /// Runs of each measurement; the median is checked so one scheduling stall does not decide it.
 const RUNS: usize = 5;
 
+/// Entries of the authorization log whose selection is timed.
+const LOG_ENTRIES: usize = 1000;
+
 const CAPTURE_BUDGET: Duration = Duration::from_micros(200);
 const SEAL_BUDGET: Duration = Duration::from_millis(20);
 const APPLY_BUDGET: Duration = Duration::from_millis(50);
+const REMOVAL_BUDGET: Duration = Duration::from_secs(1);
+/// Most a member's apply may take relative to the anchor's, which retains no displaced versions.
+const RETENTION_MARGIN: f64 = 1.1;
 
 fn insert_note(id: u32, title: &str) -> String {
     format!(
@@ -155,6 +165,132 @@ async fn version_bytes_after_a_seed() -> [(usize, usize); 2] {
         author.check_version_values().await,
         reader.check_version_values().await,
     ]
+}
+
+/// Time to apply a batch of `APPLY_OPS` updates that each supersede an applied version, on
+/// `reader`. A member keeps the superseded versions until the anchor confirms the update; the
+/// anchor keeps none, so the difference is the cost of that retention.
+async fn apply_of_superseding_updates(mut reader: Replica) -> Duration {
+    let mut author = Replica::new(0, 11).await;
+    for id in 0..APPLY_OPS {
+        author.exec(&insert_note(id, "seed")).await;
+    }
+    author.seal().await.unwrap();
+    deliver(&mut author, &mut reader).await;
+    for id in 0..APPLY_OPS {
+        author
+            .exec(&format!(
+                "UPDATE quick_notes SET title = 'update {id}' WHERE id = 'note-{id}'"
+            ))
+            .await;
+        assert_eq!(author.seal().await.unwrap().sealed_ops, 1);
+    }
+    let (applied, elapsed) = deliver(&mut author, &mut reader).await;
+    assert_eq!(applied, APPLY_OPS as usize);
+    elapsed
+}
+
+/// Time for a member to apply the removal of a device whose `MAX_EXCLUDED_PER_WRITER` applied
+/// operations past the cutoff each superseded a version the member retained.
+async fn removal_excluding_applied_operations() -> Duration {
+    let mut hub = Replica::anchor(0, 12).await;
+    let mut removed = Replica::new(1, 12).await;
+    let mut member = Replica::new(2, 12).await;
+    for id in 0..APPLY_OPS {
+        removed.exec(&insert_note(id, "seed")).await;
+    }
+    removed.seal().await.unwrap();
+    hub.pull(&mut removed).await;
+    for write in 0..MAX_EXCLUDED_PER_WRITER {
+        let id = u32::try_from(write).unwrap() % APPLY_OPS;
+        removed
+            .exec(&format!(
+                "UPDATE quick_notes SET title = 'late {write}' WHERE id = 'note-{id}'"
+            ))
+            .await;
+        assert_eq!(removed.seal().await.unwrap().sealed_ops, 1);
+    }
+    deliver(&mut removed, &mut member).await;
+    hub.remove(&removed.device_id).await.unwrap();
+    let (_, elapsed) = deliver(&mut hub, &mut member).await;
+    let excluded = member
+        .count("SELECT count(*) FROM sync_ops WHERE excluded_revision IS NOT NULL")
+        .await;
+    assert_eq!(excluded, i64::try_from(MAX_EXCLUDED_PER_WRITER).unwrap());
+    let restored = member
+        .count("SELECT count(*) FROM quick_notes WHERE title = 'seed'")
+        .await;
+    assert_eq!(restored, i64::from(APPLY_OPS));
+    elapsed
+}
+
+/// Time to select the chain again over an authorization log of `LOG_ENTRIES` entries.
+async fn rederive_of_a_long_log() -> Duration {
+    let mut hub = Replica::anchor(0, 13).await;
+    let base = view_revision(&mut hub).await;
+    for index in 0..LOG_ENTRIES {
+        hub.sequence(enroll_entry(&person(), 1000 + index, DeviceRole::Member))
+            .await
+            .unwrap()
+            .unwrap();
+    }
+    assert_eq!(
+        view_revision(&mut hub).await,
+        base + u64::try_from(LOG_ENTRIES).unwrap()
+    );
+    let started = Instant::now();
+    authorization::rederive(&mut hub.conn, hub.ctx.space)
+        .await
+        .unwrap()
+        .unwrap();
+    started.elapsed()
+}
+
+async fn view_revision(replica: &mut Replica) -> u64 {
+    replica
+        .engine
+        .authorization(&mut replica.conn, &replica.ctx)
+        .await
+        .unwrap()
+        .unwrap()
+        .revision
+}
+
+#[test]
+#[ignore = "timing budgets are meaningful only in the release profile"]
+fn removal_and_retention_budgets_hold() {
+    block_on(async {
+        let (mut retaining, mut anchor, mut removal, mut rederive) =
+            (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+        for _ in 0..RUNS {
+            retaining.push(apply_of_superseding_updates(Replica::new(1, 11).await).await);
+            anchor.push(apply_of_superseding_updates(Replica::anchor(1, 11).await).await);
+            removal.push(removal_excluding_applied_operations().await);
+            rederive.push(rederive_of_a_long_log().await);
+        }
+        retaining.sort();
+        anchor.sort();
+        let (kept, none) = (retaining[RUNS / 2], anchor[RUNS / 2]);
+        println!(
+            "apply of 256 superseding updates: member median {kept:?}, anchor median {none:?}"
+        );
+        check(
+            "apply of 256 superseding updates retaining displaced versions",
+            retaining,
+            none.mul_f64(RETENTION_MARGIN),
+        );
+        check(
+            "removal excluding 1,024 applied operations",
+            removal,
+            REMOVAL_BUDGET,
+        );
+        // The plan sets no budget for selection; the cost is recorded.
+        rederive.sort();
+        println!(
+            "rederive of a 1,000-entry log: median {:?} of {rederive:?}",
+            rederive[RUNS / 2]
+        );
+    });
 }
 
 #[test]

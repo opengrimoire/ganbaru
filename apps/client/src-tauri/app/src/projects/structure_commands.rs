@@ -1,3 +1,4 @@
+use ganbaru_chat::repository::project_files;
 use ganbaru_projects::structure_commands;
 use ganbaru_projects::{
     GroupProjectReorder, ProjectGroupCreate, ProjectGroupReorder, ProjectGroupUpdate,
@@ -5,6 +6,8 @@ use ganbaru_projects::{
     ProjectStatusCreate, ProjectStatusUpdate, ProjectTagCreate, ProjectTagUpdate,
     ProjectsMutationRows,
 };
+use sqlx::SqlitePool;
+use std::path::Path;
 use tauri::{AppHandle, Runtime};
 
 use crate::db::connect_sqlite;
@@ -38,8 +41,35 @@ pub async fn projects_delete_group<R: Runtime>(
     db_url: String,
     group_id: String,
 ) -> Result<ProjectsMutationRows, String> {
-    let pool = connect_sqlite(app, db_url).await?;
-    structure_commands::delete_group(&pool, group_id).await
+    let pool = connect_sqlite(app.clone(), db_url).await?;
+    let vault_root = vault::active_writable_vault_path(&app)?;
+    let project_ids = structure_commands::group_project_ids(&pool, &group_id).await?;
+    let chat_files = project_files::managed_file_paths_of_projects(&pool, &project_ids)
+        .await
+        .map_err(|error| format!("list Chat files of deleted projects: {}", error.message))?;
+    let mutation = structure_commands::delete_group(&pool, group_id).await?;
+    remove_deleted_project_chat_files(&pool, &vault_root, &chat_files).await;
+    Ok(mutation)
+}
+
+/// Removes the managed Chat files of deleted projects. The group deletion has already
+/// committed, so a file that cannot be removed is reported and left for manual cleanup
+/// instead of failing the command.
+async fn remove_deleted_project_chat_files(pool: &SqlitePool, vault_root: &Path, paths: &[String]) {
+    match project_files::remove_unreferenced_managed_files(pool, vault_root, paths).await {
+        Ok(failures) => {
+            for failure in failures {
+                eprintln!(
+                    "Could not remove Chat file {} of a deleted project: {}",
+                    failure.managed_relative_path, failure.reason
+                );
+            }
+        }
+        Err(error) => eprintln!(
+            "Could not check Chat files of deleted projects: {}",
+            error.message
+        ),
+    }
 }
 
 #[tauri::command]

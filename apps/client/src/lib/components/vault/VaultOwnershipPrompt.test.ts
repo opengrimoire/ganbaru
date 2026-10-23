@@ -3,6 +3,7 @@
 import { mount, tick, unmount } from "svelte";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { PairingStatus } from "$lib/api/vault-handoff";
+import { requestVaultOwnershipPrompt } from "$lib/vault/owner-required";
 import VaultOwnershipPrompt from "./VaultOwnershipPrompt.svelte";
 
 const backend = vi.hoisted(() => ({
@@ -97,6 +98,25 @@ describe("VaultOwnershipPrompt", () => {
     await vi.waitFor(() => expect(backend.readPairingStatus).toHaveBeenCalled());
 
     expect(target.querySelector("[data-vault-ownership-prompt]")).toBeNull();
+  });
+
+  it("waits in a detached window until a refused change there asks for it", async () => {
+    target = document.createElement("div");
+    document.body.append(target);
+    component = mount(VaultOwnershipPrompt, {
+      target,
+      props: { platform: "desktop", presentOnLoad: false },
+    });
+    await vi.waitFor(() => expect(backend.readPairingStatus).toHaveBeenCalled());
+    await tick();
+    expect(target.querySelector("[data-vault-ownership-prompt]")).toBeNull();
+
+    requestVaultOwnershipPrompt();
+
+    await vi.waitFor(() => {
+      expect(target?.querySelector("[data-vault-ownership-prompt]")).not.toBeNull();
+    });
+    expect(target.textContent).toContain("Phone is the main device");
   });
 
   it("requires confirmation before the first linked vault replaces local data", async () => {

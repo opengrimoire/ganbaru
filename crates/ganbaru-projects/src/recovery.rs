@@ -15,11 +15,13 @@
 //!   in list order. It gets a new managed working folder as its primary folder.
 //! - A section, status, or task needs its project; when the project is gone the restore is
 //!   refused, which leaves the offer to be discarded or restored through the project's own offer.
-//! - A task whose parent is gone becomes top-level, and a task whose section or status is gone
-//!   moves to the first section, or the first status that is not deleted, of its project.
+//! - A task whose parent is gone, or is now itself a subtask, becomes top-level, and a task whose
+//!   section or status is gone moves to the first section, or the first status that is not
+//!   deleted, of its project.
 //!
 //! A descendant that can no longer be inserted, such as a dependency whose other task is gone or
-//! a value whose field is gone, is left out. Retained managed working folders are left out
+//! that would close a cycle with the dependencies that exist now, or a value whose field is
+//! gone, is left out. Retained managed working folders are left out
 //! because the restored project creates its own; external folders return with new ids and are
 //! bound again on each device.
 
@@ -38,7 +40,9 @@ use ring::rand::{SecureRandom, SystemRandom};
 use sqlx::{AssertSqlSafe, Connection, SqliteConnection};
 
 use crate::keys;
-use crate::mutations::{task_section_order, task_status_order};
+use crate::mutations::{
+    can_parent_subtasks, dependency_would_cycle, task_section_order, task_status_order,
+};
 use crate::order::{OrderGroup, OrderPlacement};
 use crate::project_commands::insert_managed_working_folder;
 
@@ -67,6 +71,10 @@ impl RestoredRow {
         let mut columns = Vec::new();
         let mut owned = Vec::new();
         for (group_id, value) in values {
+            // The existence group of a derived-key table holds a presence flag, not a column.
+            if spec.is_exists_group(*group_id) {
+                continue;
+            }
             let group = spec
                 .group(*group_id)
                 .ok_or_else(|| format!("{} has no field group {}", spec.name, group_id.get()))?;
@@ -327,6 +335,23 @@ async fn restore_row(
                 row.set_text(reference.column, &id);
             }
         }
+    }
+    if table == TASKS_TABLE
+        && let Some(parent) = row.text("parent_task_id").map(str::to_string)
+        && !can_parent_subtasks(conn, &row.required_text("project_id")?, &parent).await?
+    {
+        row.set("parent_task_id", Field::Null);
+        restored_scope.remove("parent_task_id");
+    }
+    if table == DEPENDENCIES_TABLE
+        && dependency_would_cycle(
+            conn,
+            &row.required_text("blocking_task_id")?,
+            &row.required_text("blocked_task_id")?,
+        )
+        .await?
+    {
+        return Ok(None);
     }
 
     let key = new_key(&mut row)?;

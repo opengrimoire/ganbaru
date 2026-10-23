@@ -35,7 +35,7 @@ pub fn default_channel_ids(project_id: &str) -> ChatResult<(String, String)> {
 }
 
 /// Creates the default channel of `project_id` when it has none, and a current-folder execution
-/// environment for each of its working folders that lacks one.
+/// environment for each of its working folders that is not archived and lacks one.
 ///
 /// An existing default channel keeps its id. Running it again changes nothing. Callers run it
 /// inside their own transaction when the rows must agree with later reads in that transaction.
@@ -84,7 +84,7 @@ pub async fn ensure_working_folder_chat_defaults(
 }
 
 /// Runs [`ensure_project_chat_defaults`] for every project that lacks a default channel or a
-/// current-folder execution environment for one of its working folders.
+/// current-folder execution environment for one of its working folders that is not archived.
 pub async fn ensure_all_project_chat_defaults(
     connection: &mut SqliteConnection,
     now: &UtcTimestamp,
@@ -97,7 +97,7 @@ pub async fn ensure_all_project_chat_defaults(
                )
             OR EXISTS (
                  SELECT 1 FROM project_working_folders folder
-                 WHERE folder.project_id = project.id
+                 WHERE folder.project_id = project.id AND folder.archived_at IS NULL
                    AND NOT EXISTS (
                        SELECT 1 FROM chat_execution_environments environment
                        WHERE environment.id = ? || folder.id
@@ -189,8 +189,8 @@ async fn ensure_default_channel(
     Ok(())
 }
 
-/// Inserts `current-folder:{folder id}` for each folder of the project that has neither an
-/// active current-folder environment nor an archived row with that id.
+/// Inserts `current-folder:{folder id}` for each folder of the project that is not archived and
+/// has neither an active current-folder environment nor an archived row with that id.
 async fn ensure_folder_environments(
     connection: &mut SqliteConnection,
     project_id: &str,
@@ -202,7 +202,7 @@ async fn ensure_folder_environments(
          SELECT ? || folder.id, folder.id, 'current_folder', folder.display_name,
                 folder.repository_identity, 'available', folder.created_at, folder.updated_at
          FROM project_working_folders folder
-         WHERE folder.project_id = ?
+         WHERE folder.project_id = ? AND folder.archived_at IS NULL
            AND NOT EXISTS (
                SELECT 1 FROM chat_execution_environments environment
                WHERE environment.id = ? || folder.id

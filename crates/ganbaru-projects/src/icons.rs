@@ -38,6 +38,25 @@ pub fn project_icon_byte_size(
     vault_root: &Path,
     relative_path: &str,
 ) -> Result<Option<i64>, String> {
+    Ok(match inspect_project_icon(vault_root, relative_path)? {
+        IconFile::Sized(size) => Some(size),
+        IconFile::Unusable(_) => None,
+    })
+}
+
+/// What the file at a project icon path holds.
+pub(crate) enum IconFile {
+    /// A regular file within the size limit, with its size in bytes.
+    Sized(i64),
+    /// A file that cannot be stored, with the reason.
+    Unusable(&'static str),
+}
+
+/// Inspects the icon file at `relative_path` under the vault without reading its content.
+pub(crate) fn inspect_project_icon(
+    vault_root: &Path,
+    relative_path: &str,
+) -> Result<IconFile, String> {
     if !is_project_icon_path(relative_path) {
         return Err(
             "project icon path must name a content-addressed file under project-icons".to_string(),
@@ -46,17 +65,22 @@ pub fn project_icon_byte_size(
     let path = vault_root.join("assets").join(relative_path);
     let metadata = match fs::symlink_metadata(&path) {
         Ok(metadata) => metadata,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            return Ok(IconFile::Unusable("the file is missing"));
+        }
         Err(error) => return Err(format!("read project icon size: {error}")),
     };
-    if !metadata.file_type().is_file()
-        || metadata.len() == 0
-        || metadata.len() > PROJECT_ICON_MAX_BYTES
-    {
-        return Ok(None);
+    if !metadata.file_type().is_file() {
+        return Ok(IconFile::Unusable("the path is not a regular file"));
+    }
+    if metadata.len() == 0 {
+        return Ok(IconFile::Unusable("the file is empty"));
+    }
+    if metadata.len() > PROJECT_ICON_MAX_BYTES {
+        return Ok(IconFile::Unusable("the file exceeds the icon size limit"));
     }
     i64::try_from(metadata.len())
-        .map(Some)
+        .map(IconFile::Sized)
         .map_err(|_| "project icon size is out of range".to_string())
 }
 

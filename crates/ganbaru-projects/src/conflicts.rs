@@ -20,6 +20,7 @@ use ganbaru_sync_contracts::{Field, GroupId, SpaceId, TableId, Value, WriterId};
 use serde::{Deserialize, Serialize};
 use sqlx::{Sqlite, SqlitePool, Transaction};
 
+use crate::history::insert_task_field_change_event;
 use crate::keys::dependency_key;
 use crate::models::{ProjectTaskDependencyCreate, ProjectsMutationRows};
 use crate::mutations::{
@@ -61,6 +62,17 @@ pub enum ProjectsConflictField {
     Name,
     Title,
     Description,
+}
+
+impl ProjectsConflictField {
+    /// The column the field is stored in, also the field name task history records.
+    fn column(self) -> &'static str {
+        match self {
+            Self::Name => "name",
+            Self::Title => "title",
+            Self::Description => "description",
+        }
+    }
 }
 
 /// Where a conflicted field lives: its table, group, and column.
@@ -255,15 +267,25 @@ fn version_read(
     })
 }
 
+/// The sync space of the vault, or `None` for a vault without a person identity, which does
+/// not sync.
+async fn linked_sync_space(
+    tx: &mut Transaction<'_, Sqlite>,
+    vault_id: &str,
+) -> Result<Option<SpaceId>, String> {
+    Ok(local::space_anchor(tx)
+        .await
+        .map_err(|error| format!("read sync space: {error}"))?
+        .map(|_| SpaceId::personal(vault_id)))
+}
+
 /// The sync space of a vault that has a person identity.
 async fn sync_space(
     tx: &mut Transaction<'_, Sqlite>,
     vault_id: &str,
 ) -> Result<SpaceId, ProjectsConflictError> {
-    local::space_anchor(tx)
-        .await
-        .map_err(|error| format!("read sync space: {error}"))?
-        .map(|_| SpaceId::personal(vault_id))
+    linked_sync_space(tx, vault_id)
+        .await?
         .ok_or_else(|| ProjectsConflictError::Resolved("this vault does not sync".to_string()))
 }
 
@@ -292,7 +314,8 @@ async fn ids(
     Ok(rows.into_iter().collect())
 }
 
-/// Reads the conflicts of a project.
+/// Reads the conflicts of a project. A vault that does not sync has none, so views can read
+/// them unconditionally.
 pub async fn conflicts_from_pool(
     pool: &SqlitePool,
     vault_id: &str,
@@ -304,7 +327,16 @@ pub async fn conflicts_from_pool(
         .begin()
         .await
         .map_err(|error| format!("begin projects conflict read: {error}"))?;
-    let space = sync_space(&mut tx, vault_id).await?;
+    let Some(space) = linked_sync_space(&mut tx, vault_id).await? else {
+        tx.rollback()
+            .await
+            .map_err(|error| format!("end projects conflict read: {error}"))?;
+        return Ok(ProjectsConflictRead {
+            project_id: project_id.to_string(),
+            fields: Vec::new(),
+            dependencies: Vec::new(),
+        });
+    };
     let engine = Engine::vault();
     let task_ids = ids(
         &mut tx,
@@ -414,9 +446,28 @@ async fn task_title(tx: &mut Transaction<'_, Sqlite>, task_id: &str) -> Result<S
         .map_err(|error| format!("read task title: {error}"))
 }
 
+/// The current title or description of a task.
+async fn task_text(
+    tx: &mut Transaction<'_, Sqlite>,
+    task_id: &str,
+    field: ProjectsConflictField,
+) -> Result<String, String> {
+    let sql = match field {
+        ProjectsConflictField::Description => "SELECT description FROM project_tasks WHERE id = ?",
+        _ => "SELECT title FROM project_tasks WHERE id = ?",
+    };
+    sqlx::query_scalar(sql)
+        .bind(task_id)
+        .fetch_optional(&mut **tx)
+        .await
+        .map_err(|error| format!("read task text: {error}"))?
+        .ok_or_else(|| "the row was not found".to_string())
+}
+
 /// Resolves a conflict and returns the rows it changed. A text field's chosen value is written
 /// as a local edit and the field is sealed even when its value did not change, so the write
-/// covers every version it saw.
+/// covers every version it saw. A task title or description that changes is recorded in the
+/// task history as the edit commands record it.
 pub async fn resolve_from_pool(
     pool: &SqlitePool,
     vault_id: &str,
@@ -468,14 +519,31 @@ async fn resolve_field(
             .iter()
             .find(|candidate| Some(candidate.writer) == writer)
             .ok_or_else(|| ProjectsConflictError::Resolved("the version is gone".to_string()))?;
+        let text = text_from_value(&chosen.value)?;
+        let previous = match target {
+            ProjectsConflictTarget::Task => Some(task_text(&mut tx, id, field).await?),
+            _ => None,
+        };
         let result = sqlx::query(spec.sql)
-            .bind(text_from_value(&chosen.value)?)
+            .bind(&text)
             .bind(id)
             .execute(&mut *tx)
             .await
             .map_err(|error| format!("write projects conflict choice: {error}"))?;
         if result.rows_affected() != 1 {
             return Err("the row was not found".to_string().into());
+        }
+        if let Some(previous) = previous.filter(|previous| *previous != text) {
+            insert_task_field_change_event(
+                &mut tx,
+                id,
+                "updated",
+                field.column(),
+                Some(previous),
+                Some(text),
+                None,
+            )
+            .await?;
         }
     }
     Engine::vault()
@@ -624,6 +692,39 @@ mod tests {
             Ok("Launch".to_string())
         );
         assert!(text_from_value(&identity("a", "b")).is_err());
+    }
+
+    #[test]
+    fn a_vault_that_does_not_sync_reads_no_conflicts_and_refuses_resolutions() {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("create conflicts test runtime")
+            .block_on(async {
+                let pool = crate::tests::migrated_memory_pool().await;
+                crate::tests::insert_project_graph_fixture(&pool).await;
+                let devices = DeviceNames::new("device", std::collections::HashMap::new());
+                let read = conflicts_from_pool(&pool, "vault", &devices, "project-a")
+                    .await
+                    .expect("read conflicts of an unlinked vault");
+                assert_eq!(read.project_id, "project-a");
+                assert!(read.fields.is_empty());
+                assert!(read.dependencies.is_empty());
+
+                let refused = resolve_from_pool(
+                    &pool,
+                    "vault",
+                    ProjectsConflictResolution::Field {
+                        target: ProjectsConflictTarget::Task,
+                        id: "task-a".to_string(),
+                        field: ProjectsConflictField::Title,
+                        choice: ProjectsFieldChoice::Displayed,
+                    },
+                    1,
+                )
+                .await;
+                assert!(matches!(refused, Err(ProjectsConflictError::Resolved(_))));
+            });
     }
 
     #[test]

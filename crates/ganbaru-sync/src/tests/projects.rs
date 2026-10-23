@@ -46,7 +46,7 @@ fn key(table: &TableSpec, parts: &[&str]) -> String {
 }
 
 /// A group holding one project with two sections and an open and a done status.
-fn project_sql() -> String {
+pub(super) fn project_sql() -> String {
     let created = quoted(CREATED);
     format!(
         "INSERT INTO project_groups (id, name, created_at, updated_at, order_key)
@@ -72,7 +72,7 @@ fn project_sql() -> String {
 }
 
 /// SQL adding an open root task in the first section at `position`.
-fn task_sql(id: &str, title: &str, position: u32) -> String {
+pub(super) fn task_sql(id: &str, title: &str, position: u32) -> String {
     let created = quoted(CREATED);
     let order = quoted(&rank(position));
     format!(

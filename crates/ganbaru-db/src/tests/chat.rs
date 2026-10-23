@@ -782,6 +782,31 @@ fn authorization_source_snapshots_are_immutable_and_folder_policy_is_required() 
             .execute(&mut *connection)
             .await
             .unwrap();
+        sqlx::query(
+            "INSERT INTO project_working_folders
+                (id, project_id, display_name, kind, created_at, updated_at)
+             VALUES ('working-folder:test', 'project:test', 'Test', 'external', ?, ?)",
+        )
+        .bind(NOW)
+        .bind(NOW)
+        .execute(&mut *connection)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO chat_assignment_authorization_revisions
+                (id, assignment_id, revision, requester_participant_id,
+                 teammate_policy_revision_id, teammate_access_revision,
+                 destination_conversation_id, access_profile_revision_id,
+                 resolved_runtime_approval_policy, scope_digest, decision_state, created_at)
+             VALUES ('authorization:test', 'assignment:test', 1, 'participant:local-owner',
+                     'policy:test', 1, 'conversation:test',
+                     'access-profile-revision:read-only:1', 'ask', ?, 'allowed', ?)",
+        )
+        .bind("d".repeat(64))
+        .bind(NOW)
+        .execute(&mut *connection)
+        .await
+        .unwrap();
 
         let missing_policy = sqlx::query(
             "INSERT INTO chat_assignment_authorized_folder_sources
@@ -1292,15 +1317,27 @@ fn working_folder_project_identity_and_delete_policies_are_explicit() {
         .await;
         assert!(mismatched.is_err());
 
-        let project_delete = sqlx::query("DELETE FROM projects WHERE id = 'project-1'")
+        insert_working_folder(&pool, "working-folder-other", "project-1").await;
+        insert_thread(&pool, "thread-other", "working-folder-other", "project-1").await;
+        sqlx::query("DELETE FROM project_working_folders WHERE id = 'working-folder-project'")
             .execute(&pool)
-            .await;
-        assert!(project_delete.is_err());
-        let folder_delete =
-            sqlx::query("DELETE FROM project_working_folders WHERE id = 'working-folder-project'")
-                .execute(&pool)
-                .await;
-        assert!(folder_delete.is_err());
+            .await
+            .unwrap();
+        let remaining: Vec<String> = sqlx::query_scalar("SELECT id FROM chat_threads ORDER BY id")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+        assert_eq!(remaining, vec!["thread-other".to_string()]);
+
+        sqlx::query("DELETE FROM projects WHERE id = 'project-1'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let threads: i64 = sqlx::query_scalar("SELECT count(*) FROM chat_threads")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(threads, 0);
     });
 }
 

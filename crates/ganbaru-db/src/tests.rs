@@ -9,6 +9,7 @@ mod music;
 mod notes;
 mod pomodoro;
 mod preferences;
+mod project_fk_actions;
 mod projects;
 mod query_plans;
 mod quick_notes;

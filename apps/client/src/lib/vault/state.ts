@@ -86,6 +86,9 @@ export function parseVaultLockStatus(value: unknown): VaultLockStatus {
 /** Sync domain name of Quick notes, as the vault manifest registers it. */
 export const QUICK_NOTES_SYNC_DOMAIN = "quick_notes";
 
+/** Sync domain name of Projects, as the vault manifest registers it. */
+export const PROJECTS_SYNC_DOMAIN = "projects";
+
 /**
  * Whether this device may write the replicated tables of a sync domain, as the owner or as a linked replica the domain lets write.
  *

@@ -14,6 +14,7 @@
   import { getMobileBackStack } from "$lib/stores/mobile-back-stack.svelte";
   import { formatHandoffError } from "$lib/vault/handoff-workflow";
   import { QUICK_NOTES_SYNC_DOMAIN, canWriteSyncDomain, getVaultOwnershipStatus } from "$lib/vault/state";
+  import { onVaultOwnershipPromptRequest } from "$lib/vault/owner-required";
   import {
     beginVaultOwnershipTransition,
     cancelVaultOwnershipTransition,
@@ -42,6 +43,8 @@
   );
   let status = $state<PairingStatus | null>(null);
   let quickNotesWritable = $state(false);
+  /** Set when a refused change asked for the prompt, which then explains why. */
+  let ownerRequired = $state(false);
   let dismissed = $state(false);
   let switching = $state(false);
   let replacementConfirmationOpen = $state(false);
@@ -60,7 +63,11 @@
     status?.peerLabel
       ?? t("vaultHandoff.anotherDevice"),
   );
-  const description = $derived(t(quickNotesWritable ? "vaultOwnershipPrompt.replicaDescription" : "vaultOwnershipPrompt.description"));
+  const description = $derived(t(
+    ownerRequired
+      ? "vaultOwnershipPrompt.ownerRequiredDescription"
+      : quickNotesWritable ? "vaultOwnershipPrompt.replicaDescription" : "vaultOwnershipPrompt.description",
+  ));
   const continueLabel = $derived(
     platform === "desktop"
       ? `${t("vaultOwnershipPrompt.continueReadOnly")} (${t("common.escapeKey")})`
@@ -97,6 +104,7 @@
   function continueReadOnly(): void {
     if (switching) return;
     dismissed = true;
+    ownerRequired = false;
     error = null;
   }
 
@@ -166,9 +174,15 @@
       if (document.visibilityState === "visible") void refreshStatus();
     };
     document.addEventListener("visibilitychange", handleVisibility);
+    const stopPromptRequests = onVaultOwnershipPromptRequest(() => {
+      ownerRequired = true;
+      dismissed = false;
+      void refreshStatus();
+    });
     return () => {
       window.clearInterval(timer);
       document.removeEventListener("visibilitychange", handleVisibility);
+      stopPromptRequests();
     };
   });
 

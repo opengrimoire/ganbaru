@@ -20,11 +20,11 @@ static RESTORERS: LazyLock<RecoveryRestorers> = LazyLock::new(|| {
         .with(&themes::THEMES, restore_theme)
         .with(&music::PLAYLISTS, restore_music_playlist)
         .with(&music::ITEMS, refuse_music_item)
-        .with(&projects::GROUPS, refuse_projects_row)
-        .with(&projects::PROJECTS, refuse_projects_row)
-        .with(&projects::SECTIONS, refuse_projects_row)
-        .with(&projects::STATUSES, refuse_projects_row)
-        .with(&projects::TASKS, refuse_projects_row)
+        .with(&projects::GROUPS, restore_projects_row)
+        .with(&projects::PROJECTS, restore_projects_row)
+        .with(&projects::SECTIONS, restore_projects_row)
+        .with(&projects::STATUSES, restore_projects_row)
+        .with(&projects::TASKS, restore_projects_row)
 });
 
 /// The recovery restorers of the vault domains.
@@ -80,11 +80,18 @@ fn refuse_music_item(_: &mut SqliteConnection, _: RecoveredRow) -> RestoreFuture
     })
 }
 
-/// Refuses to restore a deleted Projects row, which keeps its offer discardable. Restoring a
-/// project with its retained subtree belongs to the Projects recovery presentation.
-fn refuse_projects_row(_: &mut SqliteConnection, _: RecoveredRow) -> RestoreFuture<'_> {
-    Box::pin(async {
-        Err("deleted Projects rows cannot be restored from the recovery list".to_string())
+/// Restores a deleted group, project, section, status, or task as a new row with copies of its
+/// deleted descendants. A refused restore keeps its offer discardable.
+fn restore_projects_row(conn: &mut SqliteConnection, row: RecoveredRow) -> RestoreFuture<'_> {
+    Box::pin(async move {
+        ganbaru_projects::recovery::restore_recovered_row(
+            conn,
+            row.table,
+            &row.row_key,
+            &row.values,
+            &row.descendants,
+        )
+        .await
     })
 }
 

@@ -10,11 +10,12 @@
 
 use ganbaru_sync_contracts::{GroupId, TableId};
 
+use crate::assets::AssetClass;
 use crate::domains::projects::{
     MAX_DATE_CHARS, MAX_ENUM_CHARS, MAX_FOLDER_ID_CHARS, MAX_FOLDER_NAME_CHARS, MAX_ICON_BYTES,
-    MAX_ICON_CHARS, MAX_ID_CHARS, MAX_LONG_TEXT_CHARS, MAX_NAME_CHARS, MAX_PREFERENCE_CHARS,
-    MAX_RELATIVE_PATH_CHARS, MAX_REPOSITORY_IDENTITY_CHARS, MAX_SELECTED_OPTIONS, MAX_TIME_CHARS,
-    MAX_TITLE_CHARS,
+    MAX_ICON_CHARS, MAX_ICON_FILE_BYTES, MAX_ID_CHARS, MAX_LONG_TEXT_CHARS, MAX_NAME_CHARS,
+    MAX_PREFERENCE_CHARS, MAX_RELATIVE_PATH_CHARS, MAX_REPOSITORY_IDENTITY_CHARS,
+    MAX_SELECTED_OPTIONS, MAX_TIME_CHARS, MAX_TITLE_CHARS,
 };
 use crate::manifest::AcyclicSpec;
 use crate::manifest::{
@@ -29,6 +30,12 @@ pub const DOMAIN_NAME: &str = "projects";
 
 /// Domain adapter name for Projects.
 pub const ADAPTER: &str = "projects";
+
+/// Project group and project icon files and custom emoji images, at most 3 MiB each.
+pub const ICON_CLASS: AssetClass = AssetClass {
+    name: "project-icons",
+    max_bytes: MAX_ICON_FILE_BYTES,
+};
 
 /// `project_groups`.
 pub const GROUPS_TABLE: TableId = TableId(96);
@@ -1534,7 +1541,8 @@ const fn device(name: &'static str) -> DeviceTable {
     }
 }
 
-/// Projects domain. Only the owner writes it until replica writes are admitted.
+/// Projects domain. Replicas write it; commands whose writes reach owner-only tables refuse on
+/// replicas before writing.
 pub const DOMAIN: DomainManifest = DomainManifest {
     name: DOMAIN_NAME,
     table_ids: TableIdRange {
@@ -1569,6 +1577,6 @@ pub const DOMAIN: DomainManifest = DomainManifest {
         device("project_task_bulk_receipts"),
     ],
     engine: &[],
-    replica_writable: false,
-    assets: &[],
+    replica_writable: true,
+    assets: &[ICON_CLASS],
 };

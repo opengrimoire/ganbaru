@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { invoke } from "@tauri-apps/api/core";
-import { addSelectedProjectWorkingFolder, bindSelectedProjectWorkingFolder, pickProjectWorkingFolder } from "./project-working-folders";
+import { addSelectedProjectWorkingFolder, bindSelectedProjectWorkingFolder, pickProjectWorkingFolder, removeProjectWorkingFolder } from "./project-working-folders";
+import { onVaultOwnershipPromptRequest } from "$lib/vault/owner-required";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 vi.mock("$lib/api/db", () => ({ ensureDbUrl: async () => "sqlite:vault" }));
@@ -81,5 +82,18 @@ describe("trust decisions at binding", () => {
     expect(await bindSelectedProjectWorkingFolder("folder", selection)).toEqual(folder);
     vi.mocked(invoke).mockResolvedValueOnce(folder).mockRejectedValueOnce(new Error("git missing"));
     expect(await bindSelectedProjectWorkingFolder("folder", selection)).toEqual(folder);
+  });
+});
+
+describe("external folder removal", () => {
+  it("asks for the ownership prompt when the owner-only removal is refused", async () => {
+    const prompt = vi.fn();
+    const stopPrompt = onVaultOwnershipPromptRequest(prompt);
+    const refusal = { code: "permission", message: "owner_required: only the vault owner can do this", retryable: true };
+    vi.mocked(invoke).mockRejectedValueOnce(refusal);
+    await expect(removeProjectWorkingFolder("folder")).rejects.toBe(refusal);
+    expect(prompt).toHaveBeenCalledOnce();
+    expect(invoke).toHaveBeenCalledWith("projects_remove_working_folder", { dbUrl: "sqlite:vault", workingFolderId: "folder" });
+    stopPrompt();
   });
 });

@@ -21,6 +21,7 @@ mod number;
 mod order;
 pub mod preferences;
 pub mod project_commands;
+pub mod recovery;
 pub mod relationship_commands;
 pub mod reorder;
 mod routine;

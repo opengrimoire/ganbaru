@@ -34,5 +34,6 @@ keyring = { workspace = true }
 [dev-dependencies]
 ganbaru-db = { workspace = true, features = ["test-support"] }
 ganbaru-music-library = { workspace = true }
+ganbaru-projects = { workspace = true }
 ganbaru-quick-notes = { workspace = true }
 ganbaru-themes = { workspace = true }

@@ -6,6 +6,7 @@ use ganbaru_projects::{
 use tauri::{AppHandle, Runtime};
 
 use crate::db::connect_sqlite;
+use crate::vault::ownership::require_active_owner;
 
 #[tauri::command]
 pub async fn projects_create_task_dependency<R: Runtime>(
@@ -48,16 +49,20 @@ pub async fn projects_unlink_task_tag<R: Runtime>(
     relationship_commands::unlink_task_tag(&pool, task_id, tag_id).await
 }
 
+/// Links a task to a Calendar event. Event links and the event's project live in Calendar tables
+/// that only the owner writes, so other devices are refused.
 #[tauri::command]
 pub async fn projects_link_task_event<R: Runtime>(
     app: AppHandle<R>,
     db_url: String,
     link: ProjectTaskEventLinkCreate,
 ) -> Result<ProjectsMutationRows, String> {
+    require_active_owner(&app)?;
     let pool = connect_sqlite(app, db_url).await?;
     relationship_commands::link_task_event(&pool, link).await
 }
 
+/// Unlinks a task from a Calendar event; owner-only for the same reason as linking.
 #[tauri::command]
 pub async fn projects_unlink_task_event<R: Runtime>(
     app: AppHandle<R>,
@@ -65,6 +70,7 @@ pub async fn projects_unlink_task_event<R: Runtime>(
     task_id: String,
     event_id: String,
 ) -> Result<ProjectsMutationRows, String> {
+    require_active_owner(&app)?;
     let pool = connect_sqlite(app, db_url).await?;
     relationship_commands::unlink_task_event(&pool, task_id, event_id).await
 }

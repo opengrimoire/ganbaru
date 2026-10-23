@@ -14,6 +14,11 @@ use tauri::{Manager, Runtime};
 const OWNERSHIP_STATE_FILE: &str = "vault-ownership.json";
 const OWNERSHIP_STATE_SCHEMA_VERSION: u32 = 1;
 pub(crate) const READ_ONLY_ERROR: &str = "This vault is read-only on this device";
+/// Error of a command whose writes reach tables only the owner writes, refused on every other
+/// device even when the command's own domain accepts replica writes. The frontend matches the
+/// `owner_required:` prefix and offers the ownership prompt.
+pub(crate) const OWNER_REQUIRED_ERROR: &str =
+    "owner_required: only the device that owns this vault can make this change";
 const MANAGED_WRITE_DRAIN_BUDGET: Duration = Duration::from_secs(10);
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
@@ -165,6 +170,21 @@ impl VaultOwnershipStatus {
         self.can_write
             || (self.linked_replica && self.replica_writable_domains.iter().any(|d| d == domain))
     }
+
+    /// Admits only the owner, refusing every other device with [`OWNER_REQUIRED_ERROR`].
+    pub(crate) fn require_owner(&self) -> Result<(), String> {
+        if self.can_write {
+            Ok(())
+        } else {
+            Err(OWNER_REQUIRED_ERROR.to_string())
+        }
+    }
+}
+
+/// Refuses with [`OWNER_REQUIRED_ERROR`] unless this device owns the active vault. Commands call
+/// it before any side effect when their writes reach owner-only tables.
+pub(crate) fn require_active_owner<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<(), String> {
+    active_status(app)?.require_owner()
 }
 
 impl VaultOwnershipManager {
@@ -1097,6 +1117,7 @@ pub(crate) fn vault_ownership_status<R: Runtime>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ganbaru_sync::manifest::vault::projects::DOMAIN_NAME as PROJECTS;
     use ganbaru_sync::manifest::vault::quick_notes::DOMAIN_NAME as QUICK_NOTES;
 
     fn test_path(name: &str) -> PathBuf {
@@ -1260,11 +1281,11 @@ mod tests {
                 .collect::<Vec<_>>()
         );
         assert!(status.can_write_domain(QUICK_NOTES));
-        assert!(!status.can_write_domain("projects"));
+        assert!(!status.can_write_domain("calendar"));
         assert_eq!(replica.cached_status("vault").unwrap().unwrap(), status);
         assert!(
             replica
-                .acquire_replicated_write("vault", "projects")
+                .acquire_replicated_write("vault", "calendar")
                 .is_err()
         );
         assert_eq!(
@@ -1316,6 +1337,32 @@ mod tests {
             VaultDatabaseAccess::ReadWrite
         );
         assert!(owner.acquire_replicated_write("vault", QUICK_NOTES).is_ok());
+        assert!(status.require_owner().is_ok());
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn projects_replicas_write_the_domain_and_refuse_owner_only_commands() {
+        let path = test_path("projects-replica");
+        let replica = load_manager(&path, "phone");
+        replica
+            .register_remote_owner("vault", "desktop".into(), 0)
+            .unwrap();
+        assert_eq!(
+            replica.status("vault").unwrap().require_owner(),
+            Err(OWNER_REQUIRED_ERROR.to_string())
+        );
+        replica
+            .set_link_probe(Some(Arc::new(|vault_id: &str| vault_id == "vault")))
+            .unwrap();
+        let status = replica.status("vault").unwrap();
+        assert!(status.linked_replica && status.can_write_domain(PROJECTS));
+        drop(replica.acquire_replicated_write("vault", PROJECTS).unwrap());
+        assert_eq!(
+            status.require_owner(),
+            Err(OWNER_REQUIRED_ERROR.to_string())
+        );
+        assert!(OWNER_REQUIRED_ERROR.starts_with("owner_required:"));
         fs::remove_file(path).unwrap();
     }
 

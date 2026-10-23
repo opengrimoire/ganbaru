@@ -608,12 +608,16 @@ pub async fn projects_open_working_folder(
     open_authorized_workspace(&authorized)
 }
 
+/// Removes an external working folder. The removal cascades into Chat rows that only the owner
+/// writes, so other devices are refused before any terminal or binding changes.
 #[tauri::command]
 pub async fn projects_remove_working_folder(
     app: tauri::AppHandle,
     db_url: String,
     working_folder_id: ProjectWorkingFolderId,
 ) -> ChatResult<()> {
+    crate::vault::ownership::require_active_owner(&app)
+        .map_err(|message| ChatError::new(ChatErrorCode::Permission, message, true))?;
     let pool = chat_pool(app.clone(), db_url).await?;
     app.state::<crate::chat::terminal::ChatTerminalRegistry>()
         .shutdown_workspace(&working_folder_id)?;

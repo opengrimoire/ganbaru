@@ -12,8 +12,8 @@ use crate::description::{
 mod preservation;
 mod validation;
 
-use preservation::{link_preserved_component, preservation_link_id, replace_preservation};
-use validation::{require_non_empty, skip_reason, validate_payload};
+use preservation::{PreservationOutcome, ProjectedRow, preservation_link_id, replace_preservation};
+use validation::{require_non_empty, skip_reason, timing_refusal, validate_payload};
 
 const PALETTE_SIZE: i64 = 32;
 
@@ -217,20 +217,22 @@ pub async fn bulk_import(
     validate_payload(&payload)?;
     let mut tx = pool.begin().await.map_err(|e| format!("begin: {e}"))?;
     let existing = load_existing_events(&mut tx, &payload).await?;
-    let mut seen_source_uids = HashSet::new();
-    let mut skipped_older = 0;
-    let mut warnings = Vec::new();
     let mut applied = Vec::new();
     let apply_preservation_links =
         payload.preservation.is_some() && !contains_older_revisions(&existing, &payload.events);
+    let plan = plan_events(&payload.events, &existing);
+    let skipped_older = plan.skipped_older;
+    let mut warnings = Vec::new();
 
     if let Some(preservation) = &payload.preservation {
         if apply_preservation_links {
+            let outcome = preservation_outcome(preservation, &plan);
             replace_preservation(
                 &mut tx,
                 &payload.target_calendar_id,
                 &payload.now,
                 preservation,
+                &outcome,
             )
             .await?;
         } else {
@@ -241,73 +243,50 @@ pub async fn bulk_import(
         }
     }
 
-    for event in &payload.events {
-        if let Some(reason) = skip_reason(event) {
-            warnings.push(format!("Event skipped: {reason}."));
-            continue;
-        }
-        let Some(source_uid) = event
-            .source_uid
-            .as_deref()
-            .filter(|uid| !uid.trim().is_empty())
-        else {
-            warnings.push("Event without UID skipped.".to_string());
-            continue;
-        };
-        if !seen_source_uids.insert(source_uid.to_string()) {
-            warnings.push("Duplicate UID skipped.".to_string());
-            continue;
-        }
+    warnings.extend(plan.warnings.iter().cloned());
 
-        if let Some(existing_row) = existing.get(source_uid) {
-            if event.sequence < existing_row.sequence {
-                skipped_older += 1;
-                continue;
+    for (event, decision) in &plan.decisions {
+        match decision {
+            EventDecision::Update(existing_row) => {
+                update_event(
+                    &mut tx,
+                    &payload.target_calendar_id,
+                    &payload.now,
+                    event,
+                    &existing_row.id,
+                    apply_preservation_links,
+                )
+                .await?;
+                replace_child_rows(&mut tx, &existing_row.id, event, apply_preservation_links)
+                    .await?;
+                applied.push(CalendarImportApplied {
+                    candidate_id: event.candidate_id.clone(),
+                    event_id: existing_row.id.clone(),
+                    action: CalendarImportAction::Updated,
+                });
             }
-            update_event(
-                &mut tx,
-                &payload.target_calendar_id,
-                &payload.now,
-                event,
-                &existing_row.id,
-                apply_preservation_links,
-            )
-            .await?;
-            replace_child_rows(
-                &mut tx,
-                &existing_row.id,
-                event,
-                &payload.now,
-                apply_preservation_links,
-            )
-            .await?;
-            applied.push(CalendarImportApplied {
-                candidate_id: event.candidate_id.clone(),
-                event_id: existing_row.id.clone(),
-                action: CalendarImportAction::Updated,
-            });
-        } else {
-            insert_event(
-                &mut tx,
-                &payload.target_calendar_id,
-                &payload.now,
-                event,
-                apply_preservation_links,
-            )
-            .await?;
-            insert_child_rows(
-                &mut tx,
-                &event.candidate_id,
-                event,
-                &payload.now,
-                apply_preservation_links,
-            )
-            .await?;
-            applied.push(CalendarImportApplied {
-                candidate_id: event.candidate_id.clone(),
-                event_id: event.candidate_id.clone(),
-                action: CalendarImportAction::Added,
-            });
+            EventDecision::Insert => {
+                insert_event(
+                    &mut tx,
+                    &payload.target_calendar_id,
+                    &payload.now,
+                    event,
+                    apply_preservation_links,
+                )
+                .await?;
+                insert_child_rows(
+                    &mut tx,
+                    &event.candidate_id,
+                    event,
+                    apply_preservation_links,
+                )
+                .await?;
+                applied.push(CalendarImportApplied {
+                    candidate_id: event.candidate_id.clone(),
+                    event_id: event.candidate_id.clone(),
+                    action: CalendarImportAction::Added,
+                });
+            }
         }
     }
 
@@ -324,6 +303,135 @@ pub async fn bulk_import(
         warnings,
         applied,
     })
+}
+
+/// What one importable event does to the vault.
+enum EventDecision<'a> {
+    /// The event replaces the stored row with this identity.
+    Update(&'a ExistingEventRow),
+    /// The event becomes a new row under its candidate identity.
+    Insert,
+}
+
+/// The per-event outcome of an import, decided before any row is written so preserved components
+/// can be stored with their projection.
+struct ImportPlan<'a> {
+    /// Events that are written, in payload order.
+    decisions: Vec<(&'a CalendarImportEvent, EventDecision<'a>)>,
+    /// Warnings for skipped events, in payload order.
+    warnings: Vec<String>,
+    /// Events left alone because the stored revision is newer.
+    skipped_older: usize,
+    /// Events refused because their timing value is over the sync bound.
+    oversized: Vec<(&'a CalendarImportEvent, String)>,
+}
+
+fn plan_events<'a>(
+    events: &'a [CalendarImportEvent],
+    existing: &'a HashMap<String, ExistingEventRow>,
+) -> ImportPlan<'a> {
+    let mut plan = ImportPlan {
+        decisions: Vec::new(),
+        warnings: Vec::new(),
+        skipped_older: 0,
+        oversized: Vec::new(),
+    };
+    let mut seen_source_uids = HashSet::new();
+    for event in events {
+        if let Some(reason) = skip_reason(event) {
+            plan.warnings.push(format!("Event skipped: {reason}."));
+            continue;
+        }
+        if let Some(refusal) = timing_refusal(event) {
+            plan.warnings.push(refusal.clone());
+            plan.oversized.push((event, refusal));
+            continue;
+        }
+        let Some(source_uid) = event
+            .source_uid
+            .as_deref()
+            .filter(|uid| !uid.trim().is_empty())
+        else {
+            plan.warnings.push("Event without UID skipped.".to_string());
+            continue;
+        };
+        if !seen_source_uids.insert(source_uid.to_string()) {
+            plan.warnings.push("Duplicate UID skipped.".to_string());
+            continue;
+        }
+        match existing.get(source_uid) {
+            Some(row) if event.sequence < row.sequence => plan.skipped_older += 1,
+            Some(row) => plan.decisions.push((event, EventDecision::Update(row))),
+            None => plan.decisions.push((event, EventDecision::Insert)),
+        }
+    }
+    plan
+}
+
+/// Projects every written event, alarm, and override onto its preserved component, and names each
+/// refused event in the diagnostics of the object that holds its component.
+fn preservation_outcome(
+    preservation: &CalendarImportPreservation,
+    plan: &ImportPlan<'_>,
+) -> PreservationOutcome {
+    let mut outcome = PreservationOutcome::default();
+    for (event, decision) in &plan.decisions {
+        let event_id = match decision {
+            EventDecision::Update(row) => row.id.as_str(),
+            EventDecision::Insert => event.candidate_id.as_str(),
+        };
+        let mut project = |component: &Option<String>, kind: &'static str, id: &str| {
+            if let Some(component_id) = preservation_link_id(component, true) {
+                outcome.projections.insert(
+                    component_id.to_string(),
+                    ProjectedRow {
+                        kind,
+                        id: id.to_string(),
+                    },
+                );
+            }
+        };
+        project(&event.icalendar_component_id, "event", event_id);
+        for alarm in &event.alarms {
+            project(&alarm.icalendar_component_id, "alarm", &alarm.id);
+        }
+        for override_row in &event.overrides {
+            project(
+                &override_row.icalendar_component_id,
+                "override",
+                &override_row.id,
+            );
+        }
+    }
+    if !plan.oversized.is_empty() {
+        let owners = component_objects(preservation);
+        for (event, message) in &plan.oversized {
+            let owner = preservation_link_id(&event.icalendar_component_id, true)
+                .and_then(|component_id| owners.get(component_id));
+            if let Some(object_id) = owner {
+                outcome
+                    .diagnostics
+                    .entry((*object_id).to_string())
+                    .or_default()
+                    .push(message.clone());
+            }
+        }
+    }
+    outcome
+}
+
+/// Maps every preserved component id to the id of the object that holds it.
+fn component_objects(preservation: &CalendarImportPreservation) -> HashMap<&str, &str> {
+    let mut owners = HashMap::new();
+    for object in &preservation.objects {
+        let mut pending: Vec<&CalendarImportPreservedComponent> =
+            object.components.iter().collect();
+        while let Some(component) = pending.pop() {
+            owners.insert(component.id.as_str(), object.id.as_str());
+            pending.extend(component.components.iter());
+        }
+    }
+    owners
 }
 
 async fn load_existing_events(
@@ -451,14 +559,6 @@ async fn insert_event(
     .await
     .map_err(|e| format!("insert imported event: {e}"))?;
     replace_import_event_metadata(tx, &event.candidate_id, event).await?;
-    link_preserved_component(
-        tx,
-        icalendar_component_id,
-        "event",
-        &event.candidate_id,
-        now,
-    )
-    .await?;
     Ok(())
 }
 
@@ -537,7 +637,6 @@ async fn update_event(
         return Err(format!("import target event '{event_id}' not found"));
     }
     replace_import_event_metadata(tx, event_id, event).await?;
-    link_preserved_component(tx, icalendar_component_id, "event", event_id, now).await?;
     Ok(())
 }
 
@@ -593,7 +692,6 @@ async fn replace_child_rows(
     tx: &mut Transaction<'_, Sqlite>,
     event_id: &str,
     event: &CalendarImportEvent,
-    now: &str,
     apply_preservation_links: bool,
 ) -> Result<(), String> {
     for query in [
@@ -607,14 +705,13 @@ async fn replace_child_rows(
             .await
             .map_err(|e| format!("delete imported event children: {e}"))?;
     }
-    insert_child_rows(tx, event_id, event, now, apply_preservation_links).await
+    insert_child_rows(tx, event_id, event, apply_preservation_links).await
 }
 
 async fn insert_child_rows(
     tx: &mut Transaction<'_, Sqlite>,
     event_id: &str,
     event: &CalendarImportEvent,
-    now: &str,
     apply_preservation_links: bool,
 ) -> Result<(), String> {
     for (sort_order, attendee) in event.attendees.iter().enumerate() {
@@ -665,7 +762,6 @@ async fn insert_child_rows(
         .execute(&mut **tx)
         .await
         .map_err(|e| format!("insert imported alarm: {e}"))?;
-        link_preserved_component(tx, icalendar_component_id, "alarm", &alarm.id, now).await?;
     }
 
     for override_row in &event.overrides {
@@ -708,14 +804,6 @@ async fn insert_child_rows(
                 &override_row.extended_properties,
                 "override.extended_properties",
             )?,
-        )
-        .await?;
-        link_preserved_component(
-            tx,
-            icalendar_component_id,
-            "override",
-            &override_row.id,
-            now,
         )
         .await?;
     }
@@ -886,10 +974,10 @@ async fn replace_organizer(
 mod tests {
     use std::collections::HashMap;
 
-    use super::preservation::replace_preservation;
+    use super::preservation::{PreservationOutcome, replace_preservation};
     use super::validation::{
-        validate_color, validate_enum, validate_event, validate_json_option, validate_payload,
-        validate_preservation, validate_priority,
+        timing_refusal, validate_color, validate_enum, validate_event, validate_json_option,
+        validate_payload, validate_preservation, validate_priority,
     };
     use super::{
         CalendarBulkImportPayload, CalendarImportAlarm, CalendarImportAttendee,
@@ -1025,9 +1113,15 @@ mod tests {
             let mut tx = pool.begin().await.unwrap();
             let preservation = preservation_payload("source.ics");
 
-            replace_preservation(&mut tx, "local", "2026-05-09 10:00:00", &preservation)
-                .await
-                .unwrap();
+            replace_preservation(
+                &mut tx,
+                "local",
+                "2026-05-09 10:00:00",
+                &preservation,
+                &PreservationOutcome::default(),
+            )
+            .await
+            .unwrap();
             tx.commit().await.unwrap();
 
             let object_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM icalendar_objects")
@@ -1061,9 +1155,15 @@ mod tests {
             preservation.objects[0].components[0].raw_jcal =
                 r#"["vevent",[["rrule",{},"recur",{"freq":"DAILY","count":3}]],[]]"#.to_string();
 
-            replace_preservation(&mut tx, "local", "2026-05-09 10:00:00", &preservation)
-                .await
-                .unwrap();
+            replace_preservation(
+                &mut tx,
+                "local",
+                "2026-05-09 10:00:00",
+                &preservation,
+                &PreservationOutcome::default(),
+            )
+            .await
+            .unwrap();
             tx.commit().await.unwrap();
 
             let object_count: i64 = sqlx::query_scalar(
@@ -1097,12 +1197,24 @@ mod tests {
                 ..preservation_payload("source.ics")
             };
 
-            replace_preservation(&mut tx, "local", "2026-05-09 10:00:00", &first)
-                .await
-                .unwrap();
-            replace_preservation(&mut tx, "local", "2026-05-09 10:05:00", &second)
-                .await
-                .unwrap();
+            replace_preservation(
+                &mut tx,
+                "local",
+                "2026-05-09 10:00:00",
+                &first,
+                &PreservationOutcome::default(),
+            )
+            .await
+            .unwrap();
+            replace_preservation(
+                &mut tx,
+                "local",
+                "2026-05-09 10:05:00",
+                &second,
+                &PreservationOutcome::default(),
+            )
+            .await
+            .unwrap();
             tx.commit().await.unwrap();
 
             let ids: Vec<String> =
@@ -1118,7 +1230,6 @@ mod tests {
     fn linked_import_rows_reference_preserved_components() {
         crate::test_support::block_on(async {
             let pool = in_memory_pool().await;
-            let mut tx = pool.begin().await.unwrap();
             let preservation = linked_preservation_payload();
             let mut event = import_event("event-1", "Parent");
             event.icalendar_component_id = Some("component-event".to_string());
@@ -1158,16 +1269,10 @@ mod tests {
                 extended_properties: None,
             }];
 
-            replace_preservation(&mut tx, "local", "2026-05-09 10:00:00", &preservation)
-                .await
-                .unwrap();
-            insert_event(&mut tx, "local", "2026-05-09 10:00:00", &event, true)
-                .await
-                .unwrap();
-            insert_child_rows(&mut tx, "event-1", &event, "2026-05-09 10:00:00", true)
-                .await
-                .unwrap();
-            tx.commit().await.unwrap();
+            let mut payload = bulk_payload(vec![event]);
+            payload.preservation = Some(preservation);
+            let summary = bulk_import(&pool, payload).await.unwrap();
+            assert_eq!(summary.added, 1, "{:?}", summary.warnings);
 
             let event_component: String = sqlx::query_scalar(
                 "SELECT icalendar_component_id FROM calendar_events WHERE id = 'event-1'",
@@ -1230,9 +1335,15 @@ mod tests {
             let mut older = import_event("event-1", "Older");
             older.icalendar_component_id = Some("missing-new-component".to_string());
 
-            replace_preservation(&mut tx, "local", "2026-05-09 10:00:00", &preservation)
-                .await
-                .unwrap();
+            replace_preservation(
+                &mut tx,
+                "local",
+                "2026-05-09 10:00:00",
+                &preservation,
+                &PreservationOutcome::default(),
+            )
+            .await
+            .unwrap();
             insert_event(&mut tx, "local", "2026-05-09 10:00:00", &initial, true)
                 .await
                 .unwrap();
@@ -1362,7 +1473,7 @@ mod tests {
             insert_event(&mut tx, "local", "2026-05-09 10:00:00", &event, false)
                 .await
                 .unwrap();
-            insert_child_rows(&mut tx, "event-1", &event, "2026-05-09 10:00:00", false)
+            insert_child_rows(&mut tx, "event-1", &event, false)
                 .await
                 .unwrap();
             tx.commit().await.unwrap();
@@ -1484,6 +1595,137 @@ mod tests {
                     .await
                     .unwrap();
             assert_eq!(stored, ["hourly", "instant", "kept"]);
+        });
+    }
+
+    fn recurring_event_with_overrides(
+        id: &str,
+        count: usize,
+        title_bytes: usize,
+    ) -> CalendarImportEvent {
+        let first = chrono::NaiveDate::from_ymd_opt(2027, 1, 1).unwrap();
+        let mut event = import_event(id, "");
+        event.rrule = Some("FREQ=DAILY".to_string());
+        event.overrides = (0..count)
+            .map(|index| {
+                let day = first + chrono::Days::new(index as u64);
+                CalendarImportOverride {
+                    id: format!("{id}-override-{index}"),
+                    icalendar_component_id: None,
+                    recurrence_id: format!("{day}T10:00:00Z"),
+                    recurrence_range: None,
+                    title: Some("t".repeat(title_bytes)),
+                    start_time: None,
+                    end_time: None,
+                    description: None,
+                    location: None,
+                    url: None,
+                    color: None,
+                    status: None,
+                    transparency: None,
+                    visibility: None,
+                    extended_properties: None,
+                }
+            })
+            .collect();
+        event
+    }
+
+    #[test]
+    fn import_refuses_an_event_over_the_timing_bound_and_keeps_its_source() {
+        crate::test_support::block_on(async {
+            let pool = in_memory_pool().await;
+            let mut normal = import_event("normal", "");
+            normal.icalendar_component_id = Some("component-event".to_string());
+            let mut oversized = recurring_event_with_overrides("big", 300, 1_000);
+            oversized.icalendar_component_id = Some("component-override".to_string());
+            let mut payload = bulk_payload(vec![normal, oversized]);
+            payload.preservation = Some(linked_preservation_payload());
+
+            let summary = bulk_import(&pool, payload).await.unwrap();
+
+            assert_eq!(summary.added, 1);
+            assert_eq!(summary.warnings.len(), 1, "{:?}", summary.warnings);
+            assert!(
+                summary.warnings[0].starts_with(crate::timing_bound::TIMING_TOO_LARGE_CODE),
+                "{:?}",
+                summary.warnings
+            );
+            assert!(summary.warnings[0].contains("UID big"));
+            let stored: Vec<String> =
+                sqlx::query_scalar("SELECT source_uid FROM calendar_events ORDER BY source_uid")
+                    .fetch_all(&pool)
+                    .await
+                    .unwrap();
+            assert_eq!(stored, ["normal"]);
+            let projections: Vec<(String, Option<String>)> = sqlx::query_as(
+                "SELECT id, projected_kind FROM icalendar_components
+                 WHERE id IN ('component-event', 'component-override') ORDER BY id",
+            )
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+            assert_eq!(
+                projections,
+                vec![
+                    ("component-event".to_string(), Some("event".to_string())),
+                    ("component-override".to_string(), None),
+                ]
+            );
+            let diagnostics: Vec<String> = sqlx::query_scalar(
+                "SELECT message FROM icalendar_object_diagnostics WHERE object_id = 'object-1'",
+            )
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+            assert_eq!(diagnostics.len(), 1);
+            assert!(diagnostics[0].contains("UID big"));
+        });
+    }
+
+    #[test]
+    fn import_timing_bound_accepts_the_largest_event_and_refuses_one_more_override() {
+        let fits = |count: usize| {
+            timing_refusal(&recurring_event_with_overrides("e", count, 400)).is_none()
+        };
+        let largest = (1..)
+            .take_while(|count| fits(*count))
+            .last()
+            .expect("one override fits");
+        assert!(fits(largest));
+        assert!(!fits(largest + 1));
+        assert!(largest > 100);
+    }
+
+    #[test]
+    fn import_stores_projection_with_each_component_and_no_ownerless_value_nodes() {
+        crate::test_support::block_on(async {
+            let pool = in_memory_pool().await;
+            let mut preservation = linked_preservation_payload();
+            preservation.objects[0].components[0].raw_jcal = r#"["vevent",[["attendee",{"cn":"Ana","role":["a","b"]},"cal-address","mailto:ana@example.com"],["rrule",{},"recur",{"freq":"DAILY","count":3}]],[]]"#.to_string();
+            let mut event = import_event("event-1", "");
+            event.icalendar_component_id = Some("component-event".to_string());
+            let mut payload = bulk_payload(vec![event]);
+            payload.preservation = Some(preservation);
+
+            bulk_import(&pool, payload).await.unwrap();
+
+            let ownerless: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM icalendar_value_nodes WHERE property_id IS NULL",
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            let parameter_nodes: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM icalendar_value_nodes n
+                 JOIN icalendar_property_parameters p ON p.id = n.parameter_id
+                 WHERE n.property_id = p.property_id",
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            assert_eq!(ownerless, 0);
+            assert!(parameter_nodes >= 3, "{parameter_nodes}");
         });
     }
 

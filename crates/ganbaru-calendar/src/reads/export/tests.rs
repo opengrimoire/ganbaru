@@ -50,7 +50,7 @@ async fn seed(pool: &SqlitePool) {
                    ('zone-property', 'zone', 'tzid', 'text');
         INSERT INTO icalendar_property_parameters (id, property_id, name) VALUES ('parameter', 'property', 'x-param');
         INSERT INTO icalendar_value_nodes (id, property_id, parameter_id, value_kind, text_value)
-            VALUES ('text', 'property', NULL, 'text', 'original'), ('param-text', NULL, 'parameter', 'text', 'kept'),
+            VALUES ('text', 'property', NULL, 'text', 'original'), ('param-text', 'property', 'parameter', 'text', 'kept'),
                    ('todo-text', 'todo-property', NULL, 'text', 'Task'), ('zone-text', 'zone-property', NULL, 'text', 'Custom/Zone');
         INSERT INTO icalendar_component_projection_warnings (id, component_id, message) VALUES ('warning', 'live', 'Preserved extension');
     "#).execute(pool).await.unwrap();

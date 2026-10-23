@@ -24,7 +24,8 @@ pub(super) fn project_order(group_id: &str) -> OrderGroup<'_> {
 const NOTES_PAGE_OPEN_MODES: &[&str] = &["center", "side", "full"];
 const NOTES_HISTORY_RETENTION_DAYS: &[i64] = &[0, 7, 30, 90, 180, 365];
 
-/// Creates a project with its default rows and managed working folder under `vault_root`.
+/// Creates a project with its default rows, its managed working folder under `vault_root`, and
+/// that folder as its stored primary folder.
 pub async fn create_project(
     pool: &SqlitePool,
     vault_root: &Path,
@@ -77,7 +78,12 @@ pub async fn create_project(
     .await
     .map_err(|e| format!("create project: {e}"))?;
 
-    let managed_folder_id = format!("working-folder:{}", project.id);
+    let managed_folder_id = ganbaru_working_folders::ProjectWorkingFolderId::new(format!(
+        "working-folder:{}",
+        project.id
+    ))
+    .map_err(|e| format!("create managed project working folder: {e}"))?
+    .into_inner();
     let managed_relative_path =
         ganbaru_working_folders::managed_project_relative_path(&project.id)?;
     sqlx::query(
@@ -92,6 +98,16 @@ pub async fn create_project(
     .execute(&mut *tx)
     .await
     .map_err(|e| format!("create managed project working folder: {e}"))?;
+    sqlx::query(
+        "INSERT INTO project_primary_working_folders
+            (project_id, working_folder_id, created_at, updated_at)
+         SELECT id, ?, created_at, created_at FROM projects WHERE id = ?",
+    )
+    .bind(&managed_folder_id)
+    .bind(&project.id)
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| format!("create primary project working folder: {e}"))?;
 
     insert_default_project_graph(&mut tx, &project.id).await?;
 

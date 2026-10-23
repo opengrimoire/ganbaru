@@ -109,6 +109,15 @@ pub(crate) async fn pool_with_thread() -> sqlx::SqlitePool {
     .execute(&pool)
     .await
     .unwrap();
+    let mut connection = pool.acquire().await.unwrap();
+    ganbaru_chat::project_defaults::ensure_project_chat_defaults(
+        &mut connection,
+        "project-chat",
+        &UtcTimestamp::new(NOW).unwrap(),
+    )
+    .await
+    .unwrap();
+    drop(connection);
     sqlx::query(
         "INSERT INTO chat_threads
             (id, project_id, working_folder_id, title, provider_family_id, provider_instance_id,

@@ -166,8 +166,22 @@ async fn seed_review_assignment_with_stranded_replies(pool: &SqlitePool) {
          VALUES ('project:review', 'group:review', 'Review', 'a1');
          INSERT INTO project_working_folders
              (id, project_id, display_name, kind, managed_relative_path)
-         VALUES ('folder:review', 'project:review', 'Review', 'managed', 'projects/review');
-         UPDATE chat_conversations SET id = 'conversation:review'
+         VALUES ('folder:review', 'project:review', 'Review', 'managed', 'projects/review');",
+    )
+    .execute(pool)
+    .await
+    .unwrap();
+    let mut connection = pool.acquire().await.unwrap();
+    ganbaru_chat::project_defaults::ensure_project_chat_defaults(
+        &mut connection,
+        "project:review",
+        &UtcTimestamp::new("2026-08-04T17:00:00.000Z").unwrap(),
+    )
+    .await
+    .unwrap();
+    drop(connection);
+    sqlx::raw_sql(
+        "UPDATE chat_conversations SET id = 'conversation:review'
          WHERE project_id = 'project:review' AND conversation_kind = 'channel';
          UPDATE chat_channels SET id = 'channel:review'
          WHERE project_id = 'project:review' AND is_default = 1;

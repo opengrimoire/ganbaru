@@ -32,6 +32,19 @@ async fn insert_working_folder(pool: &sqlx::SqlitePool, id: &str, project_id: &s
     .execute(pool)
     .await
     .unwrap();
+    sqlx::query(
+        "INSERT INTO chat_execution_environments
+            (id, working_folder_id, kind, display_name, lifecycle_state, created_at, updated_at)
+         VALUES (?, ?, 'current_folder', ?, 'available', ?, ?)",
+    )
+    .bind(format!("current-folder:{id}"))
+    .bind(id)
+    .bind(format!("Workspace {id}"))
+    .bind(NOW)
+    .bind(NOW)
+    .execute(pool)
+    .await
+    .unwrap();
 }
 
 async fn insert_thread(

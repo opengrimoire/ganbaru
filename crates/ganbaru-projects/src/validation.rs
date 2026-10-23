@@ -24,23 +24,10 @@ fn is_valid_lucide_slug(value: &str) -> bool {
         })
 }
 
-fn is_valid_project_icon_asset_path(value: &str) -> bool {
-    let Some(file_name) = value.strip_prefix("project-icons/") else {
-        return false;
-    };
-    let Some((hash, extension)) = file_name.rsplit_once('.') else {
-        return false;
-    };
-    hash.len() == 64
-        && hash.chars().all(|character| character.is_ascii_hexdigit())
-        && matches!(
-            extension.to_ascii_lowercase().as_str(),
-            "png" | "jpg" | "jpeg" | "webp"
-        )
-}
-
-pub fn validate_project_icon(value: &str) -> Result<(), String> {
-    let value = value.trim();
+/// Checks an icon encoding. A managed file reference must be stored exactly as the content-addressed
+/// `asset:project-icons/{sha256}.{ext}` form, since sync transfers the file it names.
+pub fn validate_project_icon(icon: &str) -> Result<(), String> {
+    let value = icon.trim();
     let valid = value == "none"
         || value
             .strip_prefix("emoji:")
@@ -48,9 +35,7 @@ pub fn validate_project_icon(value: &str) -> Result<(), String> {
         || value
             .strip_prefix("custom-emoji:")
             .is_some_and(|id| !id.trim().is_empty())
-        || value
-            .strip_prefix("asset:")
-            .is_some_and(is_valid_project_icon_asset_path)
+        || crate::icons::icon_asset_path(icon).is_some()
         || value.strip_prefix("lucide:").is_some_and(|icon| {
             let mut parts = icon.split(':');
             let slug = parts.next().unwrap_or_default();
@@ -529,27 +514,14 @@ pub(super) fn validate_custom_emoji_create(emoji: &ProjectCustomEmojiCreate) -> 
     Ok(())
 }
 
+/// Checks a custom emoji file path: a content-addressed PNG, JPG, or WebP file directly under
+/// `project-icons`, the form the icon upload commands produce.
 fn validate_project_icon_asset_path(asset_path: &str) -> Result<(), String> {
-    let trimmed = asset_path.trim();
-    let Some(file_name) = trimmed.strip_prefix("project-icons/") else {
-        return Err("asset_path must stay under project-icons".to_string());
-    };
-    if file_name.is_empty()
-        || file_name.contains('/')
-        || file_name.contains('\\')
-        || file_name.contains("..")
-    {
-        return Err("asset_path cannot contain nested or parent paths".to_string());
-    }
-    let extension = file_name
-        .rsplit_once('.')
-        .map(|(_, extension)| extension)
-        .unwrap_or_default();
-    if !["png", "jpg", "jpeg", "webp"]
-        .iter()
-        .any(|allowed| extension.eq_ignore_ascii_case(allowed))
-    {
-        return Err("asset_path must use a PNG, JPG, or WebP image".to_string());
+    if !crate::icons::is_project_icon_path(asset_path.trim()) {
+        return Err(
+            "asset_path must name a content-addressed PNG, JPG, or WebP file under project-icons"
+                .to_string(),
+        );
     }
     Ok(())
 }
@@ -779,6 +751,10 @@ mod icon_tests {
             "emoji:",
             "custom-emoji:",
             "asset:project-icons/../icon.png",
+            "asset:project-icons/icon.png",
+            " asset:project-icons/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.webp",
+            "asset:project-icons/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.jpeg",
+            "asset:project-icons/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA.png",
         ] {
             assert!(
                 validate_project_icon(value).is_err(),

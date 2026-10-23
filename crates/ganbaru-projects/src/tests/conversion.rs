@@ -11,7 +11,7 @@ fn conversion_vault(name: &str) -> std::path::PathBuf {
     ));
     let _ = fs::remove_dir_all(&vault_root);
     fs::create_dir_all(vault_root.join("assets/project-icons")).unwrap();
-    fs::write(vault_root.join("assets/project-icons/kept.png"), [7_u8; 12]).unwrap();
+    fs::write(vault_root.join("assets/project-icons/cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc.png"), [7_u8; 12]).unwrap();
     vault_root
 }
 
@@ -26,11 +26,11 @@ async fn insert_placeholder_rows(pool: &SqlitePool) {
          INSERT INTO project_task_dependencies (id, sync_key, blocking_task_id, blocked_task_id, dependency_type)
              VALUES ('pending:1', 'pending:1', 'task-a', 'task-b', 'blocks');
          INSERT INTO project_task_tag_links (task_id, tag_id, sync_key) VALUES ('task-a', 'tag-a', 'pending:2');
-         UPDATE project_groups SET icon = 'asset:project-icons/kept.png', icon_byte_size = NULL WHERE id = 'group-a';
-         UPDATE projects SET icon = 'asset:project-icons/missing.png', icon_byte_size = NULL WHERE id = 'project-a';
+         UPDATE project_groups SET icon = 'asset:project-icons/cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc.png', icon_byte_size = NULL WHERE id = 'group-a';
+         UPDATE projects SET icon = 'asset:project-icons/dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd.png', icon_byte_size = NULL WHERE id = 'project-a';
          INSERT INTO project_custom_emojis (id, name, asset_path, order_key)
-             VALUES ('emoji-kept', 'Kept', 'project-icons/kept.png', 'a1'),
-                    ('emoji-gone', 'Gone', 'project-icons/missing.png', 'a2');",
+             VALUES ('emoji-kept', 'Kept', 'project-icons/cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc.png', 'a1'),
+                    ('emoji-gone', 'Gone', 'project-icons/dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd.png', 'a2');",
     )
     .execute(pool)
     .await
@@ -74,7 +74,7 @@ fn conversion_rewrites_placeholder_keys_and_icon_sizes_and_a_second_pass_changes
                 .unwrap();
         assert_eq!(
             group,
-            ("asset:project-icons/kept.png".to_string(), Some(12))
+            ("asset:project-icons/cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc.png".to_string(), Some(12))
         );
         let project: (String, Option<i64>) =
             sqlx::query_as("SELECT icon, icon_byte_size FROM projects WHERE id = 'project-a'")

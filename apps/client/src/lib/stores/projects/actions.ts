@@ -123,6 +123,7 @@ import {
   type MoveDirection,
 } from "$lib/projects/types";
 import { invalidateProjectTaskReminderSchedule } from "$lib/projects/task-reminder-schedule.svelte";
+import { ownerRequiredError, requestVaultOwnershipPrompt } from "$lib/vault/owner-required";
 import type { ProjectStoreSelectors } from "./selectors";
 
 export interface ProjectStoreActionContext {
@@ -142,6 +143,11 @@ export interface ProjectStoreActionContext {
   refreshTaskDetail: (projectId: string, taskId: string) => Promise<ProjectTask>;
   /** Called after each command commits, including receipts a newer local command superseded. */
   onCommitted?: (mutation: ProjectMutation) => void;
+  /**
+   * Whether this device may write Projects, as the owner or as a linked replica the Projects sync
+   * domain lets write. A refusal shows the ownership prompt instead of sending the command.
+   */
+  canWrite?: () => Promise<boolean>;
 }
 
 /** Local command activity, so a refresh can wait for and detect commits made while it reads. */
@@ -169,6 +175,7 @@ export function createProjectStoreActions(context: ProjectStoreActionContext) {
     ensureProjectData,
     ensureTaskDetailData,
     applyCalendarEventProjectAssignments,
+    canWrite,
     deselectProjectsOfGroup,
     onCommitted,
     readLoadGeneration,
@@ -204,6 +211,10 @@ export function createProjectStoreActions(context: ProjectStoreActionContext) {
     originatingLoadGeneration = readLoadGeneration(),
     pending?: PendingProjectOperation,
   ): Promise<ProjectMutation> {
+    if (canWrite && !(await canWrite())) {
+      requestVaultOwnershipPrompt();
+      throw ownerRequiredError("Projects are read-only on this device");
+    }
     const generation = (mutationGenerations.get(key) ?? 0) + 1;
     mutationGenerations.set(key, generation);
     activity.pending += 1;

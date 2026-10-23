@@ -36,6 +36,10 @@ pub struct RecoveryChoice {
 /// it brings back, nearest first.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RecoveredRow {
+    /// Table of the root row.
+    pub table: TableId,
+    /// Key of the root row, which descendants name in their references.
+    pub row_key: String,
     /// Winning retained value per group of the root row.
     pub values: Vec<(GroupId, Value)>,
     /// Deleted descendants grouped under the root.
@@ -158,6 +162,8 @@ async fn recovered(
         .map_err(|error| format!("read recovered descendants: {error}"))?
         .ok_or_else(closed)?;
     Ok(RecoveredRow {
+        table,
+        row_key: row_key.to_string(),
         values,
         descendants,
     })

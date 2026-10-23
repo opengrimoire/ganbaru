@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { ensureDbUrl } from "$lib/api/db";
+import { withOwnerRequiredPrompt } from "$lib/vault/owner-required";
 import { normalizeEventColor } from "$lib/calendar/utils";
 import { FALLBACK_COLOR_INDEX } from "$lib/calendar/types";
 import { localTimezone } from "$lib/stores/calendar/event-payloads";
@@ -976,7 +977,7 @@ async function invokeProjectMutation(
   command: string,
   args: Record<string, unknown>,
 ): Promise<ProjectMutation> {
-  return mapMutation(await invoke<ProjectsMutationRows>(command, args));
+  return mapMutation(await withOwnerRequiredPrompt(() => invoke<ProjectsMutationRows>(command, args)));
 }
 
 export async function createProjectGroup(group: ProjectGroupCreate): Promise<ProjectMutation> {

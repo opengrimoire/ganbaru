@@ -1,20 +1,28 @@
-//! Projects value rules shared by the manifest and the engine: column bounds and the adapter
-//! checking values the column types cannot express.
+//! Projects value rules shared by the manifest and the engine: column bounds, the managed icon
+//! file reference, and the adapter checking values the column types cannot express.
+//!
+//! A managed icon file is stored as `project-icons/{sha256}.{ext}`, the class name of
+//! [`ICON_CLASS`] followed by the engine's asset file name. Group and project icons prefix it with
+//! `asset:` and custom emojis store it bare, so a reference names exactly one content-addressed
+//! file and never an arbitrary path.
+
+use std::fmt;
 
 use ganbaru_sync_contracts::{Field, GroupId, TableId, Value};
 use sqlx::SqliteConnection;
 
 use crate::adapter::{AdapterError, DomainAdapter, Presentation};
+use crate::assets::{self, AssetRef};
 use crate::codec;
 use crate::hooks::{ChangeSink, HookFuture, Hooks, MaterializeHook};
 use crate::manifest::TableSpec;
 use crate::manifest::vault::projects::{
     ADAPTER, CHANGE_EVENTS_TABLE, CHECKLIST_TABLE, DEPENDENCIES_TABLE, DOMAIN, EMOJIS_TABLE,
-    FIELDS_TABLE, FOLDERS_TABLE, GROUPS_TABLE, OPTION_VALUES, PRIORITIES_TABLE, PROJECTS_TABLE,
-    STATUSES_TABLE, TAG_LINKS_TABLE, TASKS_TABLE, VALUES_TABLE, VIEW_PREFERENCES_TABLE,
-    change_event_group, dependency_group, emoji_group, field_group, folder_group, group_group,
-    priority_group, project_group, status_group, tag_link_group, task_group, value_group,
-    view_preference_group,
+    FIELDS_TABLE, FOLDERS_TABLE, GROUPS_TABLE, ICON_CLASS, OPTION_VALUES, PRIORITIES_TABLE,
+    PROJECTS_TABLE, STATUSES_TABLE, TAG_LINKS_TABLE, TASKS_TABLE, VALUES_TABLE,
+    VIEW_PREFERENCES_TABLE, change_event_group, dependency_group, emoji_group, field_group,
+    folder_group, group_group, priority_group, project_group, status_group, tag_link_group,
+    task_group, value_group, view_preference_group,
 };
 
 /// Characters in an enumerated column.
@@ -56,17 +64,103 @@ pub const MAX_RELATIVE_PATH_CHARS: usize = 2_048;
 /// Characters in a repository identity, the schema bound.
 pub const MAX_REPOSITORY_IDENTITY_CHARS: usize = 1_024;
 
+/// Bytes in a project icon or custom emoji file, the asset class bound.
+pub const MAX_ICON_FILE_BYTES: u32 = 3 * 1024 * 1024;
+
 /// Bytes in a project icon or custom emoji file, the schema bound.
-pub const MAX_ICON_BYTES: i64 = 3 * 1024 * 1024;
+pub const MAX_ICON_BYTES: i64 = MAX_ICON_FILE_BYTES as i64;
 
 /// Selected options in one multi-select value.
 pub const MAX_SELECTED_OPTIONS: usize = 1_000;
 
-/// Prefix of a managed project icon reference.
-const ICON_ASSET_PREFIX: &str = "asset:project-icons/";
+/// Prefix of a group or project icon that references a managed icon file.
+pub const ICON_REFERENCE_PREFIX: &str = "asset:";
 
-/// Prefix of a custom emoji asset path.
-const EMOJI_ASSET_PREFIX: &str = "project-icons/";
+/// Content types a project icon or custom emoji file may have.
+pub const ICON_CONTENT_TYPES: [&str; 3] = ["image/png", "image/jpeg", "image/webp"];
+
+/// A path that is not a managed project icon file, or that cannot name an asset.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InvalidIconPath;
+
+impl fmt::Display for InvalidIconPath {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "project icon must be a managed {} file of a supported image",
+            ICON_CLASS.name
+        )
+    }
+}
+
+impl std::error::Error for InvalidIconPath {}
+
+/// The file a managed project icon path names.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IconFile {
+    /// Lowercase hex SHA-256 of the file bytes.
+    pub sha256: String,
+    /// One of [`ICON_CONTENT_TYPES`].
+    pub content_type: String,
+}
+
+impl IconFile {
+    /// The asset this file is, given its exact size.
+    pub fn asset(&self, byte_size: u32) -> Result<AssetRef, InvalidIconPath> {
+        AssetRef::new(
+            &ICON_CLASS,
+            self.sha256.clone(),
+            self.content_type.clone(),
+            byte_size,
+        )
+        .map_err(|_| InvalidIconPath)
+    }
+
+    /// The stored path, `project-icons/{sha256}.{ext}`.
+    pub fn path(&self) -> Result<String, InvalidIconPath> {
+        icon_path(&self.sha256, &self.content_type)
+    }
+}
+
+/// The path stored for an icon file, after checking the digest and content type.
+pub fn icon_path(sha256: &str, content_type: &str) -> Result<String, InvalidIconPath> {
+    if !ICON_CONTENT_TYPES.contains(&content_type) {
+        return Err(InvalidIconPath);
+    }
+    let name = assets::file_name(sha256, content_type).map_err(|_| InvalidIconPath)?;
+    Ok(format!("{}/{name}", ICON_CLASS.name))
+}
+
+/// The file a stored icon path names, such as a custom emoji `asset_path`. Accepts only the exact
+/// form [`icon_path`] produces, so no other spelling, directory, or extension reaches the
+/// filesystem or the asset store.
+pub fn parse_icon_path(path: &str) -> Result<IconFile, InvalidIconPath> {
+    let name = path
+        .strip_prefix(ICON_CLASS.name)
+        .and_then(|rest| rest.strip_prefix('/'))
+        .ok_or(InvalidIconPath)?;
+    let (sha256, extension) = name.split_once('.').ok_or(InvalidIconPath)?;
+    let content_type = ICON_CONTENT_TYPES
+        .iter()
+        .find(|content_type| assets::extension(content_type) == extension)
+        .ok_or(InvalidIconPath)?;
+    let file = IconFile {
+        sha256: sha256.to_string(),
+        content_type: (*content_type).to_string(),
+    };
+    if file.path()? != path {
+        return Err(InvalidIconPath);
+    }
+    Ok(file)
+}
+
+/// The file a group or project icon names: `None` for an icon that is not a managed file
+/// reference, and an error for an `asset:` reference that is not exactly a managed icon path.
+pub fn parse_icon_reference(icon: &str) -> Result<Option<IconFile>, InvalidIconPath> {
+    icon.strip_prefix(ICON_REFERENCE_PREFIX)
+        .map(parse_icon_path)
+        .transpose()
+}
 
 /// Prefix of a custom field icon.
 const FIELD_ICON_PREFIX: &str = "lucide:";
@@ -176,12 +270,41 @@ fn required_identity(value: &Value, what: &'static str) -> Result<(), AdapterErr
     })
 }
 
-/// An icon and its byte size: a size belongs only to a managed icon asset.
-fn validate_icon(value: &Value, what: &'static str) -> Result<(), AdapterError> {
-    match fields(value, what)? {
-        [Field::Text(_), Field::Null] => Ok(()),
-        [Field::Text(icon), Field::Integer(_)] if icon.starts_with(ICON_ASSET_PREFIX) => Ok(()),
+/// The managed file asset a group or project icon value names, or `None` for an icon that names
+/// no file. A size belongs only to a managed icon reference, and a reference needs its size.
+fn icon_asset(value: &Value, what: &'static str) -> Result<Option<AssetRef>, AdapterError> {
+    let (icon, size) = match fields(value, what)? {
+        [Field::Text(icon), Field::Null] => (icon, None),
+        [Field::Text(icon), Field::Integer(size)] => (icon, Some(*size)),
+        _ => return Err(AdapterError(what)),
+    };
+    match (parse_icon_reference(icon), size) {
+        (Ok(None), None) => Ok(None),
+        (Ok(Some(file)), Some(size)) => sized_icon_asset(&file, size, what).map(Some),
         _ => Err(AdapterError(what)),
+    }
+}
+
+/// The asset of a managed icon file with its stored size.
+fn sized_icon_asset(
+    file: &IconFile,
+    size: i64,
+    what: &'static str,
+) -> Result<AssetRef, AdapterError> {
+    let size = u32::try_from(size).map_err(|_| AdapterError(what))?;
+    file.asset(size).map_err(|_| AdapterError(what))
+}
+
+/// The managed file asset of a custom emoji asset group, one file directly under the project
+/// icon folder with its size.
+fn emoji_asset(value: &Value) -> Result<AssetRef, AdapterError> {
+    const WHAT: &str = "project emoji asset";
+    match fields(value, WHAT)? {
+        [Field::Text(path), Field::Integer(size)] => {
+            let file = parse_icon_path(path).map_err(|_| AdapterError(WHAT))?;
+            sized_icon_asset(&file, *size, WHAT)
+        }
+        _ => Err(AdapterError(WHAT)),
     }
 }
 
@@ -263,7 +386,7 @@ fn validate_project(group: GroupId, value: &Value) -> Result<(), AdapterError> {
         let [group] = fields(value, "project group")?;
         required(group, "project group")
     } else if group == project_group::ICON {
-        validate_icon(value, "project icon")
+        icon_asset(value, "project icon").map(|_| ())
     } else if group == project_group::STATUS {
         let [status] = fields(value, "project status")?;
         one_of(status, allowed::PROJECT_STATUSES, "project status")
@@ -399,21 +522,12 @@ fn validate_field_value(group: GroupId, value: &Value) -> Result<(), AdapterErro
     }
 }
 
-/// A custom emoji asset is one file directly under the project icon folder.
+/// A custom emoji asset is one managed file directly under the project icon folder.
 fn validate_emoji(group: GroupId, value: &Value) -> Result<(), AdapterError> {
     if group != emoji_group::ASSET {
         return Ok(());
     }
-    match fields(value, "project emoji asset")? {
-        [Field::Text(path), _]
-            if path.strip_prefix(EMOJI_ASSET_PREFIX).is_some_and(|name| {
-                !name.trim_matches(' ').is_empty() && !name.contains('/') && !name.contains('\\')
-            }) && !path.contains("..") =>
-        {
-            Ok(())
-        }
-        _ => Err(AdapterError("project emoji asset")),
-    }
+    emoji_asset(value).map(|_| ())
 }
 
 impl DomainAdapter for ProjectsAdapter {
@@ -421,17 +535,28 @@ impl DomainAdapter for ProjectsAdapter {
         ADAPTER
     }
 
-    fn asset_groups(&self, _table: TableId) -> &'static [GroupId] {
-        &[]
+    fn asset_groups(&self, table: TableId) -> &'static [GroupId] {
+        match table {
+            GROUPS_TABLE => &[group_group::ICON],
+            PROJECTS_TABLE => &[project_group::ICON],
+            EMOJIS_TABLE => &[emoji_group::ASSET],
+            _ => &[],
+        }
     }
 
     fn asset_refs(
         &self,
-        _table: TableId,
-        _group: GroupId,
-        _value: &Value,
-    ) -> Result<Vec<crate::assets::AssetRef>, AdapterError> {
-        Ok(Vec::new())
+        table: TableId,
+        group: GroupId,
+        value: &Value,
+    ) -> Result<Vec<AssetRef>, AdapterError> {
+        let asset = match table {
+            GROUPS_TABLE if group == group_group::ICON => icon_asset(value, "project group icon")?,
+            PROJECTS_TABLE if group == project_group::ICON => icon_asset(value, "project icon")?,
+            EMOJIS_TABLE if group == emoji_group::ASSET => Some(emoji_asset(value)?),
+            _ => None,
+        };
+        Ok(asset.into_iter().collect())
     }
 
     fn derived(
@@ -450,7 +575,7 @@ impl DomainAdapter for ProjectsAdapter {
     fn validate(&self, table: TableId, group: GroupId, value: &Value) -> Result<(), AdapterError> {
         match table {
             GROUPS_TABLE if group == group_group::ICON => {
-                validate_icon(value, "project group icon")
+                icon_asset(value, "project group icon").map(|_| ())
             }
             PROJECTS_TABLE => validate_project(group, value),
             FOLDERS_TABLE => validate_folder(group, value),
@@ -725,18 +850,149 @@ mod tests {
     #[test]
     fn icon_sizes_belong_only_to_managed_icons() {
         let adapter = ProjectsAdapter;
-        let managed = value(vec![text("asset:project-icons/a.png"), Field::Integer(10)]);
+        let managed = value(vec![
+            text(&format!("asset:project-icons/{DIGEST}.png")),
+            Field::Integer(10),
+        ]);
         assert!(
             adapter
                 .validate(PROJECTS_TABLE, project_group::ICON, &managed)
                 .is_ok()
         );
-        let named = value(vec![text("folder"), Field::Integer(10)]);
+        for invalid in [
+            value(vec![text("folder"), Field::Integer(10)]),
+            value(vec![
+                text(&format!("asset:project-icons/{DIGEST}.png")),
+                Field::Null,
+            ]),
+        ] {
+            assert!(
+                adapter
+                    .validate(PROJECTS_TABLE, project_group::ICON, &invalid)
+                    .is_err()
+            );
+        }
+    }
+
+    const DIGEST: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+    #[test]
+    fn icon_paths_round_trip_every_content_type() {
+        for content_type in ICON_CONTENT_TYPES {
+            let path = icon_path(DIGEST, content_type).unwrap();
+            let file = parse_icon_path(&path).unwrap();
+            assert_eq!(file.sha256, DIGEST);
+            assert_eq!(file.content_type, content_type);
+            assert_eq!(
+                parse_icon_reference(&format!("asset:{path}")).unwrap(),
+                Some(file)
+            );
+        }
+        assert!(icon_path(DIGEST, "image/gif").is_err());
+    }
+
+    #[test]
+    fn icon_paths_refuse_foreign_and_non_canonical_paths() {
+        for path in [
+            format!("project-icons/{}.png", DIGEST.to_uppercase()),
+            format!("project-icons/{DIGEST}.jpeg"),
+            format!("project-icons/{DIGEST}.gif"),
+            format!("project-icons/{DIGEST}.svg"),
+            format!("project-icons/nested/{DIGEST}.png"),
+            format!("project-icons/../{DIGEST}.png"),
+            format!("music/artwork/{DIGEST}.png"),
+            format!("/project-icons/{DIGEST}.png"),
+            format!(" project-icons/{DIGEST}.png"),
+            "project-icons/abcdef.png".to_string(),
+            "project-icons/".to_string(),
+        ] {
+            assert!(parse_icon_path(&path).is_err(), "{path} parsed");
+        }
+        assert_eq!(parse_icon_reference("lucide:folder"), Ok(None));
+        assert_eq!(parse_icon_reference("none"), Ok(None));
+        assert!(parse_icon_reference("asset:quick-notes/images/a.png").is_err());
+    }
+
+    #[test]
+    fn asset_refs_parse_each_icon_column_form() {
+        let adapter = ProjectsAdapter;
+        let reference = |path: &str| text(&format!("asset:{path}"));
+        let path = icon_path(DIGEST, "image/webp").unwrap();
+        for (table, group) in [
+            (GROUPS_TABLE, group_group::ICON),
+            (PROJECTS_TABLE, project_group::ICON),
+        ] {
+            assert_eq!(adapter.asset_groups(table), &[group]);
+            let refs = adapter
+                .asset_refs(
+                    table,
+                    group,
+                    &value(vec![reference(&path), Field::Integer(42)]),
+                )
+                .unwrap();
+            assert_eq!(refs.len(), 1);
+            assert_eq!(refs[0].class(), &ICON_CLASS);
+            assert_eq!(refs[0].sha256(), DIGEST);
+            assert_eq!(refs[0].content_type(), "image/webp");
+            assert_eq!(refs[0].byte_size(), 42);
+            let named = value(vec![text("lucide:folder"), Field::Null]);
+            assert!(adapter.asset_refs(table, group, &named).unwrap().is_empty());
+            let foreign = value(vec![
+                reference(&format!("music/artwork/{DIGEST}.png")),
+                Field::Integer(42),
+            ]);
+            assert!(adapter.asset_refs(table, group, &foreign).is_err());
+            assert!(adapter.validate(table, group, &foreign).is_err());
+        }
+
+        assert_eq!(adapter.asset_groups(EMOJIS_TABLE), &[emoji_group::ASSET]);
+        let emoji = value(vec![text(&path), Field::Integer(7)]);
+        let refs = adapter
+            .asset_refs(EMOJIS_TABLE, emoji_group::ASSET, &emoji)
+            .unwrap();
+        assert_eq!(refs.len(), 1);
+        assert_eq!(refs[0].byte_size(), 7);
+        for invalid in [
+            value(vec![text(&format!("asset:{path}")), Field::Integer(7)]),
+            value(vec![text("project-icons/../escape.png"), Field::Integer(7)]),
+            value(vec![text(&path), Field::Null]),
+        ] {
+            assert!(
+                adapter
+                    .asset_refs(EMOJIS_TABLE, emoji_group::ASSET, &invalid)
+                    .is_err()
+            );
+            assert!(
+                adapter
+                    .validate(EMOJIS_TABLE, emoji_group::ASSET, &invalid)
+                    .is_err()
+            );
+        }
+        assert!(adapter.asset_groups(TASKS_TABLE).is_empty());
+    }
+
+    #[test]
+    fn icon_assets_respect_the_class_bound() {
+        let adapter = ProjectsAdapter;
+        let path = icon_path(DIGEST, "image/png").unwrap();
+        let reference = text(&format!("asset:{path}"));
+        let largest = value(vec![
+            reference.clone(),
+            Field::Integer(i64::from(ICON_CLASS.max_bytes)),
+        ]);
         assert!(
             adapter
-                .validate(PROJECTS_TABLE, project_group::ICON, &named)
-                .is_err()
+                .asset_refs(PROJECTS_TABLE, project_group::ICON, &largest)
+                .is_ok()
         );
+        for size in [0, i64::from(ICON_CLASS.max_bytes) + 1, -1] {
+            let invalid = value(vec![reference.clone(), Field::Integer(size)]);
+            assert!(
+                adapter
+                    .asset_refs(PROJECTS_TABLE, project_group::ICON, &invalid)
+                    .is_err()
+            );
+        }
     }
 
     #[test]

@@ -11,7 +11,8 @@ use ganbaru_sync_contracts::PENDING_KEY_PREFIX;
 use sqlx::{AssertSqlSafe, SqliteConnection, SqlitePool};
 
 use crate::icons::{
-    MISSING_ICON_FALLBACK, PROJECT_ICON_REFERENCE_PREFIX, icon_asset_path, project_icon_byte_size,
+    MISSING_ICON_FALLBACK, PROJECT_ICON_REFERENCE_PREFIX, icon_asset_path, is_project_icon_path,
+    project_icon_byte_size,
 };
 use crate::keys::{
     custom_field_value_key, dependency_key, priority_key, task_tag_key, view_preference_key,
@@ -24,9 +25,10 @@ pub struct ConversionReport {
     pub rekeyed_rows: u64,
     /// Icon and emoji references that received their file size.
     pub sized_icons: u64,
-    /// Group and project icons reset because their file is missing or too large.
+    /// Group and project icons reset because their reference is not a managed icon file or the file is missing or
+    /// too large.
     pub reset_icons: u64,
-    /// Custom emojis removed because their file is missing or too large.
+    /// Custom emojis removed because their path is not a managed icon file or the file is missing or too large.
     pub removed_emojis: u64,
 }
 
@@ -240,7 +242,8 @@ async fn size_icons(
     Ok((sized, reset))
 }
 
-/// Fills custom emoji sizes, removing emojis whose file cannot be stored. Returns the sized and removed counts.
+/// Fills custom emoji sizes, removing emojis whose path is not a managed icon file or whose file cannot be stored.
+/// Returns the sized and removed counts.
 async fn size_emojis(conn: &mut SqliteConnection, vault_root: &Path) -> Result<(u64, u64), String> {
     let rows = sqlx::query_as::<_, (String, String)>(
         "SELECT id, asset_path FROM project_custom_emojis WHERE asset_byte_size IS NULL ORDER BY id",
@@ -250,7 +253,12 @@ async fn size_emojis(conn: &mut SqliteConnection, vault_root: &Path) -> Result<(
     .map_err(|error| format!("load custom emoji sizes: {error}"))?;
     let (mut sized, mut removed) = (0, 0);
     for (id, asset_path) in rows {
-        let result = match project_icon_byte_size(vault_root, &asset_path)? {
+        let size = if is_project_icon_path(&asset_path) {
+            project_icon_byte_size(vault_root, &asset_path)?
+        } else {
+            None
+        };
+        let result = match size {
             Some(size) => {
                 sized += 1;
                 sqlx::query("UPDATE project_custom_emojis SET asset_byte_size = ? WHERE id = ?")

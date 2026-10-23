@@ -37,6 +37,7 @@ use tauri_plugin_dialog::{DialogExt, FilePath};
 
 #[cfg(desktop)]
 use crate::native_dialogs::on_dialog_thread;
+use crate::projects::PROJECTS_DOMAIN;
 use crate::{db::connect_vault, vault};
 
 /// Project icon files this process created. A discarded upload may delete only these, so a
@@ -198,7 +199,7 @@ fn save_project_icon_bytes<R: Runtime>(
     let kind = validate_project_icon_image(&bytes)?.kind;
     let file_name = format!("{}.{}", hex_hash(&bytes), kind.extension());
     let relative_path = format!("{PROJECT_ICON_DIR}/{file_name}");
-    let writable_root = vault::active_writable_vault_path(app)?;
+    let writable_root = vault::active_replicated_asset_path(app, PROJECTS_DOMAIN)?;
     let vault_root = writable_root.to_path_buf();
     let path = writable_root
         .join("assets")
@@ -209,6 +210,24 @@ fn save_project_icon_bytes<R: Runtime>(
         created_project_icons().insert(path.to_path_buf());
     }
     Ok(ProjectIconAsset { relative_path })
+}
+
+/// Content check of a project icon a sync peer sent: the bytes must be an icon image of the type
+/// the reference names.
+pub(crate) fn check_synced_project_icon(
+    asset: &ganbaru_sync::assets::AssetRef,
+    path: &Path,
+) -> Result<(), String> {
+    let bytes = read_file_capped(path, FinalSymlink::Refuse)?;
+    let kind = validate_project_icon_image(&bytes)?.kind;
+    if kind.mime_type() != asset.content_type() {
+        return Err(format!(
+            "the bytes are {} but the reference names {}",
+            kind.mime_type(),
+            asset.content_type()
+        ));
+    }
+    Ok(())
 }
 
 fn read_file_capped(path: &Path, final_symlink: FinalSymlink) -> Result<Vec<u8>, String> {
@@ -829,6 +848,37 @@ mod tests {
             ManagedImageKind::Png
         );
         assert!(validate_project_icon_image(&png(5000, 4000)).is_err());
+    }
+
+    #[test]
+    fn synced_project_icons_must_match_their_reference() {
+        use ganbaru_sync::assets::AssetRef;
+        use ganbaru_sync::manifest::vault::projects::ICON_CLASS;
+
+        let root =
+            std::env::temp_dir().join(format!("ganbaru-project-icon-check-{}", std::process::id()));
+        fs::create_dir_all(&root).unwrap();
+        let bytes = png(64, 64);
+        let icon = root.join("icon.png");
+        fs::write(&icon, &bytes).unwrap();
+        let reference = |content_type: &str| {
+            AssetRef::new(
+                &ICON_CLASS,
+                hex_hash(&bytes),
+                content_type.to_string(),
+                bytes.len() as u32,
+            )
+            .unwrap()
+        };
+        assert_eq!(
+            check_synced_project_icon(&reference("image/png"), &icon),
+            Ok(())
+        );
+        assert!(check_synced_project_icon(&reference("image/webp"), &icon).is_err());
+        let svg = root.join("icon.svg");
+        fs::write(&svg, br#"<svg xmlns="http://www.w3.org/2000/svg"></svg>"#).unwrap();
+        assert!(check_synced_project_icon(&reference("image/png"), &svg).is_err());
+        fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]

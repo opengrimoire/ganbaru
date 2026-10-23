@@ -16,6 +16,7 @@ use ganbaru_sync::Engine;
 use ganbaru_sync::assets::AssetRef;
 use ganbaru_sync::manifest::vault::music::ARTWORK_CLASS;
 use ganbaru_sync::manifest::vault::preferences::PROFILE_CLASS;
+use ganbaru_sync::manifest::vault::projects::ICON_CLASS;
 use ganbaru_sync::manifest::vault::quick_notes::IMAGES_CLASS;
 use std::path::PathBuf;
 
@@ -39,6 +40,10 @@ impl<H: SyncHost> ActiveVaultAssets<H> {
             .with_in_flight(InFlightAssets::process())
             .with_check(&IMAGES_CLASS, images::check_synced_image)
             .with_check(&ARTWORK_CLASS, managed_artwork::check_synced_artwork)
+            .with_check(
+                &ICON_CLASS,
+                crate::projects::icons::check_synced_project_icon,
+            )
             .with_check(
                 &PROFILE_CLASS,
                 crate::profile_images::check_synced_profile_image,

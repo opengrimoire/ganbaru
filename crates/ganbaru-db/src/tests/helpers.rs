@@ -96,11 +96,18 @@ pub(super) async fn memory_pool_migrated_through(version: i64) -> SqlitePool {
         .execute(&pool)
         .await
         .unwrap();
-    sqlx::migrate::Migrator::new(MigrationsThrough(version))
-        .await
-        .unwrap()
-        .run(&pool)
-        .await
-        .unwrap();
+    migrate_through(&pool, version).await.unwrap();
     pool
+}
+
+/// Applies the pending migrations of `pool` up to and including `version`, so an upgrade test
+/// observes one migration without the later ones.
+pub(super) async fn migrate_through(
+    pool: &SqlitePool,
+    version: i64,
+) -> Result<(), sqlx::migrate::MigrateError> {
+    sqlx::migrate::Migrator::new(MigrationsThrough(version))
+        .await?
+        .run(pool)
+        .await
 }

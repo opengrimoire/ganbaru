@@ -35,7 +35,8 @@ struct KeyedTable {
     table: &'static str,
     parts: [&'static str; 2],
     derive: fn(&str, &str) -> Result<String, String>,
-    /// Whether the `id` column holds the same key as `sync_key`.
+    /// Whether the `id` column holds the same key as `sync_key`, which only dependencies do; such a row is
+    /// replaced instead of updated.
     id_is_key: bool,
 }
 
@@ -105,8 +106,7 @@ pub async fn assert_converted(pool: &SqlitePool) -> Result<(), String> {
     for table in &KEYED_TABLES {
         let remaining: i64 = sqlx::query_scalar(AssertSqlSafe(format!(
             "SELECT count(*) FROM {} WHERE {}",
-            table.table,
-            pending_condition(table)
+            table.table, PENDING_CONDITION
         )))
         .bind(PENDING_KEY_PREFIX)
         .fetch_one(&mut *conn)
@@ -122,45 +122,74 @@ pub async fn assert_converted(pool: &SqlitePool) -> Result<(), String> {
     Ok(())
 }
 
-fn pending_condition(table: &KeyedTable) -> String {
-    let sync_key = "substr(sync_key, 1, length(?1)) = ?1";
-    if table.id_is_key {
-        format!("({sync_key} OR substr(id, 1, length(?1)) = ?1)")
-    } else {
-        sync_key.to_string()
-    }
-}
+/// Matches placeholder keys; a dependency `id` cannot differ from its `sync_key`, so checking
+/// `sync_key` covers both.
+const PENDING_CONDITION: &str = "substr(sync_key, 1, length(?1)) = ?1";
 
 async fn rekey_table(conn: &mut SqliteConnection, table: &KeyedTable) -> Result<u64, String> {
     let rows = sqlx::query_as::<_, (i64, String, String)>(AssertSqlSafe(format!(
         "SELECT rowid, {}, {} FROM {} WHERE {} ORDER BY rowid",
-        table.parts[0],
-        table.parts[1],
-        table.table,
-        pending_condition(table)
+        table.parts[0], table.parts[1], table.table, PENDING_CONDITION
     )))
     .bind(PENDING_KEY_PREFIX)
     .fetch_all(&mut *conn)
     .await
     .map_err(|error| format!("load {} placeholder keys: {error}", table.table))?;
-    let set = if table.id_is_key {
-        "sync_key = ?1, id = ?1"
-    } else {
-        "sync_key = ?1"
-    };
     for (rowid, first, second) in &rows {
         let key = (table.derive)(first, second)?;
-        sqlx::query(AssertSqlSafe(format!(
-            "UPDATE {} SET {set} WHERE rowid = ?2",
-            table.table
-        )))
-        .bind(&key)
+        if table.id_is_key {
+            replace_dependency(conn, *rowid, &key).await?;
+        } else {
+            sqlx::query(AssertSqlSafe(format!(
+                "UPDATE {} SET sync_key = ?1 WHERE rowid = ?2",
+                table.table
+            )))
+            .bind(&key)
+            .bind(rowid)
+            .execute(&mut *conn)
+            .await
+            .map_err(|error| format!("write {} key: {error}", table.table))?;
+        }
+    }
+    Ok(rows.len() as u64)
+}
+
+/// Rewrites the key of a dependency by deleting and inserting it again, because sync refuses an
+/// update of the `id` row key. The row is read first and deleted before the insert, so the
+/// replacement never meets the unique task pair the original still holds.
+async fn replace_dependency(
+    conn: &mut SqliteConnection,
+    rowid: i64,
+    key: &str,
+) -> Result<(), String> {
+    let (blocking, blocked, dependency_type, created_at) =
+        sqlx::query_as::<_, (String, String, String, String)>(
+            "SELECT blocking_task_id, blocked_task_id, dependency_type, created_at
+             FROM project_task_dependencies WHERE rowid = ?",
+        )
+        .bind(rowid)
+        .fetch_one(&mut *conn)
+        .await
+        .map_err(|error| format!("load project_task_dependencies row: {error}"))?;
+    sqlx::query("DELETE FROM project_task_dependencies WHERE rowid = ?")
         .bind(rowid)
         .execute(&mut *conn)
         .await
-        .map_err(|error| format!("write {} key: {error}", table.table))?;
-    }
-    Ok(rows.len() as u64)
+        .map_err(|error| format!("remove project_task_dependencies placeholder: {error}"))?;
+    sqlx::query(
+        "INSERT INTO project_task_dependencies
+            (id, sync_key, blocking_task_id, blocked_task_id, dependency_type, created_at)
+         VALUES (?1, ?1, ?2, ?3, ?4, ?5)",
+    )
+    .bind(key)
+    .bind(&blocking)
+    .bind(&blocked)
+    .bind(&dependency_type)
+    .bind(&created_at)
+    .execute(&mut *conn)
+    .await
+    .map_err(|error| format!("write project_task_dependencies key: {error}"))?;
+    Ok(())
 }
 
 /// Fills icon sizes of groups or projects, resetting icons whose file cannot be stored. Returns the sized and reset

@@ -161,7 +161,7 @@ fn missing_duplicate_and_cross_project_selections_never_partially_apply() {
                 .contains("duplicate")
         );
         sqlx::raw_sql(
-            "INSERT INTO projects (id, group_id, name, icon, order_key) VALUES ('project-b', 'group-a', 'Other', 'lucide:folder', 'b0');
+            "INSERT INTO projects (id, group_id, name, icon, order_key) VALUES ('project-b', 'group-a', 'Other', 'lucide:folder', 'a2');
              INSERT INTO project_sections (id, project_id, name, order_key) VALUES ('section-b', 'project-b', 'Other', 'a0');
              INSERT INTO project_statuses (id, project_id, name, category, order_key) VALUES ('status-b', 'project-b', 'Other', 'not_started', 'a0');
              INSERT INTO project_tasks (id, project_id, section_id, status_id, title, section_order_key, status_order_key)

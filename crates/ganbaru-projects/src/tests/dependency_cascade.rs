@@ -135,7 +135,11 @@ fn dependency_cascade_reports_undated_invalid_and_foreign_endpoints() {
                 "invalid_date",
             ),
             (
-                "INSERT INTO projects(id, group_id, name, order_key) VALUES ('project-b', 'group-a', 'Other', 'a2'); UPDATE project_tasks SET project_id = 'project-b' WHERE id = 'task-c'",
+                // Local writes cannot move a task between projects, so the fixture writes as the applier.
+                "INSERT INTO projects(id, group_id, name, order_key) VALUES ('project-b', 'group-a', 'Other', 'a2');
+                 UPDATE sync_apply_state SET applying = 1;
+                 UPDATE project_tasks SET project_id = 'project-b' WHERE id = 'task-c';
+                 UPDATE sync_apply_state SET applying = 0",
                 "missing_endpoint",
             ),
             (
@@ -337,6 +341,12 @@ fn dependency_cascade_bounds_graph_and_full_result_before_mutation() {
     block_on(async {
         let pool = migrated_memory_pool().await;
         dated_graph(&pool).await;
+        // Sync value bounds keep stored text far below these limits; dropping them shows the cascade
+        // bounds still hold on their own.
+        sqlx::raw_sql("DROP TRIGGER sync_values_project_tasks_update")
+            .execute(&pool)
+            .await
+            .unwrap();
         sqlx::query("UPDATE project_tasks SET description = printf('%*s', 6000000, 'x') WHERE id = 'task-b'").execute(&pool).await.unwrap();
         let request = request(&pool).await;
         let before = dates(&pool).await;
@@ -369,7 +379,7 @@ fn dependency_cascade_rejects_an_excessive_task_count_without_truncation() {
         dated_graph(&pool).await;
         sqlx::query("WITH RECURSIVE items(value) AS (SELECT 1 UNION ALL SELECT value + 1 FROM items WHERE value < 10000)
             INSERT INTO project_tasks(id, project_id, section_id, status_id, title, section_order_key, status_order_key)
-            SELECT 'extra-' || value, 'project-a', 'section-a', 'status-a', 'Extra task', 'd' || printf('%04d', value), 'd' || printf('%04d', value) FROM items")
+            SELECT 'extra-' || value, 'project-a', 'section-a', 'status-a', 'Extra task', 'e' || printf('%05d', value), 'e' || printf('%05d', value) FROM items")
             .execute(&pool).await.unwrap();
         assert!(
             preview_dependency_cascade(&pool, "project-a")

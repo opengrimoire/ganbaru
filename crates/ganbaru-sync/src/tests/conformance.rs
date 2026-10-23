@@ -1115,7 +1115,8 @@ fn owned_codecs_round_trip_through_the_schema() {
         {
             for table in manifest.tables {
                 for owned in table.groups.iter().flat_map(|group| group.owned_tables()) {
-                    for rows in owned_samples(&engine, table, owned) {
+                    let required = required_columns(&pool, owned).await;
+                    for rows in owned_samples(&engine, table, owned, &required) {
                         assert_owned_round_trip(&engine, &pool, table, owned, rows).await;
                     }
                 }
@@ -1124,15 +1125,41 @@ fn owned_codecs_round_trip_through_the_schema() {
     });
 }
 
+/// `(table, column)` of every `NOT NULL` column of an owned table and its nested tables.
+type RequiredColumns = BTreeSet<(&'static str, String)>;
+
+/// The `NOT NULL` columns of `owned` and its nested tables, which samples never leave null:
+/// the adapter refuses a null there before it reaches the schema.
+async fn required_columns(pool: &SqlitePool, owned: &OwnedTable) -> RequiredColumns {
+    let mut required = RequiredColumns::new();
+    let mut pending = vec![owned];
+    while let Some(table) = pending.pop() {
+        let columns: Vec<String> =
+            sqlx::query_scalar("SELECT name FROM pragma_table_info(?) WHERE \"notnull\" = 1")
+                .bind(table.table)
+                .fetch_all(pool)
+                .await
+                .unwrap();
+        required.extend(columns.into_iter().map(|column| (table.table, column)));
+        pending.extend(table.nested);
+    }
+    required
+}
+
 /// Row lists that reach an owned table's bounds: generated for the generic codec, from the
 /// domain adapter for a custom one.
-fn owned_samples(engine: &Engine, table: &TableSpec, owned: &OwnedTable) -> Vec<Vec<OwnedRow>> {
+fn owned_samples(
+    engine: &Engine,
+    table: &TableSpec,
+    owned: &OwnedTable,
+    required: &RequiredColumns,
+) -> Vec<Vec<OwnedRow>> {
     match owned.codec {
         OwnedCodec::Generic => {
             let mut next = 0;
             [0, 1, owned.max_rows]
                 .into_iter()
-                .map(|count| generated_rows(owned, count, &mut next))
+                .map(|count| generated_rows(owned, count, &mut next, required))
                 .collect()
         }
         OwnedCodec::Custom => {
@@ -1151,7 +1178,12 @@ fn owned_samples(engine: &Engine, table: &TableSpec, owned: &OwnedTable) -> Vec<
 
 /// `count` rows with fields at their column bounds, unique values numbered from `next`, and
 /// nested tables filled the same way.
-fn generated_rows(owned: &OwnedTable, count: usize, next: &mut usize) -> Vec<OwnedRow> {
+fn generated_rows(
+    owned: &OwnedTable,
+    count: usize,
+    next: &mut usize,
+    required: &RequiredColumns,
+) -> Vec<OwnedRow> {
     (0..count)
         .map(|position| {
             let serial = *next;
@@ -1161,13 +1193,16 @@ fn generated_rows(owned: &OwnedTable, count: usize, next: &mut usize) -> Vec<Own
                 .iter()
                 .map(|column| {
                     let unique = owned.unique.contains(&column.name);
-                    generated_field(column.ty, serial, unique)
+                    let nullable = !required.contains(&(owned.table, column.name.to_string()));
+                    generated_field(column.ty, serial, unique, nullable)
                 })
                 .collect();
             let nested = owned
                 .nested
                 .iter()
-                .map(|nested| generated_rows(nested, (position % 2) * nested.max_rows, next))
+                .map(|nested| {
+                    generated_rows(nested, (position % 2) * nested.max_rows, next, required)
+                })
                 .collect();
             OwnedRow { fields, nested }
         })
@@ -1175,8 +1210,9 @@ fn generated_rows(owned: &OwnedTable, count: usize, next: &mut usize) -> Vec<Own
 }
 
 /// A field of `ty` at its upper bound for even serials and its lower bound for odd ones,
-/// starting with the serial when it must be unique.
-fn generated_field(ty: ColumnType, serial: usize, unique: bool) -> Field {
+/// starting with the serial when it must be unique, and null at the lower bound only when
+/// `nullable`.
+fn generated_field(ty: ColumnType, serial: usize, unique: bool, nullable: bool) -> Field {
     let low = serial % 2 == 1 && !unique;
     let text = |min_chars: usize, max_chars: usize, fill: char| {
         let prefix = if unique {
@@ -1190,25 +1226,25 @@ fn generated_field(ty: ColumnType, serial: usize, unique: bool) -> Field {
     };
     match ty {
         ColumnType::Text { max_chars } => text(0, max_chars, 'é'),
-        ColumnType::OptionalText { .. } if low => Field::Null,
+        ColumnType::OptionalText { .. } if low && nullable => Field::Null,
         ColumnType::OptionalText { max_chars } => text(0, max_chars, 'é'),
         ColumnType::TrimmedText {
             min_chars,
             max_chars,
         } => text(min_chars.max(1), max_chars, 'w'),
         ColumnType::Integer { min, max } => Field::Integer(if low { min } else { max }),
-        ColumnType::OptionalInteger { .. } if low && serial % 4 == 1 => Field::Null,
+        ColumnType::OptionalInteger { .. } if low && nullable && serial % 4 == 1 => Field::Null,
         ColumnType::OptionalInteger { min, max } => Field::Integer(if low { min } else { max }),
         ColumnType::Flag => Field::Integer(i64::from(!low)),
         ColumnType::Timestamp => Field::Text("9".repeat(MAX_TIMESTAMP_BYTES)),
-        ColumnType::OptionalTimestamp if low => Field::Null,
+        ColumnType::OptionalTimestamp if low && nullable => Field::Null,
         ColumnType::OptionalTimestamp => Field::Text("9".repeat(MAX_TIMESTAMP_BYTES)),
         ColumnType::OrderKey => Field::Text(
             OrderKey::rank(u32::try_from(serial).unwrap())
                 .unwrap()
                 .into_string(),
         ),
-        ColumnType::OptionalRowKey if low => Field::Null,
+        ColumnType::OptionalRowKey if low && nullable => Field::Null,
         ColumnType::OptionalRowKey => Field::Text(format!("key-{serial}")),
     }
 }
@@ -1535,7 +1571,7 @@ fn manifests_are_well_formed() {
             .collect::<Vec<_>>(),
         [
             31, 511, 7, 127, 31, 7, 3, 7, 1023, 7, 127, 31, 63, 15, 63, 3, 2047, 15, 31, 31, 15,
-            255
+            255, 127, 65535, 31, 7, 31, 255, 127, 31, 8191, 31, 15, 7, 31, 15, 15, 1, 15, 15, 31
         ]
     );
 }
@@ -1939,6 +1975,7 @@ const RECORDED_MANIFESTS: &[(u16, &str)] = &[
     (4, include_str!("fixtures/vault_manifest_v4.txt")),
     (5, include_str!("fixtures/vault_manifest_v5.txt")),
     (6, include_str!("fixtures/vault_manifest_v6.txt")),
+    (7, include_str!("fixtures/vault_manifest_v7.txt")),
 ];
 #[test]
 fn vault_manifest_changes_only_with_a_version_bump() {

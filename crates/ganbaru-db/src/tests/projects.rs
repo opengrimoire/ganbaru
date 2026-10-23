@@ -1,8 +1,9 @@
-use super::helpers::{memory_pool_migrated_through, migrated_memory_pool};
+use super::helpers::{memory_pool_migrated_through, migrate_through, migrated_memory_pool};
 use crate::run_migrations;
 
 const ICON_FILE: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.png";
 const BEFORE_ORDER_KEYS: i64 = 20261022191859;
+const ORDER_KEYS: i64 = 20261022213617;
 const BEFORE_FOLDER_TRIGGERS: i64 = 20261022234248;
 
 #[test]
@@ -397,7 +398,7 @@ fn order_keys_migration_ranks_rows_and_converts_values() {
             .await
             .unwrap();
 
-        run_migrations(&pool).await.unwrap();
+        migrate_through(&pool, ORDER_KEYS).await.unwrap();
 
         let groups: Vec<String> =
             sqlx::query_scalar("SELECT id FROM project_groups ORDER BY order_key, id")

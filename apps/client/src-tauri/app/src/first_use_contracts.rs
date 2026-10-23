@@ -487,7 +487,7 @@ fn projects_first_use_keeps_authored_built_in_values() {
             .expect("rename Routine group");
         sqlx::query(
             "UPDATE projects
-             SET name = 'Meals', order_key = 'b0', icon = 'utensils', color = 11,
+             SET name = 'Meals', order_key = 'b00', icon = 'utensils', color = 11,
                  status = 'hidden', default_event_name = 'Lunch'
              WHERE id = 'project-routine-eat'",
         )
@@ -513,7 +513,7 @@ fn projects_first_use_keeps_authored_built_in_values() {
             row,
             (
                 "Meals".to_string(),
-                "b0".to_string(),
+                "b00".to_string(),
                 "utensils".to_string(),
                 11,
                 "hidden".to_string(),

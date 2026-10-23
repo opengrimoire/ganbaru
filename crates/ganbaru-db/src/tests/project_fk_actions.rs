@@ -1,4 +1,4 @@
-use super::helpers::{memory_pool_migrated_through, migrated_memory_pool};
+use super::helpers::{memory_pool_migrated_through, migrate_through, migrated_memory_pool};
 use crate::run_migrations;
 use sqlx::{AssertSqlSafe, Row, SqlitePool};
 use std::collections::BTreeMap;
@@ -153,7 +153,7 @@ fn fk_actions_migration_keeps_rows_values_and_schema_objects() {
             foreign_keys_before.insert(table, foreign_keys(&pool, table).await);
         }
 
-        run_migrations(&pool).await.unwrap();
+        migrate_through(&pool, FK_ACTIONS).await.unwrap();
 
         assert_eq!(row_counts(&pool).await, counts_before);
         assert_eq!(foreign_key_violations(&pool).await, 0);

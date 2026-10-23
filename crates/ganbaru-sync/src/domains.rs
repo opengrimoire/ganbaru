@@ -7,6 +7,7 @@ use crate::manifest::vault::preferences::PREFERENCES_TABLE;
 pub mod contacts;
 pub mod music;
 pub mod preferences;
+pub mod projects;
 pub mod quick_notes;
 pub mod themes;
 
@@ -18,6 +19,7 @@ pub fn vault_adapters() -> Adapters {
         .with(Box::new(themes::ThemesAdapter))
         .with(Box::new(contacts::ContactsAdapter))
         .with(Box::new(music::MusicAdapter))
+        .with(Box::new(projects::ProjectsAdapter))
 }
 
 /// The hooks of the vault manifest's tables, one line per hooked table.

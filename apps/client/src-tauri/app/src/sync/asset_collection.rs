@@ -22,15 +22,24 @@ type LastCollection = Mutex<Option<(String, Instant)>>;
 static LAST_COLLECTION: LastCollection = Mutex::new(None);
 
 /// Collects the unreferenced asset files of the active vault when its last collection in this
-/// process is a day old. A failure is logged and waits for the next interval.
+/// process is a day old. A vault that cannot be written yet leaves the interval unclaimed, so
+/// the next pass tries again; a failure is logged and waits for the next interval.
 pub(super) async fn collect_if_due<H: SyncHost>(host: &H) {
     let Ok(vault_id) = host.active_vault_id() else {
         return;
     };
+    let pool = match host.connect_for_sync().await {
+        Ok(Some(pool)) => pool,
+        Ok(None) => return,
+        Err(error) => {
+            eprintln!("sync asset collection: {error}");
+            return;
+        }
+    };
     if !claim_due(&LAST_COLLECTION, &vault_id, Instant::now()) {
         return;
     }
-    match collect(host, &vault_id).await {
+    match collect(host, &pool, &vault_id).await {
         Ok(0) => {}
         Ok(removed) => eprintln!("sync: removed {removed} unreferenced asset files"),
         Err(error) => eprintln!("sync asset collection: {error}"),
@@ -55,10 +64,12 @@ fn claim_due(last: &LastCollection, vault_id: &str, now: Instant) -> bool {
     due
 }
 
-async fn collect<H: SyncHost>(host: &H, vault_id: &str) -> Result<usize, String> {
-    let Some(pool) = host.connect_for_sync().await? else {
-        return Ok(0);
-    };
+/// Sweeps the active vault through `pool` unless the active vault changed from `vault_id`.
+async fn collect<H: SyncHost>(
+    host: &H,
+    pool: &sqlx::SqlitePool,
+    vault_id: &str,
+) -> Result<usize, String> {
     if host.active_vault_id()? != vault_id {
         return Ok(0);
     }
@@ -67,7 +78,7 @@ async fn collect<H: SyncHost>(host: &H, vault_id: &str) -> Result<usize, String>
     let in_flight = InFlightAssets::process();
     let sweep = AssetSweep {
         engine: &engine,
-        pool: &pool,
+        pool,
         vault_root: &root,
         in_flight: &in_flight,
         grace: UNREFERENCED_ASSET_GRACE,

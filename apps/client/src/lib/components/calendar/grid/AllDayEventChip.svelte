@@ -11,6 +11,8 @@
   import { getEventIndicatorState } from "./event-indicators";
   import Music from "@lucide/svelte/icons/eighth-notes";
   import Repeat from "@lucide/svelte/icons/repeat";
+  import TriangleAlert from "@lucide/svelte/icons/triangle-alert";
+  import { calendarConflicts } from "$lib/stores/calendar-conflicts.svelte";
   import Video from "@lucide/svelte/icons/video";
   import MapPin from "@lucide/svelte/icons/map-pin";
   import Users from "@lucide/svelte/icons/users";
@@ -46,7 +48,7 @@
 
   const preferences = getPreferences();
   const isDark = $derived(isThemeCalendarDark(theme));
-  const indicators = $derived(getEventIndicatorState(event));
+  const indicators = $derived(getEventIndicatorState(event, undefined, calendarConflicts.isConflicted(event)));
   const hasIcons = $derived(indicators.iconCount > 0);
   const isCancelled = $derived(isEventSurfaceCancelled(event));
   const eventTitle = $derived(event.title || t("calendar.event.noTitle"));
@@ -111,6 +113,9 @@
 >
   {#if hasIcons}
     <span class="absolute right-1 top-0.75 z-10 flex items-center gap-0.5" style="color: {iconColor};">
+      {#if indicators.hasConflict}
+        <TriangleAlert size={8} class="shrink-0" role="img" aria-label={t("calendar.conflict.badge")} />
+      {/if}
       {#if indicators.hasMusic}
         <Music size={8} class="shrink-0" />
       {/if}

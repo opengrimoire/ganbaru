@@ -32,6 +32,8 @@
   import MapPin from "@lucide/svelte/icons/map-pin";
   import Users from "@lucide/svelte/icons/users";
   import X from "@lucide/svelte/icons/x";
+  import TriangleAlert from "@lucide/svelte/icons/triangle-alert";
+  import { calendarConflicts } from "$lib/stores/calendar-conflicts.svelte";
   import CalendarScrollbar from "$lib/components/calendar/CalendarScrollbar.svelte";
   import { scrollEdgeFadeAction } from "$lib/utils/scroll-edge-fade";
 
@@ -424,6 +426,9 @@
                     onclick={(e) => { e.stopPropagation(); onEventClick(evt, (e.currentTarget as HTMLElement).getBoundingClientRect()); }}
                   >
                     <span class="relative z-10 min-w-0 flex-1 truncate" style={evtIsCancelled ? 'text-decoration: line-through;' : ''}>{displayEventTitle(evt)}</span>
+                    {#if calendarConflicts.isConflicted(evt)}
+                      <TriangleAlert size={8} class="relative z-10 shrink-0" style="color: {evtIconColor};" role="img" aria-label={t("calendar.conflict.badge")} />
+                    {/if}
                     {#if evtMeetingIndicators.iconCount > 0}
                       <span class="relative z-10 flex shrink-0 items-center gap-0.5" style="color: {evtIconColor};">
                         {#if evtMeetingIndicators.hasCallLink}
@@ -546,6 +551,9 @@
                 <span class="relative z-10 min-w-0 flex-1 truncate" style={evtIsCancelled ? "text-decoration: line-through;" : ""}>
                   {displayEventTitle(evt)}
                 </span>
+                {#if calendarConflicts.isConflicted(evt)}
+                  <TriangleAlert size={9} class="relative z-10 shrink-0" style="color: {evtIconColor};" role="img" aria-label={t("calendar.conflict.badge")} />
+                {/if}
                 {#if evtMeetingIndicators.iconCount > 0}
                   <span class="relative z-10 flex shrink-0 items-center gap-0.5" style="color: {evtIconColor};">
                     {#if evtMeetingIndicators.hasCallLink}

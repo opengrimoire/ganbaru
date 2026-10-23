@@ -149,6 +149,10 @@ export const general = {
     importWarnings: "Import warnings",
     eventTooManyChangedOccurrences: (label: string) =>
       `${label} was not added to the calendar because it has too many changed occurrences. Its source is kept.`,
+    eventTooMuchData: (label: string) =>
+      `${label} was not added to the calendar because its alarms, attendees, or other attached data are too large to sync. Its source is kept.`,
+    preservedDataTrimmed:
+      "Some preserved calendar data was left out to keep it within the sync size limit.",
     moreWarnings: (count: number) =>
       `${count} more ${count === 1 ? "warning" : "warnings"} not shown.`,
     importCalendar: "Import calendar",

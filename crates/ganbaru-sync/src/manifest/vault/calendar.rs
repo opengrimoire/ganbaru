@@ -1385,7 +1385,7 @@ pub const TASK_EVENT_LINKS: TableSpec = TableSpec {
     ..BASE
 };
 
-/// The Calendar domain manifest. Replicas apply Calendar changes but do not write them yet.
+/// The Calendar domain manifest. Linked replicas write Calendar rows like the owner.
 pub const DOMAIN: DomainManifest = DomainManifest {
     name: DOMAIN_NAME,
     table_ids: TableIdRange {
@@ -1407,6 +1407,6 @@ pub const DOMAIN: DomainManifest = DomainManifest {
         triggers: &[],
     }],
     engine: &[],
-    replica_writable: false,
+    replica_writable: true,
     assets: &[],
 };

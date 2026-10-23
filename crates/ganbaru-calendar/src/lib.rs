@@ -11,6 +11,7 @@ pub mod geo;
 pub mod import;
 pub mod keys;
 pub mod reads;
+pub mod recovery;
 pub mod recurrence;
 mod stored_number;
 pub mod sync_apply;

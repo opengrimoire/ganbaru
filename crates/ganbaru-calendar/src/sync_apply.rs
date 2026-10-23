@@ -60,7 +60,7 @@ fn hook_error(context: &str, error: sqlx::Error) -> HookError {
 /// Rebuilds the projection of every component in an iCalendar object that holds a component
 /// of the changed events: the components their rows, alarms, and overrides link, and the
 /// components that still project onto an event key, which covers a deleted event.
-async fn refresh_event_projections(
+pub(crate) async fn refresh_event_projections(
     conn: &mut SqliteConnection,
     event_ids: &[String],
 ) -> Result<(), HookError> {

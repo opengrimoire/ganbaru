@@ -24,9 +24,17 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
         .plugin(tauri_plugin_fs::init());
     let app = builder
         .manage(db::vault_pools().clone())
-        .manage(vault::ownership::VaultOwnershipManager::default())
+        .manage(
+            vault::process_managers::process_managers()
+                .ownership()
+                .clone(),
+        )
         .manage(vault::preferences::PreferencesState::default())
-        .manage(vault::handoff::pairing::PairingManager::default())
+        .manage(
+            vault::process_managers::process_managers()
+                .pairing()
+                .clone(),
+        )
         .manage(vault::handoff::receiver::ReceiverLifecycle::default())
         .manage(vault::handoff::source::SourceLifecycle::default())
         .manage(crate::sync::SyncRuntime::default())
@@ -38,6 +46,7 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
             vault::vault_release_starter,
             vault::vault_active_info,
             vault::ownership::vault_ownership_status,
+            vault::vault_lock::vault_lock_status,
             vault::handoff::handoff_decode_pairing_qr,
             vault::handoff::handoff_enroll,
             vault::handoff::handoff_enrollment_code,
@@ -466,6 +475,7 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
     app.run(|_app, event| {
         if matches!(event, tauri::RunEvent::Exit) {
             crate::sync::release_runtime_handle();
+            vault::vault_lock::process_vault_lock().release();
         }
         #[cfg(target_os = "android")]
         if matches!(event, tauri::RunEvent::Resumed) {

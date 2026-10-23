@@ -6,9 +6,10 @@
 //! databases keep their invariants; at quiescence every installation holds the same
 //! replicated state.
 //!
+//! Seeds are split across four test functions that the harness runs in parallel.
 //! `GANBARU_SYNC_SOAK_SEEDS` sets the number of seeds for a soak run; the default debug
-//! test run takes about two minutes. A failing run prints its seed, and `GANBARU_SYNC_SEED` replays
-//! that seed alone.
+//! test run takes about one minute. A failing run prints its seed, and `GANBARU_SYNC_SEED` replays
+//! that seed alone in the shard that owns it.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -28,6 +29,8 @@ use crate::{ApplyReport, StoreOutcome, StoreRefusal, SyncError, SyncResult};
 const DEFAULT_SEEDS: u64 = 48;
 const SEEDS_VARIABLE: &str = "GANBARU_SYNC_SOAK_SEEDS";
 const SEED_VARIABLE: &str = "GANBARU_SYNC_SEED";
+/// Test functions the seeds are split across, so the test harness runs them in parallel.
+const SHARDS: u64 = 4;
 const STEPS: usize = 60;
 const TAG_NAMES: &[&str] = &["Work", "work", "Home", "Ideas", "IDEAS", "Errands"];
 const WORDS: &[&str] = &[
@@ -118,18 +121,38 @@ async fn crashing<T>(
     call(replica).await
 }
 
-const SEAL_FAILPOINTS: &[&str] = &["seal.reserve", "seal.before_commit", "hold.before_seal"];
+const SEAL_FAILPOINTS: &[&str] = &[
+    "seal.reserve",
+    "seal.before_commit",
+    "hold.before_seal",
+    "elide.before_commit",
+];
 const APPLY_FAILPOINTS: &[&str] = &[
     "apply.before_commit",
     "seal.reserve",
     "seal.before_commit",
     "hold.before_seal",
+    "elide.before_commit",
 ];
-const RESEAL_FAILPOINTS: &[&str] = &["reseal.before_commit", "seal.reserve"];
-const RECOVERY_FAILPOINTS: &[&str] = &["recovery.before_commit", "seal.reserve"];
+const RESEAL_FAILPOINTS: &[&str] = &[
+    "reseal.before_commit",
+    "seal.reserve",
+    "elide.before_commit",
+];
+const RECOVERY_FAILPOINTS: &[&str] = &[
+    "recovery.before_commit",
+    "seal.reserve",
+    "elide.before_commit",
+];
 
 /// Seals pending captures, rotating the writer once when it is no longer active.
 async fn seal(rng: &mut Rng, replica: &mut Replica) {
+    let before = replica.seal_snapshot().await;
+    seal_rotating(rng, replica).await;
+    replica.check_sealed_writes(&before).await;
+}
+
+async fn seal_rotating(rng: &mut Rng, replica: &mut Replica) {
     let result = crashing(rng, replica, SEAL_FAILPOINTS, async |r: &mut Replica| {
         r.seal().await
     })
@@ -1371,7 +1394,8 @@ impl Sim {
     async fn step(&mut self) {
         self.advance_clocks();
         let index = self.rng.below(self.replicas.len());
-        match self.rng.below(100) {
+        let action = self.rng.below(100);
+        match action {
             0..=39 => self.edit(index).await,
             40..=64 => {
                 if !self.offline[index] {
@@ -1388,6 +1412,12 @@ impl Sim {
             replica.check_invariants().await;
         }
         self.hub.check_invariants().await;
+        // Hydrating every version is slow, so only a step that ran the engine checks it, and
+        // only on the replica that acted. Local edits elide nothing and are read back by the
+        // engine step that follows them.
+        if (40..89).contains(&action) || action >= 97 {
+            self.replicas[index].check_version_values().await;
+        }
         self.assert_marks_stay_local().await;
     }
 
@@ -1472,6 +1502,7 @@ impl Sim {
             .iter_mut()
             .chain(std::iter::once(&mut self.hub))
         {
+            replica.check_version_values().await;
             let status = replica
                 .engine
                 .status(&mut replica.conn, &replica.ctx)
@@ -1524,18 +1555,40 @@ fn number(variable: &str) -> Option<u64> {
     )
 }
 
-fn seeds() -> std::ops::Range<u64> {
-    if let Some(seed) = number(SEED_VARIABLE) {
-        return seed..seed + 1;
-    }
-    0..number(SEEDS_VARIABLE).unwrap_or(DEFAULT_SEEDS)
+/// The seeds of one shard: every seed whose remainder by `SHARDS` is `shard`, so the shards
+/// together run each seed exactly once and share the seeds' uneven costs.
+fn seeds(shard: u64) -> impl Iterator<Item = u64> {
+    let all = match number(SEED_VARIABLE) {
+        Some(seed) => seed..seed + 1,
+        None => 0..number(SEEDS_VARIABLE).unwrap_or(DEFAULT_SEEDS),
+    };
+    all.filter(move |seed| seed % SHARDS == shard)
 }
 
-#[test]
-fn seeded_runs_converge_after_partitions_crashes_and_revocations() {
+fn run_shard(shard: u64) {
     block_on(async {
-        for seed in seeds() {
+        for seed in seeds(shard) {
             run(seed).await;
         }
     });
+}
+
+#[test]
+fn seeded_runs_converge_after_partitions_crashes_and_revocations_shard_0() {
+    run_shard(0);
+}
+
+#[test]
+fn seeded_runs_converge_after_partitions_crashes_and_revocations_shard_1() {
+    run_shard(1);
+}
+
+#[test]
+fn seeded_runs_converge_after_partitions_crashes_and_revocations_shard_2() {
+    run_shard(2);
+}
+
+#[test]
+fn seeded_runs_converge_after_partitions_crashes_and_revocations_shard_3() {
+    run_shard(3);
 }

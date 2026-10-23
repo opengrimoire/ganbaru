@@ -17,7 +17,7 @@ The repository has a substantial local desktop and Android foundation:
 - Local Music libraries and playlists with desktop and Android playback, plus YouTube integration.
 - Chromium website blocking, desktop application blocking, and consented Android application enforcement.
 - An adaptive Android shell covering the main features, portable backup and restore, and notifications.
-- Private-LAN device linking with single-writer whole-vault handoff between one person's desktop and Android devices, plus concurrent sync of Quick notes, portable preferences, user themes, and contacts through the coordinator desktop, including Android background passes (physical multi-device acceptance pending).
+- Private-LAN device linking with single-writer whole-vault handoff between one person's desktop and Android devices, plus concurrent sync of Quick notes, portable preferences, user themes, and contacts through the coordinator desktop, including Android background passes, coordinator address refresh, DNS-SD discovery, and overlay networks such as Tailscale (physical multi-device acceptance pending).
 
 Implemented does not mean release-complete on every platform. The [feature index](features/README.md) and [Android platform document](platforms/android/README.md) identify partial areas and platform limits.
 

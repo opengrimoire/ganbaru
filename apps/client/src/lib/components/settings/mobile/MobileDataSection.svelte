@@ -2,6 +2,7 @@
   import LoaderCircle from "@lucide/svelte/icons/loader-circle";
   import ConfirmDialog from "$lib/components/ui/ConfirmDialog.svelte";
   import DatabaseRollbacks from "$lib/components/vault/DatabaseRollbacks.svelte";
+  import VaultLockWarning from "$lib/components/vault/VaultLockWarning.svelte";
   import VaultHandoffPanel from "$lib/components/vault/handoff/VaultHandoffPanel.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { flushConfig } from "$lib/vault/config";
@@ -51,6 +52,8 @@
 </script>
 
 <div class="flex flex-col gap-6">
+  <VaultLockWarning class="px-1 text-[0.8rem]" />
+
   <VaultHandoffPanel platform="android" onActivated={() => window.location.reload()} />
 
   <div class="h-px shrink-0 scale-y-50 bg-border" aria-hidden="true"></div>

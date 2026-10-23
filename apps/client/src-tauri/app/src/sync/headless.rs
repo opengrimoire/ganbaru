@@ -323,14 +323,15 @@ fn run_pass_json(
     run_pass_with(&PROVIDED_RECORDS, config_dir, records, pass, names)
 }
 
-/// The discovery names of the coordinator pinned in `config_dir`.
+/// The discovery names of the coordinator pinned in `config_dir`, read through the pairing
+/// manager this process shares with the app runtime.
 #[cfg(target_os = "android")]
 fn pinned_discovery_names(config_dir: &Path) -> Result<Vec<String>, String> {
-    use crate::vault::handoff::pairing::PairingManager;
+    let managers = crate::vault::process_managers::process_managers();
     let device_id = crate::vault::ensure_device_id_in(config_dir)?;
-    let pairing = PairingManager::default();
-    pairing.initialize(config_dir.to_path_buf(), device_id)?;
-    Ok(pairing
+    managers.load_pairing(config_dir, device_id)?;
+    Ok(managers
+        .pairing()
         .coordinator_pin()?
         .map(|pin| discovery_names(&pin, unix_now()))
         .unwrap_or_default())

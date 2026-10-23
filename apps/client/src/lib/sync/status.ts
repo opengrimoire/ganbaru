@@ -1,4 +1,4 @@
-import type { SyncDeviceRef, SyncRole, SyncState, SyncStatusView } from "$lib/api/sync";
+import type { SyncDegradedReason, SyncDeviceRef, SyncRole, SyncState, SyncStatusView } from "$lib/api/sync";
 import type { AppLocale } from "$lib/i18n/locales";
 import { formatDateTime, formatList, formatRelativeMinutes } from "$lib/i18n/formatters";
 import type { Translate } from "$lib/i18n/translator.svelte";
@@ -119,6 +119,50 @@ export function syncStateLabel(t: Translate, state: SyncState): string {
     case "waiting_for_identity": return t("sync.state.waiting_for_identity");
     case "error": return t("sync.state.error");
   }
+}
+
+/** States in which the last reached connection still describes the current link. */
+const CONNECTED_STATES: readonly SyncState[] = ["idle", "syncing"];
+
+/**
+ * Labels how this device reaches its coordinator, or `null` when it is the coordinator or the
+ * last reached connection no longer describes the current link.
+ */
+export function syncConnectionLabel(t: Translate, status: SyncStatusView): string | null {
+  if (status.role !== "client" || status.connection === null || !CONNECTED_STATES.includes(status.state)) return null;
+  const { network, address } = status.connection;
+  return network === "lan" ? t("sync.connection.lan", address) : t("sync.connection.overlay", address);
+}
+
+/** A recovery action a degraded reason offers. */
+export type SyncDegradedAction = "openBatterySettings" | "allowNetworkAccess";
+
+/** One degraded reason with its explanation and recovery action. */
+export interface SyncDegradedRow {
+  reason: SyncDegradedReason;
+  label: string;
+  action: SyncDegradedAction | null;
+}
+
+/**
+ * Explains each degraded reason with its recovery action. The firewall reason has an action only
+ * on the coordinator, where this device can allow its listener through the firewall.
+ */
+export function syncDegradedRows(t: Translate, status: SyncStatusView): SyncDegradedRow[] {
+  return status.degraded.map((reason) => {
+    switch (reason) {
+      case "backgroundRestricted":
+        return { reason, label: t("sync.degraded.backgroundRestricted"), action: "openBatterySettings" };
+      case "standbyRestricted":
+        return { reason, label: t("sync.degraded.standbyRestricted"), action: "openBatterySettings" };
+      case "localNetworkDenied":
+        return { reason, label: t("sync.degraded.localNetworkDenied"), action: null };
+      case "firewallAuthorizationRequired":
+        return status.role === "hub"
+          ? { reason, label: t("sync.degraded.firewallHub"), action: "allowNetworkAccess" }
+          : { reason, label: t("sync.degraded.firewallClient"), action: null };
+    }
+  });
 }
 
 /** Describes this device's place in the sync topology. */

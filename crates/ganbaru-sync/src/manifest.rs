@@ -754,6 +754,24 @@ impl TableSpec {
             .is_some_and(|key| key.exists_group == group)
     }
 
+    /// Whether the winning version of `group` may keep no stored value while the domain row
+    /// holds it. `Reference` groups, the existence group, a tree's parent group, the groups of
+    /// a unique column set, and every group of an acyclic edge table keep theirs, because merge
+    /// and repair read them across the whole table.
+    pub fn may_elide(&self, group: &GroupSpec) -> bool {
+        !matches!(group.kind, MergeKind::Reference { .. })
+            && !self.is_exists_group(group.id)
+            && self.tree.is_none_or(|tree| tree.parent_group != group.id)
+            && self.acyclic.is_none()
+            && !self.resolutions.iter().any(|resolution| match resolution {
+                Resolution::DuplicateRepair { columns, .. } => group
+                    .columns()
+                    .iter()
+                    .any(|column| columns.contains(&column.name)),
+                Resolution::WithinGroup { .. } => false,
+            })
+    }
+
     /// Group by id.
     pub fn group(&self, id: GroupId) -> Option<&'static GroupSpec> {
         self.groups.iter().find(|group| group.id == id)

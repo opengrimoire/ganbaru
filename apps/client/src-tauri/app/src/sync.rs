@@ -5,6 +5,7 @@
 //! Tauri runtime share it.
 
 pub(crate) mod commands;
+mod connectivity;
 pub(crate) mod devices;
 #[cfg(any(target_os = "android", test))]
 pub(crate) mod headless;
@@ -22,6 +23,8 @@ use ganbaru_sync_replica::{assets, carry_forward, client, writer};
 #[cfg(test)]
 mod tests;
 
+#[cfg(target_os = "linux")]
+pub(crate) use connectivity::firewall::changed as firewall_changed;
 pub(crate) use ganbaru_sync_replica::now_ms;
 #[cfg(desktop)]
 pub(crate) use service::sync_hub;

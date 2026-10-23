@@ -108,6 +108,8 @@ Runtime cases without the WebView are in [Distraction blocker runtime acceptance
 - With the app swiped away, the periodic pass exchanges within about 15 minutes on Wi-Fi, and no pass runs on cellular alone.
 - Joining a Wi-Fi network or changing addresses while the process runs triggers a pass; after a reboot, the periodic pass resumes without opening the app.
 - When the coordinator moved to another address while the phone was closed, a background pass finds it through discovery and exchanges.
+- Turning airplane mode off with changes waiting and the app closed runs a pass once the network returns.
+- Opening the app while a background pass runs opens no second database pool, shows no error, and shows fresh status after the pass.
 - Unlinking cancels both background jobs; force-stop stops them until the app opens again.
 - Background restriction and the restricted standby bucket are reported as degraded connectivity.
 - The installed APK's merged manifest declares no WorkManager foreground service, and no foreground service notification ever appears for sync.

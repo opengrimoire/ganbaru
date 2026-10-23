@@ -84,12 +84,13 @@ struct OwnershipManagerInner {
 /// Reports whether this device is linked to other devices of a vault.
 pub(crate) type LinkProbe = Arc<dyn Fn(&str) -> bool + Send + Sync>;
 
-/// Process-local facade over the platform-private ownership state file.
-#[derive(Default)]
+/// Process-local facade over the platform-private ownership state file. Clones share one
+/// in-memory state, because every save writes that whole state.
+#[derive(Clone, Default)]
 pub(crate) struct VaultOwnershipManager {
-    inner: Mutex<OwnershipManagerInner>,
+    inner: Arc<Mutex<OwnershipManagerInner>>,
     write_fence: Arc<ManagedWriteFenceControl>,
-    link_probe: Mutex<Option<LinkProbe>>,
+    link_probe: Arc<Mutex<Option<LinkProbe>>>,
 }
 
 #[derive(Default)]
@@ -167,6 +168,7 @@ impl VaultOwnershipStatus {
 }
 
 impl VaultOwnershipManager {
+    #[cfg(desktop)]
     pub(crate) fn initialize<R: Runtime>(&self, app: &tauri::AppHandle<R>) -> Result<(), String> {
         let config_dir = app
             .path()
@@ -210,6 +212,18 @@ impl VaultOwnershipManager {
             persist_inner(&mut inner)?;
         }
         Ok(())
+    }
+
+    /// Whether ownership state was loaded. A loaded manager is the authority for its state
+    /// file, so it is not loaded again.
+    #[cfg(any(mobile, test))]
+    pub(crate) fn is_loaded(&self) -> Result<bool, String> {
+        Ok(self
+            .inner
+            .lock()
+            .map_err(|_| "vault ownership lock is unavailable".to_string())?
+            .storage_path
+            .is_some())
     }
 
     /// Installs the probe that decides whether a stable replica is linked to its vault.
@@ -1042,8 +1056,20 @@ fn sync_parent_directory(_path: &Path) -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(desktop)]
 pub(crate) fn initialize<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<(), String> {
     app.state::<VaultOwnershipManager>().initialize(app)
+}
+
+/// Loads the ownership state of the process manager the runtime manages, which a headless sync
+/// pass may have loaded first.
+#[cfg(mobile)]
+pub(crate) fn initialize<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<(), String> {
+    let config_dir = app
+        .path()
+        .app_config_dir()
+        .map_err(|error| format!("find app config directory: {error}"))?;
+    super::process_managers::process_managers().load_ownership(&config_dir)
 }
 
 pub(crate) fn active_status<R: Runtime>(

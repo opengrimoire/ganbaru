@@ -142,7 +142,7 @@ impl Engine {
             .into_iter()
             .map(|writer| (writer.id, writer.device_id))
             .collect();
-        let versions = merge::versions(conn, table, key).await?;
+        let versions = merge::versions(self, conn, table, key).await?;
         let winners = merge::winners(self, spec, &versions);
         let mut details = Vec::new();
         for group in spec.groups.iter().filter(|group| mask.contains(group.id)) {

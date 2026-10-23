@@ -12,12 +12,12 @@ use ganbaru_contacts::PersonPublicKey;
 use ganbaru_sync_contracts::{
     Envelope, GroupId, Seq, SpaceId, TableId, Value, VersionVector, WriterId, WriterPublicKey,
 };
-use sqlx::{AssertSqlSafe, Connection, SqliteConnection};
+use sqlx::{AssertSqlSafe, Connection, Row, SqliteConnection};
 
 use crate::error::{SyncError, SyncResult, corrupt};
 use crate::log::{self, WriterState};
 use crate::manifest::Manifest;
-use crate::{Engine, SpaceContext, StoreOutcome, sql};
+use crate::{Engine, SpaceContext, StoreOutcome, hydrate, sql};
 
 /// Most operations one carry-forward store transaction takes.
 const IMPORT_CHUNK: usize = 256;
@@ -82,22 +82,42 @@ pub async fn has_pending_captures(conn: &mut SqliteConnection) -> SyncResult<boo
 
 /// Every retained version value of one group of a table, for live and tombstoned rows alike:
 /// the values that open conflicts and recovery offers can still bring back.
+/// An elided value is read back from the domain row or the operation that wrote it.
 pub async fn retained_group_values(
+    engine: &Engine,
     conn: &mut SqliteConnection,
     table: TableId,
     group: GroupId,
 ) -> SyncResult<Vec<Value>> {
-    let values: Vec<Vec<u8>> = sqlx::query_scalar(
-        "SELECT value FROM sync_register_versions WHERE table_id = ? AND group_id = ?",
+    let spec = engine
+        .manifest()
+        .table(table)
+        .ok_or(SyncError::InvalidRequest("unknown table"))?;
+    let rows = sqlx::query(
+        "SELECT row_key, writer_id, seq, value_hash, value FROM sync_register_versions
+         WHERE table_id = ? AND group_id = ?",
     )
     .bind(i64::from(table.0))
     .bind(i64::from(group.get()))
     .fetch_all(&mut *conn)
     .await?;
-    values
-        .iter()
-        .map(|value| Value::decode(value).map_err(|_| corrupt("stored value does not decode")))
-        .collect()
+    let mut values = Vec::with_capacity(rows.len());
+    for row in &rows {
+        let value = match row.try_get::<Option<Vec<u8>>, _>(4)? {
+            Some(value) => {
+                Value::decode(&value).map_err(|_| corrupt("stored value does not decode"))?
+            }
+            None => {
+                let key: String = row.try_get(0)?;
+                let writer = log::writer_id(&row.try_get::<Vec<u8>, _>(1)?)?;
+                let seq = log::stored_u64(row.try_get(2)?, "version sequence")?;
+                let hash = log::digest(&row.try_get::<Vec<u8>, _>(3)?)?;
+                hydrate::elided_value(engine, conn, spec, &key, group, writer, seq, &hash).await?
+            }
+        };
+        values.push(value);
+    }
+    Ok(values)
 }
 
 /// Number of local captures that wait to be sealed.

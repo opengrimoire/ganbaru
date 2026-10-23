@@ -13,7 +13,7 @@
 | `sync_writers` | Every known writer of a space: public key, device, certificate, state (`active`, `retired`, `revoked`, `forked`), revocation cutoff, stored and applied sequences, and the head hash and clock of its chain. |
 | `sync_ops` | Every stored operation as its exact signed envelope, with its full causal context and state (`waiting`, `applied`, `held` with a reason). |
 | `sync_rows` | Merge state for every published row of a replicated table: live or tombstoned, a recovery flag, and a conflict mask. |
-| `sync_register_versions` | Concurrent versions of each group of each published row, at most one per writer, with the decoded value and its hash. |
+| `sync_register_versions` | Concurrent versions of each group of each published row, at most one per writer, with the encoded value and its hash. A winning value that the domain row holds is elided to null; readers take it from the domain row when it matches the hash, otherwise from the operation body, and materialization stores it again before the domain row changes or is deleted. |
 | `sync_version_refs` | The non-null reference values of each retained version, one row per reference column, indexed by referenced key so redirects and deletions find their referrers. |
 | `sync_tombstones` | Tombstones of published rows, keyed by the deleting operation, with an optional redirect or an optional cause (`cause_table`, `cause_row`) naming the deleted root a cascade repair followed. |
 
@@ -30,7 +30,7 @@
 - **Redirects point down.** A tombstone redirect is always a lower row key than the tombstoned row, so redirect chains terminate.
 - **Causes exclude redirects.** A tombstone carries a redirect or a cause, never both. A cause names the root of a cascade, so recovery groups the tombstoned row under that root and checks it against the root's coverage.
 - **Published keys are permanent.** A key present in `sync_rows` cannot be inserted again locally when its domain row is gone, which prevents resurrection and key reuse. A [derived-key table](../../algorithms/sync/README.md#derived-keys) is the exception: its rows are removed and added again through an existence register, never tombstoned.
-- **Device-local state stays outside.** Writer keys, the writer record with its sequence reservation, pause state, and carry-forward bundles live in the app config directory, never in the vault database, because the vault database is copied whole to other devices. The exception is device state that must change atomically with vault data: it lives in local tables and columns, which snapshot copies empty or reset and a replacement restores from the receiver's live database.
+- **Device-local state stays outside.** Writer keys, the writer record with its sequence reservation, pause state, and carry-forward bundles live in the app config directory, never in the vault database, because the vault database is copied whole to other devices. The exception is device state that must change atomically with vault data: it lives in local tables and columns, which snapshot copies empty or reset and a replacement restores from the receiver's live database. The vault root's `vault.lock` holds only the process lock, never data, and stays out of every archive.
 
 ## Replicated domain tables
 

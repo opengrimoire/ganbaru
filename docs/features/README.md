@@ -23,7 +23,7 @@ Source paths, schema inventories, cache tuning, device test matrices, and delive
 | Profile | Implemented | [Profile](profile.md) |
 | Contacts and invitations | Partial | [Contacts and invitations](collaboration/README.md) |
 
-Linked devices share a vault through single-writer whole-vault handoff. Quick notes, portable preferences with the profile picture, user themes, and contacts sync concurrently, editable on every linked device, and Android also exchanges in the background; this is implemented in source, with physical multi-device acceptance pending. Concurrent sync for other domains and the encrypted relay remain planned. See [Device linking and synchronization](../data/sync.md).
+Linked devices share a vault through single-writer whole-vault handoff. Quick notes, portable preferences with the profile picture, user themes, and contacts sync concurrently, editable on every linked device, and Android also exchanges in the background. Linked devices follow coordinator address changes, find the coordinator on the LAN, and connect over private and overlay networks such as Tailscale. This is implemented in source, with physical multi-device acceptance pending. Concurrent sync for other domains and the encrypted relay remain planned. See [Device linking and synchronization](../data/sync.md).
 
 ## Planned product surfaces
 

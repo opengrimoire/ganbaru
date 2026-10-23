@@ -21,7 +21,7 @@ use crate::materialize::Materialized;
 use crate::merge::{self, Batch};
 use crate::seal::{self, SealReport, SealSlot};
 use crate::visibility::{RowRef, Visibility};
-use crate::{Engine, LocalWriter, SpaceContext, hold, materialize, repair, sql, store};
+use crate::{Engine, LocalWriter, SpaceContext, hold, hydrate, materialize, repair, sql, store};
 
 /// Most operations one apply transaction takes.
 pub const MAX_OPS_PER_APPLY: usize = 256;
@@ -706,14 +706,19 @@ pub(crate) async fn finish(
         };
         let merged = merge::refresh_flags(engine, conn, batch, &mut visibility).await?;
         let plan = materialize::plan(engine, conn, batch, &mut visibility, merged).await?;
-        let mut captured = seal::captured(conn, plan.rows(engine)).await?;
+        let pending = seal::captured(conn, plan.rows(engine)).await?;
+        let mut captured = pending.clone();
         if constrained != Constrained::Skip {
             let tables = constrained_tables(engine, plan.rows(engine).map(|(table, _)| table));
             captured.extend(seal::captured_in(conn, &tables).await?);
         }
         captured.retain(|row| !attempted.contains(row));
         if captured.is_empty() {
+            // Rows whose capture stays keep their values: the capture may still be sealed.
+            let elisions = plan.elisions(engine, &pending);
             let changed = materialize::execute(engine, conn, plan).await?;
+            hydrate::elide(conn, &elisions).await?;
+            failpoint!("elide.before_commit");
             batch.dirty.clear();
             return Ok(Some(changed));
         }

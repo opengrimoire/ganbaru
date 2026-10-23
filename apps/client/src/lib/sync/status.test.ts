@@ -4,6 +4,8 @@ import { translateFromPartialCatalog, type Translate } from "$lib/i18n/translato
 import {
   canRequestSync,
   syncClockAheadLines,
+  syncConnectionLabel,
+  syncDegradedRows,
   formatSyncTime,
   syncConflictLines,
   syncDescription,
@@ -123,5 +125,49 @@ describe("sync state labels", () => {
     expect(syncStateLabel(t, "waiting_for_identity")).toBe("Waiting for your other device to confirm the link");
     expect(syncStateLabel(t, "idle")).toBe("Up to date");
     expect(syncRoleLabel(t, "hub")).toBe("Your other devices sync through this device");
+  });
+});
+
+describe("sync connectivity", () => {
+  const lan = { network: "lan", address: "192.168.1.20:43821" } as const;
+
+  it("labels the connection of a client only while it is linked", () => {
+    expect(syncConnectionLabel(t, status({ state: "idle", role: "client", connection: lan })))
+      .toBe("Connected over local network at 192.168.1.20:43821");
+    expect(syncConnectionLabel(t, status({
+      state: "syncing",
+      role: "client",
+      connection: { network: "overlay", address: "100.64.0.7:43821" },
+    }))).toBe("Connected over overlay network at 100.64.0.7:43821");
+    expect(syncConnectionLabel(t, status({ state: "offline", role: "client", connection: lan }))).toBeNull();
+    expect(syncConnectionLabel(t, status({ state: "error", role: "client", connection: lan }))).toBeNull();
+    expect(syncConnectionLabel(t, status({ state: "idle", role: "hub", connection: lan }))).toBeNull();
+    expect(syncConnectionLabel(t, status({ state: "idle", role: "client" }))).toBeNull();
+  });
+
+  it("explains each degraded reason with its recovery action", () => {
+    const rows = syncDegradedRows(t, status({
+      state: "offline",
+      role: "client",
+      degraded: ["backgroundRestricted", "standbyRestricted", "localNetworkDenied", "firewallAuthorizationRequired"],
+    }));
+    expect(rows.map((row) => [row.reason, row.action])).toEqual([
+      ["backgroundRestricted", "openBatterySettings"],
+      ["standbyRestricted", "openBatterySettings"],
+      ["localNetworkDenied", null],
+      ["firewallAuthorizationRequired", null],
+    ]);
+    expect(rows[3]?.label).toContain("Your main device was not found");
+    expect(rows.every((row) => !row.label.startsWith("sync."))).toBe(true);
+  });
+
+  it("offers the firewall action only on the coordinator", () => {
+    expect(syncDegradedRows(t, status({ state: "idle", role: "hub", degraded: ["firewallAuthorizationRequired"] })))
+      .toEqual([{
+        reason: "firewallAuthorizationRequired",
+        label: "The firewall keeps your other devices from reaching this device.",
+        action: "allowNetworkAccess",
+      }]);
+    expect(syncDegradedRows(t, status({ state: "idle", role: "hub" }))).toEqual([]);
   });
 });

@@ -1,6 +1,6 @@
 # Sync merge rules
 
-**Status: Reference.** These rules are implemented in source for Quick notes, the first replicated domain. Delivery, writers, and mixed mode are owned by [Device linking and synchronization](../../data/sync.md); the reasons behind the design are in [Sync engine decisions](../../architecture/decisions/sync-engine.md).
+**Status: Reference.** These rules are implemented in the sync engine for every replicated domain; a test-only fixture domain exercises the shapes no production domain uses yet. Delivery, writers, and mixed mode are owned by [Device linking and synchronization](../../data/sync.md); the reasons behind the design are in [Sync engine decisions](../../architecture/decisions/sync-engine.md).
 
 ## Model
 
@@ -8,7 +8,7 @@
 - **Field group.** The unit of merging inside a row: one column, or several columns that must change together. A write changes whole groups.
 - **Version.** One writer's value of one group of one row. A replica keeps at most one version per writer per group.
 - **Supersession.** A new version removes exactly the versions its causal context covers. The remaining versions of a group are mutually concurrent.
-- **Winner.** The version materialized into the domain table, chosen by the group's merge kind. Versions with equal value hashes are never a conflict.
+- **Winner.** The version materialized into the domain table, chosen by the group's merge kind. Versions with equal value hashes are never a conflict. Sealing skips a captured group whose value hashes to its uncontested winner, since writing it again changes nothing; a group forced by a conflict resolution is always written.
 - **Causal readiness.** An operation applies only after its writer's previous operation and every operation its context depends on. Validation depends only on the operation's bytes and the current manifest, never on local state or arrival order. An operation from a newer manifest version is held, and a new version may only add tables and groups or loosen rules, so an operation valid under one version stays valid under later ones.
 
 The hybrid logical clock is 48 bits of Unix milliseconds and a 16-bit counter. A replica adopts remote clocks only up to one minute past its own time. The clock never decides what is superseded or kept, only which concurrent version is displayed. Clocks are a tiebreak, not authorization, and never cause rejection: a paired writer that advances its clock wins concurrent ties until real time catches up. That is accepted because the writer already holds write authority, its operations are signed and attributable, its device can be revoked, and merges stay deterministic. Refusing far-future clocks at the hub would strand honest writers whose clock was once wrong, since later operations of the writer cannot be admitted past a refused one.
@@ -25,8 +25,11 @@ The hybrid logical clock is 48 bits of Unix milliseconds and a 16-bit counter. A
 | Reference | Greatest `(clock, writer)` over a row key that resolves through redirects | Note tag |
 | Owned children | The parent group's value is a canonical list that replaces the child rows | Body text runs, note images |
 | Existence register | Greatest `(clock, writer)` over 1 (present) or 0 (removed) on a derived-key table | None yet |
+| Tree | A reference into its own table and a position, each won as above, then deterministic [cycle and depth repair](#trees-and-acyclic-edge-sets) | None yet |
+| Acyclic edge set | Existence registers of a derived-key edge table; an edge that closes a cycle is severed | None yet |
 
 - A multi-column CHECK always lives inside one coupled register, so every materialized winner satisfies it.
+- There is no counter kind. Usage and statistics are rows keyed by device and bucket, each written by one device and merged with `Max`, so concurrent increments never meet in one version.
 - A register is surfaced when its concurrent distinct versions are shown to people as a conflict; otherwise it resolves silently. Quick note title, body, and images are surfaced. Color, tag, lifecycle, order, tag names, and tag colors are silent.
 - A group is recoverable when edits to it that a deletion did not see should be offered for recovery. Quick note title, body, images, color, tag, and lifecycle are recoverable; order, timestamps, and every tag group are not.
 
@@ -69,7 +72,7 @@ When two rows end up with equal keys, which concurrent placement can cause, the 
 
 - A table may hold deletes for domain Undo. Domain code holds a local delete in the transaction that deletes the row, for at most 10 seconds; sealing leaves the delete local until the lease ends.
 - Undo inside the lease checks that the hold still exists, then inserts the row again with its key. The capture becomes an ordinary write, so no tombstone is ever sealed and no recovery entry appears. Undo after the lease refuses, because the delete may already be sealed and published keys are never reused.
-- Published rows the delete removes through `ON DELETE CASCADE`, at any depth and in derived-key tables too, share the lease. Undo checks the hold of the rows it deleted and inserts them again with their children, so no tombstone or existence removal is sealed for any of them; expiry seals the whole set, with the children's tombstones naming their cause. Restoring the parent without its children seals the children's deletes at once, because materializing the parent would otherwise bring them back.
+- Published rows the delete removes through `ON DELETE CASCADE`, at any depth and in derived-key tables too, share the lease. Undo checks the hold of the rows it deleted and inserts them again with their children, so no tombstone or existence removal is sealed for any of them; expiry seals the whole set, with the children's tombstones naming their cause. Restoring the parent with changed values but without its children seals the children's deletes at once, because materializing the parent would otherwise bring them back. A parent restored unchanged seals nothing, so its children's deletes stay held until the lease ends.
 - A held delete seals early whenever a remote operation or a merge would write its row or a row cascading with it, so merge state and the domain table never disagree. Quiescing before a handoff or backup and revoking the local writer also end every hold.
 
 ## References

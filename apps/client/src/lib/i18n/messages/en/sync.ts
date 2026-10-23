@@ -27,6 +27,7 @@ export const sync = {
     `${count} ${count === 1 ? "change was" : "changes were"} rejected because ${count === 1 ? "it was" : "they were"} invalid`,
   conflicts: (count: number) =>
     `${count} ${count === 1 ? "item was" : "items were"} edited on two devices. Open ${count === 1 ? "it" : "them"} to choose what to keep.`,
+  lockUnsupported: "This folder's drive can't tell whether another Ganbaru app has it open. Don't open it from two apps at once, or your data can be damaged.",
   syncNow: "Sync now",
   syncNowFailed: "Sync could not start",
   pause: "Pause sync",
@@ -36,6 +37,19 @@ export const sync = {
   clockAhead: (device: string) =>
     `The clock on ${device} is ahead of this device. Its edits win conflicting changes until the clocks agree, so check its date and time.`,
   clockAheadOwn: "Some edits from this device were made while its clock was ahead. They win conflicting changes until that time passes.",
+  connection: {
+    lan: (address: string) => `Connected over local network at ${address}`,
+    overlay: (address: string) => `Connected over overlay network at ${address}`,
+  },
+  degraded: {
+    backgroundRestricted: "Android restricts Ganbaru in the background, so sync waits until you open the app.",
+    standbyRestricted: "Android rarely lets Ganbaru run in the background, so sync can be late.",
+    localNetworkDenied: "This device is not allowed to reach your other devices on the local network. Allow local network access for Ganbaru in the system settings.",
+    firewallHub: "The firewall keeps your other devices from reaching this device.",
+    firewallClient: "Your main device was not found on the network. A firewall on this device may be blocking it.",
+    openBatterySettings: "Open battery settings",
+    allowNetworkAccess: "Allow network access",
+  },
   recovery: {
     heading: "Recently deleted with unsaved edits",
     description: "These were deleted on one device while another device was still editing them.",

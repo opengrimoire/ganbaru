@@ -16,7 +16,7 @@ use super::host::SyncHost;
 #[cfg(desktop)]
 use super::hub::{HubVault, OpenHubVault, SyncHub};
 use super::recovery::{RecoveryChoice, RecoveryRequest};
-use super::status::{SyncErrorCode, SyncRole, SyncState, SyncStatusView};
+use super::status::{DegradedReasons, SyncErrorCode, SyncRole, SyncState, SyncStatusView};
 use super::transport::PairedTransport;
 use super::vault_assets::ActiveVaultAssets;
 use super::writer::{
@@ -587,6 +587,8 @@ impl ServiceState {
         let number = runtime.pass_started();
         let mut view = SyncStatusView {
             last_exchange_at_ms: self.view.last_exchange_at_ms,
+            connection: self.view.connection.clone(),
+            degraded: self.view.degraded.clone(),
             ..SyncStatusView::default()
         };
         let mut recovery = runtime.take_recovery_requests();
@@ -602,6 +604,7 @@ impl ServiceState {
                 Next::Retry
             }
         };
+        set_connectivity(host, &mut view).await;
         for request in recovery {
             let _ = request
                 .reply
@@ -929,6 +932,24 @@ impl ServiceState {
         host.emit_status(&view);
         self.view = view;
     }
+}
+
+/// Sets how the device reached its coordinator and why connectivity is degraded, from the
+/// latest coordinator dial and the host's platform probes. A device without a role syncs with
+/// nobody, so it reports neither.
+async fn set_connectivity<H: SyncHost>(host: &H, view: &mut SyncStatusView) {
+    let Some(role) = view.role else {
+        view.connection = None;
+        view.degraded.clear();
+        return;
+    };
+    let dial = super::connectivity::dial_report(role, &host.pairing());
+    view.connection = super::connectivity::connection(dial.as_ref());
+    let mut reasons = DegradedReasons::default();
+    super::connectivity::dial_reasons(dial.as_ref(), &mut reasons);
+    host.note_platform_degraded(role, dial.as_ref(), &mut reasons)
+        .await;
+    view.degraded = reasons.into_vec();
 }
 
 /// How a quiesced vault is opened to seal its captures.

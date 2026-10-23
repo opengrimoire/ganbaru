@@ -13,6 +13,7 @@ mod projects;
 mod query_plans;
 mod quick_notes;
 mod schema_catalog;
+mod sync;
 mod themes;
 
 fn block_on<F: std::future::Future>(future: F) -> F::Output {

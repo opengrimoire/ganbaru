@@ -2,12 +2,15 @@
 //! host built from the app config directory runs a pass without a Tauri runtime, such as when
 //! Android wakes the app in the background.
 
-use super::status::{SyncStatusView, emit_applied, emit_status};
+use super::status::{DegradedReasons, SyncRole, SyncStatusView, emit_applied, emit_status};
 use super::writer::{SyncFiles, WriterKeyStore};
 use crate::db::DatabaseState;
 use crate::vault::WritableVaultPath;
 use crate::vault::handoff::pairing::PairingManager;
+use crate::vault::handoff::transport::CoordinatorDialReport;
 use crate::vault::ownership::VaultOwnershipManager;
+#[cfg(any(mobile, test))]
+use crate::vault::process_managers::ProcessManagers;
 use ganbaru_contacts::{PersonKeyPair, PersonPublicKey};
 use ganbaru_sync::manifest::vault::VAULT_MANIFEST;
 use ganbaru_sync::{ChangeNotice, Engine, Hooks};
@@ -102,6 +105,17 @@ pub(crate) trait SyncHost: Clone + Send + Sync + 'static {
             self.refresh_cached(notices).await;
             self.emit_applied(changed.into_iter().collect());
         }
+    }
+
+    /// Adds the degraded reasons the platform probes find for a device in `role`, given what
+    /// its latest coordinator dial found. A host without views probes nothing.
+    fn note_platform_degraded(
+        &self,
+        _role: SyncRole,
+        _dial: Option<&CoordinatorDialReport>,
+        _reasons: &mut DegradedReasons,
+    ) -> impl Future<Output = ()> + Send {
+        async {}
     }
 
     /// This device's id.
@@ -226,6 +240,23 @@ impl<R: Runtime> SyncHost for AppHandle<R> {
     async fn refresh_cached(&self, notices: &[ChangeNotice]) {
         crate::vault::preferences::on_sync_notices(self, notices).await;
     }
+
+    async fn note_platform_degraded(
+        &self,
+        role: SyncRole,
+        dial: Option<&CoordinatorDialReport>,
+        reasons: &mut DegradedReasons,
+    ) {
+        #[cfg(target_os = "linux")]
+        super::connectivity::firewall::note(self, role, dial, reasons).await;
+        #[cfg(target_os = "android")]
+        {
+            let _ = (role, dial);
+            super::connectivity::note_android(self, reasons).await;
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "android")))]
+        let _ = (role, dial, reasons);
+    }
 }
 
 /// A host without a Tauri runtime, built from the app config directory. It shares the process
@@ -246,18 +277,28 @@ struct HeadlessParts {
 
 #[cfg(any(mobile, test))]
 impl HeadlessHost {
-    /// Loads pairing and ownership state from `config_dir` as app startup does. A vault
-    /// handoff this device started is left to the app, which reconciles it at startup, so the
-    /// host refuses to open while one is recorded.
+    /// Opens a host on the managers this process shares with the app runtime.
+    #[cfg(mobile)]
     pub(crate) fn open(config_dir: &Path) -> Result<Self, String> {
+        Self::open_with(
+            config_dir,
+            crate::vault::process_managers::process_managers(),
+        )
+    }
+
+    /// Opens a host on `managers`, loading their state from `config_dir` as app startup does
+    /// unless the process already loaded it. A vault handoff this device started is left to
+    /// the app, which reconciles it at startup, so the host refuses to open while one is
+    /// recorded.
+    pub(crate) fn open_with(config_dir: &Path, managers: &ProcessManagers) -> Result<Self, String> {
         let device_id = crate::vault::ensure_device_id_in(config_dir)?;
-        let pairing = PairingManager::default();
-        pairing.initialize(config_dir.to_path_buf(), device_id)?;
+        managers.load_pairing(config_dir, device_id)?;
+        let pairing = managers.pairing().clone();
         if pairing.outgoing_transfer()?.is_some() {
             return Err("a vault handoff is in progress; the app finishes it".to_string());
         }
-        let ownership = VaultOwnershipManager::default();
-        ownership.initialize_in(config_dir)?;
+        managers.load_ownership(config_dir)?;
+        let ownership = managers.ownership().clone();
         if let Some(coordinator) = pairing.coordinator_pin()? {
             ownership.register_remote_owner_if_missing(
                 &coordinator.vault_id,

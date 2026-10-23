@@ -230,6 +230,11 @@ fn initialize_linking<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<(), Strin
     let pairing = app.state::<PairingManager>();
     #[cfg(desktop)]
     pairing.set_identity_key_store(std::sync::Arc::new(key_store::KeyringIdentityKeyStore))?;
+    // On mobile the managed manager is the process one, which a headless sync pass may have
+    // loaded first.
+    #[cfg(mobile)]
+    super::process_managers::process_managers().load_pairing(&config_dir, device_id)?;
+    #[cfg(desktop)]
     pairing.initialize(config_dir, device_id)?;
     if let Some(coordinator) = pairing.coordinator_pin()? {
         app.state::<super::ownership::VaultOwnershipManager>()
@@ -457,7 +462,7 @@ pub(crate) async fn handoff_grant_network_access<R: Runtime>(
         .path()
         .app_config_dir()
         .map_err(|error| format!("find app config directory: {error}"))?;
-    tauri::async_runtime::spawn_blocking(move || {
+    let status = tauri::async_runtime::spawn_blocking(move || {
         network_access::grant(
             &config_dir,
             &local_addresses::reported_interface_addresses(),
@@ -465,7 +470,9 @@ pub(crate) async fn handoff_grant_network_access<R: Runtime>(
         )
     })
     .await
-    .map_err(|error| format!("authorize Linux network access: {error}"))?
+    .map_err(|error| format!("authorize Linux network access: {error}"))?;
+    crate::sync::firewall_changed(&app);
+    status
 }
 
 #[cfg(target_os = "linux")]
@@ -477,9 +484,11 @@ pub(crate) async fn handoff_revoke_network_access<R: Runtime>(
         .path()
         .app_config_dir()
         .map_err(|error| format!("find app config directory: {error}"))?;
-    tauri::async_runtime::spawn_blocking(move || network_access::revoke(&config_dir))
+    let status = tauri::async_runtime::spawn_blocking(move || network_access::revoke(&config_dir))
         .await
-        .map_err(|error| format!("revoke Linux network access: {error}"))?
+        .map_err(|error| format!("revoke Linux network access: {error}"))?;
+    crate::sync::firewall_changed(&app);
+    status
 }
 
 #[tauri::command]
@@ -699,7 +708,7 @@ fn status_vault_id(
 }
 
 #[cfg(target_os = "linux")]
-fn desktop_network_access_status<R: Runtime>(
+pub(crate) fn desktop_network_access_status<R: Runtime>(
     app: &tauri::AppHandle<R>,
 ) -> Result<network_access::NetworkAccessStatus, String> {
     match app.state::<CoordinatorLifecycle>().port()? {

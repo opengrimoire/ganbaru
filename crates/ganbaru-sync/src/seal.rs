@@ -916,6 +916,8 @@ struct Capture {
     table: i64,
     key: String,
     mask: GroupMask,
+    /// Groups written even when their value equals the retained winner.
+    forced: GroupMask,
     /// Whether the row was inserted locally since the last seal.
     created: bool,
     deleted: bool,
@@ -985,6 +987,7 @@ fn capture_from_row(row: &SqliteRow) -> SyncResult<Capture> {
         table: row.try_get(0)?,
         key: row.try_get(1)?,
         mask: GroupMask((mask | forced) as u64),
+        forced: GroupMask(forced as u64),
         created: row.try_get::<i64, _>(7)? != 0,
         deleted: row.try_get::<i64, _>(4)? != 0,
         held: row.try_get::<Option<i64>, _>(8)?.is_some(),
@@ -1387,6 +1390,63 @@ pub(crate) fn sink_roots(adjacency: &[Vec<usize>]) -> Vec<Option<usize>> {
         .collect()
 }
 
+/// Captured groups of a live row whose value hashes to their uncontested winner, so writing
+/// them again changes nothing. A group in `forced` is never among them, so resolving a conflict
+/// still writes.
+async fn unchanged_groups(
+    conn: &mut SqliteConnection,
+    table: &TableSpec,
+    key: &RowKey,
+    forced: GroupMask,
+    groups: &[GroupValue],
+) -> SyncResult<BTreeSet<GroupId>> {
+    if groups.is_empty() {
+        return Ok(BTreeSet::new());
+    }
+    let rows: Vec<(i64, Vec<u8>)> = sqlx::query_as(
+        "SELECT group_id, value_hash FROM sync_register_versions
+         WHERE table_id = ? AND row_key = ?",
+    )
+    .bind(table_param(table.id))
+    .bind(key.as_str())
+    .fetch_all(&mut *conn)
+    .await?;
+    let mut retained: BTreeMap<GroupId, BTreeSet<Digest32>> = BTreeMap::new();
+    for (group, hash) in rows {
+        retained
+            .entry(merge::group_id(group)?)
+            .or_default()
+            .insert(log::digest(&hash)?);
+    }
+    Ok(groups
+        .iter()
+        .filter(|value| {
+            !forced.contains(value.group)
+                && retained
+                    .get(&value.group)
+                    .is_some_and(|hashes| hashes.len() == 1 && hashes.contains(&value.hash))
+        })
+        .map(|value| value.group)
+        .collect())
+}
+
+/// `groups` without those in `unchanged`. The existence group stays while another group is
+/// written, and the change is dropped when nothing else remains and it is unchanged too.
+fn without_unchanged(
+    table: &TableSpec,
+    groups: Vec<GroupValue>,
+    unchanged: &BTreeSet<GroupId>,
+) -> Vec<GroupValue> {
+    let kept: Vec<GroupValue> = groups
+        .into_iter()
+        .filter(|value| table.is_exists_group(value.group) || !unchanged.contains(&value.group))
+        .collect();
+    if kept.iter().all(|value| unchanged.contains(&value.group)) {
+        return Vec::new();
+    }
+    kept
+}
+
 async fn plan_captures(
     engine: &Engine,
     conn: &mut SqliteConnection,
@@ -1461,11 +1521,14 @@ async fn plan_captures(
                     None => tombstone(table, &key, capture.replaced_by.as_deref()),
                 })
             }
-            // A derived-key row inserted again rewrites every group.
+            // A derived-key row inserted again rewrites every group, unless every group equals
+            // its uncontested winner.
             (Some(RowState::Live), DomainRow::Present(groups))
                 if capture.created && table.derived_key.is_some() =>
             {
-                Some(Change {
+                let unchanged =
+                    unchanged_groups(conn, table, &key, capture.forced, &groups).await?;
+                (unchanged.len() < groups.len()).then(|| Change {
                     table: table.id,
                     row: key.clone(),
                     action: ChangeAction::Write,
@@ -1484,6 +1547,9 @@ async fn plan_captures(
                                 .is_some_and(|group| group.kind != MergeKind::Immutable)
                     })
                     .collect();
+                let unchanged =
+                    unchanged_groups(conn, table, &key, capture.forced, &groups).await?;
+                let groups = without_unchanged(table, groups, &unchanged);
                 (!groups.is_empty()).then(|| Change {
                     table: table.id,
                     row: key.clone(),

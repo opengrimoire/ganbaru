@@ -17,6 +17,7 @@ use std::time::Duration;
 use tokio::sync::Notify;
 
 mod assets;
+mod backup;
 mod exchange;
 
 fn block_on<F: std::future::Future>(future: F) -> F::Output {
@@ -98,7 +99,10 @@ async fn write_migrated_database(path: &Path) {
 /// Creates a migrated vault database at `path` holding the test person identity.
 async fn create_vault(registry: &DatabasePoolRegistry, path: &Path) -> sqlx::SqlitePool {
     write_migrated_database(path).await;
-    let pool = registry.connect_path(path).await.expect("open migrated vault");
+    let pool = registry
+        .connect_path(path)
+        .await
+        .expect("open migrated vault");
     sqlx::query(
         "INSERT INTO contacts_local_identity
             (singleton, public_key, created_at)

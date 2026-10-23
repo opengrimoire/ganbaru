@@ -6,10 +6,11 @@
 //! and when the replacement holds drastically less data, the whole replaced vault
 //! layout, flagged for review on this device.
 
-use super::backup::{BUNDLE_DIRECTORIES, holds_vault};
+use super::backup::holds_vault;
 use super::{APP_SQLITE_FILE, CONFIG_FILE, VAULT_MANIFEST_FILE, active_writable_vault_path};
 use chrono::{DateTime, NaiveDateTime, SecondsFormat, TimeDelta, Utc};
 use ganbaru_atomic_files::FileAccess;
+use ganbaru_sync_replica::backup::BUNDLE_DIRECTORIES;
 use serde::{Deserialize, Serialize};
 use sqlx::Row;
 use std::fs;

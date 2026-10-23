@@ -168,6 +168,24 @@ pub fn validate_discovery_key(key: &str) -> Result<(), String> {
     crate::discovery::DiscoveryKey::decode(key).map(|_| ())
 }
 
+/// The unpadded base64url form of a sync device public key, as enrollment carries it.
+pub fn encode_sync_device_key(key: &ganbaru_sync_contracts::DevicePublicKey) -> String {
+    base64::Engine::encode(
+        &base64::engine::general_purpose::URL_SAFE_NO_PAD,
+        key.as_bytes(),
+    )
+}
+
+/// Decodes the unpadded base64url form of a sync device public key.
+pub fn decode_sync_device_key(
+    text: &str,
+) -> Result<ganbaru_sync_contracts::DevicePublicKey, String> {
+    let bytes = base64::Engine::decode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, text)
+        .map_err(|_| "sync device key is invalid".to_string())?;
+    ganbaru_sync_contracts::DevicePublicKey::from_slice(&bytes)
+        .map_err(|_| "sync device key is invalid".to_string())
+}
+
 pub(super) fn validate_writer(writer: &str) -> Result<(), String> {
     if writer.len() != WRITER_TEXT_LENGTH || !is_lower_hex(writer) {
         return Err("sync writer id is invalid".to_string());

@@ -496,10 +496,23 @@ pub(super) async fn ensure_priority_matches_project(
 }
 
 pub(super) async fn ensure_parent_task_matches_project(
-    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    conn: &mut sqlx::SqliteConnection,
     project_id: &str,
     parent_task_id: &str,
 ) -> Result<(), String> {
+    if !can_parent_subtasks(conn, project_id, parent_task_id).await? {
+        return Err("parent task must be a top-level task in the same project".to_string());
+    }
+    Ok(())
+}
+
+/// Whether `parent_task_id` can hold subtasks of a task in `project_id`: it is a top-level task
+/// of that project, which keeps subtasks one level deep.
+pub(super) async fn can_parent_subtasks(
+    conn: &mut sqlx::SqliteConnection,
+    project_id: &str,
+    parent_task_id: &str,
+) -> Result<bool, String> {
     let count: i64 = sqlx::query_scalar(
         "SELECT COUNT(*)
              FROM project_tasks
@@ -507,13 +520,10 @@ pub(super) async fn ensure_parent_task_matches_project(
     )
     .bind(parent_task_id)
     .bind(project_id)
-    .fetch_one(&mut **tx)
+    .fetch_one(conn)
     .await
     .map_err(|e| format!("check parent project task: {e}"))?;
-    if count == 0 {
-        return Err("parent task must be a top-level task in the same project".to_string());
-    }
-    Ok(())
+    Ok(count > 0)
 }
 
 pub(super) async fn ensure_task_has_no_children(

@@ -28,7 +28,7 @@ fn restore_projects_row(conn: &mut SqliteConnection, row: RecoveredRow) -> Resto
     })
 }
 
-fn rank(index: u32) -> String {
+pub(super) fn rank(index: u32) -> String {
     OrderKey::rank(index).expect("order key").into_string()
 }
 
@@ -69,15 +69,15 @@ async fn remove_unpublished_groups(replica: &Replica) {
 }
 
 /// A hub and a phone that both hold the seeded Projects rows.
-struct Pair {
-    hub: Replica,
-    phone: Replica,
+pub(super) struct Pair {
+    pub(super) hub: Replica,
+    pub(super) phone: Replica,
     transport: DirectTransport,
     _changes: watch::Sender<u64>,
 }
 
 impl Pair {
-    async fn new(label: &str) -> Self {
+    pub(super) async fn new(label: &str) -> Self {
         let mut hub_replica = Replica::new(&format!("{label}-hub"), HUB_DEVICE).await;
         let mut phone = Replica::new(&format!("{label}-phone"), PHONE_DEVICE).await;
         let (transport, changes) = hub(&hub_replica);
@@ -99,20 +99,20 @@ impl Pair {
         pair
     }
 
-    async fn finish(self) {
+    pub(super) async fn finish(self) {
         self.hub.close().await;
         self.phone.close().await;
     }
 
-    async fn hub_edit(&mut self, sql: &str) {
+    pub(super) async fn hub_edit(&mut self, sql: &str) {
         edit_sql(&mut self.hub, sql.to_string()).await;
     }
 
-    async fn phone_edit(&mut self, sql: &str) {
+    pub(super) async fn phone_edit(&mut self, sql: &str) {
         edit_sql(&mut self.phone, sql.to_string()).await;
     }
 
-    async fn converge(&mut self) {
+    pub(super) async fn converge(&mut self) {
         converge(&mut self.hub, &mut self.phone, &self.transport).await;
     }
 
@@ -169,7 +169,7 @@ impl Pair {
     }
 
     /// One text column of `sql`, which must read the same on both replicas.
-    async fn texts(&self, sql: String) -> Vec<String> {
+    pub(super) async fn texts(&self, sql: String) -> Vec<String> {
         let on_hub = music_texts(&self.hub, sql.clone()).await;
         assert_eq!(on_hub, music_texts(&self.phone, sql).await);
         on_hub
@@ -469,6 +469,112 @@ fn a_task_whose_project_is_gone_is_refused_and_can_be_discarded() {
             .await;
         pair.converge().await;
         pair.refuse_then_discard(&TASKS, "task-1").await;
+        pair.finish().await;
+    });
+}
+
+/// Top-level tasks `task-2` and `task-3` in the first section and status, with `task-3` a
+/// subtask of `task-2` instead when `subtask` is set.
+fn add_tasks_on_hub(subtask: bool) -> String {
+    let parent = if subtask { "'task-2'" } else { "NULL" };
+    format!(
+        "INSERT INTO project_tasks
+            (id, project_id, section_id, status_id, title, section_order_key, status_order_key)
+         VALUES ('task-2', 'project-1', 'section-1', 'status-1', 'Plan', '{r1}', '{r1}');
+         INSERT INTO project_tasks
+            (id, project_id, section_id, status_id, parent_task_id, title, section_order_key,
+             status_order_key)
+         VALUES ('task-3', 'project-1', 'section-1', 'status-1', {parent}, 'Draft', '{r2}',
+                 '{r2}');",
+        r1 = rank(1),
+        r2 = rank(2),
+    )
+}
+
+fn dependency_sql(blocking: &str, blocked: &str) -> String {
+    let key = ganbaru_projects::keys::dependency_key(blocking, blocked).expect("dependency key");
+    format!(
+        "INSERT INTO project_task_dependencies
+            (id, sync_key, blocking_task_id, blocked_task_id, dependency_type)
+         VALUES ('{key}', '{key}', '{blocking}', '{blocked}', 'blocks');"
+    )
+}
+
+const RENAME_TASK_3_ON_PHONE: &str =
+    "UPDATE project_tasks SET title = 'Draft more' WHERE id = 'task-3'";
+
+#[test]
+fn a_restored_subtask_whose_parent_became_a_subtask_is_top_level() {
+    block_on(async {
+        let mut pair = Pair::new("projects-recovery-subtask-depth").await;
+        pair.hub_edit(&add_tasks_on_hub(true)).await;
+        pair.converge().await;
+        pair.hub_edit("DELETE FROM project_tasks WHERE id = 'task-3'")
+            .await;
+        pair.phone_edit(RENAME_TASK_3_ON_PHONE).await;
+        pair.converge().await;
+        assert_eq!(pair.offers().await, ["task-3"]);
+        pair.hub_edit("UPDATE project_tasks SET parent_task_id = 'task-1' WHERE id = 'task-2'")
+            .await;
+        pair.converge().await;
+
+        let task = pair.restore(&TASKS, "task-3").await;
+        assert_eq!(
+            pair.texts(
+                "SELECT id || '>' || coalesce(parent_task_id, '-') FROM project_tasks
+                 WHERE id IN ('task-1', 'task-2') ORDER BY id"
+                    .to_string()
+            )
+            .await,
+            ["task-1>-", "task-2>task-1"]
+        );
+        assert_eq!(
+            pair.texts(format!(
+                "SELECT title || '|' || coalesce(parent_task_id, '-') FROM project_tasks
+                 WHERE id = '{task}'"
+            ))
+            .await,
+            ["Draft more|-"]
+        );
+        pair.finish().await;
+    });
+}
+
+#[test]
+fn a_restored_dependency_that_would_close_a_cycle_is_left_out() {
+    block_on(async {
+        let mut pair = Pair::new("projects-recovery-dependency-cycle").await;
+        pair.hub_edit(&format!(
+            "{}{}{}",
+            add_tasks_on_hub(false),
+            dependency_sql("task-3", "task-1"),
+            dependency_sql("task-2", "task-3"),
+        ))
+        .await;
+        pair.converge().await;
+        pair.hub_edit("DELETE FROM project_tasks WHERE id = 'task-3'")
+            .await;
+        pair.phone_edit(RENAME_TASK_3_ON_PHONE).await;
+        pair.converge().await;
+        assert_eq!(pair.offers().await, ["task-3"]);
+        pair.hub_edit(&dependency_sql("task-1", "task-2")).await;
+        pair.converge().await;
+
+        let task = pair.restore(&TASKS, "task-3").await;
+        let edges = pair
+            .texts(
+                "SELECT blocking_task_id || '>' || blocked_task_id FROM project_task_dependencies
+                 ORDER BY 1"
+                    .to_string(),
+            )
+            .await;
+        // Either restored edge alone closes no cycle with task-1 > task-2; both together would.
+        assert_eq!(edges.len(), 2, "{edges:?}");
+        assert!(edges.contains(&"task-1>task-2".to_string()), "{edges:?}");
+        assert!(
+            edges.contains(&format!("{task}>task-1")) || edges.contains(&format!("task-2>{task}")),
+            "{edges:?}"
+        );
         pair.finish().await;
     });
 }

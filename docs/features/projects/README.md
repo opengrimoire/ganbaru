@@ -47,7 +47,7 @@ Rationale: Calendar, Pomodoro, and Music need stable everyday categories that ex
 
 Projects, tasks, schemas, views, links, and history are SQLite-canonical. Working-folder files and Git repositories remain file-authoritative and can be linked to a project without becoming project rows. Project Notes are canonical Notes pages with project membership.
 
-Every linked device edits Projects offline, including Android. Deleting a group, removing an external working folder, and linking or unlinking a task and a Calendar event stay on the main device, and a linked device that tries them shows the ownership prompt; see [Device linking and synchronization](../../data/sync.md).
+Every linked device edits Projects offline, including Android, and links or unlinks tasks and Calendar events. Deleting a group and removing an external working folder stay on the main device, and a linked device that tries them shows the ownership prompt; see [Device linking and synchronization](../../data/sync.md).
 
 When linked devices edit the same project name, task title or description, or checklist item title, the Projects view that shows it offers the concurrent versions to choose from. A dependency that two devices added and that together closed a cycle is hidden and offered the same way, labelled as removed to break a cycle: keeping it removed is always available, and adding it back is available only while it would not recreate the cycle. Deleted groups, projects, sections, statuses, and tasks with edits the deletion missed appear in the sync settings recovery list with a preview and can be restored or discarded.
 

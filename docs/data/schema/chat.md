@@ -8,6 +8,8 @@ Authorization semantics are normative in [Chat access control](../access-control
 
 The current organization layer is project-owned channels. Each project has a built-in general channel and may have additional navigable or archived channels. Channel identity, name, archive state, ordering, and membership are independent of any provider.
 
+Projects and working folders replicate between devices, so Chat creates a project's general channel and each folder's current-folder execution environment on demand, when a device that writes Chat lists channels, environments, or assignment targets, or resolves a run target. The general channel's ids derive from the project id, so devices agree on them. A device that cannot write Chat shows only stored rows.
+
 Membership records participant identity, capability, history boundary, defaults, and current authorization revision. Personal navigation sections and last-selected channel are device-local presentation state rather than shared organization membership.
 
 Canonical messages and coordination events retain channel identity, author or actor identity, sequence, reply or reference provenance, and delivery state. A provider transcript is not a replacement for this history.

@@ -2,6 +2,7 @@
 
 use crate::db;
 use chrono::{DateTime, SecondsFormat, Utc};
+use ganbaru_chat::project_defaults;
 use ganbaru_chat_contracts::models::{
     ChatChannelId, ChatChannelRead, ChatConversationId, ChatError, ChatErrorCode, ChatResult,
     ChatWorkAssignmentState, UtcTimestamp,
@@ -44,7 +45,9 @@ pub async fn chat_list_channels(
     archived: bool,
 ) -> ChatResult<Vec<ChatChannelRead>> {
     validate_project_id(&project_id)?;
-    read_channels(&chat_pool(app, db_url).await?, Some(&project_id), archived).await
+    let pool = chat_pool(app.clone(), db_url).await?;
+    ensure_chat_defaults(&app, &pool, ChatDefaultsScope::Project(&project_id)).await?;
+    read_channels(&pool, Some(&project_id), archived).await
 }
 
 #[tauri::command]
@@ -52,7 +55,9 @@ pub async fn chat_list_navigation_channels(
     app: tauri::AppHandle,
     db_url: String,
 ) -> ChatResult<Vec<ChatChannelRead>> {
-    read_channels(&chat_pool(app, db_url).await?, None, false).await
+    let pool = chat_pool(app.clone(), db_url).await?;
+    ensure_chat_defaults(&app, &pool, ChatDefaultsScope::AllProjects).await?;
+    read_channels(&pool, None, false).await
 }
 
 #[tauri::command]
@@ -577,6 +582,59 @@ pub(crate) async fn chat_pool(app: tauri::AppHandle, db_url: String) -> ChatResu
             true,
         )
     })
+}
+
+/// Projects whose Chat defaults a command creates before it reads. A missing project or working
+/// folder leaves nothing to create.
+pub(crate) enum ChatDefaultsScope<'a> {
+    /// One project.
+    Project(&'a str),
+    /// The project that owns a working folder.
+    WorkingFolder(&'a str),
+    /// Every project.
+    AllProjects,
+}
+
+/// Creates missing default channels and current-folder execution environments for `scope` when
+/// this device writes the vault. A device that cannot write reads only what is stored.
+pub(crate) async fn ensure_chat_defaults(
+    app: &tauri::AppHandle,
+    pool: &SqlitePool,
+    scope: ChatDefaultsScope<'_>,
+) -> ChatResult<()> {
+    let status = crate::vault::ownership::active_status(app).map_err(|_| {
+        ChatError::new(
+            ChatErrorCode::Persistence,
+            "Vault ownership is unavailable",
+            true,
+        )
+    })?;
+    if !status.can_write {
+        return Ok(());
+    }
+    let now = now_timestamp()?;
+    let mut transaction = pool.begin().await.map_err(persistence_error)?;
+    let ensured = match scope {
+        ChatDefaultsScope::Project(project_id) => {
+            project_defaults::ensure_project_chat_defaults(&mut transaction, project_id, &now).await
+        }
+        ChatDefaultsScope::WorkingFolder(working_folder_id) => {
+            project_defaults::ensure_working_folder_chat_defaults(
+                &mut transaction,
+                working_folder_id,
+                &now,
+            )
+            .await
+        }
+        ChatDefaultsScope::AllProjects => {
+            project_defaults::ensure_all_project_chat_defaults(&mut transaction, &now).await
+        }
+    };
+    match ensured {
+        Ok(()) => transaction.commit().await.map_err(persistence_error),
+        Err(error) if error.code == ChatErrorCode::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
 }
 
 pub(crate) fn now_timestamp() -> ChatResult<UtcTimestamp> {

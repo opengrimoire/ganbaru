@@ -97,7 +97,9 @@ A task edit sends every field, so it also sends the revision it was based on, an
 
 ## Working folders
 
-Every project has a durable managed working-folder row and a managed directory below the vault named by project identity. Creation uses staged compensation so a project never claims a folder that does not exist.
+Every project has a durable managed working-folder row and a managed directory below the vault named by project identity. Creation uses staged compensation so a project never claims a folder that does not exist. Folder ids stay within 64 bytes because they become sync row keys, so a project id too long for its managed folder id is refused.
+
+Creating a project or a working folder creates no Chat rows; Chat creates its defaults on demand (see [Chat schema](chat.md#organizational-layer)). The stored primary folder is a preference that may name a folder not present yet: the effective primary is the stored folder when it exists, belongs to the project, and is not archived, and the managed folder otherwise. A project without a stored row reads the managed folder at revision 0. The stored primary folder cannot be archived or removed until another folder is promoted.
 
 External folders use the same logical identity but resolve through a device-local binding; absolute paths and filesystem fingerprints never enter the database. Chat authority over a project does not imply access to its folders; grants are governed by [Chat access control](../access-control.md).
 

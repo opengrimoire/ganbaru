@@ -87,7 +87,10 @@ fn acknowledging_seals_the_genesis_and_acknowledges_changes_of_other_writers() {
         assert_eq!(own_kind(&mut b, 1).await, 1);
         assert_eq!(own_kind(&mut b, 3).await, 1);
         let head = b.applied_vector().await;
-        assert_eq!(head.get(&a.writer()), a.applied_vector().await.get(&a.writer()));
+        assert_eq!(
+            head.get(&a.writer()),
+            a.applied_vector().await.get(&a.writer())
+        );
 
         // The genesis of B is not an acknowledgement, so A acknowledges it once.
         deliver(&mut a, &mut b).await;
@@ -136,7 +139,11 @@ fn an_acknowledgement_waits_out_the_interval_since_the_previous_one() {
         acknowledge(&mut b).await;
         let first = b.now_ms;
 
-        edit(&mut a, "UPDATE quick_note_tags SET name = 'Home' WHERE id = 'tag-1'").await;
+        edit(
+            &mut a,
+            "UPDATE quick_note_tags SET name = 'Home' WHERE id = 'tag-1'",
+        )
+        .await;
         b.now_ms = first + ACKNOWLEDGEMENT_INTERVAL_MS - 1;
         deliver(&mut b, &mut a).await;
         let before = total_ops(&mut b).await;
@@ -175,8 +182,7 @@ fn acknowledging_more_writers_than_a_header_lists_seals_consecutive_acknowledgem
             let mut seed = [0u8; 32];
             seed[..8].copy_from_slice(&(writer as u64).to_le_bytes());
             seed[31] = 2;
-            minter.identity =
-                Identity::new(seed, &minter.person, &device_id(100 + writer), None);
+            minter.identity = Identity::new(seed, &minter.person, &device_id(100 + writer), None);
             minter.seal().await.unwrap();
         }
         let geneses = minter.ops_since(&VersionVector::new()).await;
@@ -194,7 +200,10 @@ fn acknowledging_more_writers_than_a_header_lists_seals_consecutive_acknowledgem
                 dependencies.push(operation.header.dependencies.len());
             }
         }
-        assert_eq!(dependencies, vec![MAX_DEPENDENCIES, minted - MAX_DEPENDENCIES]);
+        assert_eq!(
+            dependencies,
+            vec![MAX_DEPENDENCIES, minted - MAX_DEPENDENCIES]
+        );
         assert_eq!(acknowledge(&mut a).await, SealReport::default());
     });
 }
@@ -205,7 +214,11 @@ fn a_fork_reseals_acknowledgements_as_acknowledgements() {
         let (mut a, mut other) = tagged_pair().await;
         let mut hub = Replica::new(2, 1).await;
         let mut clone = a.clone_installation(3).await;
-        edit(&mut a, "UPDATE quick_note_tags SET name = 'Original' WHERE id = 'tag-1'").await;
+        edit(
+            &mut a,
+            "UPDATE quick_note_tags SET name = 'Original' WHERE id = 'tag-1'",
+        )
+        .await;
         edit(
             &mut other,
             "INSERT INTO quick_note_tags (id, name, order_key) VALUES ('tag-2', 'Home', 'a1')",

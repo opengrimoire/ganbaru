@@ -13,6 +13,7 @@ mod preferences;
 mod publication;
 mod replica;
 mod sim;
+mod stability;
 mod trigger_policies;
 mod values;
 

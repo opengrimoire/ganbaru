@@ -173,4 +173,3 @@ async fn newest_stored_at(
         .map(|at| stored_u64(at, "operation storage time"))
         .transpose()
 }
-

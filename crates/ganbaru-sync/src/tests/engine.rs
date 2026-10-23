@@ -1762,6 +1762,17 @@ fn failpoints_roll_back_every_entry_point() {
         })
         .await;
         assert_eq!(b.domain_dump().await, a.domain_dump().await);
+        let acknowledged =
+            assert_rolls_back(b, "acknowledge.before_commit", async |r: &mut Replica| {
+                r.engine
+                    .acknowledge(&mut r.conn, &r.ctx, &mut r.identity.local(), r.now_ms)
+                    .await
+            })
+            .await;
+        assert_eq!(
+            acknowledged.sealed_ops, 2,
+            "the genesis and the acknowledgement"
+        );
 
         b.exec("DELETE FROM quick_notes WHERE id = 'note-1'").await;
         b.seal().await.unwrap();

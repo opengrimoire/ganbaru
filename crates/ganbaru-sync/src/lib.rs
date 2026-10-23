@@ -31,6 +31,7 @@ pub mod hooks;
 pub mod local;
 pub mod manifest;
 pub mod seed;
+pub mod stability;
 pub mod triggers;
 
 mod apply;

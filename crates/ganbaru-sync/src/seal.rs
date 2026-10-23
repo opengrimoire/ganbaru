@@ -528,16 +528,16 @@ impl Sealer {
         while pending.peek().is_some() {
             let dependencies = self
                 .catch_up(
-                engine,
-                conn,
-                ctx,
-                batch,
-                writer,
-                Advance::Changes,
-                replay,
-                now_ms,
-                report,
-            )
+                    engine,
+                    conn,
+                    ctx,
+                    batch,
+                    writer,
+                    Advance::Changes,
+                    replay,
+                    now_ms,
+                    report,
+                )
                 .await?;
             let mut header = header_base(dependencies.len());
             let mut body = 0;

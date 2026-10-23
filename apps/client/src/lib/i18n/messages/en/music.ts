@@ -172,8 +172,6 @@ export const music = {
     playlistRestoreFailed: "The playlist could not be restored",
     itemUntitled: "Untitled track",
     itemRecoveryNote: "This track was removed from the library on another device. Its edits cannot be restored, so they can only be discarded.",
-    itemRestored: "Track restored",
-    itemRestoreFailed: "The track could not be restored",
   },
   builder: {
     defaultPlaylist: {

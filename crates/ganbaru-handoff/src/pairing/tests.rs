@@ -1,5 +1,13 @@
 use super::*;
 use std::path::Path;
+use std::sync::LazyLock;
+
+/// A sync device key every enrolled test device presents.
+static SYNC_DEVICE_KEY: LazyLock<String> = LazyLock::new(|| {
+    crate::protocol::encode_sync_device_key(&ganbaru_sync_contracts::DevicePublicKey::from_bytes(
+        [3; 32],
+    ))
+});
 
 struct TestDirectory(PathBuf);
 
@@ -33,6 +41,7 @@ fn enrollment<'a>(invitation: &'a PairingInvitation, phone: &'a StoredIdentity) 
         device_label: "Phone",
         device_kind: DeviceKind::Phone,
         certificate_b64: &phone.certificate,
+        sync_device_key: &SYNC_DEVICE_KEY,
     }
 }
 
@@ -70,6 +79,7 @@ fn enroll_identity(
                 DeviceKind::Computer
             },
             certificate_b64: &identity.certificate,
+            sync_device_key: &SYNC_DEVICE_KEY,
         },
         now_ms + 1,
     )

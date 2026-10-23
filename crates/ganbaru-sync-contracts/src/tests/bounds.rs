@@ -1,17 +1,18 @@
 use super::fixtures::{
-    GOLDEN_DEVICE_ID, authorization_operation, group_value, header, proposal, row, space,
-    writer_id, writer_key,
+    GOLDEN_DEVICE_ID, authorization_operation, golden_charter, group_value, header, person,
+    proposal, row, space, writer_id, writer_key,
 };
 use crate::bounds::{
-    MAX_BLOB_FIELD_BYTES, MAX_CHANGES_PER_OPERATION, MAX_DEPENDENCIES, MAX_FIELDS_PER_VALUE,
-    MAX_HEADER_BYTES, MAX_LATE_RESOLUTIONS, MAX_OPERATION_BYTES, MAX_REMOVAL_CUTOFFS,
-    MAX_ROW_KEY_BYTES, MAX_TEXT_FIELD_BYTES, MAX_WRITERS_PER_SPACE,
+    MAX_BLOB_FIELD_BYTES, MAX_CHANGES_PER_OPERATION, MAX_CHARTER_BYTES, MAX_DEPENDENCIES,
+    MAX_DEVICE_ID_BYTES, MAX_FIELDS_PER_VALUE, MAX_HEADER_BYTES, MAX_LATE_RESOLUTIONS,
+    MAX_OPERATION_BYTES, MAX_REMOVAL_CUTOFFS, MAX_ROW_KEY_BYTES, MAX_TEXT_FIELD_BYTES,
+    MAX_WRITERS_PER_SPACE,
 };
 use crate::codec::CodecError;
 use crate::{
-    AuthorizationError, AuthorizationRecord, Change, ChangeAction, Content, Entry, Envelope, Field,
-    Handover, LateResolution, LateRow, Operation, OperationError, Remove, ResolveLate, Sequencing,
-    TableId, Value, VersionVector, WriterId,
+    AuthorizationError, AuthorizationRecord, Change, ChangeAction, CharterError, Content, Entry,
+    Envelope, Field, Handover, LateResolution, LateRow, Operation, OperationError, Remove,
+    ResolveLate, Sequencing, SignedCharter, TableId, Value, VersionVector, WriterId, sign_charter,
 };
 
 const PREVIOUS_HASH: [u8; 32] = [7; 32];
@@ -330,4 +331,20 @@ fn the_largest_late_resolution_fits_one_operation() {
         rows,
     });
     seal_and_reopen(authorization_record(entry, Sequencing::Empty, 0)).unwrap();
+}
+
+#[test]
+fn the_charter_bound_fits_the_largest_charter_and_refuses_more() {
+    let mut charter = golden_charter().charter;
+    charter.anchor_device_id = "d".repeat(MAX_DEVICE_ID_BYTES);
+    charter.created_at_ms = i64::MAX;
+    let encoded = sign_charter(&charter, &person()).unwrap().encode();
+    assert_eq!(encoded.len(), MAX_CHARTER_BYTES);
+    assert!(SignedCharter::decode(&encoded).is_ok());
+    let mut oversized = encoded;
+    oversized.push(0);
+    assert_eq!(
+        SignedCharter::decode(&oversized),
+        Err(CharterError::Codec(CodecError::Bounds("space charter")))
+    );
 }

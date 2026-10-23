@@ -6,7 +6,7 @@ use ganbaru_sync_contracts::bounds::MAX_DEPENDENCIES;
 use ganbaru_sync_contracts::{Content, Envelope, VersionVector, WriterId};
 
 use super::block_on;
-use super::replica::{Identity, Replica, device_id};
+use super::replica::{Replica, mint_writers, spread_devices};
 use crate::acknowledge::{ACKNOWLEDGEMENT_INTERVAL_MS, KEEPALIVE_INTERVAL_MS};
 use crate::{SealReport, StoreOutcome, StoreRefusal};
 
@@ -160,15 +160,16 @@ fn an_acknowledgement_waits_out_the_interval_since_the_previous_one() {
 fn a_keepalive_acknowledgement_follows_a_quiet_week() {
     block_on(async {
         let mut a = Replica::new(0, 1).await;
+        // The genesis acknowledges the authorization log the space template holds.
         let report = acknowledge(&mut a).await;
-        assert_eq!((report.sealed_ops, report.last_seq), (1, Some(1)));
+        assert_eq!((report.sealed_ops, report.last_seq), (2, Some(2)));
         let genesis_at = a.now_ms;
 
         a.now_ms = genesis_at + KEEPALIVE_INTERVAL_MS - 1;
         assert_eq!(acknowledge(&mut a).await, SealReport::default());
         a.now_ms = genesis_at + KEEPALIVE_INTERVAL_MS;
-        assert_eq!(acknowledge(&mut a).await.last_seq, Some(2));
-        assert_eq!(own_kind(&mut a, 3).await, 1);
+        assert_eq!(acknowledge(&mut a).await.last_seq, Some(3));
+        assert_eq!(own_kind(&mut a, 3).await, 2);
         assert_eq!(acknowledge(&mut a).await, SealReport::default());
     });
 }
@@ -177,17 +178,10 @@ fn a_keepalive_acknowledgement_follows_a_quiet_week() {
 fn acknowledging_more_writers_than_a_header_lists_seals_consecutive_acknowledgements() {
     block_on(async {
         let minted = MAX_DEPENDENCIES + MAX_DEPENDENCIES / 2;
-        let mut minter = Replica::new(9, 1).await;
-        for writer in 0..minted {
-            let mut seed = [0u8; 32];
-            seed[..8].copy_from_slice(&(writer as u64).to_le_bytes());
-            seed[31] = 2;
-            minter.identity = Identity::new(seed, &minter.person, &device_id(100 + writer), None);
-            minter.seal().await.unwrap();
-        }
-        let geneses = minter.ops_since(&VersionVector::new()).await;
+        let minted_writers = mint_writers(0..minted, spread_devices).await;
         let mut a = Replica::new(0, 1).await;
-        a.receive(&geneses).await;
+        minted_writers.enroll(&mut a).await;
+        a.receive(&minted_writers.geneses).await;
         a.apply_all().await.unwrap();
 
         let report = acknowledge(&mut a).await;
@@ -202,7 +196,8 @@ fn acknowledging_more_writers_than_a_header_lists_seals_consecutive_acknowledgem
         }
         assert_eq!(
             dependencies,
-            vec![MAX_DEPENDENCIES, minted - MAX_DEPENDENCIES]
+            vec![MAX_DEPENDENCIES, minted + 1 - MAX_DEPENDENCIES],
+            "the minted writers and the authority writer",
         );
         assert_eq!(acknowledge(&mut a).await, SealReport::default());
     });

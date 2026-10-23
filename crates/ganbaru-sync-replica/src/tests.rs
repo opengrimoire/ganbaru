@@ -1,13 +1,15 @@
 use super::access::vault_connection_hook;
+use super::authority::{AnchorKeys, Founding, ensure_charter};
 use super::carry_forward;
 use super::writer::{
-    FileKeyStore, RESERVATION_BLOCK, SuccessorPlan, SyncFiles, WriterCheck, WriterKeyStore,
+    FileKeyStore, RESERVATION_BLOCK, SuccessorPlan, SyncFiles, SyncKey, SyncKeyStore, WriterCheck,
     WriterRecord, check_writer, create_writer, read_record, read_stored_writer, record_matches,
 };
 use ganbaru_contacts::PersonKeyPair;
 use ganbaru_db::{DatabaseAccessMode, DatabasePoolRegistry};
 use ganbaru_sync::local::{self, LocalWriterHead};
 use ganbaru_sync::{Engine, SpaceContext, WriterState};
+use ganbaru_sync_contracts::{AdminKeyPair, DeviceKeyPair, RecoverySeed};
 use sqlx::SqliteConnection;
 use sqlx::pool::PoolConnection;
 use std::path::{Path, PathBuf};
@@ -72,6 +74,20 @@ fn person() -> PersonKeyPair {
     PersonKeyPair::from_seed(&[7; 32]).expect("test person seed")
 }
 
+/// The test device key of the anchor [`DEVICE_ID`].
+fn device() -> DeviceKeyPair {
+    DeviceKeyPair::from_seed(&[8; 32]).expect("test device seed")
+}
+
+/// The anchor keys of [`DEVICE_ID`].
+fn anchor_keys() -> AnchorKeys {
+    AnchorKeys {
+        device: device(),
+        admin: AdminKeyPair::from_seed(&[9; 32]).expect("test admin seed"),
+        recovery: RecoverySeed::from_bytes([10; 32]),
+    }
+}
+
 /// Writes a copy of the process-wide migrated template database to `path`, so connecting to it
 /// only validates the applied migrations instead of running the whole chain.
 ///
@@ -115,16 +131,27 @@ async fn create_vault(registry: &DatabasePoolRegistry, path: &Path) -> sqlx::Sql
     pool
 }
 
-/// Initializes the test space, coordinated by the device `coordinator`.
-async fn context(conn: &mut SqliteConnection, coordinator: &str) -> SpaceContext {
+/// Initializes the test space, founded by [`DEVICE_ID`] as its anchor.
+async fn context(conn: &mut SqliteConnection) -> SpaceContext {
     Engine::vault()
         .init_space(conn, VAULT_ID, NOW_MS)
         .await
         .expect("initialize space");
-    local::space_context(conn, VAULT_ID, coordinator)
+    let ctx = local::space_context(conn, VAULT_ID)
         .await
         .expect("read space")
-        .expect("space context")
+        .expect("space context");
+    let founding = Founding {
+        device_id: DEVICE_ID,
+        tls_fingerprint: [11; 32],
+        discovery_key: [12; 32],
+        person: &person(),
+        now_ms: NOW_MS,
+    };
+    ensure_charter(&Engine::vault(), conn, &ctx, &anchor_keys(), &founding)
+        .await
+        .expect("found space");
+    ctx
 }
 
 async fn add_note(conn: &mut SqliteConnection, id: &str) {
@@ -147,7 +174,7 @@ async fn check(
 ) -> WriterCheck {
     let files = directory.files();
     let stored = read_stored_writer(&files, &directory.keys()).expect("read stored writer");
-    check_writer(engine, conn, ctx, &files, stored)
+    check_writer(engine, conn, ctx, &files, &device().public_key(), stored)
         .await
         .expect("check writer")
 }
@@ -208,7 +235,7 @@ fn reservations_grow_in_blocks() {
         &files,
         &keys,
         SuccessorPlan::default(),
-        &person(),
+        &device(),
         DEVICE_ID,
         NOW_MS,
     )
@@ -277,13 +304,13 @@ fn writer_survives_restarts_and_rotates_after_a_restore() {
 
         let first = create_vault(&registry, &directory.path().join("first.sqlite")).await;
         let mut conn = acquire(&first).await;
-        let ctx = context(&mut conn, DEVICE_ID).await;
+        let ctx = context(&mut conn).await;
         let WriterCheck::Successor(plan) = check(&engine, &mut conn, &ctx, &directory).await else {
             panic!("a vault without a record needs a writer");
         };
         assert_eq!(plan, SuccessorPlan::default());
         let mut writer =
-            create_writer(&files, &keys, plan, &person(), DEVICE_ID, NOW_MS).expect("create");
+            create_writer(&files, &keys, plan, &device(), DEVICE_ID, NOW_MS).expect("create");
         let original = writer.id();
 
         add_note(&mut conn, "note-1").await;
@@ -306,12 +333,12 @@ fn writer_survives_restarts_and_rotates_after_a_restore() {
         // A restored database lacks the committed chain of the recorded writer.
         let restored = create_vault(&registry, &directory.path().join("restored.sqlite")).await;
         let mut conn = acquire(&restored).await;
-        context(&mut conn, DEVICE_ID).await;
+        context(&mut conn).await;
         let WriterCheck::Successor(plan) = check(&engine, &mut conn, &ctx, &directory).await else {
             panic!("a restored database needs a successor");
         };
         let successor =
-            create_writer(&files, &keys, plan, &person(), DEVICE_ID, NOW_MS).expect("successor");
+            create_writer(&files, &keys, plan, &device(), DEVICE_ID, NOW_MS).expect("successor");
         assert_ne!(successor.id(), original);
         assert!(successor.record().retired_keys.is_empty());
         let stored = read_record(&files.record_path())
@@ -319,12 +346,12 @@ fn writer_survives_restarts_and_rotates_after_a_restore() {
             .expect("record");
         assert_eq!(stored.writer_id, successor.id().to_hex());
         assert!(
-            keys.read(VAULT_ID, &original.to_hex())
+            keys.read(VAULT_ID, SyncKey::Writer(&original.to_hex()))
                 .expect("read retired key")
                 .is_none()
         );
         assert!(
-            keys.read(VAULT_ID, &successor.id().to_hex())
+            keys.read(VAULT_ID, SyncKey::Writer(&successor.id().to_hex()))
                 .expect("read successor key")
                 .is_some()
         );
@@ -347,12 +374,12 @@ fn carried_operations_reach_the_replacement_once() {
         let current = create_vault(&registry, &current_path).await;
         create_vault(&registry, &replacement_path).await;
         let mut conn = acquire(&current).await;
-        let ctx = context(&mut conn, DEVICE_ID).await;
+        let ctx = context(&mut conn).await;
         let mut writer = create_writer(
             &files,
             &keys,
             SuccessorPlan::default(),
-            &person(),
+            &device(),
             DEVICE_ID,
             NOW_MS,
         )
@@ -361,10 +388,9 @@ fn carried_operations_reach_the_replacement_once() {
         add_note(&mut conn, "note-unsealed").await;
         drop(conn);
         registry.close_all().await.expect("close pools");
-        let refused =
-            carry_forward::export(&engine, &current_path, &replacement_path, &files, DEVICE_ID)
-                .await
-                .expect_err("pending captures refuse the export");
+        let refused = carry_forward::export(&engine, &current_path, &replacement_path, &files)
+            .await
+            .expect_err("pending captures refuse the export");
         assert!(refused.contains("not sealed"));
 
         let current = registry.connect_path(&current_path).await.expect("reopen");
@@ -378,10 +404,9 @@ fn carried_operations_reach_the_replacement_once() {
         drop(conn);
         registry.close_all().await.expect("close pools");
 
-        let exported =
-            carry_forward::export(&engine, &current_path, &replacement_path, &files, DEVICE_ID)
-                .await
-                .expect("export");
+        let exported = carry_forward::export(&engine, &current_path, &replacement_path, &files)
+            .await
+            .expect("export");
         assert_eq!(u64::try_from(exported).expect("count"), last);
         assert!(files.carry_path().exists());
 
@@ -390,6 +415,7 @@ fn carried_operations_reach_the_replacement_once() {
             .await
             .expect("open replacement");
         let mut conn = acquire(&replacement).await;
+        context(&mut conn).await;
         let report = carry_forward::import_pending(&engine, &mut conn, &ctx, &files, NOW_MS)
             .await
             .expect("import")
@@ -440,12 +466,12 @@ fn carry_forward_aborts_when_the_replacement_lacks_compacted_operations() {
         let current = create_vault(&registry, &current_path).await;
         create_vault(&registry, &behind_path).await;
         let mut conn = acquire(&current).await;
-        let ctx = context(&mut conn, DEVICE_ID).await;
+        let ctx = context(&mut conn).await;
         let mut writer = create_writer(
             &files,
             &directory.keys(),
             SuccessorPlan::default(),
-            &person(),
+            &device(),
             DEVICE_ID,
             NOW_MS,
         )
@@ -478,17 +504,15 @@ fn carry_forward_aborts_when_the_replacement_lacks_compacted_operations() {
         drop(conn);
         registry.close_all().await.expect("close pools");
 
-        let refused =
-            carry_forward::export(&engine, &current_path, &behind_path, &files, DEVICE_ID)
-                .await
-                .expect_err("compacted operations cannot be carried");
+        let refused = carry_forward::export(&engine, &current_path, &behind_path, &files)
+            .await
+            .expect_err("compacted operations cannot be carried");
         assert!(refused.contains("compacted"), "{refused}");
         assert!(!files.carry_path().exists());
 
-        let exported =
-            carry_forward::export(&engine, &current_path, &caught_up_path, &files, DEVICE_ID)
-                .await
-                .expect("a replacement holding the compacted operations takes the rest");
+        let exported = carry_forward::export(&engine, &current_path, &caught_up_path, &files)
+            .await
+            .expect("a replacement holding the compacted operations takes the rest");
         assert_eq!(exported, 1);
         registry.close_all().await.expect("close pools");
     });
@@ -503,7 +527,7 @@ fn oversized_carry_bundles_are_refused_before_reading() {
         let files = directory.files();
         let pool = create_vault(&registry, &directory.path().join("vault.sqlite")).await;
         let mut conn = acquire(&pool).await;
-        let ctx = context(&mut conn, DEVICE_ID).await;
+        let ctx = context(&mut conn).await;
         std::fs::create_dir_all(&files.directory).expect("create sync directory");
         let bundle = std::fs::File::create(files.carry_path()).expect("create bundle");
         bundle

@@ -50,6 +50,20 @@ impl DiscoveryKey {
         Self(bytes)
     }
 
+    /// A fresh key from the secure random source.
+    pub fn generate() -> Result<Self, String> {
+        let mut bytes = [0_u8; DISCOVERY_KEY_BYTES];
+        SystemRandom::new()
+            .fill(&mut bytes)
+            .map_err(|_| "generate a discovery key".to_string())?;
+        Ok(Self(bytes))
+    }
+
+    /// Raw key bytes.
+    pub fn as_bytes(&self) -> &[u8; DISCOVERY_KEY_BYTES] {
+        &self.0
+    }
+
     /// Decodes the unpadded base64url form that sync states and pairing state carry.
     pub fn decode(encoded: &str) -> Result<Self, String> {
         let decoded =

@@ -3,11 +3,11 @@
 
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use ganbaru_contacts::PersonKeyPair;
 use ganbaru_sync::local::LocalWriterHead;
 use ganbaru_sync::{Engine, LocalWriter, SequenceReservation, SpaceContext, WriterState};
 use ganbaru_sync_contracts::{
-    SignedCertificate, WriterCertificate, WriterId, WriterKeyPair, sign_certificate,
+    DeviceKeyPair, DevicePublicKey, SignedCertificate, WriterCertificate, WriterId, WriterKeyPair,
+    sign_certificate,
 };
 use serde::{Deserialize, Serialize};
 use sqlx::SqliteConnection;
@@ -36,15 +36,33 @@ pub struct WriterRecord {
     pub retired_keys: Vec<String>,
 }
 
-/// Storage of writer signing keys outside the vault.
-pub trait WriterKeyStore: Send + Sync {
-    fn read(&self, vault_id: &str, writer_id: &str) -> Result<Option<Vec<u8>>, String>;
-    fn write(&self, vault_id: &str, writer_id: &str, pkcs8: &[u8]) -> Result<(), String>;
-    fn remove(&self, vault_id: &str, writer_id: &str) -> Result<(), String>;
+/// A secret the sync key store holds for one vault.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SyncKey<'a> {
+    /// A writer signing key, by hex writer id.
+    Writer(&'a str),
+    /// The installation's device signing key, which certifies its writers.
+    Device,
+    /// The anchor's admin signing key, which signs its authorization proposals.
+    Admin,
+    /// The recovery seed, kept until the user saves the recovery kit.
+    RecoverySeed,
 }
 
-fn key_reference(vault_id: &str, writer_id: &str) -> String {
-    format!("writer-key:{vault_id}:{writer_id}")
+/// Storage of sync secrets outside the vault.
+pub trait SyncKeyStore: Send + Sync {
+    fn read(&self, vault_id: &str, key: SyncKey<'_>) -> Result<Option<Vec<u8>>, String>;
+    fn write(&self, vault_id: &str, key: SyncKey<'_>, secret: &[u8]) -> Result<(), String>;
+    fn remove(&self, vault_id: &str, key: SyncKey<'_>) -> Result<(), String>;
+}
+
+fn key_reference(vault_id: &str, key: SyncKey<'_>) -> String {
+    match key {
+        SyncKey::Writer(writer_id) => format!("writer-key:{vault_id}:{writer_id}"),
+        SyncKey::Device => format!("device-key:{vault_id}"),
+        SyncKey::Admin => format!("admin-key:{vault_id}"),
+        SyncKey::RecoverySeed => format!("recovery-seed:{vault_id}"),
+    }
 }
 
 /// Desktop key store in the operating-system keyring.
@@ -55,76 +73,100 @@ pub struct KeyringStore;
 impl KeyringStore {
     const SERVICE: &'static str = "com.ganbaru.sync";
 
-    fn entry(vault_id: &str, writer_id: &str) -> Result<keyring::Entry, String> {
-        keyring::Entry::new(Self::SERVICE, &key_reference(vault_id, writer_id))
-            .map_err(|error| format!("open writer key store: {error}"))
+    fn entry(vault_id: &str, key: SyncKey<'_>) -> Result<keyring::Entry, String> {
+        keyring::Entry::new(Self::SERVICE, &key_reference(vault_id, key))
+            .map_err(|error| format!("open sync key store: {error}"))
     }
 }
 
 #[cfg(desktop)]
-impl WriterKeyStore for KeyringStore {
-    fn read(&self, vault_id: &str, writer_id: &str) -> Result<Option<Vec<u8>>, String> {
-        match Self::entry(vault_id, writer_id)?.get_password() {
+impl SyncKeyStore for KeyringStore {
+    fn read(&self, vault_id: &str, key: SyncKey<'_>) -> Result<Option<Vec<u8>>, String> {
+        match Self::entry(vault_id, key)?.get_password() {
             Ok(encoded) => URL_SAFE_NO_PAD
                 .decode(encoded)
                 .map(Some)
-                .map_err(|error| format!("decode stored writer key: {error}")),
+                .map_err(|error| format!("decode stored sync key: {error}")),
             Err(keyring::Error::NoEntry) => Ok(None),
-            Err(error) => Err(format!("read writer key: {error}")),
+            Err(error) => Err(format!("read sync key: {error}")),
         }
     }
 
-    fn write(&self, vault_id: &str, writer_id: &str, pkcs8: &[u8]) -> Result<(), String> {
-        Self::entry(vault_id, writer_id)?
-            .set_password(&URL_SAFE_NO_PAD.encode(pkcs8))
-            .map_err(|error| format!("store writer key: {error}"))
+    fn write(&self, vault_id: &str, key: SyncKey<'_>, secret: &[u8]) -> Result<(), String> {
+        Self::entry(vault_id, key)?
+            .set_password(&URL_SAFE_NO_PAD.encode(secret))
+            .map_err(|error| format!("store sync key: {error}"))
     }
 
-    fn remove(&self, vault_id: &str, writer_id: &str) -> Result<(), String> {
-        match Self::entry(vault_id, writer_id)?.delete_credential() {
+    fn remove(&self, vault_id: &str, key: SyncKey<'_>) -> Result<(), String> {
+        match Self::entry(vault_id, key)?.delete_credential() {
             Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
-            Err(error) => Err(format!("remove writer key: {error}")),
+            Err(error) => Err(format!("remove sync key: {error}")),
         }
     }
 }
 
-/// Key store of one private file per writer, used on Android and in tests.
+/// Key store of one private file per secret, used on Android and in tests.
 pub struct FileKeyStore {
     pub directory: PathBuf,
 }
 
 impl FileKeyStore {
-    fn path(&self, vault_id: &str, writer_id: &str) -> PathBuf {
+    fn path(&self, vault_id: &str, key: SyncKey<'_>) -> PathBuf {
         self.directory.join(format!(
             "{}.key",
-            key_reference(vault_id, writer_id).replace(':', "-")
+            key_reference(vault_id, key).replace(':', "-")
         ))
     }
 }
 
-impl WriterKeyStore for FileKeyStore {
-    fn read(&self, vault_id: &str, writer_id: &str) -> Result<Option<Vec<u8>>, String> {
-        match std::fs::read(self.path(vault_id, writer_id)) {
+impl SyncKeyStore for FileKeyStore {
+    fn read(&self, vault_id: &str, key: SyncKey<'_>) -> Result<Option<Vec<u8>>, String> {
+        match std::fs::read(self.path(vault_id, key)) {
             Ok(bytes) => Ok(Some(bytes)),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-            Err(error) => Err(format!("read writer key: {error}")),
+            Err(error) => Err(format!("read sync key: {error}")),
         }
     }
 
-    fn write(&self, vault_id: &str, writer_id: &str, pkcs8: &[u8]) -> Result<(), String> {
-        ganbaru_handoff::pairing::write_private_file_atomically(
-            &self.path(vault_id, writer_id),
-            pkcs8,
-        )
+    fn write(&self, vault_id: &str, key: SyncKey<'_>, secret: &[u8]) -> Result<(), String> {
+        ganbaru_handoff::pairing::write_private_file_atomically(&self.path(vault_id, key), secret)
     }
 
-    fn remove(&self, vault_id: &str, writer_id: &str) -> Result<(), String> {
-        match std::fs::remove_file(self.path(vault_id, writer_id)) {
+    fn remove(&self, vault_id: &str, key: SyncKey<'_>) -> Result<(), String> {
+        match std::fs::remove_file(self.path(vault_id, key)) {
             Ok(()) => Ok(()),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(error) => Err(format!("remove writer key: {error}")),
+            Err(error) => Err(format!("remove sync key: {error}")),
         }
     }
+}
+
+/// The installation's device key for a vault, or `None` before the installation paired or
+/// founded the vault's space. Key stores may block, so callers run this off the async runtime.
+pub fn read_device_key(
+    keys: &dyn SyncKeyStore,
+    vault_id: &str,
+) -> Result<Option<DeviceKeyPair>, String> {
+    keys.read(vault_id, SyncKey::Device)?
+        .map(|pkcs8| {
+            DeviceKeyPair::from_pkcs8(&pkcs8)
+                .map_err(|error| format!("decode sync device key: {error}"))
+        })
+        .transpose()
+}
+
+/// The installation's device key for a vault, created once and never replaced, because the
+/// space's log enrolls its public half. Key stores may block, so callers run this off the async
+/// runtime.
+pub fn ensure_device_key(keys: &dyn SyncKeyStore, vault_id: &str) -> Result<DeviceKeyPair, String> {
+    if let Some(device) = read_device_key(keys, vault_id)? {
+        return Ok(device);
+    }
+    let (pkcs8, device) =
+        DeviceKeyPair::generate().map_err(|error| format!("create sync device key: {error}"))?;
+    keys.write(vault_id, SyncKey::Device, &pkcs8)?;
+    Ok(device)
 }
 
 /// Device-local sync files of one vault under the app config directory.
@@ -299,12 +341,12 @@ pub struct StoredWriter {
 /// async runtime.
 pub fn read_stored_writer(
     files: &SyncFiles,
-    keys: &dyn WriterKeyStore,
+    keys: &dyn SyncKeyStore,
 ) -> Result<Option<StoredWriter>, String> {
     let Some(record) = read_record(&files.record_path())? else {
         return Ok(None);
     };
-    let key = keys.read(&files.vault_id, &record.writer_id)?;
+    let key = keys.read(&files.vault_id, SyncKey::Writer(&record.writer_id))?;
     Ok(Some(StoredWriter { record, key }))
 }
 
@@ -344,12 +386,14 @@ pub enum WriterCheck {
 }
 
 /// Keeps the recorded writer when the database still holds its chain. A copied or restored
-/// database, a lost key, or a writer the space no longer accepts needs a successor.
+/// database, a lost key, a writer certified by another device key, or a writer the space no
+/// longer accepts needs a successor.
 pub async fn check_writer(
     engine: &Engine,
     conn: &mut SqliteConnection,
     ctx: &SpaceContext,
     files: &SyncFiles,
+    device_key: &DevicePublicKey,
     stored: Option<StoredWriter>,
 ) -> Result<WriterCheck, String> {
     let Some(StoredWriter { record, key }) = stored else {
@@ -364,7 +408,7 @@ pub async fn check_writer(
         return Ok(WriterCheck::Successor(SuccessorPlan::retiring(&record)));
     };
     let certificate_matches = certificate.certificate.writer_key == key.public_key()
-        && certificate.certificate.person_key == ctx.anchor
+        && certificate.certificate.device_key == *device_key
         && certificate.certificate.writer_id().to_hex() == record.writer_id;
     if !certificate_matches {
         return Ok(WriterCheck::Successor(SuccessorPlan::retiring(&record)));
@@ -386,13 +430,13 @@ pub async fn check_writer(
     })))
 }
 
-/// Creates a writer certified by the person key and makes its key and record durable, then
+/// Creates a writer certified by the device key and makes its key and record durable, then
 /// removes the keys it retires. Key stores may block, so callers run this off the async runtime.
 pub fn create_writer(
     files: &SyncFiles,
-    keys: &dyn WriterKeyStore,
+    keys: &dyn SyncKeyStore,
     plan: SuccessorPlan,
-    person: &PersonKeyPair,
+    device: &DeviceKeyPair,
     device_id: &str,
     now_ms: u64,
 ) -> Result<ActiveWriter, String> {
@@ -402,16 +446,16 @@ pub fn create_writer(
     let certificate = sign_certificate(
         &WriterCertificate {
             writer_key: key.public_key(),
-            person_key: person.public_key(),
             device_id: device_id.to_string(),
+            device_key: device.public_key(),
             created_at_ms,
             predecessor: plan.predecessor,
         },
-        person,
+        device,
     )
     .map_err(|error| format!("certify writer: {error}"))?;
     let writer_id = certificate.certificate.writer_id().to_hex();
-    keys.write(&files.vault_id, &writer_id, &pkcs8)?;
+    keys.write(&files.vault_id, SyncKey::Writer(&writer_id), &pkcs8)?;
     let record = WriterRecord {
         schema_version: RECORD_SCHEMA_VERSION,
         writer_id,
@@ -436,14 +480,14 @@ pub fn create_writer(
 pub fn remove_retired_keys(
     writer: &mut ActiveWriter,
     files: &SyncFiles,
-    keys: &dyn WriterKeyStore,
+    keys: &dyn SyncKeyStore,
 ) -> Result<(), String> {
     if writer.record().retired_keys.is_empty() {
         return Ok(());
     }
     for retired in &writer.record().retired_keys {
         if *retired != writer.record().writer_id {
-            keys.remove(&files.vault_id, retired)?;
+            keys.remove(&files.vault_id, SyncKey::Writer(retired))?;
         }
     }
     let mut next = writer.record().clone();

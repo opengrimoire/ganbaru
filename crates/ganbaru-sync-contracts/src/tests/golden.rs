@@ -16,7 +16,9 @@ use crate::{
 };
 use std::path::PathBuf;
 
-const VECTOR_NAMES: [&str; 4] = ["genesis", "changes", "revoke", "acknowledgement"];
+const VECTOR_NAMES: [&str; 3] = ["genesis", "changes", "acknowledgement"];
+/// Wire kind of the retired hub revocation, unassigned in every format.
+const UNASSIGNED_KIND: u8 = 2;
 /// The version 2 vector: a tombstone naming its cause.
 const CAUSE_VECTOR: &str = "changes-cause";
 const BLESS_VARIABLE: &str = "GANBARU_SYNC_BLESS_VECTORS";
@@ -155,7 +157,7 @@ fn unsigned_body_damage_is_reported_apart_from_header_errors() {
         Envelope::decode(&trailing).unwrap().operation(),
         Err(PayloadError::Body(CodecError::Trailing))
     );
-    for index in [0, 2, 3] {
+    for index in [0, 2] {
         let padded = with_body(&chain[index].1, &[1]);
         assert_eq!(
             Envelope::decode(&padded).unwrap().operation(),
@@ -173,7 +175,7 @@ fn unsigned_body_damage_is_reported_apart_from_header_errors() {
 #[test]
 fn an_acknowledgement_carries_no_changes_and_seals_at_the_base_format() {
     let chain = golden_chain();
-    let (operation, bytes) = &chain[3];
+    let (operation, bytes) = &chain[2];
     assert_eq!(operation.kind(), OperationKind::Acknowledgement);
     assert_eq!(operation.format_version(), BASE_FORMAT_VERSION);
     let envelope = Envelope::decode(bytes).unwrap();
@@ -232,6 +234,17 @@ fn newer_formats_and_unknown_kinds_verify_but_are_held() {
     assert!(envelope.verify(&public_key));
     assert_eq!(envelope.operation(), Err(PayloadError::UnknownKind));
     assert_eq!(newer.len(), ENVELOPE_OVERHEAD + 13 + 11);
+}
+
+#[test]
+fn the_unassigned_kind_decodes_as_unknown_in_every_format() {
+    assert_eq!(OperationKind::from_u8(UNASSIGNED_KIND), None);
+    for format_version in BASE_FORMAT_VERSION..=FORMAT_VERSION {
+        let bytes = signed_envelope(format_version, UNASSIGNED_KIND, b"revocation", b"");
+        let envelope = Envelope::decode(&bytes).unwrap();
+        assert!(envelope.verify(&writer_key().public_key()));
+        assert_eq!(envelope.operation(), Err(PayloadError::UnknownKind));
+    }
 }
 
 #[test]

@@ -1,10 +1,9 @@
 use super::fixtures::{
-    XorShift, certificate_v2_for, fully_verifies, golden_authorization_log, golden_cause,
+    XorShift, certificate_for, fully_verifies, golden_authorization_log, golden_cause,
     golden_chain, golden_charter, golden_entries, other_writer_id, person, proposal, writer_key,
 };
 use crate::{
-    AuthorizationRecord, Envelope, SignedCertificate, SignedCertificateV2, SignedCharter,
-    SignedProposal, VersionVector,
+    AuthorizationRecord, Envelope, SignedCertificate, SignedCharter, SignedProposal, VersionVector,
 };
 
 const MUTATIONS_PER_VECTOR: usize = 3_000;
@@ -101,7 +100,6 @@ fn random_inputs_never_panic_the_decoders() {
             let _ = envelope.genesis();
         }
         let _ = SignedCertificate::decode(&bytes);
-        let _ = SignedCertificateV2::decode(&bytes);
         let _ = SignedCharter::decode(&bytes);
         let _ = SignedProposal::decode(&bytes);
         let _ = AuthorizationRecord::decode(&bytes);
@@ -116,8 +114,8 @@ fn charter_verifies(bytes: &[u8]) -> bool {
     SignedCharter::decode(bytes).is_ok_and(|charter| charter.verify(&person().public_key()).is_ok())
 }
 
-fn certificate_v2_verifies(bytes: &[u8]) -> bool {
-    SignedCertificateV2::decode(bytes).is_ok()
+fn certificate_verifies(bytes: &[u8]) -> bool {
+    SignedCertificate::decode(bytes).is_ok()
 }
 
 fn proposal_verifies(bytes: &[u8]) -> bool {
@@ -128,8 +126,8 @@ fn authorization_vectors() -> Vec<(Vec<u8>, Verifier)> {
     let mut vectors: Vec<(Vec<u8>, Verifier)> = vec![
         (golden_charter().encode(), charter_verifies),
         (
-            certificate_v2_for(&writer_key().public_key(), Some(other_writer_id())).encode(),
-            certificate_v2_verifies,
+            certificate_for(&writer_key().public_key(), Some(other_writer_id())).encode(),
+            certificate_verifies,
         ),
     ];
     for (_, entry, _) in golden_entries() {

@@ -130,6 +130,7 @@ impl CoordinatorLifecycle {
             hub: Some(
                 crate::sync::sync_hub(&app).with_contact(hub_contact_source(manager.clone(), port)),
             ),
+            enrollment_sealer: Some(crate::sync::enrollment_sealer(&app)),
             approvals: app
                 .state::<enrollment_approval::EnrollmentApprovals>()
                 .inner()
@@ -517,7 +518,15 @@ pub(crate) async fn handoff_enroll(
     } else {
         protocol::DeviceKind::Computer
     };
-    transport::enroll(&manager, &invitation, device_label, device_kind).await?;
+    let sync_device_key = crate::sync::ensure_device_key(&app, &invitation.vault_id).await?;
+    transport::enroll(
+        &manager,
+        &invitation,
+        device_label,
+        device_kind,
+        &sync_device_key,
+    )
+    .await?;
     app.state::<super::ownership::VaultOwnershipManager>()
         .register_remote_owner(
             &invitation.vault_id,
@@ -784,7 +793,10 @@ pub(crate) fn handoff_unlink<R: Runtime>(
             "switch ownership to the coordinating computer before unlinking it".to_string(),
         );
     }
-    manager.unlink_device(&device_id)
+    manager.unlink_device(&device_id)?;
+    // The next pass removes the device from the vault's sync space.
+    app.state::<crate::sync::SyncRuntime>().sync_now();
+    Ok(())
 }
 
 #[tauri::command]

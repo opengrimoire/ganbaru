@@ -10,14 +10,15 @@ use ganbaru_sync_contracts::bounds::{
 };
 use ganbaru_sync_contracts::op::{ENVELOPE_OVERHEAD, GENESIS_PREVIOUS_HASH};
 use ganbaru_sync_contracts::{
-    Cause, Change, ChangeAction, Content, Digest32, Field, GroupId, GroupMask, GroupValue, Header,
-    Hlc, HlcClock, Operation, PENDING_KEY_PREFIX, Revocation, RevokeReason, RowKey, Seq,
+    AuthorizationRecord, Cause, Change, ChangeAction, Content, Digest32, Field, GroupId, GroupMask,
+    GroupValue, Header, Hlc, HlcClock, Operation, PENDING_KEY_PREFIX, RowKey, Seq,
     SignedCertificate, TableId, Value, VersionVector, WriterId,
 };
 use sqlx::sqlite::SqliteRow;
 use sqlx::{AssertSqlSafe, Connection, Row, SqliteConnection};
 
 use crate::apply::{Constrained, MAX_BYTES_PER_APPLY, MAX_OPS_PER_APPLY, finish_sealed};
+use crate::authorization::{self, Enrollment};
 use crate::error::{SyncResult, corrupt, failpoint};
 use crate::hooks::ChangeNotice;
 use crate::log::{self, WriterState, clamp_ms, seq_i64};
@@ -130,15 +131,16 @@ pub(crate) async fn insert_applied_op(
     kind: u8,
     hash: &Digest32,
     clock: Hlc,
+    revision: u64,
     context: &VersionVector,
     bytes: &[u8],
     now_ms: u64,
 ) -> SyncResult<()> {
     sqlx::query(
         "INSERT INTO sync_ops
-            (space_id, writer_id, seq, kind, hash, clock, context, envelope, state, hold_reason,
-             stored_at_ms)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'applied', NULL, ?)",
+            (space_id, writer_id, seq, kind, hash, clock, authorization_revision, context,
+             envelope, state, hold_reason, stored_at_ms)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'applied', NULL, ?)",
     )
     .bind(ctx.space.as_bytes().as_slice())
     .bind(writer.as_bytes().as_slice())
@@ -146,6 +148,7 @@ pub(crate) async fn insert_applied_op(
     .bind(i64::from(kind))
     .bind(hash.as_slice())
     .bind(clamp_ms(clock.as_u64()))
+    .bind(seq_i64(revision)?)
     .bind(context.encode())
     .bind(bytes)
     .bind(clamp_ms(now_ms))
@@ -193,6 +196,8 @@ pub(crate) struct Sealer {
     head_hash: Digest32,
     head_context: VersionVector,
     clock: HlcClock,
+    /// Selected authorization revision when the sealer opened, stamped on content operations.
+    revision: u64,
 }
 
 impl Sealer {
@@ -208,11 +213,11 @@ impl Sealer {
         let certificate = writer.certificate;
         let cert = &certificate.certificate;
         if cert.writer_key != writer.key.public_key()
-            || cert.person_key != ctx.anchor
             || SignedCertificate::decode(&certificate.encode()).is_err()
         {
             return Err(SyncError::WriterMismatch);
         }
+        let revision = authorization::selected_revision(conn, ctx.space).await?;
         let id = cert.writer_id();
         let newest: Option<i64> =
             sqlx::query_scalar("SELECT max(head_clock) FROM sync_writers WHERE space_id = ?")
@@ -231,7 +236,7 @@ impl Sealer {
             );
         }
         let Some(row) = existing else {
-            return Self::genesis(engine, conn, ctx, batch, writer, clock, now_ms).await;
+            return Self::genesis(engine, conn, ctx, batch, writer, clock, revision, now_ms).await;
         };
         if row.state != WriterState::Active {
             return Err(SyncError::WriterInactive(id));
@@ -250,9 +255,12 @@ impl Sealer {
             head_hash: row.head_hash,
             head_context,
             clock,
+            revision,
         })
     }
 
+    /// Seals the genesis of a writer of an enrolled device that is not removed.
+    #[allow(clippy::too_many_arguments)]
     async fn genesis(
         engine: &Engine,
         conn: &mut SqliteConnection,
@@ -260,10 +268,17 @@ impl Sealer {
         batch: &mut Batch,
         writer: &mut LocalWriter<'_>,
         mut clock: HlcClock,
+        revision: u64,
         now_ms: u64,
     ) -> SyncResult<Self> {
         let certificate = writer.certificate;
         let cert = &certificate.certificate;
+        match authorization::enrollment(conn, ctx.space, &cert.device_id, &cert.device_key).await? {
+            Enrollment::Enrolled => {}
+            Enrollment::WrongKey => return Err(SyncError::WriterMismatch),
+            Enrollment::Removed => return Err(SyncError::DeviceRemoved),
+            Enrollment::Absent => return Err(SyncError::NotEnrolled),
+        }
         let id = cert.writer_id();
         writer
             .reservation
@@ -278,7 +293,7 @@ impl Sealer {
             header: Header {
                 clock: tick,
                 manifest_version: u32::from(engine.manifest().version),
-                authorization_revision: 0,
+                authorization_revision: revision,
                 key_epoch: 0,
                 dependencies: Vec::new(),
             },
@@ -314,6 +329,7 @@ impl Sealer {
             operation.kind().as_u8(),
             &sealed.hash(),
             tick,
+            revision,
             &context,
             sealed.bytes(),
             now_ms,
@@ -327,6 +343,7 @@ impl Sealer {
             head_hash: sealed.hash(),
             head_context: context,
             clock,
+            revision,
         })
     }
 
@@ -461,6 +478,12 @@ impl Sealer {
             ),
         };
         let context = log::next_context(&self.head_context, self.id, seq, &dependencies);
+        // An authorization entry creating revision R is sealed against R - 1, so it never waits
+        // on itself.
+        let revision = match &content {
+            Content::Authorization(record) => record.revision.saturating_sub(1),
+            _ => self.revision,
+        };
         let operation = Operation {
             space: ctx.space,
             writer: self.id,
@@ -469,7 +492,7 @@ impl Sealer {
             header: Header {
                 clock,
                 manifest_version,
-                authorization_revision: 0,
+                authorization_revision: revision,
                 key_epoch: 0,
                 dependencies,
             },
@@ -484,6 +507,7 @@ impl Sealer {
             operation.kind().as_u8(),
             &sealed.hash(),
             clock,
+            revision,
             &context,
             sealed.bytes(),
             now_ms,
@@ -585,20 +609,20 @@ impl Sealer {
         Ok(())
     }
 
-    /// Seals a revocation of `target` and applies its effects.
+    /// Seals an authorization entry in the anchor writer's chain and returns its sequence. The
+    /// caller records the entry and selects the chain again.
     #[allow(clippy::too_many_arguments)]
-    pub(crate) async fn seal_revoke(
+    pub(crate) async fn seal_authorization(
         &mut self,
         engine: &Engine,
         conn: &mut SqliteConnection,
         ctx: &SpaceContext,
         batch: &mut Batch,
         writer: &mut LocalWriter<'_>,
-        revocation: Revocation,
-        replay: Option<&Replay>,
+        record: AuthorizationRecord,
         now_ms: u64,
         report: &mut SealReport,
-    ) -> SyncResult<()> {
+    ) -> SyncResult<Seq> {
         let dependencies = self
             .catch_up(
                 engine,
@@ -607,12 +631,11 @@ impl Sealer {
                 batch,
                 writer,
                 Advance::Changes,
-                replay,
+                None,
                 now_ms,
                 report,
             )
             .await?;
-        let (target, cutoff, reason) = (revocation.writer, revocation.cutoff, revocation.reason);
         let (seq, _, _) = self
             .seal_operation(
                 engine,
@@ -621,15 +644,14 @@ impl Sealer {
                 batch,
                 writer,
                 dependencies,
-                Content::Revoke(revocation),
-                replay,
+                Content::Authorization(Box::new(record)),
+                None,
                 now_ms,
             )
             .await?;
-        merge::revoke_effects(conn, ctx.space, target, cutoff, reason).await?;
         report.sealed_ops += 1;
         report.last_seq = Some(seq);
-        Ok(())
+        Ok(seq)
     }
 
     /// Seals every valid capture except deletes still held at `now_ms`, and deletes the
@@ -849,7 +871,11 @@ impl<'a, 'k> SealSlot<'a, 'k> {
                 .ok_or_else(|| corrupt("sealer slot lost its writer"))?;
             match Sealer::open(engine, conn, ctx, batch, writer, now_ms).await {
                 Ok(sealer) => self.sealer = Some(sealer),
-                Err(SyncError::WriterInactive(_)) => {
+                Err(
+                    SyncError::WriterInactive(_)
+                    | SyncError::DeviceRemoved
+                    | SyncError::NotEnrolled,
+                ) => {
                     self.freeze();
                     return Ok(None);
                 }
@@ -1860,93 +1886,6 @@ impl Engine {
             &mut batch,
             &mut slot,
             Constrained::Skip,
-            now_ms,
-            &mut report,
-        )
-        .await?;
-        report.record(materialized);
-        failpoint!("seal.before_commit");
-        sql::set_applying(&mut tx, false).await?;
-        tx.commit().await?;
-        Ok(report)
-    }
-
-    /// Seals a revocation of `target` above `cutoff`, after sealing local captures.
-    ///
-    /// The cutoff must cover every operation of the target this replica applied, so no
-    /// replica needs to undo an applied operation.
-    #[allow(clippy::too_many_arguments)]
-    pub async fn seal_revoke(
-        &self,
-        conn: &mut SqliteConnection,
-        ctx: &SpaceContext,
-        target: WriterId,
-        cutoff: Seq,
-        reason: RevokeReason,
-        writer: &mut LocalWriter<'_>,
-        now_ms: u64,
-    ) -> SyncResult<SealReport> {
-        if target == writer.id() {
-            return Err(SyncError::InvalidRevoke("a writer cannot revoke itself"));
-        }
-        if writer.certificate.certificate.device_id != ctx.coordinator_device_id {
-            return Err(SyncError::InvalidRevoke(
-                "only the coordinator revokes writers",
-            ));
-        }
-        if cutoff < 1 {
-            return Err(SyncError::InvalidRevoke("cutoff must keep the genesis"));
-        }
-        let mut tx = conn.begin().await?;
-        log::ensure_space(&mut tx, ctx.space).await?;
-        sql::begin_engine_write(&mut tx).await?;
-        let mut batch = Batch::load(&mut tx, ctx.space).await?;
-        let applied = batch.applied.get(&target);
-        if applied < 1 {
-            return Err(SyncError::InvalidRevoke(
-                "the target's genesis is not applied",
-            ));
-        }
-        if cutoff < applied {
-            return Err(SyncError::InvalidRevoke(
-                "cutoff is below applied operations",
-            ));
-        }
-        let mut slot = SealSlot::new(Some(writer));
-        let mut report = SealReport::default();
-        let (sealer, writer) = slot
-            .open(self, &mut tx, ctx, &mut batch, now_ms)
-            .await?
-            .ok_or_else(|| corrupt("sealer slot has no writer"))?;
-        report.absorb(
-            sealer
-                .seal_captures(self, &mut tx, ctx, &mut batch, writer, now_ms)
-                .await?,
-        );
-        sealer
-            .seal_revoke(
-                self,
-                &mut tx,
-                ctx,
-                &mut batch,
-                writer,
-                Revocation {
-                    writer: target,
-                    cutoff,
-                    reason,
-                },
-                None,
-                now_ms,
-                &mut report,
-            )
-            .await?;
-        let materialized = finish_sealed(
-            self,
-            &mut tx,
-            ctx,
-            &mut batch,
-            &mut slot,
-            Constrained::Seal,
             now_ms,
             &mut report,
         )

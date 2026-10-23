@@ -1,7 +1,8 @@
 //! The sync service of the active vault: it imports carried operations, keeps the local writer
 //! current, seals local captures after commits, and exchanges operations and managed asset
-//! files with the hub. On the coordinator it applies what linked devices push and revokes the
-//! writers of unlinked devices.
+//! files with the hub. On the coordinator, the anchor of the vault's sync space, it founds the
+//! space at first link, applies what linked devices push, and enrolls and removes devices as
+//! they are linked and unlinked.
 //!
 //! A pass runs through a [`SyncHost`], so the app service and a headless pass share it. Passes
 //! of one process run one at a time behind a gate, and a headless pass hands its work to the
@@ -21,19 +22,21 @@ use super::status::{DegradedReasons, SyncErrorCode, SyncRole, SyncState, SyncSta
 use super::transport::PairedTransport;
 use super::vault_assets::ActiveVaultAssets;
 use super::writer::{
-    ActiveWriter, SuccessorPlan, SyncFiles, WriterCheck, WriterKeyStore, check_writer,
-    create_writer, read_stored_writer, remove_retired_keys,
+    ActiveWriter, SuccessorPlan, SyncFiles, SyncKeyStore, WriterCheck, check_writer, create_writer,
+    ensure_device_key as ensure_stored_device_key, read_stored_writer, remove_retired_keys,
 };
 use crate::vault::handoff::pairing::PairingManager;
 use ganbaru_db::{DatabaseAccessMode, DatabasePoolRegistry};
 use ganbaru_handoff::protocol::SyncRefusalCode;
 use ganbaru_sync::stability::{CountedDevice, DeviceStanding};
 use ganbaru_sync::{
-    ChangeNotice, Engine, SealReport, SpaceContext, SyncError, WriterState, compaction_limit, hold,
-    local,
+    ChangeNotice, Engine, SealReport, SpaceContext, SyncError, compaction_limit, hold, local,
 };
-use ganbaru_sync_contracts::op::RevokeReason;
-use ganbaru_sync_contracts::{Seq, VersionVector, WriterId};
+use ganbaru_sync_contracts::{DevicePublicKey, Seq, VersionVector, WriterId};
+#[cfg(desktop)]
+use ganbaru_sync_replica::authority::{
+    self, AnchorKeys, Founding, ensure_anchor_keys, ensure_charter,
+};
 use ganbaru_sync_replica::now_ms;
 use sqlx::SqlitePool;
 use std::collections::BTreeSet;
@@ -60,8 +63,8 @@ const RETRY_DELAYS: [Duration; 4] = [
 ];
 /// How long a stopping service may finish its pass before it is aborted.
 const STOP_TIMEOUT: Duration = Duration::from_secs(10);
-/// How long a headless pass waits for the running app service to finish the pass it asked for.
-#[cfg(mobile)]
+/// How long a headless pass or a device enrollment waits for the running app service to finish
+/// the pass it asked for.
 const DELEGATED_PASS_TIMEOUT: Duration = Duration::from_secs(60);
 /// Bound on apply rounds in one pass; each round is one bounded transaction.
 const MAX_APPLY_ROUNDS: usize = 10_000;
@@ -173,7 +176,6 @@ impl RuntimeState {
     }
 
     /// Whether the service task is running.
-    #[cfg(any(mobile, test))]
     fn running(&self) -> Result<bool, String> {
         self.task
             .lock()
@@ -245,7 +247,6 @@ async fn open_hub_vault<R: Runtime>(app: &AppHandle<R>) -> Result<Option<HubVaul
     let assets: Arc<dyn AssetStore> = Arc::new(ActiveVaultAssets::open(app, &vault_id)?);
     Ok(Some(HubVault {
         pool,
-        device_id: coordinator_device_id(app, &vault_id)?,
         vault_id,
         assets,
     }))
@@ -360,7 +361,6 @@ where
 
 /// Asks the running service for a pass and waits up to `wait` for one that started after the
 /// request to finish. It never runs a pass itself, so a slow service fails the call.
-#[cfg(any(mobile, test))]
 async fn delegate_pass(runtime: &RuntimeState, wait: Duration) -> Result<SyncStatusView, String> {
     if !runtime.running()? {
         return Err("the sync service is stopped".to_string());
@@ -677,6 +677,9 @@ impl ServiceState {
             view.state = SyncState::WaitingForIdentity;
             return Ok(Next::Idle);
         };
+        if peer.is_none() {
+            session.found_space(&manager).await?;
+        }
         if !self.started {
             session.start(&mut self.writer).await?;
             self.started = true;
@@ -756,7 +759,7 @@ impl ServiceState {
         let acknowledged = session.acknowledge(&mut self.writer).await?;
         if is_hub {
             session
-                .revoke_unlinked(&manager, &vault_id, &mut self.writer)
+                .reconcile_devices(&manager, &vault_id, &mut self.writer)
                 .await?;
             let stable = self
                 .stability(host, &session, &manager, &vault_id, view)
@@ -1175,7 +1178,7 @@ struct Session<'a, H: SyncHost> {
     pool: SqlitePool,
     engine: Engine,
     files: SyncFiles,
-    keys: Arc<dyn WriterKeyStore>,
+    keys: Arc<dyn SyncKeyStore>,
     ctx: SpaceContext,
     key_release: KeyRelease,
 }
@@ -1188,10 +1191,9 @@ impl<'a, H: SyncHost> Session<'a, H> {
         vault_id: &str,
         key_release: KeyRelease,
     ) -> Result<Option<Self>, String> {
-        let coordinator = coordinator_device_id(host, vault_id)?;
         let ctx = {
             let mut conn = acquire(&pool).await?;
-            local::space_context(&mut conn, vault_id, &coordinator)
+            local::space_context(&mut conn, vault_id)
                 .await
                 .map_err(|error| format!("read sync space: {error}"))?
         };
@@ -1220,9 +1222,10 @@ impl<'a, H: SyncHost> Session<'a, H> {
             .await;
     }
 
-    /// Start order: refuse Projects placeholder keys, clear a stale apply flag, seed captures of tables that start to replicate,
-    /// import a carry bundle a failed replacement left, check the writer, and apply what the
-    /// import could not apply before local captures were sealed.
+    /// Start order: refuse Projects placeholder keys, clear a stale apply flag, refuse sync
+    /// state from before the authorization log, seed captures of tables that start to
+    /// replicate, import a carry bundle a failed replacement left, check the writer, and apply
+    /// what the import could not apply before local captures were sealed.
     async fn start(&self, writer: &mut Option<ActiveWriter>) -> Result<(), String> {
         ganbaru_projects::conversion::assert_converted(&self.pool).await?;
         let imported = {
@@ -1234,6 +1237,10 @@ impl<'a, H: SyncHost> Session<'a, H> {
                 .init_space(&mut conn, &self.files.vault_id, now_ms()?)
                 .await
                 .map_err(|error| format!("initialize sync space: {error}"))?;
+            self.engine
+                .refuse_legacy_state(&mut conn, &self.ctx)
+                .await
+                .map_err(|error| format!("open sync space: {error}"))?;
             self.engine
                 .seed_captures(&mut conn, now_ms()?)
                 .await
@@ -1314,18 +1321,31 @@ impl<'a, H: SyncHost> Session<'a, H> {
             .map_err(|error| format!("read pending sync changes: {error}"))
     }
 
-    /// Makes sure a writer is ready, checking the recorded one against the database and
-    /// creating a successor when needed. Returns false while the person key is unavailable.
+    /// Makes sure a writer is ready, checking the recorded one against the database and the
+    /// device key and creating a successor when needed. Returns whether a writer is ready.
     async fn ensure_writer(&self, writer: &mut Option<ActiveWriter>) -> Result<bool, String> {
         if writer.is_some() {
             return Ok(true);
         }
         let files = self.files.clone();
         let keys = self.keys.clone();
-        let stored = blocking(move || read_stored_writer(&files, keys.as_ref())).await?;
+        let (device_key, stored) = blocking(move || {
+            let device = ensure_stored_device_key(keys.as_ref(), &files.vault_id)?;
+            let stored = read_stored_writer(&files, keys.as_ref())?;
+            Ok((device.public_key(), stored))
+        })
+        .await?;
         let check = {
             let mut conn = acquire(&self.pool).await?;
-            check_writer(&self.engine, &mut conn, &self.ctx, &self.files, stored).await?
+            check_writer(
+                &self.engine,
+                &mut conn,
+                &self.ctx,
+                &self.files,
+                &device_key,
+                stored,
+            )
+            .await?
         };
         *writer = match check {
             WriterCheck::Ready(ready) => {
@@ -1345,20 +1365,21 @@ impl<'a, H: SyncHost> Session<'a, H> {
         Ok(writer.is_some())
     }
 
-    /// Creates a successor writer, or returns `None` while the person key is unavailable.
+    /// Creates a successor writer certified by this installation's device key. A device without
+    /// the person key also asks the coordinator for it, which Contacts signing needs.
     async fn create_successor(&self, plan: SuccessorPlan) -> Result<Option<ActiveWriter>, String> {
-        let Some(person) = self.host.person_key(&self.ctx.anchor).await? else {
-            if self.key_release == KeyRelease::Request {
-                self.host.request_person_key();
-            }
-            return Ok(None);
-        };
+        if self.key_release == KeyRelease::Request
+            && self.host.person_key(&self.ctx.person_key).await?.is_none()
+        {
+            self.host.request_person_key();
+        }
         let device_id = self.host.device_id()?;
         let files = self.files.clone();
         let keys = self.keys.clone();
         let now = now_ms()?;
         blocking(move || {
-            create_writer(&files, keys.as_ref(), plan, &person, &device_id, now).map(Some)
+            let device = ensure_stored_device_key(keys.as_ref(), &files.vault_id)?;
+            create_writer(&files, keys.as_ref(), plan, &device, &device_id, now).map(Some)
         })
         .await
     }
@@ -1398,6 +1419,8 @@ impl<'a, H: SyncHost> Session<'a, H> {
                         break;
                     }
                 }
+                // Captures stay pending until the exchange brings this device's enrollment.
+                Err(SyncError::NotEnrolled) => break,
                 Err(error) => return Err(format!("seal sync changes: {error}")),
             }
         }
@@ -1405,8 +1428,8 @@ impl<'a, H: SyncHost> Session<'a, H> {
     }
 
     /// Seals the writer's genesis on its first pass, and an acknowledgement or keepalive when
-    /// one is due, rotating once when the space no longer accepts the writer. Without a writer
-    /// it seals nothing.
+    /// one is due, rotating once when the space no longer accepts the writer. Without a writer,
+    /// or before this device is enrolled, it seals nothing.
     async fn acknowledge(&self, writer: &mut Option<ActiveWriter>) -> Result<SealReport, String> {
         for attempt in 0..2 {
             let Some(active) = writer.as_mut() else {
@@ -1430,6 +1453,7 @@ impl<'a, H: SyncHost> Session<'a, H> {
                         break;
                     }
                 }
+                Err(SyncError::NotEnrolled) => break,
                 Err(error) => return Err(format!("seal sync acknowledgement: {error}")),
             }
         }
@@ -1469,36 +1493,7 @@ impl<'a, H: SyncHost> Session<'a, H> {
             ) {
                 active.committed(seq)?;
             }
-            if let Some(needed) = report.reseal_needed {
-                let current = writer.as_ref().map(ActiveWriter::id);
-                if (current == Some(needed.writer) || current.is_none())
-                    && !self.rotate(writer).await?
-                {
-                    return Ok(done(tables, notices, None));
-                }
-                let Some(active) = writer.as_mut() else {
-                    return Ok(done(tables, notices, None));
-                };
-                let resealed = {
-                    let mut conn = acquire(&self.pool).await?;
-                    self.engine
-                        .reseal(
-                            &mut conn,
-                            &self.ctx,
-                            needed.writer,
-                            needed.keep_through,
-                            &mut active.local(),
-                            now_ms()?,
-                        )
-                        .await
-                        .map_err(|error| format!("re-seal sync operations: {error}"))?
-                };
-                if let Some(seq) = resealed.seal.last_seq {
-                    active.committed(seq)?;
-                }
-                tables.extend(table_names(&resealed.seal.changed_tables));
-                notices.extend(resealed.seal.notices);
-            } else if report.local_writer_frozen {
+            if report.local_writer_frozen {
                 if !self.rotate(writer).await? {
                     return Ok(done(tables, notices, None));
                 }
@@ -1552,55 +1547,153 @@ impl<'a, H: SyncHost> Session<'a, H> {
         Ok(true)
     }
 
-    /// On the hub, revokes the active writers of devices that were unlinked from the vault, so
-    /// operations they seal later are refused everywhere. The cutoff keeps every stored
-    /// operation; a writer whose genesis is not applied yet waits for a later pass.
-    async fn revoke_unlinked(
+    /// On a desktop coordinator, founds the vault's sync space once the vault first links: it
+    /// creates the anchor keys and installs a charter naming this installation as the anchor,
+    /// signed by the person key. A space that has a charter is left as it is. Phones never found
+    /// a space.
+    async fn found_space(&self, manager: &PairingManager) -> Result<(), String> {
+        #[cfg(desktop)]
+        {
+            let installed = {
+                let mut conn = acquire(&self.pool).await?;
+                self.engine
+                    .charter(&mut conn, &self.ctx)
+                    .await
+                    .map_err(|error| format!("read sync charter: {error}"))?
+            };
+            if installed.is_some() {
+                return Ok(());
+            }
+            let Some(person) = self.host.person_key(&self.ctx.person_key).await? else {
+                return Err(
+                    "the person key that founds the sync space is missing on this device"
+                        .to_string(),
+                );
+            };
+            let anchor = self.anchor_keys().await?;
+            let device_id = manager.device_id()?;
+            let tls_fingerprint = tls_fingerprint(manager.certificate()?.as_ref());
+            let discovery_key = ganbaru_handoff::discovery::DiscoveryKey::decode(
+                &manager.discovery_key(&self.files.vault_id)?,
+            )?;
+            let founding = Founding {
+                device_id: &device_id,
+                tls_fingerprint,
+                discovery_key: *discovery_key.as_bytes(),
+                person: &person,
+                now_ms: now_ms()?,
+            };
+            let mut conn = acquire(&self.pool).await?;
+            ensure_charter(&self.engine, &mut conn, &self.ctx, &anchor, &founding).await?;
+            Ok(())
+        }
+        #[cfg(mobile)]
+        {
+            let _ = manager;
+            Ok(())
+        }
+    }
+
+    /// The anchor keys of the vault, each created once.
+    #[cfg(desktop)]
+    async fn anchor_keys(&self) -> Result<AnchorKeys, String> {
+        let keys = self.keys.clone();
+        let vault_id = self.files.vault_id.clone();
+        blocking(move || ensure_anchor_keys(keys.as_ref(), &vault_id)).await
+    }
+
+    /// On the anchor, enrolls linked devices the space does not know yet and removes enrolled
+    /// devices that are no longer linked, so a crash between linking and sealing heals on the
+    /// next pass. A device the space removed stays removed: linking it again under the same
+    /// device id enrolls nothing. A device that cannot be enrolled is reported and skipped, so
+    /// it never stops the pass.
+    async fn reconcile_devices(
         &self,
         manager: &PairingManager,
         vault_id: &str,
         writer: &mut Option<ActiveWriter>,
     ) -> Result<(), String> {
-        let revoked = manager.revoked_device_ids(vault_id)?;
-        if revoked.is_empty() {
-            return Ok(());
-        }
-        let Some(active) = writer.as_mut() else {
-            return Ok(());
-        };
-        let mut conn = acquire(&self.pool).await?;
-        let status = self
-            .engine
-            .status(&mut conn, &self.ctx)
-            .await
-            .map_err(|error| format!("read sync writers: {error}"))?;
-        for summary in status.writers {
-            if summary.state != WriterState::Active
-                || summary.applied == 0
-                || summary.writer == active.id()
-                || !revoked.contains(&summary.device_id)
-            {
-                continue;
-            }
-            let report = self
+        #[cfg(desktop)]
+        {
+            let Some(active) = writer.as_mut() else {
+                return Ok(());
+            };
+            let mut conn = acquire(&self.pool).await?;
+            let Some(view) = self
                 .engine
-                .seal_revoke(
+                .authorization(&mut conn, &self.ctx)
+                .await
+                .map_err(|error| format!("read sync authorization: {error}"))?
+            else {
+                return Ok(());
+            };
+            if view.anchor_device_id != manager.device_id()? {
+                return Ok(());
+            }
+            let peers = manager.linked_peers_for(vault_id)?;
+            let enroll: Vec<_> = peers
+                .iter()
+                .filter(|peer| {
+                    !view
+                        .devices
+                        .iter()
+                        .any(|device| device.device_id == peer.device_id)
+                })
+                .collect();
+            let remove: Vec<&str> = view
+                .devices
+                .iter()
+                .filter(|device| {
+                    device.removed_revision.is_none()
+                        && device.device_id != view.anchor_device_id
+                        && !peers.iter().any(|peer| peer.device_id == device.device_id)
+                })
+                .map(|device| device.device_id.as_str())
+                .collect();
+            if enroll.is_empty() && remove.is_empty() {
+                return Ok(());
+            }
+            let anchor = self.anchor_keys().await?;
+            for peer in enroll {
+                let result = match linked_enrollment(peer) {
+                    Ok(enrollment) => {
+                        authority::enroll(
+                            &self.engine,
+                            &mut conn,
+                            &self.ctx,
+                            &anchor.admin,
+                            &mut active.local(),
+                            enrollment,
+                            now_ms()?,
+                        )
+                        .await
+                    }
+                    Err(error) => Err(error),
+                };
+                if let Err(error) = result {
+                    eprintln!("sync: enroll linked device {}: {error}", peer.device_id);
+                }
+            }
+            for device_id in remove {
+                authority::remove(
+                    &self.engine,
                     &mut conn,
                     &self.ctx,
-                    summary.writer,
-                    summary.stored,
-                    RevokeReason::Revoked,
+                    &anchor.admin,
                     &mut active.local(),
+                    device_id,
                     now_ms()?,
                 )
                 .await
-                .map_err(|error| format!("revoke unlinked sync writer: {error}"))?;
-            if let Some(seq) = report.last_seq {
-                active.committed(seq)?;
+                .map_err(|error| format!("remove unlinked device {device_id}: {error}"))?;
             }
-            self.report_seal(&report).await;
+            Ok(())
         }
-        Ok(())
+        #[cfg(mobile)]
+        {
+            let _ = (manager, vault_id, writer);
+            Ok(())
+        }
     }
 
     /// Restores or discards a recovery offer with the local writer.
@@ -1625,18 +1718,61 @@ impl<'a, H: SyncHost> Session<'a, H> {
     }
 }
 
-/// Device id of the coordinator whose writers may revoke in `vault_id`: the pinned coordinator
-/// when this device is linked to one for that vault, otherwise this device, which then hosts
-/// the hub or does not sync with others.
-pub(crate) fn coordinator_device_id<H: SyncHost>(
+/// What enrolling a linked device records in the space.
+#[cfg(desktop)]
+fn linked_enrollment(
+    peer: &crate::vault::handoff::pairing::LinkedPeer,
+) -> Result<authority::Enrollment, String> {
+    let certificate = crate::vault::handoff::pairing::decode_certificate(&peer.certificate)?;
+    Ok(authority::Enrollment {
+        device_id: peer.device_id.clone(),
+        device_key: ganbaru_handoff::protocol::decode_sync_device_key(&peer.sync_device_key)?,
+        tls_fingerprint: tls_fingerprint(certificate.as_ref()),
+        label: peer.device_label.clone(),
+        device_kind: authority::device_kind(peer.device_kind),
+    })
+}
+
+/// The SHA-256 fingerprint of a DER certificate, as the space records TLS identities.
+#[cfg(desktop)]
+fn tls_fingerprint(certificate: &[u8]) -> [u8; 32] {
+    use sha2::Digest;
+    sha2::Sha256::digest(certificate).into()
+}
+
+/// The public half of this installation's device key for `vault_id`, created once. Pairing
+/// sends it, so the coordinator can enroll the device in the vault's sync space.
+pub(crate) async fn ensure_device_key<H: SyncHost>(
     host: &H,
     vault_id: &str,
-) -> Result<String, String> {
-    let pin = host.pairing().coordinator_pin()?;
-    match pin.filter(|pin| pin.vault_id == vault_id) {
-        Some(pin) => Ok(pin.device_id),
-        None => host.device_id(),
-    }
+) -> Result<DevicePublicKey, String> {
+    let keys = host.key_store()?;
+    let vault_id = vault_id.to_string();
+    blocking(move || {
+        ensure_stored_device_key(keys.as_ref(), &vault_id).map(|device| device.public_key())
+    })
+    .await
+}
+
+/// Seals the enrollment of a device the coordinator just linked by running a pass of the app
+/// service and waiting for it, which reconciles linked devices with the space.
+#[cfg(desktop)]
+pub(crate) fn enrollment_sealer<R: Runtime>(
+    app: &AppHandle<R>,
+) -> crate::vault::handoff::transport::EnrollmentSealer {
+    let runtime = app.state::<SyncRuntime>().inner().clone();
+    Arc::new(move || {
+        let runtime = runtime.clone();
+        Box::pin(async move {
+            let status = delegate_pass(&runtime, DELEGATED_PASS_TIMEOUT).await?;
+            match status.state {
+                SyncState::Error => Err(status
+                    .last_error
+                    .unwrap_or_else(|| "the sync pass failed".to_string())),
+                _ => Ok(()),
+            }
+        })
+    })
 }
 
 /// Device-local sync files of a vault.

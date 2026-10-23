@@ -1,59 +1,53 @@
 use super::fixtures::{
-    GOLDEN_CREATED_AT_MS, GOLDEN_DEVICE_ID, certificate_for, certificate_v2_for, device_key,
-    other_writer_id, person, writer_key,
+    GOLDEN_CREATED_AT_MS, GOLDEN_DEVICE_ID, certificate_for, device_key, other_writer_id, person,
+    writer_key,
 };
 use crate::bounds::{MAX_CERTIFICATE_BYTES, MAX_DEVICE_ID_BYTES};
 use crate::codec::CodecError;
 use crate::signing::{CERTIFICATE_DOMAIN, CHARTER_DOMAIN, domain_message};
 use crate::{
-    CertificateError, DeviceKeyPair, SignedCertificate, SignedCertificateV2, WriterCertificate,
-    WriterCertificateV2, sign_certificate, sign_certificate_v2, validate_device_id,
+    CertificateError, DeviceKeyPair, SignedCertificate, WriterCertificate, sign_certificate,
+    validate_device_id,
 };
-use ganbaru_contacts::{PersonKeyPair, verify};
 
 #[test]
-fn certificates_roundtrip_with_and_without_predecessor() {
+fn certificates_roundtrip_and_authenticate_every_byte() {
     for predecessor in [None, Some(other_writer_id())] {
         let signed = certificate_for(&writer_key().public_key(), predecessor);
-        let decoded = SignedCertificate::decode(&signed.encode()).unwrap();
+        let encoded = signed.encode();
+        let decoded = SignedCertificate::decode(&encoded).unwrap();
         assert_eq!(decoded, signed);
         assert_eq!(
             decoded.certificate.writer_id(),
             super::fixtures::writer_id()
         );
+        for index in 0..encoded.len() {
+            let mut mutated = encoded.clone();
+            mutated[index] ^= 0x01;
+            assert!(
+                SignedCertificate::decode(&mutated).is_err(),
+                "byte {index} is not authenticated"
+            );
+        }
+        let mut extended = encoded.clone();
+        extended.push(0);
+        assert!(SignedCertificate::decode(&extended).is_err());
+        assert!(SignedCertificate::decode(&encoded[..encoded.len() - 1]).is_err());
     }
 }
 
 #[test]
-fn every_byte_of_a_certificate_is_authenticated() {
-    let encoded = certificate_for(&writer_key().public_key(), Some(other_writer_id())).encode();
-    for index in 0..encoded.len() {
-        let mut tampered = encoded.clone();
-        tampered[index] ^= 0x01;
-        assert!(
-            SignedCertificate::decode(&tampered).is_err(),
-            "tampering byte {index} still decoded"
-        );
-    }
-    let mut extended = encoded.clone();
-    extended.push(0);
-    assert!(SignedCertificate::decode(&extended).is_err());
-    assert!(SignedCertificate::decode(&encoded[..encoded.len() - 1]).is_err());
-}
-
-#[test]
-fn signing_requires_the_certified_person_key() {
-    let (_, stranger) = PersonKeyPair::generate().unwrap();
-    let certificate = WriterCertificate {
-        writer_key: writer_key().public_key(),
-        person_key: person().public_key(),
-        device_id: GOLDEN_DEVICE_ID.to_string(),
-        created_at_ms: GOLDEN_CREATED_AT_MS,
-        predecessor: None,
-    };
+fn signing_requires_the_named_device_key() {
+    let mut certificate = certificate_for(&writer_key().public_key(), None).certificate;
+    let stranger = DeviceKeyPair::from_seed(&[0x47; 32]).unwrap();
     assert_eq!(
         sign_certificate(&certificate, &stranger),
-        Err(CertificateError::WrongPerson)
+        Err(CertificateError::WrongDevice)
+    );
+    certificate.device_id = "bad id".to_string();
+    assert_eq!(
+        sign_certificate(&certificate, &device_key()),
+        Err(CertificateError::DeviceId)
     );
 }
 
@@ -62,16 +56,9 @@ fn certificate_signatures_are_domain_separated() {
     let signed = certificate_for(&writer_key().public_key(), None);
     let encoded = signed.encode();
     let unsigned = &encoded[..encoded.len() - 64];
-    let public_key = person().public_key();
-    assert!(verify(&public_key, unsigned, &signed.signature).is_err());
-    assert!(
-        verify(
-            &public_key,
-            &domain_message(CERTIFICATE_DOMAIN, unsigned),
-            &signed.signature
-        )
-        .is_ok()
-    );
+    let public_key = device_key().public_key();
+    assert!(public_key.verify(CERTIFICATE_DOMAIN, unsigned, &signed.signature));
+    assert!(!public_key.verify(CHARTER_DOMAIN, unsigned, &signed.signature));
 }
 
 #[test]
@@ -86,29 +73,21 @@ fn device_ids_follow_the_handoff_identifier_rule() {
             "{invalid:?} should be invalid"
         );
     }
-    let certificate = WriterCertificate {
-        writer_key: writer_key().public_key(),
-        person_key: person().public_key(),
-        device_id: "bad id".to_string(),
-        created_at_ms: GOLDEN_CREATED_AT_MS,
-        predecessor: None,
-    };
-    assert_eq!(
-        sign_certificate(&certificate, &person()),
-        Err(CertificateError::DeviceId)
-    );
 }
 
 #[test]
-fn unknown_versions_and_predecessor_flags_are_rejected() {
+fn unsupported_versions_and_predecessor_flags_are_rejected() {
     let encoded = certificate_for(&writer_key().public_key(), None).encode();
-    let mut version = encoded.clone();
-    version[0] = 2;
-    assert_eq!(
-        SignedCertificate::decode(&version),
-        Err(CertificateError::Version)
-    );
-    let flag_index = 1 + 32 + 32 + 1 + GOLDEN_DEVICE_ID.len() + 8;
+    for version in [0, 1, 3] {
+        let mut changed = encoded.clone();
+        changed[0] = version;
+        assert_eq!(
+            SignedCertificate::decode(&changed),
+            Err(CertificateError::Version),
+            "version {version}"
+        );
+    }
+    let flag_index = 1 + 32 + 1 + GOLDEN_DEVICE_ID.len() + 32 + 8;
     let mut flag = encoded.clone();
     flag[flag_index] = 2;
     assert!(matches!(
@@ -145,9 +124,8 @@ fn every_person_key_signature_domain_is_distinct_and_prefix_free() {
         &person,
     )
     .expect("sign card");
-    let certificate_domain = domain_message(CERTIFICATE_DOMAIN, b"");
     let charter_domain = domain_message(CHARTER_DOMAIN, b"");
-    let signed_messages: [(&[u8], Vec<u8>); 5] = [
+    let signed_messages: [(&[u8], Vec<u8>); 4] = [
         (ganbaru_contacts::CARD_MAGIC, card.bytes.clone()),
         (
             ganbaru_contacts::REQUEST_SIGNATURE_DOMAIN,
@@ -156,10 +134,6 @@ fn every_person_key_signature_domain_is_distinct_and_prefix_free() {
         (
             ganbaru_contacts::STATUS_SIGNATURE_DOMAIN,
             ganbaru_contacts::status_signature_payload("request-1", GOLDEN_CREATED_AT_MS),
-        ),
-        (
-            &certificate_domain,
-            domain_message(CERTIFICATE_DOMAIN, writer_key().public_key().as_bytes()),
         ),
         (
             &charter_domain,
@@ -183,59 +157,11 @@ fn every_person_key_signature_domain_is_distinct_and_prefix_free() {
 }
 
 #[test]
-fn version_2_certificates_roundtrip_and_authenticate_every_byte() {
-    for predecessor in [None, Some(other_writer_id())] {
-        let signed = certificate_v2_for(&writer_key().public_key(), predecessor);
-        let encoded = signed.encode();
-        let decoded = SignedCertificateV2::decode(&encoded).unwrap();
-        assert_eq!(decoded, signed);
-        assert_eq!(
-            decoded.certificate.writer_id(),
-            super::fixtures::writer_id()
-        );
-        for index in 0..encoded.len() {
-            let mut mutated = encoded.clone();
-            mutated[index] ^= 0x01;
-            assert!(
-                SignedCertificateV2::decode(&mutated).is_err(),
-                "byte {index} is not authenticated"
-            );
-        }
-    }
-}
-
-#[test]
-fn version_2_signing_requires_the_named_device_key() {
-    let mut certificate = certificate_v2_for(&writer_key().public_key(), None).certificate;
-    let stranger = DeviceKeyPair::from_seed(&[0x47; 32]).unwrap();
-    assert_eq!(
-        sign_certificate_v2(&certificate, &stranger),
-        Err(CertificateError::WrongDevice)
-    );
-    certificate.device_id = "bad id".to_string();
-    assert!(sign_certificate_v2(&certificate, &device_key()).is_err());
-}
-
-#[test]
-fn certificate_versions_do_not_decode_as_each_other() {
-    let v1 = certificate_for(&writer_key().public_key(), None).encode();
-    let v2 = certificate_v2_for(&writer_key().public_key(), None).encode();
-    assert_eq!(
-        SignedCertificateV2::decode(&v1),
-        Err(CertificateError::Version)
-    );
-    assert_eq!(
-        SignedCertificate::decode(&v2),
-        Err(CertificateError::Version)
-    );
-}
-
-#[test]
-fn oversized_version_2_certificates_are_refused_before_parsing() {
-    let mut encoded = certificate_v2_for(&writer_key().public_key(), None).encode();
+fn oversized_certificates_are_refused_before_parsing() {
+    let mut encoded = certificate_for(&writer_key().public_key(), None).encode();
     encoded.resize(MAX_CERTIFICATE_BYTES + 1, 0);
     assert_eq!(
-        SignedCertificateV2::decode(&encoded),
+        SignedCertificate::decode(&encoded),
         Err(CertificateError::Codec(CodecError::Bounds(
             "writer certificate"
         )))
@@ -243,18 +169,18 @@ fn oversized_version_2_certificates_are_refused_before_parsing() {
 }
 
 #[test]
-fn the_certificate_bound_fits_the_largest_version_2_certificate() {
-    let certificate = WriterCertificateV2 {
+fn the_certificate_bound_fits_the_largest_certificate() {
+    let certificate = WriterCertificate {
         writer_key: writer_key().public_key(),
         device_id: "d".repeat(MAX_DEVICE_ID_BYTES),
         device_key: device_key().public_key(),
         created_at_ms: i64::MAX,
         predecessor: Some(other_writer_id()),
     };
-    let encoded = sign_certificate_v2(&certificate, &device_key())
+    let encoded = sign_certificate(&certificate, &device_key())
         .unwrap()
         .encode();
     assert_eq!(encoded.len(), MAX_CERTIFICATE_BYTES);
     assert_eq!(MAX_CERTIFICATE_BYTES, 315);
-    assert!(SignedCertificateV2::decode(&encoded).is_ok());
+    assert!(SignedCertificate::decode(&encoded).is_ok());
 }

@@ -11,11 +11,11 @@ mod sync;
 pub use sync::{
     DISCOVERY_KEY_BYTES, MAX_COORDINATOR_ENDPOINTS, MAX_SYNC_ASSET_BYTES, MAX_SYNC_ASSETS,
     MAX_SYNC_HASHES, SYNC_ASSET_CHUNK_BYTES, SYNC_PAGE_BYTES, SyncAsset, SyncAssetKey, SyncProbe,
-    SyncRefusal, SyncRefusalCode, SyncSeq, validate_coordinator_endpoint,
-    validate_coordinator_endpoints, validate_discovery_key,
+    SyncRefusal, SyncRefusalCode, SyncSeq, decode_sync_device_key, encode_sync_device_key,
+    validate_coordinator_endpoint, validate_coordinator_endpoints, validate_discovery_key,
 };
 
-pub const PROTOCOL_VERSION: u16 = 9;
+pub const PROTOCOL_VERSION: u16 = 10;
 pub const MAX_CONTROL_BYTES: usize = 1024 * 1024;
 /// Frame bound before the peer presents a linked certificate. Enrollment (with its 8 KiB
 /// certificate) and contact requests fit well inside it.
@@ -221,6 +221,8 @@ pub enum ControlMessage {
         device_label: String,
         device_kind: DeviceKind,
         device_certificate: String,
+        /// Device key that certifies the device's sync writers, which the anchor enrolls.
+        sync_device_key: String,
     },
     Enrolled {
         protocol_version: u16,
@@ -525,6 +527,7 @@ impl ControlMessage {
                 device_label,
                 device_kind: _,
                 device_certificate,
+                sync_device_key,
             } => {
                 validate_protocol(*protocol_version)?;
                 validate_identifier("invitation id", invitation_id)?;
@@ -535,6 +538,7 @@ impl ControlMessage {
                 if device_certificate.is_empty() || device_certificate.len() > 8 * 1024 {
                     return Err("device certificate is invalid".to_string());
                 }
+                decode_sync_device_key(sync_device_key)?;
             }
             Self::Enrolled {
                 protocol_version,
@@ -1354,6 +1358,10 @@ pub fn test_compatibility() -> HandoffCompatibility {
 mod tests {
     use super::*;
 
+    fn test_device_key() -> ganbaru_sync_contracts::DevicePublicKey {
+        ganbaru_sync_contracts::DevicePublicKey::from_bytes([3; 32])
+    }
+
     fn qr_invitation() -> PairingInvitation {
         PairingInvitation {
             protocol_version: PROTOCOL_VERSION,
@@ -1384,6 +1392,7 @@ mod tests {
             device_label: "Phone".to_string(),
             device_kind: DeviceKind::Phone,
             device_certificate: "certificate".to_string(),
+            sync_device_key: encode_sync_device_key(&test_device_key()),
         };
         for output in [format!("{invitation:?}"), format!("{enroll:?}")] {
             assert!(!output.contains(&secret), "{output}");
@@ -1409,6 +1418,7 @@ mod tests {
             device_label: label.to_string(),
             device_kind: DeviceKind::Phone,
             device_certificate: "certificate".to_string(),
+            sync_device_key: encode_sync_device_key(&test_device_key()),
         };
         let enrolled = |label: &str| ControlMessage::Enrolled {
             protocol_version: PROTOCOL_VERSION,
@@ -1427,6 +1437,44 @@ mod tests {
             assert_eq!(enroll(label).validate(), Ok(()), "{label:?}");
             assert_eq!(enrolled(label).validate(), Ok(()), "{label:?}");
         }
+        let with_key = |key: String| match enroll("Phone") {
+            ControlMessage::Enroll {
+                protocol_version,
+                invitation_id,
+                secret,
+                vault_id,
+                device_id,
+                device_label,
+                device_kind,
+                device_certificate,
+                ..
+            } => ControlMessage::Enroll {
+                protocol_version,
+                invitation_id,
+                secret,
+                vault_id,
+                device_id,
+                device_label,
+                device_kind,
+                device_certificate,
+                sync_device_key: key,
+            },
+            _ => unreachable!(),
+        };
+        let full = encode_sync_device_key(&test_device_key());
+        for invalid in [
+            String::new(),
+            full[1..].to_string(),
+            format!("{full}AA"),
+            "+".repeat(43),
+        ] {
+            assert!(with_key(invalid.clone()).validate().is_err(), "{invalid:?}");
+        }
+        assert_eq!(
+            decode_sync_device_key(&full),
+            Ok(test_device_key()),
+            "the device key round-trips"
+        );
     }
 
     #[test]

@@ -6,8 +6,13 @@ use ganbaru_contacts::PersonKeyPair;
 use ganbaru_db::DatabasePoolRegistry;
 use ganbaru_sync::local::{self, LocalWriterHead};
 use ganbaru_sync::{Engine, SpaceContext, WriterState};
-use ganbaru_sync_contracts::WriterPublicKey;
-use ganbaru_sync_replica::writer::{SuccessorPlan, SyncFiles, WriterKeyStore, create_writer};
+use ganbaru_sync_contracts::{
+    AdminKeyPair, DeviceKeyPair, DeviceKind, RecoverySeed, WriterPublicKey,
+};
+use ganbaru_sync_replica::authority::{self, AnchorKeys, Enrollment, Founding, ensure_charter};
+use ganbaru_sync_replica::writer::{
+    ActiveWriter, SuccessorPlan, SyncFiles, SyncKey, SyncKeyStore, create_writer,
+};
 use sqlx::SqliteConnection;
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -15,33 +20,39 @@ use std::sync::Mutex;
 const OWNER_DEVICE: &str = "owner";
 const RECEIVING_DEVICE: &str = "receiver";
 
-/// Writer keys kept in memory for the length of a test.
+/// Sync secrets kept in memory for the length of a test.
 #[derive(Default)]
 struct MemoryKeys(Mutex<HashMap<String, Vec<u8>>>);
 
-impl WriterKeyStore for MemoryKeys {
-    fn read(&self, vault_id: &str, writer_id: &str) -> Result<Option<Vec<u8>>, String> {
+impl MemoryKeys {
+    fn reference(vault_id: &str, key: SyncKey<'_>) -> String {
+        format!("{vault_id}:{key:?}")
+    }
+}
+
+impl SyncKeyStore for MemoryKeys {
+    fn read(&self, vault_id: &str, key: SyncKey<'_>) -> Result<Option<Vec<u8>>, String> {
         Ok(self
             .0
             .lock()
             .unwrap()
-            .get(&format!("{vault_id}:{writer_id}"))
+            .get(&Self::reference(vault_id, key))
             .cloned())
     }
 
-    fn write(&self, vault_id: &str, writer_id: &str, pkcs8: &[u8]) -> Result<(), String> {
+    fn write(&self, vault_id: &str, key: SyncKey<'_>, secret: &[u8]) -> Result<(), String> {
         self.0
             .lock()
             .unwrap()
-            .insert(format!("{vault_id}:{writer_id}"), pkcs8.to_vec());
+            .insert(Self::reference(vault_id, key), secret.to_vec());
         Ok(())
     }
 
-    fn remove(&self, vault_id: &str, writer_id: &str) -> Result<(), String> {
+    fn remove(&self, vault_id: &str, key: SyncKey<'_>) -> Result<(), String> {
         self.0
             .lock()
             .unwrap()
-            .remove(&format!("{vault_id}:{writer_id}"));
+            .remove(&Self::reference(vault_id, key));
         Ok(())
     }
 }
@@ -50,7 +61,61 @@ fn person() -> PersonKeyPair {
     PersonKeyPair::from_seed(&[7; 32]).unwrap()
 }
 
-/// The sync space of the vault on `conn`, created with the test person as its anchor.
+/// The anchor keys of [`OWNER_DEVICE`].
+fn anchor_keys() -> AnchorKeys {
+    AnchorKeys {
+        device: DeviceKeyPair::from_seed(&[8; 32]).unwrap(),
+        admin: AdminKeyPair::from_seed(&[9; 32]).unwrap(),
+        recovery: RecoverySeed::from_bytes([10; 32]),
+    }
+}
+
+/// The device key of [`RECEIVING_DEVICE`].
+fn receiver_device() -> DeviceKeyPair {
+    DeviceKeyPair::from_seed(&[11; 32]).unwrap()
+}
+
+/// Founds the space of the vault on `conn` with [`OWNER_DEVICE`] as its anchor and enrolls
+/// [`RECEIVING_DEVICE`] through the owner's writer.
+async fn found_and_enroll(
+    conn: &mut SqliteConnection,
+    ctx: &SpaceContext,
+    owner: &mut ActiveWriter,
+    now_ms: u64,
+) {
+    let engine = Engine::vault();
+    let anchor = anchor_keys();
+    let founding = Founding {
+        device_id: OWNER_DEVICE,
+        tls_fingerprint: [12; 32],
+        discovery_key: [13; 32],
+        person: &person(),
+        now_ms,
+    };
+    ensure_charter(&engine, conn, ctx, &anchor, &founding)
+        .await
+        .unwrap();
+    let enrollment = Enrollment {
+        device_id: RECEIVING_DEVICE.to_owned(),
+        device_key: receiver_device().public_key(),
+        tls_fingerprint: [14; 32],
+        label: "Receiver".to_owned(),
+        device_kind: DeviceKind::Desktop,
+    };
+    authority::enroll(
+        &engine,
+        conn,
+        ctx,
+        &anchor.admin,
+        &mut owner.local(),
+        enrollment,
+        now_ms,
+    )
+    .await
+    .unwrap();
+}
+
+/// The sync space of the vault on `conn`.
 async fn sync_context(conn: &mut SqliteConnection, vault_id: &str, now_ms: u64) -> SpaceContext {
     sqlx::query(
         "INSERT OR IGNORE INTO contacts_local_identity
@@ -65,10 +130,7 @@ async fn sync_context(conn: &mut SqliteConnection, vault_id: &str, now_ms: u64) 
         .init_space(conn, vault_id, now_ms)
         .await
         .unwrap();
-    local::space_context(conn, vault_id, OWNER_DEVICE)
-        .await
-        .unwrap()
-        .unwrap()
+    local::space_context(conn, vault_id).await.unwrap().unwrap()
 }
 
 async fn execute(conn: &mut SqliteConnection, sql: &str) {
@@ -148,11 +210,12 @@ async fn replacement_carries_operations_and_device_state_through_failed_attempts
         &owner_files,
         &keys,
         SuccessorPlan::default(),
-        &person(),
+        &anchor_keys().device,
         OWNER_DEVICE,
         now,
     )
     .unwrap();
+    found_and_enroll(&mut conn, &ctx, &mut owner, now).await;
     execute(
         &mut conn,
         "INSERT INTO quick_notes (id, title, order_key) VALUES ('note-owner', 'Owner', 'a0')",
@@ -177,7 +240,7 @@ async fn replacement_carries_operations_and_device_state_through_failed_attempts
         &files,
         &keys,
         SuccessorPlan::default(),
-        &person(),
+        &receiver_device(),
         RECEIVING_DEVICE,
         now,
     )
@@ -226,7 +289,7 @@ async fn replacement_carries_operations_and_device_state_through_failed_attempts
 
     // The staged apply ran, the bundle is gone, and nothing is restored yet.
     failpoints::arm("replace.before_restore");
-    let error = carry_into_replacement(&engine, &staging, &target, &files, OWNER_DEVICE, now)
+    let error = carry_into_replacement(&engine, &staging, &target, &files, now)
         .await
         .unwrap_err();
     assert_eq!(error, "failpoint replace.before_restore");
@@ -249,7 +312,7 @@ async fn replacement_carries_operations_and_device_state_through_failed_attempts
 
     // A retry finds the operations stored and restores device state.
     failpoints::arm("replace.before_rename");
-    let error = carry_into_replacement(&engine, &staging, &target, &files, OWNER_DEVICE, now)
+    let error = carry_into_replacement(&engine, &staging, &target, &files, now)
         .await
         .unwrap_err();
     assert_eq!(error, "failpoint replace.before_rename");
@@ -263,7 +326,7 @@ async fn replacement_carries_operations_and_device_state_through_failed_attempts
     assert_eq!(notes(&target).await, live);
 
     failpoints::clear();
-    carry_into_replacement(&engine, &staging, &target, &files, OWNER_DEVICE, now)
+    carry_into_replacement(&engine, &staging, &target, &files, now)
         .await
         .unwrap();
     replace_vault(&staging, &target, &parent.join("newer-rollback")).unwrap();

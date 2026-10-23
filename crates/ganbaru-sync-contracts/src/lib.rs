@@ -29,8 +29,7 @@ pub use authorization::{
     SignedProposal, sign_proposal,
 };
 pub use certificate::{
-    CertificateError, SignedCertificate, SignedCertificateV2, WriterCertificate,
-    WriterCertificateV2, sign_certificate, sign_certificate_v2, validate_device_id,
+    CertificateError, SignedCertificate, WriterCertificate, sign_certificate, validate_device_id,
 };
 pub use charter::{Charter, CharterError, SignedCharter, sign_charter};
 pub use codec::CodecError;
@@ -42,7 +41,7 @@ pub use ids::{
 pub use keys::{AdminKeyPair, AdminPublicKey, DeviceKeyPair, DevicePublicKey, KeyError};
 pub use op::{
     Cause, Change, ChangeAction, Content, Envelope, Field, GroupValue, Header, Operation,
-    OperationError, OperationKind, PayloadError, Revocation, RevokeReason, SealedOperation, Value,
+    OperationError, OperationKind, PayloadError, SealedOperation, Value,
 };
 pub use order_key::{OrderKey, OrderKeyError};
 pub use order_placement::{OrderPlacementError, OrderedRow};

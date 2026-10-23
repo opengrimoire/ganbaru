@@ -35,6 +35,11 @@ impl Drop for TestDirectory {
     }
 }
 
+/// The sync device key test devices send when they enroll.
+pub(crate) fn test_sync_device_key() -> ganbaru_sync_contracts::DevicePublicKey {
+    ganbaru_sync_contracts::DevicePublicKey::from_bytes([3; 32])
+}
+
 pub(crate) struct LocalPair {
     _desktop_root: TestDirectory,
     _phone_root: TestDirectory,
@@ -132,6 +137,7 @@ impl LocalPair {
                 &self.invitation,
                 "Phone".to_string(),
                 DeviceKind::Phone,
+                &test_sync_device_key(),
             ),
         )
         .await
@@ -187,9 +193,8 @@ impl LocalPair {
             CoordinatorServices {
                 coordinator: Some(requests),
                 contacts: Some(contacts),
-                hub: None,
                 approvals: approvals.clone(),
-                admission: LanAdmission::default(),
+                ..CoordinatorServices::default()
             },
             receiver,
         ));
@@ -278,7 +283,14 @@ fn spawn_phone_enrollment(
 ) -> tokio::task::JoinHandle<Result<(), String>> {
     let phone = pair.phone.clone();
     tokio::spawn(async move {
-        super::enroll(&phone, &invitation, "Phone".to_string(), DeviceKind::Phone).await
+        super::enroll(
+            &phone,
+            &invitation,
+            "Phone".to_string(),
+            DeviceKind::Phone,
+            &test_sync_device_key(),
+        )
+        .await
     })
 }
 
@@ -1033,6 +1045,7 @@ async fn invitation_replay_is_rejected_by_coordinator() {
         &pair.invitation,
         "Phone".to_string(),
         DeviceKind::Phone,
+        &test_sync_device_key(),
     )
     .await
     .unwrap_err();
@@ -1071,6 +1084,7 @@ async fn several_enrolled_devices_authenticate_with_distinct_certificates() {
             &invitation,
             "Laptop".to_string(),
             DeviceKind::Computer,
+            &test_sync_device_key(),
         ),
     )
     .await

@@ -1,10 +1,9 @@
-use super::{
-    NOW_MS, TestDirectory, VAULT_ID, acquire, add_note, block_on, context, create_vault, person,
-};
+use super::{NOW_MS, TestDirectory, VAULT_ID, acquire, add_note, block_on, create_vault, person};
 use crate::assets::{
     ASSET_UNAVAILABLE, AssetMemory, AssetSession, AssetStore, AssetTransfer, ContentAddressedStore,
     INVALID_ASSET, MAX_ASSET_PASS_BYTES,
 };
+use crate::authority::{self, AnchorKeys, Enrollment, Founding, ensure_charter};
 use crate::client::{
     ClientSession, Exchange, Exchanged, MAX_EXCHANGE_BYTES, PeerIds, SyncTransport, wait,
 };
@@ -23,21 +22,27 @@ use ganbaru_handoff::protocol::{
 };
 use ganbaru_quick_notes::images;
 use ganbaru_sync::assets::AssetRef;
+use ganbaru_sync::local;
 use ganbaru_sync::manifest::vault::quick_notes::IMAGES_CLASS;
 use ganbaru_sync::manifest::vault::quick_notes::{NOTES, NOTES_TABLE};
 use ganbaru_sync::{Engine, SpaceContext};
+use ganbaru_sync::{LocalWriter, SequenceReservation};
 use ganbaru_sync_contracts::bounds::MAX_WRITERS_PER_DEVICE;
-use ganbaru_sync_contracts::op::RevokeReason;
-use ganbaru_sync_contracts::{SpaceId, VersionVector, WriterId};
+use ganbaru_sync_contracts::{
+    AdminKeyPair, DeviceKeyPair, DeviceKind, ProposalRejection, RecoverySeed, SignedCertificate,
+    SpaceId, VersionVector, WriterCertificate, WriterId, WriterKeyPair, sign_certificate,
+};
+use sha2::{Digest as _, Sha256};
 use sqlx::{SqliteConnection, SqlitePool};
 use std::collections::{BTreeSet, HashMap};
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::watch;
 
 const HUB_DEVICE: &str = "device-hub";
 const PHONE_DEVICE: &str = "device-phone";
+const TABLET_DEVICE: &str = "device-tablet";
 
 /// Calls the hub directly, validating both frames as the transport would.
 struct DirectTransport(SyncHub);
@@ -62,11 +67,123 @@ struct Replica {
     assets: Arc<dyn AssetStore>,
 }
 
+/// The device key of a test device, derived from its id.
+fn device_key(device_id: &str) -> DeviceKeyPair {
+    DeviceKeyPair::from_seed(&Sha256::digest(device_id.as_bytes()).into()).expect("device seed")
+}
+
+/// The anchor keys of [`HUB_DEVICE`].
+fn hub_keys() -> AnchorKeys {
+    AnchorKeys {
+        device: device_key(HUB_DEVICE),
+        admin: AdminKeyPair::from_seed(&[21; 32]).expect("admin seed"),
+        recovery: RecoverySeed::from_bytes([22; 32]),
+    }
+}
+
+/// A reservation that never needs to persist, for writers that seal only during setup.
+struct Unreserved;
+
+impl SequenceReservation for Unreserved {
+    fn ensure_reserved(&mut self, _seq: u64) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// Database image of a vault whose space [`HUB_DEVICE`] founded as its anchor, with the phone
+/// and the tablet enrolled by an earlier writer of the hub.
+static SHARED_VAULT: Mutex<Option<Vec<u8>>> = Mutex::new(None);
+
+fn shared_image() -> std::sync::MutexGuard<'static, Option<Vec<u8>>> {
+    SHARED_VAULT
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+async fn shared_vault_image() -> Vec<u8> {
+    if let Some(image) = shared_image().as_ref() {
+        return image.clone();
+    }
+    let directory = TestDirectory::new("shared-vault");
+    let registry = DatabasePoolRegistry::default();
+    let pool = create_vault(&registry, &directory.path().join("vault.sqlite")).await;
+    let mut conn = acquire(&pool).await;
+    let engine = Engine::vault();
+    engine
+        .init_space(&mut conn, VAULT_ID, NOW_MS)
+        .await
+        .expect("initialize space");
+    let ctx = local::space_context(&mut conn, VAULT_ID)
+        .await
+        .expect("read space")
+        .expect("space context");
+    let anchor = hub_keys();
+    let founding = Founding {
+        device_id: HUB_DEVICE,
+        tls_fingerprint: [23; 32],
+        discovery_key: [24; 32],
+        person: &person(),
+        now_ms: NOW_MS,
+    };
+    ensure_charter(&engine, &mut conn, &ctx, &anchor, &founding)
+        .await
+        .expect("found space");
+    let key = WriterKeyPair::from_seed(&[25; 32]).expect("writer seed");
+    let certificate: SignedCertificate = sign_certificate(
+        &WriterCertificate {
+            writer_key: key.public_key(),
+            device_id: HUB_DEVICE.to_string(),
+            device_key: anchor.device.public_key(),
+            created_at_ms: i64::try_from(NOW_MS).expect("clock"),
+            predecessor: None,
+        },
+        &anchor.device,
+    )
+    .expect("certify authority writer");
+    let mut reservation = Unreserved;
+    for device_id in [PHONE_DEVICE, TABLET_DEVICE] {
+        let mut writer = LocalWriter {
+            key: &key,
+            certificate: &certificate,
+            reservation: &mut reservation,
+        };
+        let enrollment = Enrollment {
+            device_id: device_id.to_string(),
+            device_key: device_key(device_id).public_key(),
+            tls_fingerprint: [26; 32],
+            label: device_id.to_string(),
+            device_kind: DeviceKind::Mobile,
+        };
+        authority::enroll(
+            &engine,
+            &mut conn,
+            &ctx,
+            &anchor.admin,
+            &mut writer,
+            enrollment,
+            NOW_MS,
+        )
+        .await
+        .expect("enroll device");
+    }
+    let image = conn
+        .serialize(None)
+        .await
+        .expect("serialize shared vault")
+        .to_vec();
+    drop(conn);
+    drop(pool);
+    registry.close_all().await.expect("close shared vault");
+    shared_image().get_or_insert(image).clone()
+}
+
 impl Replica {
     async fn new(label: &str, device_id: &str) -> Self {
         let directory = TestDirectory::new(label);
         let registry = DatabasePoolRegistry::default();
-        let pool = create_vault(&registry, &directory.path().join("vault.sqlite")).await;
+        let path = directory.path().join("vault.sqlite");
+        std::fs::write(&path, shared_vault_image().await).expect("write shared vault");
+        let pool = registry.connect_path(&path).await.expect("open vault");
         Self::open(directory, registry, pool, device_id).await
     }
 
@@ -76,12 +193,15 @@ impl Replica {
         pool: SqlitePool,
         device_id: &str,
     ) -> Self {
-        let ctx = context(&mut *acquire(&pool).await, HUB_DEVICE).await;
+        let ctx = local::space_context(&mut *acquire(&pool).await, VAULT_ID)
+            .await
+            .expect("read space")
+            .expect("space context");
         let writer = create_writer(
             &directory.files(),
             &directory.keys(),
             SuccessorPlan::default(),
-            &person(),
+            &device_key(device_id),
             device_id,
             NOW_MS,
         )
@@ -99,6 +219,29 @@ impl Replica {
             ctx,
             writer,
         }
+    }
+
+    /// Removes `device_id` through this replica's writer, signed with the hub's admin key.
+    async fn remove(&mut self, device_id: &str) -> Result<u64, String> {
+        let mut conn = acquire(&self.pool).await;
+        let revision = authority::remove(
+            &self.engine,
+            &mut conn,
+            &self.ctx,
+            &hub_keys().admin,
+            &mut self.writer.local(),
+            device_id,
+            NOW_MS,
+        )
+        .await?;
+        let seq = self
+            .engine
+            .stored_vector(&mut conn, &self.ctx)
+            .await
+            .expect("stored vector")
+            .get(&self.writer.id());
+        self.writer.committed(seq).expect("record commit");
+        Ok(revision)
     }
 
     async fn seal_note(&mut self, id: &str) -> u64 {
@@ -314,7 +457,6 @@ fn open_hub(replica: &Replica) -> OpenHubVault {
             Ok(Some(HubVault {
                 pool,
                 vault_id: VAULT_ID.to_string(),
-                device_id: HUB_DEVICE.to_string(),
                 assets,
             }))
         })
@@ -763,28 +905,14 @@ fn hub_refuses_foreign_geneses_unlinked_writers_and_other_vaults() {
                 .await
                 .expect("exchange"),
         );
-        // A revocation keeps every applied operation, so the hub applies the genesis first.
+        // A removal keeps every operation the anchor stored before it.
         hub_replica.apply().await;
         let cutoff = hub_replica.stored().await.get(&phone.writer.id());
         assert!(cutoff > 0);
-        {
-            let mut conn = acquire(&hub_replica.pool).await;
-            let seq = Engine::vault()
-                .seal_revoke(
-                    &mut conn,
-                    &hub_replica.ctx,
-                    phone.writer.id(),
-                    cutoff,
-                    RevokeReason::Revoked,
-                    &mut hub_replica.writer.local(),
-                    NOW_MS,
-                )
-                .await
-                .expect("revoke")
-                .last_seq
-                .expect("revocation sealed");
-            hub_replica.writer.committed(seq).expect("record commit");
-        }
+        hub_replica
+            .remove(PHONE_DEVICE)
+            .await
+            .expect("remove the phone");
         phone.seal_note("note-after-unlink").await;
         let refused = done(
             phone
@@ -806,53 +934,25 @@ fn hub_refuses_foreign_geneses_unlinked_writers_and_other_vaults() {
 }
 
 #[test]
-fn hub_refuses_a_revocation_from_a_linked_device() {
+fn only_the_anchor_sequences_authorization_entries() {
     block_on(async {
-        let mut hub_replica = Replica::new("hub-revoke", HUB_DEVICE).await;
-        let mut phone = Replica::new("phone-revoke", PHONE_DEVICE).await;
-        let (transport, _changes) = hub(&hub_replica);
-        hub_replica.seal_note("note-hub").await;
-        converge(&mut hub_replica, &mut phone, &transport).await;
-        let target = hub_replica.writer.id();
-        let cutoff = phone.stored().await.get(&target);
-        assert!(cutoff > 0);
-
-        // A modified build on the phone treats itself as the coordinator.
-        phone.ctx.coordinator_device_id = PHONE_DEVICE.to_string();
-        let seq = {
-            let mut conn = acquire(&phone.pool).await;
-            Engine::vault()
-                .seal_revoke(
-                    &mut conn,
-                    &phone.ctx,
-                    target,
-                    cutoff,
-                    RevokeReason::Revoked,
-                    &mut phone.writer.local(),
-                    NOW_MS,
-                )
-                .await
-                .expect("revoke")
-                .last_seq
-                .expect("revocation sealed")
-        };
-        phone.writer.committed(seq).expect("record commit");
-        let refused = done(
-            phone
-                .exchange(&transport, &phone_ids())
-                .await
-                .expect("exchange"),
-        );
+        let mut hub_replica = Replica::new("hub-anchor-only", HUB_DEVICE).await;
+        let mut phone = Replica::new("phone-anchor-only", PHONE_DEVICE).await;
+        let before = phone.stored().await;
+        // A modified build on the phone signs a removal with an admin key it does not hold.
+        let error = phone
+            .remove(HUB_DEVICE)
+            .await
+            .expect_err("a member cannot sequence");
         assert!(
-            refused
-                .problem
-                .as_deref()
-                .is_some_and(|problem| problem.contains("Invalid")),
-            "{refused:?}"
+            error.contains(&format!("{:?}", ProposalRejection::NotAnchor)),
+            "{error}"
         );
-        assert_eq!(hub_replica.stored().await.get(&phone.writer.id()), seq - 1);
-        hub_replica.apply().await;
-        assert!(hub_replica.has_note("note-hub").await);
+        assert_eq!(phone.stored().await, before);
+        hub_replica
+            .remove(PHONE_DEVICE)
+            .await
+            .expect("the anchor removes");
         hub_replica.close().await;
         phone.close().await;
     });
@@ -871,7 +971,7 @@ fn hub_refuses_a_device_past_its_writer_limit() {
                     &phone.directory.files(),
                     &phone.directory.keys(),
                     SuccessorPlan::default(),
-                    &person(),
+                    &device_key(PHONE_DEVICE),
                     PHONE_DEVICE,
                     NOW_MS,
                 )
@@ -891,7 +991,7 @@ fn hub_refuses_a_device_past_its_writer_limit() {
             &phone.directory.files(),
             &phone.directory.keys(),
             SuccessorPlan::default(),
-            &person(),
+            &device_key(PHONE_DEVICE),
             PHONE_DEVICE,
             NOW_MS,
         )
@@ -1629,8 +1729,6 @@ fn discarding_a_recovery_offer_keeps_the_deletion() {
         phone.close().await;
     });
 }
-
-const TABLET_DEVICE: &str = "device-tablet";
 
 fn tablet_ids() -> PeerIds {
     PeerIds {

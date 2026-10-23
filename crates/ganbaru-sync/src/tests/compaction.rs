@@ -3,7 +3,7 @@
 use std::collections::BTreeSet;
 use std::time::{Duration, Instant};
 
-use ganbaru_sync_contracts::{RevokeReason, VersionVector, WriterId};
+use ganbaru_sync_contracts::{VersionVector, WriterId};
 
 use super::block_on;
 use super::replica::{Replica, converge};
@@ -14,13 +14,21 @@ use crate::{COMPACTION_BATCH_OPS, SyncError, compaction_limit, merge};
 /// Kinds of operations as stored.
 const CHANGES: i64 = 0;
 const GENESIS: i64 = 1;
-const REVOKE: i64 = 2;
+const AUTHORIZATION: i64 = 4;
 const ACKNOWLEDGEMENT: i64 = 3;
 
 /// The stored vector of `replica`, as a limit that covers every operation it holds, so only
 /// applied state and heads bound compaction.
 async fn all_of(replica: &mut Replica) -> VersionVector {
     replica.stored_vector().await
+}
+
+/// Everything one writer stored, leaving the authorization log of the space template out of a
+/// batch count.
+async fn all_of_writer(replica: &mut Replica, writer: WriterId) -> VersionVector {
+    let mut limit = VersionVector::new();
+    limit.set(writer, replica.stored_vector().await.get(&writer));
+    limit
 }
 
 async fn note(replica: &mut Replica, id: &str, title: &str) {
@@ -151,57 +159,46 @@ fn compaction_drops_applied_changes_and_acknowledgements_below_the_head() {
 }
 
 #[test]
-fn compaction_keeps_revocations_and_stops_at_the_limit_and_what_was_applied() {
+fn compaction_keeps_authorization_bodies_and_stops_at_the_limit_and_what_was_applied() {
     block_on(async {
-        let mut hub = Replica::new(0, 22).await;
+        let mut hub = Replica::anchor(0, 22).await;
         let mut member = Replica::new(1, 22).await;
         note(&mut member, "note-1", "One").await;
         retitle(&mut member, "note-1", "Two").await;
         hub.pull(&mut member).await;
-        let revoked = member.writer();
-        let cutoff = hub.stored_vector().await.get(&revoked);
-        hub.engine
-            .seal_revoke(
-                &mut hub.conn,
-                &hub.ctx,
-                revoked,
-                cutoff,
-                RevokeReason::Revoked,
-                &mut hub.identity.local(),
-                hub.now_ms,
-            )
-            .await
-            .unwrap();
+        let device = member.device_id.clone();
+        hub.remove(&device).await.unwrap();
         note(&mut hub, "note-2", "Hub").await;
         retitle(&mut hub, "note-2", "Hub again").await;
         let own = hub.writer();
-        assert_eq!(
-            chain(&mut hub, own)
-                .await
-                .iter()
-                .map(|op| op.0)
-                .collect::<Vec<_>>(),
-            [GENESIS, REVOKE, CHANGES, CHANGES]
-        );
+        let kinds: Vec<i64> = chain(&mut hub, own).await.iter().map(|op| op.0).collect();
+        let removal = kinds.len() - 3;
+        assert_eq!(kinds[0], GENESIS);
+        assert!(kinds[1..=removal].iter().all(|kind| *kind == AUTHORIZATION));
+        assert_eq!(kinds[removal + 1..], [CHANGES, CHANGES]);
+        let removal_seq = u64::try_from(removal + 1).unwrap();
 
-        // The limit stops at the revocation, so no change of the hub is compacted yet.
+        // The limit stops at the removal, so no change of the hub is compacted yet.
         let mut limit = VersionVector::new();
-        limit.set(own, 2);
+        limit.set(own, removal_seq);
         let report = hub.compact(&limit, COMPACTION_BATCH_OPS).await.unwrap();
         assert_eq!(report.compacted, 0);
-        assert_eq!(compacted_seq(&mut hub, own).await, 2);
+        assert_eq!(compacted_seq(&mut hub, own).await, removal_seq);
         let limit = all_of(&mut hub).await;
         hub.compact(&limit, COMPACTION_BATCH_OPS).await.unwrap();
         let kept = chain(&mut hub, own).await;
-        assert!(kept[1].1 > 0, "a revocation keeps its body");
-        assert_eq!(kept[2].1, 0);
-        assert_eq!(compacted_seq(&mut hub, own).await, 3);
+        assert!(
+            kept[..=removal].iter().all(|op| op.1 > 0),
+            "authorization entries keep their bodies"
+        );
+        assert_eq!(kept[removal + 1].1, 0);
+        assert_eq!(compacted_seq(&mut hub, own).await, removal_seq + 1);
 
         // Operations a replica stores but has not applied are never compacted.
         let mut late = Replica::new(2, 22).await;
         let ops = member.ops_since(&VersionVector::new()).await;
         late.receive(&ops).await;
-        let limit = all_of(&mut late).await;
+        let limit = all_of_writer(&mut late, member.writer()).await;
         let report = late.compact(&limit, COMPACTION_BATCH_OPS).await.unwrap();
         assert_eq!((report.compacted, report.batches), (0, 0));
     });
@@ -221,14 +218,12 @@ fn a_peer_behind_a_compacted_sequence_is_told_to_bootstrap() {
         assert!(compacted > 1);
 
         let server = &mut replicas[1];
+        // A peer holding every other writer, so the refusal names the compacted source.
+        let mut others = server.stored_vector().await;
+        others.set(source, 0);
         let behind = server
             .engine
-            .ops_after(
-                &mut server.conn,
-                &server.ctx,
-                &VersionVector::new(),
-                1 << 20,
-            )
+            .ops_after(&mut server.conn, &server.ctx, &others, 1 << 20)
             .await;
         match behind {
             Err(SyncError::Compacted { writer, seq }) => {
@@ -238,7 +233,7 @@ fn a_peer_behind_a_compacted_sequence_is_told_to_bootstrap() {
         }
 
         // A peer holding everything through the compacted sequence is served the rest.
-        let mut known = VersionVector::new();
+        let mut known = others;
         known.set(source, compacted);
         let page = server
             .engine
@@ -464,7 +459,7 @@ fn a_crash_between_batches_leaves_a_compacted_prefix() {
         converge(&mut replicas).await;
         let source = replicas[0].writer();
         let server = &mut replicas[1];
-        let limit = all_of(server).await;
+        let limit = all_of_writer(server, source).await;
 
         // A zero budget stops after the first transaction.
         let first = server
@@ -628,7 +623,7 @@ fn compaction_of_a_full_batch_reports_its_time_and_freed_bytes() {
         server.pull(&mut writer).await;
         let bodies = "SELECT coalesce(sum(length(envelope)), 0) FROM sync_ops";
         let before = server.count(bodies).await;
-        let limit = all_of(&mut server).await;
+        let limit = all_of_writer(&mut server, writer.writer()).await;
         let started = Instant::now();
         let report = server
             .engine

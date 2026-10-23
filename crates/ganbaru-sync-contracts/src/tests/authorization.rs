@@ -56,8 +56,8 @@ fn charter_certificate_and_proposal_encode_to_frozen_bytes() {
     let charter = golden_charter();
     assert_vector("charter", &hex(&charter.encode()));
     let certificate =
-        super::fixtures::certificate_v2_for(&writer_key().public_key(), Some(other_writer_id()));
-    assert_vector("certificate-v2", &hex(&certificate.encode()));
+        super::fixtures::certificate_for(&writer_key().public_key(), Some(other_writer_id()));
+    assert_vector("certificate", &hex(&certificate.encode()));
     assert_vector(
         "proposal-enroll",
         &hex(&proposal(enroll_entry(), 1).encode()),

@@ -168,6 +168,13 @@ string_enum!(MusicRepeatMode {
     All => "all",
     One => "one",
 });
+
+/// Icon of a playlist created without one, matching the `music_playlists.icon` column default.
+pub const DEFAULT_PLAYLIST_ICON: &str = "lucide:list-music";
+/// Repeat mode of a playlist created without one, matching the `music_playlists.repeat_mode`
+/// column default. Shuffle and mix default to off.
+pub const DEFAULT_PLAYLIST_REPEAT_MODE: MusicRepeatMode = MusicRepeatMode::All;
+
 string_enum!(MusicPlaylistAssignmentKind {
     ProjectFocus => "project-focus",
     ProjectBreak => "project-break",

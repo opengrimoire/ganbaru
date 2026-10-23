@@ -1,7 +1,8 @@
 //! Restoring Music rows offered for sync recovery.
 //!
 //! A deleted playlist comes back as a new playlist with a key of its own, its retained name,
-//! icon, and playback settings, and copies of its deleted intended uses and memberships. A
+//! icon, and playback settings (the defaults of a new playlist when the icon or playback
+//! settings were not retained), and copies of its deleted intended uses and memberships. A
 //! membership whose item no longer exists is left out, and a break item that no longer exists
 //! is cleared together with its break range.
 
@@ -18,7 +19,10 @@ use ring::rand::{SecureRandom, SystemRandom};
 use sqlx::{Connection, Sqlite, SqliteConnection, Transaction};
 
 use crate::writes::{commit, insert_intended_use, map_database_error};
-use crate::{MusicLibraryError, MusicLibraryResult, validate_icon, validate_name};
+use crate::{
+    DEFAULT_PLAYLIST_ICON, DEFAULT_PLAYLIST_REPEAT_MODE, MusicLibraryError, MusicLibraryResult,
+    validate_icon, validate_name,
+};
 
 /// Retained playlist settings.
 struct RecoveredPlaylist {
@@ -174,9 +178,14 @@ fn recovered_playlist(values: &[(GroupId, Value)]) -> MusicLibraryResult<Recover
         }
     }
     let name = name.ok_or_else(|| invalid("a recovered playlist has no name".to_string()))?;
-    let icon = icon.ok_or_else(|| invalid("a recovered playlist has no icon".to_string()))?;
-    let (shuffle_enabled, repeat_mode, mix_enabled) = playback
-        .ok_or_else(|| invalid("a recovered playlist has no playback settings".to_string()))?;
+    let icon = icon.unwrap_or_else(|| DEFAULT_PLAYLIST_ICON.to_string());
+    let (shuffle_enabled, repeat_mode, mix_enabled) = playback.unwrap_or_else(|| {
+        (
+            0,
+            DEFAULT_PLAYLIST_REPEAT_MODE.as_ref().to_string(),
+            0,
+        )
+    });
     Ok(RecoveredPlaylist {
         name,
         icon,
@@ -538,7 +547,41 @@ mod tests {
     }
 
     #[test]
-    fn recovery_refuses_a_playlist_without_retained_settings_or_with_foreign_descendants() {
+    fn recovery_restores_new_playlist_defaults_when_icon_and_playback_were_not_retained() {
+        block_on(async {
+            let pool = pool().await;
+            let name_only: Vec<_> = playlist_values()
+                .into_iter()
+                .filter(|(group, _)| {
+                    *group != playlist_group::ICON && *group != playlist_group::PLAYBACK
+                })
+                .collect();
+            let id = restore_recovered_playlist(
+                &mut pool.acquire().await.unwrap(),
+                &name_only,
+                &[intended_use("focus")],
+                42,
+            )
+            .await
+            .unwrap();
+            let (name, icon, shuffle, repeat, mix): (String, String, i64, String, i64) =
+                sqlx::query_as(
+                    "SELECT name, icon, shuffle_enabled, repeat_mode, mix_enabled
+                     FROM music_playlists WHERE id = ?",
+                )
+                .bind(&id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+            assert_eq!(
+                (name.as_str(), icon.as_str(), shuffle, repeat.as_str(), mix),
+                ("Deep work", DEFAULT_PLAYLIST_ICON, 0, "all", 0)
+            );
+        });
+    }
+
+    #[test]
+    fn recovery_refuses_a_playlist_without_a_retained_name_or_with_foreign_descendants() {
         block_on(async {
             let pool = pool().await;
             let without_name: Vec<_> = playlist_values()

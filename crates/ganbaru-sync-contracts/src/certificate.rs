@@ -1,19 +1,30 @@
-//! Writer certificates: a person key vouching for an installation's writer key.
+//! Writer certificates: a key vouching for an installation's writer key.
 //!
-//! Binary layout, big endian: version (1) | writer key (32) | person key (32) | device id length
-//! (1) and device id | created at milliseconds (8) | predecessor flag (1) and optional writer id
-//! (16) | person signature (64) over the certificate domain and everything before it.
+//! Version 1, big endian: version (1) | writer key (32) | person key (32) | device id length (1)
+//! and device id | created at milliseconds (8) | predecessor flag (1) and optional writer id (16)
+//! | person signature (64) over the version 1 certificate domain and everything before it.
+//!
+//! Version 2: version (1) | writer key (32) | device id length (1) and device id | device public
+//! key (32) | created at milliseconds (8) | predecessor flag (1) and optional writer id (16) |
+//! device signature (64) over the version 2 certificate domain and everything before it. The
+//! device key is the one the device's enrollment records in the authorization log, so a device
+//! mints its own successor writers and a certificate verifies from the log alone.
+//!
+//! Version 1 is kept until the authorization log replaces it; geneses still carry version 1.
 
-use crate::bounds::MAX_DEVICE_ID_BYTES;
+use crate::bounds::{MAX_CERTIFICATE_BYTES, MAX_DEVICE_ID_BYTES};
 use crate::codec::{CodecError, Reader, Writer};
 use crate::ids::{ID_BYTES, WriterId};
+use crate::keys::{DeviceKeyPair, DevicePublicKey};
 use crate::signing::{
-    CERTIFICATE_DOMAIN, WRITER_PUBLIC_KEY_BYTES, WriterPublicKey, domain_message,
+    CERTIFICATE_DOMAIN, CERTIFICATE_V2_DOMAIN, WRITER_PUBLIC_KEY_BYTES, WriterPublicKey,
+    domain_message,
 };
 use ganbaru_contacts::{PUBLIC_KEY_BYTES, PersonKeyPair, PersonPublicKey, SIGNATURE_BYTES, verify};
 use std::fmt;
 
 const CERTIFICATE_VERSION: u8 = 1;
+const CERTIFICATE_V2_VERSION: u8 = 2;
 
 /// A certificate that cannot be issued, decoded, or verified.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -26,7 +37,9 @@ pub enum CertificateError {
     DeviceId,
     /// The signing key is not the certified person key.
     WrongPerson,
-    /// The person signature does not verify.
+    /// The signing key is not the certified device key.
+    WrongDevice,
+    /// The person or device signature does not verify.
     Signature,
 }
 
@@ -37,6 +50,7 @@ impl fmt::Display for CertificateError {
             Self::Version => formatter.write_str("writer certificate version is unsupported"),
             Self::DeviceId => formatter.write_str("writer certificate device id is invalid"),
             Self::WrongPerson => formatter.write_str("writer certificate person key mismatch"),
+            Self::WrongDevice => formatter.write_str("writer certificate device key mismatch"),
             Self::Signature => formatter.write_str("writer certificate signature does not verify"),
         }
     }
@@ -50,7 +64,7 @@ impl From<CodecError> for CertificateError {
     }
 }
 
-/// Unsigned certificate contents.
+/// Unsigned version 1 certificate contents. Kept until the authorization log replaces it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WriterCertificate {
     /// The certified writer key.
@@ -72,7 +86,8 @@ impl WriterCertificate {
     }
 }
 
-/// A certificate with its person signature.
+/// A version 1 certificate with its person signature. Kept until the authorization log replaces
+/// it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SignedCertificate {
     /// Certified contents.
@@ -96,13 +111,18 @@ pub fn validate_device_id(device_id: &str) -> Result<(), CertificateError> {
     }
 }
 
-fn encode_unsigned(certificate: &WriterCertificate, writer: &mut Writer) {
-    writer.u8(CERTIFICATE_VERSION);
-    writer.raw(certificate.writer_key.as_bytes());
-    writer.raw(certificate.person_key.as_bytes());
-    writer.bytes_u8(certificate.device_id.as_bytes());
-    writer.i64(certificate.created_at_ms);
-    match certificate.predecessor {
+/// Reads a device id with a one-byte length and validates it.
+pub(crate) fn read_device_id(reader: &mut Reader<'_>) -> Result<String, CertificateError> {
+    let device_id = reader.bytes_u8(MAX_DEVICE_ID_BYTES, "device id")?;
+    let device_id = std::str::from_utf8(device_id)
+        .map_err(|_| CertificateError::DeviceId)?
+        .to_string();
+    validate_device_id(&device_id)?;
+    Ok(device_id)
+}
+
+fn write_predecessor(predecessor: Option<WriterId>, writer: &mut Writer) {
+    match predecessor {
         Some(predecessor) => {
             writer.u8(1);
             writer.raw(predecessor.as_bytes());
@@ -111,7 +131,24 @@ fn encode_unsigned(certificate: &WriterCertificate, writer: &mut Writer) {
     }
 }
 
-/// Signs a certificate with the person key it names.
+fn read_predecessor(reader: &mut Reader<'_>) -> Result<Option<WriterId>, CertificateError> {
+    match reader.u8()? {
+        0 => Ok(None),
+        1 => Ok(Some(WriterId::from_bytes(reader.array::<ID_BYTES>()?))),
+        _ => Err(CodecError::Malformed("certificate predecessor").into()),
+    }
+}
+
+fn encode_unsigned(certificate: &WriterCertificate, writer: &mut Writer) {
+    writer.u8(CERTIFICATE_VERSION);
+    writer.raw(certificate.writer_key.as_bytes());
+    writer.raw(certificate.person_key.as_bytes());
+    writer.bytes_u8(certificate.device_id.as_bytes());
+    writer.i64(certificate.created_at_ms);
+    write_predecessor(certificate.predecessor, writer);
+}
+
+/// Signs a version 1 certificate with the person key it names.
 pub fn sign_certificate(
     certificate: &WriterCertificate,
     person: &PersonKeyPair,
@@ -151,17 +188,9 @@ impl SignedCertificate {
         }
         let writer_key = WriterPublicKey::from_bytes(reader.array::<WRITER_PUBLIC_KEY_BYTES>()?);
         let person_key = PersonPublicKey::from_bytes(reader.array::<PUBLIC_KEY_BYTES>()?);
-        let device_id = reader.bytes_u8(MAX_DEVICE_ID_BYTES, "device id")?;
-        let device_id = std::str::from_utf8(device_id)
-            .map_err(|_| CertificateError::DeviceId)?
-            .to_string();
-        validate_device_id(&device_id)?;
+        let device_id = read_device_id(reader)?;
         let created_at_ms = reader.i64()?;
-        let predecessor = match reader.u8()? {
-            0 => None,
-            1 => Some(WriterId::from_bytes(reader.array::<ID_BYTES>()?)),
-            _ => return Err(CodecError::Malformed("certificate predecessor").into()),
-        };
+        let predecessor = read_predecessor(reader)?;
         let certificate = WriterCertificate {
             writer_key,
             person_key,
@@ -187,6 +216,125 @@ impl SignedCertificate {
 
     /// Decodes a complete certificate encoding and verifies its person signature.
     pub fn decode(bytes: &[u8]) -> Result<Self, CertificateError> {
+        let mut reader = Reader::new(bytes);
+        let certificate = Self::decode_from(&mut reader)?;
+        reader.finish()?;
+        Ok(certificate)
+    }
+}
+
+/// Unsigned version 2 certificate contents, vouched for by the owning device's key.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WriterCertificateV2 {
+    /// The certified writer key.
+    pub writer_key: WriterPublicKey,
+    /// Handoff device id of the installation that owns the writer.
+    pub device_id: String,
+    /// The device key that vouches for the writer, as its enrollment records it.
+    pub device_key: DevicePublicKey,
+    /// Creation time in Unix milliseconds.
+    pub created_at_ms: i64,
+    /// Retired writer this one replaces on the same installation. Informational only.
+    pub predecessor: Option<WriterId>,
+}
+
+impl WriterCertificateV2 {
+    /// Writer id the certificate binds.
+    pub fn writer_id(&self) -> WriterId {
+        WriterId::for_public_key(&self.writer_key)
+    }
+}
+
+/// A version 2 certificate with its device signature.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SignedCertificateV2 {
+    /// Certified contents.
+    pub certificate: WriterCertificateV2,
+    /// Device signature over the version 2 certificate domain and the unsigned encoding.
+    pub signature: [u8; SIGNATURE_BYTES],
+}
+
+fn encode_unsigned_v2(certificate: &WriterCertificateV2, writer: &mut Writer) {
+    writer.u8(CERTIFICATE_V2_VERSION);
+    writer.raw(certificate.writer_key.as_bytes());
+    writer.bytes_u8(certificate.device_id.as_bytes());
+    writer.raw(certificate.device_key.as_bytes());
+    writer.i64(certificate.created_at_ms);
+    write_predecessor(certificate.predecessor, writer);
+}
+
+/// Signs a version 2 certificate with the device key it names.
+pub fn sign_certificate_v2(
+    certificate: &WriterCertificateV2,
+    device: &DeviceKeyPair,
+) -> Result<SignedCertificateV2, CertificateError> {
+    validate_device_id(&certificate.device_id)?;
+    if device.public_key() != certificate.device_key {
+        return Err(CertificateError::WrongDevice);
+    }
+    let mut writer = Writer::default();
+    encode_unsigned_v2(certificate, &mut writer);
+    let signature = device.sign(CERTIFICATE_V2_DOMAIN, writer.as_bytes());
+    Ok(SignedCertificateV2 {
+        certificate: certificate.clone(),
+        signature,
+    })
+}
+
+impl SignedCertificateV2 {
+    /// Appends the canonical encoding.
+    pub fn encode_into(&self, writer: &mut Writer) {
+        encode_unsigned_v2(&self.certificate, writer);
+        writer.raw(&self.signature);
+    }
+
+    /// Canonical encoding.
+    pub fn encode(&self) -> Vec<u8> {
+        let mut writer = Writer::default();
+        self.encode_into(&mut writer);
+        writer.into_bytes()
+    }
+
+    /// Reads one certificate and verifies its device signature. Whether the device key belongs
+    /// to an enrolled device is the authorization log's question, not the certificate's.
+    pub fn decode_from(reader: &mut Reader<'_>) -> Result<Self, CertificateError> {
+        let start = reader.position();
+        if reader.u8()? != CERTIFICATE_V2_VERSION {
+            return Err(CertificateError::Version);
+        }
+        let writer_key = WriterPublicKey::from_bytes(reader.array::<WRITER_PUBLIC_KEY_BYTES>()?);
+        let device_id = read_device_id(reader)?;
+        let device_key = DevicePublicKey::from_bytes(reader.array::<PUBLIC_KEY_BYTES>()?);
+        let created_at_ms = reader.i64()?;
+        let predecessor = read_predecessor(reader)?;
+        let certificate = WriterCertificateV2 {
+            writer_key,
+            device_id,
+            device_key,
+            created_at_ms,
+            predecessor,
+        };
+        let mut unsigned = Writer::default();
+        encode_unsigned_v2(&certificate, &mut unsigned);
+        debug_assert_eq!(unsigned.len(), reader.position() - start);
+        let signature = reader.array::<SIGNATURE_BYTES>()?;
+        if !certificate
+            .device_key
+            .verify(CERTIFICATE_V2_DOMAIN, unsigned.as_bytes(), &signature)
+        {
+            return Err(CertificateError::Signature);
+        }
+        Ok(Self {
+            certificate,
+            signature,
+        })
+    }
+
+    /// Decodes a complete certificate encoding and verifies its device signature.
+    pub fn decode(bytes: &[u8]) -> Result<Self, CertificateError> {
+        if bytes.len() > MAX_CERTIFICATE_BYTES {
+            return Err(CodecError::Bounds("writer certificate").into());
+        }
         let mut reader = Reader::new(bytes);
         let certificate = Self::decode_from(&mut reader)?;
         reader.finish()?;

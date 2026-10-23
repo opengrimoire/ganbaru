@@ -17,6 +17,20 @@ pub const OPERATION_HASH_DOMAIN: &[u8] = b"ganbaru-sync/op-hash/v1";
 pub const VALUE_HASH_DOMAIN: &[u8] = b"ganbaru-sync/value/v1";
 /// Person signature over a writer certificate.
 pub const CERTIFICATE_DOMAIN: &[u8] = b"ganbaru-sync/writer-certificate/v1";
+/// Device signature over a writer certificate v2.
+pub const CERTIFICATE_V2_DOMAIN: &[u8] = b"ganbaru-sync/writer-certificate/v2";
+/// Person signature over a space charter.
+pub const CHARTER_DOMAIN: &[u8] = b"ganbaru-sync/charter/v1";
+/// Charter hash: the previous entry hash of authorization revision 1.
+pub const CHARTER_HASH_DOMAIN: &[u8] = b"ganbaru-sync/charter-hash/v1";
+/// Admin signature over an authorization proposal.
+pub const PROPOSAL_DOMAIN: &[u8] = b"ganbaru-sync/proposal/v1";
+/// Proposal hash, the idempotence key of a proposal.
+pub const PROPOSAL_HASH_DOMAIN: &[u8] = b"ganbaru-sync/proposal-hash/v1";
+/// Authorization entry hash that forms the inner chain of the authorization log.
+pub const AUTHORIZATION_ENTRY_DOMAIN: &[u8] = b"ganbaru-sync/auth-entry/v1";
+/// Checksum of a recovery kit code.
+pub const RECOVERY_KIT_DOMAIN: &[u8] = b"ganbaru-sync/recovery-kit/v1";
 /// Derivation of a personal space id from a vault id.
 pub const PERSONAL_SPACE_DOMAIN: &[u8] = b"ganbaru-sync/personal-space/v1";
 /// Derivation of a writer id from a writer public key.

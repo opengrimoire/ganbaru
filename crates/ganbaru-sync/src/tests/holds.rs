@@ -12,8 +12,9 @@ use crate::error::failpoints;
 use crate::hold::{self, MAX_HOLD_MS};
 use crate::{MAX_OPS_PER_SEAL, SyncError};
 
-/// Rows in the first seal of a large domain, enough to exceed one seal transaction.
-const LARGE_SEAL_ROWS: u32 = 10_000;
+/// Rows in the first seal of a large domain, enough to exceed one seal transaction with keys of
+/// the longest allowed length.
+const LARGE_SEAL_ROWS: u32 = 6_000;
 
 async fn replicas(count: usize) -> Vec<Replica> {
     let mut replicas = Vec::with_capacity(count);
@@ -433,7 +434,7 @@ fn a_large_first_seal_splits_into_batches_and_a_remote_batch_seals_its_rows_firs
                 "UPDATE fixture_memos SET label = 'Local' WHERE id = 'zz-shared';
                  WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < {LARGE_SEAL_ROWS})
                  INSERT INTO fixture_memos (id, label)
-                 SELECT printf('memo-%031d', i), printf('%040d', i) FROM n;"
+                 SELECT printf('memo-%0123d', i), printf('%040d', i) FROM n;"
             ))
             .await;
         replicas[1]
@@ -576,7 +577,7 @@ fn large_cycle_a() -> String {
     format!(
         "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < {LARGE_SEAL_ROWS})
          INSERT INTO fixture_cycle_a (id, label)
-         SELECT printf('c-%031d', i), printf('%040d', i) FROM n;"
+         SELECT printf('c-%0126d', i), printf('%040d', i) FROM n;"
     )
 }
 

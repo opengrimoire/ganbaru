@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { MaybePromise } from "$lib/utils";
+  import ProjectDependencyConflicts from "$lib/components/projects/conflicts/ProjectDependencyConflicts.svelte";
   import Select from "$lib/components/ui/Select.svelte";
   import Trash2 from "@lucide/svelte/icons/trash";
   import { getLocalization } from "$lib/i18n/translator.svelte";
@@ -86,6 +87,7 @@
   </div>
 
   </div>
+  <ProjectDependencyConflicts projectId={task.projectId} taskId={task.id} />
   <Select inline appearance="quiet" contentAlign="start" class="w-full" value=""
     triggerLabel={t("projects.detail.addBlockedBy")} ariaLabel={t("projects.detail.addBlockedBy")}
     options={dependencyCandidates.map((candidate) => ({ value: candidate.id, label: candidate.title }))}

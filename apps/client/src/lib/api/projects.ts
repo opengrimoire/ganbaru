@@ -442,7 +442,7 @@ type ProjectMutationRemovalRow =
   | { kind: "custom_emoji"; id: string }
   | { kind: "view"; id: string };
 
-interface ProjectsMutationRows extends ProjectsSnapshotRows {
+export interface ProjectsMutationRows extends ProjectsSnapshotRows {
   removals: ProjectMutationRemovalRow[];
   calendar_event_project_assignments: Array<{ event_id: string; project_id: string }>;
 }
@@ -907,7 +907,7 @@ function mapMutationRemoval(row: ProjectMutationRemovalRow): ProjectMutationRemo
   }
 }
 
-function mapMutation(rows: ProjectsMutationRows): ProjectMutation {
+export function mapMutation(rows: ProjectsMutationRows): ProjectMutation {
   return {
     changed: mapSnapshot(rows),
     removals: rows.removals.map(mapMutationRemoval),

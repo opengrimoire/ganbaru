@@ -4,6 +4,7 @@
   import Plus from "@lucide/svelte/icons/plus";
   import Save from "@lucide/svelte/icons/save";
   import Trash2 from "@lucide/svelte/icons/trash";
+  import ProjectFieldConflict from "$lib/components/projects/conflicts/ProjectFieldConflict.svelte";
   import Checkbox from "$lib/components/ui/Checkbox.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import type { MoveDirection, ProjectChecklistItem, ProjectTask } from "$lib/projects/types";
@@ -123,6 +124,13 @@
           <Trash2 size={13} strokeWidth={1.75} />
         </button>
       </div>
+      <ProjectFieldConflict
+        projectId={task.projectId}
+        target="checklist_item"
+        id={item.id}
+        field="title"
+        onResolved={(text) => onTitleDraftChange(item.id, text)}
+      />
     {/each}
   </div>
   <div class="flex gap-1">

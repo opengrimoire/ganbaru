@@ -65,6 +65,7 @@
     type ProjectTaskDraftRelations,
     type ProjectTaskDraftRelationWriter,
   } from "$lib/projects/tasks/draft-relations";
+  import ProjectFieldConflict from "$lib/components/projects/conflicts/ProjectFieldConflict.svelte";
   import ProjectTaskDetailChecklistSection from "./ProjectTaskDetailChecklistSection.svelte";
   import ProjectTaskDetailCustomFieldsSection from "./ProjectTaskDetailCustomFieldsSection.svelte";
   import ProjectTaskDetailDescriptionSection from "./ProjectTaskDetailDescriptionSection.svelte";
@@ -1253,6 +1254,22 @@
             {#key selectedTask?.id ?? "draft"}
               <div class="task-detail-workspace">
                 <div class="task-detail-content">
+                  {#if selectedTask}
+                    <ProjectFieldConflict
+                      projectId={selectedTask.projectId}
+                      target="task"
+                      id={selectedTask.id}
+                      field="title"
+                      onResolved={(text) => { detailTitle = text; }}
+                    />
+                    <ProjectFieldConflict
+                      projectId={selectedTask.projectId}
+                      target="task"
+                      id={selectedTask.id}
+                      field="description"
+                      onResolved={(text) => { detailDescription = text; }}
+                    />
+                  {/if}
                   <ProjectTaskDetailDescriptionSection
                     value={detailDescription}
                     onChange={(value) => { detailDescription = value; }}

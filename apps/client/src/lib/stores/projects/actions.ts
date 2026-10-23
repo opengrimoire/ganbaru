@@ -1,4 +1,5 @@
 import type { ProjectDependencyCascadePreview } from "$lib/api/project-cascade";
+import { resolveProjectConflict, type ProjectConflictResolution } from "$lib/api/project-conflicts";
 import {
   applyProjectTaskBulk,
   reorderProjectItem,
@@ -1044,6 +1045,18 @@ export function createProjectStoreActions(context: ProjectStoreActionContext) {
       deleteProjectTaskDependency(dependencyId));
   }
 
+  /**
+   * Resolve a sync conflict on every linked device and apply the rows it changed.
+   *
+   * @throws {ProjectConflictError} When the conflict is gone or restoring a hidden dependency would recreate its cycle.
+   */
+  async function resolveConflict(resolution: ProjectConflictResolution): Promise<void> {
+    const key = resolution.kind === "field"
+      ? `conflict:${resolution.target}:${resolution.id}:${resolution.field}`
+      : `conflict:dependency:${resolution.blockingTaskId}:${resolution.blockedTaskId}`;
+    await commitMutation(key, () => resolveProjectConflict(resolution));
+  }
+
 
 
   /** Persist one preference of one view, serialized per view and key. */
@@ -1193,6 +1206,7 @@ export function createProjectStoreActions(context: ProjectStoreActionContext) {
     searchLinkableEvents,
     addTaskDependency,
     removeTaskDependency,
+    resolveConflict,
     saveViewPreference,
     saveTaskListColumns,
     saveTaskListColumnWidths,

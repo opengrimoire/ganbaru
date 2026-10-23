@@ -4,6 +4,7 @@
 //! `ganbaru-sync-replica`. A pass runs through a host, so the app and a headless pass without a
 //! Tauri runtime share it.
 
+mod asset_collection;
 pub(crate) mod commands;
 mod connectivity;
 pub(crate) mod devices;

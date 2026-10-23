@@ -1,4 +1,4 @@
-import { collectQuickNoteImages, purgeExpiredQuickNotesTrash } from "$lib/api/quick-notes";
+import { purgeExpiredQuickNotesTrash } from "$lib/api/quick-notes";
 import type { LifecycleScheduler } from "$lib/scheduling/lifecycle-scheduler";
 import { createQuickNotesTrashPurgeScheduler } from "$lib/quick-notes/trash-purge";
 import {
@@ -14,7 +14,7 @@ export interface QuickNotesTrashPurgeRuntime {
 }
 
 /**
- * Creates the trash purge and image collection job for the window that owns background work. The job starts disabled;
+ * Creates the trash purge job for the window that owns background work. The job starts disabled;
  * it reruns after local or foreign Quick notes changes and announces each purge to open views.
  */
 export function startQuickNotesTrashPurge(): QuickNotesTrashPurgeRuntime {
@@ -23,7 +23,6 @@ export function startQuickNotesTrashPurge(): QuickNotesTrashPurgeRuntime {
   let unlistenForeign: (() => void) | null = null;
   const scheduler = createQuickNotesTrashPurgeScheduler({
     purge: purgeExpiredQuickNotesTrash,
-    collectImages: collectQuickNoteImages,
     onPurged: () => {
       announcing = true;
       try {

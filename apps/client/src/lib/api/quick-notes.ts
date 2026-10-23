@@ -319,16 +319,6 @@ export async function downloadQuickNoteImage(image: QuickNoteImage): Promise<boo
   return boolean(saved, "quick note image download");
 }
 
-/** Deletes unreferenced image files past their grace period; returns how many were removed. */
-export async function collectQuickNoteImages(): Promise<number> {
-  const removed = integer(
-    await invoke<unknown>("quick_notes_collect_images", { dbUrl: await ensureDbUrl() }),
-    "quick note image collection",
-  );
-  if (removed < 0) throw new Error("quick note image collection is invalid");
-  return removed;
-}
-
 const ORDER_KEY_PATTERN = /^[0-9A-Za-z]+$/u;
 
 export function mapQuickNoteTag(value: unknown): QuickNoteTag {

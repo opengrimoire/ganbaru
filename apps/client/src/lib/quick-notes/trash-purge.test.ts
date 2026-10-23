@@ -2,7 +2,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { QuickNotesTrashPurge } from "$lib/quick-notes/types";
 import {
   createQuickNotesTrashPurgeScheduler,
-  QUICK_NOTE_IMAGE_COLLECTION_INTERVAL_MS,
   quickNotesTrashPurgeDeadline,
 } from "./trash-purge";
 
@@ -71,57 +70,6 @@ describe("Quick notes trash purge scheduler", () => {
     await vi.advanceTimersByTimeAsync(60_000);
     expect(purge).toHaveBeenCalledTimes(3);
     expect(scheduler.hasScheduledDeadline()).toBe(false);
-    scheduler.dispose();
-  });
-
-  it("collects unused images at most once per interval", async () => {
-    const purge = vi.fn(async (): Promise<QuickNotesTrashPurge> => ({ purged: 0, nextPurgeAt: null }));
-    const collectImages = vi.fn(async () => 0);
-    const scheduler = createQuickNotesTrashPurgeScheduler({ purge, onPurged: vi.fn(), collectImages });
-
-    scheduler.setEnabled(true);
-    await vi.advanceTimersByTimeAsync(0);
-    scheduler.invalidate();
-    await vi.advanceTimersByTimeAsync(0);
-    expect(purge).toHaveBeenCalledTimes(2);
-    expect(collectImages).toHaveBeenCalledOnce();
-    expect(scheduler.hasScheduledDeadline()).toBe(true);
-
-    await vi.advanceTimersByTimeAsync(QUICK_NOTE_IMAGE_COLLECTION_INTERVAL_MS);
-    expect(collectImages).toHaveBeenCalledTimes(2);
-    scheduler.dispose();
-  });
-
-  it("wakes for the earlier of the trash expiry and the next collection", async () => {
-    const purge = vi.fn(async (): Promise<QuickNotesTrashPurge> => ({
-      purged: 0,
-      nextPurgeAt: new Date(START + 60_000).toISOString(),
-    }));
-    const collectImages = vi.fn(async () => 0);
-    const scheduler = createQuickNotesTrashPurgeScheduler({ purge, onPurged: vi.fn(), collectImages });
-
-    scheduler.setEnabled(true);
-    await vi.advanceTimersByTimeAsync(60_000);
-    expect(purge).toHaveBeenCalledTimes(2);
-    expect(collectImages).toHaveBeenCalledOnce();
-    scheduler.dispose();
-  });
-
-  it("reports a failed collection without retrying it on every purge", async () => {
-    const purge = vi.fn(async (): Promise<QuickNotesTrashPurge> => ({ purged: 0, nextPurgeAt: null }));
-    const failure = new Error("vault busy");
-    const collectImages = vi.fn(async (): Promise<number> => {
-      throw failure;
-    });
-    const onError = vi.fn();
-    const scheduler = createQuickNotesTrashPurgeScheduler({ purge, onPurged: vi.fn(), onError, collectImages });
-
-    scheduler.setEnabled(true);
-    await vi.advanceTimersByTimeAsync(0);
-    scheduler.invalidate();
-    await vi.advanceTimersByTimeAsync(0);
-    expect(onError).toHaveBeenCalledExactlyOnceWith(failure);
-    expect(collectImages).toHaveBeenCalledOnce();
     scheduler.dispose();
   });
 });

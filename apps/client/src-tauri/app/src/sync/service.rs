@@ -602,11 +602,15 @@ impl ServiceState {
             ..SyncStatusView::default()
         };
         let mut recovery = runtime.take_recovery_requests();
+        let mut succeeded = false;
         let next = match self
             .pass_inner(host, runtime, &mut view, &mut recovery)
             .await
         {
-            Ok(next) => next,
+            Ok(next) => {
+                succeeded = true;
+                next
+            }
             Err(error) => {
                 eprintln!("sync: {error}");
                 view.state = SyncState::Error;
@@ -625,6 +629,10 @@ impl ServiceState {
             .changes
             .send_modify(|generation| *generation = generation.wrapping_add(1));
         runtime.pass_done(number);
+        if succeeded {
+            // Compaction ran in the pass, so retained versions no longer hold what it dropped.
+            super::asset_collection::collect_if_due(host).await;
+        }
         next
     }
 

@@ -990,10 +990,13 @@ async fn verify_folder_environment(
     }
     let valid: bool = sqlx::query_scalar(
         "SELECT EXISTS(
-           SELECT 1 FROM chat_execution_environments
-           WHERE id = ? AND working_folder_id = ?
-             AND scratch_generation_id IS NULL
-             AND lifecycle_state = 'available' AND archived_at IS NULL
+           SELECT 1 FROM chat_execution_environments environment
+           JOIN project_working_folders folder ON folder.id = environment.working_folder_id
+           WHERE environment.id = ? AND environment.working_folder_id = ?
+             AND environment.scratch_generation_id IS NULL
+             AND environment.lifecycle_state = 'available'
+             AND environment.archived_at IS NULL
+             AND folder.archived_at IS NULL
          )",
     )
     .bind(execution_environment_id)

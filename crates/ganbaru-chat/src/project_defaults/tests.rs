@@ -193,6 +193,40 @@ async fn default_environment_is_not_recreated_beside_an_archived_current_folder_
 }
 
 #[tokio::test]
+async fn archived_working_folders_get_no_current_folder_environment() {
+    let pool = migrated_pool().await;
+    insert_project_without_chat_rows(&pool).await;
+    sqlx::query("UPDATE project_working_folders SET archived_at = ? WHERE id = ?")
+        .bind(now().as_str())
+        .bind(EXTERNAL_FOLDER_ID)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    ensure(&pool, PROJECT_ID).await.unwrap();
+    let mut connection = pool.acquire().await.unwrap();
+    ensure_all_project_chat_defaults(&mut connection, &now())
+        .await
+        .unwrap();
+    drop(connection);
+
+    let environments: Vec<String> = sqlx::query_scalar(
+        "SELECT environment.id FROM chat_execution_environments environment
+         JOIN project_working_folders folder ON folder.id = environment.working_folder_id
+         WHERE folder.project_id = ?
+         ORDER BY environment.id",
+    )
+    .bind(PROJECT_ID)
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        environments,
+        vec![current_folder_environment_id(MANAGED_FOLDER_ID)]
+    );
+}
+
+#[tokio::test]
 async fn all_project_defaults_cover_every_project_missing_chat_rows() {
     let pool = migrated_pool().await;
     insert_project_without_chat_rows(&pool).await;

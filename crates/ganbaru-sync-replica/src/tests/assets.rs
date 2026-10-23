@@ -196,6 +196,29 @@ fn assets_already_held_are_kept_and_class_checks_refuse_the_rest() {
     );
 }
 
+#[test]
+fn a_damaged_held_file_of_the_same_size_is_replaced_by_verified_bytes() {
+    let directory = TestDirectory::new("assets-damaged");
+    let store = ContentAddressedStore::new(directory.path().to_path_buf());
+    let original = bytes(SYNC_ASSET_CHUNK_BYTES + 5, 6);
+    let asset = reference(&LARGE_CLASS, &original);
+    let mut damaged = original.clone();
+    damaged[3] ^= 0xff;
+    store_file(directory.path(), &LARGE_CLASS, &asset.file_name(), &damaged);
+    // The cheap check sees only the size, so the damaged file still counts as held.
+    assert!(store.holds(&asset).expect("holds"));
+
+    receive(&store, &asset, &original).expect("receive");
+    assert_eq!(
+        std::fs::read(asset.path(directory.path())).expect("read"),
+        original
+    );
+    assert_eq!(
+        entries(directory.path(), &LARGE_CLASS),
+        vec![asset.file_name()]
+    );
+}
+
 /// Writes `bytes` as an asset file of `class` named by their digest.
 fn store_file(root: &Path, class: &AssetClass, name: &str, bytes: &[u8]) {
     let directory = class.directory(root);

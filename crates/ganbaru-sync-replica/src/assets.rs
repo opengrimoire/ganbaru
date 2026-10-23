@@ -87,8 +87,9 @@ pub trait AssetStore: Send + Sync {
     ) -> Result<Vec<u8>, AssetStoreError>;
     /// Starts receiving an asset into a temporary file beside its final path.
     fn stage(&self, asset: &AssetRef) -> Result<StagedAsset, AssetStoreError>;
-    /// Verifies a completely received asset and moves it into place. An asset the store
-    /// already holds is kept as it is.
+    /// Verifies a completely received asset and moves it into place. A held file with the
+    /// verified digest is kept as it is, and a held file with other bytes of the same size is
+    /// replaced.
     fn commit(&self, staged: StagedAsset) -> Result<(), AssetStoreError>;
 }
 
@@ -237,11 +238,30 @@ impl AssetStore for ContentAddressedStore {
                 check(&asset, file.staged_path()).map_err(AssetStoreError::Mismatch)?;
             }
         }
-        if self.holds(&asset)? {
+        if self.holds(&asset)? && self.held_digest(&asset)? == asset.sha256() {
             return Ok(());
         }
         file.commit()
             .map_err(|error| io_failure("store asset", error))
+    }
+}
+
+impl ContentAddressedStore {
+    /// SHA-256 of the held file of `asset`, read in chunks.
+    fn held_digest(&self, asset: &AssetRef) -> Result<String, AssetStoreError> {
+        let mut file = fs::File::open(asset.path(&self.root))
+            .map_err(|error| io_failure("open asset", error))?;
+        let mut hasher = Sha256::new();
+        let mut buffer = vec![0_u8; SYNC_ASSET_CHUNK_BYTES];
+        loop {
+            let read = file
+                .read(&mut buffer)
+                .map_err(|error| io_failure("read asset", error))?;
+            if read == 0 {
+                return Ok(hex(&hasher.finalize()));
+            }
+            hasher.update(&buffer[..read]);
+        }
     }
 }
 

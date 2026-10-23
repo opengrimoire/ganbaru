@@ -536,7 +536,7 @@ describe("nextUniqueDisplayName", () => {
     const base = "a".repeat(57);
     const taken = [base, `${base} 2`];
     expect(nextUniqueDisplayName(base, taken)).toBe(`${base} 3`);
-    const longer = "b".repeat(58);
+    const longer = "b".repeat(59);
     expect(nextUniqueDisplayName(longer, [longer, `${longer} 2`])).toBe(
       longer,
     );

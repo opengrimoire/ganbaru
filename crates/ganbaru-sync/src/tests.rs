@@ -6,6 +6,7 @@ mod compaction;
 mod conformance;
 mod elision;
 mod engine;
+mod exclusion;
 mod fixture;
 mod guards;
 mod holds;

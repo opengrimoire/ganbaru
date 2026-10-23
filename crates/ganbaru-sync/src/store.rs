@@ -298,12 +298,24 @@ async fn store_genesis(
         Err(_) => return Ok(StoreOutcome::Refused(StoreRefusal::Malformed)),
     };
     let cert = &certificate.certificate;
-    match authorization::enrollment(conn, ctx.space, &cert.device_id, &cert.device_key).await? {
-        Enrollment::Enrolled => {}
+    // A writer of a removed device that this replica never stored has a removal cutoff of
+    // zero: its chain is stored, excluded, so the late changes other replicas applied before
+    // the removal are derived here too.
+    let removal = match authorization::enrollment(
+        conn,
+        ctx.space,
+        &cert.device_id,
+        &cert.device_key,
+    )
+    .await?
+    {
+        Enrollment::Enrolled => None,
         Enrollment::WrongKey => return Ok(StoreOutcome::Refused(StoreRefusal::Untrusted)),
-        Enrollment::Removed => return Ok(StoreOutcome::Refused(StoreRefusal::Revoked)),
+        Enrollment::Removed => {
+            Some(exclusion::removal_revision(conn, ctx.space, &cert.device_id).await?)
+        }
         Enrollment::Absent => return Ok(StoreOutcome::Refused(StoreRefusal::Unenrolled)),
-    }
+    };
     let clock = operation.header.clock;
     if !storable_clock(clock) {
         return Ok(StoreOutcome::Refused(StoreRefusal::Malformed));
@@ -314,23 +326,41 @@ async fn store_genesis(
     sqlx::query(
         "INSERT INTO sync_writers
             (space_id, writer_id, public_key, device_id, certificate, state, predecessor,
-             cutoff_seq, stored_seq, applied_seq, head_hash, head_clock, created_at_ms)
-         VALUES (?, ?, ?, ?, ?, 'active', ?, NULL, 1, 0, ?, ?, ?)",
+             cutoff_seq, stored_seq, applied_seq, head_hash, head_clock, created_at_ms,
+             removal_cutoff_seq)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 0, ?, ?, ?, ?)",
     )
     .bind(ctx.space.as_bytes().as_slice())
     .bind(envelope.writer.as_bytes().as_slice())
     .bind(cert.writer_key.as_bytes().as_slice())
     .bind(cert.device_id.as_str())
     .bind(certificate.encode())
+    .bind(if removal.is_some() {
+        "revoked"
+    } else {
+        "active"
+    })
     .bind(
         cert.predecessor
             .map(|predecessor| predecessor.as_bytes().to_vec()),
     )
+    .bind(removal.map(|_| 0_i64))
     .bind(envelope.hash().as_slice())
     .bind(clamp_ms(clock.as_u64()))
     .bind(cert.created_at_ms.max(0))
+    .bind(removal.map(|_| 0_i64))
     .execute(&mut *conn)
     .await?;
+    let excluded = match removal {
+        Some(_)
+            if exclusion::local_device(conn, ctx.space).await?.as_deref()
+                == Some(cert.device_id.as_str()) =>
+        {
+            None
+        }
+        removal => removal,
+    };
+    let held = excluded.map(|_| HoldReason::Invalid);
     insert_op(
         conn,
         ctx,
@@ -339,12 +369,12 @@ async fn store_genesis(
         clock,
         operation.header.authorization_revision,
         Some(&VersionVector::new()),
-        None,
-        None,
+        held,
+        excluded,
         now_ms,
     )
     .await?;
-    Ok(StoreOutcome::Stored { held: None })
+    Ok(StoreOutcome::Stored { held })
 }
 
 async fn store_next(

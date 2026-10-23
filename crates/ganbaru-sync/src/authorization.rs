@@ -627,7 +627,7 @@ pub(crate) enum Enrollment {
     Enrolled,
     /// The device is enrolled with another key.
     WrongKey,
-    /// The device was removed.
+    /// The device was removed; the key is the one it was enrolled with.
     Removed,
     /// The space has no charter, or the device is not enrolled.
     Absent,
@@ -650,7 +650,7 @@ pub(crate) async fn enrollment(
     .await?;
     Ok(match row {
         None => Enrollment::Absent,
-        Some((_, Some(_))) => Enrollment::Removed,
+        Some((key, Some(_))) if key == device_key.as_bytes() => Enrollment::Removed,
         Some((key, None)) if key == device_key.as_bytes() => Enrollment::Enrolled,
         Some(_) => Enrollment::WrongKey,
     })

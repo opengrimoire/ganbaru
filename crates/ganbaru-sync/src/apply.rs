@@ -168,8 +168,8 @@ async fn candidates(
 }
 
 /// The candidate `seq` of `writer`, when it is stored, not held, within the writer's cutoff,
-/// of an enrolled device, and sealed against a reachable revision. A small envelope is read with it, since the
-/// candidate usually applies next.
+/// of an enrolled device, and sealed against a reachable revision. A small envelope is read
+/// with it, since the candidate usually applies next.
 async fn writer_candidate(
     conn: &mut SqliteConnection,
     ctx: &SpaceContext,

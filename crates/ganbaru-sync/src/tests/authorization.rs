@@ -298,8 +298,9 @@ fn store_admits_only_writers_of_enrolled_devices_with_their_enrolled_key() {
         observer.pull(&mut hub).await;
         assert_eq!(observer.stored_vector().await.get(&newcomer.writer()), 2);
 
-        // A removal excludes the device's operations past the cutoff, which are still stored,
-        // and refuses its new writers.
+        // A removal excludes the device's operations past the cutoff, which are still stored.
+        // A writer of the removed device the hub never stored has a cutoff of zero, so its
+        // chain is stored and excluded from the genesis on.
         hub.pull(&mut member).await;
         let removed = hub.remove(&member.device_id).await.unwrap();
         tag(&mut member, "tag-late").await;
@@ -315,7 +316,15 @@ fn store_admits_only_writers_of_enrolled_devices_with_their_enrolled_key() {
         let rotated = member.own_ops().await;
         assert_eq!(
             hub.receive(&rotated[..1]).await,
-            vec![StoreOutcome::Refused(StoreRefusal::Revoked)]
+            vec![StoreOutcome::Stored {
+                held: Some(HoldReason::Invalid)
+            }]
+        );
+        let impostor = Identity::new([34; 32], &device_key(&person(), 2), &member.device_id, None);
+        assert_eq!(
+            hub.receive(&[genesis_of(&rotated[0], &impostor)]).await,
+            vec![StoreOutcome::Refused(StoreRefusal::Untrusted)],
+            "a removed device id under another device key is untrusted"
         );
         observer.pull(&mut hub).await;
         let removal = view(&mut observer).await;

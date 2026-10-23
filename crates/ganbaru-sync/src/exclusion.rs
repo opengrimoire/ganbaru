@@ -1062,7 +1062,8 @@ pub struct LateChange {
 }
 
 /// The change restoring a late change seals: the late values no current version is newer than,
-/// as a create when no published state knows the row, or a deletion of a live row.
+/// as a create of every group when the removed device created the row or no published state
+/// knows it, or a deletion of a live row.
 async fn restoring_change(
     engine: &Engine,
     conn: &mut SqliteConnection,
@@ -1084,14 +1085,38 @@ async fn restoring_change(
         }));
     }
     let versions = merge::versions(engine, conn, record.table, &record.key).await?;
+    let newer = |group: GroupId, late: &LateValue| {
+        versions
+            .iter()
+            .any(|version| version.group == group && version.clock > late.clock)
+    };
+    // A late create comes back as a create, which writes every group: a group an honest
+    // operation wrote after the late value keeps that honest value.
+    if record.kind == LateKind::Created {
+        let winners = merge::winners(engine, spec, &versions);
+        let mut groups = Vec::with_capacity(spec.groups.len());
+        for group in spec.groups {
+            let value = match (record.groups.get(&group.id), winners.get(&group.id)) {
+                (Some(late), _) if !newer(group.id, late) => late.value.clone(),
+                (_, Some(winner)) => winner.value.clone(),
+                (Some(late), None) => late.value.clone(),
+                (None, None) => return Err(corrupt("a late create lacks a group value")),
+            };
+            groups.push(GroupValue::new(spec.id, group.id, value));
+        }
+        return Ok(Some(Change {
+            table: record.table,
+            row,
+            action: ChangeAction::Create,
+            groups,
+            replaced_by: None,
+            cause: None,
+        }));
+    }
     let groups = record
         .groups
         .iter()
-        .filter(|(group, late)| {
-            !versions
-                .iter()
-                .any(|version| version.group == **group && version.clock > late.clock)
-        })
+        .filter(|(group, late)| !newer(**group, late))
         .map(|(group, late)| GroupValue::new(spec.id, *group, late.value.clone()))
         .collect::<Vec<_>>();
     if groups.is_empty() {
@@ -1184,10 +1209,7 @@ impl Engine {
         let mut tx = conn.begin().await?;
         log::ensure_space(&mut tx, ctx.space).await?;
         let key = Some((late.removal_revision, late.table, late.row_key.as_str()));
-        let Some(record) = records(&mut tx, key)
-            .await?
-            .pop()
-        else {
+        let Some(record) = records(&mut tx, key).await?.pop() else {
             return Err(SyncError::InvalidRequest("row has no late change"));
         };
         if record.resolution.is_some() {

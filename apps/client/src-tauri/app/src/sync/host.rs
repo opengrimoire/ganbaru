@@ -29,7 +29,9 @@ const SYNC_DIRECTORY: &str = "sync";
 /// The materialize hooks every sync engine of the app registers, so the service, a headless
 /// pass, and recovery run the same domain code.
 pub(crate) fn vault_hooks() -> Hooks {
-    crate::music::sync::with_hooks(ganbaru_sync::domains::vault_hooks())
+    ganbaru_calendar::sync_apply::with_hooks(crate::music::sync::with_hooks(
+        ganbaru_sync::domains::vault_hooks(),
+    ))
 }
 
 /// The vault engine with `hooks`.
@@ -240,6 +242,7 @@ impl<R: Runtime> SyncHost for AppHandle<R> {
     async fn refresh_cached(&self, notices: &[ChangeNotice]) {
         crate::vault::preferences::on_sync_notices(self, notices).await;
         crate::projects::sync::on_sync_notices(self, notices);
+        crate::calendar::sync::on_sync_notices(self, notices);
         #[cfg(desktop)]
         crate::music::sync::on_sync_notices(self, notices).await;
     }

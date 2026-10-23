@@ -5,3 +5,4 @@ pub(crate) mod device_date;
 pub(crate) mod events;
 pub(crate) mod import;
 pub(crate) mod reads;
+pub(crate) mod sync;

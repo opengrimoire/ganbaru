@@ -13,6 +13,7 @@ pub mod keys;
 pub mod reads;
 pub mod recurrence;
 mod stored_number;
+pub mod sync_apply;
 pub mod value_bound;
 pub mod work_gate;
 

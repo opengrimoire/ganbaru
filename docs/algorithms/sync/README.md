@@ -24,9 +24,9 @@ The hybrid logical clock is 48 bits of Unix milliseconds and a 16-bit counter. A
 | Position | Greatest `(clock, writer)` over an order key; rows sort by `(order_key, id)` | Note and tag order |
 | Reference | Greatest `(clock, writer)` over a row key that resolves through redirects | Note tag |
 | Owned children | The parent group's value is a canonical list that replaces the child rows | Body text runs, note images |
-| Existence register | Greatest `(clock, writer)` over 1 (present) or 0 (removed) on a derived-key table | None yet |
-| Tree | A reference into its own table and a position, each won as above, then deterministic [cycle and depth repair](#trees-and-acyclic-edge-sets) | None yet |
-| Acyclic edge set | Existence registers of a derived-key edge table; an edge that closes a cycle is severed | None yet |
+| Existence register | Greatest `(clock, writer)` over 1 (present) or 0 (removed) on a derived-key table | Project dependencies, tag links, custom field values |
+| Tree | A reference into its own table and a position, each won as above, then deterministic [cycle and depth repair](#trees-and-acyclic-edge-sets) | Project tasks (parent, depth 1) |
+| Acyclic edge set | Existence registers of a derived-key edge table; an edge that closes a cycle is severed | Project task dependencies |
 
 - A multi-column CHECK always lives inside one coupled register, so every materialized winner satisfies it.
 - There is no counter kind. Usage and statistics are rows keyed by device and bucket, each written by one device and merged with `Max`, so concurrent increments never meet in one version.
@@ -139,6 +139,18 @@ If P later renames `t7` concurrently with the repair, the rename is discarded wi
 2. Offline, A moves Z first: Z gets a key before `a0` at clock 20. P moves Z between X and Y: Z gets a key between `a0` and `a1` at clock 21.
 3. Z's order group now has two concurrent versions. The winner is greatest `(clock, writer)`, P's key, so every replica shows X, Z, Y. Order is silent, so no conflict appears.
 4. If A had moved X and P had moved Y into the same slot, both would get keys from the same neighbors and could be equal. They sort by id, identically on every replica, and nothing else moves.
+
+### Project subtask depth and dependency cycles
+
+1. Tasks T, U, and V are top-level. Offline, A makes T a subtask of U, and P makes U a subtask of V. Each write is valid alone because tasks nest one level deep.
+2. After exchange, T sits under U and U under V, which is two levels. The tree repair detaches the deepest task, T, to the root, and a replica that can seal writes its parent as null. Every replica shows U under V and T at the root.
+3. Separately, A adds the dependency "T blocks U" and P adds "U blocks T". Each is a derived-key row with its own key, so neither overwrites the other. Taken in ascending `(clock, writer)`, the later edge closes the cycle and is hidden. Projects shows it as removed to break a cycle. Nothing is sealed, so removing the other edge brings it back.
+
+### Deleted status against move
+
+1. A deletes status S while P, offline, moves task K into S.
+2. Referenced settings rows are never tombstoned except with their project: A's delete sets `deleted_at`. The two writes touch different groups and both apply.
+3. K stays in S. S is hidden from pickers and settings but still shown where K uses it, so no task points at a missing row.
 
 ### Fork re-seal
 

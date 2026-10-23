@@ -28,7 +28,7 @@ Selecting a project in an event draft can fill an empty title, color, Pomodoro m
 
 Statuses and priorities are project-local, ordered, named, and colored with stable palette slots. Statuses also have a semantic category: not started, active, blocked, or done. Deleting an in-use value requires reassignment or is rejected. A status or priority deleted while another device assigns it to a task is kept as a marked row: it disappears from pickers, settings lists, and new-task defaults, but those tasks keep showing it until they are reassigned. Reordering changes presentation, not task identity or history.
 
-Tags are project-local labeled colors with stable identity and order. Deleting a tag removes its task associations while preserving tasks and their history.
+Tags are project-local labeled colors with stable identity and order. A device refuses a duplicate tag, custom field, or option name, but two devices that add the same name at once keep both, and renaming or deleting one resolves it. Deleting a tag removes its task associations while preserving tasks and their history.
 
 ## Custom fields
 

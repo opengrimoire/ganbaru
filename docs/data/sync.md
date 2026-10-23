@@ -266,7 +266,7 @@ Android background sync uses WorkManager only and never a foreground service; th
 | Concurrent replication of the Music library | Partial | Unbound root status and YouTube eligibility in the frontend, Android root refresh after apply, and physical multi-device acceptance |
 | Connectivity: address refresh, DNS-SD discovery, overlay networks, firewall scopes, and Android background sync | Implemented | Physical multi-device acceptance, including the first Android build of the background sync module |
 | Concurrent replication of other domains | Planned | Projects, distraction rules and usage counters, Calendar, Focus history, Chat organizational content, Notes text and tree merging, managed assets, and retiring whole-vault handoff |
-| Concurrent secure local linking | Planned | Anchored authority with admin keys and late changes, LAN peer exchange, operation encryption, key lifecycle, typed bootstrap, and compaction |
+| Concurrent secure local linking | Planned | Anchored authority with admin keys and late changes, LAN peer exchange, operation encryption, key lifecycle, typed bootstrap, and asset collection |
 | Delivery beyond the LAN | Planned | Encrypted relay or always-on anchor, encrypted backup, measurements, and physical acceptance |
 
 Required tests include reordered, duplicated, delayed, and interrupted delivery; text and tree convergence; deletion, undo, and history restore; crashes at persistence and acknowledgement boundaries; full disks, corrupt staging, and missing assets; invalid identity, signatures, invitation replay, revocation, key epochs, payload bounds, and protocol versions; controller handoff failure and expired commands; duplicate jobs; and long-offline replicas, compaction, restored backups, and cloned writers.

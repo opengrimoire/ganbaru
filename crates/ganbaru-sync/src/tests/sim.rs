@@ -1482,9 +1482,6 @@ impl Sim {
             89..=96 => self.offline[index] = !self.offline[index],
             _ => self.revoke(index).await,
         }
-        // A step changes only the replica that acted and the hub.
-        self.replicas[index].check_invariants().await;
-        self.hub.check_invariants().await;
         // Only exchanges change what the hub or a replica acknowledged or applied.
         if (40..65).contains(&action) {
             let stable = self.assert_stability().await;
@@ -1492,6 +1489,9 @@ impl Sim {
                 self.compact(index, &stable).await;
             }
         }
+        // A step, with its compaction, changes only the replica that acted and the hub.
+        self.replicas[index].check_invariants().await;
+        self.hub.check_invariants().await;
         // Hydrating every version is slow, so only a step that ran the engine checks it, and
         // only on the replica that acted. Local edits elide nothing and are read back by the
         // engine step that follows them.

@@ -60,6 +60,10 @@ pub struct Exchanged {
     pub refusal: Option<SyncRefusalCode>,
     /// A direction stopped at its byte bound with operations left to move.
     pub more: bool,
+    /// Operations the hub reported every counted device holds.
+    pub stable: VersionVector,
+    /// The hub reported that it no longer holds operations this device lacks.
+    pub bootstrap_required: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -109,13 +113,17 @@ impl<T: SyncTransport> ClientSession<'_, T> {
                 hash: hash_to_wire(hash),
             }),
         };
-        let (stored, probe_hash) = answer(
+        let (stored, probe_hash, stable, bootstrap_required) = answer(
             self.transport.request(hello).await?,
             "SyncState",
             |response| match response {
                 ControlMessage::SyncState {
-                    stored, probe_hash, ..
-                } => Some((stored, probe_hash)),
+                    stored,
+                    probe_hash,
+                    stable,
+                    bootstrap_required,
+                    ..
+                } => Some((stored, probe_hash, stable, bootstrap_required)),
                 _ => None,
             },
         )?;
@@ -133,7 +141,11 @@ impl<T: SyncTransport> ClientSession<'_, T> {
                 keep_through: local.get(&writer),
             }));
         }
-        let mut exchanged = Exchanged::default();
+        let mut exchanged = Exchanged {
+            stable: vector_from_wire(&stable)?,
+            bootstrap_required,
+            ..Exchanged::default()
+        };
         if let Some(fork) = self.push(&mut hub, &mut exchanged).await? {
             return Ok(Exchange::Fork(fork));
         }

@@ -13,6 +13,7 @@ use super::client::{ClientSession, Exchange, ForkPoint, PeerIds};
 #[cfg(mobile)]
 use super::host::HeadlessHost;
 use super::host::SyncHost;
+use super::hub::HubStability;
 #[cfg(desktop)]
 use super::hub::{HubVault, OpenHubVault, SyncHub};
 use super::recovery::{RecoveryChoice, RecoveryRequest};
@@ -26,6 +27,7 @@ use super::writer::{
 use crate::vault::handoff::pairing::PairingManager;
 use ganbaru_db::{DatabaseAccessMode, DatabasePoolRegistry};
 use ganbaru_handoff::protocol::SyncRefusalCode;
+use ganbaru_sync::stability::CountedDevice;
 use ganbaru_sync::{
     ChangeNotice, Engine, SealReport, SpaceContext, SyncError, WriterState, hold, local,
 };
@@ -33,7 +35,7 @@ use ganbaru_sync_contracts::VersionVector;
 use ganbaru_sync_contracts::op::RevokeReason;
 use ganbaru_sync_replica::now_ms;
 use sqlx::SqlitePool;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 #[cfg(any(mobile, test))]
 use std::future::Future;
 use std::ops::Deref;
@@ -93,6 +95,8 @@ pub(crate) struct RuntimeState {
     now: Arc<Notify>,
     /// Bumped after each pass, so hub waits recheck the log.
     changes: watch::Sender<u64>,
+    /// Stability the coordinator pass last computed, reported in every sync state.
+    stability: HubStability,
     /// A pause change waiting for the writer record.
     pause_request: Mutex<Option<bool>>,
     /// Recovery actions waiting for the next pass.
@@ -110,6 +114,7 @@ impl Default for RuntimeState {
         Self {
             now: Arc::default(),
             changes: watch::Sender::new(0),
+            stability: HubStability::default(),
             pause_request: Mutex::default(),
             recovery: Mutex::default(),
             status: Mutex::default(),
@@ -223,7 +228,8 @@ pub(crate) fn sync_hub<R: Runtime>(app: &AppHandle<R>) -> SyncHub {
         let app = opener.clone();
         Box::pin(async move { open_hub_vault(&app).await })
     });
-    SyncHub::new(open, app.state::<SyncRuntime>().changes.clone())
+    let runtime = app.state::<SyncRuntime>();
+    SyncHub::new(open, runtime.changes.clone()).with_stability(runtime.stability.clone())
 }
 
 #[cfg(desktop)]
@@ -529,6 +535,9 @@ struct ServiceState {
     applied: ApplyMark,
     /// Which managed assets the hub holds or lacks, so passes do not ask again.
     assets: AssetMemory,
+    /// When this coordinator first saw each linked device whose link time is unknown, so
+    /// dormancy has a start.
+    first_seen: BTreeMap<String, u64>,
     view: SyncStatusView,
 }
 
@@ -637,6 +646,7 @@ impl ServiceState {
                 vault_id: Some(vault_id.clone()),
                 ..Self::default()
             };
+            runtime.stability.clear();
         }
         let manager = host.pairing();
         let peer = crate::vault::handoff::transport::sync_peer(&manager)?
@@ -734,10 +744,19 @@ impl ServiceState {
             }
             host.emit_applied(restored.into_iter().collect());
         }
+        let acknowledged = session.acknowledge(&mut self.writer).await?;
         if is_hub {
             session
                 .revoke_unlinked(&manager, &vault_id, &mut self.writer)
                 .await?;
+            let stable = self.stability(&session, &manager, &vault_id).await?;
+            runtime.stability.publish(&vault_id, stable);
+        } else {
+            runtime.stability.clear();
+            if acknowledged.sealed_ops > 0 && matches!(next, Next::Online(_)) {
+                // The hub learns of the acknowledgement on the next exchange, which runs now.
+                next = Next::Continue;
+            }
         }
         let (status, clock_warnings) = {
             let mut conn = acquire(&session.pool).await?;
@@ -761,6 +780,40 @@ impl ServiceState {
             view.set_clock_ahead(&status, &clock_warnings, &names);
         }
         Ok(next)
+    }
+
+    /// On the coordinator, computes stability over the vault's linked devices. A device whose
+    /// link time is unknown counts its dormancy from this coordinator's first observation.
+    async fn stability<H: SyncHost>(
+        &mut self,
+        session: &Session<'_, H>,
+        manager: &PairingManager,
+        vault_id: &str,
+    ) -> Result<VersionVector, String> {
+        let now = now_ms()?;
+        let linked = manager.linked_peers_for(vault_id)?;
+        self.first_seen
+            .retain(|device_id, _| linked.iter().any(|peer| peer.device_id == *device_id));
+        let devices: Vec<CountedDevice> = linked
+            .into_iter()
+            .map(|peer| {
+                let since_ms = match u64::try_from(peer.linked_at_ms) {
+                    Ok(linked_at) if linked_at > 0 => linked_at,
+                    _ => *self.first_seen.entry(peer.device_id.clone()).or_insert(now),
+                };
+                CountedDevice {
+                    device_id: peer.device_id,
+                    since_ms,
+                }
+            })
+            .collect();
+        let mut conn = acquire(&session.pool).await?;
+        let stability = session
+            .engine
+            .stability(&mut conn, &session.ctx, &devices, now)
+            .await
+            .map_err(|error| format!("compute sync stability: {error}"))?;
+        Ok(stability.stable)
     }
 
     /// Exchanges with the hub, re-sealing after a fork of this installation's chain.
@@ -1262,6 +1315,38 @@ impl<'a, H: SyncHost> Session<'a, H> {
                     }
                 }
                 Err(error) => return Err(format!("seal sync changes: {error}")),
+            }
+        }
+        Ok(SealReport::default())
+    }
+
+    /// Seals the writer's genesis on its first pass, and an acknowledgement or keepalive when
+    /// one is due, rotating once when the space no longer accepts the writer. Without a writer
+    /// it seals nothing.
+    async fn acknowledge(&self, writer: &mut Option<ActiveWriter>) -> Result<SealReport, String> {
+        for attempt in 0..2 {
+            let Some(active) = writer.as_mut() else {
+                break;
+            };
+            let result = {
+                let mut conn = acquire(&self.pool).await?;
+                self.engine
+                    .acknowledge(&mut conn, &self.ctx, &mut active.local(), now_ms()?)
+                    .await
+            };
+            match result {
+                Ok(report) => {
+                    if let Some(seq) = report.last_seq {
+                        active.committed(seq)?;
+                    }
+                    return Ok(report);
+                }
+                Err(SyncError::WriterInactive(_)) if attempt == 0 => {
+                    if !self.rotate(writer).await? {
+                        break;
+                    }
+                }
+                Err(error) => return Err(format!("seal sync acknowledgement: {error}")),
             }
         }
         Ok(SealReport::default())

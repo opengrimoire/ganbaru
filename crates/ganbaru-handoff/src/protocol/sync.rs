@@ -64,6 +64,9 @@ pub enum SyncRefusalCode {
     NewerFormat,
     /// The writer's genesis would exceed the writers a device or the vault may have.
     WriterLimit,
+    /// The device must bootstrap from a snapshot because the hub no longer holds operations
+    /// it lacks.
+    BootstrapRequired,
 }
 
 /// A refused push: the code and, when it concerns one writer, where its chain stopped.

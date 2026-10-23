@@ -15,7 +15,7 @@ pub use sync::{
     validate_coordinator_endpoints, validate_discovery_key,
 };
 
-pub const PROTOCOL_VERSION: u16 = 8;
+pub const PROTOCOL_VERSION: u16 = 9;
 pub const MAX_CONTROL_BYTES: usize = 1024 * 1024;
 /// Frame bound before the peer presents a linked certificate. Enrollment (with its 8 KiB
 /// certificate) and contact requests fit well inside it.
@@ -366,13 +366,17 @@ pub enum ControlMessage {
     },
     /// The hub's stored operations and its hash at the probed sequence, when it holds it, plus
     /// the listener endpoints the coordinator reports now and the vault's discovery key, so a
-    /// linked device follows address changes without relinking.
+    /// linked device follows address changes without relinking. `stable` lists the operations
+    /// every counted device holds, and `bootstrap_required` tells the device that the hub no
+    /// longer holds operations it lacks.
     SyncState {
         manifest_version: u16,
         stored: Vec<SyncSeq>,
         probe_hash: Option<String>,
         coordinator_endpoints: Vec<String>,
         discovery_key: String,
+        stable: Vec<SyncSeq>,
+        bootstrap_required: bool,
     },
     /// Authenticated: operations the hub lacks, in an order that keeps chains contiguous.
     SyncPush {
@@ -789,8 +793,11 @@ impl ControlMessage {
                 probe_hash,
                 coordinator_endpoints,
                 discovery_key,
+                stable,
+                bootstrap_required: _,
             } => {
                 sync::validate_vector(stored)?;
+                sync::validate_vector(stable)?;
                 if let Some(hash) = probe_hash {
                     sync::validate_hashes(std::slice::from_ref(hash))?;
                 }
@@ -1784,6 +1791,11 @@ mod tests {
             probe_hash: Some("c".repeat(64)),
             coordinator_endpoints: endpoints.iter().map(ToString::to_string).collect(),
             discovery_key,
+            stable: vec![SyncSeq {
+                writer: "a".repeat(32),
+                seq: 2,
+            }],
+            bootstrap_required: false,
         }
     }
 
@@ -1849,6 +1861,42 @@ mod tests {
                 "{malformed:?}"
             );
         }
+    }
+
+    #[test]
+    fn sync_state_round_trips_stability_and_refuses_malformed_stable_vectors() {
+        let key = discovery_key_of(DISCOVERY_KEY_BYTES);
+        let mut state = sync_state(&[], key.clone());
+        if let ControlMessage::SyncState {
+            bootstrap_required, ..
+        } = &mut state
+        {
+            *bootstrap_required = true;
+        }
+        assert_eq!(frame_round_trip(&state), Ok(state));
+        for stable in [
+            vec![SyncSeq {
+                writer: "a".repeat(31),
+                seq: 1,
+            }],
+            vec![SyncSeq {
+                writer: "a".repeat(32),
+                seq: 0,
+            }],
+        ] {
+            let mut state = sync_state(&[], key.clone());
+            if let ControlMessage::SyncState { stable: field, .. } = &mut state {
+                *field = stable.clone();
+            }
+            assert!(state.validate().is_err(), "{stable:?}");
+        }
+        let refusal = SyncRefusal {
+            code: SyncRefusalCode::BootstrapRequired,
+            writer: None,
+            seq: None,
+        };
+        let encoded = serde_json::to_string(&refusal).expect("refusal encodes");
+        assert!(encoded.contains("\"bootstrap_required\""), "{encoded}");
     }
 
     #[test]

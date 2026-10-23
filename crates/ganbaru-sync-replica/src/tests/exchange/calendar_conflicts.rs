@@ -76,7 +76,7 @@ const SINGLE_START: &str = "2026-10-24T11:00:00Z";
 
 /// Moves `event-1` concurrently on both devices, resolves on the hub with the version starting
 /// at `chosen_start` whether or not it is displayed, and checks both replicas hold its timing
-/// with its excluded dates and no conflict.
+/// with its excluded dates, overrides, and override properties, and no conflict.
 async fn resolve_timing_conflict(label: &str, chosen_start: &str, expected: &str) {
     let mut pair = pair_with_event(label).await;
     pair.hub_edit(
@@ -91,7 +91,12 @@ async fn resolve_timing_conflict(label: &str, chosen_start: &str, expected: &str
                  rrule = 'FREQ=DAILY;COUNT=3'
              WHERE id = 'event-1';
              INSERT INTO calendar_event_exdates (id, event_id, occurrence_date)
-             VALUES ('exdate-1', 'event-1', '2026-10-25');",
+             VALUES ('exdate-1', 'event-1', '2026-10-25');
+             INSERT INTO calendar_event_overrides (id, parent_event_id, recurrence_id, title)
+             VALUES ('override-1', 'event-1', '2026-10-26T15:00:00Z', 'Moved review');
+             INSERT INTO calendar_event_override_extended_properties
+                 (event_id, override_id, property_key, id, property_value)
+             VALUES ('event-1', 'override-1', 'X-NOTE', 'property-1', 'Bring notes');",
     )
     .await;
     pair.converge().await;
@@ -112,6 +117,7 @@ async fn resolve_timing_conflict(label: &str, chosen_start: &str, expected: &str
         .expect("recurring version");
     assert_eq!(recurring["value"]["rrule"], "FREQ=DAILY;COUNT=3");
     assert_eq!(recurring["value"]["excludedDates"], 1);
+    assert_eq!(recurring["value"]["overrides"], 1);
 
     resolve(
         &mut pair.hub,
@@ -130,6 +136,14 @@ async fn resolve_timing_conflict(label: &str, chosen_start: &str, expected: &str
             "SELECT e.start_time || '|' || coalesce(e.rrule, '') || '|' || coalesce(
                      (SELECT group_concat(x.id || ':' || x.occurrence_date)
                       FROM calendar_event_exdates x WHERE x.event_id = e.id), '')
+                 || '|' || coalesce(
+                     (SELECT group_concat(o.id || ':' || o.recurrence_id || ':' || o.title)
+                      FROM calendar_event_overrides o WHERE o.parent_event_id = e.id), '')
+                 || '|' || coalesce(
+                     (SELECT group_concat(p.id || ':' || p.override_id || ':' || p.property_key
+                                          || ':' || p.property_value)
+                      FROM calendar_event_override_extended_properties p
+                      WHERE p.event_id = e.id), '')
                  FROM calendar_events e WHERE e.id = 'event-1'"
                 .to_string()
         )
@@ -144,7 +158,7 @@ fn a_timing_conflict_resolved_with_the_recurring_version_writes_its_excluded_dat
     block_on(resolve_timing_conflict(
         "calendar-conflict-timing-recurring",
         RECURRING_START,
-        "2026-10-24T15:00:00Z|FREQ=DAILY;COUNT=3|exdate-1:2026-10-25",
+        "2026-10-24T15:00:00Z|FREQ=DAILY;COUNT=3|exdate-1:2026-10-25|override-1:2026-10-26T15:00:00Z:Moved review|property-1:override-1:X-NOTE:Bring notes",
     ));
 }
 
@@ -153,7 +167,7 @@ fn a_timing_conflict_resolved_with_the_single_version_drops_the_excluded_dates_e
     block_on(resolve_timing_conflict(
         "calendar-conflict-timing-single",
         SINGLE_START,
-        "2026-10-24T11:00:00Z||",
+        "2026-10-24T11:00:00Z||||",
     ));
 }
 

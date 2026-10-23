@@ -69,6 +69,7 @@ export const vaultOwnershipPrompt = {
   title: (device: string) => `${device} is the main device`,
   description: "Only the main device can make changes.",
   replicaDescription: "Quick notes stay editable here and sync with your devices. Only the main device can change everything else.",
+  ownerRequiredDescription: "This change also affects data that only the main device can change. Use this device as the main device to make it.",
   continueReadOnly: "Continue in read-only",
   switching: "Switching to this device...",
   replacementTitle: "Replace this device's current data?",

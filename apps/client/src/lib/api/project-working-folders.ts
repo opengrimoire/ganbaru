@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { ensureDbUrl } from "$lib/api/db";
+import { withOwnerRequiredPrompt } from "$lib/vault/owner-required";
 import { decideTrustAfterBinding } from "$lib/api/working-folder-trust";
 import type {
   CreateProjectWorkingFolderRequest,
@@ -143,10 +144,8 @@ export async function openProjectWorkingFolder(
 export async function removeProjectWorkingFolder(
   workingFolderId: ProjectWorkingFolderId,
 ): Promise<void> {
-  await invoke("projects_remove_working_folder", {
-    dbUrl: await ensureDbUrl(),
-    workingFolderId,
-  });
+  const dbUrl = await ensureDbUrl();
+  await withOwnerRequiredPrompt(() => invoke("projects_remove_working_folder", { dbUrl, workingFolderId }));
 }
 
 export async function recreateManagedProjectWorkingFolder(

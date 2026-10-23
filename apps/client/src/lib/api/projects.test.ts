@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { invoke } from "@tauri-apps/api/core";
-import { applyProjectTaskBulk, reorderProjectItem, type ProjectTaskBulkRequest, type ProjectReorderRequest } from "./projects";
+import { applyProjectTaskBulk, deleteProjectGroup, reorderProjectItem, type ProjectTaskBulkRequest, type ProjectReorderRequest } from "./projects";
+import { onVaultOwnershipPromptRequest } from "$lib/vault/owner-required";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 vi.mock("$lib/api/db", () => ({ ensureDbUrl: vi.fn(async () => "sqlite:test") }));
@@ -85,5 +86,22 @@ describe("reorderProjectItem", () => {
     await expect(reorderProjectItem(reorder)).rejects.toThrow();
     vi.mocked(invoke).mockResolvedValue({ ...result(), tasks: [], custom_field_options: [option, option] });
     await expect(reorderProjectItem(reorder)).rejects.toThrow("Duplicate");
+  });
+});
+
+describe("owner-only Projects commands", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it("asks for the ownership prompt when a gated command is refused and rethrows the refusal", async () => {
+    const prompt = vi.fn();
+    const stopPrompt = onVaultOwnershipPromptRequest(prompt);
+    vi.mocked(invoke).mockRejectedValueOnce("owner_required: only the vault owner can do this");
+    await expect(deleteProjectGroup("group-1")).rejects.toBe("owner_required: only the vault owner can do this");
+    expect(prompt).toHaveBeenCalledOnce();
+
+    vi.mocked(invoke).mockRejectedValueOnce("Project group not found");
+    await expect(deleteProjectGroup("group-1")).rejects.toBe("Project group not found");
+    expect(prompt).toHaveBeenCalledOnce();
+    stopPrompt();
   });
 });

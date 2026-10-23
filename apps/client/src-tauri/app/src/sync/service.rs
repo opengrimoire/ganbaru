@@ -819,8 +819,10 @@ impl ServiceState {
         if stability
             .devices
             .iter()
-            .any(|device| device.standing != DeviceStanding::Counted)
+            .all(|device| device.standing == DeviceStanding::Counted)
         {
+            view.uncounted_devices.clear();
+        } else {
             let names = super::devices::read_with(host.device_id()?, manager);
             view.set_device_standings(&stability.devices, &names);
         }

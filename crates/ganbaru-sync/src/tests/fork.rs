@@ -382,7 +382,7 @@ fn honest_dependents_of_a_forked_operation_end_the_same_whenever_the_fork_was_le
 }
 
 #[test]
-fn a_fork_learned_after_the_anchor_confirmed_a_branch_converges_once_both_copies_reseal() {
+fn a_fork_learned_after_the_anchor_confirmed_a_branch_converges_on_the_anchor_without_the_clone() {
     block_on(async {
         let mut anchor = Replica::anchor(0, 305).await;
         let (mut original, mut clone) = installation(305).await;
@@ -418,8 +418,21 @@ fn a_fork_learned_after_the_anchor_confirmed_a_branch_converges_once_both_copies
         );
         assert_eq!(displaced(&mut member).await, 0);
 
-        // Evidence reaches both. Nothing they displaced is left to restore, so the title group
-        // keeps no version until a re-sealed copy arrives, while the color stays.
+        // One member receives only the clone's branch and another receives both, which stores
+        // the evidence on it.
+        let mut cloned = Replica::new(5, 305).await;
+        deliver(&mut cloned, &mut honest).await;
+        deliver(&mut cloned, &mut clone).await;
+        assert_eq!(title(&mut cloned, "note-1").await.as_deref(), Some("Clone"));
+        let mut both = Replica::new(6, 305).await;
+        deliver(&mut both, &mut honest).await;
+        cross(&mut both, &mut original).await;
+        cross(&mut both, &mut clone).await;
+        assert_eq!(both.evidence().await.len(), 1);
+
+        // Evidence reaches the anchor and the member. Nothing they displaced is left to
+        // restore, so the title group keeps no version and the branch value, while the color
+        // stays. The anchor captured the group to publish it again.
         cross(&mut anchor, &mut clone).await;
         deliver(&mut member, &mut anchor).await;
         for replica in [&mut anchor, &mut member] {
@@ -431,21 +444,100 @@ fn a_fork_learned_after_the_anchor_confirmed_a_branch_converges_once_both_copies
                     .await,
                 1
             );
-            assert_ne!(replica.domain_dump().await, before);
+            assert_eq!(title(replica, "note-1").await.as_deref(), Some("Original"));
         }
         assert_eq!(never.domain_dump().await, before);
-
-        let mut replicas = vec![anchor, original, clone, honest, never, member];
-        converge(&mut replicas).await;
-        let settled = replicas[0].domain_dump().await;
-        for replica in &mut replicas {
-            assert_eq!(replica.domain_dump().await, settled);
-        }
-        let title = title(&mut replicas[0], "note-1").await;
-        assert!(
-            matches!(title.as_deref(), Some("Original" | "Clone")),
-            "a re-sealed title supersedes the honest one: {title:?}"
+        assert_eq!(
+            anchor
+                .count("SELECT count(*) FROM sync_capture WHERE row_key = 'note-1'")
+                .await,
+            1
         );
+        assert_eq!(member.count("SELECT count(*) FROM sync_capture").await, 0);
+
+        // The clone is destroyed before it re-seals. The anchor's own operation settles every
+        // other replica on its state, original included once it re-seals its branch.
+        drop(clone);
+        assert!(anchor.seal().await.unwrap().sealed_ops > 0);
+        let mut replicas = vec![anchor, honest, never, member, cloned, both];
+        converge(&mut replicas).await;
+        let settled = replicas[0].dump().await;
+        for replica in &mut replicas {
+            assert_eq!(replica.dump().await, settled, "replica {}", replica.index);
+            assert_eq!(title(replica, "note-1").await.as_deref(), Some("Original"));
+            assert!(late_changes(replica).await.is_empty());
+            assert_eq!(
+                replica
+                    .count("SELECT count(*) FROM sync_ops WHERE state != 'applied'")
+                    .await,
+                0
+            );
+        }
+        replicas.push(original);
+        converge(&mut replicas).await;
+        let settled = replicas[0].dump().await;
+        for replica in &mut replicas {
+            assert_eq!(replica.dump().await, settled, "replica {}", replica.index);
+            assert!(late_changes(replica).await.is_empty());
+        }
+    });
+}
+
+#[test]
+fn a_branch_the_anchor_stored_without_applying_is_published_again_from_the_anchor() {
+    block_on(async {
+        let mut anchor = Replica::anchor(0, 307).await;
+        let (mut original, mut clone) = installation(307).await;
+        let mut honest = Replica::new(2, 307).await;
+        deliver(&mut honest, &mut original).await;
+        edit(
+            &mut honest,
+            "UPDATE quick_notes SET title = 'Honest' WHERE id = 'note-1'",
+        )
+        .await;
+        deliver(&mut original, &mut honest).await;
+        deliver(&mut clone, &mut honest).await;
+        diverge(&mut original, &mut clone).await;
+
+        // The anchor stores the original's branch without applying it, and its stored vector
+        // releases what the branch displaced on a member that applied it.
+        deliver(&mut anchor, &mut honest).await;
+        let branch = original.ops_since(&anchor.stored_vector().await).await;
+        anchor.receive(&branch).await;
+        let mut member = Replica::new(4, 307).await;
+        deliver(&mut member, &mut honest).await;
+        deliver(&mut member, &mut original).await;
+        let confirmed = anchor.stored_vector().await;
+        assert!(
+            member
+                .engine
+                .record_anchor_marks(&mut member.conn, &member.ctx, ANCHOR_DEVICE_ID, &confirmed)
+                .await
+                .unwrap()
+        );
+        assert_eq!(displaced(&mut member).await, 0);
+
+        // Evidence reaches both before the anchor applies. The anchor keeps the honest title,
+        // the member keeps the branch value, and the anchor's operation settles the member.
+        cross(&mut anchor, &mut clone).await;
+        deliver(&mut member, &mut anchor).await;
+        assert_eq!(
+            title(&mut anchor, "note-1").await.as_deref(),
+            Some("Honest")
+        );
+        assert_eq!(
+            title(&mut member, "note-1").await.as_deref(),
+            Some("Original")
+        );
+        drop(clone);
+        drop(original);
+        let mut replicas = vec![anchor, honest, member];
+        converge(&mut replicas).await;
+        let settled = replicas[0].dump().await;
+        for replica in &mut replicas {
+            assert_eq!(replica.dump().await, settled, "replica {}", replica.index);
+            assert_eq!(title(replica, "note-1").await.as_deref(), Some("Honest"));
+        }
     });
 }
 

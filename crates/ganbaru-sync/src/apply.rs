@@ -770,6 +770,9 @@ impl Engine {
     /// exceed that bound, an operation that touches captured rows stops the call before it
     /// applies, and a finish that would seal captured rows rolls the call back. The report then
     /// says captures are pending, and the caller seals them in batches and applies again.
+    ///
+    /// On the anchor, settling fork evidence leaves captures of the groups the excluded branch
+    /// wrote, which the next [`Engine::seal`] publishes with their current values.
     pub async fn apply(
         &self,
         conn: &mut SqliteConnection,
@@ -900,6 +903,7 @@ impl Engine {
                 ..ApplyReport::default()
             });
         };
+        fork::republish(self, &mut tx, &mut batch, now_ms).await?;
         report.changed_tables = changed.tables;
         report.notices = changed.notices;
         report.local_writer_frozen |= slot.frozen();

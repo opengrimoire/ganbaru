@@ -86,6 +86,9 @@ pub(crate) struct Batch {
     /// Dirty rows whose merge state an exclusion dropped because no remaining operation wrote
     /// them. They materialize absent.
     pub(crate) orphaned: BTreeSet<(TableId, String)>,
+    /// Groups the anchor seals again with their current values once the call materialized,
+    /// because a fork exclusion dropped a branch the anchor had stored that wrote them.
+    pub(crate) republish: BTreeMap<(TableId, String), GroupMask>,
 }
 
 impl Batch {
@@ -96,6 +99,7 @@ impl Batch {
             contexts: ContextCache::default(),
             dirty: BTreeSet::new(),
             orphaned: BTreeSet::new(),
+            republish: BTreeMap::new(),
         })
     }
 }

@@ -14,21 +14,29 @@
 //! the writer's device keeps its own branch until it re-seals it with a new writer, see
 //! [`Engine::reseal_fork`]; an installation destroyed before that loses its branch.
 //!
+//! The anchor and members whose anchor marks passed a branch retain nothing it displaced, so
+//! excluding it can leave a group without a version on them, still showing the branch value,
+//! while members that retained restore the value it displaced. The anchor therefore seals again,
+//! with its own writer, the current value of every live group that the branch it stored wrote,
+//! once the exclusion materialized. Its operations cover every version the anchor holds, so
+//! every member converges to the anchor's state whether or not a copy of the branch re-seals.
+//!
 //! A fork of a writer of the epoch's anchor device freezes the epoch at the revision its forked
 //! operations were sealed against: entries past it are superseded, and only a handover continues
 //! the log.
 
 use std::collections::BTreeMap;
 
-use ganbaru_sync_contracts::{Digest32, Envelope, Seq, SpaceId, WriterId};
+use ganbaru_sync_contracts::{
+    ChangeAction, Content, Digest32, Envelope, GroupMask, Seq, SpaceId, WriterId,
+};
 use sqlx::{Connection, SqliteConnection};
 
-use crate::authorization;
 use crate::error::{SyncResult, corrupt};
-use crate::exclusion;
 use crate::log::{self, clamp_ms, seq_i64, stored_u64};
-use crate::merge::Batch;
+use crate::merge::{self, Batch, RowState};
 use crate::{Engine, SpaceContext};
+use crate::{authorization, exclusion, seal, sql};
 
 /// Two operations of one writer at one sequence, ordered by hash.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -335,6 +343,11 @@ async fn exclude_branches(
     if cut.is_empty() {
         return Ok(());
     }
+    if is_anchor(conn, ctx.space).await? {
+        for (writer, keep, _) in &cut {
+            collect_republish(engine, conn, ctx.space, batch, *writer, *keep).await?;
+        }
+    }
     let mut removed = Vec::new();
     for (writer, keep, applied) in &cut {
         if *applied > *keep {
@@ -361,6 +374,95 @@ async fn exclude_branches(
         drop_branch(conn, ctx.space, *writer, *keep, *applied).await?;
     }
     batch.contexts.clear();
+    Ok(())
+}
+
+/// Whether the local device is the selected anchor.
+async fn is_anchor(conn: &mut SqliteConnection, space: SpaceId) -> SyncResult<bool> {
+    let devices: Option<(Option<String>, Option<String>)> = sqlx::query_as(
+        "SELECT anchor_device_id, local_device_id FROM sync_spaces WHERE space_id = ?",
+    )
+    .bind(space.as_bytes().as_slice())
+    .fetch_optional(&mut *conn)
+    .await?;
+    Ok(matches!(devices, Some((Some(anchor), Some(local))) if anchor == local))
+}
+
+/// Adds to [`Batch::republish`] every group that a stored operation of `writer` past `keep`
+/// writes. Members may have released what those operations displaced once the anchor stored
+/// them, applied or not, so the anchor seals all of them again; tombstones need nothing, since
+/// removing them revives the row with the versions they left in place.
+async fn collect_republish(
+    engine: &Engine,
+    conn: &mut SqliteConnection,
+    space: SpaceId,
+    batch: &mut Batch,
+    writer: WriterId,
+    keep: Seq,
+) -> SyncResult<()> {
+    let envelopes: Vec<Vec<u8>> = sqlx::query_scalar(
+        "SELECT envelope FROM sync_ops WHERE space_id = ? AND writer_id = ? AND seq > ?",
+    )
+    .bind(space.as_bytes().as_slice())
+    .bind(writer.as_bytes().as_slice())
+    .bind(seq_i64(keep)?)
+    .fetch_all(&mut *conn)
+    .await?;
+    for envelope in envelopes {
+        let operation = Envelope::decode(&envelope)
+            .ok()
+            .and_then(|envelope| envelope.operation().ok())
+            .ok_or_else(|| corrupt("a stored operation of a forked writer does not decode"))?;
+        let Content::Changes(changes) = &operation.content else {
+            continue;
+        };
+        for change in changes {
+            if change.action == ChangeAction::Tombstone {
+                continue;
+            }
+            let Some(spec) = engine.manifest().table(change.table) else {
+                continue;
+            };
+            let mut mask = GroupMask::EMPTY;
+            for group in &change.groups {
+                if !spec.is_exists_group(group.group) {
+                    mask.insert(group.group);
+                }
+            }
+            if mask != GroupMask::EMPTY {
+                let entry = batch
+                    .republish
+                    .entry((change.table, change.row.as_str().to_string()))
+                    .or_insert(GroupMask::EMPTY);
+                *entry = GroupMask(entry.0 | mask.0);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Captures the groups [`Batch::republish`] holds on rows that are still live, after the call
+/// materialized them, so the anchor's next seal publishes their current values as its own
+/// operations. A row the exclusion left orphaned or a tombstone deleted is skipped.
+pub(crate) async fn republish(
+    engine: &Engine,
+    conn: &mut SqliteConnection,
+    batch: &mut Batch,
+    now_ms: u64,
+) -> SyncResult<()> {
+    for ((table, key), mask) in std::mem::take(&mut batch.republish) {
+        let Some(spec) = engine.manifest().table(table) else {
+            continue;
+        };
+        if merge::row_state(conn, table, &key).await? != Some(RowState::Live)
+            || sql::read_columns(conn, spec.name, spec.key_column, &key, &[])
+                .await?
+                .is_none()
+        {
+            continue;
+        }
+        seal::force_capture(conn, table, &key, mask, now_ms).await?;
+    }
     Ok(())
 }
 

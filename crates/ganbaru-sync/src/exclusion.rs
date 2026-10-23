@@ -84,20 +84,24 @@ pub(crate) async fn record_local_device(
     .execute(&mut *conn)
     .await?
     .rows_affected();
+    if changed > 0 {
+        crate::fork::unsettle(conn, space).await?;
+    }
     Ok(changed > 0)
 }
 
-/// A writer whose operations past its removal cutoff are excluded on this replica.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// A writer some of whose operations the selected state excludes on this replica.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct Excluding {
-    /// Removal cutoff.
-    pub(crate) cutoff: Seq,
-    /// Stored sequence.
-    pub(crate) stored: Seq,
+    /// Removal cutoff and stored sequence, when the writer's device was removed and is not the
+    /// local one.
+    pub(crate) removal: Option<(Seq, Seq)>,
+    /// Last sequence the copies of a forked writer share.
+    pub(crate) fork: Option<Seq>,
 }
 
-/// Writers whose operations past their removal cutoff are excluded on this replica: every
-/// writer of a removed device but the local one.
+/// Writers some of whose operations are excluded on this replica: every writer of a removed
+/// device but the local one, and every forked writer.
 pub(crate) async fn excluding(
     conn: &mut SqliteConnection,
     space: SpaceId,
@@ -111,26 +115,42 @@ pub(crate) async fn excluding(
     .bind(space.as_bytes().as_slice())
     .fetch_all(&mut *conn)
     .await?;
-    rows.iter()
-        .map(|(writer, cutoff, stored)| {
-            Ok((
-                log::writer_id(writer)?,
-                Excluding {
-                    cutoff: stored_u64(*cutoff, "removal cutoff")?,
-                    stored: stored_u64(*stored, "stored sequence")?,
-                },
-            ))
-        })
-        .collect()
+    let mut excluding = BTreeMap::new();
+    for (writer, cutoff, stored) in &rows {
+        excluding.insert(
+            log::writer_id(writer)?,
+            Excluding {
+                removal: Some((
+                    stored_u64(*cutoff, "removal cutoff")?,
+                    stored_u64(*stored, "stored sequence")?,
+                )),
+                fork: None,
+            },
+        );
+    }
+    for (writer, keep) in crate::fork::shared_prefixes(conn, space).await? {
+        excluding
+            .entry(writer)
+            .or_insert_with(Excluding::default)
+            .fork = Some(keep);
+    }
+    Ok(excluding)
 }
 
 /// Whether an operation with causal context `context` may apply after `applied`.
 ///
-/// For a writer whose operations past its removal cutoff are excluded, a context past the
-/// cutoff is satisfied once the writer is applied through the cutoff and stored through the
-/// context, or through the most a removed writer may store past its cutoff. The excluded
-/// operations it saw never apply, so waiting for them would hold an honest operation forever,
-/// and storing them first lets the late changes they leave know the rows they created.
+/// A context entry `(W, s)` is satisfied when `W` is applied through `s`, or when the selected
+/// state excludes `(W, s)` and `W` is applied through what stays:
+///
+/// - Fork: `s` is past the last sequence the copies of the forked writer `W` share, and `W` is
+///   applied through that sequence. No replica stores either branch once it holds the evidence.
+/// - Removal: `s` is past the removal cutoff of `W`, `W` is applied through the cutoff, and the
+///   excluded operation is stored, or `s` is more than [`MAX_EXCLUDED_PER_WRITER`] past the
+///   cutoff, where no replica stores it. Storing the excluded operations first lets the late
+///   changes they leave know the rows they created.
+///
+/// The excluded operations never apply, so waiting for them would hold an honest operation
+/// forever. A fork clamps `s` to the shared prefix before the removal rule applies.
 pub(crate) fn ready(
     applied: &VersionVector,
     context: &VersionVector,
@@ -139,14 +159,35 @@ pub(crate) fn ready(
     if excluding.is_empty() {
         return applied.dominates(context);
     }
-    context
-        .iter()
-        .all(|(writer, seq)| match excluding.get(&writer) {
-            Some(excluded) if seq > excluded.cutoff => {
-                let bound = excluded.cutoff.saturating_add(MAX_EXCLUDED_PER_WRITER);
-                applied.get(&writer) >= excluded.cutoff && excluded.stored >= seq.min(bound)
+    context.iter().all(|(writer, seq)| {
+        let Some(excluded) = excluding.get(&writer) else {
+            return applied.get(&writer) >= seq;
+        };
+        let seq = excluded.fork.map_or(seq, |keep| seq.min(keep));
+        match excluded.removal {
+            Some((cutoff, stored)) if seq > cutoff => {
+                let beyond = seq > cutoff.saturating_add(MAX_EXCLUDED_PER_WRITER);
+                applied.get(&writer) >= cutoff && (stored >= seq || beyond)
             }
             _ => applied.get(&writer) >= seq,
+        }
+    })
+}
+
+/// Whether `context` covers an operation more than [`MAX_EXCLUDED_PER_WRITER`] past the
+/// removal cutoff of an excluded writer. No replica keeps such an operation, so a row only it
+/// created is unknown everywhere, and an honest change to that row is dropped on every replica
+/// alike instead of holding its writer.
+pub(crate) fn beyond_bound(
+    context: &VersionVector,
+    excluding: &BTreeMap<WriterId, Excluding>,
+) -> bool {
+    !excluding.is_empty()
+        && context.iter().any(|(writer, seq)| {
+            excluding
+                .get(&writer)
+                .and_then(|excluded| excluded.removal)
+                .is_some_and(|(cutoff, _)| seq > cutoff.saturating_add(MAX_EXCLUDED_PER_WRITER))
         })
 }
 
@@ -233,10 +274,15 @@ pub(crate) async fn reconcile(
 }
 
 /// Drops the merge rows of dirty rows left without versions and tombstones: rows only excluded
-/// operations created, which a replica that never applied them does not hold either.
-async fn drop_orphan_rows(conn: &mut SqliteConnection, batch: &Batch) -> SyncResult<()> {
+/// operations created, which a replica that never applied them does not hold either. Each
+/// dropped row is marked orphaned so it materializes absent.
+pub(crate) async fn drop_orphan_rows(
+    conn: &mut SqliteConnection,
+    batch: &mut Batch,
+) -> SyncResult<()> {
+    let mut orphaned = Vec::new();
     for (table, key) in &batch.dirty {
-        sqlx::query(
+        let dropped = sqlx::query(
             "DELETE FROM sync_rows WHERE table_id = ?1 AND row_key = ?2
                 AND NOT EXISTS (
                     SELECT 1 FROM sync_register_versions WHERE table_id = ?1 AND row_key = ?2
@@ -248,8 +294,13 @@ async fn drop_orphan_rows(conn: &mut SqliteConnection, batch: &Batch) -> SyncRes
         .bind(table_param(*table))
         .bind(key)
         .execute(&mut *conn)
-        .await?;
+        .await?
+        .rows_affected();
+        if dropped > 0 {
+            orphaned.push((*table, key.clone()));
+        }
     }
+    batch.orphaned.extend(orphaned);
     Ok(())
 }
 
@@ -298,7 +349,7 @@ async fn release(
 /// superseded version's own operation is excluded, its writer has a later version of the group,
 /// or a remaining version of the group saw it. Displaced rows of those operations, and those of
 /// versions the operations wrote, are dropped.
-async fn restore_displaced(
+pub(crate) async fn restore_displaced(
     engine: &Engine,
     conn: &mut SqliteConnection,
     batch: &mut Batch,
@@ -482,8 +533,9 @@ pub(crate) async fn settle(
 ) -> SyncResult<()> {
     let mut resolutions = selection.resolutions.clone();
     loop {
+        let bounded = drop_beyond_bound(engine, conn, ctx.space, batch).await?;
         reconcile(engine, conn, ctx, batch).await?;
-        if !record_excluded_entries(conn, ctx.space).await? {
+        if !record_excluded_entries(conn, ctx.space).await? && !bounded {
             break;
         }
         match authorization::rederive(conn, ctx.space).await? {
@@ -492,6 +544,123 @@ pub(crate) async fn settle(
         }
     }
     rebuild_late(engine, conn, batch, &resolutions).await
+}
+
+/// Drops the operations a removed device's writers have stored more than
+/// [`MAX_EXCLUDED_PER_WRITER`] past their removal cutoff, which a replica stores only while it
+/// does not know the removal yet: a replica that learned it first refuses them, so dropping
+/// them leaves what never storing them leaves. Their entries go with them, so a removed anchor
+/// device's chain counts for selection only within the bound. Rows a dropped operation created
+/// lose their whole merge state, honest changes included, since a replica that never stored
+/// the creation skips those changes (see [`beyond_bound`]). The local device keeps its own
+/// operations. Returns whether a dropped operation carried an entry.
+async fn drop_beyond_bound(
+    engine: &Engine,
+    conn: &mut SqliteConnection,
+    space: SpaceId,
+    batch: &mut Batch,
+) -> SyncResult<bool> {
+    let local = local_device(conn, space).await?;
+    let rows: Vec<(Vec<u8>, i64, i64)> = sqlx::query_as(
+        "SELECT w.writer_id, w.removal_cutoff_seq, w.applied_seq
+         FROM sync_writers w
+         JOIN sync_devices d ON d.space_id = w.space_id AND d.device_id = w.device_id
+         WHERE w.space_id = ?1 AND w.removal_cutoff_seq IS NOT NULL
+            AND d.removed_revision IS NOT NULL
+            AND (?2 IS NULL OR w.device_id <> ?2)
+            AND w.stored_seq > w.removal_cutoff_seq + ?3",
+    )
+    .bind(space.as_bytes().as_slice())
+    .bind(local.as_deref())
+    .bind(seq_i64(MAX_EXCLUDED_PER_WRITER)?)
+    .fetch_all(&mut *conn)
+    .await?;
+    let mut entries = false;
+    for (writer, cutoff, applied) in rows {
+        let writer = log::writer_id(&writer)?;
+        let bound = stored_u64(cutoff, "removal cutoff")?.saturating_add(MAX_EXCLUDED_PER_WRITER);
+        let carried: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM sync_auth_entries WHERE space_id = ? AND writer_id = ? AND seq > ?",
+        )
+        .bind(space.as_bytes().as_slice())
+        .bind(writer.as_bytes().as_slice())
+        .bind(seq_i64(bound)?)
+        .fetch_one(&mut *conn)
+        .await?;
+        entries |= carried > 0;
+        let created = created_past(engine, conn, space, writer, bound).await?;
+        // The applied sequence stays: excluding the operations within the bound lowers it to
+        // the cutoff and removes the effects of every applied one.
+        crate::fork::drop_branch(conn, space, writer, bound, stored_u64(applied, "applied")?)
+            .await?;
+        for (table, key) in created {
+            purge_row(conn, batch, table, key).await?;
+        }
+    }
+    Ok(entries)
+}
+
+/// Rows created by the applied operations of `writer` past `bound`.
+async fn created_past(
+    engine: &Engine,
+    conn: &mut SqliteConnection,
+    space: SpaceId,
+    writer: WriterId,
+    bound: Seq,
+) -> SyncResult<BTreeSet<(TableId, String)>> {
+    let envelopes: Vec<Vec<u8>> = sqlx::query_scalar(
+        "SELECT envelope FROM sync_ops
+         WHERE space_id = ? AND writer_id = ? AND seq > ? AND state = 'applied'",
+    )
+    .bind(space.as_bytes().as_slice())
+    .bind(writer.as_bytes().as_slice())
+    .bind(seq_i64(bound)?)
+    .fetch_all(&mut *conn)
+    .await?;
+    let mut created = BTreeSet::new();
+    for envelope in envelopes {
+        let Some(Content::Changes(changes)) = Envelope::decode(&envelope)
+            .ok()
+            .and_then(|envelope| envelope.operation().ok())
+            .map(|operation| operation.content)
+        else {
+            continue;
+        };
+        for change in &changes {
+            if late_kind(engine, change) == Some(LateKind::Created) {
+                created.insert((change.table, change.row.as_str().to_string()));
+            }
+        }
+    }
+    Ok(created)
+}
+
+/// Removes every version, tombstone, and displaced version of a row with its merge row, and
+/// marks it dirty and orphaned so it materializes absent.
+async fn purge_row(
+    conn: &mut SqliteConnection,
+    batch: &mut Batch,
+    table: TableId,
+    key: String,
+) -> SyncResult<()> {
+    for merge_table in [
+        "sync_version_refs",
+        "sync_register_versions",
+        "sync_tombstones",
+        "sync_displaced_versions",
+        "sync_rows",
+    ] {
+        sqlx::query(sqlx::AssertSqlSafe(format!(
+            "DELETE FROM {merge_table} WHERE table_id = ? AND row_key = ?"
+        )))
+        .bind(table_param(table))
+        .bind(&key)
+        .execute(&mut *conn)
+        .await?;
+    }
+    batch.dirty.insert((table, key.clone()));
+    batch.orphaned.insert((table, key));
+    Ok(())
 }
 
 /// Records the entries of excluded operations stored since the last engine write and settles

@@ -108,6 +108,20 @@ pub(super) fn validate_ops(ops: &[String]) -> Result<(), String> {
     Ok(())
 }
 
+/// Operations in one fork evidence message: the two copies of one sequence.
+pub const MAX_SYNC_EVIDENCE_OPS: usize = 2;
+
+/// Checks fork evidence: none or a pair, or with `pair_only` false also a single offered
+/// operation.
+pub(super) fn validate_evidence(evidence: &[String], pair_only: bool) -> Result<(), String> {
+    match evidence.len() {
+        0 | MAX_SYNC_EVIDENCE_OPS => {}
+        1 if !pair_only => {}
+        _ => return Err("sync fork evidence holds a wrong number of operations".to_string()),
+    }
+    validate_ops(evidence)
+}
+
 pub(super) fn validate_hashes(hashes: &[String]) -> Result<(), String> {
     if hashes.len() > MAX_SYNC_HASHES as usize {
         return Err("sync hash list is too large".to_string());

@@ -1,0 +1,537 @@
+//! Fork evidence and fork exclusion.
+//!
+//! A writer forks when two installations hold its key, which happens when a vault copy is
+//! restored or cloned: both seal different operations at the same sequence. Two operations of
+//! one writer at one sequence with different hashes, both signed by its key, prove it. A replica
+//! that holds such a pair stores it in `sync_fork_evidence`, keeps the writer's chain through the
+//! common prefix, and from then on refuses everything past it, so neither branch survives
+//! anywhere: the writer becomes forked with the last shared sequence as its cutoff.
+//!
+//! Every replica but the forked writer's own device excludes both branches: the merge effects
+//! of applied operations past the prefix are removed, the versions they superseded come back
+//! from `sync_displaced_versions`, and the operations are dropped, which leaves the replica as if
+//! it never stored them. Unlike a removal, a fork leaves no late changes. Each installation of
+//! the writer's device keeps its own branch until it re-seals it with a new writer, see
+//! [`Engine::reseal_fork`]; an installation destroyed before that loses its branch.
+//!
+//! A fork of a writer of the epoch's anchor device freezes the epoch at the revision its forked
+//! operations were sealed against: entries past it are superseded, and only a handover continues
+//! the log.
+
+use std::collections::BTreeMap;
+
+use ganbaru_sync_contracts::{Digest32, Envelope, Seq, SpaceId, WriterId};
+use sqlx::{Connection, SqliteConnection};
+
+use crate::authorization;
+use crate::error::{SyncResult, corrupt};
+use crate::exclusion;
+use crate::log::{self, clamp_ms, seq_i64, stored_u64};
+use crate::merge::Batch;
+use crate::{Engine, SpaceContext};
+
+/// Two operations of one writer at one sequence, ordered by hash.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ForkEvidence {
+    /// The forked writer.
+    pub writer: WriterId,
+    /// First sequence where its copies differ.
+    pub seq: Seq,
+    /// Envelope with the lower hash.
+    pub first: Vec<u8>,
+    /// Envelope with the higher hash.
+    pub second: Vec<u8>,
+}
+
+impl ForkEvidence {
+    /// Last sequence both copies share, the forked writer's cutoff.
+    pub fn keep_through(&self) -> Seq {
+        self.seq - 1
+    }
+}
+
+/// Result of offering fork evidence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EvidenceOutcome {
+    /// The evidence was stored; the writer is forked from now on.
+    Stored,
+    /// Evidence of a fork of the writer at the same or an earlier sequence is already stored.
+    Known,
+    /// The evidence was not stored.
+    Refused(EvidenceRefusal),
+}
+
+/// Why fork evidence was not stored.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EvidenceRefusal {
+    /// An envelope does not decode.
+    Malformed,
+    /// An envelope belongs to another space.
+    WrongSpace,
+    /// The envelopes name different writers or sequences.
+    Mismatched,
+    /// Both envelopes are the same operation.
+    SameOperation,
+    /// The writer is not stored here, so its key is unknown.
+    UnknownWriter,
+    /// The writer key did not sign an envelope.
+    BadSignature,
+}
+
+/// A forked writer as exclusion and chain selection see it.
+#[derive(Debug, Clone)]
+pub(crate) struct Forked {
+    /// First sequence where its copies differ.
+    pub(crate) seq: Seq,
+    /// Device the writer belongs to.
+    pub(crate) device_id: String,
+    /// Lowest authorization revision either forked operation was sealed against, when one of
+    /// them decodes.
+    pub(crate) revision: Option<u64>,
+}
+
+impl Forked {
+    /// Last sequence both copies share.
+    pub(crate) fn keep_through(&self) -> Seq {
+        self.seq - 1
+    }
+}
+
+/// A stored evidence row: writer, fork sequence, device, and both envelopes.
+type EvidenceRow = (Vec<u8>, i64, String, Vec<u8>, Vec<u8>);
+
+/// Every forked writer of the space.
+pub(crate) async fn forked(
+    conn: &mut SqliteConnection,
+    space: SpaceId,
+) -> SyncResult<BTreeMap<WriterId, Forked>> {
+    let rows: Vec<EvidenceRow> = sqlx::query_as(
+        "SELECT e.writer_id, e.seq, w.device_id, e.first_envelope, e.second_envelope
+         FROM sync_fork_evidence e JOIN sync_writers w
+            ON w.space_id = e.space_id AND w.writer_id = e.writer_id
+         WHERE e.space_id = ?",
+    )
+    .bind(space.as_bytes().as_slice())
+    .fetch_all(&mut *conn)
+    .await?;
+    rows.into_iter()
+        .map(|(writer, seq, device_id, first, second)| {
+            let revision = [first, second]
+                .iter()
+                .filter_map(|bytes| {
+                    Envelope::decode(bytes)
+                        .ok()?
+                        .operation()
+                        .ok()
+                        .map(|operation| operation.header.authorization_revision)
+                })
+                .min();
+            Ok((
+                log::writer_id(&writer)?,
+                Forked {
+                    seq: stored_u64(seq, "fork sequence")?,
+                    device_id,
+                    revision,
+                },
+            ))
+        })
+        .collect()
+}
+
+/// The last sequence the copies of each forked writer share.
+pub(crate) async fn shared_prefixes(
+    conn: &mut SqliteConnection,
+    space: SpaceId,
+) -> SyncResult<BTreeMap<WriterId, Seq>> {
+    let rows: Vec<(Vec<u8>, i64)> =
+        sqlx::query_as("SELECT writer_id, seq FROM sync_fork_evidence WHERE space_id = ?")
+            .bind(space.as_bytes().as_slice())
+            .fetch_all(&mut *conn)
+            .await?;
+    rows.iter()
+        .map(|(writer, seq)| {
+            Ok((
+                log::writer_id(writer)?,
+                stored_u64(*seq, "fork sequence")? - 1,
+            ))
+        })
+        .collect()
+}
+
+/// Marks every stored fork evidence unsettled, so the next engine write excludes again: what
+/// this replica excludes depends on its local device.
+pub(crate) async fn unsettle(conn: &mut SqliteConnection, space: SpaceId) -> SyncResult<()> {
+    sqlx::query("UPDATE sync_fork_evidence SET settled = 0 WHERE space_id = ?")
+        .bind(space.as_bytes().as_slice())
+        .execute(&mut *conn)
+        .await?;
+    Ok(())
+}
+
+/// Revisions at which forks freeze epochs, by anchor device: the lowest revision of each forked
+/// writer of the device whose forked operations decode. A fork whose operations this version
+/// cannot read freezes at revision 0, so the device's whole epoch waits for a handover.
+pub(crate) async fn freezes(
+    conn: &mut SqliteConnection,
+    space: SpaceId,
+) -> SyncResult<BTreeMap<String, Vec<u64>>> {
+    let mut freezes: BTreeMap<String, Vec<u64>> = BTreeMap::new();
+    for fork in forked(conn, space).await?.into_values() {
+        freezes
+            .entry(fork.device_id)
+            .or_default()
+            .push(fork.revision.unwrap_or(0));
+    }
+    for revisions in freezes.values_mut() {
+        revisions.sort_unstable();
+    }
+    Ok(freezes)
+}
+
+/// Records evidence that `writer` forked at `seq` and makes it forked with the last shared
+/// sequence as its cutoff. Evidence of a fork at an earlier sequence replaces a later one, since
+/// the cutoff only falls. The envelopes are stored ordered by hash, so every replica holds the
+/// same row.
+pub(crate) async fn record(
+    conn: &mut SqliteConnection,
+    space: SpaceId,
+    writer: WriterId,
+    seq: Seq,
+    pair: [(&[u8], Digest32); 2],
+    now_ms: u64,
+) -> SyncResult<EvidenceOutcome> {
+    let existing: Option<i64> = sqlx::query_scalar(
+        "SELECT seq FROM sync_fork_evidence WHERE space_id = ? AND writer_id = ?",
+    )
+    .bind(space.as_bytes().as_slice())
+    .bind(writer.as_bytes().as_slice())
+    .fetch_optional(&mut *conn)
+    .await?;
+    if let Some(existing) = existing
+        && stored_u64(existing, "fork sequence")? <= seq
+    {
+        return Ok(EvidenceOutcome::Known);
+    }
+    let [(first, first_hash), (second, second_hash)] = pair;
+    let (first, second) = if first_hash <= second_hash {
+        (first, second)
+    } else {
+        (second, first)
+    };
+    sqlx::query(
+        "INSERT INTO sync_fork_evidence
+            (space_id, writer_id, seq, first_envelope, second_envelope, received_at_ms)
+         VALUES (?, ?, ?, ?, ?, ?)
+         ON CONFLICT (space_id, writer_id) DO UPDATE SET seq = excluded.seq,
+            first_envelope = excluded.first_envelope, second_envelope = excluded.second_envelope,
+            received_at_ms = excluded.received_at_ms, settled = 0",
+    )
+    .bind(space.as_bytes().as_slice())
+    .bind(writer.as_bytes().as_slice())
+    .bind(seq_i64(seq)?)
+    .bind(first)
+    .bind(second)
+    .bind(clamp_ms(now_ms))
+    .execute(&mut *conn)
+    .await?;
+    sqlx::query(
+        "UPDATE sync_writers SET state = 'forked', cutoff_seq = min(coalesce(cutoff_seq, ?1), ?1)
+         WHERE space_id = ?2 AND writer_id = ?3",
+    )
+    .bind(seq_i64(seq - 1)?)
+    .bind(space.as_bytes().as_slice())
+    .bind(writer.as_bytes().as_slice())
+    .execute(&mut *conn)
+    .await?;
+    Ok(EvidenceOutcome::Stored)
+}
+
+/// Checks offered evidence and records it.
+async fn store_evidence(
+    conn: &mut SqliteConnection,
+    ctx: &SpaceContext,
+    first: &[u8],
+    second: &[u8],
+    now_ms: u64,
+) -> SyncResult<EvidenceOutcome> {
+    let refused = |refusal| Ok(EvidenceOutcome::Refused(refusal));
+    let (Ok(a), Ok(b)) = (Envelope::decode(first), Envelope::decode(second)) else {
+        return refused(EvidenceRefusal::Malformed);
+    };
+    if a.space != ctx.space || b.space != ctx.space {
+        return refused(EvidenceRefusal::WrongSpace);
+    }
+    if a.writer != b.writer || a.seq != b.seq || a.seq == 0 {
+        return refused(EvidenceRefusal::Mismatched);
+    }
+    if a.hash() == b.hash() {
+        return refused(EvidenceRefusal::SameOperation);
+    }
+    let Some(writer) = log::writer(conn, ctx.space, a.writer).await? else {
+        return refused(EvidenceRefusal::UnknownWriter);
+    };
+    if !a.verify(&writer.public_key) || !b.verify(&writer.public_key) {
+        return refused(EvidenceRefusal::BadSignature);
+    }
+    record(
+        conn,
+        ctx.space,
+        a.writer,
+        a.seq,
+        [(first, a.hash()), (second, b.hash())],
+        now_ms,
+    )
+    .await
+}
+
+/// Settles fork evidence stored since the last engine write, inside one: both branches of every
+/// forked writer of another device are excluded, which removes the merge effects of its applied
+/// operations past the shared prefix, restores the versions they superseded, and drops the
+/// operations, as if this replica had never stored them. The chain is then selected again, since
+/// the dropped operations may carry entries and a fork of an anchor's writer freezes its epoch.
+pub(crate) async fn reconcile(
+    engine: &Engine,
+    conn: &mut SqliteConnection,
+    ctx: &SpaceContext,
+    batch: &mut Batch,
+) -> SyncResult<()> {
+    let settled =
+        sqlx::query("UPDATE sync_fork_evidence SET settled = 1 WHERE space_id = ? AND settled = 0")
+            .bind(ctx.space.as_bytes().as_slice())
+            .execute(&mut *conn)
+            .await?
+            .rows_affected();
+    if settled == 0 {
+        return Ok(());
+    }
+    exclude_branches(engine, conn, ctx, batch).await?;
+    if let Some(selection) = authorization::rederive(conn, ctx.space).await? {
+        exclusion::settle(engine, conn, ctx, batch, &selection).await?;
+    }
+    Ok(())
+}
+
+/// Excludes both branches of every forked writer of another device that still holds them.
+async fn exclude_branches(
+    engine: &Engine,
+    conn: &mut SqliteConnection,
+    ctx: &SpaceContext,
+    batch: &mut Batch,
+) -> SyncResult<()> {
+    let local = exclusion::local_device(conn, ctx.space).await?;
+    let mut cut = Vec::new();
+    for (writer, fork) in forked(conn, ctx.space).await? {
+        if local.as_deref() == Some(fork.device_id.as_str()) {
+            continue;
+        }
+        let Some(row) = log::writer(conn, ctx.space, writer).await? else {
+            continue;
+        };
+        let keep = fork.keep_through();
+        if row.stored > keep.max(1) || row.applied > keep {
+            cut.push((writer, keep, row.applied));
+        }
+    }
+    if cut.is_empty() {
+        return Ok(());
+    }
+    let mut removed = Vec::new();
+    for (writer, keep, applied) in &cut {
+        if *applied > *keep {
+            crate::reseal::remove_effects(conn, batch, *writer, *keep).await?;
+            removed.push((*writer, *keep));
+        }
+        batch.applied.set(*writer, (*applied).min(*keep));
+    }
+    // Versions the forked operations wrote never come back, whichever writer displaced them.
+    for (writer, keep, _) in &cut {
+        sqlx::query("DELETE FROM sync_displaced_versions WHERE writer_id = ? AND seq > ?")
+            .bind(writer.as_bytes().as_slice())
+            .bind(seq_i64(*keep)?)
+            .execute(&mut *conn)
+            .await?;
+    }
+    for (writer, keep) in &removed {
+        exclusion::restore_displaced(engine, conn, batch, *writer, *keep).await?;
+    }
+    if !removed.is_empty() {
+        exclusion::drop_orphan_rows(conn, batch).await?;
+    }
+    for (writer, keep, applied) in &cut {
+        drop_branch(conn, ctx.space, *writer, *keep, *applied).await?;
+    }
+    batch.contexts.clear();
+    Ok(())
+}
+
+/// Drops the operations of `writer` past `keep`, with the authorization entries they carry, and
+/// makes `keep` its head. A fork at the genesis keeps the stored genesis, unapplied, since a
+/// known writer keeps at least one operation. Chain selection and late changes have to be
+/// derived again afterwards.
+pub(crate) async fn drop_branch(
+    conn: &mut SqliteConnection,
+    space: SpaceId,
+    writer: WriterId,
+    keep: Seq,
+    applied: Seq,
+) -> SyncResult<()> {
+    let stored = keep.max(1);
+    sqlx::query("DELETE FROM sync_auth_entries WHERE space_id = ? AND writer_id = ? AND seq > ?")
+        .bind(space.as_bytes().as_slice())
+        .bind(writer.as_bytes().as_slice())
+        .bind(seq_i64(keep)?)
+        .execute(&mut *conn)
+        .await?;
+    sqlx::query("DELETE FROM sync_ops WHERE space_id = ? AND writer_id = ? AND seq > ?")
+        .bind(space.as_bytes().as_slice())
+        .bind(writer.as_bytes().as_slice())
+        .bind(seq_i64(stored)?)
+        .execute(&mut *conn)
+        .await?;
+    let (head_hash, head_clock): (Vec<u8>, i64) = sqlx::query_as(
+        "SELECT hash, (SELECT max(clock) FROM sync_ops
+                WHERE space_id = ?1 AND writer_id = ?2 AND seq <= ?3)
+         FROM sync_ops WHERE space_id = ?1 AND writer_id = ?2 AND seq = ?3",
+    )
+    .bind(space.as_bytes().as_slice())
+    .bind(writer.as_bytes().as_slice())
+    .bind(seq_i64(stored)?)
+    .fetch_optional(&mut *conn)
+    .await?
+    .ok_or_else(|| corrupt("the kept head of a forked writer is missing"))?;
+    if keep == 0 {
+        sqlx::query(
+            "UPDATE sync_ops SET state = 'held', hold_reason = 'invalid'
+             WHERE space_id = ? AND writer_id = ? AND seq = 1",
+        )
+        .bind(space.as_bytes().as_slice())
+        .bind(writer.as_bytes().as_slice())
+        .execute(&mut *conn)
+        .await?;
+    }
+    sqlx::query(
+        "UPDATE sync_writers SET stored_seq = ?1, applied_seq = ?2, head_hash = ?3,
+            head_clock = ?4
+         WHERE space_id = ?5 AND writer_id = ?6",
+    )
+    .bind(seq_i64(stored)?)
+    .bind(seq_i64(applied.min(keep))?)
+    .bind(head_hash.as_slice())
+    .bind(head_clock)
+    .bind(space.as_bytes().as_slice())
+    .bind(writer.as_bytes().as_slice())
+    .execute(&mut *conn)
+    .await?;
+    Ok(())
+}
+
+impl Engine {
+    /// Stores evidence that a writer forked: two envelopes of one writer at one sequence with
+    /// different hashes, each signed by the writer's stored key. The writer becomes forked with
+    /// the last shared sequence as its cutoff, so neither branch is stored from then on; the
+    /// next [`Engine::apply`] excludes what this replica already holds of them.
+    pub async fn store_fork_evidence(
+        &self,
+        conn: &mut SqliteConnection,
+        ctx: &SpaceContext,
+        first: &[u8],
+        second: &[u8],
+        now_ms: u64,
+    ) -> SyncResult<EvidenceOutcome> {
+        let mut tx = conn.begin().await?;
+        log::ensure_space(&mut tx, ctx.space).await?;
+        let outcome = store_evidence(&mut tx, ctx, first, second, now_ms).await?;
+        tx.commit().await?;
+        Ok(outcome)
+    }
+
+    /// The stored fork evidence of `writer`.
+    pub async fn fork_evidence(
+        &self,
+        conn: &mut SqliteConnection,
+        ctx: &SpaceContext,
+        writer: WriterId,
+    ) -> SyncResult<Option<ForkEvidence>> {
+        log::ensure_space(conn, ctx.space).await?;
+        let row: Option<(i64, Vec<u8>, Vec<u8>)> = sqlx::query_as(
+            "SELECT seq, first_envelope, second_envelope FROM sync_fork_evidence
+             WHERE space_id = ? AND writer_id = ?",
+        )
+        .bind(ctx.space.as_bytes().as_slice())
+        .bind(writer.as_bytes().as_slice())
+        .fetch_optional(&mut *conn)
+        .await?;
+        row.map(|(seq, first, second)| {
+            Ok(ForkEvidence {
+                writer,
+                seq: stored_u64(seq, "fork sequence")?,
+                first,
+                second,
+            })
+        })
+        .transpose()
+    }
+
+    /// Forked writers of the local device whose copy past the shared prefix this installation
+    /// still holds, with that prefix. Other replicas exclude that copy, so it reaches them only
+    /// once [`Engine::reseal_fork`] seals it again with a new writer.
+    pub async fn own_forks(
+        &self,
+        conn: &mut SqliteConnection,
+        ctx: &SpaceContext,
+    ) -> SyncResult<Vec<(WriterId, Seq)>> {
+        log::ensure_space(conn, ctx.space).await?;
+        let Some(local) = exclusion::local_device(conn, ctx.space).await? else {
+            return Ok(Vec::new());
+        };
+        let mut own = Vec::new();
+        for (writer, fork) in forked(conn, ctx.space).await? {
+            if fork.device_id != local {
+                continue;
+            }
+            let keep = fork.keep_through();
+            if log::writer(conn, ctx.space, writer)
+                .await?
+                .is_some_and(|row| row.applied > keep)
+            {
+                own.push((writer, keep));
+            }
+        }
+        Ok(own)
+    }
+
+    /// Every writer with stored fork evidence and the sequence where it forked, by writer id.
+    pub async fn forked_writers(
+        &self,
+        conn: &mut SqliteConnection,
+        ctx: &SpaceContext,
+    ) -> SyncResult<Vec<(WriterId, Seq)>> {
+        log::ensure_space(conn, ctx.space).await?;
+        Ok(forked(conn, ctx.space)
+            .await?
+            .into_iter()
+            .map(|(writer, fork)| (writer, fork.seq))
+            .collect())
+    }
+
+    /// The stored envelope of `writer` at `seq`, unless it is not stored or compaction dropped
+    /// its body.
+    pub async fn operation_at(
+        &self,
+        conn: &mut SqliteConnection,
+        ctx: &SpaceContext,
+        writer: WriterId,
+        seq: Seq,
+    ) -> SyncResult<Option<Vec<u8>>> {
+        log::ensure_space(conn, ctx.space).await?;
+        let envelope: Option<Vec<u8>> = sqlx::query_scalar(
+            "SELECT envelope FROM sync_ops WHERE space_id = ? AND writer_id = ? AND seq = ?",
+        )
+        .bind(ctx.space.as_bytes().as_slice())
+        .bind(writer.as_bytes().as_slice())
+        .bind(seq_i64(seq)?)
+        .fetch_optional(&mut *conn)
+        .await?;
+        Ok(envelope.filter(|envelope| !envelope.is_empty()))
+    }
+}

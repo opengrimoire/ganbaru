@@ -244,6 +244,72 @@ async fn removal_excluding_applied_operations() -> Duration {
     elapsed
 }
 
+/// Time for a member to apply fork evidence of a writer whose `MAX_EXCLUDED_PER_WRITER` applied
+/// operations past the shared prefix each superseded a version the member retained.
+async fn fork_excluding_applied_operations() -> Duration {
+    let mut original = Replica::new(1, 14).await;
+    let mut member = Replica::new(2, 14).await;
+    for id in 0..APPLY_OPS {
+        original.exec(&insert_note(id, "seed")).await;
+    }
+    original.seal().await.unwrap();
+    deliver(&mut original, &mut member).await;
+    let mut clone = original.clone_device().await;
+    let writer = original.writer();
+    let keep = original.stored_vector().await.get(&writer);
+    for write in 0..MAX_EXCLUDED_PER_WRITER {
+        let id = u32::try_from(write).unwrap() % APPLY_OPS;
+        original
+            .exec(&format!(
+                "UPDATE quick_notes SET title = 'branch {write}' WHERE id = 'note-{id}'"
+            ))
+            .await;
+        assert_eq!(original.seal().await.unwrap().sealed_ops, 1);
+    }
+    deliver(&mut original, &mut member).await;
+    clone
+        .exec("UPDATE quick_notes SET title = 'clone' WHERE id = 'note-0'")
+        .await;
+    assert_eq!(clone.seal().await.unwrap().sealed_ops, 1);
+    let first = original
+        .engine
+        .operation_at(&mut original.conn, &original.ctx, writer, keep + 1)
+        .await
+        .unwrap()
+        .unwrap();
+    let second = clone
+        .engine
+        .operation_at(&mut clone.conn, &clone.ctx, writer, keep + 1)
+        .await
+        .unwrap()
+        .unwrap();
+    let outcome = member
+        .engine
+        .store_fork_evidence(
+            &mut member.conn,
+            &member.ctx,
+            &first,
+            &second,
+            member.now_ms,
+        )
+        .await
+        .unwrap();
+    assert_eq!(outcome, crate::EvidenceOutcome::Stored);
+    let started = Instant::now();
+    member.apply_all().await.unwrap();
+    let elapsed = started.elapsed();
+    assert_eq!(
+        member.stored_vector().await.get(&writer),
+        keep,
+        "both branches are excluded"
+    );
+    let restored = member
+        .count("SELECT count(*) FROM quick_notes WHERE title = 'seed'")
+        .await;
+    assert_eq!(restored, i64::from(APPLY_OPS));
+    elapsed
+}
+
 /// Time to select the chain again over an authorization log of `LOG_ENTRIES` entries.
 async fn rederive_of_a_long_log() -> Duration {
     let mut hub = Replica::anchor(0, 13).await;
@@ -280,12 +346,13 @@ async fn view_revision(replica: &mut Replica) -> u64 {
 #[ignore = "timing budgets are meaningful only in the release profile"]
 fn removal_and_retention_budgets_hold() {
     block_on(async {
-        let (mut retaining, mut anchor, mut removal, mut rederive) =
-            (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+        let (mut retaining, mut anchor, mut removal, mut fork, mut rederive) =
+            (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
         for _ in 0..RUNS {
             retaining.push(apply_of_superseding_updates(Replica::new(1, 11).await).await);
             anchor.push(apply_of_superseding_updates(Replica::anchor(1, 11).await).await);
             removal.push(removal_excluding_applied_operations().await);
+            fork.push(fork_excluding_applied_operations().await);
             rederive.push(rederive_of_a_long_log().await);
         }
         retaining.sort();
@@ -303,6 +370,11 @@ fn removal_and_retention_budgets_hold() {
             check(
                 "removal excluding 1,024 applied operations",
                 removal,
+                REMOVAL_BUDGET,
+            ),
+            check(
+                "fork exclusion of 1,024 applied operations",
+                fork,
                 REMOVAL_BUDGET,
             ),
         ]

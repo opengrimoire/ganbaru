@@ -24,7 +24,7 @@ fn device_admin(index: usize) -> AdminKeyPair {
     AdminKeyPair::from_seed(&seed).unwrap()
 }
 
-fn admin_entry(index: usize) -> Entry {
+pub(super) fn admin_entry(index: usize) -> Entry {
     enroll_entry(
         &person(),
         index,
@@ -32,7 +32,7 @@ fn admin_entry(index: usize) -> Entry {
     )
 }
 
-fn remove_entry(device: &str) -> Entry {
+pub(super) fn remove_entry(device: &str) -> Entry {
     Entry::Remove(Remove {
         device_id: device.to_owned(),
     })
@@ -47,7 +47,7 @@ async fn tag(replica: &mut Replica, id: &str) {
     replica.seal().await.unwrap();
 }
 
-async fn view(replica: &mut Replica) -> AuthorizationView {
+pub(super) async fn view(replica: &mut Replica) -> AuthorizationView {
     replica
         .engine
         .authorization(&mut replica.conn, &replica.ctx)
@@ -57,7 +57,7 @@ async fn view(replica: &mut Replica) -> AuthorizationView {
 }
 
 /// Epoch, revision, and entry hash of the selected head.
-async fn head(replica: &mut Replica) -> (u32, u64, Digest32) {
+pub(super) async fn head(replica: &mut Replica) -> (u32, u64, Digest32) {
     let view = view(replica).await;
     let hash: Option<Vec<u8>> = sqlx::query_scalar(
         "SELECT entry_hash FROM sync_auth_entries WHERE selected = 1
@@ -136,7 +136,10 @@ async fn next_record(
 }
 
 /// A handover of the anchor to replica device `index`, carried by that replica's writer.
-async fn forge_handover(replica: &mut Replica, index: usize) -> (AuthorizationRecord, Vec<u8>) {
+pub(super) async fn forge_handover(
+    replica: &mut Replica,
+    index: usize,
+) -> (AuthorizationRecord, Vec<u8>) {
     let (epoch, revision, hash) = head(replica).await;
     let device = device_id(index);
     let entry = Entry::Handover(Handover {
@@ -657,19 +660,19 @@ fn two_admins_removing_each_other_settle_the_same_whatever_order_their_chains_ar
 }
 
 /// Devices of a space whose epoch 0 goes on after admin 20 took the anchor over in epoch 1.
-struct Superseded {
+pub(super) struct Superseded {
     /// The epoch 0 anchor, which enrolled devices 22 and 23 after the handover point.
-    hub: Replica,
+    pub(super) hub: Replica,
     /// Admin 20, anchor of epoch 1.
-    contender: Replica,
+    pub(super) contender: Replica,
     /// Member 1. Its last operation is sealed against epoch 0's last revision, which epoch 1
     /// never reaches.
-    member: Replica,
+    pub(super) member: Replica,
     /// Device 22, enrolled only in epoch 0.
-    dropout: Replica,
+    pub(super) dropout: Replica,
 }
 
-async fn superseded(salt: u64) -> Superseded {
+pub(super) async fn superseded(salt: u64) -> Superseded {
     let mut hub = Replica::anchor(0, salt).await;
     hub.sequence(admin_entry(20)).await.unwrap().unwrap();
     let mut member = Replica::new(1, salt).await;

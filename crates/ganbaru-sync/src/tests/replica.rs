@@ -317,6 +317,13 @@ fn writer_seed(salt: u64, replica: usize, generation: u32) -> [u8; 32] {
     seed
 }
 
+/// Salt of the `clones`th clone of an installation with `salt`, distinct from the salt of
+/// every other clone, a clone of a clone included.
+fn clone_salt(salt: u64, clones: u32) -> u64 {
+    const MIX: u64 = 0x9e37_79b9_7f4a_7c15;
+    salt.wrapping_mul(MIX).wrapping_add(u64::from(clones))
+}
+
 /// One installation of the vault.
 pub(super) struct Replica {
     pub(super) index: usize,
@@ -332,6 +339,8 @@ pub(super) struct Replica {
     pub(super) now_ms: u64,
     salt: u64,
     generation: u32,
+    /// Clones made of this installation, so each draws distinct writers.
+    clones: u32,
 }
 
 impl Replica {
@@ -385,26 +394,39 @@ impl Replica {
             now_ms: START_MS,
             salt,
             generation: 0,
+            clones: 0,
         }
     }
 
     /// A clone of this installation's database and writer, as a restored backup would be. Its
     /// later writers belong to the device of replica `index`.
     pub(super) async fn clone_installation(&mut self, index: usize) -> Self {
+        let mut clone = self.clone_device().await;
+        clone.index = index;
+        clone.device_id = device_id(index);
+        clone.device_seed = key_seed(&clone.person, DEVICE_PURPOSE, index as u64);
+        clone
+    }
+
+    /// A clone of this installation's database and writer whose later writers belong to the
+    /// same device, as a copied vault folder on the same machine would be. Each clone draws
+    /// writers distinct from this installation's and from other clones'.
+    pub(super) async fn clone_device(&mut self) -> Self {
         let bytes = self.snapshot().await;
-        let person = person();
+        self.clones += 1;
         Self {
-            index,
+            index: self.index,
             conn: connection_from(&bytes).await,
             engine: test_engine(),
             ctx: self.ctx.clone(),
             identity: self.identity.duplicate(),
-            device_id: device_id(index),
-            device_seed: key_seed(&person, DEVICE_PURPOSE, index as u64),
-            person,
+            device_id: self.device_id.clone(),
+            device_seed: self.device_seed,
+            person: person(),
             now_ms: self.now_ms,
-            salt: self.salt,
+            salt: clone_salt(self.salt, self.clones),
             generation: self.generation,
+            clones: 0,
         }
     }
 
@@ -555,12 +577,39 @@ impl Replica {
             let more = report.more;
             reports.push(report);
             if frozen && !self.device_removed().await {
-                self.rotate();
+                if !self.reseal_own_forks().await {
+                    self.rotate();
+                }
             } else if !more {
                 return Ok(reports);
             }
         }
         panic!("replica {} never finished applying", self.index);
+    }
+
+    /// Re-seals every forked chain of this device that this installation still holds, each with
+    /// a new writer, the way the app does. Returns whether there was one.
+    pub(super) async fn reseal_own_forks(&mut self) -> bool {
+        let forks = self
+            .engine
+            .own_forks(&mut self.conn, &self.ctx)
+            .await
+            .unwrap();
+        for (old, keep_through) in &forks {
+            self.rotate();
+            self.engine
+                .reseal_fork(
+                    &mut self.conn,
+                    &self.ctx,
+                    *old,
+                    *keep_through,
+                    &mut self.identity.local(),
+                    self.now_ms,
+                )
+                .await
+                .unwrap();
+        }
+        !forks.is_empty()
     }
 
     /// Seals, rotating once when the local writer is no longer active.
@@ -632,8 +681,50 @@ impl Replica {
             .unwrap()
     }
 
-    /// Stores what `from` has and this replica lacks, then applies.
+    /// Every fork evidence this replica stores.
+    pub(super) async fn evidence(&mut self) -> Vec<crate::ForkEvidence> {
+        let forked = self
+            .engine
+            .forked_writers(&mut self.conn, &self.ctx)
+            .await
+            .unwrap();
+        let mut evidence = Vec::with_capacity(forked.len());
+        for (writer, _) in forked {
+            evidence.push(
+                self.engine
+                    .fork_evidence(&mut self.conn, &self.ctx, writer)
+                    .await
+                    .unwrap()
+                    .expect("a forked writer has evidence"),
+            );
+        }
+        evidence
+    }
+
+    /// Stores fork evidence `from` holds and this replica lacks.
+    pub(super) async fn take_evidence(&mut self, from: &mut Self) -> Vec<crate::EvidenceOutcome> {
+        let mut outcomes = Vec::new();
+        for evidence in from.evidence().await {
+            outcomes.push(
+                self.engine
+                    .store_fork_evidence(
+                        &mut self.conn,
+                        &self.ctx,
+                        &evidence.first,
+                        &evidence.second,
+                        self.now_ms,
+                    )
+                    .await
+                    .unwrap(),
+            );
+        }
+        outcomes
+    }
+
+    /// Stores the fork evidence and then the operations `from` has and this replica lacks, then
+    /// applies.
     pub(super) async fn pull(&mut self, from: &mut Self) -> Vec<StoreOutcome> {
+        self.take_evidence(from).await;
         let known = self.stored_vector().await;
         let ops = from.ops_since(&known).await;
         let outcomes = self.receive(&ops).await;

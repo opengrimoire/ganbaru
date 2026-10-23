@@ -298,3 +298,38 @@ fn removal_exclusion_migration_starts_unreached_and_constrains_resolutions() {
             .expect_err("an anchor names a device");
     });
 }
+
+/// Last migration before fork evidence records its settlement.
+const BEFORE_FORK_SETTLEMENT: i64 = 20261023120329;
+
+#[test]
+fn fork_settlement_migration_leaves_stored_evidence_unsettled() {
+    super::block_on(async {
+        let pool = memory_pool_migrated_through(BEFORE_FORK_SETTLEMENT).await;
+        sqlx::raw_sql(
+            "INSERT INTO sync_spaces (space_id, vault_id, created_at_ms)
+             VALUES (zeroblob(16), 'vault-a', 1);
+             INSERT INTO sync_fork_evidence
+                (space_id, writer_id, seq, first_envelope, second_envelope, received_at_ms)
+             VALUES (zeroblob(16), zeroblob(16), 3, x'01', x'02', 1);",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        run_migrations(&pool).await.unwrap();
+
+        let settled: i64 = sqlx::query_scalar("SELECT settled FROM sync_fork_evidence")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            settled, 0,
+            "stored evidence settles on the next engine write"
+        );
+        sqlx::query("UPDATE sync_fork_evidence SET settled = 2")
+            .execute(&pool)
+            .await
+            .expect_err("settlement is a flag");
+    });
+}

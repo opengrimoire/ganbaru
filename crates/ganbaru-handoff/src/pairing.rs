@@ -21,7 +21,7 @@ use super::protocol::{
     validate_device_label, validate_discovery_key, validate_identifier,
 };
 #[cfg(desktop)]
-use super::protocol::{DISCOVERY_KEY_BYTES, PROTOCOL_VERSION};
+use super::protocol::{DISCOVERY_KEY_BYTES, PROTOCOL_VERSION, decode_sync_device_key};
 use base64::Engine;
 use rcgen::{CertificateParams, DnType, KeyPair};
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
@@ -97,6 +97,8 @@ pub struct LinkedPeer {
     pub vault_id: String,
     pub certificate: String,
     pub certificate_fingerprint: String,
+    /// Public half of the device key the device enrolls in the vault's sync space, base64url.
+    pub sync_device_key: String,
     /// Enrollment time; at the stored limit, the oldest memberships of other vaults are revoked first.
     #[serde(default)]
     pub linked_at_ms: i64,
@@ -313,6 +315,8 @@ pub struct Enrollment<'a> {
     pub device_label: &'a str,
     pub device_kind: DeviceKind,
     pub certificate_b64: &'a str,
+    /// Public half of the device's sync device key, base64url.
+    pub sync_device_key: &'a str,
 }
 
 #[derive(Default)]
@@ -1179,6 +1183,7 @@ fn admit_enrollment(
     validate_identifier("device id", enrollment.device_id)?;
     validate_device_label("device label", enrollment.device_label)?;
     let certificate = decode_certificate(enrollment.certificate_b64)?;
+    decode_sync_device_key(enrollment.sync_device_key)?;
     let pending = inner
         .invitations
         .get(enrollment.invitation_id)
@@ -1199,6 +1204,7 @@ fn admit_enrollment(
         vault_id: enrollment.vault_id.to_string(),
         certificate: enrollment.certificate_b64.to_string(),
         certificate_fingerprint: certificate_fingerprint(certificate.as_ref()),
+        sync_device_key: enrollment.sync_device_key.to_string(),
         linked_at_ms: now_ms,
     };
     let state = initialized_state(inner)?;

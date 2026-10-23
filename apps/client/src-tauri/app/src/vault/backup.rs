@@ -761,13 +761,11 @@ async fn carry_forward_local_changes<R: Runtime>(
         return Ok(());
     }
     let files = crate::sync::sync_files(app, expected_vault_id)?;
-    let coordinator = crate::sync::coordinator_device_id(app, expected_vault_id)?;
     carry_into_replacement(
         &ganbaru_sync::Engine::vault(),
         staging,
         target,
         &files,
-        &coordinator,
         crate::sync::now_ms()?,
     )
     .await
@@ -783,21 +781,13 @@ async fn carry_into_replacement(
     staging: &Path,
     target: &Path,
     files: &ganbaru_sync_replica::writer::SyncFiles,
-    coordinator_device_id: &str,
     now_ms: u64,
 ) -> Result<(), String> {
     use ganbaru_sync_replica::carry_forward;
     let (current, replacement) = (database_path(target), database_path(staging));
-    carry_forward::carry_into_replacement(
-        engine,
-        &current,
-        &replacement,
-        files,
-        coordinator_device_id,
-        now_ms,
-    )
-    .await
-    .map_err(|error| format!("keep local synced changes: {error}"))?;
+    carry_forward::carry_into_replacement(engine, &current, &replacement, files, now_ms)
+        .await
+        .map_err(|error| format!("keep local synced changes: {error}"))?;
     failpoints::check("replace.before_restore")?;
     carry_forward::restore_into_replacement(engine, &current, &replacement)
         .await

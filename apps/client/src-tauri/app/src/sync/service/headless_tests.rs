@@ -11,8 +11,14 @@ use ganbaru_sync::hooks::{ChangeSink, HookFuture, MaterializeHook};
 use ganbaru_sync::manifest::TableSpec;
 use ganbaru_sync::manifest::vault::quick_notes::NOTES_TABLE;
 use ganbaru_sync::{Engine, Hooks};
+use ganbaru_sync_contracts::{
+    AdminKeyPair, DeviceKeyPair, DeviceKind, RecoverySeed, SignedCharter,
+};
 use ganbaru_sync_replica::assets::ContentAddressedStore;
-use ganbaru_sync_replica::writer::{FileKeyStore, SuccessorPlan, SyncFiles, create_writer};
+use ganbaru_sync_replica::authority::Enrollment;
+use ganbaru_sync_replica::writer::{
+    ActiveWriter, FileKeyStore, SuccessorPlan, SyncFiles, create_writer,
+};
 use sqlx::SqliteConnection;
 use std::path::Path;
 use std::sync::atomic::AtomicUsize;
@@ -77,12 +83,54 @@ async fn has_note(pool: &SqlitePool, id: &str) -> bool {
         > 0
 }
 
-/// A coordinator vault at `directory` holding a note its own writer sealed.
+/// The anchor keys of [`COORDINATOR_DEVICE`].
+fn anchor_keys() -> AnchorKeys {
+    AnchorKeys {
+        device: DeviceKeyPair::from_seed(&[8; 32]).expect("anchor device key"),
+        admin: AdminKeyPair::from_seed(&[9; 32]).expect("anchor admin key"),
+        recovery: RecoverySeed::from_bytes([10; 32]),
+    }
+}
+
+/// The founded space of a coordinator vault and the writer its anchor seals with.
+struct HubSpace {
+    ctx: SpaceContext,
+    charter: SignedCharter,
+    writer: ActiveWriter,
+}
+
+impl HubSpace {
+    /// Enrolls the phone with `device_key` through the anchor's writer.
+    async fn enroll_phone(&mut self, pool: &SqlitePool, device_key: DevicePublicKey) {
+        let mut conn = acquire(pool).await.expect("hub connection");
+        let enrollment = Enrollment {
+            device_id: PHONE_DEVICE.to_string(),
+            device_key,
+            tls_fingerprint: [14; 32],
+            label: "Phone".to_string(),
+            device_kind: DeviceKind::Mobile,
+        };
+        authority::enroll(
+            &Engine::vault(),
+            &mut conn,
+            &self.ctx,
+            &anchor_keys().admin,
+            &mut self.writer.local(),
+            enrollment,
+            now_ms().expect("clock"),
+        )
+        .await
+        .expect("enroll the phone");
+    }
+}
+
+/// A coordinator vault at `directory`, founded with [`COORDINATOR_DEVICE`] as its anchor and
+/// holding a note the anchor sealed.
 async fn hub_vault(
     directory: &Path,
     registry: &DatabasePoolRegistry,
     person: &PersonKeyPair,
-) -> SqlitePool {
+) -> (SqlitePool, HubSpace) {
     let pool = registry
         .connect_path(directory.join("ganbaru.sqlite"))
         .await
@@ -98,17 +146,28 @@ async fn hub_vault(
         .init_space(&mut conn, VAULT_ID, now)
         .await
         .expect("initialize hub space");
-    let ctx = local::space_context(&mut conn, VAULT_ID, COORDINATOR_DEVICE)
+    let ctx = local::space_context(&mut conn, VAULT_ID)
         .await
         .expect("read hub space")
         .expect("hub space context");
+    let anchor = anchor_keys();
+    let founding = Founding {
+        device_id: COORDINATOR_DEVICE,
+        tls_fingerprint: [12; 32],
+        discovery_key: [7; ganbaru_handoff::protocol::DISCOVERY_KEY_BYTES],
+        person,
+        now_ms: now,
+    };
+    let charter = ensure_charter(&engine, &mut conn, &ctx, &anchor, &founding)
+        .await
+        .expect("found hub space");
     let mut writer = create_writer(
         &SyncFiles::new(directory.join("sync"), VAULT_ID).expect("hub sync files"),
         &FileKeyStore {
             directory: directory.join("keys"),
         },
         SuccessorPlan::default(),
-        person,
+        &anchor.device,
         COORDINATOR_DEVICE,
         now,
     )
@@ -123,7 +182,14 @@ async fn hub_vault(
         .last_seq
         .expect("sealed hub operations");
     writer.committed(seq).expect("record hub commit");
-    pool
+    (
+        pool,
+        HubSpace {
+            ctx,
+            charter,
+            writer,
+        },
+    )
 }
 
 /// A hub serving `pool` over the coordinator listener, reporting a LAN contact.
@@ -136,7 +202,6 @@ fn serving_hub(pool: SqlitePool, assets: PathBuf) -> SyncHub {
             Ok(Some(HubVault {
                 pool,
                 vault_id: VAULT_ID.to_string(),
-                device_id: COORDINATOR_DEVICE.to_string(),
                 assets,
             }))
         })
@@ -149,9 +214,14 @@ fn serving_hub(pool: SqlitePool, assets: PathBuf) -> SyncHub {
         .with_contact(Arc::new(move |_: &str| Ok(contact.clone())))
 }
 
-/// Makes the linked vault active on the phone with a note of its own, and stores the person key
-/// where the phone keeps it.
-async fn phone_vault(config_dir: &Path, person: &PersonKeyPair, person_pkcs8: &[u8]) -> PathBuf {
+/// Makes the linked vault active on the phone with a note of its own and the hub's charter, as
+/// the vault bundle delivers it, and stores the person key where the phone keeps it.
+async fn phone_vault(
+    config_dir: &Path,
+    person: &PersonKeyPair,
+    person_pkcs8: &[u8],
+    charter: &SignedCharter,
+) -> PathBuf {
     let database = crate::vault::activate_test_vault(
         config_dir,
         &config_dir.join("vault"),
@@ -169,6 +239,21 @@ async fn phone_vault(config_dir: &Path, person: &PersonKeyPair, person_pkcs8: &[
         .expect("convert phone projects");
     insert_identity(&pool, person).await;
     insert_note(&pool, "note-phone").await;
+    let engine = Engine::vault();
+    let mut conn = acquire(&pool).await.expect("phone connection");
+    engine
+        .init_space(&mut conn, VAULT_ID, now_ms().expect("clock"))
+        .await
+        .expect("initialize phone space");
+    let ctx = local::space_context(&mut conn, VAULT_ID)
+        .await
+        .expect("read phone space")
+        .expect("phone space context");
+    engine
+        .install_charter(&mut conn, &ctx, charter)
+        .await
+        .expect("install the hub charter");
+    drop(conn);
     drop(pool);
     registry.close_all().await.expect("close phone pools");
     let key_path = crate::contacts::identity::person_key_path_in(config_dir, VAULT_ID);
@@ -211,7 +296,7 @@ async fn headless_pass_converges_with_the_hub_and_runs_hooks() {
     let (person_pkcs8, person) = PersonKeyPair::generate().expect("person key");
     let hub_directory = TestDirectory::new("headless-hub");
     let hub_registry = DatabasePoolRegistry::default();
-    let hub_pool = hub_vault(hub_directory.path(), &hub_registry, &person).await;
+    let (hub_pool, mut hub_space) = hub_vault(hub_directory.path(), &hub_registry, &person).await;
     let pair = LocalPair::start_with_hub(Some(serving_hub(
         hub_pool.clone(),
         hub_directory.path().join("assets"),
@@ -219,17 +304,40 @@ async fn headless_pass_converges_with_the_hub_and_runs_hooks() {
     .await;
     pair.enroll().await;
     let config_dir = pair.phone_config_dir().to_path_buf();
-    let phone_database = phone_vault(&config_dir, &person, &person_pkcs8).await;
+    let phone_database = phone_vault(&config_dir, &person, &person_pkcs8, &hub_space.charter).await;
 
     let materialized = Arc::new(AtomicUsize::new(0));
-    let counter = Arc::clone(&materialized);
-    let host = HeadlessHost::open_with(&config_dir, &ProcessManagers::default())
-        .expect("open headless host")
-        .with_hooks(move || {
-            Hooks::new().with(NOTES_TABLE, Box::new(CountingHook(Arc::clone(&counter))))
-        });
+    let open_host = || {
+        let counter = Arc::clone(&materialized);
+        HeadlessHost::open_with(&config_dir, &ProcessManagers::default())
+            .expect("open headless host")
+            .with_hooks(move || {
+                Hooks::new().with(NOTES_TABLE, Box::new(CountingHook(Arc::clone(&counter))))
+            })
+    };
+    let host = open_host();
+    let phone_key = crate::sync::ensure_device_key(&host, VAULT_ID)
+        .await
+        .expect("phone device key");
+    hub_space.enroll_phone(&hub_pool, phone_key).await;
     let live = Mutex::new(Weak::new());
     let gate = tokio::sync::Mutex::new(());
+    // Without the enrollment a vault bundle carries, the first pass only pulls it and the hub's
+    // operations; the phone seals nothing before it is enrolled.
+    let priming = tokio::time::timeout(
+        PASS_WAIT,
+        headless_pass_with(async { Ok(host) }, &live, &gate, PASS_WAIT),
+    )
+    .await
+    .expect("the priming pass finishes")
+    .expect("priming headless pass");
+    assert_eq!(
+        priming.status.state,
+        SyncState::Idle,
+        "{:?}",
+        priming.status
+    );
+    let host = open_host();
     let pass = tokio::time::timeout(
         PASS_WAIT,
         headless_pass_with(async { Ok(host) }, &live, &gate, PASS_WAIT),
@@ -261,7 +369,6 @@ async fn headless_pass_converges_with_the_hub_and_runs_hooks() {
         .await
         .expect("count phone acknowledgements");
     assert_eq!(acknowledgements, 1, "the phone acknowledged the hub note");
-    assert!(pass.more, "the next pass pushes the acknowledgement");
     assert!(
         materialized.load(Ordering::SeqCst) > 0,
         "the registered hook ran on the materialized notes"

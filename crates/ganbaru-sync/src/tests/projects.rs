@@ -271,6 +271,100 @@ fn projects_concurrent_dependencies_that_close_a_cycle_hide_the_newest_as_a_conf
 }
 
 #[test]
+fn projects_keeping_a_cycle_hidden_dependency_removed_closes_its_conflict_everywhere() {
+    block_on(async {
+        let sql = format!(
+            "{}{}",
+            task_sql("task-t", "T", 1),
+            task_sql("task-u", "U", 2)
+        );
+        let mut replicas = shared(2, &sql).await;
+        let added = [("task-t", "task-u"), ("task-u", "task-t")];
+        let mut ranks = Vec::new();
+        for (replica, (blocking, blocked)) in replicas.iter_mut().zip(added) {
+            let id = key(&DEPENDENCIES, &[blocking, blocked]);
+            replica
+                .exec(&format!(
+                    "INSERT INTO project_task_dependencies
+                         (id, blocking_task_id, blocked_task_id, created_at, sync_key)
+                     VALUES ({id}, {}, {}, {}, {id});",
+                    quoted(blocking),
+                    quoted(blocked),
+                    quoted(CREATED),
+                    id = quoted(&id),
+                ))
+                .await;
+            replica.seal().await.unwrap();
+            let clock = replica
+                .count(&format!(
+                    "SELECT max(clock) FROM sync_register_versions
+                     WHERE table_id = {} AND row_key = {} AND group_id = {}",
+                    DEPENDENCIES_TABLE.0,
+                    quoted(&id),
+                    dependency_group::EXISTS.get()
+                ))
+                .await;
+            ranks.push((clock, replica.writer(), id, blocking, blocked));
+        }
+        let (_, _, hidden, blocking, blocked) = ranks.iter().max().unwrap().clone();
+        converge(&mut replicas).await;
+        // The hidden edge's tasks stay readable from its retained identity, which a domain
+        // needs to present the conflict.
+        for replica in &mut replicas {
+            let identities = crate::local::retained_group_values(
+                &replica.engine,
+                &mut replica.conn,
+                DEPENDENCIES_TABLE,
+                dependency_group::IDENTITY,
+            )
+            .await
+            .unwrap();
+            assert!(identities.iter().any(|value| {
+                value
+                    == &ganbaru_sync_contracts::Value::new(vec![
+                        ganbaru_sync_contracts::Field::Text(blocking.to_string()),
+                        ganbaru_sync_contracts::Field::Text(blocked.to_string()),
+                    ])
+                    .unwrap()
+            }));
+        }
+        // The hidden edge is absent from the domain table; inserting and deleting it again
+        // seals an existence write of zero.
+        replicas[0]
+            .exec(&format!(
+                "INSERT INTO project_task_dependencies
+                     (id, blocking_task_id, blocked_task_id, created_at, sync_key)
+                 VALUES ({id}, {}, {}, {}, {id});
+                 DELETE FROM project_task_dependencies WHERE id = {id};",
+                quoted(blocking),
+                quoted(blocked),
+                quoted(CREATED),
+                id = quoted(&hidden),
+            ))
+            .await;
+        replicas[0].seal().await.unwrap();
+        converge(&mut replicas).await;
+        assert_converged(&mut replicas).await;
+        for replica in &mut replicas {
+            assert!(
+                replica
+                    .engine
+                    .conflicts(&mut replica.conn, DEPENDENCIES_TABLE)
+                    .await
+                    .unwrap()
+                    .is_empty()
+            );
+            assert_eq!(
+                replica
+                    .count("SELECT count(*) FROM project_task_dependencies")
+                    .await,
+                1
+            );
+        }
+    });
+}
+
+#[test]
 fn projects_a_task_moved_into_a_concurrently_deleted_status_stays_there() {
     block_on(async {
         let mut replicas = shared(2, &task_sql("task-a", "Draft", 1)).await;

@@ -19,10 +19,10 @@ use crate::manifest::TableSpec;
 use crate::manifest::vault::projects::{
     ADAPTER, CHANGE_EVENTS_TABLE, CHECKLIST_TABLE, DEPENDENCIES_TABLE, DOMAIN, EMOJIS_TABLE,
     FIELDS_TABLE, FOLDERS_TABLE, GROUPS_TABLE, ICON_CLASS, OPTION_VALUES, PRIORITIES_TABLE,
-    PROJECTS_TABLE, STATUSES_TABLE, TAG_LINKS_TABLE, TASKS_TABLE, VALUES_TABLE,
+    PROJECTS_TABLE, SECTIONS_TABLE, STATUSES_TABLE, TAG_LINKS_TABLE, TASKS_TABLE, VALUES_TABLE,
     VIEW_PREFERENCES_TABLE, change_event_group, dependency_group, emoji_group, field_group,
-    folder_group, group_group, priority_group, project_group, status_group, tag_link_group,
-    task_group, value_group, view_preference_group,
+    folder_group, group_group, priority_group, project_group, section_group, status_group,
+    tag_link_group, task_group, value_group, view_preference_group,
 };
 
 /// Characters in an enumerated column.
@@ -651,19 +651,38 @@ impl DomainAdapter for ProjectsAdapter {
     fn presentation(&self, table: TableId, values: &[(GroupId, Value)]) -> Presentation {
         let mut presentation = Presentation::default();
         let title_group = match table {
+            GROUPS_TABLE => group_group::NAME,
             PROJECTS_TABLE => project_group::NAME,
+            SECTIONS_TABLE => section_group::NAME,
+            STATUSES_TABLE => status_group::NAME,
             TASKS_TABLE => task_group::TITLE,
             _ => return presentation,
         };
         for (group, value) in values {
-            if *group == title_group
-                && let [Field::Text(title)] = value.fields()
-            {
-                presentation.title = title.trim_matches(' ').to_string();
+            let [Field::Text(text)] = value.fields() else {
+                continue;
+            };
+            if *group == title_group {
+                presentation.title = text.trim_matches(' ').to_string();
+            } else if table == TASKS_TABLE && *group == task_group::DESCRIPTION {
+                presentation.preview = preview_text(text);
             }
         }
         presentation
     }
+}
+
+/// Characters of a task description kept as a recovery preview.
+const PREVIEW_CHARS: usize = 160;
+
+/// A description as one line of at most [`PREVIEW_CHARS`] characters, whitespace collapsed.
+fn preview_text(text: &str) -> String {
+    text.split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .take(PREVIEW_CHARS)
+        .collect()
 }
 
 /// Reports every Projects row a materialization changed, with its table name as the topic and
@@ -710,6 +729,49 @@ mod tests {
 
     fn schedule(fields: [Field; 7]) -> Value {
         value(fields.to_vec())
+    }
+
+    #[test]
+    fn recovery_titles_come_from_the_name_or_title_of_each_root_table() {
+        let adapter = ProjectsAdapter;
+        for (table, group) in [
+            (GROUPS_TABLE, group_group::NAME),
+            (PROJECTS_TABLE, project_group::NAME),
+            (SECTIONS_TABLE, section_group::NAME),
+            (STATUSES_TABLE, status_group::NAME),
+            (TASKS_TABLE, task_group::TITLE),
+        ] {
+            let presented = adapter.presentation(table, &[(group, value(vec![text(" Launch ")]))]);
+            assert_eq!(presented.title, "Launch", "table {}", table.0);
+        }
+        assert_eq!(
+            adapter.presentation(
+                DEPENDENCIES_TABLE,
+                &[(project_group::NAME, value(vec![text("x")]))]
+            ),
+            Presentation::default()
+        );
+    }
+
+    #[test]
+    fn a_task_preview_is_its_description_on_one_bounded_line() {
+        let adapter = ProjectsAdapter;
+        let description = format!("First line\n\n  second   line {}", "x".repeat(400));
+        let presented = adapter.presentation(
+            TASKS_TABLE,
+            &[
+                (task_group::TITLE, value(vec![text("Ship")])),
+                (task_group::DESCRIPTION, value(vec![text(&description)])),
+            ],
+        );
+        assert_eq!(presented.title, "Ship");
+        assert!(presented.preview.starts_with("First line second line x"));
+        assert_eq!(presented.preview.chars().count(), PREVIEW_CHARS);
+        let project = adapter.presentation(
+            PROJECTS_TABLE,
+            &[(task_group::DESCRIPTION, value(vec![text("ignored")]))],
+        );
+        assert_eq!(project.preview, "");
     }
 
     #[test]

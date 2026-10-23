@@ -610,6 +610,19 @@ pub(super) async fn ensure_dependency_has_no_cycle(
     blocking_task_id: &str,
     blocked_task_id: &str,
 ) -> Result<(), String> {
+    if dependency_would_cycle(tx, blocking_task_id, blocked_task_id).await? {
+        return Err("dependency would create a cycle".to_string());
+    }
+    Ok(())
+}
+
+/// Whether a dependency from `blocking_task_id` to `blocked_task_id` would close a cycle over the
+/// dependencies that exist now.
+pub(super) async fn dependency_would_cycle(
+    conn: &mut sqlx::SqliteConnection,
+    blocking_task_id: &str,
+    blocked_task_id: &str,
+) -> Result<bool, String> {
     let cycle_count: i64 = sqlx::query_scalar(
         "WITH RECURSIVE dependency_chain(task_id) AS (
              SELECT blocked_task_id
@@ -627,13 +640,10 @@ pub(super) async fn ensure_dependency_has_no_cycle(
     )
     .bind(blocked_task_id)
     .bind(blocking_task_id)
-    .fetch_one(&mut **tx)
+    .fetch_one(conn)
     .await
     .map_err(|e| format!("check project task dependency cycle: {e}"))?;
-    if cycle_count > 0 {
-        return Err("dependency would create a cycle".to_string());
-    }
-    Ok(())
+    Ok(cycle_count > 0)
 }
 
 pub(super) async fn task_id_for_checklist_item(

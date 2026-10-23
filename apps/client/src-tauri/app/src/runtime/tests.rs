@@ -31,6 +31,8 @@ fn mobile_runtime_registers_portable_core_commands() {
         "calendar::reads::calendar_load_window",
         "calendar::reads::calendar_load_notification_scheduler_window",
         "projects::workspace::projects_load_workspace",
+        "projects::conflicts::projects_conflicts",
+        "projects::conflicts::projects_resolve_conflict",
         "notes::notes_load_workspace_shell",
         "notes::notes_toggle_comment_reaction",
         "notes::notes_set_comment_thread_muted",

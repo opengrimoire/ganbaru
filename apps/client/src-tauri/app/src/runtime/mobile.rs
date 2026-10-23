@@ -241,6 +241,8 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
             projects::relationship_commands::projects_link_task_event,
             projects::relationship_commands::projects_unlink_task_event,
             projects::relationship_commands::projects_search_linkable_events,
+            projects::conflicts::projects_conflicts,
+            projects::conflicts::projects_resolve_conflict,
             projects::relationship_commands::projects_create_task_dependency,
             projects::relationship_commands::projects_delete_task_dependency,
             projects::task_commands::projects_update_task,

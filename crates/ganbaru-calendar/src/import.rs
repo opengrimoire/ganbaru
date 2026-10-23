@@ -1703,6 +1703,80 @@ mod tests {
         event
     }
 
+    /// Exported GEO payloads of the local calendar, by source UID.
+    async fn exported_geo(pool: &sqlx::SqlitePool) -> Vec<(String, Option<String>)> {
+        let snapshot = crate::reads::load_export_snapshot(pool, "local".to_string())
+            .await
+            .unwrap();
+        let snapshot = serde_json::to_value(snapshot).unwrap();
+        let mut geo = snapshot["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|rows| {
+                let event = &rows["event"];
+                (
+                    event["source_uid"].as_str().unwrap().to_string(),
+                    event["geo"].as_str().map(str::to_string),
+                )
+            })
+            .collect::<Vec<_>>();
+        geo.sort();
+        geo
+    }
+
+    #[test]
+    fn geo_round_trips_through_import_and_export_at_stored_precision() {
+        crate::test_support::block_on(async {
+            let pool = in_memory_pool().await;
+            let with_geo = |id: &str, geo: Option<&str>| CalendarImportEvent {
+                geo: geo.map(str::to_string),
+                ..import_event(id, "")
+            };
+            let first = vec![
+                with_geo("fine", Some(r#"{"lat":37.3860134,"lng":-122.0829316}"#)),
+                with_geo("edge", Some(r#"{"lat":-90,"lng":180}"#)),
+                with_geo("none", None),
+            ];
+            bulk_import(&pool, bulk_payload(first)).await.unwrap();
+
+            let exported = exported_geo(&pool).await;
+            let payload = |uid: &str| {
+                exported
+                    .iter()
+                    .find(|(source_uid, _)| source_uid == uid)
+                    .and_then(|(_, geo)| geo.clone())
+            };
+            let fine: serde_json::Value = serde_json::from_str(&payload("fine").unwrap()).unwrap();
+            assert_eq!(
+                fine,
+                serde_json::json!({"lat": 37.386013, "lng": -122.082932})
+            );
+            let edge: serde_json::Value = serde_json::from_str(&payload("edge").unwrap()).unwrap();
+            assert_eq!(edge, serde_json::json!({"lat": -90.0, "lng": 180.0}));
+            assert_eq!(payload("none"), None);
+
+            // Importing the exported payloads again changes no stored coordinate.
+            let stored = || async {
+                sqlx::query_as::<_, (String, Option<i64>, Option<i64>)>(
+                    "SELECT source_uid, geo_lat, geo_lng FROM calendar_events ORDER BY source_uid",
+                )
+                .fetch_all(&pool)
+                .await
+                .unwrap()
+            };
+            let before = stored().await;
+            assert!(before.contains(&("fine".to_string(), Some(37_386_013), Some(-122_082_932))));
+            let again = exported
+                .iter()
+                .map(|(uid, geo)| with_geo(uid, geo.as_deref()))
+                .collect();
+            bulk_import(&pool, bulk_payload(again)).await.unwrap();
+            assert_eq!(stored().await, before);
+            assert_eq!(exported_geo(&pool).await, exported);
+        });
+    }
+
     #[test]
     fn import_keeps_owned_row_keys_unique_without_table_constraints() {
         crate::test_support::block_on(async {

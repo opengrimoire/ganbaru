@@ -592,7 +592,6 @@ commands.allow = [
   "projects_update_task",
   "projects_upsert_view_preference",
   "quick_notes_archive",
-  "quick_notes_collect_images",
   "quick_notes_conflict",
   "quick_notes_create",
   "quick_notes_create_tag",

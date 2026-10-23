@@ -58,7 +58,8 @@ pub enum SyncRefusalCode {
     Revoked,
     /// The operation is malformed, badly signed, or not certified for the vault.
     Invalid,
-    /// The writer is unknown, or its genesis names another device.
+    /// The writer is unknown, its genesis names another device, or the device is not enrolled
+    /// in the space yet.
     UnknownWriter,
     /// The writer's genesis uses a newer format than the receiver reads.
     NewerFormat,

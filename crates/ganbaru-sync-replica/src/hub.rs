@@ -45,8 +45,6 @@ pub const BOOTSTRAP_REQUIRED: &str = "bootstrap_required";
 pub struct HubVault {
     pub pool: SqlitePool,
     pub vault_id: String,
-    /// Device id of the coordinator whose writers may revoke: the hub's own device.
-    pub device_id: String,
     /// The vault's managed asset files.
     pub assets: Arc<dyn AssetStore>,
 }
@@ -246,7 +244,7 @@ impl SyncHub {
         }
         let ctx = {
             let mut conn = acquire(&vault.pool).await?;
-            local::space_context(&mut conn, &vault_id, &vault.device_id)
+            local::space_context(&mut conn, &vault_id)
                 .await
                 .map_err(|error| HubError::failed(format!("read sync space: {error}")))?
         };
@@ -784,13 +782,14 @@ pub(crate) fn refusal_to_wire(
         StoreRefusal::Fork { seq } => (SyncRefusalCode::Fork, seq),
         StoreRefusal::Gap { expected } => (SyncRefusalCode::Gap, expected),
         StoreRefusal::Revoked => (SyncRefusalCode::Revoked, seq),
-        StoreRefusal::UnknownWriter => (SyncRefusalCode::UnknownWriter, seq),
+        StoreRefusal::UnknownWriter | StoreRefusal::Unenrolled => {
+            (SyncRefusalCode::UnknownWriter, seq)
+        }
         StoreRefusal::NewerFormatGenesis => (SyncRefusalCode::NewerFormat, seq),
         StoreRefusal::Malformed
         | StoreRefusal::WrongSpace
         | StoreRefusal::BadSignature
-        | StoreRefusal::Untrusted
-        | StoreRefusal::UnauthorizedRevoke => (SyncRefusalCode::Invalid, seq),
+        | StoreRefusal::Untrusted => (SyncRefusalCode::Invalid, seq),
         StoreRefusal::WriterLimit => (SyncRefusalCode::WriterLimit, seq),
     };
     SyncRefusal {

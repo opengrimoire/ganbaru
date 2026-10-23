@@ -31,19 +31,15 @@ const CARRY_BUFFER_BYTES: usize = 64 * 1024;
 /// Exports the operations of `current` that `replacement` lacks into the carry bundle of the
 /// vault, after any bundle an interrupted replacement left. Returns how many operations the
 /// bundle holds. Pending captures refuse the export, because they would be lost.
-/// `coordinator_device_id` identifies the device whose writers may revoke in the vault.
 pub async fn export(
     engine: &Engine,
     current: &Path,
     replacement: &Path,
     files: &SyncFiles,
-    coordinator_device_id: &str,
 ) -> Result<usize, String> {
-    Ok(
-        export_space(engine, current, replacement, files, coordinator_device_id)
-            .await?
-            .map_or(0, |(_, count)| count),
-    )
+    Ok(export_space(engine, current, replacement, files)
+        .await?
+        .map_or(0, |(_, count)| count))
 }
 
 /// Carries the operations of `current` that the staged `replacement` lacks into it: exports
@@ -54,12 +50,9 @@ pub async fn carry_into_replacement(
     current: &Path,
     replacement: &Path,
     files: &SyncFiles,
-    coordinator_device_id: &str,
     now_ms: u64,
 ) -> Result<Option<CarryReport>, String> {
-    let Some((ctx, _)) =
-        export_space(engine, current, replacement, files, coordinator_device_id).await?
-    else {
+    let Some((ctx, _)) = export_space(engine, current, replacement, files).await? else {
         return Ok(None);
     };
     let mut conn = open_staged(replacement).await?;
@@ -110,18 +103,9 @@ async fn export_space(
     current: &Path,
     replacement: &Path,
     files: &SyncFiles,
-    coordinator_device_id: &str,
 ) -> Result<Option<(SpaceContext, usize)>, String> {
     let registry = DatabasePoolRegistry::default();
-    let result = export_with(
-        engine,
-        &registry,
-        current,
-        replacement,
-        files,
-        coordinator_device_id,
-    )
-    .await;
+    let result = export_with(engine, &registry, current, replacement, files).await;
     let closed = registry.close_all().await;
     let exported = result?;
     closed?;
@@ -134,11 +118,10 @@ async fn export_with(
     current: &Path,
     replacement: &Path,
     files: &SyncFiles,
-    coordinator_device_id: &str,
 ) -> Result<Option<(SpaceContext, usize)>, String> {
     let current_pool = registry.connect_path_read_only(current).await?;
     let mut current_conn = acquire(&current_pool).await?;
-    let Some(ctx) = local::space_context(&mut current_conn, &files.vault_id, coordinator_device_id)
+    let Some(ctx) = local::space_context(&mut current_conn, &files.vault_id)
         .await
         .map_err(|error| format!("read sync space: {error}"))?
     else {

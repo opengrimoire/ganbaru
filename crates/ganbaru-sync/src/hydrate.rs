@@ -3,11 +3,13 @@
 //! A winning version whose value the materialized domain row holds may keep a null value in
 //! `sync_register_versions`, so a vault does not store every value twice. A reader takes such a
 //! value from the domain row when that group's encoding hashes to the stored `value_hash`, and
-//! otherwise from the body of the operation that wrote the version, which every retained version
-//! still has. The hash decides alone: a local edit not yet sealed, or a reference the merge
-//! resolved differently, only sends the read to the operation body. A value found in neither
-//! place is corrupt state. Before materialize changes or deletes a domain row, it stores the
-//! values elided from it again, so tombstoned and hidden rows keep their versions whole.
+//! otherwise from the body of the operation that wrote the version. Compaction stores an elided
+//! value back before it drops that body, and a version whose operation was compacted is never
+//! elided, so every elided version's operation still has its body. The hash decides alone: a
+//! local edit not yet sealed, or a reference the merge resolved differently, only sends the
+//! read to the operation body. A value found in neither place is corrupt state. Before
+//! materialize changes or deletes a domain row, it stores the values elided from it again, so
+//! tombstoned and hidden rows keep their versions whole.
 
 use std::collections::BTreeSet;
 
@@ -83,6 +85,9 @@ pub(crate) async fn elided_value(
     .fetch_optional(&mut *conn)
     .await?;
     let envelope = envelope.ok_or_else(|| corrupt("elided value has no operation"))?;
+    if envelope.is_empty() {
+        return Err(corrupt("the operation of an elided value was compacted"));
+    }
     let operation = Envelope::decode(&envelope)
         .ok()
         .and_then(|envelope| envelope.operation().ok())
@@ -147,14 +152,19 @@ pub(crate) type Elision = (TableId, String, GroupId, WriterId);
 /// Most versions one elision statement nulls, four parameters each.
 const ELISIONS_PER_STATEMENT: usize = 200;
 
-/// Nulls the stored value of each version in `elisions`.
+/// Nulls the stored value of each version in `elisions` whose operation was not compacted.
 pub(crate) async fn elide(conn: &mut SqliteConnection, elisions: &[Elision]) -> SyncResult<()> {
     for chunk in elisions.chunks(ELISIONS_PER_STATEMENT) {
         let rows = vec!["(?, ?, ?, ?)"; chunk.len()].join(", ");
         let sql = format!(
             "UPDATE sync_register_versions SET value = NULL
              WHERE value IS NOT NULL
-                AND (table_id, row_key, group_id, writer_id) IN (VALUES {rows})"
+                AND (table_id, row_key, group_id, writer_id) IN (VALUES {rows})
+                AND NOT EXISTS (
+                    SELECT 1 FROM sync_writers w
+                    WHERE w.writer_id = sync_register_versions.writer_id
+                        AND w.compacted_seq >= sync_register_versions.seq
+                )"
         );
         let mut query = sqlx::query(sqlx::AssertSqlSafe(sql.as_str()));
         for (table, key, group, writer) in chunk {

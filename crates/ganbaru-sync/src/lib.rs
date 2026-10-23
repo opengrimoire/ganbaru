@@ -35,6 +35,7 @@ pub mod stability;
 pub mod triggers;
 
 mod apply;
+mod compact;
 mod conflicts;
 mod edges;
 mod hydrate;
@@ -58,6 +59,9 @@ mod tests;
 
 pub use adapter::{AdapterError, Adapters, DomainAdapter, Presentation};
 pub use apply::{ApplyReport, ClockWarning, ResealNeeded};
+pub use compact::{
+    COMPACTION_BATCH_OPS, COMPACTION_TIME_BUDGET, CompactionReport, compaction_limit,
+};
 pub use conflicts::{
     ConflictDetail, ConflictRow, ConflictVersion, OPEN_CONFLICT_MASK_SQL, OpenConflict,
 };

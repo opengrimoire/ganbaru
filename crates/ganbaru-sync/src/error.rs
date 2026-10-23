@@ -32,6 +32,14 @@ pub enum SyncError {
     /// A replicated row of the named table still holds a `pending:` placeholder key, which a
     /// domain must replace with its final key before the transaction that inserted it commits.
     PendingKey(&'static str),
+    /// A peer lacks operations of `writer` whose bodies compaction dropped, up to `seq`, so it
+    /// must bootstrap from a snapshot.
+    Compacted {
+        /// The writer whose operations were compacted.
+        writer: WriterId,
+        /// Highest compacted sequence of the writer.
+        seq: u64,
+    },
     /// A materialize hook of the named table failed.
     Hook {
         /// Table of the hook.
@@ -69,6 +77,11 @@ impl fmt::Display for SyncError {
             Self::PendingKey(table) => write!(
                 formatter,
                 "a replicated row of {table} still holds a pending placeholder key"
+            ),
+            Self::Compacted { writer, seq } => write!(
+                formatter,
+                "operations of writer {} through {seq} were compacted",
+                writer.to_hex()
             ),
             Self::Hook { table, error } => {
                 write!(formatter, "materialize hook of {table}: {error}")

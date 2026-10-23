@@ -53,6 +53,7 @@ pub const SYNC_TABLES: &[&str] = &[
     "sync_version_refs",
     "sync_tombstones",
     "sync_seeded_tables",
+    "sync_stable",
 ];
 
 /// What a domain trigger may do, so applying remote changes cannot be broken by it.

@@ -16,8 +16,8 @@ use sqlx::{AssertSqlSafe, Connection, SqliteConnection};
 use super::fixture::{NODE_MAX_DEPTH, after_local_edit, fixture_pool, test_engine};
 use crate::manifest::Manifest;
 use crate::{
-    ApplyReport, Engine, LocalWriter, ResealNeeded, ResealReport, SealReport, SequenceReservation,
-    SpaceContext, StoreOutcome, SyncResult,
+    ApplyReport, CompactionReport, Engine, LocalWriter, ResealNeeded, ResealReport, SealReport,
+    SequenceReservation, SpaceContext, StoreOutcome, SyncResult,
 };
 use crate::{hydrate, log, publication};
 
@@ -495,6 +495,7 @@ impl Replica {
             "replica {} has stale list entry counts",
             self.index
         );
+        self.check_compacted_state().await;
     }
 
     /// Asserts that every retained version reads back to a value with its stored hash, elided
@@ -675,6 +676,82 @@ impl Replica {
         dump
     }
 
+    /// Compacts up to `limit` in batches of `batch_ops`, asserting that domain rows stay the
+    /// same and that compacted state stays readable.
+    pub(super) async fn compact(
+        &mut self,
+        limit: &VersionVector,
+        batch_ops: usize,
+    ) -> SyncResult<CompactionReport> {
+        let before = self.domain_dump().await;
+        let report = self
+            .engine
+            .compact_with(
+                &mut self.conn,
+                &self.ctx,
+                limit,
+                batch_ops,
+                std::time::Duration::MAX,
+            )
+            .await;
+        assert_eq!(
+            self.domain_dump().await,
+            before,
+            "replica {} changed domain rows while compacting",
+            self.index
+        );
+        self.check_compacted_state().await;
+        report
+    }
+
+    /// Asserts [`Self::check_compacted_state`] and that every retained version reads back.
+    pub(super) async fn check_compacted(&mut self) {
+        self.check_compacted_state().await;
+        self.check_version_values().await;
+    }
+
+    /// Asserts that nothing above a writer's compacted sequence lacks a body, that kept kinds
+    /// keep theirs, and that no version of a compacted operation is elided. Heads are left
+    /// out: a re-seal may cut a chain back to a compacted operation.
+    pub(super) async fn check_compacted_state(&mut self) {
+        let above = self
+            .count(
+                "SELECT count(*) FROM sync_ops o JOIN sync_writers w
+                     ON w.space_id = o.space_id AND w.writer_id = o.writer_id
+                 WHERE length(o.envelope) = 0 AND o.seq > w.compacted_seq",
+            )
+            .await;
+        assert_eq!(
+            above, 0,
+            "replica {} lost a body above the compacted sequence",
+            self.index
+        );
+        let kept = self
+            .count(
+                "SELECT count(*) FROM sync_ops o JOIN sync_writers w
+                     ON w.space_id = o.space_id AND w.writer_id = o.writer_id
+                 WHERE length(o.envelope) = 0 AND o.kind NOT IN (0, 3)",
+            )
+            .await;
+        assert_eq!(
+            kept, 0,
+            "replica {} dropped a body compaction keeps",
+            self.index
+        );
+        let elided = self
+            .count(
+                "SELECT count(*) FROM sync_register_versions v JOIN sync_writers w
+                     ON w.writer_id = v.writer_id
+                 WHERE v.value IS NULL AND v.seq <= w.compacted_seq",
+            )
+            .await;
+        assert_eq!(
+            elided, 0,
+            "replica {} elides a version of a compacted operation",
+            self.index
+        );
+    }
+
     /// Domain tables only.
     pub(super) async fn domain_dump(&mut self) -> Vec<(&'static str, Vec<String>)> {
         let mut dump = self.dump().await;
@@ -712,10 +789,11 @@ fn dumped(manifest: &'static Manifest) -> Vec<Dumped> {
 }
 
 /// Engine merge state compared across replicas and its local timestamps. A retained value is
-/// compared by its hash, since whether it is elided depends on local captures.
+/// compared by its hash, since whether it is elided depends on local captures. Compaction is
+/// local too, so operation bodies and compacted sequences are left out.
 const ENGINE_DUMPED: &[(&str, &[&str])] = &[
-    ("sync_writers", &["created_at_ms"]),
-    ("sync_ops", &["stored_at_ms"]),
+    ("sync_writers", &["created_at_ms", "compacted_seq"]),
+    ("sync_ops", &["stored_at_ms", "envelope"]),
     ("sync_rows", &[]),
     ("sync_register_versions", &["value"]),
     ("sync_version_refs", &[]),

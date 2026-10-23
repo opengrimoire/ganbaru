@@ -2,9 +2,10 @@
 //! partly offline, and exchange operations through a hub over a network that drops, duplicates,
 //! and reorders messages.
 //! Engine calls crash at failpoints and must leave no trace, writers are revoked and re-sealed,
-//! and conflicts and recovery offers are resolved along the way. After every step the
-//! databases keep their invariants; at quiescence every installation holds the same
-//! replicated state.
+//! and conflicts and recovery offers are resolved along the way. Exchanges sometimes end with
+//! the hub and the exchanging replica compacting what is stable, except one replica that never
+//! compacts; compaction never changes domain rows. After every step the databases keep their
+//! invariants; at quiescence every installation holds the same replicated state.
 //!
 //! Seeds are split across four test functions that the harness runs in parallel.
 //! `GANBARU_SYNC_SOAK_SEEDS` sets the number of seeds for a soak run; the default debug
@@ -13,7 +14,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use ganbaru_sync_contracts::{Field, RevokeReason, WriterId};
+use ganbaru_sync_contracts::{Field, RevokeReason, VersionVector, WriterId};
 
 use super::block_on;
 use super::fixture::{
@@ -25,8 +26,8 @@ use crate::acknowledge::{ACKNOWLEDGEMENT_INTERVAL_MS, KEEPALIVE_INTERVAL_MS};
 use crate::error::failpoints;
 use crate::hold::{self, MAX_HOLD_MS};
 use crate::manifest::vault::quick_notes::{NOTES_TABLE, TAGS_TABLE, note_group};
-use crate::stability::CountedDevice;
-use crate::{ApplyReport, StoreOutcome, StoreRefusal, SyncError, SyncResult};
+use crate::stability::{CountedDevice, DeviceStanding};
+use crate::{ApplyReport, StoreOutcome, StoreRefusal, SyncError, SyncResult, compaction_limit};
 
 const DEFAULT_SEEDS: u64 = 48;
 const SEEDS_VARIABLE: &str = "GANBARU_SYNC_SOAK_SEEDS";
@@ -267,6 +268,40 @@ async fn acknowledge(rng: &mut Rng, replica: &mut Replica) {
         }
         Err(error) => panic!("replica {} failed to acknowledge: {error:?}", replica.index),
     }
+}
+
+/// Percent of exchange steps that end with compaction.
+const COMPACTION_PERCENT: u64 = 40;
+
+/// Index of the replica that never compacts, which every other replica must still equal.
+const NEVER_COMPACTS: usize = 0;
+
+/// Compacts `replica` up to `limit` in batches of `batch` operations, crashing between batches
+/// now and then.
+async fn compact(rng: &mut Rng, replica: &mut Replica, limit: &VersionVector, batch: usize) {
+    crashing(rng, replica, &["compact_batch"], async |r: &mut Replica| {
+        r.compact(limit, batch).await
+    })
+    .await
+    .unwrap_or_else(|error| panic!("replica {} failed to compact: {error:?}", replica.index));
+}
+
+/// The head of `writer` the hub stores with the same hash as `replica`, as the probe of a
+/// pass confirms it: the lower of both stored sequences, when the hashes there agree.
+async fn confirmed_head(hub: &mut Replica, replica: &mut Replica, writer: WriterId) -> Option<u64> {
+    let seq = hub
+        .stored_vector()
+        .await
+        .get(&writer)
+        .min(replica.stored_vector().await.get(&writer));
+    if seq == 0 {
+        return None;
+    }
+    let sql = format!(
+        "SELECT lower(hex(hash)) FROM sync_ops WHERE writer_id = x'{}' AND seq = {seq}",
+        writer.to_hex()
+    );
+    (ids(hub, &sql).await == ids(replica, &sql).await).then_some(seq)
 }
 
 /// The operations of a message after the network dropped, duplicated, or reordered some.
@@ -1453,7 +1488,10 @@ impl Sim {
         self.hub.check_invariants().await;
         // Only exchanges change what the hub or a replica acknowledged or applied.
         if (40..65).contains(&action) {
-            self.assert_stability().await;
+            let stable = self.assert_stability().await;
+            if self.rng.chance(COMPACTION_PERCENT) {
+                self.compact(index, &stable).await;
+            }
         }
         // Hydrating every version is slow, so only a step that ran the engine checks it, and
         // only on the replica that acted. Local edits elide nothing and are read back by the
@@ -1465,12 +1503,13 @@ impl Sim {
     }
 
     /// Stability the hub computes over every replica stays within what each replica and the
-    /// hub applied, and no replica counts as dormant while the run lasts.
-    async fn assert_stability(&mut self) {
+    /// hub applied, and no replica counts as dormant while the run lasts. Returns the stable
+    /// vector.
+    async fn assert_stability(&mut self) -> VersionVector {
         let devices: Vec<CountedDevice> = (0..self.replicas.len())
             .map(|index| CountedDevice {
                 device_id: device_id(index),
-                since_ms: START_MS,
+                linked_at_ms: Some(START_MS),
             })
             .collect();
         let hub = &mut self.hub;
@@ -1481,13 +1520,52 @@ impl Sim {
             .unwrap();
         assert!(hub.applied_vector().await.dominates(&stability.stable));
         for (replica, device) in self.replicas.iter_mut().zip(&stability.devices) {
-            assert!(!device.dormant, "replica {} is dormant", replica.index);
+            assert_eq!(
+                device.standing,
+                DeviceStanding::Counted,
+                "replica {} is not counted",
+                replica.index
+            );
             assert!(
                 replica.applied_vector().await.dominates(&stability.stable),
                 "replica {} lacks a stable operation",
                 replica.index
             );
         }
+        stability.stable
+    }
+
+    /// Compacts the hub up to `stable` and, unless it is the replica that never compacts, the
+    /// replica that just exchanged, the way a pass ends. The replica records the vector the hub
+    /// reported and caps its current writer at the head the hub holds with the same hash.
+    async fn compact(&mut self, index: usize, stable: &VersionVector) {
+        let batch = 1 + self.rng.below(16);
+        let hub = &mut self.hub;
+        compact(&mut self.rng, hub, stable, batch).await;
+        if index == NEVER_COMPACTS || self.offline[index] {
+            return;
+        }
+        let replica = &mut self.replicas[index];
+        replica
+            .engine
+            .record_stable(&mut replica.conn, &replica.ctx, stable)
+            .await
+            .unwrap();
+        let own: BTreeSet<WriterId> = ids(
+            replica,
+            &format!(
+                "SELECT lower(hex(writer_id)) FROM sync_writers WHERE device_id = {}",
+                quoted(&device_id(index))
+            ),
+        )
+        .await
+        .iter()
+        .map(|hex| WriterId::from_hex(hex).unwrap())
+        .collect();
+        let writer = replica.writer();
+        let confirmed = confirmed_head(&mut self.hub, replica, writer).await;
+        let limit = compaction_limit(stable, &own, confirmed.map(|seq| (writer, seq)));
+        compact(&mut self.rng, &mut self.replicas[index], &limit, batch).await;
     }
 
     /// Each writer's acknowledgements are at least the acknowledgement interval apart, and
@@ -1508,8 +1586,10 @@ impl Sim {
                 if let Some((last_writer, last_at)) = &previous
                     && last_writer == writer
                 {
+                    // One seal splits an acknowledgement over several headers when more
+                    // writers advanced than one header lists, all stored at the same time.
                     assert!(
-                        at - last_at >= ACKNOWLEDGEMENT_INTERVAL_MS,
+                        at == *last_at || at - last_at >= ACKNOWLEDGEMENT_INTERVAL_MS,
                         "replica {} acknowledged twice within the interval",
                         replica.index
                     );
@@ -1649,6 +1729,13 @@ async fn run(seed: u64) {
     sim.quiesce().await;
     sim.assert_converged().await;
     sim.assert_acknowledgements_bounded().await;
+    // Every replica compacts what is stable at quiescence and still matches the replica that
+    // never compacts.
+    let stable = sim.assert_stability().await;
+    for index in 0..sim.replicas.len() {
+        sim.compact(index, &stable).await;
+    }
+    sim.assert_converged().await;
 }
 
 fn number(variable: &str) -> Option<u64> {

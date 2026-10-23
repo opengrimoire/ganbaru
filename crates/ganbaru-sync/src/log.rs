@@ -62,6 +62,8 @@ pub(crate) struct WriterRow {
     pub(crate) applied: Seq,
     pub(crate) head_hash: Digest32,
     pub(crate) head_clock: u64,
+    /// Highest sequence whose body compaction may have dropped.
+    pub(crate) compacted: Seq,
 }
 
 /// Operations a peer does not have, in an order that keeps every writer's chain contiguous.
@@ -135,7 +137,7 @@ pub(crate) async fn ensure_space(conn: &mut SqliteConnection, space: SpaceId) ->
 }
 
 const WRITER_COLUMNS: &str = "writer_id, public_key, device_id, state, cutoff_seq, stored_seq, \
-     applied_seq, head_hash, head_clock";
+     applied_seq, head_hash, head_clock, compacted_seq";
 
 fn writer_row(row: &sqlx::sqlite::SqliteRow) -> SyncResult<WriterRow> {
     let id: Vec<u8> = row.try_get(0)?;
@@ -154,6 +156,7 @@ fn writer_row(row: &sqlx::sqlite::SqliteRow) -> SyncResult<WriterRow> {
         applied: stored_u64(row.try_get(6)?, "applied sequence")?,
         head_hash: digest(&head_hash)?,
         head_clock: stored_u64(row.try_get(8)?, "head clock")?,
+        compacted: stored_u64(row.try_get(9)?, "compacted sequence")?,
     })
 }
 
@@ -270,6 +273,14 @@ pub(crate) async fn stored_vector(
     vector(conn, space, "stored_seq").await
 }
 
+/// Highest compacted sequence per writer, without writers that compacted nothing.
+pub(crate) async fn compacted_vector(
+    conn: &mut SqliteConnection,
+    space: SpaceId,
+) -> SyncResult<VersionVector> {
+    vector(conn, space, "compacted_seq").await
+}
+
 /// One pending operation of a page with its arrival position.
 struct PageEntry {
     rowid: i64,
@@ -343,6 +354,9 @@ impl Engine {
     /// Stored operations that `known` does not include, held operations among them, ordered by
     /// arrival while keeping every writer's operations in sequence order. The page holds at
     /// least one operation when any remains, then stops before `max_bytes`.
+    ///
+    /// Fails with [`SyncError::Compacted`] when `known` lacks an operation whose body
+    /// compaction dropped, since the peer can then only bootstrap from a snapshot.
     pub async fn ops_after(
         &self,
         conn: &mut SqliteConnection,
@@ -356,6 +370,12 @@ impl Engine {
             let from = known.get(&writer.id);
             if writer.stored <= from {
                 continue;
+            }
+            if from < writer.compacted {
+                return Err(SyncError::Compacted {
+                    writer: writer.id,
+                    seq: writer.compacted,
+                });
             }
             let mut lane = PageLane {
                 writer: writer.id,
@@ -395,6 +415,11 @@ impl Engine {
             .bind(seq_i64(entry.seq)?)
             .fetch_one(&mut *conn)
             .await?;
+            if envelope.is_empty() {
+                return Err(corrupt(
+                    "an operation above the compacted sequence has no body",
+                ));
+            }
             total = total.saturating_add(envelope.len());
             page.ops.push(envelope);
             lane.entries.pop_front();

@@ -435,7 +435,7 @@ pub async fn rename(pool: &SqlitePool, id: &str, display_name: &str) -> Result<(
     let now = now_ms()?;
     let mut conn = pool.acquire().await.map_err(|e| format!("acquire: {e}"))?;
     let result = sqlx::query(
-        "UPDATE themes SET display_name = ?, updated_at_ms = ?
+        "UPDATE themes SET display_name = ?, updated_at_ms = max(updated_at_ms, ?)
           WHERE id = ? AND display_name IS NOT ?",
     )
     .bind(display_name)

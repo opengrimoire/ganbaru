@@ -326,6 +326,25 @@ fn rename_validates_the_name_and_requires_an_existing_theme() {
 }
 
 #[test]
+fn rename_never_moves_the_update_time_backwards() {
+    block_on(async {
+        let pool = migrated_memory_pool().await;
+        insert(&pool, &theme_write("custom")).await.unwrap();
+        let ahead = 4_102_444_800_000_i64;
+        sqlx::query("UPDATE themes SET updated_at_ms = ? WHERE id = 'custom'")
+            .bind(ahead)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        rename(&pool, "custom", "Renamed").await.unwrap();
+        let theme = load_one(&pool, "custom").await;
+        assert_eq!(theme.theme.display_name, "Renamed");
+        assert_eq!(theme.theme.updated_at_ms, ahead);
+    });
+}
+
+#[test]
 fn dismissals_keep_the_highest_version_and_go_with_the_deleted_theme() {
     block_on(async {
         let pool = migrated_memory_pool().await;
@@ -536,6 +555,7 @@ fn restoring_a_recovered_theme_creates_a_new_theme_seeded_with_its_content() {
             .unwrap();
         assert_ne!(id, again);
         validate_theme_id(&id).unwrap();
+        assert_eq!(load_one(&pool, &again).await.theme.display_name, "Forest 2");
 
         let restored = load_one(&pool, &id).await;
         assert_eq!(restored.theme.display_name, "Forest");
@@ -560,6 +580,76 @@ fn restoring_a_recovered_theme_creates_a_new_theme_seeded_with_its_content() {
                 .iter()
                 .all(|row| row.value == "#0d0d0d")
         );
+    });
+}
+
+#[test]
+fn restoring_a_recovered_theme_takes_the_lowest_free_name_ignoring_case() {
+    block_on(async {
+        let pool = migrated_memory_pool().await;
+        let mut first = theme_write("first");
+        first.display_name = "forest".to_string();
+        insert(&pool, &first).await.unwrap();
+        let mut third = theme_write("third");
+        third.display_name = "FOREST 3".to_string();
+        insert(&pool, &third).await.unwrap();
+        let content = ThemeContent {
+            blend_canvas: "#0a0a0a".to_string(),
+            derivation_engine_version: 3,
+            calendar_default_mode: "custom".to_string(),
+            calendar_default_custom: "#0b0b0b".to_string(),
+            tokens: vec![ThemeToken {
+                kind: "source".to_string(),
+                key: "canvas".to_string(),
+                value: "#0c0c0c".to_string(),
+                isolated: false,
+            }],
+            palette: vec!["#0d0d0d".to_string(); PALETTE_SIZE],
+        };
+
+        let second = restore_from_pool(&pool, &recovered_theme_values(Some(&content)))
+            .await
+            .unwrap();
+        let fourth = restore_from_pool(&pool, &recovered_theme_values(Some(&content)))
+            .await
+            .unwrap();
+        assert_eq!(
+            load_one(&pool, &second).await.theme.display_name,
+            "Forest 2"
+        );
+        assert_eq!(
+            load_one(&pool, &fourth).await.theme.display_name,
+            "Forest 4"
+        );
+    });
+}
+
+#[test]
+fn restoring_a_recovered_theme_keeps_a_long_name_when_no_suffix_fits() {
+    block_on(async {
+        let pool = migrated_memory_pool().await;
+        let long_name = "F".repeat(ganbaru_sync::domains::themes::MAX_DISPLAY_NAME_CHARS);
+        let mut existing = theme_write("existing");
+        existing.display_name = long_name.clone();
+        insert(&pool, &existing).await.unwrap();
+        let content = ThemeContent {
+            blend_canvas: "#0a0a0a".to_string(),
+            derivation_engine_version: 3,
+            calendar_default_mode: "custom".to_string(),
+            calendar_default_custom: "#0b0b0b".to_string(),
+            tokens: vec![ThemeToken {
+                kind: "source".to_string(),
+                key: "canvas".to_string(),
+                value: "#0c0c0c".to_string(),
+                isolated: false,
+            }],
+            palette: vec!["#0d0d0d".to_string(); PALETTE_SIZE],
+        };
+        let mut values = recovered_theme_values(Some(&content));
+        values[0].1 = Value::new(vec![Field::Text(long_name.clone())]).unwrap();
+
+        let id = restore_from_pool(&pool, &values).await.unwrap();
+        assert_eq!(load_one(&pool, &id).await.theme.display_name, long_name);
     });
 }
 

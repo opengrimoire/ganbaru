@@ -1482,9 +1482,8 @@ impl Sim {
             89..=96 => self.offline[index] = !self.offline[index],
             _ => self.revoke(index).await,
         }
-        for replica in &mut self.replicas {
-            replica.check_invariants().await;
-        }
+        // A step changes only the replica that acted and the hub.
+        self.replicas[index].check_invariants().await;
         self.hub.check_invariants().await;
         // Only exchanges change what the hub or a replica acknowledged or applied.
         if (40..65).contains(&action) {

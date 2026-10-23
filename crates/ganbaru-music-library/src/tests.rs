@@ -1105,7 +1105,7 @@ fn advanced_membership_settings_replace_validated_skip_ranges_atomically() {
         .await
         .unwrap();
         assert_eq!(receipt.membership.version, 2);
-        let membership_id = crate::identity::membership_id("playlist-1", "item-1");
+        let membership_id = crate::identity::membership_id("playlist-1", "item-1").unwrap();
         assert_eq!(receipt.membership.id, membership_id);
         assert_eq!(receipt.skip_ranges[1].membership_id, membership_id);
         assert_eq!(receipt.skip_ranges[1].ordinal, 1);
@@ -1252,7 +1252,7 @@ fn bulk_membership_edits_preserve_existing_settings_and_commit_as_one_change() {
         .unwrap();
         assert_eq!(
             added_id,
-            crate::identity::membership_id("playlist-1", "item-2")
+            crate::identity::membership_id("playlist-1", "item-2").unwrap()
         );
 
         let repeated = super::playlist_edits::bulk_edit_memberships(
@@ -1465,7 +1465,7 @@ fn playlist_reorder_and_playback_projection_share_canonical_memberships() {
                 (membership_id, ordinal, start_ms, end_ms)
              VALUES (?, 0, 1000, 2000)",
         )
-        .bind(crate::identity::membership_id("playlist-1", "item-1"))
+        .bind(crate::identity::membership_id("playlist-1", "item-1").unwrap())
         .execute(&pool)
         .await
         .unwrap();
@@ -1478,15 +1478,14 @@ fn playlist_reorder_and_playback_projection_share_canonical_memberships() {
         .execute(&pool)
         .await
         .unwrap();
-        sqlx::query(
-            "UPDATE music_library_items
+        crate::test_support::execute_as_sync_apply(
+            &pool,
+            &["UPDATE music_library_items
              SET source_kind = 'youtube-video', youtube_video_id = 'abcdefghijk',
                  youtube_resolution_state = 'embedding-blocked'
-             WHERE id = 'item-3'",
+             WHERE id = 'item-3'"],
         )
-        .execute(&pool)
-        .await
-        .unwrap();
+        .await;
         sqlx::query(
             "UPDATE music_library_items
              SET original_artwork_identity = 'sidecar:album/cover.jpg'

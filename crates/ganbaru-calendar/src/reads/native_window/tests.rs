@@ -359,10 +359,10 @@ fn native_render_window_flags_events_whose_resolved_music_plays() {
         let pool = pool().await;
         sqlx::raw_sql("INSERT INTO calendar_events(id, title, start_time, end_time, timezone, calendar_id)
             VALUES('quiet', 'Quiet', '2024-03-09T16:00:00Z', '2024-03-09T17:00:00Z', 'UTC', 'native-calendar');
-            INSERT INTO music_context_assignments(owner_kind, owner_id, phase, behavior, playlist_id, provenance_kind, updated_at_ms)
-            VALUES('event-snapshot', 'series', 'focus', 'play-automatically', 'playlist-default-start-of-day', 'copied-project', 1),
-                  ('event-snapshot', 'quiet', 'focus', 'play-automatically', 'playlist-default-start-of-day', 'copied-project', 1),
-                  ('event-override', 'quiet', 'focus', 'pause-music', NULL, 'explicit', 1);")
+            INSERT INTO music_context_assignments(owner_kind, owner_id, phase, behavior, playlist_id, provenance_kind, updated_at_ms, sync_key)
+            VALUES('event-snapshot', 'series', 'focus', 'play-automatically', 'playlist-default-start-of-day', 'copied-project', 1, lower(hex(randomblob(16)))),
+                  ('event-snapshot', 'quiet', 'focus', 'play-automatically', 'playlist-default-start-of-day', 'copied-project', 1, lower(hex(randomblob(16)))),
+                  ('event-override', 'quiet', 'focus', 'pause-music', NULL, 'explicit', 1, lower(hex(randomblob(16))));")
             .execute(&pool).await.unwrap();
         let window = window("2024-03-09", "2024-03-09");
         let flags = |result: &NativeCalendarWindow, id: &str| {

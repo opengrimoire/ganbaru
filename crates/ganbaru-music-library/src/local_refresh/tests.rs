@@ -454,14 +454,23 @@ fn refresh_normalizes_cross_platform_separators_without_collapsing_path_case() {
         let first = request("path-first", &root, 1_700_000_000_000);
         prepare(&pool, &first).await.unwrap();
         run_prepared(&pool, first).await.unwrap();
-        sqlx::query(
-            "UPDATE music_local_locations
-             SET id = 'unnormalized-location', relative_path = 'Album\\Track.mp3'
-             WHERE root_id = 'root-1'",
+        crate::test_support::execute_as_sync_apply(
+            &pool,
+            &[
+                "INSERT INTO music_local_locations
+                    (id, item_id, root_id, relative_path, file_size_bytes, modified_at_ms,
+                     lightweight_fingerprint, strong_fingerprint, availability,
+                     last_seen_generation, first_seen_at_ms, updated_at_ms)
+                 SELECT 'unnormalized-location', item_id, root_id, 'Album\\Track.mp3',
+                     file_size_bytes, modified_at_ms, lightweight_fingerprint,
+                     strong_fingerprint, availability, last_seen_generation, first_seen_at_ms,
+                     updated_at_ms
+                 FROM music_local_locations WHERE root_id = 'root-1'",
+                "DELETE FROM music_local_locations
+                 WHERE root_id = 'root-1' AND id <> 'unnormalized-location'",
+            ],
         )
-        .execute(&pool)
-        .await
-        .unwrap();
+        .await;
         let second = request("path-second", &root, 1_700_000_100_000);
         prepare(&pool, &second).await.unwrap();
         run_prepared(&pool, second).await.unwrap();
@@ -645,6 +654,13 @@ async fn stored_scan_rows(pool: &SqlitePool) -> Vec<StoredScanRow> {
     .unwrap()
 }
 
+async fn capture_count(pool: &SqlitePool) -> i64 {
+    sqlx::query_scalar("SELECT COUNT(*) FROM sync_capture")
+        .fetch_one(pool)
+        .await
+        .unwrap()
+}
+
 #[test]
 fn unchanged_rescan_writes_only_device_observations() {
     crate::test_support::block_on(async {
@@ -667,11 +683,22 @@ fn unchanged_rescan_writes_only_device_observations() {
             crate::identity::location_id("root-1", "first.mp3")
         );
 
+        assert!(capture_count(&pool).await > 0);
+        sqlx::query("DELETE FROM sync_capture")
+            .execute(&pool)
+            .await
+            .unwrap();
+
         fs::remove_file(root.join("second.mp3")).unwrap();
         let second = request("incremental-2", &root, 1_700_000_100_000);
         prepare(&pool, &second).await.unwrap();
         let completed = run_prepared(&pool, second).await.unwrap();
         assert_eq!(completed.processed_count, 1);
+        assert_eq!(
+            capture_count(&pool).await,
+            0,
+            "device observations are local and capture nothing"
+        );
         let after = stored_scan_rows(&pool).await;
         let portable = |row: &StoredScanRow| {
             (

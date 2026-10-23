@@ -209,6 +209,13 @@ pub enum ColumnType {
         /// Upper bound.
         max: i64,
     },
+    /// Null or a [`ColumnType::Integer`] value.
+    OptionalInteger {
+        /// Lower bound.
+        min: i64,
+        /// Upper bound.
+        max: i64,
+    },
     /// Integer 0 or 1.
     Flag,
     /// Non-blank text of at most [`MAX_TIMESTAMP_BYTES`].
@@ -224,7 +231,10 @@ pub enum ColumnType {
 impl ColumnType {
     /// Whether the column holds text, so comparisons must ignore declared collations.
     pub const fn is_text(self) -> bool {
-        !matches!(self, Self::Integer { .. } | Self::Flag)
+        !matches!(
+            self,
+            Self::Integer { .. } | Self::OptionalInteger { .. } | Self::Flag
+        )
     }
 
     /// Text that moves a unique value aside while merged rows swap values, numbered by `n`, or
@@ -251,7 +261,9 @@ impl ColumnType {
         const LENGTH: usize = 4;
         const MAX_UTF8_BYTES_PER_CHAR: usize = 4;
         let text_bytes = match self {
-            Self::Integer { .. } | Self::Flag => return TAG + INTEGER,
+            Self::Integer { .. } | Self::OptionalInteger { .. } | Self::Flag => {
+                return TAG + INTEGER;
+            }
             Self::Text { max_chars }
             | Self::OptionalText { max_chars }
             | Self::TrimmedText { max_chars, .. } => {

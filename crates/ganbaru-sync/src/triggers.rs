@@ -218,6 +218,9 @@ pub(crate) fn value_rule(expr: &str, ty: ColumnType) -> String {
         ColumnType::Integer { min, max } => {
             format!("typeof({expr}) = 'integer' AND {expr} BETWEEN {min} AND {max}")
         }
+        ColumnType::OptionalInteger { min, max } => format!(
+            "{expr} IS NULL OR (typeof({expr}) = 'integer' AND {expr} BETWEEN {min} AND {max})"
+        ),
         ColumnType::Flag => format!("typeof({expr}) = 'integer' AND {expr} IN (0, 1)"),
         ColumnType::Timestamp => timestamp_rule(expr),
         ColumnType::OptionalTimestamp => {

@@ -1,4 +1,5 @@
 use super::*;
+use ganbaru_music::sync_keys;
 use sqlx::{Sqlite, SqlitePool, Transaction};
 use std::path::Path;
 
@@ -57,18 +58,31 @@ pub(super) async fn replace_intended_uses(
         if stored.iter().any(|stored| stored == value) {
             continue;
         }
-        let inserted = sqlx::query(
-            "INSERT INTO music_playlist_intended_uses (playlist_id, intended_use) VALUES (?, ?)
-             ON CONFLICT DO NOTHING",
-        )
-        .bind(playlist_id)
-        .bind(value)
-        .execute(&mut **transaction)
-        .await
-        .map_err(|error| map_database_error("save music playlist intended use", error))?;
-        changed |= inserted.rows_affected() > 0;
+        changed |= insert_intended_use(transaction, playlist_id, value).await?;
     }
     Ok(changed)
+}
+
+/// Adds one intended use to a playlist unless it is already there. Returns whether a row was
+/// inserted.
+pub(super) async fn insert_intended_use(
+    transaction: &mut Transaction<'_, Sqlite>,
+    playlist_id: &str,
+    intended_use: &str,
+) -> MusicLibraryResult<bool> {
+    let sync_key = sync_keys::intended_use_key(playlist_id, intended_use)?;
+    let inserted = sqlx::query(
+        "INSERT INTO music_playlist_intended_uses (playlist_id, intended_use, sync_key)
+         VALUES (?, ?, ?)
+         ON CONFLICT DO NOTHING",
+    )
+    .bind(playlist_id)
+    .bind(intended_use)
+    .bind(sync_key)
+    .execute(&mut **transaction)
+    .await
+    .map_err(|error| map_database_error("save music playlist intended use", error))?;
+    Ok(inserted.rows_affected() > 0)
 }
 
 /// Makes an item's signals equal `signals`, inserting and deleting only the differences.
@@ -104,12 +118,14 @@ pub(super) async fn replace_item_signals(
             continue;
         }
         let inserted = sqlx::query(
-            "INSERT INTO music_item_signals (item_id, signal, created_at_ms) VALUES (?, ?, ?)
+            "INSERT INTO music_item_signals (item_id, signal, created_at_ms, sync_key)
+             VALUES (?, ?, ?, ?)
              ON CONFLICT DO NOTHING",
         )
         .bind(item_id)
         .bind(value)
         .bind(created_at_ms)
+        .bind(sync_keys::signal_key(item_id, value)?)
         .execute(&mut **transaction)
         .await
         .map_err(|error| MusicLibraryError::database("save music item signal", error))?;
@@ -158,14 +174,7 @@ pub async fn create_playlist(
     .await
     .map_err(|error| map_database_error("create music playlist", error))?;
     for intended_use in request.intended_uses {
-        sqlx::query(
-            "INSERT INTO music_playlist_intended_uses (playlist_id, intended_use) VALUES (?, ?)",
-        )
-        .bind(&request.id)
-        .bind(intended_use.as_ref())
-        .execute(&mut *transaction)
-        .await
-        .map_err(|error| map_database_error("save music playlist intended use", error))?;
+        insert_intended_use(&mut transaction, &request.id, intended_use.as_ref()).await?;
     }
     commit(transaction, "commit create music playlist").await?;
     Ok(MusicWriteReceipt {
@@ -291,15 +300,16 @@ pub async fn duplicate_playlist(
     .execute(&mut *transaction)
     .await
     .map_err(|error| map_database_error("duplicate music playlist", error))?;
-    sqlx::query(
-        "INSERT INTO music_playlist_intended_uses (playlist_id, intended_use)
-         SELECT ?, intended_use FROM music_playlist_intended_uses WHERE playlist_id = ?",
+    let source_uses: Vec<String> = sqlx::query_scalar(
+        "SELECT intended_use FROM music_playlist_intended_uses WHERE playlist_id = ?",
     )
-    .bind(&request.new_playlist_id)
     .bind(&request.source_playlist_id)
-    .execute(&mut *transaction)
+    .fetch_all(&mut *transaction)
     .await
     .map_err(|error| MusicLibraryError::database("duplicate playlist intended uses", error))?;
+    for intended_use in source_uses {
+        insert_intended_use(&mut transaction, &request.new_playlist_id, &intended_use).await?;
+    }
     duplicate_memberships(
         &mut transaction,
         &request.source_playlist_id,
@@ -334,7 +344,7 @@ async fn duplicate_memberships(
     .map_err(|error| MusicLibraryError::database("load duplicated memberships", error))?;
     let order_keys = super::order::rank_keys(sources.len())?;
     for ((source_id, item_id), order_key) in sources.into_iter().zip(order_keys) {
-        let copy_id = super::identity::membership_id(new_playlist_id, &item_id);
+        let copy_id = super::identity::membership_id(new_playlist_id, &item_id)?;
         sqlx::query(
             "INSERT INTO music_playlist_memberships
                 (id, playlist_id, item_id, order_key, weight, enabled, start_ms, end_ms,
@@ -703,7 +713,7 @@ async fn upsert_membership_in_transaction(
     .await
     .map_err(|error| MusicLibraryError::database("load playlist membership", error))?;
     let Some((id, version)) = existing else {
-        let id = super::identity::membership_id(&membership.playlist_id, &membership.item_id);
+        let id = super::identity::membership_id(&membership.playlist_id, &membership.item_id)?;
         if membership.expected_version.is_some() {
             return Err(MusicLibraryError::not_found("playlist membership", &id));
         }

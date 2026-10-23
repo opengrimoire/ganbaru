@@ -4,7 +4,9 @@ use ganbaru_sync_contracts::TableId;
 use sqlx::Connection;
 
 use super::block_on;
-use super::fixture::{DRAFT_PARTS_TABLE, DRAFTS_TABLE, ITEMS_TABLE, MEMOS_TABLE};
+use super::fixture::{
+    DRAFT_PARTS_TABLE, DRAFTS_TABLE, FIXTURE_TABLE_IDS, ITEMS_TABLE, MEMOS_TABLE,
+};
 use super::replica::{Replica, converge};
 use crate::{SyncError, seed};
 
@@ -16,12 +18,14 @@ async fn replicas(count: usize) -> Vec<Replica> {
     replicas
 }
 
-/// Captured rows as `table key created mask`, in table and key order.
+/// Captured fixture rows as `table key created mask`, in table and key order. Vault domain
+/// rows every vault seeds, such as the Music soundscape state, are left out.
 async fn captures(replica: &mut Replica) -> Vec<String> {
     let rows: Vec<String> = sqlx::query_scalar(
         "SELECT table_id || ' ' || row_key || ' ' || created || ' ' || mask FROM sync_capture
-         ORDER BY table_id, row_key",
+         WHERE table_id >= ? ORDER BY table_id, row_key",
     )
+    .bind(i64::from(FIXTURE_TABLE_IDS))
     .fetch_all(&mut replica.conn)
     .await
     .unwrap();

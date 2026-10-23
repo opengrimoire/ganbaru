@@ -2,6 +2,7 @@ use serde::Serialize;
 use sqlx::{QueryBuilder, Sqlite, SqlitePool, Transaction};
 
 use super::{MusicLibraryError, MusicLibraryResult, search};
+use ganbaru_music::sync_keys;
 
 pub(crate) const DENSE_MUSIC_FIXTURE_PROFILE: &str = "dense-music-v1";
 const FIXTURE_PREFIX: &str = "benchmark-music-";
@@ -193,10 +194,15 @@ async fn seed_playlists(transaction: &mut Transaction<'_, Sqlite>) -> MusicLibra
         .await
         .map_err(fixture_database_error)?;
         sqlx::query(
-            "INSERT INTO music_playlist_intended_uses (playlist_id, intended_use) VALUES (?, ?)",
+            "INSERT INTO music_playlist_intended_uses (playlist_id, intended_use, sync_key)
+             VALUES (?, ?, ?)",
         )
         .bind(playlist_id(index))
         .bind(USES[index])
+        .bind(sync_keys::intended_use_key(
+            &playlist_id(index),
+            USES[index],
+        )?)
         .execute(&mut **transaction)
         .await
         .map_err(fixture_database_error)?;
@@ -340,33 +346,43 @@ async fn seed_source_provenance(
 ) -> MusicLibraryResult<()> {
     for start in (0..item_count()).step_by(INSERT_BATCH_SIZE) {
         let end = (start + INSERT_BATCH_SIZE).min(item_count());
+        let rows = (start..end)
+            .map(|index| {
+                let local = index < LOCAL_ITEM_COUNT;
+                let source_index = if local {
+                    index
+                } else {
+                    index - LOCAL_ITEM_COUNT
+                };
+                let collection = if local {
+                    local_collection_id(source_index % LOCAL_ROOT_COUNT)
+                } else {
+                    youtube_collection_id(source_index % YOUTUBE_COLLECTION_COUNT)
+                };
+                let key = sync_keys::collection_item_key(&collection, &item_id(index))?;
+                Ok((index, local, source_index, collection, key))
+            })
+            .collect::<MusicLibraryResult<Vec<_>>>()?;
         let mut query = QueryBuilder::<Sqlite>::new(
             "INSERT INTO music_source_collection_items
                 (collection_id, item_id, source_position, first_discovered_at_ms,
-                 last_seen_generation, missing_from_latest_snapshot) ",
+                 last_seen_generation, missing_from_latest_snapshot, sync_key) ",
         );
-        query.push_values(start..end, |mut row, index| {
-            let local = index < LOCAL_ITEM_COUNT;
-            let source_index = if local {
-                index
-            } else {
-                index - LOCAL_ITEM_COUNT
-            };
-            let collection = if local {
-                local_collection_id(source_index % LOCAL_ROOT_COUNT)
-            } else {
-                youtube_collection_id(source_index % YOUTUBE_COLLECTION_COUNT)
-            };
-            row.push_bind(collection)
-                .push_bind(item_id(index))
-                .push_bind(source_index as i64)
-                .push_bind(SEEDED_AT + index as i64)
-                .push_bind(if local { 3_i64 } else { 2_i64 })
-                .push_bind(i64::from(
-                    (local && source_index.is_multiple_of(29))
-                        || (!local && source_index.is_multiple_of(31)),
-                ));
-        });
+        query.push_values(
+            rows,
+            |mut row, (index, local, source_index, collection, key)| {
+                row.push_bind(collection)
+                    .push_bind(item_id(index))
+                    .push_bind(source_index as i64)
+                    .push_bind(SEEDED_AT + index as i64)
+                    .push_bind(if local { 3_i64 } else { 2_i64 })
+                    .push_bind(i64::from(
+                        (local && source_index.is_multiple_of(29))
+                            || (!local && source_index.is_multiple_of(31)),
+                    ))
+                    .push_bind(key);
+            },
+        );
         query
             .build()
             .execute(&mut **transaction)
@@ -376,20 +392,27 @@ async fn seed_source_provenance(
 
     let duplicate_items = duplicate_provenance_pairs();
     for chunk in duplicate_items.chunks(INSERT_BATCH_SIZE) {
+        let keys = chunk
+            .iter()
+            .map(|(collection_id, index, _)| {
+                sync_keys::collection_item_key(collection_id, &item_id(*index))
+            })
+            .collect::<MusicLibraryResult<Vec<_>>>()?;
         let mut query = QueryBuilder::<Sqlite>::new(
             "INSERT INTO music_source_collection_items
                 (collection_id, item_id, source_position, first_discovered_at_ms,
-                 last_seen_generation, missing_from_latest_snapshot) ",
+                 last_seen_generation, missing_from_latest_snapshot, sync_key) ",
         );
         query.push_values(
-            chunk.iter(),
-            |mut row, (collection_id, index, source_index)| {
+            chunk.iter().zip(keys),
+            |mut row, ((collection_id, index, source_index), key)| {
                 row.push_bind(collection_id.clone())
                     .push_bind(item_id(*index))
                     .push_bind(*source_index as i64)
                     .push_bind(SEEDED_AT + *index as i64)
                     .push_bind(2_i64)
-                    .push_bind(0_i64);
+                    .push_bind(0_i64)
+                    .push_bind(key);
             },
         );
         query
@@ -418,6 +441,15 @@ async fn seed_memberships(transaction: &mut Transaction<'_, Sqlite>) -> MusicLib
         total += included.len();
         let keys = super::order::rank_keys(included.len())?;
         for (chunk_index, chunk) in included.chunks(INSERT_BATCH_SIZE).enumerate() {
+            let ids = chunk
+                .iter()
+                .map(|item_index| {
+                    super::identity::membership_id(
+                        &playlist_id(playlist_index),
+                        &item_id(*item_index),
+                    )
+                })
+                .collect::<MusicLibraryResult<Vec<_>>>()?;
             let mut query = QueryBuilder::<Sqlite>::new(
                 "INSERT INTO music_playlist_memberships
                     (id, playlist_id, item_id, order_key, weight, enabled,
@@ -425,20 +457,18 @@ async fn seed_memberships(transaction: &mut Transaction<'_, Sqlite>) -> MusicLib
             );
             query.push_values(chunk.iter().enumerate(), |mut row, (offset, item_index)| {
                 let position = chunk_index * INSERT_BATCH_SIZE + offset;
-                row.push_bind(format!(
-                    "{FIXTURE_PREFIX}membership-{playlist_index:02}-{item_index:06}"
-                ))
-                .push_bind(playlist_id(playlist_index))
-                .push_bind(item_id(*item_index))
-                .push_bind(keys[position].as_str().to_owned())
-                .push_bind(weights[(item_index + playlist_index) % weights.len()])
-                .push_bind(i64::from(!(item_index + playlist_index).is_multiple_of(19)))
-                .push_bind(item_index.is_multiple_of(97).then_some(5_000_i64))
-                .push_bind(item_index.is_multiple_of(97).then_some(85_000_i64))
-                .push_bind(item_index.is_multiple_of(43).then_some(820_i64))
-                .push_bind(item_index.is_multiple_of(71).then_some(1_050_i64))
-                .push_bind(SEEDED_AT + position as i64)
-                .push_bind(SEEDED_AT + position as i64);
+                row.push_bind(ids[offset].clone())
+                    .push_bind(playlist_id(playlist_index))
+                    .push_bind(item_id(*item_index))
+                    .push_bind(keys[position].as_str().to_owned())
+                    .push_bind(weights[(item_index + playlist_index) % weights.len()])
+                    .push_bind(i64::from(!(item_index + playlist_index).is_multiple_of(19)))
+                    .push_bind(item_index.is_multiple_of(97).then_some(5_000_i64))
+                    .push_bind(item_index.is_multiple_of(97).then_some(85_000_i64))
+                    .push_bind(item_index.is_multiple_of(43).then_some(820_i64))
+                    .push_bind(item_index.is_multiple_of(71).then_some(1_050_i64))
+                    .push_bind(SEEDED_AT + position as i64)
+                    .push_bind(SEEDED_AT + position as i64);
             });
             query
                 .build()
@@ -481,22 +511,34 @@ async fn seed_signals_statistics_and_history(
     transaction: &mut Transaction<'_, Sqlite>,
 ) -> MusicLibraryResult<()> {
     let signal_indices = (0..item_count()).step_by(17).collect::<Vec<_>>();
+    let signals = [
+        "lyrics",
+        "sudden-changes",
+        "high-intensity",
+        "calm",
+        "repetitive",
+        "energizing",
+    ];
     for chunk in signal_indices.chunks(INSERT_BATCH_SIZE) {
+        let rows = chunk
+            .iter()
+            .map(|&index| {
+                let signal = signals[index % signals.len()];
+                Ok((
+                    index,
+                    signal,
+                    sync_keys::signal_key(&item_id(index), signal)?,
+                ))
+            })
+            .collect::<MusicLibraryResult<Vec<_>>>()?;
         let mut query = QueryBuilder::<Sqlite>::new(
-            "INSERT INTO music_item_signals (item_id, signal, created_at_ms) ",
+            "INSERT INTO music_item_signals (item_id, signal, created_at_ms, sync_key) ",
         );
-        query.push_values(chunk.iter().copied(), |mut row, index| {
-            let signals = [
-                "lyrics",
-                "sudden-changes",
-                "high-intensity",
-                "calm",
-                "repetitive",
-                "energizing",
-            ];
+        query.push_values(rows, |mut row, (index, signal, key)| {
             row.push_bind(item_id(index))
-                .push_bind(signals[index % signals.len()])
-                .push_bind(SEEDED_AT);
+                .push_bind(signal)
+                .push_bind(SEEDED_AT)
+                .push_bind(key);
         });
         query
             .build()
@@ -507,12 +549,21 @@ async fn seed_signals_statistics_and_history(
 
     let statistic_indices = (0..item_count()).step_by(7).collect::<Vec<_>>();
     for chunk in statistic_indices.chunks(INSERT_BATCH_SIZE) {
+        let rows = chunk
+            .iter()
+            .map(|&index| {
+                Ok((
+                    index,
+                    sync_keys::statistics_key(FIXTURE_DEVICE_ID, &item_id(index))?,
+                ))
+            })
+            .collect::<MusicLibraryResult<Vec<_>>>()?;
         let mut query = QueryBuilder::<Sqlite>::new(
             "INSERT INTO music_listening_statistics
                 (device_id, item_id, last_played_at_ms, play_count, completion_count, skip_count,
-                 updated_at_ms) ",
+                 updated_at_ms, sync_key) ",
         );
-        query.push_values(chunk.iter().copied(), |mut row, index| {
+        query.push_values(rows, |mut row, (index, key)| {
             let plays = (index % 31 + 1) as i64;
             row.push_bind(FIXTURE_DEVICE_ID)
                 .push_bind(item_id(index))
@@ -520,7 +571,8 @@ async fn seed_signals_statistics_and_history(
                 .push_bind(plays)
                 .push_bind((plays - (index % 5) as i64).max(0))
                 .push_bind((index % 6) as i64)
-                .push_bind(SEEDED_AT);
+                .push_bind(SEEDED_AT)
+                .push_bind(key);
         });
         query
             .build()
@@ -703,7 +755,8 @@ mod tests {
             let counts = sqlx::query(
             "SELECT
                 (SELECT COUNT(*) FROM music_library_items WHERE id LIKE 'benchmark-music-%') AS items,
-                (SELECT COUNT(*) FROM music_playlist_memberships WHERE id LIKE 'benchmark-music-%') AS memberships,
+                (SELECT COUNT(*) FROM music_playlist_memberships
+                    WHERE playlist_id LIKE 'benchmark-music-%') AS memberships,
                 (SELECT COUNT(DISTINCT review_state) FROM music_library_items
                     WHERE id LIKE 'benchmark-music-%') AS review_states,
                 (SELECT COUNT(DISTINCT item_id) FROM music_source_collection_items

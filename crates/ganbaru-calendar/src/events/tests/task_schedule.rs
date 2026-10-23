@@ -325,8 +325,8 @@ fn scheduling_snapshots_soundtrack_and_custom_idle_and_rejects_changed_review() 
     crate::test_support::block_on(async {
         let pool = seed().await;
         sqlx::raw_sql("INSERT INTO music_playlists (id, name, order_key, created_at_ms, updated_at_ms) VALUES ('playlist', 'Focus', 'a0', 1, 1);
-            INSERT INTO music_context_assignments (owner_kind, owner_id, phase, behavior, playlist_id, provenance_kind, updated_at_ms)
-                VALUES ('project-default', 'project', 'focus', 'play-automatically', 'playlist', 'explicit', 1);
+            INSERT INTO music_context_assignments (owner_kind, owner_id, phase, behavior, playlist_id, provenance_kind, updated_at_ms, sync_key)
+                VALUES ('project-default', 'project', 'focus', 'play-automatically', 'playlist', 'explicit', 1, lower(hex(randomblob(16))));
             UPDATE projects SET default_pomodoro_mode='custom', default_pomodoro_preset_key=NULL, default_pomodoro_focus_minutes=35,
                 default_pomodoro_short_break_minutes=7, default_pomodoro_long_break_minutes=12,
                 default_pomodoro_long_break_after_focus_count=3, default_idle_settings_source='custom',

@@ -586,8 +586,8 @@ fn music_sync_shape_rejects_missing_keys_bad_ranges_and_extra_skips() {
                 (id, playlist_id, item_id, order_key, created_at_ms, updated_at_ms)
              VALUES ('m', 'p', 'item-1', 'a0', 1, 1);
              INSERT INTO music_listening_statistics
-                (device_id, item_id, play_count, updated_at_ms)
-             VALUES ('device-a', 'item-1', 2, 1), ('device-b', 'item-1', 3, 1);",
+                (device_id, item_id, play_count, updated_at_ms, sync_key)
+             VALUES ('device-a', 'item-1', 2, 1, 'statistics-a'), ('device-b', 'item-1', 3, 1, 'statistics-b');",
         )
         .execute(&pool)
         .await
@@ -605,8 +605,10 @@ fn music_sync_shape_rejects_missing_keys_bad_ranges_and_extra_skips() {
             "UPDATE music_playlist_memberships SET break_rate_milli = 2001",
             "INSERT INTO music_membership_skip_ranges (membership_id, ordinal, start_ms, end_ms)
              VALUES ('m', 64, 0, 1)",
-            "INSERT INTO music_listening_statistics (device_id, item_id, updated_at_ms)
-             VALUES (' ', 'item-1', 1)",
+            "INSERT INTO music_listening_statistics (device_id, item_id, updated_at_ms, sync_key)
+             VALUES (' ', 'item-1', 1, 'statistics-blank')",
+            "INSERT INTO music_item_signals (item_id, signal, created_at_ms)
+             VALUES ('item-1', 'calm', 1)",
         ] {
             assert!(sqlx::query(sql).execute(&pool).await.is_err(), "{sql}");
         }
@@ -617,6 +619,53 @@ fn music_sync_shape_rejects_missing_keys_bad_ranges_and_extra_skips() {
         .await
         .unwrap();
         assert_eq!(total, 5);
+    });
+}
+
+#[test]
+fn music_capture_migration_gives_composite_rows_placeholder_or_seeded_keys() {
+    super::block_on(async {
+        const BEFORE_MUSIC_CAPTURE: i64 = 20261022191859;
+        let pool = memory_pool_migrated_through(BEFORE_MUSIC_CAPTURE).await;
+        sqlx::raw_sql(
+            "INSERT INTO music_library_items
+                (id, identity_key, source_kind, availability, review_state, discovered_at_ms, updated_at_ms)
+             VALUES ('item-1', 'local:1', 'local-file', 'available', 'reviewed', 1, 1);
+             INSERT INTO music_item_signals (item_id, signal, created_at_ms)
+             VALUES ('item-1', 'calm', 1), ('item-1', 'energizing', 1);
+             INSERT INTO music_listening_statistics (device_id, item_id, play_count, updated_at_ms)
+             VALUES ('device-a', 'item-1', 2, 1);",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        run_migrations(&pool).await.unwrap();
+
+        let signal_keys: Vec<String> =
+            sqlx::query_scalar("SELECT sync_key FROM music_item_signals ORDER BY signal")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        assert_eq!(signal_keys.len(), 2);
+        assert!(signal_keys.iter().all(|key| key.starts_with("pending:")));
+        assert_ne!(signal_keys[0], signal_keys[1]);
+        let statistics_key: String =
+            sqlx::query_scalar("SELECT sync_key FROM music_listening_statistics")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert!(statistics_key.starts_with("pending:"));
+        let pending_preset_sounds: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM music_soundscape_preset_sounds WHERE sync_key GLOB 'pending:*'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            pending_preset_sounds, 0,
+            "seeded preset sounds carry their derived keys"
+        );
     });
 }
 

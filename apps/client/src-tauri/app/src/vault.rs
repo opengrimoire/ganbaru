@@ -1019,7 +1019,7 @@ pub(crate) fn replicated_asset_path_in(
     domain: &str,
 ) -> Result<WritableVaultPath, String> {
     let (path, manifest) = active_vault_in(config_dir)?;
-    let permit = ownership.acquire_replicated_asset_write(&manifest.vault_id, domain)?;
+    let permit = ownership.acquire_replicated_write(&manifest.vault_id, domain)?;
     Ok(WritableVaultPath {
         path,
         _permit: permit,

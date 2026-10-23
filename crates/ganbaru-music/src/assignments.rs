@@ -1,6 +1,7 @@
 //! Portable music-assignment contracts shared by desktop and mobile planning.
 
 use crate::error::{MusicLibraryError, MusicLibraryResult};
+use crate::sync_keys::assignment_key;
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
 use sqlx::{Sqlite, Transaction};
@@ -219,11 +220,12 @@ async fn upsert_assignment(
     assignment: MusicContextAssignmentDraft,
     updated_at_ms: i64,
 ) -> MusicLibraryResult<()> {
+    let sync_key = assignment_key(owner_kind.as_ref(), owner_id, assignment.phase.as_ref())?;
     sqlx::query(
         "INSERT INTO music_context_assignments
             (owner_kind, owner_id, phase, behavior, playlist_id, soundscape_preset_id, soundscape_behavior,
-             provenance_kind, provenance_id, updated_at_ms, version)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+             provenance_kind, provenance_id, updated_at_ms, version, sync_key)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
          ON CONFLICT (owner_kind, owner_id, phase) DO UPDATE SET
             behavior = excluded.behavior,
             playlist_id = excluded.playlist_id,
@@ -250,6 +252,7 @@ async fn upsert_assignment(
     .bind(assignment.provenance_kind.as_ref())
     .bind(assignment.provenance_id)
     .bind(updated_at_ms)
+    .bind(sync_key)
     .execute(&mut **transaction)
     .await
     .map_err(|error| MusicLibraryError::database("write music context assignment", error))?;

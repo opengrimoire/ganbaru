@@ -36,6 +36,7 @@ pub(crate) mod session;
 pub(crate) mod soundscape;
 #[cfg(desktop)]
 pub(crate) mod soundscape_paths;
+pub(crate) mod sync;
 #[cfg(not(target_os = "ios"))]
 pub(crate) mod youtube;
 

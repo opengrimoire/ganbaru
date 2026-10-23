@@ -159,17 +159,60 @@ pub async fn remove_external_working_folder(
             "Promote another working folder before removing the primary folder",
         ));
     }
+    let mut transaction = pool.begin().await.map_err(persistence_error)?;
+    if is_referenced_by_chat(&mut transaction, id).await? {
+        return Err(ChatError::new(
+            ChatErrorCode::Conflict,
+            "Chat still references this working folder",
+            true,
+        ));
+    }
     let result =
         sqlx::query("DELETE FROM project_working_folders WHERE id = ? AND kind = 'external'")
             .bind(id.as_str())
-            .execute(pool)
+            .execute(&mut *transaction)
             .await
             .map_err(persistence_error)?;
-    if result.rows_affected() == 1 {
-        Ok(())
-    } else {
-        Err(not_found_error())
+    if result.rows_affected() != 1 {
+        return Err(not_found_error());
     }
+    transaction.commit().await.map_err(persistence_error)
+}
+
+/// Returns whether any Chat row that cascades with the folder references `id`.
+///
+/// Folder deletion cascades into Chat so that project deletion converges on every replica, so a
+/// local removal checks for references explicitly instead of relying on the foreign keys.
+/// Drafts and execution environments belong to the folder itself and do not count as use.
+async fn is_referenced_by_chat(
+    connection: &mut sqlx::SqliteConnection,
+    id: &ProjectWorkingFolderId,
+) -> ChatResult<bool> {
+    sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM chat_threads WHERE working_folder_id = ?1)
+             OR EXISTS(SELECT 1 FROM chat_agent_runs WHERE working_folder_id = ?1)
+             OR EXISTS(SELECT 1 FROM chat_attachments WHERE working_folder_id = ?1)
+             OR EXISTS(SELECT 1 FROM chat_resources WHERE working_folder_id = ?1)
+             OR EXISTS(SELECT 1 FROM chat_cleanup_jobs WHERE working_folder_id = ?1)
+             OR EXISTS(SELECT 1 FROM chat_assignment_authorization_revisions
+                       WHERE working_folder_id = ?1)
+             OR EXISTS(SELECT 1 FROM chat_assignment_authorized_folder_sources
+                       WHERE working_folder_id = ?1)
+             OR EXISTS(SELECT 1 FROM chat_scheduled_message_references
+                       WHERE working_folder_id = ?1)
+             OR EXISTS(SELECT 1 FROM chat_scratch_promotions
+                       WHERE destination_working_folder_id = ?1)
+             OR EXISTS(SELECT 1 FROM chat_teammate_working_folder_grants
+                       WHERE working_folder_id = ?1)
+             OR EXISTS(SELECT 1 FROM chat_working_folder_reference_targets
+                       WHERE working_folder_id = ?1)
+             OR EXISTS(SELECT 1 FROM chat_workspace_path_reference_targets
+                       WHERE working_folder_id = ?1)",
+    )
+    .bind(id.as_str())
+    .fetch_one(connection)
+    .await
+    .map_err(persistence_error)
 }
 
 /// Returns whether `id` is the stored primary folder of its own project.
@@ -302,3 +345,6 @@ fn corrupt_data_error() -> ChatError {
         false,
     )
 }
+
+#[cfg(test)]
+mod tests;

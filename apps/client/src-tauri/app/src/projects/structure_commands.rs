@@ -11,7 +11,9 @@ use std::path::Path;
 use tauri::{AppHandle, Runtime};
 
 use crate::db::connect_sqlite;
+use crate::projects::PROJECTS_DOMAIN;
 use crate::vault;
+use crate::vault::ownership::require_active_owner;
 
 #[tauri::command]
 pub async fn projects_create_group<R: Runtime>(
@@ -20,7 +22,7 @@ pub async fn projects_create_group<R: Runtime>(
     group: ProjectGroupCreate,
 ) -> Result<ProjectsMutationRows, String> {
     let pool = connect_sqlite(app.clone(), db_url).await?;
-    let vault_root = vault::active_writable_vault_path(&app)?;
+    let vault_root = vault::active_replicated_asset_path(&app, PROJECTS_DOMAIN)?;
     structure_commands::create_group(&pool, &vault_root, group).await
 }
 
@@ -31,16 +33,19 @@ pub async fn projects_update_group<R: Runtime>(
     group: ProjectGroupUpdate,
 ) -> Result<ProjectsMutationRows, String> {
     let pool = connect_sqlite(app.clone(), db_url).await?;
-    let vault_root = vault::active_writable_vault_path(&app)?;
+    let vault_root = vault::active_replicated_asset_path(&app, PROJECTS_DOMAIN)?;
     structure_commands::update_group(&pool, &vault_root, group).await
 }
 
+/// Deletes a group with its projects. The deletion cascades into Chat and Notes rows that only the
+/// owner writes, so other devices are refused before anything changes.
 #[tauri::command]
 pub async fn projects_delete_group<R: Runtime>(
     app: AppHandle<R>,
     db_url: String,
     group_id: String,
 ) -> Result<ProjectsMutationRows, String> {
+    require_active_owner(&app)?;
     let pool = connect_sqlite(app.clone(), db_url).await?;
     let vault_root = vault::active_writable_vault_path(&app)?;
     let project_ids = structure_commands::group_project_ids(&pool, &group_id).await?;

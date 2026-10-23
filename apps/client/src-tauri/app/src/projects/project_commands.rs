@@ -3,6 +3,7 @@ use ganbaru_projects::{ProjectCreate, ProjectUpdate, ProjectsMutationRows};
 use tauri::{AppHandle, Runtime};
 
 use crate::db::connect_sqlite;
+use crate::projects::PROJECTS_DOMAIN;
 use crate::vault;
 
 #[tauri::command]
@@ -12,7 +13,7 @@ pub async fn projects_create_project<R: Runtime>(
     project: ProjectCreate,
 ) -> Result<ProjectsMutationRows, String> {
     let pool = connect_sqlite(app.clone(), db_url).await?;
-    let vault_root = vault::active_writable_vault_path(&app)?;
+    let vault_root = vault::active_replicated_asset_path(&app, PROJECTS_DOMAIN)?;
     project_commands::create_project(&pool, &vault_root, project).await
 }
 
@@ -23,7 +24,7 @@ pub async fn projects_update_project<R: Runtime>(
     project: ProjectUpdate,
 ) -> Result<ProjectsMutationRows, String> {
     let pool = connect_sqlite(app.clone(), db_url).await?;
-    let vault_root = vault::active_writable_vault_path(&app)?;
+    let vault_root = vault::active_replicated_asset_path(&app, PROJECTS_DOMAIN)?;
     project_commands::update_project(&pool, &vault_root, project).await
 }
 

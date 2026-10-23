@@ -1775,6 +1775,7 @@ dependencies = [
  "ganbaru-music",
  "ganbaru-pomodoro",
  "ganbaru-projects",
+ "ganbaru-sync",
  "ganbaru-sync-contracts",
  "jiff",
  "serde",
@@ -2103,6 +2104,7 @@ version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
  "ganbaru-atomic-files",
+ "ganbaru-calendar",
  "ganbaru-contacts",
  "ganbaru-db",
  "ganbaru-handoff",

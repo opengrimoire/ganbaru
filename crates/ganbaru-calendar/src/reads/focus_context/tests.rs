@@ -222,3 +222,49 @@ fn native_focus_canonical_edit_changes_the_fingerprint_and_cancelled_events_are_
         );
     });
 }
+
+/// Marks the open conflict groups of event `row_key`.
+async fn mark_conflict(tx: &mut SqliteConnection, row_key: &str, mask: GroupMask) {
+    sqlx::query(
+        "INSERT INTO sync_rows (table_id, row_key, state, conflict_mask) VALUES (?, ?, 'live', ?)
+         ON CONFLICT (table_id, row_key) DO UPDATE SET conflict_mask = excluded.conflict_mask",
+    )
+    .bind(i64::from(EVENTS_TABLE.0))
+    .bind(row_key)
+    .bind(i64::try_from(mask.0).unwrap())
+    .execute(&mut *tx)
+    .await
+    .unwrap();
+}
+
+#[test]
+fn native_focus_skips_automatic_admission_of_an_event_with_an_open_timing_conflict() {
+    crate::test_support::block_on(async {
+        let pool = pool().await;
+        let time = now("2024-03-11T10:15:00Z");
+        let mut tx = pool.begin().await.unwrap();
+        mark_conflict(&mut tx, "short", GroupMask::of(event_group::TITLE)).await;
+        let other_group = resolve_in_zone(&mut tx, time, None, &TimeZone::UTC)
+            .await
+            .unwrap();
+        assert_eq!(other_group.commitment.unwrap().occurrence_id, "short");
+
+        mark_conflict(&mut tx, "short", GroupMask::of(event_group::TIMING)).await;
+        let automatic = resolve_in_zone(&mut tx, time, None, &TimeZone::UTC)
+            .await
+            .unwrap();
+        assert_eq!(automatic.commitment.unwrap().occurrence_id, "long");
+        assert_eq!(automatic.planned_blocks.len(), 2);
+        let requested = resolve_in_zone(&mut tx, time, Some("short"), &TimeZone::UTC)
+            .await
+            .unwrap();
+        assert_eq!(requested.commitment.unwrap().occurrence_id, "short");
+
+        mark_conflict(&mut tx, "long", GroupMask::of(event_group::TIMING)).await;
+        let suspended = resolve_in_zone(&mut tx, time, None, &TimeZone::UTC)
+            .await
+            .unwrap();
+        assert!(suspended.commitment.is_none());
+        assert_eq!(suspended.planned_blocks.len(), 2);
+    });
+}

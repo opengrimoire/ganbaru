@@ -21,6 +21,7 @@ ganbaru-db = { workspace = true }
 ganbaru-music = { workspace = true }
 ganbaru-pomodoro = { workspace = true }
 ganbaru-projects = { workspace = true }
+ganbaru-sync = { workspace = true }
 ganbaru-sync-contracts = { workspace = true }
 jiff = { workspace = true }
 serde = { workspace = true }

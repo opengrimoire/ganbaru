@@ -3,7 +3,7 @@
 
 use std::sync::LazyLock;
 
-use ganbaru_sync::manifest::vault::{music, projects, quick_notes, themes};
+use ganbaru_sync::manifest::vault::{calendar, music, projects, quick_notes, themes};
 use ganbaru_sync::{DeviceRef, Engine, local};
 pub(crate) use ganbaru_sync_replica::recovery::{
     RecoveredRow, RecoveryAction, RecoveryChoice, RecoveryRestorers, RestoreFuture, close,
@@ -25,6 +25,10 @@ static RESTORERS: LazyLock<RecoveryRestorers> = LazyLock::new(|| {
         .with(&projects::SECTIONS, restore_projects_row)
         .with(&projects::STATUSES, restore_projects_row)
         .with(&projects::TASKS, restore_projects_row)
+        .with(&calendar::CALENDARS, restore_calendar)
+        .with(&calendar::OBJECTS, refuse_calendar_source)
+        .with(&calendar::COMPONENTS, refuse_calendar_source)
+        .with(&calendar::EVENTS, restore_calendar_event)
 });
 
 /// The recovery restorers of the vault domains.
@@ -92,6 +96,36 @@ fn restore_projects_row(conn: &mut SqliteConnection, row: RecoveredRow) -> Resto
             &row.descendants,
         )
         .await
+    })
+}
+
+/// Restores a deleted event as a new event with its task links; its calendar becomes Local when
+/// the retained one is gone.
+fn restore_calendar_event(conn: &mut SqliteConnection, row: RecoveredRow) -> RestoreFuture<'_> {
+    Box::pin(async move {
+        ganbaru_calendar::recovery::restore_recovered_event(
+            conn,
+            &row.row_key,
+            &row.values,
+            &row.descendants,
+        )
+        .await
+    })
+}
+
+/// Restores the deleted events of a removed calendar into Local. The calendar itself comes back
+/// by adding or subscribing to it again.
+fn restore_calendar(conn: &mut SqliteConnection, row: RecoveredRow) -> RestoreFuture<'_> {
+    Box::pin(async move {
+        ganbaru_calendar::recovery::restore_recovered_calendar(conn, &row.descendants).await
+    })
+}
+
+/// Refuses to restore preserved iCalendar source data, which comes back by importing the file
+/// again; its offer can only be discarded.
+fn refuse_calendar_source(_: &mut SqliteConnection, _: RecoveredRow) -> RestoreFuture<'_> {
+    Box::pin(async {
+        Err("preserved iCalendar data comes back by importing the file again".to_string())
     })
 }
 

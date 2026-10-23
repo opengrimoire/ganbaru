@@ -57,18 +57,15 @@ pub async fn space_anchor(conn: &mut SqliteConnection) -> SyncResult<Option<Pers
         .transpose()
 }
 
-/// The space context of a vault: its personal space anchored at the person key of
-/// `contacts_local_identity`, with revocations authorized for `coordinator_device_id`, or
-/// `None` while the vault has no person identity.
+/// The space context of a vault: its personal space, whose charter the person key of
+/// `contacts_local_identity` signs, or `None` while the vault has no person identity.
 pub async fn space_context(
     conn: &mut SqliteConnection,
     vault_id: &str,
-    coordinator_device_id: &str,
 ) -> SyncResult<Option<SpaceContext>> {
-    Ok(space_anchor(conn).await?.map(|anchor| SpaceContext {
+    Ok(space_anchor(conn).await?.map(|person_key| SpaceContext {
         space: SpaceId::personal(vault_id),
-        anchor,
-        coordinator_device_id: coordinator_device_id.to_string(),
+        person_key,
     }))
 }
 

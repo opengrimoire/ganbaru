@@ -54,7 +54,16 @@ pub const SYNC_TABLES: &[&str] = &[
     "sync_tombstones",
     "sync_seeded_tables",
     "sync_stable",
+    "sync_auth_entries",
+    "sync_devices",
+    "sync_displaced_versions",
+    "sync_late_changes",
+    "sync_fork_evidence",
 ];
+
+/// Engine tables of device-bound state that every manifest classifies as `Local`, so snapshot
+/// copies empty them.
+pub const SYNC_LOCAL_TABLES: &[&str] = &["sync_anchor_marks"];
 
 /// What a domain trigger may do, so applying remote changes cannot be broken by it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -879,7 +888,7 @@ pub struct Manifest {
     pub tables: &'static [TableSpec],
     /// Derived tables, including virtual tables whose shadow tables follow them.
     pub derived: &'static [&'static str],
-    /// `Local` tables.
+    /// `Local` tables: [`SYNC_LOCAL_TABLES`] and the domains' `Local` tables.
     pub local: &'static [&'static str],
     /// Engine tables: [`SYNC_TABLES`] and the domains' engine-side tables.
     pub engine: &'static [&'static str],
@@ -900,9 +909,14 @@ impl Manifest {
             .iter()
             .flat_map(|domain| domain.derived.iter().copied())
             .collect();
-        let local = domains
+        let local = SYNC_LOCAL_TABLES
             .iter()
-            .flat_map(|domain| domain.local.iter().map(|table| table.name))
+            .copied()
+            .chain(
+                domains
+                    .iter()
+                    .flat_map(|domain| domain.local.iter().map(|table| table.name)),
+            )
             .collect();
         let engine = SYNC_TABLES
             .iter()

@@ -15,7 +15,8 @@ pub enum SyncError {
     InvalidManifest(String),
     /// A space has no row in `sync_spaces`.
     UnknownSpace,
-    /// The local writer cannot seal: its certificate does not match its key or the space anchor.
+    /// The local writer cannot seal: its certificate does not match its key or the enrolled
+    /// device key.
     WriterMismatch,
     /// The local writer is no longer active in this space.
     WriterInactive(WriterId),
@@ -25,8 +26,16 @@ pub enum SyncError {
     Seal(OperationError),
     /// A re-seal request does not match the stored chain.
     InvalidReseal(&'static str),
-    /// A revocation request does not match the stored chain.
-    InvalidRevoke(&'static str),
+    /// The space holds sync state this build does not read; resetting sync state recovers it.
+    ResetRequired(&'static str),
+    /// A charter does not verify with the space person key, names another space, or differs
+    /// from the installed one.
+    InvalidCharter,
+    /// The selected authorization chain removed the local device.
+    DeviceRemoved,
+    /// The selected authorization chain has not enrolled the local device yet, so its writer
+    /// cannot seal a genesis.
+    NotEnrolled,
     /// A request names a row, group, or table the engine cannot act on.
     InvalidRequest(&'static str),
     /// A replicated row of the named table still holds a `pending:` placeholder key, which a
@@ -72,7 +81,14 @@ impl fmt::Display for SyncError {
             }
             Self::Seal(error) => write!(formatter, "operation could not be sealed: {error}"),
             Self::InvalidReseal(detail) => write!(formatter, "invalid re-seal: {detail}"),
-            Self::InvalidRevoke(detail) => write!(formatter, "invalid revocation: {detail}"),
+            Self::ResetRequired(detail) => {
+                write!(formatter, "reset sync state: {detail}")
+            }
+            Self::InvalidCharter => formatter.write_str("sync charter is invalid for this space"),
+            Self::DeviceRemoved => formatter.write_str("this device was removed from the space"),
+            Self::NotEnrolled => {
+                formatter.write_str("this device is not enrolled in the space yet")
+            }
             Self::InvalidRequest(detail) => write!(formatter, "invalid sync request: {detail}"),
             Self::PendingKey(table) => write!(
                 formatter,

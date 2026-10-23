@@ -279,15 +279,21 @@ impl Engine {
                 Err(_) => Classified::Malformed,
             };
             let reason = match &classified {
-                Classified::Waiting { dependencies, .. } => {
+                Classified::Waiting {
+                    dependencies,
+                    revision,
+                    ..
+                } => {
                     let context =
                         store::derive_context(&mut tx, ctx, writer, seq, Some(dependencies))
                             .await?;
                     sqlx::query(
-                        "UPDATE sync_ops SET state = 'waiting', hold_reason = NULL, context = ?
+                        "UPDATE sync_ops SET state = 'waiting', hold_reason = NULL, context = ?,
+                            authorization_revision = ?
                          WHERE space_id = ? AND writer_id = ? AND seq = ?",
                     )
                     .bind(log::encode_context(context.as_ref()))
+                    .bind(seq_i64(*revision)?)
                     .bind(ctx.space.as_bytes().as_slice())
                     .bind(writer.as_bytes().as_slice())
                     .bind(seq_i64(seq)?)

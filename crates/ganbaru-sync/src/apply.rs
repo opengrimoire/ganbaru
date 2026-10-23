@@ -8,7 +8,7 @@
 use std::collections::BTreeSet;
 
 use ganbaru_sync_contracts::{
-    Change, ChangeAction, Content, Envelope, Hlc, OpId, Revocation, Seq, TableId, VersionVector,
+    AuthorizationRecord, Change, ChangeAction, Content, Envelope, Hlc, Seq, TableId, VersionVector,
     WriterId, hlc,
 };
 use sqlx::sqlite::SqliteRow;
@@ -16,12 +16,14 @@ use sqlx::{Connection, Row, SqliteConnection};
 
 use crate::error::{SyncError, SyncResult, corrupt, failpoint};
 use crate::hooks::ChangeNotice;
-use crate::log::{self, seq_i64, stored_u64};
+use crate::log::{self, WriterState, seq_i64, stored_u64};
 use crate::materialize::Materialized;
 use crate::merge::{self, Batch};
 use crate::seal::{self, SealReport, SealSlot};
 use crate::visibility::{RowRef, Visibility};
-use crate::{Engine, LocalWriter, SpaceContext, hold, hydrate, materialize, repair, sql, store};
+use crate::{
+    Engine, LocalWriter, SpaceContext, authorization, hydrate, materialize, repair, sql, store,
+};
 
 /// Most operations one apply transaction takes.
 pub const MAX_OPS_PER_APPLY: usize = 256;
@@ -39,23 +41,12 @@ pub struct ClockWarning {
     pub clock: Hlc,
 }
 
-/// A revocation of the local writer cuts off operations this replica already applied, so the
-/// local writer's operations past `keep_through` must be re-sealed by a new writer before the
-/// revocation can apply.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ResealNeeded {
-    /// The revoked local writer.
-    pub writer: WriterId,
-    /// Last operation of it that stays.
-    pub keep_through: Seq,
-}
-
 /// Result of one apply transaction.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ApplyReport {
     /// Operations applied.
     pub applied: usize,
-    /// Operations held as invalid in the call, including those past a revocation cutoff.
+    /// Operations held as invalid in the call.
     pub held: usize,
     /// Domain tables the call changed.
     pub changed_tables: Vec<&'static str>,
@@ -63,11 +54,6 @@ pub struct ApplyReport {
     pub notices: Vec<ChangeNotice>,
     /// Writers with clocks far ahead of local time.
     pub clock_warnings: Vec<ClockWarning>,
-    /// The local writer must be re-sealed before a revocation of it can apply.
-    pub reseal_needed: Option<ResealNeeded>,
-    /// Revocations of remote writers that cut off operations this replica applied. They stay
-    /// stored and block their writer until the conflict is resolved.
-    pub blocked_revocations: Vec<OpId>,
     /// Local captures of rows the call would change could not be sealed, so the operations
     /// changing them did not apply, or nothing applied when a merge would overwrite them.
     pub pending_captures: bool,
@@ -93,10 +79,9 @@ struct Candidate {
 /// What applying one operation did.
 enum Outcome {
     Applied,
-    /// A revocation applied; it may hold operations of other writers.
-    Revoked,
+    /// An authorization entry applied; it may change which writers and revisions are ready.
+    Authorized,
     Held,
-    Blocked,
     /// It touches rows with local captures and no writer can seal them first.
     PendingCaptures,
 }
@@ -150,72 +135,57 @@ impl Sealing<'_, '_, '_> {
             .await?;
         Ok(true)
     }
-
-    /// Seals every capture before the local writer is revoked, so the revocation sees every
-    /// local edit this replica made with it. Holds end here, because a revoked writer can never
-    /// seal a held delete later.
-    async fn seal_all(
-        &mut self,
-        engine: &Engine,
-        conn: &mut SqliteConnection,
-        ctx: &SpaceContext,
-        batch: &mut Batch,
-    ) -> SyncResult<()> {
-        let captured: Option<i64> = sqlx::query_scalar("SELECT 1 FROM sync_capture LIMIT 1")
-            .fetch_optional(&mut *conn)
-            .await?;
-        if captured.is_none() {
-            return Ok(());
-        }
-        let Some((sealer, writer)) = self
-            .slot
-            .try_open(engine, conn, ctx, batch, self.now_ms)
-            .await?
-        else {
-            return Ok(());
-        };
-        flush_applied(conn, ctx, batch, self.advanced).await?;
-        hold::expire_holds(conn).await?;
-        let sealed = sealer
-            .seal_captures(engine, conn, ctx, batch, writer, self.now_ms)
-            .await?;
-        self.report.absorb(sealed);
-        Ok(())
-    }
 }
 
-async fn candidates(conn: &mut SqliteConnection, ctx: &SpaceContext) -> SyncResult<Vec<Candidate>> {
+/// Waiting operations whose writer's previous operation is applied, that are within their
+/// writer's cutoff, and whose authorization revision is selected.
+async fn candidates(
+    conn: &mut SqliteConnection,
+    ctx: &SpaceContext,
+    revision: u64,
+) -> SyncResult<Vec<Candidate>> {
     let rows = sqlx::query(
         "SELECT o.writer_id, o.seq, o.clock, o.context, o.state, length(o.envelope), NULL
          FROM sync_writers w JOIN sync_ops o
             ON o.space_id = w.space_id AND o.writer_id = w.writer_id AND o.seq = w.applied_seq + 1
-         WHERE w.space_id = ? AND o.state <> 'held'
+         WHERE w.space_id = ? AND o.state <> 'held' AND o.authorization_revision <= ?
+            AND (w.cutoff_seq IS NULL OR o.seq <= w.cutoff_seq)
          ORDER BY o.clock, o.writer_id",
     )
     .bind(ctx.space.as_bytes().as_slice())
+    .bind(seq_i64(revision)?)
     .fetch_all(&mut *conn)
     .await?;
     rows.iter().map(candidate_from_row).collect()
 }
 
-/// The candidate `seq` of `writer`, when it is stored and not held. A small envelope is read
-/// with it, since the candidate usually applies next.
+/// The candidate `seq` of `writer`, when it is stored, not held, within the writer's cutoff,
+/// and sealed against a selected revision. A small envelope is read with it, since the
+/// candidate usually applies next.
 async fn writer_candidate(
     conn: &mut SqliteConnection,
     ctx: &SpaceContext,
     writer: WriterId,
     seq: Seq,
+    revision: u64,
 ) -> SyncResult<Option<Candidate>> {
     let row = sqlx::query(
         "SELECT writer_id, seq, clock, context, state, length(envelope),
             CASE WHEN length(envelope) <= ? THEN envelope END
-         FROM sync_ops
-         WHERE space_id = ? AND writer_id = ? AND seq = ? AND state <> 'held'",
+         FROM sync_ops o
+         WHERE space_id = ? AND writer_id = ? AND seq = ? AND state <> 'held'
+            AND authorization_revision <= ?
+            AND NOT EXISTS (
+                SELECT 1 FROM sync_writers w
+                WHERE w.space_id = o.space_id AND w.writer_id = o.writer_id
+                    AND w.cutoff_seq IS NOT NULL AND o.seq > w.cutoff_seq
+            )",
     )
     .bind(i64::try_from(PREFETCH_ENVELOPE_BYTES).unwrap_or(i64::MAX))
     .bind(ctx.space.as_bytes().as_slice())
     .bind(writer.as_bytes().as_slice())
     .bind(seq_i64(seq)?)
+    .bind(seq_i64(revision)?)
     .fetch_optional(&mut *conn)
     .await?;
     row.as_ref().map(candidate_from_row).transpose()
@@ -317,12 +287,16 @@ async fn resolve_context(
 /// candidate, so the list is refreshed per writer instead of read again for every operation.
 struct Heads {
     candidates: Vec<Candidate>,
+    /// Selected authorization revision the candidates were read against.
+    revision: u64,
 }
 
 impl Heads {
     async fn load(conn: &mut SqliteConnection, ctx: &SpaceContext) -> SyncResult<Self> {
+        let revision = authorization::selected_revision(conn, ctx.space).await?;
         Ok(Self {
-            candidates: candidates(conn, ctx).await?,
+            candidates: candidates(conn, ctx, revision).await?,
+            revision,
         })
     }
 
@@ -380,7 +354,7 @@ impl Heads {
         writer: WriterId,
         seq: Seq,
     ) -> SyncResult<()> {
-        let Some(next) = writer_candidate(conn, ctx, writer, seq + 1).await? else {
+        let Some(next) = writer_candidate(conn, ctx, writer, seq + 1, self.revision).await? else {
             return Ok(());
         };
         let position = self
@@ -422,48 +396,6 @@ async fn rows_exist(
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn apply_revoke(
-    conn: &mut SqliteConnection,
-    batch: &Batch,
-    slot: &mut SealSlot<'_, '_>,
-    id: OpId,
-    context: &VersionVector,
-    revocation: &Revocation,
-    report: &mut ApplyReport,
-) -> SyncResult<Outcome> {
-    let target = revocation.writer;
-    if revocation.cutoff < 1 || target == id.writer || !context.covers(&target, 1) {
-        return Ok(Outcome::Held);
-    }
-    let local = slot.local_id() == Some(target);
-    if batch.applied.get(&target) > revocation.cutoff {
-        if local {
-            report.reseal_needed = Some(ResealNeeded {
-                writer: target,
-                keep_through: revocation.cutoff,
-            });
-        } else {
-            report.blocked_revocations.push(id);
-        }
-        return Ok(Outcome::Blocked);
-    }
-    let held = merge::revoke_effects(
-        conn,
-        batch.space,
-        target,
-        revocation.cutoff,
-        revocation.reason,
-    )
-    .await?;
-    report.held += usize::try_from(held).unwrap_or(usize::MAX);
-    if local {
-        slot.freeze();
-        report.local_writer_frozen = true;
-    }
-    Ok(Outcome::Revoked)
-}
-
-#[allow(clippy::too_many_arguments)]
 async fn apply_one(
     engine: &Engine,
     conn: &mut SqliteConnection,
@@ -486,7 +418,6 @@ async fn apply_one(
     };
     match &operation.content {
         Content::Genesis(_) | Content::Acknowledgement => Ok(Outcome::Applied),
-        Content::Authorization(_) => Ok(Outcome::Held),
         Content::Changes(changes) => {
             if !rows_exist(engine, conn, changes).await? {
                 return Ok(Outcome::Held);
@@ -522,30 +453,42 @@ async fn apply_one(
             }
             Ok(Outcome::Applied)
         }
-        Content::Revoke(revocation) => {
-            // Store refuses these already. One stored while another device was the coordinator
-            // stays waiting without revoking, so it applies only if that device coordinates again.
-            let issuer = log::writer(conn, ctx.space, candidate.writer)
-                .await?
-                .ok_or_else(|| corrupt("operation of an unknown writer reached apply"))?;
-            if !store::may_issue(ctx, &issuer, envelope.kind) {
-                return Ok(Outcome::Blocked);
-            }
-            if sealing.slot.local_id() == Some(revocation.writer) {
-                sealing.seal_all(engine, conn, ctx, batch).await?;
-            }
-            apply_revoke(
-                conn,
-                batch,
-                sealing.slot,
-                operation.id(),
-                context,
-                revocation,
-                report,
-            )
-            .await
+        Content::Authorization(record) => {
+            apply_authorization(conn, ctx, sealing.slot, candidate, record, report).await
         }
     }
+}
+
+/// Records an authorization entry and selects the chain again. Only a writer of the device the
+/// record names as anchor may carry entries; any other carrier is held. The entry is stored and
+/// forwarded whether or not selection takes it, and the local writer freezes when the selected
+/// chain removes its device.
+async fn apply_authorization(
+    conn: &mut SqliteConnection,
+    ctx: &SpaceContext,
+    slot: &mut SealSlot<'_, '_>,
+    candidate: &Candidate,
+    record: &AuthorizationRecord,
+    report: &mut ApplyReport,
+) -> SyncResult<Outcome> {
+    let issuer = log::writer(conn, ctx.space, candidate.writer)
+        .await?
+        .ok_or_else(|| corrupt("operation of an unknown writer reached apply"))?;
+    if issuer.device_id != record.anchor_device_id || record.validate().is_err() {
+        return Ok(Outcome::Held);
+    }
+    authorization::insert_entry(conn, ctx.space, candidate.writer, candidate.seq, record).await?;
+    authorization::rederive(conn, ctx.space).await?;
+    if let Some(local) = slot.local_id() {
+        let active = log::writer(conn, ctx.space, local)
+            .await?
+            .is_some_and(|writer| writer.state == WriterState::Active);
+        if !active {
+            slot.freeze();
+            report.local_writer_frozen = true;
+        }
+    }
+    Ok(Outcome::Authorized)
 }
 
 /// Marks an operation applied. Its writer's `sync_writers.applied_seq` is written by
@@ -825,12 +768,12 @@ impl Engine {
             )
             .await?
             {
-                outcome @ (Outcome::Applied | Outcome::Revoked) => {
+                outcome @ (Outcome::Applied | Outcome::Authorized) => {
                     mark_applied(&mut tx, ctx, &mut batch, &candidate, context).await?;
                     warn_clock(&mut report, candidate.writer, candidate.clock, now_ms);
                     report.applied += 1;
                     advanced.insert(candidate.writer);
-                    if matches!(outcome, Outcome::Revoked) {
+                    if matches!(outcome, Outcome::Authorized) {
                         flush_applied(&mut tx, ctx, &batch, &mut advanced).await?;
                         heads = Heads::load(&mut tx, ctx).await?;
                     } else {
@@ -842,9 +785,6 @@ impl Engine {
                 Outcome::Held => {
                     hold_invalid(&mut tx, ctx, candidate.writer, candidate.seq).await?;
                     report.held += 1;
-                }
-                Outcome::Blocked => {
-                    blocked.insert(candidate.writer);
                 }
                 Outcome::PendingCaptures => {
                     report.pending_captures = true;

@@ -4,7 +4,7 @@ use ganbaru_contacts::PersonKeyPair;
 use ganbaru_sync_contracts::bounds::{MAX_DEPENDENCIES, MAX_WRITERS_PER_DEVICE};
 use ganbaru_sync_contracts::hlc::CLOCK_WARNING_AHEAD_MS;
 use ganbaru_sync_contracts::{
-    Content, Envelope, Field, GroupMask, RevokeReason, TableId, VersionVector, WriterId,
+    Content, Envelope, Field, GroupMask, TableId, VersionVector, WriterId,
 };
 
 use super::block_on;
@@ -13,13 +13,11 @@ use super::fixture::{
     MEMBERSHIPS_TABLE, NODES_TABLE, TEST_MANIFEST, edge_group, edge_key, membership_key,
 };
 use super::replica::{
-    Identity, Replica, START_MS, VAULT_ID, converge, device_id, pair, person, rank,
+    Replica, START_MS, VAULT_ID, converge, mint_writers, pair, person, rank, spread_devices,
 };
 use crate::error::failpoints;
 use crate::manifest::vault::quick_notes::{NOTES_TABLE, TAGS_TABLE, note_group};
-use crate::{
-    ConflictRow, HoldReason, StoreOutcome, StoreRefusal, SyncError, SyncResult, WriterState,
-};
+use crate::{ConflictRow, HoldReason, StoreOutcome, StoreRefusal, SyncError, SyncResult};
 
 const STORED: StoreOutcome = StoreOutcome::Stored { held: None };
 
@@ -232,7 +230,7 @@ fn store_refuses_unknown_writers_gaps_and_tampered_operations() {
         a.exec("UPDATE quick_note_tags SET name = 'Home' WHERE id = 'tag-1'")
             .await;
         a.seal().await.unwrap();
-        let ops = a.ops_since(&VersionVector::new()).await;
+        let ops = a.own_ops().await;
         assert_eq!(ops.len(), 3);
 
         assert_eq!(
@@ -278,20 +276,21 @@ fn store_refuses_other_spaces_and_untrusted_writers() {
         let mut other = Replica::with_space(1, 1, "vault-other", person()).await;
         let stranger = PersonKeyPair::from_seed(&[9; 32]).unwrap();
         let mut untrusted = Replica::with_space(2, 1, VAULT_ID, stranger).await;
+        let template = vault.stored_vector().await;
         for replica in [&mut other, &mut untrusted] {
             replica.seal().await.unwrap();
         }
-        let foreign = other.ops_since(&VersionVector::new()).await;
+        let foreign = other.own_ops().await;
         assert_eq!(
             vault.receive(&foreign).await,
             vec![StoreOutcome::Refused(StoreRefusal::WrongSpace)]
         );
-        let untrusted_ops = untrusted.ops_since(&VersionVector::new()).await;
+        let untrusted_ops = untrusted.own_ops().await;
         assert_eq!(
             vault.receive(&untrusted_ops).await,
             vec![StoreOutcome::Refused(StoreRefusal::Untrusted)]
         );
-        assert!(vault.stored_vector().await.is_empty());
+        assert_eq!(vault.stored_vector().await, template);
     });
 }
 
@@ -312,9 +311,9 @@ fn a_cloned_installation_forks_and_storing_stops_at_the_fork() {
             .await;
         clone.seal().await.unwrap();
 
-        let ops = a.ops_since(&VersionVector::new()).await;
+        let ops = a.own_ops().await;
         assert_eq!(b.receive(&ops).await, vec![STORED; 3]);
-        let forked = clone.ops_since(&VersionVector::new()).await;
+        let forked = clone.own_ops().await;
         assert_eq!(forked[..2], ops[..2]);
         assert_ne!(forked[2], ops[2]);
         assert_eq!(
@@ -1595,198 +1594,6 @@ fn concurrent_edges_that_close_a_cycle_sever_the_newest_until_another_edge_is_re
     });
 }
 
-async fn seal_revoke(
-    revoker: &mut Replica,
-    target: ganbaru_sync_contracts::WriterId,
-    cutoff: u64,
-) -> SyncResult<crate::SealReport> {
-    revoker
-        .engine
-        .seal_revoke(
-            &mut revoker.conn,
-            &revoker.ctx,
-            target,
-            cutoff,
-            RevokeReason::Revoked,
-            &mut revoker.identity.local(),
-            revoker.now_ms,
-        )
-        .await
-}
-
-#[test]
-fn revoking_a_writer_reseals_its_unpublished_operations() {
-    block_on(async {
-        let mut replicas = replicas(3).await;
-        seed_note(&mut replicas[1]).await;
-        replicas[1].seal().await.unwrap();
-        let (a, rest) = replicas.split_at_mut(1);
-        let (b, c) = rest.split_at_mut(1);
-        let (a, b, c) = (&mut a[0], &mut b[0], &mut c[0]);
-        a.pull(b).await;
-        c.pull(b).await;
-        let old = b.writer();
-        b.exec("UPDATE quick_notes SET title = 'Unpublished' WHERE id = 'note-1'")
-            .await;
-        b.seal().await.unwrap();
-        let unpublished = b.ops_since(&a.stored_vector().await).await;
-        assert_eq!(unpublished.len(), 1);
-
-        seal_revoke(a, old, 2).await.unwrap();
-        c.pull(a).await;
-        assert_eq!(
-            a.receive(&unpublished).await,
-            vec![StoreOutcome::Refused(StoreRefusal::Revoked)]
-        );
-        b.pull(a).await;
-        assert_ne!(b.writer(), old);
-        assert_eq!(
-            b.receive(&unpublished).await,
-            vec![StoreOutcome::Refused(StoreRefusal::Revoked)]
-        );
-        assert_eq!(title(b, "note-1").await.as_deref(), Some("Unpublished"));
-
-        converge(&mut replicas).await;
-        assert_converged(&mut replicas).await;
-        for replica in &mut replicas {
-            assert_eq!(
-                title(replica, "note-1").await.as_deref(),
-                Some("Unpublished")
-            );
-            let status = replica
-                .engine
-                .status(&mut replica.conn, &replica.ctx)
-                .await
-                .unwrap();
-            let revoked = status
-                .writers
-                .iter()
-                .find(|writer| writer.writer == old)
-                .unwrap();
-            assert_eq!(revoked.state, WriterState::Revoked);
-            assert_eq!(revoked.cutoff, Some(2));
-            assert_eq!(revoked.applied, 2);
-        }
-    });
-}
-
-#[test]
-fn revocations_must_keep_applied_operations_of_another_writer() {
-    block_on(async {
-        let mut replicas = replicas(2).await;
-        seed_note(&mut replicas[1]).await;
-        replicas[1].seal().await.unwrap();
-        replicas[1]
-            .exec("UPDATE quick_notes SET title = 'Two' WHERE id = 'note-1'")
-            .await;
-        replicas[1].seal().await.unwrap();
-        let (a, b) = replicas.split_at_mut(1);
-        let (a, b) = (&mut a[0], &mut b[0]);
-        let target = b.writer();
-        let own = a.writer();
-        assert!(matches!(
-            seal_revoke(a, target, 1).await,
-            Err(SyncError::InvalidRevoke(_))
-        ));
-        a.pull(b).await;
-        assert!(matches!(
-            seal_revoke(a, own, 1).await,
-            Err(SyncError::InvalidRevoke(_))
-        ));
-        assert!(matches!(
-            seal_revoke(a, target, 0).await,
-            Err(SyncError::InvalidRevoke(_))
-        ));
-        assert!(matches!(
-            seal_revoke(a, target, 2).await,
-            Err(SyncError::InvalidRevoke(_))
-        ));
-        seal_revoke(a, target, 3).await.unwrap();
-    });
-}
-
-#[test]
-fn a_remote_revocation_below_applied_operations_is_blocked() {
-    block_on(async {
-        let mut replicas = replicas(3).await;
-        seed_note(&mut replicas[1]).await;
-        replicas[1].seal().await.unwrap();
-        let (a, rest) = replicas.split_at_mut(1);
-        let (b, c) = rest.split_at_mut(1);
-        let (a, b, c) = (&mut a[0], &mut b[0], &mut c[0]);
-        a.pull(b).await;
-        b.exec("UPDATE quick_notes SET title = 'Seen' WHERE id = 'note-1'")
-            .await;
-        b.seal().await.unwrap();
-        c.pull(b).await;
-        let target = b.writer();
-        seal_revoke(a, target, 2).await.unwrap();
-
-        let known = c.stored_vector().await;
-        let ops = a.ops_since(&known).await;
-        c.receive(&ops).await;
-        let reports = c.apply_all().await.unwrap();
-        assert!(
-            reports
-                .iter()
-                .any(|report| !report.blocked_revocations.is_empty())
-        );
-        let status = c.engine.status(&mut c.conn, &c.ctx).await.unwrap();
-        assert!(status.waiting > 0);
-        assert_eq!(title(c, "note-1").await.as_deref(), Some("Seen"));
-    });
-}
-
-#[test]
-fn revoke_from_non_coordinator_writer_is_not_applied() {
-    block_on(async {
-        let mut replicas = replicas(4).await;
-        seed_note(&mut replicas[1]).await;
-        replicas[1].seal().await.unwrap();
-        let (a, rest) = replicas.split_at_mut(1);
-        let (b, rest) = rest.split_at_mut(1);
-        let (c, d) = rest.split_at_mut(1);
-        let (a, b, c, d) = (&mut a[0], &mut b[0], &mut c[0], &mut d[0]);
-        a.pull(b).await;
-        c.pull(b).await;
-        d.pull(b).await;
-        let target = b.writer();
-        let cutoff = c.applied_vector().await.get(&target);
-        assert!(matches!(
-            seal_revoke(c, target, cutoff).await,
-            Err(SyncError::InvalidRevoke(_))
-        ));
-
-        // A modified build on C seals the revocation anyway.
-        c.ctx.coordinator_device_id = device_id(c.index);
-        seal_revoke(c, target, cutoff).await.unwrap();
-        let ops = c.ops_since(&a.stored_vector().await).await;
-        let outcomes = a.receive(&ops).await;
-        assert_eq!(
-            outcomes.last(),
-            Some(&StoreOutcome::Refused(StoreRefusal::UnauthorizedRevoke))
-        );
-        a.apply_all().await.unwrap();
-        assert_eq!(title(a, "note-1").await.as_deref(), Some("One"));
-
-        // D stored it while C coordinated; once A coordinates it waits without revoking.
-        d.ctx.coordinator_device_id = device_id(c.index);
-        let ops = c.ops_since(&d.stored_vector().await).await;
-        assert!(
-            d.receive(&ops)
-                .await
-                .iter()
-                .all(|outcome| *outcome == STORED)
-        );
-        d.ctx.coordinator_device_id = device_id(a.index);
-        let reports = d.apply_all().await.unwrap();
-        assert!(reports.iter().all(|report| report.held == 0));
-        let status = d.engine.status(&mut d.conn, &d.ctx).await.unwrap();
-        assert!(status.waiting > 0);
-        assert_eq!(title(d, "note-1").await.as_deref(), Some("One"));
-    });
-}
-
 #[test]
 fn a_reseal_is_refused_once_another_writer_saw_the_replaced_operations() {
     block_on(async {
@@ -1811,7 +1618,7 @@ fn a_reseal_is_refused_once_another_writer_saw_the_replaced_operations() {
         for keep_through in [0, 2, 4] {
             let result = b
                 .engine
-                .reseal(
+                .reseal_fork(
                     &mut b.conn,
                     &b.ctx,
                     old,
@@ -1828,7 +1635,7 @@ fn a_reseal_is_refused_once_another_writer_saw_the_replaced_operations() {
         let same = b.writer();
         let result = b
             .engine
-            .reseal(&mut b.conn, &b.ctx, same, 1, &mut b.identity.local(), now)
+            .reseal_fork(&mut b.conn, &b.ctx, same, 1, &mut b.identity.local(), now)
             .await;
         assert!(matches!(result, Err(SyncError::InvalidReseal(_))));
     });
@@ -1842,7 +1649,7 @@ fn operations_with_a_newer_manifest_are_held_until_an_update_can_read_them() {
         replicas[0].seal().await.unwrap();
         let (a, b) = replicas.split_at_mut(1);
         let (a, b) = (&mut a[0], &mut b[0]);
-        let ops = a.ops_since(&VersionVector::new()).await;
+        let ops = a.own_ops().await;
         let mut newer = Envelope::decode(&ops[1]).unwrap().operation().unwrap();
         newer.header.manifest_version += 1;
         let newer = newer.seal(&a.identity.key).unwrap().into_bytes();
@@ -1947,53 +1754,16 @@ fn failpoints_roll_back_every_entry_point() {
         })
         .await;
 
-        b.pull(c).await;
-        c.exec("UPDATE quick_note_tags SET name = 'Unpublished' WHERE id = 'tag-1'")
-            .await;
-        c.seal().await.unwrap();
-        let target = c.writer();
-        let cutoff = b.applied_vector().await.get(&target);
-        // B coordinates here, so it may revoke and C accepts the revocation.
-        b.ctx.coordinator_device_id = device_id(b.index);
-        c.ctx.coordinator_device_id = device_id(b.index);
-        seal_revoke(b, target, cutoff).await.unwrap();
-        let known = c.stored_vector().await;
-        let ops = b.ops_since(&known).await;
-        c.receive(&ops).await;
-        let report = loop {
-            let report = c.apply_once().await.unwrap();
-            if report.reseal_needed.is_some() || !report.more {
-                break report;
-            }
-        };
-        let needed = report
-            .reseal_needed
-            .expect("the revocation cuts off an applied local operation");
-        assert_rolls_back(c, "reseal.before_commit", async |r: &mut Replica| {
-            r.reseal(needed).await
-        })
+        let mut anchor = Replica::anchor(3, 1).await;
+        anchor.pull(c).await;
+        let device = c.device_id.clone();
+        assert_rolls_back(
+            &mut anchor,
+            "sequence.before_commit",
+            async |r: &mut Replica| r.remove(&device).await,
+        )
         .await;
     });
-}
-
-/// Index of the replica that seals geneses for other installations.
-const MINTER_INDEX: usize = 9;
-
-/// Geneses of new writers numbered `writers`, each on `device(writer)`, as other installations
-/// would seal them.
-async fn mint_writers(
-    writers: std::ops::Range<usize>,
-    device: impl Fn(usize) -> String,
-) -> Vec<Vec<u8>> {
-    let mut minter = Replica::new(MINTER_INDEX, 1).await;
-    for writer in writers {
-        let mut seed = [0u8; 32];
-        seed[..8].copy_from_slice(&(writer as u64).to_le_bytes());
-        seed[31] = 2;
-        minter.identity = Identity::new(seed, &minter.person, &device(writer), None);
-        minter.seal().await.unwrap();
-    }
-    minter.ops_since(&VersionVector::new()).await
 }
 
 /// Dependency counts of every stored operation of `writer`, in chain order, with whether
@@ -2016,10 +1786,14 @@ fn seal_succeeds_when_more_than_max_dependencies_writers_advanced() {
     block_on(async {
         let mut replicas = replicas(2).await;
         let minted = MAX_DEPENDENCIES + MAX_DEPENDENCIES / 2;
-        let geneses = mint_writers(0..minted, |writer| device_id(100 + writer)).await;
+        let minted_writers = mint_writers(0..minted, spread_devices).await;
         let (a, b) = replicas.split_at_mut(1);
         let (a, b) = (&mut a[0], &mut b[0]);
-        assert_eq!(a.receive(&geneses).await, vec![STORED; minted]);
+        minted_writers.enroll(a).await;
+        assert_eq!(
+            a.receive(&minted_writers.geneses).await,
+            vec![STORED; minted]
+        );
         a.apply_all().await.unwrap();
 
         seed_note(a).await;
@@ -2033,11 +1807,13 @@ fn seal_succeeds_when_more_than_max_dependencies_writers_advanced() {
             vec![
                 (0, false),
                 (MAX_DEPENDENCIES, true),
-                (minted - MAX_DEPENDENCIES, false)
+                // The rest of the minted writers and the authority writer.
+                (minted + 1 - MAX_DEPENDENCIES, false)
             ]
         );
-        assert_eq!(a.applied_vector().await.len(), minted + 1);
+        assert_eq!(a.applied_vector().await.len(), minted + 2);
 
+        minted_writers.enroll(b).await;
         b.pull(a).await;
         assert_eq!(title(b, "note-1").await.as_deref(), Some("One"));
         assert_converged(&mut replicas).await;
@@ -2056,8 +1832,9 @@ fn a_fork_reseals_operations_that_only_advance_dependencies() {
         a.exec("UPDATE quick_note_tags SET name = 'Original' WHERE id = 'tag-1'")
             .await;
         a.seal().await.unwrap();
-        let geneses = mint_writers(0..MAX_DEPENDENCIES + 1, |writer| device_id(100 + writer)).await;
-        clone.receive(&geneses).await;
+        let minted = mint_writers(0..MAX_DEPENDENCIES + 1, spread_devices).await;
+        minted.enroll(&mut clone).await;
+        clone.receive(&minted.geneses).await;
         clone.apply_all().await.unwrap();
         clone
             .exec(
@@ -2120,17 +1897,21 @@ fn a_fork_reseals_operations_that_only_advance_dependencies() {
 fn store_refuses_geneses_past_the_writers_of_one_device() {
     block_on(async {
         let mut a = Replica::new(0, 1).await;
-        let geneses = mint_writers(0..MAX_WRITERS_PER_DEVICE + 1, |_| device_id(100)).await;
+        let geneses = mint_writers(0..MAX_WRITERS_PER_DEVICE + 1, |_| 10)
+            .await
+            .geneses;
         let mut expected = vec![STORED; MAX_WRITERS_PER_DEVICE];
         expected.push(StoreOutcome::Refused(StoreRefusal::WriterLimit));
         assert_eq!(a.receive(&geneses).await, expected);
-        assert_eq!(a.stored_vector().await.len(), MAX_WRITERS_PER_DEVICE);
+        // The minted writers and the authority writer of the space template.
+        assert_eq!(a.stored_vector().await.len(), MAX_WRITERS_PER_DEVICE + 1);
 
         let other_device = mint_writers(
             MAX_WRITERS_PER_DEVICE + 1..MAX_WRITERS_PER_DEVICE + 2,
-            |_| device_id(101),
+            |_| 11,
         )
-        .await;
+        .await
+        .geneses;
         assert_eq!(a.receive(&other_device).await, vec![STORED]);
     });
 }

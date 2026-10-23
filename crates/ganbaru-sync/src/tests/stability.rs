@@ -3,7 +3,7 @@
 use ganbaru_sync_contracts::VersionVector;
 
 use super::block_on;
-use super::replica::{Replica, device_id};
+use super::replica::{Replica, device_id, person, template_vector};
 use crate::stability::{CountedDevice, DORMANCY_MS, DeviceStanding, Stability};
 
 async fn acknowledge(replica: &mut Replica) {
@@ -65,7 +65,8 @@ fn stability_is_what_every_counted_device_and_the_coordinator_hold() {
         let (mut hub, a, b) = linked().await;
         let since = hub.now_ms;
         let result = stability(&mut hub, &[counted(1, since), counted(2, since)]).await;
-        let expected: VersionVector = [(a.writer(), 2)].into_iter().collect();
+        let mut expected = template_vector(&person());
+        expected.set(a.writer(), 2);
         assert_eq!(result.stable, expected);
         assert_eq!(result.devices.len(), 2);
         assert!(result.devices[1].acknowledged.covers(&a.writer(), 2));
@@ -124,7 +125,7 @@ fn stability_ignores_a_dormant_device_until_it_returns() {
         let result = stability(&mut hub, &devices).await;
         assert_eq!(result.devices[2].standing, DeviceStanding::Counted);
         assert_eq!(result.devices[2].last_stored_ms, Some(hub.now_ms));
-        assert!(result.stable.is_empty());
+        assert_eq!(result.stable, template_vector(&person()));
 
         // Devices whose newest operation is older than the limit are dormant too.
         hub.now_ms += DORMANCY_MS + 1;

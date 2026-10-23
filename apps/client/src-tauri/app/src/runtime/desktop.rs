@@ -886,7 +886,6 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
             quick_notes::quick_notes_paste_clipboard_image,
             quick_notes::quick_notes_import_dropped_images,
             quick_notes::quick_notes_download_image,
-            quick_notes::quick_notes_collect_images,
             crate::sync::commands::sync_status,
             crate::sync::commands::sync_subscribe,
             crate::sync::commands::sync_unsubscribe,

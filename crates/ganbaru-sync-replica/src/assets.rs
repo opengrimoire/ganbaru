@@ -7,6 +7,14 @@
 //! when the size and digest match the reference and the asset's class accepts the bytes, and an
 //! aborted or refused transfer removes the temporary file. Paths come from the registered
 //! [`AssetClass`] of a reference, never from wire text.
+//!
+//! [`collect_unreferenced_assets`] removes the files nothing references any more.
+
+mod collection;
+
+pub use collection::{
+    AssetSweep, InFlightAssets, UNREFERENCED_ASSET_GRACE, collect_unreferenced_assets,
+};
 
 use super::client::{PeerIds, SyncTransport, answer};
 use super::wire::{asset_key, asset_to_wire, bytes_from_wire, bytes_to_wire};
@@ -163,24 +171,34 @@ fn hex(bytes: &[u8]) -> String {
 }
 
 /// The asset files under a fixed vault root, each at the path its class derives, with the
-/// checks registered for some classes.
+/// checks registered for some classes. Every asset it confirms holding, stages, or commits is
+/// recorded in its [`InFlightAssets`], so the asset sweep spares it within the grace.
 #[derive(Clone, Debug)]
 pub struct ContentAddressedStore {
     root: PathBuf,
     checks: Vec<(&'static AssetClass, AssetCheck)>,
+    in_flight: Arc<InFlightAssets>,
 }
 
 impl ContentAddressedStore {
+    /// A store with its own in-flight registry.
     pub fn new(root: PathBuf) -> Self {
         Self {
             root,
             checks: Vec::new(),
+            in_flight: Arc::default(),
         }
     }
 
     /// Adds a check that every received asset of `class` must pass before it is stored.
     pub fn with_check(mut self, class: &'static AssetClass, check: AssetCheck) -> Self {
         self.checks.push((class, check));
+        self
+    }
+
+    /// Records touched assets in `in_flight`, the registry the asset sweep of the vault reads.
+    pub fn with_in_flight(mut self, in_flight: Arc<InFlightAssets>) -> Self {
+        self.in_flight = in_flight;
         self
     }
 
@@ -192,13 +210,11 @@ impl ContentAddressedStore {
 
 impl AssetStore for ContentAddressedStore {
     fn holds(&self, asset: &AssetRef) -> Result<bool, AssetStoreError> {
-        match fs::symlink_metadata(asset.path(&self.root)) {
-            Ok(metadata) => {
-                Ok(metadata.is_file() && metadata.len() == u64::from(asset.byte_size()))
-            }
-            Err(error) if error.kind() == ErrorKind::NotFound => Ok(false),
-            Err(error) => Err(io_failure("inspect asset", error)),
+        let held = self.holds_file(asset)?;
+        if held {
+            self.in_flight.touch(asset);
         }
+        Ok(held)
     }
 
     fn read_chunk(
@@ -207,7 +223,7 @@ impl AssetStore for ContentAddressedStore {
         offset: u32,
         max_len: usize,
     ) -> Result<Vec<u8>, AssetStoreError> {
-        if offset >= asset.byte_size() || !self.holds(asset)? {
+        if offset >= asset.byte_size() || !self.holds_file(asset)? {
             return Err(AssetStoreError::Unavailable);
         }
         let mut file = fs::File::open(asset.path(&self.root))
@@ -230,6 +246,7 @@ impl AssetStore for ContentAddressedStore {
             .map_err(|error| io_failure("create asset directory", error))?;
         let file = StagedFile::create(&asset.path(&self.root), FileAccess::Default)
             .map_err(|error| io_failure("stage asset", error))?;
+        self.in_flight.touch(asset);
         Ok(StagedAsset {
             asset: asset.clone(),
             file,
@@ -244,7 +261,10 @@ impl AssetStore for ContentAddressedStore {
                 check(&asset, file.staged_path()).map_err(AssetStoreError::Mismatch)?;
             }
         }
-        if self.holds(&asset)? && self.held_digest(&asset)? == asset.sha256() {
+        // Recorded before the held file is inspected, so a sweep either removed the file
+        // already, and the commit places it again, or spares it.
+        self.in_flight.touch(&asset);
+        if self.holds_file(&asset)? && self.held_digest(&asset)? == asset.sha256() {
             return Ok(());
         }
         file.commit()
@@ -253,6 +273,17 @@ impl AssetStore for ContentAddressedStore {
 }
 
 impl ContentAddressedStore {
+    /// Whether a regular file of the asset's exact size is at its path.
+    fn holds_file(&self, asset: &AssetRef) -> Result<bool, AssetStoreError> {
+        match fs::symlink_metadata(asset.path(&self.root)) {
+            Ok(metadata) => {
+                Ok(metadata.is_file() && metadata.len() == u64::from(asset.byte_size()))
+            }
+            Err(error) if error.kind() == ErrorKind::NotFound => Ok(false),
+            Err(error) => Err(io_failure("inspect asset", error)),
+        }
+    }
+
     /// Removes the temporary files that transfers into the directories of `classes` left behind
     /// when the process stopped before it could clean them up, and returns how many it removed.
     /// Only regular files named like a staged temporary file and unmodified for at least

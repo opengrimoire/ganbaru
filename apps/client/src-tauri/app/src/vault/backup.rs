@@ -3,7 +3,7 @@
 #[cfg(target_os = "android")]
 use super::active_vault_path;
 use super::select_quiesced_vault;
-use super::{APP_SQLITE_FILE, CONFIG_FILE, CONFIG_LOCK, VAULT_MANIFEST_FILE, VaultInfo};
+use super::{APP_SQLITE_FILE, CONFIG_LOCK, VAULT_MANIFEST_FILE, VaultInfo};
 use super::{MAX_VAULT_MANIFEST_BYTES, database_path, parse_vault_manifest, vault_info_from_path};
 #[cfg(target_os = "android")]
 use super::{default_vault_path, ensure_vault_skeleton, path_to_string};
@@ -11,6 +11,10 @@ use super::{default_vault_path, ensure_vault_skeleton, path_to_string};
 use chrono::{SecondsFormat, Utc};
 #[cfg(target_os = "android")]
 use ganbaru_mobile_documents::MobileDocumentsExt;
+use ganbaru_sync_replica::backup::{
+    ArchiveGate, BACKUP_MAX_BYTES, BACKUP_MAX_DEPTH, BACKUP_MAX_ENTRIES, COPY_BUFFER_BYTES,
+    create_snapshot_archive, is_bundle_layout_entry, is_database_sidecar,
+};
 use sqlx::Row;
 use std::fs;
 use std::io::{Read, Write};
@@ -18,66 +22,15 @@ use std::path::{Component, Path, PathBuf};
 #[cfg(target_os = "android")]
 use tauri::Manager;
 use tauri::Runtime;
-use zip::write::{SimpleFileOptions, ZipWriter};
-use zip::{CompressionMethod, ZipArchive};
+use zip::ZipArchive;
 
 #[cfg(target_os = "android")]
 const BACKUP_EXTENSION: &str = "ganbaru-backup";
 #[cfg(target_os = "android")]
 const BACKUP_MIME_TYPE: &str = "application/zip";
-const BACKUP_MAX_ENTRIES: usize = 100_000;
-const BACKUP_MAX_BYTES: u64 = 100 * 1024 * 1024 * 1024;
-const BACKUP_MAX_DEPTH: usize = 64;
-const COPY_BUFFER_BYTES: usize = 64 * 1024;
-/// Top-level directories a vault bundle carries with everything below them.
-/// Every vault skeleton directory lives below one of these.
-pub(super) const BUNDLE_DIRECTORIES: &[&str] = &[
-    "notes",
-    "diary",
-    "projects",
-    "reports",
-    "assets",
-    "templates",
-    ".yjs",
-];
-/// Directory whose direct children are project working folders.
-const BUNDLE_PROJECTS_DIRECTORY: &str = "projects";
 /// Most skipped bundle entries named in one log line.
 const MAX_REPORTED_SKIPPED_ENTRIES: usize = 8;
 const DIFFERENT_VAULT_ERROR: &str = "received bundle belongs to a different vault";
-
-/// Whether `relative` belongs to the vault layout a bundle carries: the vault
-/// marker, configuration, and database files, the skeleton directories with
-/// their contents, and only folders directly below `projects`. Anything else,
-/// such as a `.git`, `.claude`, `.codex`, or `.vscode` folder at the vault
-/// root, stays out of bundles in both directions.
-fn is_bundle_layout_entry(relative: &Path, directory: bool) -> bool {
-    let mut components = relative.components().map(|component| match component {
-        Component::Normal(name) => name.to_str(),
-        _ => None,
-    });
-    let Some(Some(top)) = components.next() else {
-        return false;
-    };
-    match components.next() {
-        None if directory => BUNDLE_DIRECTORIES.contains(&top),
-        None => [VAULT_MANIFEST_FILE, CONFIG_FILE, APP_SQLITE_FILE].contains(&top),
-        Some(None) => false,
-        Some(Some(_)) if top == BUNDLE_PROJECTS_DIRECTORY => {
-            directory || components.next().is_some()
-        }
-        Some(Some(_)) => BUNDLE_DIRECTORIES.contains(&top),
-    }
-}
-
-/// Whether `name` is a SQLite journal, WAL, or shared-memory file of the vault
-/// database. These belong to one database file and never move with another.
-fn is_database_sidecar(name: &Path) -> bool {
-    name.file_name()
-        .and_then(|value| value.to_str())
-        .and_then(|value| value.strip_prefix(APP_SQLITE_FILE))
-        .is_some_and(|suffix| suffix.starts_with('-'))
-}
 
 /// Entries left out of an extracted bundle or a vault replacement.
 #[derive(Debug, Default)]
@@ -154,196 +107,20 @@ fn backup_file_name() -> String {
     format!("ganbaru-backup-{timestamp}.{BACKUP_EXTENSION}")
 }
 
-#[cfg(target_os = "android")]
-async fn create_database_snapshot<R: Runtime>(
-    app: &tauri::AppHandle<R>,
-    destination: &Path,
-) -> Result<(), String> {
-    let pool = crate::db::connect_vault(&app).await?;
-    vacuum_database(&pool, destination).await
-}
-
-async fn vacuum_database(pool: &sqlx::SqlitePool, destination: &Path) -> Result<(), String> {
-    let destination = destination
-        .to_str()
-        .ok_or_else(|| "database snapshot path contains non-UTF-8 characters".to_string())?;
-    sqlx::query("VACUUM INTO ?")
-        .bind(destination)
-        .execute(pool)
-        .await
-        .map_err(|error| format!("create consistent database snapshot: {error}"))?;
-    Ok(())
-}
-
-#[derive(Clone)]
-struct ArchiveEntry {
-    source: PathBuf,
-    relative: PathBuf,
-    directory: bool,
-}
-
-fn collect_archive_entries(
-    root: &Path,
-    current: &Path,
-    entries: &mut Vec<ArchiveEntry>,
-    total_bytes: &mut u64,
-) -> Result<(), String> {
-    let mut children = fs::read_dir(current)
-        .map_err(|error| format!("read backup source '{}': {error}", current.display()))?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|error| format!("read backup source entry: {error}"))?;
-    children.sort_by_key(fs::DirEntry::file_name);
-
-    for child in children {
-        if entries.len() >= BACKUP_MAX_ENTRIES {
-            return Err("Ganbaru folder contains too many backup entries".to_string());
-        }
-        let source = child.path();
-        let relative = source
-            .strip_prefix(root)
-            .map_err(|_| "backup entry escaped the Ganbaru folder".to_string())?
-            .to_path_buf();
-        let depth = relative.components().count();
-        if depth > BACKUP_MAX_DEPTH {
-            return Err("Ganbaru folder is nested too deeply to back up".to_string());
-        }
-        let metadata = fs::symlink_metadata(&source)
-            .map_err(|error| format!("inspect backup entry '{}': {error}", source.display()))?;
-        if !is_bundle_layout_entry(&relative, metadata.is_dir()) {
-            continue;
-        }
-        if metadata.file_type().is_symlink() {
-            return Err(format!(
-                "backup does not support symbolic link '{}'",
-                relative.display()
-            ));
-        }
-        if metadata.is_dir() {
-            entries.push(ArchiveEntry {
-                source: source.clone(),
-                relative,
-                directory: true,
-            });
-            collect_archive_entries(root, &source, entries, total_bytes)?;
-        } else if metadata.is_file() {
-            if is_database_sidecar(&relative) {
-                continue;
-            }
-            *total_bytes = total_bytes.saturating_add(metadata.len());
-            if *total_bytes > BACKUP_MAX_BYTES {
-                return Err("Ganbaru folder exceeds the backup size limit".to_string());
-            }
-            entries.push(ArchiveEntry {
-                source,
-                relative,
-                directory: false,
-            });
-        } else {
-            return Err(format!(
-                "backup contains unsupported entry '{}'",
-                relative.display()
-            ));
-        }
-    }
-    Ok(())
-}
-
-fn archive_name(path: &Path, directory: bool) -> Result<String, String> {
-    let mut name = path
-        .to_str()
-        .ok_or_else(|| "backup entry path contains non-UTF-8 characters".to_string())?
-        .replace('\\', "/");
-    if directory && !name.ends_with('/') {
-        name.push('/');
-    }
-    Ok(name)
-}
-
-fn create_backup_archive(
-    vault_root: &Path,
-    database_snapshot: &Path,
-    destination: &Path,
-) -> Result<(), String> {
-    let _config_guard = CONFIG_LOCK
-        .lock()
-        .map_err(|_| "vault config lock is unavailable".to_string())?;
-    let mut entries = Vec::new();
-    let mut total_bytes = 0;
-    collect_archive_entries(vault_root, vault_root, &mut entries, &mut total_bytes)?;
-
-    let file =
-        fs::File::create(destination).map_err(|error| format!("create backup archive: {error}"))?;
-    let mut writer = ZipWriter::new(file);
-    let options = SimpleFileOptions::default()
-        .compression_method(CompressionMethod::Deflated)
-        .unix_permissions(0o600);
-    let directory_options = SimpleFileOptions::default()
-        .compression_method(CompressionMethod::Stored)
-        .unix_permissions(0o700);
-    let mut buffer = vec![0_u8; COPY_BUFFER_BYTES];
-
-    for entry in entries {
-        let name = archive_name(&entry.relative, entry.directory)?;
-        if entry.directory {
-            writer
-                .add_directory(name, directory_options)
-                .map_err(|error| format!("write backup directory: {error}"))?;
-            continue;
-        }
-        writer
-            .start_file(name, options)
-            .map_err(|error| format!("write backup entry: {error}"))?;
-        let source = if entry.relative == Path::new(APP_SQLITE_FILE) {
-            database_snapshot
-        } else {
-            &entry.source
-        };
-        let mut input = fs::File::open(source).map_err(|error| {
-            format!("open backup entry '{}': {error}", entry.relative.display())
-        })?;
-        loop {
-            let count = input.read(&mut buffer).map_err(|error| {
-                format!("read backup entry '{}': {error}", entry.relative.display())
-            })?;
-            if count == 0 {
-                break;
-            }
-            writer.write_all(&buffer[..count]).map_err(|error| {
-                format!(
-                    "compress backup entry '{}': {error}",
-                    entry.relative.display()
-                )
-            })?;
-        }
-    }
-    writer
-        .finish()
-        .map_err(|error| format!("finish backup archive: {error}"))?
-        .sync_all()
-        .map_err(|error| format!("sync backup archive: {error}"))?;
-    Ok(())
-}
-
 /// Creates one consistent whole-vault archive after the caller excludes vault writers.
 pub(crate) async fn create_handoff_archive(
     vault_root: &Path,
     database_snapshot: &Path,
     archive_path: &Path,
 ) -> Result<(), String> {
-    for path in [database_snapshot, archive_path] {
-        match fs::remove_file(path) {
-            Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(format!("remove stale handoff snapshot: {error}")),
-        }
-    }
-    let registry = ganbaru_db::DatabasePoolRegistry::default();
-    let pool = registry.connect_path(database_path(vault_root)).await?;
-    let snapshot_result = vacuum_database(&pool, database_snapshot).await;
-    registry.close_all().await?;
-    snapshot_result?;
-    prepare_snapshot_copy(database_snapshot).await?;
-    create_backup_archive(vault_root, database_snapshot, archive_path)
+    create_snapshot_archive(
+        &ArchiveGate::process(),
+        vault_root,
+        database_snapshot,
+        archive_path,
+        &CONFIG_LOCK,
+    )
+    .await
 }
 
 fn safe_archive_path(path: &Path) -> Result<PathBuf, String> {
@@ -973,28 +750,6 @@ async fn activate_handoff_at_path<R: Runtime>(
     .map_err(|error| format!("handoff activation worker failed: {error}"))?
 }
 
-/// Clears installation-local sync state and device-local rows from a snapshot copy before it
-/// leaves this device.
-async fn prepare_snapshot_copy(snapshot: &Path) -> Result<(), String> {
-    use sqlx::Connection;
-    let options = sqlx::sqlite::SqliteConnectOptions::new().filename(snapshot);
-    let mut conn = sqlx::SqliteConnection::connect_with(&options)
-        .await
-        .map_err(|error| format!("open handoff snapshot: {error}"))?;
-    let result = ganbaru_sync::local::prepare_snapshot_copy(
-        &mut conn,
-        &ganbaru_sync::manifest::vault::VAULT_MANIFEST,
-    )
-    .await
-    .map_err(|error| format!("prepare handoff snapshot: {error}"));
-    let closed = conn
-        .close()
-        .await
-        .map_err(|error| format!("close handoff snapshot: {error}"));
-    result.and(closed)
-}
-
-/// Carries this device's sync operations and device state into the staged replacement of the
 /// same vault. A replacement by another vault carries nothing.
 async fn carry_forward_local_changes<R: Runtime>(
     app: &tauri::AppHandle<R>,
@@ -1166,8 +921,16 @@ pub async fn vault_backup_to_downloads(
         let vault_root = active_vault_path(&app)?;
         let database_snapshot = transfer.join("database.sqlite");
         let archive_path = transfer.join("backup.ganbaru-backup");
-        create_database_snapshot(&app, &database_snapshot).await?;
-        create_backup_archive(&vault_root, &database_snapshot, &archive_path)?;
+        let pool = crate::db::connect_vault(&app).await?;
+        ganbaru_sync_replica::backup::create_backup_archive(
+            &ArchiveGate::process(),
+            &pool,
+            &vault_root,
+            &database_snapshot,
+            &archive_path,
+            &CONFIG_LOCK,
+        )
+        .await?;
         let file_name = backup_file_name();
         let archive_path = path_to_string(&archive_path, "backup archive")?;
         let saved_name = app.mobile_documents().save_file_download(
@@ -1320,6 +1083,7 @@ pub async fn vault_pick_and_restore_backup() -> Result<Option<VaultInfo>, String
 #[cfg(test)]
 mod tests {
     use super::*;
+    use zip::write::{SimpleFileOptions, ZipWriter};
 
     fn unique_test_path(name: &str) -> PathBuf {
         std::env::temp_dir().join(format!(
@@ -1369,41 +1133,6 @@ mod tests {
         fs::write(target.join("vault.json"), "invalid json").unwrap();
         assert!(replaces_independent_vault(&target, &linked.vault_id));
         let _ = fs::remove_dir_all(parent);
-    }
-
-    #[test]
-    fn backup_archive_uses_consistent_database_snapshot() {
-        let root = unique_test_path("root");
-        let snapshot = unique_test_path("snapshot.sqlite");
-        let archive_path = unique_test_path("backup.ganbaru-backup");
-        fs::create_dir_all(root.join("notes")).unwrap();
-        fs::write(root.join("vault.json"), b"vault").unwrap();
-        fs::write(root.join(APP_SQLITE_FILE), b"live database").unwrap();
-        fs::write(root.join("ganbaru.sqlite-wal"), b"wal").unwrap();
-        fs::write(root.join(super::super::vault_lock::VAULT_LOCK_FILE), b"").unwrap();
-        fs::write(root.join("notes/page.md"), b"note").unwrap();
-        fs::write(&snapshot, b"snapshot database").unwrap();
-
-        create_backup_archive(&root, &snapshot, &archive_path).unwrap();
-        let file = fs::File::open(&archive_path).unwrap();
-        let mut archive = ZipArchive::new(file).unwrap();
-        let mut database = String::new();
-        archive
-            .by_name(APP_SQLITE_FILE)
-            .unwrap()
-            .read_to_string(&mut database)
-            .unwrap();
-        assert_eq!(database, "snapshot database");
-        assert!(archive.by_name("ganbaru.sqlite-wal").is_err());
-        assert!(
-            archive
-                .by_name(super::super::vault_lock::VAULT_LOCK_FILE)
-                .is_err()
-        );
-
-        let _ = fs::remove_dir_all(root);
-        let _ = fs::remove_file(snapshot);
-        let _ = fs::remove_file(archive_path);
     }
 
     #[test]
@@ -1565,15 +1294,6 @@ mod tests {
                 "{path}"
             );
         }
-    }
-
-    #[test]
-    fn database_sidecars_are_recognized_by_name() {
-        assert!(is_database_sidecar(Path::new("ganbaru.sqlite-wal")));
-        assert!(is_database_sidecar(Path::new("ganbaru.sqlite-shm")));
-        assert!(is_database_sidecar(Path::new("ganbaru.sqlite-journal")));
-        assert!(!is_database_sidecar(Path::new(APP_SQLITE_FILE)));
-        assert!(!is_database_sidecar(Path::new("ganbaru.sqlite.bak")));
     }
 
     #[test]
@@ -1783,49 +1503,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn vacuum_database_creates_a_consistent_readable_snapshot() {
-        use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
-
-        let source = unique_test_path("source.sqlite");
-        let snapshot = unique_test_path("vacuum.sqlite");
-        let options = SqliteConnectOptions::new()
-            .filename(&source)
-            .create_if_missing(true);
-        let pool = SqlitePoolOptions::new()
-            .max_connections(1)
-            .connect_with(options)
-            .await
-            .unwrap();
-        sqlx::query("CREATE TABLE backup_test (value TEXT NOT NULL)")
-            .execute(&pool)
-            .await
-            .unwrap();
-        sqlx::query("INSERT INTO backup_test (value) VALUES ('preserved')")
-            .execute(&pool)
-            .await
-            .unwrap();
-
-        vacuum_database(&pool, &snapshot).await.unwrap();
-        pool.close().await;
-
-        let snapshot_options = SqliteConnectOptions::new().filename(&snapshot);
-        let snapshot_pool = SqlitePoolOptions::new()
-            .max_connections(1)
-            .connect_with(snapshot_options)
-            .await
-            .unwrap();
-        let value: String = sqlx::query_scalar("SELECT value FROM backup_test")
-            .fetch_one(&snapshot_pool)
-            .await
-            .unwrap();
-        assert_eq!(value, "preserved");
-        snapshot_pool.close().await;
-
-        let _ = fs::remove_file(source);
-        let _ = fs::remove_file(snapshot);
-    }
-
-    #[tokio::test]
     async fn whole_vault_snapshot_restores_database_and_managed_files() {
         let parent = unique_test_path("whole-vault");
         let source = parent.join("source");
@@ -1893,8 +1570,16 @@ mod tests {
         assert!(live_wal.exists(), "source should have an active WAL");
         assert!(live_shm.exists(), "source should have active shared memory");
 
-        vacuum_database(&source_pool, &snapshot).await.unwrap();
-        create_backup_archive(&source, &snapshot, &archive_path).unwrap();
+        ganbaru_sync_replica::backup::create_backup_archive(
+            &ArchiveGate::default(),
+            &source_pool,
+            &source,
+            &snapshot,
+            &archive_path,
+            &CONFIG_LOCK,
+        )
+        .await
+        .unwrap();
 
         let file = fs::File::open(&archive_path).unwrap();
         let mut archive = ZipArchive::new(file).unwrap();

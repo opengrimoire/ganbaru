@@ -1,7 +1,7 @@
 [package]
 name = "ganbaru-sync-replica"
 version = "0.1.0"
-description = "Ganbaru vault replica sync: installation writer keys, guarded access, carry-forward, recovery, and the hub and client exchange"
+description = "Ganbaru vault replica sync: installation writer keys, guarded access, carry-forward, recovery, the hub and client exchange, asset collection, and vault archives"
 authors.workspace = true
 license.workspace = true
 edition.workspace = true
@@ -26,11 +26,13 @@ serde_json = { workspace = true }
 sha2 = { workspace = true }
 sqlx = { workspace = true }
 tokio = { workspace = true }
+zip = { workspace = true }
 
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 keyring = { workspace = true }
 
 [dev-dependencies]
+ganbaru-db = { workspace = true, features = ["test-support"] }
 ganbaru-music-library = { workspace = true }
 ganbaru-quick-notes = { workspace = true }
 ganbaru-themes = { workspace = true }

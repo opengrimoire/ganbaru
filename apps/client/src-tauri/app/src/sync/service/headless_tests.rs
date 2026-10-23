@@ -258,6 +258,27 @@ async fn headless_pass_converges_with_the_hub_and_runs_hooks() {
         materialized.load(Ordering::SeqCst) > 0,
         "the registered hook ran on the materialized notes"
     );
+
+    let host = HeadlessHost::open(&config_dir).expect("reopen headless host");
+    let pass = tokio::time::timeout(
+        PASS_WAIT,
+        headless_pass_with(async { Ok(host) }, &live, &gate, PASS_WAIT),
+    )
+    .await
+    .expect("the follow-up pass finishes")
+    .expect("follow-up headless pass");
+    assert!(!pass.more, "pushing the acknowledgement settles the pass");
+    let phone_acknowledgements: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM sync_ops WHERE kind = 3")
+            .fetch_one(&phone_pool)
+            .await
+            .expect("recount phone acknowledgements");
+    assert_eq!(phone_acknowledgements, 1, "an idle pass seals nothing");
+    let pushed: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM sync_ops WHERE kind = 3")
+        .fetch_one(&hub_pool)
+        .await
+        .expect("count hub acknowledgements");
+    assert_eq!(pushed, 1, "the hub holds the phone acknowledgement");
     drop(phone_pool);
     phone_registry
         .close_all()

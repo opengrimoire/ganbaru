@@ -2,13 +2,14 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use ganbaru_sync_contracts::{Field, OrderKey};
+use ganbaru_sync_contracts::{Change, ChangeAction, Field, GroupValue, OrderKey, RowKey, Value};
 use sqlx::SqlitePool;
 
 use super::fixture::{
     CYCLE_A, CYCLE_A_TABLE, CYCLE_B, CYCLE_B_TABLE, FIXTURE_DOMAIN, FIXTURE_TABLE_IDS, FixtureHook,
     ITEMS, ITEMS_TABLE, LINKS, LINKS_TABLE, LISTS_TABLE, MEMBERSHIP_DETAILS, MEMBERSHIP_IDENTITY,
-    MEMBERSHIPS, TEST_MANIFEST, fixture_pool, membership_group, test_engine,
+    MEMBERSHIP_KEY_PREFIX, MEMBERSHIPS, MEMBERSHIPS_TABLE, TEST_MANIFEST, fixture_pool,
+    membership_group, membership_key, test_engine,
 };
 use super::{block_on, migrated_pool};
 use crate::assets::{AssetClass, MAX_ASSET_BYTES};
@@ -24,7 +25,7 @@ use crate::manifest::{
     SYNC_TABLES, TableIdRange, TableSpec, is_sql_literal,
 };
 use crate::sql::{read_owned, replace_owned};
-use crate::{Adapters, Engine, Hooks, SyncError, triggers};
+use crate::{Adapters, Engine, Hooks, SyncError, triggers, validate};
 
 /// Every manifest under test with a freshly migrated database that holds its schema.
 pub(super) async fn cases() -> Vec<(&'static Manifest, SqlitePool)> {
@@ -432,7 +433,8 @@ fn derived_key_refuses_a_non_key_column_in_an_immutable_group() {
         const TIME_AS_INPUT: TableSpec = TableSpec {
             derived_key: Some(DerivedKey {
                 exists_group: membership_group::EXISTS,
-                key_inputs: &["created_at"],
+                prefix: Some(MEMBERSHIP_KEY_PREFIX),
+                key_inputs: &["item_id", "end_id", "created_at"],
             }),
             ..TIME_IN_IDENTITY
         };
@@ -454,6 +456,7 @@ fn validation_refuses_malformed_derived_keys() {
         redirects: true,
         derived_key: Some(DerivedKey {
             exists_group: membership_group::EXISTS,
+            prefix: Some("Not Valid"),
             key_inputs: &["role"],
         }),
         ..MEMBERSHIPS
@@ -461,6 +464,30 @@ fn validation_refuses_malformed_derived_keys() {
     const NO_EXISTS: TableSpec = TableSpec {
         derived_key: None,
         ..MEMBERSHIPS
+    };
+    const NO_PREFIX: TableSpec = TableSpec {
+        derived_key: Some(DerivedKey {
+            exists_group: membership_group::EXISTS,
+            prefix: None,
+            key_inputs: &["item_id", "end_id"],
+        }),
+        ..MEMBERSHIPS
+    };
+    const PREFIX_WITHOUT_INPUTS: TableSpec = TableSpec {
+        derived_key: Some(DerivedKey {
+            exists_group: membership_group::EXISTS,
+            prefix: Some(MEMBERSHIP_KEY_PREFIX),
+            key_inputs: &[],
+        }),
+        ..MEMBERSHIPS
+    };
+    const UNPREFIXED: DomainManifest = DomainManifest {
+        tables: &[ITEMS, CYCLE_A, CYCLE_B, LINKS, NO_PREFIX],
+        ..FIXTURE_DOMAIN
+    };
+    const INPUTLESS: DomainManifest = DomainManifest {
+        tables: &[ITEMS, CYCLE_A, CYCLE_B, LINKS, PREFIX_WITHOUT_INPUTS],
+        ..FIXTURE_DOMAIN
     };
     const BAD_DERIVED: DomainManifest = DomainManifest {
         tables: &[ITEMS, CYCLE_A, CYCLE_B, LINKS, BAD_EXISTS],
@@ -475,9 +502,22 @@ fn validation_refuses_malformed_derived_keys() {
         "existence group exists is not a hidden register without columns",
         "a derived-key table never redirects",
         "key input role is not an immutable column",
+        "key prefix Not Valid is not a valid derived key prefix",
     ] {
         assert!(bad.contains(problem), "{problem}: {bad}");
     }
+    let unprefixed = validation_error(&[&quick_notes::DOMAIN, &UNPREFIXED]);
+    for problem in [
+        "key inputs need a key prefix",
+        "a composite-key table derives its key with a prefix",
+    ] {
+        assert!(unprefixed.contains(problem), "{problem}: {unprefixed}");
+    }
+    let inputless = validation_error(&[&quick_notes::DOMAIN, &INPUTLESS]);
+    assert!(
+        inputless.contains("a key prefix needs key inputs"),
+        "{inputless}"
+    );
     let columnless = validation_error(&[&quick_notes::DOMAIN, &COLUMNLESS]);
     assert!(
         columnless.contains("exists has no columns and is not the existence group"),
@@ -914,10 +954,11 @@ async fn assert_owned_constraints(owned: &OwnedTable, pool: &SqlitePool) {
 }
 
 /// The unique column set a derived key implies: the row key is a function of its non-empty key
-/// inputs, so two rows with equal inputs are one row and never need duplicate repair.
+/// inputs, so two rows with equal inputs are one row and never need duplicate repair. A
+/// composite-key table derives its key from its primary key, which is unique already.
 fn implied_unique(table: &TableSpec) -> Option<BTreeSet<(String, String)>> {
     let derived = table.derived_key?;
-    (!derived.key_inputs.is_empty()).then(|| {
+    (!derived.key_inputs.is_empty() && !table.has_composite_key()).then(|| {
         derived
             .key_inputs
             .iter()
@@ -1163,6 +1204,7 @@ fn a_unique_set_of_derived_key_inputs_needs_no_repair() {
         key_column: "id",
         derived_key: Some(DerivedKey {
             exists_group: membership_group::EXISTS,
+            prefix: Some(MEMBERSHIP_KEY_PREFIX),
             key_inputs: &["item_id", "end_id"],
         }),
         ..MEMBERSHIPS
@@ -1170,6 +1212,7 @@ fn a_unique_set_of_derived_key_inputs_needs_no_repair() {
     const ONE_INPUT: TableSpec = TableSpec {
         derived_key: Some(DerivedKey {
             exists_group: membership_group::EXISTS,
+            prefix: Some(MEMBERSHIP_KEY_PREFIX),
             key_inputs: &["item_id"],
         }),
         ..KEYED_BY_INPUTS
@@ -1710,4 +1753,49 @@ fn vault_manifest_changes_only_with_a_version_bump() {
         recorded.replace("\r\n", "\n"),
         "the vault manifest changed without a version bump"
     );
+}
+
+/// A full membership value under `row`, whose identity names `item` in `end`.
+fn membership_change(row: &str, action: ChangeAction, item: &str, end: &str) -> Change {
+    let text = |value: &str| Field::Text(value.to_string());
+    let group = |group, fields| {
+        GroupValue::new(
+            MEMBERSHIPS_TABLE,
+            group,
+            Value::new(fields).expect("fixture values are in bounds"),
+        )
+    };
+    Change {
+        table: MEMBERSHIPS_TABLE,
+        row: RowKey::new(row).expect("fixture keys are valid"),
+        action,
+        groups: vec![
+            group(membership_group::IDENTITY, vec![text(item), text(end)]),
+            group(
+                membership_group::DETAILS,
+                vec![text("2026-01-01T00:00:00Z"), text("member")],
+            ),
+            group(membership_group::EXISTS, vec![Field::Integer(1)]),
+        ],
+        replaced_by: None,
+        cause: None,
+    }
+}
+
+#[test]
+fn a_derived_key_row_is_valid_only_under_the_key_its_inputs_derive() {
+    let engine = test_engine();
+    let derived = membership_key("i-1", "a-1");
+    let other = membership_key("i-2", "a-1");
+    for action in [ChangeAction::Create, ChangeAction::Write] {
+        let change = membership_change(&derived, action, "i-1", "a-1");
+        assert_eq!(validate::change(&engine, &change), Ok(()));
+        for row in [other.as_str(), "m-1"] {
+            let forged = membership_change(row, action, "i-1", "a-1");
+            assert_eq!(
+                validate::change(&engine, &forged),
+                Err(validate::DERIVED_KEY_MISMATCH)
+            );
+        }
+    }
 }

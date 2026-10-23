@@ -29,9 +29,12 @@ impl Manifest {
             if let Some(derived) = table.derived_key {
                 let _ = writeln!(
                     text,
-                    "  derived key exists {} inputs {}",
+                    "  derived key exists {} inputs {}{}",
                     derived.exists_group.get(),
-                    derived.key_inputs.join(",")
+                    derived.key_inputs.join(","),
+                    derived
+                        .prefix
+                        .map_or_else(String::new, |prefix| format!(" prefix {prefix}"))
                 );
             }
             if let Some(tree) = table.tree {

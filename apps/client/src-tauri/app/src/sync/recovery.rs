@@ -9,7 +9,7 @@ pub(crate) use ganbaru_sync_replica::recovery::{
     RecoveredRow, RecoveryAction, RecoveryChoice, RecoveryRestorers, RestoreFuture, close,
 };
 use serde::Serialize;
-use sqlx::SqlitePool;
+use sqlx::SqliteConnection;
 use tauri::{AppHandle, Runtime};
 use tokio::sync::oneshot;
 
@@ -27,24 +27,24 @@ pub(crate) fn restorers() -> &'static RecoveryRestorers {
 
 /// Restores a deleted Quick note as a new note. Notes have no cascade descendants, so a
 /// recovered note that carries some was grouped by a manifest this version does not know.
-fn restore_quick_note(pool: SqlitePool, row: RecoveredRow) -> RestoreFuture {
+fn restore_quick_note(conn: &mut SqliteConnection, row: RecoveredRow) -> RestoreFuture<'_> {
     Box::pin(async move {
         if !row.descendants.is_empty() {
             return Err("a recovered quick note has deleted descendants".to_string());
         }
-        ganbaru_quick_notes::restore_recovered(&pool, &row.values).await
+        ganbaru_quick_notes::restore_recovered(conn, &row.values).await
     })
 }
 
 /// Restores a deleted theme as a new theme. Its token and palette rows are owned by the theme
 /// row rather than cascade descendants, so a recovered theme that carries some was grouped by
 /// a manifest this version does not know.
-fn restore_theme(pool: SqlitePool, row: RecoveredRow) -> RestoreFuture {
+fn restore_theme(conn: &mut SqliteConnection, row: RecoveredRow) -> RestoreFuture<'_> {
     Box::pin(async move {
         if !row.descendants.is_empty() {
             return Err("a recovered theme has deleted descendants".to_string());
         }
-        ganbaru_themes::restore_recovered(&pool, &row.values).await
+        ganbaru_themes::restore_recovered(conn, &row.values).await
     })
 }
 

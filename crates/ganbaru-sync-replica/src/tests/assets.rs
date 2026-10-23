@@ -1,5 +1,5 @@
 use super::TestDirectory;
-use crate::assets::{AssetStore, AssetStoreError, ContentAddressedStore};
+use crate::assets::{AssetStore, AssetStoreError, ContentAddressedStore, STALE_STAGING_AGE};
 use crate::carry_forward::carry_assets;
 use ganbaru_handoff::protocol::SYNC_ASSET_CHUNK_BYTES;
 use ganbaru_sync::Engine;
@@ -7,6 +7,7 @@ use ganbaru_sync::assets::{AssetClass, AssetRef, MAX_ASSET_BYTES};
 use ganbaru_sync::manifest::vault::quick_notes::IMAGES_CLASS;
 use sha2::{Digest as _, Sha256};
 use std::path::Path;
+use std::time::{Duration, SystemTime};
 
 /// A class at the largest asset bound, larger than the bound of every class the vault registers.
 static LARGE_CLASS: AssetClass = AssetClass {
@@ -193,6 +194,89 @@ fn assets_already_held_are_kept_and_class_checks_refuse_the_rest() {
     assert_eq!(
         entries(directory.path(), &LARGE_CLASS),
         vec![asset.file_name()]
+    );
+}
+
+#[test]
+fn a_damaged_held_file_of_the_same_size_is_replaced_by_verified_bytes() {
+    let directory = TestDirectory::new("assets-damaged");
+    let store = ContentAddressedStore::new(directory.path().to_path_buf());
+    let original = bytes(SYNC_ASSET_CHUNK_BYTES + 5, 6);
+    let asset = reference(&LARGE_CLASS, &original);
+    let mut damaged = original.clone();
+    damaged[3] ^= 0xff;
+    store_file(directory.path(), &LARGE_CLASS, &asset.file_name(), &damaged);
+    // The cheap check sees only the size, so the damaged file still counts as held.
+    assert!(store.holds(&asset).expect("holds"));
+
+    receive(&store, &asset, &original).expect("receive");
+    assert_eq!(
+        std::fs::read(asset.path(directory.path())).expect("read"),
+        original
+    );
+    assert_eq!(
+        entries(directory.path(), &LARGE_CLASS),
+        vec![asset.file_name()]
+    );
+}
+
+/// Sets the modification time of the entry at `path`.
+fn age(path: &Path, modified: SystemTime) {
+    std::fs::File::open(path)
+        .and_then(|file| file.set_modified(modified))
+        .expect("age entry");
+}
+
+#[test]
+fn stale_staged_files_are_swept_and_every_other_entry_stays() {
+    let directory = TestDirectory::new("assets-sweep");
+    let store = ContentAddressedStore::new(directory.path().to_path_buf());
+    let held = bytes(40, 10);
+    let asset = reference(&LARGE_CLASS, &held);
+    receive(&store, &asset, &held).expect("receive");
+    let class_directory = LARGE_CLASS.directory(directory.path());
+
+    let staged = |nonce: char| {
+        format!(
+            ".{}.{}.tmp",
+            asset.file_name(),
+            nonce.to_string().repeat(32)
+        )
+    };
+    let abandoned = staged('a');
+    let fresh = staged('b');
+    let lookalike = format!("{}.{}.tmp", asset.file_name(), "c".repeat(32));
+    let staged_directory = format!(".dir.png.{}.tmp", "d".repeat(32));
+    for name in [&abandoned, &fresh, &lookalike, &"notes.tmp".to_string()] {
+        store_file(directory.path(), &LARGE_CLASS, name, &held[..8]);
+    }
+    std::fs::create_dir(class_directory.join(&staged_directory)).expect("create directory");
+    let old = SystemTime::now() - STALE_STAGING_AGE - Duration::from_secs(1);
+    for name in [
+        &abandoned,
+        &lookalike,
+        &"notes.tmp".to_string(),
+        &staged_directory,
+    ] {
+        age(&class_directory.join(name), old);
+    }
+
+    assert_eq!(
+        store.remove_stale_staging([&LARGE_CLASS, &IMAGES_CLASS], STALE_STAGING_AGE),
+        Ok(1)
+    );
+    let mut expected = vec![
+        asset.file_name(),
+        fresh,
+        lookalike,
+        "notes.tmp".to_string(),
+        staged_directory,
+    ];
+    expected.sort();
+    assert_eq!(entries(directory.path(), &LARGE_CLASS), expected);
+    assert_eq!(
+        store.remove_stale_staging([&LARGE_CLASS], STALE_STAGING_AGE),
+        Ok(0)
     );
 }
 

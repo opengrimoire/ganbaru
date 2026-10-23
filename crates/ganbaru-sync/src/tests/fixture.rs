@@ -185,6 +185,43 @@ pub(super) const CYCLE_B: TableSpec = TableSpec {
     ..CYCLE_A
 };
 
+/// `fixture_handles`.
+pub(super) const HANDLES_TABLE: TableId = TableId(FIXTURE_TABLE_IDS + 14);
+
+/// Handles with two independently unique columns, so one row can collide with a different row
+/// under each rule.
+pub(super) const HANDLES: TableSpec = TableSpec {
+    id: HANDLES_TABLE,
+    name: "fixture_handles",
+    groups: &[
+        LABEL,
+        GroupSpec {
+            id: group_id(1),
+            name: "code",
+            kind: MergeKind::Register,
+            storage: GroupStorage::Columns(&[ColumnSpec {
+                name: "code",
+                ty: ColumnType::Text { max_chars: 40 },
+            }]),
+            references: &[],
+            surfaced: false,
+            recoverable: false,
+            bumps_revision: false,
+        },
+    ],
+    resolutions: &[
+        Resolution::DuplicateRepair {
+            columns: &["label"],
+            collation: Collation::Binary,
+        },
+        Resolution::DuplicateRepair {
+            columns: &["code"],
+            collation: Collation::Binary,
+        },
+    ],
+    ..CYCLE_A
+};
+
 /// Links with an immutable owner item, a register group referencing both cycle tables, and a
 /// parent link in the same table.
 pub(super) const LINKS: TableSpec = TableSpec {
@@ -278,7 +315,7 @@ pub(super) const LINKS: TableSpec = TableSpec {
 };
 
 /// Prefix of [`MEMBERSHIPS`] keys.
-const MEMBERSHIP_KEY_PREFIX: &str = "fixture_membership";
+pub(super) const MEMBERSHIP_KEY_PREFIX: &str = "fixture_membership";
 
 /// The `sync_key` of the membership of `item` in `end`.
 pub(super) fn membership_key(item: &str, end: &str) -> String {
@@ -387,7 +424,8 @@ pub(super) const MEMBERSHIPS: TableSpec = TableSpec {
     triggers: &[],
     derived_key: Some(DerivedKey {
         exists_group: membership_group::EXISTS,
-        key_inputs: &[],
+        prefix: Some(MEMBERSHIP_KEY_PREFIX),
+        key_inputs: &["item_id", "end_id"],
     }),
     tree: None,
     acyclic: None,
@@ -566,7 +604,8 @@ pub(super) const EDGES: TableSpec = TableSpec {
     triggers: &[],
     derived_key: Some(DerivedKey {
         exists_group: edge_group::EXISTS,
-        key_inputs: &[],
+        prefix: Some(EDGE_KEY_PREFIX),
+        key_inputs: &["from_id", "to_id"],
     }),
     tree: None,
     acyclic: Some(AcyclicSpec {
@@ -805,7 +844,8 @@ pub(super) const MEMO_TAGS: TableSpec = TableSpec {
     ],
     derived_key: Some(DerivedKey {
         exists_group: group_id(1),
-        key_inputs: &[],
+        prefix: Some(MEMO_TAG_KEY_PREFIX),
+        key_inputs: &["memo_id", "tag"],
     }),
     holds_deletes: false,
     ..MEMOS
@@ -1198,6 +1238,7 @@ pub(super) const FIXTURE_DOMAIN: DomainManifest = DomainManifest {
         ITEMS,
         CYCLE_A,
         CYCLE_B,
+        HANDLES,
         LINKS,
         MEMBERSHIPS,
         NODES,
@@ -1278,6 +1319,13 @@ fn fixture_schema() -> String {
              id TEXT PRIMARY KEY CHECK (trim(id) <> ''),
              label TEXT NOT NULL CHECK (length(label) <= 40),
              peer_id TEXT REFERENCES fixture_cycle_a(id) ON DELETE CASCADE
+         );
+         CREATE TABLE fixture_handles (
+             id TEXT PRIMARY KEY CHECK (trim(id) <> ''),
+             label TEXT NOT NULL CHECK (length(label) <= 40),
+             code TEXT NOT NULL CHECK (length(code) <= 40),
+             UNIQUE (label),
+             UNIQUE (code)
          );
          CREATE TABLE fixture_links (
              id TEXT PRIMARY KEY CHECK (trim(id) <> ''),

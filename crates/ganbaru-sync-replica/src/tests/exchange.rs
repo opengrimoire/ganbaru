@@ -25,8 +25,8 @@ use ganbaru_sync::manifest::vault::quick_notes::{NOTES, NOTES_TABLE};
 use ganbaru_sync::{Engine, SpaceContext};
 use ganbaru_sync_contracts::bounds::MAX_WRITERS_PER_DEVICE;
 use ganbaru_sync_contracts::op::RevokeReason;
-use ganbaru_sync_contracts::{VersionVector, WriterId};
-use sqlx::SqlitePool;
+use ganbaru_sync_contracts::{SpaceId, VersionVector, WriterId};
+use sqlx::{SqliteConnection, SqlitePool};
 use std::collections::{BTreeSet, HashMap};
 use std::path::Path;
 use std::sync::Arc;
@@ -1136,6 +1136,79 @@ fn restoring_an_edit_that_outlived_a_deletion_closes_the_offer_everywhere() {
 }
 
 #[test]
+fn a_restore_whose_close_fails_leaves_no_restored_row_and_the_offer_open() {
+    block_on(async {
+        let mut hub_replica = Replica::new("atomic-restore-hub", HUB_DEVICE).await;
+        let mut phone = Replica::new("atomic-restore-phone", PHONE_DEVICE).await;
+        let (transport, _changes) = hub(&hub_replica);
+        hub_replica.seal_note("note-4").await;
+        converge(&mut hub_replica, &mut phone, &transport).await;
+
+        hub_replica
+            .edit("DELETE FROM quick_notes WHERE id = ?", "note-4")
+            .await;
+        phone
+            .edit(
+                "UPDATE quick_notes SET title = 'Kept edit' WHERE id = ?",
+                "note-4",
+            )
+            .await;
+        converge(&mut hub_replica, &mut phone, &transport).await;
+        let offer = vec![("note-4".to_string(), "Kept edit".to_string())];
+        assert_eq!(recovery_titles(&phone).await, offer);
+
+        let choice = RecoveryChoice {
+            table: NOTES_TABLE,
+            row_key: "note-4".to_string(),
+            action: RecoveryAction::Restore,
+        };
+        let foreign = SpaceContext {
+            space: SpaceId::personal("another-vault"),
+            ..phone.ctx.clone()
+        };
+        let error = crate::recovery::close(
+            &Engine::vault(),
+            &phone.pool,
+            &foreign,
+            &mut phone.writer,
+            &restorers(),
+            &choice,
+            NOW_MS + 1,
+        )
+        .await
+        .expect_err("closing in another space fails");
+        assert!(error.contains("close recovery offer"), "{error}");
+        let notes: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM quick_notes")
+            .fetch_one(&phone.pool)
+            .await
+            .expect("count notes");
+        assert_eq!(notes, 0);
+        assert_eq!(recovery_titles(&phone).await, offer);
+
+        let restored = crate::recovery::close(
+            &Engine::vault(),
+            &phone.pool,
+            &phone.ctx,
+            &mut phone.writer,
+            &restorers(),
+            &choice,
+            NOW_MS + 2,
+        )
+        .await
+        .expect("restore")
+        .expect("restored note id");
+        let notes: Vec<String> = sqlx::query_scalar("SELECT id FROM quick_notes")
+            .fetch_all(&phone.pool)
+            .await
+            .expect("list notes");
+        assert_eq!(notes, [restored]);
+        assert!(recovery_titles(&phone).await.is_empty());
+        hub_replica.close().await;
+        phone.close().await;
+    });
+}
+
+#[test]
 fn discarding_a_recovery_offer_keeps_the_deletion() {
     block_on(async {
         let mut hub_replica = Replica::new("discard-hub", HUB_DEVICE).await;
@@ -1207,8 +1280,8 @@ fn png(len: usize, seed: u8) -> Vec<u8> {
 }
 
 /// Restores a recovered Quick note through its domain persistence, as the app does.
-fn restore_note(pool: SqlitePool, row: RecoveredRow) -> RestoreFuture {
-    Box::pin(async move { ganbaru_quick_notes::restore_recovered(&pool, &row.values).await })
+fn restore_note(conn: &mut SqliteConnection, row: RecoveredRow) -> RestoreFuture<'_> {
+    Box::pin(async move { ganbaru_quick_notes::restore_recovered(conn, &row.values).await })
 }
 
 /// The Quick notes restorer, registered as the app registers it.

@@ -471,6 +471,15 @@ fn resets_that_change_nothing_capture_nothing() {
     });
 }
 
+/// Restores a recovered theme on a connection of its own, outside any caller transaction.
+async fn restore_from_pool(
+    pool: &SqlitePool,
+    values: &[(GroupId, Value)],
+) -> Result<String, String> {
+    let mut conn = pool.acquire().await.unwrap();
+    restore_recovered(&mut conn, values).await
+}
+
 fn recovered_theme_values(content: Option<&ThemeContent>) -> Vec<(GroupId, Value)> {
     use ganbaru_sync::domains::themes::{encode_palette, encode_tokens};
     use ganbaru_sync::manifest::vault::themes::group;
@@ -519,10 +528,10 @@ fn restoring_a_recovered_theme_creates_a_new_theme_seeded_with_its_content() {
             palette: vec!["#0d0d0d".to_string(); PALETTE_SIZE],
         };
 
-        let id = restore_recovered(&pool, &recovered_theme_values(Some(&content)))
+        let id = restore_from_pool(&pool, &recovered_theme_values(Some(&content)))
             .await
             .unwrap();
-        let again = restore_recovered(&pool, &recovered_theme_values(Some(&content)))
+        let again = restore_from_pool(&pool, &recovered_theme_values(Some(&content)))
             .await
             .unwrap();
         assert_ne!(id, again);
@@ -558,7 +567,7 @@ fn restoring_a_recovered_theme_creates_a_new_theme_seeded_with_its_content() {
 fn restoring_a_recovered_theme_without_content_writes_nothing() {
     block_on(async {
         let pool = migrated_memory_pool().await;
-        let error = restore_recovered(&pool, &recovered_theme_values(None))
+        let error = restore_from_pool(&pool, &recovered_theme_values(None))
             .await
             .unwrap_err();
         assert!(error.contains("no content"), "{error}");

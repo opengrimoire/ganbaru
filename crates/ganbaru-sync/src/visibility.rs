@@ -1,6 +1,7 @@
 //! Which live rows materialize.
 //!
-//! A live row is not materialized while it is a hidden duplicate, its existence register holds
+//! A live row is not materialized while it is a hidden duplicate (it collides with a shown row
+//! of a lower key on a unique column set), its existence register holds
 //! 0, it is an edge severed to break a cycle, its merged winners fail its publication
 //! predicate, or it is hidden by cascade: one of its cascading references, followed through
 //! cascading references of live rows, reaches a root. A root is a tombstoned row without a
@@ -19,10 +20,14 @@ use sqlx::SqliteConnection;
 use crate::error::{SyncResult, corrupt};
 use crate::manifest::{MergeKind, OnDelete, TableSpec};
 use crate::merge::{self, RowState, table_param};
-use crate::{Engine, edges, publication, repair, tree};
+use crate::repair::Contested;
+use crate::{Engine, edges, publication, repair, sql, tree};
 
 /// Longest chain of redirects and duplicate keepers a reference follows.
 pub(crate) const MAX_REDIRECT_DEPTH: usize = 64;
+
+/// Most rounds of choosing duplicate keepers while the rows hidden for other reasons settle.
+pub(crate) const MAX_DUPLICATE_ROUNDS: usize = 8;
 
 /// A row by table and key.
 pub(crate) type RowRef = (TableId, String);
@@ -109,16 +114,112 @@ impl Visibility {
 
     /// Visibility of the current merge state: hidden duplicates, detached tree rows, and severed
     /// edges. Rows whose materialization those may change are marked dirty.
+    ///
+    /// A colliding row that is hidden for another reason never keeps its class, so a duplicate
+    /// is only hidden behind a shown row. Which rows are hidden for other reasons can depend on
+    /// the duplicates, so the choice repeats until the excluded rows settle. When they do not
+    /// settle within [`MAX_DUPLICATE_ROUNDS`], keepers are chosen without exclusions, which still
+    /// shows one row per class and is the same on every replica.
     pub(crate) async fn load(
         engine: &Engine,
         conn: &mut SqliteConnection,
         dirty: &mut BTreeSet<RowRef>,
     ) -> SyncResult<Self> {
-        let duplicates = repair::duplicates(engine, conn, dirty).await?;
+        let contested = repair::contested(engine, conn, dirty).await?;
+        let mut excluded = BTreeSet::new();
+        for _ in 0..MAX_DUPLICATE_ROUNDS {
+            let duplicates = repair::keepers(&contested, &excluded);
+            let mut visibility = Self::derive(engine, conn, duplicates, dirty).await?;
+            let next = visibility
+                .otherwise_hidden(engine, conn, &contested)
+                .await?;
+            if next == excluded {
+                visibility
+                    .mark_unsettled(engine, conn, &contested, &excluded, dirty)
+                    .await?;
+                return Ok(visibility);
+            }
+            excluded = next;
+        }
+        excluded.clear();
+        let duplicates = repair::keepers(&contested, &excluded);
+        let visibility = Self::derive(engine, conn, duplicates, dirty).await?;
+        visibility
+            .mark_unsettled(engine, conn, &contested, &excluded, dirty)
+            .await?;
+        Ok(visibility)
+    }
+
+    /// Visibility with the given duplicates and the tree and edge state that follows from them.
+    async fn derive(
+        engine: &Engine,
+        conn: &mut SqliteConnection,
+        duplicates: Duplicates,
+        dirty: &mut BTreeSet<RowRef>,
+    ) -> SyncResult<Self> {
         let mut visibility = Self::with_duplicates(duplicates);
         visibility.detached = tree::detached(engine, conn, &visibility, dirty).await?;
         visibility.severed = edges::severed(engine, conn, &visibility, dirty).await?;
         Ok(visibility)
+    }
+
+    /// Contested rows that are hidden whether or not they are duplicates: removed, severed,
+    /// unpublished, or hidden by cascade.
+    async fn otherwise_hidden(
+        &mut self,
+        engine: &Engine,
+        conn: &mut SqliteConnection,
+        contested: &Contested,
+    ) -> SyncResult<BTreeSet<RowRef>> {
+        let mut hidden = BTreeSet::new();
+        for (table, classes) in contested {
+            let keys: BTreeSet<&String> = classes.iter().flatten().collect();
+            for key in keys {
+                if merge::row_state(conn, *table, key).await? != Some(RowState::Live) {
+                    continue;
+                }
+                if self.is_severed(*table, key)
+                    || removed(engine, conn, *table, key).await?
+                    || unpublished(engine, conn, *table, key).await?
+                    || self.cascade_roots(engine, conn, *table, key).await?.hides()
+                {
+                    hidden.insert((*table, key.clone()));
+                }
+            }
+        }
+        Ok(hidden)
+    }
+
+    /// Marks dirty every contested row whose domain row is present while it should be hidden as
+    /// a duplicate or for another reason, or absent while it should be shown. A keeper can
+    /// change because a row elsewhere was deleted or published, without any member of its class
+    /// changing.
+    async fn mark_unsettled(
+        &self,
+        engine: &Engine,
+        conn: &mut SqliteConnection,
+        contested: &Contested,
+        excluded: &BTreeSet<RowRef>,
+        dirty: &mut BTreeSet<RowRef>,
+    ) -> SyncResult<()> {
+        for (table, classes) in contested {
+            let spec = engine
+                .manifest()
+                .table(*table)
+                .ok_or_else(|| corrupt("duplicate class of an unknown table"))?;
+            let keys: BTreeSet<&String> = classes.iter().flatten().collect();
+            for key in keys {
+                let row = (*table, key.clone());
+                let shown = !self.is_duplicate(*table, key) && !excluded.contains(&row);
+                let present = sql::read_columns(conn, spec.name, spec.key_column, key, &[])
+                    .await?
+                    .is_some();
+                if shown != present {
+                    dirty.insert(row);
+                }
+            }
+        }
+        Ok(())
     }
 
     /// The kept row of a hidden duplicate.

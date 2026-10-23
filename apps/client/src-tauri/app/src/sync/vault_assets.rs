@@ -1,10 +1,13 @@
 //! The managed asset files of the active vault as the sync service and the hub move them.
-//! Reads and staging use the vault root resolved when the store opens. Each commit holds the
+//! Reads and staging use the vault root resolved when the store opens, and opening removes the
+//! stale temporary files that transfers of a stopped process left. Each commit holds the
 //! replicated asset permit of the domain that owns the asset class for that one file, so a vault
 //! handoff fences it, and tells the frontend which tables reference the arrived asset so views
 //! waiting for it load again.
 
-use super::assets::{AssetStore, AssetStoreError, ContentAddressedStore, StagedAsset};
+use super::assets::{
+    AssetStore, AssetStoreError, ContentAddressedStore, STALE_STAGING_AGE, StagedAsset,
+};
 use super::host::SyncHost;
 use ganbaru_music_library::managed_artwork;
 use ganbaru_quick_notes::images;
@@ -30,17 +33,22 @@ impl<H: SyncHost> ActiveVaultAssets<H> {
             return Err("the active vault changed during sync".to_string());
         }
         let root = host.active_vault_path()?;
+        let engine = Engine::vault();
+        let files = ContentAddressedStore::new(root.clone())
+            .with_check(&IMAGES_CLASS, images::check_synced_image)
+            .with_check(&ARTWORK_CLASS, managed_artwork::check_synced_artwork)
+            .with_check(
+                &PROFILE_CLASS,
+                crate::profile_images::check_synced_profile_image,
+            );
+        files
+            .remove_stale_staging(engine.manifest().asset_classes(), STALE_STAGING_AGE)
+            .map_err(|error| error.describe())?;
         Ok(Self {
             host: host.clone(),
-            files: ContentAddressedStore::new(root.clone())
-                .with_check(&IMAGES_CLASS, images::check_synced_image)
-                .with_check(&ARTWORK_CLASS, managed_artwork::check_synced_artwork)
-                .with_check(
-                    &PROFILE_CLASS,
-                    crate::profile_images::check_synced_profile_image,
-                ),
+            files,
             root,
-            engine: Engine::vault(),
+            engine,
         })
     }
 }

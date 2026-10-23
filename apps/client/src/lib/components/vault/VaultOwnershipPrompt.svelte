@@ -1,6 +1,6 @@
 <script lang="ts">
   import LoaderCircle from "@lucide/svelte/icons/loader-circle";
-  import { onMount, tick } from "svelte";
+  import { onMount, tick, untrack } from "svelte";
   import ConfirmDialog from "$lib/components/ui/ConfirmDialog.svelte";
   import { readPairingStatus, type PairingStatus } from "$lib/api/vault-handoff";
   import { getLocalization } from "$lib/i18n/translator.svelte";
@@ -25,11 +25,17 @@
 
   let {
     platform,
+    presentOnLoad = true,
     closeConfirmationOpen = false,
     onRequestClose = () => Promise.resolve(),
     onStatusReady = () => undefined,
   }: {
     platform: VaultOwnershipPlatform;
+    /**
+     * Whether the prompt shows by itself when this device is not the owner. Detached windows
+     * pass false so only a refused change in that window shows it.
+     */
+    presentOnLoad?: boolean;
     closeConfirmationOpen?: boolean;
     onRequestClose?: () => Promise<void>;
     onStatusReady?: () => void;
@@ -45,7 +51,7 @@
   let quickNotesWritable = $state(false);
   /** Set when a refused change asked for the prompt, which then explains why. */
   let ownerRequired = $state(false);
-  let dismissed = $state(false);
+  let dismissed = $state(untrack(() => !presentOnLoad));
   let switching = $state(false);
   let replacementConfirmationOpen = $state(false);
   let error = $state<string | null>(null);
@@ -77,7 +83,7 @@
   async function refreshStatus(): Promise<void> {
     try {
       const next = await readPairingStatus();
-      if (previousCanWrite === true && next.canWrite === false) dismissed = false;
+      if (presentOnLoad && previousCanWrite === true && next.canWrite === false) dismissed = false;
       previousCanWrite = next.canWrite;
       quickNotesWritable = shouldPresentVaultOwnershipPrompt(next) && await readQuickNotesWritable();
       status = next;

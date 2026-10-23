@@ -1035,16 +1035,15 @@
     <Overlay />
   {/if}
 
-  {#if isMainWindow}
-    {#await import("$lib/components/vault/VaultOwnershipPrompt.svelte") then module}
-      {@const VaultOwnershipPrompt = module.default}
-      <VaultOwnershipPrompt
-        platform="desktop"
-        closeConfirmationOpen={appClose.confirmationOpen}
-        onRequestClose={() => appClose.request()}
-      />
-    {/await}
-  {/if}
+  {#await import("$lib/components/vault/VaultOwnershipPrompt.svelte") then module}
+    {@const VaultOwnershipPrompt = module.default}
+    <VaultOwnershipPrompt
+      platform="desktop"
+      presentOnLoad={isMainWindow}
+      closeConfirmationOpen={appClose.confirmationOpen}
+      onRequestClose={() => appClose.request()}
+    />
+  {/await}
 
   <MusicPlaybackHost decodes={isMainWindow} />
   {#if isMainWindow}

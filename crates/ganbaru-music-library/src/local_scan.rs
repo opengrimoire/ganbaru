@@ -7,6 +7,7 @@
 
 use sqlx::{Sqlite, Transaction};
 
+use crate::identity::{RetirableTable, creatable_key};
 use crate::{MusicLibraryError, MusicLibraryResult};
 
 /// Values one refresh read for a local media file.
@@ -150,7 +151,12 @@ pub async fn persist_scanned_file(
     {
         return Ok(LocalScanOutcome::Unchanged);
     }
-    let item_id = crate::identity::local_item_id(root_id, values.relative_path);
+    let item_id = creatable_key(
+        transaction,
+        RetirableTable::Items,
+        crate::identity::local_item_id(root_id, values.relative_path),
+    )
+    .await?;
     upsert_scanned_item(
         transaction,
         &item_id,
@@ -271,6 +277,12 @@ pub async fn upsert_scanned_location(
     first_seen_at_ms: i64,
     updated_at_ms: i64,
 ) -> MusicLibraryResult<()> {
+    let location_id = creatable_key(
+        transaction,
+        RetirableTable::Locations,
+        crate::identity::location_id(root_id, values.relative_path),
+    )
+    .await?;
     let inserted = sqlx::query(
         "INSERT INTO music_local_locations
             (id, item_id, root_id, relative_path, file_size_bytes, modified_at_ms,
@@ -279,7 +291,7 @@ pub async fn upsert_scanned_location(
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(root_id, relative_path) DO NOTHING",
     )
-    .bind(crate::identity::location_id(root_id, values.relative_path))
+    .bind(&location_id)
     .bind(item_id)
     .bind(root_id)
     .bind(values.relative_path)

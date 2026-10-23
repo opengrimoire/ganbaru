@@ -8,10 +8,10 @@ export interface SyncRecoveryPresentation {
   note?: (t: Translate) => string;
   /** Whether offers of the table can be restored. Offers that cannot are only discarded. Defaults to true. */
   restorable?: boolean;
-  /** Confirmation after the row was restored. */
-  restored: (t: Translate) => string;
-  /** Error after the row could not be restored. */
-  restoreFailed: (t: Translate) => string;
+  /** Confirmation after the row was restored. Omitted for a table whose offers cannot be restored. */
+  restored?: (t: Translate) => string;
+  /** Error after the row could not be restored. Omitted for a table whose offers cannot be restored. */
+  restoreFailed?: (t: Translate) => string;
 }
 
 /** How the sync settings present one replicated table. Missing parts use neutral sync copy. */
@@ -87,14 +87,12 @@ export class SyncPresentationRegistry {
 
   /** Confirmation after an offer rooted in `table` was restored. */
   recoveryRestored(t: Translate, table: string): string {
-    const recovery = this.recovery(table);
-    return recovery ? recovery.restored(t) : t("sync.recovery.restored");
+    return this.recovery(table)?.restored?.(t) ?? t("sync.recovery.restored");
   }
 
   /** Error after an offer rooted in `table` could not be restored. */
   recoveryRestoreFailed(t: Translate, table: string): string {
-    const recovery = this.recovery(table);
-    return recovery ? recovery.restoreFailed(t) : t("sync.recovery.failed");
+    return this.recovery(table)?.restoreFailed?.(t) ?? t("sync.recovery.failed");
   }
 
   /** Changed notices of the domains owning `tables`, once per domain. Unknown tables have none. */

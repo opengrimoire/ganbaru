@@ -72,6 +72,7 @@ pub async fn upsert(
         .begin()
         .await
         .map_err(|error| MusicLibraryError::database("begin soundscape preset update", error))?;
+    check_layer_cap(&mut transaction, &request).await?;
     for sound in &request.sounds {
         let exists: bool =
             sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM music_soundscapes WHERE id = ?)")
@@ -357,6 +358,43 @@ fn validate_preset_level(level_milli: i64) -> MusicLibraryResult<()> {
     Ok(())
 }
 
+fn layer_count_error() -> MusicLibraryError {
+    MusicLibraryError::validation(
+        "sounds",
+        format!("must contain between one and {MAX_SOUNDSCAPE_LAYERS} sounds"),
+    )
+}
+
+/// Refuses a write that grows a preset past [`MAX_SOUNDSCAPE_LAYERS`]. Concurrent edits on
+/// linked devices can merge a preset past the cap; such a preset stays editable and can be
+/// trimmed, so a write may name more sounds only when every one of them is already stored.
+async fn check_layer_cap(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    request: &MusicSoundscapePresetWrite,
+) -> MusicLibraryResult<()> {
+    if request.sounds.len() <= MAX_SOUNDSCAPE_LAYERS {
+        return Ok(());
+    }
+    let stored = sqlx::query_scalar::<_, String>(
+        "SELECT soundscape_id FROM music_soundscape_preset_sounds WHERE preset_id = ?",
+    )
+    .bind(&request.id)
+    .fetch_all(&mut **transaction)
+    .await
+    .map_err(|error| MusicLibraryError::database("load soundscape preset sounds", error))?
+    .into_iter()
+    .collect::<HashSet<_>>();
+    if request
+        .sounds
+        .iter()
+        .all(|sound| stored.contains(&sound.soundscape_id))
+    {
+        Ok(())
+    } else {
+        Err(layer_count_error())
+    }
+}
+
 fn validate_write(request: &MusicSoundscapePresetWrite) -> MusicLibraryResult<()> {
     validate_id(&request.id, "id")?;
     let name_chars = request.name.trim().chars().count();
@@ -374,11 +412,8 @@ fn validate_write(request: &MusicSoundscapePresetWrite) -> MusicLibraryResult<()
             "must be positive",
         ));
     }
-    if request.sounds.is_empty() || request.sounds.len() > MAX_SOUNDSCAPE_LAYERS {
-        return Err(MusicLibraryError::validation(
-            "sounds",
-            format!("must contain between one and {MAX_SOUNDSCAPE_LAYERS} sounds"),
-        ));
+    if request.sounds.is_empty() {
+        return Err(layer_count_error());
     }
     let mut seen = HashSet::new();
     for sound in &request.sounds {
@@ -645,6 +680,100 @@ mod tests {
                 );
             }
             assert!(custom_presets(&pool).await.is_empty());
+        });
+    }
+
+    #[test]
+    fn a_preset_merged_past_the_layer_cap_stays_editable_but_never_grows() {
+        crate::test_support::block_on(async {
+            let pool = pool().await;
+            let ids = (0..=MAX_SOUNDSCAPE_LAYERS + 1)
+                .map(|index| format!("local-layer-{index:02}"))
+                .collect::<Vec<_>>();
+            for id in &ids {
+                sqlx::query(
+                    "INSERT INTO music_soundscapes
+                        (id, source_kind, name, availability, created_at_ms, updated_at_ms, version)
+                     VALUES (?, 'local-loop', ?, 'available', 1, 1, 1)",
+                )
+                .bind(id)
+                .bind(id)
+                .execute(&pool)
+                .await
+                .unwrap();
+            }
+            let entries = |count: usize| {
+                ids[..count]
+                    .iter()
+                    .map(|id| (id.as_str(), 500))
+                    .collect::<Vec<_>>()
+            };
+            let saved = upsert(
+                &pool,
+                write("merged", &entries(MAX_SOUNDSCAPE_LAYERS), None),
+            )
+            .await
+            .unwrap();
+            assert!(
+                upsert(
+                    &pool,
+                    write(
+                        "merged",
+                        &entries(MAX_SOUNDSCAPE_LAYERS + 1),
+                        Some(saved.version)
+                    )
+                )
+                .await
+                .is_err()
+            );
+
+            // A layer another device added, merged in by sync.
+            let merged = &ids[MAX_SOUNDSCAPE_LAYERS];
+            let tail: String = sqlx::query_scalar(
+                "SELECT max(order_key) FROM music_soundscape_preset_sounds WHERE preset_id = 'merged'",
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            let order_key = crate::order::keys_after(Some(&tail), 1).unwrap().remove(0);
+            sqlx::query(
+                "INSERT INTO music_soundscape_preset_sounds
+                    (preset_id, soundscape_id, order_key, level_milli, sync_key)
+                 VALUES ('merged', ?, ?, 500, ?)",
+            )
+            .bind(merged)
+            .bind(order_key.as_str())
+            .bind(ganbaru_music::sync_keys::preset_sound_key("merged", merged).unwrap())
+            .execute(&pool)
+            .await
+            .unwrap();
+            let merged_preset = preset(&pool, "merged").await.unwrap();
+            assert_eq!(merged_preset.sounds.len(), MAX_SOUNDSCAPE_LAYERS + 1);
+
+            let mut louder = entries(MAX_SOUNDSCAPE_LAYERS + 1);
+            louder[0].1 = 900;
+            let edited = upsert(&pool, write("merged", &louder, Some(merged_preset.version)))
+                .await
+                .unwrap();
+            assert_eq!(edited.sounds.len(), MAX_SOUNDSCAPE_LAYERS + 1);
+            let mut grown = entries(MAX_SOUNDSCAPE_LAYERS + 2);
+            grown[0].1 = 900;
+            assert!(
+                upsert(&pool, write("merged", &grown, Some(edited.version)))
+                    .await
+                    .is_err()
+            );
+            let trimmed = upsert(
+                &pool,
+                write(
+                    "merged",
+                    &entries(MAX_SOUNDSCAPE_LAYERS),
+                    Some(edited.version),
+                ),
+            )
+            .await
+            .unwrap();
+            assert_eq!(trimmed.sounds.len(), MAX_SOUNDSCAPE_LAYERS);
         });
     }
 

@@ -46,7 +46,7 @@ describe("sync presentation registry", () => {
     const registry = new SyncPresentationRegistry().register({
       label: () => "Library",
       tables: {
-        tracks: { recovery: { untitled: () => "Track", note: () => "Discard only", restorable: false, restored: () => "", restoreFailed: () => "" } },
+        tracks: { recovery: { untitled: () => "Track", note: () => "Discard only", restorable: false } },
         lists: { recovery: { untitled: () => "List", restored: () => "", restoreFailed: () => "" } },
       },
       changed: () => {},
@@ -56,6 +56,8 @@ describe("sync presentation registry", () => {
     expect(registry.recoveryRestorable("lists")).toBe(true);
     expect(registry.recoveryNote(t, "lists")).toBeNull();
     expect(registry.recoveryRestorable("unknown")).toBe(true);
+    expect(registry.recoveryRestored(t, "tracks")).toBe(t("sync.recovery.restored"));
+    expect(registry.recoveryRestoreFailed(t, "tracks")).toBe(t("sync.recovery.failed"));
     expect(registry.recoveryNote(t, "unknown")).toBeNull();
   });
 

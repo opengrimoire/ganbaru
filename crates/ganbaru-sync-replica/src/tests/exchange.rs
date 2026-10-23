@@ -1404,6 +1404,184 @@ fn a_restore_whose_close_fails_leaves_no_restored_row_and_the_offer_open() {
     });
 }
 
+/// Runs a local multi-statement edit and seals it.
+async fn edit_sql(replica: &mut Replica, sql: String) {
+    sqlx::raw_sql(sqlx::AssertSqlSafe(sql))
+        .execute(&replica.pool)
+        .await
+        .expect("edit");
+    replica.seal().await;
+}
+
+/// The derived row key of a Music table for `parts`, in its key input order.
+fn music_key(table: &ganbaru_sync::manifest::TableSpec, parts: &[&str]) -> String {
+    let prefix = table
+        .derived_key
+        .as_ref()
+        .and_then(|derived| derived.prefix)
+        .expect("derived key prefix");
+    ganbaru_sync_contracts::derived_key(prefix, parts)
+        .expect("derived key")
+        .into_string()
+}
+
+/// One text column of `sql`, in row order.
+async fn music_texts(replica: &Replica, sql: String) -> Vec<String> {
+    sqlx::query_scalar(sqlx::AssertSqlSafe(sql))
+        .fetch_all(&replica.pool)
+        .await
+        .expect("read music rows")
+}
+
+/// Restores a recovered Music playlist through its domain persistence, as the app does.
+fn restore_music_playlist(conn: &mut SqliteConnection, row: RecoveredRow) -> RestoreFuture<'_> {
+    Box::pin(async move {
+        ganbaru_music_library::recovery::restore_recovered_playlist(
+            conn,
+            &row.values,
+            &row.descendants,
+            i64::try_from(NOW_MS + 1).expect("restore time"),
+        )
+        .await
+        .map_err(|error| error.to_string())
+    })
+}
+
+#[test]
+fn a_restored_music_playlist_keeps_concurrent_membership_skip_range_and_intended_use_edits() {
+    block_on(async {
+        use ganbaru_sync::manifest::vault::music::{INTENDED_USES, MEMBERSHIPS, PLAYLISTS};
+        let mut hub_replica = Replica::new("music-recovery-hub", HUB_DEVICE).await;
+        let mut phone = Replica::new("music-recovery-phone", PHONE_DEVICE).await;
+        let (transport, _changes) = hub(&hub_replica);
+        let playlist = "music-playlist-recovered";
+        let item = "music-item-recovered";
+        let membership = music_key(&MEMBERSHIPS, &[playlist, item]);
+        let order_key = ganbaru_sync_contracts::OrderKey::rank(0)
+            .expect("order key")
+            .into_string();
+        edit_sql(
+            &mut hub_replica,
+            format!(
+                "INSERT INTO music_library_items
+                    (id, identity_key, source_kind, media_kind, original_title, discovered_at_ms,
+                     updated_at_ms)
+                 VALUES ('{item}', 'local:{item}', 'local-file', 'audio', 'Song', {NOW_MS}, {NOW_MS});
+                 INSERT INTO music_playlists (id, name, created_at_ms, updated_at_ms, order_key)
+                 VALUES ('{playlist}', 'Focus mix', {NOW_MS}, {NOW_MS}, '{order_key}');
+                 INSERT INTO music_playlist_memberships
+                    (id, playlist_id, item_id, order_key, created_at_ms, updated_at_ms)
+                 VALUES ('{membership}', '{playlist}', '{item}', '{order_key}', {NOW_MS}, {NOW_MS});
+                 INSERT INTO music_membership_skip_ranges (membership_id, ordinal, start_ms, end_ms)
+                 VALUES ('{membership}', 0, 1000, 2000);
+                 INSERT INTO music_playlist_intended_uses (playlist_id, intended_use, sync_key)
+                 VALUES ('{playlist}', 'focus', '{focus}');",
+                focus = music_key(&INTENDED_USES, &[playlist, "focus"]),
+            ),
+        )
+        .await;
+        converge(&mut hub_replica, &mut phone, &transport).await;
+
+        edit_sql(
+            &mut hub_replica,
+            format!("DELETE FROM music_playlists WHERE id = '{playlist}'"),
+        )
+        .await;
+        edit_sql(
+            &mut phone,
+            format!(
+                "UPDATE music_playlist_memberships SET weight = 'more-often'
+                 WHERE id = '{membership}';
+                 INSERT INTO music_membership_skip_ranges (membership_id, ordinal, start_ms, end_ms)
+                 VALUES ('{membership}', 1, 5000, 6000);
+                 INSERT INTO music_playlist_intended_uses (playlist_id, intended_use, sync_key)
+                 VALUES ('{playlist}', 'reading', '{reading}');",
+                reading = music_key(&INTENDED_USES, &[playlist, "reading"]),
+            ),
+        )
+        .await;
+        converge(&mut hub_replica, &mut phone, &transport).await;
+        for replica in [&hub_replica, &phone] {
+            assert_eq!(
+                recovery_titles(replica).await,
+                [(playlist.to_string(), "Focus mix".to_string())]
+            );
+        }
+
+        let restored = crate::recovery::close(
+            &Engine::vault(),
+            &hub_replica.pool,
+            &hub_replica.ctx,
+            &mut hub_replica.writer,
+            &RecoveryRestorers::new().with(&PLAYLISTS, restore_music_playlist),
+            &RecoveryChoice {
+                table: PLAYLISTS.id,
+                row_key: playlist.to_string(),
+                action: RecoveryAction::Restore,
+            },
+            NOW_MS + 1,
+        )
+        .await
+        .expect("restore")
+        .expect("restored playlist id");
+        assert_ne!(restored, playlist);
+
+        converge(&mut hub_replica, &mut phone, &transport).await;
+        for replica in [&hub_replica, &phone] {
+            assert_eq!(
+                music_texts(
+                    replica,
+                    format!(
+                        "SELECT name || '|' || icon FROM music_playlists WHERE id = '{restored}'"
+                    )
+                )
+                .await,
+                ["Focus mix|lucide:list-music"]
+            );
+            assert_eq!(
+                music_texts(
+                    replica,
+                    format!(
+                        "SELECT item_id || '|' || weight FROM music_playlist_memberships
+                         WHERE playlist_id = '{restored}'"
+                    )
+                )
+                .await,
+                [format!("{item}|more-often")]
+            );
+            assert_eq!(
+                music_texts(
+                    replica,
+                    format!(
+                        "SELECT skip.start_ms || '-' || skip.end_ms
+                         FROM music_membership_skip_ranges AS skip
+                         JOIN music_playlist_memberships AS membership
+                           ON membership.id = skip.membership_id
+                         WHERE membership.playlist_id = '{restored}'
+                         ORDER BY skip.ordinal"
+                    )
+                )
+                .await,
+                ["1000-2000", "5000-6000"]
+            );
+            assert_eq!(
+                music_texts(
+                    replica,
+                    format!(
+                        "SELECT intended_use FROM music_playlist_intended_uses
+                         WHERE playlist_id = '{restored}' ORDER BY intended_use"
+                    )
+                )
+                .await,
+                ["focus", "reading"]
+            );
+            assert!(recovery_titles(replica).await.is_empty());
+        }
+        hub_replica.close().await;
+        phone.close().await;
+    });
+}
+
 #[test]
 fn discarding_a_recovery_offer_keeps_the_deletion() {
     block_on(async {

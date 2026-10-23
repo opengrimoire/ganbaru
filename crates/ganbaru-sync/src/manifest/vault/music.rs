@@ -88,7 +88,8 @@ pub mod item_group {
     pub const IDENTITY: GroupId = group_id(0);
     /// `discovered_at_ms`.
     pub const DISCOVERED: GroupId = group_id(1);
-    /// Media kind, original tags, duration, and YouTube resolution state.
+    /// Media kind, original tags, duration, and whether that metadata came from the source.
+    /// Coupled: resolved metadata wins over a concurrent placeholder.
     pub const SOURCE: GroupId = group_id(2);
     /// `title_override`.
     pub const TITLE: GroupId = group_id(3);
@@ -102,6 +103,9 @@ pub mod item_group {
     pub const REVIEW: GroupId = group_id(7);
     /// `updated_at_ms`.
     pub const UPDATED: GroupId = group_id(8);
+    /// `youtube_resolution_state`. Coupled: a resolved or terminal state wins over a
+    /// concurrent `resolving`.
+    pub const RESOLUTION: GroupId = group_id(9);
 }
 
 /// Signal field groups.
@@ -559,7 +563,7 @@ pub const ITEMS: TableSpec = TableSpec {
         group(
             item_group::SOURCE,
             "source",
-            MergeKind::Register,
+            MergeKind::Coupled,
             &[
                 text("media_kind", MAX_ENUM_CHARS),
                 text("original_title", MAX_DESCRIPTION_CHARS),
@@ -567,7 +571,7 @@ pub const ITEMS: TableSpec = TableSpec {
                 text("original_album", MAX_DESCRIPTION_CHARS),
                 optional_integer("original_track_number", 1, i64::MAX),
                 optional_integer("duration_ms", 0, i64::MAX),
-                optional_text("youtube_resolution_state", MAX_ENUM_CHARS),
+                flag("metadata_resolved"),
             ],
         ),
         group(
@@ -612,6 +616,12 @@ pub const ITEMS: TableSpec = TableSpec {
             "updated",
             MergeKind::Max,
             &[positive_ms("updated_at_ms")],
+        ),
+        group(
+            item_group::RESOLUTION,
+            "resolution",
+            MergeKind::Coupled,
+            &[optional_text("youtube_resolution_state", MAX_ENUM_CHARS)],
         ),
     ],
     local_columns: &[
@@ -945,18 +955,19 @@ pub const PLAYLISTS: TableSpec = TableSpec {
     ..BASE
 };
 
-/// `music_playlist_intended_uses`.
+/// `music_playlist_intended_uses`. The identity is recoverable, so an intended use added while
+/// another device deletes its playlist offers the playlist for recovery and returns with it.
 pub const INTENDED_USES: TableSpec = TableSpec {
     id: INTENDED_USES_TABLE,
     name: "music_playlist_intended_uses",
     key_column: SYNC_KEY_COLUMN,
     groups: &[
-        immutable(
+        recoverable(immutable(
             intended_use_group::IDENTITY,
             "identity",
             &[row_key("playlist_id"), text("intended_use", MAX_ENUM_CHARS)],
             &[cascade("playlist_id", PLAYLISTS_TABLE)],
-        ),
+        )),
         exists(intended_use_group::EXISTS),
     ],
     derived_key: Some(DerivedKey {

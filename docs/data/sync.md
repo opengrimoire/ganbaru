@@ -1,6 +1,6 @@
 # Device linking and synchronization
 
-**Status: Partial.** The vault runs in mixed mode. Quick notes, portable preferences, user themes, and contacts replicate concurrently between linked devices as signed operations through the coordinator desktop, with conflicts and recovery entries where the domain surfaces them (contacts resolve silently by fixed precedence); this is implemented in source. Every other domain keeps single-writer whole-vault handoff: secure LAN pairing, one administration desktop, explicit write ownership, read-only refresh, and combined distraction usage accounting. Physical multi-device acceptance is pending for both. Concurrent replication of the remaining domains, Notes text and tree merging, anchored authority with LAN peer exchange, operation encryption, and delivery beyond the LAN are planned.
+**Status: Partial.** The vault runs in mixed mode. Quick notes, portable preferences, user themes, contacts, and the Music library replicate concurrently between linked devices as signed operations through the coordinator desktop, with conflicts and recovery entries where the domain surfaces them (contacts resolve silently by fixed precedence); this is implemented in source. Every other domain keeps single-writer whole-vault handoff: secure LAN pairing, one administration desktop, explicit write ownership, read-only refresh, and combined distraction usage accounting. Physical multi-device acceptance is pending for both. Concurrent replication of the remaining domains, Notes text and tree merging, anchored authority with LAN peer exchange, operation encryption, and delivery beyond the LAN are planned.
 
 This contract links one person's devices; multi-person sharing is later work. The phone must provide full offline access to portable Notes, Projects, Calendar, and other synchronized content. Focus execution has its own controller and evidence rules in [Focus authority](../algorithms/pomodoro/focus-authority.md).
 
@@ -66,7 +66,7 @@ Whole-vault handoff itself is deliberately not the concurrent synchronization sy
 
 ## Implemented concurrent replication
 
-Source: `crates/ganbaru-sync-contracts/`, `crates/ganbaru-sync/`, `crates/ganbaru-sync-replica/`, and `apps/client/src-tauri/app/src/sync/`. **Status: Implemented** in source for Quick notes and their tags, portable preferences, user themes, and contacts; physical multi-device acceptance is pending. User-facing behavior is owned by [Quick notes](../features/quick-notes.md), [Themes](../features/themes/README.md), and [Contacts and invitations](../features/collaboration/README.md), and the network surface and key storage by [Network and privacy](security/network-and-privacy.md).
+Source: `crates/ganbaru-sync-contracts/`, `crates/ganbaru-sync/`, `crates/ganbaru-sync-replica/`, and `apps/client/src-tauri/app/src/sync/`. **Status: Implemented** in source for Quick notes and their tags, portable preferences, user themes, contacts, and the Music library; physical multi-device acceptance is pending. User-facing behavior is owned by [Quick notes](../features/quick-notes.md), [Themes](../features/themes/README.md), [Contacts and invitations](../features/collaboration/README.md), and [Music](../features/music/README.md), and the network surface and key storage by [Network and privacy](security/network-and-privacy.md).
 
 ### Mixed mode
 

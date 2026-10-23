@@ -7,6 +7,7 @@ import {
 import type { MusicBuilderInspectorController } from "$lib/music/builder/inspector.svelte";
 import type { MusicLibraryController } from "$lib/music/library/controller.svelte";
 import { nextMusicWeight } from "$lib/music/review";
+import { musicItemCountsAsPlayable } from "$lib/music/youtube-eligibility";
 import type {
   MusicPlaylistMembership,
   MusicPlaylistSummary,
@@ -261,7 +262,7 @@ export class MusicReviewController {
     const detail = this.inspector.detail;
     if (!detail) return;
     playlist.totalCount = Math.max(0, playlist.totalCount + delta);
-    if (detail.item.availability === "available") playlist.eligibleCount = Math.max(0, playlist.eligibleCount + delta);
+    if (musicItemCountsAsPlayable(detail.item)) playlist.eligibleCount = Math.max(0, playlist.eligibleCount + delta);
     else playlist.unavailableCount = Math.max(0, playlist.unavailableCount + delta);
     if (detail.item.sourceKind === "local-file") playlist.localCount = Math.max(0, playlist.localCount + delta);
     else playlist.onlineCount = Math.max(0, playlist.onlineCount + delta);

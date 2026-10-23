@@ -18,8 +18,6 @@ const ITEMS_PRESENTATION: SyncTablePresentation = {
     untitled: (t) => t("music.sync.itemUntitled"),
     note: (t) => t("music.sync.itemRecoveryNote"),
     restorable: false,
-    restored: (t) => t("music.sync.itemRestored"),
-    restoreFailed: (t) => t("music.sync.itemRestoreFailed"),
   },
 };
 

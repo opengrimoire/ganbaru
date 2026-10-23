@@ -152,7 +152,10 @@ async fn ensure_default_channel(
     sqlx::query(
         "INSERT INTO chat_channels
             (id, project_id, conversation_id, name, topic, is_default, created_at, updated_at)
-         VALUES (?, ?, ?, ?, '', 1, ?, ?)",
+         SELECT ?, ?, ?, ?, '', 1, ?, ?
+         WHERE NOT EXISTS (
+             SELECT 1 FROM chat_channels WHERE id = ? OR (project_id = ? AND is_default = 1)
+         )",
     )
     .bind(&channel_id)
     .bind(project_id)
@@ -160,6 +163,8 @@ async fn ensure_default_channel(
     .bind(DEFAULT_CHANNEL_NAME)
     .bind(now.as_str())
     .bind(now.as_str())
+    .bind(&channel_id)
+    .bind(project_id)
     .execute(&mut *connection)
     .await
     .map_err(persistence_error)?;

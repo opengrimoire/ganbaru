@@ -472,6 +472,12 @@ pub(crate) async fn selected_revision(
 }
 
 /// Records a kind 4 operation of `writer` at `seq` as a log entry.
+/// Whether a writer of `carrier_device` may carry `record`: only writers of the device the record
+/// names as anchor carry entries, and only well-formed ones.
+pub(crate) fn carries(carrier_device: &str, record: &AuthorizationRecord) -> bool {
+    carrier_device == record.anchor_device_id && record.validate().is_ok()
+}
+
 pub(crate) async fn insert_entry(
     conn: &mut SqliteConnection,
     space: SpaceId,

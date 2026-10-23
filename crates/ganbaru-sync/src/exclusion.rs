@@ -8,7 +8,8 @@
 //! `sync_displaced_versions`, which a member fills while the anchor has not confirmed storing
 //! the superseding operation; the anchor never applies an operation past a cutoff, so it keeps
 //! none. Operations of other writers stay applied: an honest operation that saw an excluded one
-//! keeps its effects.
+//! keeps its effects. The authorization entries excluded operations carry still count for chain
+//! selection, so a competing chain wins on every replica whatever order it arrived in.
 //!
 //! Excluded operations leave late changes an admin restores or discards. They are derived from
 //! the excluded bodies alone, folded commutatively, so every replica that stores the same
@@ -18,7 +19,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use ganbaru_sync_contracts::{
     Change, ChangeAction, Content, Envelope, GroupId, GroupMask, GroupValue, Hlc, LateResolution,
-    ResolveLate, RowKey, Seq, SpaceId, TableId, Value, VersionVector, WriterId,
+    OperationKind, ResolveLate, RowKey, Seq, SpaceId, TableId, Value, VersionVector, WriterId,
 };
 use sqlx::{Connection, Row, SqliteConnection};
 
@@ -469,7 +470,9 @@ impl Retention {
 }
 
 /// Brings exclusions and late changes in line with a new selection of the authorization chain,
-/// inside the engine write that selected it.
+/// inside the engine write that selected it. Entries carried by operations it excludes are
+/// recorded and the chain selected again until nothing new is recorded, which ends because each
+/// round records at least one stored operation.
 pub(crate) async fn settle(
     engine: &Engine,
     conn: &mut SqliteConnection,
@@ -477,8 +480,78 @@ pub(crate) async fn settle(
     batch: &mut Batch,
     selection: &Selection,
 ) -> SyncResult<()> {
-    reconcile(engine, conn, ctx, batch).await?;
-    rebuild_late(engine, conn, batch, &selection.resolutions).await
+    let mut resolutions = selection.resolutions.clone();
+    loop {
+        reconcile(engine, conn, ctx, batch).await?;
+        if !record_excluded_entries(conn, ctx.space).await? {
+            break;
+        }
+        match authorization::rederive(conn, ctx.space).await? {
+            Some(next) => resolutions = next.resolutions,
+            None => break,
+        }
+    }
+    rebuild_late(engine, conn, batch, &resolutions).await
+}
+
+/// Records the entries of excluded operations stored since the last engine write and settles
+/// again when the chain they extend changes the selection.
+pub(crate) async fn admit_excluded_entries(
+    engine: &Engine,
+    conn: &mut SqliteConnection,
+    ctx: &SpaceContext,
+    batch: &mut Batch,
+) -> SyncResult<()> {
+    if !record_excluded_entries(conn, ctx.space).await? {
+        return Ok(());
+    }
+    if let Some(selection) = authorization::rederive(conn, ctx.space).await? {
+        settle(engine, conn, ctx, batch, &selection).await?;
+    }
+    Ok(())
+}
+
+/// Records the authorization entries that excluded operations carry, which never apply. Chain
+/// selection has to see every entry a replica stores whatever became of its carrier: otherwise
+/// two replicas that learn of competing chains in different orders each keep the first, since
+/// its removals exclude the other chain's carrier. Returns whether any entry was new.
+async fn record_excluded_entries(conn: &mut SqliteConnection, space: SpaceId) -> SyncResult<bool> {
+    let rows: Vec<(Vec<u8>, i64, Vec<u8>)> = sqlx::query_as(
+        "SELECT o.writer_id, o.seq, o.envelope FROM sync_ops o
+         WHERE o.space_id = ?1 AND o.kind = ?2 AND o.excluded_revision IS NOT NULL
+            AND NOT EXISTS (
+                SELECT 1 FROM sync_auth_entries e
+                WHERE e.space_id = o.space_id AND e.writer_id = o.writer_id AND e.seq = o.seq
+            )
+         ORDER BY o.writer_id, o.seq",
+    )
+    .bind(space.as_bytes().as_slice())
+    .bind(i64::from(OperationKind::Authorization.as_u8()))
+    .fetch_all(&mut *conn)
+    .await?;
+    let mut recorded = false;
+    for (writer, seq, envelope) in rows {
+        let Some(operation) = Envelope::decode(&envelope)
+            .ok()
+            .and_then(|envelope| envelope.operation().ok())
+        else {
+            continue;
+        };
+        let Content::Authorization(record) = &operation.content else {
+            continue;
+        };
+        let writer = log::writer_id(&writer)?;
+        let carrier = log::writer(conn, space, writer)
+            .await?
+            .ok_or_else(|| corrupt("an excluded operation has no writer"))?;
+        if !authorization::carries(&carrier.device_id, record) {
+            continue;
+        }
+        authorization::insert_entry(conn, space, writer, stored_u64(seq, "sequence")?, record)
+            .await?;
+        recorded = true;
+    }
+    Ok(recorded)
 }
 
 /// Records the device of the local writer and, when it changed, settles exclusions again: the

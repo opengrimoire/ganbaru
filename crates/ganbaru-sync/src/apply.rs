@@ -493,7 +493,8 @@ async fn apply_one(
 /// record names as anchor may carry entries; any other carrier is held. The entry is stored and
 /// forwarded whether or not selection takes it, and the local writer freezes when the selected
 /// chain removes its device. Operations the selected removals exclude, or no longer exclude,
-/// change state in the same transaction.
+/// change state in the same transaction. Entries of excluded operations, which never get here,
+/// are recorded by [`exclusion::settle`] and at the start of each apply call.
 #[allow(clippy::too_many_arguments)]
 async fn apply_authorization(
     engine: &Engine,
@@ -508,7 +509,7 @@ async fn apply_authorization(
     let issuer = log::writer(conn, ctx.space, candidate.writer)
         .await?
         .ok_or_else(|| corrupt("operation of an unknown writer reached apply"))?;
-    if issuer.device_id != record.anchor_device_id || record.validate().is_err() {
+    if !authorization::carries(&issuer.device_id, record) {
         return Ok(Outcome::Held);
     }
     authorization::insert_entry(conn, ctx.space, candidate.writer, candidate.seq, record).await?;
@@ -776,6 +777,7 @@ impl Engine {
             )
             .await?;
         }
+        exclusion::admit_excluded_entries(self, &mut tx, ctx, &mut batch).await?;
         let mut retention = Retention::load(&mut tx, ctx.space).await?;
         let mut slot = SealSlot::bounded(writer);
         let mut report = ApplyReport::default();

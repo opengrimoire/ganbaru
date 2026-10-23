@@ -11,7 +11,7 @@ fn emoji_vault(name: &str) -> std::path::PathBuf {
     let _ = fs::remove_dir_all(&vault_root);
     fs::create_dir_all(vault_root.join("assets/project-icons")).unwrap();
     fs::write(
-        vault_root.join("assets/project-icons/abcdef.png"),
+        vault_root.join("assets/project-icons/abcdef0000000000000000000000000000000000000000000000000000000000.png"),
         [1u8; 42],
     )
     .unwrap();
@@ -36,7 +36,7 @@ fn custom_emoji_create_list_delete_round_trips() {
         insert_project_custom_emoji(
             &pool,
             &vault_root,
-            &emoji(" emoji-a ", " project-icons/abcdef.png "),
+            &emoji(" emoji-a ", " project-icons/abcdef0000000000000000000000000000000000000000000000000000000000.png "),
         )
         .await
         .unwrap();
@@ -45,7 +45,10 @@ fn custom_emoji_create_list_delete_round_trips() {
         assert_eq!(emojis.len(), 1);
         assert_eq!(emojis[0].id, "emoji-a");
         assert_eq!(emojis[0].name, "Focus");
-        assert_eq!(emojis[0].asset_path, "project-icons/abcdef.png");
+        assert_eq!(
+            emojis[0].asset_path,
+            "project-icons/abcdef0000000000000000000000000000000000000000000000000000000000.png"
+        );
         assert_eq!(emojis[0].order_key, "a0");
         let size: Option<i64> = sqlx::query_scalar(
             "SELECT asset_byte_size FROM project_custom_emojis WHERE id = 'emoji-a'",
@@ -75,7 +78,7 @@ fn custom_emoji_order_key_places_new_emoji_after_existing_ones_and_refuses_missi
         let pool = migrated_memory_pool().await;
         let vault_root = emoji_vault("order");
         for id in ["emoji-a", "emoji-b"] {
-            insert_project_custom_emoji(&pool, &vault_root, &emoji(id, "project-icons/abcdef.png"))
+            insert_project_custom_emoji(&pool, &vault_root, &emoji(id, "project-icons/abcdef0000000000000000000000000000000000000000000000000000000000.png"))
                 .await
                 .unwrap();
         }
@@ -93,7 +96,7 @@ fn custom_emoji_order_key_places_new_emoji_after_existing_ones_and_refuses_missi
             insert_project_custom_emoji(
                 &pool,
                 &vault_root,
-                &emoji("emoji-missing", "project-icons/missing.png")
+                &emoji("emoji-missing", "project-icons/dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd.png")
             )
             .await
             .is_err()

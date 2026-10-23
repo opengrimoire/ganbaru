@@ -2047,6 +2047,7 @@ dependencies = [
  "chrono",
  "ganbaru-db",
  "ganbaru-music",
+ "ganbaru-sync",
  "ganbaru-sync-contracts",
  "ganbaru-working-folders",
  "serde",

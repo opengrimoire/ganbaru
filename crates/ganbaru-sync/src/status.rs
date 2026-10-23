@@ -76,8 +76,11 @@ pub struct SyncStatus {
     pub waiting: usize,
     /// Envelope bytes of the waiting operations.
     pub waiting_bytes: u64,
-    /// Held operations by reason.
+    /// Held operations by reason, without the excluded ones.
     pub held: HeldCounts,
+    /// Operations of removed devices past their removal cutoff, stored and forwarded but never
+    /// applied while the removal stays selected.
+    pub excluded: usize,
     /// Local rows with changes that are not sealed yet.
     pub pending_captures: usize,
     /// Live rows with surfaced conflicts, per table name, for tables that have any.
@@ -130,8 +133,10 @@ impl Engine {
             ..SyncStatus::default()
         };
         let pending = sqlx::query(
-            "SELECT state, hold_reason, count(*), coalesce(sum(length(envelope)), 0) FROM sync_ops
-             WHERE space_id = ? AND state <> 'applied' GROUP BY state, hold_reason",
+            "SELECT CASE WHEN excluded_revision IS NULL THEN state ELSE 'excluded' END,
+                hold_reason, count(*), coalesce(sum(length(envelope)), 0)
+             FROM sync_ops WHERE space_id = ? AND state <> 'applied'
+             GROUP BY 1, hold_reason",
         )
         .bind(ctx.space.as_bytes().as_slice())
         .fetch_all(&mut *conn)
@@ -146,6 +151,7 @@ impl Engine {
                     status.waiting_bytes = stored_u64(row.try_get(3)?, "waiting bytes")?;
                 }
                 ("held", Some(reason)) => status.held.add(HoldReason::parse(&reason)?, ops),
+                ("excluded", _) => status.excluded += ops,
                 _ => return Err(corrupt("pending operation with an unknown state")),
             }
         }
@@ -214,7 +220,8 @@ impl Engine {
         Ok(warnings)
     }
 
-    /// Held operations in writer and sequence order, at most `limit`.
+    /// Held operations in writer and sequence order, at most `limit`, without the operations
+    /// a removal excludes.
     pub async fn held_ops(
         &self,
         conn: &mut SqliteConnection,
@@ -225,6 +232,7 @@ impl Engine {
         let rows = sqlx::query(
             "SELECT writer_id, seq, hold_reason, stored_at_ms FROM sync_ops
              WHERE space_id = ? AND state <> 'applied' AND state = 'held'
+                AND excluded_revision IS NULL
              ORDER BY writer_id, seq LIMIT ?",
         )
         .bind(ctx.space.as_bytes().as_slice())
@@ -262,6 +270,7 @@ impl Engine {
             "SELECT writer_id, seq, hold_reason, envelope FROM sync_ops
              WHERE space_id = ? AND state <> 'applied' AND state = 'held'
                 AND hold_reason IN ('newer_format', 'newer_manifest')
+                AND excluded_revision IS NULL
              ORDER BY writer_id, seq",
         )
         .bind(ctx.space.as_bytes().as_slice())

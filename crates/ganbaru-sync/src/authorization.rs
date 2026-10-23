@@ -13,16 +13,17 @@ use std::collections::{BTreeMap, BTreeSet};
 use ganbaru_sync_contracts::bounds::DISCOVERY_KEY_BYTES;
 use ganbaru_sync_contracts::{
     AdminPublicKey, AuthorizationRecord, Content, DeviceKind, DevicePublicKey, DeviceRole,
-    Digest32, Entry, Envelope, ProposalRejection, Seq, Sequencing, SetRole, SignedCharter,
-    SignedProposal, SpaceId, WriterId,
+    Digest32, Entry, Envelope, ProposalRejection, ResolveLate, Seq, Sequencing, SetRole,
+    SignedCharter, SignedProposal, SpaceId, WriterId,
 };
 use sqlx::{Connection, Row, SqliteConnection};
 
+use crate::apply::{self, Constrained};
 use crate::error::{SyncError, SyncResult, corrupt, failpoint};
 use crate::log::{self, seq_i64, stored_u64};
 use crate::merge::Batch;
 use crate::seal::{SealReport, SealSlot};
-use crate::{Engine, LocalWriter, SpaceContext, sql};
+use crate::{Engine, LocalWriter, SpaceContext, exclusion, sql};
 
 /// An enrolled device as the selected chain leaves it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -261,7 +262,7 @@ impl AuthState {
         )
     }
 
-    fn view(&self) -> AuthorizationView {
+    pub(crate) fn view(&self) -> AuthorizationView {
         AuthorizationView {
             epoch: self.epoch,
             revision: self.revision,
@@ -294,6 +295,17 @@ struct Node {
 pub(crate) struct Selection {
     pub(crate) state: AuthState,
     path: Vec<(WriterId, Seq)>,
+    /// Late change decisions of the chain with their revisions, in revision order.
+    pub(crate) resolutions: Vec<(u64, ResolveLate)>,
+    /// Highest revision any stored chain reaches from the charter, selected or not.
+    pub(crate) reachable: u64,
+}
+
+impl Selection {
+    /// Device id of the selected anchor.
+    pub(crate) fn anchor(&self) -> &str {
+        &self.state.anchor_device_id
+    }
 }
 
 fn kind_text(kind: DeviceKind) -> &'static str {
@@ -380,11 +392,15 @@ pub(crate) async fn select(
     // Entries name their parent by hash and duplicates are dropped, so the walk visits each
     // entry at most once.
     let mut best: Option<Selection> = None;
+    let mut reachable = 0;
     let mut stack = vec![Selection {
         state: AuthState::from_charter(&charter),
         path: Vec::new(),
+        resolutions: Vec::new(),
+        reachable: 0,
     }];
     while let Some(selection) = stack.pop() {
+        reachable = reachable.max(selection.state.revision);
         let mut extended = false;
         for index in children
             .get(&selection.state.entry_hash)
@@ -399,7 +415,16 @@ pub(crate) async fn select(
             state.advance(&node.record, node.hash);
             let mut path = selection.path.clone();
             path.push((node.writer, node.seq));
-            stack.push(Selection { state, path });
+            let mut resolutions = selection.resolutions.clone();
+            if let Entry::ResolveLate(resolve) = &node.record.proposal.proposal.entry {
+                resolutions.push((node.record.revision, resolve.clone()));
+            }
+            stack.push(Selection {
+                state,
+                path,
+                resolutions,
+                reachable: 0,
+            });
             extended = true;
         }
         if !extended
@@ -410,7 +435,26 @@ pub(crate) async fn select(
             best = Some(selection);
         }
     }
-    Ok(best)
+    Ok(best.map(|best| Selection { reachable, ..best }))
+}
+
+/// Revision an operation's authorization revision must not exceed to be applied: the highest
+/// revision any stored chain reaches, selected or not.
+///
+/// This guarantees that the receiver stored every entry the author had applied when it sealed
+/// the operation, not that the selected chain covers them: a superseded chain can satisfy it.
+/// Requiring the selected chain instead would leave an operation sealed against a superseded
+/// entry waiting forever.
+pub(crate) async fn readiness_revision(
+    conn: &mut SqliteConnection,
+    space: SpaceId,
+) -> SyncResult<u64> {
+    let revision: Option<i64> =
+        sqlx::query_scalar("SELECT reachable_revision FROM sync_spaces WHERE space_id = ?")
+            .bind(space.as_bytes().as_slice())
+            .fetch_optional(&mut *conn)
+            .await?;
+    revision.map_or(Ok(0), |revision| stored_u64(revision, "revision"))
 }
 
 /// Highest revision of the selected chain, 0 with only the charter or none.
@@ -456,18 +500,40 @@ pub(crate) async fn insert_entry(
     Ok(())
 }
 
-/// Selects the chain and writes what it derives: the selected flags, `sync_devices`, and the
-/// writer state of removed devices. Writers of a removed device become revoked at the cutoff the
-/// removal lists, or 0 when it lists none; revoked writers of a device that is no longer removed
-/// become active again. Retired and forked writers keep their state, and writers of devices the
-/// chain does not enroll are left as they are.
+/// Selects the chain and writes what it derives: the selected flags, `sync_devices`, the
+/// reachable revision, the anchor, and the writer state of removed devices. Writers of a removed
+/// device become revoked at the cutoff the removal lists, or 0 when it lists none, and every
+/// writer of a removed device, retired and forked ones included, gets that cutoff as its removal
+/// cutoff; revoked writers of a device that is no longer removed become active again. Retired
+/// and forked writers keep their state, and writers of devices the chain does not enroll are left
+/// as they are. Anchor marks are cleared when the anchor changes, since they confirm what the
+/// previous anchor stored.
 pub(crate) async fn rederive(
     conn: &mut SqliteConnection,
     space: SpaceId,
-) -> SyncResult<Option<AuthState>> {
+) -> SyncResult<Option<Selection>> {
     let Some(selection) = select(conn, space).await? else {
         return Ok(None);
     };
+    let previous_anchor: Option<String> =
+        sqlx::query_scalar("SELECT anchor_device_id FROM sync_spaces WHERE space_id = ?")
+            .bind(space.as_bytes().as_slice())
+            .fetch_one(&mut *conn)
+            .await?;
+    if previous_anchor.as_deref() != Some(selection.anchor()) {
+        sqlx::query("DELETE FROM sync_anchor_marks WHERE space_id = ?")
+            .bind(space.as_bytes().as_slice())
+            .execute(&mut *conn)
+            .await?;
+    }
+    sqlx::query(
+        "UPDATE sync_spaces SET reachable_revision = ?, anchor_device_id = ? WHERE space_id = ?",
+    )
+    .bind(seq_i64(selection.reachable)?)
+    .bind(selection.anchor())
+    .bind(space.as_bytes().as_slice())
+    .execute(&mut *conn)
+    .await?;
     sqlx::query("UPDATE sync_auth_entries SET selected = 0 WHERE space_id = ? AND selected = 1")
         .bind(space.as_bytes().as_slice())
         .execute(&mut *conn)
@@ -512,6 +578,23 @@ pub(crate) async fn rederive(
         .await?;
     }
     for writer in log::writers(conn, space).await? {
+        let removal_cutoff = selection
+            .state
+            .devices
+            .get(&writer.device_id)
+            .filter(|device| device.removed.is_some())
+            .map(|device| device.cutoffs.get(&writer.id).copied().unwrap_or(0));
+        if removal_cutoff != writer.removal_cutoff {
+            sqlx::query(
+                "UPDATE sync_writers SET removal_cutoff_seq = ?
+                 WHERE space_id = ? AND writer_id = ?",
+            )
+            .bind(removal_cutoff.map(seq_i64).transpose()?)
+            .bind(space.as_bytes().as_slice())
+            .bind(writer.id.as_bytes().as_slice())
+            .execute(&mut *conn)
+            .await?;
+        }
         let Some(device) = selection.state.devices.get(&writer.device_id) else {
             continue;
         };
@@ -535,7 +618,7 @@ pub(crate) async fn rederive(
         .execute(&mut *conn)
         .await?;
     }
-    Ok(Some(selection.state))
+    Ok(Some(selection))
 }
 
 /// How the selected chain knows the device a genesis names.
@@ -730,6 +813,14 @@ impl Engine {
         }
         sql::begin_engine_write(&mut tx).await?;
         let mut batch = Batch::load(&mut tx, ctx.space).await?;
+        exclusion::note_local_device(
+            self,
+            &mut tx,
+            ctx,
+            &mut batch,
+            &writer.certificate.certificate.device_id,
+        )
+        .await?;
         let mut slot = SealSlot::new(Some(writer));
         let mut report = SealReport::default();
         let (sealer, writer) = slot
@@ -750,7 +841,20 @@ impl Engine {
             )
             .await?;
         insert_entry(&mut tx, ctx.space, writer.id(), seq, &record).await?;
-        rederive(&mut tx, ctx.space).await?;
+        if let Some(selection) = rederive(&mut tx, ctx.space).await? {
+            exclusion::settle(self, &mut tx, ctx, &mut batch, &selection).await?;
+        }
+        apply::finish_sealed(
+            self,
+            &mut tx,
+            ctx,
+            &mut batch,
+            &mut slot,
+            Constrained::Seal,
+            now_ms,
+            &mut report,
+        )
+        .await?;
         failpoint!("sequence.before_commit");
         sql::set_applying(&mut tx, false).await?;
         tx.commit().await?;

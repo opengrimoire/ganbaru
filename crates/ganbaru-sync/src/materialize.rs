@@ -144,6 +144,9 @@ async fn desired(
         Some((state, versions)) => (state, Some(versions)),
         None => match merge::row_state(conn, table.id, key).await? {
             Some(state) => (state, None),
+            None if visibility.late_created(conn, table.id, key).await? => {
+                return Ok(Some(Desired::Absent));
+            }
             None => return Ok(None),
         },
     };

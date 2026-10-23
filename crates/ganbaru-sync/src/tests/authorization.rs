@@ -14,7 +14,7 @@ use super::replica::{
     ANCHOR_DEVICE_ID, Identity, Replica, anchor_admin, device_id, device_key, enroll_entry, person,
     proposal,
 };
-use crate::{AuthorizationView, StoreOutcome, StoreRefusal};
+use crate::{AuthorizationView, HoldReason, StoreOutcome, StoreRefusal};
 
 const STORED: StoreOutcome = StoreOutcome::Stored { held: None };
 
@@ -298,14 +298,17 @@ fn store_admits_only_writers_of_enrolled_devices_with_their_enrolled_key() {
         observer.pull(&mut hub).await;
         assert_eq!(observer.stored_vector().await.get(&newcomer.writer()), 2);
 
-        // A removal stops the device's writers at the cutoff and refuses its new writers.
+        // A removal excludes the device's operations past the cutoff, which are still stored,
+        // and refuses its new writers.
         hub.pull(&mut member).await;
         let removed = hub.remove(&member.device_id).await.unwrap();
         tag(&mut member, "tag-late").await;
         let late = member.own_ops().await;
         assert_eq!(
             hub.receive(&late[2..]).await,
-            vec![StoreOutcome::Refused(StoreRefusal::Revoked)]
+            vec![StoreOutcome::Stored {
+                held: Some(HoldReason::Invalid)
+            }]
         );
         member.rotate();
         tag(&mut member, "tag-rotated").await;

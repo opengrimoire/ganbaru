@@ -15,7 +15,7 @@ use crate::authorization::{self, Enrollment};
 use crate::error::{SyncResult, corrupt, failpoint};
 use crate::exclusion::{self, MAX_EXCLUDED_PER_WRITER};
 use crate::log::{self, WriterRow, WriterState, clamp_ms, seq_i64};
-use crate::{Engine, SpaceContext, validate};
+use crate::{Engine, SpaceContext, fork, validate};
 
 /// Why a stored operation cannot be applied yet or ever.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -390,8 +390,8 @@ async fn store_next(
         return Ok(StoreOutcome::Refused(StoreRefusal::BadSignature));
     }
     if envelope.seq <= writer.stored {
-        let stored: Option<Vec<u8>> = sqlx::query_scalar(
-            "SELECT hash FROM sync_ops WHERE space_id = ? AND writer_id = ? AND seq = ?",
+        let stored: Option<(Vec<u8>, Vec<u8>)> = sqlx::query_as(
+            "SELECT hash, envelope FROM sync_ops WHERE space_id = ? AND writer_id = ? AND seq = ?",
         )
         .bind(ctx.space.as_bytes().as_slice())
         .bind(writer.id.as_bytes().as_slice())
@@ -399,7 +399,20 @@ async fn store_next(
         .fetch_optional(&mut *conn)
         .await?;
         return Ok(match stored {
-            Some(hash) if hash != envelope.hash() => {
+            Some((hash, stored)) if hash != envelope.hash() => {
+                // Both operations are signed by the writer key: the pair is fork evidence,
+                // unless compaction dropped the stored body.
+                if !stored.is_empty() {
+                    fork::record(
+                        conn,
+                        ctx.space,
+                        writer.id,
+                        envelope.seq,
+                        [(&stored, log::digest(&hash)?), (bytes, envelope.hash())],
+                        now_ms,
+                    )
+                    .await?;
+                }
                 StoreOutcome::Refused(StoreRefusal::Fork { seq: envelope.seq })
             }
             _ => StoreOutcome::Duplicate,

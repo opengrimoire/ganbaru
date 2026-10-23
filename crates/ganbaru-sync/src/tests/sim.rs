@@ -184,7 +184,9 @@ async fn apply_all(rng: &mut Rng, replica: &mut Replica) {
             .await
             .unwrap_or_else(|error| panic!("replica {} failed to apply: {error:?}", replica.index));
         if report.local_writer_frozen && !replica.device_removed().await {
-            replica.rotate();
+            if !replica.reseal_own_forks().await {
+                replica.rotate();
+            }
         } else if !report.more {
             return;
         }

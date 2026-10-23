@@ -1,11 +1,12 @@
 //! Re-sealing a local writer's operations with a new writer.
 //!
-//! When a fork cuts off operations this replica sealed and applied, the
-//! installation replaces its writer. Every operation of the old writer past the kept sequence is
-//! removed with its merge effects and sealed again by the new writer with its original clock,
-//! manifest version, and causal context, where removed operations of the old writer are renamed
-//! to their replacements. Operations of other writers stay as they are, so the merge state after
-//! the re-seal is the one every replica computes from the kept chain and the replacements.
+//! When a fork cuts off operations this replica sealed and applied, the installation replaces
+//! its writer. Every operation of the old writer past the kept sequence is removed with its merge
+//! effects and sealed again by the new writer with its original clock, manifest version, and
+//! causal context, where removed operations of the old writer are renamed to their replacements.
+//! Authorization entries are dropped instead. Operations of other writers stay as they are, so
+//! the merge state after the re-seal is the one every replica computes from the kept chain and
+//! the replacements.
 
 use std::collections::BTreeMap;
 
@@ -17,7 +18,7 @@ use crate::error::{SyncResult, corrupt, failpoint};
 use crate::log::{self, seq_i64, stored_u64};
 use crate::merge::{Batch, table_param};
 use crate::seal::{Advance, Replay, SealReport, SealSlot};
-use crate::{Engine, LocalWriter, SpaceContext, SyncError, sql};
+use crate::{Engine, LocalWriter, SpaceContext, SyncError, authorization, exclusion, fork, sql};
 
 /// Result of a re-seal.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -77,34 +78,10 @@ async fn replaced_ops(
         .collect()
 }
 
-/// Fails when an applied operation of another writer saw a replaced operation. Contexts only
-/// grow along a chain, so checking each writer's applied head is enough.
-async fn ensure_unseen(
-    conn: &mut SqliteConnection,
-    batch: &mut Batch,
-    old: WriterId,
-    keep_through: Seq,
-) -> SyncResult<()> {
-    let heads: Vec<(WriterId, Seq)> = batch
-        .applied
-        .iter()
-        .filter(|(writer, _)| *writer != old)
-        .collect();
-    for (writer, applied) in heads {
-        let context = batch
-            .contexts
-            .get(conn, batch.space, writer, applied)
-            .await?;
-        if context.get(&old) > keep_through {
-            return Err(SyncError::InvalidReseal(
-                "another writer's applied operations depend on replaced operations",
-            ));
-        }
-    }
-    Ok(())
-}
-
-/// A replaced operation's context with removed operations of the old writer renamed.
+/// A replaced operation's context with removed operations of the old writer renamed to the
+/// replacement of the latest one it saw. Authorization operations are dropped rather than
+/// replaced, so a context that saw only dropped ones past `keep_through` keeps the old writer at
+/// `keep_through`.
 fn remap(
     context: &VersionVector,
     old: WriterId,
@@ -122,10 +99,9 @@ fn remap(
             continue;
         }
         remapped.advance(old, keep_through);
-        let replacement = renamed.get(&seq).ok_or_else(|| {
-            corrupt("a replaced operation saw an operation that was not replaced")
-        })?;
-        remapped.advance(new, *replacement);
+        if let Some((_, replacement)) = renamed.range(..=seq).next_back() {
+            remapped.advance(new, *replacement);
+        }
     }
     Ok(remapped)
 }
@@ -182,52 +158,22 @@ pub(crate) async fn remove_effects(
     Ok(())
 }
 
-/// Removes the old writer's operations past `keep_through` and makes `keep_through` its head.
-/// Its state and cutoff stay, so the other copy of the chain past the divergence can be stored.
-async fn truncate_chain(
-    conn: &mut SqliteConnection,
-    ctx: &SpaceContext,
-    old: WriterId,
-    keep_through: Seq,
-) -> SyncResult<()> {
-    let keep = seq_i64(keep_through)?;
-    let (head_hash, head_clock): (Vec<u8>, i64) = sqlx::query_as(
-        "SELECT hash, clock FROM sync_ops WHERE space_id = ? AND writer_id = ? AND seq = ?",
-    )
-    .bind(ctx.space.as_bytes().as_slice())
-    .bind(old.as_bytes().as_slice())
-    .bind(keep)
-    .fetch_optional(&mut *conn)
-    .await?
-    .ok_or_else(|| corrupt("kept head of a re-sealed chain is missing"))?;
-    sqlx::query("DELETE FROM sync_ops WHERE space_id = ? AND writer_id = ? AND seq > ?")
-        .bind(ctx.space.as_bytes().as_slice())
-        .bind(old.as_bytes().as_slice())
-        .bind(keep)
-        .execute(&mut *conn)
-        .await?;
-    sqlx::query(
-        "UPDATE sync_writers SET stored_seq = ?1, applied_seq = ?1, head_hash = ?2,
-            head_clock = ?3
-         WHERE space_id = ?4 AND writer_id = ?5",
-    )
-    .bind(keep)
-    .bind(head_hash.as_slice())
-    .bind(head_clock)
-    .bind(ctx.space.as_bytes().as_slice())
-    .bind(old.as_bytes().as_slice())
-    .execute(&mut *conn)
-    .await?;
-    Ok(())
-}
-
 impl Engine {
     /// Replaces the old local writer's operations past `keep_through`, the last sequence another
     /// copy of the chain shares with this one, with operations of a new writer that merge the same
     /// way, then seals pending captures with it. The new writer must not have sealed anything but
-    /// its genesis. The old writer keeps its state and cutoff, so the other copy's operations
-    /// past the divergence can be stored and applied afterwards. Only operations that never left
-    /// this replica may be re-sealed this way.
+    /// its genesis.
+    ///
+    /// `keep_through` comes from stored fork evidence, see [`Engine::own_forks`], or from a
+    /// local comparison with another copy of the chain; with evidence stored, the kept sequence
+    /// is at most the one it proves shared. Every replica that holds the evidence excludes both
+    /// copies past it, so replaced operations may have left this replica and been seen by other
+    /// writers: their operations stay, and only lose the effects of what they saw. Authorization
+    /// entries past the kept sequence are dropped, not sealed again, since a fork of the anchor
+    /// freezes its epoch and only a handover continues the log.
+    ///
+    /// Each installation that holds a copy of the forked chain re-seals its own copy this way;
+    /// an installation destroyed before it does loses its copy, which no other replica keeps.
     pub async fn reseal_fork(
         &self,
         conn: &mut SqliteConnection,
@@ -253,7 +199,12 @@ impl Engine {
                 "the old writer has operations that are not applied",
             ));
         }
-        if keep_through < 1 || keep_through > row.stored {
+        let proven = fork::shared_prefixes(&mut tx, ctx.space)
+            .await?
+            .get(&old)
+            .copied();
+        let keep_through = proven.map_or(keep_through, |proven| keep_through.min(proven));
+        if (keep_through < 1 && proven != Some(0)) || keep_through > row.stored {
             return Err(SyncError::InvalidReseal(
                 "the kept sequence is outside the old chain",
             ));
@@ -267,12 +218,23 @@ impl Engine {
         }
         sql::begin_engine_write(&mut tx).await?;
         let mut batch = Batch::load(&mut tx, ctx.space).await?;
-        ensure_unseen(&mut tx, &mut batch, old, keep_through).await?;
         let replaced = replaced_ops(&mut tx, ctx, old, keep_through).await?;
+        let dropped_entries = replaced
+            .iter()
+            .any(|op| matches!(op.operation.content, Content::Authorization(_)));
         remove_effects(&mut tx, &mut batch, old, keep_through).await?;
-        truncate_chain(&mut tx, ctx, old, keep_through).await?;
+        fork::drop_branch(&mut tx, ctx.space, old, keep_through, row.applied).await?;
         batch.applied.set(old, keep_through);
         batch.contexts.clear();
+        if dropped_entries
+            && let Some(selection) = authorization::rederive(&mut tx, ctx.space).await?
+        {
+            exclusion::settle(self, &mut tx, ctx, &mut batch, &selection).await?;
+        }
+        let replaced: Vec<Replaced> = replaced
+            .into_iter()
+            .filter(|op| !matches!(op.operation.content, Content::Authorization(_)))
+            .collect();
         let mut report = ResealReport {
             replaced_ops: replaced.len(),
             seal: SealReport::default(),
@@ -339,7 +301,7 @@ impl Engine {
                     return Err(corrupt("a genesis follows the start of a chain"));
                 }
                 Content::Authorization(_) => {
-                    return Err(corrupt("an own authorization operation cannot be resealed"));
+                    return Err(corrupt("an authorization operation is sealed again"));
                 }
             }
             let replacement = report

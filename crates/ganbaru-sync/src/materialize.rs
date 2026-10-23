@@ -132,11 +132,14 @@ async fn resolve_owned(
     Ok(kept)
 }
 
+/// The domain state of one row, or `None` when the row has no merge state and nothing says it
+/// must be absent. `orphaned` marks a row whose merge state an exclusion dropped.
 async fn desired(
     engine: &Engine,
     conn: &mut SqliteConnection,
     table: &'static TableSpec,
     key: &str,
+    orphaned: bool,
     visibility: &mut Visibility,
     merged: &mut MergedRows,
 ) -> SyncResult<Option<Desired>> {
@@ -144,6 +147,7 @@ async fn desired(
         Some((state, versions)) => (state, Some(versions)),
         None => match merge::row_state(conn, table.id, key).await? {
             Some(state) => (state, None),
+            None if orphaned => return Ok(Some(Desired::Absent)),
             None if visibility.late_created(conn, table.id, key).await? => {
                 return Ok(Some(Desired::Absent));
             }
@@ -173,9 +177,12 @@ async fn desired(
         if table.is_exists_group(group.id) {
             continue;
         }
-        let version = winners
-            .get(&group.id)
-            .ok_or_else(|| corrupt("a live row lacks a group version"))?;
+        // Excluding a forked branch the anchor already confirmed can leave a group without a
+        // version, since nothing kept the version that branch displaced. The domain row keeps
+        // its value until an operation writes the group again, as the re-sealed copy does.
+        let Some(version) = winners.get(&group.id) else {
+            continue;
+        };
         if let Some(adapter) = adapter {
             let derived = adapter
                 .derived(table.id, group.id, &version.value)
@@ -618,7 +625,9 @@ pub(crate) async fn plan(
             if plans[index].contains_key(&key) {
                 continue;
             }
-            let desired = desired(engine, conn, table, &key, visibility, &mut merged).await?;
+            let orphaned = batch.orphaned.contains(&(table.id, key.clone()));
+            let desired =
+                desired(engine, conn, table, &key, orphaned, visibility, &mut merged).await?;
             if matches!(desired, Some(Desired::Absent)) && domain_exists(conn, table, &key).await? {
                 // Deleting the row clears or cascades references to it at once, so referrers
                 // must be materialized again even when their merge state did not change.

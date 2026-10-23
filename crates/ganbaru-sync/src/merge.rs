@@ -83,6 +83,9 @@ pub(crate) struct Batch {
     pub(crate) contexts: ContextCache,
     /// Rows whose merge state changed and must be refreshed and materialized.
     pub(crate) dirty: BTreeSet<(TableId, String)>,
+    /// Dirty rows whose merge state an exclusion dropped because no remaining operation wrote
+    /// them. They materialize absent.
+    pub(crate) orphaned: BTreeSet<(TableId, String)>,
 }
 
 impl Batch {
@@ -92,6 +95,7 @@ impl Batch {
             applied: log::applied_vector(conn, space).await?,
             contexts: ContextCache::default(),
             dirty: BTreeSet::new(),
+            orphaned: BTreeSet::new(),
         })
     }
 }

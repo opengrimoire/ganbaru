@@ -11,18 +11,12 @@ use ganbaru_sync_contracts::{
 
 use super::block_on;
 use super::replica::{
-    ANCHOR_DEVICE_ID, Identity, Replica, anchor_admin, device_id, device_key, enroll_entry, person,
-    proposal,
+    ANCHOR_DEVICE_ID, Identity, Replica, anchor_admin, device_admin, device_id, device_key,
+    enroll_entry, person, proposal,
 };
 use crate::{AuthorizationView, HoldReason, LateChange, StoreOutcome, StoreRefusal};
 
 const STORED: StoreOutcome = StoreOutcome::Stored { held: None };
-
-/// An admin key for replica device `index`.
-fn device_admin(index: usize) -> AdminKeyPair {
-    let seed = [u8::try_from(index).unwrap().wrapping_add(100); 32];
-    AdminKeyPair::from_seed(&seed).unwrap()
-}
 
 pub(super) fn admin_entry(index: usize) -> Entry {
     enroll_entry(
@@ -523,6 +517,86 @@ fn a_handover_supersedes_the_old_epoch_and_equal_epoch_handovers_take_the_lower_
                 .unwrap(),
             Err(ProposalRejection::NotAnchor)
         );
+    });
+}
+
+#[test]
+fn the_named_admin_desktop_seals_a_handover_from_the_head_it_continues() {
+    block_on(async {
+        let mut hub = Replica::anchor(0, 43).await;
+        for index in [20, 21] {
+            hub.sequence(admin_entry(index)).await.unwrap().unwrap();
+        }
+        let mut admin = Replica::new(20, 43).await;
+        let mut other = Replica::new(21, 43).await;
+        admin.pull(&mut hub).await;
+        other.pull(&mut hub).await;
+        let stale = admin.handover_proposal(&device_admin(20)).await;
+
+        // Only the device a handover names seals it, and only from the head it continues.
+        assert_eq!(
+            other.seal_handover(&stale, None).await.unwrap(),
+            Err(ProposalRejection::NotAnchor)
+        );
+        hub.sequence(enroll_entry(&person(), 22, DeviceRole::Member))
+            .await
+            .unwrap()
+            .unwrap();
+        admin.pull(&mut hub).await;
+        assert_eq!(
+            admin.seal_handover(&stale, None).await.unwrap(),
+            Err(ProposalRejection::HandoverConflict)
+        );
+        let signed = admin.handover_proposal(&device_admin(20)).await;
+        assert_eq!(
+            admin.sequence_signed(&signed).await.unwrap(),
+            Err(ProposalRejection::NotAnchor)
+        );
+        let enroll = proposal(
+            admin.ctx.space,
+            &device_admin(20),
+            admin.now_ms,
+            enroll_entry(&person(), 23, DeviceRole::Member),
+        );
+        assert_eq!(
+            admin.seal_handover(&enroll, None).await.unwrap(),
+            Err(ProposalRejection::UnsupportedEntry)
+        );
+
+        let old_vector = hub.stored_vector().await;
+        let revision = admin
+            .seal_handover(&signed, Some(old_vector))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            admin.seal_handover(&signed, None).await.unwrap(),
+            Ok(revision)
+        );
+        let opened = view(&mut admin).await;
+        assert_eq!(
+            (
+                opened.epoch,
+                opened.revision,
+                opened.anchor_device_id.as_str()
+            ),
+            (1, revision, device_id(20).as_str())
+        );
+
+        // The new anchor sequences in its epoch; the old one no longer can.
+        let promoted = admin.sequence_signed(&enroll).await.unwrap().unwrap();
+        assert_eq!(promoted, revision + 1);
+        hub.pull(&mut admin).await;
+        other.pull(&mut admin).await;
+        assert_eq!(view(&mut hub).await, view(&mut admin).await);
+        assert_eq!(view(&mut other).await, view(&mut admin).await);
+        assert_eq!(
+            hub.sequence(enroll_entry(&person(), 24, DeviceRole::Member))
+                .await
+                .unwrap(),
+            Err(ProposalRejection::NotAnchor)
+        );
+        assert_devices_replay_the_selected_chain(&mut other).await;
     });
 }
 

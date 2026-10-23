@@ -8,7 +8,7 @@ use std::sync::{Mutex, OnceLock};
 use ganbaru_contacts::PersonKeyPair;
 use ganbaru_sync_contracts::{
     AdminKeyPair, ChangeAction, Charter, Content, DeviceKeyPair, DeviceKind, DeviceRole, Enroll,
-    Entry, Envelope, GroupId, Proposal, ProposalRejection, Remove, SignedCertificate,
+    Entry, Envelope, GroupId, Handover, Proposal, ProposalRejection, Remove, SignedCertificate,
     SignedCharter, SignedProposal, SpaceId, TableId, Value, VersionVector, WriterCertificate,
     WriterId, WriterKeyPair, sign_certificate, sign_charter, sign_proposal,
 };
@@ -126,6 +126,14 @@ fn anchor_device_key(person: &PersonKeyPair) -> DeviceKeyPair {
 pub(super) fn anchor_admin(person: &PersonKeyPair) -> AdminKeyPair {
     AdminKeyPair::from_seed(&key_seed(person, ADMIN_PURPOSE, ANCHOR_KEY_INDEX))
         .expect("test admin seed should be valid")
+}
+
+/// An admin key for replica device `index`.
+pub(super) fn device_admin(index: usize) -> AdminKeyPair {
+    let seed = [u8::try_from(index)
+        .expect("test device indexes fit a byte")
+        .wrapping_add(100); 32];
+    AdminKeyPair::from_seed(&seed).expect("test admin seed should be valid")
 }
 
 /// The recovery admin key of `person`'s spaces.
@@ -474,6 +482,37 @@ impl Replica {
                 &self.ctx,
                 signed,
                 [5; 32],
+                &mut self.identity.local(),
+                self.now_ms,
+            )
+            .await
+    }
+
+    /// A handover of the anchor to this replica's device that continues its selected head,
+    /// signed by `admin` at the local clock.
+    pub(super) async fn handover_proposal(&mut self, admin: &AdminKeyPair) -> SignedProposal {
+        let (epoch, revision, hash) = super::authorization::head(self).await;
+        let entry = Entry::Handover(Handover {
+            new_anchor_device_id: self.device_id.clone(),
+            epoch: epoch + 1,
+            continues_from_revision: revision,
+            continues_from_hash: hash,
+        });
+        proposal(self.ctx.space, admin, self.now_ms, entry)
+    }
+
+    /// Seals a signed handover as the new anchor, with the old anchor's stored vector when known.
+    pub(super) async fn seal_handover(
+        &mut self,
+        signed: &SignedProposal,
+        old_anchor_vector: Option<VersionVector>,
+    ) -> SyncResult<Result<u64, ProposalRejection>> {
+        self.engine
+            .seal_handover(
+                &mut self.conn,
+                &self.ctx,
+                signed,
+                old_anchor_vector,
                 &mut self.identity.local(),
                 self.now_ms,
             )

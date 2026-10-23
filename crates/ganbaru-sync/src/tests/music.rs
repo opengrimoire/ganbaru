@@ -850,6 +850,8 @@ fn music_soundscape_deleted_while_a_preset_sound_level_is_edited_cascades_everyw
                     .await,
                 1
             );
+            // A deleted layer leaves every soundscape without an offer to bring it back.
+            assert_eq!(surfaced(replica).await, (0, 0));
         }
     });
 }

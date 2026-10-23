@@ -1,16 +1,19 @@
 //! Transaction-bound Calendar commitment selection for native Focus execution.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::{self, Write};
 
 use chrono::DateTime;
 use ganbaru_pomodoro::{
     FocusCommitment, FocusConfiguration, PomodoroRunRhythm, PomodoroRunSequenceStep,
 };
+use ganbaru_sync::OPEN_CONFLICT_MASK_SQL;
+use ganbaru_sync::manifest::vault::calendar::{EVENTS_TABLE, event_group};
+use ganbaru_sync_contracts::GroupMask;
 use jiff::tz::TimeZone;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
-use sqlx::SqliteConnection;
+use sqlx::{AssertSqlSafe, SqliteConnection};
 
 use super::native_window::{self, NativeCalendarWindow};
 use super::{DbCalendarEventRow, DbOverrideRow};
@@ -74,6 +77,7 @@ async fn resolve_in_zone(
     .fetch_optional(&mut *connection)
     .await
     .map_err(|error| format!("read committed Focus owner: {error}"))?;
+    let suspended = timing_conflicts(connection).await?;
     let source = native_window::read(
         connection,
         &window,
@@ -92,6 +96,7 @@ async fn resolve_in_zone(
         device_zone,
         active_occurrence.as_deref(),
         requested_occurrence_id,
+        &suspended,
     )?;
     // An overnight or multi-day owner can have started outside today's window.
     // Capture its full original device-day plan in the same accepted transaction.
@@ -123,10 +128,30 @@ async fn resolve_in_zone(
             device_zone,
             active_occurrence.as_deref(),
             Some(&commitment.occurrence_id),
+            &suspended,
         )?
         .planned_blocks;
     }
     Ok(context)
+}
+
+/// Ids of the events whose timing has an open sync conflict. Their timing may change when the
+/// user picks another version, so automatic admission waits for the conflict to be resolved.
+async fn timing_conflicts(connection: &mut SqliteConnection) -> Result<BTreeSet<String>, String> {
+    let sql = format!(
+        "SELECT r.row_key FROM sync_rows r
+         WHERE r.table_id = ? AND r.conflict_mask <> 0 AND ({OPEN_CONFLICT_MASK_SQL} & ?) <> 0"
+    );
+    let rows: Vec<String> = sqlx::query_scalar(AssertSqlSafe(sql))
+        .bind(i64::from(EVENTS_TABLE.0))
+        .bind(
+            i64::try_from(GroupMask::of(event_group::TIMING).0)
+                .map_err(|error| error.to_string())?,
+        )
+        .fetch_all(&mut *connection)
+        .await
+        .map_err(|error| format!("read Calendar timing conflicts: {error}"))?;
+    Ok(rows.into_iter().collect())
 }
 
 fn configuration(event: &DbCalendarEventRow) -> Result<FocusConfiguration, String> {
@@ -188,6 +213,7 @@ fn select(
     device_zone: &TimeZone,
     active_occurrence: Option<&str>,
     requested_occurrence: Option<&str>,
+    suspended: &BTreeSet<String>,
 ) -> Result<FocusCalendarContext, String> {
     let events: BTreeMap<_, _> = projection
         .events
@@ -299,7 +325,13 @@ fn select(
                     .iter()
                     .position(|(_, value)| value.occurrence_id == active)
             })
-            .or_else(|| (!candidates.is_empty()).then_some(0))
+            .or_else(|| {
+                // Events with an open timing conflict stay in the plan but are not admitted
+                // automatically; an explicit request or the running owner still selects them.
+                candidates
+                    .iter()
+                    .position(|(_, value)| !suspended.contains(&value.event_id))
+            })
     };
     let commitment = selected.map(|index| candidates.remove(index).1);
     let plan_date = commitment

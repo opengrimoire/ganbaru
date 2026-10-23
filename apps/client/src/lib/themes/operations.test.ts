@@ -531,6 +531,16 @@ describe("nextUniqueDisplayName", () => {
     const set = new Set(["Theme"]);
     expect(nextUniqueDisplayName("Theme", set)).toBe("Theme 2");
   });
+
+  it("skips suffixed names over the stored length limit", () => {
+    const base = "a".repeat(57);
+    const taken = [base, `${base} 2`];
+    expect(nextUniqueDisplayName(base, taken)).toBe(`${base} 3`);
+    const longer = "b".repeat(58);
+    expect(nextUniqueDisplayName(longer, [longer, `${longer} 2`])).toBe(
+      longer,
+    );
+  });
 });
 
 describe("normalizeDisplayName", () => {

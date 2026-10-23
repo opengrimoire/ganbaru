@@ -8,6 +8,7 @@ import type {
 } from "$lib/music/library/contracts";
 import { resolveLocalMusicPath } from "$lib/music/platform-paths";
 import { fromThousandths } from "$lib/music/thousandths";
+import { youtubeResolutionAllowsPlayback } from "$lib/music/youtube-eligibility";
 import { localFileSourceFromPath, youtubeVideoSourceFromId, type MusicSource } from "$lib/music/sources";
 import { compareOrderKeyThenId } from "$lib/utils/order-key";
 
@@ -98,7 +99,7 @@ export function evaluateMusicQueueEntry(
     if (entry.youtubeResolutionState === "embedding-blocked") {
       return { eligible: false, reason: "embedding-blocked" };
     }
-    if (entry.availability !== "available" || ["unavailable", "timed-out"].includes(entry.youtubeResolutionState ?? "")) {
+    if (!youtubeResolutionAllowsPlayback(entry.youtubeResolutionState)) {
       return { eligible: false, reason: "unavailable" };
     }
   } else if (entry.availability !== "available") {

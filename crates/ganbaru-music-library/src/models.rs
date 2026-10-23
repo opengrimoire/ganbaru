@@ -953,6 +953,7 @@ pub struct MusicItemListEntry {
     pub source_collection_ids: Vec<String>,
     pub original_artwork_identity: Option<String>,
     pub artwork_override: Option<String>,
+    pub youtube_resolution_state: Option<MusicYouTubeResolutionState>,
     pub duration_ms: Option<i64>,
     pub availability: MusicItemAvailability,
     pub review_state: MusicReviewState,

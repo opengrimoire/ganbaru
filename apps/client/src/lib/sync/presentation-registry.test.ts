@@ -42,6 +42,23 @@ describe("sync presentation registry", () => {
     expect(registry.conflictLine(t, "note_tags", 3)).not.toBe(registry.conflictLine(t, "note_tags", 1));
   });
 
+  it("reports notes and restorability, defaulting to a restorable offer without a note", () => {
+    const registry = new SyncPresentationRegistry().register({
+      label: () => "Library",
+      tables: {
+        tracks: { recovery: { untitled: () => "Track", note: () => "Discard only", restorable: false, restored: () => "", restoreFailed: () => "" } },
+        lists: { recovery: { untitled: () => "List", restored: () => "", restoreFailed: () => "" } },
+      },
+      changed: () => {},
+    });
+    expect(registry.recoveryRestorable("tracks")).toBe(false);
+    expect(registry.recoveryNote(t, "tracks")).toBe("Discard only");
+    expect(registry.recoveryRestorable("lists")).toBe(true);
+    expect(registry.recoveryNote(t, "lists")).toBeNull();
+    expect(registry.recoveryRestorable("unknown")).toBe(true);
+    expect(registry.recoveryNote(t, "unknown")).toBeNull();
+  });
+
   it("refuses a second domain for a table and keeps the first registration", () => {
     const registry = new SyncPresentationRegistry().register(notesDomain());
     const intruder: SyncDomainPresentation = {

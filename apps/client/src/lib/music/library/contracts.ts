@@ -21,7 +21,7 @@ export type MusicListDestination = "review" | "library" | "playlist";
 export type MusicItemSort = "title" | "artist" | "album" | "source-order" | "discovered-at" | "added-to-playlist" | "last-played-at" | "play-count" | "manual-position";
 export type MusicSortDirection = "ascending" | "descending";
 export type MusicGroupBy = "none" | "source-kind" | "review-state" | "availability" | "album" | "folder" | "source-collection";
-export type LocalRootBindingStatus = "available" | "missing" | "needs-relink";
+export type LocalRootBindingStatus = "available" | "missing" | "unbound";
 
 export interface MusicWriteReceipt { id: string; version: number }
 /** A row's place after a reorder, so lists can sort by `(orderKey, id)` without a reload. */
@@ -258,6 +258,7 @@ export interface MusicItemListEntry {
   sourceCollectionIds: string[];
   originalArtworkIdentity: string | null;
   artworkOverride: string | null;
+  youtubeResolutionState: MusicYouTubeResolutionState | null;
   durationMs: number | null;
   availability: MusicItemAvailability;
   reviewState: MusicReviewState;
@@ -568,7 +569,7 @@ const intendedUses = ["general", "focus", "reading", "relaxation", "energizing"]
 const signals = ["lyrics", "sudden-changes", "high-intensity", "calm", "repetitive", "energizing"] as const;
 const snoozeScopes = ["playlist", "all-playlists"] as const;
 const repeatModes = ["off", "all", "one"] as const;
-const rootStatuses = ["available", "missing", "needs-relink"] as const;
+const rootStatuses = ["available", "missing", "unbound"] as const;
 const playlistAssignmentKinds = ["project-focus", "project-break", "calendar-event", "context-assignment"] as const;
 
 function object(value: unknown, label: string): Record<string, unknown> {
@@ -670,6 +671,7 @@ function parseItemEntry(value: unknown, label: string): MusicItemListEntry {
     localRootId: nullable(row.localRootId, string, `${label}.localRootId`), relativePath: nullable(row.relativePath, string, `${label}.relativePath`),
     sourceCollectionIds: array(row.sourceCollectionIds, string, `${label}.sourceCollectionIds`),
     originalArtworkIdentity: nullable(row.originalArtworkIdentity, string, `${label}.originalArtworkIdentity`), artworkOverride: nullable(row.artworkOverride, string, `${label}.artworkOverride`),
+    youtubeResolutionState: nullable(row.youtubeResolutionState, (entry, entryLabel) => enumeration(entry, youtubeResolutionStates, entryLabel), `${label}.youtubeResolutionState`),
     durationMs: nullable(row.durationMs, number, `${label}.durationMs`), availability: enumeration(row.availability, itemAvailability, `${label}.availability`),
     reviewState: enumeration(row.reviewState, reviewStates, `${label}.reviewState`), discoveredAtMs: number(row.discoveredAtMs, `${label}.discoveredAtMs`),
     updatedAtMs: number(row.updatedAtMs, `${label}.updatedAtMs`), version: number(row.version, `${label}.version`), playlistCount: number(row.playlistCount, `${label}.playlistCount`),

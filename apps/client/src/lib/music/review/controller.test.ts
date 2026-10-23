@@ -47,7 +47,7 @@ const detail = (): MusicInspectorDetail => ({
 const listItem = (): MusicItemListEntry => ({
   id: "item", identityKey: "local:item", sourceKind: "local-file", mediaKind: "audio",
   title: "Track", artist: "Artist", album: "Album", localRootId: "root",
-  relativePath: "Track.flac", sourceCollectionIds: ["source"], originalArtworkIdentity: null, artworkOverride: null, durationMs: 1_000,
+  relativePath: "Track.flac", sourceCollectionIds: ["source"], originalArtworkIdentity: null, artworkOverride: null, youtubeResolutionState: null, durationMs: 1_000,
   availability: "available", reviewState: "unreviewed", discoveredAtMs: 1, updatedAtMs: 1, version: 1,
   playlistCount: 0, activeSnoozeCount: 0, lastPlayedAtMs: null, playCount: 0,
   membershipId: null, membershipOrderKey: null, membershipWeight: null,

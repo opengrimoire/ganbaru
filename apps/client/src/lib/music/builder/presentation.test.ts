@@ -20,6 +20,7 @@ const item: MusicItemListEntry = {
   sourceCollectionIds: ["source-1"],
   originalArtworkIdentity: null,
   artworkOverride: null,
+  youtubeResolutionState: null,
   durationMs: 65_000,
   availability: "available",
   reviewState: "unreviewed",

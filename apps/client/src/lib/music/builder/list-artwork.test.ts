@@ -6,7 +6,7 @@ function item(patch: Partial<MusicItemListEntry> = {}): MusicItemListEntry {
   return {
     id: "track-1", identityKey: "local:track-1", sourceKind: "local-file", mediaKind: "audio",
     title: "Track", artist: "Artist", album: "Album", localRootId: "root-1", relativePath: "album/track.flac",
-    originalArtworkIdentity: null, artworkOverride: null, durationMs: null, availability: "available",
+    originalArtworkIdentity: null, artworkOverride: null, youtubeResolutionState: null, durationMs: null, availability: "available",
     reviewState: "reviewed", discoveredAtMs: 1, updatedAtMs: 1, version: 1, playlistCount: 1,
     activeSnoozeCount: 0, lastPlayedAtMs: null, playCount: 0, membershipId: "membership-1",
     membershipOrderKey: "a0", membershipWeight: "normal", membershipEnabled: true, membershipVersion: 1,

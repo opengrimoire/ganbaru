@@ -264,6 +264,7 @@ pub(crate) struct MusicItemListRow {
     pub source_collection_ids_json: String,
     pub original_artwork_identity: Option<String>,
     pub artwork_override: Option<String>,
+    pub youtube_resolution_state: Option<String>,
     pub duration_ms: Option<i64>,
     pub availability: String,
     pub review_state: String,
@@ -319,6 +320,11 @@ impl TryFrom<MusicItemListRow> for MusicItemListEntry {
             )?,
             original_artwork_identity: row.original_artwork_identity,
             artwork_override: row.artwork_override,
+            youtube_resolution_state: row
+                .youtube_resolution_state
+                .as_deref()
+                .map(|value| parse_enum(value, "youtubeResolutionState"))
+                .transpose()?,
             duration_ms: row.duration_ms,
             availability: parse_enum(&row.availability, "availability")?,
             review_state: parse_enum(&row.review_state, "reviewState")?,

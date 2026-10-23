@@ -29,6 +29,7 @@ const item = {
   sourceCollectionIds: ["source-1"],
   originalArtworkIdentity: "sidecar:Games/Nier/cover.jpg",
   artworkOverride: null,
+  youtubeResolutionState: null,
   durationMs: 120_000,
   availability: "available",
   reviewState: "unreviewed",
@@ -104,8 +105,8 @@ describe("music library contracts", () => {
   });
 
   it("validates device binding state", () => {
-    expect(parseBindingResult({ rootId: "root-1", folderPath: null, status: "needs-relink" }))
-      .toEqual({ rootId: "root-1", folderPath: null, status: "needs-relink" });
+    expect(parseBindingResult({ rootId: "root-1", folderPath: null, status: "unbound" }))
+      .toEqual({ rootId: "root-1", folderPath: null, status: "unbound" });
     expect(() => parseBindingResult({ rootId: "root-1", folderPath: null, status: "lost" }))
       .toThrow("status is not supported");
   });

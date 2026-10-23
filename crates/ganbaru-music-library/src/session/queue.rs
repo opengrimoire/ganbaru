@@ -206,6 +206,24 @@ fn resolve_path(root: Option<&String>, relative: Option<&str>) -> Option<String>
     }
 }
 
+/// Availability used by the queue policy: the device observation for local files, and the replicated
+/// resolution state for YouTube videos, so a video resolved on one device plays on every online device.
+/// An embedding block is reported separately by the policy.
+fn row_availability(
+    local: bool,
+    observed: &str,
+    youtube_resolution_state: Option<&str>,
+) -> MusicLibraryResult<MusicItemAvailability> {
+    if local {
+        return MusicItemAvailability::try_from(observed).map_err(validation);
+    }
+    Ok(if youtube_resolution_state == Some("unavailable") {
+        MusicItemAvailability::Unavailable
+    } else {
+        MusicItemAvailability::Available
+    })
+}
+
 fn row_entry(
     row: QueueRow,
     roots: &BTreeMap<String, String>,
@@ -228,8 +246,11 @@ fn row_entry(
     } else {
         SessionBackend::Browser
     };
-    let availability =
-        MusicItemAvailability::try_from(row.availability.as_str()).map_err(validation)?;
+    let availability = row_availability(
+        local,
+        &row.availability,
+        row.youtube_resolution_state.as_deref(),
+    )?;
     let weight =
         MusicWeight::try_from(row.weight.as_deref().unwrap_or("normal")).map_err(validation)?;
     let bound = !local || path.is_some();
@@ -477,4 +498,34 @@ async fn load_items(
                 .ok_or_else(|| MusicLibraryError::not_found("music item", id))
         })
         .collect()
+}
+
+#[cfg(test)]
+mod availability_tests {
+    use super::*;
+
+    #[test]
+    fn youtube_availability_follows_the_replicated_resolution_state() {
+        for (state, expected) in [
+            (None, MusicItemAvailability::Available),
+            (Some("resolving"), MusicItemAvailability::Available),
+            (Some("timed-out"), MusicItemAvailability::Available),
+            (Some("ready"), MusicItemAvailability::Available),
+            (Some("unavailable"), MusicItemAvailability::Unavailable),
+        ] {
+            assert_eq!(
+                row_availability(false, "unknown", state).unwrap(),
+                expected,
+                "{state:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn local_availability_stays_the_device_observation() {
+        assert_eq!(
+            row_availability(true, "missing", None).unwrap(),
+            MusicItemAvailability::Missing
+        );
+    }
 }

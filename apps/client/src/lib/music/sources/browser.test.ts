@@ -32,6 +32,7 @@ function item(
     relativePath: null,
     originalArtworkIdentity: null,
     artworkOverride: null,
+    youtubeResolutionState: null,
     durationMs: null,
     availability: "available",
     reviewState: "unreviewed",

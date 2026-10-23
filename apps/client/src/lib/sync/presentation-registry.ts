@@ -4,6 +4,10 @@ import type { Translate } from "$lib/i18n/translator.svelte";
 export interface SyncRecoveryPresentation {
   /** Title of a row whose title is empty. */
   untitled: (t: Translate) => string;
+  /** Line under each offer explaining what restoring does, when the default needs context. */
+  note?: (t: Translate) => string;
+  /** Whether offers of the table can be restored. Offers that cannot are only discarded. Defaults to true. */
+  restorable?: boolean;
   /** Confirmation after the row was restored. */
   restored: (t: Translate) => string;
   /** Error after the row could not be restored. */
@@ -69,6 +73,16 @@ export class SyncPresentationRegistry {
   recoveryUntitled(t: Translate, table: string): string {
     const recovery = this.recovery(table);
     return recovery ? recovery.untitled(t) : t("sync.recovery.untitled");
+  }
+
+  /** Explanation shown under an offer rooted in `table`, or null when the table has none. */
+  recoveryNote(t: Translate, table: string): string | null {
+    return this.recovery(table)?.note?.(t) ?? null;
+  }
+
+  /** Whether an offer rooted in `table` can be restored, or can only be discarded. */
+  recoveryRestorable(table: string): boolean {
+    return this.recovery(table)?.restorable ?? true;
   }
 
   /** Confirmation after an offer rooted in `table` was restored. */

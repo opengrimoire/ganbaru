@@ -349,6 +349,52 @@ fn task_link_key(row: &TaskLink) -> Result<String, String> {
     ganbaru_projects::keys::task_event_key(&row.task_id, &row.event_id)
 }
 
+impl TaskLink {
+    /// Writes the link in place of the stored link of the same task and event, leaving an
+    /// unchanged link untouched so replication captures nothing for it.
+    pub(super) async fn upsert(&self, connection: &mut SqliteConnection) -> Result<(), String> {
+        sqlx::query(
+            "INSERT INTO project_task_event_links (task_id, event_id, link_kind, created_at, sync_key)
+             VALUES (?, ?, ?, ?, ?)
+             ON CONFLICT (task_id, event_id) DO UPDATE SET
+                link_kind = excluded.link_kind,
+                created_at = excluded.created_at
+             WHERE link_kind IS NOT excluded.link_kind
+                OR created_at IS NOT excluded.created_at",
+        )
+        .bind(&self.task_id)
+        .bind(&self.event_id)
+        .bind(&self.link_kind)
+        .bind(&self.created_at)
+        .bind(task_link_key(self)?)
+        .execute(connection)
+        .await
+        .map_err(|error| format!("write Calendar task link: {error}"))?;
+        Ok(())
+    }
+
+    /// Removes the event's stored links whose task is not among `kept`.
+    pub(super) async fn remove_stale(
+        connection: &mut SqliteConnection,
+        event_id: &str,
+        kept: &[Self],
+    ) -> Result<(), String> {
+        let kept = serde_json::to_string(&kept.iter().map(|row| &row.task_id).collect::<Vec<_>>())
+            .map_err(|error| format!("encode kept Calendar task links: {error}"))?;
+        sqlx::query(
+            "DELETE FROM project_task_event_links
+             WHERE event_id = ?1
+               AND task_id NOT IN (SELECT value FROM json_each(?2))",
+        )
+        .bind(event_id)
+        .bind(kept)
+        .execute(connection)
+        .await
+        .map_err(|error| format!("clear stale Calendar task links: {error}"))?;
+        Ok(())
+    }
+}
+
 stored_row!(Component, "icalendar_components", "id IN (SELECT value FROM json_each(?1))", (id), {
     id: String,
     object_id: String,
@@ -429,7 +475,7 @@ stored_row!(Diagnostic, "icalendar_object_diagnostics", "object_id IN (SELECT va
 
 #[cfg(test)]
 mod tests {
-    use super::MusicAssignment;
+    use super::{MusicAssignment, TaskLink};
 
     async fn pool() -> sqlx::SqlitePool {
         let pool = sqlx::sqlite::SqlitePoolOptions::new()
@@ -536,6 +582,88 @@ mod tests {
             .await
             .unwrap();
             assert_eq!(after, ("pause-music".to_string(), key));
+        });
+    }
+
+    #[test]
+    fn stale_task_links_are_removed_and_kept_links_are_updated_in_place() {
+        crate::test_support::block_on(async {
+            let pool = pool().await;
+            sqlx::raw_sql(
+                "INSERT INTO calendar_events (id, title, start_time, end_time, timezone,
+                    calendar_id, created_at, updated_at)
+                 VALUES ('source', '', '2099-05-09T10:00:00Z', '2099-05-09T11:00:00Z', 'UTC',
+                    'local', 'now', 'now');
+                 INSERT INTO project_groups (id, name, order_key) VALUES ('group', 'Group', 'a1');
+                 INSERT INTO projects (id, group_id, name, order_key)
+                 VALUES ('project', 'group', 'Project', 'a1');
+                 INSERT INTO project_sections (id, project_id, name, order_key)
+                 VALUES ('section', 'project', 'General', 'a1');
+                 INSERT INTO project_statuses (id, project_id, name, category, order_key)
+                 VALUES ('status', 'project', 'Open', 'not_started', 'a1');
+                 INSERT INTO project_tasks (id, project_id, section_id, status_id, title,
+                    section_order_key, status_order_key)
+                 VALUES ('kept', 'project', 'section', 'status', 'Kept', 'a1', 'a1'),
+                        ('stale', 'project', 'section', 'status', 'Stale', 'a2', 'a2');
+                 UPDATE calendar_events SET project_id = 'project';
+                 INSERT INTO project_task_event_links (task_id, event_id, sync_key)
+                 VALUES ('kept', 'source', 'kept-link'), ('stale', 'source', 'stale-link');
+                 DELETE FROM sync_capture;",
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+            let mut connection = pool.acquire().await.unwrap();
+            let created_at: String = sqlx::query_scalar(
+                "SELECT created_at FROM project_task_event_links WHERE task_id = 'kept'",
+            )
+            .fetch_one(&mut *connection)
+            .await
+            .unwrap();
+            let mut kept = TaskLink {
+                task_id: "kept".into(),
+                event_id: "source".into(),
+                link_kind: "scheduled".into(),
+                created_at,
+            };
+            TaskLink::remove_stale(&mut connection, "source", std::slice::from_ref(&kept))
+                .await
+                .unwrap();
+            kept.upsert(&mut connection).await.unwrap();
+            const CAPTURES: &str = "SELECT row_key, deleted FROM sync_capture ORDER BY row_key";
+            assert_eq!(
+                sqlx::query_as::<_, (String, i64)>(CAPTURES)
+                    .fetch_all(&mut *connection)
+                    .await
+                    .unwrap(),
+                [("stale-link".to_string(), 1)],
+                "an unchanged link captures nothing"
+            );
+
+            kept.link_kind = "reference".into();
+            kept.upsert(&mut connection).await.unwrap();
+            let stored: Vec<(String, String, String)> = sqlx::query_as(
+                "SELECT task_id, link_kind, sync_key FROM project_task_event_links
+                 WHERE event_id = 'source'",
+            )
+            .fetch_all(&mut *connection)
+            .await
+            .unwrap();
+            assert_eq!(
+                stored,
+                [(
+                    "kept".to_string(),
+                    "reference".to_string(),
+                    "kept-link".to_string()
+                )]
+            );
+            assert_eq!(
+                sqlx::query_as::<_, (String, i64)>(CAPTURES)
+                    .fetch_all(&mut *connection)
+                    .await
+                    .unwrap(),
+                [("kept-link".to_string(), 0), ("stale-link".to_string(), 1)]
+            );
         });
     }
 }

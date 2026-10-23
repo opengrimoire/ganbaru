@@ -143,11 +143,8 @@ impl PreparedSide {
                 &metadata.music_assignments,
             )
             .await?;
-            sqlx::query("DELETE FROM project_task_event_links WHERE event_id = ?1")
-                .bind(&event.id)
-                .execute(&mut *connection)
-                .await
-                .map_err(|error| format!("clear prepared Calendar task_links: {error}"))?;
+            super::rows::TaskLink::remove_stale(connection, &event.id, &metadata.task_links)
+                .await?;
         } else {
             event.insert(connection).await?;
         }
@@ -194,7 +191,7 @@ impl PreparedSide {
             row.upsert(connection).await?;
         }
         for row in &metadata.task_links {
-            row.insert(connection).await?;
+            row.upsert(connection).await?;
         }
         Ok(())
     }

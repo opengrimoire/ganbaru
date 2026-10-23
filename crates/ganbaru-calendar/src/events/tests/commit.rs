@@ -1239,3 +1239,59 @@ fn an_edit_that_keeps_music_leaves_stored_assignments_untouched() {
         assert_eq!(assignments().await, before);
     });
 }
+
+#[test]
+fn an_edit_that_keeps_task_links_captures_nothing_for_them() {
+    crate::test_support::block_on(async {
+        let pool = super::metadata::seed().await;
+        let links = || async {
+            sqlx::query_as::<_, (String, String, String, String)>(
+                "SELECT task_id, link_kind, created_at, sync_key FROM project_task_event_links
+                 WHERE event_id = 'source' ORDER BY task_id",
+            )
+            .fetch_all(&pool)
+            .await
+            .unwrap()
+        };
+        sqlx::query("DELETE FROM sync_capture")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let before = links().await;
+        assert_eq!(before.len(), 1);
+        let now = clock("2099-05-08T00:00:00Z");
+        let draft = json!({"fields":[{"field":"title","value":"Renamed"}]});
+        let (_, revision) = review(&pool, draft.clone(), EditScope::All, now).await;
+        let mut tx = pool.begin().await.unwrap();
+        prepare_rows(
+            read_snapshot(&mut tx, "source").await.unwrap(),
+            parse_date("2099-05-10").unwrap(),
+            EditScope::All,
+            now,
+            serde_json::from_value(draft).unwrap(),
+            "save-1",
+            &revision,
+        )
+        .unwrap()
+        .write(&mut tx)
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+
+        assert_eq!(links().await, before);
+        let link_captures: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM sync_capture
+             WHERE row_key IN (SELECT sync_key FROM project_task_event_links)",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(link_captures, 0);
+        let event_captures: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM sync_capture WHERE row_key = 'source'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(event_captures, 1, "the title edit itself is captured");
+    });
+}

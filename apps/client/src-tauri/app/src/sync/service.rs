@@ -1506,6 +1506,9 @@ impl<'a, H: SyncHost> Session<'a, H> {
             ) {
                 active.committed(seq)?;
             }
+            if !self.reseal_own_forks(writer).await? {
+                return Ok(done(tables, notices, None));
+            }
             if report.local_writer_frozen {
                 if !self.rotate(writer).await? {
                     return Ok(done(tables, notices, None));
@@ -1522,6 +1525,30 @@ impl<'a, H: SyncHost> Session<'a, H> {
             }
         }
         Err("sync apply did not finish".to_string())
+    }
+
+    /// Re-seals every chain of this device that stored fork evidence proves forked while this
+    /// installation still holds its copy past the shared prefix. Evidence reaches a hub, the
+    /// anchor included, without an exchange of its own, so each apply checks. Returns false
+    /// while the person key is unavailable.
+    async fn reseal_own_forks(&self, writer: &mut Option<ActiveWriter>) -> Result<bool, String> {
+        let own = {
+            let mut conn = acquire(&self.pool).await?;
+            self.engine
+                .own_forks(&mut conn, &self.ctx)
+                .await
+                .map_err(|error| format!("read fork evidence: {error}"))?
+        };
+        for (forked, keep_through) in own {
+            let fork = ForkPoint {
+                writer: forked,
+                keep_through,
+            };
+            if !self.recover_fork(writer, fork).await? {
+                return Ok(false);
+            }
+        }
+        Ok(true)
     }
 
     /// Recovers from a fork of one of this installation's chains: the hub holds other

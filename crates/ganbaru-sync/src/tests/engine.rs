@@ -1595,7 +1595,7 @@ fn concurrent_edges_that_close_a_cycle_sever_the_newest_until_another_edge_is_re
 }
 
 #[test]
-fn a_reseal_is_refused_once_another_writer_saw_the_replaced_operations() {
+fn a_reseal_past_operations_another_writer_saw_keeps_that_writers_operations() {
     block_on(async {
         let mut replicas = replicas(2).await;
         seed_note(&mut replicas[0]).await;
@@ -1615,7 +1615,7 @@ fn a_reseal_is_refused_once_another_writer_saw_the_replaced_operations() {
         let old = b.writer();
         b.rotate();
         let now = b.now_ms;
-        for keep_through in [0, 2, 4] {
+        for keep_through in [0, 4] {
             let result = b
                 .engine
                 .reseal_fork(
@@ -1638,6 +1638,21 @@ fn a_reseal_is_refused_once_another_writer_saw_the_replaced_operations() {
             .reseal_fork(&mut b.conn, &b.ctx, same, 1, &mut b.identity.local(), now)
             .await;
         assert!(matches!(result, Err(SyncError::InvalidReseal(_))));
+
+        // The operation C saw is replaced, and C's own edit on top of it stays.
+        let report = b
+            .engine
+            .reseal_fork(&mut b.conn, &b.ctx, old, 2, &mut b.identity.local(), now)
+            .await
+            .unwrap();
+        assert_eq!(report.replaced_ops, 1);
+        assert_eq!(b.stored_vector().await.get(&old), 2);
+        assert_eq!(
+            b.count("SELECT count(*) FROM quick_notes WHERE title = 'Seen' AND color = 3")
+                .await,
+            1
+        );
+        b.check_invariants().await;
     });
 }
 

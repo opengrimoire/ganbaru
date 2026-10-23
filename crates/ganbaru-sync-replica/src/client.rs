@@ -3,17 +3,19 @@
 
 use super::hub::BOOTSTRAP_REQUIRED;
 use super::wire::{
-    hash_from_wire, hash_to_wire, ops_from_wire, ops_to_wire, vector_from_wire, vector_to_wire,
-    writer_from_wire,
+    forked_from_wire, hash_from_wire, hash_to_wire, ops_from_wire, ops_to_wire, vector_from_wire,
+    vector_to_wire, writer_from_wire,
 };
 use ganbaru_handoff::protocol::{
     ControlMessage, MAX_SYNC_HASHES, PROTOCOL_VERSION, SYNC_PAGE_BYTES, SyncProbe, SyncRefusal,
     SyncRefusalCode,
 };
-use ganbaru_sync::{Engine, SpaceContext, StoreOutcome, StoreRefusal};
+use ganbaru_sync::{
+    Engine, EvidenceOutcome, EvidenceRefusal, SpaceContext, StoreOutcome, StoreRefusal,
+};
 use ganbaru_sync_contracts::{Envelope, Seq, VersionVector, WriterId};
 use sqlx::SqlitePool;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
 
 /// Bound on operation bytes moved in one direction of one exchange. Pulled operations wait in
@@ -122,7 +124,7 @@ impl<T: SyncTransport> ClientSession<'_, T> {
                 hash: hash_to_wire(hash),
             }),
         };
-        let (stored, probe_hash, stable, bootstrap_required) = answer(
+        let (stored, probe_hash, stable, bootstrap_required, forked) = answer(
             self.transport.request(hello).await?,
             "SyncState",
             |response| match response {
@@ -131,12 +133,17 @@ impl<T: SyncTransport> ClientSession<'_, T> {
                     probe_hash,
                     stable,
                     bootstrap_required,
+                    forked,
                     ..
-                } => Some((stored, probe_hash, stable, bootstrap_required)),
+                } => Some((stored, probe_hash, stable, bootstrap_required, forked)),
                 _ => None,
             },
         )?;
         let mut hub = vector_from_wire(&stored)?;
+        let hub_forked = forked_from_wire(&forked)?;
+        if let Some(fork) = self.reported_own_fork(&hub_forked, &local).await? {
+            return Ok(Exchange::Fork(fork));
+        }
         let mut confirmed = None;
         if let (Some((writer, seq, hash)), Some(theirs)) = (probe, probe_hash) {
             if hash_from_wire(&theirs)? != hash {
@@ -168,6 +175,7 @@ impl<T: SyncTransport> ClientSession<'_, T> {
         {
             return Ok(Exchange::Fork(fork));
         }
+        self.share_evidence(&hub_forked, &mut exchanged).await?;
         exchanged.known = self.stored().await?;
         Ok(Exchange::Done(exchanged))
     }
@@ -269,7 +277,9 @@ impl<T: SyncTransport> ClientSession<'_, T> {
             for (op, outcome) in ops.iter().zip(&outcomes) {
                 match outcome {
                     StoreOutcome::Stored { .. } => exchanged.pulled += 1,
-                    StoreOutcome::Duplicate => {}
+                    // An operation past a cutoff this replica already knows, which a hub still
+                    // holds until its next apply excludes it.
+                    StoreOutcome::Duplicate | StoreOutcome::Refused(StoreRefusal::Revoked) => {}
                     StoreOutcome::Refused(refusal) => {
                         let envelope = Envelope::decode(op)
                             .map_err(|_| "the hub sent a malformed operation".to_string())?;
@@ -351,7 +361,9 @@ impl<T: SyncTransport> ClientSession<'_, T> {
                     break;
                 }
                 if hash_from_wire(theirs)? != *ours {
-                    return fork_at(writer, *seq);
+                    let fork = fork_at(writer, *seq)?;
+                    self.offer_own(writer, *seq).await?;
+                    return Ok(fork);
                 }
                 compared += 1;
             }
@@ -364,6 +376,144 @@ impl<T: SyncTransport> ClientSession<'_, T> {
             "the copies of writer {} agree, so the fork cannot be located",
             writer.to_hex()
         ))
+    }
+
+    /// A writer of this installation that the hub reports forked while this replica still holds
+    /// its copy past the shared prefix. The hub's evidence is stored here first, so the fork
+    /// reaches the re-seal however it was found. Once re-sealed, this replica holds the prefix
+    /// only and the report no longer applies.
+    async fn reported_own_fork(
+        &self,
+        hub_forked: &[(WriterId, Seq)],
+        local: &VersionVector,
+    ) -> Result<Option<ForkPoint>, String> {
+        for (writer, seq) in hub_forked {
+            if !self.own_writers.contains(writer) || local.get(writer) < *seq {
+                continue;
+            }
+            let pair = self.request_evidence(*writer, Vec::new()).await?;
+            if let Some(EvidenceOutcome::Refused(refusal)) = self.store_evidence(&pair).await? {
+                return Err(format!(
+                    "this device refused fork evidence of its writer {}: {refusal:?}",
+                    writer.to_hex()
+                ));
+            }
+            return fork_at(*writer, *seq).map(fork_only);
+        }
+        Ok(None)
+    }
+
+    /// Offers this installation's operation of `writer` at the first differing sequence, so the
+    /// hub holds fork evidence that it forwards to every member, and stores the pair the hub
+    /// answers. A hub that no longer holds its own copy answers no pair.
+    async fn offer_own(&self, writer: WriterId, seq: Seq) -> Result<(), String> {
+        let operation = {
+            let mut conn = acquire(self.pool).await?;
+            self.engine
+                .operation_at(&mut conn, self.ctx, writer, seq)
+                .await
+                .map_err(|error| format!("read sync log: {error}"))?
+        };
+        let Some(operation) = operation else {
+            return Ok(());
+        };
+        let pair = self.request_evidence(writer, vec![operation]).await?;
+        match self.store_evidence(&pair).await? {
+            None | Some(EvidenceOutcome::Stored | EvidenceOutcome::Known) => Ok(()),
+            Some(EvidenceOutcome::Refused(refusal)) => Err(format!(
+                "the hub answered fork evidence of writer {} this device refused: {refusal:?}",
+                writer.to_hex()
+            )),
+        }
+    }
+
+    /// Exchanges fork evidence with the hub: fetches the pair of every writer the hub reports
+    /// forked that this replica does not know forked at that sequence, and offers the pair of
+    /// every writer this replica knows forked that the hub does not. A pair whose writer this
+    /// replica has not stored yet waits for a later exchange.
+    async fn share_evidence(
+        &self,
+        hub_forked: &[(WriterId, Seq)],
+        exchanged: &mut Exchanged,
+    ) -> Result<(), String> {
+        let local: BTreeMap<WriterId, Seq> = {
+            let mut conn = acquire(self.pool).await?;
+            self.engine
+                .forked_writers(&mut conn, self.ctx)
+                .await
+                .map_err(|error| format!("read fork evidence: {error}"))?
+                .into_iter()
+                .collect()
+        };
+        for (writer, seq) in hub_forked {
+            if local.get(writer).is_some_and(|known| known <= seq) {
+                continue;
+            }
+            let pair = self.request_evidence(*writer, Vec::new()).await?;
+            if let Some(EvidenceOutcome::Refused(refusal)) = self.store_evidence(&pair).await?
+                && refusal != EvidenceRefusal::UnknownWriter
+            {
+                exchanged.problem = Some(format!(
+                    "this device refused fork evidence of writer {}: {refusal:?}",
+                    writer.to_hex()
+                ));
+            }
+        }
+        let hub: BTreeMap<WriterId, Seq> = hub_forked.iter().copied().collect();
+        for (writer, seq) in &local {
+            if hub.get(writer).is_some_and(|known| known <= seq) {
+                continue;
+            }
+            let evidence = {
+                let mut conn = acquire(self.pool).await?;
+                self.engine
+                    .fork_evidence(&mut conn, self.ctx, *writer)
+                    .await
+                    .map_err(|error| format!("read fork evidence: {error}"))?
+            };
+            if let Some(evidence) = evidence {
+                self.request_evidence(*writer, vec![evidence.first, evidence.second])
+                    .await?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Sends fork evidence of `writer`, possibly none, and returns the pair the hub holds.
+    async fn request_evidence(
+        &self,
+        writer: WriterId,
+        evidence: Vec<Vec<u8>>,
+    ) -> Result<Vec<Vec<u8>>, String> {
+        let request = ControlMessage::SyncForkEvidence {
+            protocol_version: PROTOCOL_VERSION,
+            vault_id: self.ids.vault_id.clone(),
+            device_id: self.ids.device_id.clone(),
+            writer: writer.to_hex(),
+            evidence: ops_to_wire(&evidence),
+        };
+        let pair = answer(
+            self.transport.request(request).await?,
+            "SyncForkPair",
+            |response| match response {
+                ControlMessage::SyncForkPair { evidence } => Some(evidence),
+                _ => None,
+            },
+        )?;
+        ops_from_wire(&pair)
+    }
+
+    /// Stores a pair the hub answered, or nothing when it answered none.
+    async fn store_evidence(&self, pair: &[Vec<u8>]) -> Result<Option<EvidenceOutcome>, String> {
+        let [first, second] = pair else {
+            return Ok(None);
+        };
+        let mut conn = acquire(self.pool).await?;
+        self.engine
+            .store_fork_evidence(&mut conn, self.ctx, first, second, super::now_ms()?)
+            .await
+            .map(Some)
+            .map_err(|error| format!("store fork evidence: {error}"))
     }
 
     async fn stored(&self) -> Result<VersionVector, String> {

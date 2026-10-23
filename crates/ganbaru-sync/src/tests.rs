@@ -8,6 +8,7 @@ mod elision;
 mod engine;
 mod exclusion;
 mod fixture;
+mod fork;
 mod guards;
 mod holds;
 mod local;

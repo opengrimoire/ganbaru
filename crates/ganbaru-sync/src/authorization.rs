@@ -7,8 +7,14 @@
 //! entry hash wins, then the longer chain, then the lower head hash. `sync_devices` and the
 //! writer states of removed devices are recomputed from the selected chain whenever an entry
 //! arrives, so a reselection reverts what a superseded chain set.
+//!
+//! A fork of a writer of an epoch's anchor freezes the epoch at the authorization revision its
+//! forked operations were sealed against, the last one both copies of the anchor share: entries
+//! of the epoch past it are rejected, so the chain through them is superseded, and only a
+//! handover continues the log.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 use ganbaru_sync_contracts::bounds::DISCOVERY_KEY_BYTES;
 use ganbaru_sync_contracts::{
@@ -23,7 +29,7 @@ use crate::error::{SyncError, SyncResult, corrupt, failpoint};
 use crate::log::{self, seq_i64, stored_u64};
 use crate::merge::Batch;
 use crate::seal::{SealReport, SealSlot};
-use crate::{Engine, LocalWriter, SpaceContext, exclusion, sql};
+use crate::{Engine, LocalWriter, SpaceContext, exclusion, fork, sql};
 
 /// An enrolled device as the selected chain leaves it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -51,6 +57,9 @@ pub struct AuthorizationView {
     pub revision: u64,
     /// Device id of the current anchor.
     pub anchor_device_id: String,
+    /// Revision past which the epoch is frozen because a writer of its anchor forked; only a
+    /// handover continues the log then.
+    pub frozen_at: Option<u64>,
     /// Every device the selected chain enrolled, removed ones included, by device id.
     pub devices: Vec<EnrolledDevice>,
 }
@@ -81,11 +90,27 @@ pub(crate) struct AuthState {
     anchor_device_id: String,
     recovery_admin_key: AdminPublicKey,
     devices: BTreeMap<String, DeviceState>,
+    /// Revisions at which forks freeze epochs, by anchor device.
+    freezes: Arc<BTreeMap<String, Vec<u64>>>,
+    /// Revision past which the current epoch is frozen.
+    frozen_at: Option<u64>,
+}
+
+/// Revision past which an epoch that `anchor` opened at revision `start` is frozen: the lowest
+/// fork revision of the anchor's writers at or past the start. A fork sealed before the epoch
+/// opened belongs to an earlier one.
+fn frozen_at(freezes: &BTreeMap<String, Vec<u64>>, anchor: &str, start: u64) -> Option<u64> {
+    freezes
+        .get(anchor)?
+        .iter()
+        .copied()
+        .find(|revision| *revision >= start)
 }
 
 impl AuthState {
-    /// State at revision 0: the charter enrolls its anchor as an admin desktop.
-    fn from_charter(charter: &SignedCharter) -> Self {
+    /// State at revision 0: the charter enrolls its anchor as an admin desktop. `freezes` lists
+    /// the revisions at which forks freeze epochs, by anchor device.
+    fn from_charter(charter: &SignedCharter, freezes: Arc<BTreeMap<String, Vec<u64>>>) -> Self {
         let body = &charter.charter;
         let hash = charter.hash();
         let anchor = DeviceState {
@@ -107,6 +132,8 @@ impl AuthState {
             anchor_device_id: body.anchor_device_id.clone(),
             recovery_admin_key: body.recovery_admin_key,
             devices: BTreeMap::from([(body.anchor_device_id.clone(), anchor)]),
+            frozen_at: frozen_at(&freezes, &body.anchor_device_id, 0),
+            freezes,
         }
     }
 
@@ -158,6 +185,12 @@ impl AuthState {
         if record.epoch != self.epoch || record.anchor_device_id != self.anchor_device_id {
             return Err(ProposalRejection::NotAnchor);
         }
+        if self
+            .frozen_at
+            .is_some_and(|frozen| record.revision > frozen)
+        {
+            return Err(ProposalRejection::EpochFrozen);
+        }
         match &proposal.entry {
             Entry::Enroll(enroll) => {
                 if self.devices.contains_key(&enroll.device_id) {
@@ -208,6 +241,7 @@ impl AuthState {
                 self.epoch = record.epoch;
                 self.epoch_root = hash;
                 self.anchor_device_id = handover.new_anchor_device_id.clone();
+                self.frozen_at = frozen_at(&self.freezes, &self.anchor_device_id, record.revision);
             }
             Entry::Enroll(enroll) => {
                 self.devices.insert(
@@ -267,6 +301,7 @@ impl AuthState {
             epoch: self.epoch,
             revision: self.revision,
             anchor_device_id: self.anchor_device_id.clone(),
+            frozen_at: self.frozen_at,
             devices: self
                 .devices
                 .iter()
@@ -395,6 +430,7 @@ pub(crate) async fn select(
         return Ok(None);
     };
     let nodes = load_nodes(conn, space).await?;
+    let freezes = Arc::new(fork::freezes(conn, space).await?);
     let mut children: BTreeMap<Digest32, Vec<usize>> = BTreeMap::new();
     for (index, node) in nodes.iter().enumerate() {
         children
@@ -407,7 +443,7 @@ pub(crate) async fn select(
     let mut best: Option<Selection> = None;
     let mut reachable = 0;
     let mut stack = vec![Selection {
-        state: AuthState::from_charter(&charter),
+        state: AuthState::from_charter(&charter, freezes),
         path: Vec::new(),
         resolutions: Vec::new(),
         reachable: 0,

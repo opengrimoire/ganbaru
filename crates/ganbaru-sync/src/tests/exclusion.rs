@@ -27,23 +27,23 @@ async fn trio(salt: u64) -> (Replica, Replica, Replica) {
     )
 }
 
-async fn edit(replica: &mut Replica, sql: &str) {
+pub(super) async fn edit(replica: &mut Replica, sql: &str) {
     replica.exec(sql).await;
     replica.seal().await.unwrap();
 }
 
 /// Delivers what `from` has to `to` and applies it.
-async fn deliver(to: &mut Replica, from: &mut Replica) {
+pub(super) async fn deliver(to: &mut Replica, from: &mut Replica) {
     to.pull(from).await;
 }
 
-async fn displaced(replica: &mut Replica) -> i64 {
+pub(super) async fn displaced(replica: &mut Replica) -> i64 {
     replica
         .count("SELECT count(*) FROM sync_displaced_versions")
         .await
 }
 
-async fn late_changes(replica: &mut Replica) -> Vec<LateChange> {
+pub(super) async fn late_changes(replica: &mut Replica) -> Vec<LateChange> {
     replica
         .engine
         .late_changes(&mut replica.conn, &replica.ctx)
@@ -60,7 +60,7 @@ async fn late_rows(replica: &mut Replica) -> Vec<(String, LateKind)> {
         .collect()
 }
 
-async fn title(replica: &mut Replica, id: &str) -> Option<String> {
+pub(super) async fn title(replica: &mut Replica, id: &str) -> Option<String> {
     replica
         .scalar_text(&format!(
             "SELECT title FROM quick_notes WHERE id = {}",
@@ -69,7 +69,7 @@ async fn title(replica: &mut Replica, id: &str) -> Option<String> {
         .await
 }
 
-fn note(id: &str, title: &str, position: u32) -> String {
+pub(super) fn note(id: &str, title: &str, position: u32) -> String {
     format!(
         "INSERT INTO quick_notes (id, title, order_key) VALUES ({}, {}, {});",
         quoted(id),

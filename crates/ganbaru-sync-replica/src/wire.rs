@@ -4,7 +4,7 @@ use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use ganbaru_handoff::protocol::{SyncAsset, SyncAssetKey, SyncSeq};
 use ganbaru_sync::assets::AssetRef;
-use ganbaru_sync_contracts::{Digest32, VersionVector, WriterId};
+use ganbaru_sync_contracts::{Digest32, Seq, VersionVector, WriterId};
 
 /// Wire entries of a version vector, in writer order.
 pub fn vector_to_wire(vector: &VersionVector) -> Vec<SyncSeq> {
@@ -24,6 +24,25 @@ pub fn vector_from_wire(entries: &[SyncSeq]) -> Result<VersionVector, String> {
         vector.advance(writer_from_wire(&entry.writer)?, entry.seq);
     }
     Ok(vector)
+}
+
+/// Wire entries of forked writers with their fork sequences.
+pub fn forked_to_wire(forked: &[(WriterId, Seq)]) -> Vec<SyncSeq> {
+    forked
+        .iter()
+        .map(|(writer, seq)| SyncSeq {
+            writer: writer.to_hex(),
+            seq: *seq,
+        })
+        .collect()
+}
+
+/// Reads wire forked writers. Protocol validation already checked the text forms.
+pub fn forked_from_wire(entries: &[SyncSeq]) -> Result<Vec<(WriterId, Seq)>, String> {
+    entries
+        .iter()
+        .map(|entry| Ok((writer_from_wire(&entry.writer)?, entry.seq)))
+        .collect()
 }
 
 pub fn writer_from_wire(text: &str) -> Result<WriterId, String> {

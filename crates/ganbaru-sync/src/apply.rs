@@ -23,8 +23,8 @@ use crate::merge::{self, Batch};
 use crate::seal::{self, SealReport, SealSlot};
 use crate::visibility::{RowRef, Visibility};
 use crate::{
-    Engine, LocalWriter, SpaceContext, authorization, exclusion, hydrate, materialize, repair, sql,
-    store,
+    Engine, LocalWriter, SpaceContext, authorization, exclusion, fork, hydrate, materialize,
+    repair, sql, store,
 };
 
 /// Most operations one apply transaction takes.
@@ -380,16 +380,23 @@ impl Heads {
     }
 }
 
-/// Whether every change names a known table and every write or tombstone a published row.
-async fn rows_exist(
+/// The rows of `changes` that are written or tombstoned without being known, or `None` when the
+/// operation must be held: a change names an unknown table, or writes an unknown row although
+/// its context reaches no operation past the bound of a removal (`beyond`, see
+/// [`exclusion::beyond_bound`]). A row is known when it is published, created earlier in the
+/// operation, or created by a late operation of a removed device. The returned rows were
+/// created only by an operation past the bound, so their changes are skipped.
+async fn admitted_rows<'a>(
     engine: &Engine,
     conn: &mut SqliteConnection,
-    changes: &[Change],
-) -> SyncResult<bool> {
+    changes: &'a [Change],
+    beyond: bool,
+) -> SyncResult<Option<BTreeSet<(TableId, &'a str)>>> {
     let mut created: BTreeSet<(TableId, &str)> = BTreeSet::new();
+    let mut unknown = BTreeSet::new();
     for change in changes {
         if engine.manifest().table(change.table).is_none() {
-            return Ok(false);
+            return Ok(None);
         }
         let key = (change.table, change.row.as_str());
         match change.action {
@@ -403,12 +410,15 @@ async fn rows_exist(
                         .is_none()
                     && !exclusion::created_late(conn, change.table, change.row.as_str()).await?
                 {
-                    return Ok(false);
+                    if !beyond {
+                        return Ok(None);
+                    }
+                    unknown.insert(key);
                 }
             }
         }
     }
-    Ok(true)
+    Ok(Some(unknown))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -419,7 +429,7 @@ async fn apply_one(
     batch: &mut Batch,
     sealing: &mut Sealing<'_, '_, '_>,
     candidate: &mut Candidate,
-    context: &VersionVector,
+    (context, beyond): (&VersionVector, bool),
     retention: &Retention,
     report: &mut ApplyReport,
 ) -> SyncResult<Outcome> {
@@ -436,9 +446,9 @@ async fn apply_one(
     match &operation.content {
         Content::Genesis(_) | Content::Acknowledgement => Ok(Outcome::Applied),
         Content::Changes(changes) => {
-            if !rows_exist(engine, conn, changes).await? {
+            let Some(unknown) = admitted_rows(engine, conn, changes, beyond).await? else {
                 return Ok(Outcome::Held);
-            }
+            };
             // The rows it changes and the rows it names, so a reference never materializes to
             // a row whose local delete is still held.
             let touched = changes
@@ -452,6 +462,9 @@ async fn apply_one(
                 return Ok(Outcome::PendingCaptures);
             }
             for change in changes {
+                if unknown.contains(&(change.table, change.row.as_str())) {
+                    continue;
+                }
                 let table = engine
                     .manifest()
                     .table(change.table)
@@ -712,6 +725,7 @@ pub(crate) async fn finish(
             hydrate::elide(conn, &elisions).await?;
             failpoint!("elide.before_commit");
             batch.dirty.clear();
+            batch.orphaned.clear();
             return Ok(Some(changed));
         }
         if !seal_for_finish(engine, conn, ctx, batch, slot, &captured, now_ms, report).await? {
@@ -777,10 +791,20 @@ impl Engine {
             )
             .await?;
         }
+        fork::reconcile(self, &mut tx, ctx, &mut batch).await?;
         exclusion::admit_excluded_entries(self, &mut tx, ctx, &mut batch).await?;
         let mut retention = Retention::load(&mut tx, ctx.space).await?;
         let mut slot = SealSlot::bounded(writer);
         let mut report = ApplyReport::default();
+        // Fork evidence stored since the last call forks the local writer without an entry.
+        if let Some(local) = slot.local_id()
+            && log::writer(&mut tx, ctx.space, local)
+                .await?
+                .is_some_and(|writer| writer.state == WriterState::Forked)
+        {
+            slot.freeze();
+            report.local_writer_frozen = true;
+        }
         let mut sealed = SealReport::default();
         let mut blocked = BTreeSet::new();
         let mut taken = 0usize;
@@ -807,6 +831,7 @@ impl Engine {
                 report: &mut sealed,
                 now_ms,
             };
+            let beyond = exclusion::beyond_bound(&context, &heads.excluding);
             match apply_one(
                 self,
                 &mut tx,
@@ -814,7 +839,7 @@ impl Engine {
                 &mut batch,
                 &mut sealing,
                 &mut candidate,
-                &context,
+                (&context, beyond),
                 &retention,
                 &mut report,
             )

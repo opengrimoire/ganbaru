@@ -821,11 +821,13 @@ pub enum ProposalRejection {
     UnknownRemoval,
     /// The handover does not continue the current log, or another handover won.
     HandoverConflict,
+    /// A writer of the anchor forked in the current epoch, so only a handover continues the log.
+    EpochFrozen,
 }
 
 impl ProposalRejection {
     /// Every reason, in wire order.
-    pub const ALL: [Self; 13] = [
+    pub const ALL: [Self; 14] = [
         Self::NotAnchor,
         Self::WrongSpace,
         Self::NotAdmin,
@@ -839,6 +841,7 @@ impl ProposalRejection {
         Self::LastAdmin,
         Self::UnknownRemoval,
         Self::HandoverConflict,
+        Self::EpochFrozen,
     ];
 
     /// Wire value.
@@ -857,6 +860,7 @@ impl ProposalRejection {
             Self::LastAdmin => 10,
             Self::UnknownRemoval => 11,
             Self::HandoverConflict => 12,
+            Self::EpochFrozen => 13,
         }
     }
 
@@ -881,6 +885,7 @@ impl ProposalRejection {
             Self::LastAdmin => "last_admin",
             Self::UnknownRemoval => "unknown_removal",
             Self::HandoverConflict => "handover_conflict",
+            Self::EpochFrozen => "epoch_frozen",
         }
     }
 }

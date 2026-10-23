@@ -11,6 +11,7 @@ use crate::recurrence::canonical::{
 use crate::value_bound::{OverrideColumns, TIMING_TOO_LARGE_CODE, VALUE_TOO_LARGE_CODE, ValueSize};
 use ganbaru_civil_time as civil_time;
 use jiff::tz::TimeZone;
+use std::collections::HashSet;
 
 pub(super) fn validate_payload(payload: &CalendarBulkImportPayload) -> Result<(), String> {
     require_non_empty(&payload.target_calendar_id, "target_calendar_id")?;
@@ -189,6 +190,9 @@ pub(super) fn skip_reason(event: &CalendarImportEvent) -> Option<String> {
             event_label(event)
         ));
     }
+    if let Some(reason) = repeated_key(event) {
+        return Some(reason);
+    }
     let zone = if event.all_day {
         TimeZone::UTC
     } else {
@@ -208,6 +212,41 @@ pub(super) fn skip_reason(event: &CalendarImportEvent) -> Option<String> {
         .chain(rdates.iter().map(String::as_str))
         .find_map(|value| readable(value).err())
         .map(|error| format!("{} has an unreadable time ({error})", event_label(event)))
+}
+
+/// Names a key the event repeats among its owned rows. Owned row keys replicate as sets within
+/// the event, and override properties refer to their override by id, so the writer keeps them
+/// unique instead of the database.
+fn repeated_key(event: &CalendarImportEvent) -> Option<String> {
+    let keys: [(&str, Vec<&str>); 4] = [
+        (
+            "override recurrence id",
+            event
+                .overrides
+                .iter()
+                .map(|row| row.recurrence_id.as_str())
+                .collect(),
+        ),
+        (
+            "override id",
+            event.overrides.iter().map(|row| row.id.as_str()).collect(),
+        ),
+        (
+            "alarm id",
+            event.alarms.iter().map(|row| row.id.as_str()).collect(),
+        ),
+        (
+            "attendee id",
+            event.attendees.iter().map(|row| row.id.as_str()).collect(),
+        ),
+    ];
+    keys.into_iter().find_map(|(name, values)| {
+        let mut seen = HashSet::new();
+        values
+            .into_iter()
+            .find(|value| !seen.insert(*value))
+            .map(|value| format!("{} repeats the {name} {value}", event_label(event)))
+    })
 }
 
 /// Names the event when its timing value is over the sync bound, led by the stable

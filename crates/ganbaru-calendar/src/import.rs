@@ -1704,6 +1704,56 @@ mod tests {
     }
 
     #[test]
+    fn import_keeps_owned_row_keys_unique_without_table_constraints() {
+        crate::test_support::block_on(async {
+            let pool = in_memory_pool().await;
+            let mut repeated = recurring_event_with_overrides("repeated", 2, 1);
+            repeated.overrides[1].recurrence_id = repeated.overrides[0].recurrence_id.clone();
+            let mut shared_id = recurring_event_with_overrides("shared-id", 2, 1);
+            shared_id.overrides[1].id = shared_id.overrides[0].id.clone();
+            let mut properties = recurring_event_with_overrides("properties", 1, 1);
+            properties.extended_properties = Some(r#"{"X-A":"first","X-A":"second"}"#.to_string());
+            properties.overrides[0].extended_properties =
+                Some(r#"{"X-B":"first","X-B":"second"}"#.to_string());
+            properties.exceptions = Some(r#"["2027-01-03","2027-01-03"]"#.to_string());
+
+            let summary = bulk_import(&pool, bulk_payload(vec![repeated, shared_id, properties]))
+                .await
+                .unwrap();
+
+            assert_eq!(summary.added, 1, "{:?}", summary.warnings);
+            assert_eq!(summary.warnings.len(), 2, "{:?}", summary.warnings);
+            assert!(summary.warnings[0].contains("UID repeated"));
+            assert!(summary.warnings[0].contains("override recurrence id"));
+            assert!(summary.warnings[1].contains("UID shared-id"));
+            assert!(summary.warnings[1].contains("override id"));
+            let duplicates: i64 = sqlx::query_scalar(
+                "SELECT
+                    (SELECT COUNT(*) FROM (SELECT 1 FROM calendar_event_overrides
+                        GROUP BY parent_event_id, recurrence_id HAVING COUNT(*) > 1))
+                  + (SELECT COUNT(*) FROM (SELECT 1 FROM calendar_event_extended_properties
+                        GROUP BY event_id, property_key HAVING COUNT(*) > 1))
+                  + (SELECT COUNT(*) FROM (SELECT 1 FROM calendar_event_override_extended_properties
+                        GROUP BY override_id, property_key HAVING COUNT(*) > 1))
+                  + (SELECT COUNT(*) FROM (SELECT 1 FROM calendar_event_exdates
+                        GROUP BY event_id, occurrence_date HAVING COUNT(*) > 1))",
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            assert_eq!(duplicates, 0);
+            let values: Vec<String> = sqlx::query_scalar(
+                "SELECT property_value FROM calendar_event_extended_properties
+                 UNION ALL SELECT property_value FROM calendar_event_override_extended_properties",
+            )
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+            assert_eq!(values, ["second", "second"]);
+        });
+    }
+
+    #[test]
     fn import_refuses_an_event_over_the_timing_bound_and_keeps_its_source() {
         crate::test_support::block_on(async {
             let pool = in_memory_pool().await;

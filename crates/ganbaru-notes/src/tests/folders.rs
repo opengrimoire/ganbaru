@@ -7,13 +7,13 @@ const FOLDER_B: &str = "72727272-7272-4272-8272-727272727272";
 const FOLDER_C: &str = "73737373-7373-4373-8373-737373737373";
 
 async fn seed_projects(pool: &SqlitePool) {
-    sqlx::query("INSERT INTO project_groups (id, name) VALUES ('notes-folders', 'Notes folders')")
+    sqlx::query("INSERT INTO project_groups (id, name, order_key) VALUES ('notes-folders', 'Notes folders', 'a1')")
         .execute(pool)
         .await
         .unwrap();
     sqlx::query(
-        "INSERT INTO projects (id, group_id, name)
-         VALUES (?, 'notes-folders', 'Project A'), (?, 'notes-folders', 'Project B')",
+        "INSERT INTO projects (id, group_id, name, order_key)
+         VALUES (?, 'notes-folders', 'Project A', 'a1'), (?, 'notes-folders', 'Project B', 'a2')",
     )
     .bind(PROJECT_A)
     .bind(PROJECT_B)

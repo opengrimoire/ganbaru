@@ -20,6 +20,7 @@
   import { formatTimeLabel } from "$lib/calendar/utils";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import {
+    canonicalProjectCustomFieldNumber,
     projectCustomFieldAllowsMultipleOptions,
     projectCustomFieldInputType,
     projectCustomFieldTextInputMode,
@@ -203,7 +204,7 @@
 
   function customFieldInputValue(field: ProjectCustomField, value: ProjectCustomFieldValue | undefined): string {
     if (projectCustomFieldUsesTextValue(field.fieldType)) return projectCustomFieldTextValue(value);
-    if (field.fieldType === "number") return value?.numberValue === undefined ? "" : String(value.numberValue);
+    if (field.fieldType === "number") return value?.numberValue ?? "";
     if (field.fieldType === "date") return value?.dateValue ?? "";
     return "";
   }
@@ -232,8 +233,8 @@
     const value = customFieldValue(task, field);
     const current = value?.numberValue;
     const text = nextValue.trim();
-    const nextNumber = text ? Number(text) : null;
-    if (text && !Number.isFinite(nextNumber)) {
+    const nextNumber = text ? canonicalProjectCustomFieldNumber(text) : null;
+    if (text && nextNumber === null) {
       input?.setCustomValidity(t("projects.customFields.invalidNumber"));
       input?.reportValidity();
       return;
@@ -498,7 +499,7 @@
           class="surface-floating surface-floating-body fixed z-40 w-44"
           role="menu"
         >
-          {#each statuses as nextStatus (nextStatus.id)}
+          {#each statuses.filter((entry) => !entry.deletedAt) as nextStatus (nextStatus.id)}
             <button
               type="button"
               class="menu-item justify-between"
@@ -545,7 +546,7 @@
           class="surface-floating surface-floating-body fixed z-40 w-44"
           role="menu"
         >
-          {#each priorities as priority (priority.id)}
+          {#each priorities.filter((entry) => !entry.deletedAt) as priority (priority.id)}
             <button
               type="button"
               class="menu-item justify-between"
@@ -755,7 +756,7 @@
         <input data-collection-cell-primary
           type="text"
           inputmode="decimal"
-          value={numericDraft ?? (customValue?.numberValue === undefined ? "" : projectListNumberLabel(customValue.numberValue, context?.query.listPresentation.numberFormats[column] ?? "number", localization.locale))}
+          value={numericDraft ?? (customValue?.numberValue === undefined ? "" : projectListNumberLabel(Number(customValue.numberValue), context?.query.listPresentation.numberFormats[column] ?? "number", localization.locale))}
           onfocus={() => { numericDraft ??= customFieldInputValue(customField, customValue); }}
           oninput={(event) => {
             numericDraft = event.currentTarget.value;

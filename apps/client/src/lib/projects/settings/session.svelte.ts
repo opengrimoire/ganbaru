@@ -258,15 +258,6 @@ export function createProjectSettingsSession(options: ProjectSettingsSessionOpti
     return t("projects.settings.invalidDuration");
   }
 
-  function nextProjectSortOrderForGroup(groupId: string, excludeProjectId: string): number {
-    return Math.max(
-      0,
-      ...projects.projectsForGroupIncludingInactive(groupId)
-        .filter((project) => project.id !== excludeProjectId)
-        .map((project) => project.sortOrder),
-    ) + 1000;
-  }
-
   /** Validate the complete draft before committing folder, collection, project, and playlist changes. */
   async function save(
     project: Project,
@@ -283,7 +274,6 @@ export function createProjectSettingsSession(options: ProjectSettingsSessionOpti
           project,
           draft: state.projectDraft,
           visibleGroupIds,
-          nextSortOrderForGroup: nextProjectSortOrderForGroup,
         })
       : null;
     if (projectUpdateResult && !projectUpdateResult.ok) {

@@ -327,12 +327,14 @@ fn page_location_follows_project_folder_and_page_ancestry_through_the_page_itsel
     crate::test_block_on(async {
         let pool = migrated_memory_pool().await;
         let folder_id = "00000000-0000-4000-8000-000000000301";
-        sqlx::query("INSERT INTO project_groups (id, name) VALUES ('group', 'Group')")
-            .execute(&pool)
-            .await
-            .unwrap();
         sqlx::query(
-            "INSERT INTO projects (id, group_id, name) VALUES ('project', 'group', 'Project')",
+            "INSERT INTO project_groups (id, name, order_key) VALUES ('group', 'Group', 'a1')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO projects (id, group_id, name, order_key) VALUES ('project', 'group', 'Project', 'a1')",
         )
         .execute(&pool)
         .await
@@ -394,27 +396,27 @@ fn page_project_group_lists_the_page_project_and_its_active_peers() {
     crate::test_block_on(async {
         let pool = migrated_memory_pool().await;
         for (id, name) in [("group", "Group"), ("other-group", "Other")] {
-            sqlx::query("INSERT INTO project_groups (id, name) VALUES (?, ?)")
+            sqlx::query("INSERT INTO project_groups (id, name, order_key) VALUES (?, ?, 'a1')")
                 .bind(id)
                 .bind(name)
                 .execute(&pool)
                 .await
                 .unwrap();
         }
-        for (id, group, status, sort_order) in [
-            ("own", "group", "hidden", 2),
-            ("peer", "group", "active", 1),
-            ("archived-peer", "group", "archived", 0),
-            ("elsewhere", "other-group", "active", 0),
+        for (id, group, status, order_key) in [
+            ("own", "group", "hidden", "a2"),
+            ("peer", "group", "active", "a1"),
+            ("archived-peer", "group", "archived", "a0"),
+            ("elsewhere", "other-group", "active", "a0"),
         ] {
             sqlx::query(
-                "INSERT INTO projects (id, group_id, name, status, sort_order) VALUES (?, ?, ?, ?, ?)",
+                "INSERT INTO projects (id, group_id, name, status, order_key) VALUES (?, ?, ?, ?, ?)",
             )
             .bind(id)
             .bind(group)
             .bind(id)
             .bind(status)
-            .bind(sort_order)
+            .bind(order_key)
             .execute(&pool)
             .await
             .unwrap();

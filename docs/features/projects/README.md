@@ -39,7 +39,7 @@ Groups organize projects. Projects own settings, statuses, priorities, tags, cus
 
 ## Routine group
 
-The built-in Routine group holds a fixed set of life-maintenance projects (such as Learning, Reading, Exercise, Chores, and Sleep). The group cannot be deleted or renamed, built-in Routine projects keep their names, group, and order, and missing built-in projects are restored when the workspace loads. Otherwise they are ordinary projects for tasks, views, scheduling, Notes, and Music defaults; their protected identity grants no broader access or special task semantics.
+The built-in Routine group holds a fixed set of life-maintenance projects (such as Learning, Reading, Exercise, Chores, and Sleep). The group cannot be deleted or renamed, built-in Routine projects keep their names, group, and order. A fresh vault receives them once; a missing built-in project is not recreated when the workspace loads, so a deletion made on another device stays deleted. Otherwise they are ordinary projects for tasks, views, scheduling, Notes, and Music defaults; their protected identity grants no broader access or special task semantics.
 
 Rationale: Calendar, Pomodoro, and Music need stable everyday categories that exist in every vault without setup.
 

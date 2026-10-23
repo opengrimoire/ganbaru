@@ -16,6 +16,9 @@ import type {
   ProjectTaskSortMode,
   ProjectTaskStatusFilter,
 } from "$lib/projects/types";
+import { compareProjectCustomFieldNumbers } from "$lib/projects/custom-fields";
+import { compareProjectOrder, compareTaskSectionOrder, compareTaskStatusOrder } from "$lib/projects/order";
+import { compareCodeUnits } from "$lib/utils/order-key";
 import { customFieldIdFromCustomFieldReference } from "./list-columns";
 
 export interface ProjectTaskViewInput {
@@ -108,18 +111,26 @@ function compareOptionalNumber(
   return withDirection(a - b, direction);
 }
 
-function manualSectionCompare(a: ProjectTask, b: ProjectTask): number {
-  return a.sectionSortOrder - b.sectionSortOrder
-    || a.statusSortOrder - b.statusSortOrder
-    || a.createdAt.localeCompare(b.createdAt)
-    || a.title.localeCompare(b.title);
+/** Compares number custom field values exactly, keeping empty values last. */
+function compareOptionalCustomFieldNumber(
+  a: string | undefined,
+  b: string | undefined,
+  direction: ProjectTaskSortDirection,
+): number {
+  if (a === undefined && b === undefined) return 0;
+  if (a === undefined) return 1;
+  if (b === undefined) return -1;
+  return withDirection(compareProjectCustomFieldNumbers(a, b), direction);
 }
 
+/** Native section order: section order key, then status order key, then id. */
+function manualSectionCompare(a: ProjectTask, b: ProjectTask): number {
+  return compareCodeUnits(a.sectionOrderKey, b.sectionOrderKey) || compareTaskStatusOrder(a, b);
+}
+
+/** Native status order: status order key, then section order key, then id. */
 export function manualStatusCompare(a: ProjectTask, b: ProjectTask): number {
-  return a.statusSortOrder - b.statusSortOrder
-    || a.sectionSortOrder - b.sectionSortOrder
-    || a.createdAt.localeCompare(b.createdAt)
-    || a.title.localeCompare(b.title);
+  return compareCodeUnits(a.statusOrderKey, b.statusOrderKey) || compareTaskSectionOrder(a, b);
 }
 
 function statusIndexById(statuses: readonly ProjectStatus[]): ReadonlyMap<string, number> {
@@ -329,7 +340,7 @@ function customFieldOptionNamesForTask(
   if (selectedOptionIds.size === 0) return undefined;
   const names = input.customFieldOptions
     .filter((option) => option.fieldId === field.id && selectedOptionIds.has(option.id))
-    .sort((a, b) => a.sortOrder - b.sortOrder || a.name.localeCompare(b.name))
+    .sort(compareProjectOrder)
     .map((option) => option.name);
   return names.length > 0 ? names.join(", ") : undefined;
 }
@@ -355,7 +366,7 @@ function compareCustomFieldSortValues(
   input: ProjectTaskViewInput,
 ): number {
   if (field.fieldType === "number") {
-    return compareOptionalNumber(
+    return compareOptionalCustomFieldNumber(
       taskCustomFieldValue(input, a.id, field.id)?.numberValue,
       taskCustomFieldValue(input, b.id, field.id)?.numberValue,
       input.sortDirection,
@@ -398,8 +409,7 @@ function compareTasks(
     ) || manualStatusCompare(a, b);
   }
   if (input.sortMode === "section") {
-    return withDirection(a.sectionSortOrder - b.sectionSortOrder, input.sortDirection)
-      || manualSectionCompare(a, b);
+    return withDirection(manualSectionCompare(a, b), input.sortDirection);
   }
   if (input.sortMode === "priority") {
     return comparePriorityOrder(a.priority, b.priority, indexByPriorityId, input.sortDirection)

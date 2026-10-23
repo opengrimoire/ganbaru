@@ -161,9 +161,9 @@ fn teammate_role_is_required_and_trimmed() {
 
 async fn seed_review_assignment_with_stranded_replies(pool: &SqlitePool) {
     sqlx::raw_sql(
-        "INSERT INTO project_groups (id, name) VALUES ('group:review', 'Review');
-         INSERT INTO projects (id, group_id, name)
-         VALUES ('project:review', 'group:review', 'Review');
+        "INSERT INTO project_groups (id, name, order_key) VALUES ('group:review', 'Review', 'a1');
+         INSERT INTO projects (id, group_id, name, order_key)
+         VALUES ('project:review', 'group:review', 'Review', 'a1');
          INSERT INTO project_working_folders
              (id, project_id, display_name, kind, managed_relative_path)
          VALUES ('folder:review', 'project:review', 'Review', 'managed', 'projects/review');
@@ -456,13 +456,15 @@ fn immediate_scheduled_delivery_claim_is_atomic() {
     tauri::async_runtime::block_on(async {
         let pool = migrated_pool().await;
         let now = UtcTimestamp::new("2026-08-03T00:00:00.000Z").unwrap();
-        sqlx::query("INSERT INTO project_groups (id, name) VALUES ('group:test', 'Test')")
-            .execute(&pool)
-            .await
-            .unwrap();
         sqlx::query(
-            "INSERT INTO projects (id, group_id, name)
-             VALUES ('project:test', 'group:test', 'Test')",
+            "INSERT INTO project_groups (id, name, order_key) VALUES ('group:test', 'Test', 'a1')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO projects (id, group_id, name, order_key)
+             VALUES ('project:test', 'group:test', 'Test', 'a1')",
         )
         .execute(&pool)
         .await
@@ -712,9 +714,9 @@ fn channel_unread_count_excludes_local_messages() {
     tauri::async_runtime::block_on(async {
         let pool = migrated_pool().await;
         sqlx::raw_sql(
-            "INSERT INTO project_groups (id, name) VALUES ('group:unread', 'Unread');
-             INSERT INTO projects (id, group_id, name)
-             VALUES ('project:unread', 'group:unread', 'Unread');
+            "INSERT INTO project_groups (id, name, order_key) VALUES ('group:unread', 'Unread', 'a1');
+             INSERT INTO projects (id, group_id, name, order_key)
+             VALUES ('project:unread', 'group:unread', 'Unread', 'a1');
              INSERT INTO chat_conversations
                  (id, project_id, conversation_kind, last_activity_at,
                   created_at, updated_at)
@@ -772,10 +774,10 @@ fn reply_thread_unread_excludes_local_messages_and_tracks_item_ordinals() {
     tauri::async_runtime::block_on(async {
         let pool = migrated_pool().await;
         sqlx::raw_sql(
-            "INSERT INTO project_groups (id, name)
-             VALUES ('group:thread-unread', 'Thread unread');
-             INSERT INTO projects (id, group_id, name)
-             VALUES ('project:thread-unread', 'group:thread-unread', 'Thread unread');
+            "INSERT INTO project_groups (id, name, order_key)
+             VALUES ('group:thread-unread', 'Thread unread', 'a1');
+             INSERT INTO projects (id, group_id, name, order_key)
+             VALUES ('project:thread-unread', 'group:thread-unread', 'Thread unread', 'a1');
              INSERT INTO chat_conversations
                  (id, project_id, conversation_kind, last_activity_at,
                   created_at, updated_at)

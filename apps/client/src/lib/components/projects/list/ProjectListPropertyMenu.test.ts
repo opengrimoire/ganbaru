@@ -30,7 +30,7 @@ vi.mock("$lib/stores/projects.svelte", () => {
 vi.mock("$lib/vault/config", () => ({ensureConfigLoaded: async () => undefined, getConfigKey: <T>(_key: string, fallback: T) => fallback, setConfigKey: () => undefined, configKeyChanged: () => false, onConfigChangedElsewhere: () => () => undefined}));
 
 let component: ReturnType<typeof mount> | undefined;
-const initialField: ProjectCustomField = {id: "points", projectId: "project", name: "Points", fieldType: "number", sortOrder: 100, icon: null, createdAt: "", updatedAt: ""};
+const initialField: ProjectCustomField = {id: "points", projectId: "project", name: "Points", fieldType: "number", orderKey: "100", icon: null, createdAt: "", updatedAt: ""};
 
 beforeEach(() => {
   vi.stubGlobal("ResizeObserver", class {
@@ -166,10 +166,10 @@ async function enter(input: HTMLInputElement, value: string): Promise<void> {
 
 describe("Projects property settings", () => {
   const stage: ProjectCustomField = {...initialField, id: "stage", name: "Stage", fieldType: "select"};
-  const option = (id: string, name: string, sortOrder: number): ProjectCustomFieldOption => ({id, fieldId: "stage", name, sortOrder, createdAt: "", updatedAt: ""});
+  const option = (id: string, name: string, orderKey: string): ProjectCustomFieldOption => ({id, fieldId: "stage", name, orderKey, createdAt: "", updatedAt: ""});
 
   it("adds options under Edit property and rejects a name another option already has", async () => {
-    store.options = [option("idea", "Idea", 100)];
+    store.options = [option("idea", "Idea", "100")];
     store.addCustomFieldOption.mockResolvedValue(undefined);
     component = mount(ProjectListPropertyMenuHarness, {target: document.body, props: {initialField: stage}});
     await tick();
@@ -185,7 +185,7 @@ describe("Projects property settings", () => {
     expect(input.value).toBe(" idea ");
   });
   it("renames, reorders, and deletes an option without a save step", async () => {
-    store.options = [option("idea", "Idea", 100), option("done", "Done", 200)];
+    store.options = [option("idea", "Idea", "100"), option("done", "Done", "200")];
     store.updateCustomFieldOption.mockResolvedValue(undefined);
     store.moveCustomFieldOption.mockImplementation(async (moved, direction) => {
       const from = store.options.findIndex((candidate) => candidate.id === moved.id);

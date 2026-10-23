@@ -161,11 +161,11 @@ fn missing_duplicate_and_cross_project_selections_never_partially_apply() {
                 .contains("duplicate")
         );
         sqlx::raw_sql(
-            "INSERT INTO projects (id, group_id, name, icon) VALUES ('project-b', 'group-a', 'Other', 'lucide:folder');
-             INSERT INTO project_sections (id, project_id, name) VALUES ('section-b', 'project-b', 'Other');
-             INSERT INTO project_statuses (id, project_id, name, category) VALUES ('status-b', 'project-b', 'Other', 'not_started');
-             INSERT INTO project_tasks (id, project_id, section_id, status_id, title)
-             VALUES ('foreign-task', 'project-b', 'section-b', 'status-b', 'Foreign');",
+            "INSERT INTO projects (id, group_id, name, icon, order_key) VALUES ('project-b', 'group-a', 'Other', 'lucide:folder', 'b0');
+             INSERT INTO project_sections (id, project_id, name, order_key) VALUES ('section-b', 'project-b', 'Other', 'a0');
+             INSERT INTO project_statuses (id, project_id, name, category, order_key) VALUES ('status-b', 'project-b', 'Other', 'not_started', 'a0');
+             INSERT INTO project_tasks (id, project_id, section_id, status_id, title, section_order_key, status_order_key)
+             VALUES ('foreign-task', 'project-b', 'section-b', 'status-b', 'Foreign', 'a0', 'a0');",
         ).execute(&pool).await.unwrap();
         request.tasks[1].id = "foreign-task".to_string();
         assert!(
@@ -189,7 +189,7 @@ fn status_changes_assign_native_order_and_preserve_completion_on_noop() {
     block_on(async {
         let pool = migrated_memory_pool().await;
         insert_project_graph_fixture(&pool).await;
-        sqlx::query("INSERT INTO project_statuses (id, project_id, name, category, terminal) VALUES ('done', 'project-a', 'Done', 'done', 1)")
+        sqlx::query("INSERT INTO project_statuses (id, project_id, name, category, terminal, order_key) VALUES ('done', 'project-a', 'Done', 'done', 1, 'a2')")
             .execute(&pool).await.unwrap();
         let mut request = archive_request();
         request.tasks[0].value = Some("status-a".to_string());
@@ -202,7 +202,7 @@ fn status_changes_assign_native_order_and_preserve_completion_on_noop() {
         };
         let result = apply_task_bulk(&pool, &request).await.unwrap();
         assert!(result.tasks.iter().all(|task| task.completed_at.is_some()));
-        assert!(result.tasks[0].status_sort_order < result.tasks[1].status_sort_order);
+        assert!(result.tasks[0].status_order_key < result.tasks[1].status_order_key);
         request.operation_id = "noop-completion".to_string();
         for task in &mut request.tasks {
             task.value = Some("done".to_string());

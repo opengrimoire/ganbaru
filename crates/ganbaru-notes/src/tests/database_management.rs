@@ -296,12 +296,14 @@ fn database_sources_create_attach_and_keep_shared_rows_with_independent_views() 
             3
         );
         let folder_id = "00000000-0000-4000-8000-000000000301";
-        sqlx::query("INSERT INTO project_groups (id, name) VALUES ('group', 'Group')")
-            .execute(&pool)
-            .await
-            .unwrap();
         sqlx::query(
-            "INSERT INTO projects (id, group_id, name) VALUES ('project', 'group', 'Project')",
+            "INSERT INTO project_groups (id, name, order_key) VALUES ('group', 'Group', 'a1')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO projects (id, group_id, name, order_key) VALUES ('project', 'group', 'Project', 'a1')",
         )
         .execute(&pool)
         .await

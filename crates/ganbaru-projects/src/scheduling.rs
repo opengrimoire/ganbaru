@@ -177,7 +177,7 @@ pub async fn write(
         let task = scheduled.task;
         let result = sqlx::query(
             "UPDATE project_tasks SET start_date = ?1, target_end_date = ?1,
-             due_date = COALESCE(due_date, ?1), updated_at = datetime('now')
+             due_date = COALESCE(due_date, ?1), revision = revision + 1, updated_at = datetime('now')
              WHERE id = ?2 AND revision = ?3 AND archived_at IS NULL",
         )
         .bind(&scheduled.date)

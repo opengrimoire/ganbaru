@@ -1137,10 +1137,11 @@ impl<'a, H: SyncHost> Session<'a, H> {
             .await;
     }
 
-    /// Start order: clear a stale apply flag, seed captures of tables that start to replicate,
+    /// Start order: refuse Projects placeholder keys, clear a stale apply flag, seed captures of tables that start to replicate,
     /// import a carry bundle a failed replacement left, check the writer, and apply what the
     /// import could not apply before local captures were sealed.
     async fn start(&self, writer: &mut Option<ActiveWriter>) -> Result<(), String> {
+        ganbaru_projects::conversion::assert_converted(&self.pool).await?;
         let imported = {
             let mut conn = acquire(&self.pool).await?;
             local::reset_applying(&mut conn)

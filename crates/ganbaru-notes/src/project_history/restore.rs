@@ -962,13 +962,13 @@ mod tests {
     fn project_restore_preserves_empty_folders_and_page_folder_membership() {
         crate::test_block_on(async {
             let pool = migrated_pool().await;
-            sqlx::query("INSERT INTO project_groups (id, name) VALUES ('folder-history', 'Notes')")
+            sqlx::query("INSERT INTO project_groups (id, name, order_key) VALUES ('folder-history', 'Notes', 'a1')")
                 .execute(&pool)
                 .await
                 .unwrap();
             sqlx::query(
-                "INSERT INTO projects (id, group_id, name)
-                 VALUES (?, 'folder-history', 'Folder history')",
+                "INSERT INTO projects (id, group_id, name, order_key)
+                 VALUES (?, 'folder-history', 'Folder history', 'a1')",
             )
             .bind(PROJECT_ID)
             .execute(&pool)

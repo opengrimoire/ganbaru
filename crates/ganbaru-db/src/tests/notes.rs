@@ -136,14 +136,14 @@ fn schema_enforces_notes_folder_placement_invariants() {
         .unwrap();
         assert_eq!(folder_column, Some(1));
 
-        sqlx::query("INSERT INTO project_groups (id, name) VALUES ('folder-group', 'Folders')")
+        sqlx::query("INSERT INTO project_groups (id, name, order_key) VALUES ('folder-group', 'Folders', 'a0')")
             .execute(&pool)
             .await
             .unwrap();
         sqlx::query(
-            "INSERT INTO projects (id, group_id, name)
-             VALUES ('folder-project-a', 'folder-group', 'A'),
-                    ('folder-project-b', 'folder-group', 'B')",
+            "INSERT INTO projects (id, group_id, name, order_key)
+             VALUES ('folder-project-a', 'folder-group', 'A', 'a0'),
+                    ('folder-project-b', 'folder-group', 'B', 'a1')",
         )
         .execute(&pool)
         .await
@@ -245,15 +245,15 @@ fn schema_validates_project_notes_default_open_mode() {
     super::block_on(async {
         let pool = migrated_memory_pool().await;
         sqlx::query(
-            "INSERT INTO project_groups (id, name, icon, sort_order)
-             VALUES ('group-notes-mode', 'Notes mode', 'lucide:folder', 100)",
+            "INSERT INTO project_groups (id, name, icon, order_key)
+             VALUES ('group-notes-mode', 'Notes mode', 'lucide:folder', 'a0')",
         )
         .execute(&pool)
         .await
         .unwrap();
         sqlx::query(
-            "INSERT INTO projects (id, group_id, name, icon, sort_order)
-             VALUES ('project-notes-mode', 'group-notes-mode', 'Notes mode', 'lucide:folder', 100)",
+            "INSERT INTO projects (id, group_id, name, icon, order_key)
+             VALUES ('project-notes-mode', 'group-notes-mode', 'Notes mode', 'lucide:folder', 'a0')",
         )
         .execute(&pool)
         .await
@@ -1697,13 +1697,15 @@ fn schema_creates_strict_project_notes_history_storage() {
         .unwrap();
         assert_eq!(default_retention, 30);
 
-        sqlx::query("INSERT INTO project_groups (id, name) VALUES ('group-1', 'Group')")
-            .execute(&pool)
-            .await
-            .unwrap();
         sqlx::query(
-            "INSERT INTO projects (id, group_id, name)
-             VALUES ('project-1', 'group-1', 'Learning')",
+            "INSERT INTO project_groups (id, name, order_key) VALUES ('group-1', 'Group', 'a0')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO projects (id, group_id, name, order_key)
+             VALUES ('project-1', 'group-1', 'Learning', 'a0')",
         )
         .execute(&pool)
         .await

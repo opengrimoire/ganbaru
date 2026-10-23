@@ -659,8 +659,8 @@ async fn load_project_tasks(
          LEFT JOIN project_tasks parent ON parent.id = task.parent_task_id
          WHERE task.project_id = ?
            AND task.archived_at IS NULL
-         ORDER BY section.sort_order ASC,
-                  task.section_sort_order ASC,
+         ORDER BY section.order_key ASC,
+                  task.section_order_key ASC,
                   task.created_at ASC,
                   task.id ASC",
     )
@@ -738,7 +738,7 @@ async fn load_checklist_items(
         "SELECT task_id, title, completed_at
          FROM project_checklist_items
          WHERE task_id IN ({})
-         ORDER BY task_id ASC, sort_order ASC, id ASC",
+         ORDER BY task_id ASC, order_key ASC, id ASC",
         placeholders(task_ids.len())
     );
     let mut query = sqlx::query(AssertSqlSafe(sql.as_str()));

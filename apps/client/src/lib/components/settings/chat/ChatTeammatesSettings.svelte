@@ -37,6 +37,7 @@
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { getChat } from "$lib/stores/chat.svelte";
   import { getProjects } from "$lib/stores/projects.svelte";
+  import { projectOrderRanks } from "$lib/projects/order";
   import CalendarScrollbar from "$lib/components/calendar/CalendarScrollbar.svelte";
   import Select from "$lib/components/ui/Select.svelte";
   import Checkbox from "$lib/components/ui/Checkbox.svelte";
@@ -160,6 +161,8 @@
   const accessSummaryGroups = $derived.by(() => {
     const projectById = new Map(projects.projects.map((project) => [project.id, project]));
     const groupById = new Map(projects.groups.map((group) => [group.id, group]));
+    const groupRanks = projectOrderRanks(projects.groups);
+    const projectRanks = projectOrderRanks(projects.projects);
     const channelOrder = new Map(activeNavigationChannels.map((channel, index) => [channel.id, index]));
     const grouped = new Map<string, TeammateAccessSummaryGroup>();
 
@@ -174,7 +177,7 @@
         summaryGroup = {
           id: groupId,
           name: group?.name ?? t("settings.chat.teammates.unknownGroup"),
-          sortOrder: group?.sortOrder ?? Number.MAX_SAFE_INTEGER,
+          sortOrder: groupRanks.get(group?.id ?? "") ?? Number.MAX_SAFE_INTEGER,
           projects: [],
         };
         grouped.set(groupId, summaryGroup);
@@ -184,7 +187,7 @@
         summaryProject = {
           id: channel.projectId,
           name: project?.name ?? t("settings.chat.teammates.unknownProject"),
-          sortOrder: project?.sortOrder ?? Number.MAX_SAFE_INTEGER,
+          sortOrder: projectRanks.get(channel.projectId) ?? Number.MAX_SAFE_INTEGER,
           channels: [],
         };
         summaryGroup.projects.push(summaryProject);

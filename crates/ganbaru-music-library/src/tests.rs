@@ -687,13 +687,15 @@ fn deletion_requires_current_impact_and_repairs_assignments_atomically() {
         .await
         .unwrap();
         transaction.commit().await.unwrap();
-        sqlx::query("INSERT INTO project_groups (id, name) VALUES ('group-1', 'Group')")
-            .execute(&pool)
-            .await
-            .unwrap();
         sqlx::query(
-            "INSERT INTO projects (id, group_id, name, focus_playlist_id)
-             VALUES ('project-1', 'group-1', 'Project', 'playlist-1')",
+            "INSERT INTO project_groups (id, name, order_key) VALUES ('group-1', 'Group', 'a1')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO projects (id, group_id, name, focus_playlist_id, order_key)
+             VALUES ('project-1', 'group-1', 'Project', 'playlist-1', 'a1')",
         )
         .execute(&pool)
         .await

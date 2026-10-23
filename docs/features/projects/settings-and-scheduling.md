@@ -26,13 +26,13 @@ Selecting a project in an event draft can fill an empty title, color, Pomodoro m
 
 ## Statuses, priorities, and tags
 
-Statuses and priorities are project-local, ordered, named, and colored with stable palette slots. Statuses also have a semantic category: not started, active, blocked, or done. Deleting an in-use value requires reassignment or is rejected. Reordering changes presentation, not task identity or history.
+Statuses and priorities are project-local, ordered, named, and colored with stable palette slots. Statuses also have a semantic category: not started, active, blocked, or done. Deleting an in-use value requires reassignment or is rejected. A status or priority deleted while another device assigns it to a task is kept as a marked row: it disappears from pickers, settings lists, and new-task defaults, but those tasks keep showing it until they are reassigned. Reordering changes presentation, not task identity or history.
 
 Tags are project-local labeled colors with stable identity and order. Deleting a tag removes its task associations while preserving tasks and their history.
 
 ## Custom fields
 
-Projects support text, number, select, multi-select, status, date, person, files, checkbox, URL, phone, and email custom fields. Select-like fields own stable options. Schema changes validate existing values, and deleting a field requires confirmation before its values are removed.
+Projects support text, number, select, multi-select, status, date, person, files, checkbox, URL, phone, and email custom fields. Select-like fields own stable options. Number values are exact decimals with at most six decimal places; input with more precision, exponents, or out-of-range values is rejected rather than rounded. Schema changes validate existing values, and deleting a field requires confirmation before its values are removed.
 
 ## Project templates
 

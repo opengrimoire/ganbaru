@@ -1510,6 +1510,11 @@ fn stored_relative_paths_reject_any_backslash_and_trailing_parent_segments() {
         }
         insert_comment("accepted", "src/main..rs").await.unwrap();
 
+        // A folder path is immutable locally, so only an applied change reaches the shape check.
+        sqlx::query("UPDATE sync_apply_state SET applying = 1")
+            .execute(&pool)
+            .await
+            .unwrap();
         let error = sqlx::query(
             "UPDATE project_working_folders SET managed_relative_path = 'projects\\x'
              WHERE id = 'folder-1'",

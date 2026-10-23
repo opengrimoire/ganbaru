@@ -698,16 +698,19 @@ pub struct PublishedWith {
 }
 
 /// A tree: rows nest through a `Reference` group into the table itself and are ordered by a
-/// `Position` group. A cycle among winning parents is broken at the row whose winning parent
-/// version has the greatest `(clock, writer)`, which materializes as a root and keeps its order
-/// key. A root has depth 0 and its children depth 1; every row deeper than `max_depth` also
-/// materializes as a root. Replicas that can seal write those parents as null.
+/// `Position` group, or by order keys outside the tree when siblings have none of their own. A
+/// cycle among winning parents is broken at the row whose winning parent version has the
+/// greatest `(clock, writer)`, which materializes as a root and keeps its order key. A row that
+/// names itself is a cycle of length 1, so a CHECK that the parent differs from the key never
+/// refuses a materialized row. A root has depth 0 and its children depth 1; every row deeper
+/// than `max_depth` also materializes as a root. Replicas that can seal write those parents as
+/// null.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TreeSpec {
     /// The `Reference` group naming the parent row in the same table.
     pub parent_group: GroupId,
-    /// The `Position` group ordering siblings.
-    pub position_group: GroupId,
+    /// The `Position` group ordering siblings, if siblings are ordered within the tree.
+    pub position_group: Option<GroupId>,
     /// Greatest depth a row may have, if any.
     pub max_depth: Option<u8>,
 }
@@ -1542,7 +1545,9 @@ fn tree_problems(table: &TableSpec) -> Vec<String> {
         Some(MergeKind::Reference { table: target, .. }) if target == table.id => {}
         _ => problems.push("the tree parent is not a reference group into the table".to_string()),
     }
-    if table.group(tree.position_group).map(|group| group.kind) != Some(MergeKind::Position) {
+    if let Some(position) = tree.position_group
+        && table.group(position).map(|group| group.kind) != Some(MergeKind::Position)
+    {
         problems.push("the tree position is not a position group".to_string());
     }
     if table.derived_key.is_some() {

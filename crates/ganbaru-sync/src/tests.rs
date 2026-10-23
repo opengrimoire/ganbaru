@@ -12,6 +12,7 @@ mod local;
 mod music;
 mod owned;
 mod preferences;
+mod projects;
 mod publication;
 mod replica;
 mod sim;

@@ -42,7 +42,8 @@ impl Manifest {
                     text,
                     "  tree parent {} position {} depth {}",
                     tree.parent_group.get(),
-                    tree.position_group.get(),
+                    tree.position_group
+                        .map_or_else(|| "none".to_string(), |group| group.get().to_string()),
                     tree.max_depth
                         .map_or_else(|| "unbounded".to_string(), |depth| depth.to_string())
                 );

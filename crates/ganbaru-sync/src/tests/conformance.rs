@@ -2,14 +2,16 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use ganbaru_sync_contracts::{Change, ChangeAction, Field, GroupValue, OrderKey, RowKey, Value};
+use ganbaru_sync_contracts::{
+    Change, ChangeAction, Field, GroupValue, OrderKey, RowKey, TableId, Value,
+};
 use sqlx::SqlitePool;
 
 use super::fixture::{
     CYCLE_A, CYCLE_A_TABLE, CYCLE_B, CYCLE_B_TABLE, FIXTURE_DOMAIN, FIXTURE_TABLE_IDS, FixtureHook,
     ITEMS, ITEMS_TABLE, LINKS, LINKS_TABLE, LISTS_TABLE, MEMBERSHIP_DETAILS, MEMBERSHIP_IDENTITY,
-    MEMBERSHIP_KEY_PREFIX, MEMBERSHIPS, MEMBERSHIPS_TABLE, TEST_MANIFEST, fixture_pool,
-    membership_group, membership_key, test_engine,
+    MEMBERSHIP_KEY_PREFIX, MEMBERSHIPS, MEMBERSHIPS_TABLE, NODES, TEST_MANIFEST, fixture_pool,
+    membership_group, membership_key, node_group, test_engine,
 };
 use super::{block_on, migrated_pool};
 use crate::assets::{AssetClass, MAX_ASSET_BYTES};
@@ -22,7 +24,7 @@ use crate::manifest::{
     Classification, Collation, ColumnSpec, ColumnType, DerivedKey, DomainManifest, GroupSpec,
     GroupStorage, KeyDerivedColumn, LocalColumn, MAX_TIMESTAMP_BYTES, Manifest, MergeKind,
     OnDelete, OwnedCodec, OwnedOrder, OwnedTable, ReferenceColumn, Resolution, SYNC_KEY_COLUMN,
-    SYNC_TABLES, TableIdRange, TableSpec, is_sql_literal,
+    SYNC_TABLES, TableIdRange, TableSpec, TreeSpec, group_id, is_sql_literal,
 };
 use crate::sql::{read_owned, replace_owned};
 use crate::{Adapters, Engine, Hooks, SyncError, triggers, validate};
@@ -575,6 +577,7 @@ async fn assert_foreign_keys(manifest: &Manifest, pool: &SqlitePool) {
         let actual = foreign_keys(&pool, table.name)
             .await
             .into_iter()
+            .filter(|foreign_key| !is_key_foreign_key(manifest, table, foreign_key))
             .collect::<BTreeSet<_>>();
         assert_eq!(actual, expected, "{} foreign keys", table.name);
 
@@ -587,6 +590,28 @@ async fn assert_foreign_keys(manifest: &Manifest, pool: &SqlitePool) {
             }
         }
     }
+}
+
+/// Whether a foreign key ties a row to an earlier replicated row of the same key: a table keyed
+/// by its parent's key holds at most one row per parent, and that row cascades with it. The key
+/// is not a group column, so no reference declares it, and the parent materializes first.
+fn is_key_foreign_key(
+    manifest: &Manifest,
+    table: &TableSpec,
+    (from, target, to, on_delete): &(String, String, String, String),
+) -> bool {
+    let Some(parent) = manifest.tables.iter().position(|spec| spec.name == *target) else {
+        return false;
+    };
+    let child = manifest
+        .tables
+        .iter()
+        .position(|spec| spec.name == table.name);
+    from == table.key_column
+        && !table.has_composite_key()
+        && *to == manifest.tables[parent].key_column
+        && on_delete == "CASCADE"
+        && child.is_some_and(|child| parent < child)
 }
 
 /// An owned table cascades from its owner row, or from its parent owned row through the parent
@@ -992,6 +1017,30 @@ fn key_derived_implications(table: &TableSpec) -> (Vec<UniqueSet>, Vec<BTreeSet<
         .unzip()
 }
 
+/// Whether a unique set holds the row key of a table keyed by one column. The key is unique on
+/// its own, so a set holding it collides only when the key does, and an index on it exists only
+/// for foreign keys that target the set.
+fn contains_key(table: &TableSpec, columns: &UniqueSet) -> bool {
+    !table.has_composite_key()
+        && columns.len() > 1
+        && columns
+            .iter()
+            .any(|(column, _)| *column == table.key_column.to_lowercase())
+}
+
+/// The multi-column CHECK a tree implies: a parent that differs from the row's key. A row naming
+/// itself is a cycle of length 1, which tree repair breaks before the row materializes.
+fn tree_implication(table: &TableSpec) -> Option<BTreeSet<String>> {
+    let tree = table.tree?;
+    let [parent] = table.group(tree.parent_group)?.columns() else {
+        return None;
+    };
+    Some(BTreeSet::from([
+        parent.name.to_lowercase(),
+        table.key_column.to_lowercase(),
+    ]))
+}
+
 async fn assert_resolutions(table: &TableSpec, pool: &SqlitePool) {
     let pool = pool.clone();
     let implied = implied_unique(table);
@@ -999,7 +1048,11 @@ async fn assert_resolutions(table: &TableSpec, pool: &SqlitePool) {
     let mut unique = unique_indexes(&pool, table.name)
         .await
         .into_iter()
-        .filter(|columns| implied.as_ref() != Some(columns) && !key_unique.contains(columns))
+        .filter(|columns| {
+            implied.as_ref() != Some(columns)
+                && !key_unique.contains(columns)
+                && !contains_key(table, columns)
+        })
         .collect::<Vec<_>>();
     unique.sort();
     let mut declared = declared_unique(table);
@@ -1040,6 +1093,9 @@ async fn assert_resolutions(table: &TableSpec, pool: &SqlitePool) {
         });
         multi_column.remove(position);
     }
+    if let Some(implied) = tree_implication(table) {
+        multi_column.retain(|columns| *columns != implied);
+    }
     multi_column.sort();
     let mut declared = declared_checks(table);
     declared.sort();
@@ -1059,7 +1115,8 @@ fn owned_codecs_round_trip_through_the_schema() {
         {
             for table in manifest.tables {
                 for owned in table.groups.iter().flat_map(|group| group.owned_tables()) {
-                    for rows in owned_samples(&engine, table, owned) {
+                    let required = required_columns(&pool, owned).await;
+                    for rows in owned_samples(&engine, table, owned, &required) {
                         assert_owned_round_trip(&engine, &pool, table, owned, rows).await;
                     }
                 }
@@ -1068,15 +1125,41 @@ fn owned_codecs_round_trip_through_the_schema() {
     });
 }
 
+/// `(table, column)` of every `NOT NULL` column of an owned table and its nested tables.
+type RequiredColumns = BTreeSet<(&'static str, String)>;
+
+/// The `NOT NULL` columns of `owned` and its nested tables, which samples never leave null:
+/// the adapter refuses a null there before it reaches the schema.
+async fn required_columns(pool: &SqlitePool, owned: &OwnedTable) -> RequiredColumns {
+    let mut required = RequiredColumns::new();
+    let mut pending = vec![owned];
+    while let Some(table) = pending.pop() {
+        let columns: Vec<String> =
+            sqlx::query_scalar("SELECT name FROM pragma_table_info(?) WHERE \"notnull\" = 1")
+                .bind(table.table)
+                .fetch_all(pool)
+                .await
+                .unwrap();
+        required.extend(columns.into_iter().map(|column| (table.table, column)));
+        pending.extend(table.nested);
+    }
+    required
+}
+
 /// Row lists that reach an owned table's bounds: generated for the generic codec, from the
 /// domain adapter for a custom one.
-fn owned_samples(engine: &Engine, table: &TableSpec, owned: &OwnedTable) -> Vec<Vec<OwnedRow>> {
+fn owned_samples(
+    engine: &Engine,
+    table: &TableSpec,
+    owned: &OwnedTable,
+    required: &RequiredColumns,
+) -> Vec<Vec<OwnedRow>> {
     match owned.codec {
         OwnedCodec::Generic => {
             let mut next = 0;
             [0, 1, owned.max_rows]
                 .into_iter()
-                .map(|count| generated_rows(owned, count, &mut next))
+                .map(|count| generated_rows(owned, count, &mut next, required))
                 .collect()
         }
         OwnedCodec::Custom => {
@@ -1095,7 +1178,12 @@ fn owned_samples(engine: &Engine, table: &TableSpec, owned: &OwnedTable) -> Vec<
 
 /// `count` rows with fields at their column bounds, unique values numbered from `next`, and
 /// nested tables filled the same way.
-fn generated_rows(owned: &OwnedTable, count: usize, next: &mut usize) -> Vec<OwnedRow> {
+fn generated_rows(
+    owned: &OwnedTable,
+    count: usize,
+    next: &mut usize,
+    required: &RequiredColumns,
+) -> Vec<OwnedRow> {
     (0..count)
         .map(|position| {
             let serial = *next;
@@ -1105,13 +1193,16 @@ fn generated_rows(owned: &OwnedTable, count: usize, next: &mut usize) -> Vec<Own
                 .iter()
                 .map(|column| {
                     let unique = owned.unique.contains(&column.name);
-                    generated_field(column.ty, serial, unique)
+                    let nullable = !required.contains(&(owned.table, column.name.to_string()));
+                    generated_field(column.ty, serial, unique, nullable)
                 })
                 .collect();
             let nested = owned
                 .nested
                 .iter()
-                .map(|nested| generated_rows(nested, (position % 2) * nested.max_rows, next))
+                .map(|nested| {
+                    generated_rows(nested, (position % 2) * nested.max_rows, next, required)
+                })
                 .collect();
             OwnedRow { fields, nested }
         })
@@ -1119,8 +1210,9 @@ fn generated_rows(owned: &OwnedTable, count: usize, next: &mut usize) -> Vec<Own
 }
 
 /// A field of `ty` at its upper bound for even serials and its lower bound for odd ones,
-/// starting with the serial when it must be unique.
-fn generated_field(ty: ColumnType, serial: usize, unique: bool) -> Field {
+/// starting with the serial when it must be unique, and null at the lower bound only when
+/// `nullable`.
+fn generated_field(ty: ColumnType, serial: usize, unique: bool, nullable: bool) -> Field {
     let low = serial % 2 == 1 && !unique;
     let text = |min_chars: usize, max_chars: usize, fill: char| {
         let prefix = if unique {
@@ -1134,25 +1226,25 @@ fn generated_field(ty: ColumnType, serial: usize, unique: bool) -> Field {
     };
     match ty {
         ColumnType::Text { max_chars } => text(0, max_chars, 'é'),
-        ColumnType::OptionalText { .. } if low => Field::Null,
+        ColumnType::OptionalText { .. } if low && nullable => Field::Null,
         ColumnType::OptionalText { max_chars } => text(0, max_chars, 'é'),
         ColumnType::TrimmedText {
             min_chars,
             max_chars,
         } => text(min_chars.max(1), max_chars, 'w'),
         ColumnType::Integer { min, max } => Field::Integer(if low { min } else { max }),
-        ColumnType::OptionalInteger { .. } if low && serial % 4 == 1 => Field::Null,
+        ColumnType::OptionalInteger { .. } if low && nullable && serial % 4 == 1 => Field::Null,
         ColumnType::OptionalInteger { min, max } => Field::Integer(if low { min } else { max }),
         ColumnType::Flag => Field::Integer(i64::from(!low)),
         ColumnType::Timestamp => Field::Text("9".repeat(MAX_TIMESTAMP_BYTES)),
-        ColumnType::OptionalTimestamp if low => Field::Null,
+        ColumnType::OptionalTimestamp if low && nullable => Field::Null,
         ColumnType::OptionalTimestamp => Field::Text("9".repeat(MAX_TIMESTAMP_BYTES)),
         ColumnType::OrderKey => Field::Text(
             OrderKey::rank(u32::try_from(serial).unwrap())
                 .unwrap()
                 .into_string(),
         ),
-        ColumnType::OptionalRowKey if low => Field::Null,
+        ColumnType::OptionalRowKey if low && nullable => Field::Null,
         ColumnType::OptionalRowKey => Field::Text(format!("key-{serial}")),
     }
 }
@@ -1241,6 +1333,88 @@ fn a_unique_set_of_derived_key_inputs_needs_no_repair() {
         // A unique set that differs from the key inputs still needs a resolution.
         assert_ne!(unique.first(), implied_unique(&ONE_INPUT).as_ref());
         assert_eq!(implied_unique(&MEMBERSHIPS), None);
+    });
+}
+
+#[test]
+fn a_row_keyed_by_its_parent_cascades_and_unique_sets_holding_the_key_need_no_repair() {
+    const ITEM_NOTES: TableSpec = TableSpec {
+        id: TableId(FIXTURE_TABLE_IDS + 15),
+        name: "fixture_item_notes",
+        key_column: "item_id",
+        groups: &[GroupSpec {
+            id: group_id(0),
+            name: "note",
+            kind: MergeKind::Register,
+            storage: GroupStorage::Columns(&[ColumnSpec {
+                name: "note",
+                ty: ColumnType::Text { max_chars: 40 },
+            }]),
+            references: &[],
+            surfaced: false,
+            recoverable: false,
+            bumps_revision: false,
+        }],
+        local_columns: &[],
+        triggers: &[],
+        ..ITEMS
+    };
+    const PARENT_FIRST: DomainManifest = DomainManifest {
+        tables: &[ITEMS, ITEM_NOTES],
+        ..FIXTURE_DOMAIN
+    };
+    const CHILD_FIRST: DomainManifest = DomainManifest {
+        tables: &[ITEM_NOTES, ITEMS],
+        ..FIXTURE_DOMAIN
+    };
+    block_on(async {
+        let pool = fixture_pool().await;
+        sqlx::raw_sql(
+            "CREATE TABLE fixture_item_notes (
+                 item_id TEXT PRIMARY KEY REFERENCES fixture_items(id) ON DELETE CASCADE,
+                 note TEXT NOT NULL CHECK (length(note) <= 40),
+                 UNIQUE (item_id, note)
+             )",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let parent_first = leaked(&[&PARENT_FIRST]);
+        assert_foreign_keys(parent_first, &pool).await;
+        assert_resolutions(&ITEM_NOTES, &pool).await;
+
+        let key_foreign_key = foreign_keys(&pool, ITEM_NOTES.name).await.remove(0);
+        assert!(is_key_foreign_key(
+            parent_first,
+            &ITEM_NOTES,
+            &key_foreign_key
+        ));
+        // The parent must materialize first, and the child must leave with it.
+        let child_first = leaked(&[&CHILD_FIRST]);
+        assert!(!is_key_foreign_key(
+            child_first,
+            &ITEM_NOTES,
+            &key_foreign_key
+        ));
+        let (from, target, to, _) = key_foreign_key.clone();
+        let clearing = (from, target, to, "SET NULL".to_string());
+        assert!(!is_key_foreign_key(parent_first, &ITEM_NOTES, &clearing));
+        let (_, target, to, on_delete) = key_foreign_key;
+        let from_other = ("note".to_string(), target, to, on_delete);
+        assert!(!is_key_foreign_key(parent_first, &ITEM_NOTES, &from_other));
+
+        let binary = || Collation::Binary.sql_name().to_string();
+        let with_key = BTreeSet::from([
+            ("item_id".to_string(), binary()),
+            ("note".to_string(), binary()),
+        ]);
+        assert!(contains_key(&ITEM_NOTES, &with_key));
+        // A unique set without the key can collide between distinct rows.
+        assert!(!contains_key(
+            &ITEM_NOTES,
+            &BTreeSet::from([("note".to_string(), binary())])
+        ));
+        assert!(!contains_key(&MEMBERSHIPS, &with_key));
     });
 }
 
@@ -1397,7 +1571,7 @@ fn manifests_are_well_formed() {
             .collect::<Vec<_>>(),
         [
             31, 511, 7, 127, 31, 7, 3, 7, 1023, 7, 127, 31, 63, 15, 63, 3, 2047, 15, 31, 31, 15,
-            255
+            255, 127, 65535, 31, 7, 31, 255, 127, 31, 8191, 31, 15, 7, 31, 15, 15, 1, 15, 15, 31
         ]
     );
 }
@@ -1510,6 +1684,62 @@ fn validation_refuses_key_derived_columns_naming_the_key_or_on_composite_keys() 
     ] {
         assert!(problems.contains(problem), "{problems}");
     }
+}
+
+#[test]
+fn a_tree_orders_siblings_by_a_position_group_or_by_none() {
+    const UNORDERED: TableSpec = TableSpec {
+        tree: Some(TreeSpec {
+            position_group: None,
+            ..NODES_TREE
+        }),
+        ..NODES
+    };
+    const MISORDERED: TableSpec = TableSpec {
+        tree: Some(TreeSpec {
+            position_group: Some(node_group::LABEL),
+            ..NODES_TREE
+        }),
+        ..NODES
+    };
+    const UNORDERED_DOMAIN: DomainManifest = DomainManifest {
+        tables: &[UNORDERED],
+        ..FIXTURE_DOMAIN
+    };
+    const MISORDERED_DOMAIN: DomainManifest = DomainManifest {
+        tables: &[MISORDERED],
+        ..FIXTURE_DOMAIN
+    };
+    const NODES_TREE: TreeSpec = match NODES.tree {
+        Some(tree) => tree,
+        None => panic!("the node fixture is a tree"),
+    };
+
+    leaked(&[&UNORDERED_DOMAIN]).validate().unwrap();
+    let misordered = validation_error(&[&MISORDERED_DOMAIN]);
+    assert!(
+        misordered.contains("the tree position is not a position group"),
+        "{misordered}"
+    );
+
+    let summary = leaked(&[&UNORDERED_DOMAIN]).summary();
+    assert!(
+        summary.contains("tree parent 0 position none depth 2"),
+        "{summary}"
+    );
+    let summary = leaked(&[&FIXTURE_DOMAIN]).summary();
+    assert!(
+        summary.contains("tree parent 0 position 1 depth 2"),
+        "{summary}"
+    );
+
+    // The node schema refuses a self parent, a CHECK over the parent and the key that the tree
+    // implies, so it needs no declared resolution.
+    assert_eq!(
+        tree_implication(&NODES),
+        Some(BTreeSet::from(["parent_id".to_string(), "id".to_string()]))
+    );
+    assert_eq!(tree_implication(&quick_notes::NOTES), None);
 }
 
 #[test]
@@ -1745,6 +1975,7 @@ const RECORDED_MANIFESTS: &[(u16, &str)] = &[
     (4, include_str!("fixtures/vault_manifest_v4.txt")),
     (5, include_str!("fixtures/vault_manifest_v5.txt")),
     (6, include_str!("fixtures/vault_manifest_v6.txt")),
+    (7, include_str!("fixtures/vault_manifest_v7.txt")),
 ];
 #[test]
 fn vault_manifest_changes_only_with_a_version_bump() {

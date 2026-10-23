@@ -1,4 +1,5 @@
-//! Size limits every replica enforces when encoding and decoding operations.
+//! Size limits every replica enforces when encoding and decoding operations, certificates, and
+//! authorization entries.
 //!
 //! The limits derive from the 1 MiB transport control frame. Tightening one changes which
 //! operations are valid, so it requires a manifest version bump that keeps the old rule for
@@ -35,3 +36,17 @@ pub const MAX_WRITERS_PER_SPACE: usize = 4_096;
 /// successor only after a restore, a copied database, a lost key, or a clone, so this is far
 /// above honest use while it keeps one linked device from flooding the space.
 pub const MAX_WRITERS_PER_DEVICE: usize = 64;
+/// Largest device label in an enrollment, matching the handoff device label rule.
+pub const MAX_DEVICE_LABEL_BYTES: usize = 128;
+/// Length of a TLS certificate fingerprint: the SHA-256 of the DER certificate.
+pub const TLS_FINGERPRINT_BYTES: usize = 32;
+/// Length of a vault discovery key.
+pub const DISCOVERY_KEY_BYTES: usize = 32;
+/// Largest writer certificate encoding: a version 2 certificate with the longest device id and
+/// a predecessor. Version 1 certificates are never larger.
+pub const MAX_CERTIFICATE_BYTES: usize =
+    1 + 32 + (1 + MAX_DEVICE_ID_BYTES) + 32 + 8 + (1 + 16) + 64;
+/// Cutoffs one removal lists: one per writer the removed device certified.
+pub const MAX_REMOVAL_CUTOFFS: usize = MAX_WRITERS_PER_DEVICE;
+/// Rows one late change resolution decides.
+pub const MAX_LATE_RESOLUTIONS: usize = MAX_CHANGES_PER_OPERATION;

@@ -1,9 +1,13 @@
 use super::fixtures::{
-    GOLDEN_CREATED_AT_MS, GOLDEN_DEVICE_ID, certificate_for, other_writer_id, person, writer_key,
+    GOLDEN_CREATED_AT_MS, GOLDEN_DEVICE_ID, certificate_for, certificate_v2_for, device_key,
+    other_writer_id, person, writer_key,
 };
-use crate::signing::{CERTIFICATE_DOMAIN, domain_message};
+use crate::bounds::{MAX_CERTIFICATE_BYTES, MAX_DEVICE_ID_BYTES};
+use crate::codec::CodecError;
+use crate::signing::{CERTIFICATE_DOMAIN, CHARTER_DOMAIN, domain_message};
 use crate::{
-    CertificateError, SignedCertificate, WriterCertificate, sign_certificate, validate_device_id,
+    CertificateError, DeviceKeyPair, SignedCertificate, SignedCertificateV2, WriterCertificate,
+    WriterCertificateV2, sign_certificate, sign_certificate_v2, validate_device_id,
 };
 use ganbaru_contacts::{PersonKeyPair, verify};
 
@@ -142,7 +146,8 @@ fn every_person_key_signature_domain_is_distinct_and_prefix_free() {
     )
     .expect("sign card");
     let certificate_domain = domain_message(CERTIFICATE_DOMAIN, b"");
-    let signed_messages: [(&[u8], Vec<u8>); 4] = [
+    let charter_domain = domain_message(CHARTER_DOMAIN, b"");
+    let signed_messages: [(&[u8], Vec<u8>); 5] = [
         (ganbaru_contacts::CARD_MAGIC, card.bytes.clone()),
         (
             ganbaru_contacts::REQUEST_SIGNATURE_DOMAIN,
@@ -155,6 +160,10 @@ fn every_person_key_signature_domain_is_distinct_and_prefix_free() {
         (
             &certificate_domain,
             domain_message(CERTIFICATE_DOMAIN, writer_key().public_key().as_bytes()),
+        ),
+        (
+            &charter_domain,
+            domain_message(CHARTER_DOMAIN, &super::fixtures::golden_charter().encode()),
         ),
     ];
 
@@ -171,4 +180,81 @@ fn every_person_key_signature_domain_is_distinct_and_prefix_free() {
             }
         }
     }
+}
+
+#[test]
+fn version_2_certificates_roundtrip_and_authenticate_every_byte() {
+    for predecessor in [None, Some(other_writer_id())] {
+        let signed = certificate_v2_for(&writer_key().public_key(), predecessor);
+        let encoded = signed.encode();
+        let decoded = SignedCertificateV2::decode(&encoded).unwrap();
+        assert_eq!(decoded, signed);
+        assert_eq!(
+            decoded.certificate.writer_id(),
+            super::fixtures::writer_id()
+        );
+        for index in 0..encoded.len() {
+            let mut mutated = encoded.clone();
+            mutated[index] ^= 0x01;
+            assert!(
+                SignedCertificateV2::decode(&mutated).is_err(),
+                "byte {index} is not authenticated"
+            );
+        }
+    }
+}
+
+#[test]
+fn version_2_signing_requires_the_named_device_key() {
+    let mut certificate = certificate_v2_for(&writer_key().public_key(), None).certificate;
+    let stranger = DeviceKeyPair::from_seed(&[0x47; 32]).unwrap();
+    assert_eq!(
+        sign_certificate_v2(&certificate, &stranger),
+        Err(CertificateError::WrongDevice)
+    );
+    certificate.device_id = "bad id".to_string();
+    assert!(sign_certificate_v2(&certificate, &device_key()).is_err());
+}
+
+#[test]
+fn certificate_versions_do_not_decode_as_each_other() {
+    let v1 = certificate_for(&writer_key().public_key(), None).encode();
+    let v2 = certificate_v2_for(&writer_key().public_key(), None).encode();
+    assert_eq!(
+        SignedCertificateV2::decode(&v1),
+        Err(CertificateError::Version)
+    );
+    assert_eq!(
+        SignedCertificate::decode(&v2),
+        Err(CertificateError::Version)
+    );
+}
+
+#[test]
+fn oversized_version_2_certificates_are_refused_before_parsing() {
+    let mut encoded = certificate_v2_for(&writer_key().public_key(), None).encode();
+    encoded.resize(MAX_CERTIFICATE_BYTES + 1, 0);
+    assert_eq!(
+        SignedCertificateV2::decode(&encoded),
+        Err(CertificateError::Codec(CodecError::Bounds(
+            "writer certificate"
+        )))
+    );
+}
+
+#[test]
+fn the_certificate_bound_fits_the_largest_version_2_certificate() {
+    let certificate = WriterCertificateV2 {
+        writer_key: writer_key().public_key(),
+        device_id: "d".repeat(MAX_DEVICE_ID_BYTES),
+        device_key: device_key().public_key(),
+        created_at_ms: i64::MAX,
+        predecessor: Some(other_writer_id()),
+    };
+    let encoded = sign_certificate_v2(&certificate, &device_key())
+        .unwrap()
+        .encode();
+    assert_eq!(encoded.len(), MAX_CERTIFICATE_BYTES);
+    assert_eq!(MAX_CERTIFICATE_BYTES, 315);
+    assert!(SignedCertificateV2::decode(&encoded).is_ok());
 }

@@ -1,4 +1,4 @@
-//! The signed operation format, versions 1 and 2.
+//! The signed operation format, versions 1 to 3.
 //!
 //! Envelope, big endian and stable across format versions: magic `GBSO` (4) | format version (1)
 //! | kind (1) | space id (16) | writer id (16) | sequence (8) | previous operation hash (32) |
@@ -16,16 +16,24 @@
 //! successor byte (1): `0` none, `1` followed by the redirect row key, or `2` followed by the
 //! cause's table id (2) and row key. A genesis payload is a certificate length (2) and the
 //! certificate. A revoke payload is target writer (16) | cutoff sequence (8) | reason (1). An
-//! acknowledgement has no payload.
+//! acknowledgement has no payload. An authorization payload is the entry hash (32) of the record
+//! the body carries.
 //!
-//! Body: per change and set group, a presence byte (1) and the value: field count (1) and typed
-//! fields, tag `0` null, `1` i64 (8), `2` text with length (4), `3` blob with length (4). Every
-//! value is present. Every kind other than changes has an empty body.
+//! Body: for changes, per change and set group, a presence byte (1) and the value: field count
+//! (1) and typed fields, tag `0` null, `1` i64 (8), `2` text with length (4), `3` blob with
+//! length (4). Every value is present. For an authorization, the authorization record, which can
+//! outgrow a header when a handover carries a large stored vector; the signed entry hash binds
+//! it. Every other kind has an empty body.
 //!
-//! Version 2 adds the cause successor and is otherwise version 1. An operation is sealed at
-//! version 2 only when one of its tombstones names a cause, so every other operation stays
-//! readable by version 1 builds, which hold version 2 operations as a newer format.
+//! Version 2 adds the cause successor and is otherwise version 1. Version 3 adds kind 4,
+//! authorization, and is otherwise version 2. Each operation seals at the lowest version that
+//! can express it, so older builds keep reading everything else and hold the rest as a newer
+//! format.
+//!
+//! An authorization operation creating revision R carries header authorization revision R − 1:
+//! the revision it was ordered against.
 
+use crate::authorization::{AuthorizationError, AuthorizationRecord, entry_hash};
 use crate::bounds::{
     MAX_BLOB_FIELD_BYTES, MAX_CHANGES_PER_OPERATION, MAX_FIELDS_PER_VALUE, MAX_HEADER_BYTES,
     MAX_OPERATION_BYTES, MAX_ROW_KEY_BYTES, MAX_TEXT_FIELD_BYTES,
@@ -45,11 +53,13 @@ use std::fmt;
 /// Leading bytes of every operation.
 pub const OPERATION_MAGIC: &[u8; 4] = b"GBSO";
 /// Newest operation format this build encodes and fully decodes.
-pub const FORMAT_VERSION: u8 = 2;
+pub const FORMAT_VERSION: u8 = 3;
 /// Format of operations whose tombstones name no cause.
 pub const BASE_FORMAT_VERSION: u8 = 1;
 /// First format whose tombstones may name a cause.
 pub const CAUSE_FORMAT_VERSION: u8 = 2;
+/// First format with authorization operations.
+pub const AUTHORIZATION_FORMAT_VERSION: u8 = 3;
 /// Previous hash of a writer genesis.
 pub const GENESIS_PREVIOUS_HASH: Digest32 = [0u8; DIGEST_BYTES];
 
@@ -69,33 +79,45 @@ pub enum OperationKind {
     Changes,
     /// The first operation of a writer, carrying its certificate.
     Genesis,
-    /// A writer revocation with a cutoff sequence.
+    /// A writer revocation with a cutoff sequence. Kept until the authorization log replaces
+    /// it.
     Revoke,
     /// A signed acknowledgement: no changes, only the dependencies that advance the writer's
     /// context to what it applied.
     Acknowledgement,
+    /// One revision of the space's authorization log, sealed by the anchor.
+    Authorization,
 }
 
 impl OperationKind {
-    /// Wire value. `4` is reserved for authorization entries; `Revoke` keeps `2` until
-    /// authorization entries replace it.
+    /// Wire value.
     pub const fn as_u8(self) -> u8 {
         match self {
             Self::Changes => 0,
             Self::Genesis => 1,
             Self::Revoke => 2,
             Self::Acknowledgement => 3,
+            Self::Authorization => 4,
         }
     }
 
-    /// Kind for a wire value known to this format.
+    /// Kind for a wire value known to this build.
     pub const fn from_u8(value: u8) -> Option<Self> {
         match value {
             0 => Some(Self::Changes),
             1 => Some(Self::Genesis),
             2 => Some(Self::Revoke),
             3 => Some(Self::Acknowledgement),
+            4 => Some(Self::Authorization),
             _ => None,
+        }
+    }
+
+    /// Lowest format version that defines the kind.
+    pub const fn minimum_format_version(self) -> u8 {
+        match self {
+            Self::Authorization => AUTHORIZATION_FORMAT_VERSION,
+            _ => BASE_FORMAT_VERSION,
         }
     }
 }
@@ -353,7 +375,7 @@ impl Change {
     }
 }
 
-/// Why a writer was revoked.
+/// Why a writer was revoked. Kept until the authorization log replaces revocations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum RevokeReason {
     /// The device was unlinked.
@@ -379,7 +401,8 @@ impl RevokeReason {
     }
 }
 
-/// A writer revocation: operations of `writer` above `cutoff` are refused.
+/// A writer revocation: operations of `writer` above `cutoff` are refused. Kept until the
+/// authorization log replaces it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Revocation {
     /// The revoked writer.
@@ -397,7 +420,8 @@ pub struct Header {
     pub clock: Hlc,
     /// Manifest version the changes were sealed under.
     pub manifest_version: u32,
-    /// Authorization revision; zero until multi-person spaces.
+    /// Authorization revision the operation was sealed against; zero until spaces carry an
+    /// authorization log.
     pub authorization_revision: u64,
     /// Key epoch; zero until operation encryption.
     pub key_epoch: u32,
@@ -419,6 +443,8 @@ pub enum Content {
     /// A signed acknowledgement of the writer's context. Acknowledgements of other writers are
     /// never a reason to seal one, so acknowledgement traffic settles.
     Acknowledgement,
+    /// One authorization log revision.
+    Authorization(Box<AuthorizationRecord>),
 }
 
 /// A logical operation before signing or after verification.
@@ -445,6 +471,8 @@ pub enum OperationError {
     Codec(CodecError),
     /// The genesis certificate is invalid.
     Certificate(CertificateError),
+    /// The authorization record is invalid.
+    Authorization(AuthorizationError),
     /// A key or certificate names a different writer than the operation.
     WriterMismatch,
     /// The envelope signature does not verify.
@@ -456,6 +484,7 @@ impl fmt::Display for OperationError {
         match self {
             Self::Codec(error) => write!(formatter, "operation: {error}"),
             Self::Certificate(error) => write!(formatter, "operation: {error}"),
+            Self::Authorization(error) => write!(formatter, "operation: {error}"),
             Self::WriterMismatch => formatter.write_str("operation writer mismatch"),
             Self::Signature => formatter.write_str("operation signature does not verify"),
         }
@@ -476,6 +505,12 @@ impl From<CertificateError> for OperationError {
     }
 }
 
+impl From<AuthorizationError> for OperationError {
+    fn from(error: AuthorizationError) -> Self {
+        Self::Authorization(error)
+    }
+}
+
 impl Operation {
     /// Kind of the contents.
     pub fn kind(&self) -> OperationKind {
@@ -484,6 +519,7 @@ impl Operation {
             Content::Genesis(_) => OperationKind::Genesis,
             Content::Revoke(_) => OperationKind::Revoke,
             Content::Acknowledgement => OperationKind::Acknowledgement,
+            Content::Authorization(_) => OperationKind::Authorization,
         }
     }
 
@@ -496,10 +532,12 @@ impl Operation {
         }
     }
 
-    /// Format version the operation seals at: [`CAUSE_FORMAT_VERSION`] when a tombstone names
-    /// a cause, [`BASE_FORMAT_VERSION`] otherwise.
+    /// Format version the operation seals at: [`AUTHORIZATION_FORMAT_VERSION`] for an
+    /// authorization, [`CAUSE_FORMAT_VERSION`] when a tombstone names a cause,
+    /// [`BASE_FORMAT_VERSION`] otherwise.
     pub fn format_version(&self) -> u8 {
         match &self.content {
+            Content::Authorization(_) => AUTHORIZATION_FORMAT_VERSION,
             Content::Changes(changes) if changes.iter().any(|change| change.cause.is_some()) => {
                 CAUSE_FORMAT_VERSION
             }
@@ -541,6 +579,15 @@ impl Operation {
                 }
             }
             Content::Acknowledgement => {}
+            Content::Authorization(record) => {
+                record.validate()?;
+                if record.proposal.proposal.space != self.space {
+                    return Err(CodecError::Malformed("authorization space").into());
+                }
+                if self.header.authorization_revision.checked_add(1) != Some(record.revision) {
+                    return Err(CodecError::Malformed("authorization revision").into());
+                }
+            }
         }
         Ok(())
     }
@@ -594,19 +641,24 @@ impl Operation {
                 writer.u8(revocation.reason.as_u8());
             }
             Content::Acknowledgement => {}
+            Content::Authorization(record) => writer.raw(&record.hash()),
         }
         writer
     }
 
     fn encode_body(&self) -> Writer {
         let mut writer = Writer::default();
-        if let Content::Changes(changes) = &self.content {
-            for change in changes {
-                for group in &change.groups {
-                    writer.u8(PRESENT);
-                    group.value.encode_into(&mut writer);
+        match &self.content {
+            Content::Changes(changes) => {
+                for change in changes {
+                    for group in &change.groups {
+                        writer.u8(PRESENT);
+                        group.value.encode_into(&mut writer);
+                    }
                 }
             }
+            Content::Authorization(record) => writer.raw(&record.encode()),
+            Content::Genesis(_) | Content::Revoke(_) | Content::Acknowledgement => {}
         }
         writer
     }
@@ -804,8 +856,8 @@ impl<'a> Envelope<'a> {
             && key.verify_operation(self.signed, self.signature)
     }
 
-    /// Decodes the header and body. A genesis certificate's person signature is verified; the
-    /// envelope signature is not.
+    /// Decodes the header and body. A genesis certificate's person signature and an
+    /// authorization proposal's admin signature are verified; the envelope signature is not.
     ///
     /// The header is decoded completely before the body, so [`PayloadError::Body`] means the
     /// signed header is well formed and only the unsigned body fails to match it.
@@ -813,7 +865,9 @@ impl<'a> Envelope<'a> {
         if self.format_version > FORMAT_VERSION {
             return Err(PayloadError::NewerFormat);
         }
-        let kind = OperationKind::from_u8(self.kind).ok_or(PayloadError::UnknownKind)?;
+        let kind = OperationKind::from_u8(self.kind)
+            .filter(|kind| kind.minimum_format_version() <= self.format_version)
+            .ok_or(PayloadError::UnknownKind)?;
         let mut header = Reader::new(self.header);
         let clock = Hlc::from_u64(header.u64()?);
         let manifest_version = header.u32()?;
@@ -846,11 +900,24 @@ impl<'a> Envelope<'a> {
                 }))
             }
             OperationKind::Acknowledgement => HeaderPayload::Complete(Content::Acknowledgement),
+            OperationKind::Authorization => {
+                HeaderPayload::Authorization(header.array::<DIGEST_BYTES>()?)
+            }
         };
         header.finish()?;
         let content = match payload {
             HeaderPayload::Changes(changes) => {
                 Content::Changes(attach_values(changes, self.body).map_err(PayloadError::Body)?)
+            }
+            HeaderPayload::Authorization(hash) => {
+                if entry_hash(self.body) != hash {
+                    return Err(PayloadError::Body(CodecError::Malformed(
+                        "authorization entry hash",
+                    )));
+                }
+                let record = AuthorizationRecord::decode(self.body)
+                    .map_err(|error| PayloadError::Invalid(error.into()))?;
+                Content::Authorization(Box::new(record))
             }
             HeaderPayload::Complete(content) => {
                 expect_empty_body(self.body).map_err(PayloadError::Body)?;
@@ -892,6 +959,8 @@ impl<'a> Envelope<'a> {
 /// The kind payload of a decoded header, before the body is attached.
 enum HeaderPayload {
     Changes(Vec<ChangeHeader>),
+    /// The signed entry hash of the authorization record in the body.
+    Authorization(Digest32),
     Complete(Content),
 }
 

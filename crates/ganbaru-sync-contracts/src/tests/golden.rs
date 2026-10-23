@@ -1,4 +1,5 @@
-//! Golden vectors freeze the version 1 and 2 encodings. Changing any byte breaks every stored
+//! Golden vectors freeze the operation encodings of every format version, and the charter,
+//! certificate, proposal, and recovery encodings beside them. Changing any byte breaks every stored
 //! log, so a mismatch means the format changed by accident. Set `GANBARU_SYNC_BLESS_VECTORS=1`
 //! only when introducing a new format version deliberately.
 
@@ -31,6 +32,19 @@ fn expected_vector(name: &str) -> String {
         .unwrap_or_else(|error| panic!("golden vector {name} is missing: {error}"))
         .trim()
         .to_string()
+}
+
+/// Compares `actual` text with the golden vector `name`, or rewrites the vector when blessing.
+pub(super) fn assert_vector(name: &str, actual: &str) {
+    if std::env::var_os(BLESS_VARIABLE).is_some() {
+        std::fs::write(vector_path(name), format!("{actual}\n")).unwrap();
+        return;
+    }
+    assert_eq!(
+        actual,
+        expected_vector(name),
+        "golden vector {name} changed; actual:\n{actual}"
+    );
 }
 
 #[test]
@@ -212,11 +226,23 @@ fn newer_formats_and_unknown_kinds_verify_but_are_held() {
     assert!(envelope.verify(&public_key));
     assert_eq!(envelope.operation(), Err(PayloadError::NewerFormat));
 
-    let authorization = signed_envelope(1, 4, b"authorization", b"");
-    let envelope = Envelope::decode(&authorization).unwrap();
+    let unknown = OperationKind::Authorization.as_u8() + 1;
+    let future_kind = signed_envelope(FORMAT_VERSION, unknown, b"future kind", b"");
+    let envelope = Envelope::decode(&future_kind).unwrap();
     assert!(envelope.verify(&public_key));
     assert_eq!(envelope.operation(), Err(PayloadError::UnknownKind));
     assert_eq!(newer.len(), ENVELOPE_OVERHEAD + 13 + 11);
+}
+
+#[test]
+fn a_kind_is_unknown_in_formats_older_than_the_one_that_defines_it() {
+    let kind = OperationKind::Authorization;
+    for format_version in BASE_FORMAT_VERSION..kind.minimum_format_version() {
+        let envelope = signed_envelope(format_version, kind.as_u8(), b"authorization", b"");
+        let envelope = Envelope::decode(&envelope).unwrap();
+        assert!(envelope.verify(&writer_key().public_key()));
+        assert_eq!(envelope.operation(), Err(PayloadError::UnknownKind));
+    }
 }
 
 #[test]

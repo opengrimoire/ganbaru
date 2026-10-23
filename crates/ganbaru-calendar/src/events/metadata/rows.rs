@@ -411,3 +411,116 @@ stored_row!(Diagnostic, "icalendar_object_diagnostics", "object_id IN (SELECT va
     message: String,
     sort_order: i64,
 });
+
+#[cfg(test)]
+mod tests {
+    use super::MusicAssignment;
+
+    async fn pool() -> sqlx::SqlitePool {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        ganbaru_db::test_support::apply_migrated_template(&pool)
+            .await
+            .unwrap();
+        pool
+    }
+
+    fn assignment(owner_kind: &str, phase: &str, behavior: &str) -> MusicAssignment {
+        MusicAssignment {
+            owner_kind: owner_kind.into(),
+            owner_id: "source".into(),
+            phase: phase.into(),
+            behavior: behavior.into(),
+            playlist_id: None,
+            provenance_kind: "explicit".into(),
+            provenance_id: None,
+            updated_at_ms: 1,
+            version: 1,
+            soundscape_behavior: "inherit".into(),
+            soundscape_preset_id: None,
+        }
+    }
+
+    async fn stored(pool: &sqlx::SqlitePool) -> Vec<(String, String, String)> {
+        sqlx::query_as(
+            "SELECT owner_kind, phase, behavior FROM music_context_assignments
+             WHERE owner_id = 'source' ORDER BY owner_kind, phase",
+        )
+        .fetch_all(pool)
+        .await
+        .unwrap()
+    }
+
+    #[test]
+    fn removing_stale_assignments_keeps_listed_phases_and_other_owner_kinds() {
+        crate::test_support::block_on(async {
+            let pool = pool().await;
+            let mut connection = pool.acquire().await.unwrap();
+            let kept = [
+                assignment("event-snapshot", "focus", "keep-current-music"),
+                assignment("event-override", "short-break", "pause-music"),
+            ];
+            for row in kept.iter().chain(&[
+                assignment("event-override", "focus", "pause-music"),
+                assignment("event-snapshot", "short-break", "pause-music"),
+                assignment("project-default", "long-break", "pause-music"),
+            ]) {
+                row.upsert(&mut connection).await.unwrap();
+            }
+
+            MusicAssignment::remove_stale(&mut connection, "source", &kept)
+                .await
+                .unwrap();
+            drop(connection);
+            let expected = |kind: &str, phase: &str, behavior: &str| {
+                (kind.to_string(), phase.to_string(), behavior.to_string())
+            };
+            assert_eq!(
+                stored(&pool).await,
+                vec![
+                    expected("event-override", "short-break", "pause-music"),
+                    expected("event-snapshot", "focus", "keep-current-music"),
+                    expected("project-default", "long-break", "pause-music"),
+                ]
+            );
+
+            let mut connection = pool.acquire().await.unwrap();
+            MusicAssignment::remove_stale(&mut connection, "source", &[])
+                .await
+                .unwrap();
+            drop(connection);
+            assert_eq!(
+                stored(&pool).await,
+                vec![expected("project-default", "long-break", "pause-music")]
+            );
+        });
+    }
+
+    #[test]
+    fn upserting_a_changed_assignment_updates_it_in_place_and_keeps_its_key() {
+        crate::test_support::block_on(async {
+            let pool = pool().await;
+            let mut connection = pool.acquire().await.unwrap();
+            let mut row = assignment("event-snapshot", "focus", "keep-current-music");
+            row.upsert(&mut connection).await.unwrap();
+            let key: String = sqlx::query_scalar(
+                "SELECT sync_key FROM music_context_assignments WHERE owner_id = 'source'",
+            )
+            .fetch_one(&mut *connection)
+            .await
+            .unwrap();
+            row.behavior = "pause-music".into();
+            row.upsert(&mut connection).await.unwrap();
+            let after: (String, String) = sqlx::query_as(
+                "SELECT behavior, sync_key FROM music_context_assignments WHERE owner_id = 'source'",
+            )
+            .fetch_one(&mut *connection)
+            .await
+            .unwrap();
+            assert_eq!(after, ("pause-music".to_string(), key));
+        });
+    }
+}

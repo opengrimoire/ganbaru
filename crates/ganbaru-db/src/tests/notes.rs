@@ -1,5 +1,5 @@
 use super::helpers::migrated_memory_pool;
-use sqlx::{AssertSqlSafe, Row};
+use sqlx::AssertSqlSafe;
 
 #[test]
 fn schema_creates_normalized_notes_database_tables() {
@@ -286,19 +286,20 @@ fn schema_validates_project_notes_default_open_mode() {
 fn schema_creates_notes_local_user_identity() {
     super::block_on(async {
         let pool = migrated_memory_pool().await;
-        let row = sqlx::query(
-            "SELECT id, display_name
-             FROM notes_local_users
-             ORDER BY created_time ASC, id ASC
-             LIMIT 1",
+        let id: String = sqlx::query_scalar(
+            "SELECT id FROM notes_local_users ORDER BY created_time ASC, id ASC LIMIT 1",
         )
         .fetch_one(&pool)
         .await
         .unwrap();
-        let id: String = row.try_get("id").unwrap();
-        let display_name: String = row.try_get("display_name").unwrap();
         assert_ne!(id, "local-user");
-        assert_eq!(display_name, "You");
+        let columns: Vec<String> = sqlx::query_scalar(
+            "SELECT name FROM pragma_table_info('notes_local_users') ORDER BY cid",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(columns, ["id", "created_time"]);
 
         let created_by_column: Option<i64> = sqlx::query_scalar(
             "SELECT 1
@@ -353,7 +354,8 @@ fn schema_creates_notes_comment_reactions_and_notification_preferences() {
              VALUES ('page-a', 'workspace', 'Inbox', '{}')",
             "INSERT INTO notes_comment_threads (id, page_id, parent_type, parent_page_id)
              VALUES ('thread-a', 'page-a', 'page_id', 'page-a')",
-            "INSERT INTO notes_comments (id, thread_id, rich_text) VALUES ('comment-a', 'thread-a', '[]')",
+            "INSERT INTO notes_comments (id, thread_id, rich_text, created_by)
+             VALUES ('comment-a', 'thread-a', '[]', 'person-a')",
         ] {
             sqlx::query(statement).execute(&pool).await.unwrap();
         }
@@ -610,9 +612,13 @@ fn schema_creates_notes_suggestions() {
                 .unwrap();
         assert_eq!(exists, Some(1));
 
-        for column in ["created_by", "accepted_by", "rejected_by"] {
-            let user_fk: Option<i64> = sqlx::query_scalar(
-                "SELECT 1
+        for (column, action) in [
+            ("created_by", "CASCADE"),
+            ("accepted_by", "SET NULL"),
+            ("rejected_by", "SET NULL"),
+        ] {
+            let user_fk: Option<String> = sqlx::query_scalar(
+                "SELECT on_delete
                  FROM pragma_foreign_key_list('notes_suggestions')
                  WHERE \"table\" = 'notes_local_users'
                    AND \"from\" = ?",
@@ -622,8 +628,8 @@ fn schema_creates_notes_suggestions() {
             .await
             .unwrap();
             assert_eq!(
-                user_fk,
-                Some(1),
+                user_fk.as_deref(),
+                Some(action),
                 "{column} should reference notes_local_users"
             );
         }
@@ -701,165 +707,6 @@ fn schema_creates_notes_suggestions() {
             .await
             .is_err()
         );
-    });
-}
-
-#[test]
-fn schema_creates_notes_collaboration_operations() {
-    super::block_on(async {
-        let pool = migrated_memory_pool().await;
-        let exists: Option<i64> =
-            sqlx::query_scalar("SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = ?")
-                .bind("notes_collaboration_operations")
-                .fetch_optional(&pool)
-                .await
-                .unwrap();
-        assert_eq!(exists, Some(1));
-
-        for table in ["notes_local_users"] {
-            let fk: Option<i64> = sqlx::query_scalar(
-                "SELECT 1
-                 FROM pragma_foreign_key_list('notes_collaboration_operations')
-                 WHERE \"table\" = ?",
-            )
-            .bind(table)
-            .fetch_optional(&pool)
-            .await
-            .unwrap();
-            assert_eq!(fk, Some(1), "{table} should be referenced");
-        }
-        for table in ["notes_pages", "notes_blocks"] {
-            let fk: Option<i64> = sqlx::query_scalar(
-                "SELECT 1
-                 FROM pragma_foreign_key_list('notes_collaboration_operations')
-                 WHERE \"table\" = ?",
-            )
-            .bind(table)
-            .fetch_optional(&pool)
-            .await
-            .unwrap();
-            assert_eq!(fk, None, "{table} must not delete append-only operations");
-        }
-
-        sqlx::query(
-            "INSERT INTO notes_pages (id, parent_type, title, properties)
-             VALUES ('page-a', 'workspace', 'Inbox', '{}')",
-        )
-        .execute(&pool)
-        .await
-        .unwrap();
-        sqlx::query(
-            "INSERT INTO notes_blocks (
-                id,
-                page_id,
-                parent_type,
-                parent_page_id,
-                type,
-                payload,
-                plain_text,
-                sort_order
-             )
-             VALUES (
-                'block-a',
-                'page-a',
-                'page_id',
-                'page-a',
-                'paragraph',
-                json_object('rich_text', json_array()),
-                'Original',
-                1
-             )",
-        )
-        .execute(&pool)
-        .await
-        .unwrap();
-        let user_id: String = sqlx::query_scalar(
-            "SELECT id FROM notes_local_users ORDER BY created_time ASC, id ASC LIMIT 1",
-        )
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-        sqlx::query(
-            "INSERT INTO notes_collaboration_operations (
-                id,
-                entity_type,
-                entity_id,
-                operation_type,
-                page_id,
-                block_id,
-                actor_id,
-                actor_display_name,
-                base_version,
-                entity_version,
-                conflict_policy,
-                payload
-             )
-             VALUES (
-                'operation-a',
-                'suggestion',
-                'suggestion-a',
-                'suggestion_create',
-                'page-a',
-                'block-a',
-                ?,
-                json_object('type', 'user', 'resolved_name', 'You'),
-                0,
-                1,
-                'append_only',
-                json_object('schema_version', 1)
-             )",
-        )
-        .bind(&user_id)
-        .execute(&pool)
-        .await
-        .unwrap();
-
-        assert!(
-            sqlx::query(
-                "INSERT INTO notes_collaboration_operations (
-                id,
-                entity_type,
-                entity_id,
-                operation_type,
-                page_id,
-                actor_id,
-                actor_display_name,
-                base_version,
-                entity_version,
-                conflict_policy,
-                payload
-             )
-             VALUES (
-                'operation-b',
-                'suggestion',
-                'suggestion-b',
-                'suggestion_accept',
-                'page-a',
-                ?,
-                json_object('type', 'user', 'resolved_name', 'You'),
-                0,
-                1,
-                'append_only',
-                json_object('schema_version', 1)
-             )",
-            )
-            .bind(&user_id)
-            .execute(&pool)
-            .await
-            .is_err()
-        );
-
-        sqlx::query("DELETE FROM notes_pages WHERE id = 'page-a'")
-            .execute(&pool)
-            .await
-            .unwrap();
-        let retained_operations: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM notes_collaboration_operations WHERE id = 'operation-a'",
-        )
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-        assert_eq!(retained_operations, 1);
     });
 }
 
@@ -1783,23 +1630,6 @@ fn schema_creates_strict_project_notes_history_storage() {
         .await
         .unwrap();
         assert_eq!(deadline_index_exists, 1);
-
-        let operation_foreign_keys: Vec<String> = sqlx::query_scalar(
-            "SELECT \"table\" FROM pragma_foreign_key_list('notes_collaboration_operations')",
-        )
-        .fetch_all(&pool)
-        .await
-        .unwrap();
-        assert!(
-            !operation_foreign_keys
-                .iter()
-                .any(|table| table == "notes_pages")
-        );
-        assert!(
-            !operation_foreign_keys
-                .iter()
-                .any(|table| table == "notes_blocks")
-        );
     });
 }
 

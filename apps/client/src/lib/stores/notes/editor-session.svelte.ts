@@ -2100,7 +2100,7 @@ export function createNotesEditorStore(
     ensureOptionalSubsystem,
     setPagePanelSubsystemOpen,
     loadLocalUser: collaborationController.loadLocalUser,
-    updateLocalUserDisplayName: collaborationController.updateLocalUserDisplayName,
+    refreshLocalAuthor: collaborationController.refreshLocalAuthor,
     loadPageHistorySettings: pageHistoryController.loadSettings,
     updatePageHistoryRetention: pageHistoryController.updateRetention,
     reloadPageHistory: pageHistoryController.reloadSnapshots,

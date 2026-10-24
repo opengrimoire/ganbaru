@@ -529,7 +529,6 @@ const VAULT_SKELETON_DIRECTORIES: &[&str] = &[
     "reports",
     "assets",
     "templates",
-    ".yjs",
 ];
 
 fn ensure_vault_skeleton(path: &Path) -> Result<(), String> {
@@ -1316,7 +1315,7 @@ mod tests {
         assert!(path.join(APP_SQLITE_FILE).exists());
         assert!(path.join("notes").join("daily").is_dir());
         assert!(path.join("diary").join("morning").is_dir());
-        assert!(path.join(".yjs").is_dir());
+        assert!(!path.join(".yjs").exists());
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;

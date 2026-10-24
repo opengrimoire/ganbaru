@@ -60,7 +60,7 @@ pub use write_requests::{
     NoteDataSourceTimelineViewUpdate, NoteDataSourceViewWindowRequest, NoteDatabaseCreate,
     NoteDatabaseDuplicate, NoteDatabaseRename, NoteDatabaseViewDuplicate, NoteDatabaseViewRename,
     NoteDuplicateBlock, NoteDuplicateBlocks, NoteDuplicatePage, NoteDuplicatedBlockId,
-    NoteFolderCreate, NoteFolderUpdate, NoteLinkedDatabaseCreate, NoteLocalUserUpdate,
+    NoteFolderCreate, NoteFolderUpdate, NoteLinkedDatabaseCreate,
     NoteMentionNotificationDeliveryUpdate, NoteMoveBlock, NoteMoveBlocks, NoteMovePage,
     NotePageCreate, NotePageHistoryCopyBlocks, NotePageHistorySettingsUpdate,
     NotePageTemplateApply, NotePageTemplateCreateFromPage, NotePageTemplateDuplicate,

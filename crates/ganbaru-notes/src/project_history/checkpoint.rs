@@ -114,7 +114,7 @@ where
             .map_err(|e| format!("commit disabled Notes project history cleanup: {e}"))?;
         return Ok(None);
     }
-    let local_user = if actor_id.is_none() || actor_display_name.is_none() {
+    let local_user = if actor_id.is_none() {
         Some(local_user::current_local_user_tx(&mut tx).await?)
     } else {
         None
@@ -122,8 +122,12 @@ where
     let resolved_actor_id = actor_id
         .or_else(|| local_user.as_ref().map(|user| user.id.as_str()))
         .ok_or_else(|| "Notes history actor is unavailable".to_string())?;
+    let local_author_name = match actor_display_name {
+        Some(_) => None,
+        None => Some(local_user::local_author_name(&mut *tx).await?),
+    };
     let resolved_display_name = actor_display_name
-        .or_else(|| local_user.as_ref().map(|user| user.display_name.as_str()))
+        .or(local_author_name.as_deref())
         .ok_or_else(|| "Notes history display name is unavailable".to_string())?;
     let (manifest_hash, bundle_hashes, manifest_bytes) =
         store_graph_tx(&mut tx, &project_id, &graph).await?;

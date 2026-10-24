@@ -23,7 +23,8 @@ pub async fn mark_project_dirty_tx(
         return Ok(());
     }
     let local_user = local_user::current_local_user_tx(tx).await?;
-    let display_name = local_user::comment_display_name_json(&local_user.display_name);
+    let display_name =
+        local_user::comment_display_name_json(&local_user::local_author_name(&mut **tx).await?);
     sqlx::query(
         "INSERT INTO notes_project_history_dirty (
             project_id, first_dirty_at, last_dirty_at, actor_id,

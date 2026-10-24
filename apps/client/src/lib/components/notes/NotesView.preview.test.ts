@@ -80,7 +80,7 @@ vi.mock("$lib/api/notes", async (importOriginal) => ({
   listNotesComments: async () => [], listNotesSuggestions: async () => [], listNotesDataSources: backend.mentionSources,
   getNotesLocalUser: async (): Promise<NotesLocalUser> => ({
     object: "user", id: "local", display_name: "Local",
-    created_time: "2026-09-28T12:00:00Z", last_edited_time: "2026-09-28T12:00:00Z",
+    created_time: "2026-09-28T12:00:00Z",
   }),
   saveNotesUndoState: async () => undefined,
   clearNotesUndoState: async () => undefined,

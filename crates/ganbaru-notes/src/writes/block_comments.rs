@@ -90,7 +90,7 @@ pub(super) async fn duplicate_block_comment_threads(
                     String,
                     String,
                     String,
-                    String,
+                    Option<String>,
                     String,
                     Option<String>,
                     String,

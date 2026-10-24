@@ -79,7 +79,6 @@ describe("Notes block mention targets", () => {
         id: "user-1",
         display_name: "Alice",
         created_time: "2026-01-01T00:00:00Z",
-        last_edited_time: "2026-01-01T00:00:00Z",
       },
       dataSources: [],
       dataSourceRowPages: [firstPage, page("page-2", "Second")],

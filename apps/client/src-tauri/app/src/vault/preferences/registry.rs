@@ -504,6 +504,14 @@ mod tests {
     }
 
     #[test]
+    fn preferences_registry_names_the_notes_local_author_preference() {
+        let key = ganbaru_notes::local_user::PROFILE_DISPLAY_NAME_PREFERENCE_KEY;
+        let (spec, child) = portable_row(key).expect("Notes reads a registered preference");
+        assert_eq!((spec.path, child), (key, None));
+        assert!(spec.rule.accepts(&serde_json::json!("Alice")));
+    }
+
+    #[test]
     fn preferences_per_child_keys_stay_within_the_row_key_bound() {
         let spec = REGISTRY
             .iter()

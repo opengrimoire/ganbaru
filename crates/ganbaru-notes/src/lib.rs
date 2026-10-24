@@ -2,7 +2,6 @@
 
 pub mod assets;
 pub mod blocking;
-pub mod collaboration_operations;
 pub mod comments;
 pub mod data_sources;
 pub mod databases;

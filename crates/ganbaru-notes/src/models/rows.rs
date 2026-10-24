@@ -154,9 +154,7 @@ pub struct NotePageHistorySnapshotRow {
 #[derive(Clone, Serialize, sqlx::FromRow)]
 pub struct NoteLocalUserRow {
     pub id: String,
-    pub display_name: String,
     pub created_time: String,
-    pub last_edited_time: String,
 }
 
 #[derive(Serialize, sqlx::FromRow)]
@@ -296,7 +294,6 @@ pub struct NoteCommentThreadRow {
     pub status: String,
     pub resolved_at: Option<String>,
     pub resolved_by: Option<String>,
-    pub sync_version: i64,
     pub created_time: String,
     pub last_edited_time: String,
 }
@@ -322,10 +319,9 @@ pub struct NoteCommentRow {
     pub rich_text: String,
     pub plain_text: String,
     pub created_by: String,
-    pub display_name: String,
+    pub display_name: Option<String>,
     pub attachments: String,
     pub deleted_at: Option<String>,
-    pub sync_version: i64,
     pub created_time: String,
     pub last_edited_time: String,
 }
@@ -336,7 +332,7 @@ pub struct NoteSuggestionRow {
     pub page_id: String,
     pub block_id: String,
     pub created_by: String,
-    pub display_name: String,
+    pub display_name: Option<String>,
     pub status: String,
     pub range_start: i64,
     pub range_end: i64,
@@ -348,7 +344,6 @@ pub struct NoteSuggestionRow {
     pub accepted_by: Option<String>,
     pub rejected_at: Option<String>,
     pub rejected_by: Option<String>,
-    pub sync_version: i64,
     pub created_time: String,
     pub last_edited_time: String,
 }

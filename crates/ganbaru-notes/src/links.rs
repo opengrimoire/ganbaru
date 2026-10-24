@@ -487,7 +487,6 @@ async fn resolve_comment_link_tx(
     sqlx::query(
         "UPDATE notes_comments
          SET rich_text = ?,
-             sync_version = sync_version + 1,
              last_edited_time = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
          WHERE id = ?",
     )
@@ -498,8 +497,7 @@ async fn resolve_comment_link_tx(
     .map_err(|e| format!("resolve notes comment link: {e}"))?;
     sqlx::query(
         "UPDATE notes_comment_threads
-         SET sync_version = sync_version + 1,
-             last_edited_time = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+         SET last_edited_time = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
          WHERE id = ?",
     )
     .bind(&comment.thread_id)

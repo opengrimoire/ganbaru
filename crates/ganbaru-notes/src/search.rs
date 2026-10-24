@@ -498,9 +498,14 @@ async fn append_comment_entries(
     .fetch_all(pool)
     .await
     .map_err(|e| format!("load notes comments for search index: {e}"))?;
+    let local_author_name = crate::local_user::local_author_name_from_pool(pool).await?;
     for row in rows {
         let attachment_text = indexable_json_text(&row.attachments, "comment attachments")?;
-        let display_name_text = indexable_json_text(&row.display_name, "comment display name")?;
+        let display_name = crate::local_user::resolved_display_name_json(
+            row.display_name.as_deref(),
+            &local_author_name,
+        );
+        let display_name_text = indexable_json_text(&display_name, "comment display name")?;
         entries.push(SearchIndexEntry {
             id: format!("comment:{}", row.id),
             source_type: "comment".to_string(),
@@ -662,6 +667,7 @@ async fn search_candidate(
                 target.status,
                 target.anchor,
                 snippet,
+                &crate::local_user::local_author_name_from_pool(pool).await?,
             )?,
         }));
     }
@@ -733,7 +739,7 @@ async fn load_block_row(pool: &SqlitePool, block_id: &str) -> Result<NoteBlockRo
 async fn load_comment_row(pool: &SqlitePool, comment_id: &str) -> Result<NoteCommentRow, String> {
     sqlx::query_as::<_, NoteCommentRow>(
         "SELECT id, thread_id, rich_text, plain_text, created_by, display_name, attachments,
-                deleted_at, sync_version, created_time, last_edited_time
+                deleted_at, created_time, last_edited_time
          FROM notes_comments WHERE id = ?",
     )
     .bind(comment_id)
@@ -1094,7 +1100,7 @@ struct CommentThreadSearchTargetRow {
 struct CommentIndexRow {
     id: String,
     plain_text: String,
-    display_name: String,
+    display_name: Option<String>,
     attachments: String,
     page_id: String,
     parent_block_id: Option<String>,

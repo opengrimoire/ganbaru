@@ -487,6 +487,7 @@ async fn load_page_comments(
         .fetch_all(pool)
         .await
         .map_err(|e| format!("load notes comment threads for HTML export: {e}"))?;
+    let local_author_name = crate::local_user::local_author_name_from_pool(pool).await?;
     let mut threads = Vec::new();
     for thread in thread_rows {
         let anchor = sqlx::query_as::<_, NoteCommentAnchorRow>(
@@ -514,7 +515,10 @@ async fn load_page_comments(
             .map(|row| ExportComment {
                 id: row.id,
                 rich_text: row.rich_text,
-                author_name: display_name(&row.display_name),
+                author_name: display_name(Some(&crate::local_user::resolved_display_name_json(
+                    row.display_name.as_deref(),
+                    &local_author_name,
+                ))),
             })
             .collect();
         threads.push(ExportCommentThread {
@@ -878,9 +882,8 @@ fn block_key(block_id: &str) -> String {
     format!("block:{block_id}")
 }
 
-fn display_name(raw: &str) -> String {
-    serde_json::from_str::<Value>(raw)
-        .ok()
+fn display_name(raw: Option<&str>) -> String {
+    raw.and_then(|raw| serde_json::from_str::<Value>(raw).ok())
         .and_then(|value| {
             value
                 .get("resolved_name")

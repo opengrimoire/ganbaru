@@ -664,11 +664,6 @@ pub struct NoteMentionNotificationDeliveryUpdate {
     pub ids: Vec<String>,
 }
 
-#[derive(Deserialize)]
-pub struct NoteLocalUserUpdate {
-    pub display_name: String,
-}
-
 #[derive(Deserialize, Serialize)]
 pub struct NoteDatabaseCreate {
     pub id: String,

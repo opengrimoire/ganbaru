@@ -179,7 +179,8 @@ async fn desired(
         }
         // Excluding a forked branch the anchor already confirmed can leave a group without a
         // version, since nothing kept the version that branch displaced. The domain row keeps
-        // its value until an operation writes the group again, as the re-sealed copy does.
+        // its value until an operation writes the group again, as the anchor's republished
+        // value does.
         let Some(version) = winners.get(&group.id) else {
             continue;
         };

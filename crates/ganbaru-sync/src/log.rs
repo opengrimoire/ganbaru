@@ -215,7 +215,7 @@ pub(crate) async fn load_context(
 }
 
 /// Contexts of operations, cached for one engine transaction.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub(crate) struct ContextCache {
     contexts: HashMap<(WriterId, Seq), VersionVector>,
 }

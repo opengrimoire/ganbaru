@@ -8,7 +8,7 @@ use std::sync::{Mutex, OnceLock};
 use ganbaru_contacts::PersonKeyPair;
 use ganbaru_sync_contracts::{
     AdminKeyPair, ChangeAction, Charter, Content, DeviceKeyPair, DeviceKind, DeviceRole, Enroll,
-    Entry, Envelope, GroupId, Proposal, ProposalRejection, Remove, SignedCertificate,
+    Entry, Envelope, GroupId, Handover, Proposal, ProposalRejection, Remove, SignedCertificate,
     SignedCharter, SignedProposal, SpaceId, TableId, Value, VersionVector, WriterCertificate,
     WriterId, WriterKeyPair, sign_certificate, sign_charter, sign_proposal,
 };
@@ -126,6 +126,14 @@ fn anchor_device_key(person: &PersonKeyPair) -> DeviceKeyPair {
 pub(super) fn anchor_admin(person: &PersonKeyPair) -> AdminKeyPair {
     AdminKeyPair::from_seed(&key_seed(person, ADMIN_PURPOSE, ANCHOR_KEY_INDEX))
         .expect("test admin seed should be valid")
+}
+
+/// An admin key for replica device `index`.
+pub(super) fn device_admin(index: usize) -> AdminKeyPair {
+    let seed = [u8::try_from(index)
+        .expect("test device indexes fit a byte")
+        .wrapping_add(100); 32];
+    AdminKeyPair::from_seed(&seed).expect("test admin seed should be valid")
 }
 
 /// The recovery admin key of `person`'s spaces.
@@ -480,6 +488,37 @@ impl Replica {
             .await
     }
 
+    /// A handover of the anchor to this replica's device that continues its selected head,
+    /// signed by `admin` at the local clock.
+    pub(super) async fn handover_proposal(&mut self, admin: &AdminKeyPair) -> SignedProposal {
+        let (epoch, revision, hash) = super::authorization::head(self).await;
+        let entry = Entry::Handover(Handover {
+            new_anchor_device_id: self.device_id.clone(),
+            epoch: epoch + 1,
+            continues_from_revision: revision,
+            continues_from_hash: hash,
+        });
+        proposal(self.ctx.space, admin, self.now_ms, entry)
+    }
+
+    /// Seals a signed handover as the new anchor, with the old anchor's stored vector when known.
+    pub(super) async fn seal_handover(
+        &mut self,
+        signed: &SignedProposal,
+        old_anchor_vector: Option<VersionVector>,
+    ) -> SyncResult<Result<u64, ProposalRejection>> {
+        self.engine
+            .seal_handover(
+                &mut self.conn,
+                &self.ctx,
+                signed,
+                old_anchor_vector,
+                &mut self.identity.local(),
+                self.now_ms,
+            )
+            .await
+    }
+
     /// Removes `device_id` from the space as the anchor.
     pub(super) async fn remove(&mut self, device_id: &str) -> SyncResult<u64> {
         let entry = Entry::Remove(Remove {
@@ -576,8 +615,9 @@ impl Replica {
             let frozen = report.local_writer_frozen;
             let more = report.more;
             reports.push(report);
+            let resealed = self.reseal_own_forks().await;
             if frozen && !self.device_removed().await {
-                if !self.reseal_own_forks().await {
+                if !resealed {
                     self.rotate();
                 }
             } else if !more {
@@ -587,8 +627,9 @@ impl Replica {
         panic!("replica {} never finished applying", self.index);
     }
 
-    /// Re-seals every forked chain of this device that this installation still holds, each with
-    /// a new writer, the way the app does. Returns whether there was one.
+    /// Re-seals every forked chain of this device that this installation still holds with a
+    /// new writer, rotating away from a forked local writer first, the way the app does after
+    /// each apply. Returns whether there was one.
     pub(super) async fn reseal_own_forks(&mut self) -> bool {
         let forks = self
             .engine
@@ -596,6 +637,8 @@ impl Replica {
             .await
             .unwrap();
         for (old, keep_through) in &forks {
+            // Each re-seal needs a writer that sealed nothing but its genesis, and evidence of
+            // an earlier writer's fork can arrive after its successor sealed.
             self.rotate();
             self.engine
                 .reseal_fork(
@@ -612,11 +655,21 @@ impl Replica {
         !forks.is_empty()
     }
 
-    /// Seals, rotating once when the local writer is no longer active.
+    /// Replaces a local writer that is no longer active: re-seals the forked chains this
+    /// installation still holds, each with a new writer, or else rotates.
+    pub(super) async fn recover_inactive(&mut self) {
+        let before = self.writer();
+        self.reseal_own_forks().await;
+        if self.writer() == before {
+            self.rotate();
+        }
+    }
+
+    /// Seals, recovering once when the local writer is no longer active.
     pub(super) async fn seal_rotating(&mut self) -> SyncResult<SealReport> {
         match self.seal().await {
             Err(crate::SyncError::WriterInactive(_)) => {
-                self.rotate();
+                self.recover_inactive().await;
                 self.seal().await
             }
             other => other,
@@ -1183,6 +1236,7 @@ const ENGINE_DUMPED: &[(&str, &[&str])] = &[
     ("sync_auth_entries", &[]),
     ("sync_devices", &[]),
     ("sync_late_changes", &[]),
+    ("sync_row_creations", &[]),
 ];
 
 pub(super) fn device_id(index: usize) -> String {

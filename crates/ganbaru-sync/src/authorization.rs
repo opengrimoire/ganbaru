@@ -20,7 +20,7 @@ use ganbaru_sync_contracts::bounds::DISCOVERY_KEY_BYTES;
 use ganbaru_sync_contracts::{
     AdminPublicKey, AuthorizationRecord, Content, DeviceKind, DevicePublicKey, DeviceRole,
     Digest32, Entry, Envelope, ProposalRejection, ResolveLate, Seq, Sequencing, SetRole,
-    SignedCharter, SignedProposal, SpaceId, WriterId,
+    SignedCharter, SignedProposal, SpaceId, VersionVector, WriterId,
 };
 use sqlx::{Connection, Row, SqliteConnection};
 
@@ -421,6 +421,10 @@ async fn load_nodes(conn: &mut SqliteConnection, space: SpaceId) -> SyncResult<V
     Ok(nodes)
 }
 
+/// Readiness revision of a space whose stored chains reach a freeze: every revision, kept within
+/// the stored integer range.
+const UNBOUNDED_REVISION: u64 = i64::MAX.unsigned_abs();
+
 /// Selects the chain from the charter through the stored entries, or `None` without a charter.
 pub(crate) async fn select(
     conn: &mut SqliteConnection,
@@ -450,6 +454,18 @@ pub(crate) async fn select(
     }];
     while let Some(selection) = stack.pop() {
         reachable = reachable.max(selection.state.revision);
+        // Copies of a forked anchor writer may carry entries past the revision its epoch froze
+        // at, which no replica keeps once the fork is excluded. An author that applied one
+        // before the fork was found must not wait for it, so a chain that reaches a freeze
+        // reaches every revision. Each operation's device is still checked against the selected
+        // chain when it applies.
+        if selection
+            .state
+            .frozen_at
+            .is_some_and(|frozen| selection.state.revision >= frozen)
+        {
+            reachable = UNBOUNDED_REVISION;
+        }
         let valid: Vec<&Node> = children
             .get(&selection.state.entry_hash)
             .into_iter()
@@ -481,7 +497,8 @@ pub(crate) async fn select(
 /// This guarantees that the receiver stored every entry the author had applied when it sealed
 /// the operation, not that the selected chain covers them: a superseded chain can satisfy it.
 /// Requiring the selected chain instead would leave an operation sealed against a superseded
-/// entry waiting forever.
+/// entry waiting forever. Once a stored chain reaches the revision a fork froze its epoch at,
+/// every revision is reachable, since the forked copies' later entries are kept nowhere.
 pub(crate) async fn readiness_revision(
     conn: &mut SqliteConnection,
     space: SpaceId,
@@ -799,14 +816,60 @@ impl Engine {
     /// why the proposal was rejected; a proposal already in the selected chain returns its
     /// revision without sealing again. A removal takes `discovery_key` as the rotated key.
     ///
-    /// This build sequences `enroll`, `remove`, `set_role`, and `resolve_late`; handovers and
-    /// unknown kinds are rejected as unsupported.
+    /// This sequences `enroll`, `remove`, `set_role`, and `resolve_late`; handovers go through
+    /// [`Self::seal_handover`] and unknown kinds are rejected as unsupported.
     pub async fn sequence_proposal(
         &self,
         conn: &mut SqliteConnection,
         ctx: &SpaceContext,
         proposal: &SignedProposal,
         discovery_key: [u8; DISCOVERY_KEY_BYTES],
+        writer: &mut LocalWriter<'_>,
+        now_ms: u64,
+    ) -> SyncResult<Result<u64, ProposalRejection>> {
+        self.sequence(
+            conn,
+            ctx,
+            proposal,
+            Ordering::Anchor { discovery_key },
+            writer,
+            now_ms,
+        )
+        .await
+    }
+
+    /// Seals an admin-signed handover as the first entry of the epoch it opens, in the local
+    /// writer's chain. The local device must be the handover's new anchor and the selected head
+    /// the revision the handover continues from; `old_anchor_vector` is the old anchor's stored
+    /// vector when known. A frozen epoch does not stop a handover. Returns the revision, or why
+    /// the handover was rejected; one already in the selected chain returns its revision without
+    /// sealing again.
+    pub async fn seal_handover(
+        &self,
+        conn: &mut SqliteConnection,
+        ctx: &SpaceContext,
+        proposal: &SignedProposal,
+        old_anchor_vector: Option<VersionVector>,
+        writer: &mut LocalWriter<'_>,
+        now_ms: u64,
+    ) -> SyncResult<Result<u64, ProposalRejection>> {
+        self.sequence(
+            conn,
+            ctx,
+            proposal,
+            Ordering::Handover { old_anchor_vector },
+            writer,
+            now_ms,
+        )
+        .await
+    }
+
+    async fn sequence(
+        &self,
+        conn: &mut SqliteConnection,
+        ctx: &SpaceContext,
+        proposal: &SignedProposal,
+        ordering: Ordering,
         writer: &mut LocalWriter<'_>,
         now_ms: u64,
     ) -> SyncResult<Result<u64, ProposalRejection>> {
@@ -827,26 +890,54 @@ impl Engine {
             return Err(SyncError::ResetRequired("the space has no charter"));
         };
         let state = selection.state;
-        if writer.certificate.certificate.device_id != state.anchor_device_id {
-            return Ok(Err(ProposalRejection::NotAnchor));
-        }
-        let sequencing = match &proposal.proposal.entry {
-            Entry::Enroll(_) | Entry::SetRole(_) | Entry::ResolveLate(_) => Sequencing::Empty,
-            Entry::Remove(remove) => Sequencing::Removal {
-                cutoffs: removal_cutoffs(&mut tx, ctx.space, &remove.device_id).await?,
-                discovery_key,
-            },
-            Entry::Handover(_) | Entry::Unknown { .. } => {
+        let local_device = &writer.certificate.certificate.device_id;
+        let record = match (ordering, &proposal.proposal.entry) {
+            (Ordering::Anchor { .. }, _) if *local_device != state.anchor_device_id => {
+                return Ok(Err(ProposalRejection::NotAnchor));
+            }
+            (Ordering::Anchor { discovery_key }, entry) => {
+                let sequencing = match entry {
+                    Entry::Enroll(_) | Entry::SetRole(_) | Entry::ResolveLate(_) => {
+                        Sequencing::Empty
+                    }
+                    Entry::Remove(remove) => Sequencing::Removal {
+                        cutoffs: removal_cutoffs(&mut tx, ctx.space, &remove.device_id).await?,
+                        discovery_key,
+                    },
+                    Entry::Handover(_) | Entry::Unknown { .. } => {
+                        return Ok(Err(ProposalRejection::UnsupportedEntry));
+                    }
+                };
+                AuthorizationRecord {
+                    epoch: state.epoch,
+                    revision: state.revision + 1,
+                    previous_entry_hash: state.entry_hash,
+                    anchor_device_id: state.anchor_device_id.clone(),
+                    proposal: proposal.clone(),
+                    sequencing,
+                }
+            }
+            (Ordering::Handover { old_anchor_vector }, Entry::Handover(handover)) => {
+                if handover.new_anchor_device_id != *local_device {
+                    return Ok(Err(ProposalRejection::NotAnchor));
+                }
+                if handover.continues_from_revision != state.revision
+                    || handover.continues_from_hash != state.entry_hash
+                {
+                    return Ok(Err(ProposalRejection::HandoverConflict));
+                }
+                AuthorizationRecord {
+                    epoch: handover.epoch,
+                    revision: state.revision + 1,
+                    previous_entry_hash: state.entry_hash,
+                    anchor_device_id: handover.new_anchor_device_id.clone(),
+                    proposal: proposal.clone(),
+                    sequencing: Sequencing::Handover { old_anchor_vector },
+                }
+            }
+            (Ordering::Handover { .. }, _) => {
                 return Ok(Err(ProposalRejection::UnsupportedEntry));
             }
-        };
-        let record = AuthorizationRecord {
-            epoch: state.epoch,
-            revision: state.revision + 1,
-            previous_entry_hash: state.entry_hash,
-            anchor_device_id: state.anchor_device_id.clone(),
-            proposal: proposal.clone(),
-            sequencing,
         };
         if record.validate().is_err() {
             return Ok(Err(ProposalRejection::Malformed));
@@ -903,6 +994,18 @@ impl Engine {
         tx.commit().await?;
         Ok(Ok(revision))
     }
+}
+
+/// How a proposal is ordered into the log.
+enum Ordering {
+    /// By the selected anchor, in its epoch; a removal takes the rotated discovery key.
+    Anchor {
+        discovery_key: [u8; DISCOVERY_KEY_BYTES],
+    },
+    /// By the new anchor a handover names, as the first entry of the next epoch.
+    Handover {
+        old_anchor_vector: Option<VersionVector>,
+    },
 }
 
 /// Cutoffs of a removal of `device_id`: the stored sequence of each of its writers.

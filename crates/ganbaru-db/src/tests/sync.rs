@@ -333,3 +333,87 @@ fn fork_settlement_migration_leaves_stored_evidence_unsettled() {
             .expect_err("settlement is a flag");
     });
 }
+
+/// Last migration before rows record their creations.
+const BEFORE_ROW_CREATIONS: i64 = 20261023162759;
+
+#[test]
+fn row_creation_migration_keeps_existing_rows_created_and_cascades_creations() {
+    super::block_on(async {
+        let pool = memory_pool_migrated_through(BEFORE_ROW_CREATIONS).await;
+        sqlx::raw_sql(
+            "INSERT INTO sync_rows (table_id, row_key, state) VALUES (1, 'row-a', 'live');",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        run_migrations(&pool).await.unwrap();
+
+        let pending: i64 = sqlx::query_scalar("SELECT creation_pending FROM sync_rows")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(pending, 0, "an existing row stays visible");
+        sqlx::query("UPDATE sync_rows SET creation_pending = 2")
+            .execute(&pool)
+            .await
+            .expect_err("a pending creation is a flag");
+        sqlx::query(
+            "INSERT INTO sync_row_creations (table_id, row_key, writer_id, seq)
+             VALUES (1, 'row-a', zeroblob(16), 1)",
+        )
+        .execute(&pool)
+        .await
+        .expect("a published row records its creation");
+        sqlx::query(
+            "INSERT INTO sync_row_creations (table_id, row_key, writer_id, seq)
+             VALUES (1, 'row-b', zeroblob(16), 1)",
+        )
+        .execute(&pool)
+        .await
+        .expect_err("a creation names a published row");
+        sqlx::query("DELETE FROM sync_rows")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let left: i64 = sqlx::query_scalar("SELECT count(*) FROM sync_row_creations")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(left, 0, "creations go with their row");
+    });
+}
+
+#[test]
+fn stale_rows_and_restated_groups_keep_one_bounded_entry_each() {
+    super::block_on(async {
+        let pool = super::helpers::migrated_memory_pool().await;
+        let stale = "INSERT INTO sync_stale_rows (table_id, row_key) VALUES (1, 'row-a')";
+        sqlx::query(stale).execute(&pool).await.unwrap();
+        sqlx::query(stale)
+            .execute(&pool)
+            .await
+            .expect_err("a stale row is listed once");
+        sqlx::query("INSERT INTO sync_stale_rows (table_id, row_key) VALUES (0, 'row-b')")
+            .execute(&pool)
+            .await
+            .expect_err("a stale row names a replicated table");
+
+        let restated = "INSERT INTO sync_restated_groups (table_id, row_key, group_id, value_hash)
+                        VALUES (1, 'row-a', ?, zeroblob(?))";
+        for (group, length, accepted, reason) in [
+            (1, 32, true, "a restated group records its value hash"),
+            (1, 32, false, "a group is restated once"),
+            (64, 32, false, "a restated group is a field group"),
+            (2, 16, false, "a restated value hash is a digest"),
+        ] {
+            let result = sqlx::query(restated)
+                .bind(group)
+                .bind(length)
+                .execute(&pool)
+                .await;
+            assert_eq!(result.is_ok(), accepted, "{reason}");
+        }
+    });
+}

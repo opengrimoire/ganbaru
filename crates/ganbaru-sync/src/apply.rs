@@ -83,6 +83,8 @@ enum Outcome {
     Applied,
     /// An authorization entry applied; it may change which writers and revisions are ready.
     Authorized,
+    /// An authorization entry recorded whose selection excludes the operation carrying it.
+    Excluded,
     Held,
     /// It touches rows with local captures and no writer can seal them first.
     PendingCaptures,
@@ -380,20 +382,39 @@ impl Heads {
     }
 }
 
+/// How far an operation's context reaches past the operations other replicas keep of excluded
+/// writers.
+#[derive(Debug, Clone, Copy)]
+struct Reach {
+    /// Past the bound of a removal, see [`exclusion::beyond_bound`].
+    beyond: bool,
+    /// Past the shared prefix of a forked writer, see [`exclusion::past_fork`].
+    past_fork: bool,
+}
+
+/// Rows an operation writes or tombstones without knowing them.
+#[derive(Debug, Default)]
+struct Unknown<'a> {
+    /// Rows only an operation past the bound of a removal created, whose changes are skipped.
+    skipped: BTreeSet<(TableId, &'a str)>,
+    /// Rows only a forked branch created, whose changes apply to a row that waits for a
+    /// creation.
+    deferred: BTreeSet<(TableId, &'a str)>,
+}
+
 /// The rows of `changes` that are written or tombstoned without being known, or `None` when the
 /// operation must be held: a change names an unknown table, or writes an unknown row although
-/// its context reaches no operation past the bound of a removal (`beyond`, see
-/// [`exclusion::beyond_bound`]). A row is known when it is published, created earlier in the
-/// operation, or created by a late operation of a removed device. The returned rows were
-/// created only by an operation past the bound, so their changes are skipped.
+/// its context reaches no operation that other replicas drop. A row is known when it is
+/// published, created earlier in the operation, or created by a late operation of a removed
+/// device.
 async fn admitted_rows<'a>(
     engine: &Engine,
     conn: &mut SqliteConnection,
     changes: &'a [Change],
-    beyond: bool,
-) -> SyncResult<Option<BTreeSet<(TableId, &'a str)>>> {
+    reach: Reach,
+) -> SyncResult<Option<Unknown<'a>>> {
     let mut created: BTreeSet<(TableId, &str)> = BTreeSet::new();
-    let mut unknown = BTreeSet::new();
+    let mut unknown = Unknown::default();
     for change in changes {
         if engine.manifest().table(change.table).is_none() {
             return Ok(None);
@@ -410,15 +431,30 @@ async fn admitted_rows<'a>(
                         .is_none()
                     && !exclusion::created_late(conn, change.table, change.row.as_str()).await?
                 {
-                    if !beyond {
+                    if reach.beyond {
+                        unknown.skipped.insert(key);
+                    } else if reach.past_fork {
+                        unknown.deferred.insert(key);
+                    } else {
                         return Ok(None);
                     }
-                    unknown.insert(key);
                 }
             }
         }
     }
     Ok(Some(unknown))
+}
+
+/// Excludes fork branches and records the entries of excluded operations, either of which may
+/// select the chain again.
+async fn reselect(
+    engine: &Engine,
+    conn: &mut SqliteConnection,
+    ctx: &SpaceContext,
+    batch: &mut Batch,
+) -> SyncResult<()> {
+    fork::reconcile(engine, conn, ctx, batch).await?;
+    exclusion::admit_excluded_entries(engine, conn, ctx, batch).await
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -429,7 +465,7 @@ async fn apply_one(
     batch: &mut Batch,
     sealing: &mut Sealing<'_, '_, '_>,
     candidate: &mut Candidate,
-    (context, beyond): (&VersionVector, bool),
+    (context, reach): (&VersionVector, Reach),
     retention: &Retention,
     report: &mut ApplyReport,
 ) -> SyncResult<Outcome> {
@@ -446,7 +482,7 @@ async fn apply_one(
     match &operation.content {
         Content::Genesis(_) | Content::Acknowledgement => Ok(Outcome::Applied),
         Content::Changes(changes) => {
-            let Some(unknown) = admitted_rows(engine, conn, changes, beyond).await? else {
+            let Some(unknown) = admitted_rows(engine, conn, changes, reach).await? else {
                 return Ok(Outcome::Held);
             };
             // The rows it changes and the rows it names, so a reference never materializes to
@@ -462,8 +498,12 @@ async fn apply_one(
                 return Ok(Outcome::PendingCaptures);
             }
             for change in changes {
-                if unknown.contains(&(change.table, change.row.as_str())) {
+                let key = (change.table, change.row.as_str());
+                if unknown.skipped.contains(&key) {
                     continue;
+                }
+                if unknown.deferred.contains(&key) {
+                    merge::defer_creation(conn, change.table, change.row.as_str()).await?;
                 }
                 let table = engine
                     .manifest()
@@ -487,6 +527,25 @@ async fn apply_one(
             Ok(Outcome::Applied)
         }
         Content::Authorization(record) => {
+            // An entry may remove the local device or retire its writer, after which its
+            // captures never seal and every later call would roll back over them, so they seal
+            // first while the writer still can. Sealed, they become operations the entry
+            // excludes and their values late changes.
+            if sealing.slot.may_seal(conn, ctx).await? {
+                let tables = engine
+                    .manifest()
+                    .tables
+                    .iter()
+                    .map(|table| table.id)
+                    .collect();
+                let captured = seal::captured_in(conn, &tables).await?;
+                if !sealing
+                    .seal_rows(engine, conn, ctx, batch, captured)
+                    .await?
+                {
+                    return Ok(Outcome::PendingCaptures);
+                }
+            }
             apply_authorization(
                 engine,
                 conn,
@@ -529,16 +588,42 @@ async fn apply_authorization(
     if let Some(selection) = authorization::rederive(conn, ctx.space).await? {
         exclusion::settle(engine, conn, ctx, batch, &selection).await?;
     }
+    // A local writer without a genesis yet is checked against its device's enrollment when the
+    // slot first opens it.
     if let Some(local) = slot.local_id() {
-        let active = log::writer(conn, ctx.space, local)
+        let inactive = log::writer(conn, ctx.space, local)
             .await?
-            .is_some_and(|writer| writer.state == WriterState::Active);
-        if !active {
+            .is_some_and(|writer| writer.state != WriterState::Active);
+        if inactive {
             slot.freeze();
             report.local_writer_frozen = true;
         }
     }
+    // A chain the entry makes selectable may remove its own carrier's device, so the entry
+    // excludes the operation that carries it and stays recorded like any excluded entry.
+    if excluded(conn, ctx, candidate.writer, candidate.seq).await? {
+        return Ok(Outcome::Excluded);
+    }
     Ok(Outcome::Authorized)
+}
+
+/// Whether the stored operation `seq` of `writer` is excluded.
+async fn excluded(
+    conn: &mut SqliteConnection,
+    ctx: &SpaceContext,
+    writer: WriterId,
+    seq: Seq,
+) -> SyncResult<bool> {
+    let excluded: Option<bool> = sqlx::query_scalar(
+        "SELECT excluded_revision IS NOT NULL FROM sync_ops
+         WHERE space_id = ? AND writer_id = ? AND seq = ?",
+    )
+    .bind(ctx.space.as_bytes().as_slice())
+    .bind(writer.as_bytes().as_slice())
+    .bind(seq_i64(seq)?)
+    .fetch_optional(&mut *conn)
+    .await?;
+    Ok(excluded.unwrap_or(false))
 }
 
 /// Marks an operation applied. Its writer's `sync_writers.applied_seq` is written by
@@ -652,7 +737,8 @@ async fn seal_for_finish(
 }
 
 /// Seals repairs for hidden duplicates, detached tree rows, and cascades, refreshes row flags,
-/// and materializes every dirty row, running the registered hooks. Returns what it changed.
+/// and materializes every dirty row, running the registered hooks, then captures the groups an
+/// exclusion left to republish. Returns what it changed.
 ///
 /// A materialization never overwrites a local edit that is not sealed: captured rows it would
 /// write, or cascade to, are sealed first and the merge is planned again. Captures of dirty
@@ -670,7 +756,9 @@ pub(crate) async fn finish(
     now_ms: u64,
     report: &mut SealReport,
 ) -> SyncResult<Option<Materialized>> {
+    exclusion::take_stale(conn, &mut batch.dirty).await?;
     if batch.dirty.is_empty() {
+        fork::republish(engine, conn, batch, now_ms).await?;
         return Ok(Some(Materialized::default()));
     }
     // Captured rows already sealed once. A capture that stays is an invalid row, which the
@@ -726,6 +814,7 @@ pub(crate) async fn finish(
             failpoint!("elide.before_commit");
             batch.dirty.clear();
             batch.orphaned.clear();
+            fork::republish(engine, conn, batch, now_ms).await?;
             return Ok(Some(changed));
         }
         if !seal_for_finish(engine, conn, ctx, batch, slot, &captured, now_ms, report).await? {
@@ -770,6 +859,10 @@ impl Engine {
     /// exceed that bound, an operation that touches captured rows stops the call before it
     /// applies, and a finish that would seal captured rows rolls the call back. The report then
     /// says captures are pending, and the caller seals them in batches and applies again.
+    ///
+    /// On the anchor, excluding a fork branch or operations past a removal cutoff leaves
+    /// captures of the groups they wrote, which the next [`Engine::seal`] publishes with their
+    /// current values.
     pub async fn apply(
         &self,
         conn: &mut SqliteConnection,
@@ -791,10 +884,54 @@ impl Engine {
             )
             .await?;
         }
-        fork::reconcile(self, &mut tx, ctx, &mut batch).await?;
-        exclusion::admit_excluded_entries(self, &mut tx, ctx, &mut batch).await?;
-        let mut retention = Retention::load(&mut tx, ctx.space).await?;
         let mut slot = SealSlot::bounded(writer);
+        let mut sealed = SealReport::default();
+        // Writers whose applied sequence moved past `sync_writers`, written before anything
+        // reads it again.
+        let mut advanced = BTreeSet::new();
+        // Excluding a fork branch or admitting an excluded entry selects the chain again, which
+        // may remove the local device. Captures the writer could still seal then never would, so
+        // when the selection would stop the writer, they seal first and the selection runs again.
+        if crate::local::has_pending_captures(&mut tx).await? && slot.may_seal(&mut tx, ctx).await?
+        {
+            let saved = batch.clone();
+            let mut trial = tx.begin().await?;
+            reselect(self, &mut trial, ctx, &mut batch).await?;
+            if slot.may_seal(&mut trial, ctx).await? {
+                trial.commit().await?;
+            } else {
+                trial.rollback().await?;
+                batch = saved;
+                let tables = self
+                    .manifest()
+                    .tables
+                    .iter()
+                    .map(|table| table.id)
+                    .collect();
+                let captured = seal::captured_in(&mut tx, &tables).await?;
+                let mut sealing = Sealing {
+                    slot: &mut slot,
+                    advanced: &mut advanced,
+                    report: &mut sealed,
+                    now_ms,
+                };
+                if !sealing
+                    .seal_rows(self, &mut tx, ctx, &mut batch, captured)
+                    .await?
+                {
+                    drop(tx);
+                    return Ok(ApplyReport {
+                        pending_captures: true,
+                        ..ApplyReport::default()
+                    });
+                }
+                flush_applied(&mut tx, ctx, &batch, &mut advanced).await?;
+                reselect(self, &mut tx, ctx, &mut batch).await?;
+            }
+        } else {
+            reselect(self, &mut tx, ctx, &mut batch).await?;
+        }
+        let mut retention = Retention::load(&mut tx, ctx.space).await?;
         let mut report = ApplyReport::default();
         // Fork evidence stored since the last call forks the local writer without an entry.
         if let Some(local) = slot.local_id()
@@ -805,14 +942,10 @@ impl Engine {
             slot.freeze();
             report.local_writer_frozen = true;
         }
-        let mut sealed = SealReport::default();
         let mut blocked = BTreeSet::new();
         let mut taken = 0usize;
         let mut bytes = 0usize;
         let mut heads = Heads::load(&mut tx, ctx).await?;
-        // Writers whose applied sequence moved past `sync_writers`, written before anything
-        // reads it again.
-        let mut advanced = BTreeSet::new();
         while let Some((mut candidate, context)) = heads
             .take_ready(self, &mut tx, ctx, &batch, &blocked, &mut report)
             .await?
@@ -831,7 +964,10 @@ impl Engine {
                 report: &mut sealed,
                 now_ms,
             };
-            let beyond = exclusion::beyond_bound(&context, &heads.excluding);
+            let reach = Reach {
+                beyond: exclusion::beyond_bound(&context, &heads.excluding),
+                past_fork: exclusion::past_fork(&context, &heads.excluding),
+            };
             match apply_one(
                 self,
                 &mut tx,
@@ -839,7 +975,7 @@ impl Engine {
                 &mut batch,
                 &mut sealing,
                 &mut candidate,
-                (&context, beyond),
+                (&context, reach),
                 &retention,
                 &mut report,
             )
@@ -868,6 +1004,12 @@ impl Engine {
                             .advance(&mut tx, ctx, candidate.writer, candidate.seq)
                             .await?;
                     }
+                }
+                Outcome::Excluded => {
+                    flush_applied(&mut tx, ctx, &batch, &mut advanced).await?;
+                    retention.flush(&mut tx, ctx.space).await?;
+                    retention = Retention::load(&mut tx, ctx.space).await?;
+                    heads = Heads::load(&mut tx, ctx).await?;
                 }
                 Outcome::Held => {
                     hold_invalid(&mut tx, ctx, candidate.writer, candidate.seq).await?;

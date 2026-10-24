@@ -1,6 +1,6 @@
 # Device linking and synchronization
 
-**Status: Partial.** The vault runs in mixed mode. Quick notes, portable preferences, user themes, contacts, the Music library, Projects with working folder bindings, Calendar, distraction rules, daily distraction usage totals, and closed Focus runs with device Focus activity replicate concurrently between linked devices as signed operations through the coordinator desktop, with conflicts and recovery entries where the domain surfaces them (contacts resolve silently by fixed precedence); this is implemented in source. Every other domain keeps single-writer whole-vault handoff: secure LAN pairing, one administration desktop, explicit write ownership, and read-only refresh. Physical multi-device acceptance is pending for both. Concurrent replication of the remaining domains, Notes text and tree merging, anchored authority with LAN peer exchange, operation encryption, and delivery beyond the LAN are planned.
+**Status: Partial.** The vault runs in mixed mode. Quick notes, portable preferences, user themes, contacts, the Music library, Projects with working folder bindings, Calendar, distraction rules, daily distraction usage totals, distraction block history, and closed Focus runs with device Focus activity replicate concurrently between linked devices as signed operations through the coordinator desktop, with conflicts and recovery entries where the domain surfaces them (contacts resolve silently by fixed precedence); this is implemented in source. Every other domain keeps single-writer whole-vault handoff: secure LAN pairing, one administration desktop, explicit write ownership, and read-only refresh. Physical multi-device acceptance is pending for both. Concurrent replication of the remaining domains, Notes text and tree merging, anchored authority with LAN peer exchange, operation encryption, and delivery beyond the LAN are planned.
 
 This contract links one person's devices; multi-person sharing is later work. The phone must provide full offline access to portable Notes, Projects, Calendar, and other synchronized content. Focus execution has its own controller and evidence rules in [Focus authority](../algorithms/pomodoro/focus-authority.md).
 
@@ -190,11 +190,11 @@ Every persisted field needs an explicit replication classification before it can
 | --- | --- | --- |
 | Notes, Projects, Calendar, Quick notes | Content, relationships, templates, archive, Trash, retained history, favorites | Recents, current selection, navigation, viewport layout |
 | Preferences | Profile, themes, quick-toggle theme pair, language, time format, rhythm defaults, favorites, sidebar orders | Active theme, font family and scale, Calendar view mode, title bar, Notes notification delivery, update check time, recents, selection, and collapsed sidebar state |
-| Distraction blocker | Rule definitions and device-attributed history | Permissions, application bindings, enforcement state |
+| Distraction blocker | Rule definitions, daily usage totals per device, block history | Raw usage samples, permissions, application bindings, enforcement state, the native host spool |
 | Music | Library items and metadata, roots, locations, source collections, playlists and memberships, snoozes, soundscapes and presets, assignments, artwork, and listening statistics per device | Root bindings, availability and file observations, media bytes, sessions and checkpoints, refresh jobs, current playback, volume, routing |
 | Chat | Organizational content, portable review history, origin-attributed drafts | Execution processes, credentials, provider homes, terminals, native trust, paths, caches |
 | Managed assets | Immutable content and metadata | Transfer staging, local availability, caches |
-| Focus | Closed runs, per-device activity rows, explicit controller ownership history | Open runs, execution state, adaptive state, local activity sources, native alarms and effects |
+| Focus | Closed runs with their segments, pauses, and run events; per-device activity rows | Open runs, execution state, receipts, heartbeats, adaptive state, local activity sources, native alarms and effects |
 
 Unsent Chat drafts keep their origin and can be explicitly continued on another device. Portable preferences live in the vault table `vault_preferences` so a preference change and its outbound record can commit atomically; each key replicates on its own, concurrent edits of one key resolve without a visible conflict, and the profile picture travels as a managed asset named by the `profile.image` value. User themes replicate one row per theme: the seed is fixed at creation, name and icon resolve to the latest edit, the editor's content merges as one unit and surfaces concurrent saves as a conflict, and a dismissed engine upgrade keeps the highest version. Device preferences live in a per-vault file in the app config directory. `config.json` remains for Chat settings. Remove `config.json` only after its consumers migrate.
 
@@ -211,7 +211,7 @@ Authoritative connections already use WAL with `synchronous=FULL`, because WAL w
 Valid concurrent operations converge regardless of delivery order; rejecting whichever arrives second is insufficient.
 
 - Independent fields merge. Concurrent values for one scalar keep alternatives, a deterministic displayed value, and a visible resolution action.
-- Calendar start, end, timezone, and recurrence form one coupled value. A conflict suspends automatic occurrence activation until resolved.
+- Calendar start, end, timezone, and recurrence form one coupled value. A conflict suspends automatic occurrence activation until resolved, while reminders and Android alarms follow the winning value.
 - Notes and project placement use stable identities, a parent reference, and an order key per row. Cycles and rows past a maximum depth are repaired deterministically from merge state, as described in [Trees and acyclic edge sets](../algorithms/sync/README.md#trees-and-acyclic-edge-sets), instead of a [replicated move log](https://martin.kleppmann.com/papers/move-op.pdf) that every replica would have to undo and replay in one order.
 - Deletion creates tombstones. Concurrent edits stay recoverable in Trash or conflict recovery, and old operations never silently restore deleted content.
 - Database property type changes keep incompatible values for resolution.
@@ -261,7 +261,7 @@ Android background sync uses WorkManager only and never a foreground service; th
 
 | Milestone | Status | Remaining work |
 | --- | --- | --- |
-| Focus correctness and contracts | Partial | Durable device controller ownership, remote commands, and live companion status |
+| Focus correctness and contracts | Partial | Live companion status; each device owns its own runs, and remote Focus control is deferred |
 | Durable mutation and storage boundaries | Partial | Scoped preferences and capture coverage for the remaining domains |
 | Local whole-vault handoff | Partial | Physical multi-device acceptance |
 | Concurrent replication of Quick notes | Implemented | Physical multi-device acceptance |
@@ -270,7 +270,9 @@ Android background sync uses WorkManager only and never a foreground service; th
 | Concurrent replication of contacts | Implemented | Physical multi-device acceptance |
 | Concurrent replication of the Music library | Implemented | Physical multi-device acceptance |
 | Concurrent replication of Projects | Implemented | Physical multi-device acceptance |
+| Concurrent replication of Calendar | Implemented | Physical multi-device acceptance, including Android reminder rescheduling |
 | Concurrent replication of Focus history and device activity | Implemented | Physical multi-device acceptance |
+| Concurrent replication of distraction rules, usage totals, and block history | Implemented | Physical multi-device acceptance, including the first Android build of the Guardian export |
 | Connectivity: address refresh, DNS-SD discovery, overlay networks, firewall scopes, and Android background sync | Implemented | Physical multi-device acceptance, including the first Android build of the background sync module |
 | Concurrent replication of other domains | Planned | Chat organizational content, Notes text and tree merging, managed assets, and retiring whole-vault handoff |
 | Concurrent secure local linking | Planned | Anchored authority with admin keys and late changes, LAN peer exchange, operation encryption, key lifecycle, and typed bootstrap |

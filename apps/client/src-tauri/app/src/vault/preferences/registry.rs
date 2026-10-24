@@ -213,7 +213,6 @@ const FOCUS_EXTENSION_LIMIT: ValueRule = ValueRule::IntegerChoice(&[1, 3, 5, 10,
 
 /// Every preference path the app reads or writes. Paths never nest inside one another.
 pub(crate) const REGISTRY: &[PreferenceSpec] = &[
-    spec("distractions", Scope::VaultConfig, LARGE_JSON),
     spec("chat", Scope::VaultConfig, LARGE_JSON),
     portable("profile.displayName", LABEL),
     portable("profile.fullName", ValueRule::Text { max_bytes: 512 }),
@@ -442,7 +441,7 @@ mod tests {
         let vault_config = specs(Scope::VaultConfig)
             .map(|spec| spec.path)
             .collect::<Vec<_>>();
-        assert_eq!(vault_config, ["distractions", "chat"]);
+        assert_eq!(vault_config, ["chat"]);
     }
 
     #[test]
@@ -487,8 +486,8 @@ mod tests {
         assert!(
             matches!(route(&child), Ok(Target::Child(spec, "project-1")) if spec.path == "notes.customOrderByProject")
         );
-        let rules = path("distractions.rules.0.domain");
-        assert!(matches!(route(&rules), Ok(Target::Whole(spec)) if spec.path == "distractions"));
+        let chat = path("chat.providers.0.instanceId");
+        assert!(matches!(route(&chat), Ok(Target::Whole(spec)) if spec.path == "chat"));
 
         for refused in [
             "theme",
@@ -497,6 +496,7 @@ mod tests {
             "notes.customOrderByProject.project-1.extra",
             "preferences.unknownKey",
             "unknown",
+            "distractions.enabled",
         ] {
             let error = route(&path(refused)).unwrap_err();
             assert!(error.contains(refused), "{refused}: {error}");

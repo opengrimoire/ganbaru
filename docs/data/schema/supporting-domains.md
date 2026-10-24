@@ -50,7 +50,17 @@ Soundscape state records whether a selection was manual or automatic. An automat
 
 ## Distraction blocker
 
-Portable rules live in the vault `config.json`, with separate browser and desktop settings because the surfaces can carry different intent. SQLite stores usage samples and block events for daily limits, reports, and recovery. Local-date grouping keeps the date basis, so a later device timezone change never reassigns historical usage. Browser rules, desktop application rules, and Android app rules have separate source identities and validation.
+Source: `crates/ganbaru-db/migrations/`, `crates/ganbaru-distractions/src/config/`, and `apps/client/src-tauri/app/src/distractions/`.
+
+Portable rules are SQLite rows in replicated tables, with separate browser, desktop, and Android settings because the surfaces can carry different intent:
+
+- `distractions_settings` is one row keyed `vault`, seeded by its migration on every replica, with the mode and each switch in its own field group, so concurrent toggles of different switches all survive.
+- `distractions_category_rules` holds a row only for a built-in category toggled away from its default; a missing row means the default from the shared category list.
+- `distractions_custom_categories` holds named custom categories; their hosts are `distractions_host_rules` rows scoped by the category id.
+- `distractions_host_rules` and `distractions_app_rules` are keyed by content (list, scope, and host; the lowercase desktop app name or the Android package), so a rule removed on one device can be added again on another.
+- `distractions_usage_limits` owns its entries in `distractions_usage_limit_entries`, ordered by ordinal, and the limit and its entries merge as one value.
+
+Native commands make each edit in one transaction and return the assembled rules or a refusal reason; every reader (desktop blocker, browser host, Android projection, Settings) reads that one assembled snapshot. Assembly skips rows it cannot use instead of failing. SQLite also stores usage samples and block events for daily limits, reports, and recovery; they stay on the device that owns the vault. Local-date grouping keeps the date basis, so a later device timezone change never reassigns historical usage. Browser rules, desktop application rules, and Android app rules have separate source identities and validation.
 
 Device-local state supports enforcement without replacing portable policy:
 

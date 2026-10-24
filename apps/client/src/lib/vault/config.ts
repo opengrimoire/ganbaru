@@ -2,8 +2,8 @@
  * Frontend bridge to the active vault's configuration.
  *
  * Rust composes one nested view from the portable preferences in the vault
- * database, this device's preference file, and the `distractions` and `chat`
- * branches of `config.json`. This module reads that view once at boot, keeps
+ * database, this device's preference file, and the `chat` branch of
+ * `config.json`. This module reads that view once at boot, keeps
  * an in-memory cache, and flushes bounded key-level patches through a
  * debounced write so a burst of edits (dragging a color picker, typing in a
  * name field) coalesces into one IO. Rust routes each patch to the store that

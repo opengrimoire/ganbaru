@@ -18,16 +18,6 @@ pub(crate) struct UsageProjection {
     foreground_status: DistractionsForegroundDesktopAppStatus,
 }
 
-pub(super) fn config_at(path: &Path) -> Result<Value, String> {
-    if !path
-        .try_exists()
-        .map_err(|error| format!("inspect usage configuration: {error}"))?
-    {
-        return Ok(serde_json::json!({}));
-    }
-    authorization::read_bounded_authorization_config(path)
-}
-
 /// Read the owner's last accepted projection without scheduling observation or enforcement work.
 #[tauri::command]
 pub fn distractions_load_usage_projection<R: Runtime>(
@@ -36,7 +26,7 @@ pub fn distractions_load_usage_projection<R: Runtime>(
     runtime::usage_projection(&app)
 }
 
-/// Derive exhaustion from persisted configuration and usage, never from a frontend total.
+/// Derive exhaustion from the vault's rules and usage, never from a frontend total.
 pub(super) async fn derive_usage_projection<R: Runtime>(
     app: tauri::AppHandle<R>,
 ) -> Result<UsageProjection, String> {
@@ -46,11 +36,14 @@ pub(super) async fn derive_usage_projection<R: Runtime>(
     let publication_token = runtime::publication_token(&app)?;
     let vault_id = vault::active_vault_id(&app)?;
     let database_path = vault::active_database_path(&app)?;
-    let config_path = vault::active_vault_path(&app)?.join(VAULT_CONFIG_FILE);
-    let path = config_path.clone();
+    let rules = rule_store::snapshot(&app).await?;
+    if rules.vault_id != vault_id {
+        return Err("native usage vault changed before its rules were read".into());
+    }
+    let rules_revision = rules.revision;
     let (config_root, config, local_date, checked_at) =
         tauri::async_runtime::spawn_blocking(move || {
-            let root = config_at(&path)?;
+            let root = rules.root;
             let config = parse_config(&root)?;
             let zone = ganbaru_civil_time::system_zone()?;
             let checked_at = now_utc();
@@ -111,7 +104,7 @@ pub(super) async fn derive_usage_projection<R: Runtime>(
                 .state::<vault::ownership::VaultOwnershipManager>()
                 .status(&vault_id)?
                 != status
-            || config_at(&config_path)?.get("distractions") != config_root.get("distractions")
+            || !rule_store::is_current(rules_revision)
         {
             return Err("native usage context changed during the read".into());
         }

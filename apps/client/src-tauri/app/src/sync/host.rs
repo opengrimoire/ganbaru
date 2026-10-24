@@ -236,6 +236,7 @@ impl<R: Runtime> SyncHost for AppHandle<R> {
     }
 
     fn emit_applied(&self, tables: Vec<String>) {
+        crate::distractions::rule_store::on_sync_changes(self, &tables);
         emit_applied(self, tables);
     }
 

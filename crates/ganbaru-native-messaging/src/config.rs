@@ -5,6 +5,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
 use std::io::Read;
+use std::path::Path;
 use std::sync::OnceLock;
 
 #[derive(Debug, Deserialize)]
@@ -18,6 +19,13 @@ pub(super) struct BuiltInCategory {
     pub(super) domain_keywords: Vec<String>,
     #[serde(default)]
     pub(super) reddit_subreddit_keywords: Vec<String>,
+    /// Whether the category blocks before the vault records a choice.
+    #[serde(default = "enabled_by_default")]
+    pub(super) default_enabled: bool,
+}
+
+fn enabled_by_default() -> bool {
+    true
 }
 
 pub(super) const BUILT_IN_CATEGORIES_JSON: &str =
@@ -106,17 +114,28 @@ pub(super) struct DistractionsConfig {
     pub(super) limit_configuration_digest: Option<String>,
 }
 
-pub(super) fn read_config(path: &std::path::Path) -> Option<DistractionsConfig> {
+/// Reads the rules file the app publishes from the vault's SQLite rules. `None` when the file is
+/// missing, oversized, malformed, or belongs to a vault other than `vault_path`.
+pub(super) fn read_rules(path: &Path, vault_path: &Path) -> Option<DistractionsConfig> {
     let mut contents = Vec::new();
     std::fs::File::open(path)
         .ok()?
-        .take(MAX_CONFIG_BYTES + 1)
+        .take(MAX_RULES_BYTES + 1)
         .read_to_end(&mut contents)
         .ok()?;
-    if contents.len() as u64 > MAX_CONFIG_BYTES {
+    if contents.len() as u64 > MAX_RULES_BYTES {
         return None;
     }
     let value: Value = serde_json::from_slice(&contents).ok()?;
+    let rules_vault = value.get("vaultPath").and_then(Value::as_str)?;
+    if Path::new(rules_vault) != vault_path {
+        return None;
+    }
+    parse_rules(&value)
+}
+
+/// Parses rules under a `distractions` key of `value`.
+pub(super) fn parse_rules(value: &Value) -> Option<DistractionsConfig> {
     let distractions = value.get("distractions")?;
     let mode = read_mode(distractions)?;
     Some(DistractionsConfig {
@@ -149,13 +168,13 @@ pub(super) fn read_config(path: &std::path::Path) -> Option<DistractionsConfig> 
         exception_hosts: read_host_array(distractions.get("exceptionHosts")),
         allowed_hosts: read_host_array(distractions.get("allowedHosts")),
         limits: read_usage_limits_config(distractions.get("limits")),
-        limit_configuration_digest: Some(limit_configuration_digest(&value)?),
+        limit_configuration_digest: Some(limit_configuration_digest(value)?),
     })
 }
 
-/// Matches the largest `config.json` the app writes, so the browser host reads every saved
-/// configuration.
-const MAX_CONFIG_BYTES: u64 = 4 * 1024 * 1024;
+/// Bounds the rules file the host reads. The vault's row and text bounds keep published rules
+/// far below it.
+const MAX_RULES_BYTES: u64 = 4 * 1024 * 1024;
 
 /// Digests the persisted limits so derived budget exhaustion stays bound to that exact configuration.
 pub(super) fn limit_configuration_digest(root: &Value) -> Option<String> {
@@ -181,7 +200,7 @@ pub(super) fn built_in_category(id: &str) -> Option<&'static BuiltInCategory> {
 fn default_built_in_category_ids() -> Vec<String> {
     built_in_categories()
         .iter()
-        .filter(|category| category.id != "news")
+        .filter(|category| category.default_enabled)
         .map(|category| category.id.to_string())
         .collect()
 }

@@ -226,27 +226,6 @@ fn atomic_state_write_does_not_follow_predictable_temp_symlinks() {
 }
 
 #[test]
-fn oversized_authorization_config_is_rejected() {
-    let path = std::env::temp_dir().join(format!(
-        "ganbaru-distractions-oversized-{}.json",
-        std::process::id()
-    ));
-    std::fs::write(
-        &path,
-        vec![b' '; MAX_AUTHORIZATION_CONFIG_BYTES as usize + 1],
-    )
-    .unwrap();
-
-    assert_eq!(
-        read_bounded_authorization_config(&path)
-            .unwrap_err()
-            .to_string(),
-        "persisted distraction configuration is too large"
-    );
-    std::fs::remove_file(path).unwrap();
-}
-
-#[test]
 fn recent_extension_status_is_connected() {
     let checked_at = DateTime::parse_from_rfc3339("2026-05-26T00:01:00.000Z")
         .unwrap()

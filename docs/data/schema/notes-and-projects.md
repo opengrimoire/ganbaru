@@ -22,7 +22,7 @@ Undo is selective: it restores only changed payloads and placements from bounded
 
 ## Placement and projects
 
-A page is workspace-rooted, nested below one valid page, or placed through one valid project location (invariant 8 in [Data invariants](../invariants.md)). Moves update project and ancestry implications transactionally. A page stores its project in `project_id`; nested pages keep their parent page's project, and deleting a project deletes its pages.
+A page is workspace-rooted, nested below one valid page, or placed through one valid project location (invariant 8 in [Data invariants](../invariants.md)). Moves update project and ancestry implications transactionally. A page stores its project in `project_id`; nested pages keep their parent page's project, and deleting a project keeps its pages as unassigned workspace pages with no folder.
 
 Project working-folder Markdown stays file-authoritative and is not copied into the Notes graph. The project tree may show pages and files together, but their source-of-truth rules remain distinct.
 
@@ -105,4 +105,4 @@ Creating a project or a working folder creates no Chat rows; Chat creates its de
 
 External folders use the same logical identity but resolve through a device-local binding; absolute paths and filesystem fingerprints never enter the database. Chat authority over a project does not imply access to its folders; grants are governed by [Chat access control](../access-control.md).
 
-Deleting a project must account for managed files, linked Notes, tasks, calendar events, Chat history, and external bindings. Its Notes pages are removed by a cascading foreign key. Filesystem removal is never an automatic foreign-key cascade. A task's section and status are cascading foreign keys, so deleting either row removes its tasks on every replica; commands still refuse deleting a status or priority a task uses and soft delete it otherwise.
+Deleting a project must account for managed files, linked Notes, tasks, calendar events, Chat history, and external bindings. Its Notes pages stay as unassigned workspace pages: the page project and folder references are set to null, so no note content is lost. Filesystem removal is never an automatic foreign-key cascade. A task's section and status are cascading foreign keys, so deleting either row removes its tasks on every replica; commands still refuse deleting a status or priority a task uses and soft delete it otherwise.

@@ -186,11 +186,24 @@ fn schema_keeps_notes_page_project_and_trash_owner_in_columns() {
             .execute(&pool)
             .await
             .unwrap();
-        let remaining: Vec<String> = sqlx::query_scalar("SELECT id FROM notes_pages ORDER BY id")
-            .fetch_all(&pool)
-            .await
-            .unwrap();
-        assert_eq!(remaining, ["loose-page", "unassigned-page"]);
+        let remaining: Vec<(String, Option<String>, Option<String>)> =
+            sqlx::query_as("SELECT id, project_id, folder_id FROM notes_pages ORDER BY id")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            remaining,
+            [
+                ("folder-page".to_string(), None, None),
+                (
+                    "loose-page".to_string(),
+                    Some("folder-project-b".to_string()),
+                    None
+                ),
+                ("unassigned-page".to_string(), None, None),
+            ],
+            "deleting a project keeps its pages as unassigned workspace pages"
+        );
     });
 }
 

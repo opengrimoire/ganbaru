@@ -226,3 +226,72 @@ fn deleting_folder_promotes_children_and_pages_without_deleting_notes() {
         assert!(reads::load_page(&pool, PAGE_A).await.is_ok());
     });
 }
+
+#[test]
+fn deleting_project_keeps_its_pages_and_content_as_workspace_pages() {
+    crate::test_block_on(async {
+        let pool = migrated_memory_pool().await;
+        seed_projects(&pool).await;
+        create_folder(&pool, FOLDER_A, PROJECT_A, None, "Research").await;
+        create_project_page(&pool, PAGE_A, BLOCK_A, "Folder page", Some(FOLDER_A)).await;
+        writes::create_page(
+            &pool,
+            NotePageCreate {
+                id: PAGE_B.to_string(),
+                title: "Nested page".to_string(),
+                parent: page_parent(PAGE_A),
+                folder_id: None,
+                project_id: None,
+                first_block_id: BLOCK_B.to_string(),
+                after_block_id: None,
+                properties: None,
+            },
+        )
+        .await
+        .unwrap();
+        comments::create_comment(
+            &pool,
+            NoteCommentCreate {
+                id: COMMENT_A.to_string(),
+                parent: Some(page_parent(PAGE_A)),
+                discussion_id: None,
+                anchor: None,
+                rich_text: vec![rich_text("Keep me")],
+                attachments: None,
+            },
+        )
+        .await
+        .unwrap();
+        let content_counts = "SELECT (SELECT COUNT(*) FROM notes_pages WHERE in_trash = 0),
+                (SELECT COUNT(*) FROM notes_blocks WHERE in_trash = 0),
+                (SELECT COUNT(*) FROM notes_comments),
+                (SELECT COUNT(*) FROM notes_page_history_snapshots)";
+        let before: (i64, i64, i64, i64) = sqlx::query_as(content_counts)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+
+        sqlx::query("DELETE FROM projects WHERE id = ?")
+            .bind(PROJECT_A)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let after: (i64, i64, i64, i64) = sqlx::query_as(content_counts)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(after, before);
+        let root: (String, Option<String>, Option<String>) = sqlx::query_as(
+            "SELECT parent_type, project_id, folder_id FROM notes_pages WHERE id = ?",
+        )
+        .bind(PAGE_A)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(root, ("workspace".to_string(), None, None));
+        let nested = serde_json::to_value(reads::load_page(&pool, PAGE_B).await.unwrap()).unwrap();
+        assert_eq!(nested["page"]["parent"]["page_id"], PAGE_A);
+        assert!(nested["page"]["project_id"].is_null());
+    });
+}

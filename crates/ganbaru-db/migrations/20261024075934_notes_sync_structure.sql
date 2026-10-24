@@ -570,7 +570,8 @@ DROP TRIGGER notes_row_hierarchy_detach_moved_page;
 -- notes_pages: the project and the trash owner move out of the properties JSON into columns, and a
 -- page nested under a page or block names its child_page block (which shares its id) in
 -- `child_block_id`, so deleting the block deletes the page. A project id that names no project is
--- dropped, and a nested page whose child_page block is gone becomes a workspace page.
+-- dropped, deleting a project leaves its pages as unassigned workspace pages, and a nested page whose
+-- child_page block is gone becomes a workspace page.
 UPDATE notes_pages
 SET parent_type = 'workspace', parent_page_id = NULL, parent_block_id = NULL
 WHERE parent_type IN ('page_id', 'block_id')
@@ -583,7 +584,7 @@ CREATE TABLE notes_pages_next (
     parent_data_source_id TEXT REFERENCES notes_data_sources(id) ON DELETE CASCADE,
     child_block_id TEXT REFERENCES "notes_blocks"(id) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
         CHECK (child_block_id IS NULL OR child_block_id = id),
-    project_id TEXT REFERENCES projects(id) ON DELETE CASCADE,
+    project_id TEXT REFERENCES projects(id) ON DELETE SET NULL,
     title TEXT NOT NULL DEFAULT '',
     properties TEXT NOT NULL DEFAULT '{"title":{"id":"title","type":"title","title":[]}}' CHECK (json_valid(properties)),
     icon TEXT CHECK (icon IS NULL OR json_valid(icon)),

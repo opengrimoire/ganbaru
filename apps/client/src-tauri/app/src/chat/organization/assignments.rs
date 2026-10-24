@@ -1,6 +1,6 @@
 //! Work assignment cancellation, retry, and dispatch recovery.
 
-use super::common::new_id;
+use super::common::{assignment_input_id, new_id};
 use super::dispatch::{deliver_pending_assignment_inputs, dispatch_assignment_job};
 use super::reads::read_assignment;
 use super::workflow::{ResolvedInvocation, persist_assignment_routing, set_assignment_state};
@@ -163,18 +163,17 @@ pub(super) async fn recover_stranded_follow_up_assignments(
                     true,
                 )
             })?;
+            let message_item_id = input
+                .try_get::<String, _>("message_item_id")
+                .map_err(persistence_error)?;
             sqlx::query(
                 "INSERT INTO chat_work_assignment_inputs
                     (id, assignment_id, message_item_id, ordinal, routing_kind, created_at)
                  VALUES (?, ?, ?, ?, 'queued_continuation', ?)",
             )
-            .bind(new_id("assignment-input"))
+            .bind(assignment_input_id(&message_item_id)?)
             .bind(recovered_assignment_id.as_str())
-            .bind(
-                input
-                    .try_get::<String, _>("message_item_id")
-                    .map_err(persistence_error)?,
-            )
+            .bind(message_item_id.as_str())
             .bind(ordinal)
             .bind(now.as_str())
             .execute(&mut *transaction)
@@ -283,7 +282,7 @@ pub(super) async fn retry_assignment(
             claimed_at = NULL, claim_token = NULL, last_error = NULL,
             updated_at = excluded.updated_at",
     )
-    .bind(new_id("dispatch"))
+    .bind(new_id("dispatch")?)
     .bind(assignment_id.as_str())
     .bind(now.as_str())
     .bind(now.as_str())

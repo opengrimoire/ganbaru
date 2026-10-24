@@ -181,7 +181,7 @@ pub(super) async fn freeze_context_package(
         }
         serialized.push_str(&line);
     }
-    let context_id = new_id("context");
+    let context_id = new_id("context")?;
     let context_hash = sha256_hex(serialized.as_bytes());
     sqlx::query(
         "INSERT INTO chat_assignment_context_packages
@@ -328,7 +328,7 @@ pub(super) async fn freeze_context_package(
             .as_slice(),
     );
     let authorization_id =
-        ChatAuthorizationRevisionId::new(new_id("authorization")).map_err(identifier_error)?;
+        ChatAuthorizationRevisionId::new(new_id("authorization")?).map_err(identifier_error)?;
     sqlx::query(
         "INSERT INTO chat_assignment_authorization_revisions
             (id, assignment_id, revision, requester_participant_id,
@@ -540,6 +540,7 @@ async fn read_assignment_access(
          JOIN chat_teammate_channel_memberships channel_access
            ON channel_access.conversation_id = membership.conversation_id
           AND channel_access.teammate_id = membership.participant_id
+          AND channel_access.removed_at IS NULL
          JOIN chat_teammate_access_state access_state
            ON access_state.teammate_id = membership.participant_id
           AND access_state.access_revision >= 1
@@ -1134,6 +1135,7 @@ async fn verify_channel_disclosure(
            JOIN chat_teammate_channel_memberships teammate_access
              ON teammate_access.conversation_id = teammate.conversation_id
             AND teammate_access.teammate_id = teammate.participant_id
+            AND teammate_access.removed_at IS NULL
            JOIN chat_access_profiles teammate_profile
              ON teammate_profile.id = teammate_access.access_profile_id
             AND teammate_profile.archived_at IS NULL
@@ -1174,6 +1176,7 @@ async fn verify_channel_disclosure(
                   AND requester_profile_revision.revision = requester_profile.latest_revision
                  WHERE requester_access.conversation_id = ?
                    AND requester_access.teammate_id = ?
+                   AND requester_access.removed_at IS NULL
                    AND CASE
                          WHEN requester_access.read_history_inherits_profile = 1
                            THEN requester_profile_revision.default_read_history
@@ -1216,6 +1219,7 @@ async fn verify_channel_disclosure(
                       AND destination_profile_revision.revision = destination_profile.latest_revision
                      WHERE destination_ai.conversation_id = ?
                        AND destination_ai.teammate_id = destination_member.participant_id
+                       AND destination_ai.removed_at IS NULL
                        AND CASE
                              WHEN destination_ai.read_history_inherits_profile = 1
                                THEN destination_profile_revision.default_read_history
@@ -1258,6 +1262,7 @@ async fn verify_channel_disclosure(
                         AND source_profile_revision.revision = source_profile.latest_revision
                        WHERE source_ai.conversation_id = ?
                          AND source_ai.teammate_id = destination_member.participant_id
+                         AND source_ai.removed_at IS NULL
                          AND CASE
                                WHEN source_ai.read_history_inherits_profile = 1
                                  THEN source_profile_revision.default_read_history

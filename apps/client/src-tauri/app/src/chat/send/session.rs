@@ -476,6 +476,7 @@ pub(super) async fn require_live_authorization(
          JOIN chat_teammate_channel_memberships channel_access
            ON channel_access.conversation_id = membership.conversation_id
           AND channel_access.teammate_id = membership.participant_id
+          AND channel_access.removed_at IS NULL
          JOIN chat_access_profiles profile ON profile.id = channel_access.access_profile_id
          JOIN chat_access_profile_revisions profile_revision
            ON profile_revision.access_profile_id = profile.id

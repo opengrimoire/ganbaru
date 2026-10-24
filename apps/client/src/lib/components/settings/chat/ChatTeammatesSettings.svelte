@@ -11,7 +11,6 @@
   import ShieldCheck from "@lucide/svelte/icons/shield-check";
   import Plus from "@lucide/svelte/icons/plus";
   import Search from "@lucide/svelte/icons/search";
-  import Trash2 from "@lucide/svelte/icons/trash";
   import X from "@lucide/svelte/icons/x";
   import * as chatApi from "$lib/api/chat";
   import type {
@@ -67,8 +66,6 @@
     initialCreate?: boolean;
     onDraftStateChange?: (open: boolean) => void;
   } = $props();
-
-  type LifecycleAction = "archive" | "delete";
 
   interface TeammateAccessSummaryChannel {
     channel: ChatChannelRead;
@@ -128,8 +125,7 @@
   let expandedAccessChannelId = $state<string | null>(null);
   let advancedChannelIds = $state<Set<string>>(new Set());
 
-  let lifecycleAction = $state<LifecycleAction | null>(null);
-  let lifecycleTarget = $state<ChatAiTeammateRead | null>(null);
+  let archiveTarget = $state<ChatAiTeammateRead | null>(null);
   let lifecycleBusy = $state(false);
 
   let initialSelectionApplied = false;
@@ -590,31 +586,24 @@
     }
   }
 
-  function requestLifecycle(action: LifecycleAction): void {
+  function requestArchive(): void {
     if (!editor.selected || lifecycleBusy) return;
     editor.lifecycleError = null;
-    if (action === "archive" && editor.selected.activeAssignmentCount > 0) {
+    if (editor.selected.activeAssignmentCount > 0) {
       editor.lifecycleError = t("settings.chat.teammates.archiveBlocked", editor.selected.activeAssignmentCount);
       return;
     }
-    lifecycleAction = action;
-    lifecycleTarget = editor.selected;
+    archiveTarget = editor.selected;
   }
 
-  async function confirmLifecycle(): Promise<void> {
-    const action = lifecycleAction;
-    const target = lifecycleTarget;
-    lifecycleAction = null;
-    lifecycleTarget = null;
-    if (!action || !target) return;
+  async function confirmArchive(): Promise<void> {
+    const target = archiveTarget;
+    archiveTarget = null;
+    if (!target) return;
     editor.lifecycleError = null;
     lifecycleBusy = true;
     try {
-      if (action === "archive") {
-        await chatApi.archiveChatTeammate(target.participant.id, target.participant.revision, true);
-      } else {
-        await chatApi.deleteUnusedChatTeammate(target.participant.id, target.participant.revision);
-      }
+      await chatApi.archiveChatTeammate(target.participant.id, target.participant.revision, true);
       editor.selectedId = null;
       await chat.refreshTeammates();
       await editor.loadDirectoryData();
@@ -888,7 +877,7 @@
             <CalendarScrollbar scrollContainer={detailScrollElement} wheelPassthrough />
           </div>
 
-          <footer class="editor-footer"><div>{#if editor.creating}<button type="button" class="secondary-button" onclick={editor.cancelCreate}><X size={14} />{t("common.cancel")}</button>{:else if editor.selected && editor.archivedMode}<button type="button" class="danger-button" disabled={editor.selected.hasDurableHistory} onclick={() => requestLifecycle("delete")}><Trash2 size={14} />{t("settings.chat.teammates.deletePermanently")}</button>{:else if editor.selected}<button type="button" class="secondary-button" disabled={editor.selected.activeAssignmentCount > 0} onclick={() => requestLifecycle("archive")}><Archive size={14} />{t("settings.chat.teammates.archive")}</button>{/if}{#if editor.lifecycleError}<span class="field-error" role="alert">{editor.lifecycleError}</span>{/if}</div><div class="save-area">{#if editor.error && editor.errorField !== "displayName" && editor.errorField !== "role"}<span class="field-error" role="alert">{editor.error}</span>{:else if editor.accessErrors.length > 0}<span class="field-error" role="alert">{t("settings.chat.teammates.accessValidationFailed")}</span>{:else if editor.providerResourceBlockers[0]}<span class="field-error" role="alert">{editor.providerResourceBlockers[0]}</span>{/if}{#if editor.archivedMode}<button type="button" class="primary-button" onclick={() => void restoreSelected()}><ArchiveRestore size={14} />{t("settings.chat.teammates.restore")}</button>{:else}<button bind:this={saveButtonElement} type="submit" class="primary-button" disabled={editor.saving || !editor.canSave}>{editor.saving ? t("settings.chat.teammates.saving") : editor.creating ? t("settings.chat.teammates.createInert") : t("settings.chat.teammates.save")}</button>{/if}</div></footer>
+          <footer class="editor-footer"><div>{#if editor.creating}<button type="button" class="secondary-button" onclick={editor.cancelCreate}><X size={14} />{t("common.cancel")}</button>{:else if editor.selected && !editor.archivedMode}<button type="button" class="secondary-button" disabled={editor.selected.activeAssignmentCount > 0} onclick={requestArchive}><Archive size={14} />{t("settings.chat.teammates.archive")}</button>{/if}{#if editor.lifecycleError}<span class="field-error" role="alert">{editor.lifecycleError}</span>{/if}</div><div class="save-area">{#if editor.error && editor.errorField !== "displayName" && editor.errorField !== "role"}<span class="field-error" role="alert">{editor.error}</span>{:else if editor.accessErrors.length > 0}<span class="field-error" role="alert">{t("settings.chat.teammates.accessValidationFailed")}</span>{:else if editor.providerResourceBlockers[0]}<span class="field-error" role="alert">{editor.providerResourceBlockers[0]}</span>{/if}{#if editor.archivedMode}<button type="button" class="primary-button" onclick={() => void restoreSelected()}><ArchiveRestore size={14} />{t("settings.chat.teammates.restore")}</button>{:else}<button bind:this={saveButtonElement} type="submit" class="primary-button" disabled={editor.saving || !editor.canSave}>{editor.saving ? t("settings.chat.teammates.saving") : editor.creating ? t("settings.chat.teammates.createInert") : t("settings.chat.teammates.save")}</button>{/if}</div></footer>
         </form>
       {:else}
         <div class="empty-detail"><p>{t("settings.chat.teammates.selectPrompt")}</p></div>
@@ -923,15 +912,14 @@
   />
 {/if}
 
-{#if lifecycleAction && lifecycleTarget}
+{#if archiveTarget}
   <ConfirmDialog
-    title={lifecycleAction === "archive" ? t("settings.chat.teammates.archiveTitle", lifecycleTarget.participant.displayName) : t("settings.chat.teammates.deleteTitle", lifecycleTarget.participant.displayName)}
-    message={lifecycleAction === "archive" ? t("settings.chat.teammates.archiveMessage", lifecycleTarget.participant.displayName) : t("settings.chat.teammates.deleteMessage", lifecycleTarget.participant.displayName)}
-    confirmLabel={lifecycleAction === "archive" ? t("settings.chat.teammates.archiveConfirm") : t("settings.chat.teammates.deletePermanently")}
+    title={t("settings.chat.teammates.archiveTitle", archiveTarget.participant.displayName)}
+    message={t("settings.chat.teammates.archiveMessage", archiveTarget.participant.displayName)}
+    confirmLabel={t("settings.chat.teammates.archiveConfirm")}
     cancelLabel={t("common.cancel")}
-    danger={lifecycleAction === "delete"}
-    onConfirm={() => void confirmLifecycle()}
-    onCancel={() => { lifecycleAction = null; lifecycleTarget = null; }}
+    onConfirm={() => void confirmArchive()}
+    onCancel={() => { archiveTarget = null; }}
   />
 {/if}
 
@@ -947,10 +935,9 @@
 <style>
   .header-actions,.editor-footer,.save-area { display:flex; align-items:center; }
   .header-actions,.save-area { gap:0.45rem; }
-  .primary-button,.secondary-button,.danger-button { display:inline-flex; min-height:2rem; align-items:center; justify-content:center; gap:0.38rem; border-radius:0.42rem; padding:0.35rem 0.7rem; font-size:calc(0.733333rem * var(--type-scale)); font-weight:600; }
+  .primary-button,.secondary-button { display:inline-flex; min-height:2rem; align-items:center; justify-content:center; gap:0.38rem; border-radius:0.42rem; padding:0.35rem 0.7rem; font-size:calc(0.733333rem * var(--type-scale)); font-weight:600; }
   .primary-button { background:var(--primary); color:var(--primary-foreground); }
   .secondary-button { border:1px solid var(--border); background:var(--background); color:var(--foreground); }
-  .danger-button { background:var(--destructive); color:var(--destructive-foreground); }
   button:hover:not(:disabled) { filter:brightness(0.96); }
   button:disabled { cursor:not-allowed; opacity:0.5; }
   .scroll-frame,.editor-scroll-frame { position:relative; min-height:0; }
@@ -1087,7 +1074,7 @@
   .advanced-fields { width:min(30rem,100%); }
   .editor-footer { padding:0.65rem 0.75rem 0.65rem 0; }
   .editor-footer button { white-space:nowrap; }
-  .primary-button,.secondary-button,.danger-button { white-space:nowrap; }
+  .primary-button,.secondary-button { white-space:nowrap; }
   .teammate-settings input[type="radio"] { appearance:none; width:0.9rem; height:0.9rem; border:1px solid var(--border); border-radius:50%; background:var(--background); }
   .teammate-settings input[type="radio"]:checked { border:0.25rem solid var(--primary); }
   @media (max-width:700px) { .teammate-settings { grid-template-rows:auto minmax(0,1fr); }.directory-layout { grid-template-columns:1fr; grid-template-rows:minmax(7rem,28%) minmax(0,1fr); }.directory-panel { border-bottom:1px solid var(--border); padding:0 0 0.75rem; }.detail-panel { border-top:0; border-left:0; padding:0.8rem 0 0; }.directory-list { grid-template-columns:repeat(auto-fill,minmax(11rem,1fr)); }.field-grid,.field-grid.compact,.capability-switches { grid-template-columns:1fr; }.folder-row { grid-template-columns:auto auto minmax(7rem,1fr); }.folder-controls { grid-column:3; justify-content:flex-start; }.editor-footer { padding-right:0; } }

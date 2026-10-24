@@ -385,7 +385,7 @@ pub(super) async fn send_scheduled_message_now(
 ) -> ChatResult<PostChatMessageResult> {
     let pool = chat_pool(app.clone(), db_url.clone()).await?;
     let now = now_timestamp()?;
-    let claim_token = new_id("scheduled-message-immediate-claim");
+    let claim_token = new_id("scheduled-message-immediate-claim")?;
     let request_data = claim_scheduled_message_for_immediate_send(
         &pool,
         &scheduled_message_id,
@@ -459,7 +459,7 @@ pub(super) async fn dispatch_due_scheduled_messages(
     let mut dispatched_channel_ids = Vec::new();
     for id in ids {
         let scheduled_message_id = ChatScheduledMessageId::new(id).map_err(identifier_error)?;
-        let claim_token = new_id("scheduled-message-claim");
+        let claim_token = new_id("scheduled-message-claim")?;
         let claimed = sqlx::query(
             "UPDATE chat_scheduled_messages
              SET state = 'dispatching', attempt_count = attempt_count + 1,

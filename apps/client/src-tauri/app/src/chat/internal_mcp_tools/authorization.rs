@@ -25,6 +25,7 @@ pub(crate) async fn verify_scope(
             JOIN chat_teammate_channel_memberships channel_access
               ON channel_access.conversation_id = authorization.destination_conversation_id
              AND channel_access.teammate_id = assignment.teammate_id
+             AND channel_access.removed_at IS NULL
             JOIN chat_conversation_memberships membership
               ON membership.conversation_id = channel_access.conversation_id
              AND membership.participant_id = channel_access.teammate_id
@@ -113,6 +114,7 @@ pub(super) async fn verify_channel_source(
             JOIN chat_teammate_channel_memberships channel_access
               ON channel_access.conversation_id = source.conversation_id
              AND channel_access.teammate_id = assignment.teammate_id
+             AND channel_access.removed_at IS NULL
             JOIN chat_conversation_memberships membership
               ON membership.conversation_id = channel_access.conversation_id
              AND membership.participant_id = channel_access.teammate_id
@@ -182,6 +184,7 @@ pub(super) async fn verify_channel_source(
                    AND requester_profile_revision.revision = requester_profile.latest_revision
                   WHERE requester_source_access.conversation_id = source.conversation_id
                     AND requester_source_access.teammate_id = authorization.requester_participant_id
+                    AND requester_source_access.removed_at IS NULL
                     AND CASE
                           WHEN requester_source_access.read_history_inherits_profile = 1
                             THEN requester_profile_revision.default_read_history
@@ -223,6 +226,7 @@ pub(super) async fn verify_channel_source(
                        AND destination_profile_revision.revision = destination_profile.latest_revision
                       WHERE destination_ai_access.conversation_id = authorization.destination_conversation_id
                         AND destination_ai_access.teammate_id = destination_member.participant_id
+                        AND destination_ai_access.removed_at IS NULL
                         AND CASE
                               WHEN destination_ai_access.read_history_inherits_profile = 1
                                 THEN destination_profile_revision.default_read_history
@@ -265,6 +269,7 @@ pub(super) async fn verify_channel_source(
                          AND source_profile_revision.revision = source_profile.latest_revision
                         WHERE source_ai_access.conversation_id = source.conversation_id
                           AND source_ai_access.teammate_id = destination_member.participant_id
+                          AND source_ai_access.removed_at IS NULL
                           AND CASE
                                 WHEN source_ai_access.read_history_inherits_profile = 1
                                   THEN source_profile_revision.default_read_history
@@ -333,6 +338,7 @@ pub(super) async fn verify_folder_source(
             JOIN chat_teammate_channel_memberships channel_access
               ON channel_access.conversation_id = membership.conversation_id
              AND channel_access.teammate_id = membership.participant_id
+             AND channel_access.removed_at IS NULL
             JOIN chat_teammate_access_state access_state
               ON access_state.teammate_id = membership.participant_id
             JOIN chat_teammates teammate

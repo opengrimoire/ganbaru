@@ -10,6 +10,8 @@ The current organization layer is project-owned channels. Each project has a bui
 
 Projects and working folders replicate between devices, so Chat creates a project's general channel and each folder's current-folder execution environment (never for an archived folder) on demand, when a device that writes Chat lists channels, environments, or assignment targets, or resolves a run target. The general channel's ids derive from the project id, so devices agree on them. A device that cannot write Chat shows only stored rows.
 
+Organizational ids are a kind prefix and 128 random bits, or derive from their inputs when devices must agree: a reply thread's id derives from its root message and a work assignment input's id from its message. They fit the 128-byte sync row key bound. Ordinary commands archive or end organizational rows instead of deleting them: agents are archived, and an agent's channel membership ends with a removal timestamp that every reader filters. Device-local rows that reference organizational rows cascade when that row is deleted.
+
 Membership records participant identity, capability, history boundary, defaults, and current authorization revision. Personal navigation sections and last-selected channel are device-local presentation state rather than shared organization membership.
 
 Canonical messages and coordination events retain channel identity, author or actor identity, sequence, reply or reference provenance, and delivery state. A provider transcript is not a replacement for this history.

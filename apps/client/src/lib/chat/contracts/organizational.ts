@@ -499,7 +499,6 @@ export interface ChatAiTeammateRead {
   latestPolicy: ChatTeammatePolicyRead | null;
   channelCount: number;
   activeAssignmentCount: number;
-  hasDurableHistory: boolean;
 }
 
 export interface ChatConversationMembershipRead {

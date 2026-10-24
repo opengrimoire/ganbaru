@@ -104,7 +104,6 @@ describe("ChatParticipantAvatar", () => {
       },
       channelCount: 1,
       activeAssignmentCount: 0,
-      hasDurableHistory: false,
     } satisfies ChatAiTeammateRead];
     target = document.createElement("div");
     document.body.append(target);
@@ -142,7 +141,6 @@ describe("ChatParticipantAvatar", () => {
       },
       channelCount: 1,
       activeAssignmentCount: 0,
-      hasDurableHistory: true,
     } satisfies ChatAiTeammateRead;
     chat.archivedTeammates = [archivedTeammate];
     target = document.createElement("div");

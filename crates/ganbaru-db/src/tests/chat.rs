@@ -845,6 +845,36 @@ fn authorization_source_snapshots_are_immutable_and_folder_policy_is_required() 
         .execute(&mut *connection)
         .await
         .unwrap();
+        // Delete guards stand down once any parent is gone, so every parent must exist here.
+        sqlx::query(
+            "INSERT INTO chat_conversations
+                (id, project_id, conversation_kind, last_activity_at, created_at, updated_at)
+             VALUES ('conversation:test', 'project:test', 'channel', ?1, ?1, ?1)",
+        )
+        .bind(NOW)
+        .execute(&mut *connection)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO chat_communication_message_revisions
+                (id, message_item_id, revision, normalized_markdown, created_at)
+             VALUES ('revision:test', 'item:test', 1, 'Source', ?)",
+        )
+        .bind(NOW)
+        .execute(&mut *connection)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO chat_message_references
+                (id, message_revision_id, reference_kind, label_snapshot, plain_text_projection,
+                 start_offset, end_offset, ordinal, created_at)
+             VALUES ('reference:test', 'revision:test', 'working_folder', 'Test', 'Test',
+                     0, 4, 0, ?)",
+        )
+        .bind(NOW)
+        .execute(&mut *connection)
+        .await
+        .unwrap();
 
         for statement in [
             "UPDATE chat_assignment_authorized_folder_sources SET capability = 'edit'",

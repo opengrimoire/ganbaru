@@ -149,7 +149,6 @@ export function parseChatAiTeammate(value: unknown, label = "Chat AI teammate"):
       record.activeAssignmentCount,
       `${label}.activeAssignmentCount`,
     ),
-    hasDurableHistory: readBoolean(record.hasDurableHistory, `${label}.hasDurableHistory`),
   };
 }
 

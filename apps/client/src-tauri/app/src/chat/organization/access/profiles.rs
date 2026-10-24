@@ -132,7 +132,7 @@ pub async fn chat_preview_access_profile_revision(
         "SELECT DISTINCT membership.teammate_id, channel.id AS channel_id
          FROM chat_teammate_channel_memberships membership
          JOIN chat_channels channel ON channel.conversation_id = membership.conversation_id
-         WHERE membership.access_profile_id = ?
+         WHERE membership.access_profile_id = ? AND membership.removed_at IS NULL
          ORDER BY membership.teammate_id, channel.id",
     )
     .bind(request.access_profile_id.as_str())
@@ -330,7 +330,7 @@ async fn apply_profile_reduction(
              ),
              history_boundary = 'from_grant',
              updated_at = ?
-         WHERE access_profile_id = ?
+         WHERE access_profile_id = ? AND removed_at IS NULL
            AND history_boundary_inherits_profile = 1
            AND ? = 'from_grant'
            AND (history_boundary != 'from_grant' OR history_from_ordinal IS NULL)",
@@ -346,7 +346,7 @@ async fn apply_profile_reduction(
          SET access_revision = access_revision + 1, updated_at = ?
          WHERE teammate_id IN (
            SELECT teammate_id FROM chat_teammate_channel_memberships
-           WHERE access_profile_id = ?
+           WHERE access_profile_id = ? AND removed_at IS NULL
          )",
     )
     .bind(now.as_str())
@@ -375,7 +375,7 @@ pub async fn chat_archive_access_profile(
     if request.archived {
         let membership_count: i64 = sqlx::query_scalar(
             "SELECT count(*) FROM chat_teammate_channel_memberships
-             WHERE access_profile_id = ?",
+             WHERE access_profile_id = ? AND removed_at IS NULL",
         )
         .bind(request.access_profile_id.as_str())
         .fetch_one(&pool)
@@ -508,7 +508,7 @@ async fn insert_access_profile_revision(
              maximum_folder_capability, created_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
     )
-    .bind(new_id("access-profile-revision"))
+    .bind(new_id("access-profile-revision")?)
     .bind(access_profile_id.as_str())
     .bind(i64_value(revision)?)
     .bind(input.default_channel_capabilities.read_history)
@@ -530,7 +530,7 @@ async fn revoke_profile_authorizations(
 ) -> ChatResult<()> {
     let teammate_ids = sqlx::query_scalar::<_, String>(
         "SELECT DISTINCT teammate_id FROM chat_teammate_channel_memberships
-         WHERE access_profile_id = ?",
+         WHERE access_profile_id = ? AND removed_at IS NULL",
     )
     .bind(access_profile_id.as_str())
     .fetch_all(&mut **transaction)

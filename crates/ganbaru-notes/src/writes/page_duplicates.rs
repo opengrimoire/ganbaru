@@ -350,11 +350,11 @@ pub async fn duplicate_page(
             .filter(|_| source_page.parent_type == "data_source_id")
         {
             let children = sqlx::query_scalar::<_, String>(
-                "SELECT page.id FROM notes_data_source_row_hierarchy AS hierarchy JOIN notes_pages AS page ON page.id = hierarchy.row_page_id
-                 WHERE hierarchy.parent_row_page_id = ? AND hierarchy.data_source_id = ?
+                "SELECT page.id FROM notes_pages AS page
+                 WHERE page.parent_row_page_id = ?
                    AND page.parent_type = 'data_source_id' AND page.parent_data_source_id = ? AND page.in_trash = 0 AND page.archived = 0
                  ORDER BY page.id LIMIT ?",
-            ).bind(&source_page_id).bind(source_id).bind(source_id)
+            ).bind(&source_page_id).bind(source_id)
                 .bind((super::database_copy::MAX_COPY_OBJECTS + 1) as i64).fetch_all(&mut *tx).await
                 .map_err(|error| format!("load duplicated row sub-items: {error}"))?;
             for child in children {

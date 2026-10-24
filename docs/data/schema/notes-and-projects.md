@@ -40,7 +40,7 @@ A data source names its default template through `default_template_id`, which mu
 
 Schema changes reconcile every referencing view, including linked shells, in the same transaction: deleted property references are removed, incompatible grouping and calculations are cleared, and surviving presentation is preserved. Saved views own grouping, wrapping, freezing, display formats, calculations, and conditional colors by stable property identity.
 
-Row sub-items live in `notes_data_source_row_hierarchy`: at most one parent per row, same source, acyclic, and at most 32 levels deep. Trash and archive keep the edges; moving a row to another source detaches incompatible ones. Copies, graph export, and project history include the relationship.
+Row sub-items live in `notes_pages.parent_row_page_id` on the child row: at most one parent per row, same source, acyclic, and at most 32 levels deep. The column only holds a row of the same source; writers clear it when either page leaves the source, and deleting the parent clears it. Trash and archive keep it, so restored parents regain their children. Copies, graph export, and project history include the relationship.
 
 Row windows use stable ordering and keyset boundaries (see [Query plans](query-plans.md)). Group counts and calculation footers describe the complete filtered source, including unloaded rows, and are read projections rather than canonical values.
 

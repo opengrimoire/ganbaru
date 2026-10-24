@@ -335,7 +335,6 @@ fn row_is_in_copy_scope(table: &str, row: &Value, scope: &CopyScope) -> bool {
         "notes_data_source_properties" | "notes_data_source_property_options" => {
             value_in(row, "data_source_id", &scope.data_source_ids)
         }
-        "notes_data_source_row_hierarchy" => value_in(row, "row_page_id", &scope.page_ids),
         "notes_database_views" => {
             value_in(row, "database_id", &scope.database_ids)
                 || value_in(row, "data_source_id", &scope.data_source_ids)
@@ -523,14 +522,12 @@ async fn validate_restored_hierarchy_tx(
 ) -> Result<(), String> {
     let page_ids = ids(rows, "notes_pages");
     let source_ids = ids(rows, "notes_data_sources");
-    for edge in rows
-        .get("notes_data_source_row_hierarchy")
-        .into_iter()
-        .flatten()
-    {
-        if !value_in(edge, "data_source_id", &source_ids)
-            || !value_in(edge, "row_page_id", &page_ids)
-            || !value_in(edge, "parent_row_page_id", &page_ids)
+    for page in rows.get("notes_pages").into_iter().flatten() {
+        if json_optional_string(page, "parent_row_page_id").is_none() {
+            continue;
+        }
+        if !value_in(page, "parent_data_source_id", &source_ids)
+            || !value_in(page, "parent_row_page_id", &page_ids)
         {
             return Err(
                 "Restored sub-items must stay within the restored project graph".to_string(),

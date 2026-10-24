@@ -642,3 +642,75 @@ fn fresh_vault_relation_pairs_accept_one_sided_synced_properties() {
         );
     });
 }
+
+#[test]
+fn notes_sync_databases_migration_moves_row_sub_items_onto_the_child_row() {
+    super::block_on(async {
+        let pool = super::helpers::memory_pool_migrated_through(NOTES_SYNC_STRUCTURE).await;
+        insert_database_graph(&pool, &serde_json::json!({})).await;
+        sqlx::raw_sql(
+            "INSERT INTO notes_data_sources (id, database_id, title, title_rich_text, description, properties)
+               VALUES ('ds2', 'db', 'Other', '[]', '[]', '{}');
+             INSERT INTO notes_pages (id, parent_type, parent_data_source_id, title, properties)
+             VALUES
+               ('parent', 'data_source_id', 'ds', 'Parent', '{}'),
+               ('child', 'data_source_id', 'ds', 'Child', '{}'),
+               ('stale', 'data_source_id', 'ds', 'Stale source', '{}'),
+               ('foreign', 'data_source_id', 'ds', 'Foreign parent', '{}'),
+               ('other', 'data_source_id', 'ds2', 'Other row', '{}');
+             INSERT INTO notes_data_source_row_hierarchy (row_page_id, data_source_id, parent_row_page_id)
+             VALUES
+               ('child', 'ds', 'parent'),
+               ('stale', 'ds2', 'parent'),
+               ('foreign', 'ds', 'other');",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        super::helpers::migrate_through(&pool, NOTES_SYNC_DATABASES)
+            .await
+            .unwrap();
+
+        let parents: Vec<(String, Option<String>)> = sqlx::query_as(
+            "SELECT id, parent_row_page_id FROM notes_pages
+             WHERE parent_type = 'data_source_id' ORDER BY id",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            parents,
+            vec![
+                ("child".to_string(), Some("parent".to_string())),
+                ("foreign".to_string(), None),
+                ("other".to_string(), None),
+                ("parent".to_string(), None),
+                ("stale".to_string(), None),
+            ]
+        );
+        let hierarchy_table: Option<i64> = sqlx::query_scalar(
+            "SELECT 1 FROM sqlite_schema WHERE name = 'notes_data_source_row_hierarchy'",
+        )
+        .fetch_optional(&pool)
+        .await
+        .unwrap();
+        assert_eq!(hierarchy_table, None);
+
+        let self_parent =
+            sqlx::query("UPDATE notes_pages SET parent_row_page_id = id WHERE id = 'child'")
+                .execute(&pool)
+                .await;
+        assert!(self_parent.is_err(), "a row must not be its own sub-item");
+        sqlx::query("DELETE FROM notes_pages WHERE id = 'parent'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let orphan: Option<String> =
+            sqlx::query_scalar("SELECT parent_row_page_id FROM notes_pages WHERE id = 'child'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(orphan, None);
+    });
+}

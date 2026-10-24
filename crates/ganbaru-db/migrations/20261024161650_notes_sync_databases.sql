@@ -585,6 +585,29 @@ DROP TABLE notes_relation_edge_sources;
 DROP TABLE notes_data_source_relation_links;
 ALTER TABLE notes_pages DROP COLUMN properties;
 
+-- Row sub-items: the parent row is a column of the child row page. It only means something while
+-- both pages are rows of the same data source; writers clear it when either page leaves.
+ALTER TABLE notes_pages ADD COLUMN parent_row_page_id TEXT
+    REFERENCES notes_pages(id) ON DELETE SET NULL
+    CHECK (parent_row_page_id IS NULL OR parent_row_page_id <> id);
+UPDATE notes_pages
+SET parent_row_page_id = (
+    SELECT hierarchy.parent_row_page_id
+    FROM notes_data_source_row_hierarchy AS hierarchy
+    JOIN notes_pages AS parent ON parent.id = hierarchy.parent_row_page_id
+    WHERE hierarchy.row_page_id = notes_pages.id
+      AND hierarchy.data_source_id = notes_pages.parent_data_source_id
+      AND parent.parent_type = 'data_source_id'
+      AND parent.parent_data_source_id = hierarchy.data_source_id
+)
+WHERE parent_type = 'data_source_id'
+  AND id IN (SELECT row_page_id FROM notes_data_source_row_hierarchy);
+DROP INDEX idx_notes_data_source_row_hierarchy_parent;
+DROP TABLE notes_data_source_row_hierarchy;
+CREATE INDEX idx_notes_pages_parent_row
+    ON notes_pages(parent_row_page_id)
+    WHERE parent_row_page_id IS NOT NULL;
+
 -- Both sides of every relation edge, as the link from a page under one of its relation
 -- properties. The forward side is the stored edge; the reverse side is the edge read by target
 -- under the peer property of a two-way relation pair. Edges whose property is no longer a relation

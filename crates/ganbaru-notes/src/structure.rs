@@ -245,22 +245,23 @@ pub(crate) async fn require_page_project_tx(
         .ok_or_else(|| "project not found".to_string())
 }
 
-/// Drop data source row hierarchy links that no longer match the page parent.
-///
-/// A row page keeps its sub-item links only while it stays a row of the same
-/// data source as the linked rows.
+/// Clear the sub-item parent of `page_id` and of its child rows where the two pages
+/// are no longer rows of the same data source.
 pub(crate) async fn detach_row_hierarchy_tx(
     tx: &mut Transaction<'_, Sqlite>,
     page_id: &str,
 ) -> Result<(), String> {
     sqlx::query(
-        "DELETE FROM notes_data_source_row_hierarchy
-         WHERE (row_page_id = ?1 OR parent_row_page_id = ?1)
+        "UPDATE notes_pages AS child
+         SET parent_row_page_id = NULL
+         WHERE (child.id = ?1 OR child.parent_row_page_id = ?1)
+           AND child.parent_row_page_id IS NOT NULL
            AND NOT EXISTS (
-               SELECT 1 FROM notes_pages AS page
-               WHERE page.id = ?1
-                 AND page.parent_type = 'data_source_id'
-                 AND page.parent_data_source_id = notes_data_source_row_hierarchy.data_source_id
+               SELECT 1 FROM notes_pages AS parent
+               WHERE parent.id = child.parent_row_page_id
+                 AND child.parent_type = 'data_source_id'
+                 AND parent.parent_type = 'data_source_id'
+                 AND parent.parent_data_source_id = child.parent_data_source_id
            )",
     )
     .bind(page_id)

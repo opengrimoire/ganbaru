@@ -6,6 +6,7 @@ use super::{DomainManifest, Manifest};
 
 pub mod calendar;
 pub mod contacts;
+pub mod distractions;
 pub mod music;
 pub mod preferences;
 pub mod projects;
@@ -13,7 +14,7 @@ pub mod quick_notes;
 pub mod themes;
 
 /// Current vault manifest version.
-pub const VAULT_MANIFEST_VERSION: u16 = 8;
+pub const VAULT_MANIFEST_VERSION: u16 = 9;
 
 /// Registered vault domains in dependency order, one line per domain.
 pub const VAULT_DOMAINS: &[&DomainManifest] = &[
@@ -24,6 +25,7 @@ pub const VAULT_DOMAINS: &[&DomainManifest] = &[
     &music::DOMAIN,
     &projects::DOMAIN,
     &calendar::DOMAIN,
+    &distractions::DOMAIN,
 ];
 
 /// The vault manifest.

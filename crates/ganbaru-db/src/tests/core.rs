@@ -233,6 +233,13 @@ fn schema_normalizes_domain_storage_with_explicit_receipt_and_runtime_envelopes(
             ("music_session_checkpoints", "checkpoint_json"),
             ("music_session_receipts", "result_json"),
             ("calendar_edit_receipts", "result_json"),
+            // Desktop process names replicate with the app name they belong to as one value,
+            // a bounded list of plain strings with no identity of its own.
+            ("distractions_app_rules", "match_names_json"),
+            (
+                "distractions_usage_limit_entries",
+                "desktop_app_match_names_json",
+            ),
         ];
         let mut observed_envelopes = std::collections::BTreeSet::new();
         for row in rows {

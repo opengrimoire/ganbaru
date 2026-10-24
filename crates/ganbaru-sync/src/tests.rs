@@ -5,6 +5,7 @@ mod calendar;
 mod capture;
 mod compaction;
 mod conformance;
+mod distractions;
 mod elision;
 mod engine;
 mod exclusion;

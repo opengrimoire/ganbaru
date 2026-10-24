@@ -11,6 +11,7 @@ import type {
   NotesDataSourceNumberFormat,
 } from "$lib/notes/types";
 import { notesDatabaseParseFilters, notesDatabaseSerializeFilters } from "./filters";
+import { notesDatabaseMatchingProperty } from "./property-cell";
 import { NOTES_DATA_SOURCE_NUMBER_FORMATS } from "$lib/notes/types";
 import { notesDatabaseDateValue, type NotesDatabaseDateValue } from "./date";
 import type { NotesDatabasePropertyDisplayFormat } from "./property-display";
@@ -194,7 +195,7 @@ export function notesDatabaseTableCellText(
   page: NotesPage,
   column: NotesDatabaseTableColumn,
 ): string {
-  const property = Object.values(page.properties).find((value) => propertyMatchesColumn(value, column));
+  const property = notesDatabaseMatchingProperty(page, column);
   if (!isRecord(property)) return "";
   const payload = property[column.type];
   switch (column.type) {
@@ -262,7 +263,7 @@ export function notesDatabaseRowTitle(page: NotesPage, fallback: string): string
 
 /** Read exact option labels without splitting names that contain punctuation. */
 export function notesDatabaseTableOptionNames(page: NotesPage, column: NotesDatabaseTableColumn): string[] {
-  const property = Object.values(page.properties).find((value) => propertyMatchesColumn(value, column));
+  const property = notesDatabaseMatchingProperty(page, column);
   if (!isRecord(property)) return [];
   const payload = property[column.type];
   if (column.type === "multi_select") {
@@ -288,7 +289,7 @@ export function notesDatabaseTableCellEditValue(
 
 /** Read a row's complete date range for editing without losing its timezone. */
 export function notesDatabaseTableDateValue(page: NotesPage, column: NotesDatabaseTableColumn): NotesDatabaseDateValue | null {
-  const property = Object.values(page.properties).find((value) => propertyMatchesColumn(value, column));
+  const property = notesDatabaseMatchingProperty(page, column);
   return isRecord(property) ? notesDatabaseDateValue(property.date) : null;
 }
 
@@ -318,9 +319,7 @@ export function notesDatabaseTableRelationItems(
   page: NotesPage,
   column: NotesDatabaseTableColumn,
 ): NotesDatabaseTableRelationItem[] {
-  const property = Object.values(page.properties).find((value) =>
-    propertyMatchesColumn(value, column)
-  );
+  const property = notesDatabaseMatchingProperty(page, column);
   if (!isRecord(property) || !Array.isArray(property.relation)) return [];
   return property.relation.filter(isRecord).flatMap((item) => {
     const id = readString(item.id);
@@ -396,14 +395,6 @@ function buttonRequiresConfirmation(
   if (type !== "button") return false;
   const config = property.button;
   return isRecord(config) && config.requires_confirmation === true;
-}
-
-function propertyMatchesColumn(value: unknown, column: NotesDatabaseTableColumn): boolean {
-  return (
-    isRecord(value)
-    && value.id === column.id
-    && value.type === column.type
-  );
 }
 
 function richTextPlainText(items: unknown[]): string {

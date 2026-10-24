@@ -1,4 +1,5 @@
 import { notesDatabaseSerializeFilters } from "./filters";
+import { notesDatabaseMatchingPayload } from "./property-cell";
 import {
   notesDatabaseTableCellText,
   notesDatabaseTableColumns,
@@ -287,8 +288,5 @@ function rowPropertyPayload(
   page: NotesPage,
   column: NotesDatabaseTableColumn,
 ): unknown {
-  const property = Object.values(page.properties).find((value) =>
-    isRecord(value) && value.id === column.id && value.type === column.type
-  );
-  return isRecord(property) ? property[column.type] : null;
+  return notesDatabaseMatchingPayload(page, column);
 }

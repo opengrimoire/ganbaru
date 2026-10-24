@@ -1,34 +1,20 @@
+//! Restores a project version as a diff against the current project graph.
+//!
+//! Bundle rows that are still part of the project keep their ids and are rewritten in place.
+//! Bundle pages and blocks that left the project or no longer exist come back as copies under
+//! fresh ids, together with everything nested under them, so a moved graph stays intact where it
+//! now lives and a deleted id is never reused.
+
+mod diff;
+
 use super::{
     NotesProjectHistoryRestorePlanDto, NotesProjectHistoryVersionDto, create_checkpoint,
     json_optional_string, load_manifest_rows_tx, load_manifest_tx, validate_project_id,
 };
 use crate::{links, search, writes};
 use serde_json::Value;
-use sqlx::{AssertSqlSafe, QueryBuilder, Row, Sqlite, SqlitePool, Transaction};
+use sqlx::{QueryBuilder, Row, Sqlite, SqlitePool, Transaction};
 use std::collections::{BTreeMap, HashMap, HashSet};
-
-const RESTORE_TABLE_ORDER: [&str; 20] = [
-    "notes_assets",
-    "notes_folders",
-    "notes_pages",
-    "notes_blocks",
-    "notes_databases",
-    "notes_data_sources",
-    "notes_data_source_row_hierarchy",
-    "notes_database_views",
-    "notes_data_source_templates",
-    "notes_data_source_template_blocks",
-    "notes_page_aliases",
-    "notes_page_notification_settings",
-    "notes_comment_threads",
-    "notes_comments",
-    "notes_comment_reactions",
-    "notes_comment_thread_anchors",
-    "notes_comment_thread_reads",
-    "notes_comment_thread_mutes",
-    "notes_suggestions",
-    "notes_mention_notifications",
-];
 
 fn ids(rows: &BTreeMap<String, Vec<Value>>, table: &str) -> HashSet<String> {
     rows.get(table)
@@ -105,7 +91,14 @@ async fn restore_plan(
         .count() as i64;
     let plan = NotesProjectHistoryRestorePlanDto {
         version_id: version_id.to_string(),
-        remove_count: current_pages.difference(&historical_pages).count() as i64,
+        remove_count: current
+            .rows_by_table
+            .get("notes_pages")
+            .into_iter()
+            .flatten()
+            .filter(|row| row.get("in_trash").and_then(Value::as_i64) == Some(0))
+            .filter(|row| !value_in(row, "id", &historical_pages))
+            .count() as i64,
         recreate_count: historical_pages.difference(&current_pages).count() as i64 - copy_count,
         change_count,
         copy_count,
@@ -134,6 +127,7 @@ pub(super) async fn restore_version(
 ) -> Result<NotesProjectHistoryVersionDto, String> {
     let project_id = validate_project_id(project_id)?;
     let (_, mut historical) = restore_plan(pool, &project_id, version_id).await?;
+    diff::refuse_outdated_bundle(&historical)?;
     create_checkpoint(
         pool,
         &project_id,
@@ -143,10 +137,9 @@ pub(super) async fn restore_version(
         "Before version history restore",
     )
     .await?;
-    let current = super::scope::load_project_graph(pool, &project_id).await?;
-    let current_folder_ids = ids(&current.rows_by_table, "notes_folders");
-    let current_page_ids = ids(&current.rows_by_table, "notes_pages");
-    let historical_page_ids = ids(&historical, "notes_pages");
+    let current = super::scope::load_project_graph(pool, &project_id)
+        .await?
+        .rows_by_table;
     let mut tx = pool
         .begin()
         .await
@@ -155,19 +148,17 @@ pub(super) async fn restore_version(
         .execute(&mut *tx)
         .await
         .map_err(|e| format!("defer Notes restore foreign keys: {e}"))?;
-    let moved_page_ids =
-        existing_outside_page_ids_tx(&mut tx, &historical_page_ids, &current_page_ids).await?;
-    let copy_scope = copied_graph_scope(&historical, &moved_page_ids);
+    let copy_scope = copied_graph_scope(&historical, &current);
     let id_map = create_copy_id_map(&mut tx, &historical, &copy_scope).await?;
-    remap_copy_rows(&mut historical, &copy_scope, &id_map);
+    remap_copy_rows(&mut historical, &id_map);
     resolve_copied_alias_conflicts_tx(&mut tx, &mut historical, &id_map).await?;
     suppress_historical_notifications(&mut historical);
-    preserve_page_history_tx(&mut tx, &historical_page_ids).await?;
-    delete_current_project_pages_tx(&mut tx, &current_page_ids).await?;
-    delete_current_project_folders_tx(&mut tx, &current_folder_ids).await?;
-    insert_historical_rows_tx(&mut tx, &historical).await?;
+    let mut touched_page_ids = ids(&current, "notes_pages");
+    touched_page_ids.extend(ids(&historical, "notes_pages"));
+    diff::remove_omitted_rows_tx(&mut tx, &current, &historical, &id_map).await?;
+    diff::write_bundle_rows_tx(&mut tx, &current, &historical).await?;
+    diff::clear_page_derived_state_tx(&mut tx, &touched_page_ids).await?;
     validate_restored_hierarchy_tx(&mut tx, &historical).await?;
-    restore_preserved_page_history_tx(&mut tx).await?;
     sqlx::query("DELETE FROM notes_project_history_dirty WHERE project_id = ?")
         .bind(&project_id)
         .execute(&mut *tx)
@@ -208,82 +199,6 @@ pub(super) async fn restore_version(
     super::version_from_row(&row)
 }
 
-async fn preserve_page_history_tx(
-    tx: &mut Transaction<'_, Sqlite>,
-    restored_page_ids: &HashSet<String>,
-) -> Result<(), String> {
-    sqlx::query("DROP TABLE IF EXISTS temp.notes_restore_page_history")
-        .execute(&mut **tx)
-        .await
-        .map_err(|e| format!("clear temporary Notes page history restore table: {e}"))?;
-    if restored_page_ids.is_empty() {
-        sqlx::query(
-            "CREATE TEMP TABLE notes_restore_page_history
-             AS SELECT * FROM notes_page_history_snapshots WHERE 0",
-        )
-        .execute(&mut **tx)
-        .await
-        .map_err(|e| format!("create empty temporary Notes page history table: {e}"))?;
-        return Ok(());
-    }
-    let mut query = QueryBuilder::<Sqlite>::new(
-        "CREATE TEMP TABLE notes_restore_page_history AS
-         SELECT * FROM notes_page_history_snapshots WHERE page_id IN (",
-    );
-    let mut separated = query.separated(", ");
-    for page_id in restored_page_ids {
-        separated.push_bind(page_id);
-    }
-    separated.push_unseparated(")");
-    query
-        .build()
-        .execute(&mut **tx)
-        .await
-        .map_err(|e| format!("preserve Notes page history during project restore: {e}"))?;
-    Ok(())
-}
-
-async fn restore_preserved_page_history_tx(tx: &mut Transaction<'_, Sqlite>) -> Result<(), String> {
-    sqlx::query(
-        "INSERT OR IGNORE INTO notes_page_history_snapshots
-         SELECT * FROM temp.notes_restore_page_history",
-    )
-    .execute(&mut **tx)
-    .await
-    .map_err(|e| format!("restore preserved Notes page history records: {e}"))?;
-    sqlx::query("DROP TABLE temp.notes_restore_page_history")
-        .execute(&mut **tx)
-        .await
-        .map_err(|e| format!("drop temporary Notes page history restore table: {e}"))?;
-    Ok(())
-}
-
-async fn existing_outside_page_ids_tx(
-    tx: &mut Transaction<'_, Sqlite>,
-    historical_page_ids: &HashSet<String>,
-    current_page_ids: &HashSet<String>,
-) -> Result<HashSet<String>, String> {
-    if historical_page_ids.is_empty() {
-        return Ok(HashSet::new());
-    }
-    let mut query = QueryBuilder::<Sqlite>::new("SELECT id FROM notes_pages WHERE id IN (");
-    let mut separated = query.separated(", ");
-    for id in historical_page_ids {
-        separated.push_bind(id);
-    }
-    separated.push_unseparated(")");
-    let rows = query
-        .build()
-        .fetch_all(&mut **tx)
-        .await
-        .map_err(|e| format!("load moved Notes history pages: {e}"))?;
-    Ok(rows
-        .into_iter()
-        .filter_map(|row| row.try_get::<String, _>("id").ok())
-        .filter(|id| !current_page_ids.contains(id))
-        .collect())
-}
-
 #[derive(Default)]
 struct CopyScope {
     page_ids: HashSet<String>,
@@ -295,12 +210,24 @@ struct CopyScope {
     comment_ids: HashSet<String>,
 }
 
+/// Collects the bundle rows restored as copies: every bundle page and block that is not part of
+/// the current project graph, and everything nested under them. A page, its `child_page` block,
+/// and a database and its `child_database` block share an id, so each pair is copied together.
 fn copied_graph_scope(
     rows: &BTreeMap<String, Vec<Value>>,
-    moved_page_ids: &HashSet<String>,
+    current: &BTreeMap<String, Vec<Value>>,
 ) -> CopyScope {
+    let current_page_ids = ids(current, "notes_pages");
+    let current_block_ids = ids(current, "notes_blocks");
     let mut scope = CopyScope {
-        page_ids: moved_page_ids.clone(),
+        page_ids: ids(rows, "notes_pages")
+            .difference(&current_page_ids)
+            .cloned()
+            .collect(),
+        block_ids: ids(rows, "notes_blocks")
+            .difference(&current_block_ids)
+            .cloned()
+            .collect(),
         ..CopyScope::default()
     };
     loop {
@@ -311,12 +238,16 @@ fn copied_graph_scope(
             scope.data_source_ids.len(),
         );
         for row in rows.get("notes_blocks").into_iter().flatten() {
-            if value_in(row, "page_id", &scope.page_ids) {
+            if value_in(row, "page_id", &scope.page_ids)
+                || value_in(row, "id", &scope.page_ids)
+                || value_in(row, "parent_block_id", &scope.block_ids)
+            {
                 insert_row_id(&mut scope.block_ids, row);
             }
         }
         for row in rows.get("notes_databases").into_iter().flatten() {
-            if value_in(row, "parent_page_id", &scope.page_ids)
+            if value_in(row, "id", &scope.block_ids)
+                || value_in(row, "parent_page_id", &scope.page_ids)
                 || value_in(row, "parent_block_id", &scope.block_ids)
             {
                 insert_row_id(&mut scope.database_ids, row);
@@ -328,7 +259,8 @@ fn copied_graph_scope(
             }
         }
         for row in rows.get("notes_pages").into_iter().flatten() {
-            if value_in(row, "parent_page_id", &scope.page_ids)
+            if value_in(row, "id", &scope.block_ids)
+                || value_in(row, "parent_page_id", &scope.page_ids)
                 || value_in(row, "parent_block_id", &scope.block_ids)
                 || value_in(row, "parent_data_source_id", &scope.data_source_ids)
             {
@@ -427,6 +359,9 @@ async fn create_copy_id_map(
             let Some(id) = json_optional_string(row, "id") else {
                 continue;
             };
+            if map.contains_key(&id) {
+                continue;
+            }
             let replacement = writes::new_note_id(tx, &mut reserved).await?;
             map.insert(id, replacement);
         }
@@ -434,16 +369,15 @@ async fn create_copy_id_map(
     Ok(map)
 }
 
-fn remap_copy_rows(
-    rows: &mut BTreeMap<String, Vec<Value>>,
-    scope: &CopyScope,
-    id_map: &HashMap<String, String>,
-) {
-    for (table, table_rows) in rows {
+/// Points every bundle row at the copies, so restored rows that mention or nest under a copied
+/// row reference the copy rather than the original.
+fn remap_copy_rows(rows: &mut BTreeMap<String, Vec<Value>>, id_map: &HashMap<String, String>) {
+    if id_map.is_empty() {
+        return;
+    }
+    for table_rows in rows.values_mut() {
         for row in table_rows {
-            if row_is_in_copy_scope(table, row, scope) {
-                remap_value(row, id_map);
-            }
+            remap_value(row, id_map);
         }
     }
 }
@@ -547,75 +481,6 @@ fn suppress_historical_notifications(rows: &mut BTreeMap<String, Vec<Value>>) {
         }
     }
 }
-
-async fn delete_current_project_pages_tx(
-    tx: &mut Transaction<'_, Sqlite>,
-    page_ids: &HashSet<String>,
-) -> Result<(), String> {
-    if page_ids.is_empty() {
-        return Ok(());
-    }
-    let mut query = QueryBuilder::<Sqlite>::new("DELETE FROM notes_pages WHERE id IN (");
-    let mut separated = query.separated(", ");
-    for id in page_ids {
-        separated.push_bind(id);
-    }
-    separated.push_unseparated(")");
-    query
-        .build()
-        .execute(&mut **tx)
-        .await
-        .map_err(|e| format!("remove current project Notes before restore: {e}"))?;
-    Ok(())
-}
-
-async fn delete_current_project_folders_tx(
-    tx: &mut Transaction<'_, Sqlite>,
-    folder_ids: &HashSet<String>,
-) -> Result<(), String> {
-    if folder_ids.is_empty() {
-        return Ok(());
-    }
-    let mut query = QueryBuilder::<Sqlite>::new("DELETE FROM notes_folders WHERE id IN (");
-    let mut separated = query.separated(", ");
-    for id in folder_ids {
-        separated.push_bind(id);
-    }
-    separated.push_unseparated(")");
-    query
-        .build()
-        .execute(&mut **tx)
-        .await
-        .map_err(|e| format!("remove current project Notes folders before restore: {e}"))?;
-    Ok(())
-}
-
-async fn insert_historical_rows_tx(
-    tx: &mut Transaction<'_, Sqlite>,
-    rows: &BTreeMap<String, Vec<Value>>,
-) -> Result<(), String> {
-    for table in RESTORE_TABLE_ORDER {
-        let Some(table_rows) = rows.get(table) else {
-            continue;
-        };
-        if table == "notes_folders" {
-            for row in folder_rows_in_restore_order(table_rows)? {
-                insert_json_row_tx(tx, table, row, false).await?;
-            }
-            continue;
-        }
-        for row in table_rows {
-            insert_json_row_tx(tx, table, row, table == "notes_assets").await?;
-        }
-    }
-    if let Some(asset_references) = rows.get("notes_asset_references") {
-        for row in asset_references {
-            insert_json_row_tx(tx, "notes_asset_references", row, false).await?;
-        }
-    }
-    Ok(())
-}
-
 /// Keep untrusted snapshot edges inside the graph being restored, then validate canonical ownership.
 async fn validate_restored_hierarchy_tx(
     tx: &mut Transaction<'_, Sqlite>,
@@ -682,49 +547,6 @@ fn folder_rows_in_restore_order(rows: &[Value]) -> Result<Vec<&Value>, String> {
     }
     Ok(ordered)
 }
-
-async fn insert_json_row_tx(
-    tx: &mut Transaction<'_, Sqlite>,
-    table: &str,
-    row: &Value,
-    ignore_conflict: bool,
-) -> Result<(), String> {
-    let object = row
-        .as_object()
-        .ok_or_else(|| format!("Notes history {table} row is not an object"))?;
-    if object.is_empty() {
-        return Err(format!("Notes history {table} row is empty"));
-    }
-    let columns = object.keys().collect::<Vec<_>>();
-    let verb = if ignore_conflict {
-        "INSERT OR IGNORE"
-    } else {
-        "INSERT"
-    };
-    let column_sql = columns
-        .iter()
-        .map(|column| format!("\"{}\"", column.replace('"', "\"\"")))
-        .collect::<Vec<_>>()
-        .join(", ");
-    let value_sql = columns
-        .iter()
-        .map(|column| format!("json_extract(?, '$.{}')", column.replace('\'', "''")))
-        .collect::<Vec<_>>()
-        .join(", ");
-    let sql = format!("{verb} INTO \"{table}\" ({column_sql}) VALUES ({value_sql})");
-    let row_json = serde_json::to_string(row)
-        .map_err(|e| format!("serialize Notes history {table} row: {e}"))?;
-    let mut query = sqlx::query(AssertSqlSafe(sql.as_str()));
-    for _ in &columns {
-        query = query.bind(&row_json);
-    }
-    query
-        .execute(&mut **tx)
-        .await
-        .map_err(|e| format!("restore Notes history row in {table}: {e}"))?;
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::{folder_rows_in_restore_order, restore_version};

@@ -37,7 +37,6 @@ pub const BUNDLE_DIRECTORIES: &[&str] = &[
     "reports",
     "assets",
     "templates",
-    ".yjs",
 ];
 /// Directory whose direct children are project working folders.
 const BUNDLE_PROJECTS_DIRECTORY: &str = "projects";

@@ -22,6 +22,9 @@ pub(super) async fn load_manifest_tx(
     let raw = load_bundle_tx(tx, &version.manifest_hash).await?;
     let manifest: ProjectHistoryManifest = serde_json::from_slice(&raw)
         .map_err(|e| format!("parse Notes project history manifest: {e}"))?;
+    if manifest.schema_version < HISTORY_SCHEMA_VERSION {
+        return Err(OLDER_NOTES_FORMAT_ERROR.to_string());
+    }
     if manifest.schema_version != HISTORY_SCHEMA_VERSION || manifest.project_id != project_id {
         return Err("Notes project history manifest metadata is invalid".to_string());
     }

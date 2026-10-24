@@ -85,3 +85,56 @@ fn manifests_that_repeat_a_row_are_refused() {
         );
     });
 }
+
+#[test]
+fn versions_saved_in_an_older_notes_format_stay_listed_but_refuse_to_open_or_restore() {
+    crate::test_block_on(async {
+        let pool = migrated_pool().await;
+        let version_id = checkpointed_version(&pool).await;
+        let mut tx = pool.begin().await.unwrap();
+        let (mut manifest, _) = load_manifest_tx(&mut tx, PROJECT_ID, &version_id)
+            .await
+            .unwrap();
+        manifest.schema_version = 1;
+        let raw = serde_json::to_vec(&manifest).unwrap();
+        let manifest_hash = store_bundle_tx(&mut tx, "manifest", &raw).await.unwrap();
+        sqlx::query("UPDATE notes_project_history_versions SET manifest_hash = ? WHERE id = ?")
+            .bind(&manifest_hash)
+            .bind(&version_id)
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+
+        let listed = crate::project_history::reads::notes_list_project_history_versions(
+            &pool,
+            PROJECT_ID.to_string(),
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        assert!(
+            listed
+                .versions
+                .iter()
+                .any(|version| version.id == version_id)
+        );
+        let Err(open_error) =
+            notes_load_project_history_tree(&pool, PROJECT_ID.to_string(), version_id.clone())
+                .await
+        else {
+            panic!("an older format version opened");
+        };
+        assert_eq!(open_error, crate::project_history::OLDER_NOTES_FORMAT_ERROR);
+        let Err(restore_error) = restore::restore_version(&pool, PROJECT_ID, &version_id).await
+        else {
+            panic!("an older format version restored");
+        };
+        assert_eq!(
+            restore_error,
+            crate::project_history::OLDER_NOTES_FORMAT_ERROR
+        );
+    });
+}

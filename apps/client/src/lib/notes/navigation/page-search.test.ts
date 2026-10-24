@@ -1,5 +1,4 @@
 import { describe, expect, it } from "vitest";
-import { NOTES_PAGE_PROJECT_ID_PROPERTY } from "$lib/notes/project-membership";
 import type { NotesPage, NotesSearchResult, NotesSearchResultType } from "$lib/notes/types";
 import {
   NOTES_SEARCH_QUERY_MAX_CHARS,
@@ -19,7 +18,8 @@ function page(id: string, projectId?: string): NotesPage {
     archived: false,
     icon: null,
     cover: null,
-    properties: projectId ? { [NOTES_PAGE_PROJECT_ID_PROPERTY]: projectId } : {},
+    project_id: projectId ?? null,
+    properties: {},
     url: null,
     public_url: null,
     source_provider: null,

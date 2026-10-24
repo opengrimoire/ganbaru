@@ -386,16 +386,6 @@ pub async fn notes_local_user<R: Runtime>(
 }
 
 #[tauri::command]
-pub async fn notes_update_local_user<R: Runtime>(
-    app: AppHandle<R>,
-    db_url: String,
-    update: NoteLocalUserUpdate,
-) -> Result<NoteLocalUserDto, String> {
-    let pool = connect_sqlite(app, db_url).await?;
-    local_user::update_local_user(&pool, update).await
-}
-
-#[tauri::command]
 pub async fn notes_list_page_templates<R: Runtime>(
     app: AppHandle<R>,
     db_url: String,

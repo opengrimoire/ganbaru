@@ -156,10 +156,11 @@ pub(crate) async fn load_row_page_tx(
         }
     }
 
-    let mut query = QueryBuilder::<Sqlite>::new(
-        "SELECT page.* FROM notes_pages AS page \
+    let mut query = QueryBuilder::<Sqlite>::new(format!(
+        "SELECT {} FROM notes_pages AS page \
          WHERE page.parent_type = 'data_source_id' AND page.parent_data_source_id = ",
-    );
+        crate::structure::page_row_columns("page")
+    ));
     query.push_bind(data_source_id);
     query.push(" AND page.in_trash = 0 AND page.archived = 0");
     push_filters(&mut query, schema, filters);

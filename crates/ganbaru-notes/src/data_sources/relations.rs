@@ -198,14 +198,15 @@ pub async fn rebuild_data_source_relation_links_tx(
     .execute(&mut **tx)
     .await
     .map_err(|e| format!("delete notes data source relation links: {e}"))?;
-    let rows = sqlx::query_as::<_, NotePageRow>(
-        "SELECT *
+    let rows = sqlx::query_as::<_, NotePageRow>(sqlx::AssertSqlSafe(format!(
+        "SELECT {}
          FROM notes_pages
          WHERE parent_type = 'data_source_id'
            AND parent_data_source_id = ?
            AND in_trash = 0
            AND archived = 0",
-    )
+        crate::structure::page_row_columns("notes_pages")
+    )))
     .bind(data_source_id)
     .fetch_all(&mut **tx)
     .await
@@ -397,15 +398,16 @@ async fn update_inverse_relation_value_tx(
     target_page_id: &str,
     should_add: bool,
 ) -> Result<(), String> {
-    let Some(mut row) = sqlx::query_as::<_, NotePageRow>(
-        "SELECT *
+    let Some(mut row) = sqlx::query_as::<_, NotePageRow>(sqlx::AssertSqlSafe(format!(
+        "SELECT {}
          FROM notes_pages
          WHERE id = ?
            AND parent_type = 'data_source_id'
            AND parent_data_source_id = ?
            AND in_trash = 0
            AND archived = 0",
-    )
+        crate::structure::page_row_columns("notes_pages")
+    )))
     .bind(inverse_page_id)
     .bind(inverse_data_source_id)
     .fetch_optional(&mut **tx)

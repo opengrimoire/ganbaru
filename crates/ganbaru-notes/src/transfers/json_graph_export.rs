@@ -163,7 +163,6 @@ pub async fn project_history_source_rows(
     let excluded = [
         "notes_backlink_index",
         "notes_backlink_index_state",
-        "notes_collaboration_operations",
         "notes_data_source_relation_links",
         "notes_data_source_rollup_cache",
         "notes_link_facts",
@@ -308,7 +307,7 @@ fn table_family(name: &str) -> TableFamily {
             | "notes_comment_thread_mutes"
             | "notes_page_notification_settings"
             | "notes_mention_notifications"
-            | "notes_collaboration_operations"
+            | "notes_block_view_state"
     ) {
         return TableFamily::LocalState;
     }
@@ -322,9 +321,7 @@ fn table_section(name: &str) -> &'static str {
     if name == "notes_blocks" {
         return "blocks";
     }
-    if name.starts_with("notes_comment")
-        || matches!(name, "notes_suggestions" | "notes_collaboration_operations")
-    {
+    if name.starts_with("notes_comment") || name == "notes_suggestions" {
         return "comments";
     }
     if name.starts_with("notes_database")
@@ -333,13 +330,7 @@ fn table_section(name: &str) -> &'static str {
     {
         return "data_sources";
     }
-    if matches!(
-        name,
-        "notes_assets"
-            | "notes_asset_references"
-            | "notes_page_icon_assets"
-            | "notes_page_cover_assets"
-    ) {
+    if matches!(name, "notes_assets" | "notes_asset_references") {
         return "files";
     }
     if table_family(name) == TableFamily::Index {
@@ -363,7 +354,8 @@ fn json_column(table: &str, column: &str) -> bool {
         ("notes_pages", "properties")
             | ("notes_pages", "icon")
             | ("notes_pages", "cover")
-            | ("notes_blocks", "payload")
+            | ("notes_blocks", "attrs")
+            | ("notes_blocks", "text")
             | ("notes_databases", "title_rich_text")
             | ("notes_databases", "description")
             | ("notes_databases", "icon")
@@ -390,8 +382,6 @@ fn json_column(table: &str, column: &str) -> bool {
             | ("notes_comments", "attachments")
             | ("notes_comment_reactions", "display_name")
             | ("notes_suggestions", "display_name")
-            | ("notes_collaboration_operations", "actor_display_name")
-            | ("notes_collaboration_operations", "payload")
             | ("notes_data_source_rollup_cache", "value")
             | ("notes_undo_state", "state_json")
     )
@@ -415,7 +405,7 @@ fn order_by_columns(table: &str, columns: &[String]) -> String {
             "parent_type",
             "parent_page_id",
             "parent_block_id",
-            "sort_order",
+            "order_key",
             "id",
         ],
         "notes_asset_references" => vec!["owner_type", "owner_id", "role", "asset_id"],
@@ -423,7 +413,6 @@ fn order_by_columns(table: &str, columns: &[String]) -> String {
             vec!["source_page_id", "source_property_id", "target_page_id"]
         }
         "notes_data_source_rollup_cache" => vec!["source_page_id", "source_property_id"],
-        "notes_collaboration_operations" => vec!["sequence"],
         _ => vec!["id", "page_id", "created_time", "updated_at"],
     };
     let order_columns = preferred

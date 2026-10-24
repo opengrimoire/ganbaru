@@ -141,11 +141,12 @@ fn deleting_default_view_replaces_its_source_pair_and_linked_creation_uses_that_
         databases::view_management::delete_database_view(&pool, DATABASE_A, DATABASE_VIEW_A)
             .await
             .unwrap();
-        let raw: String = sqlx::query_scalar("SELECT payload FROM notes_blocks WHERE id = ?")
-            .bind(DATABASE_A)
-            .fetch_one(&pool)
-            .await
-            .unwrap();
+        let raw: String =
+            sqlx::query_scalar("SELECT json_patch(attrs, text) FROM notes_blocks WHERE id = ?")
+                .bind(DATABASE_A)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
         let payload: Value = serde_json::from_str(&raw).unwrap();
         assert_eq!(payload["view_id"], DATABASE_VIEW_B);
         assert_eq!(payload["data_source_id"], DATA_SOURCE_B);
@@ -316,18 +317,20 @@ fn database_sources_create_attach_and_keep_shared_rows_with_independent_views() 
         .await
         .unwrap();
         create_page(&pool, PAGE_C, "99999999-9999-4999-8999-999999999999").await;
-        sqlx::query("UPDATE notes_pages SET title = 'Projects', folder_id = ?, properties = json_set(properties, '$.__ganbaru_project_id', 'project') WHERE id = ?")
+        sqlx::query("UPDATE notes_pages SET title = 'Projects', folder_id = ?, project_id = 'project' WHERE id = ?")
             .bind(folder_id)
             .bind(PAGE_C)
             .execute(&pool)
             .await
             .unwrap();
-        sqlx::query(
-            "UPDATE notes_pages SET parent_type = 'page_id', parent_page_id = ? WHERE id = ?",
+        writes::move_page(
+            &pool,
+            PAGE_A,
+            crate::models::NoteMovePage {
+                parent: page_parent(PAGE_C),
+                folder_id: None,
+            },
         )
-        .bind(PAGE_C)
-        .bind(PAGE_A)
-        .execute(&pool)
         .await
         .unwrap();
         let listed = serde_json::to_value(

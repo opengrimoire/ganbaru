@@ -140,7 +140,7 @@ impl CopyBudget {
                 SELECT bytes FROM selected_threads
                 UNION ALL
                 SELECT length(CAST(comment.rich_text AS BLOB)) + length(CAST(comment.plain_text AS BLOB))
-                    + length(CAST(comment.created_by AS BLOB)) + length(CAST(comment.display_name AS BLOB))
+                    + length(CAST(comment.created_by AS BLOB)) + COALESCE(length(CAST(comment.display_name AS BLOB)), 0)
                     + length(CAST(comment.attachments AS BLOB))
                 FROM notes_comments AS comment JOIN selected_threads ON comment.thread_id = selected_threads.id
                 LIMIT ?

@@ -27,6 +27,7 @@ fn html_export_writes_page_tree_assets_comments_and_database_metadata() {
                 title: "Child Page".to_string(),
                 parent: page_parent(PAGE_A),
                 folder_id: None,
+                project_id: None,
                 first_block_id: BLOCK_B.to_string(),
                 after_block_id: Some(BLOCK_A.to_string()),
                 properties: None,

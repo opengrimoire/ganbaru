@@ -23,7 +23,8 @@ pub async fn mark_project_dirty_tx(
         return Ok(());
     }
     let local_user = local_user::current_local_user_tx(tx).await?;
-    let display_name = local_user::comment_display_name_json(&local_user.display_name);
+    let display_name =
+        local_user::comment_display_name_json(&local_user::local_author_name(tx).await?);
     sqlx::query(
         "INSERT INTO notes_project_history_dirty (
             project_id, first_dirty_at, last_dirty_at, actor_id,
@@ -190,52 +191,21 @@ pub async fn ensure_blocks_baseline_for_mutation(
     Ok(())
 }
 
+/// The project of `page_id`, stored or derived from its ancestors, or none for a page
+/// outside every project or a missing page.
 pub(crate) async fn resolve_project_id_for_page_tx(
     tx: &mut Transaction<'_, Sqlite>,
     page_id: &str,
 ) -> Result<Option<String>, String> {
-    sqlx::query_scalar(
-        "WITH RECURSIVE ancestors(id, parent_page_id, properties) AS (
-             SELECT page.id,
-                    COALESCE(
-                        page.parent_page_id,
-                        (SELECT block.page_id FROM notes_blocks AS block
-                         WHERE block.id = page.parent_block_id),
-                        (SELECT COALESCE(database.parent_page_id, database_block.page_id)
-                         FROM notes_data_sources AS data_source
-                         JOIN notes_databases AS database ON database.id = data_source.database_id
-                         LEFT JOIN notes_blocks AS database_block ON database_block.id = database.id
-                         WHERE data_source.id = page.parent_data_source_id)
-                    ),
-                    page.properties
-             FROM notes_pages AS page
-             WHERE page.id = ?
-             UNION ALL
-             SELECT parent.id,
-                    COALESCE(
-                        parent.parent_page_id,
-                        (SELECT block.page_id FROM notes_blocks AS block
-                         WHERE block.id = parent.parent_block_id),
-                        (SELECT COALESCE(database.parent_page_id, database_block.page_id)
-                         FROM notes_data_sources AS data_source
-                         JOIN notes_databases AS database ON database.id = data_source.database_id
-                         LEFT JOIN notes_blocks AS database_block ON database_block.id = database.id
-                         WHERE data_source.id = parent.parent_data_source_id)
-                    ),
-                    parent.properties
-             FROM notes_pages AS parent
-             JOIN ancestors AS child ON child.parent_page_id = parent.id
-         )
-         SELECT project.id
-         FROM ancestors
-         JOIN projects AS project
-           ON project.id = trim(json_extract(ancestors.properties, '$.__ganbaru_project_id'))
-         LIMIT 1",
-    )
+    let project: Option<Option<String>> = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+        "SELECT {} FROM notes_pages AS page WHERE page.id = ?",
+        crate::structure::page_project_sql("page")
+    )))
     .bind(page_id)
     .fetch_optional(&mut **tx)
     .await
-    .map_err(|e| format!("resolve Notes history project for page: {e}"))
+    .map_err(|e| format!("resolve Notes history project for page: {e}"))?;
+    Ok(project.flatten())
 }
 
 pub async fn page_history_enabled_tx(

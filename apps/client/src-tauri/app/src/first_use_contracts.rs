@@ -540,10 +540,10 @@ fn empty_notes_first_use_has_a_fixed_backend_contract() {
         metrics.sql = trace.counts;
         let response = serde_json::to_value(&shell).expect("serialize Notes workspace shell");
         assert_eq!(response["navigation_databases"], serde_json::json!([]));
+        // Shell page reads name `notes_blocks`, `notes_databases`, and `notes_data_sources`
+        // only inside the derived page project walk, which runs for nested pages alone, so
+        // those containers are not listed here.
         for optional_table in [
-            "notes_blocks",
-            "notes_databases",
-            "notes_data_sources",
             "notes_database_views",
             "notes_page_templates",
             "notes_local_users",

@@ -29,6 +29,7 @@ fn exact_page_create_retry_returns_the_existing_page() {
             title: "First page".to_string(),
             parent: workspace_parent(),
             folder_id: None,
+            project_id: None,
             first_block_id: BLOCK_A.to_string(),
             after_block_id: None,
             properties: None,
@@ -61,6 +62,7 @@ fn page_create_retry_rejects_mismatched_or_partial_data() {
                 title: "Different title".to_string(),
                 parent: workspace_parent(),
                 folder_id: None,
+                project_id: None,
                 first_block_id: BLOCK_A.to_string(),
                 after_block_id: None,
                 properties: None,
@@ -83,6 +85,7 @@ fn page_create_retry_rejects_mismatched_or_partial_data() {
                 title: "First page".to_string(),
                 parent: workspace_parent(),
                 folder_id: None,
+                project_id: None,
                 first_block_id: BLOCK_A.to_string(),
                 after_block_id: None,
                 properties: None,
@@ -96,9 +99,17 @@ fn page_create_retry_rejects_mismatched_or_partial_data() {
 }
 
 #[test]
-fn page_rename_preserves_project_metadata_properties() {
+fn page_rename_preserves_project_and_custom_properties() {
     crate::test_block_on(async {
         let pool = migrated_memory_pool().await;
+        sqlx::query("INSERT INTO project_groups (id, name, order_key) VALUES ('rename-group', 'Rename', 'a1')")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO projects (id, group_id, name, order_key) VALUES ('project-a', 'rename-group', 'Project A', 'a1')")
+            .execute(&pool)
+            .await
+            .unwrap();
         writes::create_page(
             &pool,
             NotePageCreate {
@@ -106,10 +117,10 @@ fn page_rename_preserves_project_metadata_properties() {
                 title: "Untitled".to_string(),
                 parent: workspace_parent(),
                 folder_id: None,
+                project_id: Some("project-a".to_string()),
                 first_block_id: BLOCK_A.to_string(),
                 after_block_id: None,
                 properties: Some(json!({
-                    "__ganbaru_project_id": "project-a",
                     "custom": "value"
                 })),
             },
@@ -132,10 +143,7 @@ fn page_rename_preserves_project_metadata_properties() {
         .unwrap();
         let renamed_json = serde_json::to_value(renamed).unwrap();
 
-        assert_eq!(
-            renamed_json["properties"]["__ganbaru_project_id"],
-            "project-a"
-        );
+        assert_eq!(renamed_json["project_id"], "project-a");
         assert_eq!(renamed_json["properties"]["custom"], "value");
         assert_eq!(
             renamed_json["properties"]["title"]["title"][0]["plain_text"],
@@ -157,6 +165,7 @@ fn create_nested_page_appends_child_page_block_to_parent_page() {
                 title: "Nested page".to_string(),
                 parent: page_parent(PAGE_A),
                 folder_id: None,
+                project_id: None,
                 first_block_id: BLOCK_B.to_string(),
                 after_block_id: Some(BLOCK_A.to_string()),
                 properties: None,
@@ -246,6 +255,7 @@ fn page_templates_create_apply_update_duplicate_and_delete() {
             NotePageTemplateApply {
                 parent: workspace_parent(),
                 title: Some("Friday review".to_string()),
+                project_id: None,
             },
         )
         .await
@@ -554,6 +564,124 @@ fn page_history_snapshots_restore_copy_and_retention_settings() {
 }
 
 #[test]
+fn page_history_snapshots_in_an_older_notes_format_stay_listed_but_refuse_to_open_or_restore() {
+    crate::test_block_on(async {
+        let pool = migrated_memory_pool().await;
+        create_page(&pool, PAGE_A, BLOCK_A).await;
+        writes::update_block(
+            &pool,
+            BLOCK_A,
+            block_update("paragraph", paragraph_payload("Draft one")),
+        )
+        .await
+        .unwrap();
+        let snapshots = page_history::list_page_history_snapshots(&pool, PAGE_A)
+            .await
+            .unwrap();
+        let snapshot_id = serde_json::to_value(&snapshots).unwrap()[0]["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let older_blocks = serde_json::json!([{
+            "id": BLOCK_A,
+            "page_id": PAGE_A,
+            "type": "paragraph",
+            "sort_order": 0,
+            "content": "{}"
+        }]);
+        sqlx::query(
+            "UPDATE notes_page_history_snapshots
+             SET blocks = ?, block_bundle_hash = NULL
+             WHERE id = ?",
+        )
+        .bind(older_blocks.to_string())
+        .bind(&snapshot_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let listed = page_history::list_page_history_snapshots(&pool, PAGE_A)
+            .await
+            .unwrap();
+        assert_eq!(listed.len(), 1);
+        let Err(open_error) =
+            page_history::load_page_history_snapshot(&pool, PAGE_A, &snapshot_id).await
+        else {
+            panic!("an older format snapshot opened");
+        };
+        assert_eq!(open_error, crate::project_history::OLDER_NOTES_FORMAT_ERROR);
+        let Err(restore_error) =
+            page_history::restore_page_history_snapshot(&pool, PAGE_A, &snapshot_id).await
+        else {
+            panic!("an older format snapshot restored");
+        };
+        assert_eq!(
+            restore_error,
+            crate::project_history::OLDER_NOTES_FORMAT_ERROR
+        );
+    });
+}
+
+#[test]
+fn page_history_restore_revives_a_child_page_with_its_own_properties() {
+    crate::test_block_on(async {
+        let pool = migrated_memory_pool().await;
+        create_page(&pool, PAGE_A, BLOCK_A).await;
+        writes::create_page(
+            &pool,
+            NotePageCreate {
+                id: PAGE_B.to_string(),
+                title: "Child".to_string(),
+                parent: page_parent(PAGE_A),
+                folder_id: None,
+                project_id: None,
+                first_block_id: BLOCK_C.to_string(),
+                after_block_id: None,
+                properties: None,
+            },
+        )
+        .await
+        .unwrap();
+        let mut tx = pool.begin().await.unwrap();
+        let snapshot_id = page_history::record_page_snapshot_tx(&mut tx, PAGE_A, "manual")
+            .await
+            .unwrap()
+            .expect("the page snapshot is recorded");
+        tx.commit().await.unwrap();
+        sqlx::query(
+            "UPDATE notes_pages
+             SET in_trash = 1,
+                 trash_owner = 'bulk-trash',
+                 trashed_time = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
+                 title = 'Renamed',
+                 properties = json_set(properties, '$.status', 'kept')
+             WHERE id = ?",
+        )
+        .bind(PAGE_B)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        page_history::restore_page_history_snapshot(&pool, PAGE_A, &snapshot_id)
+            .await
+            .unwrap();
+
+        let (in_trash, trash_owner, title, properties): (i64, Option<String>, String, String) =
+            sqlx::query_as(
+                "SELECT in_trash, trash_owner, title, properties FROM notes_pages WHERE id = ?",
+            )
+            .bind(PAGE_B)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!((in_trash, trash_owner, title.as_str()), (0, None, "Child"));
+        let properties: serde_json::Value = serde_json::from_str(&properties).unwrap();
+        assert_eq!(properties["status"], "kept");
+        assert_eq!(properties["title"]["title"][0]["plain_text"], "Child");
+    });
+}
+
+#[test]
 fn page_history_coalesces_rapid_editor_snapshots() {
     crate::test_block_on(async {
         let pool = migrated_memory_pool().await;
@@ -606,6 +734,7 @@ fn sidebar_pages_load_roots_expanded_children_and_selected_ancestors() {
                 title: "Nested".to_string(),
                 parent: page_parent(PAGE_A),
                 folder_id: None,
+                project_id: None,
                 first_block_id: BLOCK_B.to_string(),
                 after_block_id: None,
                 properties: None,
@@ -620,6 +749,7 @@ fn sidebar_pages_load_roots_expanded_children_and_selected_ancestors() {
                 title: "Leaf".to_string(),
                 parent: page_parent(PAGE_B),
                 folder_id: None,
+                project_id: None,
                 first_block_id: BLOCK_C.to_string(),
                 after_block_id: None,
                 properties: None,
@@ -703,6 +833,7 @@ fn sidebar_pages_report_trashed_parents_for_seed_pages() {
                 title: "Nested".to_string(),
                 parent: page_parent(PAGE_A),
                 folder_id: None,
+                project_id: None,
                 first_block_id: BLOCK_B.to_string(),
                 after_block_id: None,
                 properties: None,
@@ -756,6 +887,7 @@ fn create_nested_page_can_insert_after_block_parent_sibling() {
                 title: "Nested under block".to_string(),
                 parent: block_parent(BLOCK_A),
                 folder_id: None,
+                project_id: None,
                 first_block_id: BLOCK_D.to_string(),
                 after_block_id: Some(BLOCK_B.to_string()),
                 properties: None,

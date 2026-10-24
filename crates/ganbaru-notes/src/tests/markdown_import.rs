@@ -307,3 +307,99 @@ fn markdown_import_stops_table_rows_at_the_block_budget() {
     assert!(started.elapsed() < ADVERSARIAL_PARSE_LIMIT);
     assert!(error.contains("up to 1000 blocks"), "{error}");
 }
+
+#[test]
+fn markdown_import_splits_oversized_text_and_keeps_large_unsupported_source_as_text() {
+    crate::test_block_on(async {
+        let pool = migrated_memory_pool().await;
+        let long = "word \u{e9}".repeat(crate::block_storage::MAX_BLOCK_TEXT_BYTES / 5);
+        let html = format!(
+            "<div>{}</div>",
+            "y".repeat(crate::block_storage::MAX_BLOCK_ATTRS_BYTES)
+        );
+        let result = transfers::markdown_import::import_page(
+            &pool,
+            NoteMarkdownImportRequest {
+                parent: workspace_parent(),
+                title: Some("Long".to_string()),
+                source_name: None,
+                after_block_id: None,
+                markdown: format!("{long}\n\n{html}\n"),
+            },
+        )
+        .await
+        .unwrap();
+        let page_id = serde_json::to_value(&result).unwrap()["page"]["page"]["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let rows: Vec<(String, String, i64, i64)> = sqlx::query_as(
+            "SELECT type, plain_text, length(CAST(text AS BLOB)), length(CAST(attrs AS BLOB))
+             FROM notes_blocks WHERE page_id = ? ORDER BY order_key, id",
+        )
+        .bind(&page_id)
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert!(rows.len() > 2, "{}", rows.len());
+        assert!(
+            rows.iter()
+                .all(|(block_type, ..)| block_type == "paragraph")
+        );
+        for (_, _, text_bytes, attrs_bytes) in &rows {
+            assert!(*text_bytes as usize <= crate::block_storage::MAX_BLOCK_TEXT_BYTES);
+            assert!(*attrs_bytes as usize <= crate::block_storage::MAX_BLOCK_ATTRS_BYTES);
+        }
+        let (html_row, text_rows) = rows.split_last().unwrap();
+        let joined: String = text_rows
+            .iter()
+            .map(|(_, plain, ..)| plain.as_str())
+            .collect();
+        assert_eq!(joined.trim_end(), long.trim_end());
+        assert_eq!(html_row.1, html);
+    });
+}
+
+#[test]
+fn split_import_blocks_keep_text_before_children_and_give_continuations_neutral_attributes() {
+    use crate::transfers::import_writer::{ImportBlock, split_oversized_import_blocks};
+    let long = "word ".repeat(crate::block_storage::MAX_BLOCK_TEXT_BYTES / 3);
+    let mut payload = writes::default_text_payload(&long);
+    payload["checked"] = serde_json::Value::Bool(true);
+    payload["color"] = serde_json::Value::String("blue".to_string());
+    let child = ImportBlock::new(
+        "paragraph",
+        writes::default_text_payload("Child"),
+        None,
+        Vec::new(),
+    );
+    let todo = ImportBlock::new(
+        "to_do",
+        payload,
+        Some("source-todo".to_string()),
+        vec![child],
+    );
+
+    let split = split_oversized_import_blocks(vec![todo]).unwrap();
+
+    assert!(split.len() > 1, "{}", split.len());
+    let (first, continuations) = split.split_first().unwrap();
+    assert_eq!(first.source_object_id.as_deref(), Some("source-todo"));
+    assert_eq!(first.payload["checked"], true);
+    assert!(first.children.is_empty());
+    for (index, continuation) in continuations.iter().enumerate() {
+        assert_eq!(continuation.block_type, "to_do");
+        assert_eq!(continuation.source_object_id, None);
+        assert_eq!(continuation.payload["checked"], false);
+        assert_eq!(continuation.payload["color"], "blue");
+        crate::validation::validate_block_payload("to_do", &continuation.payload).unwrap();
+        let holds_children = index + 1 == continuations.len();
+        assert_eq!(!continuation.children.is_empty(), holds_children);
+    }
+    let joined: String = split
+        .iter()
+        .flat_map(|block| block.payload["rich_text"].as_array().unwrap())
+        .map(|item| item["text"]["content"].as_str().unwrap())
+        .collect();
+    assert_eq!(joined, long);
+}

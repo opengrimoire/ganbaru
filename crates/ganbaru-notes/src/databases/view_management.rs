@@ -262,18 +262,20 @@ pub async fn delete_database_view(
         replacement.ok_or_else(|| "a database needs at least one view".to_string())?;
     page_history::record_page_snapshot_tx(&mut tx, &page_id, "delete_database_view").await?;
     project_history::mark_page_dirty_tx(&mut tx, &page_id, "Delete database view", false).await?;
-    let payload: String = sqlx::query_scalar("SELECT payload FROM notes_blocks WHERE id = ?")
+    let attrs: String = sqlx::query_scalar("SELECT attrs FROM notes_blocks WHERE id = ?")
         .bind(database_id)
         .fetch_one(&mut *tx)
         .await
         .map_err(|error| format!("load Notes database block: {error}"))?;
-    let mut payload: Value = serde_json::from_str(&payload)
+    let mut attrs: Value = serde_json::from_str(&attrs)
         .map_err(|error| format!("parse Notes database block: {error}"))?;
-    if payload.get("view_id").and_then(Value::as_str) == Some(view_id) {
-        payload["view_id"] = Value::String(replacement.0);
-        payload["data_source_id"] = Value::String(replacement.1);
-        sqlx::query("UPDATE notes_blocks SET payload = ?, last_edited_time = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?")
-            .bind(payload.to_string())
+    if attrs.get("view_id").and_then(Value::as_str) == Some(view_id) {
+        attrs["view_id"] = Value::String(replacement.0);
+        attrs["data_source_id"] = Value::String(replacement.1);
+        let attrs = attrs.to_string();
+        crate::block_storage::check_block_content_bounds("child_database", &attrs, "{}")?;
+        sqlx::query("UPDATE notes_blocks SET attrs = ?, last_edited_time = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?")
+            .bind(attrs)
             .bind(database_id)
             .execute(&mut *tx)
             .await

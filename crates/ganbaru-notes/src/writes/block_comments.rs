@@ -9,12 +9,13 @@ pub(super) async fn update_block_comment_thread_pages(
     page_id: &str,
 ) -> Result<(), String> {
     sqlx::query(
-        "WITH RECURSIVE subtree(id) AS (
-            SELECT id FROM notes_blocks WHERE id = ?
-            UNION ALL
-            SELECT notes_blocks.id
+        "WITH RECURSIVE subtree(id, depth) AS (
+            SELECT id, 1 FROM notes_blocks WHERE id = ?
+            UNION
+            SELECT notes_blocks.id, subtree.depth + 1
             FROM notes_blocks
             JOIN subtree ON notes_blocks.parent_block_id = subtree.id
+            WHERE subtree.depth < ?
          )
          UPDATE notes_comment_threads
          SET page_id = ?
@@ -22,6 +23,7 @@ pub(super) async fn update_block_comment_thread_pages(
            AND parent_block_id IN (SELECT id FROM subtree)",
     )
     .bind(block_id)
+    .bind(crate::writes::MAX_BLOCK_DEPTH)
     .bind(page_id)
     .execute(&mut **tx)
     .await
@@ -90,7 +92,7 @@ pub(super) async fn duplicate_block_comment_threads(
                     String,
                     String,
                     String,
-                    String,
+                    Option<String>,
                     String,
                     Option<String>,
                     String,

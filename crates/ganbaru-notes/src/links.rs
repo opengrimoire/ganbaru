@@ -307,10 +307,12 @@ async fn append_block_unresolved_entries(
     resolver: &LocalLinkResolver,
     entries: &mut Vec<UnresolvedLinkEntry>,
 ) -> Result<(), String> {
-    let rows = sqlx::query_as::<_, UnresolvedBlockSourceRow>(
-        "SELECT id, page_id, payload, plain_text, type AS block_type, created_time, last_edited_time
-         FROM notes_blocks",
-    )
+    let rows = sqlx::query_as::<_, UnresolvedBlockSourceRow>(concat!(
+        "SELECT id, page_id, ",
+        crate::note_block_content_sql!("notes_blocks"),
+        " AS payload, plain_text, type AS block_type, created_time, last_edited_time
+             FROM notes_blocks"
+    ))
     .fetch_all(pool)
     .await
     .map_err(|e| format!("load notes blocks for unresolved links: {e}"))?;
@@ -426,7 +428,7 @@ async fn resolve_block_link_tx(
         .as_deref()
         .ok_or_else(|| "unresolved block link is missing a block id".to_string())?;
     let block = sqlx::query_as::<_, ResolveBlockRow>(
-        "SELECT id, page_id, payload
+        "SELECT id, page_id, type AS block_type, attrs, text
          FROM notes_blocks
          WHERE id = ? AND in_trash = 0",
     )
@@ -435,19 +437,18 @@ async fn resolve_block_link_tx(
     .await
     .map_err(|e| format!("load notes unresolved block source: {e}"))?
     .ok_or_else(|| "unresolved link source block not found".to_string())?;
-    let mut payload: Value = serde_json::from_str(&block.payload)
-        .map_err(|e| format!("parse notes unresolved block payload: {e}"))?;
+    let mut payload =
+        crate::block_storage::compose_block_content(&block.block_type, &block.attrs, &block.text)?;
     if !replace_url_value(&mut payload, &row.raw_url, target_url) {
         return Err("unresolved link source no longer contains that URL".to_string());
     }
     page_history::record_page_snapshot_tx(tx, &block.page_id, "resolve_unresolved_link").await?;
+    crate::block_storage::rewrite_block_content(tx, &block.id, &block.block_type, &payload).await?;
     sqlx::query(
         "UPDATE notes_blocks
-         SET payload = ?,
-             last_edited_time = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+         SET last_edited_time = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
          WHERE id = ? AND in_trash = 0",
     )
-    .bind(payload.to_string())
     .bind(&block.id)
     .execute(&mut **tx)
     .await
@@ -487,7 +488,6 @@ async fn resolve_comment_link_tx(
     sqlx::query(
         "UPDATE notes_comments
          SET rich_text = ?,
-             sync_version = sync_version + 1,
              last_edited_time = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
          WHERE id = ?",
     )
@@ -498,8 +498,7 @@ async fn resolve_comment_link_tx(
     .map_err(|e| format!("resolve notes comment link: {e}"))?;
     sqlx::query(
         "UPDATE notes_comment_threads
-         SET sync_version = sync_version + 1,
-             last_edited_time = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+         SET last_edited_time = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
          WHERE id = ?",
     )
     .bind(&comment.thread_id)
@@ -781,7 +780,9 @@ struct UnresolvedCommentSourceRow {
 struct ResolveBlockRow {
     id: String,
     page_id: String,
-    payload: String,
+    block_type: String,
+    attrs: String,
+    text: String,
 }
 
 #[derive(FromRow)]

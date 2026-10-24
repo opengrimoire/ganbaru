@@ -16,7 +16,7 @@ Mutations to page details, placement, lifecycle, child links, or blocks record a
 
 Version history renders the selected snapshot without live editing controls and lists localized time and author. Users can copy blocks from a version or restore it.
 
-Copy creates fresh block IDs and valid paired child pages where needed. Restore saves the current page first when history is enabled, then replaces page details and body through one transaction. It does not move the page to an old parent, which prevents a content restore from unexpectedly changing current navigation and access. For the same reason, a child page link in the version brings back the page itself only when that page still belongs to the restored page, including from Trash; a page that has since moved elsewhere stays where it is, and the link restores as a new child page with the recorded title.
+Copy creates fresh block IDs and valid paired child pages where needed. Restore saves the current page first when history is enabled, then rewrites page details and body in one transaction: blocks still on the page keep their identity and are updated in place, blocks the version lacks move to Trash, and only blocks that no longer exist return under fresh IDs. It does not move the page to an old parent, which prevents a content restore from unexpectedly changing current navigation and access. For the same reason, a child page link in the version brings back the page itself only when that page still belongs to the restored page, including from Trash; a page that has since moved elsewhere stays where it is, and the link restores as a new child page with the recorded title.
 
 Copying a database block from page history creates an independent copy of its currently available database graph. A page snapshot does not contain historical database source and row graphs. Page-history restore therefore refuses pages or snapshots with local database content and directs users to project versions, preventing block replacement from deleting canonical database data.
 
@@ -24,7 +24,7 @@ Copying a database block from page history creates an independent copy of its cu
 
 A project version captures the complete project Notes closure: folders and placement, active, archived, and trashed pages, nested pages, blocks, databases, data sources, row properties, views, database templates, comments, suggestions, notifications, aliases, and managed asset references.
 
-It excludes project identity, global preferences, undo stacks, collaboration operation history, and rebuildable projections.
+It excludes project identity, global preferences, undo stacks, page history, and rebuildable projections.
 
 Content-addressed immutable bundles share unchanged data between versions. Managed assets referenced by retained versions remain pinned. Dirty scheduling survives restarts, and no version is created merely by opening Notes.
 
@@ -32,11 +32,11 @@ Continuous editing creates bounded periodic and idle checkpoints. Destructive ch
 
 ## Project restore
 
-Restore preview identifies pages that will be removed, recreated, changed, or copied. Confirmation creates a safety version and applies canonical changes in one transaction. Derived indexes rebuild only after that commit succeeds.
+Restore preview identifies pages that will move to Trash, be recreated, change, or be copied. Confirmation creates a safety version and applies the version as a diff in one transaction: rows still in the project keep their identity and are updated in place, and nothing is deleted and recreated under the same ID. Derived indexes rebuild only after that commit succeeds.
 
-Pages created after the selected version leave the restored project but remain recoverable through the safety version. If a historical page now belongs to another project, the current page remains untouched and the historical graph is restored with fresh identities.
+Pages and blocks created after the selected version move to Trash. If a historical page now belongs to another project or no longer exists, the current page remains untouched and the historical graph is restored with fresh identities.
 
-Collaboration operation sequence history is never rewound or deleted. Restore appends new operations describing restored comment and suggestion state. Historical pending notifications do not become newly deliverable.
+Historical pending notifications do not become newly deliverable.
 
 **Planned for device synchronization:** restoration must create a safety version and new operations against the current replica, including text and structural changes. It cannot rewind causal history or peer acknowledgements. Tombstones and incompatible concurrent changes remain recoverable, and compaction must retain state required by enrolled offline devices. The current comment and suggestion operation log does not provide that general replication boundary. See [Synchronization](../../data/sync.md).
 

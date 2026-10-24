@@ -89,11 +89,10 @@ fn fresh_database_applies_clean_baseline() {
             "music_search_fts",
             "notes_pages",
             "notes_blocks",
+            "notes_block_view_state",
             "notes_data_source_row_hierarchy",
             "idx_notes_data_source_row_hierarchy_parent",
-            "notes_row_hierarchy_detach_moved_page",
             "notes_search_fts",
-            "notes_folders_validate_parent_insert",
             "idx_notes_project_history_dirty_deadlines",
         ] {
             let exists: Option<i64> =
@@ -113,6 +112,9 @@ fn fresh_database_applies_clean_baseline() {
             "project_view_preferences_rebuild",
             "notes_blocks_next",
             "notes_pages_next",
+            "notes_row_hierarchy_detach_moved_page",
+            "notes_folders_validate_parent_insert",
+            "notes_pages_validate_folder_update",
             "notes_page_history_settings_next",
             "music_playlist_tracks",
             "music_track_skip_ranges",

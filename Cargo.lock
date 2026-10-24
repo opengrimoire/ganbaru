@@ -1861,6 +1861,7 @@ version = "0.1.5"
 dependencies = [
  "ganbaru-atomic-files",
  "libsqlite3-sys",
+ "serde_json",
  "sqlx",
  "tokio",
 ]
@@ -2024,6 +2025,7 @@ dependencies = [
  "ganbaru-atomic-files",
  "ganbaru-db",
  "ganbaru-image-metadata",
+ "ganbaru-sync-contracts",
  "reqwest",
  "rustls",
  "serde",

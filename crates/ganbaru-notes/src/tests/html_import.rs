@@ -61,10 +61,7 @@ fn html_import_creates_canonical_blocks_rich_text_tables_media_and_toggles() {
             result_json["page"]["page"]["properties"]["title"]["title"][0]["plain_text"],
             "Imported workspace"
         );
-        assert_eq!(
-            result_json["page"]["page"]["properties"]["__ganbaru_project_id"],
-            "project-a"
-        );
+        assert_eq!(result_json["page"]["page"]["project_id"], "project-a");
         assert_eq!(result_json["imported_block_count"], 15);
 
         let blocks = result_json["page"]["blocks"]["results"].as_array().unwrap();

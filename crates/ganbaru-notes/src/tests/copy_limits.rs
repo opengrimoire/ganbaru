@@ -8,9 +8,9 @@ fn copy_limits_reject_a_large_page_without_creating_a_partial_copy() {
         create_page(&pool, PAGE_A, BLOCK_A).await;
         sqlx::query(
             "WITH RECURSIVE ids(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM ids WHERE n < 10000)
-             INSERT INTO notes_blocks (id, page_id, parent_type, parent_page_id, type, payload, plain_text, sort_order)
+             INSERT INTO notes_blocks (id, page_id, parent_type, parent_page_id, type, text, plain_text, order_key)
              SELECT printf('12121212-1212-4212-8212-%012d', n), ?, 'page_id', ?, 'paragraph',
-                '{\"rich_text\":[]}', '', n FROM ids",
+                '{\"rich_text\":[]}', '', 'a0' FROM ids",
         )
         .bind(PAGE_A)
         .bind(PAGE_A)
@@ -37,10 +37,10 @@ fn copy_limits_reject_excessive_block_depth_without_truncating_content() {
         create_page(&pool, PAGE_A, BLOCK_A).await;
         sqlx::query(
             "WITH RECURSIVE ids(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM ids WHERE n < 65)
-             INSERT INTO notes_blocks (id, page_id, parent_type, parent_block_id, type, payload, plain_text, sort_order)
+             INSERT INTO notes_blocks (id, page_id, parent_type, parent_block_id, type, text, plain_text, order_key)
              SELECT printf('12121212-1212-4212-8212-%012d', n), ?, 'block_id',
                 CASE WHEN n = 1 THEN ? ELSE printf('12121212-1212-4212-8212-%012d', n - 1) END,
-                'paragraph', '{\"rich_text\":[]}', '', n FROM ids",
+                'paragraph', '{\"rich_text\":[]}', '', 'a0' FROM ids",
         )
         .bind(PAGE_A)
         .bind(BLOCK_A)

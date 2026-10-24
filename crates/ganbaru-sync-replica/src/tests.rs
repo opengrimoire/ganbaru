@@ -567,12 +567,10 @@ fn guarded_connections_refuse_local_tables_and_signal_commits() {
             .expect("open guarded");
         assert_eq!(access, DatabaseAccessMode::Guarded);
 
-        let refused = sqlx::query(
-            "INSERT INTO notes_local_users (id, display_name) VALUES ('user-1', 'Writer')",
-        )
-        .execute(&pool)
-        .await
-        .expect_err("guarded replicas refuse tables of domains they do not write");
+        let refused = sqlx::query("INSERT INTO notes_local_users (id) VALUES ('user-1')")
+            .execute(&pool)
+            .await
+            .expect_err("guarded replicas refuse tables of domains they do not write");
         assert!(
             refused
                 .to_string()

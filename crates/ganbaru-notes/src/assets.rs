@@ -4,7 +4,7 @@ pub mod page_covers;
 pub mod page_icons;
 
 use serde_json::{Map, Value};
-use sqlx::{Sqlite, SqlitePool, Transaction};
+use sqlx::{Row, Sqlite, SqlitePool, Transaction};
 use std::collections::HashSet;
 use std::path::{Component, Path};
 
@@ -37,16 +37,61 @@ pub struct ManagedAssetWrite<'a> {
     pub missing_at: Option<&'a str>,
 }
 
+/// The stored identity of a managed asset.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ManagedAssetRecord {
+    /// `{class}:{sha256}`, where the class is the managed directory.
+    pub id: String,
+    /// The path the asset row keeps. Bytes recorded again under another name keep the first path.
+    pub asset_path: String,
+}
+
+/// Returns the asset id for content stored under `relative_path`.
+pub fn managed_asset_id(relative_path: &str, sha256: &str) -> Result<String, String> {
+    let relative_path = relative_path.trim();
+    let class = [
+        ASSET_PAGE_ICON_PREFIX,
+        ASSET_PAGE_COVER_PREFIX,
+        ASSET_FILE_PREFIX,
+    ]
+    .iter()
+    .find(|prefix| relative_path.starts_with(**prefix))
+    .map(|prefix| prefix.trim_end_matches('/'))
+    .ok_or_else(|| {
+        "notes asset path must stay under a managed Notes asset directory".to_string()
+    })?;
+    Ok(format!("{class}:{}", sha256.trim()))
+}
+
+/// Records a managed asset and returns the row it resolves to.
+///
+/// Rows are named by class and content digest, so the same bytes recorded twice share one row and
+/// keep the first path. A path that already names a row with other bytes resolves to that row,
+/// because the path is what stored payloads name.
 pub async fn upsert_managed_asset_tx(
     tx: &mut Transaction<'_, Sqlite>,
     asset: ManagedAssetWrite<'_>,
-) -> Result<(), String> {
+) -> Result<ManagedAssetRecord, String> {
     let kind = validate_managed_asset(&asset)?;
+    let relative_path = asset.relative_path.trim();
+    let id = managed_asset_id(relative_path, asset.sha256)?;
     let original_name = asset
         .original_name
         .map(str::trim)
         .filter(|name| !name.is_empty());
-    sqlx::query(
+    let existing_path_id: Option<String> =
+        sqlx::query_scalar("SELECT id FROM notes_assets WHERE asset_path = ?")
+            .bind(relative_path)
+            .fetch_optional(&mut **tx)
+            .await
+            .map_err(|e| format!("load notes asset by path: {e}"))?;
+    if let Some(existing_id) = existing_path_id.filter(|existing_id| *existing_id != id) {
+        return Ok(ManagedAssetRecord {
+            id: existing_id,
+            asset_path: relative_path.to_string(),
+        });
+    }
+    let row = sqlx::query(
         "INSERT INTO notes_assets (
             id,
             asset_path,
@@ -60,20 +105,23 @@ pub async fn upsert_managed_asset_tx(
             missing_at
          )
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-         ON CONFLICT(asset_path)
+         ON CONFLICT(id)
          DO UPDATE SET
-            kind = excluded.kind,
             source_type = excluded.source_type,
             original_name = COALESCE(excluded.original_name, notes_assets.original_name),
-            content_type = excluded.content_type,
-            byte_size = excluded.byte_size,
-            sha256 = excluded.sha256,
-            storage_state = excluded.storage_state,
-            missing_at = excluded.missing_at,
-            updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')",
+            storage_state = CASE
+                WHEN notes_assets.asset_path = excluded.asset_path THEN excluded.storage_state
+                ELSE notes_assets.storage_state
+            END,
+            missing_at = CASE
+                WHEN notes_assets.asset_path = excluded.asset_path THEN excluded.missing_at
+                ELSE notes_assets.missing_at
+            END,
+            updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+         RETURNING id, asset_path",
     )
-    .bind(asset.relative_path.trim())
-    .bind(asset.relative_path.trim())
+    .bind(&id)
+    .bind(relative_path)
     .bind(kind)
     .bind(asset.source_type.trim())
     .bind(original_name)
@@ -82,10 +130,17 @@ pub async fn upsert_managed_asset_tx(
     .bind(asset.sha256.trim())
     .bind(asset.storage_state.trim())
     .bind(asset.missing_at.map(str::trim))
-    .execute(&mut **tx)
+    .fetch_one(&mut **tx)
     .await
     .map_err(|e| format!("record notes asset: {e}"))?;
-    Ok(())
+    Ok(ManagedAssetRecord {
+        id: row
+            .try_get("id")
+            .map_err(|e| format!("read notes asset id: {e}"))?,
+        asset_path: row
+            .try_get("asset_path")
+            .map_err(|e| format!("read notes asset path: {e}"))?,
+    })
 }
 
 pub async fn mark_managed_asset_storage_state(
@@ -180,8 +235,7 @@ pub async fn sync_block_asset_reference_tx(
     let Some(asset) = asset else {
         return Ok(());
     };
-    let asset_path = asset.relative_path.trim().to_string();
-    upsert_managed_asset_tx(tx, asset).await?;
+    let record = upsert_managed_asset_tx(tx, asset).await?;
     sqlx::query(
         "INSERT INTO notes_asset_references (
             asset_id,
@@ -198,7 +252,7 @@ pub async fn sync_block_asset_reference_tx(
             block_id = excluded.block_id,
             updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')",
     )
-    .bind(asset_path)
+    .bind(&record.id)
     .bind(block_id)
     .bind(page_id)
     .bind(block_id)
@@ -262,17 +316,16 @@ pub async fn sync_data_source_property_asset_references_tx(
     .fetch_all(&mut **tx)
     .await
     .map_err(|e| format!("load notes row properties for asset references: {e}"))?;
-    let mut seen_asset_paths = HashSet::new();
+    let mut seen_asset_ids = HashSet::new();
     for (row_properties,) in rows {
         let properties: Value = serde_json::from_str(&row_properties)
             .map_err(|e| format!("parse row properties for asset references: {e}"))?;
         for property_id in &property_ids {
             for asset in data_source_property_local_file_assets(&properties, property_id)? {
-                let asset_path = asset.relative_path.trim().to_string();
-                if !seen_asset_paths.insert(asset_path.clone()) {
+                let record = upsert_managed_asset_tx(tx, asset).await?;
+                if !seen_asset_ids.insert(record.id.clone()) {
                     continue;
                 }
-                upsert_managed_asset_tx(tx, asset).await?;
                 sqlx::query(
                     "INSERT INTO notes_asset_references (
                         asset_id,
@@ -284,7 +337,7 @@ pub async fn sync_data_source_property_asset_references_tx(
                      )
                      VALUES (?, 'data_source_property', ?, ?, ?, 'property_file')",
                 )
-                .bind(asset_path)
+                .bind(&record.id)
                 .bind(data_source_id)
                 .bind(data_source_id)
                 .bind(property_id)
@@ -312,16 +365,15 @@ pub async fn sync_comment_asset_references_tx(
     .await
     .map_err(|e| format!("clear notes comment asset references: {e}"))?;
 
-    let mut seen_asset_paths = HashSet::new();
+    let mut seen_asset_ids = HashSet::new();
     for (index, attachment) in attachments.iter().enumerate() {
         let Some(asset) = comment_attachment_local_file_asset(attachment, index)? else {
             continue;
         };
-        let asset_path = asset.relative_path.trim().to_string();
-        if !seen_asset_paths.insert(asset_path.clone()) {
+        let record = upsert_managed_asset_tx(tx, asset).await?;
+        if !seen_asset_ids.insert(record.id.clone()) {
             continue;
         }
-        upsert_managed_asset_tx(tx, asset).await?;
         sqlx::query(
             "INSERT INTO notes_asset_references (
                 asset_id,
@@ -333,7 +385,7 @@ pub async fn sync_comment_asset_references_tx(
              )
              VALUES (?, 'comment', ?, ?, ?, 'comment_attachment')",
         )
-        .bind(asset_path)
+        .bind(&record.id)
         .bind(comment_id.trim())
         .bind(page_id.trim())
         .bind(comment_id.trim())
@@ -365,8 +417,7 @@ async fn replace_page_asset_reference_tx(
     let Some(asset) = page_local_file_asset(value, field, expected_prefix)? else {
         return Ok(());
     };
-    let asset_path = asset.relative_path.trim().to_string();
-    upsert_managed_asset_tx(tx, asset).await?;
+    let record = upsert_managed_asset_tx(tx, asset).await?;
     sqlx::query(
         "INSERT INTO notes_asset_references (
             asset_id,
@@ -380,7 +431,7 @@ async fn replace_page_asset_reference_tx(
          DO UPDATE SET
             updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')",
     )
-    .bind(asset_path)
+    .bind(&record.id)
     .bind(page_id)
     .bind(page_id)
     .bind(role)

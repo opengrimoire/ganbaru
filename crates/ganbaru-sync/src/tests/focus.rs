@@ -9,12 +9,12 @@ use super::block_on;
 use super::calendar::{calendar_sql, event_sql};
 use super::replica::{Replica, converge, device_id, quoted};
 use crate::error::failpoints;
-use crate::{SyncError, SyncResult};
 use crate::hold::{self, MAX_HOLD_MS};
 use crate::manifest::vault::calendar::EVENTS_TABLE;
 use crate::manifest::vault::focus::{
     DEVICE_ACTIVITY_TABLE, RUN_EVENTS_TABLE, RUNS_TABLE, SEGMENTS_TABLE,
 };
+use crate::{SyncError, SyncResult};
 
 const EVENT: &str = "event-a";
 const RUN: &str = "run-a";
@@ -314,11 +314,17 @@ fn focus_a_crash_while_sealing_or_applying_a_closed_run_leaves_no_partial_histor
                 matches!(result, Err(SyncError::Failpoint(hit)) if hit == name),
                 "{name} did not fail"
             );
-            assert!(replicas[0].snapshot().await == before, "{name} left changes");
+            assert!(
+                replicas[0].snapshot().await == before,
+                "{name} left changes"
+            );
             assert_eq!(focus_captures(&mut replicas[0]).await, captured);
         }
         let report = replicas[0].seal().await.unwrap();
-        assert_eq!(report.sealed_ops, 1, "the run and its children seal together");
+        assert_eq!(
+            report.sealed_ops, 1,
+            "the run and its children seal together"
+        );
 
         let (author, rest) = replicas.split_at_mut(1);
         let reader = &mut rest[0];

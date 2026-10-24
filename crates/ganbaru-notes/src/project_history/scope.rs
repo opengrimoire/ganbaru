@@ -35,9 +35,7 @@ fn value_in(row: &Value, key: &str, values: &HashSet<String>) -> bool {
 }
 
 fn page_project_id(row: &Value) -> Option<&str> {
-    row.get("properties")
-        .and_then(Value::as_object)
-        .and_then(|properties| properties.get(crate::PAGE_PROJECT_ID_PROPERTY))
+    row.get("project_id")
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|value| !value.is_empty())

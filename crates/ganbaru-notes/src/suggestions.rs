@@ -1,7 +1,6 @@
-use crate::models::{NoteBlockRow, NoteSuggestionCreate, NoteSuggestionDto, NoteSuggestionRow};
+use crate::local_user;
+use crate::models::{NoteSuggestionCreate, NoteSuggestionDto, NoteSuggestionRow};
 use crate::validation::require_uuid;
-use crate::{collaboration_operations, local_user};
-use serde_json::{Value, json};
 use sqlx::{Sqlite, SqlitePool, Transaction};
 
 const SUGGESTION_MAX_TEXT_LENGTH: usize = 2000;
@@ -45,7 +44,10 @@ pub async fn list_suggestions(
         .await
     }
     .map_err(|e| format!("list notes suggestions: {e}"))?;
-    rows.into_iter().map(NoteSuggestionDto::new).collect()
+    let local_author_name = local_user::local_author_name_from_pool(pool).await?;
+    rows.into_iter()
+        .map(|row| NoteSuggestionDto::new(row, &local_author_name))
+        .collect()
 }
 
 pub async fn create_suggestion(
@@ -71,14 +73,12 @@ pub async fn create_suggestion(
         return Err("suggestion original text must exist in the block".to_string());
     }
     let local_user = local_user::current_local_user_tx(&mut tx).await?;
-    let actor_display_name = local_user::comment_display_name_json(&local_user.display_name);
     sqlx::query(
         "INSERT INTO notes_suggestions (
             id,
             page_id,
             block_id,
             created_by,
-            display_name,
             range_start,
             range_end,
             original_text,
@@ -86,13 +86,12 @@ pub async fn create_suggestion(
             prefix_text,
             suffix_text
          )
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(request.id.trim())
     .bind(&block.page_id)
     .bind(&block.id)
     .bind(&local_user.id)
-    .bind(&actor_display_name)
     .bind(request.range_start)
     .bind(request.range_end)
     .bind(request.original_text.as_str())
@@ -103,27 +102,13 @@ pub async fn create_suggestion(
     .await
     .map_err(|e| format!("create notes suggestion: {e}"))?;
     let row = load_suggestion_row_tx(&mut tx, request.id.trim()).await?;
-    collaboration_operations::record_tx(
-        &mut tx,
-        collaboration_operations::CollaborationOperation {
-            entity_type: "suggestion",
-            entity_id: &row.id,
-            operation_type: "suggestion_create",
-            page_id: &row.page_id,
-            block_id: Some(&row.block_id),
-            actor_id: &local_user.id,
-            actor_display_name: &actor_display_name,
-            base_version: 0,
-            entity_version: row.sync_version,
-            conflict_policy: "append_only",
-            payload: suggestion_payload(&row)?,
-        },
-    )
-    .await?;
+    crate::project_history::mark_page_dirty_tx(&mut tx, &row.page_id, "suggestion_create", false)
+        .await?;
+    let local_author_name = local_user::local_author_name(&mut tx).await?;
     tx.commit()
         .await
         .map_err(|e| format!("commit notes suggestion create: {e}"))?;
-    NoteSuggestionDto::new(row)
+    NoteSuggestionDto::new(row, &local_author_name)
 }
 
 pub async fn accept_suggestion(
@@ -166,14 +151,12 @@ async fn decide_suggestion(
     }
     load_active_block_tx(&mut tx, &suggestion.block_id).await?;
     let local_user = local_user::current_local_user_tx(&mut tx).await?;
-    let actor_display_name = local_user::comment_display_name_json(&local_user.display_name);
     if status == "accepted" {
         sqlx::query(
             "UPDATE notes_suggestions
              SET status = 'accepted',
                  accepted_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
                  accepted_by = ?,
-                 sync_version = sync_version + 1,
                  last_edited_time = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
              WHERE id = ?",
         )
@@ -188,7 +171,6 @@ async fn decide_suggestion(
              SET status = 'rejected',
                  rejected_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
                  rejected_by = ?,
-                 sync_version = sync_version + 1,
                  last_edited_time = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
              WHERE id = ?",
         )
@@ -199,31 +181,18 @@ async fn decide_suggestion(
         .map_err(|e| format!("reject notes suggestion: {e}"))?;
     }
     let row = load_suggestion_row_tx(&mut tx, suggestion_id).await?;
-    collaboration_operations::record_tx(
-        &mut tx,
-        collaboration_operations::CollaborationOperation {
-            entity_type: "suggestion",
-            entity_id: &row.id,
-            operation_type: if status == "accepted" {
-                "suggestion_accept"
-            } else {
-                "suggestion_reject"
-            },
-            page_id: &row.page_id,
-            block_id: Some(&row.block_id),
-            actor_id: &local_user.id,
-            actor_display_name: &actor_display_name,
-            base_version: suggestion.sync_version,
-            entity_version: row.sync_version,
-            conflict_policy: "state_transition",
-            payload: suggestion_payload(&row)?,
-        },
-    )
-    .await?;
+    let operation_type = if status == "accepted" {
+        "suggestion_accept"
+    } else {
+        "suggestion_reject"
+    };
+    crate::project_history::mark_page_dirty_tx(&mut tx, &row.page_id, operation_type, false)
+        .await?;
+    let local_author_name = local_user::local_author_name(&mut tx).await?;
     tx.commit()
         .await
         .map_err(|e| format!("commit notes suggestion decision: {e}"))?;
-    NoteSuggestionDto::new(row)
+    NoteSuggestionDto::new(row, &local_author_name)
 }
 
 fn validate_suggestion_create(request: &NoteSuggestionCreate) -> Result<(), String> {
@@ -249,34 +218,6 @@ fn validate_suggestion_create(request: &NoteSuggestionCreate) -> Result<(), Stri
     Ok(())
 }
 
-fn suggestion_payload(row: &NoteSuggestionRow) -> Result<Value, String> {
-    Ok(json!({
-        "schema_version": 1,
-        "suggestion_id": &row.id,
-        "page_id": &row.page_id,
-        "block_id": &row.block_id,
-        "status": &row.status,
-        "range_start": row.range_start,
-        "range_end": row.range_end,
-        "original_text": &row.original_text,
-        "proposed_text": &row.proposed_text,
-        "prefix": &row.prefix_text,
-        "suffix": &row.suffix_text,
-        "created_by": &row.created_by,
-        "display_name": parse_stored_json(&row.display_name)?,
-        "accepted_at": row.accepted_at.as_deref(),
-        "accepted_by": row.accepted_by.as_deref(),
-        "rejected_at": row.rejected_at.as_deref(),
-        "rejected_by": row.rejected_by.as_deref(),
-        "created_time": &row.created_time,
-        "last_edited_time": &row.last_edited_time,
-    }))
-}
-
-fn parse_stored_json(value: &str) -> Result<Value, String> {
-    serde_json::from_str(value).map_err(|e| format!("parse suggestion display name: {e}"))
-}
-
 async fn load_suggestion_row_tx(
     tx: &mut Transaction<'_, Sqlite>,
     suggestion_id: &str,
@@ -289,28 +230,19 @@ async fn load_suggestion_row_tx(
         .ok_or_else(|| "notes suggestion not found".to_string())
 }
 
+/// Block fields a suggestion needs: its id, page, and searchable text.
+struct SuggestionBlock {
+    id: String,
+    page_id: String,
+    plain_text: String,
+}
+
 async fn load_active_block_tx(
     tx: &mut Transaction<'_, Sqlite>,
     block_id: &str,
-) -> Result<NoteBlockRow, String> {
-    sqlx::query_as::<_, NoteBlockRow>(
-        "SELECT
-           block.id,
-           block.page_id,
-           block.parent_type,
-           block.parent_page_id,
-           block.parent_block_id,
-           block.has_children,
-           block.in_trash,
-           block.type AS block_type,
-           block.payload,
-           block.plain_text,
-           block.sort_order,
-           block.source_provider,
-           block.source_object_id,
-           block.source_last_edited_time,
-           block.created_time,
-           block.last_edited_time
+) -> Result<SuggestionBlock, String> {
+    let (id, page_id, plain_text) = sqlx::query_as::<_, (String, String, String)>(
+        "SELECT block.id, block.page_id, block.plain_text
          FROM notes_blocks AS block
          JOIN notes_pages AS page ON page.id = block.page_id
          WHERE block.id = ?
@@ -322,7 +254,12 @@ async fn load_active_block_tx(
     .fetch_optional(&mut **tx)
     .await
     .map_err(|e| format!("load notes suggestion block: {e}"))?
-    .ok_or_else(|| "notes block not found".to_string())
+    .ok_or_else(|| "notes block not found".to_string())?;
+    Ok(SuggestionBlock {
+        id,
+        page_id,
+        plain_text,
+    })
 }
 
 async fn ensure_active_page(pool: &SqlitePool, page_id: &str) -> Result<(), String> {

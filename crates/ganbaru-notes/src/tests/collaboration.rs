@@ -1,7 +1,20 @@
 use super::helpers::*;
 
+async fn set_profile_display_name(pool: &sqlx::SqlitePool, name: &str) {
+    sqlx::query(
+        "INSERT INTO vault_preferences (key, value, updated_at)
+         VALUES (?, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+    )
+    .bind(local_user::PROFILE_DISPLAY_NAME_PREFERENCE_KEY)
+    .bind(serde_json::to_string(name).unwrap())
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
 #[test]
-fn collaboration_operations_track_comments_and_suggestions_for_future_sync() {
+fn local_authors_store_no_name_and_follow_the_profile_preference() {
     crate::test_block_on(async {
         let pool = migrated_memory_pool().await;
         create_page(&pool, PAGE_A, BLOCK_A).await;
@@ -20,46 +33,32 @@ fn collaboration_operations_track_comments_and_suggestions_for_future_sync() {
         .await
         .unwrap();
 
+        let local_user_json =
+            serde_json::to_value(local_user::load_local_user(&pool).await.unwrap()).unwrap();
+        let local_user_id = local_user_json["id"].as_str().unwrap().to_string();
+        assert_eq!(local_user_json["display_name"], "You");
+        assert!(local_user_json.get("last_edited_time").is_none());
+
         let thread = comments::create_comment(
             &pool,
             NoteCommentCreate {
                 id: COMMENT_A.to_string(),
                 parent: Some(block_parent(BLOCK_B)),
                 discussion_id: None,
-                anchor: Some(NoteCommentAnchorCreate {
-                    start: 6,
-                    end: 10,
-                    text: "beta".to_string(),
-                    prefix: "Alpha ".to_string(),
-                    suffix: " gamma".to_string(),
-                }),
+                anchor: None,
                 rich_text: vec![rich_text("First note")],
                 attachments: None,
             },
         )
         .await
         .unwrap();
-        let thread_value = serde_json::to_value(thread).unwrap();
-        let thread_id = thread_value["id"].as_str().unwrap().to_string();
-
-        comments::update_comment(
-            &pool,
-            COMMENT_A,
-            NoteCommentUpdate {
-                rich_text: vec![rich_text("Edited note")],
-                attachments: None,
-            },
-        )
-        .await
-        .unwrap();
-        comments::resolve_comment_thread(&pool, &thread_id, true)
+        let thread_id = serde_json::to_value(thread).unwrap()["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        comments::toggle_comment_reaction(&pool, COMMENT_A, "👍")
             .await
             .unwrap();
-        comments::resolve_comment_thread(&pool, &thread_id, false)
-            .await
-            .unwrap();
-        comments::delete_comment(&pool, COMMENT_A).await.unwrap();
-
         suggestions::create_suggestion(
             &pool,
             NoteSuggestionCreate {
@@ -75,90 +74,56 @@ fn collaboration_operations_track_comments_and_suggestions_for_future_sync() {
         )
         .await
         .unwrap();
-        suggestions::reject_suggestion(&pool, SUGGESTION_A)
-            .await
-            .unwrap();
 
-        let rows = sqlx::query(
-            "SELECT
-                entity_type,
-                entity_id,
-                operation_type,
-                base_version,
-                entity_version,
-                conflict_policy,
-                actor_display_name,
-                payload
-             FROM notes_collaboration_operations
-             WHERE page_id = ?
-             ORDER BY sequence ASC",
+        let stored_names: Vec<Option<String>> = sqlx::query_scalar(
+            "SELECT display_name FROM notes_comments
+             UNION ALL SELECT display_name FROM notes_comment_reactions
+             UNION ALL SELECT display_name FROM notes_suggestions",
         )
-        .bind(PAGE_A)
         .fetch_all(&pool)
         .await
         .unwrap();
-        let operation_types: Vec<String> = rows
-            .iter()
-            .map(|row| row.try_get::<String, _>("operation_type").unwrap())
-            .collect();
+        assert_eq!(stored_names, vec![None, None, None]);
+
+        set_profile_display_name(&pool, " Alice ").await;
+        let listed =
+            serde_json::to_value(comments::list_comments(&pool, PAGE_A, false).await.unwrap())
+                .unwrap();
+        let comment = &listed[0]["comments"][0];
+        assert_eq!(comment["created_by"]["id"], local_user_id);
+        assert_eq!(comment["display_name"]["resolved_name"], "Alice");
+        assert_eq!(comment["reactions"][0]["names"][0], "Alice");
+        let suggestion = serde_json::to_value(
+            suggestions::list_suggestions(&pool, PAGE_A, false)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(suggestion[0]["display_name"]["resolved_name"], "Alice");
         assert_eq!(
-            operation_types,
-            vec![
-                "comment_thread_create",
-                "comment_create",
-                "comment_update",
-                "comment_thread_resolve",
-                "comment_thread_reopen",
-                "comment_delete",
-                "suggestion_create",
-                "suggestion_reject",
-            ]
+            serde_json::to_value(local_user::load_local_user(&pool).await.unwrap()).unwrap()["display_name"],
+            "Alice"
         );
 
-        let versions: Vec<(i64, i64, String)> = rows
-            .iter()
-            .map(|row| {
-                (
-                    row.try_get::<i64, _>("base_version").unwrap(),
-                    row.try_get::<i64, _>("entity_version").unwrap(),
-                    row.try_get::<String, _>("conflict_policy").unwrap(),
-                )
-            })
-            .collect();
+        let imported_name = r#"{"type":"user","resolved_name":"Imported author"}"#;
+        sqlx::query("UPDATE notes_comments SET display_name = ? WHERE id = ?")
+            .bind(imported_name)
+            .bind(COMMENT_A)
+            .execute(&pool)
+            .await
+            .unwrap();
+        set_profile_display_name(&pool, "   ").await;
+        let resolved = serde_json::to_value(
+            comments::resolve_comment_thread(&pool, &thread_id, true)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(resolved["resolved_by"]["id"], local_user_id);
         assert_eq!(
-            versions,
-            vec![
-                (0, 1, "append_only".to_string()),
-                (0, 1, "append_only".to_string()),
-                (1, 2, "last_writer_wins".to_string()),
-                (1, 2, "state_transition".to_string()),
-                (2, 3, "state_transition".to_string()),
-                (2, 3, "state_transition".to_string()),
-                (0, 1, "append_only".to_string()),
-                (1, 2, "state_transition".to_string()),
-            ]
+            resolved["comments"][0]["display_name"]["resolved_name"],
+            "Imported author"
         );
-
-        let thread_payload: serde_json::Value =
-            serde_json::from_str(&rows[0].try_get::<String, _>("payload").unwrap()).unwrap();
-        assert_eq!(thread_payload["anchor"]["text"], "beta");
-        assert_eq!(thread_payload["parent"]["block_id"], BLOCK_B);
-
-        let update_payload: serde_json::Value =
-            serde_json::from_str(&rows[2].try_get::<String, _>("payload").unwrap()).unwrap();
-        assert_eq!(update_payload["rich_text"][0]["plain_text"], "Edited note");
-
-        let reject_payload: serde_json::Value =
-            serde_json::from_str(&rows[7].try_get::<String, _>("payload").unwrap()).unwrap();
-        assert_eq!(reject_payload["status"], "rejected");
-        assert_eq!(reject_payload["original_text"], "beta");
-        assert_eq!(reject_payload["proposed_text"], "delta");
-
-        for row in rows {
-            let display_name: serde_json::Value =
-                serde_json::from_str(&row.try_get::<String, _>("actor_display_name").unwrap())
-                    .unwrap();
-            assert_eq!(display_name["resolved_name"], "You");
-        }
+        assert_eq!(resolved["comments"][0]["reactions"][0]["names"][0], "You");
     });
 }

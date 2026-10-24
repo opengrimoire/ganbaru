@@ -506,7 +506,6 @@ commands.allow = [
   "notes_update_data_source_table_view",
   "notes_update_data_source_timeline_view",
   "notes_update_folder",
-  "notes_update_local_user",
   "notes_update_page",
   "notes_update_page_history_settings",
   "notes_update_page_template",

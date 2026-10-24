@@ -113,7 +113,7 @@ fn guards_let_engine_apply_transactions_write_guarded_tables() {
     block_on(async {
         let pool = migrated_pool().await;
         guard(&pool).await;
-        let insert = "INSERT INTO notes_local_users (id, display_name) VALUES ('user-1', 'Writer')";
+        let insert = "INSERT INTO notes_local_users (id) VALUES ('user-1')";
         let error = refusal(&pool, insert).await;
         assert!(is_guard_abort(&error), "{error}");
 
@@ -121,19 +121,19 @@ fn guards_let_engine_apply_transactions_write_guarded_tables() {
         execute(&pool, insert).await;
         execute(
             &pool,
-            "UPDATE notes_local_users SET display_name = 'Renamed' WHERE id = 'user-1'",
+            "UPDATE notes_local_users SET created_time = '2027-01-01T00:00:00.000Z' WHERE id = 'user-1'",
         )
         .await;
         set_applying(&pool, false).await;
 
         let error = refusal(&pool, "DELETE FROM notes_local_users").await;
         assert!(is_guard_abort(&error), "{error}");
-        let name: String =
-            sqlx::query_scalar("SELECT display_name FROM notes_local_users WHERE id = 'user-1'")
+        let created: String =
+            sqlx::query_scalar("SELECT created_time FROM notes_local_users WHERE id = 'user-1'")
                 .fetch_one(&pool)
                 .await
                 .unwrap();
-        assert_eq!(name, "Renamed");
+        assert_eq!(created, "2027-01-01T00:00:00.000Z");
     });
 }
 
@@ -145,7 +145,7 @@ fn guards_hold_when_the_apply_state_row_is_missing() {
         execute(&pool, "DELETE FROM sync_apply_state").await;
         let error = refusal(
             &pool,
-            "INSERT INTO notes_local_users (id, display_name) VALUES ('user-1', 'Writer')",
+            "INSERT INTO notes_local_users (id) VALUES ('user-1')",
         )
         .await;
         assert!(is_guard_abort(&error), "{error}");
@@ -281,7 +281,7 @@ fn a_guarded_vault_pool_installs_guards_on_its_connection() {
         .await;
         let error = refusal(
             &pool,
-            "INSERT INTO notes_local_users (id, display_name) VALUES ('user-1', 'Writer')",
+            "INSERT INTO notes_local_users (id) VALUES ('user-1')",
         )
         .await;
         assert!(is_guard_abort(&error), "{error}");

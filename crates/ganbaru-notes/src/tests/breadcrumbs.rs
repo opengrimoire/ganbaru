@@ -172,6 +172,7 @@ fn page_breadcrumb_resolves_unloaded_ancestor_rows() {
                 title: "Root".to_string(),
                 parent: workspace_parent(),
                 folder_id: None,
+                project_id: None,
                 first_block_id: BLOCK_A.to_string(),
                 after_block_id: None,
                 properties: None,
@@ -186,6 +187,7 @@ fn page_breadcrumb_resolves_unloaded_ancestor_rows() {
                 title: "Child".to_string(),
                 parent: page_parent(PAGE_A),
                 folder_id: None,
+                project_id: None,
                 first_block_id: BLOCK_B.to_string(),
                 after_block_id: None,
                 properties: None,
@@ -200,6 +202,7 @@ fn page_breadcrumb_resolves_unloaded_ancestor_rows() {
                 title: "Leaf".to_string(),
                 parent: page_parent(PAGE_B),
                 folder_id: None,
+                project_id: None,
                 first_block_id: BLOCK_C.to_string(),
                 after_block_id: None,
                 properties: None,
@@ -231,6 +234,7 @@ fn page_breadcrumb_marks_unavailable_ancestors() {
                 title: "Archived root".to_string(),
                 parent: workspace_parent(),
                 folder_id: None,
+                project_id: None,
                 first_block_id: BLOCK_A.to_string(),
                 after_block_id: None,
                 properties: None,
@@ -245,6 +249,7 @@ fn page_breadcrumb_marks_unavailable_ancestors() {
                 title: "Trashed child".to_string(),
                 parent: page_parent(PAGE_A),
                 folder_id: None,
+                project_id: None,
                 first_block_id: BLOCK_B.to_string(),
                 after_block_id: None,
                 properties: None,
@@ -259,6 +264,7 @@ fn page_breadcrumb_marks_unavailable_ancestors() {
                 title: "Leaf".to_string(),
                 parent: page_parent(PAGE_B),
                 folder_id: None,
+                project_id: None,
                 first_block_id: BLOCK_C.to_string(),
                 after_block_id: None,
                 properties: None,
@@ -299,7 +305,7 @@ fn page_breadcrumb_marks_missing_ancestor_rows() {
             .unwrap();
         sqlx::query(
             "UPDATE notes_pages
-             SET parent_type = 'page_id', parent_page_id = ?
+             SET parent_type = 'page_id', parent_page_id = ?, child_block_id = id
              WHERE id = ?",
         )
         .bind(PAGE_B)
@@ -358,6 +364,7 @@ fn page_location_follows_project_folder_and_page_ancestry_through_the_page_itsel
                     title: title.to_string(),
                     parent,
                     folder_id: None,
+                    project_id: None,
                     first_block_id: first_block.to_string(),
                     after_block_id: None,
                     properties: None,
@@ -366,7 +373,7 @@ fn page_location_follows_project_folder_and_page_ancestry_through_the_page_itsel
             .await
             .unwrap();
         }
-        sqlx::query("UPDATE notes_pages SET folder_id = ?, properties = json_set(properties, '$.__ganbaru_project_id', 'project') WHERE id = ?")
+        sqlx::query("UPDATE notes_pages SET folder_id = ?, project_id = 'project' WHERE id = ?")
             .bind(folder_id)
             .bind(PAGE_A)
             .execute(&pool)
@@ -433,6 +440,7 @@ fn page_project_group_lists_the_page_project_and_its_active_peers() {
                     title: "Page".to_string(),
                     parent,
                     folder_id: None,
+                    project_id: None,
                     first_block_id: first_block.to_string(),
                     after_block_id: None,
                     properties: None,
@@ -441,7 +449,7 @@ fn page_project_group_lists_the_page_project_and_its_active_peers() {
             .await
             .unwrap();
         }
-        sqlx::query("UPDATE notes_pages SET properties = json_set(properties, '$.__ganbaru_project_id', 'own') WHERE id = ?")
+        sqlx::query("UPDATE notes_pages SET project_id = 'own' WHERE id = ?")
             .bind(PAGE_A)
             .execute(&pool)
             .await

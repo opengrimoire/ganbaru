@@ -49,6 +49,7 @@ mod page_block_operations;
 mod page_lifecycle;
 mod page_movement;
 mod pages;
+mod recursion_cycles;
 mod schema_validation;
 mod search;
 mod suggestions;

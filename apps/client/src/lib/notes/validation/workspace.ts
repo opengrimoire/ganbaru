@@ -35,6 +35,10 @@ export function parseNotesPage(value: unknown): NotesPage {
     last_edited_time: readString(record.last_edited_time, "page.last_edited_time"),
     parent: parseNotesParent(record.parent),
     folder_id: readNullableString(record.folder_id, "page.folder_id"),
+    project_id:
+      record.project_id === undefined
+        ? null
+        : readNullableString(record.project_id, "page.project_id"),
     in_trash: readBoolean(record.in_trash, "page.in_trash"),
     archived: typeof record.archived === "boolean" ? record.archived : undefined,
     icon: parseNullableNotesIcon(record.icon, "page.icon"),

@@ -22,7 +22,6 @@ import type { NotesPageOpenMode } from "$lib/notes/pages/open-mode";
 import {
   normalizeNotesProjectId,
   notesPageProjectId,
-  notesPageProjectProperties,
   type NotesCreatePageOptions,
 } from "$lib/notes/project-membership";
 import type { NotesPostMutationResult, NotesSidebarMetadataImpact } from "$lib/notes/post-mutation";
@@ -139,7 +138,7 @@ export function createNotesPageActions(context: NotesPageActionsContext) {
       folder_id: folderId,
       first_block_id: firstBlockId,
       after_block_id: null,
-      properties: notesPageProjectProperties(projectId),
+      project_id: projectId,
     };
     const provisional = createProvisionalNotesPage(request);
     if (provisional.page.folder_id) context.setFolderCollapsed(provisional.page.folder_id, false);
@@ -170,11 +169,9 @@ export function createNotesPageActions(context: NotesPageActionsContext) {
     const block = context.readBlocksById()[blockId];
     if (!sourcePageId || !block || block.type === "child_page") return Promise.resolve();
     const firstBlockId = crypto.randomUUID();
-    const page = context.readLoadedPage();
     const request = {
       first_block_id: firstBlockId,
       title: clearText ? "" : blockPlainText(block).trim(),
-      properties: notesPageProjectProperties(page ? notesPageProjectId(page) : null),
     };
     context.localApplyBlockUpdate(blockId, createBlockUpdate("child_page", request.title));
     context.resetUndoHistory(sourcePageId);
@@ -200,7 +197,6 @@ export function createNotesPageActions(context: NotesPageActionsContext) {
     await context.flushPendingWrites();
     const pageId = crypto.randomUUID();
     const firstBlockId = crypto.randomUUID();
-    const page = context.readLoadedPage();
     const loaded = await createNotesPage({
       id: pageId,
       title: "",
@@ -208,7 +204,6 @@ export function createNotesPageActions(context: NotesPageActionsContext) {
       folder_id: null,
       first_block_id: firstBlockId,
       after_block_id: blockId,
-      properties: notesPageProjectProperties(page ? notesPageProjectId(page) : null),
     });
     const blocks = await hydrateNotesBlocks({ page_id: sourcePageId, block_ids: [loaded.page.id] });
     context.applyPostMutation({

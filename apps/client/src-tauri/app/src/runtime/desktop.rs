@@ -751,7 +751,6 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
             notes::notes_pick_and_write_json_graph,
             notes::notes_pick_and_write_agent_bridge,
             notes::notes_local_user,
-            notes::notes_update_local_user,
             notes::notes_list_page_templates,
             notes::notes_create_page_template_from_page,
             notes::notes_apply_page_template,

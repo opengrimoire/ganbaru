@@ -1,5 +1,4 @@
 import { createRichText } from "$lib/notes/blocks/factory";
-import { NOTES_PAGE_PROJECT_ID_PROPERTY } from "$lib/notes/project-membership";
 import { mapNotesPageDto } from "$lib/notes/validation/response-mappers";
 import type { NotesNavigationDatabase, NotesPage } from "$lib/notes/types";
 import { isNotesUuid } from "$lib/notes/links/block-link";
@@ -101,13 +100,13 @@ export function mapPageSummary(value: unknown): NotesPage {
     last_edited_time: shellString(row.last_edited_time, "page.last_edited_time"),
     parent,
     folder_id: shellNullableString(row.folder_id, "page.folder_id"),
+    project_id: projectId,
     in_trash: row.in_trash === undefined ? false : shellBoolean(row.in_trash, "page.in_trash"),
     archived: row.archived === undefined ? false : shellBoolean(row.archived, "page.archived"),
     icon: parsePageSummaryIcon(rawIcon, pageId),
     cover: null,
     properties: {
       title: { id: "title", type: "title", title: title ? [createRichText(title)] : [] },
-      ...(projectId ? { [NOTES_PAGE_PROJECT_ID_PROPERTY]: projectId } : {}),
     },
     url: null,
     public_url: null,

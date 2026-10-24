@@ -144,9 +144,8 @@ pub(crate) fn synced_block_label(payload: &Value) -> String {
     }
 }
 
-pub(crate) fn display_name(raw: &str) -> String {
-    serde_json::from_str::<Value>(raw)
-        .ok()
+pub(crate) fn display_name(raw: Option<&str>) -> String {
+    raw.and_then(|raw| serde_json::from_str::<Value>(raw).ok())
         .and_then(|value| {
             value
                 .get("resolved_name")

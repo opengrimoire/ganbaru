@@ -1405,6 +1405,7 @@ pub const DOMAIN: DomainManifest = DomainManifest {
     local: &[DeviceTable {
         name: "calendar_edit_receipts",
         triggers: &[],
+        assets: &[],
     }],
     engine: &[],
     replica_writable: true,

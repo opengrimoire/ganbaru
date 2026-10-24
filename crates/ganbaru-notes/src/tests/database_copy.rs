@@ -246,6 +246,7 @@ async fn add_nested_graph(pool: &SqlitePool) {
             title: "Nested note".into(),
             parent: page_parent(PAGE_B),
             folder_id: None,
+            project_id: None,
             first_block_id: BLOCK_E.into(),
             after_block_id: None,
             properties: None,
@@ -462,8 +463,8 @@ fn database_replacement_is_atomic_and_missing_or_structural_targets_leave_no_obj
         request.parent = None;
         request.after_block_id = None;
         request.replace_block_id = Some(BLOCK_C.into());
-        let original_order: f64 =
-            sqlx::query_scalar("SELECT sort_order FROM notes_blocks WHERE id = ?")
+        let original_order: String =
+            sqlx::query_scalar("SELECT order_key FROM notes_blocks WHERE id = ?")
                 .bind(BLOCK_C)
                 .fetch_one(&pool)
                 .await
@@ -471,7 +472,7 @@ fn database_replacement_is_atomic_and_missing_or_structural_targets_leave_no_obj
         databases::create_linked_database_view(&pool, request)
             .await
             .unwrap();
-        let order: f64 = sqlx::query_scalar("SELECT sort_order FROM notes_blocks WHERE id = ?")
+        let order: String = sqlx::query_scalar("SELECT order_key FROM notes_blocks WHERE id = ?")
             .bind(BLOCK_C)
             .fetch_one(&pool)
             .await
@@ -691,6 +692,7 @@ fn copying_a_cut_note_preserves_nested_database_graphs() {
                 title: "Containing note".into(),
                 parent: page_parent(PAGE_A),
                 folder_id: None,
+                project_id: None,
                 first_block_id: BLOCK_E.into(),
                 after_block_id: None,
                 properties: None,
@@ -885,7 +887,7 @@ fn duplicating_imported_database_placeholders_preserves_the_placeholder_without_
         .unwrap();
         let page = copied["page"]["id"].as_str().unwrap();
         let payload: String = sqlx::query_scalar(
-            "SELECT payload FROM notes_blocks WHERE page_id = ? AND type = 'child_database'",
+            "SELECT json_patch(attrs, text) FROM notes_blocks WHERE page_id = ? AND type = 'child_database'",
         )
         .bind(page)
         .fetch_one(&pool)
@@ -979,7 +981,7 @@ fn copying_database_rows_preserves_assets_literal_values_and_unavailable_relatio
         .await
         .unwrap();
         assert_eq!(links, 1);
-        let pins: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM notes_asset_references WHERE asset_id = ? AND owner_type = 'block' AND page_id = ?")
+        let pins: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM notes_asset_references WHERE asset_id = (SELECT id FROM notes_assets WHERE asset_path = ?) AND owner_type = 'block' AND page_id = ?")
             .bind(asset).bind(&row).fetch_one(&pool).await.unwrap();
         assert_eq!(pins, 1);
         writes::trash_block(&pool, DATABASE_A, true).await.unwrap();

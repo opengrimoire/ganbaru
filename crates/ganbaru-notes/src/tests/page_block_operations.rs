@@ -159,6 +159,7 @@ fn duplicate_block_copies_child_page_with_independent_content() {
                 title: "Nested page".to_string(),
                 parent: page_parent(PAGE_A),
                 folder_id: None,
+                project_id: None,
                 first_block_id: BLOCK_B.to_string(),
                 after_block_id: Some(BLOCK_A.to_string()),
                 properties: None,
@@ -289,6 +290,7 @@ fn duplicate_blocks_copies_nested_notes_after_cut_and_rolls_back_failed_copies()
                     title: title.to_string(),
                     parent: page_parent(parent_id),
                     folder_id: None,
+                    project_id: None,
                     first_block_id: first_block_id.to_string(),
                     after_block_id: None,
                     properties: None,
@@ -391,6 +393,7 @@ fn duplicate_blocks_can_copy_a_note_into_itself_without_copying_the_new_graph() 
                 title: "Child".to_string(),
                 parent: page_parent(PAGE_A),
                 folder_id: None,
+                project_id: None,
                 first_block_id: BLOCK_B.to_string(),
                 after_block_id: None,
                 properties: None,
@@ -467,11 +470,10 @@ fn duplicate_blocks_adopts_destination_project_and_preserves_page_properties_on_
                     title: "Page".to_string(),
                     parent,
                     folder_id: None,
+                    project_id: Some(project.to_string()),
                     first_block_id: first_block.to_string(),
                     after_block_id: None,
-                    properties: Some(
-                        json!({ "__ganbaru_project_id": project, "custom": "retained" }),
-                    ),
+                    properties: Some(json!({ "custom": "retained" })),
                 },
             )
             .await
@@ -505,17 +507,11 @@ fn duplicate_blocks_adopts_destination_project_and_preserves_page_properties_on_
         .unwrap();
         let copy =
             serde_json::to_value(reads::get_page(&pool, BLOCK_D, false).await.unwrap()).unwrap();
-        assert_eq!(
-            copy["properties"]["__ganbaru_project_id"],
-            "destination-project"
-        );
+        assert_eq!(copy["project_id"], "destination-project");
         assert_eq!(copy["properties"]["custom"], "retained");
         let source =
             serde_json::to_value(reads::get_page(&pool, PAGE_C, false).await.unwrap()).unwrap();
-        assert_eq!(
-            source["properties"]["__ganbaru_project_id"],
-            "source-project"
-        );
+        assert_eq!(source["project_id"], "source-project");
         assert!(
             writes::update_block(
                 &pool,
@@ -547,6 +543,7 @@ fn move_blocks_moves_subtrees_updates_comment_pages_and_rejects_cycles() {
                 title: "Destination".to_string(),
                 parent: workspace_parent(),
                 folder_id: None,
+                project_id: None,
                 first_block_id: BLOCK_F.to_string(),
                 after_block_id: None,
                 properties: None,

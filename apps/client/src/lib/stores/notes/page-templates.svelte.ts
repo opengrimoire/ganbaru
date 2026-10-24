@@ -14,6 +14,8 @@ import type {
 
 interface NotesPageTemplatesControllerContext {
   readLoadedPage: () => NotesPage | null;
+  /** The project a workspace page created from a template joins, or null for none. */
+  readProjectId: () => string | null;
   flushPendingBlockSaves: () => Promise<void>;
   activateReturnedPage: (loaded: NotesLoadedPage) => Promise<void>;
   queueDescendantHydration: () => void;
@@ -54,6 +56,7 @@ export function createNotesPageTemplatesController(
     const loaded = await applyNotesPageTemplate(templateId, {
       parent: { type: "workspace", workspace: true },
       title: title?.trim() || null,
+      project_id: context.readProjectId(),
     });
     await context.activateReturnedPage(loaded);
     context.queueDescendantHydration();

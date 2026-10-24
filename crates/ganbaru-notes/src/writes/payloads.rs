@@ -22,7 +22,11 @@ pub(super) fn page_row_properties_for_title(
     }
 }
 
-fn normal_page_properties_with_title(properties: &str, title: &str) -> Result<String, String> {
+/// Replace the title of a page that is not a data source row, keeping its other properties.
+pub(crate) fn normal_page_properties_with_title(
+    properties: &str,
+    title: &str,
+) -> Result<String, String> {
     let mut value: Value =
         serde_json::from_str(properties).map_err(|e| format!("parse page properties: {e}"))?;
     let object = value

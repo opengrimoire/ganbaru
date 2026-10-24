@@ -145,11 +145,13 @@ async fn append_block_entries(
     link_resolver: &LocalLinkResolver,
     entries: &mut Vec<LinkFactEntry>,
 ) -> Result<(), String> {
-    let rows = sqlx::query_as::<_, BlockFactRow>(
+    let rows = sqlx::query_as::<_, BlockFactRow>(concat!(
         "SELECT block.id,
                 block.page_id,
                 block.type AS block_type,
-                block.payload,
+                ",
+        crate::note_block_content_sql!("block"),
+        " AS payload,
                 block.plain_text,
                 block.created_time,
                 block.last_edited_time
@@ -169,7 +171,7 @@ async fn append_block_entries(
                      AND database.in_trash = 0
                )
            )",
-    )
+    ))
     .fetch_all(pool)
     .await
     .map_err(|e| format!("load notes blocks for link facts: {e}"))?;

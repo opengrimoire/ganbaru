@@ -545,6 +545,43 @@ fn foreign_keys_follow_references_and_ownership() {
     });
 }
 
+/// A `published_with` column is nullable exactly when null publishes, and its foreign key
+/// cascades: a nullable column that never publishes when null would keep such rows local
+/// forever, and a key that clears would publish a parent's pending children at its delete.
+#[test]
+fn published_with_columns_are_nullable_only_when_null_publishes() {
+    block_on(async {
+        for (manifest, pool) in cases().await {
+            for table in manifest.tables {
+                let Some(with) = table.published_with else {
+                    continue;
+                };
+                let not_null: Vec<String> = sqlx::query_scalar(
+                    "SELECT name FROM pragma_table_info(?) WHERE \"notnull\" = 1",
+                )
+                .bind(table.name)
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+                let nullable = !not_null.iter().any(|name| name == with.column);
+                assert_eq!(
+                    nullable, with.null_publishes,
+                    "{}.{}: the column is nullable exactly when null publishes",
+                    table.name, with.column
+                );
+                let cascades = foreign_keys(&pool, table.name).await.into_iter().any(
+                    |(column, _, _, on_delete)| column == with.column && on_delete == "CASCADE",
+                );
+                assert!(
+                    cascades,
+                    "{}.{}: the foreign key into the publishing parent cascades",
+                    table.name, with.column
+                );
+            }
+        }
+    });
+}
+
 /// Replicated rows are deleted by apply, so every foreign key into a replicated or owned child
 /// table must clear or cascade instead of blocking the delete.
 #[test]

@@ -262,19 +262,20 @@ async fn load_pages(
     include_tree: bool,
 ) -> Result<Vec<NotePageRow>, String> {
     if !include_tree {
-        return sqlx::query_as::<_, NotePageRow>(
-            "SELECT *
+        return sqlx::query_as::<_, NotePageRow>(sqlx::AssertSqlSafe(format!(
+            "SELECT {}
              FROM notes_pages
              WHERE id = ?
                AND in_trash = 0
                AND archived = 0",
-        )
+            crate::structure::page_row_columns("notes_pages")
+        )))
         .bind(page_id)
         .fetch_all(pool)
         .await
         .map_err(|e| format!("load notes page for HTML export: {e}"));
     }
-    sqlx::query_as::<_, NotePageRow>(
+    sqlx::query_as::<_, NotePageRow>(sqlx::AssertSqlSafe(format!(
         "WITH RECURSIVE page_tree(id, depth) AS (
             SELECT id, 0
             FROM notes_pages
@@ -299,11 +300,12 @@ async fn load_pages(
                   )
               )
          )
-         SELECT page.*
+         SELECT {}
          FROM notes_pages AS page
          JOIN page_tree ON page_tree.id = page.id
          ORDER BY page_tree.depth ASC, page.title COLLATE NOCASE ASC, page.id ASC",
-    )
+        crate::structure::page_row_columns("page")
+    )))
     .bind(page_id)
     .bind(PAGE_TREE_DEPTH_LIMIT)
     .fetch_all(pool)
@@ -317,26 +319,16 @@ async fn load_blocks(pool: &SqlitePool, page_ids: &[String]) -> Result<Vec<NoteB
     }
     let placeholders = placeholders(page_ids.len());
     let sql = format!(
-        "SELECT id,
-                page_id,
-                parent_type,
-                parent_page_id,
-                parent_block_id,
-                has_children,
-                in_trash,
-                type AS block_type,
-                payload,
-                plain_text,
-                sort_order,
-                source_provider,
-                source_object_id,
-                source_last_edited_time,
-                created_time,
-                last_edited_time
+        concat!(
+            "SELECT ",
+            crate::note_block_row_columns!("notes_blocks"),
+            "
          FROM notes_blocks
-         WHERE page_id IN ({placeholders})
+         WHERE page_id IN ({})
            AND in_trash = 0
-         ORDER BY page_id ASC, sort_order ASC, id ASC"
+         ORDER BY page_id ASC, order_key ASC, id ASC"
+        ),
+        placeholders
     );
     let mut query = sqlx::query_as::<_, NoteBlockRow>(AssertSqlSafe(sql.as_str()));
     for page_id in page_ids {
@@ -487,6 +479,7 @@ async fn load_page_comments(
         .fetch_all(pool)
         .await
         .map_err(|e| format!("load notes comment threads for HTML export: {e}"))?;
+    let local_author_name = crate::local_user::local_author_name_from_pool(pool).await?;
     let mut threads = Vec::new();
     for thread in thread_rows {
         let anchor = sqlx::query_as::<_, NoteCommentAnchorRow>(
@@ -514,7 +507,10 @@ async fn load_page_comments(
             .map(|row| ExportComment {
                 id: row.id,
                 rich_text: row.rich_text,
-                author_name: display_name(&row.display_name),
+                author_name: display_name(Some(&crate::local_user::resolved_display_name_json(
+                    row.display_name.as_deref(),
+                    &local_author_name,
+                ))),
             })
             .collect();
         threads.push(ExportCommentThread {
@@ -878,9 +874,8 @@ fn block_key(block_id: &str) -> String {
     format!("block:{block_id}")
 }
 
-fn display_name(raw: &str) -> String {
-    serde_json::from_str::<Value>(raw)
-        .ok()
+fn display_name(raw: Option<&str>) -> String {
+    raw.and_then(|raw| serde_json::from_str::<Value>(raw).ok())
         .and_then(|value| {
             value
                 .get("resolved_name")

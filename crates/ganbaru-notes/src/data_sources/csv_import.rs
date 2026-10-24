@@ -1,3 +1,4 @@
+use crate::block_storage::{BlockRowInsert, insert_block_row};
 use crate::models::{
     NoteDataSourceCsvImportColumnDto, NoteDataSourceCsvImportDiagnosticDto,
     NoteDataSourceCsvImportDto, NoteDataSourceCsvImportRequest, NoteDataSourceCsvImportRowDto,
@@ -5,6 +6,7 @@ use crate::models::{
 };
 use crate::validation::{plain_text_from_payload, require_uuid};
 use crate::{assets, data_sources, writes};
+use ganbaru_sync_contracts::OrderKey;
 use serde_json::{Map, Value, json};
 use sqlx::{Sqlite, SqlitePool, Transaction};
 use std::collections::{HashMap, HashSet};
@@ -310,31 +312,27 @@ async fn insert_initial_block_tx(
 ) -> Result<(), String> {
     let payload = writes::default_text_payload("");
     let plain_text = plain_text_from_payload("paragraph", &payload);
-    sqlx::query(
-        "INSERT INTO notes_blocks (
-            id,
+    let source_object_id = format!("row:{row_number}");
+    let order_key = OrderKey::first().into_string();
+    insert_block_row(
+        tx,
+        BlockRowInsert {
+            id: block_id,
             page_id,
-            parent_type,
-            parent_page_id,
-            type,
-            payload,
-            plain_text,
-            sort_order,
-            source_provider,
-            source_object_id
-         )
-         VALUES (?, ?, 'page_id', ?, 'paragraph', ?, ?, 1000, 'csv', ?)",
+            parent_type: "page_id",
+            parent_page_id: Some(page_id),
+            parent_block_id: None,
+            block_type: "paragraph",
+            payload: &payload,
+            plain_text: &plain_text,
+            order_key: &order_key,
+            source_provider: Some("csv"),
+            source_object_id: Some(&source_object_id),
+            source_last_edited_time: None,
+        },
     )
-    .bind(block_id)
-    .bind(page_id)
-    .bind(page_id)
-    .bind(payload.to_string())
-    .bind(plain_text)
-    .bind(format!("row:{}", row_number))
-    .execute(&mut **tx)
     .await
-    .map_err(|e| format!("insert CSV data source row block: {e}"))?;
-    Ok(())
+    .map_err(|e| format!("insert CSV data source row block: {e}"))
 }
 
 async fn property_value_from_csv(

@@ -3,16 +3,18 @@
 //! log, so a mismatch means the format changed by accident. Set `GANBARU_SYNC_BLESS_VECTORS=1`
 //! only when introducing a new format version deliberately.
 
-use super::fixtures::{golden_cause, golden_chain, writer_key};
+use super::fixtures::{golden_cause, golden_chain, golden_group, writer_key};
+use crate::bounds::{MAX_GROUP_BYTES, MAX_OPERATIONS_PER_GROUP};
 use crate::codec::{CodecError, Reader, Writer};
 use crate::ids::hex;
 use crate::op::{
-    BASE_FORMAT_VERSION, CAUSE_FORMAT_VERSION, ENVELOPE_OVERHEAD, FORMAT_VERSION, OPERATION_MAGIC,
+    BASE_FORMAT_VERSION, CAUSE_FORMAT_VERSION, ENVELOPE_OVERHEAD, FORMAT_VERSION,
+    GROUP_FORMAT_VERSION, OPERATION_MAGIC,
 };
 use crate::signing::WriterPublicKey;
 use crate::{
     Cause, ChangeAction, Content, Envelope, Field, GroupId, GroupValue, OperationError,
-    OperationKind, PayloadError, SignedCertificate, Value,
+    OperationKind, PayloadError, SignedCertificate, Value, ends_group,
 };
 use std::path::PathBuf;
 
@@ -21,6 +23,10 @@ const VECTOR_NAMES: [&str; 3] = ["genesis", "changes", "acknowledgement"];
 const UNASSIGNED_KIND: u8 = 2;
 /// The version 2 vector: a tombstone naming its cause.
 const CAUSE_VECTOR: &str = "changes-cause";
+/// The version 4 vector: the cause operation marked as continuing its apply group.
+const GROUP_VECTOR: &str = "changes-group";
+/// Header offset of the version 4 flags byte: clock, manifest version, revision, key epoch.
+const FLAGS_OFFSET: usize = 8 + 4 + 8 + 4;
 const BLESS_VARIABLE: &str = "GANBARU_SYNC_BLESS_VECTORS";
 
 fn vector_path(name: &str) -> PathBuf {
@@ -358,6 +364,86 @@ fn envelope_rejects_format_zero_wrong_magic_and_sequence_zero() {
     let mut bytes = chain[1].1.clone();
     bytes[38..46].copy_from_slice(&0u64.to_be_bytes());
     assert!(Envelope::decode(&bytes).is_err());
+}
+
+#[test]
+fn a_continuing_group_seals_at_version_4_and_reencodes_byte_identically() {
+    let (operation, bytes) = golden_group();
+    assert_vector(GROUP_VECTOR, &hex(&bytes));
+    let envelope = Envelope::decode(&bytes).unwrap();
+    assert_eq!(envelope.format_version, GROUP_FORMAT_VERSION);
+    assert!(envelope.verify(&writer_key().public_key()));
+    // The flags byte follows the key epoch.
+    assert_eq!(envelope.header[FLAGS_OFFSET], 1);
+    let decoded = envelope.operation().unwrap();
+    assert!(decoded.header.group_continues);
+    assert_eq!(decoded, operation);
+    assert_eq!(
+        decoded.seal(&writer_key()).unwrap().bytes(),
+        bytes.as_slice()
+    );
+
+    let (_, cause) = golden_cause();
+    assert_eq!(
+        Envelope::decode(&cause).unwrap().format_version,
+        CAUSE_FORMAT_VERSION
+    );
+}
+
+#[test]
+fn header_flags_reject_unknown_bits_and_older_formats_lack_them() {
+    let (_, bytes) = golden_group();
+    let envelope = Envelope::decode(&bytes).unwrap();
+    let mut unknown = envelope.header.to_vec();
+    unknown[FLAGS_OFFSET] = 0b10;
+    let unknown = signed_envelope(GROUP_FORMAT_VERSION, 0, &unknown, envelope.body);
+    assert_eq!(
+        Envelope::decode(&unknown).unwrap().operation(),
+        Err(PayloadError::Invalid(OperationError::Codec(
+            CodecError::Malformed("header flags")
+        )))
+    );
+
+    // An older reader of the same header reads the flags byte as part of the dependency count.
+    let downgraded = signed_envelope(CAUSE_FORMAT_VERSION, 0, envelope.header, envelope.body);
+    assert!(Envelope::decode(&downgraded).unwrap().operation().is_err());
+
+    // A clear flags byte at version 4 decodes as an operation that ends its group.
+    let mut clear = envelope.header.to_vec();
+    clear[FLAGS_OFFSET] = 0;
+    let clear = signed_envelope(GROUP_FORMAT_VERSION, 0, &clear, envelope.body);
+    let decoded = Envelope::decode(&clear).unwrap().operation().unwrap();
+    assert!(!decoded.header.group_continues);
+}
+
+#[test]
+fn only_a_changes_operation_continues_a_group() {
+    let chain = golden_chain();
+    for index in [0, 2] {
+        let mut operation = chain[index].0.clone();
+        operation.header.group_continues = true;
+        assert_eq!(
+            operation.validate(),
+            Err(OperationError::Codec(CodecError::Malformed("header flags")))
+        );
+    }
+    let mut empty = chain[1].0.clone();
+    empty.content = Content::Changes(Vec::new());
+    empty.header.group_continues = true;
+    assert!(empty.validate().is_ok());
+}
+
+#[test]
+fn a_group_ends_at_a_clear_flag_or_either_bound() {
+    assert!(ends_group(false, 1, 0));
+    assert!(!ends_group(true, 1, 0));
+    assert!(!ends_group(
+        true,
+        MAX_OPERATIONS_PER_GROUP - 1,
+        MAX_GROUP_BYTES - 1
+    ));
+    assert!(ends_group(true, MAX_OPERATIONS_PER_GROUP, 0));
+    assert!(ends_group(true, 1, MAX_GROUP_BYTES));
 }
 
 #[test]

@@ -49,7 +49,7 @@ export const navigationAndSearch = {
     changed: number,
     copied: number,
   ) =>
-    `Se eliminarán ${removed} notas, se recrearán ${recreated} y se cambiarán ${changed}. ${copied} notas que ahora pertenecen a otros proyectos se restaurarán como copias con IDs nuevos. Primero se creará una versión de seguridad completa del proyecto actual.`,
+    `Se moverán ${removed} notas a la papelera, se recrearán ${recreated} y se cambiarán ${changed}. ${copied} notas que ahora pertenecen a otros proyectos se restaurarán como copias con IDs nuevos. Primero se creará una versión de seguridad completa del proyecto actual.`,
   projectHistoryRestoreFailed: (message: string) =>
     `No se pudo restaurar esta versión: ${message}`,
   projectSettingsSaveFailed: (message: string) =>

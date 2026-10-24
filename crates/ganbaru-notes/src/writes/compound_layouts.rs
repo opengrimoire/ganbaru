@@ -14,7 +14,7 @@ const MAX_LAYOUT_CHILDREN: i64 = 20_000;
 const MAX_LAYOUT_PAYLOAD_BYTES: i64 = 16 * 1024 * 1024;
 
 async fn child_ids(tx: &mut Transaction<'_, Sqlite>, id: &str) -> Result<Vec<String>, String> {
-    let ids: Vec<String> = sqlx::query_scalar("SELECT id FROM notes_blocks WHERE parent_block_id = ? AND in_trash = 0 ORDER BY sort_order, id LIMIT ?")
+    let ids: Vec<String> = sqlx::query_scalar("SELECT id FROM notes_blocks WHERE parent_block_id = ? AND in_trash = 0 ORDER BY order_key, id LIMIT ?")
         .bind(id).bind(MAX_LAYOUT_CHILDREN + 1).fetch_all(&mut **tx).await
         .map_err(|error| format!("load Notes layout children: {error}"))?;
     if ids.len() > MAX_LAYOUT_CHILDREN as usize {
@@ -40,8 +40,8 @@ pub(super) async fn template_children(
         return Err("Notes template insertion requires an active template or button".to_string());
     }
     request.block_ids = child_ids(tx, id).await?;
-    let source: Vec<(String, String)> = sqlx::query_as("WITH RECURSIVE content(id) AS (SELECT id FROM notes_blocks WHERE parent_block_id = ? AND in_trash = 0 UNION SELECT b.id FROM notes_blocks b JOIN content c ON b.parent_block_id = c.id WHERE b.in_trash = 0 LIMIT ?) SELECT b.id, b.type FROM notes_blocks b JOIN content c ON b.id = c.id ORDER BY b.id")
-        .bind(id).bind(MAX_LAYOUT_CHILDREN + 1).fetch_all(&mut **tx).await
+    let source: Vec<(String, String)> = sqlx::query_as("WITH RECURSIVE content(id, depth) AS (SELECT id, 1 FROM notes_blocks WHERE parent_block_id = ? AND in_trash = 0 UNION SELECT b.id, c.depth + 1 FROM notes_blocks b JOIN content c ON b.parent_block_id = c.id WHERE b.in_trash = 0 AND c.depth < ? LIMIT ?) SELECT b.id, b.type FROM notes_blocks b WHERE b.id IN (SELECT id FROM content) ORDER BY b.id")
+        .bind(id).bind(crate::writes::MAX_BLOCK_DEPTH).bind(MAX_LAYOUT_CHILDREN + 1).fetch_all(&mut **tx).await
         .map_err(|error| format!("bound Notes template content: {error}"))?;
     validation::validate_duplicate_block_count(source.len())?;
     if source
@@ -106,7 +106,7 @@ pub(super) async fn table_column(
     empty_row_id: &str,
 ) -> Result<Vec<String>, String> {
     let mut ids = child_ids(tx, id).await?;
-    let payload_bytes: i64 = sqlx::query_scalar("SELECT COALESCE(SUM(length(CAST(payload AS BLOB))), 0) FROM notes_blocks WHERE (parent_block_id = ? OR id = ?) AND in_trash = 0")
+    let payload_bytes: i64 = sqlx::query_scalar("SELECT COALESCE(SUM(length(CAST(attrs AS BLOB)) + length(CAST(text AS BLOB))), 0) FROM notes_blocks WHERE (parent_block_id = ? OR id = ?) AND in_trash = 0")
         .bind(id).bind(id).fetch_one(&mut **tx).await.map_err(|error| format!("bound Notes table payload: {error}"))?;
     if payload_bytes > MAX_LAYOUT_PAYLOAD_BYTES {
         return Err("Notes table exceeds its payload limit".to_string());

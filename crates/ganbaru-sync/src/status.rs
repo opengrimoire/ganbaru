@@ -291,6 +291,7 @@ impl Engine {
                 Classified::Waiting {
                     dependencies,
                     revision,
+                    continues,
                     ..
                 } => {
                     let context =
@@ -298,11 +299,12 @@ impl Engine {
                             .await?;
                     sqlx::query(
                         "UPDATE sync_ops SET state = 'waiting', hold_reason = NULL, context = ?,
-                            authorization_revision = ?
+                            authorization_revision = ?, group_continues = ?
                          WHERE space_id = ? AND writer_id = ? AND seq = ?",
                     )
                     .bind(log::encode_context(context.as_ref()))
                     .bind(seq_i64(*revision)?)
+                    .bind(*continues)
                     .bind(ctx.space.as_bytes().as_slice())
                     .bind(writer.as_bytes().as_slice())
                     .bind(seq_i64(seq)?)

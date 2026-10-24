@@ -452,8 +452,8 @@ async fn load_active_target_row_tx(
     target_data_source_id: &str,
     target_page_id: &str,
 ) -> Result<Option<NotePageRow>, String> {
-    sqlx::query_as::<_, NotePageRow>(
-        "SELECT page.*
+    sqlx::query_as::<_, NotePageRow>(sqlx::AssertSqlSafe(format!(
+        "SELECT {}
          FROM notes_pages AS page
          JOIN notes_data_sources AS data_source ON data_source.id = page.parent_data_source_id
          JOIN notes_databases AS database ON database.id = data_source.database_id
@@ -464,7 +464,8 @@ async fn load_active_target_row_tx(
            AND page.archived = 0
            AND data_source.in_trash = 0
            AND database.in_trash = 0",
-    )
+        crate::structure::page_row_columns("page")
+    )))
     .bind(target_page_id)
     .bind(target_data_source_id)
     .fetch_optional(&mut **tx)

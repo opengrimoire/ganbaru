@@ -315,16 +315,16 @@ pub async fn sync_page_properties_tx(
     tx: &mut Transaction<'_, Sqlite>,
     page_id: &str,
 ) -> Result<(), String> {
-    let row = sqlx::query_as::<_, (String, String, Option<String>)>(concat!(
-        "SELECT page.title, page.properties, CASE WHEN source.id IS NULL THEN NULL ELSE ",
-        crate::note_data_source_properties_json!("source"),
-        " END
+    let row = sqlx::query_as::<_, (String, String, Option<String>)>(sqlx::AssertSqlSafe(format!(
+        "SELECT page.title, {properties}, CASE WHEN source.id IS NULL THEN NULL ELSE {schema} END
          FROM notes_pages AS page
          LEFT JOIN notes_data_sources AS source
            ON page.parent_type = 'data_source_id'
           AND source.id = page.parent_data_source_id
-         WHERE page.id = ?"
-    ))
+         WHERE page.id = ?",
+        properties = crate::page_property_storage::page_properties_sql("page"),
+        schema = crate::note_data_source_properties_json!("source"),
+    )))
     .bind(page_id)
     .fetch_optional(&mut **tx)
     .await

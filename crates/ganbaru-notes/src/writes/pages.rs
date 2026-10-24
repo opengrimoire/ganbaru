@@ -1,9 +1,7 @@
 use super::parents::{
     resolve_block_parent, touch_page, touch_parent_block, validate_page_parent_exists,
 };
-use super::payloads::{
-    child_page_payload, default_text_payload, page_row_properties_for_title, page_title_properties,
-};
+use super::payloads::{child_page_payload, default_text_payload};
 use super::sort::next_order_keys;
 use crate::block_storage::{
     BlockRowInsert, BlockViewState, compose_block_payload, insert_block_row, write_block_content,
@@ -29,14 +27,14 @@ pub async fn create_page(
         return Err("data source pages must be created with the row page command".to_string());
     }
     let title = page.title.trim().to_string();
-    let properties = page_properties_for_create(&title, page.properties.as_ref())?;
+    validate_extra_page_properties(page.properties.as_ref())?;
     let requested_project_id = page
         .project_id
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty());
     if let Some(existing) =
-        load_idempotent_page_create(pool, &page, &title, &properties, requested_project_id).await?
+        load_idempotent_page_create(pool, &page, &title, requested_project_id).await?
     {
         return Ok(existing);
     }
@@ -97,10 +95,9 @@ pub async fn create_page(
             child_block_id,
             folder_id,
             project_id,
-            title,
-            properties
+            title
          )
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(page.id.trim())
     .bind(parent_type)
@@ -116,7 +113,6 @@ pub async fn create_page(
         project_id.as_deref(),
     ))
     .bind(&title)
-    .bind(properties.to_string())
     .execute(&mut *tx)
     .await
     .map_err(|e| format!("create notes page: {e}"))?;
@@ -168,13 +164,11 @@ async fn load_idempotent_page_create(
     pool: &SqlitePool,
     page: &NotePageCreate,
     title: &str,
-    properties: &Value,
     requested_project_id: Option<&str>,
 ) -> Result<Option<NoteLoadedPage>, String> {
     let page_id = page.id.trim();
     let existing = sqlx::query(sqlx::AssertSqlSafe(format!(
-        "SELECT parent_type, parent_page_id, parent_block_id, folder_id, {} AS project_id, title,
-                properties
+        "SELECT parent_type, parent_page_id, parent_block_id, folder_id, {} AS project_id, title
          FROM notes_pages WHERE id = ?",
         crate::structure::page_project_sql("notes_pages")
     )))
@@ -196,11 +190,6 @@ async fn load_idempotent_page_create(
     };
 
     let (parent_type, parent_page_id, parent_block_id) = parent_columns(&page.parent);
-    let stored_properties: String = existing
-        .try_get("properties")
-        .map_err(|e| format!("read existing notes page properties: {e}"))?;
-    let stored_properties: Value = serde_json::from_str(&stored_properties)
-        .map_err(|e| format!("parse existing notes page properties: {e}"))?;
     let stored_parent_type: String = existing
         .try_get("parent_type")
         .map_err(|e| format!("read existing notes page parent type: {e}"))?;
@@ -224,7 +213,6 @@ async fn load_idempotent_page_create(
         && stored_parent_block_id.as_deref() == parent_block_id
         && stored_folder_id.as_deref() == page.folder_id.as_deref().map(str::trim)
         && stored_title == title
-        && stored_properties == *properties
         && project_matches(
             &page.parent,
             stored_project_id.as_deref(),
@@ -309,7 +297,7 @@ pub async fn create_child_page_from_block(
         .map(str::trim)
         .unwrap_or_else(|| current.plain_text.trim())
         .to_string();
-    let properties = page_properties_for_create(&title, request.properties.as_ref())?;
+    validate_extra_page_properties(request.properties.as_ref())?;
     let page_parent_type = if current.parent_type == "page_id" {
         "page_id"
     } else {
@@ -342,10 +330,9 @@ pub async fn create_child_page_from_block(
             parent_page_id,
             parent_block_id,
             child_block_id,
-            title,
-            properties
+            title
          )
-         VALUES (?, ?, ?, ?, ?, ?, ?)",
+         VALUES (?, ?, ?, ?, ?, ?)",
     )
     .bind(block_id)
     .bind(page_parent_type)
@@ -353,7 +340,6 @@ pub async fn create_child_page_from_block(
     .bind(&current.parent_block_id)
     .bind(block_id)
     .bind(&title)
-    .bind(properties.to_string())
     .execute(&mut *tx)
     .await
     .map_err(|e| format!("create notes child page: {e}"))?;
@@ -444,28 +430,13 @@ fn project_matches(parent: &NoteParent, stored: Option<&str>, requested: Option<
     }
 }
 
-fn page_properties_for_create(
-    title: &str,
-    extra_properties: Option<&Value>,
-) -> Result<Value, String> {
-    let mut properties = page_title_properties(title);
-    let Some(extra_properties) = extra_properties else {
-        return Ok(properties);
-    };
-    crate::validation::validate_page_properties(extra_properties)?;
-    let extra_object = extra_properties
-        .as_object()
-        .ok_or_else(|| "properties must be an object".to_string())?;
-    let properties_object = properties
-        .as_object_mut()
-        .ok_or_else(|| "page properties must be an object".to_string())?;
-    for (key, value) in extra_object {
-        if key == "title" {
-            continue;
-        }
-        properties_object.insert(key.clone(), value.clone());
+/// Validates the extra properties of a new page outside a data source. Only rows store property
+/// values, so a page outside a data source keeps its title and drops the rest.
+fn validate_extra_page_properties(extra_properties: Option<&Value>) -> Result<(), String> {
+    match extra_properties {
+        Some(extra_properties) => crate::validation::validate_page_properties(extra_properties),
+        None => Ok(()),
     }
-    Ok(properties)
 }
 
 pub async fn update_page(
@@ -512,20 +483,13 @@ pub async fn update_page(
     }
     if let Some(title) = update.title {
         let title = title.trim().to_string();
-        let current_page = load_page_row(&mut tx, page_id).await?;
-        let properties = match update.properties.clone() {
-            Some(properties) => properties.to_string(),
-            None => page_row_properties_for_title(&current_page, &title)?,
-        };
         sqlx::query(
             "UPDATE notes_pages
              SET title = ?,
-                 properties = ?,
                  last_edited_time = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
              WHERE id = ? AND in_trash = 0 AND archived = 0",
         )
         .bind(&title)
-        .bind(properties)
         .bind(page_id)
         .execute(&mut *tx)
         .await
@@ -542,18 +506,21 @@ pub async fn update_page(
         .execute(&mut *tx)
         .await
         .map_err(|e| format!("update notes child page block title: {e}"))?;
-    } else if let Some(properties) = update.properties {
-        sqlx::query(
+    }
+    if let Some(properties) = &update.properties {
+        let touched = sqlx::query(
             "UPDATE notes_pages
-             SET properties = ?,
-                 last_edited_time = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+             SET last_edited_time = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
              WHERE id = ? AND in_trash = 0 AND archived = 0",
         )
-        .bind(properties.to_string())
         .bind(page_id)
         .execute(&mut *tx)
         .await
         .map_err(|e| format!("update notes page properties: {e}"))?;
+        if touched.rows_affected() > 0 {
+            crate::page_property_storage::write_page_properties(&mut *tx, page_id, properties)
+                .await?;
+        }
     }
     if update.icon.is_set() || update.cover.is_set() {
         let icon_reference_value = update.icon.value().cloned();

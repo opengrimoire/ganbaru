@@ -2,7 +2,9 @@
 -- Notes databases preparation for concurrent sync. A database names its child_database block in
 -- `block_id`, so deleting the block deletes the database. Template blocks are keyed by their
 -- depth-first ordinal inside the template instead of a REAL sort order, and a data source names
--- its default template in `default_template_id` instead of a flag on each template.
+-- its default template in `default_template_id` instead of a flag on each template. Data source
+-- properties and options, row property values, and relation edges move out of JSON columns into
+-- rows with `pending:` sync keys that startup replaces with derived keys.
 --
 -- SQLite applies changed column constraints and foreign key actions only by rebuilding the table.
 -- Foreign keys are disabled for the rebuild and every copy keeps its values. Legacy rename keeps
@@ -399,6 +401,238 @@ JOIN notes_data_source_properties AS property
 
 DROP TABLE notes_data_source_property_sources;
 ALTER TABLE notes_data_sources DROP COLUMN properties;
+
+-- Row page property values move out of the page properties JSON into one row per page and
+-- property. A value keeps the type it was written with, which can differ from the property type
+-- after a concurrent type change. The title lives in the page title column and relations in edge
+-- rows, so neither is stored as a value; computed properties are never stored. Entries name their
+-- property by `id`, or by name when the id does not match a property of the row's data source.
+CREATE TABLE notes_page_property_values (
+    page_id TEXT NOT NULL REFERENCES notes_pages(id) ON DELETE CASCADE,
+    property_id TEXT NOT NULL CHECK (trim(property_id) <> ''),
+    sync_key TEXT NOT NULL CHECK (sync_key <> '' AND length(sync_key) <= 128),
+    value_type TEXT NOT NULL CHECK (trim(value_type) <> ''),
+    value TEXT NOT NULL CHECK (json_valid(value)),
+    PRIMARY KEY (page_id, property_id)
+);
+CREATE UNIQUE INDEX idx_notes_page_property_values_sync_key
+    ON notes_page_property_values(sync_key);
+CREATE INDEX idx_notes_page_property_values_property
+    ON notes_page_property_values(property_id, page_id);
+
+CREATE TEMP TABLE notes_page_property_value_sources AS
+SELECT
+    entry.page_id,
+    COALESCE(by_id.property_id, by_name.property_id) AS property_id,
+    CASE WHEN by_id.property_id IS NOT NULL THEN 0 ELSE 1 END AS preference,
+    entry.value_type,
+    COALESCE(entry.value -> ('$."' || entry.value_type || '"'), 'null') AS value,
+    entry.entry_rank
+FROM (
+    SELECT
+        page.id AS page_id,
+        page.parent_data_source_id AS data_source_id,
+        item.key AS name,
+        item.id AS entry_rank,
+        item.value AS value,
+        CASE WHEN item.type = 'object' THEN CASE WHEN json_type(item.value, '$.id') = 'text'
+            THEN json_extract(item.value, '$.id') END END AS property_id,
+        CASE WHEN item.type = 'object' THEN json_extract(item.value, '$.type') END AS value_type
+    FROM notes_pages AS page, json_each(page.properties) AS item
+    WHERE page.parent_type = 'data_source_id'
+      AND json_valid(page.properties)
+      AND item.type = 'object'
+) AS entry
+LEFT JOIN notes_data_source_properties AS by_id
+  ON by_id.data_source_id = entry.data_source_id
+ AND by_id.property_id = entry.property_id
+LEFT JOIN notes_data_source_properties AS by_name
+  ON by_name.data_source_id = entry.data_source_id
+ AND by_name.name = entry.name
+WHERE typeof(entry.value_type) = 'text'
+  AND trim(entry.value_type) <> ''
+  AND entry.value_type NOT IN ('title', 'relation', 'formula', 'rollup', 'button')
+  AND COALESCE(by_id.property_id, by_name.property_id) IS NOT NULL
+  AND COALESCE(by_id.type, by_name.type) NOT IN ('title', 'relation', 'formula', 'rollup', 'button');
+
+INSERT OR IGNORE INTO notes_page_property_values (page_id, property_id, sync_key, value_type, value)
+SELECT
+    source.page_id,
+    source.property_id,
+    'pending:v' || ROW_NUMBER() OVER (ORDER BY source.page_id, source.property_id, source.preference, source.entry_rank),
+    source.value_type,
+    source.value
+FROM notes_page_property_value_sources AS source
+ORDER BY source.page_id, source.property_id, source.preference, source.entry_rank;
+DROP TABLE notes_page_property_value_sources;
+
+-- The two-way relation pairs, listed from both sides. A relation property names a peer when its
+-- synced property is a relation of its target data source that targets the property's own data
+-- source. Two properties that name each other pair. A property that names no peer pairs with the
+-- property naming it, the smallest `(data_source_id, property_id)` when several do, so a synced
+-- property needs to be configured on one side only. Each property has at most one peer.
+CREATE VIEW notes_relation_pairs AS
+WITH relation AS (
+    SELECT
+        data_source_id,
+        property_id,
+        json_extract(config, '$.relation.data_source_id') AS target_data_source_id,
+        json_extract(config, '$.relation.dual_property.synced_property_id') AS synced_property_id
+    FROM notes_data_source_properties
+    WHERE type = 'relation'
+),
+naming AS (
+    SELECT
+        property.data_source_id,
+        property.property_id,
+        peer.data_source_id AS peer_data_source_id,
+        peer.property_id AS peer_property_id
+    FROM relation AS property
+    JOIN relation AS peer
+      ON peer.data_source_id = property.target_data_source_id
+     AND peer.property_id = property.synced_property_id
+     AND peer.target_data_source_id = property.data_source_id
+),
+paired AS (
+    SELECT naming.*
+    FROM naming
+    WHERE EXISTS (
+        SELECT 1 FROM naming AS back
+        WHERE back.data_source_id = naming.peer_data_source_id
+          AND back.property_id = naming.peer_property_id
+          AND back.peer_data_source_id = naming.data_source_id
+          AND back.peer_property_id = naming.property_id
+    )
+       OR (
+        NOT EXISTS (
+            SELECT 1 FROM naming AS back
+            WHERE back.data_source_id = naming.peer_data_source_id
+              AND back.property_id = naming.peer_property_id
+        )
+        AND NOT EXISTS (
+            SELECT 1 FROM naming AS other
+            WHERE other.peer_data_source_id = naming.peer_data_source_id
+              AND other.peer_property_id = naming.peer_property_id
+              AND (other.data_source_id < naming.data_source_id
+                   OR (other.data_source_id = naming.data_source_id
+                       AND other.property_id < naming.property_id))
+        )
+    )
+)
+SELECT data_source_id, property_id, peer_data_source_id, peer_property_id FROM paired
+UNION
+SELECT peer_data_source_id, peer_property_id, data_source_id, property_id FROM paired;
+
+-- Relation edges are canonical: a two-way relation (a pair in `notes_relation_pairs`) stores each
+-- edge once, under the side whose `(data_source_id, property_id)` is smaller, and the other side
+-- is read from edges by target. A property synced with itself stores the edge from the smaller
+-- page id. One-way relations keep the edge under their own property. Both mirrored links of a
+-- two-way edge collapse into one row.
+CREATE TABLE notes_relation_edges (
+    source_page_id TEXT NOT NULL REFERENCES notes_pages(id) ON DELETE CASCADE,
+    source_property_id TEXT NOT NULL CHECK (trim(source_property_id) <> ''),
+    target_page_id TEXT NOT NULL REFERENCES notes_pages(id) ON DELETE CASCADE,
+    sync_key TEXT NOT NULL CHECK (sync_key <> '' AND length(sync_key) <= 128),
+    created_time TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')) CHECK (trim(created_time) <> ''),
+    PRIMARY KEY (source_page_id, source_property_id, target_page_id)
+);
+CREATE UNIQUE INDEX idx_notes_relation_edges_sync_key ON notes_relation_edges(sync_key);
+CREATE INDEX idx_notes_relation_edges_target
+    ON notes_relation_edges(target_page_id, source_property_id, source_page_id);
+
+CREATE TEMP TABLE notes_relation_edge_sources AS
+SELECT
+    CASE WHEN swap THEN target_page_id ELSE source_page_id END AS source_page_id,
+    CASE WHEN swap THEN peer_property_id ELSE source_property_id END AS source_property_id,
+    CASE WHEN swap THEN source_page_id ELSE target_page_id END AS target_page_id,
+    created_time
+FROM (
+    SELECT
+        link.source_page_id,
+        link.source_property_id,
+        link.target_page_id,
+        link.created_time,
+        pair.peer_property_id,
+        CASE
+            WHEN pair.peer_property_id IS NULL THEN 0
+            WHEN pair.peer_data_source_id = link.source_data_source_id
+             AND pair.peer_property_id = link.source_property_id
+                THEN link.target_page_id < link.source_page_id
+            ELSE pair.peer_data_source_id < link.source_data_source_id
+              OR (pair.peer_data_source_id = link.source_data_source_id
+                  AND pair.peer_property_id < link.source_property_id)
+        END AS swap
+    FROM notes_data_source_relation_links AS link
+    LEFT JOIN notes_relation_pairs AS pair
+      ON pair.data_source_id = link.source_data_source_id
+     AND pair.property_id = link.source_property_id
+);
+
+INSERT OR IGNORE INTO notes_relation_edges (
+    source_page_id, source_property_id, target_page_id, sync_key, created_time
+)
+SELECT
+    source.source_page_id,
+    source.source_property_id,
+    source.target_page_id,
+    'pending:e' || ROW_NUMBER() OVER (
+        ORDER BY source.source_page_id, source.source_property_id, source.target_page_id, source.created_time
+    ),
+    source.created_time
+FROM notes_relation_edge_sources AS source
+ORDER BY source.source_page_id, source.source_property_id, source.target_page_id, source.created_time;
+DROP TABLE notes_relation_edge_sources;
+DROP TABLE notes_data_source_relation_links;
+ALTER TABLE notes_pages DROP COLUMN properties;
+
+-- Both sides of every relation edge, as the link from a page under one of its relation
+-- properties. The forward side is the stored edge; the reverse side is the edge read by target
+-- under the peer property of a two-way relation pair. Edges whose property is no longer a relation
+-- of the source page's data source, or whose pages are no longer rows of the data sources the
+-- relation joins, are hidden until a writer removes them or the rows return.
+CREATE VIEW notes_relation_links AS
+SELECT
+    edge.source_page_id AS source_page_id,
+    property.data_source_id AS source_data_source_id,
+    edge.source_property_id AS source_property_id,
+    property.name AS source_property_name,
+    edge.target_page_id AS target_page_id,
+    target_page.parent_data_source_id AS target_data_source_id,
+    edge.created_time AS created_time
+FROM notes_relation_edges AS edge
+JOIN notes_pages AS source_page ON source_page.id = edge.source_page_id
+JOIN notes_pages AS target_page ON target_page.id = edge.target_page_id
+JOIN notes_data_source_properties AS property
+  ON property.data_source_id = source_page.parent_data_source_id
+ AND property.property_id = edge.source_property_id
+ AND property.type = 'relation'
+WHERE target_page.parent_data_source_id = json_extract(property.config, '$.relation.data_source_id')
+UNION ALL
+SELECT
+    edge.target_page_id,
+    peer.data_source_id,
+    peer.property_id,
+    peer.name,
+    edge.source_page_id,
+    property.data_source_id,
+    edge.created_time
+FROM notes_relation_edges AS edge
+JOIN notes_pages AS source_page ON source_page.id = edge.source_page_id
+JOIN notes_pages AS target_page ON target_page.id = edge.target_page_id
+JOIN notes_data_source_properties AS property
+  ON property.data_source_id = source_page.parent_data_source_id
+ AND property.property_id = edge.source_property_id
+ AND property.type = 'relation'
+JOIN notes_relation_pairs AS pair
+  ON pair.data_source_id = property.data_source_id
+ AND pair.property_id = property.property_id
+JOIN notes_data_source_properties AS peer
+  ON peer.data_source_id = pair.peer_data_source_id
+ AND peer.property_id = pair.peer_property_id
+WHERE peer.data_source_id = target_page.parent_data_source_id
+  AND NOT (peer.data_source_id = property.data_source_id
+       AND peer.property_id = property.property_id
+       AND edge.source_page_id = edge.target_page_id);
 
 CREATE TEMP TABLE notes_sync_databases_guard (violations INTEGER NOT NULL CHECK (violations = 0));
 INSERT INTO notes_sync_databases_guard SELECT COUNT(*) FROM pragma_foreign_key_check;

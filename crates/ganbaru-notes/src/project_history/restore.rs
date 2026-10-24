@@ -679,8 +679,8 @@ mod tests {
             .await
             .unwrap();
             sqlx::query(
-                "INSERT INTO notes_pages (id, parent_type, folder_id, project_id, title, properties)
-                 VALUES (?, 'workspace', ?, ?, 'Folder note', json_object('title', json_object()))",
+                "INSERT INTO notes_pages (id, parent_type, folder_id, project_id, title)
+                 VALUES (?, 'workspace', ?, ?, 'Folder note')",
             )
             .bind(PAGE_ID)
             .bind(ROOT_FOLDER_ID)

@@ -176,7 +176,7 @@ fn database_copy_across_notes_keeps_schema_views_rows_templates_and_self_relatio
         assert_eq!(stored["properties"]["Related"]["relation"][0]["id"], row);
         assert_eq!(stored["properties"]["Priority"]["id"], priority);
         assert_eq!(stored["properties"]["Priority"]["select"]["id"], option);
-        let link: (String, String, String) = sqlx::query_as("SELECT source_property_id, target_page_id, target_data_source_id FROM notes_data_source_relation_links WHERE source_page_id = ?")
+        let link: (String, String, String) = sqlx::query_as("SELECT source_property_id, target_page_id, target_data_source_id FROM notes_relation_links WHERE source_page_id = ?")
             .bind(&row).fetch_one(&pool).await.unwrap();
         assert_eq!(link, (relation.into(), row.clone(), source.into()));
         let views: i64 =
@@ -906,7 +906,7 @@ fn duplicating_imported_database_placeholders_preserves_the_placeholder_without_
 }
 
 #[test]
-fn copying_database_rows_preserves_assets_literal_values_and_unavailable_relation_references() {
+fn copying_database_rows_preserves_assets_and_literal_values_and_drops_uncopied_relation_targets() {
     crate::test_block_on(async {
         let pool = migrated_memory_pool().await;
         seed_database(&pool).await;
@@ -957,8 +957,16 @@ fn copying_database_rows_preserves_assets_literal_values_and_unavailable_relatio
         )
         .await
         .unwrap();
-        sqlx::query("UPDATE notes_pages SET properties = json_set(properties, '$.Literal', json(?)) WHERE id = ?")
-            .bind(json!({"id": "literal", "type": "email", "email": "high"}).to_string()).bind(PAGE_B).execute(&pool).await.unwrap();
+        let mut schema = stored_schema(&pool, DATA_SOURCE_A).await;
+        schema["Literal"] =
+            json!({"id": "literal", "name": "Literal", "type": "email", "email": {}});
+        store_schema(&pool, DATA_SOURCE_A, &schema).await;
+        merge_page_properties(
+            &pool,
+            PAGE_B,
+            json!({"Literal": {"id": "literal", "type": "email", "email": "high"}}),
+        )
+        .await;
         let copied = serde_json::to_value(
             databases::duplicate_database(&pool, duplicate_request(DATABASE_B))
                 .await
@@ -970,11 +978,12 @@ fn copying_database_rows_preserves_assets_literal_values_and_unavailable_relatio
             serde_json::to_value(reads::get_page(&pool, &row, false).await.unwrap()).unwrap();
         assert_eq!(page["properties"]["Literal"]["email"], "high");
         assert_eq!(
-            page["properties"]["Related"]["relation"][1]["id"],
-            COMMENT_B
+            page["properties"]["Related"]["relation"],
+            json!([{"id": row}]),
+            "a trashed row the copy does not include is not a row of the copied data source"
         );
         let links: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM notes_data_source_relation_links WHERE source_page_id = ?",
+            "SELECT COUNT(*) FROM notes_relation_links WHERE source_page_id = ?",
         )
         .bind(&row)
         .fetch_one(&pool)
@@ -1110,8 +1119,6 @@ fn multi_source_database_copy_remaps_inverse_relations_with_overlapping_schema_i
         )
         .await
         .unwrap();
-        sqlx::query("UPDATE notes_pages SET properties = json_set(properties, '$.Related.relation', json(?)) WHERE id = ?")
-            .bind(json!([{"id": COMMENT_A}]).to_string()).bind(PAGE_B).execute(&pool).await.unwrap();
         data_sources::layouts::table::update_data_source_row_property(
             &pool,
             DATA_SOURCE_B,

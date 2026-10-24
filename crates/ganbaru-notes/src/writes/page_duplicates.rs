@@ -6,7 +6,7 @@ use super::database_copy::{DatabaseCopy, insert_database_copy, plan_database_cop
 use super::ids::new_note_id;
 use super::pages::load_page_row;
 use super::parents::{parent_target_from_block_row, touch_page, touch_parent_block};
-use super::payloads::{child_page_payload, page_row_properties_for_title};
+use super::payloads::child_page_payload;
 use super::sort::next_order_keys;
 use crate::block_storage::{
     BlockRowInsert, insert_block_row, load_block_content_payload, replace_block_payload,
@@ -59,7 +59,7 @@ impl DuplicatePageGraph {
         tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
         inherited: &HashMap<String, String>,
         schemas: &HashMap<String, HashMap<String, String>>,
-        copied_sources: &mut HashSet<String>,
+        copied: &mut super::database_copy::CopiedRelations,
     ) -> Result<(), String> {
         let mut identities = inherited.clone();
         let mut schemas = schemas.clone();
@@ -74,14 +74,23 @@ impl DuplicatePageGraph {
             {
                 scoped.extend(ids.clone());
             }
-            super::database_copy::remap_column(
-                tx,
-                "notes_pages",
-                "properties",
-                &plan.duplicate_id,
-                &scoped,
-            )
-            .await?;
+            if let NoteParent::DataSourceId { data_source_id } = &plan.parent {
+                let mut properties: serde_json::Value =
+                    serde_json::from_str(&plan.source_page.properties)
+                        .map_err(|e| format!("parse copied row properties: {e}"))?;
+                super::database_copy::remap_json_ids(&mut properties, &scoped);
+                crate::page_property_storage::write_page_properties(
+                    &mut **tx,
+                    &plan.duplicate_id,
+                    &properties,
+                )
+                .await?;
+                copied.rows.push(super::database_copy::CopiedRow {
+                    data_source_id: data_source_id.clone(),
+                    page_id: plan.duplicate_id.clone(),
+                    properties,
+                });
+            }
             let icon = plan
                 .source_page
                 .icon
@@ -123,7 +132,7 @@ impl DuplicatePageGraph {
             }
         }
         for database in &self.databases {
-            Box::pin(database.finalize(tx, &identities, &schemas, copied_sources)).await?;
+            Box::pin(database.finalize(tx, &identities, &schemas, copied)).await?;
         }
         Ok(())
     }
@@ -159,12 +168,7 @@ pub(crate) async fn plan_child_page_copy(
         .await
         .map_err(|e| format!("load copied child page: {e}"))?
         .ok_or_else(|| "notes child page not found".to_string())?;
-        let mut properties: serde_json::Map<String, serde_json::Value> =
-            serde_json::from_str(&source_page.properties)
-                .map_err(|e| format!("parse copied note properties: {e}"))?;
-        properties.remove("__ganbaru_trash");
         source_page.project_id = destination_project_id.map(str::to_string);
-        source_page.properties = serde_json::Value::Object(properties).to_string();
         let blocks = load_page_block_subtree_rows_for_copy(
             tx,
             &source_page_id,
@@ -528,11 +532,6 @@ pub(super) async fn insert_duplicated_page(
     } else {
         None
     };
-    let properties = if plan.duplicate_title == plan.source_page.title {
-        plan.source_page.properties.clone()
-    } else {
-        page_row_properties_for_title(&plan.source_page, &plan.duplicate_title)?
-    };
     sqlx::query(
         "INSERT INTO notes_pages (
             id,
@@ -544,12 +543,11 @@ pub(super) async fn insert_duplicated_page(
             folder_id,
             project_id,
             title,
-            properties,
             icon,
             cover,
             archived
          )
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(&plan.duplicate_id)
     .bind(parent_type)
@@ -566,7 +564,6 @@ pub(super) async fn insert_duplicated_page(
         plan.source_page.project_id.as_deref(),
     ))
     .bind(&plan.duplicate_title)
-    .bind(properties)
     .bind(&plan.source_page.icon)
     .bind(&plan.source_page.cover)
     .bind(plan.source_page.archived)

@@ -102,7 +102,8 @@ fn json_graph_export_includes_canonical_tables_counts_schema_and_warnings() {
         assert_eq!(graph["counts"]["tables"]["notes_data_sources"], 1);
 
         let pages = graph["graph"]["pages"]["notes_pages"].as_array().unwrap();
-        assert_eq!(pages[0]["properties"]["title"]["type"], "title");
+        assert!(pages[0].get("properties").is_none());
+        assert!(graph["graph"]["data_sources"]["notes_page_property_values"].is_array());
         let blocks = graph["graph"]["blocks"]["notes_blocks"].as_array().unwrap();
         assert!(
             blocks

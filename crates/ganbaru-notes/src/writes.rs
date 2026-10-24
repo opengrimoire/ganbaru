@@ -34,6 +34,5 @@ pub use parents::{
     touch_parent_block, validate_page_parent_exists,
 };
 pub(crate) use parents::{block_nesting_error, validate_block_for_parent};
-pub(crate) use payloads::normal_page_properties_with_title;
 pub use payloads::{default_text_payload, page_title_properties, rich_text};
 pub use sort::next_order_keys;

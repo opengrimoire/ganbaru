@@ -85,18 +85,18 @@ pub(crate) async fn create_data_source_row_page_tx(
             id,
             parent_type,
             parent_data_source_id,
-            title,
-            properties
+            title
          )
-         VALUES (?, 'data_source_id', ?, ?, ?)",
+         VALUES (?, 'data_source_id', ?, ?)",
     )
     .bind(request.id.trim())
     .bind(data_source_id)
     .bind(&title)
-    .bind(properties.to_string())
     .execute(&mut **tx)
     .await
     .map_err(|e| format!("create notes data source row page: {e}"))?;
+    crate::page_property_storage::write_page_properties(&mut **tx, request.id.trim(), &properties)
+        .await?;
     let first_order_key = OrderKey::first().into_string();
     insert_block_row(
         tx,
@@ -123,7 +123,6 @@ pub(crate) async fn create_data_source_row_page_tx(
         request.id.trim(),
         &schema_properties,
         &properties,
-        true,
     )
     .await?;
     assets::sync_data_source_property_asset_references_tx(tx, data_source_id, &schema_properties)

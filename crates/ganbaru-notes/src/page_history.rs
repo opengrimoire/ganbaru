@@ -266,7 +266,6 @@ async fn replace_page_from_snapshot(
     sqlx::query(
         "UPDATE notes_pages
          SET title = ?,
-             properties = ?,
              icon = ?,
              cover = ?,
              in_trash = 0,
@@ -276,13 +275,15 @@ async fn replace_page_from_snapshot(
          WHERE id = ?",
     )
     .bind(&snapshot.title)
-    .bind(&snapshot.properties)
     .bind(&snapshot.icon)
     .bind(&snapshot.cover)
     .bind(page_id)
     .execute(&mut **tx)
     .await
     .map_err(|e| format!("restore notes page history metadata: {e}"))?;
+    let properties: Value = serde_json::from_str(&snapshot.properties)
+        .map_err(|e| format!("parse notes page history properties: {e}"))?;
+    crate::page_property_storage::write_page_properties(&mut **tx, page_id, &properties).await?;
     restore::restore_blocks_from_snapshot(tx, page_id, &blocks).await?;
     if blocks.is_empty() {
         insert_default_page_block(tx, page_id, &mut HashSet::new()).await?;
@@ -463,20 +464,12 @@ async fn upsert_snapshot_child_page(
     } else {
         None
     };
-    let existing: Option<(String, String)> =
-        sqlx::query_as("SELECT parent_type, properties FROM notes_pages WHERE id = ?")
-            .bind(page_id)
-            .fetch_optional(&mut **tx)
-            .await
-            .map_err(|e| format!("load history child page: {e}"))?;
-    if let Some((existing_parent_type, existing_properties)) = existing {
-        // A restored child page keeps its own properties; only a former data source row,
-        // whose properties follow that source schema, starts again from a plain title.
-        let properties = if existing_parent_type == "data_source_id" {
-            page_title_properties(&title).to_string()
-        } else {
-            crate::writes::normal_page_properties_with_title(&existing_properties, &title)?
-        };
+    let existing: Option<i64> = sqlx::query_scalar("SELECT 1 FROM notes_pages WHERE id = ?")
+        .bind(page_id)
+        .fetch_optional(&mut **tx)
+        .await
+        .map_err(|e| format!("load history child page: {e}"))?;
+    if existing.is_some() {
         sqlx::query(
             "UPDATE notes_pages
              SET parent_type = ?,
@@ -487,7 +480,6 @@ async fn upsert_snapshot_child_page(
                  folder_id = NULL,
                  project_id = NULL,
                  title = ?,
-                 properties = ?,
                  in_trash = 0,
                  trash_owner = NULL,
                  trashed_time = NULL,
@@ -500,7 +492,6 @@ async fn upsert_snapshot_child_page(
         .bind(block_parent_block_id.as_deref())
         .bind(page_id)
         .bind(&title)
-        .bind(properties)
         .bind(page_id)
         .execute(&mut **tx)
         .await
@@ -514,10 +505,9 @@ async fn upsert_snapshot_child_page(
                 parent_page_id,
                 parent_block_id,
                 child_block_id,
-                title,
-                properties
+                title
              )
-             VALUES (?, ?, ?, ?, ?, ?, ?)",
+             VALUES (?, ?, ?, ?, ?, ?)",
         )
         .bind(page_id)
         .bind(page_parent_type)
@@ -525,7 +515,6 @@ async fn upsert_snapshot_child_page(
         .bind(block_parent_block_id.as_deref())
         .bind(page_id)
         .bind(&title)
-        .bind(page_title_properties(&title).to_string())
         .execute(&mut **tx)
         .await
         .map_err(|e| format!("create history child page: {e}"))?;
@@ -1056,16 +1045,6 @@ async fn touch_page(tx: &mut Transaction<'_, Sqlite>, page_id: &str) -> Result<(
     .await
     .map_err(|e| format!("touch notes page after history write: {e}"))?;
     Ok(())
-}
-
-fn page_title_properties(title: &str) -> Value {
-    json!({
-        "title": {
-            "id": "title",
-            "type": "title",
-            "title": [rich_text(title)]
-        }
-    })
 }
 
 fn default_text_payload(text: &str) -> Value {

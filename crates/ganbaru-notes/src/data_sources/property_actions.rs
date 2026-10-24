@@ -455,14 +455,14 @@ async fn apply_row_change_tx(
                     property_conversion::insert_value(row, &property.key, value);
                 }
             }
-            property_conversion::save_rows_tx(tx, &rows).await
+            property_conversion::save_rows_tx(tx, &rows, &property_id).await
         }
         RowChange::Remove { key, property_id } => {
             let mut rows = property_conversion::load_rows_tx(tx, data_source_id).await?;
             rows.retain_mut(|row| {
                 property_conversion::remove_value(row, &key, &property_id).is_some()
             });
-            property_conversion::save_rows_tx(tx, &rows).await
+            property_conversion::save_rows_tx(tx, &rows, &property_id).await
         }
     }
 }

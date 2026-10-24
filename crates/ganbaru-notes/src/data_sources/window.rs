@@ -420,12 +420,9 @@ fn push_filter_predicate(
         condition if property.property_type == "number" => {
             let payload = property_value_expression(property);
             query
-                .push("(CASE WHEN json_type(page.properties, '")
-                .push(sql_string(&json_path(
-                    &property.key,
-                    &property.property_type,
-                )))
-                .push("') IN ('integer', 'real') THEN CAST(")
+                .push("(CASE WHEN ")
+                .push(stored_value_sql(property, "json_type(stored_value.value)"))
+                .push(" IN ('integer', 'real') THEN CAST(")
                 .push(payload)
                 .push(" AS REAL) END)")
                 .push(comparison_operator(condition))
@@ -728,7 +725,7 @@ fn property_text_expression(property: &TableProperty) -> String {
         ),
         "relation" => format!(
             "COALESCE((SELECT group_concat(COALESCE(NULLIF(target.title, ''), target.id), ', ') \
-              FROM notes_data_source_relation_links AS relation \
+              FROM notes_relation_links AS relation \
               JOIN notes_pages AS target ON target.id = relation.target_page_id \
               WHERE relation.source_page_id = page.id \
                 AND relation.source_property_id = '{}'), '')",
@@ -758,17 +755,23 @@ fn sql_string(value: &str) -> String {
     value.replace('\'', "''")
 }
 
+/// The SQL value of `property` on the row `page`, or NULL when the row stores no value of the
+/// property's current type.
 fn property_value_expression(property: &TableProperty) -> String {
-    format!(
-        "json_extract(page.properties, '{}')",
-        sql_string(&json_path(&property.key, &property.property_type)),
-    )
+    stored_value_sql(property, "json_extract(stored_value.value, '$')")
 }
 
-fn json_path(key: &str, property_type: &str) -> String {
-    let escaped_key = key.replace('\\', "\\\\").replace('"', "\\\"");
-    let escaped_type = property_type.replace('\\', "\\\\").replace('"', "\\\"");
-    format!("$.\"{escaped_key}\".\"{escaped_type}\"")
+/// A scalar subquery evaluating `expression` over the stored value of `property` on the row
+/// `page`, matching only a value stored with the property's current type.
+fn stored_value_sql(property: &TableProperty, expression: &str) -> String {
+    format!(
+        "(SELECT {expression} FROM notes_page_property_values AS stored_value \
+          WHERE stored_value.page_id = page.id \
+            AND stored_value.property_id = '{}' \
+            AND stored_value.value_type = '{}')",
+        sql_string(&property.id),
+        sql_string(&property.property_type),
+    )
 }
 
 fn scalar_filter_text(value: &Value) -> String {

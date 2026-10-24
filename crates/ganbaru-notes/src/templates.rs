@@ -127,7 +127,6 @@ pub async fn apply_page_template(
     let mut reserved_ids = HashSet::new();
     let page_id = new_note_id(&mut tx, &mut reserved_ids).await?;
     let title = title_override.unwrap_or_else(|| template.name.clone());
-    let properties = properties_with_title(&template.properties, &title)?;
     let (parent_type, parent_page_id, parent_block_id) = parent_columns(&request.parent);
     sqlx::query(
         "INSERT INTO notes_pages (
@@ -138,11 +137,10 @@ pub async fn apply_page_template(
             child_block_id,
             project_id,
             title,
-            properties,
             icon,
             cover
          )
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(&page_id)
     .bind(parent_type)
@@ -157,7 +155,6 @@ pub async fn apply_page_template(
         project_id,
     ))
     .bind(&title)
-    .bind(properties.to_string())
     .bind(&template.icon)
     .bind(&template.cover)
     .execute(&mut *tx)
@@ -368,11 +365,12 @@ async fn load_active_page_snapshot(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     page_id: &str,
 ) -> Result<SourcePageSnapshot, String> {
-    sqlx::query_as::<_, SourcePageSnapshot>(
-        "SELECT properties, icon, cover
-         FROM notes_pages
-         WHERE id = ? AND in_trash = 0 AND archived = 0",
-    )
+    sqlx::query_as::<_, SourcePageSnapshot>(sqlx::AssertSqlSafe(format!(
+        "SELECT {} AS properties, page.icon, page.cover
+         FROM notes_pages AS page
+         WHERE page.id = ? AND page.in_trash = 0 AND page.archived = 0",
+        crate::page_property_storage::page_properties_sql("page")
+    )))
     .bind(page_id)
     .fetch_optional(&mut **tx)
     .await
@@ -586,10 +584,9 @@ async fn insert_applied_child_page(
             parent_page_id,
             parent_block_id,
             child_block_id,
-            title,
-            properties
+            title
          )
-         VALUES (?, ?, ?, ?, ?, ?, ?)",
+         VALUES (?, ?, ?, ?, ?, ?)",
     )
     .bind(page_id)
     .bind(page_parent_type)
@@ -597,7 +594,6 @@ async fn insert_applied_child_page(
     .bind(block_parent_block_id.as_deref())
     .bind(page_id)
     .bind(&title)
-    .bind(page_title_properties(&title).to_string())
     .execute(&mut **tx)
     .await
     .map_err(|e| format!("create template child page: {e}"))?;
@@ -914,33 +910,6 @@ fn normalize_optional_page_title(value: &str) -> Result<String, String> {
         return Err("page title must not contain control characters".to_string());
     }
     Ok(title.to_string())
-}
-
-fn properties_with_title(properties: &str, title: &str) -> Result<Value, String> {
-    let mut value: Value = serde_json::from_str(properties)
-        .map_err(|e| format!("parse page template properties: {e}"))?;
-    let object = value
-        .as_object_mut()
-        .ok_or_else(|| "page template properties must be an object".to_string())?;
-    object.insert(
-        "title".to_string(),
-        json!({
-            "id": "title",
-            "type": "title",
-            "title": [rich_text(title)]
-        }),
-    );
-    Ok(value)
-}
-
-fn page_title_properties(title: &str) -> Value {
-    json!({
-        "title": {
-            "id": "title",
-            "type": "title",
-            "title": [rich_text(title)]
-        }
-    })
 }
 
 fn child_page_payload(title: &str) -> Value {

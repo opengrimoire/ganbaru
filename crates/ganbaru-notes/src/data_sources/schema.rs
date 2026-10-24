@@ -217,12 +217,6 @@ pub(crate) async fn update_data_source_schema_tx(
     .await
     .map_err(|e| format!("update notes data source properties: {e}"))?;
     reconcile_saved_views_tx(tx, data_source_id, &prepared).await?;
-    data_sources::relations::rebuild_data_source_relation_links_tx(
-        tx,
-        data_source_id.trim(),
-        &prepared,
-    )
-    .await?;
     assets::sync_data_source_property_asset_references_tx(tx, data_source_id.trim(), &prepared)
         .await?;
     data_sources::rollups::invalidate_rollup_cache_for_data_source_tx(tx, data_source_id.trim())

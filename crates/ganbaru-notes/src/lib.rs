@@ -12,6 +12,7 @@ pub mod local_user;
 pub mod mention_notifications;
 pub mod models;
 pub mod page_history;
+pub mod page_property_storage;
 pub mod project_history;
 pub mod property_storage;
 pub mod reads;

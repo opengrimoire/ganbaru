@@ -89,7 +89,7 @@ fn database_subitems_keep_source_ownership_and_reject_cycles_and_foreign_parents
         )
         .await;
         let foreign_row = "44444444-4444-4444-8444-444444444444";
-        sqlx::query("INSERT INTO notes_pages(id, parent_type, parent_data_source_id, title, properties) VALUES (?, 'data_source_id', ?, 'Foreign', '{}')")
+        sqlx::query("INSERT INTO notes_pages(id, parent_type, parent_data_source_id, title) VALUES (?, 'data_source_id', ?, 'Foreign')")
             .bind(foreign_row).bind(DATA_SOURCE_B).execute(&pool).await.unwrap();
         assert!(
             data_sources::row_hierarchy::set_row_parent(
@@ -189,7 +189,7 @@ fn database_subitems_validate_subtree_depth_and_roll_back_new_row_documents_at_t
         let mut parent = PAGE_B.to_string();
         for depth in 1..=data_sources::row_hierarchy::MAX_ROW_HIERARCHY_DEPTH {
             let id = format!("40000000-0000-4000-8000-{depth:012}");
-            sqlx::query("INSERT INTO notes_pages(id, parent_type, parent_data_source_id, title, properties) VALUES (?, 'data_source_id', ?, ?, '{}')")
+            sqlx::query("INSERT INTO notes_pages(id, parent_type, parent_data_source_id, title) VALUES (?, 'data_source_id', ?, ?)")
                 .bind(&id).bind(DATA_SOURCE_A).bind(format!("Depth {depth}")).execute(&pool).await.unwrap();
             data_sources::row_hierarchy::set_row_parent(
                 &pool,
@@ -221,7 +221,7 @@ fn database_subitems_validate_subtree_depth_and_roll_back_new_row_documents_at_t
         let absent: i64 = sqlx::query_scalar("SELECT (SELECT COUNT(*) FROM notes_pages WHERE id = ?) + (SELECT COUNT(*) FROM notes_blocks WHERE id = ?)")
             .bind(PAGE_C).bind(BLOCK_C).fetch_one(&pool).await.unwrap();
         assert_eq!(absent, 0);
-        sqlx::query("INSERT INTO notes_pages(id, parent_type, parent_data_source_id, title, properties) VALUES (?, 'data_source_id', ?, 'Other root', '{}')")
+        sqlx::query("INSERT INTO notes_pages(id, parent_type, parent_data_source_id, title) VALUES (?, 'data_source_id', ?, 'Other root')")
             .bind(PAGE_C).bind(DATA_SOURCE_A).execute(&pool).await.unwrap();
         assert!(
             data_sources::row_hierarchy::set_row_parent(

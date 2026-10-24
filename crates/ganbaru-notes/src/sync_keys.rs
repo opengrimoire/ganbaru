@@ -35,8 +35,27 @@ pub const PROPERTY_OPTIONS: DerivedKeyTable = DerivedKeyTable {
     columns: &["data_source_id", "property_id", "option_id"],
 };
 
+/// Row page property values, keyed by page and property.
+pub const PROPERTY_VALUES: DerivedKeyTable = DerivedKeyTable {
+    table: "notes_page_property_values",
+    prefix: "notes-property-value",
+    columns: &["page_id", "property_id"],
+};
+
+/// Canonical relation edges, keyed by source page, source property, and target page.
+pub const RELATION_EDGES: DerivedKeyTable = DerivedKeyTable {
+    table: "notes_relation_edges",
+    prefix: "notes-relation-edge",
+    columns: &["source_page_id", "source_property_id", "target_page_id"],
+};
+
 /// Every Notes table with a derived `sync_key`.
-pub const DERIVED_KEY_TABLES: &[DerivedKeyTable] = &[PROPERTIES, PROPERTY_OPTIONS];
+pub const DERIVED_KEY_TABLES: &[DerivedKeyTable] = &[
+    PROPERTIES,
+    PROPERTY_OPTIONS,
+    PROPERTY_VALUES,
+    RELATION_EDGES,
+];
 
 /// Matches placeholder keys.
 const PENDING_CONDITION: &str = "substr(sync_key, 1, length(?1)) = ?1";

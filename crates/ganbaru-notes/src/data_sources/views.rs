@@ -413,6 +413,7 @@ fn normalized_row_properties(
         }
         let value = existing_property_value(current_object, property)
             .and_then(|value| canonical_stored_property_value(property, value).ok())
+            .or_else(|| mismatched_property_value(current_object, property))
             .unwrap_or_else(|| default_property_value(property, fallback_title));
         if property.property_type == "title" {
             title = title_from_property_value(&value).unwrap_or_else(|| fallback_title.to_string());
@@ -434,6 +435,26 @@ fn existing_property_value<'a>(
                 .values()
                 .find(|value| property_value_matches_schema(property, value))
         })
+}
+
+/// A stored value for `property` written under another property type. It reads with its own type until the next
+/// edit of that cell replaces it, so a schema type change never discards it silently.
+fn mismatched_property_value(
+    current: &Map<String, Value>,
+    property: &ViewProperty,
+) -> Option<Value> {
+    current
+        .get(&property.key)
+        .into_iter()
+        .chain(current.values())
+        .find(|value| {
+            crate::page_property_storage::is_mismatched_value(
+                value,
+                &property.id,
+                &property.property_type,
+            )
+        })
+        .cloned()
 }
 
 fn property_value_matches_schema(property: &ViewProperty, value: &Value) -> bool {

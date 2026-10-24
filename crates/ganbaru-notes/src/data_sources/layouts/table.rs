@@ -263,7 +263,7 @@ async fn write_row_property_tx(
     let row = load_active_row_page_tx(tx, data_source_id, page_id).await?;
     page_history::record_page_snapshot_tx(tx, page_id, "update_database_row_property").await?;
     let current_properties = parse_json(&row.properties, "row page properties")?;
-    let (mut title, mut properties) =
+    let (mut title, properties) =
         normalized_row_properties(schema, &current_properties, &row.title)?;
     let previous_date = properties
         .get(&property.key)
@@ -272,39 +272,35 @@ async fn write_row_property_tx(
     if property.property_type == "title" {
         title = title_from_property_value(&next_value).unwrap_or_default();
     }
-    properties[property.key.as_str()] = next_value;
-    let relation_value = if property.property_type == "relation" {
-        Some(
-            properties
-                .get(&property.key)
-                .cloned()
-                .ok_or_else(|| "relation property value was not stored".to_string())?,
-        )
-    } else {
-        None
-    };
     sqlx::query(
         "UPDATE notes_pages
          SET title = ?,
-             properties = ?,
              last_edited_time = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
          WHERE id = ? AND parent_type = 'data_source_id' AND parent_data_source_id = ?",
     )
     .bind(&title)
-    .bind(properties.to_string())
     .bind(page_id.trim())
     .bind(data_source_id.trim())
     .execute(&mut **tx)
     .await
     .map_err(|e| format!("update notes data source row property: {e}"))?;
-    if let Some(relation_value) = relation_value {
+    let property_type = property.property_type.as_str();
+    if property_type == "relation" {
         data_sources::relations::replace_relation_property_links_tx(
             tx,
             data_source_id.trim(),
             page_id.trim(),
             &property.schema,
-            &relation_value,
-            true,
+            &next_value,
+        )
+        .await?;
+    } else if !crate::page_property_storage::UNSTORED_VALUE_TYPES.contains(&property_type) {
+        crate::page_property_storage::write_page_property_value(
+            &mut **tx,
+            page_id.trim(),
+            &property.id,
+            property_type,
+            next_value.get(property_type).unwrap_or(&Value::Null),
         )
         .await?;
     }
@@ -756,6 +752,7 @@ fn normalized_row_properties(
         }
         let value = existing_property_value(current_object, property)
             .and_then(|value| canonical_stored_property_value(property, value).ok())
+            .or_else(|| mismatched_property_value(current_object, property))
             .unwrap_or_else(|| default_property_value(property, fallback_title));
         if property.property_type == "title" {
             title = title_from_property_value(&value).unwrap_or_else(|| fallback_title.to_string());
@@ -777,6 +774,26 @@ fn existing_property_value<'a>(
                 .values()
                 .find(|value| property_value_matches_schema(property, value))
         })
+}
+
+/// A stored value for `property` written under another property type. It reads with its own type until the next
+/// edit of that cell replaces it, so a schema type change never discards it silently.
+fn mismatched_property_value(
+    current: &Map<String, Value>,
+    property: &TableProperty,
+) -> Option<Value> {
+    current
+        .get(&property.key)
+        .into_iter()
+        .chain(current.values())
+        .find(|value| {
+            crate::page_property_storage::is_mismatched_value(
+                value,
+                &property.id,
+                &property.property_type,
+            )
+        })
+        .cloned()
 }
 
 fn property_value_matches_schema(property: &TableProperty, value: &Value) -> bool {

@@ -3,7 +3,7 @@
 use super::copy_budget::CopyContext;
 use super::ids::new_note_id;
 use super::page_duplicates::{DuplicatePageGraph, insert_child_page_copy, plan_child_page_copy};
-use crate::models::{NoteBlockRow, NoteDataSourceRow, NotePageRow, NoteParent};
+use crate::models::{NoteBlockRow, NoteDataSourceRow, NoteParent};
 use crate::{assets, data_sources};
 use serde_json::Value;
 use sqlx::{AssertSqlSafe, Sqlite, Transaction};
@@ -371,7 +371,7 @@ impl DatabaseCopy {
         tx: &mut Transaction<'_, Sqlite>,
         inherited: &HashMap<String, String>,
         schemas: &HashMap<String, HashMap<String, String>>,
-        copied_sources: &mut HashSet<String>,
+        copied: &mut CopiedRelations,
     ) -> Result<(), String> {
         let mut identities = inherited.clone();
         let mut schemas = schemas.clone();
@@ -382,7 +382,7 @@ impl DatabaseCopy {
                 .ok_or_else(|| "copied data source not found".to_string())?;
             remap_schema(&mut schema, &identities, &schemas, source);
             crate::property_storage::write_data_source_properties(&mut **tx, id, &schema).await?;
-            copied_sources.insert(id.clone());
+            copied.sources.insert(id.clone());
         }
         for (source, id) in &self.views {
             let source_id: String =
@@ -438,10 +438,26 @@ impl DatabaseCopy {
             }
         }
         for graph in &self.rows {
-            Box::pin(graph.finalize(tx, &identities, &schemas, copied_sources)).await?;
+            Box::pin(graph.finalize(tx, &identities, &schemas, copied)).await?;
         }
         Ok(())
     }
+}
+
+/// One copied row page with its properties remapped onto the copy's identities.
+pub(crate) struct CopiedRow {
+    pub data_source_id: String,
+    pub page_id: String,
+    pub properties: Value,
+}
+
+/// What finalizing copies leaves for the closing pass: the copied data sources, whose property
+/// assets are reindexed, and the copied rows, whose relation links are written once every copy
+/// exists.
+#[derive(Default)]
+pub(crate) struct CopiedRelations {
+    pub sources: HashSet<String>,
+    pub rows: Vec<CopiedRow>,
 }
 
 /// Remap the entire captured closure after insertion, then rebuild relation and asset indexes.
@@ -459,35 +475,73 @@ pub(crate) async fn finalize_copies(
     for page in pages {
         page.collect_identities(&mut identities, &mut schemas);
     }
-    let mut copied_sources = HashSet::new();
+    let mut copied = CopiedRelations::default();
     for database in databases {
         database
-            .finalize(tx, &identities, &schemas, &mut copied_sources)
+            .finalize(tx, &identities, &schemas, &mut copied)
             .await?;
     }
     for page in pages {
-        page.finalize(tx, &identities, &schemas, &mut copied_sources)
+        page.finalize(tx, &identities, &schemas, &mut copied)
             .await?;
     }
     crate::data_sources::row_hierarchy::copy_edges_tx(tx, &identities).await?;
-    for source in copied_sources {
-        let schema = crate::property_storage::load_data_source_properties(&mut **tx, &source)
+    write_copied_relation_links(tx, &copied.rows).await?;
+    for source in &copied.sources {
+        let schema = crate::property_storage::load_data_source_properties(&mut **tx, source)
             .await?
             .ok_or_else(|| "copied data source not found".to_string())?;
-        rebuild_copied_relation_links(tx, &source, &schema).await?;
-        assets::sync_data_source_property_asset_references_tx(tx, &source, &schema).await?;
+        assets::sync_data_source_property_asset_references_tx(tx, source, &schema).await?;
     }
     Ok(())
 }
 
-/// Retain unavailable relation references in canonical data without indexing them as live targets.
-async fn rebuild_copied_relation_links(
+/// Links each active copied row to the related pages its source row showed that are still rows
+/// of the relation's target data source. Relations to an unavailable data source are
+/// left empty.
+async fn write_copied_relation_links(
     tx: &mut Transaction<'_, Sqlite>,
-    source: &str,
-    schema: &Value,
+    rows: &[CopiedRow],
 ) -> Result<(), String> {
-    let mut index_schema = schema.clone();
-    let mut unavailable = Vec::new();
+    let mut schemas = HashMap::<String, Value>::new();
+    for row in rows {
+        let active_row: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM notes_pages WHERE id = ? AND in_trash = 0 AND archived = 0)",
+        )
+        .bind(&row.page_id)
+        .fetch_one(&mut **tx)
+        .await
+        .map_err(|e| format!("check copied relation row: {e}"))?;
+        if !active_row {
+            continue;
+        }
+        if !schemas.contains_key(&row.data_source_id) {
+            let schema = live_relation_schema(tx, &row.data_source_id).await?;
+            schemas.insert(row.data_source_id.clone(), schema);
+        }
+        let schema = &schemas[&row.data_source_id];
+        let properties = related_row_values(tx, schema, &row.properties).await?;
+        data_sources::relations::replace_row_relation_links_tx(
+            tx,
+            &row.data_source_id,
+            &row.page_id,
+            schema,
+            &properties,
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+/// The relation properties of `data_source_id` whose target data source is active.
+async fn live_relation_schema(
+    tx: &mut Transaction<'_, Sqlite>,
+    data_source_id: &str,
+) -> Result<Value, String> {
+    let schema = crate::property_storage::load_data_source_properties(&mut **tx, data_source_id)
+        .await?
+        .ok_or_else(|| "copied data source not found".to_string())?;
+    let mut live = serde_json::Map::new();
     for (key, property) in schema
         .as_object()
         .ok_or("copied schema must be an object")?
@@ -504,33 +558,36 @@ async fn rebuild_copied_relation_links(
         .fetch_one(&mut **tx)
         .await
         .map_err(|e| format!("check copied relation source: {e}"))?;
-        if !active {
-            unavailable.push(key.clone());
+        if active {
+            live.insert(key.clone(), property.clone());
         }
     }
-    if let Some(properties) = index_schema.as_object_mut() {
-        for key in unavailable {
-            properties.remove(&key);
-        }
-    }
-    let rows = sqlx::query_as::<_, NotePageRow>(sqlx::AssertSqlSafe(format!("SELECT {} FROM notes_pages WHERE parent_data_source_id = ? AND in_trash = 0 AND archived = 0", crate::structure::page_row_columns("notes_pages"))))
-        .bind(source).fetch_all(&mut **tx).await.map_err(|e| format!("read copied relation rows: {e}"))?;
-    for row in rows {
-        let mut properties: Value = serde_json::from_str(&row.properties)
-            .map_err(|e| format!("parse copied row relations: {e}"))?;
-        for (key, property) in index_schema
-            .as_object()
-            .ok_or("copied schema must be an object")?
-        {
-            let Some(relation) = data_sources::relations::relation_config_from_schema(property)?
-            else {
-                continue;
-            };
-            let Some(value) = properties.get(key) else {
-                continue;
-            };
+    Ok(Value::Object(live))
+}
+
+/// The relation values of `properties` under `schema`, keeping only related pages that are still
+/// rows of each relation's target data source. Trashed and archived rows stay linked, as they
+/// do on the source row, so restoring them restores the link on both rows.
+async fn related_row_values(
+    tx: &mut Transaction<'_, Sqlite>,
+    schema: &Value,
+    properties: &Value,
+) -> Result<Value, String> {
+    let mut live_values = serde_json::Map::new();
+    for (key, property) in schema
+        .as_object()
+        .ok_or("copied schema must be an object")?
+    {
+        let Some(relation) = data_sources::relations::relation_config_from_schema(property)? else {
+            continue;
+        };
+        let property_id = property
+            .get("id")
+            .and_then(Value::as_str)
+            .ok_or("copied relation has no property id")?;
+        let mut live = Vec::new();
+        if let Some(value) = properties.get(key) {
             let references = data_sources::relations::canonical_relation_payload(value)?;
-            let mut live = Vec::new();
             for reference in references
                 .as_array()
                 .ok_or("copied relation must be an array")?
@@ -540,36 +597,24 @@ async fn rebuild_copied_relation_links(
                     .and_then(Value::as_str)
                     .ok_or("copied relation has no page id")?;
                 let active: bool = sqlx::query_scalar(
-                    "SELECT EXISTS(SELECT 1 FROM notes_pages WHERE id = ?
-                    AND parent_data_source_id = ? AND in_trash = 0 AND archived = 0)",
+                    "SELECT EXISTS(SELECT 1 FROM notes_pages WHERE id = ? AND parent_data_source_id = ?)",
                 )
                 .bind(page_id)
                 .bind(&relation.target_data_source_id)
                 .fetch_one(&mut **tx)
                 .await
-                .map_err(|e| format!("check copied relation row: {e}"))?;
+                .map_err(|e| format!("check copied relation target: {e}"))?;
                 if active {
                     live.push(reference.clone());
                 }
             }
-            let property_id = property
-                .get("id")
-                .and_then(Value::as_str)
-                .ok_or("copied relation has no property id")?;
-            properties[key] =
-                data_sources::relations::relation_property_value(property_id, Value::Array(live));
         }
-        data_sources::relations::replace_row_relation_links_tx(
-            tx,
-            source,
-            &row.id,
-            &index_schema,
-            &properties,
-            false,
-        )
-        .await?;
+        live_values.insert(
+            key.clone(),
+            data_sources::relations::relation_property_value(property_id, Value::Array(live)),
+        );
     }
-    Ok(())
+    Ok(Value::Object(live_values))
 }
 
 fn remap_schema(

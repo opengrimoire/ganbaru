@@ -68,11 +68,12 @@ pub(crate) fn page_row_columns(page: &str) -> String {
     format!(
         "{page}.id, {page}.parent_type, {page}.parent_page_id, {page}.parent_block_id,
          {page}.parent_data_source_id, {page}.folder_id, {project} AS project_id, {page}.title,
-         {page}.properties, {page}.icon, {page}.cover, {page}.in_trash, {page}.archived,
+         {properties} AS properties, {page}.icon, {page}.cover, {page}.in_trash, {page}.archived,
          {page}.source_provider, {page}.source_object_id, {page}.source_workspace_id,
          {page}.source_last_edited_time, {page}.url, {page}.public_url, {page}.created_time,
          {page}.last_edited_time",
-        project = page_project_sql(page)
+        project = page_project_sql(page),
+        properties = crate::page_property_storage::page_properties_sql(page)
     )
 }
 

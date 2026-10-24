@@ -100,6 +100,62 @@ pub(super) async fn store_schema(
         .unwrap();
 }
 
+/// Reads the composed properties object of a page.
+pub(super) async fn stored_page_properties(pool: &SqlitePool, page_id: &str) -> serde_json::Value {
+    let mut connection = pool.acquire().await.unwrap();
+    crate::page_property_storage::load_page_properties(&mut connection, page_id)
+        .await
+        .unwrap()
+        .expect("page exists")
+}
+
+/// Replaces the stored values of a page without the row update validation.
+pub(super) async fn store_page_properties(
+    pool: &SqlitePool,
+    page_id: &str,
+    properties: &serde_json::Value,
+) {
+    let mut connection = pool.acquire().await.unwrap();
+    crate::page_property_storage::write_page_properties(&mut connection, page_id, properties)
+        .await
+        .unwrap();
+}
+
+/// Inserts a database row page with `properties` as its stored values, without the row create
+/// validation.
+pub(super) async fn insert_row_page(
+    pool: &SqlitePool,
+    id: &str,
+    data_source_id: &str,
+    title: &str,
+    properties: serde_json::Value,
+) {
+    sqlx::query(
+        "INSERT INTO notes_pages (id, parent_type, parent_data_source_id, title)
+         VALUES (?, 'data_source_id', ?, ?)",
+    )
+    .bind(id)
+    .bind(data_source_id)
+    .bind(title)
+    .execute(pool)
+    .await
+    .unwrap();
+    store_page_properties(pool, id, &properties).await;
+}
+
+/// Merges `entries` into the stored values of a page without the row update validation.
+pub(super) async fn merge_page_properties(
+    pool: &SqlitePool,
+    page_id: &str,
+    entries: serde_json::Value,
+) {
+    let mut properties = stored_page_properties(pool, page_id).await;
+    for (key, value) in entries.as_object().expect("entries are an object") {
+        properties[key] = value.clone();
+    }
+    store_page_properties(pool, page_id, &properties).await;
+}
+
 pub(super) fn workspace_parent() -> NoteParent {
     NoteParent::Workspace { workspace: true }
 }

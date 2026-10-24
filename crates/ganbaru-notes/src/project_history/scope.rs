@@ -194,6 +194,11 @@ fn row_is_selected(table: &str, row: &Value, scope: &ProjectScope) -> bool {
         "notes_data_source_row_hierarchy" => {
             value_in(row, "data_source_id", &scope.data_source_ids)
         }
+        "notes_page_property_values" => value_in(row, "page_id", &scope.page_ids),
+        "notes_relation_edges" => {
+            value_in(row, "source_page_id", &scope.page_ids)
+                || value_in(row, "target_page_id", &scope.page_ids)
+        }
         "notes_data_source_template_blocks" => {
             value_in(row, "template_id", &scope.data_source_template_ids)
         }

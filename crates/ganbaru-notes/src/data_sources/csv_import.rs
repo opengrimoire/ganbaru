@@ -253,7 +253,6 @@ async fn write_valid_rows_tx(
             &page_id,
             schema_properties,
             properties,
-            true,
         )
         .await?;
         imported_page_ids.push(page_id);
@@ -287,20 +286,19 @@ async fn insert_row_page_tx(
             parent_type,
             parent_data_source_id,
             title,
-            properties,
             source_provider,
             source_object_id
          )
-         VALUES (?, 'data_source_id', ?, ?, ?, 'csv', ?)",
+         VALUES (?, 'data_source_id', ?, ?, 'csv', ?)",
     )
     .bind(page_id)
     .bind(data_source_id)
     .bind(&row.title)
-    .bind(properties.to_string())
     .bind(format!("row:{}", row.row_number))
     .execute(&mut **tx)
     .await
     .map_err(|e| format!("insert CSV data source row page: {e}"))?;
+    crate::page_property_storage::write_page_properties(&mut **tx, page_id, properties).await?;
     Ok(())
 }
 

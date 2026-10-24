@@ -10,7 +10,7 @@ use crate::models::{
 use crate::validation::{plain_text_from_payload, require_uuid, validate_block_payload};
 use crate::{data_sources, reads, writes};
 use ganbaru_sync_contracts::OrderKey;
-use serde_json::{Value, json};
+use serde_json::Value;
 use sqlx::{Sqlite, SqlitePool, Transaction};
 use std::collections::{HashMap, HashSet};
 
@@ -162,18 +162,17 @@ pub async fn apply_data_source_template(
             id,
             parent_type,
             parent_data_source_id,
-            title,
-            properties
+            title
          )
-         VALUES (?, 'data_source_id', ?, ?, ?)",
+         VALUES (?, 'data_source_id', ?, ?)",
     )
     .bind(&page_id)
     .bind(data_source_id)
     .bind(&title)
-    .bind(properties.to_string())
     .execute(&mut *tx)
     .await
     .map_err(|e| format!("create notes row from data source template: {e}"))?;
+    crate::page_property_storage::write_page_properties(&mut *tx, &page_id, &properties).await?;
     let mut reserved_ids = HashSet::from([page_id.clone()]);
     if blocks.is_empty() {
         insert_default_row_block(&mut tx, &page_id, &mut reserved_ids).await?;
@@ -187,7 +186,6 @@ pub async fn apply_data_source_template(
         &page_id,
         &schema_properties,
         &properties,
-        true,
     )
     .await?;
     data_sources::rollups::invalidate_rollup_cache_for_data_source_tx(&mut tx, data_source_id)
@@ -808,10 +806,9 @@ async fn insert_applied_child_page(
             parent_page_id,
             parent_block_id,
             child_block_id,
-            title,
-            properties
+            title
          )
-         VALUES (?, ?, ?, ?, ?, ?, ?)",
+         VALUES (?, ?, ?, ?, ?, ?)",
     )
     .bind(page_id)
     .bind(page_parent_type)
@@ -819,7 +816,6 @@ async fn insert_applied_child_page(
     .bind(block_parent_block_id.as_deref())
     .bind(page_id)
     .bind(&title)
-    .bind(page_title_properties(&title).to_string())
     .execute(&mut **tx)
     .await
     .map_err(|e| format!("create data source template child page: {e}"))?;
@@ -1026,16 +1022,6 @@ fn normalize_row_title(value: &str) -> Result<String, String> {
         return Err("title must not contain control characters".to_string());
     }
     Ok(trimmed.to_string())
-}
-
-fn page_title_properties(title: &str) -> Value {
-    json!({
-        "title": {
-            "id": "title",
-            "type": "title",
-            "title": [writes::rich_text(title)]
-        }
-    })
 }
 
 fn parse_json(value: &str, label: &str) -> Result<Value, String> {

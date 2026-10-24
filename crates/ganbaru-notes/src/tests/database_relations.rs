@@ -88,7 +88,7 @@ fn database_relations_persist_links_backlinks_and_search() {
 
         let links: Vec<(String, String, String, String)> = sqlx::query_as(
             "SELECT source_page_id, source_property_id, target_page_id, target_data_source_id
-             FROM notes_data_source_relation_links",
+             FROM notes_relation_links",
         )
         .fetch_all(&pool)
         .await
@@ -273,11 +273,10 @@ fn database_relations_sync_two_way_when_inverse_property_is_configured() {
             project_json["properties"]["Tasks"]["relation"][0]["id"],
             PAGE_B
         );
-        let link_count: i64 =
-            sqlx::query_scalar("SELECT COUNT(*) FROM notes_data_source_relation_links")
-                .fetch_one(&pool)
-                .await
-                .unwrap();
+        let link_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM notes_relation_links")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
         assert_eq!(link_count, 2);
 
         data_sources::layouts::table::update_data_source_row_property(
@@ -295,11 +294,48 @@ fn database_relations_sync_two_way_when_inverse_property_is_configured() {
         let project = reads::get_page(&pool, PAGE_C, false).await.unwrap();
         let project_json = serde_json::to_value(project).unwrap();
         assert_eq!(project_json["properties"]["Tasks"]["relation"], json!([]));
-        let link_count: i64 =
-            sqlx::query_scalar("SELECT COUNT(*) FROM notes_data_source_relation_links")
+        let link_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM notes_relation_links")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(link_count, 0);
+
+        for (targets, expected_count) in [(json!([PAGE_B]), 2), (json!([]), 0)] {
+            data_sources::layouts::table::update_data_source_row_property(
+                &pool,
+                DATA_SOURCE_B,
+                PAGE_C,
+                NoteDataSourceRowPropertyUpdate {
+                    property_id: "tasks_relation".to_string(),
+                    value: targets,
+                },
+            )
+            .await
+            .unwrap();
+            let task = reads::get_page(&pool, PAGE_B, false).await.unwrap();
+            let task_json = serde_json::to_value(task).unwrap();
+            let related = task_json["properties"]["Project"]["relation"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|item| item["id"].as_str().unwrap().to_string())
+                .collect::<Vec<_>>();
+            let expected = if expected_count == 0 {
+                Vec::new()
+            } else {
+                vec![PAGE_C.to_string()]
+            };
+            assert_eq!(related, expected);
+            let link_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM notes_relation_links")
                 .fetch_one(&pool)
                 .await
                 .unwrap();
-        assert_eq!(link_count, 0);
+            assert_eq!(link_count, expected_count);
+            let edge_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM notes_relation_edges")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+            assert_eq!(edge_count, expected_count / 2);
+        }
     });
 }

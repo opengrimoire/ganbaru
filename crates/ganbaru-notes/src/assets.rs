@@ -300,12 +300,13 @@ pub async fn sync_data_source_property_asset_references_tx(
     if property_ids.is_empty() {
         return Ok(());
     }
-    let rows = sqlx::query_as::<_, (String,)>(
-        "SELECT properties
-         FROM notes_pages
-         WHERE parent_type = 'data_source_id'
-           AND parent_data_source_id = ?",
-    )
+    let rows = sqlx::query_as::<_, (String,)>(sqlx::AssertSqlSafe(format!(
+        "SELECT {} AS properties
+         FROM notes_pages AS page
+         WHERE page.parent_type = 'data_source_id'
+           AND page.parent_data_source_id = ?",
+        crate::page_property_storage::page_properties_sql("page")
+    )))
     .bind(data_source_id)
     .fetch_all(&mut **tx)
     .await

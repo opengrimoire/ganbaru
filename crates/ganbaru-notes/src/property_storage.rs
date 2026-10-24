@@ -8,6 +8,7 @@
 //! only the rows that change, so concurrent edits to different properties or options never
 //! overwrite each other.
 
+use crate::page_property_storage;
 use crate::sync_keys::{PROPERTIES, PROPERTY_OPTIONS};
 use ganbaru_sync_contracts::OrderKey;
 use ganbaru_sync_contracts::order_placement::{self, OrderedRow};
@@ -311,8 +312,11 @@ pub fn plan_order_keys(
 
 /// Replaces the stored schema of `data_source_id` with `schema`, writing only changed rows.
 ///
-/// Properties and options the schema omits are deleted. New rows get their derived sync keys;
-/// updated rows keep theirs.
+/// Properties and options the schema omits are deleted, with the row values stored under a
+/// deleted property. New rows get their derived sync keys; updated rows keep theirs. When a
+/// relation property is added, removed, retargeted, or paired differently, the edges under it
+/// and its synced properties are reconciled so every link keeps its meaning (see
+/// [`page_property_storage::reconcile_relation_edges`]).
 pub async fn write_data_source_properties(
     connection: &mut SqliteConnection,
     data_source_id: &str,
@@ -327,12 +331,29 @@ pub async fn write_data_source_properties(
     .fetch_all(&mut *connection)
     .await
     .map_err(|e| format!("load notes data source properties: {e}"))?;
+    let mut relation_scope = changed_relation_scope(data_source_id, &stored, &properties)?;
+    page_property_storage::extend_scope_with_namers(connection, &mut relation_scope).await?;
+    let relation_links = if relation_scope.is_empty() {
+        Vec::new()
+    } else {
+        page_property_storage::relation_links_in_scope(connection, &relation_scope).await?
+    };
     let wanted = properties
         .iter()
         .map(|property| property.property_id.as_str())
         .collect::<HashSet<_>>();
     for (property_id, ..) in &stored {
         if !wanted.contains(property_id.as_str()) {
+            sqlx::query(
+                "DELETE FROM notes_page_property_values
+                 WHERE property_id = ?
+                   AND page_id IN (SELECT id FROM notes_pages WHERE parent_data_source_id = ?)",
+            )
+            .bind(property_id)
+            .bind(data_source_id)
+            .execute(&mut *connection)
+            .await
+            .map_err(|e| format!("delete notes page property values: {e}"))?;
             sqlx::query(
                 "DELETE FROM notes_data_source_properties
                  WHERE data_source_id = ? AND property_id = ?",
@@ -391,7 +412,73 @@ pub async fn write_data_source_properties(
         }
         write_property_options(connection, data_source_id, property).await?;
     }
+    if !relation_scope.is_empty() {
+        page_property_storage::reconcile_relation_edges(
+            connection,
+            &relation_scope,
+            &relation_links,
+        )
+        .await?;
+    }
     Ok(())
+}
+
+/// The relation target and synced property a property's config names, when it is a relation.
+fn relation_identity(property_type: &str, config: &Value) -> Option<(String, Option<String>)> {
+    if property_type != "relation" {
+        return None;
+    }
+    let relation = config.get("relation")?;
+    let target = relation.get("data_source_id")?.as_str()?.to_string();
+    let synced = relation
+        .get("dual_property")
+        .and_then(|dual| dual.get("synced_property_id"))
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    Some((target, synced))
+}
+
+/// The relation properties whose links a write of `properties` over `stored` can change.
+fn changed_relation_scope(
+    data_source_id: &str,
+    stored: &[(String, String, String, String, String)],
+    properties: &[StoredProperty],
+) -> Result<page_property_storage::RelationScope, String> {
+    let mut before = HashMap::new();
+    for (property_id, _, property_type, config, _) in stored {
+        let config = serde_json::from_str::<Value>(config)
+            .map_err(|e| format!("parse notes data source property config: {e}"))?;
+        if let Some(identity) = relation_identity(property_type, &config) {
+            before.insert(property_id.as_str(), identity);
+        }
+    }
+    let after = properties
+        .iter()
+        .filter_map(|property| {
+            relation_identity(&property.property_type, &property.config)
+                .map(|identity| (property.property_id.as_str(), identity))
+        })
+        .collect::<HashMap<_, _>>();
+    let mut scope = page_property_storage::RelationScope::new();
+    let ids = before
+        .keys()
+        .chain(after.keys())
+        .copied()
+        .collect::<HashSet<_>>();
+    for property_id in ids {
+        let old = before.get(property_id);
+        let new = after.get(property_id);
+        if old == new {
+            continue;
+        }
+        scope.insert((data_source_id.to_string(), property_id.to_string()));
+        for (target, synced) in [old, new].into_iter().flatten() {
+            if let Some(synced) = synced {
+                scope.insert((target.clone(), synced.clone()));
+            }
+        }
+    }
+    Ok(scope)
 }
 
 type StoredOptionRow = (String, String, String, Option<String>, String);

@@ -633,12 +633,7 @@ fn contextual_property_insert_and_empty_duplicate_preserve_view_state_and_roll_b
             ["options"][0];
         assert_ne!(option["id"], "high");
         assert_eq!(option["name"], "High");
-        let row: String = sqlx::query_scalar("SELECT properties FROM notes_pages WHERE id = ?")
-            .bind(PAGE_B)
-            .fetch_one(&pool)
-            .await
-            .unwrap();
-        let row: Value = serde_json::from_str(&row).unwrap();
+        let row = stored_page_properties(&pool, PAGE_B).await;
         assert!(!row.as_object().unwrap().values().any(|value| value.get("id").and_then(Value::as_str) == Some(duplicate_id.as_str())));
         let before = stored_schema(&pool, DATA_SOURCE_A).await;
         for action in [
@@ -807,12 +802,7 @@ fn change_type(
 }
 
 async fn row_properties(pool: &sqlx::SqlitePool, page_id: &str) -> Value {
-    let raw: String = sqlx::query_scalar("SELECT properties FROM notes_pages WHERE id = ?")
-        .bind(page_id)
-        .fetch_one(pool)
-        .await
-        .unwrap();
-    serde_json::from_str(&raw).unwrap()
+    stored_page_properties(pool, page_id).await
 }
 
 #[test]

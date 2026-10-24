@@ -9,7 +9,8 @@ fn schema_creates_normalized_notes_database_tables() {
             "notes_databases",
             "notes_data_sources",
             "notes_database_views",
-            "notes_data_source_relation_links",
+            "notes_relation_edges",
+            "notes_page_property_values",
             "notes_data_source_rollup_cache",
             "notes_data_source_templates",
             "notes_data_source_template_blocks",
@@ -24,8 +25,8 @@ fn schema_creates_normalized_notes_database_tables() {
         }
 
         sqlx::query(
-            "INSERT INTO notes_pages (id, parent_type, title, properties)
-             VALUES ('page-a', 'workspace', 'Inbox', '{}')",
+            "INSERT INTO notes_pages (id, parent_type, title)
+             VALUES ('page-a', 'workspace', 'Inbox')",
         )
         .execute(&pool)
         .await
@@ -317,8 +318,8 @@ fn schema_creates_notes_comment_reactions_and_notification_preferences() {
                 .await
                 .unwrap();
         for statement in [
-            "INSERT INTO notes_pages (id, parent_type, title, properties)
-             VALUES ('page-a', 'workspace', 'Inbox', '{}')",
+            "INSERT INTO notes_pages (id, parent_type, title)
+             VALUES ('page-a', 'workspace', 'Inbox')",
             "INSERT INTO notes_comment_threads (id, page_id, parent_type, parent_page_id)
              VALUES ('thread-a', 'page-a', 'page_id', 'page-a')",
             "INSERT INTO notes_comments (id, thread_id, rich_text, created_by)
@@ -457,8 +458,8 @@ fn schema_creates_notes_mention_notifications() {
         assert_eq!(page_fk, Some(1));
 
         sqlx::query(
-            "INSERT INTO notes_pages (id, parent_type, title, properties)
-             VALUES ('page-a', 'workspace', 'Inbox', '{}')",
+            "INSERT INTO notes_pages (id, parent_type, title)
+             VALUES ('page-a', 'workspace', 'Inbox')",
         )
         .execute(&pool)
         .await
@@ -602,8 +603,8 @@ fn schema_creates_notes_suggestions() {
         }
 
         sqlx::query(
-            "INSERT INTO notes_pages (id, parent_type, title, properties)
-             VALUES ('page-a', 'workspace', 'Inbox', '{}')",
+            "INSERT INTO notes_pages (id, parent_type, title)
+             VALUES ('page-a', 'workspace', 'Inbox')",
         )
         .execute(&pool)
         .await
@@ -1452,7 +1453,7 @@ fn notes_block_types_accept_six_heading_levels_in_blocks_and_templates() {
     super::block_on(async {
         let pool = migrated_memory_pool().await;
         sqlx::raw_sql(
-            "INSERT INTO notes_pages (id, parent_type, title, properties) VALUES ('page', 'workspace', 'Headings', '{}');
+            "INSERT INTO notes_pages (id, parent_type, title) VALUES ('page', 'workspace', 'Headings');
              INSERT INTO notes_blocks (id, page_id, parent_type, parent_page_id, type, attrs, order_key)
                VALUES ('parent', 'page', 'page_id', 'page', 'heading_4', '{\"is_toggleable\":true}', 'a0');
              INSERT INTO notes_blocks (id, page_id, parent_type, parent_block_id, type, text, order_key)
@@ -1891,7 +1892,7 @@ fn fresh_vault_notes_blocks_store_split_content_and_order_keys() {
         assert_eq!(notes_triggers, 0);
 
         sqlx::raw_sql(
-            "INSERT INTO notes_pages (id, parent_type, title, properties) VALUES ('page', 'workspace', 'P', '{}');
+            "INSERT INTO notes_pages (id, parent_type, title) VALUES ('page', 'workspace', 'P');
              INSERT INTO notes_blocks (id, page_id, parent_type, parent_page_id, type, order_key)
                VALUES ('block', 'page', 'page_id', 'page', 'toggle', 'a0');",
         )

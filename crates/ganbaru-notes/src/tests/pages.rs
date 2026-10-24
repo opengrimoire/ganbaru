@@ -99,7 +99,7 @@ fn page_create_retry_rejects_mismatched_or_partial_data() {
 }
 
 #[test]
-fn page_rename_preserves_project_and_custom_properties() {
+fn page_rename_preserves_project_and_drops_properties_outside_data_sources() {
     crate::test_block_on(async {
         let pool = migrated_memory_pool().await;
         sqlx::query("INSERT INTO project_groups (id, name, order_key) VALUES ('rename-group', 'Rename', 'a1')")
@@ -144,7 +144,7 @@ fn page_rename_preserves_project_and_custom_properties() {
         let renamed_json = serde_json::to_value(renamed).unwrap();
 
         assert_eq!(renamed_json["project_id"], "project-a");
-        assert_eq!(renamed_json["properties"]["custom"], "value");
+        assert!(renamed_json["properties"].get("custom").is_none());
         assert_eq!(
             renamed_json["properties"]["title"]["title"][0]["plain_text"],
             "Saved title"
@@ -653,8 +653,7 @@ fn page_history_restore_revives_a_child_page_with_its_own_properties() {
              SET in_trash = 1,
                  trash_owner = 'bulk-trash',
                  trashed_time = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
-                 title = 'Renamed',
-                 properties = json_set(properties, '$.status', 'kept')
+                 title = 'Renamed'
              WHERE id = ?",
         )
         .bind(PAGE_B)
@@ -666,17 +665,14 @@ fn page_history_restore_revives_a_child_page_with_its_own_properties() {
             .await
             .unwrap();
 
-        let (in_trash, trash_owner, title, properties): (i64, Option<String>, String, String) =
-            sqlx::query_as(
-                "SELECT in_trash, trash_owner, title, properties FROM notes_pages WHERE id = ?",
-            )
-            .bind(PAGE_B)
-            .fetch_one(&pool)
-            .await
-            .unwrap();
+        let (in_trash, trash_owner, title): (i64, Option<String>, String) =
+            sqlx::query_as("SELECT in_trash, trash_owner, title FROM notes_pages WHERE id = ?")
+                .bind(PAGE_B)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
         assert_eq!((in_trash, trash_owner, title.as_str()), (0, None, "Child"));
-        let properties: serde_json::Value = serde_json::from_str(&properties).unwrap();
-        assert_eq!(properties["status"], "kept");
+        let properties = stored_page_properties(&pool, PAGE_B).await;
         assert_eq!(properties["title"]["title"][0]["plain_text"], "Child");
     });
 }

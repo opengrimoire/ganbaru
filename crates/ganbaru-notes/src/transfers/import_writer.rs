@@ -409,7 +409,6 @@ async fn insert_import_page(
             child_block_id,
             project_id,
             title,
-            properties,
             source_provider,
             source_object_id,
             source_workspace_id,
@@ -419,7 +418,7 @@ async fn insert_import_page(
             url,
             public_url
          )
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(page_id)
     .bind(parent_type)
@@ -431,7 +430,6 @@ async fn insert_import_page(
         request.project_id,
     ))
     .bind(request.title)
-    .bind(writes::page_title_properties(request.title).to_string())
     .bind(request.source_provider)
     .bind(request.source_object_id)
     .bind(request.source_workspace_id)
@@ -483,18 +481,16 @@ async fn insert_import_row_page(
             parent_type,
             parent_data_source_id,
             title,
-            properties,
             source_provider,
             source_object_id,
             source_workspace_id,
             source_last_edited_time
          )
-         VALUES (?, 'data_source_id', ?, ?, ?, ?, ?, ?, ?)",
+         VALUES (?, 'data_source_id', ?, ?, ?, ?, ?, ?)",
     )
     .bind(page_id)
     .bind(request.data_source_id)
     .bind(request.title)
-    .bind(request.properties.to_string())
     .bind(request.source_provider)
     .bind(request.source_object_id)
     .bind(request.source_workspace_id)
@@ -502,7 +498,8 @@ async fn insert_import_row_page(
     .execute(&mut **tx)
     .await
     .map_err(|e| format!("create {} import row page: {e}", request.source_provider))?;
-    Ok(())
+    crate::page_property_storage::write_page_properties(&mut **tx, page_id, request.properties)
+        .await
 }
 
 async fn insert_import_child_page_block(

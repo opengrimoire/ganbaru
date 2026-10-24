@@ -8,7 +8,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use ganbaru_sync_contracts::bounds::{
     MAX_CHANGES_PER_OPERATION, MAX_DEPENDENCIES, MAX_HEADER_BYTES, MAX_OPERATION_BYTES,
 };
-use ganbaru_sync_contracts::op::{ENVELOPE_OVERHEAD, GENESIS_PREVIOUS_HASH, ends_group};
+#[cfg(doc)]
+use ganbaru_sync_contracts::op::ends_group;
+use ganbaru_sync_contracts::op::{ENVELOPE_OVERHEAD, GENESIS_PREVIOUS_HASH};
 use ganbaru_sync_contracts::{
     AuthorizationRecord, Cause, Change, ChangeAction, Content, Digest32, Field, GroupId, GroupMask,
     GroupValue, Header, Hlc, HlcClock, Operation, PENDING_KEY_PREFIX, RowKey, Seq,
@@ -207,9 +209,11 @@ pub(crate) struct Sealer {
     clock: HlcClock,
     /// Selected authorization revision when the sealer opened, stamped on content operations.
     revision: u64,
-    /// Operations and envelope bytes of the apply group the last sealed operation left open.
-    /// Every call closes its groups, so a sealer opens with none.
-    group: Option<(usize, usize)>,
+    /// Whether the last sealed operation marks the writer's next one as continuing its set of
+    /// changes. Receivers cut the set at the bounds of [`ends_group`] and still read it as one
+    /// chain, so an operation sealed inside the set keeps the mark past a cut. Every call
+    /// closes its sets, so a sealer opens with none.
+    continues: bool,
 }
 
 impl Sealer {
@@ -268,7 +272,7 @@ impl Sealer {
             head_context,
             clock,
             revision,
-            group: None,
+            continues: false,
         })
     }
 
@@ -359,7 +363,7 @@ impl Sealer {
             head_context: context,
             clock,
             revision,
-            group: None,
+            continues: false,
         })
     }
 
@@ -425,7 +429,7 @@ impl Sealer {
                 return Ok(dependencies);
             }
             dependencies.truncate(MAX_DEPENDENCIES);
-            let continues = self.group.is_some() && advance == Advance::Changes;
+            let continues = self.continues && advance == Advance::Changes;
             let (seq, _, _) = self
                 .seal_operation(
                     engine,
@@ -543,8 +547,6 @@ impl Sealer {
             content,
         };
         let sealed = operation.seal(writer.key).map_err(SyncError::Seal)?;
-        let (operations, bytes) = self.group.unwrap_or((0, 0));
-        let group = (operations + 1, bytes + sealed.bytes().len());
         insert_applied_op(
             conn,
             ctx,
@@ -578,7 +580,7 @@ impl Sealer {
         self.stored = seq;
         self.head_hash = sealed.hash();
         self.head_context = context.clone();
-        self.group = (!ends_group(continues, group.0, group.1)).then_some(group);
+        self.continues = continues;
         Ok((seq, clock, context))
     }
 

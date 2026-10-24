@@ -7,7 +7,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use ganbaru_sync_contracts::bounds::MAX_OPERATIONS_PER_GROUP;
+use ganbaru_sync_contracts::bounds::{MAX_OPERATIONS_PER_CHAIN, MAX_OPERATIONS_PER_GROUP};
 use ganbaru_sync_contracts::{
     AuthorizationRecord, Change, ChangeAction, Content, Envelope, Hlc, OperationKind, Seq, TableId,
     VersionVector, WriterId, ends_group, hlc,
@@ -46,7 +46,9 @@ pub const MAX_OPS_PER_APPLY: usize = 16;
 /// limits and form one apply group, which the header of each operation but the last marks as
 /// continuing. A group starts only once every operation of it is stored and ready, and then
 /// applies whole past every cap, so repairs never see part of it; see
-/// [`ganbaru_sync_contracts::ends_group`] for its bounds. The transaction may also seal local
+/// [`ganbaru_sync_contracts::ends_group`] for its bounds. Changes past those bounds apply as a
+/// chain of groups, and no repair is sealed while a chain is open, see
+/// [`MAX_OPERATIONS_PER_CHAIN`]. The transaction may also seal local
 /// changes of the rows the remote changes touch, within [`crate::MAX_CHANGES_PER_SEAL`].
 pub const MAX_CHANGES_PER_APPLY: usize = 16;
 /// Most envelope bytes one apply transaction takes after its first operation.
@@ -882,13 +884,65 @@ async fn seal_for_finish(
     Ok(true)
 }
 
+/// Whether a writer's chain is open: its last applied operation marks the next as continuing,
+/// fewer than [`MAX_OPERATIONS_PER_CHAIN`] continuing operations end there, the writer's cutoff
+/// does not end the chain, and its next operation is not held. The rest of the chain may not be
+/// stored yet, as a transfer delivers it in bounded batches. Every input is stored operation
+/// state, so receivers that applied the same operations agree.
+async fn chain_open(
+    conn: &mut SqliteConnection,
+    ctx: &SpaceContext,
+    batch: &Batch,
+) -> SyncResult<bool> {
+    let bound = i64::try_from(MAX_OPERATIONS_PER_CHAIN).unwrap_or(i64::MAX);
+    for (writer, applied) in batch.applied.iter() {
+        if applied == 0 {
+            continue;
+        }
+        let flags: Vec<bool> = sqlx::query_scalar(
+            "SELECT group_continues FROM sync_ops
+             WHERE space_id = ? AND writer_id = ? AND seq <= ?
+             ORDER BY seq DESC LIMIT ?",
+        )
+        .bind(ctx.space.as_bytes().as_slice())
+        .bind(writer.as_bytes().as_slice())
+        .bind(seq_i64(applied)?)
+        .bind(bound)
+        .fetch_all(&mut *conn)
+        .await?;
+        let run = flags.iter().take_while(|continues| **continues).count();
+        if run == 0 || run >= MAX_OPERATIONS_PER_CHAIN {
+            continue;
+        }
+        let stuck: bool = sqlx::query_scalar(
+            "SELECT coalesce(w.cutoff_seq <= ?, 0)
+                 OR EXISTS (SELECT 1 FROM sync_ops o
+                            WHERE o.space_id = w.space_id AND o.writer_id = w.writer_id
+                                AND o.seq = ? AND o.state = 'held')
+             FROM sync_writers w WHERE w.space_id = ? AND w.writer_id = ?",
+        )
+        .bind(seq_i64(applied)?)
+        .bind(seq_i64(applied + 1)?)
+        .bind(ctx.space.as_bytes().as_slice())
+        .bind(writer.as_bytes().as_slice())
+        .fetch_optional(&mut *conn)
+        .await?
+        .unwrap_or(true);
+        if !stuck {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 /// Seals repairs for hidden duplicates, detached tree rows, and cascades, refreshes row flags,
 /// and materializes every dirty row, running the registered hooks, then captures the groups an
 /// exclusion left to republish. Returns what it changed.
 ///
 /// A materialization never overwrites a local edit that is not sealed: captured rows it would
 /// write, or cascade to, are sealed first and the merge is planned again. Captures of dirty
-/// tables are sealed before repairs as `constrained` says. Without a writer that can seal them,
+/// tables are sealed before repairs as `constrained` says. Repairs are not sealed while a chain
+/// is open, see [`MAX_OPERATIONS_PER_CHAIN`]. Without a writer that can seal them,
 /// or when they exceed what a bounded slot may still seal, it returns `None` and writes
 /// nothing, so the caller rolls back.
 #[allow(clippy::too_many_arguments)]
@@ -933,6 +987,11 @@ pub(crate) async fn finish(
                 break visibility;
             }
             repaired = true;
+            // Between two groups of one chain the state is part of one edit, which the rest of
+            // the chain completes; repairs wait as they do without a writer that can seal them.
+            if chain_open(conn, ctx, batch).await? {
+                break visibility;
+            }
             let Some((sealer, writer)) = slot.try_open(engine, conn, ctx, batch, now_ms).await?
             else {
                 break visibility;

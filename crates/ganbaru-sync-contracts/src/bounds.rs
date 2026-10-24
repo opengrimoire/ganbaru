@@ -64,9 +64,17 @@ pub const MAX_LATE_RESOLUTIONS: usize = MAX_CHANGES_PER_OPERATION;
 /// receiver applies in one transaction, see [`crate::op::ends_group`]. [`MAX_GROUP_BYTES`]
 /// bounds the changes of a group; this bound caps the per-operation work, such as decoding and
 /// readiness checks, that a writer marking every operation as continuing adds to one transaction.
-/// Honest groups stay far below it: an operation of the most changes reaches tens of KiB, so
-/// the byte bound ends a group of filled operations first.
+/// Honest groups stay far below it: filled operations reach hundreds of KiB, so the byte bound
+/// ends a group of them after a few operations.
 pub const MAX_OPERATIONS_PER_GROUP: usize = 64;
 /// Envelope bytes at which an apply group ends: the operation that reaches them closes it
 /// whatever its header says, so a group holds at most this plus one operation.
 pub const MAX_GROUP_BYTES: usize = 1 << 20;
+/// Most operations of one chain: a run of a writer's operations that each mark the next as
+/// continuing, which a local edit too large for one group seals as. A receiver applies the
+/// chain in bounded groups and seals no repair while a chain it applied part of is open, so a
+/// state between two groups of one edit never becomes a repair. Past this many operations the
+/// chain counts as closed, so a writer that marks every operation as continuing defers repairs
+/// for a bounded run only. A dense Music library refresh of 6,000 items spans 9 operations and
+/// one of the longest metadata 19.
+pub const MAX_OPERATIONS_PER_CHAIN: usize = 256;

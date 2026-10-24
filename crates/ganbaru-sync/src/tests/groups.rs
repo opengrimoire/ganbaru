@@ -1,13 +1,18 @@
 //! Apply groups across replicas: changes that only hold together and fill several operations
 //! apply in one transaction once every operation of their group is stored, across store passes
-//! and restarts, honest groups past the group bounds split where every receiver splits them, and
-//! a writer that marks every operation as continuing cannot hold back other writers or grow a
-//! group past its bounds.
+//! and restarts, honest changes past the group bounds apply as a chain of bounded groups with no
+//! repair sealed between them, and a writer that marks every operation as continuing cannot
+//! hold back other writers, grow a group past its bounds, or defer repairs past the chain bound.
 
-use ganbaru_sync_contracts::bounds::{MAX_GROUP_BYTES, MAX_OPERATIONS_PER_GROUP};
+use std::time::Instant;
+
+use ganbaru_sync_contracts::bounds::{
+    MAX_GROUP_BYTES, MAX_OPERATIONS_PER_CHAIN, MAX_OPERATIONS_PER_GROUP,
+};
 use ganbaru_sync_contracts::{Content, Envelope, WriterId, ends_group};
 
 use super::block_on;
+use super::calendar::{calendar_sql, event_sql};
 use super::projects::{project_sql, task_sql};
 use super::replica::{Replica, connection_from, converge, quoted, rank};
 use crate::domains::music::MAX_DESCRIPTION_CHARS;
@@ -201,13 +206,24 @@ fn a_group_stored_over_two_passes_with_a_restart_applies_only_once_whole() {
 }
 
 fn insert_item(index: usize) -> String {
-    let id = format!("music-item-{index:05}");
+    insert_keyed_item(&item_id(index), &identity(index))
+}
+
+fn item_id(index: usize) -> String {
+    format!("music-item-{index:05}")
+}
+
+fn identity(index: usize) -> String {
+    format!("local:{index:05}")
+}
+
+fn insert_keyed_item(id: &str, identity: &str) -> String {
     format!(
         "INSERT INTO music_library_items
             (id, identity_key, source_kind, media_kind, original_title, discovered_at_ms, updated_at_ms)
          VALUES ({id}, {identity}, 'local-file', 'audio', 'Track', {NOW_MS}, {NOW_MS});",
-        identity = quoted(&format!("local:{index:05}")),
-        id = quoted(&id),
+        identity = quoted(identity),
+        id = quoted(id),
     )
 }
 
@@ -217,17 +233,123 @@ const METADATA_CHARS: usize = MAX_DESCRIPTION_CHARS;
 /// A local media refresh that rewrites the metadata of every item in one transaction. Updates
 /// of a table with a unique rule only hold together, so they seal as one group.
 fn refresh_sql() -> String {
-    let field = format!("substr(id || hex(zeroblob({METADATA_CHARS})), 1, {METADATA_CHARS})");
+    refresh_fields_sql(
+        &["original_title", "original_artist", "original_album"],
+        METADATA_CHARS,
+    )
+}
+
+/// A refresh that rewrites `columns` of every item with values of `chars` characters.
+fn refresh_fields_sql(columns: &[&str], chars: usize) -> String {
+    let field = format!("substr(id || hex(zeroblob({chars})), 1, {chars})");
+    let set: String = columns
+        .iter()
+        .map(|column| format!("{column} = {field}, "))
+        .collect();
     format!(
-        "UPDATE music_library_items
-         SET original_title = {field}, original_artist = {field}, original_album = {field},
-             metadata_resolved = 1, updated_at_ms = {};",
+        "UPDATE music_library_items SET {set} metadata_resolved = 1, updated_at_ms = {};",
         NOW_MS + 1,
     )
 }
 
+/// Events of the calendar test, each with a description long enough that two fill an operation.
+const EVENTS: usize = 8;
+/// Characters of each rewritten event description.
+const EVENT_DESCRIPTION_CHARS: usize = 200_000;
+
+fn event_id(index: usize) -> String {
+    format!("event-{index}")
+}
+
+fn event_uid(index: usize) -> String {
+    format!("uid-{index}")
+}
+
+/// One edit that moves the import uid of the last event to the first and rewrites every
+/// description. The first event seals in the first group and the last event in a later one,
+/// so between them a receiver holds two events with one uid, which it hides as duplicates.
+fn move_uid_sql() -> String {
+    let last = EVENTS - 1;
+    format!(
+        "UPDATE calendar_events SET source_uid = {moved} WHERE id = {last_id};
+         UPDATE calendar_events SET source_uid = {taken} WHERE id = {first_id};
+         UPDATE calendar_events
+         SET description = substr(id || hex(zeroblob({chars})), 1, {chars}),
+             updated_at = '2027-01-02T00:00:00.000Z';",
+        moved = quoted("uid-moved"),
+        taken = quoted(&event_uid(last)),
+        last_id = quoted(&event_id(last)),
+        first_id = quoted(&event_id(0)),
+        chars = EVENT_DESCRIPTION_CHARS,
+    )
+}
+
+async fn event_text(replica: &mut Replica, column: &str, index: usize) -> Option<String> {
+    replica
+        .scalar_text(&format!(
+            "SELECT {column} FROM calendar_events WHERE id = {}",
+            quoted(&event_id(index))
+        ))
+        .await
+}
+
 #[test]
-fn an_honest_group_past_the_byte_bound_applies_in_bounded_groups() {
+fn a_unique_value_moved_across_a_group_cut_seals_no_repair() {
+    block_on(async {
+        let mut replicas = replicas(2).await;
+        let mut setup = calendar_sql();
+        for index in 0..EVENTS {
+            setup.push_str(&event_sql(&event_id(index), &event_uid(index), "Event"));
+        }
+        replicas[0].exec(&setup).await;
+        converge(&mut replicas).await;
+        let known = replicas[1].stored_vector().await;
+        replicas[0].exec(&move_uid_sql()).await;
+        replicas[0].seal().await.unwrap();
+        let ops = new_ops(&mut replicas[0], &known).await;
+        let sizes = group_sizes(&ops);
+        assert!(sizes.len() >= 2, "the edit should span groups: {sizes:?}");
+
+        let own = replicas[1].own_ops().await.len();
+        replicas[1].receive(&ops).await;
+        let report = replicas[1].apply_once().await.unwrap();
+        assert_eq!(report.applied, sizes[0]);
+        // The cut separates the two events: the first group gave the first event the last
+        // one's uid, so the last event is hidden as its duplicate until a later group.
+        let length = "CAST(length(description) AS TEXT)";
+        let rewritten = event_text(&mut replicas[1], length, 0).await;
+        assert_eq!(rewritten, Some(EVENT_DESCRIPTION_CHARS.to_string()));
+        assert_eq!(event_text(&mut replicas[1], "id", EVENTS - 1).await, None);
+        assert_eq!(report.seal.map_or(0, |seal| seal.sealed_ops), 0);
+        assert_eq!(
+            replicas[1].own_ops().await.len(),
+            own,
+            "no repair is sealed between groups of one chain"
+        );
+
+        replicas[1].apply_all().await.unwrap();
+        assert_eq!(replicas[1].own_ops().await.len(), own);
+        assert_eq!(
+            event_text(&mut replicas[1], "source_uid", 0).await,
+            Some(event_uid(EVENTS - 1))
+        );
+        assert_eq!(
+            event_text(&mut replicas[1], "source_uid", EVENTS - 1)
+                .await
+                .as_deref(),
+            Some("uid-moved")
+        );
+        let events = replicas[1]
+            .count("SELECT count(*) FROM calendar_events")
+            .await;
+        assert_eq!(events, i64::try_from(EVENTS).unwrap());
+        converge(&mut replicas).await;
+        assert_converged(&mut replicas).await;
+    });
+}
+
+#[test]
+fn an_honest_chain_past_the_group_bounds_seals_no_repair_between_its_groups() {
     block_on(async {
         let mut replicas = replicas(2).await;
         // Enough items that their rewritten metadata spans two groups by bytes.
@@ -245,21 +367,93 @@ fn an_honest_group_past_the_byte_bound_applies_in_bounded_groups() {
             sizes.len() >= 2,
             "the refresh should span bounded groups: {sizes:?}"
         );
-        // The sender kept the group open; the byte bound ended it.
-        assert!(continues(&ops[sizes[0] - 1]));
+        // The sender kept the chain open; the byte bound ended the first group.
+        assert!(ops[..ops.len() - 1].iter().all(|op| continues(op)));
         let first_bytes: usize = ops[..sizes[0]].iter().map(Vec::len).sum();
         assert!(first_bytes >= MAX_GROUP_BYTES);
 
+        let own = replicas[1].own_ops().await.len();
         replicas[1].receive(&ops).await;
         let report = replicas[1].apply_once().await.unwrap();
         assert_eq!(report.applied, sizes[0]);
         assert!(report.more);
+        assert_eq!(report.seal.map_or(0, |seal| seal.sealed_ops), 0);
+        assert_eq!(
+            replicas[1].own_ops().await.len(),
+            own,
+            "no repair is sealed between groups of one chain"
+        );
+        replicas[1].apply_all().await.unwrap();
+        assert_eq!(replicas[1].own_ops().await.len(), own);
         converge(&mut replicas).await;
         assert_converged(&mut replicas).await;
         let refreshed = replicas[1]
             .count("SELECT count(*) FROM music_library_items WHERE metadata_resolved = 1")
             .await;
         assert_eq!(refreshed, i64::try_from(items).unwrap());
+    });
+}
+
+/// Stores `ops` on `to` and applies everything ready, returning how many operations applied.
+async fn take(to: &mut Replica, ops: &[Vec<u8>]) -> usize {
+    to.receive(ops).await;
+    let reports = to.apply_all().await.unwrap();
+    reports.iter().map(|report| report.applied).sum()
+}
+
+/// Inserts an item on each of two replicas under one identity key and delivers the second's to
+/// the third, which hides one of them as a duplicate. Returns the operations the third sealed.
+async fn duplicate_on(replicas: &mut [Replica], key: &str) -> usize {
+    replicas[2]
+        .exec(&insert_keyed_item(&format!("music-dup-a-{key}"), key))
+        .await;
+    replicas[2].seal().await.unwrap();
+    let known = replicas[2].stored_vector().await;
+    replicas[1]
+        .exec(&insert_keyed_item(&format!("music-dup-b-{key}"), key))
+        .await;
+    replicas[1].seal().await.unwrap();
+    let ops = new_ops(&mut replicas[1], &known).await;
+    let own = replicas[2].own_ops().await.len();
+    replicas[2].receive(&ops).await;
+    replicas[2].apply_all().await.unwrap();
+    let hidden = replicas[2]
+        .count(&format!(
+            "SELECT count(*) FROM music_library_items WHERE identity_key = {}",
+            quoted(key)
+        ))
+        .await;
+    assert_eq!(hidden, 1, "one of the duplicates is hidden");
+    replicas[2].own_ops().await.len() - own
+}
+
+#[test]
+fn a_writer_marking_every_operation_continuing_defers_repairs_for_the_chain_bound_only() {
+    block_on(async {
+        let mut replicas = replicas(3).await;
+        for (index, replica) in replicas.iter_mut().enumerate() {
+            replica.exec(&insert_note(index, 9_999)).await;
+        }
+        converge(&mut replicas).await;
+        // Every group of the forged run ends at the operation bound, so all of it applies
+        // without a closing operation.
+        assert_eq!(MAX_OPERATIONS_PER_CHAIN % MAX_OPERATIONS_PER_GROUP, 0);
+        let forged = continuing_ops(&mut replicas[0], MAX_OPERATIONS_PER_CHAIN).await;
+        let (open, rest) = forged.split_at(MAX_OPERATIONS_PER_GROUP);
+        assert_eq!(take(&mut replicas[2], open).await, open.len());
+
+        assert_eq!(
+            duplicate_on(&mut replicas, "local:dup-1").await,
+            0,
+            "an open chain defers the repair"
+        );
+
+        assert_eq!(take(&mut replicas[2], rest).await, rest.len());
+        assert!(
+            duplicate_on(&mut replicas, "local:dup-2").await > 0,
+            "past the chain bound the repair is sealed"
+        );
+        replicas[2].check_invariants().await;
     });
 }
 
@@ -366,5 +560,90 @@ fn a_writer_marking_every_operation_continuing_forms_groups_of_the_operation_bou
             i64::try_from(MAX_OPERATIONS_PER_GROUP + 1).unwrap()
         );
         replicas[1].check_invariants().await;
+    });
+}
+
+/// Prints the operations, bytes, and receiver groups of one writer's chain from `edit`, and the
+/// time of every apply call that takes it in.
+async fn measure_chain(label: &str, author: &mut Replica, reader: &mut Replica, edit: &str) {
+    let known = reader.stored_vector().await;
+    author.exec(edit).await;
+    let started = Instant::now();
+    let mut seals = 0;
+    loop {
+        seals += 1;
+        if !author.seal().await.unwrap().more {
+            break;
+        }
+    }
+    let sealing = started.elapsed();
+    let ops = new_ops(author, &known).await;
+    let bytes: usize = ops.iter().map(Vec::len).sum();
+    let largest = ops.iter().map(Vec::len).max().unwrap_or(0);
+    let most_changes = ops
+        .iter()
+        .map(
+            |op| match Envelope::decode(op).unwrap().operation().unwrap().content {
+                Content::Changes(changes) => changes.len(),
+                _ => 0,
+            },
+        )
+        .max()
+        .unwrap_or(0);
+    let chain = ops.iter().take_while(|op| continues(op)).count() + 1;
+    println!(
+        "{label}: {} operations, {bytes} bytes, largest {largest}, most changes {most_changes}, \
+         sealed in {seals} calls over {sealing:?}, continuing chain {chain}, groups {:?}",
+        ops.len(),
+        group_sizes(&ops),
+    );
+    reader.receive(&ops).await;
+    loop {
+        let started = Instant::now();
+        let report = reader.apply_once().await.unwrap();
+        println!(
+            "  apply: {} operations, {} changes, {} sealed in {:?}",
+            report.applied,
+            report.changes,
+            report.seal.as_ref().map_or(0, |seal| seal.sealed_ops),
+            started.elapsed()
+        );
+        if !report.more {
+            break;
+        }
+    }
+}
+
+const SHORT_FIELDS: [&str; 3] = ["original_title", "original_artist", "original_album"];
+
+/// Measures the chains of a dense Music library refresh and of operations near the wire bounds:
+/// `cargo test -p ganbaru-sync --lib --release chain_sizes -- --ignored --nocapture`.
+#[test]
+#[ignore = "measurements are meaningful only in the release profile"]
+fn chain_sizes_are_measured() {
+    block_on(async {
+        // The dense Music fixture: 6,000 items with short titles, artists, and albums.
+        let mut dense_pair = replicas(2).await;
+        let (author, reader) = dense_pair.split_at_mut(1);
+        let discovery: String = (0..6_000).map(insert_item).collect();
+        measure_chain(
+            "dense discovery",
+            &mut author[0],
+            &mut reader[0],
+            &discovery,
+        )
+        .await;
+        let refresh = refresh_fields_sql(&SHORT_FIELDS, 18);
+        measure_chain("dense refresh", &mut author[0], &mut reader[0], &refresh).await;
+        let longest = refresh_fields_sql(&SHORT_FIELDS, METADATA_CHARS);
+        measure_chain("longest refresh", &mut author[0], &mut reader[0], &longest).await;
+
+        // One field near 440 characters per change fills operations near both wire bounds.
+        let mut wide_pair = replicas(2).await;
+        let (author, reader) = wide_pair.split_at_mut(1);
+        let discovery: String = (0..4_096).map(insert_item).collect();
+        measure_chain("wide discovery", &mut author[0], &mut reader[0], &discovery).await;
+        let wide = refresh_fields_sql(&["original_title"], 440);
+        measure_chain("wide refresh", &mut author[0], &mut reader[0], &wide).await;
     });
 }

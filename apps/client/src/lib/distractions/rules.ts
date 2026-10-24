@@ -21,6 +21,8 @@ export type DistractionsCategoryId = (typeof DISTRACTIONS_CATEGORY_IDS)[number];
 interface DistractionsCategoryDefinition {
   id: DistractionsCategoryId;
   label: string;
+  /** Whether the category blocks until the vault records a choice; native assembly reads the same file. */
+  defaultEnabled: boolean;
   hosts: readonly string[];
   domainKeywords?: readonly string[];
   redditSubredditKeywords?: readonly string[];
@@ -231,10 +233,15 @@ function loadDistractionsCategoryDefinitions(value: unknown): readonly Distracti
     if (typeof label !== "string" || label.trim() === "") {
       throw new Error(`Distractions category ${id} has an invalid label`);
     }
+    const defaultEnabled = item.defaultEnabled ?? true;
+    if (typeof defaultEnabled !== "boolean") {
+      throw new Error(`Distractions category ${id} has an invalid default`);
+    }
     seenIds.add(id);
     definitions.push({
       id,
       label,
+      defaultEnabled,
       hosts: parseCategoryStringList(item.hosts, id, "hosts"),
       domainKeywords: parseCategoryStringList(item.domainKeywords, id, "domainKeywords"),
       redditSubredditKeywords: parseCategoryStringList(
@@ -375,7 +382,7 @@ const MAX_WEEKLY_LIMIT_MINUTES = 7 * 24 * 60;
 function defaultCategoryRules(): DistractionsCategoryRule[] {
   return DISTRACTIONS_CATEGORY_DEFINITIONS.map((category) => ({
     id: category.id,
-    enabled: category.id !== "news",
+    enabled: category.defaultEnabled,
   }));
 }
 

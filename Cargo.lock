@@ -1871,6 +1871,8 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "ganbaru-civil-time",
+ "ganbaru-db",
+ "ganbaru-sync-contracts",
  "jiff",
  "serde",
  "serde_json",

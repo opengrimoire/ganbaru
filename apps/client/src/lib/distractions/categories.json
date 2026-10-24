@@ -49,6 +49,7 @@
   {
     "id": "news",
     "label": "News",
+    "defaultEnabled": false,
     "hosts": [
       "cnn.com",
       "bbc.com",

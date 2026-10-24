@@ -223,8 +223,8 @@ CREATE INDEX idx_notes_page_history_snapshots_page
     ON notes_page_history_snapshots(page_id, created_time DESC, id);
 
 -- notes_assets: each row is named by its class (the managed directory) and content digest, so the
--- same bytes added twice are one row. Rows that collide keep the earliest path, and stored JSON
--- that named a dropped path is rewritten to the kept one. Asset references, link facts, and history
+-- same bytes added twice are one row. Rows that collide keep an available row before a missing one,
+-- then the earliest path, and stored JSON that named a dropped path is rewritten to the kept one. Asset references, link facts, and history
 -- pins follow the new ids, and the derived link and search indexes rebuild on next use.
 CREATE TEMP TABLE notes_asset_id_map AS
 WITH classified AS (
@@ -236,14 +236,18 @@ WITH classified AS (
             WHEN asset_path GLOB 'notes/page-covers/*' THEN 'notes/page-covers:'
             ELSE 'notes/files:'
         END || sha256 AS new_id,
-        created_at
+        created_at,
+        storage_state
     FROM notes_assets
 )
 SELECT
     old_id,
     old_path,
     new_id,
-    first_value(old_path) OVER (PARTITION BY new_id ORDER BY created_at, old_path) AS new_path
+    first_value(old_path) OVER (
+        PARTITION BY new_id
+        ORDER BY storage_state = 'available' DESC, created_at, old_path
+    ) AS new_path
 FROM classified;
 
 CREATE TEMP TABLE notes_asset_path_rewrites AS
@@ -383,10 +387,11 @@ DELETE FROM notes_search_index_state;
 DROP TABLE notes_page_cover_assets;
 DROP TABLE notes_page_icon_assets;
 
--- notes_project_history_asset_pins
+-- notes_project_history_asset_pins: a pin names its asset without a foreign key, since it only keeps
+-- the asset from collection and must not block deleting or recreating the asset row.
 CREATE TABLE notes_project_history_asset_pins_next (
     version_id TEXT NOT NULL REFERENCES notes_project_history_versions(id) ON DELETE CASCADE,
-    asset_id TEXT NOT NULL REFERENCES notes_assets(id) ON DELETE NO ACTION,
+    asset_id TEXT NOT NULL,
     PRIMARY KEY (version_id, asset_id)
 );
 INSERT OR IGNORE INTO notes_project_history_asset_pins_next (version_id, asset_id)
@@ -675,6 +680,8 @@ CREATE INDEX idx_notes_pages_source
     ON notes_pages(source_provider, source_workspace_id, source_object_id);
 CREATE INDEX idx_notes_pages_trash_retention
     ON notes_pages(in_trash, trashed_time);
+CREATE INDEX idx_notes_pages_visible
+    ON notes_pages(in_trash, last_edited_time DESC, title);
 
 -- notes_blocks: the payload splits into `text` (the type's text keys) and `attrs` (every other
 -- key); toggle open state and the database editing lock move to the device-local

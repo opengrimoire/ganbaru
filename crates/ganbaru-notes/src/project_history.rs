@@ -57,7 +57,12 @@ use sqlx::{Row, Sqlite, SqlitePool, Transaction};
 use std::collections::{BTreeMap, HashSet};
 
 const DEFAULT_RETENTION_DAYS: i64 = 30;
-const HISTORY_SCHEMA_VERSION: i64 = 1;
+/// Version of the project history manifest and row shape. Versions saved before the current Notes
+/// structure are refused instead of restored into the new columns.
+const HISTORY_SCHEMA_VERSION: i64 = 2;
+/// Refusal shown when a saved version predates the current Notes format.
+pub(crate) const OLDER_NOTES_FORMAT_ERROR: &str =
+    "This version was saved in an older Notes format and can no longer be opened or restored";
 const ACTIVE_CHECKPOINT_MINUTES: i64 = 10;
 const IDLE_CHECKPOINT_MINUTES: i64 = 2;
 const DEFAULT_PAGE_SIZE: i64 = 40;

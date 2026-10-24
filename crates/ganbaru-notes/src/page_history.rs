@@ -669,7 +669,7 @@ fn parse_snapshot_blocks(
     snapshot: &NotePageHistorySnapshotRow,
 ) -> Result<Vec<NoteBlockRow>, String> {
     let blocks: Vec<NoteBlockRow> = serde_json::from_str(&snapshot.blocks)
-        .map_err(|e| format!("parse notes page history blocks: {e}"))?;
+        .map_err(|_| crate::project_history::OLDER_NOTES_FORMAT_ERROR.to_string())?;
     for block in &blocks {
         validate_order_key(&block.order_key)?;
         let payload: Value = serde_json::from_str(&block.payload)

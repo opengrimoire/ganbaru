@@ -564,6 +564,65 @@ fn page_history_snapshots_restore_copy_and_retention_settings() {
 }
 
 #[test]
+fn page_history_snapshots_in_an_older_notes_format_stay_listed_but_refuse_to_open_or_restore() {
+    crate::test_block_on(async {
+        let pool = migrated_memory_pool().await;
+        create_page(&pool, PAGE_A, BLOCK_A).await;
+        writes::update_block(
+            &pool,
+            BLOCK_A,
+            block_update("paragraph", paragraph_payload("Draft one")),
+        )
+        .await
+        .unwrap();
+        let snapshots = page_history::list_page_history_snapshots(&pool, PAGE_A)
+            .await
+            .unwrap();
+        let snapshot_id = serde_json::to_value(&snapshots).unwrap()[0]["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let older_blocks = serde_json::json!([{
+            "id": BLOCK_A,
+            "page_id": PAGE_A,
+            "type": "paragraph",
+            "sort_order": 0,
+            "content": "{}"
+        }]);
+        sqlx::query(
+            "UPDATE notes_page_history_snapshots
+             SET blocks = ?, block_bundle_hash = NULL
+             WHERE id = ?",
+        )
+        .bind(older_blocks.to_string())
+        .bind(&snapshot_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let listed = page_history::list_page_history_snapshots(&pool, PAGE_A)
+            .await
+            .unwrap();
+        assert_eq!(listed.len(), 1);
+        let Err(open_error) =
+            page_history::load_page_history_snapshot(&pool, PAGE_A, &snapshot_id).await
+        else {
+            panic!("an older format snapshot opened");
+        };
+        assert_eq!(open_error, crate::project_history::OLDER_NOTES_FORMAT_ERROR);
+        let Err(restore_error) =
+            page_history::restore_page_history_snapshot(&pool, PAGE_A, &snapshot_id).await
+        else {
+            panic!("an older format snapshot restored");
+        };
+        assert_eq!(
+            restore_error,
+            crate::project_history::OLDER_NOTES_FORMAT_ERROR
+        );
+    });
+}
+
+#[test]
 fn page_history_coalesces_rapid_editor_snapshots() {
     crate::test_block_on(async {
         let pool = migrated_memory_pool().await;

@@ -1769,6 +1769,85 @@ fn notes_sync_structure_migration_keeps_every_block_and_property_type() {
 }
 
 #[test]
+fn notes_sync_structure_migration_merges_duplicate_assets_into_the_available_row() {
+    super::block_on(async {
+        let pool = super::helpers::memory_pool_migrated_through(BEFORE_NOTES_SYNC_STRUCTURE).await;
+        let sha256 = "a".repeat(64);
+        sqlx::query(
+            "INSERT INTO notes_assets (
+                id, asset_path, kind, source_type, original_name, content_type, byte_size, sha256,
+                storage_state, missing_at, created_at
+             ) VALUES
+                ('missing-old', 'notes/files/old.pdf', 'pdf', 'local_upload', NULL,
+                 'application/pdf', 10, ?1, 'missing', '2026-02-01T00:00:00.000Z',
+                 '2026-01-01T00:00:00.000Z'),
+                ('available-new', 'notes/files/new.pdf', 'pdf', 'local_upload', 'Report.pdf',
+                 'application/pdf', 10, ?1, 'available', NULL, '2026-03-01T00:00:00.000Z')",
+        )
+        .bind(&sha256)
+        .execute(&pool)
+        .await
+        .unwrap();
+        let properties = serde_json::json!({
+            "title": { "type": "title", "title": [] },
+            "Files": { "type": "files", "files": [
+                { "name": "old.pdf", "type": "file", "file": { "url": "notes/files/old.pdf" } }
+            ] }
+        });
+        sqlx::query(
+            "INSERT INTO notes_pages (id, parent_type, title, properties)
+             VALUES ('page', 'workspace', 'Assets', ?)",
+        )
+        .bind(properties.to_string())
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO notes_asset_references (asset_id, owner_type, owner_id, page_id, role)
+             VALUES ('missing-old', 'page', 'page', 'page', 'page_cover')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        crate::run_migrations(&pool).await.unwrap();
+
+        let merged_id = format!("notes/files:{sha256}");
+        let assets: Vec<(String, String, String, Option<String>)> =
+            sqlx::query_as("SELECT id, asset_path, storage_state, original_name FROM notes_assets")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            assets,
+            vec![(
+                merged_id.clone(),
+                "notes/files/new.pdf".to_string(),
+                "available".to_string(),
+                Some("Report.pdf".to_string()),
+            )]
+        );
+        let reference: String = sqlx::query_scalar(
+            "SELECT asset_id FROM notes_asset_references WHERE page_id = 'page'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(reference, merged_id);
+        let stored: String =
+            sqlx::query_scalar("SELECT properties FROM notes_pages WHERE id = 'page'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        let stored: serde_json::Value = serde_json::from_str(&stored).unwrap();
+        assert_eq!(
+            stored["Files"]["files"][0]["file"]["url"],
+            "notes/files/new.pdf"
+        );
+    });
+}
+
+#[test]
 fn fresh_vault_notes_blocks_store_split_content_and_order_keys() {
     super::block_on(async {
         let pool = migrated_memory_pool().await;

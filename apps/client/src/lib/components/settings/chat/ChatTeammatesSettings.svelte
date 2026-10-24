@@ -67,7 +67,6 @@
     onDraftStateChange?: (open: boolean) => void;
   } = $props();
 
-
   interface TeammateAccessSummaryChannel {
     channel: ChatChannelRead;
     access: ChatTeammateChannelAccessInput;

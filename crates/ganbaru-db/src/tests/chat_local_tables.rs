@@ -3,7 +3,7 @@ use crate::run_migrations;
 use sqlx::{AssertSqlSafe, Row, SqlitePool};
 use std::collections::BTreeMap;
 
-const BEFORE_CHAT_LOCAL_TABLES: i64 = 20261024045821;
+const BEFORE_CHAT_LOCAL_TABLES: i64 = 20261024093938;
 const CHAT_LOCAL_TABLES: i64 = 20261024142304;
 
 /// One project with a Chat graph of teammates, assignments, authorizations, runs, and scratch.
@@ -18,7 +18,7 @@ VALUES ('revocation-1', 'participant-teammate', 'conversation-general', 'authori
         '2026-10-23T00:00:00.000Z');";
 
 /// Tables the migration rebuilds.
-const REBUILT_TABLES: [&str; 8] = [
+const REBUILT_TABLES: [&str; 11] = [
     "chat_access_revocation_jobs",
     "chat_assignment_authorization_revisions",
     "chat_agent_runs",
@@ -27,10 +27,35 @@ const REBUILT_TABLES: [&str; 8] = [
     "chat_host_tool_returned_message_revisions",
     "chat_scratch_generation_sources",
     "chat_scratch_scopes",
+    "chat_threads",
+    "chat_execution_environment_reference_targets",
+    "chat_scheduled_message_references",
+];
+
+/// Foreign keys the migration drops, as (table, column), so the id stays unchecked.
+const DROPPED_FOREIGN_KEYS: [(&str, &str); 2] = [
+    (
+        "chat_execution_environment_reference_targets",
+        "execution_environment_id",
+    ),
+    (
+        "chat_scheduled_message_references",
+        "execution_environment_id",
+    ),
+];
+
+/// Foreign keys whose delete action the migration keeps, as (table, parent).
+const KEPT_FOREIGN_KEY_ACTIONS: [(&str, &str); 3] = [
+    (
+        "chat_access_revocation_jobs",
+        "chat_assignment_authorization_revisions",
+    ),
+    ("chat_scheduled_message_references", "chat_participants"),
+    ("chat_scheduled_message_references", "chat_channels"),
 ];
 
 /// Triggers that stand down while the sync engine applies remote rows.
-const GATED_TRIGGERS: [&str; 16] = [
+const GATED_TRIGGERS: [&str; 15] = [
     "chat_reply_threads_root_item_insert",
     "chat_communication_message_current_revision_update",
     "chat_teammate_folder_grant_identity_insert",
@@ -46,10 +71,42 @@ const GATED_TRIGGERS: [&str; 16] = [
     "chat_teammate_channel_membership_audience_update",
     "chat_teammate_channel_membership_audience_delete",
     "chat_communication_search_insert",
-    "chat_communication_search_delete",
 ];
 
 const APPLY_GATE: &str = "(SELECT applying FROM sync_apply_state WHERE singleton = 1) = 0";
+
+/// Chat tables that replicate; every other Chat table is device-local.
+const REPLICATED_CHAT_TABLES: [&str; 29] = [
+    "chat_participants",
+    "chat_teammates",
+    "chat_teammate_policy_revisions",
+    "chat_access_profiles",
+    "chat_access_profile_revisions",
+    "chat_conversations",
+    "chat_conversation_memberships",
+    "chat_teammate_channel_memberships",
+    "chat_teammate_working_folder_grants",
+    "chat_channels",
+    "chat_reply_threads",
+    "chat_conversation_items",
+    "chat_communication_messages",
+    "chat_communication_message_revisions",
+    "chat_message_references",
+    "chat_channel_reference_targets",
+    "chat_execution_environment_reference_targets",
+    "chat_participant_reference_targets",
+    "chat_working_folder_reference_targets",
+    "chat_workspace_path_reference_targets",
+    "chat_conversation_read_cursors",
+    "chat_reply_thread_read_cursors",
+    "chat_communication_attachment_references",
+    "chat_scheduled_messages",
+    "chat_scheduled_message_attachment_references",
+    "chat_scheduled_message_references",
+    "chat_work_assignments",
+    "chat_work_assignment_inputs",
+    "chat_work_semantic_updates",
+];
 
 async fn load_seeded_graph(pool: &SqlitePool) {
     sqlx::raw_sql(PROJECT_CHAT_GRAPH)
@@ -141,11 +198,11 @@ fn chat_local_tables_migration_keeps_rows_and_objects_and_cascades_from_organiza
         load_seeded_graph(&pool).await;
         let counts_before = row_counts(&pool).await;
         let objects_before = rebuilt_table_objects(&pool).await;
-        let run_before: (String, String, String) = sqlx::query_as(
+        let runs_before: Vec<(String, String, String)> = sqlx::query_as(
             "SELECT assignment_id, authorization_revision_id, provider_turn_id
-             FROM chat_agent_runs",
+             FROM chat_agent_runs ORDER BY id",
         )
-        .fetch_one(&pool)
+        .fetch_all(&pool)
         .await
         .unwrap();
         let mut foreign_keys_before = BTreeMap::new();
@@ -169,29 +226,27 @@ fn chat_local_tables_migration_keeps_rows_and_objects_and_cascades_from_organiza
             .unwrap();
         assert_eq!(enabled, 1);
         assert_eq!(rebuilt_table_objects(&pool).await, objects_before);
-        let run_after: (String, String, String) = sqlx::query_as(
+        let runs_after: Vec<(String, String, String)> = sqlx::query_as(
             "SELECT assignment_id, authorization_revision_id, provider_turn_id
-             FROM chat_agent_runs",
+             FROM chat_agent_runs ORDER BY id",
         )
-        .fetch_one(&pool)
+        .fetch_all(&pool)
         .await
         .unwrap();
-        assert_eq!(run_after, run_before);
+        assert_eq!(runs_after, runs_before);
 
         for table in REBUILT_TABLES {
-            let before = &foreign_keys_before[table];
+            let before: Vec<_> = foreign_keys_before[table]
+                .iter()
+                .filter(|(_, column, _)| !DROPPED_FOREIGN_KEYS.contains(&(table, column.as_str())))
+                .collect();
             let after = foreign_keys(&pool, table).await;
             assert_eq!(after.len(), before.len(), "{table} keeps its foreign keys");
             for ((parent, column, old_action), (new_parent, new_column, action)) in
-                before.iter().zip(&after)
+                before.into_iter().zip(&after)
             {
                 assert_eq!((parent, column), (new_parent, new_column));
-                let kept = parent == "chat_execution_environments"
-                    || parent == "chat_scratch_generations"
-                    || parent == "chat_threads"
-                    || (table == "chat_access_revocation_jobs"
-                        && parent == "chat_assignment_authorization_revisions");
-                if kept {
+                if KEPT_FOREIGN_KEY_ACTIONS.contains(&(table, parent.as_str())) {
                     assert_eq!(action, old_action, "{table}.{column} -> {parent}");
                 } else {
                     assert_eq!(action, "CASCADE", "{table}.{column} -> {parent}");
@@ -239,7 +294,117 @@ fn chat_local_tables_migration_keeps_rows_and_objects_and_cascades_from_organiza
                 "{table} rows follow the deleted conversation"
             );
         }
+        assert_scratch_chain_removed(&pool).await;
         assert_eq!(foreign_key_violations(&pool).await, 0);
+    });
+}
+
+/// Asserts that the fixture's scratch generation, environment, thread, turn, and run are gone
+/// while the folder-bound thread stays.
+async fn assert_scratch_chain_removed(pool: &SqlitePool) {
+    for (table, filter) in [
+        ("chat_scratch_generations", "id = 'scratch-generation'"),
+        ("chat_execution_environments", "id = 'scratch-environment'"),
+        ("chat_threads", "id = 'thread-scratch'"),
+        ("chat_turns", "id = 'turn-scratch'"),
+        ("chat_agent_runs", "id = 'run-scratch'"),
+    ] {
+        assert_eq!(
+            count_where(pool, table, filter).await,
+            0,
+            "{table} follows its scratch scope"
+        );
+    }
+    assert_eq!(
+        count_where(pool, "chat_threads", "id = 'thread-managed'").await,
+        1
+    );
+}
+
+#[test]
+fn deleting_a_reply_thread_removes_its_scratch_work_and_keeps_the_conversation() {
+    super::block_on(async {
+        let pool = migrated_memory_pool().await;
+        load_seeded_graph(&pool).await;
+
+        sqlx::query("DELETE FROM chat_reply_threads WHERE id = 'reply-thread'")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        for table in [
+            "chat_scratch_scopes",
+            "chat_assignment_authorization_revisions",
+        ] {
+            assert_eq!(count_where(&pool, table, "1 = 1").await, 0, "{table}");
+        }
+        assert_scratch_chain_removed(&pool).await;
+        assert_eq!(
+            count_where(&pool, "chat_conversations", "id = 'conversation-general'").await,
+            1
+        );
+        assert_eq!(
+            count_where(
+                &pool,
+                "chat_execution_environment_reference_targets",
+                "execution_environment_id = 'scratch-environment'"
+            )
+            .await,
+            1,
+            "an organizational mention keeps the unchecked environment id"
+        );
+        assert_eq!(
+            count_where(
+                &pool,
+                "chat_scheduled_message_references",
+                "execution_environment_id = 'scratch-environment'"
+            )
+            .await,
+            1,
+            "a scheduled mention keeps the unchecked environment id"
+        );
+        assert_eq!(foreign_key_violations(&pool).await, 0);
+    });
+}
+
+#[test]
+fn a_message_deleted_while_sync_applies_leaves_the_search_index() {
+    super::block_on(async {
+        let pool = migrated_memory_pool().await;
+        load_seeded_graph(&pool).await;
+        sqlx::raw_sql(
+            "INSERT INTO chat_conversation_items (id, conversation_id, item_kind, ordinal, created_at)
+             VALUES ('item-reply', 'conversation-general', 'message', 2, '2026-10-24T00:00:00.000Z');
+             INSERT INTO chat_communication_messages (item_id, author_participant_id, created_at)
+             VALUES ('item-reply', 'participant:local-owner', '2026-10-24T00:00:00.000Z');
+             INSERT INTO chat_communication_message_revisions
+                 (id, message_item_id, revision, normalized_markdown, created_at)
+             VALUES ('message-revision-reply', 'item-reply', 1, 'Searchable reply',
+                     '2026-10-24T00:00:00.000Z');
+             UPDATE chat_communication_messages SET current_revision_id = 'message-revision-reply'
+             WHERE item_id = 'item-reply';",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let indexed = "message_item_id = 'item-reply'";
+        assert_eq!(
+            count_where(&pool, "chat_communication_search_fts", indexed).await,
+            1
+        );
+
+        set_applying(&pool, true).await;
+        sqlx::query("DELETE FROM chat_communication_messages WHERE item_id = 'item-reply'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        set_applying(&pool, false).await;
+
+        assert_eq!(
+            count_where(&pool, "chat_communication_search_fts", indexed).await,
+            0,
+            "the device-local search index drops a message deleted by sync"
+        );
     });
 }
 
@@ -330,7 +495,9 @@ fn chat_local_tables_migration_rolls_back_when_a_foreign_key_is_violated() {
 
         let error = run_migrations(&pool).await.unwrap_err();
         assert!(error.contains("CHECK constraint failed"), "{error}");
-        // The pool's only connection still holds the open migration transaction.
+        // A no-transaction migration owns its BEGIN, so a failure leaves that transaction open on the
+        // pool's only connection, and an in-memory database cannot be reopened on a fresh connection.
+        // The test rolls it back and restores the pragmas that the migration changed.
         sqlx::raw_sql("ROLLBACK; PRAGMA legacy_alter_table = OFF; PRAGMA foreign_keys = ON;")
             .execute(&pool)
             .await
@@ -353,5 +520,61 @@ fn chat_local_tables_migration_rolls_back_when_a_foreign_key_is_violated() {
         .await
         .unwrap();
         assert_eq!(leftovers, 0);
+    });
+}
+
+/// Device-local `NO ACTION` edges, as (child, column), whose child row always cascades from the same
+/// root as its parent. SQLite checks `NO ACTION` at the end of the statement, so these never stop a
+/// delete: a restore operation and its checkpoint both cascade from their thread.
+const SAME_ROOT_NO_ACTION_EDGES: [(&str, &str); 1] = [("chat_restore_operations", "checkpoint_id")];
+
+/// Walks every foreign key chain that a replicated Chat delete can start and returns the edges
+/// that would stop it or that would let a device-local delete remove a replicated row.
+async fn blocking_foreign_key_edges(pool: &SqlitePool) -> Vec<String> {
+    let edges: Vec<(String, String, String, String)> = sqlx::query_as(
+        "SELECT child.name, foreign_key.\"table\", foreign_key.\"from\", foreign_key.on_delete
+         FROM sqlite_schema child
+         JOIN pragma_foreign_key_list(child.name) foreign_key
+         WHERE child.type = 'table'
+         ORDER BY child.name, foreign_key.id, foreign_key.seq",
+    )
+    .fetch_all(pool)
+    .await
+    .unwrap();
+    let mut reached: Vec<String> = REPLICATED_CHAT_TABLES.map(String::from).to_vec();
+    let mut next = 0;
+    let mut blocking = Vec::new();
+    while next < reached.len() {
+        let parent = reached[next].clone();
+        next += 1;
+        let parent_is_replicated = REPLICATED_CHAT_TABLES.contains(&parent.as_str());
+        for (child, _, column, action) in edges.iter().filter(|edge| edge.1 == parent) {
+            let child_is_replicated = REPLICATED_CHAT_TABLES.contains(&child.as_str());
+            let edge = format!("{child}.{column} -> {parent} ON DELETE {action}");
+            match action.as_str() {
+                "CASCADE" if !parent_is_replicated && child_is_replicated => blocking.push(edge),
+                "CASCADE" => {
+                    if !reached.contains(child) {
+                        reached.push(child.clone());
+                    }
+                }
+                "SET NULL" | "SET DEFAULT" => {}
+                _ if parent_is_replicated && child_is_replicated => {}
+                _ if SAME_ROOT_NO_ACTION_EDGES.contains(&(child.as_str(), column.as_str())) => {}
+                _ => blocking.push(edge),
+            }
+        }
+    }
+    blocking
+}
+
+#[test]
+fn replicated_chat_deletes_never_stop_on_a_device_local_foreign_key() {
+    super::block_on(async {
+        let pool = migrated_memory_pool().await;
+        assert_eq!(
+            blocking_foreign_key_edges(&pool).await,
+            Vec::<String>::new()
+        );
     });
 }

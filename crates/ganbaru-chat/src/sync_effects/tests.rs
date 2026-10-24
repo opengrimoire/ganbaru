@@ -388,11 +388,9 @@ async fn search_follows_revisions_that_arrive_after_their_message_and_deleted_me
         .execute(&pool)
         .await
         .unwrap();
+    // The search delete trigger stays active during apply, so the hook finds nothing left to remove.
     let removed = run_hook(&pool, MESSAGES_TABLE, &["item:second"]).await;
-    assert_eq!(
-        removed.search_rebuilt,
-        BTreeSet::from(["item:second".to_string()])
-    );
+    assert!(removed.search_rebuilt.is_empty());
     let remaining: Vec<String> = search_rows(&pool)
         .await
         .into_iter()

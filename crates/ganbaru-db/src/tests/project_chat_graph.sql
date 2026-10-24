@@ -178,6 +178,49 @@ VALUES ('scratch-scope', 'reply-thread', 'participant-teammate',
         '2026-10-23T00:00:00.000Z', '2026-10-23T00:00:00.000Z');
 INSERT INTO chat_scratch_generations (id, scratch_scope_id, generation, created_at, updated_at)
 VALUES ('scratch-generation', 'scratch-scope', 1, '2026-10-23T00:00:00.000Z', '2026-10-23T00:00:00.000Z');
+INSERT INTO chat_execution_environments
+    (id, scratch_generation_id, kind, display_name, created_at, updated_at)
+VALUES ('scratch-environment', 'scratch-generation', 'scratch', 'Scratch',
+        '2026-10-23T00:00:00.000Z', '2026-10-23T00:00:00.000Z');
+INSERT INTO chat_message_references
+    (id, message_revision_id, reference_kind, label_snapshot, plain_text_projection,
+     start_offset, end_offset, ordinal, created_at)
+VALUES ('reference-environment', 'message-revision-root', 'execution_environment', 'Scratch', 'Scratch',
+        13, 16, 3, '2026-10-23T00:00:00.000Z');
+INSERT INTO chat_execution_environment_reference_targets (reference_id, execution_environment_id)
+VALUES ('reference-environment', 'scratch-environment');
+INSERT INTO chat_scheduled_message_references
+    (id, scheduled_message_id, reference_kind, label_snapshot, plain_text_projection, start_offset,
+     end_offset, execution_environment_id, ordinal)
+VALUES ('scheduled-reference-environment', 'scheduled-1', 'execution_environment', 'Scratch', 'Scratch',
+        9, 12, 'scratch-environment', 2);
+INSERT INTO chat_assignment_authorization_revisions
+    (id, assignment_id, revision, requester_participant_id, teammate_policy_revision_id,
+     teammate_access_revision, destination_conversation_id, access_profile_revision_id,
+     execution_environment_id, working_folder_id, resolved_runtime_approval_policy, scope_digest,
+     decision_state, created_at)
+VALUES ('authorization-scratch', 'assignment-1', 2, 'participant:local-owner', 'policy-1', 1,
+        'conversation-general', 'access-profile-revision:edit-files:1', 'scratch-environment', NULL,
+        'ask', '2222222222222222222222222222222222222222222222222222222222222222', 'allowed',
+        '2026-10-23T00:00:00.000Z');
+INSERT INTO chat_threads
+    (id, project_id, execution_environment_id, scratch_generation_id, title, provider_family_id,
+     provider_instance_id, continuation_group_id, safety_mode, interaction_mode, state,
+     last_activity_at, created_at, updated_at)
+VALUES ('thread-scratch', 'project-chat', 'scratch-environment', 'scratch-generation', 'Scratch work',
+        'codex', 'codex-personal', 'continuation-3', 'ask_for_approval', 'build', 'idle',
+        '2026-10-23T00:00:00.000Z', '2026-10-23T00:00:00.000Z', '2026-10-23T00:00:00.000Z');
+INSERT INTO chat_turns (id, thread_id, ordinal, state, safety_mode, interaction_mode, created_at, updated_at)
+VALUES ('turn-scratch', 'thread-scratch', 0, 'active', 'ask_for_approval', 'build',
+        '2026-10-23T00:00:00.000Z', '2026-10-23T00:00:00.000Z');
+INSERT INTO chat_agent_runs
+    (id, assignment_id, project_id, execution_environment_id, scratch_generation_id,
+     teammate_policy_revision_id, authorization_revision_id, authorization_scope_digest,
+     provider_turn_id, provider_thread_id, state, run_ordinal, created_at, updated_at)
+VALUES ('run-scratch', 'assignment-1', 'project-chat', 'scratch-environment', 'scratch-generation',
+        'policy-1', 'authorization-scratch',
+        '2222222222222222222222222222222222222222222222222222222222222222', 'turn-scratch',
+        'thread-scratch', 'working', 2, '2026-10-23T00:00:00.000Z', '2026-10-23T00:00:00.000Z');
 INSERT INTO chat_scratch_generation_sources
     (scratch_generation_id, conversation_id, lower_ordinal, high_ordinal, audience_revision, created_at)
 VALUES ('scratch-generation', 'conversation-general', 1, 1, 1, '2026-10-23T00:00:00.000Z');

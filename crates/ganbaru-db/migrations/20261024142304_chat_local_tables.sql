@@ -2,7 +2,10 @@
 -- Device-local Chat rows that point at organizational Chat rows cascade when that organizational row is deleted, so
 -- a delete that arrives through sync removes the local evidence that depends on it instead of failing. Audit
 -- triggers that deny deletion keep denying it while every parent row exists, so foreign key cascades can remove
--- them with any parent. Agent runs cascade with their authorization revision for the same reason.
+-- them with any parent. Agent runs cascade with their authorization revision for the same reason. Threads, agent
+-- runs, and authorization revisions also cascade with the execution environment or scratch generation they run in,
+-- because a scratch scope goes away with its reply thread. Organizational mentions of an execution environment keep
+-- an unchecked id and render their label snapshot when the device-local environment is missing.
 --
 -- Triggers that validate or derive state from organizational rows step aside while the sync engine applies remote
 -- operations, because remote rows can arrive in any order and the derived state is rebuilt after materialization.
@@ -65,7 +68,7 @@ CREATE TABLE chat_assignment_authorization_revisions_next (
     access_profile_revision_id TEXT NOT NULL REFERENCES chat_access_profile_revisions(id)
         ON UPDATE CASCADE ON DELETE CASCADE,
     execution_environment_id TEXT REFERENCES chat_execution_environments(id)
-        ON UPDATE CASCADE ON DELETE NO ACTION,
+        ON UPDATE CASCADE ON DELETE CASCADE,
     working_folder_id TEXT REFERENCES project_working_folders(id)
         ON UPDATE CASCADE ON DELETE CASCADE,
     resolved_runtime_approval_policy TEXT NOT NULL CHECK (
@@ -101,6 +104,8 @@ WHEN EXISTS (SELECT 1 FROM chat_work_assignments WHERE id = OLD.assignment_id)
  AND EXISTS (SELECT 1 FROM chat_teammate_policy_revisions WHERE id = OLD.teammate_policy_revision_id)
  AND EXISTS (SELECT 1 FROM chat_conversations WHERE id = OLD.destination_conversation_id)
  AND EXISTS (SELECT 1 FROM chat_access_profile_revisions WHERE id = OLD.access_profile_revision_id)
+ AND (OLD.execution_environment_id IS NULL
+      OR EXISTS (SELECT 1 FROM chat_execution_environments WHERE id = OLD.execution_environment_id))
  AND (OLD.working_folder_id IS NULL
       OR EXISTS (SELECT 1 FROM project_working_folders WHERE id = OLD.working_folder_id))
 BEGIN
@@ -194,9 +199,9 @@ CREATE TABLE chat_agent_runs_next (
         ON UPDATE CASCADE ON DELETE CASCADE,
     working_folder_id TEXT,
     execution_environment_id TEXT REFERENCES chat_execution_environments(id)
-        ON UPDATE CASCADE ON DELETE NO ACTION,
+        ON UPDATE CASCADE ON DELETE CASCADE,
     scratch_generation_id TEXT REFERENCES chat_scratch_generations(id)
-        ON UPDATE CASCADE ON DELETE NO ACTION,
+        ON UPDATE CASCADE ON DELETE CASCADE,
     teammate_policy_revision_id TEXT NOT NULL REFERENCES chat_teammate_policy_revisions(id)
         ON UPDATE CASCADE ON DELETE CASCADE,
     authorization_revision_id TEXT NOT NULL REFERENCES chat_assignment_authorization_revisions(id)
@@ -205,7 +210,7 @@ CREATE TABLE chat_agent_runs_next (
     provider_turn_id TEXT NOT NULL UNIQUE REFERENCES chat_turns(id)
         ON UPDATE CASCADE ON DELETE CASCADE,
     provider_thread_id TEXT REFERENCES chat_threads(id)
-        ON UPDATE CASCADE ON DELETE SET NULL,
+        ON UPDATE CASCADE ON DELETE CASCADE,
     state TEXT NOT NULL CHECK (
         state IN ('queued', 'starting', 'working', 'waiting', 'completed', 'failed', 'cancelled')
     ),
@@ -463,6 +468,374 @@ BEGIN
     SELECT RAISE(ABORT, 'Scratch scope identity is immutable');
 END;
 
+-- chat_threads
+CREATE TABLE chat_threads_next (
+    id TEXT PRIMARY KEY NOT NULL CHECK (length(id) BETWEEN 1 AND 1024),
+    working_folder_id TEXT,
+    project_id TEXT NOT NULL REFERENCES projects(id)
+        ON UPDATE CASCADE ON DELETE CASCADE,
+    execution_environment_id TEXT REFERENCES chat_execution_environments(id)
+        ON UPDATE CASCADE ON DELETE CASCADE,
+    scratch_generation_id TEXT REFERENCES chat_scratch_generations(id)
+        ON UPDATE CASCADE ON DELETE CASCADE,
+    title TEXT NOT NULL DEFAULT '' CHECK (length(title) <= 1000),
+    title_search TEXT GENERATED ALWAYS AS (lower(trim(title))) STORED,
+    title_source TEXT NOT NULL DEFAULT 'user' CHECK (title_source IN ('user', 'provider')),
+    provider_family_id TEXT NOT NULL CHECK (length(provider_family_id) BETWEEN 1 AND 1024),
+    provider_instance_id TEXT NOT NULL CHECK (length(provider_instance_id) BETWEEN 1 AND 1024),
+    continuation_group_id TEXT NOT NULL CHECK (length(continuation_group_id) BETWEEN 1 AND 1024),
+    provider_thread_id TEXT CHECK (
+        provider_thread_id IS NULL OR length(provider_thread_id) BETWEEN 1 AND 1024
+    ),
+    resume_cursor_schema_version INTEGER CHECK (
+        resume_cursor_schema_version IS NULL OR resume_cursor_schema_version >= 1
+    ),
+    resume_cursor_data TEXT CHECK (resume_cursor_data IS NULL OR json_valid(resume_cursor_data)),
+    model_selection_schema_version INTEGER NOT NULL DEFAULT 1 CHECK (
+        model_selection_schema_version >= 1
+    ),
+    model_selection_data TEXT NOT NULL DEFAULT '{"modelId":null,"options":[]}' CHECK (
+        json_valid(model_selection_data) AND json_type(model_selection_data) = 'object'
+    ),
+    safety_mode TEXT NOT NULL CHECK (
+        safety_mode IN ('ask_for_approval', 'approve_for_me', 'full_access', 'custom')
+    ),
+    interaction_mode TEXT NOT NULL CHECK (interaction_mode IN ('build', 'plan')),
+    state TEXT NOT NULL CHECK (
+        state IN ('draft', 'active', 'waiting', 'idle', 'error', 'archived', 'closed')
+    ),
+    latest_turn_state TEXT CHECK (
+        latest_turn_state IS NULL OR latest_turn_state IN (
+            'pending', 'dispatching', 'active', 'waiting_for_approval',
+            'waiting_for_user_input', 'completed', 'interrupted', 'failed'
+        )
+    ),
+    latest_preview TEXT CHECK (latest_preview IS NULL OR length(latest_preview) <= 2000),
+    changed_file_summary_schema_version INTEGER CHECK (
+        changed_file_summary_schema_version IS NULL OR changed_file_summary_schema_version >= 1
+    ),
+    changed_file_summary_data TEXT CHECK (
+        changed_file_summary_data IS NULL OR (
+            json_valid(changed_file_summary_data)
+            AND json_type(changed_file_summary_data) = 'object'
+        )
+    ),
+    message_count INTEGER NOT NULL DEFAULT 0 CHECK (message_count >= 0),
+    revision INTEGER NOT NULL DEFAULT 1 CHECK (revision >= 1),
+    last_event_sequence INTEGER NOT NULL DEFAULT 0 CHECK (last_event_sequence >= 0),
+    last_projected_sequence INTEGER NOT NULL DEFAULT 0 CHECK (
+        last_projected_sequence >= 0 AND last_projected_sequence <= last_event_sequence
+    ),
+    read_revision INTEGER NOT NULL DEFAULT 0 CHECK (read_revision >= 0),
+    unread_at TEXT CHECK (unread_at IS NULL OR length(unread_at) >= 20),
+    last_activity_at TEXT NOT NULL CHECK (length(last_activity_at) >= 20),
+    archived_at TEXT CHECK (archived_at IS NULL OR length(archived_at) >= 20),
+    created_at TEXT NOT NULL CHECK (length(created_at) >= 20),
+    updated_at TEXT NOT NULL CHECK (length(updated_at) >= 20),
+    FOREIGN KEY (working_folder_id, project_id)
+        REFERENCES project_working_folders(id, project_id)
+        ON UPDATE CASCADE ON DELETE CASCADE,
+    CHECK (
+        (working_folder_id IS NULL AND execution_environment_id IS NULL
+            AND scratch_generation_id IS NULL)
+        OR (working_folder_id IS NOT NULL AND scratch_generation_id IS NULL)
+        OR (working_folder_id IS NULL AND execution_environment_id IS NOT NULL
+            AND scratch_generation_id IS NOT NULL)
+    ),
+    CHECK (
+        (resume_cursor_schema_version IS NULL AND resume_cursor_data IS NULL)
+        OR (resume_cursor_schema_version IS NOT NULL AND resume_cursor_data IS NOT NULL)
+    )
+) STRICT;
+
+INSERT INTO chat_threads_next (
+    id,
+    working_folder_id,
+    project_id,
+    execution_environment_id,
+    scratch_generation_id,
+    title,
+    title_source,
+    provider_family_id,
+    provider_instance_id,
+    continuation_group_id,
+    provider_thread_id,
+    resume_cursor_schema_version,
+    resume_cursor_data,
+    model_selection_schema_version,
+    model_selection_data,
+    safety_mode,
+    interaction_mode,
+    state,
+    latest_turn_state,
+    latest_preview,
+    changed_file_summary_schema_version,
+    changed_file_summary_data,
+    message_count,
+    revision,
+    last_event_sequence,
+    last_projected_sequence,
+    read_revision,
+    unread_at,
+    last_activity_at,
+    archived_at,
+    created_at,
+    updated_at
+)
+SELECT
+    id,
+    working_folder_id,
+    project_id,
+    execution_environment_id,
+    scratch_generation_id,
+    title,
+    title_source,
+    provider_family_id,
+    provider_instance_id,
+    continuation_group_id,
+    provider_thread_id,
+    resume_cursor_schema_version,
+    resume_cursor_data,
+    model_selection_schema_version,
+    model_selection_data,
+    safety_mode,
+    interaction_mode,
+    state,
+    latest_turn_state,
+    latest_preview,
+    changed_file_summary_schema_version,
+    changed_file_summary_data,
+    message_count,
+    revision,
+    last_event_sequence,
+    last_projected_sequence,
+    read_revision,
+    unread_at,
+    last_activity_at,
+    archived_at,
+    created_at,
+    updated_at
+FROM chat_threads;
+
+DROP TABLE chat_threads;
+ALTER TABLE chat_threads_next RENAME TO chat_threads;
+
+CREATE INDEX idx_chat_threads_active_project
+ON chat_threads(project_id, last_activity_at DESC, id)
+WHERE archived_at IS NULL AND state != 'closed';
+CREATE INDEX idx_chat_threads_active_working_folder
+ON chat_threads(working_folder_id, last_activity_at DESC, id)
+WHERE working_folder_id IS NOT NULL AND archived_at IS NULL AND state != 'closed';
+CREATE INDEX idx_chat_threads_archived
+ON chat_threads(archived_at DESC, id)
+WHERE archived_at IS NOT NULL;
+CREATE INDEX idx_chat_threads_execution_environment
+ON chat_threads(execution_environment_id, last_activity_at DESC, id)
+WHERE execution_environment_id IS NOT NULL;
+CREATE INDEX idx_chat_threads_scratch_generation
+ON chat_threads(scratch_generation_id, last_activity_at DESC, id)
+WHERE scratch_generation_id IS NOT NULL;
+CREATE INDEX idx_chat_threads_title_search
+ON chat_threads(title_search, last_activity_at DESC, id);
+
+CREATE TRIGGER chat_threads_assign_current_environment
+AFTER INSERT ON chat_threads
+WHEN NEW.working_folder_id IS NOT NULL AND NEW.execution_environment_id IS NULL
+BEGIN
+    UPDATE chat_threads
+    SET execution_environment_id = 'current-folder:' || NEW.working_folder_id
+    WHERE id = NEW.id;
+END;
+
+CREATE TRIGGER chat_threads_execution_target_insert
+BEFORE INSERT ON chat_threads
+WHEN NOT (
+    (NEW.working_folder_id IS NULL AND NEW.execution_environment_id IS NULL
+        AND NEW.scratch_generation_id IS NULL)
+    OR (NEW.working_folder_id IS NOT NULL
+        AND NEW.execution_environment_id IS NULL
+        AND NEW.scratch_generation_id IS NULL)
+    OR EXISTS (
+        SELECT 1 FROM chat_execution_environments environment
+        WHERE environment.id = NEW.execution_environment_id
+          AND (
+            (NEW.working_folder_id IS NOT NULL
+                AND environment.working_folder_id = NEW.working_folder_id
+                AND NEW.scratch_generation_id IS NULL
+                AND environment.scratch_generation_id IS NULL)
+            OR (NEW.working_folder_id IS NULL
+                AND NEW.scratch_generation_id IS NOT NULL
+                AND environment.scratch_generation_id = NEW.scratch_generation_id
+                AND environment.working_folder_id IS NULL)
+          )
+    )
+)
+BEGIN
+    SELECT RAISE(ABORT, 'Chat thread execution target is inconsistent');
+END;
+
+CREATE TRIGGER chat_threads_execution_target_update
+BEFORE UPDATE OF working_folder_id, execution_environment_id, scratch_generation_id ON chat_threads
+WHEN NOT (
+    (NEW.working_folder_id IS NULL AND NEW.execution_environment_id IS NULL
+        AND NEW.scratch_generation_id IS NULL)
+    OR EXISTS (
+        SELECT 1 FROM chat_execution_environments environment
+        WHERE environment.id = NEW.execution_environment_id
+          AND (
+            (NEW.working_folder_id IS NOT NULL
+                AND environment.working_folder_id = NEW.working_folder_id
+                AND NEW.scratch_generation_id IS NULL
+                AND environment.scratch_generation_id IS NULL)
+            OR (NEW.working_folder_id IS NULL
+                AND NEW.scratch_generation_id IS NOT NULL
+                AND environment.scratch_generation_id = NEW.scratch_generation_id
+                AND environment.working_folder_id IS NULL)
+          )
+    )
+)
+BEGIN
+    SELECT RAISE(ABORT, 'Chat thread execution target is inconsistent');
+END;
+
+CREATE TRIGGER chat_threads_project_matches_working_folder_insert
+BEFORE INSERT ON chat_threads
+WHEN NEW.working_folder_id IS NOT NULL AND NOT EXISTS (
+    SELECT 1 FROM project_working_folders
+    WHERE id = NEW.working_folder_id AND project_id = NEW.project_id
+)
+BEGIN
+    SELECT RAISE(ABORT, 'Chat thread project must match its working folder');
+END;
+
+CREATE TRIGGER chat_threads_project_matches_working_folder_update
+BEFORE UPDATE OF working_folder_id, project_id ON chat_threads
+WHEN NEW.working_folder_id IS NOT NULL AND NOT EXISTS (
+    SELECT 1 FROM project_working_folders
+    WHERE id = NEW.working_folder_id AND project_id = NEW.project_id
+)
+BEGIN
+    SELECT RAISE(ABORT, 'Chat thread project must match its working folder');
+END;
+
+-- chat_execution_environment_reference_targets
+CREATE TABLE chat_execution_environment_reference_targets_next (
+    reference_id TEXT PRIMARY KEY NOT NULL REFERENCES chat_message_references(id)
+        ON UPDATE CASCADE ON DELETE CASCADE,
+    execution_environment_id TEXT NOT NULL
+) STRICT;
+
+INSERT INTO chat_execution_environment_reference_targets_next (reference_id, execution_environment_id)
+SELECT reference_id, execution_environment_id FROM chat_execution_environment_reference_targets;
+
+DROP TABLE chat_execution_environment_reference_targets;
+ALTER TABLE chat_execution_environment_reference_targets_next
+RENAME TO chat_execution_environment_reference_targets;
+
+-- chat_scheduled_message_references
+CREATE TABLE chat_scheduled_message_references_next (
+    id TEXT PRIMARY KEY NOT NULL CHECK (length(id) BETWEEN 1 AND 1024),
+    scheduled_message_id TEXT NOT NULL REFERENCES chat_scheduled_messages(id)
+        ON UPDATE CASCADE ON DELETE CASCADE,
+    reference_kind TEXT NOT NULL CHECK (
+        reference_kind IN (
+            'participant', 'channel', 'working_folder',
+            'workspace_path', 'execution_environment'
+        )
+    ),
+    label_snapshot TEXT NOT NULL CHECK (length(label_snapshot) BETWEEN 1 AND 4096),
+    plain_text_projection TEXT NOT NULL CHECK (length(plain_text_projection) BETWEEN 1 AND 4096),
+    start_offset INTEGER NOT NULL CHECK (start_offset >= 0),
+    end_offset INTEGER NOT NULL CHECK (end_offset > start_offset),
+    participant_id TEXT REFERENCES chat_participants(id)
+        ON UPDATE CASCADE ON DELETE NO ACTION,
+    participant_kind TEXT CHECK (
+        participant_kind IS NULL OR participant_kind IN ('local_user', 'ai_teammate', 'human')
+    ),
+    channel_id TEXT REFERENCES chat_channels(id)
+        ON UPDATE CASCADE ON DELETE NO ACTION,
+    working_folder_id TEXT REFERENCES project_working_folders(id)
+        ON UPDATE CASCADE ON DELETE CASCADE,
+    path_kind TEXT CHECK (path_kind IS NULL OR path_kind IN ('file', 'folder')),
+    relative_path TEXT CHECK (
+        relative_path IS NULL OR (
+            length(relative_path) BETWEEN 1 AND 4096
+            AND relative_path NOT LIKE '/%'
+            AND relative_path NOT LIKE '../%'
+            AND relative_path NOT LIKE '%/../%'
+            AND relative_path NOT LIKE '%/..'
+            AND relative_path NOT LIKE '%\%'
+        )
+    ),
+    execution_environment_id TEXT,
+    ordinal INTEGER NOT NULL CHECK (ordinal >= 0),
+    UNIQUE (scheduled_message_id, start_offset, end_offset),
+    UNIQUE (scheduled_message_id, ordinal),
+    CHECK (
+        (reference_kind = 'participant' AND participant_id IS NOT NULL
+            AND participant_kind IS NOT NULL AND channel_id IS NULL
+            AND working_folder_id IS NULL AND path_kind IS NULL
+            AND relative_path IS NULL AND execution_environment_id IS NULL)
+        OR (reference_kind = 'channel' AND participant_id IS NULL
+            AND participant_kind IS NULL AND channel_id IS NOT NULL
+            AND working_folder_id IS NULL AND path_kind IS NULL
+            AND relative_path IS NULL AND execution_environment_id IS NULL)
+        OR (reference_kind = 'working_folder' AND participant_id IS NULL
+            AND participant_kind IS NULL AND channel_id IS NULL
+            AND working_folder_id IS NOT NULL AND path_kind IS NULL
+            AND relative_path IS NULL AND execution_environment_id IS NULL)
+        OR (reference_kind = 'workspace_path' AND participant_id IS NULL
+            AND participant_kind IS NULL AND channel_id IS NULL
+            AND working_folder_id IS NOT NULL AND path_kind IS NOT NULL
+            AND relative_path IS NOT NULL AND execution_environment_id IS NULL)
+        OR (reference_kind = 'execution_environment' AND participant_id IS NULL
+            AND participant_kind IS NULL AND channel_id IS NULL
+            AND working_folder_id IS NULL AND path_kind IS NULL
+            AND relative_path IS NULL AND execution_environment_id IS NOT NULL)
+    )
+) STRICT;
+
+INSERT INTO chat_scheduled_message_references_next (
+    id,
+    scheduled_message_id,
+    reference_kind,
+    label_snapshot,
+    plain_text_projection,
+    start_offset,
+    end_offset,
+    participant_id,
+    participant_kind,
+    channel_id,
+    working_folder_id,
+    path_kind,
+    relative_path,
+    execution_environment_id,
+    ordinal
+)
+SELECT
+    id,
+    scheduled_message_id,
+    reference_kind,
+    label_snapshot,
+    plain_text_projection,
+    start_offset,
+    end_offset,
+    participant_id,
+    participant_kind,
+    channel_id,
+    working_folder_id,
+    path_kind,
+    relative_path,
+    execution_environment_id,
+    ordinal
+FROM chat_scheduled_message_references;
+
+DROP TABLE chat_scheduled_message_references;
+ALTER TABLE chat_scheduled_message_references_next RENAME TO chat_scheduled_message_references;
+
+CREATE INDEX idx_chat_scheduled_message_references_target
+ON chat_scheduled_message_references(scheduled_message_id, reference_kind, ordinal);
+
 -- Teammate channel memberships end with a removal timestamp.
 ALTER TABLE chat_teammate_channel_memberships
 ADD COLUMN removed_at TEXT CHECK (removed_at IS NULL OR length(removed_at) >= 20);
@@ -674,14 +1047,6 @@ BEGIN
     JOIN chat_communication_message_revisions revision
       ON revision.id = NEW.current_revision_id
     WHERE item.id = NEW.item_id;
-END;
-
-DROP TRIGGER chat_communication_search_delete;
-CREATE TRIGGER chat_communication_search_delete
-AFTER DELETE ON chat_communication_messages
-WHEN (SELECT applying FROM sync_apply_state WHERE singleton = 1) = 0
-BEGIN
-    DELETE FROM chat_communication_search_fts WHERE message_item_id = OLD.item_id;
 END;
 
 CREATE TEMP TABLE chat_local_tables_guard (

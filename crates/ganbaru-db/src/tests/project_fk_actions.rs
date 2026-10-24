@@ -348,7 +348,12 @@ fn deleting_a_working_folder_removes_only_its_chat_rows() {
             );
         }
         assert_eq!(
-            count_where(&pool, "chat_assignment_authorization_revisions", "1 = 1").await,
+            count_where(
+                &pool,
+                "chat_assignment_authorization_revisions",
+                "id = 'authorization-1'"
+            )
+            .await,
             1
         );
         assert_eq!(foreign_key_violations(&pool).await, 0);

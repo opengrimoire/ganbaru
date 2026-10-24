@@ -730,12 +730,28 @@ pub(super) const DRAFT_PARTS: TableSpec = TableSpec {
     published_with: Some(PublishedWith {
         column: "draft_id",
         parent: DRAFTS_TABLE,
+        null_publishes: false,
     }),
     ..DRAFTS
 };
 
 /// `fixture_draft_parts`.
 pub(super) const DRAFT_PARTS_TABLE: TableId = TableId(FIXTURE_TABLE_IDS + 8);
+
+/// Notes that publish with the draft they name, or at once when they name none.
+pub(super) const DRAFT_NOTES: TableSpec = TableSpec {
+    id: DRAFT_NOTES_TABLE,
+    name: "fixture_draft_notes",
+    published_with: Some(PublishedWith {
+        column: "draft_id",
+        parent: DRAFTS_TABLE,
+        null_publishes: true,
+    }),
+    ..DRAFT_PARTS
+};
+
+/// `fixture_draft_notes`.
+pub(super) const DRAFT_NOTES_TABLE: TableId = TableId(FIXTURE_TABLE_IDS + 16);
 
 /// Memos whose local deletes domain Undo can hold.
 pub(super) const MEMOS: TableSpec = TableSpec {
@@ -1290,7 +1306,7 @@ pub(super) const FIXTURE_DOMAIN: DomainManifest = DomainManifest {
     name: "fixture",
     table_ids: TableIdRange {
         first: FIXTURE_TABLE_IDS,
-        last: FIXTURE_TABLE_IDS + 15,
+        last: FIXTURE_TABLE_IDS + 16,
     },
     tables: &[
         ITEMS,
@@ -1303,6 +1319,7 @@ pub(super) const FIXTURE_DOMAIN: DomainManifest = DomainManifest {
         EDGES,
         DRAFTS,
         DRAFT_PARTS,
+        DRAFT_NOTES,
         MEMOS,
         MEMO_LINES,
         MEMO_TAGS,
@@ -1429,6 +1446,11 @@ fn fixture_schema() -> String {
          CREATE TABLE fixture_draft_parts (
              id TEXT PRIMARY KEY CHECK (trim(id) <> ''),
              draft_id TEXT NOT NULL REFERENCES fixture_drafts(id) ON DELETE CASCADE,
+             body TEXT NOT NULL CHECK (length(body) <= 40)
+         );
+         CREATE TABLE fixture_draft_notes (
+             id TEXT PRIMARY KEY CHECK (trim(id) <> ''),
+             draft_id TEXT REFERENCES fixture_drafts(id) ON DELETE CASCADE,
              body TEXT NOT NULL CHECK (length(body) <= 40)
          );
          CREATE TABLE fixture_memos (

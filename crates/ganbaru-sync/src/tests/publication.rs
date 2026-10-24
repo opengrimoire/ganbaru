@@ -5,7 +5,7 @@ use sqlx::Connection;
 
 use super::block_on;
 use super::fixture::{
-    DRAFT_PARTS_TABLE, DRAFTS_TABLE, FIXTURE_TABLE_IDS, ITEMS_TABLE, MEMOS_TABLE,
+    DRAFT_NOTES_TABLE, DRAFT_PARTS_TABLE, DRAFTS_TABLE, FIXTURE_TABLE_IDS, ITEMS_TABLE, MEMOS_TABLE,
 };
 use super::replica::{Replica, converge};
 use crate::{SyncError, seed};
@@ -266,6 +266,108 @@ fn seeding_refuses_a_pending_key_and_records_nothing() {
             captures(&mut replica)
                 .await
                 .contains(&format!("{} item-1 1 3", ITEMS_TABLE.0))
+        );
+    });
+}
+
+#[test]
+fn a_child_naming_no_parent_publishes_at_once_and_a_named_parent_holds_it() {
+    block_on(async {
+        let mut replicas = replicas(2).await;
+        let author = &mut replicas[0];
+        author
+            .exec(
+                "INSERT INTO fixture_drafts (id, title, published) VALUES ('draft-1', 'One', 0);
+                 INSERT INTO fixture_draft_notes (id, draft_id, body) VALUES
+                     ('note-free', NULL, 'free'), ('note-held', 'draft-1', 'held');
+                 UPDATE fixture_draft_notes SET body = 'edited' WHERE id = 'note-held';",
+            )
+            .await;
+        let created = |table: TableId, key: &str| format!("{} {key} 1 3", table.0);
+        assert_eq!(
+            captures(author).await,
+            vec![created(DRAFT_NOTES_TABLE, "note-free")],
+            "a note naming no draft publishes at once and a note naming a draft waits"
+        );
+        author.seal().await.unwrap();
+        converge(&mut replicas).await;
+        assert_eq!(
+            ids(&mut replicas[1], "SELECT id FROM fixture_draft_notes").await,
+            vec!["note-free"]
+        );
+
+        let author = &mut replicas[0];
+        author
+            .exec("UPDATE fixture_drafts SET published = 1 WHERE id = 'draft-1'")
+            .await;
+        assert_eq!(
+            captures(author).await,
+            vec![
+                created(DRAFTS_TABLE, "draft-1"),
+                created(DRAFT_NOTES_TABLE, "note-held"),
+            ],
+            "publishing the draft captures the note naming it"
+        );
+        author.seal().await.unwrap();
+        converge(&mut replicas).await;
+        assert_eq!(
+            ids(
+                &mut replicas[1],
+                "SELECT id || ' ' || body FROM fixture_draft_notes ORDER BY id"
+            )
+            .await,
+            vec!["note-free free", "note-held edited"]
+        );
+
+        replicas[1]
+            .exec("DELETE FROM fixture_drafts WHERE id = 'draft-1'")
+            .await;
+        replicas[1].seal().await.unwrap();
+        converge(&mut replicas).await;
+        for replica in &mut replicas {
+            assert_eq!(
+                ids(replica, "SELECT id FROM fixture_draft_notes").await,
+                vec!["note-free"],
+                "deleting the draft deletes its notes and keeps the free one"
+            );
+        }
+    });
+}
+
+#[test]
+fn seeding_captures_a_child_naming_no_parent() {
+    block_on(async {
+        let mut replica = Replica::new(0, 3).await;
+        let now = replica.now_ms;
+        replica
+            .engine
+            .seed_captures(&mut replica.conn, now)
+            .await
+            .unwrap();
+        replica
+            .exec(&format!(
+                "INSERT INTO fixture_drafts (id, title, published) VALUES
+                     ('draft-1', 'Sent', 1), ('draft-2', 'Unsent', 0);
+                 INSERT INTO fixture_draft_notes (id, draft_id, body) VALUES
+                     ('note-free', NULL, 'free'), ('note-sent', 'draft-1', 'sent'),
+                     ('note-unsent', 'draft-2', 'unsent');
+                 DELETE FROM sync_capture;
+                 DELETE FROM sync_seeded_tables WHERE table_id = {};",
+                DRAFT_NOTES_TABLE.0
+            ))
+            .await;
+        let seeded = replica
+            .engine
+            .seed_captures(&mut replica.conn, now)
+            .await
+            .unwrap();
+        assert_eq!(seeded, vec!["fixture_draft_notes"]);
+        assert_eq!(
+            captures(&mut replica).await,
+            vec![
+                format!("{} note-free 1 3", DRAFT_NOTES_TABLE.0),
+                format!("{} note-sent 1 3", DRAFT_NOTES_TABLE.0),
+            ]
         );
     });
 }

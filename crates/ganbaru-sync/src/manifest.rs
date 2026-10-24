@@ -721,6 +721,12 @@ pub struct PublishedWith {
     pub column: &'static str,
     /// The predicate table.
     pub parent: TableId,
+    /// Whether a row whose column is null publishes at once, as a row with no parent. The
+    /// column is then nullable in the schema, and `NOT NULL` otherwise. Since the reference is
+    /// immutable and cascades, a row never moves between the two shapes: a null stays null, and
+    /// deleting the parent deletes its children instead of making them publish. `ON DELETE SET
+    /// NULL` is refused for that reason.
+    pub null_publishes: bool,
 }
 
 /// A tree: rows nest through a `Reference` group into the table itself and are ordered by a

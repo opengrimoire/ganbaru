@@ -514,7 +514,7 @@ async fn rebuild_copied_relation_links(
             properties.remove(&key);
         }
     }
-    let rows = sqlx::query_as::<_, NotePageRow>("SELECT * FROM notes_pages WHERE parent_data_source_id = ? AND in_trash = 0 AND archived = 0")
+    let rows = sqlx::query_as::<_, NotePageRow>(sqlx::AssertSqlSafe(format!("SELECT {} FROM notes_pages WHERE parent_data_source_id = ? AND in_trash = 0 AND archived = 0", crate::structure::page_row_columns("notes_pages"))))
         .bind(source).fetch_all(&mut **tx).await.map_err(|e| format!("read copied relation rows: {e}"))?;
     for row in rows {
         let mut properties: Value = serde_json::from_str(&row.properties)

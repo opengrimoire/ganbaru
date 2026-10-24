@@ -190,6 +190,19 @@ fn project_restore_rewrites_rows_in_place_and_keeps_nested_content_and_page_hist
                 .await
                 .unwrap();
         assert_eq!(restored_text, "First version");
+        let nested_stored_project: Option<String> =
+            sqlx::query_scalar("SELECT project_id FROM notes_pages WHERE id = ?")
+                .bind(NESTED_PAGE_ID)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(nested_stored_project, None);
+        let mut tx = pool.begin().await.unwrap();
+        let nested_project = crate::structure::page_project_id_tx(&mut tx, NESTED_PAGE_ID)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        assert_eq!(nested_project.as_deref(), Some(PROJECT_ID));
         assert_eq!(row_state(&pool, "notes_blocks", EXTRA_BLOCK_ID).await.1, 1);
         assert_eq!(row_state(&pool, "notes_pages", LATER_PAGE_ID).await.1, 1);
         let snapshot_kept: i64 = sqlx::query_scalar(

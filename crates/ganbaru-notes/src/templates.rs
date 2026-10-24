@@ -93,6 +93,17 @@ pub async fn apply_page_template(
     ) {
         return Err("page templates can only create workspace pages or subpages".to_string());
     }
+    let project_id = request
+        .project_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    if project_id.is_some() && !matches!(&request.parent, NoteParent::Workspace { .. }) {
+        return Err("template subpages take their parent page project".to_string());
+    }
+    if let Some(project_id) = project_id {
+        crate::project_history::ensure_project_baseline_for_mutation(pool, project_id).await?;
+    }
     let title_override = request
         .title
         .as_deref()
@@ -102,6 +113,9 @@ pub async fn apply_page_template(
         .begin()
         .await
         .map_err(|e| format!("begin notes page template apply: {e}"))?;
+    if let Some(project_id) = project_id {
+        crate::structure::require_page_project_tx(&mut tx, project_id).await?;
+    }
     let template = load_template_row(&mut tx, &template_id).await?;
     let blocks = load_template_block_rows(&mut tx, &template_id).await?;
     let parent = resolve_page_template_parent(&mut tx, &request.parent).await?;
@@ -123,12 +137,13 @@ pub async fn apply_page_template(
             parent_page_id,
             parent_block_id,
             child_block_id,
+            project_id,
             title,
             properties,
             icon,
             cover
          )
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(&page_id)
     .bind(parent_type)
@@ -137,6 +152,10 @@ pub async fn apply_page_template(
     .bind(crate::structure::nested_page_block_id(
         parent_type,
         &page_id,
+    ))
+    .bind(crate::structure::stored_page_project(
+        parent_type,
+        project_id,
     ))
     .bind(&title)
     .bind(properties.to_string())
@@ -157,6 +176,7 @@ pub async fn apply_page_template(
     if let Some(parent) = &parent {
         touch_page(&mut tx, &parent.parent_page_id).await?;
     }
+    crate::project_history::mark_page_dirty_tx(&mut tx, &page_id, &title, false).await?;
     tx.commit()
         .await
         .map_err(|e| format!("commit notes page template apply: {e}"))?;

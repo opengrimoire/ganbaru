@@ -255,6 +255,7 @@ fn page_templates_create_apply_update_duplicate_and_delete() {
             NotePageTemplateApply {
                 parent: workspace_parent(),
                 title: Some("Friday review".to_string()),
+                project_id: None,
             },
         )
         .await

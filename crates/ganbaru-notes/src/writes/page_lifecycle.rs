@@ -9,7 +9,7 @@ use crate::models::{
 };
 use crate::validation::{plain_text_from_payload, require_uuid, validate_parent};
 use crate::{data_sources, page_history, reads};
-use sqlx::SqlitePool;
+use sqlx::{Sqlite, SqlitePool, Transaction};
 use std::collections::HashSet;
 
 const TRASH_RETENTION_DAYS: i64 = 7;
@@ -54,6 +54,7 @@ pub async fn move_page(
     for history_page_id in history_page_ids {
         page_history::record_page_snapshot_tx(&mut tx, &history_page_id, "move_page").await?;
     }
+    let workspace_project_id = workspace_move_project_tx(&mut tx, page_id, folder_id).await?;
     sqlx::query(
         "UPDATE notes_pages
          SET parent_type = ?,
@@ -75,6 +76,8 @@ pub async fn move_page(
     .execute(&mut *tx)
     .await
     .map_err(|e| format!("move notes page: {e}"))?;
+    crate::structure::store_page_project_tx(&mut tx, page_id, workspace_project_id.as_deref())
+        .await?;
     crate::structure::validate_page_folder_tx(&mut tx, page_id).await?;
     crate::structure::detach_row_hierarchy_tx(&mut tx, page_id).await?;
     match &new_parent {
@@ -117,6 +120,27 @@ pub async fn move_page(
         .await
         .map_err(|e| format!("commit move notes page: {e}"))?;
     reads::load_page(pool, page_id).await
+}
+
+/// The project a page keeps if a move places it at the workspace: the folder's project when
+/// it moves into a folder, otherwise the project it belongs to before the move.
+async fn workspace_move_project_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    page_id: &str,
+    folder_id: Option<&str>,
+) -> Result<Option<String>, String> {
+    let Some(folder_id) = folder_id else {
+        return crate::structure::page_project_id_tx(tx, page_id).await;
+    };
+    let folder_project: Option<String> =
+        sqlx::query_scalar("SELECT project_id FROM notes_folders WHERE id = ?")
+            .bind(folder_id)
+            .fetch_optional(&mut **tx)
+            .await
+            .map_err(|e| format!("load notes folder project for page move: {e}"))?;
+    folder_project
+        .map(Some)
+        .ok_or_else(|| "notes folder not found".to_string())
 }
 
 pub async fn trash_page(
@@ -426,6 +450,7 @@ pub(super) async fn move_page_to_workspace_parent(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     page_id: &str,
 ) -> Result<(), String> {
+    let project_id = crate::structure::page_project_id_tx(tx, page_id).await?;
     sqlx::query(
         "UPDATE notes_pages
          SET parent_type = 'workspace',
@@ -441,6 +466,7 @@ pub(super) async fn move_page_to_workspace_parent(
     .execute(&mut **tx)
     .await
     .map_err(|e| format!("move restored notes page to workspace: {e}"))?;
+    crate::structure::store_page_project_tx(tx, page_id, project_id.as_deref()).await?;
     crate::structure::detach_row_hierarchy_tx(tx, page_id).await?;
     Ok(())
 }

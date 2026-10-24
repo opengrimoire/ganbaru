@@ -388,7 +388,10 @@ async fn insert_import_page(
     .bind(parent_page_id)
     .bind(parent_block_id)
     .bind(crate::structure::nested_page_block_id(parent_type, page_id))
-    .bind(request.project_id)
+    .bind(crate::structure::stored_page_project(
+        parent_type,
+        request.project_id,
+    ))
     .bind(request.title)
     .bind(writes::page_title_properties(request.title).to_string())
     .bind(request.source_provider)

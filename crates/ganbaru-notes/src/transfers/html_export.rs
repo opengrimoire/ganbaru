@@ -262,19 +262,20 @@ async fn load_pages(
     include_tree: bool,
 ) -> Result<Vec<NotePageRow>, String> {
     if !include_tree {
-        return sqlx::query_as::<_, NotePageRow>(
-            "SELECT *
+        return sqlx::query_as::<_, NotePageRow>(sqlx::AssertSqlSafe(format!(
+            "SELECT {}
              FROM notes_pages
              WHERE id = ?
                AND in_trash = 0
                AND archived = 0",
-        )
+            crate::structure::page_row_columns("notes_pages")
+        )))
         .bind(page_id)
         .fetch_all(pool)
         .await
         .map_err(|e| format!("load notes page for HTML export: {e}"));
     }
-    sqlx::query_as::<_, NotePageRow>(
+    sqlx::query_as::<_, NotePageRow>(sqlx::AssertSqlSafe(format!(
         "WITH RECURSIVE page_tree(id, depth) AS (
             SELECT id, 0
             FROM notes_pages
@@ -299,11 +300,12 @@ async fn load_pages(
                   )
               )
          )
-         SELECT page.*
+         SELECT {}
          FROM notes_pages AS page
          JOIN page_tree ON page_tree.id = page.id
          ORDER BY page_tree.depth ASC, page.title COLLATE NOCASE ASC, page.id ASC",
-    )
+        crate::structure::page_row_columns("page")
+    )))
     .bind(page_id)
     .bind(PAGE_TREE_DEPTH_LIMIT)
     .fetch_all(pool)

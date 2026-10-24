@@ -463,12 +463,20 @@ async fn upsert_snapshot_child_page(
     } else {
         None
     };
-    let exists: Option<i64> = sqlx::query_scalar("SELECT 1 FROM notes_pages WHERE id = ?")
-        .bind(page_id)
-        .fetch_optional(&mut **tx)
-        .await
-        .map_err(|e| format!("load history child page: {e}"))?;
-    if exists.is_some() {
+    let existing: Option<(String, String)> =
+        sqlx::query_as("SELECT parent_type, properties FROM notes_pages WHERE id = ?")
+            .bind(page_id)
+            .fetch_optional(&mut **tx)
+            .await
+            .map_err(|e| format!("load history child page: {e}"))?;
+    if let Some((existing_parent_type, existing_properties)) = existing {
+        // A restored child page keeps its own properties; only a former data source row,
+        // whose properties follow that source schema, starts again from a plain title.
+        let properties = if existing_parent_type == "data_source_id" {
+            page_title_properties(&title).to_string()
+        } else {
+            crate::writes::normal_page_properties_with_title(&existing_properties, &title)?
+        };
         sqlx::query(
             "UPDATE notes_pages
              SET parent_type = ?,
@@ -477,9 +485,11 @@ async fn upsert_snapshot_child_page(
                  parent_data_source_id = NULL,
                  child_block_id = ?,
                  folder_id = NULL,
+                 project_id = NULL,
                  title = ?,
                  properties = ?,
                  in_trash = 0,
+                 trash_owner = NULL,
                  trashed_time = NULL,
                  archived = 0,
                  last_edited_time = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
@@ -490,11 +500,12 @@ async fn upsert_snapshot_child_page(
         .bind(block_parent_block_id.as_deref())
         .bind(page_id)
         .bind(&title)
-        .bind(page_title_properties(&title).to_string())
+        .bind(properties)
         .bind(page_id)
         .execute(&mut **tx)
         .await
         .map_err(|e| format!("restore history child page: {e}"))?;
+        crate::structure::detach_row_hierarchy_tx(tx, page_id).await?;
     } else {
         sqlx::query(
             "INSERT INTO notes_pages (
@@ -585,12 +596,15 @@ async fn load_page_row_tx(
     tx: &mut Transaction<'_, Sqlite>,
     page_id: &str,
 ) -> Result<NotePageRow, String> {
-    sqlx::query_as::<_, NotePageRow>("SELECT * FROM notes_pages WHERE id = ?")
-        .bind(page_id)
-        .fetch_optional(&mut **tx)
-        .await
-        .map_err(|e| format!("load notes page for history: {e}"))?
-        .ok_or_else(|| "notes page not found".to_string())
+    sqlx::query_as::<_, NotePageRow>(sqlx::AssertSqlSafe(format!(
+        "SELECT {} FROM notes_pages WHERE id = ?",
+        crate::structure::page_row_columns("notes_pages")
+    )))
+    .bind(page_id)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(|e| format!("load notes page for history: {e}"))?
+    .ok_or_else(|| "notes page not found".to_string())
 }
 
 async fn ensure_active_page_exists_tx(

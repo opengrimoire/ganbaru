@@ -21,6 +21,96 @@ pub(crate) const MAX_TREE_DEPTH: i64 = 64;
 pub(crate) const MAX_CONTENT_WALK_DEPTH: i64 =
     MAX_TREE_DEPTH * (crate::writes::MAX_BLOCK_DEPTH + 3);
 
+/// SQL expression for the project of the page row that `page` names in the enclosing query.
+///
+/// Only workspace pages store a project; a nested page (under a page, a block, or a data
+/// source row) stores none and belongs to the project of its nearest ancestor that stores
+/// one. The walk follows the same containers as the content tree and stops at
+/// [`MAX_TREE_DEPTH`], so a corrupt parent cycle resolves to no project instead of looping.
+/// `page` is a table alias or table name of `notes_pages` in the enclosing query.
+pub(crate) fn page_project_sql(page: &str) -> String {
+    format!(
+        "(WITH RECURSIVE project_walk(id, project_id, depth) AS (
+             SELECT {page}.id, {page}.project_id, 0
+             UNION
+             SELECT project_container.id, project_container.project_id, project_walk.depth + 1
+             FROM project_walk
+             JOIN notes_pages AS project_walked ON project_walked.id = project_walk.id
+             JOIN notes_pages AS project_container ON project_container.id = COALESCE(
+                 project_walked.parent_page_id,
+                 (SELECT project_block.page_id FROM notes_blocks AS project_block
+                  WHERE project_block.id = project_walked.parent_block_id),
+                 (SELECT COALESCE(project_database.parent_page_id, project_database_block.page_id)
+                  FROM notes_data_sources AS project_data_source
+                  JOIN notes_databases AS project_database
+                    ON project_database.id = project_data_source.database_id
+                  LEFT JOIN notes_blocks AS project_database_block
+                    ON project_database_block.id = project_database.id
+                  WHERE project_data_source.id = project_walked.parent_data_source_id)
+             )
+             WHERE project_walk.project_id IS NULL AND project_walk.depth < {MAX_TREE_DEPTH}
+         )
+         SELECT project_walk.project_id FROM project_walk
+         WHERE project_walk.project_id IS NOT NULL
+         ORDER BY project_walk.depth
+         LIMIT 1)"
+    )
+}
+
+/// Column list for a [`crate::models::NotePageRow`] read of the `notes_pages` row named
+/// `page`, with `project_id` derived by [`page_project_sql`].
+pub(crate) fn page_row_columns(page: &str) -> String {
+    format!(
+        "{page}.id, {page}.parent_type, {page}.parent_page_id, {page}.parent_block_id,
+         {page}.parent_data_source_id, {page}.folder_id, {project} AS project_id, {page}.title,
+         {page}.properties, {page}.icon, {page}.cover, {page}.in_trash, {page}.archived,
+         {page}.source_provider, {page}.source_object_id, {page}.source_workspace_id,
+         {page}.source_last_edited_time, {page}.url, {page}.public_url, {page}.created_time,
+         {page}.last_edited_time",
+        project = page_project_sql(page)
+    )
+}
+
+/// Column list for a [`crate::models::NotePageSummaryDto`] read of the `notes_pages` row
+/// named `page`, with `project_id` derived by [`page_project_sql`].
+pub(crate) fn page_summary_columns(page: &str) -> String {
+    format!(
+        "{page}.id, {page}.parent_type, {page}.parent_page_id, {page}.parent_block_id,
+         {page}.parent_data_source_id, {page}.folder_id, {page}.title, {project} AS project_id,
+         {page}.icon, {page}.in_trash, {page}.archived, {page}.created_time,
+         {page}.last_edited_time",
+        project = page_project_sql(page)
+    )
+}
+
+/// The project a page stores for its placement: `project_id` for a workspace page and
+/// none for a nested page, which derives its project from its ancestors.
+pub(crate) fn stored_page_project<'a>(
+    parent_type: &str,
+    project_id: Option<&'a str>,
+) -> Option<&'a str> {
+    (parent_type == "workspace").then_some(project_id).flatten()
+}
+
+/// Store the project of a page placed at the workspace (`project_id`) or nested (none).
+pub(crate) async fn store_page_project_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    page_id: &str,
+    project_id: Option<&str>,
+) -> Result<(), String> {
+    sqlx::query(
+        "UPDATE notes_pages
+         SET project_id = CASE WHEN parent_type = 'workspace' THEN ? END
+         WHERE id = ?",
+    )
+    .bind(project_id)
+    .bind(page_id)
+    .execute(&mut **tx)
+    .await
+    .map_err(|e| format!("store Notes page project: {e}"))?;
+    Ok(())
+}
+
 /// The `child_block_id` a page with `parent_type` stores.
 ///
 /// A page nested under a page or a block is placed by its `child_page` block,
@@ -117,17 +207,20 @@ pub(crate) async fn misplaced_folder_page_count_tx(
     .map_err(|e| format!("check notes folder page placement: {e}"))
 }
 
-/// Read the project that owns a page, if any.
+/// Read the project that owns a page, stored or derived from its ancestors (see
+/// [`page_project_sql`]).
 pub(crate) async fn page_project_id_tx(
     tx: &mut Transaction<'_, Sqlite>,
     page_id: &str,
 ) -> Result<Option<String>, String> {
-    let project: Option<Option<String>> =
-        sqlx::query_scalar("SELECT project_id FROM notes_pages WHERE id = ?")
-            .bind(page_id)
-            .fetch_optional(&mut **tx)
-            .await
-            .map_err(|e| format!("load notes page project: {e}"))?;
+    let project: Option<Option<String>> = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+        "SELECT {} FROM notes_pages AS page WHERE page.id = ?",
+        page_project_sql("page")
+    )))
+    .bind(page_id)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(|e| format!("load notes page project: {e}"))?;
     project.ok_or_else(|| "notes page not found".to_string())
 }
 

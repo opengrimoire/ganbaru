@@ -139,9 +139,8 @@ pub(super) async fn move_block_tx(
         .map_err(|e| format!("move notes child page parent: {e}"))?;
     }
     refresh_moved_database_parents(tx, block_id).await?;
-    let project_id =
-        project_history::resolve_project_id_for_page_tx(tx, &new_parent.page_id).await?;
-    super::database_lifecycle::adopt_block_project(tx, block_id, project_id.as_deref()).await?;
+    project_history::mark_page_dirty_tx(tx, &new_parent.page_id, "Move Notes content", true)
+        .await?;
     touch_parent_block(tx, &old_parent).await?;
     touch_parent_block(tx, &new_parent).await?;
     touch_page(tx, &new_parent.page_id).await?;
@@ -277,13 +276,11 @@ pub async fn move_blocks(
             touch_page(&mut tx, &parent.page_id).await?;
         }
     }
-    let project_id =
-        project_history::resolve_project_id_for_page_tx(&mut tx, &new_parent.page_id).await?;
     for root in &root_ids {
         refresh_moved_database_parents(&mut tx, root).await?;
-        super::database_lifecycle::adopt_block_project(&mut tx, root, project_id.as_deref())
-            .await?;
     }
+    project_history::mark_page_dirty_tx(&mut tx, &new_parent.page_id, "Move Notes content", true)
+        .await?;
     touch_parent_block(&mut tx, &new_parent).await?;
     touch_page(&mut tx, &new_parent.page_id).await?;
     tx.commit()

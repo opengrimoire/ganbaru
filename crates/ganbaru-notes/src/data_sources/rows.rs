@@ -14,8 +14,8 @@ pub async fn list_data_source_row_pages(
     data_source_id: &str,
 ) -> Result<Vec<NotePageDto>, String> {
     require_uuid(data_source_id, "data_source_id")?;
-    let rows = sqlx::query_as::<_, NotePageRow>(
-        "SELECT page.*
+    let rows = sqlx::query_as::<_, NotePageRow>(sqlx::AssertSqlSafe(format!(
+        "SELECT {}
          FROM notes_pages AS page
          JOIN notes_data_sources AS data_source ON data_source.id = page.parent_data_source_id
          JOIN notes_databases AS database ON database.id = data_source.database_id
@@ -26,7 +26,8 @@ pub async fn list_data_source_row_pages(
            AND data_source.in_trash = 0
            AND database.in_trash = 0
          ORDER BY page.last_edited_time DESC, page.title COLLATE NOCASE ASC, page.id ASC",
-    )
+        crate::structure::page_row_columns("page")
+    )))
     .bind(data_source_id.trim())
     .fetch_all(pool)
     .await

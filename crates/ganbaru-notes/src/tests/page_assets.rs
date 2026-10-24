@@ -668,6 +668,7 @@ fn page_cover_metadata_survives_templates_duplication_history_and_exports() {
             NotePageTemplateApply {
                 parent: workspace_parent(),
                 title: None,
+                project_id: None,
             },
         )
         .await

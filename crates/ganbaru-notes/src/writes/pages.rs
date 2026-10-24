@@ -111,7 +111,10 @@ pub async fn create_page(
         page.id.trim(),
     ))
     .bind(folder_id)
-    .bind(&project_id)
+    .bind(crate::structure::stored_page_project(
+        parent_type,
+        project_id.as_deref(),
+    ))
     .bind(&title)
     .bind(properties.to_string())
     .execute(&mut *tx)
@@ -169,10 +172,12 @@ async fn load_idempotent_page_create(
     requested_project_id: Option<&str>,
 ) -> Result<Option<NoteLoadedPage>, String> {
     let page_id = page.id.trim();
-    let existing = sqlx::query(
-        "SELECT parent_type, parent_page_id, parent_block_id, folder_id, project_id, title, properties
+    let existing = sqlx::query(sqlx::AssertSqlSafe(format!(
+        "SELECT parent_type, parent_page_id, parent_block_id, folder_id, {} AS project_id, title,
+                properties
          FROM notes_pages WHERE id = ?",
-    )
+        crate::structure::page_project_sql("notes_pages")
+    )))
     .bind(page_id)
     .fetch_optional(pool)
     .await
@@ -330,7 +335,6 @@ pub async fn create_child_page_from_block(
         "create_child_page_from_block",
     )
     .await?;
-    let project_id = crate::structure::page_project_id_tx(&mut tx, &current.page_id).await?;
     sqlx::query(
         "INSERT INTO notes_pages (
             id,
@@ -338,18 +342,16 @@ pub async fn create_child_page_from_block(
             parent_page_id,
             parent_block_id,
             child_block_id,
-            project_id,
             title,
             properties
          )
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+         VALUES (?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(block_id)
     .bind(page_parent_type)
     .bind(&current.parent_page_id)
     .bind(&current.parent_block_id)
     .bind(block_id)
-    .bind(&project_id)
     .bind(&title)
     .bind(properties.to_string())
     .execute(&mut *tx)
@@ -616,9 +618,10 @@ pub(super) async fn load_page_row(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     page_id: &str,
 ) -> Result<NotePageRow, String> {
-    sqlx::query_as::<_, NotePageRow>(
-        "SELECT * FROM notes_pages WHERE id = ? AND in_trash = 0 AND archived = 0",
-    )
+    sqlx::query_as::<_, NotePageRow>(sqlx::AssertSqlSafe(format!(
+        "SELECT {} FROM notes_pages WHERE id = ? AND in_trash = 0 AND archived = 0",
+        crate::structure::page_row_columns("notes_pages")
+    )))
     .bind(page_id)
     .fetch_optional(&mut **tx)
     .await

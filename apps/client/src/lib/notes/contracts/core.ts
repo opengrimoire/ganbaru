@@ -681,6 +681,8 @@ export interface NotesPageTemplateCreateFromPageRequest {
 export interface NotesPageTemplateApplyRequest {
   parent: NotesParent;
   title?: string | null;
+  /** Project of the created workspace page; subpages take their parent page project. */
+  project_id?: string | null;
 }
 
 export interface NotesPageTemplateUpdateRequest {

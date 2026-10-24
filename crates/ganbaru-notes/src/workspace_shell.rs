@@ -345,16 +345,23 @@ fn add_unique(
     }
 }
 
-pub(super) fn page_projection() -> &'static str {
-    "id, parent_type, parent_page_id, parent_block_id, parent_data_source_id, folder_id, title, project_id, icon, in_trash, archived, created_time, last_edited_time"
+/// Summary columns for an unaliased `notes_pages` read, with the derived page project.
+pub(super) fn page_projection() -> String {
+    crate::structure::page_summary_columns("notes_pages")
 }
 
 fn push_project_filter(query: &mut QueryBuilder<Sqlite>, project_id: Option<&str>) {
     if let Some(project_id) = project_id {
-        query.push(" AND project_id = ");
+        query.push(format!(
+            " AND {} = ",
+            crate::structure::page_project_sql("notes_pages")
+        ));
         query.push_bind(project_id.to_string());
     } else {
-        query.push(" AND project_id IS NULL");
+        query.push(format!(
+            " AND {} IS NULL",
+            crate::structure::page_project_sql("notes_pages")
+        ));
     }
 }
 

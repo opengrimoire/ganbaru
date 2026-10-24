@@ -570,8 +570,9 @@ DROP TRIGGER notes_row_hierarchy_detach_moved_page;
 -- notes_pages: the project and the trash owner move out of the properties JSON into columns, and a
 -- page nested under a page or block names its child_page block (which shares its id) in
 -- `child_block_id`, so deleting the block deletes the page. A project id that names no project is
--- dropped, deleting a project leaves its pages as unassigned workspace pages, and a nested page whose
--- child_page block is gone becomes a workspace page.
+-- dropped, only workspace pages store a project (a nested page derives it from its nearest workspace
+-- ancestor), deleting a project leaves its pages as unassigned workspace pages, and a nested page
+-- whose child_page block is gone becomes a workspace page.
 UPDATE notes_pages
 SET parent_type = 'workspace', parent_page_id = NULL, parent_block_id = NULL
 WHERE parent_type IN ('page_id', 'block_id')
@@ -642,9 +643,11 @@ SELECT
     page.id, page.parent_type, page.parent_page_id, page.parent_block_id,
     page.parent_data_source_id,
     CASE WHEN page.parent_type IN ('page_id', 'block_id') THEN page.id END,
-    (SELECT project.id FROM projects AS project
-     WHERE json_type(page.properties, '$.__ganbaru_project_id') = 'text'
-       AND project.id = trim(json_extract(page.properties, '$.__ganbaru_project_id'))),
+    CASE WHEN page.parent_type = 'workspace' THEN
+        (SELECT project.id FROM projects AS project
+         WHERE json_type(page.properties, '$.__ganbaru_project_id') = 'text'
+           AND project.id = trim(json_extract(page.properties, '$.__ganbaru_project_id')))
+    END,
     page.title,
     json_remove(page.properties, '$.__ganbaru_project_id', '$.__ganbaru_trash_owner'),
     page.icon, page.cover, page.in_trash,

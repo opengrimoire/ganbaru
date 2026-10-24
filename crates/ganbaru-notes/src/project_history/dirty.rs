@@ -191,57 +191,21 @@ pub async fn ensure_blocks_baseline_for_mutation(
     Ok(())
 }
 
+/// The project of `page_id`, stored or derived from its ancestors, or none for a page
+/// outside every project or a missing page.
 pub(crate) async fn resolve_project_id_for_page_tx(
     tx: &mut Transaction<'_, Sqlite>,
     page_id: &str,
 ) -> Result<Option<String>, String> {
-    sqlx::query_scalar(
-        "WITH RECURSIVE ancestors(id, parent_page_id, project_id, depth) AS (
-             SELECT page.id,
-                    COALESCE(
-                        page.parent_page_id,
-                        (SELECT block.page_id FROM notes_blocks AS block
-                         WHERE block.id = page.parent_block_id),
-                        (SELECT COALESCE(database.parent_page_id, database_block.page_id)
-                         FROM notes_data_sources AS data_source
-                         JOIN notes_databases AS database ON database.id = data_source.database_id
-                         LEFT JOIN notes_blocks AS database_block ON database_block.id = database.id
-                         WHERE data_source.id = page.parent_data_source_id)
-                    ),
-                    page.project_id,
-                    0
-             FROM notes_pages AS page
-             WHERE page.id = ?
-             UNION
-             SELECT parent.id,
-                    COALESCE(
-                        parent.parent_page_id,
-                        (SELECT block.page_id FROM notes_blocks AS block
-                         WHERE block.id = parent.parent_block_id),
-                        (SELECT COALESCE(database.parent_page_id, database_block.page_id)
-                         FROM notes_data_sources AS data_source
-                         JOIN notes_databases AS database ON database.id = data_source.database_id
-                         LEFT JOIN notes_blocks AS database_block ON database_block.id = database.id
-                         WHERE data_source.id = parent.parent_data_source_id)
-                    ),
-                    parent.project_id,
-                    child.depth + 1
-             FROM notes_pages AS parent
-             JOIN ancestors AS child ON child.parent_page_id = parent.id
-             WHERE child.depth < ?
-         )
-         SELECT project.id
-         FROM ancestors
-         JOIN projects AS project
-           ON project.id = ancestors.project_id
-         ORDER BY ancestors.depth
-         LIMIT 1",
-    )
+    let project: Option<Option<String>> = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+        "SELECT {} FROM notes_pages AS page WHERE page.id = ?",
+        crate::structure::page_project_sql("page")
+    )))
     .bind(page_id)
-    .bind(crate::structure::MAX_TREE_DEPTH)
     .fetch_optional(&mut **tx)
     .await
-    .map_err(|e| format!("resolve Notes history project for page: {e}"))
+    .map_err(|e| format!("resolve Notes history project for page: {e}"))?;
+    Ok(project.flatten())
 }
 
 pub async fn page_history_enabled_tx(

@@ -22,7 +22,7 @@ Undo is selective: it restores only changed payloads and placements from bounded
 
 ## Placement and projects
 
-A page is workspace-rooted, nested below one valid page, or placed through one valid project location (invariant 8 in [Data invariants](../invariants.md)). Moves update project and ancestry implications transactionally. A page stores its project in `project_id`; nested pages keep their parent page's project, and deleting a project keeps its pages as unassigned workspace pages with no folder.
+A page is workspace-rooted, nested below one valid page, or placed through one valid project location (invariant 8 in [Data invariants](../invariants.md)). Moves update project and ancestry implications transactionally. Only a workspace page stores its project in `project_id`; a nested page stores none and belongs to the project of its nearest workspace ancestor, so a move never rewrites its descendants. Reads derive that project with a bounded ancestor walk, and the rule is enforced in Rust rather than by a schema check. Deleting a project keeps its pages as unassigned workspace pages with no folder.
 
 Project working-folder Markdown stays file-authoritative and is not copied into the Notes graph. The project tree may show pages and files together, but their source-of-truth rules remain distinct.
 

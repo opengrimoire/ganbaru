@@ -441,23 +441,25 @@ async fn list_pages_by_state(
     archived: Option<bool>,
 ) -> Result<Vec<NotePageDto>, String> {
     let rows = if let Some(archived) = archived {
-        sqlx::query_as::<_, NotePageRow>(
-            "SELECT *
+        sqlx::query_as::<_, NotePageRow>(sqlx::AssertSqlSafe(format!(
+            "SELECT {}
              FROM notes_pages
              WHERE in_trash = ? AND archived = ?
              ORDER BY last_edited_time DESC, title COLLATE NOCASE ASC, id ASC",
-        )
+            crate::structure::page_row_columns("notes_pages")
+        )))
         .bind(if in_trash { 1_i64 } else { 0_i64 })
         .bind(if archived { 1_i64 } else { 0_i64 })
         .fetch_all(pool)
         .await
     } else {
-        sqlx::query_as::<_, NotePageRow>(
-            "SELECT *
+        sqlx::query_as::<_, NotePageRow>(sqlx::AssertSqlSafe(format!(
+            "SELECT {}
              FROM notes_pages
              WHERE in_trash = ?
              ORDER BY last_edited_time DESC, title COLLATE NOCASE ASC, id ASC",
-        )
+            crate::structure::page_row_columns("notes_pages")
+        )))
         .bind(if in_trash { 1_i64 } else { 0_i64 })
         .fetch_all(pool)
         .await
@@ -601,12 +603,13 @@ async fn load_page_row_including_trashed(
     pool: &SqlitePool,
     page_id: &str,
 ) -> Result<Option<NotePageRow>, String> {
-    sqlx::query_as::<_, NotePageRow>(
-        "SELECT *
+    sqlx::query_as::<_, NotePageRow>(sqlx::AssertSqlSafe(format!(
+        "SELECT {}
          FROM notes_pages
          WHERE id = ?
          LIMIT 1",
-    )
+        crate::structure::page_row_columns("notes_pages")
+    )))
     .bind(page_id)
     .fetch_optional(pool)
     .await
@@ -703,9 +706,10 @@ pub async fn open_page(pool: &SqlitePool, page_id: &str) -> Result<NotePageOpenD
         .begin()
         .await
         .map_err(|error| format!("begin notes page open: {error}"))?;
-    let page_row = sqlx::query_as::<_, NotePageRow>(
-        "SELECT * FROM notes_pages WHERE id = ? AND in_trash = 0 AND archived = 0",
-    )
+    let page_row = sqlx::query_as::<_, NotePageRow>(sqlx::AssertSqlSafe(format!(
+        "SELECT {} FROM notes_pages WHERE id = ? AND in_trash = 0 AND archived = 0",
+        crate::structure::page_row_columns("notes_pages")
+    )))
     .bind(page_id)
     .fetch_optional(&mut *transaction)
     .await
@@ -858,11 +862,14 @@ async fn page_breadcrumb_tx(
         if !seen.insert(current_page_id.clone()) {
             break;
         }
-        let row = sqlx::query_as::<_, NotePageRow>("SELECT * FROM notes_pages WHERE id = ?")
-            .bind(&current_page_id)
-            .fetch_optional(&mut **transaction)
-            .await
-            .map_err(|error| format!("load notes page breadcrumb: {error}"))?;
+        let row = sqlx::query_as::<_, NotePageRow>(sqlx::AssertSqlSafe(format!(
+            "SELECT {} FROM notes_pages WHERE id = ?",
+            crate::structure::page_row_columns("notes_pages")
+        )))
+        .bind(&current_page_id)
+        .fetch_optional(&mut **transaction)
+        .await
+        .map_err(|error| format!("load notes page breadcrumb: {error}"))?;
         let Some(row) = row else {
             crumbs.push(NotePageBreadcrumbItemDto::missing(current_page_id));
             break;
@@ -1014,14 +1021,18 @@ pub async fn get_page(
     include_trash: bool,
 ) -> Result<NotePageDto, String> {
     let row = if include_trash {
-        sqlx::query_as::<_, NotePageRow>("SELECT * FROM notes_pages WHERE id = ?")
-            .bind(page_id)
-            .fetch_optional(pool)
-            .await
+        sqlx::query_as::<_, NotePageRow>(sqlx::AssertSqlSafe(format!(
+            "SELECT {} FROM notes_pages WHERE id = ?",
+            crate::structure::page_row_columns("notes_pages")
+        )))
+        .bind(page_id)
+        .fetch_optional(pool)
+        .await
     } else {
-        sqlx::query_as::<_, NotePageRow>(
-            "SELECT * FROM notes_pages WHERE id = ? AND in_trash = 0 AND archived = 0",
-        )
+        sqlx::query_as::<_, NotePageRow>(sqlx::AssertSqlSafe(format!(
+            "SELECT {} FROM notes_pages WHERE id = ? AND in_trash = 0 AND archived = 0",
+            crate::structure::page_row_columns("notes_pages")
+        )))
         .bind(page_id)
         .fetch_optional(pool)
         .await

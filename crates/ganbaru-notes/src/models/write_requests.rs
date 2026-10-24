@@ -402,6 +402,10 @@ pub struct NotePageTemplateCreateFromPage {
 pub struct NotePageTemplateApply {
     pub parent: NoteParent,
     pub title: Option<String>,
+    /// Project of a workspace page created from the template; a subpage derives its project
+    /// from its parent and must leave this empty.
+    #[serde(default)]
+    pub project_id: Option<String>,
 }
 
 #[derive(Deserialize)]

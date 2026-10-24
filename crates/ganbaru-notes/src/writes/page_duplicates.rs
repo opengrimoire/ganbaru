@@ -149,9 +149,10 @@ pub(crate) async fn plan_child_page_copy(
             return Err("child page graph contains a cycle".to_string());
         }
         context.budget.page(tx, &source_page_id).await?;
-        let mut source_page = sqlx::query_as::<_, NotePageRow>(
-            "SELECT * FROM notes_pages WHERE id = ? AND (? OR in_trash = 0)",
-        )
+        let mut source_page = sqlx::query_as::<_, NotePageRow>(sqlx::AssertSqlSafe(format!(
+            "SELECT {} FROM notes_pages WHERE id = ? AND (? OR in_trash = 0)",
+            crate::structure::page_row_columns("notes_pages")
+        )))
         .bind(&source_page_id)
         .bind(include_trashed)
         .fetch_optional(&mut **tx)
@@ -560,7 +561,10 @@ pub(super) async fn insert_duplicated_page(
         &plan.duplicate_id,
     ))
     .bind(folder_id)
-    .bind(&plan.source_page.project_id)
+    .bind(crate::structure::stored_page_project(
+        parent_type,
+        plan.source_page.project_id.as_deref(),
+    ))
     .bind(&plan.duplicate_title)
     .bind(properties)
     .bind(&plan.source_page.icon)

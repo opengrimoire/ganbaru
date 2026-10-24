@@ -1197,6 +1197,7 @@ export function createNotesEditorStore(
 
   const pageTemplatesController = createNotesPageTemplatesController({
     readLoadedPage: () => treeProjection.loadedPage,
+    readProjectId: () => projects.selectedProjectId,
     flushPendingBlockSaves,
     activateReturnedPage: (nextLoadedPage) => activateReturnedPage(nextLoadedPage, "hierarchy"),
     queueDescendantHydration: () => queueDescendantHydration(),

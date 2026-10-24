@@ -44,26 +44,6 @@ pub(super) async fn set_page_trash(
     set_graph_trash(tx, TrashObject::Page(id.to_string()), in_trash).await
 }
 
-/// Reassign only owned note pages when a database or note block moves between projects.
-pub(super) async fn adopt_block_project(
-    tx: &mut Transaction<'_, Sqlite>,
-    id: &str,
-    project_id: Option<&str>,
-) -> Result<(), String> {
-    let graph = collect_graph(tx, TrashObject::Block(id.to_string()), None).await?;
-    for page in graph.pages {
-        sqlx::query("UPDATE notes_pages SET project_id = ? WHERE id = ?")
-            .bind(project_id)
-            .bind(&page)
-            .execute(&mut **tx)
-            .await
-            .map_err(|e| format!("adopt moved Notes graph project: {e}"))?;
-        crate::structure::validate_page_folder_tx(tx, &page).await?;
-        project_history::mark_page_dirty_tx(tx, &page, "Move Notes content", true).await?;
-    }
-    Ok(())
-}
-
 async fn set_graph_trash(
     tx: &mut Transaction<'_, Sqlite>,
     root: TrashObject,

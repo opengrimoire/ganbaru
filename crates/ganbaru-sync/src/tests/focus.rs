@@ -1,5 +1,5 @@
 //! Focus across replicas: open runs and heartbeats capture nothing, closing a run publishes it
-//! with its segments, pauses, and run events in one seal, Calendar writes to a closed run's link
+//! with its segments, pauses, and run events in one seal that a crash never splits, Calendar writes to a closed run's link
 //! replicate as Focus operations, runs closed against a concurrently split or deleted event
 //! converge, and each device's activity row replicates as one operation per transition.
 
@@ -8,6 +8,8 @@ use sqlx::Connection;
 use super::block_on;
 use super::calendar::{calendar_sql, event_sql};
 use super::replica::{Replica, converge, device_id, quoted};
+use crate::error::failpoints;
+use crate::{SyncError, SyncResult};
 use crate::hold::{self, MAX_HOLD_MS};
 use crate::manifest::vault::calendar::EVENTS_TABLE;
 use crate::manifest::vault::focus::{
@@ -267,6 +269,69 @@ fn focus_closing_a_run_publishes_it_with_its_children_in_one_seal() {
             .await,
             [format!("0:manual:{ENDED}")]
         );
+    });
+}
+
+/// Arms `name`, checks that `call` fails there leaving `replica` exactly as it was, then runs
+/// the call again disarmed.
+async fn after_rollback<T: std::fmt::Debug>(
+    replica: &mut Replica,
+    name: &'static str,
+    mut call: impl AsyncFnMut(&mut Replica) -> SyncResult<T>,
+) -> T {
+    let before = replica.snapshot().await;
+    failpoints::arm(name);
+    let result = call(replica).await;
+    failpoints::clear();
+    match result {
+        Err(SyncError::Failpoint(hit)) => assert_eq!(hit, name),
+        other => panic!("{name} did not fail: {other:?}"),
+    }
+    assert!(replica.snapshot().await == before, "{name} left changes");
+    replica.check_invariants().await;
+    call(replica).await.unwrap()
+}
+
+#[test]
+fn focus_a_crash_while_sealing_or_applying_a_closed_run_leaves_no_partial_history() {
+    block_on(async {
+        let mut replicas = shared(2).await;
+        replicas[0]
+            .exec(&format!(
+                "{}{}",
+                open_run_sql(RUN, EVENT, SEGMENTS, RUN_EVENTS),
+                close_run_sql(RUN, SEGMENTS)
+            ))
+            .await;
+        for name in ["seal.reserve", "seal.before_commit"] {
+            let captured = focus_captures(&mut replicas[0]).await;
+            assert!(!captured.is_empty());
+            let before = replicas[0].snapshot().await;
+            failpoints::arm(name);
+            let result = replicas[0].seal().await;
+            failpoints::clear();
+            assert!(
+                matches!(result, Err(SyncError::Failpoint(hit)) if hit == name),
+                "{name} did not fail"
+            );
+            assert!(replicas[0].snapshot().await == before, "{name} left changes");
+            assert_eq!(focus_captures(&mut replicas[0]).await, captured);
+        }
+        let report = replicas[0].seal().await.unwrap();
+        assert_eq!(report.sealed_ops, 1, "the run and its children seal together");
+
+        let (author, rest) = replicas.split_at_mut(1);
+        let reader = &mut rest[0];
+        let known = reader.stored_vector().await;
+        let ops = author[0].ops_since(&known).await;
+        reader.receive(&ops).await;
+        assert_eq!(history(reader).await, [0; 4]);
+        after_rollback(reader, "apply.before_commit", async |r: &mut Replica| {
+            r.apply_once().await
+        })
+        .await;
+        assert_eq!(history(reader).await, CLOSED_HISTORY);
+        assert_converged(&mut replicas).await;
     });
 }
 

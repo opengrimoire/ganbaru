@@ -1,6 +1,6 @@
 # Desktop platforms
 
-Linux and Windows host the complete local application, including native coding-agent execution, authorized working folders, terminals, Git, desktop media, browser native messaging, and platform-specific anti-distraction adapters.
+Linux and Windows host the complete local application, including native coding-agent execution, authorized working folders, terminals, Git, desktop media, browser native messaging, and platform-specific anti-distraction adapters. The browser native messaging host never opens the vault: it writes block events and usage to a spool in the app config directory, and the app moves them into the vault.
 
 Shared feature behavior lives under [features](../../features/README.md). Cross-platform frontend and native composition are documented under [architecture](../../architecture/README.md). Desktop-specific documents:
 

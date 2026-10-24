@@ -20,7 +20,7 @@ use crate::hooks::ChangeNotice;
 use crate::log::{self, WriterState, seq_i64, stored_u64};
 use crate::materialize::Materialized;
 use crate::merge::{self, Batch};
-use crate::seal::{self, SealReport, SealSlot};
+use crate::seal::{self, MAX_CHANGES_PER_SEALED_OPERATION, SealReport, SealSlot};
 use crate::visibility::{RowRef, Visibility};
 use crate::{
     Engine, LocalWriter, SpaceContext, authorization, exclusion, fork, hydrate, materialize,
@@ -39,9 +39,15 @@ pub const MAX_OPS_PER_APPLY: usize = 16;
 /// crosses it still applies whole, so a transaction takes at least one operation however many
 /// changes it carries.
 ///
-/// A sealed operation carries at most this many changes, so each one applies in one
-/// transaction within the budget. The transaction may also seal local changes of the rows the
-/// remote changes touch, within [`crate::MAX_CHANGES_PER_SEAL`].
+/// A sealed operation carries at most this many changes, unless its changes hold only whole:
+/// writes and tombstones of a table whose constraint reads several rows together, cascaded
+/// deletions, the changes they depend on, and repairs. Those fill operations up to the wire
+/// limits, so they usually seal in one operation, and every operation of them but the last
+/// carries more than this many changes unless the wire byte limit cuts it first. After an
+/// operation that carries more, the transaction goes on with the next operation of the same
+/// writer past every cap, so its repairs never see part of such changes. The transaction
+/// may also seal local changes of the rows the remote changes touch, within
+/// [`crate::MAX_CHANGES_PER_SEAL`].
 pub const MAX_CHANGES_PER_APPLY: usize = 16;
 /// Most envelope bytes one apply transaction takes after its first operation.
 pub const MAX_BYTES_PER_APPLY: usize = 1 << 20;
@@ -960,6 +966,9 @@ impl Engine {
             report.local_writer_frozen = true;
         }
         let mut blocked = BTreeSet::new();
+        // Writers whose last operation here carried more changes than a sealed operation takes
+        // alone: changes that hold only whole, which may continue in the next operation.
+        let mut continuing = BTreeSet::new();
         let mut taken = 0usize;
         let mut bytes = 0usize;
         let mut heads = Heads::load(&mut tx, ctx).await?;
@@ -972,8 +981,16 @@ impl Engine {
                 || (taken > 0 && bytes.saturating_add(candidate.bytes) > MAX_BYTES_PER_APPLY)
             {
                 report.more = true;
-                break;
+                if continuing.is_empty() {
+                    break;
+                }
+                if !continuing.contains(&candidate.writer) {
+                    blocked.insert(candidate.writer);
+                    continue;
+                }
             }
+            continuing.remove(&candidate.writer);
+            let changes_before = report.changes;
             taken += 1;
             bytes = bytes.saturating_add(candidate.bytes);
             let mut sealing = Sealing {
@@ -1012,6 +1029,9 @@ impl Engine {
                     warn_clock(&mut report, candidate.writer, candidate.clock, now_ms);
                     report.applied += 1;
                     advanced.insert(candidate.writer);
+                    if report.changes - changes_before > MAX_CHANGES_PER_SEALED_OPERATION {
+                        continuing.insert(candidate.writer);
+                    }
                     if matches!(outcome, Outcome::Authorized) {
                         flush_applied(&mut tx, ctx, &batch, &mut advanced).await?;
                         retention.flush(&mut tx, ctx.space).await?;

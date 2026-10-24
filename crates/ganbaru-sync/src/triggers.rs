@@ -377,7 +377,8 @@ fn published_when(manifest: &Manifest, table: &TableSpec, row: &str) -> String {
 }
 
 /// Captures an inserted row. Inserting a row whose delete is held reinserts it: the held
-/// capture becomes an ordinary write instead of a create.
+/// capture becomes an ordinary write instead of a create. A held insert that was deleted and
+/// is inserted again keeps `created`, so it still seals as a create, and loses its hold.
 fn insert_capture(manifest: &Manifest, table: &TableSpec) -> TriggerSql {
     let name = format!("sync_capture_{}_insert", table.name);
     let reinsert = if manifest.may_hold_deletes(table.id) {

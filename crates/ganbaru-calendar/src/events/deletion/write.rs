@@ -2,8 +2,8 @@
 
 use chrono::{DateTime, SecondsFormat};
 use ganbaru_sync::Engine;
-use ganbaru_sync::hold::hold_deletes;
-use ganbaru_sync::manifest::vault::calendar::EVENTS_TABLE;
+use ganbaru_sync::hold::{hold_creates, hold_deletes};
+use ganbaru_sync::manifest::vault::calendar::{ARCHIVES_TABLE, EVENTS_TABLE};
 use sqlx::{Sqlite, Transaction};
 
 use super::super::commit::DeletionLease;
@@ -127,7 +127,8 @@ impl PreparedDeletion {
 
     /// Stopping Focus precedes this writer in the same transaction. Original
     /// execution IDs, timestamps, pauses and segment outcomes are never rewritten.
-    /// A `lease` holds the sync delete of a removed source until it ends.
+    /// A `lease` holds the sync delete of a removed source and the archive inserts until it
+    /// ends.
     pub(in crate::events) async fn write(
         self,
         tx: &mut Transaction<'_, Sqlite>,
@@ -135,6 +136,20 @@ impl PreparedDeletion {
     ) -> Result<(), String> {
         for archive in &self.archives {
             archive.write(tx, &self.archived_at).await?;
+        }
+        // Undo removes the archives again, so a lease keeps them local with the delete.
+        if let Some(lease) = lease {
+            let ids: Vec<&str> = self.archives.iter().map(PreparedArchive::id).collect();
+            hold_creates(
+                &Engine::vault(),
+                tx,
+                ARCHIVES_TABLE,
+                &ids,
+                lease.now_ms,
+                lease.until_ms,
+            )
+            .await
+            .map_err(|error| format!("hold Calendar archives: {error}"))?;
         }
         for (run, expected, archive) in &self.references {
             let changed = sqlx::query("UPDATE pomodoro_runs SET event_id=NULL, calendar_archive_id=?1

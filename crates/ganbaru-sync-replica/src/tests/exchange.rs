@@ -271,13 +271,15 @@ impl Replica {
         seq
     }
 
+    /// Applies every received operation, over as many transactions as the apply caps take.
     async fn apply(&mut self) {
         let mut conn = acquire(&self.pool).await;
-        let report = Engine::vault()
+        while Engine::vault()
             .apply(&mut conn, &self.ctx, Some(&mut self.writer.local()), NOW_MS)
             .await
-            .expect("apply");
-        assert!(!report.more, "test logs apply in one round");
+            .expect("apply")
+            .more
+        {}
     }
 
     async fn stored(&self) -> VersionVector {
@@ -2603,6 +2605,51 @@ fn duplicate_pending_requests_both_survive_and_a_concurrent_delete_beats_an_answ
         }
         hub_replica.close().await;
         phone.close().await;
+    });
+}
+
+/// Records the first seal of the dense benchmark Music library, sealed in batches until no
+/// capture remains. No budget applies; the time is recorded with the sync budgets.
+#[test]
+#[ignore = "timings are meaningful only in the release profile"]
+fn first_seal_of_the_dense_music_library_is_recorded() {
+    block_on(async {
+        let mut replica = Replica::new("dense-music-seal", HUB_DEVICE).await;
+        let summary = ganbaru_music_library::fixtures::seed_dense_music_fixture(&replica.pool)
+            .await
+            .expect("seed dense music library");
+        // The fixture's Calendar events join the migration-seeded calendar, which vault open
+        // captures before the service starts.
+        Engine::vault()
+            .seed_captures(&mut *acquire(&replica.pool).await, NOW_MS)
+            .await
+            .expect("seed captures");
+        let (mut batches, mut ops, mut changes) = (0_usize, 0_usize, 0_usize);
+        let started = std::time::Instant::now();
+        loop {
+            let mut conn = acquire(&replica.pool).await;
+            let report = Engine::vault()
+                .seal(&mut conn, &replica.ctx, &mut replica.writer.local(), NOW_MS)
+                .await
+                .expect("seal");
+            if let Some(seq) = report.last_seq {
+                replica.writer.committed(seq).expect("record commit");
+            }
+            batches += 1;
+            ops += report.sealed_ops;
+            changes += report.changes;
+            if !report.more {
+                break;
+            }
+        }
+        let elapsed = started.elapsed();
+        println!(
+            "first seal of the dense Music library ({} items): {elapsed:?} over {batches} \
+             batches, {ops} operations, {changes} changes",
+            summary.item_count
+        );
+        assert!(changes > summary.item_count);
+        replica.close().await;
     });
 }
 

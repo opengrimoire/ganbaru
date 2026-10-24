@@ -94,8 +94,8 @@ impl From<&str> for CommitFailure {
     }
 }
 
-/// The sync lease a deletion holds its event delete for, so Undo inside it restores the event
-/// without publishing a tombstone. Times are wall-clock milliseconds, the clock sync seals by.
+/// The sync lease a deletion holds its event delete and archive inserts for, so Undo inside it
+/// restores the event without publishing a tombstone or the archive. Times are wall-clock milliseconds, the clock sync seals by.
 #[derive(Clone, Copy, Debug)]
 pub struct DeletionLease {
     pub now_ms: u64,

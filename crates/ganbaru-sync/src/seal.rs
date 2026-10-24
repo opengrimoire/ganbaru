@@ -17,7 +17,7 @@ use ganbaru_sync_contracts::{
 use sqlx::sqlite::SqliteRow;
 use sqlx::{AssertSqlSafe, Connection, Row, SqliteConnection};
 
-use crate::apply::{Constrained, MAX_BYTES_PER_APPLY, MAX_OPS_PER_APPLY, finish_sealed};
+use crate::apply::{Constrained, MAX_BYTES_PER_APPLY, MAX_CHANGES_PER_APPLY, finish_sealed};
 use crate::authorization::{self, Enrollment};
 use crate::error::{SyncResult, corrupt, failpoint};
 use crate::exclusion::{self, Excluding};
@@ -557,7 +557,9 @@ impl Sealer {
         Ok((seq, clock, context))
     }
 
-    /// Seals changes into as few operations as their exact sizes allow and applies them.
+    /// Seals changes into as few operations as the wire limits allow and applies them, so a
+    /// receiver applies them in one transaction. Repairs, recovery discards, and replays seal
+    /// this way: each is a set of changes that only holds whole.
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn seal_changes(
         &mut self,
@@ -571,8 +573,40 @@ impl Sealer {
         now_ms: u64,
         report: &mut SealReport,
     ) -> SyncResult<()> {
+        let whole = changes.len();
+        self.seal_leading(
+            engine, conn, ctx, batch, writer, changes, whole, replay, now_ms, report,
+        )
+        .await
+    }
+
+    /// Seals changes into as few operations as their exact sizes allow and applies them. The
+    /// first `whole` changes fill operations up to the wire limits, so a receiver applies them
+    /// in one transaction; an operation that carries more than
+    /// [`MAX_CHANGES_PER_SEALED_OPERATION`] changes holds only such changes. The rest take at
+    /// most [`MAX_CHANGES_PER_SEALED_OPERATION`] changes each.
+    #[allow(clippy::too_many_arguments)]
+    async fn seal_leading(
+        &mut self,
+        engine: &Engine,
+        conn: &mut SqliteConnection,
+        ctx: &SpaceContext,
+        batch: &mut Batch,
+        writer: &mut LocalWriter<'_>,
+        changes: Vec<Change>,
+        whole: usize,
+        replay: Option<&Replay<'_>>,
+        now_ms: u64,
+        report: &mut SealReport,
+    ) -> SyncResult<()> {
+        let mut whole = whole.min(changes.len());
         let mut pending = changes.into_iter().peekable();
         while pending.peek().is_some() {
+            // A replay keeps the operation it re-seals whole, as its changes share one clock.
+            let per_operation = match replay {
+                Some(_) => MAX_CHANGES_PER_OPERATION,
+                None => whole.clamp(MAX_CHANGES_PER_SEALED_OPERATION, MAX_CHANGES_PER_OPERATION),
+            };
             let dependencies = self
                 .catch_up(
                     engine,
@@ -591,7 +625,7 @@ impl Sealer {
             let mut chunk = Vec::new();
             while let Some(change) = pending.peek() {
                 let (change_header, change_body) = change_size(change);
-                let full = chunk.len() == MAX_CHANGES_PER_OPERATION
+                let full = chunk.len() == per_operation
                     || !fits(header + change_header, body + change_body);
                 if full {
                     break;
@@ -604,6 +638,7 @@ impl Sealer {
                 return Err(corrupt("a change does not fit an operation"));
             }
             let count = chunk.len();
+            whole = whole.saturating_sub(count);
             let (seq, op_clock, context) = self
                 .seal_operation(
                     engine,
@@ -679,7 +714,7 @@ impl Sealer {
         Ok(seq)
     }
 
-    /// Seals every valid capture except deletes still held at `now_ms`, and deletes the
+    /// Seals every valid capture except those still held at `now_ms`, and deletes the
     /// captures it consumed.
     pub(crate) async fn seal_captures(
         &mut self,
@@ -707,8 +742,8 @@ impl Sealer {
         Ok(report)
     }
 
-    /// Like [`Self::seal_captures`], taking one batch of at most [`MAX_OPS_PER_SEAL`]
-    /// operations and [`MAX_BYTES_PER_SEAL`] change bytes. Captures of changes left for the
+    /// Like [`Self::seal_captures`], taking one batch of at most [`MAX_CHANGES_PER_SEAL`]
+    /// changes and [`MAX_BYTES_PER_SEAL`] change bytes. Captures of changes left for the
     /// next batch stay, and the report says more remain.
     pub(crate) async fn seal_capture_batch(
         &mut self,
@@ -748,7 +783,7 @@ impl Sealer {
         Ok(report)
     }
 
-    /// Seals the captures of `rows`, held deletes included, with the captured creates they
+    /// Seals the captures of `rows`, held ones included, with the captured creates they
     /// depend on, before a remote operation or a materialization changes those rows.
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn seal_rows(
@@ -782,16 +817,9 @@ impl Sealer {
         if planned.held {
             failpoint!("hold.before_seal");
         }
-        self.seal_changes(
-            engine,
-            conn,
-            ctx,
-            batch,
-            writer,
-            constrained_first(engine, planned.changes),
-            None,
-            now_ms,
-            report,
+        let (changes, together) = constrained_first(engine, planned.changes);
+        self.seal_leading(
+            engine, conn, ctx, batch, writer, changes, together, None, now_ms, report,
         )
         .await?;
         delete_captures(conn, &planned.consumed).await
@@ -1044,7 +1072,7 @@ struct Capture {
     /// Whether the row was inserted locally since the last seal.
     created: bool,
     deleted: bool,
-    /// Whether the delete is held for Undo, expired or not.
+    /// Whether the capture is held for Undo, expired or not.
     held: bool,
     replaced_by: Option<String>,
     /// Sync state of the row when planning started.
@@ -1055,18 +1083,37 @@ struct Capture {
 struct PlannedCaptures {
     changes: Vec<Change>,
     consumed: Vec<(i64, String)>,
-    /// Whether a held delete is among the captures.
+    /// Whether a held capture is among the captures.
     held: bool,
 }
 
-/// Most operations one seal transaction commits, matching what one apply transaction takes.
-pub const MAX_OPS_PER_SEAL: usize = MAX_OPS_PER_APPLY;
-/// Most change bytes one seal transaction commits, matching what one apply transaction takes,
-/// so a large first seal reaches other devices in batches they apply whole.
+/// Most operations one seal transaction commits. A receiver applies them over several
+/// transactions of at most [`crate::MAX_OPS_PER_APPLY`] operations each.
+///
+/// The seal cap stays well above the apply cap because every seal call plans the whole
+/// capture backlog before it selects a batch, and deletions cascade only among deletions
+/// planned together. Small seal batches would make a large first seal quadratic and split
+/// cascade families across operations.
+pub const MAX_OPS_PER_SEAL: usize = 256;
+/// Most change bytes one seal transaction commits, matching what one apply transaction takes
+/// after its first operation.
 pub const MAX_BYTES_PER_SEAL: usize = MAX_BYTES_PER_APPLY;
 
-/// Most changes one seal transaction commits: [`MAX_OPS_PER_SEAL`] full operations.
-const MAX_CHANGES_PER_SEAL: usize = MAX_OPS_PER_SEAL.saturating_mul(MAX_CHANGES_PER_OPERATION);
+/// Most changes one sealed operation carries, so it applies within one apply transaction of
+/// [`MAX_CHANGES_PER_APPLY`] changes, unless the changes must apply together: the writes and
+/// tombstones of tables whose constraint reads several rows together, cascaded deletions, a
+/// published parent with its `published_with` children, and the changes they depend on fill
+/// operations up to the wire limits instead.
+pub(crate) const MAX_CHANGES_PER_SEALED_OPERATION: usize =
+    if MAX_CHANGES_PER_APPLY < MAX_CHANGES_PER_OPERATION {
+        MAX_CHANGES_PER_APPLY
+    } else {
+        MAX_CHANGES_PER_OPERATION
+    };
+
+/// Most changes one seal transaction commits: [`MAX_OPS_PER_SEAL`] full sealed operations.
+pub const MAX_CHANGES_PER_SEAL: usize =
+    MAX_OPS_PER_SEAL.saturating_mul(MAX_CHANGES_PER_SEALED_OPERATION);
 
 /// Encoded bytes of `change` in its operation, header and body.
 fn change_cost(change: &Change) -> usize {
@@ -1119,7 +1166,7 @@ fn capture_from_row(row: &SqliteRow) -> SyncResult<Capture> {
     })
 }
 
-/// Every capture except deletes still held at `now_ms`, in table and key order.
+/// Every capture except those still held at `now_ms`, in table and key order.
 async fn pending_captures(conn: &mut SqliteConnection, now_ms: u64) -> SyncResult<Vec<Capture>> {
     let sql = format!(
         "{CAPTURE_SELECT}
@@ -1133,7 +1180,7 @@ async fn pending_captures(conn: &mut SqliteConnection, now_ms: u64) -> SyncResul
     rows.iter().map(capture_from_row).collect()
 }
 
-/// The captures of `rows`, held deletes included.
+/// The captures of `rows`, held ones included.
 async fn row_captures(
     conn: &mut SqliteConnection,
     rows: &BTreeSet<RowRef>,
@@ -1179,8 +1226,10 @@ pub(crate) async fn captured(
     Ok(found)
 }
 
-/// Captured rows of `tables` without a held delete. A held row stays live in merge state, so
-/// repairs already account for it, and it seals early only when a change or plan names it.
+/// Captured rows of `tables` without a held delete. A row with a held delete stays live in
+/// merge state, so repairs already account for it, and it seals early only when a change or
+/// plan names it. A held insert is returned: merge state does not know the row, so it seals
+/// early when a constraint over its table must read it.
 pub(crate) async fn captured_in(
     conn: &mut SqliteConnection,
     tables: &BTreeSet<TableId>,
@@ -1188,7 +1237,8 @@ pub(crate) async fn captured_in(
     let mut found = BTreeSet::new();
     for table in tables {
         let keys: Vec<String> = sqlx::query_scalar(
-            "SELECT row_key FROM sync_capture WHERE table_id = ? AND held_until_ms IS NULL",
+            "SELECT row_key FROM sync_capture
+             WHERE table_id = ? AND (held_until_ms IS NULL OR deleted = 0)",
         )
         .bind(table_param(*table))
         .fetch_all(&mut *conn)
@@ -1254,47 +1304,135 @@ fn change_index(changes: &[Change]) -> BTreeMap<RowRef, usize> {
         .collect()
 }
 
-/// Planned changes in sealed order: the writes and tombstones of tables whose constraint reads
-/// several rows together, with the changes they depend on, then the rest, each part in planned
-/// order. A receiver may apply a seal over several transactions, and its repairs must see a
-/// rename or delete before a create that reuses the value it frees.
-fn constrained_first(engine: &Engine, changes: Vec<Change>) -> Vec<Change> {
-    let constrained = constrained_changes(engine, &changes);
-    if constrained.is_empty() {
-        return changes;
+/// Positions of the tombstones that name a cause, by the row they name.
+fn cascaded_changes(changes: &[Change]) -> BTreeMap<RowRef, Vec<usize>> {
+    let mut cascaded: BTreeMap<RowRef, Vec<usize>> = BTreeMap::new();
+    for (position, change) in changes.iter().enumerate() {
+        if let Some(cause) = &change.cause {
+            cascaded
+                .entry((cause.table, cause.row.as_str().to_string()))
+                .or_default()
+                .push(position);
+        }
     }
+    cascaded
+}
+
+/// Positions of the creates of `published_with` children, by the created parent row they name.
+/// Such a parent and those children publish together, see [`crate::manifest::PublishedWith`].
+fn published_changes(
+    engine: &Engine,
+    changes: &[Change],
+    index: &BTreeMap<RowRef, usize>,
+) -> BTreeMap<RowRef, Vec<usize>> {
+    let mut published: BTreeMap<RowRef, Vec<usize>> = BTreeMap::new();
+    for (position, change) in changes.iter().enumerate() {
+        if change.action != ChangeAction::Create {
+            continue;
+        }
+        let Some(table) = engine.manifest().table(change.table) else {
+            continue;
+        };
+        let Some(with) = table.published_with else {
+            continue;
+        };
+        let parent = table
+            .references()
+            .filter(|(_, _, reference)| reference.column == with.column)
+            .find_map(|(group, field, _)| {
+                let value = change.groups.iter().find(|value| value.group == group.id)?;
+                match value.value.fields().get(field) {
+                    Some(Field::Text(key)) => Some((with.parent, key.clone())),
+                    _ => None,
+                }
+            });
+        let Some(parent) = parent else {
+            continue;
+        };
+        let created = index
+            .get(&parent)
+            .is_some_and(|parent| changes[*parent].action == ChangeAction::Create);
+        if created {
+            published.entry(parent).or_default().push(position);
+        }
+    }
+    published
+}
+
+/// Planned changes in sealed order, and how many lead it. The writes and tombstones of tables
+/// whose constraint reads several rows together, every cascaded deletion, and every published
+/// parent with its `published_with` children lead, with the changes they depend on, the
+/// deletions that name a leading row as their cause, and the children a leading row publishes,
+/// then the rest follows, each part in planned order.
+///
+/// A receiver may apply a seal over several transactions, and neither the repairs it seals at
+/// the end of each nor the domain that reads its rows may see part of these changes: a create
+/// that reuses a value before the rename that frees it, a task nested under a parent that has
+/// not moved yet, a deleted root whose cascaded rows are still live, or a closed Focus run
+/// without its segments. The leading changes therefore seal in operations a receiver applies
+/// in one transaction.
+fn constrained_first(engine: &Engine, changes: Vec<Change>) -> (Vec<Change>, usize) {
+    let constrained = constrained_changes(engine, &changes);
+    let cascaded = cascaded_changes(&changes);
     let index = change_index(&changes);
+    let published = published_changes(engine, &changes, &index);
+    if constrained.is_empty() && cascaded.is_empty() && published.is_empty() {
+        return (changes, 0);
+    }
     let mut first = vec![false; changes.len()];
-    let mut pending: Vec<usize> = constrained.into_values().flatten().collect();
+    let mut pending: Vec<usize> = constrained
+        .into_values()
+        .chain(cascaded.values().cloned())
+        .chain(published.values().cloned())
+        .flatten()
+        .collect();
     while let Some(position) = pending.pop() {
         if std::mem::replace(&mut first[position], true) {
             continue;
         }
+        let change = &changes[position];
         pending.extend(
-            change_dependencies(engine, &changes[position])
+            change_dependencies(engine, change)
                 .into_iter()
                 .filter_map(|row| index.get(&row).copied()),
+        );
+        let row = (change.table, change.row.as_str().to_string());
+        pending.extend(
+            cascaded
+                .get(&row)
+                .into_iter()
+                .chain(published.get(&row))
+                .flatten()
+                .copied(),
         );
     }
     let (mut ordered, rest): (Vec<_>, Vec<_>) = changes
         .into_iter()
         .zip(first)
         .partition(|(_, first)| *first);
+    let leading = ordered.len();
     ordered.extend(rest);
-    ordered.into_iter().map(|(change, _)| change).collect()
+    (
+        ordered.into_iter().map(|(change, _)| change).collect(),
+        leading,
+    )
 }
 
 /// The changes one seal transaction takes, in planned order, within [`MAX_BYTES_PER_SEAL`]
-/// and [`MAX_OPS_PER_SEAL`] full operations, and whether changes remain. A change is taken
+/// and [`MAX_CHANGES_PER_SEAL`], and whether changes remain. A change is taken
 /// together with the planned changes of every row it depends on, so a batch never names a
 /// row that a later batch creates.
 ///
 /// Writes and tombstones of a table whose constraint reads several rows together seal as one
 /// group ahead of every other change, so a create never seals before the rename or delete that
 /// frees its unique value, tree position, or edge, and repairs never act on the stale value.
+/// A deleted row is taken with every deletion that names it as its cause, so a cascade seals
+/// whole, and a published parent with the `published_with` children it publishes.
 fn select_batch(engine: &Engine, changes: Vec<Change>) -> (Vec<Change>, Vec<Change>) {
     let index = change_index(&changes);
     let constrained = constrained_changes(engine, &changes);
+    let cascaded = cascaded_changes(&changes);
+    let published = published_changes(engine, &changes, &index);
     let starts: Vec<usize> = constrained
         .values()
         .flatten()
@@ -1312,12 +1450,16 @@ fn select_batch(engine: &Engine, changes: Vec<Change>) -> (Vec<Change>, Vec<Chan
         let mut seen = BTreeSet::from([start]);
         let mut pending = vec![start];
         while let Some(position) = pending.pop() {
+            let change = &changes[position];
+            let row = (change.table, change.row.as_str().to_string());
             let together = constrained
-                .get(&changes[position].table)
+                .get(&change.table)
                 .into_iter()
+                .chain(cascaded.get(&row))
+                .chain(published.get(&row))
                 .flatten()
                 .copied();
-            let dependencies = change_dependencies(engine, &changes[position])
+            let dependencies = change_dependencies(engine, change)
                 .into_iter()
                 .filter_map(|row| index.get(&row).copied());
             for dependency in together.chain(dependencies) {
@@ -1940,9 +2082,10 @@ pub(crate) async fn force_delete_capture(
 impl Engine {
     /// Seals local captures with the local writer, sealing its genesis first when needed.
     ///
-    /// One call commits at most [`MAX_OPS_PER_SEAL`] operations and [`MAX_BYTES_PER_SEAL`]
-    /// change bytes; [`SealReport::more`] asks the caller to seal again at once. Deletes held
-    /// past `now_ms` stay captured; [`crate::hold::next_hold_expiry`] says when to seal them.
+    /// One call commits at most [`MAX_OPS_PER_SEAL`] operations, [`MAX_CHANGES_PER_SEAL`]
+    /// changes, and [`MAX_BYTES_PER_SEAL`] change bytes; [`SealReport::more`] asks the caller
+    /// to seal again at once. Captures held past `now_ms` stay captured;
+    /// [`crate::hold::next_hold_expiry`] says when to seal them.
     pub async fn seal(
         &self,
         conn: &mut SqliteConnection,

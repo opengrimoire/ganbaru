@@ -210,6 +210,132 @@ fn projects_concurrent_subtask_moves_beyond_depth_one_move_the_deepest_task_to_t
 }
 
 #[test]
+fn projects_a_large_seal_that_moves_a_parent_and_nests_under_it_applies_without_repairs() {
+    block_on(async {
+        let fillers: Vec<String> = (0..2 * crate::MAX_CHANGES_PER_APPLY)
+            .map(|index| format!("task-m{index:03}"))
+            .collect();
+        let mut sql = format!(
+            "{}{}",
+            task_sql("task-a", "A", 1),
+            task_sql("task-c", "C", 2)
+        );
+        for (index, id) in fillers.iter().enumerate() {
+            sql.push_str(&task_sql(id, "Filler", 3 + index as u32));
+        }
+        sql.push_str(&task_sql("task-z", "B", 1000));
+        sql.push_str("UPDATE project_tasks SET parent_task_id = 'task-c' WHERE id = 'task-z';");
+        let mut replicas = shared(2, &sql).await;
+        // Alone, A under B nests two levels while B is still under C. The task writes outnumber
+        // what one apply transaction takes, and A's write orders before B's.
+        replicas[0]
+            .exec(&format!(
+                "UPDATE project_tasks SET parent_task_id = NULL WHERE id = 'task-z';
+                 UPDATE project_tasks SET parent_task_id = 'task-z' WHERE id = 'task-a';
+                 UPDATE project_tasks SET title = 'Edited', updated_at = {}
+                 WHERE id LIKE 'task-m%';",
+                quoted(EDITED),
+            ))
+            .await;
+        let sealed = replicas[0].seal().await.unwrap();
+        assert!(sealed.changes > crate::MAX_CHANGES_PER_APPLY);
+        let known = replicas[1].stored_vector().await;
+        let ops = replicas[0].ops_since(&known).await;
+        replicas[1].receive(&ops).await;
+        for report in replicas[1].apply_all().await.unwrap() {
+            assert!(
+                report.seal.is_none(),
+                "a receiver should seal no repair: {:?}",
+                report.seal
+            );
+        }
+        converge(&mut replicas).await;
+        assert_converged(&mut replicas).await;
+        for replica in &mut replicas {
+            let parents = task_parents(replica).await;
+            assert!(
+                parents.contains(&"task-a>task-z".to_string()),
+                "{parents:?}"
+            );
+            assert!(parents.contains(&"task-z>-".to_string()), "{parents:?}");
+        }
+    });
+}
+
+#[test]
+fn projects_a_large_cascaded_deletion_applies_without_repairs() {
+    block_on(cascaded_deletion_applies_without_repairs(
+        Children::ChecklistItems,
+        2 * crate::MAX_CHANGES_PER_APPLY,
+        1,
+    ));
+}
+
+#[test]
+fn projects_a_cascaded_deletion_past_one_operation_applies_without_repairs() {
+    // Subtasks seal after their parent in key order, so the operation that ends the seal holds
+    // deletions the root's operation already implies.
+    block_on(cascaded_deletion_applies_without_repairs(
+        Children::Subtasks,
+        ganbaru_sync_contracts::bounds::MAX_CHANGES_PER_OPERATION,
+        2,
+    ));
+}
+
+/// Rows that cascade from a deleted task.
+enum Children {
+    ChecklistItems,
+    Subtasks,
+}
+
+/// Deletes a task with `count` children and checks that a receiver applies the seal of `ops`
+/// operations without sealing a cascade tombstone of its own. The deleted root and the
+/// deletions naming it as their cause must apply together.
+async fn cascaded_deletion_applies_without_repairs(children: Children, count: usize, ops: usize) {
+    let mut sql = task_sql("task-a", "A", 1);
+    for index in 0..count {
+        sql.push_str(&match children {
+            Children::ChecklistItems => format!(
+                "INSERT INTO project_checklist_items (id, task_id, title, order_key)
+                 VALUES ('item-{index:04}', 'task-a', 'Step', {});",
+                quoted(&rank(index as u32 + 1)),
+            ),
+            Children::Subtasks => task_sql(&format!("task-s{index:04}"), "Step", index as u32 + 2),
+        });
+    }
+    sql.push_str("UPDATE project_tasks SET parent_task_id = 'task-a' WHERE id LIKE 'task-s%';");
+    let mut replicas = shared(2, &sql).await;
+    replicas[0]
+        .exec("DELETE FROM project_tasks WHERE id = 'task-a'")
+        .await;
+    let sealed = replicas[0].seal().await.unwrap();
+    assert_eq!((sealed.sealed_ops, sealed.changes), (ops, count + 1));
+    let known = replicas[1].stored_vector().await;
+    let ops = replicas[0].ops_since(&known).await;
+    replicas[1].receive(&ops).await;
+    for report in replicas[1].apply_all().await.unwrap() {
+        assert!(
+            report.seal.is_none(),
+            "a receiver should seal no cascade tombstone: {:?}",
+            report.seal
+        );
+    }
+    converge(&mut replicas).await;
+    assert_converged(&mut replicas).await;
+    for replica in &mut replicas {
+        assert_eq!(
+            replica
+                .count(
+                    "SELECT (SELECT count(*) FROM project_checklist_items)
+                         + (SELECT count(*) FROM project_tasks)"
+                )
+                .await,
+            0
+        );
+    }
+}
+
+#[test]
 fn projects_concurrent_dependencies_that_close_a_cycle_hide_the_newest_as_a_conflict() {
     block_on(async {
         let sql = format!(

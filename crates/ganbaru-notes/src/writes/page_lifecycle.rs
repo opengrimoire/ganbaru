@@ -60,6 +60,7 @@ pub async fn move_page(
              parent_page_id = ?,
              parent_block_id = ?,
              parent_data_source_id = ?,
+             child_block_id = ?,
              folder_id = ?,
              last_edited_time = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
          WHERE id = ? AND in_trash = 0 AND archived = 0",
@@ -68,6 +69,7 @@ pub async fn move_page(
     .bind(parent_page_id)
     .bind(parent_block_id)
     .bind(parent_data_source_id)
+    .bind(crate::structure::nested_page_block_id(parent_type, page_id))
     .bind(folder_id)
     .bind(page_id)
     .execute(&mut *tx)
@@ -415,6 +417,7 @@ pub(super) async fn move_page_to_workspace_parent(
              parent_page_id = NULL,
              parent_block_id = NULL,
              parent_data_source_id = NULL,
+             child_block_id = NULL,
              folder_id = NULL,
              last_edited_time = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
          WHERE id = ?",

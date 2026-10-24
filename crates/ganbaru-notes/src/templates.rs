@@ -122,17 +122,22 @@ pub async fn apply_page_template(
             parent_type,
             parent_page_id,
             parent_block_id,
+            child_block_id,
             title,
             properties,
             icon,
             cover
          )
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(&page_id)
     .bind(parent_type)
     .bind(parent_page_id)
     .bind(parent_block_id)
+    .bind(crate::structure::nested_page_block_id(
+        parent_type,
+        &page_id,
+    ))
     .bind(&title)
     .bind(properties.to_string())
     .bind(&template.icon)
@@ -565,15 +570,17 @@ async fn insert_applied_child_page(
             parent_type,
             parent_page_id,
             parent_block_id,
+            child_block_id,
             title,
             properties
          )
-         VALUES (?, ?, ?, ?, ?, ?)",
+         VALUES (?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(page_id)
     .bind(page_parent_type)
     .bind(parent_page_id)
     .bind(block_parent_block_id.as_deref())
+    .bind(page_id)
     .bind(&title)
     .bind(page_title_properties(&title).to_string())
     .execute(&mut **tx)

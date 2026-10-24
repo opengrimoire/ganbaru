@@ -368,6 +368,7 @@ async fn insert_import_page(
             parent_type,
             parent_page_id,
             parent_block_id,
+            child_block_id,
             project_id,
             title,
             properties,
@@ -380,12 +381,13 @@ async fn insert_import_page(
             url,
             public_url
          )
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(page_id)
     .bind(parent_type)
     .bind(parent_page_id)
     .bind(parent_block_id)
+    .bind(crate::structure::nested_page_block_id(parent_type, page_id))
     .bind(request.project_id)
     .bind(request.title)
     .bind(writes::page_title_properties(request.title).to_string())

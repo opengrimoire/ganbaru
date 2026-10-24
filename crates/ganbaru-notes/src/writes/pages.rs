@@ -94,17 +94,22 @@ pub async fn create_page(
             parent_type,
             parent_page_id,
             parent_block_id,
+            child_block_id,
             folder_id,
             project_id,
             title,
             properties
          )
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(page.id.trim())
     .bind(parent_type)
     .bind(parent_page_id)
     .bind(parent_block_id)
+    .bind(crate::structure::nested_page_block_id(
+        parent_type,
+        page.id.trim(),
+    ))
     .bind(folder_id)
     .bind(&project_id)
     .bind(&title)
@@ -332,16 +337,18 @@ pub async fn create_child_page_from_block(
             parent_type,
             parent_page_id,
             parent_block_id,
+            child_block_id,
             project_id,
             title,
             properties
          )
-         VALUES (?, ?, ?, ?, ?, ?, ?)",
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(block_id)
     .bind(page_parent_type)
     .bind(&current.parent_page_id)
     .bind(&current.parent_block_id)
+    .bind(block_id)
     .bind(&project_id)
     .bind(&title)
     .bind(properties.to_string())
@@ -484,6 +491,7 @@ pub async fn update_page(
                  parent_page_id = ?,
                  parent_block_id = ?,
                  parent_data_source_id = ?,
+                 child_block_id = ?,
                  folder_id = NULL,
                  last_edited_time = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
              WHERE id = ? AND in_trash = 0 AND archived = 0",
@@ -492,6 +500,7 @@ pub async fn update_page(
         .bind(parent_page_id)
         .bind(parent_block_id)
         .bind(parent_data_source_id)
+        .bind(crate::structure::nested_page_block_id(parent_type, page_id))
         .bind(page_id)
         .execute(&mut *tx)
         .await

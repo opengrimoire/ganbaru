@@ -305,7 +305,7 @@ fn page_breadcrumb_marks_missing_ancestor_rows() {
             .unwrap();
         sqlx::query(
             "UPDATE notes_pages
-             SET parent_type = 'page_id', parent_page_id = ?
+             SET parent_type = 'page_id', parent_page_id = ?, child_block_id = id
              WHERE id = ?",
         )
         .bind(PAGE_B)

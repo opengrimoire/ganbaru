@@ -12,6 +12,15 @@ use sqlx::{Sqlite, Transaction};
 /// cycle from turning a recursive query into unbounded work.
 pub(crate) const MAX_TREE_DEPTH: i64 = 64;
 
+/// The `child_block_id` a page with `parent_type` stores.
+///
+/// A page nested under a page or a block is placed by its `child_page` block,
+/// which shares the page id; workspace, folder, and data source row pages have
+/// no such block.
+pub(crate) fn nested_page_block_id<'a>(parent_type: &str, page_id: &'a str) -> Option<&'a str> {
+    matches!(parent_type, "page_id" | "block_id").then_some(page_id)
+}
+
 /// Reject a folder parent that would place `folder_id` under itself or one of
 /// its descendants.
 pub(crate) async fn ensure_folder_parent_acyclic_tx(

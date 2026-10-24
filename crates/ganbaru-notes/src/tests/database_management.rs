@@ -323,12 +323,14 @@ fn database_sources_create_attach_and_keep_shared_rows_with_independent_views() 
             .execute(&pool)
             .await
             .unwrap();
-        sqlx::query(
-            "UPDATE notes_pages SET parent_type = 'page_id', parent_page_id = ? WHERE id = ?",
+        writes::move_page(
+            &pool,
+            PAGE_A,
+            crate::models::NoteMovePage {
+                parent: page_parent(PAGE_C),
+                folder_id: None,
+            },
         )
-        .bind(PAGE_C)
-        .bind(PAGE_A)
-        .execute(&pool)
         .await
         .unwrap();
         let listed = serde_json::to_value(

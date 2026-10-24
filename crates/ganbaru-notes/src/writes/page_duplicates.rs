@@ -539,6 +539,7 @@ pub(super) async fn insert_duplicated_page(
             parent_page_id,
             parent_block_id,
             parent_data_source_id,
+            child_block_id,
             folder_id,
             project_id,
             title,
@@ -547,13 +548,17 @@ pub(super) async fn insert_duplicated_page(
             cover,
             archived
          )
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(&plan.duplicate_id)
     .bind(parent_type)
     .bind(parent_page_id)
     .bind(parent_block_id)
     .bind(parent_data_source_id)
+    .bind(crate::structure::nested_page_block_id(
+        parent_type,
+        &plan.duplicate_id,
+    ))
     .bind(folder_id)
     .bind(&plan.source_page.project_id)
     .bind(&plan.duplicate_title)

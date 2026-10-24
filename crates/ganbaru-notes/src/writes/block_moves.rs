@@ -124,6 +124,7 @@ pub(super) async fn move_block_tx(
                  parent_page_id = ?,
                  parent_block_id = ?,
                  parent_data_source_id = NULL,
+                 child_block_id = id,
                  last_edited_time = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
              WHERE id = ?",
         )
@@ -253,6 +254,7 @@ pub async fn move_blocks(
                      parent_page_id = ?,
                      parent_block_id = ?,
                      parent_data_source_id = NULL,
+                     child_block_id = id,
                      last_edited_time = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
                  WHERE id = ?",
             )

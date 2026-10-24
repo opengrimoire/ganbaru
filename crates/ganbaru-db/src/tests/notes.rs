@@ -1650,8 +1650,36 @@ fn notes_sync_structure_migration_keeps_every_block_and_property_type() {
         .execute(&pool)
         .await
         .unwrap();
+        // `block-13` is the fixture's child_page block; `orphan` names no block.
+        sqlx::raw_sql(
+            "INSERT INTO notes_pages (id, parent_type, parent_page_id, title)
+             VALUES ('block-13', 'page_id', 'page', 'Nested'),
+                    ('orphan', 'page_id', 'page', 'Orphan');",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
 
         crate::run_migrations(&pool).await.unwrap();
+
+        let placements: Vec<(String, String, Option<String>)> = sqlx::query_as(
+            "SELECT id, parent_type, child_block_id FROM notes_pages
+             WHERE id IN ('block-13', 'orphan') ORDER BY id",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            placements,
+            vec![
+                (
+                    "block-13".to_string(),
+                    "page_id".to_string(),
+                    Some("block-13".to_string())
+                ),
+                ("orphan".to_string(), "workspace".to_string(), None),
+            ]
+        );
 
         let (project_id, trash_owner, stored_properties): (Option<String>, Option<String>, String) =
             sqlx::query_as(
@@ -1800,5 +1828,74 @@ fn fresh_vault_notes_blocks_store_split_content_and_order_keys() {
         .await
         .unwrap();
         assert_eq!(remaining, 0);
+    });
+}
+
+#[test]
+fn fresh_vault_nested_pages_follow_their_child_page_block() {
+    super::block_on(async {
+        let pool = migrated_memory_pool().await;
+        sqlx::raw_sql(
+            "INSERT INTO project_groups (id, name, order_key) VALUES ('group', 'G', 'a0');
+             INSERT INTO projects (id, group_id, name, order_key) VALUES ('project', 'group', 'P', 'a0');
+             INSERT INTO notes_folders (id, project_id, name) VALUES ('folder', 'project', 'F');
+             INSERT INTO notes_pages (id, parent_type, title) VALUES ('parent', 'workspace', 'P');",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let mut tx = pool.begin().await.unwrap();
+        sqlx::query(
+            "INSERT INTO notes_pages (id, parent_type, parent_page_id, child_block_id, title)
+             VALUES ('child', 'page_id', 'parent', 'child', 'C')",
+        )
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO notes_blocks (id, page_id, parent_type, parent_page_id, type, order_key)
+             VALUES ('child', 'parent', 'page_id', 'parent', 'child_page', 'a0')",
+        )
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+        tx.commit()
+            .await
+            .expect("the block reference is checked at commit");
+
+        for statement in [
+            "UPDATE notes_pages SET child_block_id = NULL WHERE id = 'child'",
+            "UPDATE notes_pages SET child_block_id = 'parent' WHERE id = 'child'",
+            "UPDATE notes_pages SET child_block_id = 'parent' WHERE id = 'parent'",
+            "UPDATE notes_pages SET folder_id = 'folder' WHERE id = 'child'",
+        ] {
+            assert!(
+                sqlx::raw_sql(AssertSqlSafe(statement))
+                    .execute(&pool)
+                    .await
+                    .is_err(),
+                "{statement}"
+            );
+        }
+        assert!(
+            sqlx::query(
+                "INSERT INTO notes_pages (id, parent_type, parent_page_id, child_block_id, title)
+                 VALUES ('loose', 'page_id', 'parent', 'loose', 'L')",
+            )
+            .execute(&pool)
+            .await
+            .is_err(),
+            "a nested page needs its child_page block"
+        );
+
+        sqlx::query("DELETE FROM notes_blocks WHERE id = 'child'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let pages: Vec<String> = sqlx::query_scalar("SELECT id FROM notes_pages ORDER BY id")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+        assert_eq!(pages, vec!["parent".to_string()]);
     });
 }

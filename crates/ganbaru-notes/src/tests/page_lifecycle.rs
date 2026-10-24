@@ -444,7 +444,8 @@ fn restoring_page_with_missing_parent_promotes_to_workspace() {
             "UPDATE notes_pages
              SET parent_type = 'page_id',
                  parent_page_id = ?,
-                 parent_block_id = NULL
+                 parent_block_id = NULL,
+                 child_block_id = id
              WHERE id = ?",
         )
         .bind(PAGE_B)

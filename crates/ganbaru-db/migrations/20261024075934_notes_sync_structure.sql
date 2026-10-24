@@ -567,14 +567,22 @@ DROP TRIGGER notes_pages_validate_folder_insert;
 DROP TRIGGER notes_pages_validate_folder_update;
 DROP TRIGGER notes_row_hierarchy_detach_moved_page;
 
--- notes_pages: the project and the trash owner move out of the properties JSON into columns. A
--- project id that names no project is dropped.
+-- notes_pages: the project and the trash owner move out of the properties JSON into columns, and a
+-- page nested under a page or block names its child_page block (which shares its id) in
+-- `child_block_id`, so deleting the block deletes the page. A project id that names no project is
+-- dropped, and a nested page whose child_page block is gone becomes a workspace page.
+UPDATE notes_pages
+SET parent_type = 'workspace', parent_page_id = NULL, parent_block_id = NULL
+WHERE parent_type IN ('page_id', 'block_id')
+  AND NOT EXISTS (SELECT 1 FROM notes_blocks AS block WHERE block.id = notes_pages.id);
 CREATE TABLE notes_pages_next (
     id TEXT PRIMARY KEY CHECK (trim(id) <> ''),
     parent_type TEXT NOT NULL CHECK (parent_type IN ('workspace', 'page_id', 'block_id', 'data_source_id')),
     parent_page_id TEXT REFERENCES notes_pages(id) ON DELETE CASCADE,
     parent_block_id TEXT,
     parent_data_source_id TEXT REFERENCES notes_data_sources(id) ON DELETE CASCADE,
+    child_block_id TEXT REFERENCES "notes_blocks"(id) ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED
+        CHECK (child_block_id IS NULL OR child_block_id = id),
     project_id TEXT REFERENCES projects(id) ON DELETE CASCADE,
     title TEXT NOT NULL DEFAULT '',
     properties TEXT NOT NULL DEFAULT '{"title":{"id":"title","type":"title","title":[]}}' CHECK (json_valid(properties)),
@@ -593,6 +601,9 @@ CREATE TABLE notes_pages_next (
     last_edited_time TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')) CHECK (trim(last_edited_time) <> ''),
     trashed_time TEXT CHECK (trashed_time IS NULL OR trim(trashed_time) <> ''),
     folder_id TEXT REFERENCES notes_folders(id) ON DELETE SET NULL,
+    CHECK ((child_block_id IS NOT NULL) = (parent_type IN ('page_id', 'block_id'))),
+    CHECK (child_block_id IS NULL OR parent_data_source_id IS NULL),
+    CHECK (folder_id IS NULL OR (child_block_id IS NULL AND parent_data_source_id IS NULL)),
     CHECK (
         (
             parent_type = 'workspace'
@@ -621,14 +632,15 @@ CREATE TABLE notes_pages_next (
     )
 );
 INSERT INTO notes_pages_next (
-    id, parent_type, parent_page_id, parent_block_id, parent_data_source_id, project_id, title,
-    properties, icon, cover, in_trash, trash_owner, archived, source_provider, source_object_id,
-    source_workspace_id, source_last_edited_time, url, public_url, created_time, last_edited_time,
-    trashed_time, folder_id
+    id, parent_type, parent_page_id, parent_block_id, parent_data_source_id, child_block_id,
+    project_id, title, properties, icon, cover, in_trash, trash_owner, archived, source_provider,
+    source_object_id, source_workspace_id, source_last_edited_time, url, public_url, created_time,
+    last_edited_time, trashed_time, folder_id
 )
 SELECT
     page.id, page.parent_type, page.parent_page_id, page.parent_block_id,
     page.parent_data_source_id,
+    CASE WHEN page.parent_type IN ('page_id', 'block_id') THEN page.id END,
     (SELECT project.id FROM projects AS project
      WHERE json_type(page.properties, '$.__ganbaru_project_id') = 'text'
        AND project.id = trim(json_extract(page.properties, '$.__ganbaru_project_id'))),
@@ -639,12 +651,14 @@ SELECT
         THEN NULLIF(trim(json_extract(page.properties, '$.__ganbaru_trash_owner')), '') END,
     page.archived, page.source_provider, page.source_object_id, page.source_workspace_id,
     page.source_last_edited_time, page.url, page.public_url, page.created_time,
-    page.last_edited_time, page.trashed_time, page.folder_id
+    page.last_edited_time, page.trashed_time,
+    CASE WHEN page.parent_type = 'workspace' THEN page.folder_id END
 FROM notes_pages AS page;
 DROP TABLE notes_pages;
 ALTER TABLE notes_pages_next RENAME TO notes_pages;
 CREATE INDEX idx_notes_pages_active
     ON notes_pages(in_trash, archived, last_edited_time DESC, title);
+CREATE INDEX idx_notes_pages_child_block ON notes_pages(child_block_id);
 CREATE INDEX idx_notes_pages_data_source
     ON notes_pages(parent_data_source_id, in_trash, archived, last_edited_time DESC, title);
 CREATE INDEX idx_notes_pages_folder

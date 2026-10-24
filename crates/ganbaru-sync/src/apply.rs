@@ -56,6 +56,9 @@ pub const MAX_CHANGES_PER_APPLY: usize = 16;
 pub const MAX_BYTES_PER_APPLY: usize = 1 << 20;
 /// Largest envelope read ahead with its writer's next candidate. Each writer holds at most one.
 const PREFETCH_ENVELOPE_BYTES: usize = 64 * 1024;
+/// Most stale rows one engine write takes back, so the rows a chain deferred are repaired and
+/// materialized over several bounded writes. It matches what one seal transaction may carry.
+const MAX_STALE_ROWS_PER_WRITE: usize = crate::MAX_CHANGES_PER_SEAL;
 
 /// A writer whose operations carry clocks far ahead of local time.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -262,8 +265,12 @@ fn candidate_from_row(row: &SqliteRow) -> SyncResult<Candidate> {
 enum GroupScan {
     /// The chain the candidate belongs to is closed, and every operation of it from the
     /// candidate on is stored and ready in turn. Holds the operations after the candidate that
-    /// complete its group, in sequence order.
-    Complete(Vec<(Candidate, VersionVector)>),
+    /// complete its group, in sequence order, and whether the group opens a chain that later
+    /// groups finish.
+    Complete {
+        rest: Vec<(Candidate, VersionVector)>,
+        opens: bool,
+    },
     /// The chain is not closed yet, or an operation of it waits.
     Waiting {
         /// It waits on an operation of another writer, which the call may still apply.
@@ -386,7 +393,10 @@ async fn scan_group(
     let position = chain_position(conn, ctx, first.writer, first.seq).await?;
     let room = MAX_OPERATIONS_PER_CHAIN - position - 1;
     if !first.continues || room == 0 {
-        return Ok(GroupScan::Complete(Vec::new()));
+        return Ok(GroupScan::Complete {
+            rest: Vec::new(),
+            opens: false,
+        });
     }
     let cutoff = log::writer(conn, ctx.space, first.writer)
         .await?
@@ -452,7 +462,8 @@ async fn scan_group(
         bytes = bytes.saturating_add(length);
         grouping = !ends_group(continues, operations, bytes);
     }
-    Ok(GroupScan::Complete(rest))
+    let opens = position == 0 && rest.len() < extent;
+    Ok(GroupScan::Complete { rest, opens })
 }
 
 async fn envelope_bytes(
@@ -965,9 +976,10 @@ async fn seal_for_finish(
 
 /// Whether a writer is between two groups of a chain: its last applied operation continues a
 /// chain that the rest of its stored operations close, so the next apply calls finish the
-/// chain. [`scan_group`] starts a chain only once it is closed, so this holds only while those
-/// calls run; a chain whose rest went missing counts as finished, so it cannot defer repairs
-/// for good. Reads `sync_writers.applied_seq`, which every caller of [`finish`] has written.
+/// chain. [`scan_group`] starts a chain only once it is closed and every operation of it is
+/// ready, so this holds only while those calls run; a chain whose rest went missing or fell
+/// past a cutoff counts as finished, so it cannot defer repairs for good. Reads
+/// `sync_writers.applied_seq`, which every caller of [`finish`] has written.
 async fn chain_resuming(conn: &mut SqliteConnection, ctx: &SpaceContext) -> SyncResult<bool> {
     let writers: Vec<(Vec<u8>, i64, Option<i64>)> = sqlx::query_as(
         "SELECT w.writer_id, w.applied_seq, w.cutoff_seq
@@ -997,18 +1009,29 @@ async fn chain_resuming(conn: &mut SqliteConnection, ctx: &SpaceContext) -> Sync
     Ok(false)
 }
 
+/// Whether repairs wait for a chain: a writer is between two groups of it, see
+/// [`chain_resuming`], and `slot` may seal. A call that cannot seal repairs has none to defer,
+/// so a replica without an active local writer never holds rows back for a chain.
+async fn repairs_wait(
+    conn: &mut SqliteConnection,
+    ctx: &SpaceContext,
+    slot: &mut SealSlot<'_, '_>,
+) -> SyncResult<bool> {
+    Ok(slot.may_seal(conn, ctx).await? && chain_resuming(conn, ctx).await?)
+}
+
 /// Seals repairs for hidden duplicates, detached tree rows, and cascades, refreshes row flags,
 /// and materializes every dirty row, running the registered hooks, then captures the groups an
 /// exclusion left to republish. Returns what it changed.
 ///
 /// A materialization never overwrites a local edit that is not sealed: captured rows it would
 /// write, or cascade to, are sealed first and the merge is planned again. Captures of dirty
-/// tables are sealed before repairs as `constrained` says. While a writer is between two
-/// groups of a chain, repairs wait: the dirty rows are kept as stale rows, and the first finish
-/// after the chain applied takes them back and seals the repairs once, see
-/// [`MAX_OPERATIONS_PER_CHAIN`]. Without a writer that can seal them, or when they exceed what
-/// a bounded slot may still seal, it returns `None` and writes nothing, so the caller rolls
-/// back.
+/// tables are sealed before repairs as `constrained` says. While repairs wait for a chain, see
+/// [`repairs_wait`], every repair waits and the dirty rows are listed as stale rows. Once no
+/// chain is open, each finish takes back at most [`MAX_STALE_ROWS_PER_WRITE`] stale rows and
+/// seals their repairs, and says whether more remain, see [`MAX_OPERATIONS_PER_CHAIN`].
+/// Without a writer that can seal them, or when they exceed what a bounded slot may still
+/// seal, it returns `None` and writes nothing, so the caller rolls back.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn finish(
     engine: &Engine,
@@ -1020,13 +1043,15 @@ pub(crate) async fn finish(
     now_ms: u64,
     report: &mut SealReport,
 ) -> SyncResult<Option<Materialized>> {
-    let resuming = chain_resuming(conn, ctx).await?;
-    if !resuming {
-        exclusion::take_stale(conn, &mut batch.dirty).await?;
-    }
+    let resuming = repairs_wait(conn, ctx, slot).await?;
+    let stale_left = !resuming
+        && exclusion::take_stale(conn, &mut batch.dirty, MAX_STALE_ROWS_PER_WRITE).await?;
     if batch.dirty.is_empty() {
         fork::republish(engine, conn, batch, now_ms).await?;
-        return Ok(Some(Materialized::default()));
+        return Ok(Some(Materialized {
+            stale_left,
+            ..Materialized::default()
+        }));
     }
     // Captured rows already sealed once. A capture that stays is an invalid row, which the
     // merge overwrites as it would without the capture. Captures only shrink inside the
@@ -1052,7 +1077,7 @@ pub(crate) async fn finish(
                 repair::repair_changes(engine, conn, &mut visibility, &batch.dirty).await?;
             // Between two groups of one chain the state is part of one edit, which the rest of
             // the chain completes. Every row it touched stays stale until it has applied, so
-            // the repairs of the whole chain are planned once, over all of its rows.
+            // its repairs are planned only against the state the whole chain leaves.
             if resuming {
                 exclusion::defer_stale(conn, &batch.dirty).await?;
                 break visibility;
@@ -1083,7 +1108,8 @@ pub(crate) async fn finish(
         if captured.is_empty() {
             // Rows whose capture stays keep their values: the capture may still be sealed.
             let elisions = plan.elisions(engine, &pending);
-            let changed = materialize::execute(engine, conn, plan).await?;
+            let mut changed = materialize::execute(engine, conn, plan).await?;
+            changed.stale_left = stale_left;
             hydrate::elide(conn, &elisions).await?;
             failpoint!("elide.before_commit");
             batch.dirty.clear();
@@ -1225,6 +1251,14 @@ impl Engine {
         let mut taken = 0usize;
         let mut bytes = 0usize;
         let mut heads = Heads::load(&mut tx, ctx).await?;
+        // Chains open one at a time, and only once the rows the last one deferred were taken
+        // back, so repairs wait for one chain at a time and every deferral ends. A call that
+        // cannot seal repairs defers none and opens chains freely.
+        let may_seal = slot.may_seal(&mut tx, ctx).await?;
+        let chain_open = may_seal && chain_resuming(&mut tx, ctx).await?;
+        let stale_waiting = may_seal && exclusion::stale_rows_listed(&mut tx).await?;
+        let mut opened = false;
+        let mut gated = false;
         while let Some((mut candidate, context)) = heads
             .take_ready(self, &mut tx, ctx, &batch, &blocked, &mut report)
             .await?
@@ -1237,7 +1271,15 @@ impl Engine {
                 break;
             }
             let rest = match scan_group(self, &mut tx, ctx, &batch, &candidate, &heads).await? {
-                GroupScan::Complete(rest) => rest,
+                GroupScan::Complete { rest, opens } => {
+                    if opens && (chain_open || stale_waiting || opened) {
+                        gated = true;
+                        blocked.insert(candidate.writer);
+                        continue;
+                    }
+                    opened |= opens;
+                    rest
+                }
                 GroupScan::Waiting { on_others } => {
                     deferred |= on_others;
                     if !on_others {
@@ -1421,6 +1463,11 @@ impl Engine {
         if deferred && report.applied > 0 {
             report.more = true;
         }
+        // A gated chain opens in a later call once the open chain applied or the finish took
+        // the deferred rows back.
+        if gated && (report.applied > 0 || (stale_waiting && !chain_open)) {
+            report.more = true;
+        }
         flush_applied(&mut tx, ctx, &batch, &mut advanced).await?;
         retention.flush(&mut tx, ctx.space).await?;
         let Some(changed) = finish(
@@ -1444,6 +1491,7 @@ impl Engine {
         };
         report.changed_tables = changed.tables;
         report.notices = changed.notices;
+        report.more |= changed.stale_left;
         report.local_writer_frozen |= slot.frozen();
         if !sealed.is_empty() {
             report.seal = Some(sealed);

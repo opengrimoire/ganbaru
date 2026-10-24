@@ -2,8 +2,8 @@
 //! apply in one transaction once every operation of their group is stored, across store passes
 //! and restarts, honest changes past the group bounds apply as a chain of bounded groups with no
 //! repair sealed between them, and a writer that marks every operation as continuing cannot
-//! hold back other writers or their repairs, grow a group past its bounds, or show part of a
-//! chain that never closes.
+//! hold back other writers, defer repairs for good, grow a group past its bounds, or show part
+//! of a chain that never closes.
 
 use std::time::Instant;
 
@@ -709,3 +709,52 @@ fn chain_sizes_are_measured() {
         measure_chain("wide refresh", &mut author[0], &mut reader[0], &wide).await;
     });
 }
+
+/// Items of the take-back measurement, each a distinct row the chain's groups leave deferred.
+const TAKE_BACK_ITEMS: usize = 16_384;
+
+/// Measures the apply calls of a multi-group chain over many distinct rows, whose final calls
+/// take the deferred rows back:
+/// `cargo test -p ganbaru-sync --lib --release take_back_is_measured -- --ignored --nocapture`.
+#[test]
+#[ignore = "measurements are meaningful only in the release profile"]
+fn take_back_is_measured() {
+    block_on(async {
+        let mut pair = replicas(2).await;
+        let discovery: String = (0..TAKE_BACK_ITEMS).map(insert_item).collect();
+        pair[0].exec(&discovery).await;
+        converge(&mut pair).await;
+        let (author, reader) = pair.split_at_mut(1);
+        let (author, reader) = (&mut author[0], &mut reader[0]);
+        let known = reader.stored_vector().await;
+        author.exec(&refresh_fields_sql(&SHORT_FIELDS, 18)).await;
+        while author.seal().await.unwrap().more {}
+        let ops = new_ops(author, &known).await;
+        println!(
+            "take-back chain: {} items, {} operations, {} bytes, groups {:?}",
+            TAKE_BACK_ITEMS,
+            ops.len(),
+            ops.iter().map(Vec::len).sum::<usize>(),
+            group_sizes(&ops),
+        );
+        reader.receive(&ops).await;
+        loop {
+            let deferred = reader.count(DEFERRED_ROWS).await;
+            let started = Instant::now();
+            let report = reader.apply_once().await.unwrap();
+            println!(
+                "  apply: {} operations, {} changes, {deferred} deferred rows before, in {:?}",
+                report.applied,
+                report.changes,
+                started.elapsed()
+            );
+            if !report.more {
+                break;
+            }
+        }
+        assert_eq!(reader.count(DEFERRED_ROWS).await, 0);
+    });
+}
+
+/// Rows a receiver keeps deferred for a later engine write.
+const DEFERRED_ROWS: &str = "SELECT count(*) FROM sync_stale_rows";

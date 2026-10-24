@@ -46,6 +46,9 @@ struct Present {
 pub(crate) struct Materialized {
     pub(crate) tables: Vec<&'static str>,
     pub(crate) notices: Vec<ChangeNotice>,
+    /// Whether rows listed as stale remain for a later engine write, since one write takes
+    /// back a bounded number of them.
+    pub(crate) stale_left: bool,
 }
 
 /// What a domain row needs to match its desired values.
@@ -769,5 +772,6 @@ pub(crate) async fn execute(
             .map(|(table, _)| table.name)
             .collect(),
         notices: notices.0.into_iter().collect(),
+        stale_left: false,
     })
 }

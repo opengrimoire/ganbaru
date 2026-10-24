@@ -10,7 +10,7 @@ use crate::distractions::DistractionsUsageSampleRow;
 use crate::distractions::limits::{MAX_SOURCE_GROUPS, UsageSourceDay};
 use ganbaru_distractions::usage::totals::insert_own_samples;
 use ganbaru_distractions::usage::{
-    SpooledBlockEvent, UsageDateWindow, record_spooled_block_event, validate_spooled_block_event,
+    SpooledBlockEvent, SpooledBlockEventError, UsageDateWindow, record_spooled_block_event,
 };
 use sha2::{Digest, Sha256};
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
@@ -512,7 +512,9 @@ async fn read_pending_block_events(
 
 /// Each batch commits to the vault before it leaves the spool; the vault ignores events it
 /// already holds, so a batch that committed but stayed in the spool ingests again harmlessly. A
-/// spooled row the vault would refuse is dropped with a log line instead of blocking the rest.
+/// spooled row the vault would refuse, by validation or by a constraint or trigger, is dropped
+/// with a log line instead of blocking the rest; any other vault error keeps the whole batch in
+/// the spool for the next attempt.
 async fn ingest_block_events_at(
     path: &Path,
     pool: &SqlitePool,
@@ -544,11 +546,13 @@ async fn ingest_block_events_at(
                 .await
                 .map_err(|error| format!("begin block event import: {error}"))?;
             for event in &batch {
-                if let Err(error) = validate_spooled_block_event(event) {
-                    eprintln!("dropped spooled Distractions block event: {error}");
-                    continue;
+                match record_spooled_block_event(&mut transaction, event).await {
+                    Ok(()) => {}
+                    Err(SpooledBlockEventError::Refused(reason)) => {
+                        eprintln!("dropped spooled Distractions block event: {reason}");
+                    }
+                    Err(SpooledBlockEventError::Failed(reason)) => return Err(reason),
                 }
-                record_spooled_block_event(&mut transaction, event).await?;
             }
             transaction
                 .commit()

@@ -12,7 +12,8 @@ use ganbaru_sync::domains::distractions::{
     BLOCK_DECISIONS, BLOCK_PHASES, BLOCK_SOURCE_TYPES, MAX_BLOCK_TEXT_CHARS,
     SNAPSHOT_BLOCKER_MODES, SNAPSHOT_RULE_KINDS,
 };
-use ganbaru_sync_contracts::bounds::MAX_ROW_KEY_BYTES;
+use ganbaru_sync::manifest::MAX_TIMESTAMP_BYTES;
+use ganbaru_sync_contracts::RowKey;
 use sha2::{Digest, Sha256};
 use sqlx::{SqliteConnection, SqlitePool};
 
@@ -241,10 +242,15 @@ pub struct SpooledBlockEvent {
 }
 
 fn bounded_text(value: &str, max_chars: usize, what: &str) -> Result<(), String> {
-    if value.trim().is_empty() || value.chars().count() > max_chars {
+    if value.trim().is_empty() || value.contains('\0') || value.chars().count() > max_chars {
         return Err(format!("spooled block event {what} is invalid"));
     }
     Ok(())
+}
+
+/// Whether `key` is a row key the vault's value triggers and the sync engine both accept.
+fn is_row_key(key: &str) -> bool {
+    !key.trim().is_empty() && RowKey::new(key).is_ok()
 }
 
 fn optional_choice(value: Option<&str>, allowed: &[&str], what: &str) -> Result<(), String> {
@@ -259,13 +265,16 @@ fn optional_choice(value: Option<&str>, allowed: &[&str], what: &str) -> Result<
 /// Checks a spooled block event against the bounds the vault's capture triggers enforce and the
 /// values the replicated table accepts, so a malformed spool row never aborts a vault write.
 pub fn validate_spooled_block_event(event: &SpooledBlockEvent) -> Result<(), String> {
-    if event.id.trim().is_empty() || event.id.len() > MAX_ROW_KEY_BYTES {
+    if !is_row_key(&event.id) {
         return Err("spooled block event id is invalid".into());
     }
     if let Some(run_id) = &event.run_id
-        && (run_id.trim().is_empty() || run_id.len() > MAX_ROW_KEY_BYTES)
+        && !is_row_key(run_id)
     {
         return Err("spooled block event run is invalid".into());
+    }
+    if event.occurred_at.len() > MAX_TIMESTAMP_BYTES {
+        return Err("spooled block event time is invalid".into());
     }
     chrono::DateTime::parse_from_rfc3339(&event.occurred_at)
         .map_err(|_| "spooled block event time is invalid".to_string())?;
@@ -297,14 +306,72 @@ pub fn validate_spooled_block_event(event: &SpooledBlockEvent) -> Result<(), Str
     )
 }
 
-/// Records one spooled block event and its rule snapshot. Recording an event the vault already
-/// holds changes nothing, so a spool batch that committed but was not removed records again
-/// harmlessly. A run the vault no longer holds leaves the event without a run.
+/// Why a spooled block event was not recorded.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum SpooledBlockEventError {
+    /// The event breaks a rule of the vault, so every later attempt would fail the same way.
+    Refused(String),
+    /// The vault could not be written now, for example while busy; a later attempt may succeed.
+    Failed(String),
+}
+
+impl std::fmt::Display for SpooledBlockEventError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Refused(message) | Self::Failed(message) => formatter.write_str(message),
+        }
+    }
+}
+
+/// SQLite primary result code of a constraint, CHECK, foreign key, or `RAISE(ABORT)` failure.
+const SQLITE_CONSTRAINT: i32 = 19;
+
+/// Classifies a vault error: a constraint or trigger refusal is permanent, anything else is not.
+fn spooled_write_error(error: sqlx::Error, what: &str) -> SpooledBlockEventError {
+    let refused = error
+        .as_database_error()
+        .and_then(|database| database.code())
+        .and_then(|code| code.parse::<i32>().ok())
+        .is_some_and(|code| code & 0xff == SQLITE_CONSTRAINT);
+    let message = format!("{what}: {error}");
+    if refused {
+        SpooledBlockEventError::Refused(message)
+    } else {
+        SpooledBlockEventError::Failed(message)
+    }
+}
+
+/// Records one spooled block event and its rule snapshot inside a savepoint, so a refused event
+/// leaves nothing behind and the caller's transaction stays usable. Recording an event the vault
+/// already holds changes nothing, so a spool batch that committed but was not removed records
+/// again harmlessly. A run the vault no longer holds leaves the event without a run. A spooled
+/// event never names a segment, so it can never reference a segment without its run.
 pub async fn record_spooled_block_event(
     connection: &mut SqliteConnection,
     event: &SpooledBlockEvent,
-) -> Result<(), String> {
-    validate_spooled_block_event(event)?;
+) -> Result<(), SpooledBlockEventError> {
+    validate_spooled_block_event(event).map_err(SpooledBlockEventError::Refused)?;
+    let mut savepoint = sqlx::Connection::begin(&mut *connection)
+        .await
+        .map_err(|error| spooled_write_error(error, "begin spooled block event"))?;
+    match write_spooled_block_event(&mut savepoint, event).await {
+        Ok(()) => savepoint
+            .commit()
+            .await
+            .map_err(|error| spooled_write_error(error, "commit spooled block event")),
+        Err(error) => {
+            savepoint.rollback().await.map_err(|rollback| {
+                spooled_write_error(rollback, "roll back spooled block event")
+            })?;
+            Err(error)
+        }
+    }
+}
+
+async fn write_spooled_block_event(
+    connection: &mut SqliteConnection,
+    event: &SpooledBlockEvent,
+) -> Result<(), SpooledBlockEventError> {
     let run_id = match &event.run_id {
         Some(run_id) => {
             let exists: bool =
@@ -312,7 +379,7 @@ pub async fn record_spooled_block_event(
                     .bind(run_id)
                     .fetch_one(&mut *connection)
                     .await
-                    .map_err(|error| format!("find spooled block event run: {error}"))?;
+                    .map_err(|error| spooled_write_error(error, "find spooled block event run"))?;
             exists.then_some(run_id.as_str())
         }
         None => None,
@@ -334,7 +401,7 @@ pub async fn record_spooled_block_event(
     .bind(&event.occurred_at)
     .execute(&mut *connection)
     .await
-    .map_err(|error| format!("record spooled block event: {error}"))?
+    .map_err(|error| spooled_write_error(error, "record spooled block event"))?
     .rows_affected();
     if inserted == 0 {
         return Ok(());
@@ -350,7 +417,7 @@ pub async fn record_spooled_block_event(
     .bind(&event.blocker_mode)
     .execute(&mut *connection)
     .await
-    .map_err(|error| format!("record spooled block event rule snapshot: {error}"))?;
+    .map_err(|error| spooled_write_error(error, "record spooled block event rule snapshot"))?;
     Ok(())
 }
 

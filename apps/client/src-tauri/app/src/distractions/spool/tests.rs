@@ -317,23 +317,44 @@ async fn pending_usage_sums_per_source_and_day_inside_the_week() {
 }
 
 async fn spool_block_event(path: &Path, vault_id: &str, event_id: &str, source_key: &str) {
+    spool_block_event_in_run(path, vault_id, event_id, source_key, "run-gone").await;
+}
+
+async fn spool_block_event_in_run(
+    path: &Path,
+    vault_id: &str,
+    event_id: &str,
+    source_key: &str,
+    run_id: &str,
+) {
     let pool = open_spool(path).await.unwrap();
     sqlx::query(
         "INSERT INTO pending_block_events
             (event_id, vault_id, device_id, run_id, occurred_at, source_type, source_key,
              display_name, phase, decision, rule_kind, rule_label, blocker_mode)
-         VALUES (?, ?, ?, 'run-gone', '2026-09-13T10:00:00.000Z', 'browser', ?, ?, 'focus',
+         VALUES (?, ?, ?, ?, '2026-09-13T10:00:00.000Z', 'browser', ?, ?, 'focus',
                  'blocked', 'domain', 'Video', 'blacklist')",
     )
     .bind(event_id)
     .bind(vault_id)
     .bind(DEVICE)
+    .bind(run_id)
     .bind(source_key)
     .bind(source_key)
     .execute(&pool)
     .await
     .unwrap();
     pool.close().await;
+}
+
+/// Block event rows the vault's capture triggers queued for the next seal.
+async fn captured_block_events(pool: &SqlitePool) -> Vec<String> {
+    let table = ganbaru_sync::manifest::vault::distractions::BLOCK_EVENTS_TABLE;
+    sqlx::query_scalar("SELECT row_key FROM sync_capture WHERE table_id = ? ORDER BY row_key")
+        .bind(i64::from(table.0))
+        .fetch_all(pool)
+        .await
+        .unwrap()
 }
 
 async fn spooled_block_event_ids(path: &Path) -> Vec<String> {
@@ -399,12 +420,55 @@ async fn spooled_block_events_reach_the_vault_once_and_leave_the_spool() {
 }
 
 #[tokio::test]
-async fn a_failed_block_event_import_keeps_the_batch_in_the_spool() {
-    let path = temporary_spool("failed-blocks");
+async fn block_events_the_vault_refuses_are_dropped_and_the_rest_import() {
+    let path = temporary_spool("refused-blocks");
     let vault = vault_pool().await;
     sqlx::raw_sql(
         "CREATE TRIGGER reject_block BEFORE INSERT ON distractions_block_events
-         WHEN NEW.id = 'block-2' BEGIN SELECT RAISE(ABORT, 'injected failure'); END",
+         WHEN NEW.id = 'block-2' BEGIN SELECT RAISE(ABORT, 'injected refusal'); END;
+         CREATE TRIGGER reject_snapshot BEFORE INSERT ON distractions_block_event_rule_snapshots
+         WHEN NEW.block_event_id = 'block-4' BEGIN SELECT RAISE(ABORT, 'injected refusal'); END;",
+    )
+    .execute(&vault)
+    .await
+    .unwrap();
+    spool_block_event(&path, VAULT, "block-1", "youtube.com").await;
+    spool_block_event(&path, VAULT, "block-2", "reddit.com").await;
+    // A NUL byte passes the browser host but the vault's value triggers refuse it.
+    spool_block_event(&path, VAULT, "block-3", "you\0tube.com").await;
+    spool_block_event(&path, VAULT, "block-4", "news.example.com").await;
+    spool_block_event(&path, VAULT, "block-5", "video.example.com").await;
+    assert_eq!(
+        ingest_block_events_at(&path, &vault, VAULT, DEVICE)
+            .await
+            .unwrap(),
+        5
+    );
+    // A refused rule snapshot takes its event with it, so no event lacks its snapshot.
+    let ingested: Vec<String> = vault_block_events(&vault)
+        .await
+        .into_iter()
+        .map(|(id, _, _)| id)
+        .collect();
+    assert_eq!(ingested, ["block-1", "block-5"]);
+    let events: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM distractions_block_events")
+        .fetch_one(&vault)
+        .await
+        .unwrap();
+    assert_eq!(events, 2);
+    assert!(spooled_block_event_ids(&path).await.is_empty());
+    vault.close().await;
+    remove(&path);
+}
+
+#[tokio::test]
+async fn a_vault_failure_that_is_not_a_refusal_keeps_the_batch_in_the_spool() {
+    let path = temporary_spool("failed-blocks");
+    let vault = vault_pool().await;
+    // The trigger body names a missing table, which fails with a plain SQLite error.
+    sqlx::raw_sql(
+        "CREATE TRIGGER fail_block BEFORE INSERT ON distractions_block_events
+         WHEN NEW.id = 'block-2' BEGIN SELECT * FROM missing_table; END",
     )
     .execute(&vault)
     .await
@@ -418,6 +482,61 @@ async fn a_failed_block_event_import_keeps_the_batch_in_the_spool() {
     );
     assert_eq!(spooled_block_event_ids(&path).await, ["block-1", "block-2"]);
     assert!(vault_block_events(&vault).await.is_empty());
+    vault.close().await;
+    remove(&path);
+}
+
+#[tokio::test]
+async fn a_block_event_ingested_during_an_open_run_publishes_when_the_run_closes() {
+    let path = temporary_spool("open-run-blocks");
+    let vault = vault_pool().await;
+    sqlx::raw_sql(
+        "INSERT INTO calendar_events (id, title, start_time, end_time)
+         VALUES ('event-1', 'Focus block', '2026-09-13T09:00:00Z', '2026-09-13T11:00:00Z');
+         INSERT INTO pomodoro_runs
+            (id, event_id, original_event_id, event_date, planned_start, planned_end,
+             started_at, rhythm_kind, rhythm_source, preset_key, last_heartbeat, start_trigger)
+         VALUES ('run-open', 'event-1', 'event-1', '2026-09-13', '2026-09-13T09:00:00Z',
+                 '2026-09-13T11:00:00Z', '2026-09-13T09:00:00Z', 'count', 'preset',
+                 'adaptive', '2026-09-13T09:00:00Z', 'manual');
+         DELETE FROM sync_capture;",
+    )
+    .execute(&vault)
+    .await
+    .unwrap();
+    spool_block_event_in_run(&path, VAULT, "block-1", "youtube.com", "run-open").await;
+    assert_eq!(
+        ingest_block_events_at(&path, &vault, VAULT, DEVICE)
+            .await
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        vault_block_events(&vault).await,
+        [(
+            "block-1".to_string(),
+            Some("run-open".to_string()),
+            "Video".to_string()
+        )]
+    );
+    assert!(spooled_block_event_ids(&path).await.is_empty());
+    assert!(
+        captured_block_events(&vault).await.is_empty(),
+        "an event of an open run waits for the run"
+    );
+
+    sqlx::query(
+        "UPDATE pomodoro_runs SET ended_at = '2026-09-13T10:30:00Z', end_reason = 'completed'
+         WHERE id = 'run-open'",
+    )
+    .execute(&vault)
+    .await
+    .unwrap();
+    assert_eq!(
+        captured_block_events(&vault).await,
+        ["block-1"],
+        "closing the run publishes its block events"
+    );
     vault.close().await;
     remove(&path);
 }

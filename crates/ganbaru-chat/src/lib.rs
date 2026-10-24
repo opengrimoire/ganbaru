@@ -15,6 +15,7 @@ pub mod credentials;
 pub mod driver_operations;
 #[cfg(feature = "native-runtime")]
 pub mod git;
+pub mod ids;
 #[cfg(feature = "native-runtime")]
 pub mod ingestion;
 pub mod project_defaults;

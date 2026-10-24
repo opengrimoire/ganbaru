@@ -508,7 +508,7 @@ async fn insert_access_profile_revision(
              maximum_folder_capability, created_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
     )
-    .bind(new_id("access-profile-revision"))
+    .bind(new_id("access-profile-revision")?)
     .bind(access_profile_id.as_str())
     .bind(i64_value(revision)?)
     .bind(input.default_channel_capabilities.read_history)

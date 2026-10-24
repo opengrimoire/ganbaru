@@ -6,9 +6,9 @@ use ganbaru_chat_contracts::models::*;
 use serde_json::Value;
 #[cfg(desktop)]
 use sha2::{Digest, Sha256};
+pub(super) use ganbaru_chat::ids::new_id;
+use ganbaru_chat::ids::{REPLY_THREAD_ID_PREFIX, derived_id};
 use std::collections::BTreeSet;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 pub(super) const MAX_MESSAGE_BYTES: usize = 128 * 1024;
 
@@ -262,20 +262,35 @@ fn safe_relative_path(path: &str) -> bool {
 }
 
 pub(super) fn conversation_item_id() -> ChatResult<ChatConversationItemId> {
-    ChatConversationItemId::new(new_id("conversation-item")).map_err(identifier_error)
+    ChatConversationItemId::new(new_id("conversation-item")?).map_err(identifier_error)
 }
 
 pub(super) fn message_revision_id() -> ChatResult<ChatMessageRevisionId> {
-    ChatMessageRevisionId::new(new_id("message-revision")).map_err(identifier_error)
+    ChatMessageRevisionId::new(new_id("message-revision")?).map_err(identifier_error)
 }
 
-pub(super) fn reply_thread_id() -> ChatResult<ChatReplyThreadId> {
-    ChatReplyThreadId::new(new_id("reply-thread")).map_err(identifier_error)
+/// Returns the reply thread id derived from its root item, so every device that opens the thread
+/// for the same root message agrees on its id.
+pub(super) fn reply_thread_id(
+    root_item_id: &ChatConversationItemId,
+) -> ChatResult<ChatReplyThreadId> {
+    ChatReplyThreadId::new(derived_id(
+        REPLY_THREAD_ID_PREFIX,
+        &[root_item_id.as_str()],
+    )?)
+    .map_err(identifier_error)
+}
+
+/// Returns the work assignment input id derived from its message, so one message routes to at
+/// most one input whichever device writes it.
+#[cfg(desktop)]
+pub(super) fn assignment_input_id(message_item_id: &str) -> ChatResult<String> {
+    derived_id(ganbaru_chat::ids::ASSIGNMENT_INPUT_ID_PREFIX, &[message_item_id])
 }
 
 #[cfg(desktop)]
 pub(super) fn work_assignment_id() -> ChatResult<ChatWorkAssignmentId> {
-    ChatWorkAssignmentId::new(new_id("assignment")).map_err(identifier_error)
+    ChatWorkAssignmentId::new(new_id("assignment")?).map_err(identifier_error)
 }
 
 pub(super) fn parse_participant_kind(value: &str) -> ChatResult<ChatParticipantKind> {
@@ -548,16 +563,6 @@ fn stored_value_error(label: &str) -> ChatError {
         format!("Stored Chat {label} is invalid"),
         false,
     )
-}
-
-pub(super) fn new_id(prefix: &str) -> String {
-    static SEQUENCE: AtomicU64 = AtomicU64::new(0);
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_nanos())
-        .unwrap_or_default();
-    let sequence = SEQUENCE.fetch_add(1, Ordering::Relaxed);
-    format!("{prefix}:{nanos:032x}{sequence:016x}")
 }
 
 pub(super) fn serialization_error<E>(_error: E) -> ChatError {

@@ -17,7 +17,7 @@ pub(super) async fn dispatch_assignment_job(
 ) -> ChatResult<()> {
     let pool = chat_pool(app.clone(), db_url.clone()).await?;
     let now = now_timestamp()?;
-    let claim_token = new_id("dispatch-claim");
+    let claim_token = new_id("dispatch-claim")?;
     let claimed = sqlx::query(
         "UPDATE chat_assignment_dispatch_jobs
          SET state = 'claimed', claimed_at = ?, claim_token = ?,
@@ -384,7 +384,7 @@ async fn dispatch_claimed_assignment(
         .transpose()?;
     let provider_execution_thread_id = existing_thread_id
         .clone()
-        .unwrap_or(ChatThreadId::new(new_id("provider-execution")).map_err(identifier_error)?);
+        .unwrap_or(ChatThreadId::new(new_id("provider-execution")?).map_err(identifier_error)?);
     let attachment_ids = sqlx::query_scalar::<_, String>(
         "SELECT attachment.attachment_id
          FROM chat_work_assignments assignment
@@ -455,8 +455,8 @@ async fn dispatch_claimed_assignment(
         new_thread_id: (continuation.is_none()).then_some(provider_execution_thread_id),
         execution_environment_id: execution_environment_id.clone(),
         scratch_generation_id: scratch_generation_id.clone(),
-        turn_id: ChatTurnId::new(new_id("provider-turn")).map_err(identifier_error)?,
-        message_id: ChatMessageId::new(new_id("provider-message")).map_err(identifier_error)?,
+        turn_id: ChatTurnId::new(new_id("provider-turn")?).map_err(identifier_error)?,
+        message_id: ChatMessageId::new(new_id("provider-message")?).map_err(identifier_error)?,
         provider_instance_id: policy.provider_instance_id,
         provider_managed_model: policy.provider_managed_model,
         model_id: policy.model_id,
@@ -478,7 +478,7 @@ async fn dispatch_claimed_assignment(
             origin: ganbaru_chat::agent_runs::TurnOrigin::Assignment {
                 developer_instructions,
                 run: Box::new(ganbaru_chat::agent_runs::AgentRunBinding {
-                    run_id: ChatAgentRunId::new(new_id("agent-run")).map_err(identifier_error)?,
+                    run_id: ChatAgentRunId::new(new_id("agent-run")?).map_err(identifier_error)?,
                     assignment_id: assignment_id.clone(),
                     project_id,
                     teammate_policy_revision_id: policy.id,
@@ -838,7 +838,7 @@ pub(super) async fn deliver_assignment_input(
                 expected_thread_revision: None,
             },
             thread_id,
-            message_id: ChatMessageId::new(new_id("provider-steer-message"))
+            message_id: ChatMessageId::new(new_id("provider-steer-message")?)
                 .map_err(identifier_error)?,
             prompt: row
                 .try_get("normalized_markdown")

@@ -181,7 +181,7 @@ pub(super) async fn freeze_context_package(
         }
         serialized.push_str(&line);
     }
-    let context_id = new_id("context");
+    let context_id = new_id("context")?;
     let context_hash = sha256_hex(serialized.as_bytes());
     sqlx::query(
         "INSERT INTO chat_assignment_context_packages
@@ -328,7 +328,7 @@ pub(super) async fn freeze_context_package(
             .as_slice(),
     );
     let authorization_id =
-        ChatAuthorizationRevisionId::new(new_id("authorization")).map_err(identifier_error)?;
+        ChatAuthorizationRevisionId::new(new_id("authorization")?).map_err(identifier_error)?;
     sqlx::query(
         "INSERT INTO chat_assignment_authorization_revisions
             (id, assignment_id, revision, requester_participant_id,

@@ -5,7 +5,9 @@ use super::common::{
     parse_participant_kind, reply_thread_id, serialization_error, wire_participant_kind,
 };
 #[cfg(desktop)]
-use super::common::{wire_approval_policy, wire_work_state, work_assignment_id};
+use super::common::{
+    assignment_input_id, wire_approval_policy, wire_work_state, work_assignment_id,
+};
 #[cfg(desktop)]
 use super::context::freeze_context_package;
 #[cfg(desktop)]
@@ -164,7 +166,7 @@ pub(super) async fn persist_assignment_routing(
                 (id, assignment_id, message_item_id, ordinal, routing_kind, created_at)
              VALUES (?, ?, ?, ?, ?, ?)",
         )
-        .bind(new_id("assignment-input"))
+        .bind(assignment_input_id(message_item_id.as_str())?)
         .bind(active.id.as_str())
         .bind(message_item_id.as_str())
         .bind(ordinal)
@@ -228,7 +230,7 @@ pub(super) async fn persist_assignment_routing(
             (id, assignment_id, message_item_id, ordinal, routing_kind, created_at)
          VALUES (?, ?, ?, 1, ?, ?)",
     )
-    .bind(new_id("assignment-input"))
+    .bind(assignment_input_id(message_item_id.as_str())?)
     .bind(assignment_id.as_str())
     .bind(message_item_id.as_str())
     .bind(if previous_id.is_some() {
@@ -255,7 +257,7 @@ pub(super) async fn persist_assignment_routing(
             (id, assignment_id, state, available_at, created_at, updated_at)
          VALUES (?, ?, 'queued', ?, ?, ?)",
     )
-    .bind(new_id("dispatch"))
+    .bind(new_id("dispatch")?)
     .bind(assignment_id.as_str())
     .bind(now.as_str())
     .bind(now.as_str())
@@ -850,7 +852,7 @@ pub(super) async fn insert_channel_copy(
     let mut copied_request = request.clone();
     for reference in &mut copied_request.references {
         reference.metadata_mut().reference_id =
-            ChatMessageReferenceId::new(new_id("message-reference")).map_err(identifier_error)?;
+            ChatMessageReferenceId::new(new_id("message-reference")?).map_err(identifier_error)?;
     }
     insert_communication_message(
         transaction,
@@ -867,7 +869,7 @@ pub(super) async fn insert_channel_copy(
     )
     .await?;
     if has_thread_eligible_mention(request) {
-        let thread_id = reply_thread_id()?;
+        let thread_id = reply_thread_id(&item_id)?;
         sqlx::query(
             "INSERT INTO chat_reply_threads
                 (id, conversation_id, root_item_id, last_activity_at, created_at, updated_at)
@@ -1024,7 +1026,7 @@ pub(super) async fn insert_policy_revision(
              interaction_mode, created_at)
          VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, 'build', ?)",
     )
-    .bind(new_id("teammate-policy"))
+    .bind(new_id("teammate-policy")?)
     .bind(teammate_id.as_str())
     .bind(i64_value(revision)?)
     .bind(policy.provider_instance_id.as_str())

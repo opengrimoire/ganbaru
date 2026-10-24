@@ -299,7 +299,7 @@ pub async fn chat_post_message(
     let revision_id = message_revision_id()?;
     let target_reply_thread_id = match request.reply_thread_id.as_ref() {
         Some(reply_thread_id) => Some(reply_thread_id.clone()),
-        None if has_thread_eligible_mention(&request) => Some(reply_thread_id()?),
+        None if has_thread_eligible_mention(&request) => Some(reply_thread_id(&item_id)?),
         None => None,
     };
     let mut transaction = pool.begin().await.map_err(persistence_error)?;

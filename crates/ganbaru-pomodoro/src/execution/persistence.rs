@@ -298,7 +298,7 @@ pub(super) async fn load_segment(
         .try_get("actual_end")
         .map_err(|error| error.to_string())?;
     let pause_rows = sqlx::query_as::<_, (String, Option<String>, String)>(
-        "SELECT started_at, ended_at, reason FROM pomodoro_pauses WHERE segment_id = ? ORDER BY started_at, id LIMIT ?",
+        "SELECT started_at, ended_at, reason FROM pomodoro_pauses WHERE segment_id = ? ORDER BY ordinal LIMIT ?",
     ).bind(id).bind(MAX_SEGMENT_PAUSES + 1).fetch_all(&mut **tx).await
         .map_err(|error| format!("Read canonical Focus pauses: {error}"))?;
     if pause_rows.len() > MAX_SEGMENT_PAUSES as usize {

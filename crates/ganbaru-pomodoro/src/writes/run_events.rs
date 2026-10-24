@@ -45,10 +45,11 @@ pub(crate) async fn replace_segment_pauses(
         validate_pause(pause)?;
         sqlx::query(
             "INSERT INTO pomodoro_pauses
-                (id, segment_id, started_at, ended_at, reason, detected_at)
-             VALUES (lower(hex(randomblob(16))), ?, ?, ?, ?, ?)",
+                (segment_id, ordinal, started_at, ended_at, reason, detected_at)
+             VALUES (?, ?, ?, ?, ?, ?)",
         )
         .bind(segment_id)
+        .bind(i64::try_from(index).map_err(|e| format!("pomodoro pause ordinal {index}: {e}"))?)
         .bind(&pause.started_at)
         .bind(&pause.ended_at)
         .bind(&pause.reason)

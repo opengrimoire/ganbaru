@@ -194,6 +194,7 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
             calendar::conflicts::calendar_conflicts,
             calendar::conflicts::calendar_resolve_conflict,
             pomodoro::pomodoro_load_segments_for_events,
+            pomodoro::focus_device_activity,
             pomodoro::native_runtime::focus_snapshot,
             pomodoro::native_runtime::focus_command,
             pomodoro::native_runtime::focus_notification_copy,

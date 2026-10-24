@@ -231,7 +231,7 @@ pub(crate) async fn commit_calendar_edit(
     if ownership
         .cached_status(&request.vault_id)
         .map_err(CommitFailure::unknown)?
-        .is_some_and(|status| !status.can_write)
+        .is_some_and(|status| !crate::pomodoro::calendar_edit_writable(&status))
     {
         return read_only_calendar_retry(app, &request)
             .await
@@ -315,7 +315,10 @@ async fn receipt_read_authority(
             .state::<crate::vault::ownership::VaultOwnershipManager>()
             .status(&vault_id)
             .map_err(CommitFailure::unknown)?;
-        Ok((status.generation, status.can_write))
+        Ok((
+            status.generation,
+            crate::pomodoro::calendar_edit_writable(&status),
+        ))
     });
     tokio::time::timeout(
         ganbaru_calendar::events::scope::SCOPE_WORKER_TIMEOUT,
@@ -424,7 +427,7 @@ impl Owner {
         let _permit = self
             .app
             .state::<crate::vault::ownership::VaultOwnershipManager>()
-            .acquire_managed_write(&request.vault_id)?;
+            .acquire_replicated_write(&request.vault_id, crate::pomodoro::CALENDAR_DOMAIN)?;
         let pool = self
             .pool
             .as_ref()
@@ -530,6 +533,7 @@ impl Owner {
                 now_ms: now,
                 platform: platform(),
                 foreground: self.foreground,
+                device_id: Some(self.device_id()?),
                 commitment: calendar.commitment,
                 local_time: Some(Arc::new(local_time::NativeLocalTime(self.app.clone()))),
                 planned_blocks: calendar
@@ -566,6 +570,7 @@ impl Owner {
                 now_ms: now,
                 platform: platform(),
                 foreground: self.foreground,
+                device_id: Some(self.device_id()?),
                 commitment: calendar.commitment,
                 local_time: Some(Arc::new(local_time::NativeLocalTime(self.app.clone()))),
                 planned_blocks: calendar

@@ -43,7 +43,7 @@ fn hot_domain_queries_use_expected_indexes() {
             (
                 "active Pomodoro segment",
                 "SELECT id FROM pomodoro_segments WHERE status = 'active' LIMIT 1",
-                "idx_pomodoro_segments_single_active",
+                "idx_pomodoro_segments_active",
             ),
             (
                 "active Quick notes",

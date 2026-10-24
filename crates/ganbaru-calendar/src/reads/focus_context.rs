@@ -46,20 +46,89 @@ pub async fn resolve(
     now_ms: i64,
     requested_occurrence_id: Option<&str>,
 ) -> Result<FocusCalendarContext, String> {
-    resolve_in_zone(
+    resolve_with(
         connection,
         now_ms,
         requested_occurrence_id,
         &civil_time::system_zone()?,
+        None,
     )
     .await
 }
 
+/// Like [`resolve`] for automatic admission without a requested occurrence: the automatic
+/// choice also skips every occurrence that a fresh activity row of a device other than
+/// `local_device_id` is focusing on, so two devices do not start the same occurrence on their
+/// own. The running owner keeps its occurrence.
+pub async fn resolve_for_admission(
+    connection: &mut SqliteConnection,
+    now_ms: i64,
+    local_device_id: &str,
+) -> Result<FocusCalendarContext, String> {
+    resolve_with(
+        connection,
+        now_ms,
+        None,
+        &civil_time::system_zone()?,
+        Some(local_device_id),
+    )
+    .await
+}
+
+/// Occurrences the automatic choice passes over.
+struct AutomaticSkips {
+    /// Ids of events whose timing has an open sync conflict.
+    timing_conflicts: BTreeSet<String>,
+    /// Occurrence ids that fresh activity rows of other devices are focusing on.
+    focused_elsewhere: BTreeSet<String>,
+}
+
+impl AutomaticSkips {
+    fn skips(&self, commitment: &FocusCommitment) -> bool {
+        self.timing_conflicts.contains(&commitment.event_id)
+            || self.focused_elsewhere.contains(&commitment.occurrence_id)
+    }
+}
+
+/// Occurrence ids that fresh activity rows of devices other than `local_device_id` name.
+async fn focused_elsewhere(
+    connection: &mut SqliteConnection,
+    local_device_id: &str,
+    now_ms: i64,
+) -> Result<BTreeSet<String>, String> {
+    Ok(
+        ganbaru_pomodoro::focus_read_other_device_activity(connection, local_device_id, now_ms)
+            .await
+            .map_err(|error| format!("read Focus activity of other devices: {}", error.message))?
+            .into_iter()
+            .filter_map(|activity| activity.occurrence_id)
+            .collect(),
+    )
+}
+
+#[cfg(test)]
 async fn resolve_in_zone(
     connection: &mut SqliteConnection,
     now_ms: i64,
     requested_occurrence_id: Option<&str>,
     device_zone: &TimeZone,
+) -> Result<FocusCalendarContext, String> {
+    resolve_with(
+        connection,
+        now_ms,
+        requested_occurrence_id,
+        device_zone,
+        None,
+    )
+    .await
+}
+
+async fn resolve_with(
+    connection: &mut SqliteConnection,
+    now_ms: i64,
+    requested_occurrence_id: Option<&str>,
+    device_zone: &TimeZone,
+    local_device_id: Option<&str>,
 ) -> Result<FocusCalendarContext, String> {
     if requested_occurrence_id.is_some_and(|id| id.is_empty() || id.len() > 2_048) {
         return Err("invalid requested Focus occurrence identity".into());
@@ -77,7 +146,13 @@ async fn resolve_in_zone(
     .fetch_optional(&mut *connection)
     .await
     .map_err(|error| format!("read committed Focus owner: {error}"))?;
-    let suspended = timing_conflicts(connection).await?;
+    let skips = AutomaticSkips {
+        timing_conflicts: timing_conflicts(connection).await?,
+        focused_elsewhere: match local_device_id {
+            Some(device_id) => focused_elsewhere(connection, device_id, now_ms).await?,
+            None => BTreeSet::new(),
+        },
+    };
     let source = native_window::read(
         connection,
         &window,
@@ -96,7 +171,7 @@ async fn resolve_in_zone(
         device_zone,
         active_occurrence.as_deref(),
         requested_occurrence_id,
-        &suspended,
+        &skips,
     )?;
     // An overnight or multi-day owner can have started outside today's window.
     // Capture its full original device-day plan in the same accepted transaction.
@@ -128,7 +203,7 @@ async fn resolve_in_zone(
             device_zone,
             active_occurrence.as_deref(),
             Some(&commitment.occurrence_id),
-            &suspended,
+            &skips,
         )?
         .planned_blocks;
     }
@@ -213,7 +288,7 @@ fn select(
     device_zone: &TimeZone,
     active_occurrence: Option<&str>,
     requested_occurrence: Option<&str>,
-    suspended: &BTreeSet<String>,
+    skips: &AutomaticSkips,
 ) -> Result<FocusCalendarContext, String> {
     let events: BTreeMap<_, _> = projection
         .events
@@ -326,11 +401,10 @@ fn select(
                     .position(|(_, value)| value.occurrence_id == active)
             })
             .or_else(|| {
-                // Events with an open timing conflict stay in the plan but are not admitted
-                // automatically; an explicit request or the running owner still selects them.
-                candidates
-                    .iter()
-                    .position(|(_, value)| !suspended.contains(&value.event_id))
+                // Events with an open timing conflict, and occurrences another device is
+                // focusing on, stay in the plan but are not admitted automatically; an explicit
+                // request or the running owner still selects them.
+                candidates.iter().position(|(_, value)| !skips.skips(value))
             })
     };
     let commitment = selected.map(|index| candidates.remove(index).1);

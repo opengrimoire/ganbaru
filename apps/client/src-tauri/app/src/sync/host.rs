@@ -244,6 +244,7 @@ impl<R: Runtime> SyncHost for AppHandle<R> {
         crate::vault::preferences::on_sync_notices(self, notices).await;
         crate::projects::sync::on_sync_notices(self, notices);
         crate::calendar::sync::on_sync_notices(self, notices);
+        crate::pomodoro::sync::on_sync_notices(self, notices);
         #[cfg(desktop)]
         crate::music::sync::on_sync_notices(self, notices).await;
     }

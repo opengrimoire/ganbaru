@@ -13,6 +13,7 @@ A timer measures an accepted interval; it does not prove productive work. Calend
 - Desktop automatic starts require an eligible Calendar event and a new native activity observation showing input at or after the event boundary and no older than 15 seconds. Missing, malformed, future, or stale observations cannot authorize execution. While a due commitment waits for activity, the owner rechecks every 15 seconds. Manual start remains available when the source is unavailable.
 - Android starts only through explicit user action. Calendar alarms carry reminder data only, never a run ID, phase plan, or running flag. Permission denial never starts a session.
 - A run publishes running state only after its initial write commits. A failed write leaves no executing timer. A late start uses its actual acceptance time.
+- Desktop automatic admission skips an occurrence that a fresh activity row of another linked device is focusing on. An explicit start is never filtered; the UI names the other device and its event and asks for confirmation first. Replicated rows never start, stop, or change a run on this device.
 - A finished break waiting for return is not an accepted phase. Waiting for any duration cannot start focus; the user must accept the return ("Ready to return").
 
 Rationale: without these rules, a phone alarm or a desktop that was off at event start could fabricate focus history and drive the distraction blocker or Music as if the user were working.
@@ -53,6 +54,10 @@ Vault selection, replacement, and handoff freeze the native owner before closing
 ## Idle grace
 
 Idle failure is measured from the first committed visibility acknowledgement of the current warning, using the owner's monotonic clock. Missing visibility or a failed acknowledgement write cannot consume the user's grace period. See [Idle detection](idle-detection.md).
+
+## Linked devices
+
+Each linked device runs its own native owner and writes only its own runs, so Focus works on replicas as well as the owner. A run replicates once closed, and the device activity row is rewritten in the same transaction as each start, phase change, pause, resume, and stop, never on heartbeat. A running row expires 10 minutes after its planned phase end and a paused row 30 minutes after the pause began, so a device that goes silent stops blocking admission elsewhere. Expiry is compared with the reading device's clock, so clock skew between devices shortens or lengthens that window. Activity is advisory: it never counts as activity evidence for this device.
 
 ## Planned: device controller ownership
 

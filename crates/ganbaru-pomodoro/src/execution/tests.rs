@@ -3,11 +3,14 @@ use sqlx::SqlitePool;
 use super::*;
 use crate::PomodoroRunRhythm;
 
+mod activity;
 mod adaptive;
 mod calendar;
 
 const START: i64 = 1_779_444_000_000;
 const MINUTE: i64 = 60_000;
+/// Device whose activity row the test contexts write.
+const LOCAL_DEVICE: &str = "device-local";
 
 #[test]
 fn phase_consumers_use_shared_ownership_and_cannot_renew_past_accepted_deadlines() {
@@ -80,6 +83,7 @@ fn context(now_ms: i64) -> FocusExecutionContext {
         foreground: true,
         local_time: None,
         planned_blocks: Vec::new(),
+        device_id: Some(LOCAL_DEVICE.to_owned()),
         commitment: Some(FocusCommitment {
             event_id: "focus-event".to_owned(),
             occurrence_id: "focus-event".to_owned(),

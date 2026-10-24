@@ -1103,23 +1103,39 @@ pub(crate) async fn defer_stale(
     Ok(())
 }
 
-/// Moves the rows [`mark_stale`] and [`defer_stale`] listed into `dirty`, so the engine write
-/// materializes them again.
+/// Moves at most `limit` of the rows [`mark_stale`] and [`defer_stale`] listed into `dirty`,
+/// first in table and key order, so the engine write materializes them again. Returns whether
+/// listed rows remain for a later engine write.
 pub(crate) async fn take_stale(
     conn: &mut SqliteConnection,
     dirty: &mut BTreeSet<(TableId, String)>,
-) -> SyncResult<()> {
-    let rows: Vec<(i64, String)> =
-        sqlx::query_as("DELETE FROM sync_stale_rows RETURNING table_id, row_key")
-            .fetch_all(&mut *conn)
-            .await?;
+    limit: usize,
+) -> SyncResult<bool> {
+    let rows: Vec<(i64, String)> = sqlx::query_as(
+        "DELETE FROM sync_stale_rows WHERE (table_id, row_key) IN (
+            SELECT table_id, row_key FROM sync_stale_rows ORDER BY table_id, row_key LIMIT ?
+         )
+         RETURNING table_id, row_key",
+    )
+    .bind(i64::try_from(limit).unwrap_or(i64::MAX))
+    .fetch_all(&mut *conn)
+    .await?;
     for (table, key) in rows {
         let table = u16::try_from(table)
             .map(TableId)
             .map_err(|_| corrupt("stale row of a table id out of range"))?;
         dirty.insert((table, key));
     }
-    Ok(())
+    stale_rows_listed(conn).await
+}
+
+/// Whether [`mark_stale`] or [`defer_stale`] listed rows no engine write took back yet.
+pub(crate) async fn stale_rows_listed(conn: &mut SqliteConnection) -> SyncResult<bool> {
+    Ok(
+        sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM sync_stale_rows)")
+            .fetch_one(&mut *conn)
+            .await?,
+    )
 }
 
 /// Late change state of a row: per removal, its kind and decision.

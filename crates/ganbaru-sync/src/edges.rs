@@ -112,8 +112,8 @@ async fn edges(
         let target = endpoints.table;
         if probe.hidden(engine, conn, target, from).await?
             || probe.hidden(engine, conn, target, to).await?
-            || merge::row_state(conn, target, from).await?.is_none()
-            || merge::row_state(conn, target, to).await?.is_none()
+            || probe.state(conn, target, from).await?.is_none()
+            || probe.state(conn, target, to).await?.is_none()
         {
             continue;
         }

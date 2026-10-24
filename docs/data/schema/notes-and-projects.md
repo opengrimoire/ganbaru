@@ -4,7 +4,9 @@ Notes and Projects share project identity, navigation, task scheduling, managed 
 
 ## Notes canonical graph
 
-A page has stable identity, metadata, placement, trash and archive state, and an ordered block tree. Blocks have stable identity independent of their current parent and order. Mutations validate the resulting graph for cycles, stale parents, invalid project placement, and unsupported content before committing.
+A page has stable identity, metadata, placement, trash and archive state, and an ordered block tree. Blocks have stable identity independent of their current parent and order. Mutations validate the resulting graph for cycles, stale parents, invalid project placement, and unsupported content before committing. The schema keeps only row-local checks and foreign keys; rules that span rows (folder cycles, folder placement and project, row hierarchy detachment) run in Rust inside the writing transaction. Recursive queries over pages, blocks, and folders use set semantics and a depth bound, so a corrupt parent cycle ends instead of looping.
+
+A block row stores its text content (rich text, table cells, captions) in `text` and every other attribute in `attrs`, bounded at 256 KiB and 64 KiB; imports split oversized rich text into continuation blocks instead of exceeding the bound. Siblings sort by a fractional `order_key`, then id. Whether a block is open or its editing lock is set is device-local view state, not page content. A nested page shares its id with the `child_page` block that places it (`child_block_id`), so deleting that block deletes the page. Pages and blocks trashed together with a database carry that trash operation's token in `trash_owner`, so restore revives only what the operation trashed.
 
 Page bodies are not canonical Markdown or HTML. Rich content is validated block data and text runs; rendered output, Markdown export, previews, and search projections are derivative. Page cover descriptors (a designed pattern with a palette slot, or an image reference with an optional focal point) are canonical and follow duplication, templates, and history, while image bytes stay managed assets. See [Page covers](../../features/notes/page-covers.md).
 
@@ -20,7 +22,7 @@ Undo is selective: it restores only changed payloads and placements from bounded
 
 ## Placement and projects
 
-A page is workspace-rooted, nested below one valid page, or placed through one valid project location (invariant 8 in [Data invariants](../invariants.md)). Moves update project and ancestry implications transactionally.
+A page is workspace-rooted, nested below one valid page, or placed through one valid project location (invariant 8 in [Data invariants](../invariants.md)). Moves update project and ancestry implications transactionally. A page stores its project in `project_id`; nested pages keep their parent page's project, and deleting a project deletes its pages.
 
 Project working-folder Markdown stays file-authoritative and is not copied into the Notes graph. The project tree may show pages and files together, but their source-of-truth rules remain distinct.
 
@@ -48,7 +50,7 @@ Mentions, comments, suggestions, and mention notifications keep author, target, 
 
 ## Assets
 
-Managed Notes assets use feature-owned relative identities below the vault. Page icons, covers, block files, property files, comment attachments, and imported files stay distinguishable so cleanup applies the correct references and retention. Rust validates type, size, content signature, and destination before importing bytes, and uses the staged workflow in [Data architecture](../architecture.md#transactions-and-filesystem-work). Exported paths never become canonical managed paths.
+Managed Notes assets use feature-owned relative identities below the vault. An asset id is its managed class and content hash (`notes/page-icons:<sha256>`), so identical bytes in one class share one row. Page icons, covers, block files, property files, comment attachments, and imported files stay distinguishable so cleanup applies the correct references and retention. Rust validates type, size, content signature, and destination before importing bytes, and uses the staged workflow in [Data architecture](../architecture.md#transactions-and-filesystem-work). Exported paths never become canonical managed paths.
 
 ## Import, export, and working Markdown
 
@@ -56,13 +58,11 @@ Import is an explicit conversion into validated canonical rows; an arbitrary Mar
 
 Working Markdown is a controlled bridge for selected Notes and related project context, with provenance and revision checks. Applying changes back requires an explicit command and conflict handling. It is not a second live source of truth.
 
-## History and collaboration
+## History
 
 Page history stores bounded compressed snapshots with digests and retention metadata. Global retention is 0 (indefinite), 7, 30, 90, 180, or 365 days, and a project may inherit it or override it.
 
-History reads treat stored data as untrusted: encoding, declared size, decompression bound, digest, and JSON shape are validated before use. Restore records the current state first, applies canonical rows transactionally, keeps collaboration sequencing append-only, suppresses historical notification delivery, and rebuilds derived indexes.
-
-Collaboration operations have stable sequence and author identity. They are durable local history and a future sync input, not evidence that remote collaboration exists.
+History reads treat stored data as untrusted: encoding, declared size, decompression bound, digest, and JSON shape are validated before use. Restore records the current state first, then applies the version as a diff in one transaction: rows still present are updated in place, later rows the version lacks move to the trash (folders and leaf rows are deleted), and only rows that are gone or moved elsewhere return with new identities. Restore never deletes and reinserts a surviving row, suppresses historical notification delivery, and rebuilds derived indexes.
 
 ## Search and derived indexes
 
@@ -105,4 +105,4 @@ Creating a project or a working folder creates no Chat rows; Chat creates its de
 
 External folders use the same logical identity but resolve through a device-local binding; absolute paths and filesystem fingerprints never enter the database. Chat authority over a project does not imply access to its folders; grants are governed by [Chat access control](../access-control.md).
 
-Deleting a project must account for managed files, linked Notes, tasks, calendar events, Chat history, and external bindings. Filesystem removal is never an automatic foreign-key cascade. A task's section and status are cascading foreign keys, so deleting either row removes its tasks on every replica; commands still refuse deleting a status or priority a task uses and soft delete it otherwise.
+Deleting a project must account for managed files, linked Notes, tasks, calendar events, Chat history, and external bindings. Its Notes pages are removed by a cascading foreign key. Filesystem removal is never an automatic foreign-key cascade. A task's section and status are cascading foreign keys, so deleting either row removes its tasks on every replica; commands still refuse deleting a status or priority a task uses and soft delete it otherwise.

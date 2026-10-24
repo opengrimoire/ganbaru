@@ -12,6 +12,15 @@ use sqlx::{Sqlite, Transaction};
 /// cycle from turning a recursive query into unbounded work.
 pub(crate) const MAX_TREE_DEPTH: i64 = 64;
 
+/// Deepest step count a recursive walk across nested pages and their blocks,
+/// databases, and data sources takes.
+///
+/// Each nested page level adds at most its block nesting, a database, and a
+/// data source, so a complete walk of any real tree stays below it; it only
+/// stops a corrupt or adversarial cycle.
+pub(crate) const MAX_CONTENT_WALK_DEPTH: i64 =
+    MAX_TREE_DEPTH * (crate::writes::MAX_BLOCK_DEPTH + 3);
+
 /// The `child_block_id` a page with `parent_type` stores.
 ///
 /// A page nested under a page or a block is placed by its `child_page` block,

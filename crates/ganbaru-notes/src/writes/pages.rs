@@ -377,19 +377,20 @@ pub async fn create_child_page_from_block(
         .map_err(|e| format!("create initial notes child page block: {e}"))?;
     } else {
         sqlx::query(
-            "WITH RECURSIVE subtree(id) AS (
-                SELECT id FROM notes_blocks WHERE parent_block_id = ? AND in_trash = 0
-                UNION ALL
-                SELECT child.id
+            "WITH RECURSIVE subtree(id, depth) AS (
+                SELECT id, 1 FROM notes_blocks WHERE parent_block_id = ? AND in_trash = 0
+                UNION
+                SELECT child.id, subtree.depth + 1
                 FROM notes_blocks AS child
                 JOIN subtree ON child.parent_block_id = subtree.id
-                WHERE child.in_trash = 0
+                WHERE child.in_trash = 0 AND subtree.depth < ?
              )
              UPDATE notes_blocks
              SET page_id = ?
              WHERE id IN (SELECT id FROM subtree)",
         )
         .bind(block_id)
+        .bind(crate::writes::MAX_BLOCK_DEPTH)
         .bind(block_id)
         .execute(&mut *tx)
         .await

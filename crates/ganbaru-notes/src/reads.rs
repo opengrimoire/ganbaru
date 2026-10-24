@@ -16,8 +16,6 @@ const BLOCK_FRONTIER_PARENT_BATCH_SIZE: usize = 400;
 pub const MAX_BLOCK_FRONTIER_PARENT_IDS: usize = 2_000;
 const SUMMARY_WINDOW_SIZE: i64 = 50;
 const MAX_SUMMARY_WINDOW_SIZE: i64 = 100;
-/// Deepest page or folder ancestry read for a location, which also ends a malformed parent cycle.
-const PAGE_LOCATION_MAX_DEPTH: i64 = 64;
 
 #[derive(Deserialize, Serialize)]
 struct PageSummaryCursor {
@@ -362,7 +360,7 @@ async fn ancestry_pages(pool: &SqlitePool, page_id: &str) -> Result<Vec<Location
     sqlx::query_as::<_, LocationPage>(
         "WITH RECURSIVE path(page_id, depth) AS (
            SELECT ?, 0
-           UNION ALL
+           UNION
            SELECT COALESCE(
                     page.parent_page_id,
                     (SELECT parent_block.page_id FROM notes_blocks AS parent_block
@@ -389,7 +387,7 @@ async fn ancestry_pages(pool: &SqlitePool, page_id: &str) -> Result<Vec<Location
          ORDER BY path.depth DESC",
     )
     .bind(page_id)
-    .bind(PAGE_LOCATION_MAX_DEPTH)
+    .bind(crate::structure::MAX_TREE_DEPTH)
     .fetch_all(pool)
     .await
     .map_err(|e| format!("load notes page location: {e}"))
@@ -403,7 +401,7 @@ async fn folder_location(
     sqlx::query_as::<_, (String, String)>(
         "WITH RECURSIVE chain(folder_id, depth) AS (
            SELECT ?, 0
-           UNION ALL
+           UNION
            SELECT folder.parent_folder_id, chain.depth + 1
            FROM chain
            JOIN notes_folders AS folder ON folder.id = chain.folder_id
@@ -415,7 +413,7 @@ async fn folder_location(
          ORDER BY chain.depth DESC",
     )
     .bind(folder_id)
-    .bind(PAGE_LOCATION_MAX_DEPTH)
+    .bind(crate::structure::MAX_TREE_DEPTH)
     .fetch_all(pool)
     .await
     .map_err(|e| format!("load notes folder location: {e}"))
@@ -576,20 +574,21 @@ async fn load_active_ancestor_page_rows(
         "WITH RECURSIVE ancestors(id, depth) AS (
              SELECT parent_page_id, 1 FROM notes_pages
              WHERE id = ? AND parent_type = 'page_id'
-             UNION ALL
+             UNION
              SELECT page.parent_page_id, ancestors.depth + 1
              FROM notes_pages AS page
              JOIN ancestors ON page.id = ancestors.id
              WHERE page.parent_type = 'page_id'
                AND page.in_trash = 0
                AND page.archived = 0
-               AND ancestors.depth < 64
+               AND ancestors.depth < {max_depth}
          )
          SELECT {} FROM notes_pages
          WHERE id IN (SELECT id FROM ancestors WHERE id IS NOT NULL)
            AND in_trash = 0 AND archived = 0
-         LIMIT 64",
-        crate::workspace_shell::page_projection()
+         LIMIT {max_depth}",
+        crate::workspace_shell::page_projection(),
+        max_depth = crate::structure::MAX_TREE_DEPTH,
     );
     sqlx::query_as::<_, NotePageSummaryDto>(AssertSqlSafe(query.as_str()))
         .bind(page_id)

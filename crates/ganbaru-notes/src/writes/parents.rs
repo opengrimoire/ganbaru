@@ -170,7 +170,7 @@ async fn block_depth(
     sqlx::query_scalar::<_, Option<i64>>(
         "WITH RECURSIVE ancestors(parent_id, depth) AS (
             SELECT parent_block_id, 1 FROM notes_blocks WHERE id = ?
-            UNION ALL
+            UNION
             SELECT block.parent_block_id, ancestors.depth + 1
             FROM notes_blocks AS block
             JOIN ancestors ON block.id = ancestors.parent_id
@@ -195,7 +195,7 @@ pub(super) async fn block_subtree_height(
     sqlx::query_scalar::<_, Option<i64>>(
         "WITH RECURSIVE subtree(id, depth) AS (
             SELECT id, 1 FROM notes_blocks WHERE id = ?
-            UNION ALL
+            UNION
             SELECT child.id, subtree.depth + 1
             FROM notes_blocks AS child
             JOIN subtree ON child.parent_block_id = subtree.id

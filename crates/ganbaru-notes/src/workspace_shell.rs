@@ -482,10 +482,15 @@ async fn load_ancestors(
     for id in ids {
         separated.push_bind(id);
     }
-    separated.push_unseparated(") AND parent_type = 'page_id' UNION ALL SELECT page.parent_page_id, ancestors.depth + 1 FROM notes_pages page JOIN ancestors ON page.id = ancestors.id WHERE page.parent_type = 'page_id' AND ancestors.depth < 64) SELECT DISTINCT ");
+    separated.push_unseparated(") AND parent_type = 'page_id' UNION SELECT page.parent_page_id, ancestors.depth + 1 FROM notes_pages page JOIN ancestors ON page.id = ancestors.id WHERE page.parent_type = 'page_id' AND ancestors.depth < ");
+    query
+        .push_bind(crate::structure::MAX_TREE_DEPTH)
+        .push(") SELECT DISTINCT ");
     query.push(page_projection()).push(" FROM notes_pages WHERE in_trash = 0 AND archived = 0 AND id IN (SELECT id FROM ancestors WHERE id IS NOT NULL)");
     push_project_filter(&mut query, project_id);
-    query.push(" LIMIT 64");
+    query
+        .push(" LIMIT ")
+        .push_bind(crate::structure::MAX_TREE_DEPTH);
     query
         .build_query_as()
         .fetch_all(&mut **transaction)

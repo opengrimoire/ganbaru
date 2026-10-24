@@ -40,8 +40,8 @@ pub(super) async fn template_children(
         return Err("Notes template insertion requires an active template or button".to_string());
     }
     request.block_ids = child_ids(tx, id).await?;
-    let source: Vec<(String, String)> = sqlx::query_as("WITH RECURSIVE content(id) AS (SELECT id FROM notes_blocks WHERE parent_block_id = ? AND in_trash = 0 UNION SELECT b.id FROM notes_blocks b JOIN content c ON b.parent_block_id = c.id WHERE b.in_trash = 0 LIMIT ?) SELECT b.id, b.type FROM notes_blocks b JOIN content c ON b.id = c.id ORDER BY b.id")
-        .bind(id).bind(MAX_LAYOUT_CHILDREN + 1).fetch_all(&mut **tx).await
+    let source: Vec<(String, String)> = sqlx::query_as("WITH RECURSIVE content(id, depth) AS (SELECT id, 1 FROM notes_blocks WHERE parent_block_id = ? AND in_trash = 0 UNION SELECT b.id, c.depth + 1 FROM notes_blocks b JOIN content c ON b.parent_block_id = c.id WHERE b.in_trash = 0 AND c.depth < ? LIMIT ?) SELECT b.id, b.type FROM notes_blocks b WHERE b.id IN (SELECT id FROM content) ORDER BY b.id")
+        .bind(id).bind(crate::writes::MAX_BLOCK_DEPTH).bind(MAX_LAYOUT_CHILDREN + 1).fetch_all(&mut **tx).await
         .map_err(|error| format!("bound Notes template content: {error}"))?;
     validation::validate_duplicate_block_count(source.len())?;
     if source

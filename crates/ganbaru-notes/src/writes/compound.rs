@@ -575,8 +575,8 @@ async fn validate_mutation(
     if row.page_id != page_id {
         return Err("Notes compound edits cannot mutate another page".to_string());
     }
-    let ids: Vec<String> = sqlx::query_scalar("WITH RECURSIVE subtree(id) AS (SELECT id FROM notes_blocks WHERE id = ? UNION SELECT b.id FROM notes_blocks b JOIN subtree s ON b.parent_block_id = s.id LIMIT ?) SELECT id FROM subtree")
-        .bind(id).bind(MAX_GRAPH_BLOCKS + 1).fetch_all(&mut **tx).await
+    let ids: Vec<String> = sqlx::query_scalar("WITH RECURSIVE subtree(id, depth) AS (SELECT id, 1 FROM notes_blocks WHERE id = ? UNION SELECT b.id, s.depth + 1 FROM notes_blocks b JOIN subtree s ON b.parent_block_id = s.id WHERE s.depth < ? LIMIT ?) SELECT DISTINCT id FROM subtree")
+        .bind(id).bind(crate::writes::MAX_BLOCK_DEPTH).bind(MAX_GRAPH_BLOCKS + 1).fetch_all(&mut **tx).await
         .map_err(|e| format!("bound Notes edit graph: {e}"))?;
     if ids.len() > MAX_GRAPH_BLOCKS as usize {
         return Err("Notes edit graph exceeds its block limit".to_string());

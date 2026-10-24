@@ -219,78 +219,93 @@ pub async fn permanently_delete_page(
         None => return Err("notes page not found".to_string()),
     }
     let deleted_page_ids: Vec<String> = sqlx::query_scalar(
-        "WITH RECURSIVE page_subtree(id) AS (
-            SELECT id FROM notes_pages WHERE id = ?
+        "WITH RECURSIVE page_subtree(id, depth) AS (
+            SELECT id, 0 FROM notes_pages WHERE id = ?
             UNION
-            SELECT child.id
+            SELECT child.id, parent.depth + 1
             FROM notes_pages AS child
             JOIN page_subtree AS parent ON child.parent_page_id = parent.id
+            WHERE parent.depth < ?
             UNION
-            SELECT child.id
+            SELECT child.id, parent.depth + 1
             FROM notes_pages AS child
             JOIN notes_blocks AS parent_block ON child.parent_block_id = parent_block.id
             JOIN page_subtree AS parent ON parent_block.page_id = parent.id
+            WHERE parent.depth < ?
             UNION
-            SELECT child_block.id
+            SELECT child_block.id, parent.depth + 1
             FROM notes_blocks AS child_block
             JOIN page_subtree AS parent ON child_block.page_id = parent.id
-            WHERE child_block.type = 'child_page'
+            WHERE child_block.type = 'child_page' AND parent.depth < ?
          )
-         SELECT id FROM page_subtree ORDER BY id ASC",
+         SELECT DISTINCT id FROM page_subtree ORDER BY id ASC",
     )
     .bind(page_id)
+    .bind(crate::structure::MAX_CONTENT_WALK_DEPTH)
+    .bind(crate::structure::MAX_CONTENT_WALK_DEPTH)
+    .bind(crate::structure::MAX_CONTENT_WALK_DEPTH)
     .fetch_all(&mut *tx)
     .await
     .map_err(|e| format!("load permanent notes page delete subtree: {e}"))?;
     let child_parents = load_external_child_page_block_parents(&mut tx, page_id).await?;
     data_sources::rollups::invalidate_rollup_cache_for_page_tx(&mut tx, page_id).await?;
     sqlx::query(
-        "WITH RECURSIVE page_subtree(id) AS (
-            SELECT id FROM notes_pages WHERE id = ?
+        "WITH RECURSIVE page_subtree(id, depth) AS (
+            SELECT id, 0 FROM notes_pages WHERE id = ?
             UNION
-            SELECT child.id
+            SELECT child.id, parent.depth + 1
             FROM notes_pages AS child
             JOIN page_subtree AS parent ON child.parent_page_id = parent.id
+            WHERE parent.depth < ?
             UNION
-            SELECT child.id
+            SELECT child.id, parent.depth + 1
             FROM notes_pages AS child
             JOIN notes_blocks AS parent_block ON child.parent_block_id = parent_block.id
             JOIN page_subtree AS parent ON parent_block.page_id = parent.id
+            WHERE parent.depth < ?
             UNION
-            SELECT child_block.id
+            SELECT child_block.id, parent.depth + 1
             FROM notes_blocks AS child_block
             JOIN page_subtree AS parent ON child_block.page_id = parent.id
-            WHERE child_block.type = 'child_page'
+            WHERE child_block.type = 'child_page' AND parent.depth < ?
          )
          DELETE FROM notes_blocks
          WHERE type = 'child_page' AND id IN (SELECT id FROM page_subtree)",
     )
     .bind(page_id)
+    .bind(crate::structure::MAX_CONTENT_WALK_DEPTH)
+    .bind(crate::structure::MAX_CONTENT_WALK_DEPTH)
+    .bind(crate::structure::MAX_CONTENT_WALK_DEPTH)
     .execute(&mut *tx)
     .await
     .map_err(|e| format!("delete notes child page blocks permanently: {e}"))?;
     sqlx::query(
-        "WITH RECURSIVE page_subtree(id) AS (
-            SELECT id FROM notes_pages WHERE id = ?
+        "WITH RECURSIVE page_subtree(id, depth) AS (
+            SELECT id, 0 FROM notes_pages WHERE id = ?
             UNION
-            SELECT child.id
+            SELECT child.id, parent.depth + 1
             FROM notes_pages AS child
             JOIN page_subtree AS parent ON child.parent_page_id = parent.id
+            WHERE parent.depth < ?
             UNION
-            SELECT child.id
+            SELECT child.id, parent.depth + 1
             FROM notes_pages AS child
             JOIN notes_blocks AS parent_block ON child.parent_block_id = parent_block.id
             JOIN page_subtree AS parent ON parent_block.page_id = parent.id
+            WHERE parent.depth < ?
             UNION
-            SELECT child_block.id
+            SELECT child_block.id, parent.depth + 1
             FROM notes_blocks AS child_block
             JOIN page_subtree AS parent ON child_block.page_id = parent.id
-            WHERE child_block.type = 'child_page'
+            WHERE child_block.type = 'child_page' AND parent.depth < ?
          )
          DELETE FROM notes_pages
          WHERE id IN (SELECT id FROM page_subtree)",
     )
     .bind(page_id)
+    .bind(crate::structure::MAX_CONTENT_WALK_DEPTH)
+    .bind(crate::structure::MAX_CONTENT_WALK_DEPTH)
+    .bind(crate::structure::MAX_CONTENT_WALK_DEPTH)
     .execute(&mut *tx)
     .await
     .map_err(|e| format!("delete notes pages permanently: {e}"))?;
@@ -454,22 +469,24 @@ pub(super) async fn load_external_child_page_block_parents(
     page_id: &str,
 ) -> Result<Vec<ParentTarget>, String> {
     let rows = sqlx::query_as::<_, (String, String, Option<String>, Option<String>)>(
-        "WITH RECURSIVE page_subtree(id) AS (
-            SELECT id FROM notes_pages WHERE id = ?
+        "WITH RECURSIVE page_subtree(id, depth) AS (
+            SELECT id, 0 FROM notes_pages WHERE id = ?
             UNION
-            SELECT child.id
+            SELECT child.id, parent.depth + 1
             FROM notes_pages AS child
             JOIN page_subtree AS parent ON child.parent_page_id = parent.id
+            WHERE parent.depth < ?
             UNION
-            SELECT child.id
+            SELECT child.id, parent.depth + 1
             FROM notes_pages AS child
             JOIN notes_blocks AS parent_block ON child.parent_block_id = parent_block.id
             JOIN page_subtree AS parent ON parent_block.page_id = parent.id
+            WHERE parent.depth < ?
             UNION
-            SELECT child_block.id
+            SELECT child_block.id, parent.depth + 1
             FROM notes_blocks AS child_block
             JOIN page_subtree AS parent ON child_block.page_id = parent.id
-            WHERE child_block.type = 'child_page'
+            WHERE child_block.type = 'child_page' AND parent.depth < ?
          )
          SELECT DISTINCT block.page_id,
                          block.parent_type,
@@ -481,6 +498,9 @@ pub(super) async fn load_external_child_page_block_parents(
            AND block.page_id NOT IN (SELECT id FROM page_subtree)",
     )
     .bind(page_id)
+    .bind(crate::structure::MAX_CONTENT_WALK_DEPTH)
+    .bind(crate::structure::MAX_CONTENT_WALK_DEPTH)
+    .bind(crate::structure::MAX_CONTENT_WALK_DEPTH)
     .fetch_all(&mut **tx)
     .await
     .map_err(|e| format!("load external notes child page block parents: {e}"))?;
@@ -610,10 +630,10 @@ pub(super) async fn ensure_page_not_moved_under_descendant(
     target_page_id: &str,
 ) -> Result<(), String> {
     let is_descendant: Option<i64> = sqlx::query_scalar(
-        "WITH RECURSIVE page_subtree(id) AS (
-            SELECT id FROM notes_pages WHERE id = ?
-            UNION ALL
-            SELECT child.id
+        "WITH RECURSIVE page_subtree(id, depth) AS (
+            SELECT id, 0 FROM notes_pages WHERE id = ?
+            UNION
+            SELECT child.id, page_subtree.depth + 1
             FROM notes_pages AS child
             LEFT JOIN notes_blocks AS parent_block ON parent_block.id = child.parent_block_id
             JOIN page_subtree ON (
@@ -623,11 +643,12 @@ pub(super) async fn ensure_page_not_moved_under_descendant(
                 child.parent_type = 'block_id'
                 AND parent_block.page_id = page_subtree.id
             )
-            WHERE child.in_trash = 0
+            WHERE child.in_trash = 0 AND page_subtree.depth < ?
          )
          SELECT 1 FROM page_subtree WHERE id = ? AND id <> ? LIMIT 1",
     )
     .bind(page_id)
+    .bind(crate::structure::MAX_CONTENT_WALK_DEPTH)
     .bind(target_page_id)
     .bind(page_id)
     .fetch_optional(&mut **tx)

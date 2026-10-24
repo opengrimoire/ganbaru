@@ -616,15 +616,17 @@ async fn load_page_block_subtree_rows(
     // A space separates each order key from its id and a slash separates levels. Both sort below
     // every order key and id character, so the path order is the depth-first sibling order.
     sqlx::query_as::<_, NoteBlockRow>(concat!(
-        "WITH RECURSIVE subtree(id, path) AS (
-            SELECT id, order_key || ' ' || id
+        "WITH RECURSIVE subtree(id, path, depth) AS (
+            SELECT id, order_key || ' ' || id, 1
             FROM notes_blocks
             WHERE parent_type = 'page_id' AND parent_page_id = ? AND in_trash = 0
-            UNION ALL
-            SELECT child.id, subtree.path || '/' || child.order_key || ' ' || child.id
+            UNION
+            SELECT child.id,
+                   subtree.path || '/' || child.order_key || ' ' || child.id,
+                   subtree.depth + 1
             FROM notes_blocks AS child
             JOIN subtree ON child.parent_block_id = subtree.id
-            WHERE child.in_trash = 0
+            WHERE child.in_trash = 0 AND subtree.depth < ?
          )
          SELECT ",
         crate::note_block_row_columns!("notes_blocks"),
@@ -633,6 +635,7 @@ async fn load_page_block_subtree_rows(
          ORDER BY subtree.path ASC",
     ))
     .bind(page_id)
+    .bind(crate::writes::MAX_BLOCK_DEPTH)
     .fetch_all(&mut **tx)
     .await
     .map_err(|e| format!("load notes page blocks for history: {e}"))

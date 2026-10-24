@@ -111,7 +111,7 @@ pub(super) async fn load_block_subtree_rows_including_trashed(
             SELECT id, order_key || ' ' || id, 0
             FROM notes_blocks
             WHERE id = ? AND (? = 1 OR in_trash = 0)
-            UNION ALL
+            UNION
             SELECT child.id, subtree.path || '/' || child.order_key || ' ' || child.id, subtree.depth + 1
             FROM notes_blocks AS child
             JOIN subtree ON child.parent_block_id = subtree.id
@@ -175,7 +175,7 @@ pub(super) async fn load_page_block_subtree_rows_for_copy(
             SELECT id, order_key || ' ' || id, 0
             FROM eligible
             WHERE parent_type = 'page_id' AND parent_page_id = ?
-            UNION ALL
+            UNION
             SELECT child.id, subtree.path || '/' || child.order_key || ' ' || child.id, subtree.depth + 1
             FROM eligible AS child
             JOIN subtree ON child.parent_block_id = subtree.id

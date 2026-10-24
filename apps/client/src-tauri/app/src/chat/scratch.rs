@@ -402,6 +402,7 @@ pub(crate) async fn generation_constraints_hold_in_connection(
          LEFT JOIN chat_teammate_channel_memberships channel_access
            ON channel_access.conversation_id = membership.conversation_id
           AND channel_access.teammate_id = membership.participant_id
+          AND channel_access.removed_at IS NULL
          LEFT JOIN chat_access_profiles profile ON profile.id = channel_access.access_profile_id
          LEFT JOIN chat_access_profile_revisions profile_revision
            ON profile_revision.access_profile_id = profile.id
@@ -478,6 +479,7 @@ async fn participant_can_read_source(
            LEFT JOIN chat_teammate_channel_memberships channel_access
              ON channel_access.conversation_id = membership.conversation_id
             AND channel_access.teammate_id = membership.participant_id
+            AND channel_access.removed_at IS NULL
            LEFT JOIN chat_access_profiles profile ON profile.id = channel_access.access_profile_id
            LEFT JOIN chat_access_profile_revisions profile_revision
              ON profile_revision.access_profile_id = profile.id

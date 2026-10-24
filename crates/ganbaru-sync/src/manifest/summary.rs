@@ -60,7 +60,11 @@ impl Manifest {
                 let _ = writeln!(text, "  publish when {predicate}");
             }
             if let Some(with) = table.published_with {
-                let _ = writeln!(text, "  published with {} {}", with.column, with.parent.0);
+                let _ = write!(text, "  published with {} {}", with.column, with.parent.0);
+                if with.null_publishes {
+                    text.push_str(" null publishes");
+                }
+                text.push('\n');
             }
             for group in table.groups {
                 let mut line = format!("  group {} {}", group.id.get(), kind(group.kind));

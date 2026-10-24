@@ -103,7 +103,8 @@ async fn read_roster_ai_access(
          JOIN chat_access_profile_revisions profile_revision
            ON profile_revision.access_profile_id = profile.id
           AND profile_revision.revision = profile.latest_revision
-         WHERE membership.conversation_id = ? AND membership.teammate_id = ?",
+         WHERE membership.conversation_id = ? AND membership.teammate_id = ?
+           AND membership.removed_at IS NULL",
     )
     .bind(conversation_id.as_str())
     .bind(teammate_id.as_str())
@@ -359,7 +360,6 @@ pub(super) async fn read_teammate(
         },
         channel_count: u64_value(row.try_get("channel_count").map_err(persistence_error)?)?,
         active_assignment_count: lifecycle.active_assignment_count,
-        has_durable_history: lifecycle.has_durable_history,
     })
 }
 

@@ -57,6 +57,7 @@ pub fn header(clock_ms: u64, dependencies: Vec<(WriterId, u64)>) -> Header {
         manifest_version: 1,
         authorization_revision: 0,
         key_epoch: 0,
+        group_continues: false,
         dependencies,
     }
 }
@@ -180,6 +181,16 @@ pub fn golden_cause() -> (Operation, Vec<u8>) {
     let key = writer_key();
     let genesis = genesis_operation().seal(&key).unwrap();
     let operation = cause_operation(genesis.hash());
+    let sealed = operation.seal(&key).unwrap();
+    (operation, sealed.into_bytes())
+}
+
+/// The cause operation marked as continuing its apply group, which seals at version 4.
+pub fn golden_group() -> (Operation, Vec<u8>) {
+    let key = writer_key();
+    let genesis = genesis_operation().seal(&key).unwrap();
+    let mut operation = cause_operation(genesis.hash());
+    operation.header.group_continues = true;
     let sealed = operation.seal(&key).unwrap();
     (operation, sealed.into_bytes())
 }

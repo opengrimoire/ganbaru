@@ -1,7 +1,8 @@
 //! Publication: which domain rows replicate and which stay local drafts.
 //!
 //! A table with a `publish_when` predicate replicates a row once the row satisfies it, and a
-//! `published_with` child replicates its rows once their parent row does. The same condition
+//! `published_with` child replicates its rows once their parent row does, or at once when it
+//! names no parent and its declaration lets null publish. The same condition
 //! renders over a trigger row (`NEW` or `OLD`), over the rows of the table itself, and over
 //! merged winners, so capture, seeding, and visibility agree on it.
 
@@ -10,7 +11,7 @@ use sqlx::{AssertSqlSafe, Row, SqliteConnection};
 
 use crate::Engine;
 use crate::error::{SyncResult, corrupt};
-use crate::manifest::{GroupStorage, Manifest, TableSpec};
+use crate::manifest::{GroupStorage, Manifest, PublishedWith, TableSpec};
 use crate::merge;
 use crate::sql;
 
@@ -40,34 +41,41 @@ pub(crate) fn own_over(table: &TableSpec, row: &str) -> Option<String> {
     ))
 }
 
-/// The predicate table a `published_with` child names and the child's column.
+/// The predicate table a `published_with` child names and the child's publication shape.
 fn publisher<'m>(
     manifest: &'m Manifest,
     table: &TableSpec,
-) -> Option<(&'m TableSpec, &'static str)> {
+) -> Option<(&'m TableSpec, PublishedWith)> {
     let with = table.published_with?;
     let parent = manifest
         .table(with.parent)
         .unwrap_or_else(|| panic!("{} publishes with an unknown table", table.name));
-    Some((parent, with.column))
+    Some((parent, with))
 }
 
-/// Whether the parent row a child names through `reference` satisfies its predicate.
-fn parent_published(parent: &TableSpec, reference: &str) -> String {
+/// Whether the child row read under `row` publishes: the parent row it names satisfies its
+/// predicate, or it names none and null publishes.
+fn parent_published(parent: &TableSpec, with: PublishedWith, row: &str) -> String {
     let predicate = parent
         .publish_when
         .unwrap_or_else(|| panic!("{} has no publication predicate", parent.name));
-    format!(
+    let reference = format!("{row}.{}", with.column);
+    let published = format!(
         "EXISTS (SELECT 1 FROM {name} AS {PARENT_ALIAS} WHERE {PARENT_ALIAS}.{key} = {reference} AND ({predicate}))",
         name = parent.name,
         key = parent.key_column,
-    )
+    );
+    if with.null_publishes {
+        format!("({reference} IS NULL OR {published})")
+    } else {
+        published
+    }
 }
 
 /// The publication condition of the trigger row `row`, or `None` when every row publishes.
 pub(crate) fn condition_over(manifest: &Manifest, table: &TableSpec, row: &str) -> Option<String> {
-    if let Some((parent, column)) = publisher(manifest, table) {
-        return Some(parent_published(parent, &format!("{row}.{column}")));
+    if let Some((parent, with)) = publisher(manifest, table) {
+        return Some(parent_published(parent, with, row));
     }
     own_over(table, row)
 }
@@ -75,8 +83,8 @@ pub(crate) fn condition_over(manifest: &Manifest, table: &TableSpec, row: &str) 
 /// The publication condition of a row of `table` read under `alias` in a query, or `None` when
 /// every row publishes.
 pub(crate) fn condition_in(manifest: &Manifest, table: &TableSpec, alias: &str) -> Option<String> {
-    if let Some((parent, column)) = publisher(manifest, table) {
-        return Some(parent_published(parent, &format!("{alias}.{column}")));
+    if let Some((parent, with)) = publisher(manifest, table) {
+        return Some(parent_published(parent, with, alias));
     }
     let predicate = table.publish_when?;
     Some(format!(

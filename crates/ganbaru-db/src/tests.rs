@@ -1,6 +1,7 @@
 mod access;
 mod calendar;
 mod chat;
+mod chat_local_tables;
 mod contacts;
 mod core;
 mod distractions;

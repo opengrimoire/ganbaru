@@ -110,6 +110,8 @@ pub(crate) enum Classified {
         dependencies: Vec<(WriterId, Seq)>,
         /// Authorization revision the operation was sealed against.
         revision: u64,
+        /// Whether the writer's next operation belongs to the same apply group.
+        continues: bool,
     },
     /// Held, with the signed header fields when they could be read.
     Held {
@@ -142,6 +144,15 @@ impl Classified {
         match self {
             Self::Waiting { revision, .. } => *revision,
             Self::Held { .. } | Self::Malformed => 0,
+        }
+    }
+
+    /// Whether a waiting operation's apply group continues; false for one that is held or
+    /// malformed, which blocks its writer's chain anyway.
+    pub(crate) fn continues(&self) -> bool {
+        match self {
+            Self::Waiting { continues, .. } => *continues,
+            Self::Held { .. } | Self::Malformed => false,
         }
     }
 
@@ -206,6 +217,7 @@ fn classify_operation(engine: &Engine, operation: Operation) -> Classified {
         Content::Genesis(_) | Content::Acknowledgement | Content::Authorization(_) => None,
     };
     let revision = operation.header.authorization_revision;
+    let continues = operation.header.group_continues;
     let dependencies = operation.header.dependencies;
     match reason {
         Some(reason) => Classified::Held {
@@ -216,6 +228,7 @@ fn classify_operation(engine: &Engine, operation: Operation) -> Classified {
             clock,
             dependencies,
             revision,
+            continues,
         },
     }
 }
@@ -241,25 +254,36 @@ pub(crate) async fn derive_context(
     Ok(previous.map(|previous| log::next_context(&previous, writer, seq, dependencies)))
 }
 
+/// Signed header fields a stored operation copies into its log row.
+struct StoredHeader {
+    clock: Hlc,
+    revision: u64,
+    continues: bool,
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn insert_op(
     conn: &mut SqliteConnection,
     ctx: &SpaceContext,
     envelope: &Envelope<'_>,
     bytes: &[u8],
-    clock: Hlc,
-    revision: u64,
+    header: StoredHeader,
     context: Option<&VersionVector>,
     held: Option<HoldReason>,
     excluded: Option<u64>,
     now_ms: u64,
 ) -> SyncResult<()> {
+    let StoredHeader {
+        clock,
+        revision,
+        continues,
+    } = header;
     let state = if held.is_some() { "held" } else { "waiting" };
     sqlx::query(
         "INSERT INTO sync_ops
             (space_id, writer_id, seq, kind, hash, clock, authorization_revision, context,
-             envelope, state, hold_reason, stored_at_ms, excluded_revision)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+             envelope, state, hold_reason, stored_at_ms, excluded_revision, group_continues)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(ctx.space.as_bytes().as_slice())
     .bind(envelope.writer.as_bytes().as_slice())
@@ -274,6 +298,7 @@ async fn insert_op(
     .bind(held.map(HoldReason::as_str))
     .bind(clamp_ms(now_ms))
     .bind(excluded.map(seq_i64).transpose()?)
+    .bind(continues)
     .execute(&mut *conn)
     .await?;
     Ok(())
@@ -368,8 +393,11 @@ async fn store_genesis(
         ctx,
         envelope,
         bytes,
-        clock,
-        operation.header.authorization_revision,
+        StoredHeader {
+            clock,
+            revision: operation.header.authorization_revision,
+            continues: false,
+        },
         Some(&VersionVector::new()),
         held,
         excluded,
@@ -493,8 +521,11 @@ async fn store_next(
         ctx,
         envelope,
         bytes,
-        clock,
-        classified.revision(),
+        StoredHeader {
+            clock,
+            revision: classified.revision(),
+            continues: classified.continues(),
+        },
         context.as_ref(),
         held,
         excluded,

@@ -168,7 +168,7 @@ pub(super) async fn retained_profile_reference_issues_in_transaction(
          JOIN chat_conversation_memberships membership
            ON membership.conversation_id = ai.conversation_id
           AND membership.participant_id = ai.teammate_id
-         WHERE ai.access_profile_id = ? AND membership.removed_at IS NULL
+         WHERE ai.access_profile_id = ? AND ai.removed_at IS NULL AND membership.removed_at IS NULL
          ORDER BY ai.teammate_id",
     )
     .bind(access_profile_id.as_str())
@@ -220,7 +220,7 @@ async fn read_effective_disclosure_access_in_transaction(
          JOIN chat_access_profile_revisions profile_revision
            ON profile_revision.access_profile_id = profile.id
           AND profile_revision.revision = profile.latest_revision
-         WHERE ai.teammate_id = ? AND membership.removed_at IS NULL
+         WHERE ai.teammate_id = ? AND ai.removed_at IS NULL AND membership.removed_at IS NULL
          ORDER BY project.group_id, channel.project_id, channel.name COLLATE NOCASE, channel.id",
     )
     .bind(teammate_id)

@@ -6,7 +6,7 @@ Ganbaru coordinates work through durable conversations, explicit assignments, an
 
 ## Participants and agents
 
-A participant is the local person, a persistent AI agent, or (planned) a human collaborator. An agent has a stable identity, role, and instructions independent of provider and model. Changing its provider or model creates a new policy revision, not a new participant, and its history stays intact.
+A participant is the local person, a persistent AI agent, or (planned) a human collaborator. An agent has a stable identity, role, and instructions independent of provider and model. Changing its provider or model creates a new policy revision, not a new participant, and its history stays intact. An agent is archived and restored rather than deleted, because its identity is shared with other devices of the vault.
 
 An agent's policy selects the provider instance, model and options, effort, and approval mode. Its configuration state reports when it needs setup, its provider is unavailable, or it lacks folder access.
 

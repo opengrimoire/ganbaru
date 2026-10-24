@@ -496,6 +496,7 @@ pub const SEGMENTS: TableSpec = TableSpec {
     published_with: Some(PublishedWith {
         column: "run_id",
         parent: RUNS_TABLE,
+        null_publishes: false,
     }),
     ..BASE
 };
@@ -529,6 +530,7 @@ pub const RUN_EVENTS: TableSpec = TableSpec {
     published_with: Some(PublishedWith {
         column: "run_id",
         parent: RUNS_TABLE,
+        null_publishes: false,
     }),
     ..BASE
 };
@@ -569,6 +571,7 @@ const fn device(name: &'static str) -> DeviceTable {
     DeviceTable {
         name,
         triggers: &[],
+        assets: &[],
     }
 }
 

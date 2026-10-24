@@ -1,14 +1,12 @@
 use super::{
     NativeResponse,
     config::{DistractionsConfig, DistractionsMode, UsageLimitsConfig},
-    events::{block_event_phase, record_block_event_in_database},
+    events::{block_event_phase, spool_block_event},
     rules::{HostDecision, decide_url, host_from_url, host_matches_rule},
     snapshot::{RuntimeState, StateSnapshot, runtime_status_at, should_enforce},
 };
 use chrono::{DateTime, SecondsFormat, Utc};
 use sqlx::Row;
-
-static APP_MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("../ganbaru-db/migrations");
 
 fn config() -> DistractionsConfig {
     DistractionsConfig {
@@ -206,99 +204,91 @@ fn runtime_state_requires_current_nullable_fields() {
 }
 
 #[test]
-fn records_block_event_to_sqlite_without_full_url() {
-    let vault_path = std::env::temp_dir().join(format!(
+fn block_events_are_spooled_without_opening_the_vault_or_keeping_full_urls() {
+    let root = std::env::temp_dir().join(format!(
         "ganbaru-native-block-event-{}-{}",
         std::process::id(),
         super::now_epoch_ms()
     ));
-    let _ = std::fs::remove_dir_all(&vault_path);
+    let _ = std::fs::remove_dir_all(&root);
+    let config_dir = root.join("config");
+    let vault_path = root.join("vault");
+    std::fs::create_dir_all(&config_dir).unwrap();
     std::fs::create_dir_all(&vault_path).unwrap();
-    let db_path = vault_path.join("ganbaru.sqlite");
-    std::fs::File::create(&db_path).unwrap();
-    let db_url = format!("sqlite:{}", db_path.to_string_lossy());
-
-    let mut runtime = runtime_for_phase("focus", false);
-    runtime.active_run_id = None;
+    std::fs::write(vault_path.join("vault.json"), r#"{"vaultId":"vault-test"}"#).unwrap();
+    std::fs::write(
+        config_dir.join("app-state.json"),
+        r#"{"deviceId":"desktop-test","activeVaultPath":null}"#,
+    )
+    .unwrap();
     let snapshot = StateSnapshot {
-        config_dir: None,
+        config_dir: Some(config_dir.clone()),
         vault_path: Some(vault_path.clone()),
         config: config(),
-        runtime: Some(runtime),
+        runtime: Some(runtime_for_phase("focus", false)),
         limit_state: None,
     };
+    let blocked = HostDecision::BlockedHost("youtube.com".into());
 
-    let rejected = record_block_event_in_database(
-        &snapshot,
-        "2026-06-10T10:00:00.000Z",
-        "youtube.com",
-        &HostDecision::BlockedHost("youtube.com".into()),
-    );
-    assert!(rejected.is_err());
-
-    super::block_on(async {
-        let pool = sqlx::sqlite::SqlitePoolOptions::new()
-            .max_connections(1)
-            .connect(&db_url)
-            .await
-            .unwrap();
-        let table_count: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM sqlite_schema
-             WHERE type = 'table' AND name = 'distractions_block_events'",
+    assert!(
+        spool_block_event(
+            &snapshot,
+            "2026-06-10T10:00:00.000Z",
+            "https://youtube.com/watch",
+            &blocked,
         )
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-        assert_eq!(table_count, 0);
-        APP_MIGRATOR.run(&pool).await.unwrap();
-        pool.close().await;
-    });
-
-    let rejected = record_block_event_in_database(
-        &snapshot,
-        "2026-06-10T10:00:00.000Z",
-        "https://youtube.com/watch",
-        &HostDecision::BlockedHost("youtube.com".into()),
+        .is_err()
     );
-    assert!(rejected.is_err());
-
-    record_block_event_in_database(
+    spool_block_event(
         &snapshot,
         "2026-06-10T10:00:00.000Z",
         "youtube.com",
-        &HostDecision::BlockedHost("youtube.com".into()),
+        &blocked,
     )
     .unwrap();
 
+    let vault_entries: Vec<_> = std::fs::read_dir(&vault_path)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .collect();
+    assert_eq!(
+        vault_entries,
+        ["vault.json"],
+        "the host never opens the vault"
+    );
     super::block_on(async {
+        let spool_url = format!(
+            "sqlite:{}",
+            config_dir
+                .join("distractions-device-spool.sqlite")
+                .to_string_lossy()
+        );
         let pool = sqlx::sqlite::SqlitePoolOptions::new()
             .max_connections(1)
-            .connect(&db_url)
+            .connect(&spool_url)
             .await
             .unwrap();
-        let row = sqlx::query(
-            "SELECT e.source_key, e.decision, e.phase, s.rule_kind, s.blocker_mode
-                 FROM distractions_block_events e
-                 JOIN distractions_block_event_rule_snapshots s ON s.block_event_id = e.id",
+        let rows = sqlx::query(
+            "SELECT vault_id, device_id, run_id, source_key, decision, phase, rule_kind,
+                    blocker_mode
+             FROM pending_block_events",
         )
-        .fetch_one(&pool)
+        .fetch_all(&pool)
         .await
         .unwrap();
-
-        let source_key: String = row.try_get("source_key").unwrap();
-        let decision: String = row.try_get("decision").unwrap();
-        let phase: String = row.try_get("phase").unwrap();
-        let rule_kind: String = row.try_get("rule_kind").unwrap();
-        let blocker_mode: String = row.try_get("blocker_mode").unwrap();
-        assert_eq!(source_key, "youtube.com");
-        assert_eq!(decision, "blocked");
-        assert_eq!(phase, "focus");
-        assert_eq!(rule_kind, "domain");
-        assert_eq!(blocker_mode, "blacklist");
-
+        assert_eq!(rows.len(), 1, "a refused URL leaves nothing behind");
+        let text = |column: &str| rows[0].try_get::<String, _>(column).unwrap();
+        assert_eq!(text("vault_id"), "vault-test");
+        assert_eq!(text("device_id"), "desktop-test");
+        assert_eq!(text("run_id"), "run-1");
+        assert_eq!(text("source_key"), "youtube.com");
+        assert_eq!(text("decision"), "blocked");
+        assert_eq!(text("phase"), "focus");
+        assert_eq!(text("rule_kind"), "domain");
+        assert_eq!(text("blocker_mode"), "blacklist");
         pool.close().await;
     });
-    let _ = std::fs::remove_dir_all(&vault_path);
+    std::fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
@@ -379,41 +369,6 @@ fn retried_browser_usage_keeps_the_same_device_sample_id() {
     let first = super::normalize_usage_sample(&request).unwrap();
     let retry = super::normalize_usage_sample(&request).unwrap();
     assert_eq!(first.id, retry.id);
-}
-
-#[test]
-fn native_vault_writes_require_stable_local_ownership() {
-    let root = std::env::temp_dir().join(format!(
-        "ganbaru-native-ownership-{}-{}",
-        std::process::id(),
-        super::now_epoch_ms()
-    ));
-    let config = root.join("config");
-    let vault = root.join("vault");
-    std::fs::create_dir_all(&config).unwrap();
-    std::fs::create_dir_all(&vault).unwrap();
-    std::fs::write(
-        config.join("app-state.json"),
-        r#"{"deviceId":"desktop","activeVaultPath":null}"#,
-    )
-    .unwrap();
-    std::fs::write(vault.join("vault.json"), r#"{"vaultId":"vault"}"#).unwrap();
-    let ownership = |owner: &str| {
-        format!(
-            r#"{{"schemaVersion":1,"vaults":{{"vault":{{"vaultId":"vault","ownerDeviceId":"{owner}","generation":1,"transferPhase":{{"kind":"stable"}}}}}}}}"#
-        )
-    };
-    std::fs::write(config.join("vault-ownership.json"), ownership("desktop")).unwrap();
-    assert!(super::linked_usage::native_vault_is_writable(
-        &config,
-        Some(&vault)
-    ));
-    std::fs::write(config.join("vault-ownership.json"), ownership("phone")).unwrap();
-    assert!(!super::linked_usage::native_vault_is_writable(
-        &config,
-        Some(&vault)
-    ));
-    std::fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
@@ -756,34 +711,6 @@ fn active_focus_rules_win_over_limit_blocks() {
     assert_eq!(
         decision.matched_rule_name().as_deref(),
         Some("blocked host: reddit.com")
-    );
-}
-
-#[test]
-fn uses_limit_state_database_path_for_usage_samples() {
-    let vault_path = std::path::Path::new("/tmp/ganbaru-vault");
-    let limit_state = super::snapshot::LimitState {
-        local_date: "2026-05-28".to_string(),
-        week_start_local_date: "2026-05-25".to_string(),
-        updated_at: super::now_utc().to_rfc3339_opts(SecondsFormat::Millis, true),
-        database_path: "/tmp/ganbaru-vault/ganbaru.sqlite".to_string(),
-        configuration_digest: Some("native-test-digest".into()),
-        limits: Vec::new(),
-    };
-
-    assert_eq!(
-        super::snapshot::usage_db_path(vault_path, Some(&limit_state)),
-        vault_path.join("ganbaru.sqlite")
-    );
-}
-
-#[test]
-fn uses_vault_database_path_without_limit_state() {
-    let vault_path = std::path::Path::new("/tmp/ganbaru-vault");
-
-    assert_eq!(
-        super::snapshot::usage_db_path(vault_path, None),
-        vault_path.join("ganbaru.sqlite")
     );
 }
 

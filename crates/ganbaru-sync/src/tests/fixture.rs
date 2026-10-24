@@ -17,7 +17,7 @@ use sqlx::{AssertSqlSafe, SqliteConnection, SqlitePool};
 use super::{execute, migrated_pool};
 use crate::Engine;
 use crate::adapter::{AdapterError, Adapters, DomainAdapter, Presentation};
-use crate::assets::AssetClass;
+use crate::assets::{AssetClass, LocalAssetColumn, LocalDigest};
 use crate::domains::{vault_adapters, vault_hooks};
 use crate::hooks::{ChangeSink, HookFuture, MaterializeHook};
 use crate::manifest::vault::{
@@ -730,12 +730,28 @@ pub(super) const DRAFT_PARTS: TableSpec = TableSpec {
     published_with: Some(PublishedWith {
         column: "draft_id",
         parent: DRAFTS_TABLE,
+        null_publishes: false,
     }),
     ..DRAFTS
 };
 
 /// `fixture_draft_parts`.
 pub(super) const DRAFT_PARTS_TABLE: TableId = TableId(FIXTURE_TABLE_IDS + 8);
+
+/// Notes that publish with the draft they name, or at once when they name none.
+pub(super) const DRAFT_NOTES: TableSpec = TableSpec {
+    id: DRAFT_NOTES_TABLE,
+    name: "fixture_draft_notes",
+    published_with: Some(PublishedWith {
+        column: "draft_id",
+        parent: DRAFTS_TABLE,
+        null_publishes: true,
+    }),
+    ..DRAFT_PARTS
+};
+
+/// `fixture_draft_notes`.
+pub(super) const DRAFT_NOTES_TABLE: TableId = TableId(FIXTURE_TABLE_IDS + 16);
 
 /// Memos whose local deletes domain Undo can hold.
 pub(super) const MEMOS: TableSpec = TableSpec {
@@ -1290,7 +1306,7 @@ pub(super) const FIXTURE_DOMAIN: DomainManifest = DomainManifest {
     name: "fixture",
     table_ids: TableIdRange {
         first: FIXTURE_TABLE_IDS,
-        last: FIXTURE_TABLE_IDS + 15,
+        last: FIXTURE_TABLE_IDS + 16,
     },
     tables: &[
         ITEMS,
@@ -1303,6 +1319,7 @@ pub(super) const FIXTURE_DOMAIN: DomainManifest = DomainManifest {
         EDGES,
         DRAFTS,
         DRAFT_PARTS,
+        DRAFT_NOTES,
         MEMOS,
         MEMO_LINES,
         MEMO_TAGS,
@@ -1311,19 +1328,52 @@ pub(super) const FIXTURE_DOMAIN: DomainManifest = DomainManifest {
         SCROLLS,
     ],
     derived: &["fixture_items_index", "fixture_list_counts"],
-    local: &[DeviceTable {
-        name: "fixture_item_marks",
-        triggers: &[DomainTrigger {
-            name: "fixture_item_marks_refuse_negative",
-            policy: TriggerPolicy::ApplierVisible,
-        }],
-    }],
+    local: &[
+        DeviceTable {
+            name: "fixture_item_marks",
+            triggers: &[DomainTrigger {
+                name: "fixture_item_marks_refuse_negative",
+                policy: TriggerPolicy::ApplierVisible,
+            }],
+            assets: &[],
+        },
+        DeviceTable {
+            name: "fixture_asset_pins",
+            triggers: &[],
+            assets: &[
+                LocalAssetColumn {
+                    column: "sha256",
+                    json_path: None,
+                    digest: LocalDigest::Sha256 {
+                        class: FIXTURE_CLASS.name,
+                    },
+                },
+                LocalAssetColumn {
+                    column: "asset_id",
+                    json_path: None,
+                    digest: LocalDigest::AssetId {
+                        classes: &[FIXTURE_CLASS.name],
+                    },
+                },
+                LocalAssetColumn {
+                    column: "attrs",
+                    json_path: Some("$.files"),
+                    digest: LocalDigest::AssetId {
+                        classes: &[FIXTURE_CLASS.name],
+                    },
+                },
+            ],
+        },
+    ],
     engine: &[],
     replica_writable: true,
-    assets: &[AssetClass {
-        name: "fixture/files",
-        max_bytes: 1024 * 1024,
-    }],
+    assets: &[FIXTURE_CLASS],
+};
+
+/// The fixture asset class, named only by `Local` rows of `fixture_asset_pins`.
+pub(super) const FIXTURE_CLASS: AssetClass = AssetClass {
+    name: "fixture/files",
+    max_bytes: 1024 * 1024,
 };
 
 /// The vault domains followed by the fixture domain.
@@ -1373,6 +1423,12 @@ fn fixture_schema() -> String {
          CREATE TABLE fixture_item_marks (
              item_id TEXT PRIMARY KEY REFERENCES fixture_items(id) ON DELETE CASCADE,
              mark INTEGER NOT NULL
+         );
+         CREATE TABLE fixture_asset_pins (
+             id TEXT PRIMARY KEY,
+             sha256 TEXT,
+             asset_id TEXT,
+             attrs TEXT
          );
          CREATE TABLE fixture_cycle_a (
              id TEXT PRIMARY KEY CHECK (trim(id) <> ''),
@@ -1429,6 +1485,11 @@ fn fixture_schema() -> String {
          CREATE TABLE fixture_draft_parts (
              id TEXT PRIMARY KEY CHECK (trim(id) <> ''),
              draft_id TEXT NOT NULL REFERENCES fixture_drafts(id) ON DELETE CASCADE,
+             body TEXT NOT NULL CHECK (length(body) <= 40)
+         );
+         CREATE TABLE fixture_draft_notes (
+             id TEXT PRIMARY KEY CHECK (trim(id) <> ''),
+             draft_id TEXT REFERENCES fixture_drafts(id) ON DELETE CASCADE,
              body TEXT NOT NULL CHECK (length(body) <= 40)
          );
          CREATE TABLE fixture_memos (

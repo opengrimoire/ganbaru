@@ -59,7 +59,7 @@ pub(in crate::chat::organization) async fn read_teammate_access(
          JOIN chat_access_profile_revisions profile_revision
            ON profile_revision.access_profile_id = profile.id
           AND profile_revision.revision = profile.latest_revision
-         WHERE ai.teammate_id = ?
+         WHERE ai.teammate_id = ? AND ai.removed_at IS NULL
          ORDER BY project.group_id, channel.project_id, channel.name COLLATE NOCASE, channel.id",
     )
     .bind(teammate_id.as_str())
@@ -437,7 +437,7 @@ pub(super) async fn resolve_channel_access(
             ChatHistoryBoundary::FromGrant { .. } => {
                 let current_lower = sqlx::query_scalar::<_, Option<i64>>(
                     "SELECT history_from_ordinal FROM chat_teammate_channel_memberships
-                     WHERE conversation_id = ? AND teammate_id = ?
+                     WHERE conversation_id = ? AND teammate_id = ? AND removed_at IS NULL
                        AND history_boundary = 'from_grant'",
                 )
                 .bind(conversation_id.as_str())

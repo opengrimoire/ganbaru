@@ -314,7 +314,7 @@ async fn seed_review_assignment_with_stranded_replies(pool: &SqlitePool) {
 }
 
 #[test]
-fn unused_archived_teammates_can_be_restored_or_permanently_deleted() {
+fn unused_archived_teammates_can_be_restored() {
     tauri::async_runtime::block_on(async {
         let pool = migrated_pool().await;
         let teammate_id = ChatParticipantId::new("participant:unused-agent").unwrap();
@@ -326,7 +326,6 @@ fn unused_archived_teammates_can_be_restored_or_permanently_deleted() {
                 .unwrap();
         assert!(archived.participant.archived_at.is_some());
         assert_eq!(archived.active_assignment_count, 0);
-        assert!(!archived.has_durable_history);
         let archived_access = access::read_teammate_access(&pool, &teammate_id)
             .await
             .expect("archived agents stay inspectable in Settings");
@@ -341,38 +340,6 @@ fn unused_archived_teammates_can_be_restored_or_permanently_deleted() {
         .await
         .unwrap();
         assert!(restored.participant.archived_at.is_none());
-
-        let archived_again = super::teammate_lifecycle::set_teammate_archived(
-            &pool,
-            &teammate_id,
-            restored.participant.revision,
-            true,
-        )
-        .await
-        .unwrap();
-        super::teammate_lifecycle::delete_unused_teammate(
-            &pool,
-            &teammate_id,
-            archived_again.participant.revision,
-        )
-        .await
-        .unwrap();
-
-        let participant_count: i64 =
-            sqlx::query_scalar("SELECT count(*) FROM chat_participants WHERE id = ?")
-                .bind(teammate_id.as_str())
-                .fetch_one(&pool)
-                .await
-                .unwrap();
-        let policy_count: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM chat_teammate_policy_revisions WHERE teammate_id = ?",
-        )
-        .bind(teammate_id.as_str())
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-        assert_eq!(participant_count, 0);
-        assert_eq!(policy_count, 0);
     });
 }
 
@@ -394,41 +361,6 @@ fn active_work_blocks_teammate_archiving() {
                 .await
                 .unwrap();
         assert!(archived_at.is_none());
-    });
-}
-
-#[test]
-fn durable_history_blocks_permanent_teammate_deletion() {
-    tauri::async_runtime::block_on(async {
-        let pool = migrated_pool().await;
-        seed_review_assignment_with_stranded_replies(&pool).await;
-        sqlx::query(
-            "UPDATE chat_work_assignments SET state = 'completed' WHERE id = 'assignment:review'",
-        )
-        .execute(&pool)
-        .await
-        .unwrap();
-        let teammate_id = ChatParticipantId::new("participant:review-agent").unwrap();
-        let archived =
-            super::teammate_lifecycle::set_teammate_archived(&pool, &teammate_id, 1, true)
-                .await
-                .unwrap();
-        assert!(archived.has_durable_history);
-        let error = super::teammate_lifecycle::delete_unused_teammate(
-            &pool,
-            &teammate_id,
-            archived.participant.revision,
-        )
-        .await
-        .unwrap_err();
-        assert_eq!(error.code, ChatErrorCode::Conflict);
-        let participant_count: i64 =
-            sqlx::query_scalar("SELECT count(*) FROM chat_participants WHERE id = ?")
-                .bind(teammate_id.as_str())
-                .fetch_one(&pool)
-                .await
-                .unwrap();
-        assert_eq!(participant_count, 1);
     });
 }
 
@@ -1162,5 +1094,84 @@ fn context_packages_without_history_access_hold_only_the_trigger() {
         let (kinds, excluded) = freeze_review_reply_context(false, None).await;
         assert_eq!(kinds, ["trigger:item:review-reply-2".to_string()]);
         assert_eq!(excluded, 0);
+    });
+}
+
+#[test]
+fn removing_a_teammate_from_a_channel_keeps_the_rows_and_hides_them_from_readers() {
+    tauri::async_runtime::block_on(async {
+        let pool = migrated_pool().await;
+        let teammate_id = ChatParticipantId::new("participant:design-agent").unwrap();
+        seed_unused_teammate(&pool, teammate_id.as_str(), "policy:design-agent").await;
+        sqlx::raw_sql(
+            "INSERT INTO project_groups (id, name, icon, order_key)
+             VALUES ('group-design', 'Design', 'lucide:folder', 'a0');
+             INSERT INTO projects (id, group_id, name, icon, order_key)
+             VALUES ('project-design', 'group-design', 'Design', 'lucide:folder', 'a0');
+             INSERT INTO chat_conversations
+                 (id, project_id, conversation_kind, last_activity_at, created_at, updated_at)
+             VALUES ('conversation-design', 'project-design', 'channel',
+                     '2026-08-14T17:30:00.000Z', '2026-08-14T17:30:00.000Z',
+                     '2026-08-14T17:30:00.000Z');
+             INSERT INTO chat_channels
+                 (id, project_id, conversation_id, name, is_default, created_at, updated_at)
+             VALUES ('channel-design', 'project-design', 'conversation-design', 'design', 0,
+                     '2026-08-14T17:30:00.000Z', '2026-08-14T17:30:00.000Z');
+             INSERT INTO chat_conversation_memberships
+                 (conversation_id, participant_id, membership_role, created_at, updated_at)
+             VALUES ('conversation-design', 'participant:design-agent', 'member',
+                     '2026-08-14T17:30:00.000Z', '2026-08-14T17:30:00.000Z');
+             INSERT INTO chat_teammate_channel_memberships
+                 (conversation_id, teammate_id, access_profile_id, created_at, updated_at)
+             VALUES ('conversation-design', 'participant:design-agent', 'access-profile:edit-files',
+                     '2026-08-14T17:30:00.000Z', '2026-08-14T17:30:00.000Z');",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let conversation_id = ChatConversationId::new("conversation-design").unwrap();
+        let before = access::read_teammate_access(&pool, &teammate_id)
+            .await
+            .unwrap();
+        assert_eq!(before.channels.len(), 1);
+
+        let removed_at = UtcTimestamp::new("2026-08-15T09:00:00.000Z").unwrap();
+        let mut transaction = pool.begin().await.unwrap();
+        access::remove_teammate_from_conversation(
+            &mut transaction,
+            &teammate_id,
+            conversation_id.as_str(),
+            &removed_at,
+        )
+        .await
+        .unwrap();
+        transaction.commit().await.unwrap();
+
+        let kept: Option<String> = sqlx::query_scalar(
+            "SELECT removed_at FROM chat_teammate_channel_memberships
+             WHERE conversation_id = 'conversation-design'
+               AND teammate_id = 'participant:design-agent'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(kept.as_deref(), Some(removed_at.as_str()));
+        let after = access::read_teammate_access(&pool, &teammate_id)
+            .await
+            .unwrap();
+        assert!(after.channels.is_empty());
+        let roster = reads::read_memberships_for_conversation(&pool, &conversation_id, false)
+            .await
+            .unwrap();
+        assert!(roster.is_empty());
+        let history = reads::read_memberships_for_conversation(&pool, &conversation_id, true)
+            .await
+            .unwrap();
+        assert_eq!(history.len(), 1);
+        assert!(history[0].removed_at.is_some());
+        assert!(
+            history[0].ai_access.is_none(),
+            "a removed membership carries no channel access"
+        );
     });
 }

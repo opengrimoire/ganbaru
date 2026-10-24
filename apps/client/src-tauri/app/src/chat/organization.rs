@@ -59,7 +59,7 @@ use reads::{
     read_teammate,
 };
 #[cfg(desktop)]
-use teammate_lifecycle::{delete_unused_teammate, set_teammate_archived};
+use teammate_lifecycle::set_teammate_archived;
 #[cfg(desktop)]
 use workflow::insert_policy_revision;
 use workflow::{
@@ -187,18 +187,6 @@ pub async fn chat_archive_teammate(
 }
 
 #[tauri::command]
-#[cfg(desktop)]
-pub async fn chat_delete_unused_teammate(
-    app: tauri::AppHandle,
-    db_url: String,
-    teammate_id: ChatParticipantId,
-    expected_revision: u64,
-) -> ChatResult<()> {
-    let pool = chat_pool(app, db_url).await?;
-    delete_unused_teammate(&pool, &teammate_id, expected_revision).await
-}
-
-#[tauri::command]
 #[cfg(any(test, mobile))]
 pub async fn chat_read_mobile_channel_roster(
     app: tauri::AppHandle,
@@ -299,7 +287,7 @@ pub async fn chat_post_message(
     let revision_id = message_revision_id()?;
     let target_reply_thread_id = match request.reply_thread_id.as_ref() {
         Some(reply_thread_id) => Some(reply_thread_id.clone()),
-        None if has_thread_eligible_mention(&request) => Some(reply_thread_id()?),
+        None if has_thread_eligible_mention(&request) => Some(reply_thread_id(&item_id)?),
         None => None,
     };
     let mut transaction = pool.begin().await.map_err(persistence_error)?;

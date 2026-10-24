@@ -368,6 +368,7 @@ pub const DOMAIN: DomainManifest = DomainManifest {
                 policy: TriggerPolicy::ApplierVisible,
             },
         ],
+        assets: &[],
     }],
     replica_writable: true,
     assets: &[],

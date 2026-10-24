@@ -6,22 +6,27 @@
 //! device can be added again on another under the same key.
 //!
 //! Daily usage replicates as one total per device, source, and local day, which only its device
-//! writes and which only grows. Usage samples stay on the device as its accounting journal; block
-//! events stay owner-only. Ids 279 to 287 are reserved.
+//! writes and which only grows. Usage samples stay on the device as its accounting journal.
+//!
+//! Block events are written once. An event during a Focus run publishes with the closed run and
+//! goes with it when the run is deleted; an event outside a run publishes at once. Ids 280 to 287
+//! are reserved.
 
 use ganbaru_sync_contracts::bounds::MAX_DEVICE_ID_BYTES;
 use ganbaru_sync_contracts::{GroupId, TableId};
 
 use crate::domains::distractions::{
-    MAX_APP_IDENTITY_CHARS, MAX_APP_NAME_CHARS, MAX_CATEGORY_NAME_CHARS, MAX_COLOR, MAX_ENUM_CHARS,
-    MAX_HOST_CHARS, MAX_ID_CHARS, MAX_LIMIT_ENTRIES, MAX_LIMIT_NAME_CHARS,
-    MAX_MATCH_NAMES_JSON_CHARS, MAX_MINUTES_PER_DAY, MAX_MINUTES_PER_WEEK, MAX_PACKAGE_CHARS,
-    MAX_USAGE_DAY_SECONDS, MAX_USAGE_LABEL_CHARS, MAX_USAGE_SOURCE_KEY_CHARS, USAGE_DATE_CHARS,
+    MAX_APP_IDENTITY_CHARS, MAX_APP_NAME_CHARS, MAX_BLOCK_ENUM_CHARS, MAX_BLOCK_TEXT_CHARS,
+    MAX_CATEGORY_NAME_CHARS, MAX_COLOR, MAX_ENUM_CHARS, MAX_HOST_CHARS, MAX_ID_CHARS,
+    MAX_LIMIT_ENTRIES, MAX_LIMIT_NAME_CHARS, MAX_MATCH_NAMES_JSON_CHARS, MAX_MINUTES_PER_DAY,
+    MAX_MINUTES_PER_WEEK, MAX_PACKAGE_CHARS, MAX_USAGE_DAY_SECONDS, MAX_USAGE_LABEL_CHARS,
+    MAX_USAGE_SOURCE_KEY_CHARS, USAGE_DATE_CHARS,
 };
+use crate::manifest::vault::focus::{RUNS_TABLE, SEGMENTS_TABLE};
 use crate::manifest::{
     ColumnSpec, ColumnType, DerivedKey, DeviceTable, DomainManifest, GroupSpec, GroupStorage,
-    MergeKind, OnDelete, OwnedBound, OwnedCodec, OwnedOrder, OwnedTable, TableIdRange, TableSpec,
-    group_id,
+    MergeKind, OnDelete, OwnedBound, OwnedCodec, OwnedOrder, OwnedTable, PublishedWith,
+    ReferenceColumn, TableIdRange, TableSpec, group_id,
 };
 
 /// Domain name for distraction rules.
@@ -44,6 +49,11 @@ pub const APP_RULES_TABLE: TableId = TableId(276);
 pub const USAGE_LIMITS_TABLE: TableId = TableId(277);
 /// `distractions_usage_totals`.
 pub const USAGE_TOTALS_TABLE: TableId = TableId(278);
+/// `distractions_block_events`.
+pub const BLOCK_EVENTS_TABLE: TableId = TableId(279);
+
+/// The owned rule snapshot of a block event.
+pub const BLOCK_RULE_SNAPSHOTS_OWNED: &str = "distractions_block_event_rule_snapshots";
 
 /// The device's journal of usage samples, which never replicates.
 pub const USAGE_SAMPLES_LOCAL: &str = "distractions_usage_samples";
@@ -162,6 +172,20 @@ pub mod usage_total_group {
     pub const ELAPSED: GroupId = group_id(1);
     /// `display_name`.
     pub const LABEL: GroupId = group_id(2);
+}
+
+/// Block event field groups.
+pub mod block_event_group {
+    use super::{GroupId, group_id};
+
+    /// The source, time, phase, decision, and matched rule.
+    pub const EVENT: GroupId = group_id(0);
+    /// `run_id`.
+    pub const RUN: GroupId = group_id(1);
+    /// `segment_id`.
+    pub const SEGMENT: GroupId = group_id(2);
+    /// The owned rule snapshot.
+    pub const SNAPSHOT: GroupId = group_id(3);
 }
 
 /// A hidden, non-recoverable group without references.
@@ -560,11 +584,111 @@ pub const USAGE_TOTALS: TableSpec = TableSpec {
     ..BASE
 };
 
+/// The rule a block event matched, as it was when the event happened: at most one row at
+/// ordinal zero. The adapter checks its rule kind and blocker mode.
+pub const BLOCK_RULE_SNAPSHOTS: OwnedTable = OwnedTable {
+    table: BLOCK_RULE_SNAPSHOTS_OWNED,
+    parent_column: "block_event_id",
+    order: OwnedOrder::Ordinal("ordinal"),
+    columns: &[
+        optional_text("rule_id", MAX_BLOCK_TEXT_CHARS),
+        optional_text("rule_kind", MAX_BLOCK_ENUM_CHARS),
+        optional_text("rule_label", MAX_BLOCK_TEXT_CHARS),
+        optional_text("environment_id", MAX_BLOCK_TEXT_CHARS),
+        optional_text("blocker_mode", MAX_BLOCK_ENUM_CHARS),
+    ],
+    references: &[],
+    unique: &[],
+    max_rows: 1,
+    codec: OwnedCodec::Generic,
+    nested: &[],
+    bound: OwnedBound::Static,
+};
+
+/// `distractions_block_events`, written once by the device that blocked. `run_id` publishes the
+/// event with its run and cascades with it. `segment_id` clears instead, as on Focus run events;
+/// segments are deleted only with their run, which deletes the event too.
+pub const BLOCK_EVENTS: TableSpec = TableSpec {
+    id: BLOCK_EVENTS_TABLE,
+    name: "distractions_block_events",
+    groups: &[
+        group(
+            block_event_group::EVENT,
+            "event",
+            MergeKind::Immutable,
+            &[
+                ColumnSpec {
+                    name: "occurred_at",
+                    ty: ColumnType::Timestamp,
+                },
+                text("source_type", MAX_BLOCK_ENUM_CHARS),
+                trimmed("source_key", MAX_BLOCK_TEXT_CHARS),
+                optional_text("display_name", MAX_BLOCK_TEXT_CHARS),
+                optional_text("phase", MAX_BLOCK_ENUM_CHARS),
+                text("decision", MAX_BLOCK_ENUM_CHARS),
+                optional_text("rule_id", MAX_BLOCK_TEXT_CHARS),
+                optional_text("category_id", MAX_BLOCK_TEXT_CHARS),
+                ColumnSpec {
+                    name: "created_at",
+                    ty: ColumnType::Timestamp,
+                },
+            ],
+        ),
+        GroupSpec {
+            references: &[ReferenceColumn {
+                column: "run_id",
+                table: RUNS_TABLE,
+                on_delete: OnDelete::Cascade,
+            }],
+            ..group(
+                block_event_group::RUN,
+                "run",
+                MergeKind::Immutable,
+                &[ColumnSpec {
+                    name: "run_id",
+                    ty: ColumnType::OptionalRowKey,
+                }],
+            )
+        },
+        group(
+            block_event_group::SEGMENT,
+            "segment",
+            MergeKind::Reference {
+                table: SEGMENTS_TABLE,
+                on_delete: OnDelete::SetNull,
+            },
+            &[ColumnSpec {
+                name: "segment_id",
+                ty: ColumnType::OptionalRowKey,
+            }],
+        ),
+        GroupSpec {
+            storage: GroupStorage::Owned {
+                columns: &[],
+                tables: &[BLOCK_RULE_SNAPSHOTS],
+            },
+            ..group(
+                block_event_group::SNAPSHOT,
+                "snapshot",
+                MergeKind::Immutable,
+                &[],
+            )
+        },
+    ],
+    published_with: Some(PublishedWith {
+        column: "run_id",
+        parent: RUNS_TABLE,
+        null_publishes: true,
+    }),
+    ..BASE
+};
+
 /// A device table without domain triggers.
 const fn device(name: &'static str) -> DeviceTable {
     DeviceTable {
         name,
         triggers: &[],
+        assets: &[],
     }
 }
 
@@ -583,6 +707,7 @@ pub const DOMAIN: DomainManifest = DomainManifest {
         APP_RULES,
         USAGE_LIMITS,
         USAGE_TOTALS,
+        BLOCK_EVENTS,
     ],
     derived: &[],
     local: &[device(USAGE_SAMPLES_LOCAL)],

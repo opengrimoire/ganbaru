@@ -133,6 +133,7 @@ async fn require_current_scratch_authority(
            JOIN chat_teammate_channel_memberships access
              ON access.conversation_id = membership.conversation_id
             AND access.teammate_id = membership.participant_id
+            AND access.removed_at IS NULL
            JOIN chat_access_profiles profile ON profile.id = access.access_profile_id
            JOIN chat_access_profile_revisions revision
              ON revision.access_profile_id = profile.id

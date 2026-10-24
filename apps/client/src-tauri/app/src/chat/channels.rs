@@ -2,6 +2,7 @@
 
 use crate::db;
 use chrono::{DateTime, SecondsFormat, Utc};
+use ganbaru_chat::ids::new_id;
 use ganbaru_chat::project_defaults;
 use ganbaru_chat_contracts::models::{
     ChatChannelId, ChatChannelRead, ChatConversationId, ChatError, ChatErrorCode, ChatResult,
@@ -9,8 +10,7 @@ use ganbaru_chat_contracts::models::{
 };
 use serde::Deserialize;
 use sqlx::{AssertSqlSafe, Row, SqlitePool};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::SystemTime;
 
 const LOCAL_PARTICIPANT_ID: &str = "participant:local-owner";
 const MAX_CHANNEL_NAME_CHARS: usize = 80;
@@ -83,7 +83,7 @@ pub async fn chat_create_channel(
     require_active_project(&pool, &request.project_id).await?;
     let now = now_timestamp()?;
     let conversation_id =
-        ChatConversationId::new(new_id("conversation")).map_err(identifier_error)?;
+        ChatConversationId::new(new_id("conversation")?).map_err(identifier_error)?;
     let mut transaction = pool.begin().await.map_err(persistence_error)?;
     sqlx::query(
         "INSERT INTO chat_conversations
@@ -683,16 +683,6 @@ pub(crate) fn identifier_error(_error: String) -> ChatError {
         "Stored Chat identifier is invalid",
         false,
     )
-}
-
-fn new_id(prefix: &str) -> String {
-    static SEQUENCE: AtomicU64 = AtomicU64::new(0);
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_nanos())
-        .unwrap_or_default();
-    let sequence = SEQUENCE.fetch_add(1, Ordering::Relaxed);
-    format!("{prefix}:{nanos:032x}{sequence:016x}")
 }
 
 #[cfg(test)]

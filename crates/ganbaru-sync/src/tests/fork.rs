@@ -541,6 +541,102 @@ fn a_branch_the_anchor_stored_without_applying_is_published_again_from_the_ancho
     });
 }
 
+/// The anchor applies the original's branch, which creates `note-3`, and changes that note with
+/// `statement`. A member learns of the fork before it stores the branch and applies the anchor's
+/// change to a hidden row waiting for a creation; the anchor hides the row the same way once
+/// evidence reaches it. The original re-seals its branch, which creates the note again: an
+/// observer that applies the re-sealed creation before the anchor's change ends on the same
+/// state, and every replica shows `expected`.
+async fn change_branch_row_on_the_anchor(space: u64, statement: &str, expected: Option<&str>) {
+    let mut anchor = Replica::anchor(0, space).await;
+    let (mut original, mut clone) = installation(space).await;
+    let mut member = Replica::new(2, space).await;
+    let mut observer = Replica::new(3, space).await;
+    for replica in [&mut anchor, &mut member, &mut observer] {
+        deliver(replica, &mut original).await;
+    }
+    edit(&mut original, &note("note-3", "Branch", 2)).await;
+    edit(
+        &mut clone,
+        "UPDATE quick_notes SET title = 'Clone' WHERE id = 'note-1'",
+    )
+    .await;
+    let ours = original.own_ops().await;
+    let theirs = clone.own_ops().await;
+
+    deliver(&mut anchor, &mut original).await;
+    edit(&mut anchor, statement).await;
+    assert_eq!(
+        offer(&mut member, &ours[2], &theirs[2]).await,
+        EvidenceOutcome::Stored
+    );
+    deliver(&mut member, &mut anchor).await;
+    assert_eq!(
+        member.applied_vector().await.get(&anchor.writer()),
+        anchor.stored_vector().await.get(&anchor.writer()),
+        "the anchor's change applies to a row waiting for a creation"
+    );
+    assert_eq!(
+        member
+            .count("SELECT count(*) FROM sync_ops WHERE state != 'applied'")
+            .await,
+        0
+    );
+    assert_eq!(title(&mut member, "note-3").await, None);
+
+    // Evidence reaches the anchor, which hides the note only the branch created.
+    cross(&mut anchor, &mut clone).await;
+    anchor.seal().await.unwrap();
+    assert_eq!(title(&mut anchor, "note-3").await, None);
+
+    // The original re-seals its branch, and the observer applies it before the anchor's change.
+    deliver(&mut original, &mut anchor).await;
+    assert_eq!(
+        offer(&mut observer, &ours[2], &theirs[2]).await,
+        EvidenceOutcome::Stored
+    );
+    deliver(&mut observer, &mut original).await;
+    drop(clone);
+    let mut replicas = vec![anchor, member, original, observer];
+    converge(&mut replicas).await;
+    let settled = replicas[0].dump().await;
+    for replica in &mut replicas {
+        assert_eq!(replica.dump().await, settled, "replica {}", replica.index);
+        assert_eq!(
+            replica
+                .count("SELECT count(*) FROM sync_ops WHERE state != 'applied'")
+                .await,
+            0
+        );
+        assert_eq!(
+            replica
+                .count("SELECT count(*) FROM sync_rows WHERE creation_pending = 1")
+                .await,
+            0
+        );
+        assert_eq!(title(replica, "note-3").await.as_deref(), expected);
+        replica.check_invariants().await;
+    }
+}
+
+#[test]
+fn a_change_to_a_row_only_a_forked_branch_created_waits_for_its_re_sealed_creation() {
+    block_on(change_branch_row_on_the_anchor(
+        308,
+        "UPDATE quick_notes SET title = 'Anchor' WHERE id = 'note-3'",
+        Some("Anchor"),
+    ));
+}
+
+#[test]
+fn a_delete_of_a_row_only_a_forked_branch_created_survives_its_re_sealed_creation() {
+    block_on(change_branch_row_on_the_anchor(
+        309,
+        "DELETE FROM quick_notes WHERE id = 'note-3'",
+        None,
+    ));
+}
+
 #[test]
 fn both_copies_reseal_from_received_evidence_and_a_successor_can_fork_again() {
     block_on(async {

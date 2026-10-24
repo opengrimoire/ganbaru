@@ -7,7 +7,11 @@
 //! are removed. The versions such an operation superseded come back from
 //! `sync_displaced_versions`, which a member fills while the anchor has not confirmed storing
 //! the superseding operation; the anchor never applies an operation past a cutoff, so it keeps
-//! none. Operations of other writers stay applied: an honest operation that saw an excluded one
+//! none. After a handover the cutoff can still fall below what an earlier anchor installation
+//! stored and confirmed, which kept nothing either, so the anchor seals again the current value
+//! of every live group an operation it excludes writes. The charter epoch has no earlier
+//! anchor, and sealing again there would only bury late values an admin may still restore.
+//! Operations of other writers stay applied: an honest operation that saw an excluded one
 //! keeps its effects. The authorization entries excluded operations carry still count for chain
 //! selection, so a competing chain wins on every replica whatever order it arrived in.
 //!
@@ -191,6 +195,23 @@ pub(crate) fn beyond_bound(
         })
 }
 
+/// Whether `context` covers an operation past the shared prefix of a forked writer. No replica
+/// but the forked device keeps such an operation, so a row only it created is unknown, and an
+/// honest change to that row applies to a row that waits, hidden, for a creation: the forked
+/// device's re-sealed branch creates it again on every replica, whichever arrives first.
+pub(crate) fn past_fork(
+    context: &VersionVector,
+    excluding: &BTreeMap<WriterId, Excluding>,
+) -> bool {
+    !excluding.is_empty()
+        && context.iter().any(|(writer, seq)| {
+            excluding
+                .get(&writer)
+                .and_then(|excluded| excluded.fork)
+                .is_some_and(|keep| seq > keep)
+        })
+}
+
 /// Brings operation states in line with the selected removals, inside an engine write.
 ///
 /// Operations past a removal cutoff become held as invalid with the removal's revision; the
@@ -231,6 +252,13 @@ pub(crate) async fn reconcile(
             false,
         ));
         entry.2 |= state == "applied";
+    }
+    // An earlier anchor may have stored these operations, which released what they displaced.
+    if !writers.is_empty() && crate::fork::reseals_excluded(conn, ctx.space).await? {
+        for (writer, (cutoff, _, _)) in &writers {
+            crate::fork::collect_republish(engine, conn, ctx.space, batch, *writer, *cutoff)
+                .await?;
+        }
     }
     for (writer, (cutoff, revision, _)) in &writers {
         sqlx::query(
@@ -273,9 +301,11 @@ pub(crate) async fn reconcile(
     Ok(!writers.is_empty() || released)
 }
 
-/// Drops the merge rows of dirty rows left without versions and tombstones: rows only excluded
-/// operations created, which a replica that never applied them does not hold either. Each
-/// dropped row is marked orphaned so it materializes absent.
+/// Drops the merge rows of dirty rows left without versions, tombstones, and creations: rows
+/// only excluded operations created, which a replica that never applied them does not hold
+/// either. Each dropped row is marked orphaned so it materializes absent. A row an applied
+/// operation created stays even without versions, which happens when excluded operations
+/// displaced every version it had and nothing retained them; the anchor publishes it again.
 pub(crate) async fn drop_orphan_rows(
     conn: &mut SqliteConnection,
     batch: &mut Batch,
@@ -289,6 +319,9 @@ pub(crate) async fn drop_orphan_rows(
                 )
                 AND NOT EXISTS (
                     SELECT 1 FROM sync_tombstones WHERE table_id = ?1 AND row_key = ?2
+                )
+                AND NOT EXISTS (
+                    SELECT 1 FROM sync_row_creations WHERE table_id = ?1 AND row_key = ?2
                 )",
         )
         .bind(table_param(*table))
@@ -601,7 +634,7 @@ async fn drop_beyond_bound(
 }
 
 /// Rows created by the applied operations of `writer` past `bound`.
-async fn created_past(
+pub(crate) async fn created_past(
     engine: &Engine,
     conn: &mut SqliteConnection,
     space: SpaceId,
@@ -1025,6 +1058,51 @@ pub(crate) async fn fold(
     Ok(())
 }
 
+/// Lists the rows whose late changes [`fold`] changed outside an engine write as stale, since
+/// a late change can hide a row already materialized. See [`take_stale`].
+pub(crate) async fn mark_stale(
+    engine: &Engine,
+    conn: &mut SqliteConnection,
+    content: &Content,
+) -> SyncResult<()> {
+    let Content::Changes(changes) = content else {
+        return Ok(());
+    };
+    for change in changes {
+        if late_kind(engine, change).is_none() {
+            continue;
+        }
+        sqlx::query(
+            "INSERT INTO sync_stale_rows (table_id, row_key) VALUES (?, ?)
+             ON CONFLICT (table_id, row_key) DO NOTHING",
+        )
+        .bind(table_param(change.table))
+        .bind(change.row.as_str())
+        .execute(&mut *conn)
+        .await?;
+    }
+    Ok(())
+}
+
+/// Moves the rows [`mark_stale`] listed into `dirty`, so the engine write materializes them
+/// again.
+pub(crate) async fn take_stale(
+    conn: &mut SqliteConnection,
+    dirty: &mut BTreeSet<(TableId, String)>,
+) -> SyncResult<()> {
+    let rows: Vec<(i64, String)> =
+        sqlx::query_as("DELETE FROM sync_stale_rows RETURNING table_id, row_key")
+            .fetch_all(&mut *conn)
+            .await?;
+    for (table, key) in rows {
+        let table = u16::try_from(table)
+            .map(TableId)
+            .map_err(|_| corrupt("stale row of a table id out of range"))?;
+        dirty.insert((table, key));
+    }
+    Ok(())
+}
+
 /// Late change state of a row: per removal, its kind and decision.
 type LateState = BTreeMap<(TableId, String), Vec<(i64, String, Option<String>)>>;
 
@@ -1102,6 +1180,7 @@ pub(crate) async fn rebuild_late(
             .await?;
         }
     }
+    crate::fork::drop_restated(conn).await?;
     let after = late_state(conn).await?;
     for row in before.keys().chain(after.keys()) {
         if before.get(row) != after.get(row) {
@@ -1327,10 +1406,14 @@ async fn restoring_change(
         }));
     }
     let versions = merge::versions(engine, conn, record.table, &record.key).await?;
+    let restated = crate::fork::restated(conn, record.table, &record.key).await?;
+    // A version restating an older value the anchor sealed again is no newer edit.
     let newer = |group: GroupId, late: &LateValue| {
-        versions
-            .iter()
-            .any(|version| version.group == group && version.clock > late.clock)
+        versions.iter().any(|version| {
+            version.group == group
+                && version.clock > late.clock
+                && restated.get(&group) != Some(&version.hash)
+        })
     };
     // A late create comes back as a create, which writes every group: a group an honest
     // operation wrote after the late value keeps that honest value.

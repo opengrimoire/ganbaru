@@ -5,7 +5,8 @@
 //! 0, it is an edge severed to break a cycle, its merged winners fail its publication
 //! predicate, or it is hidden by cascade: one of its cascading references, followed through
 //! cascading references of live rows, reaches a root. A root is a tombstoned row without a
-//! redirect, a removed derived-key row, a severed edge, an unpublished row, or, through a
+//! redirect, a removed derived-key row, a severed edge, an unpublished row, a late change, a row
+//! waiting for a creation, or, through a
 //! composite-key identity reference, a hidden duplicate or a row that was never published.
 //! Cascading references other than identity references follow redirects and duplicate keepers
 //! first, and a reference to a row that was never published is ignored. The walk keeps a
@@ -52,6 +53,8 @@ pub(crate) enum RootKind {
     Unpublished,
     /// A live row hidden as a late change of a removed device.
     Late,
+    /// A live row whose merge state waits for an operation that creates it.
+    Uncreated,
 }
 
 impl RootKind {
@@ -187,6 +190,7 @@ impl Visibility {
                     || removed(engine, conn, *table, key).await?
                     || unpublished(engine, conn, *table, key).await?
                     || self.late(engine, conn, *table, key).await?
+                    || merge::creation_pending(conn, *table, key).await?
                     || self.cascade_roots(engine, conn, *table, key).await?.hides()
                 {
                     hidden.insert((*table, key.clone()));
@@ -297,6 +301,9 @@ impl Visibility {
             Some(RowState::Live) if self.late(engine, conn, *table, key).await? => {
                 Some(RootKind::Late)
             }
+            Some(RowState::Live) if merge::creation_pending(conn, *table, key).await? => {
+                Some(RootKind::Uncreated)
+            }
             Some(RowState::Live) if identity && self.is_duplicate(*table, key) => {
                 Some(RootKind::Duplicate)
             }
@@ -394,7 +401,8 @@ impl Visibility {
     }
 
     /// Whether a row is hidden by its own merge state, before cascade: tombstoned, removed,
-    /// severed, a hidden duplicate, failing its publication predicate, or a late change.
+    /// severed, a hidden duplicate, waiting for a creation, failing its publication predicate,
+    /// or a late change.
     pub(crate) async fn self_hidden(
         &self,
         engine: &Engine,
@@ -407,6 +415,7 @@ impl Visibility {
             Some(RowState::Tombstoned) => true,
             Some(RowState::Live) => {
                 self.is_duplicate(table, key)
+                    || merge::creation_pending(conn, table, key).await?
                     || self.is_severed(table, key)
                     || removed(engine, conn, table, key).await?
                     || unpublished(engine, conn, table, key).await?

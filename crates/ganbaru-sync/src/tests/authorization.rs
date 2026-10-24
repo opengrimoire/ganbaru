@@ -997,6 +997,42 @@ fn operations_wait_for_the_revision_they_were_sealed_against_but_entries_never_w
 }
 
 #[test]
+fn an_entry_applied_before_the_local_writer_seals_its_genesis_does_not_freeze_it() {
+    block_on(async {
+        let mut hub = Replica::anchor(0, 58).await;
+        let mut member = Replica::new(1, 58).await;
+        tag(&mut hub, "tag-1").await;
+        member.pull(&mut hub).await;
+        assert_eq!(member.stored_vector().await.get(&member.writer()), 0);
+
+        // The member renames the tag without sealing, then receives an entry and a rename of
+        // the same tag, which waits for the member's capture to seal first.
+        member
+            .exec("UPDATE quick_note_tags SET name = 'Member' WHERE id = 'tag-1'")
+            .await;
+        hub.sequence(enroll_entry(&person(), 20, DeviceRole::Member))
+            .await
+            .unwrap()
+            .unwrap();
+        hub.exec("UPDATE quick_note_tags SET name = 'Hub' WHERE id = 'tag-1'")
+            .await;
+        hub.seal().await.unwrap();
+        let known = member.stored_vector().await;
+        let ops = hub.ops_since(&known).await;
+        member.receive(&ops).await;
+        let report = member.apply_once().await.unwrap();
+        assert!(!report.local_writer_frozen);
+        assert!(!report.pending_captures);
+        assert_eq!(
+            member.applied_vector().await,
+            member.stored_vector().await,
+            "the member seals its genesis and capture, then applies both operations"
+        );
+        assert_eq!(member.stored_vector().await.get(&member.writer()), 2);
+    });
+}
+
+#[test]
 fn the_anchor_rejects_entries_its_rules_forbid() {
     block_on(async {
         let mut hub = Replica::anchor(0, 61).await;

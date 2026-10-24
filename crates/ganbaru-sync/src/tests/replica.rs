@@ -615,8 +615,9 @@ impl Replica {
             let frozen = report.local_writer_frozen;
             let more = report.more;
             reports.push(report);
+            let resealed = self.reseal_own_forks().await;
             if frozen && !self.device_removed().await {
-                if !self.reseal_own_forks().await {
+                if !resealed {
                     self.rotate();
                 }
             } else if !more {
@@ -626,8 +627,9 @@ impl Replica {
         panic!("replica {} never finished applying", self.index);
     }
 
-    /// Re-seals every forked chain of this device that this installation still holds, each with
-    /// a new writer, the way the app does. Returns whether there was one.
+    /// Re-seals every forked chain of this device that this installation still holds with a
+    /// new writer, rotating away from a forked local writer first, the way the app does after
+    /// each apply. Returns whether there was one.
     pub(super) async fn reseal_own_forks(&mut self) -> bool {
         let forks = self
             .engine
@@ -635,6 +637,8 @@ impl Replica {
             .await
             .unwrap();
         for (old, keep_through) in &forks {
+            // Each re-seal needs a writer that sealed nothing but its genesis, and evidence of
+            // an earlier writer's fork can arrive after its successor sealed.
             self.rotate();
             self.engine
                 .reseal_fork(
@@ -651,11 +655,21 @@ impl Replica {
         !forks.is_empty()
     }
 
-    /// Seals, rotating once when the local writer is no longer active.
+    /// Replaces a local writer that is no longer active: re-seals the forked chains this
+    /// installation still holds, each with a new writer, or else rotates.
+    pub(super) async fn recover_inactive(&mut self) {
+        let before = self.writer();
+        self.reseal_own_forks().await;
+        if self.writer() == before {
+            self.rotate();
+        }
+    }
+
+    /// Seals, recovering once when the local writer is no longer active.
     pub(super) async fn seal_rotating(&mut self) -> SyncResult<SealReport> {
         match self.seal().await {
             Err(crate::SyncError::WriterInactive(_)) => {
-                self.rotate();
+                self.recover_inactive().await;
                 self.seal().await
             }
             other => other,
@@ -1222,6 +1236,7 @@ const ENGINE_DUMPED: &[(&str, &[&str])] = &[
     ("sync_auth_entries", &[]),
     ("sync_devices", &[]),
     ("sync_late_changes", &[]),
+    ("sync_row_creations", &[]),
 ];
 
 pub(super) fn device_id(index: usize) -> String {

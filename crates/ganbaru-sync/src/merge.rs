@@ -74,7 +74,7 @@ impl Stored {
 }
 
 /// Mutable state of one engine transaction.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct Batch {
     pub(crate) space: SpaceId,
     /// Applied sequence per writer. `sync_writers.applied_seq` matches it except while an
@@ -87,7 +87,7 @@ pub(crate) struct Batch {
     /// them. They materialize absent.
     pub(crate) orphaned: BTreeSet<(TableId, String)>,
     /// Groups the anchor seals again with their current values once the call materialized,
-    /// because a fork exclusion dropped a branch the anchor had stored that wrote them.
+    /// because a fork or removal excluded stored operations that wrote them.
     pub(crate) republish: BTreeMap<(TableId, String), GroupMask>,
 }
 
@@ -142,6 +142,93 @@ pub(crate) fn parse_row_state(state: Option<&str>) -> SyncResult<Option<RowState
         Some("tombstoned") => Ok(Some(RowState::Tombstoned)),
         Some(other) => Err(corrupt(format!("unknown row state {other}"))),
     }
+}
+
+/// Records that operation `seq` of `writer` created a row, which no longer waits for a
+/// creation.
+async fn record_creation(
+    conn: &mut SqliteConnection,
+    table: TableId,
+    key: &str,
+    writer: WriterId,
+    seq: Seq,
+) -> SyncResult<()> {
+    sqlx::query(
+        "INSERT INTO sync_row_creations (table_id, row_key, writer_id, seq) VALUES (?, ?, ?, ?)
+         ON CONFLICT DO NOTHING",
+    )
+    .bind(table_param(table))
+    .bind(key)
+    .bind(writer.as_bytes().as_slice())
+    .bind(seq_i64(seq)?)
+    .execute(&mut *conn)
+    .await?;
+    sqlx::query(
+        "UPDATE sync_rows SET creation_pending = 0
+         WHERE table_id = ? AND row_key = ? AND creation_pending = 1",
+    )
+    .bind(table_param(table))
+    .bind(key)
+    .execute(&mut *conn)
+    .await?;
+    Ok(())
+}
+
+/// Adds merge state for a row no operation this replica applied created, so changes from an
+/// operation that saw it created on an excluded forked branch apply and stay hidden until an
+/// operation creates the row.
+pub(crate) async fn defer_creation(
+    conn: &mut SqliteConnection,
+    table: TableId,
+    key: &str,
+) -> SyncResult<()> {
+    sqlx::query(
+        "INSERT INTO sync_rows (table_id, row_key, state, creation_pending) VALUES (?, ?, 'live', 1)
+         ON CONFLICT DO NOTHING",
+    )
+    .bind(table_param(table))
+    .bind(key)
+    .execute(&mut *conn)
+    .await?;
+    Ok(())
+}
+
+/// Marks the rows of `rows` that kept merge state but lost every creation as waiting for one.
+pub(crate) async fn mark_uncreated(
+    conn: &mut SqliteConnection,
+    rows: &BTreeSet<(TableId, String)>,
+) -> SyncResult<()> {
+    for (table, key) in rows {
+        sqlx::query(
+            "UPDATE sync_rows SET creation_pending = 1
+             WHERE table_id = ?1 AND row_key = ?2
+                AND NOT EXISTS (
+                    SELECT 1 FROM sync_row_creations c
+                    WHERE c.table_id = ?1 AND c.row_key = ?2
+                )",
+        )
+        .bind(table_param(*table))
+        .bind(key)
+        .execute(&mut *conn)
+        .await?;
+    }
+    Ok(())
+}
+
+/// Whether a row's merge state holds no creation yet, so it is not materialized.
+pub(crate) async fn creation_pending(
+    conn: &mut SqliteConnection,
+    table: TableId,
+    key: &str,
+) -> SyncResult<bool> {
+    let pending: Option<i64> = sqlx::query_scalar(
+        "SELECT creation_pending FROM sync_rows WHERE table_id = ? AND row_key = ?",
+    )
+    .bind(table_param(table))
+    .bind(key)
+    .fetch_optional(&mut *conn)
+    .await?;
+    Ok(pending == Some(1))
 }
 
 /// Retained versions of a row with elided values read back, ordered by group and writer.
@@ -409,6 +496,9 @@ pub(crate) async fn apply_change(
     } else {
         return Err(corrupt("change for an unpublished row reached apply"));
     };
+    if change.action == ChangeAction::Create {
+        record_creation(conn, change.table, key, writer, seq).await?;
+    }
     if change.action == ChangeAction::Tombstone {
         sqlx::query(
             "INSERT INTO sync_tombstones

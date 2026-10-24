@@ -421,6 +421,10 @@ async fn load_nodes(conn: &mut SqliteConnection, space: SpaceId) -> SyncResult<V
     Ok(nodes)
 }
 
+/// Readiness revision of a space whose stored chains reach a freeze: every revision, kept within
+/// the stored integer range.
+const UNBOUNDED_REVISION: u64 = i64::MAX.unsigned_abs();
+
 /// Selects the chain from the charter through the stored entries, or `None` without a charter.
 pub(crate) async fn select(
     conn: &mut SqliteConnection,
@@ -450,6 +454,18 @@ pub(crate) async fn select(
     }];
     while let Some(selection) = stack.pop() {
         reachable = reachable.max(selection.state.revision);
+        // Copies of a forked anchor writer may carry entries past the revision its epoch froze
+        // at, which no replica keeps once the fork is excluded. An author that applied one
+        // before the fork was found must not wait for it, so a chain that reaches a freeze
+        // reaches every revision. Each operation's device is still checked against the selected
+        // chain when it applies.
+        if selection
+            .state
+            .frozen_at
+            .is_some_and(|frozen| selection.state.revision >= frozen)
+        {
+            reachable = UNBOUNDED_REVISION;
+        }
         let valid: Vec<&Node> = children
             .get(&selection.state.entry_hash)
             .into_iter()
@@ -481,7 +497,8 @@ pub(crate) async fn select(
 /// This guarantees that the receiver stored every entry the author had applied when it sealed
 /// the operation, not that the selected chain covers them: a superseded chain can satisfy it.
 /// Requiring the selected chain instead would leave an operation sealed against a superseded
-/// entry waiting forever.
+/// entry waiting forever. Once a stored chain reaches the revision a fork froze its epoch at,
+/// every revision is reachable, since the forked copies' later entries are kept nowhere.
 pub(crate) async fn readiness_revision(
     conn: &mut SqliteConnection,
     space: SpaceId,

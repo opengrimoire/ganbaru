@@ -329,16 +329,16 @@ describe("refreshConfigKeysFromDisk", () => {
   });
 
   it("leaves the cache alone when the file is no longer a JSON object", async () => {
-    setReadResponse(JSON.stringify({ distractions: { enabled: true } }));
+    setReadResponse(JSON.stringify({ chat: { enabled: true } }));
     const { ensureConfigLoaded, getConfigKey, refreshConfigKeysFromDisk } = await loadModule();
     await ensureConfigLoaded();
     setReadResponse("not json");
 
-    await expect(refreshConfigKeysFromDisk(["distractions"])).rejects.toThrow(
+    await expect(refreshConfigKeysFromDisk(["chat"])).rejects.toThrow(
       "vault configuration is not a JSON object",
     );
 
-    expect(getConfigKey("distractions", null)).toEqual({ enabled: true });
+    expect(getConfigKey("chat", null)).toEqual({ enabled: true });
   });
 });
 

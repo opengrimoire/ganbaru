@@ -1,13 +1,11 @@
 import { invoke } from "@tauri-apps/api/core";
 import { translate } from "$lib/i18n/translator.svelte";
-import { flushConfig } from "$lib/vault/config";
 
 const PLUGIN_COMMAND = "plugin:ganbaru-mobile-distractions";
 
-/** Persist settings and send localized text. Rust owns rule derivation and accounting. */
+/** Send localized notification and overlay text. Rust owns rules, their publication, and accounting. */
 export async function publishMobileDistractionsConfig(): Promise<void> {
   if (__GANBARU_BUILD_PLATFORM__ !== "android") return;
-  await flushConfig();
   await invoke("distractions_mobile_update_copy", {
     copy: {
       channelName: translate("settings.distractions.mobile.channelName"),

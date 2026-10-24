@@ -964,6 +964,138 @@ export function normalizeDistractionsConfig(value: unknown): DistractionsConfig 
   };
 }
 
+/** A switch of the rules settings, as the native rule commands name it. */
+export type DistractionsSettingFlag =
+  | "enabled"
+  | "blockDuringFocus"
+  | "blockDuringShortBreaks"
+  | "blockDuringLongBreaks"
+  | "pauseDuringFocusPause"
+  | "desktopEnabled"
+  | "desktopBlockDuringFocus"
+  | "desktopBlockDuringShortBreaks"
+  | "desktopBlockDuringLongBreaks"
+  | "desktopPauseDuringFocusPause"
+  | "mobileEnabled"
+  | "mobileBlockDuringFocus"
+  | "mobileBlockDuringShortBreaks"
+  | "mobileBlockDuringLongBreaks"
+  | "mobilePauseDuringFocusPause"
+  | "limitsEnabled";
+
+/** A global host list. */
+export type DistractionsHostList = "blocked" | "exception" | "allowed";
+
+/** The rule a toggle or removal names. */
+export type DistractionsRuleTarget =
+  | { kind: "setting"; setting: DistractionsSettingFlag }
+  | { kind: "category"; id: DistractionsCategoryId }
+  | { kind: "customCategory"; id: string }
+  | { kind: "host"; list: DistractionsHostList; host: string }
+  | { kind: "desktopApp"; name: string }
+  | { kind: "mobileApp"; packageName: string }
+  | { kind: "usageLimit"; id: string };
+
+/** Why the native rules refused an edit without changing anything. */
+export const DISTRACTIONS_RULE_REFUSALS = [
+  "missing",
+  "invalid-target",
+  "invalid-category",
+  "invalid-name",
+  "invalid-hosts",
+  "duplicate-name",
+  "invalid-app",
+  "protected-source",
+  "invalid-minutes",
+  "invalid-budget",
+  "invalid-sources",
+  "duplicate-source",
+  "too-large",
+] as const;
+
+export type DistractionsRuleRefusal = (typeof DISTRACTIONS_RULE_REFUSALS)[number];
+
+/** Result of a native rule edit: the rules after it, or why nothing changed. */
+export type DistractionsRulesEditOutcome =
+  | { status: "saved"; config: DistractionsConfig }
+  | { status: "refused"; reason: DistractionsRuleRefusal };
+
+const DISTRACTIONS_SETTINGS_SHAPE = [
+  "enabled",
+  "blockDuringFocus",
+  "blockDuringShortBreaks",
+  "blockDuringLongBreaks",
+  "pauseDuringFocusPause",
+] as const;
+
+function requireRecord(value: unknown, label: string): Record<string, unknown> {
+  if (!isRecord(value)) throw new Error(`Invalid native Distractions ${label}`);
+  return value;
+}
+
+function requireBooleans(record: Record<string, unknown>, keys: readonly string[], label: string): void {
+  for (const key of keys) {
+    if (typeof record[key] !== "boolean") throw new Error(`Invalid native Distractions ${label}.${key}`);
+  }
+}
+
+function requireArrays(record: Record<string, unknown>, keys: readonly string[], label: string): void {
+  for (const key of keys) {
+    if (!Array.isArray(record[key])) throw new Error(`Invalid native Distractions ${label}.${key}`);
+  }
+}
+
+/**
+ * Validate the assembled rules a native command returned. The top-level shape must match exactly, so a broken
+ * response fails instead of silently showing defaults; rows inside the lists then go through the same normalization
+ * as every other reader.
+ *
+ * @param value Untrusted command response.
+ * @returns The normalized rules.
+ * @throws Error when a required section or switch is missing or has the wrong type.
+ */
+export function parseDistractionsConfig(value: unknown): DistractionsConfig {
+  const record = requireRecord(value, "rules");
+  if (record.mode !== "blacklist" && record.mode !== "whitelist") {
+    throw new Error("Invalid native Distractions rules.mode");
+  }
+  requireBooleans(record, DISTRACTIONS_SETTINGS_SHAPE, "rules");
+  requireArrays(
+    record,
+    ["blockedCategories", "customCategoryStacks", "blockedHosts", "exceptionHosts", "allowedHosts"],
+    "rules",
+  );
+  for (const section of ["desktop", "mobile"] as const) {
+    const platform = requireRecord(record[section], section);
+    requireBooleans(platform, DISTRACTIONS_SETTINGS_SHAPE, section);
+    requireArrays(platform, ["blockedApps"], section);
+  }
+  const limits = requireRecord(record.limits, "limits");
+  requireBooleans(limits, ["enabled"], "limits");
+  requireArrays(limits, ["items"], "limits");
+  return normalizeDistractionsConfig(record);
+}
+
+function isDistractionsRuleRefusal(value: unknown): value is DistractionsRuleRefusal {
+  return DISTRACTIONS_RULE_REFUSALS.some((refusal) => refusal === value);
+}
+
+/**
+ * Validate the outcome of a native rule edit.
+ *
+ * @param value Untrusted command response.
+ * @returns The saved rules or the refusal reason.
+ * @throws Error when the status, rules, or reason is not valid.
+ */
+export function parseDistractionsRulesEditOutcome(value: unknown): DistractionsRulesEditOutcome {
+  const record = requireRecord(value, "edit outcome");
+  if (record.status === "saved") return { status: "saved", config: parseDistractionsConfig(record.config) };
+  if (record.status === "refused" && isDistractionsRuleRefusal(record.reason)) {
+    return { status: "refused", reason: record.reason };
+  }
+  throw new Error("Invalid native Distractions edit outcome");
+}
+
 export function distractionsHostMatchesRule(host: string, ruleHost: string): boolean {
   return host === ruleHost || host.endsWith(`.${ruleHost}`);
 }

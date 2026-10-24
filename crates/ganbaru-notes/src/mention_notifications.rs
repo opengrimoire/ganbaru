@@ -315,14 +315,16 @@ pub async fn sync_page_properties_tx(
     tx: &mut Transaction<'_, Sqlite>,
     page_id: &str,
 ) -> Result<(), String> {
-    let row = sqlx::query_as::<_, (String, String, Option<String>)>(
-        "SELECT page.title, page.properties, source.properties
+    let row = sqlx::query_as::<_, (String, String, Option<String>)>(concat!(
+        "SELECT page.title, page.properties, CASE WHEN source.id IS NULL THEN NULL ELSE ",
+        crate::note_data_source_properties_json!("source"),
+        " END
          FROM notes_pages AS page
          LEFT JOIN notes_data_sources AS source
            ON page.parent_type = 'data_source_id'
           AND source.id = page.parent_data_source_id
-         WHERE page.id = ?",
-    )
+         WHERE page.id = ?"
+    ))
     .bind(page_id)
     .fetch_optional(&mut **tx)
     .await
@@ -562,12 +564,13 @@ async fn active_pending_notification_rows(
                    AND page.parent_type = 'data_source_id'
                    AND EXISTS (
                        SELECT 1
-                       FROM notes_data_sources AS source,
-                            json_each(source.properties) AS property
+                       FROM notes_data_sources AS source
+                       JOIN notes_data_source_properties AS property
+                         ON property.data_source_id = source.id
                        WHERE source.id = page.parent_data_source_id
                          AND source.in_trash = 0
-                         AND json_extract(property.value, '$.id') = notification.target_id
-                         AND json_extract(property.value, '$.type') = 'date'
+                         AND property.property_id = notification.target_id
+                         AND property.type = 'date'
                    )
                )
            )

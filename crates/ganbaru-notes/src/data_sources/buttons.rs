@@ -164,9 +164,10 @@ pub async fn click_data_source_button(
     if property_id.is_empty() {
         return Err("button property_id is required".to_string());
     }
-    let schema_properties: String = sqlx::query_scalar(
-        "SELECT data_source.properties
-         FROM notes_data_sources AS data_source
+    let schema_properties: String = sqlx::query_scalar(concat!(
+        "SELECT ",
+        crate::note_data_source_properties_json!("data_source"),
+        " FROM notes_data_sources AS data_source
          JOIN notes_databases AS database ON database.id = data_source.database_id
          JOIN notes_pages AS page ON page.parent_data_source_id = data_source.id
          WHERE data_source.id = ?
@@ -175,8 +176,8 @@ pub async fn click_data_source_button(
            AND data_source.in_trash = 0
            AND database.in_trash = 0
            AND page.in_trash = 0
-           AND page.archived = 0",
-    )
+           AND page.archived = 0"
+    ))
     .bind(data_source_id.trim())
     .bind(page_id.trim())
     .fetch_optional(pool)

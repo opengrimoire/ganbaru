@@ -91,14 +91,16 @@ const STATUS_GROUPS: &[&str] = &["To-do", "In progress", "Complete"];
 pub async fn list_data_sources(
     pool: &SqlitePool,
 ) -> Result<Vec<NoteDataSourceListItemDto>, String> {
-    let rows = sqlx::query_as::<_, NoteDataSourceRow>(
-        "SELECT data_source.*
+    let rows = sqlx::query_as::<_, NoteDataSourceRow>(concat!(
+        "SELECT ",
+        crate::note_data_source_row_columns!("data_source"),
+        "
          FROM notes_data_sources AS data_source
          JOIN notes_databases AS database ON database.id = data_source.database_id
          WHERE data_source.in_trash = 0
            AND database.in_trash = 0
          ORDER BY data_source.title COLLATE NOCASE ASC, data_source.id ASC",
-    )
+    ))
     .fetch_all(pool)
     .await
     .map_err(|e| format!("list notes data sources: {e}"))?;
@@ -199,13 +201,17 @@ pub(crate) async fn update_data_source_schema_tx(
         .await?;
     data_sources::formulas::ensure_formula_schema(&prepared)?;
     data_sources::buttons::ensure_button_schema(&prepared)?;
+    crate::property_storage::write_data_source_properties(
+        &mut **tx,
+        data_source_id.trim(),
+        &prepared,
+    )
+    .await?;
     sqlx::query(
         "UPDATE notes_data_sources
-         SET properties = ?,
-             last_edited_time = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+         SET last_edited_time = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
          WHERE id = ? AND in_trash = 0",
     )
-    .bind(prepared.to_string())
     .bind(data_source_id.trim())
     .execute(&mut **tx)
     .await
@@ -968,11 +974,12 @@ async fn load_data_source_row_tx(
     tx: &mut Transaction<'_, Sqlite>,
     data_source_id: &str,
 ) -> Result<NoteDataSourceRow, String> {
-    sqlx::query_as::<_, NoteDataSourceRow>(
-        "SELECT *
-         FROM notes_data_sources
-         WHERE id = ? AND in_trash = 0",
-    )
+    sqlx::query_as::<_, NoteDataSourceRow>(concat!(
+        "SELECT ",
+        crate::note_data_source_row_columns!("data_source"),
+        " FROM notes_data_sources AS data_source
+         WHERE data_source.id = ? AND data_source.in_trash = 0",
+    ))
     .bind(data_source_id.trim())
     .fetch_optional(&mut **tx)
     .await

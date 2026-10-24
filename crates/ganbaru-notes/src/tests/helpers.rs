@@ -79,6 +79,27 @@ pub(super) async fn migrated_memory_pool() -> SqlitePool {
     pool
 }
 
+/// Reads the composed schema object of a data source.
+pub(super) async fn stored_schema(pool: &SqlitePool, data_source_id: &str) -> serde_json::Value {
+    let mut connection = pool.acquire().await.unwrap();
+    crate::property_storage::load_data_source_properties(&mut connection, data_source_id)
+        .await
+        .unwrap()
+        .expect("data source exists")
+}
+
+/// Replaces the stored schema of a data source without the schema update validation.
+pub(super) async fn store_schema(
+    pool: &SqlitePool,
+    data_source_id: &str,
+    schema: &serde_json::Value,
+) {
+    let mut connection = pool.acquire().await.unwrap();
+    crate::property_storage::write_data_source_properties(&mut connection, data_source_id, schema)
+        .await
+        .unwrap();
+}
+
 pub(super) fn workspace_parent() -> NoteParent {
     NoteParent::Workspace { workspace: true }
 }

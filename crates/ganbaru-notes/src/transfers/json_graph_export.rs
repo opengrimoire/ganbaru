@@ -363,7 +363,7 @@ fn json_column(table: &str, column: &str) -> bool {
             | ("notes_data_sources", "title_rich_text")
             | ("notes_data_sources", "description")
             | ("notes_data_sources", "icon")
-            | ("notes_data_sources", "properties")
+            | ("notes_data_source_properties", "config")
             | ("notes_database_views", "filter")
             | ("notes_database_views", "sorts")
             | ("notes_database_views", "configuration")
@@ -413,6 +413,10 @@ fn order_by_columns(table: &str, columns: &[String]) -> String {
             vec!["source_page_id", "source_property_id", "target_page_id"]
         }
         "notes_data_source_rollup_cache" => vec!["source_page_id", "source_property_id"],
+        "notes_data_source_properties" => vec!["data_source_id", "order_key", "property_id"],
+        "notes_data_source_property_options" => {
+            vec!["data_source_id", "property_id", "position", "option_id"]
+        }
         _ => vec!["id", "page_id", "created_time", "updated_at"],
     };
     let order_columns = preferred
@@ -492,16 +496,8 @@ fn build_summary(
             "notes_pages" => summary.exported_page_count = count,
             "notes_blocks" => summary.exported_block_count = count,
             "notes_comments" => summary.exported_comment_count = count,
-            "notes_data_sources" => {
-                summary.exported_data_source_count = count;
-                summary.exported_property_schema_count = exported
-                    .rows
-                    .iter()
-                    .filter_map(|row| row.get("properties"))
-                    .filter_map(Value::as_object)
-                    .map(|properties| properties.len() as i64)
-                    .sum();
-            }
+            "notes_data_sources" => summary.exported_data_source_count = count,
+            "notes_data_source_properties" => summary.exported_property_schema_count = count,
             "notes_assets" => summary.exported_file_count = count,
             _ => {
                 if exported.table.family == TableFamily::Index {

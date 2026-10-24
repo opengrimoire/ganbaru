@@ -267,18 +267,12 @@ pub async fn sync_current_data_source_property_asset_references_tx(
     tx: &mut Transaction<'_, Sqlite>,
     data_source_id: &str,
 ) -> Result<(), String> {
-    let properties: String = sqlx::query_scalar(
-        "SELECT properties
-         FROM notes_data_sources
-         WHERE id = ? AND in_trash = 0",
+    let schema_properties = crate::property_storage::load_active_data_source_properties(
+        &mut **tx,
+        data_source_id.trim(),
     )
-    .bind(data_source_id.trim())
-    .fetch_optional(&mut **tx)
-    .await
-    .map_err(|e| format!("load notes data source properties for asset references: {e}"))?
+    .await?
     .ok_or_else(|| "data source not found".to_string())?;
-    let schema_properties: Value = serde_json::from_str(&properties)
-        .map_err(|e| format!("parse data source properties for asset references: {e}"))?;
     sync_data_source_property_asset_references_tx(tx, data_source_id, &schema_properties).await
 }
 

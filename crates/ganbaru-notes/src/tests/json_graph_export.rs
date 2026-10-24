@@ -109,10 +109,12 @@ fn json_graph_export_includes_canonical_tables_counts_schema_and_warnings() {
                 .iter()
                 .any(|block| block["attrs"].is_object() && block["text"].is_object())
         );
-        let data_sources = graph["graph"]["data_sources"]["notes_data_sources"]
+        let properties = graph["graph"]["data_sources"]["notes_data_source_properties"]
             .as_array()
             .unwrap();
-        assert_eq!(data_sources[0]["properties"]["Name"]["type"], "title");
+        assert!(properties.iter().any(|property| property["name"] == "Name"
+            && property["type"] == "title"
+            && property["config"].is_object()));
         assert_eq!(
             graph["graph"]["comments"]["notes_comments"][0]["rich_text"][0]["plain_text"],
             "Graph note"

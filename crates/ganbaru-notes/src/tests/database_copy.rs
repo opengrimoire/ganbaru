@@ -1084,19 +1084,20 @@ fn multi_source_database_copy_remaps_inverse_relations_with_overlapping_schema_i
     crate::test_block_on(async {
         let pool = migrated_memory_pool().await;
         seed_database(&pool).await;
-        sqlx::query("INSERT INTO notes_data_sources (id, database_id, title, properties) VALUES (?, ?, 'Second source', ?)")
-            .bind(DATA_SOURCE_B).bind(DATABASE_A).bind(json!({
+        sqlx::query("INSERT INTO notes_data_sources (id, database_id, title) VALUES (?, ?, 'Second source')")
+            .bind(DATA_SOURCE_B).bind(DATABASE_A).execute(&pool).await.unwrap();
+        store_schema(&pool, DATA_SOURCE_B, &json!({
                 "Name": {"id": "title", "name": "Name", "type": "title", "title": {}},
                 "Priority": {"id": "priority", "name": "Priority", "type": "select", "select": {
                     "options": [{"id": "high", "name": "High", "color": "red"}]}},
                 "Related": {"id": "related", "name": "Related", "type": "relation", "relation": {
                     "data_source_id": DATA_SOURCE_A, "dual_property": {"synced_property_id": "related", "synced_property_name": "Related"}}}
-            }).to_string()).execute(&pool).await.unwrap();
+            })).await;
         sqlx::query("INSERT INTO notes_database_views (id, database_id, data_source_id, name, type) VALUES (?, ?, ?, 'Second table', 'table')")
             .bind(DATABASE_VIEW_B).bind(DATABASE_A).bind(DATA_SOURCE_B).execute(&pool).await.unwrap();
-        sqlx::query("UPDATE notes_data_sources SET properties = json_set(properties, '$.Related.relation', json(?)) WHERE id = ?")
-            .bind(json!({"data_source_id": DATA_SOURCE_B, "dual_property": {"synced_property_id": "related", "synced_property_name": "Related"}}).to_string())
-            .bind(DATA_SOURCE_A).execute(&pool).await.unwrap();
+        let mut schema_a = stored_schema(&pool, DATA_SOURCE_A).await;
+        schema_a["Related"]["relation"] = json!({"data_source_id": DATA_SOURCE_B, "dual_property": {"synced_property_id": "related", "synced_property_name": "Related"}});
+        store_schema(&pool, DATA_SOURCE_A, &schema_a).await;
         data_sources::rows::create_data_source_row_page(
             &pool,
             DATA_SOURCE_B,
@@ -1125,12 +1126,18 @@ fn multi_source_database_copy_remaps_inverse_relations_with_overlapping_schema_i
         databases::duplicate_database(&pool, duplicate_request(DATABASE_B))
             .await
             .unwrap();
-        let sources: Vec<(String, String)> =
-            sqlx::query_as("SELECT id, properties FROM notes_data_sources WHERE database_id = ?")
-                .bind(DATABASE_B)
-                .fetch_all(&pool)
-                .await
-                .unwrap();
+        let source_ids: Vec<String> = sqlx::query_scalar(
+            "SELECT id FROM notes_data_sources WHERE database_id = ? ORDER BY rowid",
+        )
+        .bind(DATABASE_B)
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        let mut sources = Vec::new();
+        for id in source_ids {
+            let schema = stored_schema(&pool, &id).await.to_string();
+            sources.push((id, schema));
+        }
         assert_eq!(sources.len(), 2);
         let schema_a: Value = serde_json::from_str(&sources[0].1).unwrap();
         let schema_b: Value = serde_json::from_str(&sources[1].1).unwrap();

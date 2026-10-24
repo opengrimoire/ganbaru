@@ -672,14 +672,15 @@ async fn load_data_source_properties_tx(
     tx: &mut Transaction<'_, Sqlite>,
     data_source_id: &str,
 ) -> Result<Value, String> {
-    let properties: String = sqlx::query_scalar(
-        "SELECT data_source.properties
-         FROM notes_data_sources AS data_source
+    let properties: String = sqlx::query_scalar(concat!(
+        "SELECT ",
+        crate::note_data_source_properties_json!("data_source"),
+        " FROM notes_data_sources AS data_source
          JOIN notes_databases AS database ON database.id = data_source.database_id
          WHERE data_source.id = ?
            AND data_source.in_trash = 0
-           AND database.in_trash = 0",
-    )
+           AND database.in_trash = 0"
+    ))
     .bind(data_source_id)
     .fetch_optional(&mut **tx)
     .await

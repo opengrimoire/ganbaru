@@ -353,13 +353,12 @@ async fn insert_database_objects(
             title_rich_text,
             description,
             icon,
-            properties,
             source_provider,
             source_object_id,
             source_workspace_id,
             source_last_edited_time
          )
-         VALUES (?, ?, ?, ?, ?, ?, ?, 'notion', ?, ?, ?)",
+         VALUES (?, ?, ?, ?, ?, ?, 'notion', ?, ?, ?)",
     )
     .bind(data_source_id)
     .bind(&block.id)
@@ -367,13 +366,18 @@ async fn insert_database_objects(
     .bind(title_rich_text.to_string())
     .bind(description.to_string())
     .bind(icon)
-    .bind(data_source.properties.to_string())
     .bind(&data_source.source_id)
     .bind(source_workspace_id)
     .bind(data_source.last_edited_time.as_deref())
     .execute(&mut **tx)
     .await
     .map_err(|e| format!("insert imported Notion data source: {e}"))?;
+    crate::property_storage::write_data_source_properties(
+        &mut **tx,
+        data_source_id,
+        &data_source.properties,
+    )
+    .await?;
 
     sqlx::query(
         "INSERT INTO notes_database_views (

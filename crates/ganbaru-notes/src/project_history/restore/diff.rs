@@ -12,13 +12,21 @@ use sqlx::{AssertSqlSafe, QueryBuilder, Sqlite, Transaction};
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 /// Restored tables in insertion order with their primary key columns.
-const RESTORE_TABLES: [(&str, &[&str]); 21] = [
+const RESTORE_TABLES: [(&str, &[&str]); 23] = [
     ("notes_assets", &["id"]),
     ("notes_folders", &["id"]),
     ("notes_pages", &["id"]),
     ("notes_blocks", &["id"]),
     ("notes_databases", &["id"]),
     ("notes_data_sources", &["id"]),
+    (
+        "notes_data_source_properties",
+        &["data_source_id", "property_id"],
+    ),
+    (
+        "notes_data_source_property_options",
+        &["data_source_id", "property_id", "option_id"],
+    ),
     ("notes_data_source_row_hierarchy", &["row_page_id"]),
     ("notes_database_views", &["id"]),
     ("notes_data_source_templates", &["id"]),
@@ -214,7 +222,10 @@ fn omitted_row_removal(table: &str, row: &Value, owners: &BundleOwners) -> Remov
             owners.owns(row, "page_id", &owners.pages)
                 || owners.owns(row, "normalized_alias", &owners.normalized_aliases),
         ),
-        "notes_data_source_row_hierarchy" | "notes_data_source_templates" => {
+        "notes_data_source_row_hierarchy"
+        | "notes_data_source_templates"
+        | "notes_data_source_properties"
+        | "notes_data_source_property_options" => {
             gated(owners.owns(row, "data_source_id", &owners.data_sources))
         }
         "notes_database_views" => gated(

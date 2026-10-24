@@ -76,11 +76,13 @@ pub(crate) async fn plan_database_copy(
         .and_then(Value::as_str)
         .ok_or("database block has no view")?
         .to_string();
-    let source_sizes = sqlx::query_as::<_, (String, i64)>(
+    let source_sizes = sqlx::query_as::<_, (String, i64)>(concat!(
         "SELECT DISTINCT source.id,
             length(CAST(source.title AS BLOB)) + length(CAST(source.title_rich_text AS BLOB))
                 + length(CAST(source.description AS BLOB)) + coalesce(length(CAST(source.icon AS BLOB)), 0)
-                + length(CAST(source.properties AS BLOB))
+                + length(CAST(",
+        crate::note_data_source_properties_json!("source"),
+        " AS BLOB))
                 + coalesce(length(CAST(source.source_provider AS BLOB)), 0)
                 + coalesce(length(CAST(source.source_object_id AS BLOB)), 0)
                 + coalesce(length(CAST(source.source_workspace_id AS BLOB)), 0)
@@ -94,7 +96,7 @@ pub(crate) async fn plan_database_copy(
          AND (source.database_id = ? OR source.id IN (
              SELECT data_source_id FROM notes_database_views WHERE database_id = ?))
          ORDER BY source.id LIMIT ?",
-    )
+    ))
     .bind(include_trashed)
     .bind(&block.id)
     .bind(&block.id)
@@ -117,10 +119,12 @@ pub(crate) async fn plan_database_copy(
     let source_keys =
         serde_json::to_string(&source_sizes.iter().map(|(id, _)| id).collect::<Vec<_>>())
             .map_err(|error| format!("encode copied source identities: {error}"))?;
-    let sources = sqlx::query_as::<_, NoteDataSourceRow>(
-        "SELECT source.* FROM notes_data_sources AS source
+    let sources = sqlx::query_as::<_, NoteDataSourceRow>(concat!(
+        "SELECT ",
+        crate::note_data_source_row_columns!("source"),
+        " FROM notes_data_sources AS source
          JOIN json_each(?) AS selected ON source.id = selected.value ORDER BY source.id",
-    )
+    ))
     .bind(source_keys)
     .fetch_all(&mut **tx)
     .await
@@ -279,10 +283,11 @@ pub(crate) async fn insert_database_copy(
         .bind(&copy.id).bind(&copy.source_id).execute(&mut **tx).await
         .map_err(|e| format!("copy Notes database: {e}"))?;
     for (source, id) in &copy.sources {
-        sqlx::query("INSERT INTO notes_data_sources (id, database_id, title, title_rich_text, description, icon, properties)
-            SELECT ?, ?, title, title_rich_text, description, icon, properties FROM notes_data_sources WHERE id = ?")
+        sqlx::query("INSERT INTO notes_data_sources (id, database_id, title, title_rich_text, description, icon)
+            SELECT ?, ?, title, title_rich_text, description, icon FROM notes_data_sources WHERE id = ?")
             .bind(id).bind(&copy.id).bind(source).execute(&mut **tx).await
             .map_err(|e| format!("copy Notes database source: {e}"))?;
+        crate::property_storage::copy_data_source_properties(&mut **tx, source, id).await?;
     }
     for (source, id) in &copy.views {
         sqlx::query("INSERT INTO notes_database_views (id, database_id, data_source_id, name, type, filter, sorts, configuration, sort_order)
@@ -372,23 +377,11 @@ impl DatabaseCopy {
         let mut schemas = schemas.clone();
         self.collect_identities(&mut identities, &mut schemas);
         for (source, id) in &self.sources {
-            let mut schema: Value = serde_json::from_str(
-                &sqlx::query_scalar::<_, String>(
-                    "SELECT properties FROM notes_data_sources WHERE id = ?",
-                )
-                .bind(id)
-                .fetch_one(&mut **tx)
-                .await
-                .map_err(|e| format!("read copied schema: {e}"))?,
-            )
-            .map_err(|e| format!("parse copied schema: {e}"))?;
+            let mut schema = crate::property_storage::load_data_source_properties(&mut **tx, id)
+                .await?
+                .ok_or_else(|| "copied data source not found".to_string())?;
             remap_schema(&mut schema, &identities, &schemas, source);
-            sqlx::query("UPDATE notes_data_sources SET properties = ? WHERE id = ?")
-                .bind(schema.to_string())
-                .bind(id)
-                .execute(&mut **tx)
-                .await
-                .map_err(|e| format!("remap copied database schema: {e}"))?;
+            crate::property_storage::write_data_source_properties(&mut **tx, id, &schema).await?;
             copied_sources.insert(id.clone());
         }
         for (source, id) in &self.views {
@@ -478,14 +471,9 @@ pub(crate) async fn finalize_copies(
     }
     crate::data_sources::row_hierarchy::copy_edges_tx(tx, &identities).await?;
     for source in copied_sources {
-        let raw: String =
-            sqlx::query_scalar("SELECT properties FROM notes_data_sources WHERE id = ?")
-                .bind(&source)
-                .fetch_one(&mut **tx)
-                .await
-                .map_err(|e| format!("read copied relation schema: {e}"))?;
-        let schema: Value =
-            serde_json::from_str(&raw).map_err(|e| format!("parse copied relation schema: {e}"))?;
+        let schema = crate::property_storage::load_data_source_properties(&mut **tx, &source)
+            .await?
+            .ok_or_else(|| "copied data source not found".to_string())?;
         rebuild_copied_relation_links(tx, &source, &schema).await?;
         assets::sync_data_source_property_asset_references_tx(tx, &source, &schema).await?;
     }

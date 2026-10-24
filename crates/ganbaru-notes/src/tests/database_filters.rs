@@ -165,12 +165,7 @@ fn database_filters_match_ascii_case_only_in_sql_and_csv_export() {
 fn database_filters_use_relation_ids_for_empty_target_titles_in_sql_and_csv_export() {
     crate::test_block_on(async {
         let pool = filter_pool().await;
-        let raw_schema: String =
-            sqlx::query_scalar("SELECT properties FROM notes_data_sources WHERE id = ?")
-                .bind(DATA_SOURCE_A)
-                .fetch_one(&pool)
-                .await
-                .unwrap();
+        let raw_schema = stored_schema(&pool, DATA_SOURCE_A).await.to_string();
         let mut properties: Value = serde_json::from_str(&raw_schema).unwrap();
         properties.as_object_mut().unwrap().insert(
             "Related".to_string(),
@@ -674,12 +669,7 @@ fn database_filters_use_numeric_and_date_types_and_reject_invalid_writes_atomica
 fn database_filter_reconciliation_and_group_counts_preserve_query_meaning_and_range() {
     crate::test_block_on(async {
         let pool = filter_pool().await;
-        let source: String =
-            sqlx::query_scalar("SELECT properties FROM notes_data_sources WHERE id = ?")
-                .bind(DATA_SOURCE_A)
-                .fetch_one(&pool)
-                .await
-                .unwrap();
+        let source = stored_schema(&pool, DATA_SOURCE_A).await.to_string();
         let schema =
             data_sources::views::view_schema(&serde_json::from_str(&source).unwrap()).unwrap();
         let window_schema = data_sources::window::table_properties_from_view(&schema);

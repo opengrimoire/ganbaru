@@ -452,15 +452,16 @@ async fn load_active_data_source_tx(
     tx: &mut Transaction<'_, Sqlite>,
     data_source_id: &str,
 ) -> Result<DataSourceTemplateOwner, String> {
-    sqlx::query_as::<_, DataSourceTemplateOwner>(
-        "SELECT data_source.database_id,
-                data_source.properties
+    sqlx::query_as::<_, DataSourceTemplateOwner>(concat!(
+        "SELECT data_source.database_id, ",
+        crate::note_data_source_properties_json!("data_source"),
+        " AS properties
          FROM notes_data_sources AS data_source
          JOIN notes_databases AS database ON database.id = data_source.database_id
          WHERE data_source.id = ?
            AND data_source.in_trash = 0
-           AND database.in_trash = 0",
-    )
+           AND database.in_trash = 0"
+    ))
     .bind(data_source_id)
     .fetch_optional(&mut **tx)
     .await

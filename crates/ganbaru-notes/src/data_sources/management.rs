@@ -55,9 +55,11 @@ pub async fn create_data_source(
         .map_err(|error| format!("begin data source creation: {error}"))?;
     prepare_shell_write_tx(&mut tx, &request.database_id, "create_data_source").await?;
     let properties = databases::default_data_source_properties();
-    sqlx::query("INSERT INTO notes_data_sources (id, database_id, title, title_rich_text, description, properties) VALUES (?, ?, ?, ?, '[]', ?)")
-        .bind(&request.id).bind(&request.database_id).bind(title).bind(databases::rich_text_array(title).to_string()).bind(properties.to_string())
+    sqlx::query("INSERT INTO notes_data_sources (id, database_id, title, title_rich_text, description) VALUES (?, ?, ?, ?, '[]')")
+        .bind(&request.id).bind(&request.database_id).bind(title).bind(databases::rich_text_array(title).to_string())
         .execute(&mut *tx).await.map_err(|error| format!("create database data source: {error}"))?;
+    crate::property_storage::write_data_source_properties(&mut *tx, &request.id, &properties)
+        .await?;
     insert_table_tx(
         &mut tx,
         &request.database_id,

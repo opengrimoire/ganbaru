@@ -196,3 +196,123 @@ fn fresh_vault_template_blocks_are_keyed_by_ordinal_with_unique_ids() {
         assert_eq!(ids, vec!["root".to_string()], "the parent link cascades");
     });
 }
+
+#[test]
+fn notes_sync_databases_migration_moves_properties_and_options_into_rows() {
+    super::block_on(async {
+        let pool = super::helpers::memory_pool_migrated_through(NOTES_SYNC_STRUCTURE).await;
+        let schema = serde_json::json!({
+            "Name": {"id": "title", "name": "Name", "type": "title", "title": {}},
+            "Stage": {"id": "stage", "name": "Stage", "type": "status", "status": {
+                "options": [
+                    {"id": "todo", "name": "To do", "color": "gray"},
+                    {"id": "done", "name": "Done", "color": "green"},
+                    {"id": "loose", "name": "Loose"}
+                ],
+                "groups": [
+                    {"id": "g-open", "name": "To-do", "color": "gray", "option_ids": ["todo"]},
+                    {"id": "g-closed", "name": "Complete", "color": "green", "option_ids": ["done"]}
+                ]
+            }},
+            "Tags": {"id": "tags", "name": "Tags", "type": "multi_select", "multi_select": {
+                "options": [{"id": "b", "name": "Beta", "color": "blue"}, {"id": "a", "name": "Alpha", "color": "red"}]
+            }},
+            "Count": {"id": "count", "name": "Count", "type": "number", "number": {"format": "dollar"}},
+            "Broken": "not an object"
+        });
+        insert_database_graph(&pool, &schema).await;
+
+        super::helpers::migrate_through(&pool, NOTES_SYNC_DATABASES)
+            .await
+            .unwrap();
+
+        let properties: Vec<(String, String, String, String, String)> = sqlx::query_as(
+            "SELECT property_id, name, type, config, sync_key FROM notes_data_source_properties
+             WHERE data_source_id = 'ds' ORDER BY order_key",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        // The stored object text is ordered by key, so the rank order is the key order, and the
+        // entry that is not an object is skipped.
+        let ids = properties
+            .iter()
+            .map(|(id, ..)| id.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(ids, vec!["count", "title", "stage", "tags"]);
+        for (.., sync_key) in &properties {
+            assert!(sync_key.starts_with("pending:"), "{sync_key}");
+        }
+        let config = |id: &str| -> serde_json::Value {
+            let (.., config, _) = properties.iter().find(|row| row.0 == id).unwrap();
+            serde_json::from_str(config).unwrap()
+        };
+        assert_eq!(
+            config("count"),
+            serde_json::json!({"number": {"format": "dollar"}})
+        );
+        assert_eq!(config("tags"), serde_json::json!({"multi_select": {}}));
+        assert_eq!(
+            config("stage"),
+            serde_json::json!({"status": {"groups": [
+                {"id": "g-open", "name": "To-do", "color": "gray"},
+                {"id": "g-closed", "name": "Complete", "color": "green"}
+            ]}})
+        );
+
+        let options: Vec<(String, String, String, String, Option<String>)> = sqlx::query_as(
+            "SELECT property_id, option_id, name, color, status_group
+             FROM notes_data_source_property_options WHERE data_source_id = 'ds'
+             ORDER BY property_id, position",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        let option = |property: &str, id: &str, name: &str, color: &str, group: Option<&str>| {
+            (
+                property.to_string(),
+                id.to_string(),
+                name.to_string(),
+                color.to_string(),
+                group.map(str::to_string),
+            )
+        };
+        assert_eq!(
+            options,
+            vec![
+                option("stage", "todo", "To do", "gray", Some("To-do")),
+                option("stage", "done", "Done", "green", Some("Complete")),
+                option("stage", "loose", "Loose", "default", None),
+                option("tags", "b", "Beta", "blue", None),
+                option("tags", "a", "Alpha", "red", None),
+            ]
+        );
+
+        let columns: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM pragma_table_info('notes_data_sources') WHERE name = 'properties'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(columns, 0);
+        assert!(
+            sqlx::query(
+                "UPDATE notes_data_source_properties SET sync_key = '' WHERE property_id = 'tags'"
+            )
+            .execute(&pool)
+            .await
+            .is_err()
+        );
+        sqlx::query("DELETE FROM notes_data_source_properties WHERE property_id = 'tags'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let tag_options: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM notes_data_source_property_options WHERE property_id = 'tags'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(tag_options, 0, "options cascade with their property");
+    });
+}

@@ -109,14 +109,16 @@ pub(crate) async fn load_active_data_source_and_database_tx(
     data_source_id: &str,
     view_kind: &str,
 ) -> Result<(NoteDataSourceRow, NoteDatabaseRow), String> {
-    let data_source = sqlx::query_as::<_, NoteDataSourceRow>(
-        "SELECT data_source.*
+    let data_source = sqlx::query_as::<_, NoteDataSourceRow>(concat!(
+        "SELECT ",
+        crate::note_data_source_row_columns!("data_source"),
+        "
          FROM notes_data_sources AS data_source
          JOIN notes_databases AS database ON database.id = data_source.database_id
          WHERE data_source.id = ?
            AND data_source.in_trash = 0
            AND database.in_trash = 0",
-    )
+    ))
     .bind(data_source_id.trim())
     .fetch_optional(&mut **tx)
     .await

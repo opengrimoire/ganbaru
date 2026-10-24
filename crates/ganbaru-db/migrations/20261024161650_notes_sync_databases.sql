@@ -268,6 +268,138 @@ ALTER TABLE notes_data_source_template_blocks_next RENAME TO notes_data_source_t
 CREATE INDEX idx_notes_data_source_template_blocks_parent
     ON notes_data_source_template_blocks(template_id, parent_block_id, ordinal);
 
+-- Data source properties and select, multi-select, and status options move out of the schema JSON
+-- into rows. The schema object is keyed by property name, so the name is the object key; the
+-- property row keeps every other field in `config` except the options and the status group
+-- membership, which the option rows carry. Properties and options keep their JSON order as rank
+-- order keys. Rows get a placeholder sync key that the Notes conversion pass replaces at vault
+-- open.
+CREATE TABLE notes_data_source_properties (
+    data_source_id TEXT NOT NULL REFERENCES notes_data_sources(id) ON DELETE CASCADE,
+    property_id TEXT NOT NULL CHECK (trim(property_id) <> ''),
+    sync_key TEXT NOT NULL CHECK (sync_key <> '' AND length(sync_key) <= 128),
+    name TEXT NOT NULL CHECK (trim(name) <> ''),
+    type TEXT NOT NULL CHECK (trim(type) <> ''),
+    config TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(config) AND json_type(config) = 'object'),
+    order_key TEXT NOT NULL CHECK (trim(order_key) <> ''),
+    PRIMARY KEY (data_source_id, property_id)
+);
+CREATE UNIQUE INDEX idx_notes_data_source_properties_sync_key
+    ON notes_data_source_properties(sync_key);
+CREATE INDEX idx_notes_data_source_properties_order
+    ON notes_data_source_properties(data_source_id, order_key, property_id);
+
+CREATE TABLE notes_data_source_property_options (
+    data_source_id TEXT NOT NULL,
+    property_id TEXT NOT NULL,
+    option_id TEXT NOT NULL CHECK (trim(option_id) <> ''),
+    sync_key TEXT NOT NULL CHECK (sync_key <> '' AND length(sync_key) <= 128),
+    name TEXT NOT NULL,
+    color TEXT NOT NULL DEFAULT 'default',
+    status_group TEXT,
+    position TEXT NOT NULL CHECK (trim(position) <> ''),
+    PRIMARY KEY (data_source_id, property_id, option_id),
+    FOREIGN KEY (data_source_id, property_id)
+        REFERENCES notes_data_source_properties(data_source_id, property_id) ON DELETE CASCADE
+);
+CREATE UNIQUE INDEX idx_notes_data_source_property_options_sync_key
+    ON notes_data_source_property_options(sync_key);
+
+CREATE TEMP TABLE notes_data_source_property_sources AS
+SELECT
+    data_source.id AS data_source_id,
+    property.key AS name,
+    COALESCE(
+        json_extract(property.value, '$.id'),
+        CASE WHEN json_extract(property.value, '$.type') = 'title' THEN 'title' END
+    ) AS property_id,
+    json_extract(property.value, '$.type') AS type,
+    property.value AS value,
+    ROW_NUMBER() OVER (PARTITION BY data_source.id ORDER BY property.id) - 1 AS rank
+FROM notes_data_sources AS data_source, json_each(data_source.properties) AS property
+WHERE json_valid(data_source.properties)
+  AND CASE WHEN property.type = 'object' THEN json_type(property.value, '$.type') END = 'text'
+  AND trim(property.key) <> '';
+
+INSERT OR IGNORE INTO notes_data_source_properties (
+    data_source_id, property_id, sync_key, name, type, config, order_key
+)
+SELECT
+    source.data_source_id,
+    source.property_id,
+    'pending:p' || ROW_NUMBER() OVER (ORDER BY source.data_source_id, source.rank),
+    source.name,
+    source.type,
+    CASE
+        WHEN source.type IN ('select', 'multi_select') THEN
+            json_remove(source.value, '$.id', '$.name', '$.type', '$.' || source.type || '.options')
+        WHEN source.type = 'status' AND json_type(source.value, '$.status.groups') = 'array' THEN
+            json_set(
+                json_remove(source.value, '$.id', '$.name', '$.type', '$.status.options'),
+                '$.status.groups',
+                json((
+                    SELECT json_group_array(json(json_remove(grp.value, '$.option_ids')) ORDER BY grp.id)
+                    FROM json_each(source.value, '$.status.groups') AS grp
+                    WHERE grp.type = 'object'
+                ))
+            )
+        WHEN source.type = 'status' THEN
+            json_remove(source.value, '$.id', '$.name', '$.type', '$.status.options')
+        ELSE json_remove(source.value, '$.id', '$.name', '$.type')
+    END,
+    'c'
+        || substr('0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz', source.rank / 3844 % 62 + 1, 1)
+        || substr('0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz', source.rank / 62 % 62 + 1, 1)
+        || substr('0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz', source.rank % 62 + 1, 1)
+FROM notes_data_source_property_sources AS source
+WHERE typeof(source.property_id) = 'text' AND trim(source.property_id) <> '';
+
+INSERT OR IGNORE INTO notes_data_source_property_options (
+    data_source_id, property_id, option_id, sync_key, name, color, status_group, position
+)
+SELECT
+    ranked.data_source_id,
+    ranked.property_id,
+    ranked.option_id,
+    'pending:o' || ROW_NUMBER() OVER (ORDER BY ranked.data_source_id, ranked.property_id, ranked.rank),
+    ranked.name,
+    ranked.color,
+    ranked.status_group,
+    'c'
+        || substr('0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz', ranked.rank / 3844 % 62 + 1, 1)
+        || substr('0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz', ranked.rank / 62 % 62 + 1, 1)
+        || substr('0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz', ranked.rank % 62 + 1, 1)
+FROM (
+    SELECT
+        source.data_source_id,
+        source.property_id,
+        json_extract(option.value, '$.id') AS option_id,
+        COALESCE(json_extract(option.value, '$.name'), '') AS name,
+        COALESCE(json_extract(option.value, '$.color'), 'default') AS color,
+        CASE WHEN source.type = 'status' THEN (
+            SELECT json_extract(grp.value, '$.name')
+            FROM json_each(source.value, '$.status.groups') AS grp,
+                 json_each(CASE WHEN grp.type = 'object' THEN grp.value ELSE '{}' END, '$.option_ids') AS member
+            WHERE member.value = json_extract(option.value, '$.id')
+            ORDER BY grp.id
+            LIMIT 1
+        ) END AS status_group,
+        ROW_NUMBER() OVER (
+            PARTITION BY source.data_source_id, source.property_id ORDER BY option.id
+        ) - 1 AS rank
+    FROM notes_data_source_property_sources AS source,
+         json_each(source.value, '$.' || source.type || '.options') AS option
+    WHERE source.type IN ('select', 'multi_select', 'status')
+      AND CASE WHEN option.type = 'object' THEN
+          json_type(option.value, '$.id') = 'text' AND trim(json_extract(option.value, '$.id')) <> ''
+      ELSE 0 END
+) AS ranked
+JOIN notes_data_source_properties AS property
+  ON property.data_source_id = ranked.data_source_id AND property.property_id = ranked.property_id;
+
+DROP TABLE notes_data_source_property_sources;
+ALTER TABLE notes_data_sources DROP COLUMN properties;
+
 CREATE TEMP TABLE notes_sync_databases_guard (violations INTEGER NOT NULL CHECK (violations = 0));
 INSERT INTO notes_sync_databases_guard SELECT COUNT(*) FROM pragma_foreign_key_check;
 DROP TABLE notes_sync_databases_guard;

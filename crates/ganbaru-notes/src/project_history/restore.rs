@@ -151,6 +151,7 @@ pub(super) async fn restore_version(
     let copy_scope = copied_graph_scope(&historical, &current);
     let id_map = create_copy_id_map(&mut tx, &historical, &copy_scope).await?;
     remap_copy_rows(&mut historical, &id_map);
+    refresh_derived_sync_keys(&mut historical)?;
     resolve_copied_alias_conflicts_tx(&mut tx, &mut historical, &id_map).await?;
     suppress_historical_notifications(&mut historical);
     let mut touched_page_ids = ids(&current, "notes_pages");
@@ -331,6 +332,9 @@ fn row_is_in_copy_scope(table: &str, row: &Value, scope: &CopyScope) -> bool {
         "notes_blocks" => value_in(row, "id", &scope.block_ids),
         "notes_databases" => value_in(row, "id", &scope.database_ids),
         "notes_data_sources" => value_in(row, "id", &scope.data_source_ids),
+        "notes_data_source_properties" | "notes_data_source_property_options" => {
+            value_in(row, "data_source_id", &scope.data_source_ids)
+        }
         "notes_data_source_row_hierarchy" => value_in(row, "row_page_id", &scope.page_ids),
         "notes_database_views" => {
             value_in(row, "database_id", &scope.database_ids)
@@ -396,6 +400,21 @@ fn remap_copy_rows(rows: &mut BTreeMap<String, Vec<Value>>, id_map: &HashMap<Str
             remap_value(row, id_map);
         }
     }
+}
+
+/// Rederives the `sync_key` of rows whose key follows their identity, so a copied row never
+/// reuses the key of the original it was copied from.
+fn refresh_derived_sync_keys(rows: &mut BTreeMap<String, Vec<Value>>) -> Result<(), String> {
+    for table in crate::sync_keys::DERIVED_KEY_TABLES {
+        for row in rows.get_mut(table.table).into_iter().flatten() {
+            let key = table.row_key(row)?;
+            let object = row
+                .as_object_mut()
+                .ok_or_else(|| format!("Notes history {} row is not an object", table.table))?;
+            object.insert("sync_key".to_string(), Value::String(key));
+        }
+    }
+    Ok(())
 }
 
 async fn resolve_copied_alias_conflicts_tx(

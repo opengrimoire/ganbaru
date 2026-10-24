@@ -221,12 +221,7 @@ fn attached_view_updates_checkpoint_both_projects_and_locked_failures_leave_hist
         )
         .await
         .unwrap();
-        let source_schema: String =
-            sqlx::query_scalar("SELECT properties FROM notes_data_sources WHERE id = ?")
-                .bind(DATA_SOURCE_A)
-                .fetch_one(&pool)
-                .await
-                .unwrap();
+        let source_schema = stored_schema(&pool, DATA_SOURCE_A).await.to_string();
 
         for kind in ["table", "board", "gallery", "list", "calendar", "timeline"] {
             let loaded = attached_view(&pool, kind).await;
@@ -287,13 +282,7 @@ fn attached_view_updates_checkpoint_both_projects_and_locked_failures_leave_hist
             assert_eq!(checkpoints, 1);
         }
         assert_eq!(
-            sqlx::query_scalar::<_, String>(
-                "SELECT properties FROM notes_data_sources WHERE id = ?"
-            )
-            .bind(DATA_SOURCE_A)
-            .fetch_one(&pool)
-            .await
-            .unwrap(),
+            stored_schema(&pool, DATA_SOURCE_A).await.to_string(),
             source_schema
         );
         assert_eq!(

@@ -183,6 +183,9 @@ fn row_is_selected(table: &str, row: &Value, scope: &ProjectScope) -> bool {
         "notes_blocks" => value_in(row, "id", &scope.block_ids),
         "notes_databases" => value_in(row, "id", &scope.database_ids),
         "notes_data_sources" => value_in(row, "id", &scope.data_source_ids),
+        "notes_data_source_properties" | "notes_data_source_property_options" => {
+            value_in(row, "data_source_id", &scope.data_source_ids)
+        }
         "notes_database_views" => {
             value_in(row, "database_id", &scope.database_ids)
                 || value_in(row, "data_source_id", &scope.data_source_ids)

@@ -640,12 +640,7 @@ fn contextual_property_insert_and_empty_duplicate_preserve_view_state_and_roll_b
             .unwrap();
         let row: Value = serde_json::from_str(&row).unwrap();
         assert!(!row.as_object().unwrap().values().any(|value| value.get("id").and_then(Value::as_str) == Some(duplicate_id.as_str())));
-        let before: String =
-            sqlx::query_scalar("SELECT properties FROM notes_data_sources WHERE id = ?")
-                .bind(DATA_SOURCE_A)
-                .fetch_one(&pool)
-                .await
-                .unwrap();
+        let before = stored_schema(&pool, DATA_SOURCE_A).await;
         for action in [
             NoteDataSourcePropertyAction::Insert {
                 property_id: "title".to_string(),
@@ -673,16 +668,7 @@ fn contextual_property_insert_and_empty_duplicate_preserve_view_state_and_roll_b
                 .is_err()
             );
         }
-        assert_eq!(
-            sqlx::query_scalar::<_, String>(
-                "SELECT properties FROM notes_data_sources WHERE id = ?"
-            )
-            .bind(DATA_SOURCE_A)
-            .fetch_one(&pool)
-            .await
-            .unwrap(),
-            before
-        );
+        assert_eq!(stored_schema(&pool, DATA_SOURCE_A).await, before);
     });
 }
 
@@ -972,12 +958,7 @@ fn property_type_changes_convert_row_values_and_deletion_strips_them() {
         );
         assert!(row_properties(&pool, PAGE_B).await.get("Due").is_none());
 
-        let before: String =
-            sqlx::query_scalar("SELECT properties FROM notes_data_sources WHERE id = ?")
-                .bind(DATA_SOURCE_A)
-                .fetch_one(&pool)
-                .await
-                .unwrap();
+        let before = stored_schema(&pool, DATA_SOURCE_A).await;
         for action in [
             change_type("title", "rich_text", None),
             change_type("notes", "multi_select", None),
@@ -989,16 +970,7 @@ fn property_type_changes_convert_row_values_and_deletion_strips_them() {
         ] {
             assert!(run_property_action(&pool, action).await.is_err());
         }
-        assert_eq!(
-            sqlx::query_scalar::<_, String>(
-                "SELECT properties FROM notes_data_sources WHERE id = ?"
-            )
-            .bind(DATA_SOURCE_A)
-            .fetch_one(&pool)
-            .await
-            .unwrap(),
-            before
-        );
+        assert_eq!(stored_schema(&pool, DATA_SOURCE_A).await, before);
     });
 }
 

@@ -76,10 +76,9 @@ fn schema_creates_normalized_notes_database_tables() {
                 database_id,
                 title,
                 title_rich_text,
-                description,
-                properties
+                description
              )
-             VALUES ('source-a', 'database-a', 'Tasks', '[]', '[]', '{}')",
+             VALUES ('source-a', 'database-a', 'Tasks', '[]', '[]')",
         )
         .execute(&pool)
         .await

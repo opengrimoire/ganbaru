@@ -258,7 +258,7 @@ async fn replace_relation_property_links_inner_tx(
         .map(|target| target.id)
         .collect::<Vec<_>>();
     let (added, removed) = page_property_storage::replace_relation_targets(
-        &mut **tx,
+        tx,
         source_data_source_id,
         source_page_id,
         &property.id,

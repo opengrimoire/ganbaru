@@ -95,8 +95,7 @@ pub(crate) async fn create_data_source_row_page_tx(
     .execute(&mut **tx)
     .await
     .map_err(|e| format!("create notes data source row page: {e}"))?;
-    crate::page_property_storage::write_page_properties(&mut **tx, request.id.trim(), &properties)
-        .await?;
+    crate::page_property_storage::write_page_properties(tx, request.id.trim(), &properties).await?;
     let first_order_key = OrderKey::first().into_string();
     insert_block_row(
         tx,

@@ -60,7 +60,7 @@ pub async fn apply_property_action(
     .ok_or_else(|| "requesting table view not found".to_string())?;
     data_sources::views::prepare_view_mutation_tx(&mut tx, &view, "Database property").await?;
     let mut properties =
-        crate::property_storage::load_active_data_source_properties(&mut *tx, data_source_id)
+        crate::property_storage::load_active_data_source_properties(&mut tx, data_source_id)
             .await?
             .ok_or_else(|| "data source not found".to_string())?;
     let object = properties
@@ -380,7 +380,7 @@ async fn detach_inverse_relation_tx(
         return Ok(());
     }
     let Some(mut target) = crate::property_storage::load_active_data_source_properties(
-        &mut **tx,
+        tx,
         &config.target_data_source_id,
     )
     .await?
@@ -401,7 +401,7 @@ async fn detach_inverse_relation_tx(
     )
     .await?;
     crate::property_storage::write_data_source_properties(
-        &mut **tx,
+        tx,
         &config.target_data_source_id,
         &target,
     )

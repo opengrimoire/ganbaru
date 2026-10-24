@@ -172,7 +172,7 @@ pub async fn apply_data_source_template(
     .execute(&mut *tx)
     .await
     .map_err(|e| format!("create notes row from data source template: {e}"))?;
-    crate::page_property_storage::write_page_properties(&mut *tx, &page_id, &properties).await?;
+    crate::page_property_storage::write_page_properties(&mut tx, &page_id, &properties).await?;
     let mut reserved_ids = HashSet::from([page_id.clone()]);
     if blocks.is_empty() {
         insert_default_row_block(&mut tx, &page_id, &mut reserved_ids).await?;

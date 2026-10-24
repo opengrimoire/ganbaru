@@ -92,7 +92,7 @@ pub(crate) async fn save_rows_tx(
         match stored {
             Some((value_type, value)) => {
                 crate::page_property_storage::write_page_property_value(
-                    &mut **tx,
+                    tx,
                     &row.id,
                     property_id,
                     value_type,
@@ -101,12 +101,8 @@ pub(crate) async fn save_rows_tx(
                 .await?
             }
             None => {
-                crate::page_property_storage::delete_page_property_value(
-                    &mut **tx,
-                    &row.id,
-                    property_id,
-                )
-                .await?
+                crate::page_property_storage::delete_page_property_value(tx, &row.id, property_id)
+                    .await?
             }
         }
     }

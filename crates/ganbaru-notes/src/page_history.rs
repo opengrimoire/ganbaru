@@ -283,7 +283,7 @@ async fn replace_page_from_snapshot(
     .map_err(|e| format!("restore notes page history metadata: {e}"))?;
     let properties: Value = serde_json::from_str(&snapshot.properties)
         .map_err(|e| format!("parse notes page history properties: {e}"))?;
-    crate::page_property_storage::write_page_properties(&mut **tx, page_id, &properties).await?;
+    crate::page_property_storage::write_page_properties(tx, page_id, &properties).await?;
     restore::restore_blocks_from_snapshot(tx, page_id, &blocks).await?;
     if blocks.is_empty() {
         insert_default_page_block(tx, page_id, &mut HashSet::new()).await?;

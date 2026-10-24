@@ -267,12 +267,10 @@ pub async fn sync_current_data_source_property_asset_references_tx(
     tx: &mut Transaction<'_, Sqlite>,
     data_source_id: &str,
 ) -> Result<(), String> {
-    let schema_properties = crate::property_storage::load_active_data_source_properties(
-        &mut **tx,
-        data_source_id.trim(),
-    )
-    .await?
-    .ok_or_else(|| "data source not found".to_string())?;
+    let schema_properties =
+        crate::property_storage::load_active_data_source_properties(tx, data_source_id.trim())
+            .await?
+            .ok_or_else(|| "data source not found".to_string())?;
     sync_data_source_property_asset_references_tx(tx, data_source_id, &schema_properties).await
 }
 

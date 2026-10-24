@@ -80,7 +80,7 @@ impl DuplicatePageGraph {
                         .map_err(|e| format!("parse copied row properties: {e}"))?;
                 super::database_copy::remap_json_ids(&mut properties, &scoped);
                 crate::page_property_storage::write_page_properties(
-                    &mut **tx,
+                    tx,
                     &plan.duplicate_id,
                     &properties,
                 )

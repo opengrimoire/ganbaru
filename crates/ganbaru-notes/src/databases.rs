@@ -634,7 +634,7 @@ async fn insert_database_objects(
     .await
     .map_err(|e| format!("insert notes data source: {e}"))?;
     crate::property_storage::write_data_source_properties(
-        &mut **tx,
+        tx,
         request.data_source_id.trim(),
         &default_data_source_properties(),
     )

@@ -498,8 +498,7 @@ async fn insert_import_row_page(
     .execute(&mut **tx)
     .await
     .map_err(|e| format!("create {} import row page: {e}", request.source_provider))?;
-    crate::page_property_storage::write_page_properties(&mut **tx, page_id, request.properties)
-        .await
+    crate::page_property_storage::write_page_properties(tx, page_id, request.properties).await
 }
 
 async fn insert_import_child_page_block(

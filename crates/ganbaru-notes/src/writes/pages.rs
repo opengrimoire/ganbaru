@@ -518,7 +518,7 @@ pub async fn update_page(
         .await
         .map_err(|e| format!("update notes page properties: {e}"))?;
         if touched.rows_affected() > 0 {
-            crate::page_property_storage::write_page_properties(&mut *tx, page_id, properties)
+            crate::page_property_storage::write_page_properties(&mut tx, page_id, properties)
                 .await?;
         }
     }

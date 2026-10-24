@@ -296,7 +296,7 @@ async fn write_row_property_tx(
         .await?;
     } else if !crate::page_property_storage::UNSTORED_VALUE_TYPES.contains(&property_type) {
         crate::page_property_storage::write_page_property_value(
-            &mut **tx,
+            tx,
             page_id.trim(),
             &property.id,
             property_type,

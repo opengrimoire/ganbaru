@@ -201,12 +201,8 @@ pub(crate) async fn update_data_source_schema_tx(
         .await?;
     data_sources::formulas::ensure_formula_schema(&prepared)?;
     data_sources::buttons::ensure_button_schema(&prepared)?;
-    crate::property_storage::write_data_source_properties(
-        &mut **tx,
-        data_source_id.trim(),
-        &prepared,
-    )
-    .await?;
+    crate::property_storage::write_data_source_properties(tx, data_source_id.trim(), &prepared)
+        .await?;
     sqlx::query(
         "UPDATE notes_data_sources
          SET last_edited_time = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')

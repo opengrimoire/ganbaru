@@ -298,7 +298,7 @@ async fn insert_row_page_tx(
     .execute(&mut **tx)
     .await
     .map_err(|e| format!("insert CSV data source row page: {e}"))?;
-    crate::page_property_storage::write_page_properties(&mut **tx, page_id, properties).await?;
+    crate::page_property_storage::write_page_properties(tx, page_id, properties).await?;
     Ok(())
 }
 

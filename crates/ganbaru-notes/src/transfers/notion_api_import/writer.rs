@@ -373,7 +373,7 @@ async fn insert_database_objects(
     .await
     .map_err(|e| format!("insert imported Notion data source: {e}"))?;
     crate::property_storage::write_data_source_properties(
-        &mut **tx,
+        tx,
         data_source_id,
         &data_source.properties,
     )

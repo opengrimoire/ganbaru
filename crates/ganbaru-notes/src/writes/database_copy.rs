@@ -287,7 +287,7 @@ pub(crate) async fn insert_database_copy(
             SELECT ?, ?, title, title_rich_text, description, icon FROM notes_data_sources WHERE id = ?")
             .bind(id).bind(&copy.id).bind(source).execute(&mut **tx).await
             .map_err(|e| format!("copy Notes database source: {e}"))?;
-        crate::property_storage::copy_data_source_properties(&mut **tx, source, id).await?;
+        crate::property_storage::copy_data_source_properties(tx, source, id).await?;
     }
     for (source, id) in &copy.views {
         sqlx::query("INSERT INTO notes_database_views (id, database_id, data_source_id, name, type, filter, sorts, configuration, sort_order)
@@ -377,11 +377,11 @@ impl DatabaseCopy {
         let mut schemas = schemas.clone();
         self.collect_identities(&mut identities, &mut schemas);
         for (source, id) in &self.sources {
-            let mut schema = crate::property_storage::load_data_source_properties(&mut **tx, id)
+            let mut schema = crate::property_storage::load_data_source_properties(tx, id)
                 .await?
                 .ok_or_else(|| "copied data source not found".to_string())?;
             remap_schema(&mut schema, &identities, &schemas, source);
-            crate::property_storage::write_data_source_properties(&mut **tx, id, &schema).await?;
+            crate::property_storage::write_data_source_properties(tx, id, &schema).await?;
             copied.sources.insert(id.clone());
         }
         for (source, id) in &self.views {
@@ -488,7 +488,7 @@ pub(crate) async fn finalize_copies(
     crate::data_sources::row_hierarchy::copy_edges_tx(tx, &identities).await?;
     write_copied_relation_links(tx, &copied.rows).await?;
     for source in &copied.sources {
-        let schema = crate::property_storage::load_data_source_properties(&mut **tx, source)
+        let schema = crate::property_storage::load_data_source_properties(tx, source)
             .await?
             .ok_or_else(|| "copied data source not found".to_string())?;
         assets::sync_data_source_property_asset_references_tx(tx, source, &schema).await?;
@@ -538,7 +538,7 @@ async fn live_relation_schema(
     tx: &mut Transaction<'_, Sqlite>,
     data_source_id: &str,
 ) -> Result<Value, String> {
-    let schema = crate::property_storage::load_data_source_properties(&mut **tx, data_source_id)
+    let schema = crate::property_storage::load_data_source_properties(tx, data_source_id)
         .await?
         .ok_or_else(|| "copied data source not found".to_string())?;
     let mut live = serde_json::Map::new();

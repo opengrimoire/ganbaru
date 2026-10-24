@@ -1,8 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { invoke } from "@tauri-apps/api/core";
 import { createRichText } from "$lib/notes/blocks/payloads";
-import { notesDatabasePropertyCell } from "$lib/notes/database/property-cell";
 import {
+  notesDatabasePropertyCell,
   notesDatabaseTableCellText,
   notesDatabaseTableColumns,
   notesDatabaseTableRelationItems,

@@ -1,6 +1,6 @@
 import { notesDatabaseSerializeFilters } from "./filters";
-import { notesDatabaseMatchingPayload } from "./property-cell";
 import {
+  notesDatabaseMatchingPayload,
   notesDatabaseTableCellText,
   notesDatabaseTableColumns,
   notesDatabaseTableFiltersFromView,

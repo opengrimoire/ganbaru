@@ -4,7 +4,7 @@ import { formatDateTime, formatList, formatNumber } from "$lib/i18n/formatters";
 import type { NotesDataSourceNumberFormat, NotesPage } from "$lib/notes/types";
 import { notesDatabaseDateBoundaryOrder, notesDatabaseIsDateBoundaryValid, notesDatabaseDateValue, notesDatabaseIsTimeZoneValid, type NotesDatabaseDateValue } from "./date";
 import { notesDatabaseTableCellText, type NotesDatabaseTableColumn } from "./table";
-import { notesDatabaseMatchingPayload } from "./property-cell";
+import { notesDatabaseMatchingPayload } from "./table";
 
 export type NotesDatabaseDateFormat = "locale" | "iso" | "relative";
 export type NotesDatabaseTimeFormat = "locale" | "12_hour" | "24_hour" | "hidden";

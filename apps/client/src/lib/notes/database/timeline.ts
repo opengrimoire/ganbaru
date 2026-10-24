@@ -2,8 +2,8 @@ import { Temporal } from "@js-temporal/polyfill";
 import { notesDateMentionValueWithDates } from "$lib/notes/rich-text/date-mention-edit";
 import { notesDatabaseDateValue } from "./date";
 import { notesDatabaseSerializeFilters } from "./filters";
-import { notesDatabaseMatchingPayload } from "./property-cell";
 import {
+  notesDatabaseMatchingPayload,
   notesDatabaseTableCellText,
   notesDatabaseTableColumns,
   notesDatabaseTableFiltersFromView,

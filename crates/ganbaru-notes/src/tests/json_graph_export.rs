@@ -104,7 +104,11 @@ fn json_graph_export_includes_canonical_tables_counts_schema_and_warnings() {
         let pages = graph["graph"]["pages"]["notes_pages"].as_array().unwrap();
         assert_eq!(pages[0]["properties"]["title"]["type"], "title");
         let blocks = graph["graph"]["blocks"]["notes_blocks"].as_array().unwrap();
-        assert!(blocks.iter().any(|block| block["payload"].is_object()));
+        assert!(
+            blocks
+                .iter()
+                .any(|block| block["attrs"].is_object() && block["text"].is_object())
+        );
         let data_sources = graph["graph"]["data_sources"]["notes_data_sources"]
             .as_array()
             .unwrap();

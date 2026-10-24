@@ -153,11 +153,12 @@ fn update_block_persists_supported_block_color() {
         .await
         .unwrap();
 
-        let payload: String = sqlx::query_scalar("SELECT payload FROM notes_blocks WHERE id = ?")
-            .bind(BLOCK_A)
-            .fetch_one(&pool)
-            .await
-            .unwrap();
+        let payload: String =
+            sqlx::query_scalar("SELECT json_patch(attrs, text) FROM notes_blocks WHERE id = ?")
+                .bind(BLOCK_A)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
         assert!(payload.contains("\"color\":\"red_background\""));
         assert!(payload.contains("Colored"));
     });
@@ -287,7 +288,7 @@ fn rich_text_paste_payloads_round_trip_current_and_appended_blocks() {
         assert_eq!(second_rich_text[1]["href"], "mailto:team@example.com");
 
         let stored_plain_text: Vec<String> = sqlx::query_scalar(
-            "SELECT plain_text FROM notes_blocks WHERE id IN (?, ?) ORDER BY sort_order",
+            "SELECT plain_text FROM notes_blocks WHERE id IN (?, ?) ORDER BY order_key, id",
         )
         .bind(BLOCK_A)
         .bind(BLOCK_B)
@@ -521,7 +522,7 @@ fn callout_icon_assets_follow_icon_changes_and_block_conversion() {
 async fn callout_icon_reference_count(pool: &SqlitePool, asset_path: &str) -> i64 {
     sqlx::query_scalar::<_, i64>(
         "SELECT COUNT(*) FROM notes_asset_references
-         WHERE owner_type = 'block' AND owner_id = ? AND asset_id = ?
+         WHERE owner_type = 'block' AND owner_id = ? AND asset_id = (SELECT id FROM notes_assets WHERE asset_path = ?)
            AND role = 'callout_icon'",
     )
     .bind(BLOCK_B)

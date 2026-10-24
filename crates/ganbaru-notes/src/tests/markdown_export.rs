@@ -266,8 +266,14 @@ fn markdown_export_links_only_safe_web_references_and_escapes_labels() {
         )
         .await
         .unwrap();
-        sqlx::query("UPDATE notes_blocks SET payload = ? WHERE id = ?")
-            .bind(bookmark_payload("javascript:alert(1)", "Hostile").to_string())
+        let hostile = bookmark_payload("javascript:alert(1)", "Hostile").to_string();
+        sqlx::query(
+            "UPDATE notes_blocks
+             SET attrs = json_remove(?, '$.caption'), text = json_object('caption', json_extract(?, '$.caption'))
+             WHERE id = ?",
+        )
+            .bind(&hostile)
+            .bind(&hostile)
             .bind(BLOCK_C)
             .execute(&pool)
             .await

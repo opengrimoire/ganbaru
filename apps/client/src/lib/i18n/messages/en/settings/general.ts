@@ -69,7 +69,6 @@ export const general = {
     fullNameTooLong: (max: number) => `Full name must be ${max} characters or fewer.`,
     invalidName: "Display name cannot contain control or invisible characters.",
     invalidFullName: "Full name cannot contain control or invisible characters.",
-    syncFailed: "Could not update the notes author name.",
     discardChangesTitle: "Discard profile changes?",
     discardChangesMessage: "Your unsaved profile changes will be lost.",
     discardChanges: "Discard changes",

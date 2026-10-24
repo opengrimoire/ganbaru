@@ -58,8 +58,8 @@ async fn seed_empty_project(pool: &SqlitePool) {
 
 async fn insert_project_page(pool: &SqlitePool, page_id: &str, block_id: &str, text: &str) {
     sqlx::query(
-        "INSERT INTO notes_pages (id, parent_type, title, properties)
-         VALUES (?, 'workspace', ?, json_object('__ganbaru_project_id', ?, 'title', json_object()))",
+        "INSERT INTO notes_pages (id, parent_type, title, project_id, properties)
+         VALUES (?, 'workspace', ?, ?, json_object('title', json_object()))",
     )
     .bind(page_id)
     .bind(text)
@@ -69,31 +69,28 @@ async fn insert_project_page(pool: &SqlitePool, page_id: &str, block_id: &str, t
     .unwrap();
     sqlx::query(
         "INSERT INTO notes_blocks (
-            id, page_id, parent_type, parent_page_id, type, payload, plain_text, sort_order
-         ) VALUES (?, ?, 'page_id', ?, 'paragraph', ?, ?, 1000)",
+            id, page_id, parent_type, parent_page_id, type, attrs, text, plain_text, order_key
+         ) VALUES (?, ?, 'page_id', ?, 'paragraph', '{\"color\":\"default\"}', ?, ?, 'a0')",
     )
     .bind(block_id)
     .bind(page_id)
     .bind(page_id)
     .bind(
         serde_json::json!({
-            "paragraph": {
-                "rich_text": [{
-                    "type": "text",
-                    "text": { "content": text, "link": null },
-                    "annotations": {
-                        "bold": false,
-                        "italic": false,
-                        "strikethrough": false,
-                        "underline": false,
-                        "code": false,
-                        "color": "default"
-                    },
-                    "plain_text": text,
-                    "href": null
-                }],
-                "color": "default"
-            }
+            "rich_text": [{
+                "type": "text",
+                "text": { "content": text, "link": null },
+                "annotations": {
+                    "bold": false,
+                    "italic": false,
+                    "strikethrough": false,
+                    "underline": false,
+                    "code": false,
+                    "color": "default"
+                },
+                "plain_text": text,
+                "href": null
+            }]
         })
         .to_string(),
     )

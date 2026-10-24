@@ -164,8 +164,12 @@ fn attached_view_updates_checkpoint_both_projects_and_locked_failures_leave_hist
         create_page(&pool, PAGE_A, BLOCK_A).await;
         create_page(&pool, PAGE_B, BLOCK_B).await;
         for (page, project) in [(PAGE_A, SOURCE_PROJECT), (PAGE_B, SHELL_PROJECT)] {
-            sqlx::query("UPDATE notes_pages SET properties = json_set(properties, '$.__ganbaru_project_id', ?) WHERE id = ?")
-                .bind(project).bind(page).execute(&pool).await.unwrap();
+            sqlx::query("UPDATE notes_pages SET project_id = ? WHERE id = ?")
+                .bind(project)
+                .bind(page)
+                .execute(&pool)
+                .await
+                .unwrap();
         }
         create_database(
             &pool,

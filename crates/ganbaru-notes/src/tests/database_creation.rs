@@ -280,11 +280,12 @@ fn saved_database_views_keep_their_settings_and_default_reference() {
         databases::view_management::delete_database_view(&pool, DATABASE_A, DATABASE_VIEW_A)
             .await
             .unwrap();
-        let payload: String = sqlx::query_scalar("SELECT payload FROM notes_blocks WHERE id = ?")
-            .bind(DATABASE_A)
-            .fetch_one(&pool)
-            .await
-            .unwrap();
+        let payload: String =
+            sqlx::query_scalar("SELECT json_patch(attrs, text) FROM notes_blocks WHERE id = ?")
+                .bind(DATABASE_A)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
         let payload: serde_json::Value = serde_json::from_str(&payload).unwrap();
         assert_eq!(payload["view_id"], DATABASE_VIEW_B);
         sqlx::query("INSERT INTO notes_database_views (id, database_id, data_source_id, name, type, sorts, configuration) VALUES (?, ?, ?, 'Board', 'board', '[]', '{}')")
@@ -326,7 +327,7 @@ fn renaming_linked_database_does_not_rename_shared_source() {
         .await
         .unwrap();
         let original_payload: String =
-            sqlx::query_scalar("SELECT payload FROM notes_blocks WHERE id = ?")
+            sqlx::query_scalar("SELECT json_patch(attrs, text) FROM notes_blocks WHERE id = ?")
                 .bind(DATABASE_A)
                 .fetch_one(&pool)
                 .await

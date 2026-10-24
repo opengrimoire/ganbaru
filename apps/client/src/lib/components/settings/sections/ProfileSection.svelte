@@ -10,7 +10,6 @@
   import ProfileImageCropDialog from "$lib/components/profile/ProfileImageCropDialog.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
-  import type { NotesLocalUser } from "$lib/notes/types";
   import type { EventColor } from "$lib/calendar/types";
   import {
     PROFILE_IMAGE_DEFAULT_CROP,
@@ -145,20 +144,16 @@
       return;
     }
 
-    const shouldUpdateNotesName = displayName.value !== preferences.profileDisplayName;
-    const notesDisplayName = displayName.value || PROFILE_DISPLAY_NAME_FALLBACK;
+    const displayNameChanged = displayName.value !== preferences.profileDisplayName;
     saving = true;
     try {
-      if (shouldUpdateNotesName) {
-        const updated: NotesLocalUser | null = await notes.updateLocalUserDisplayName(notesDisplayName);
-        if (!updated) {
-          saveError = notes.localUserError ?? t("settings.profileIdentity.syncFailed");
-          return;
-        }
-      }
       if (!preferences.setProfileDisplayName(displayName.value)) {
         saveError = t("settings.profileIdentity.invalidName");
         return;
+      }
+      if (displayNameChanged) {
+        await flushConfig();
+        await notes.refreshLocalAuthor();
       }
       if (!preferences.setProfileFullName(fullName.value)) {
         saveError = t("settings.profileIdentity.invalidFullName");

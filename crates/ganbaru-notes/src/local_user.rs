@@ -1,10 +1,15 @@
-use crate::models::{NoteLocalUserDto, NoteLocalUserRow, NoteLocalUserUpdate};
+use crate::models::{NoteLocalUserDto, NoteLocalUserRow};
 use crate::validation::require_uuid;
 use serde_json::json;
-use sqlx::{Sqlite, SqlitePool, Transaction};
+use sqlx::{Sqlite, SqliteConnection, SqlitePool, Transaction};
 
 const DEFAULT_LOCAL_USER_DISPLAY_NAME: &str = "You";
-const LOCAL_USER_DISPLAY_NAME_MAX_CHARS: usize = 80;
+
+/// Portable preference that names the person using this vault.
+///
+/// The app's preference registry owns the key; Notes reads it so local comment, suggestion, and
+/// reaction authors store no copy of the name and a rename writes one preference.
+pub const PROFILE_DISPLAY_NAME_PREFERENCE_KEY: &str = "profile.displayName";
 
 pub async fn load_local_user(pool: &SqlitePool) -> Result<NoteLocalUserDto, String> {
     let mut tx = pool
@@ -12,69 +17,42 @@ pub async fn load_local_user(pool: &SqlitePool) -> Result<NoteLocalUserDto, Stri
         .await
         .map_err(|e| format!("begin notes local user load: {e}"))?;
     let row = ensure_local_user_tx(&mut tx).await?;
+    let display_name = local_author_name(&mut tx).await?;
     tx.commit()
         .await
         .map_err(|e| format!("commit notes local user load: {e}"))?;
-    Ok(NoteLocalUserDto::new(row))
-}
-
-pub async fn update_local_user(
-    pool: &SqlitePool,
-    update: NoteLocalUserUpdate,
-) -> Result<NoteLocalUserDto, String> {
-    let display_name = normalize_display_name(&update.display_name)?;
-    let mut tx = pool
-        .begin()
-        .await
-        .map_err(|e| format!("begin notes local user update: {e}"))?;
-    let existing = ensure_local_user_tx(&mut tx).await?;
-    sqlx::query(
-        "UPDATE notes_local_users
-         SET display_name = ?,
-             last_edited_time = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-         WHERE id = ?",
-    )
-    .bind(&display_name)
-    .bind(&existing.id)
-    .execute(&mut *tx)
-    .await
-    .map_err(|e| format!("update notes local user: {e}"))?;
-
-    sqlx::query(
-        "UPDATE notes_comments
-         SET display_name = ?
-         WHERE created_by = ?
-           AND json_extract(display_name, '$.type') = 'user'",
-    )
-    .bind(comment_display_name_json(&display_name))
-    .bind(&existing.id)
-    .execute(&mut *tx)
-    .await
-    .map_err(|e| format!("update notes local comment display names: {e}"))?;
-
-    sqlx::query(
-        "UPDATE notes_suggestions
-         SET display_name = ?
-         WHERE created_by = ?
-           AND json_extract(display_name, '$.type') = 'user'",
-    )
-    .bind(comment_display_name_json(&display_name))
-    .bind(&existing.id)
-    .execute(&mut *tx)
-    .await
-    .map_err(|e| format!("update notes local suggestion display names: {e}"))?;
-
-    let row = load_local_user_tx(&mut tx, &existing.id).await?;
-    tx.commit()
-        .await
-        .map_err(|e| format!("commit notes local user update: {e}"))?;
-    Ok(NoteLocalUserDto::new(row))
+    Ok(NoteLocalUserDto::new(row, display_name))
 }
 
 pub async fn current_local_user_tx(
     tx: &mut Transaction<'_, Sqlite>,
 ) -> Result<NoteLocalUserRow, String> {
     ensure_local_user_tx(tx).await
+}
+
+/// Reads the local author's name from the profile preference, falling back to the default name
+/// when the preference is unset, blank, or not a JSON string.
+pub async fn local_author_name(connection: &mut SqliteConnection) -> Result<String, String> {
+    let stored: Option<String> =
+        sqlx::query_scalar("SELECT value FROM vault_preferences WHERE key = ?")
+            .bind(PROFILE_DISPLAY_NAME_PREFERENCE_KEY)
+            .fetch_optional(&mut *connection)
+            .await
+            .map_err(|e| format!("load profile display name: {e}"))?;
+    Ok(stored
+        .and_then(|value| serde_json::from_str::<String>(&value).ok())
+        .map(|name| name.trim().to_string())
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| DEFAULT_LOCAL_USER_DISPLAY_NAME.to_string()))
+}
+
+/// Reads the local author's name through a pool connection.
+pub async fn local_author_name_from_pool(pool: &SqlitePool) -> Result<String, String> {
+    let mut connection = pool
+        .acquire()
+        .await
+        .map_err(|e| format!("acquire profile display name connection: {e}"))?;
+    local_author_name(&mut connection).await
 }
 
 pub fn comment_display_name_json(display_name: &str) -> String {
@@ -89,6 +67,14 @@ pub fn comment_display_name_json(display_name: &str) -> String {
         "resolved_name": resolved_name,
     })
     .to_string()
+}
+
+/// Returns a stored author name, or the local author's name when the row stores none.
+pub fn resolved_display_name_json(stored: Option<&str>, local_author_name: &str) -> String {
+    stored.map_or_else(
+        || comment_display_name_json(local_author_name),
+        str::to_string,
+    )
 }
 
 /// Reads the name captured by [`comment_display_name_json`], falling back to the default for malformed values.
@@ -113,15 +99,11 @@ async fn ensure_local_user_tx(
         return Ok(row);
     }
     let id = generate_local_user_id_tx(tx).await?;
-    sqlx::query(
-        "INSERT INTO notes_local_users (id, display_name)
-         VALUES (?, ?)",
-    )
-    .bind(&id)
-    .bind(DEFAULT_LOCAL_USER_DISPLAY_NAME)
-    .execute(&mut **tx)
-    .await
-    .map_err(|e| format!("create notes local user: {e}"))?;
+    sqlx::query("INSERT INTO notes_local_users (id) VALUES (?)")
+        .bind(&id)
+        .execute(&mut **tx)
+        .await
+        .map_err(|e| format!("create notes local user: {e}"))?;
     load_local_user_tx(tx, &id).await
 }
 
@@ -129,7 +111,7 @@ async fn load_first_local_user_tx(
     tx: &mut Transaction<'_, Sqlite>,
 ) -> Result<Option<NoteLocalUserRow>, String> {
     sqlx::query_as::<_, NoteLocalUserRow>(
-        "SELECT *
+        "SELECT id, created_time
          FROM notes_local_users
          ORDER BY created_time ASC, id ASC
          LIMIT 1",
@@ -144,7 +126,7 @@ async fn load_local_user_tx(
     id: &str,
 ) -> Result<NoteLocalUserRow, String> {
     sqlx::query_as::<_, NoteLocalUserRow>(
-        "SELECT *
+        "SELECT id, created_time
          FROM notes_local_users
          WHERE id = ?",
     )
@@ -179,18 +161,4 @@ async fn generate_local_user_id_tx(tx: &mut Transaction<'_, Sqlite>) -> Result<S
         }
     }
     Err("could not generate a unique notes local user id".to_string())
-}
-
-fn normalize_display_name(value: &str) -> Result<String, String> {
-    let trimmed = value.trim();
-    if trimmed.is_empty() {
-        return Err("display_name is required".to_string());
-    }
-    if trimmed.chars().count() > LOCAL_USER_DISPLAY_NAME_MAX_CHARS {
-        return Err("display_name is too long".to_string());
-    }
-    if trimmed.chars().any(char::is_control) {
-        return Err("display_name must not contain control characters".to_string());
-    }
-    Ok(trimmed.to_string())
 }

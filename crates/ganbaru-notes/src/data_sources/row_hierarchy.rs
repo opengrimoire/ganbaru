@@ -32,7 +32,7 @@ pub async fn row_metadata_tx(
     let rows = sqlx::query(
         "WITH RECURSIVE ancestors(row_id, ancestor_id, depth) AS (
             SELECT value, value, 0 FROM json_each(?)
-            UNION ALL
+            UNION
             SELECT ancestors.row_id, hierarchy.parent_row_page_id, ancestors.depth + 1
             FROM ancestors
             JOIN notes_data_source_row_hierarchy AS hierarchy
@@ -134,7 +134,7 @@ pub(crate) async fn set_parent_tx(
         require_active_row_tx(tx, source_id, parent_id).await?;
         let ancestors = sqlx::query(
             "WITH RECURSIVE ancestors(id, depth) AS (
-                SELECT ?, 0 UNION ALL
+                SELECT ?, 0 UNION
                 SELECT hierarchy.parent_row_page_id, ancestors.depth + 1 FROM ancestors
                 JOIN notes_data_source_row_hierarchy AS hierarchy ON hierarchy.row_page_id = ancestors.id
                  AND hierarchy.data_source_id = ? WHERE ancestors.depth <= ?
@@ -155,7 +155,7 @@ pub(crate) async fn set_parent_tx(
         }
         let descendant_depth: i64 = sqlx::query_scalar(
             "WITH RECURSIVE descendants(id, depth) AS (
-                SELECT ?, 0 UNION ALL
+                SELECT ?, 0 UNION
                 SELECT hierarchy.row_page_id, descendants.depth + 1 FROM descendants
                 JOIN notes_data_source_row_hierarchy AS hierarchy ON hierarchy.parent_row_page_id = descendants.id
                  AND hierarchy.data_source_id = ? WHERE descendants.depth <= ?

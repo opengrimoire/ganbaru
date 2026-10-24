@@ -480,15 +480,16 @@ pub(crate) async fn load_active_row_pages_tx(
     tx: &mut Transaction<'_, Sqlite>,
     data_source_id: &str,
 ) -> Result<Vec<NotePageRow>, String> {
-    sqlx::query_as::<_, NotePageRow>(
-        "SELECT page.*
+    sqlx::query_as::<_, NotePageRow>(sqlx::AssertSqlSafe(format!(
+        "SELECT {}
          FROM notes_pages AS page
          WHERE page.parent_type = 'data_source_id'
            AND page.parent_data_source_id = ?
            AND page.in_trash = 0
            AND page.archived = 0
          ORDER BY page.last_edited_time DESC, page.title COLLATE NOCASE ASC, page.id ASC",
-    )
+        crate::structure::page_row_columns("page")
+    )))
     .bind(data_source_id.trim())
     .fetch_all(&mut **tx)
     .await
@@ -500,15 +501,16 @@ pub(crate) async fn load_active_row_page_tx(
     data_source_id: &str,
     page_id: &str,
 ) -> Result<NotePageRow, String> {
-    sqlx::query_as::<_, NotePageRow>(
-        "SELECT page.*
+    sqlx::query_as::<_, NotePageRow>(sqlx::AssertSqlSafe(format!(
+        "SELECT {}
          FROM notes_pages AS page
          WHERE page.id = ?
            AND page.parent_type = 'data_source_id'
            AND page.parent_data_source_id = ?
            AND page.in_trash = 0
            AND page.archived = 0",
-    )
+        crate::structure::page_row_columns("page")
+    )))
     .bind(page_id.trim())
     .bind(data_source_id.trim())
     .fetch_optional(&mut **tx)

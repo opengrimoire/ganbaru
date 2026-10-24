@@ -1302,8 +1302,8 @@ mod reference_tests {
         .await
         .unwrap();
         sqlx::query(
-            "INSERT INTO notes_blocks (id, page_id, parent_type, parent_page_id, type, payload)
-             VALUES ('b', 'p', 'page_id', 'p', 'callout', ?1)",
+            "INSERT INTO notes_blocks (id, page_id, parent_type, parent_page_id, type, attrs, order_key)
+             VALUES ('b', 'p', 'page_id', 'p', 'callout', ?1, 'a0')",
         )
         .bind(format!(
             r#"{{"callout":{{"icon":{}}}}}"#,

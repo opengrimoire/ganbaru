@@ -23,3 +23,6 @@ sqlx = { workspace = true }
 libsqlite3-sys = { workspace = true }
 ganbaru-atomic-files = { workspace = true }
 tokio = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }

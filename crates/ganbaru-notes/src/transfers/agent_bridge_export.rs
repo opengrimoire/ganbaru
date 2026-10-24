@@ -278,6 +278,9 @@ async fn load_exact_pages(
     for id in requested_page_ids {
         query = query.bind(id);
     }
+    query = query
+        .bind(crate::structure::MAX_CONTENT_WALK_DEPTH)
+        .bind(crate::structure::MAX_CONTENT_WALK_DEPTH);
     rows_to_pages(
         query
             .fetch_all(pool)
@@ -296,19 +299,19 @@ async fn load_pages_with_descendants(
         .join(", ");
     let sql = format!(
         "WITH RECURSIVE requested(id) AS (VALUES {values}),
-             bridge_pages(id) AS (
-                SELECT page.id
+             bridge_pages(id, depth) AS (
+                SELECT page.id, 0
                 FROM notes_pages page
                 JOIN requested ON requested.id = page.id
                 WHERE page.in_trash = 0 AND page.archived = 0
                 UNION
-                SELECT child.id
+                SELECT child.id, parent.depth + 1
                 FROM notes_pages child
                 JOIN bridge_pages parent ON child.parent_type = 'page_id'
                   AND child.parent_page_id = parent.id
-                WHERE child.in_trash = 0 AND child.archived = 0
+                WHERE child.in_trash = 0 AND child.archived = 0 AND parent.depth < ?
                 UNION
-                SELECT child.id
+                SELECT child.id, parent.depth + 1
                 FROM notes_pages child
                 JOIN notes_blocks block ON child.parent_type = 'block_id'
                   AND child.parent_block_id = block.id
@@ -316,10 +319,11 @@ async fn load_pages_with_descendants(
                 WHERE child.in_trash = 0
                   AND child.archived = 0
                   AND block.in_trash = 0
+                  AND parent.depth < ?
              )
          SELECT page.id, page.title
          FROM notes_pages page
-         JOIN bridge_pages ON bridge_pages.id = page.id
+         WHERE page.id IN (SELECT id FROM bridge_pages)
          ORDER BY lower(page.title) ASC, page.id ASC"
     );
     let mut query = sqlx::query(AssertSqlSafe(sql.as_str()));
@@ -360,13 +364,13 @@ async fn load_database_views(
     let sql = format!(
         "SELECT block.id AS block_id,
                 page.title AS page_title,
-                block.payload AS payload
+                block.attrs AS payload
          FROM notes_blocks block
          JOIN notes_pages page ON page.id = block.page_id
          WHERE block.in_trash = 0
            AND block.type = 'child_database'
            AND block.page_id IN ({})
-         ORDER BY lower(page.title) ASC, block.sort_order ASC, block.id ASC",
+         ORDER BY lower(page.title) ASC, block.order_key ASC, block.id ASC",
         placeholders(page_ids.len())
     );
     let mut query = sqlx::query(AssertSqlSafe(sql.as_str()));

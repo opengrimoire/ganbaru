@@ -1,6 +1,8 @@
+use crate::block_storage::{BlockRowInsert, insert_block_row};
 use crate::models::{NoteDataSourceRowPageCreate, NoteLoadedPage, NotePageDto, NotePageRow};
 use crate::validation::{plain_text_from_payload, require_uuid};
 use crate::{assets, data_sources, reads, writes};
+use ganbaru_sync_contracts::OrderKey;
 use serde_json::{Map, Value, json};
 use sqlx::{Sqlite, SqlitePool, Transaction};
 
@@ -12,8 +14,8 @@ pub async fn list_data_source_row_pages(
     data_source_id: &str,
 ) -> Result<Vec<NotePageDto>, String> {
     require_uuid(data_source_id, "data_source_id")?;
-    let rows = sqlx::query_as::<_, NotePageRow>(
-        "SELECT page.*
+    let rows = sqlx::query_as::<_, NotePageRow>(sqlx::AssertSqlSafe(format!(
+        "SELECT {}
          FROM notes_pages AS page
          JOIN notes_data_sources AS data_source ON data_source.id = page.parent_data_source_id
          JOIN notes_databases AS database ON database.id = data_source.database_id
@@ -24,7 +26,8 @@ pub async fn list_data_source_row_pages(
            AND data_source.in_trash = 0
            AND database.in_trash = 0
          ORDER BY page.last_edited_time DESC, page.title COLLATE NOCASE ASC, page.id ASC",
-    )
+        crate::structure::page_row_columns("page")
+    )))
     .bind(data_source_id.trim())
     .fetch_all(pool)
     .await
@@ -94,25 +97,24 @@ pub(crate) async fn create_data_source_row_page_tx(
     .execute(&mut **tx)
     .await
     .map_err(|e| format!("create notes data source row page: {e}"))?;
-    sqlx::query(
-        "INSERT INTO notes_blocks (
-            id,
-            page_id,
-            parent_type,
-            parent_page_id,
-            type,
-            payload,
-            plain_text,
-            sort_order
-         )
-         VALUES (?, ?, 'page_id', ?, 'paragraph', ?, ?, 1000)",
+    let first_order_key = OrderKey::first().into_string();
+    insert_block_row(
+        tx,
+        BlockRowInsert {
+            id: request.first_block_id.trim(),
+            page_id: request.id.trim(),
+            parent_type: "page_id",
+            parent_page_id: Some(request.id.trim()),
+            parent_block_id: None,
+            block_type: "paragraph",
+            payload: &first_payload,
+            plain_text: &first_plain_text,
+            order_key: &first_order_key,
+            source_provider: None,
+            source_object_id: None,
+            source_last_edited_time: None,
+        },
     )
-    .bind(request.first_block_id.trim())
-    .bind(request.id.trim())
-    .bind(request.id.trim())
-    .bind(first_payload.to_string())
-    .bind(first_plain_text)
-    .execute(&mut **tx)
     .await
     .map_err(|e| format!("create initial notes data source row block: {e}"))?;
     data_sources::relations::replace_row_relation_links_tx(

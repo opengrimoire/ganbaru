@@ -174,9 +174,9 @@ fn workspace_shell_can_include_cross_project_navigation_metadata() {
         .await
         .expect("seed navigation projects");
         sqlx::query(
-            "INSERT INTO notes_pages (id, parent_type, title, properties, icon)
-             VALUES (?, 'workspace', 'Learning note', json_object('__ganbaru_project_id', ?), ?),
-                    (?, 'workspace', 'Eating note', json_object('__ganbaru_project_id', ?), ?)",
+            "INSERT INTO notes_pages (id, parent_type, title, project_id, icon)
+             VALUES (?, 'workspace', 'Learning note', ?, ?),
+                    (?, 'workspace', 'Eating note', ?, ?)",
         )
         .bind("00000000-0000-4000-8000-000000000101")
         .bind("notes-navigation-project-a")

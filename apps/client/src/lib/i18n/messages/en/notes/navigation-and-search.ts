@@ -45,7 +45,7 @@ export const navigationAndSearch = {
     changed: number,
     copied: number,
   ) =>
-    `${removed} notes will be removed, ${recreated} recreated, and ${changed} changed. ${copied} notes now owned by other projects will be restored as copies with new IDs. A complete safety version of the current project will be created first.`,
+    `${removed} notes will be moved to the trash, ${recreated} recreated, and ${changed} changed. ${copied} notes now owned by other projects will be restored as copies with new IDs. A complete safety version of the current project will be created first.`,
   projectHistoryRestoreFailed: (message: string) => `Could not restore this version: ${message}`,
   projectSettingsSaveFailed: (message: string) => `Could not save project notes settings: ${message}`,
   showProjectHome: "Show project notes",

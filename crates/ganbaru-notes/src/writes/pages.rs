@@ -1,21 +1,24 @@
 use super::parents::{
-    refresh_parent_has_children, resolve_block_parent, touch_page, validate_page_parent_exists,
+    resolve_block_parent, touch_page, touch_parent_block, validate_page_parent_exists,
 };
 use super::payloads::{
     child_page_payload, default_text_payload, page_row_properties_for_title, page_title_properties,
 };
-use super::sort::next_sort_orders;
+use super::sort::next_order_keys;
+use crate::block_storage::{
+    BlockRowInsert, BlockViewState, compose_block_payload, insert_block_row, write_block_content,
+};
 use crate::models::{
     NoteChildPageFromBlockCreate, NoteLoadedPage, NotePageCreate, NotePageDto, NotePageRow,
     NotePageUpdate, NoteParent, OptionalJsonValue, page_parent_columns, parent_columns,
 };
 use crate::validation::{
     plain_text_from_payload, require_uuid, validate_page_create, validate_page_update,
-    validate_sort_order,
 };
 use crate::{assets, mention_notifications, page_history, project_history, reads};
+use ganbaru_sync_contracts::OrderKey;
 use serde_json::Value;
-use sqlx::{Row, SqlitePool};
+use sqlx::{Row, SqliteConnection, SqlitePool};
 
 pub async fn create_page(
     pool: &SqlitePool,
@@ -27,15 +30,17 @@ pub async fn create_page(
     }
     let title = page.title.trim().to_string();
     let properties = page_properties_for_create(&title, page.properties.as_ref())?;
-    if let Some(existing) = load_idempotent_page_create(pool, &page, &title, &properties).await? {
+    let requested_project_id = page
+        .project_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    if let Some(existing) =
+        load_idempotent_page_create(pool, &page, &title, &properties, requested_project_id).await?
+    {
         return Ok(existing);
     }
-    if let Some(project_id) = properties
-        .get("__ganbaru_project_id")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
+    if let Some(project_id) = requested_project_id {
         project_history::ensure_project_baseline_for_mutation(pool, project_id).await?;
     } else {
         project_history::ensure_parent_baseline_for_mutation(pool, &page.parent).await?;
@@ -53,8 +58,29 @@ pub async fn create_page(
         NoteParent::Workspace { .. } => None,
         _ => Some(resolve_block_parent(&mut tx, &page.parent).await?),
     };
-    let child_page_sort_order = if let Some(parent) = &child_page_parent {
-        Some(next_sort_orders(&mut tx, parent, page.after_block_id.as_deref(), 1).await?[0])
+    let project_id = match &child_page_parent {
+        None => {
+            if let Some(project_id) = requested_project_id {
+                crate::structure::require_page_project_tx(&mut tx, project_id).await?;
+            }
+            requested_project_id.map(str::to_string)
+        }
+        Some(parent) => {
+            let inherited = crate::structure::page_project_id_tx(&mut tx, &parent.page_id).await?;
+            if requested_project_id
+                .is_some_and(|project_id| inherited.as_deref() != Some(project_id))
+            {
+                return Err("nested notes pages inherit their parent project".to_string());
+            }
+            inherited
+        }
+    };
+    let child_page_order_key = if let Some(parent) = &child_page_parent {
+        Some(
+            next_order_keys(&mut tx, parent, page.after_block_id.as_deref(), 1)
+                .await?
+                .remove(0),
+        )
     } else {
         None
     };
@@ -68,76 +94,68 @@ pub async fn create_page(
             parent_type,
             parent_page_id,
             parent_block_id,
+            child_block_id,
             folder_id,
+            project_id,
             title,
             properties
          )
-         VALUES (?, ?, ?, ?, ?, ?, ?)",
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(page.id.trim())
     .bind(parent_type)
     .bind(parent_page_id)
     .bind(parent_block_id)
+    .bind(crate::structure::nested_page_block_id(
+        parent_type,
+        page.id.trim(),
+    ))
     .bind(folder_id)
+    .bind(crate::structure::stored_page_project(
+        parent_type,
+        project_id.as_deref(),
+    ))
     .bind(&title)
     .bind(properties.to_string())
     .execute(&mut *tx)
     .await
     .map_err(|e| format!("create notes page: {e}"))?;
-    sqlx::query(
-        "INSERT INTO notes_blocks (
-            id,
-            page_id,
-            parent_type,
-            parent_page_id,
-            type,
-            payload,
-            plain_text,
-            sort_order
-         )
-         VALUES (?, ?, 'page_id', ?, 'paragraph', ?, ?, 1000)",
+    crate::structure::validate_page_folder_tx(&mut tx, page.id.trim()).await?;
+    insert_initial_block(
+        &mut tx,
+        page.first_block_id.trim(),
+        page.id.trim(),
+        &first_payload,
+        &first_plain_text,
     )
-    .bind(page.first_block_id.trim())
-    .bind(page.id.trim())
-    .bind(page.id.trim())
-    .bind(first_payload.to_string())
-    .bind(first_plain_text)
-    .execute(&mut *tx)
     .await
     .map_err(|e| format!("create initial notes block: {e}"))?;
     crate::project_history::mark_page_dirty_tx(&mut tx, page.id.trim(), &title, false).await?;
     if let Some(parent) = child_page_parent {
         let child_payload = child_page_payload(&title);
         let child_plain_text = plain_text_from_payload("child_page", &child_payload);
-        let sort_order = child_page_sort_order
-            .ok_or_else(|| "child page sort order was not prepared".to_string())?;
-        validate_sort_order(sort_order)?;
-        sqlx::query(
-            "INSERT INTO notes_blocks (
-                id,
-                page_id,
-                parent_type,
-                parent_page_id,
-                parent_block_id,
-                type,
-                payload,
-                plain_text,
-                sort_order
-             )
-             VALUES (?, ?, ?, ?, ?, 'child_page', ?, ?, ?)",
+        let order_key = child_page_order_key
+            .ok_or_else(|| "child page order key was not prepared".to_string())?;
+        insert_block_row(
+            &mut tx,
+            BlockRowInsert {
+                id: page.id.trim(),
+                page_id: &parent.page_id,
+                parent_type: parent.parent_type,
+                parent_page_id: parent.parent_page_id.as_deref(),
+                parent_block_id: parent.parent_block_id.as_deref(),
+                block_type: "child_page",
+                payload: &child_payload,
+                plain_text: &child_plain_text,
+                order_key: &order_key,
+                source_provider: None,
+                source_object_id: None,
+                source_last_edited_time: None,
+            },
         )
-        .bind(page.id.trim())
-        .bind(&parent.page_id)
-        .bind(parent.parent_type)
-        .bind(&parent.parent_page_id)
-        .bind(&parent.parent_block_id)
-        .bind(child_payload.to_string())
-        .bind(child_plain_text)
-        .bind(sort_order)
-        .execute(&mut *tx)
         .await
         .map_err(|e| format!("create notes child page block: {e}"))?;
-        refresh_parent_has_children(&mut tx, &parent).await?;
+        touch_parent_block(&mut tx, &parent).await?;
         touch_page(&mut tx, &parent.page_id).await?;
     }
     tx.commit()
@@ -151,12 +169,15 @@ async fn load_idempotent_page_create(
     page: &NotePageCreate,
     title: &str,
     properties: &Value,
+    requested_project_id: Option<&str>,
 ) -> Result<Option<NoteLoadedPage>, String> {
     let page_id = page.id.trim();
-    let existing = sqlx::query(
-        "SELECT parent_type, parent_page_id, parent_block_id, folder_id, title, properties
+    let existing = sqlx::query(sqlx::AssertSqlSafe(format!(
+        "SELECT parent_type, parent_page_id, parent_block_id, folder_id, {} AS project_id, title,
+                properties
          FROM notes_pages WHERE id = ?",
-    )
+        crate::structure::page_project_sql("notes_pages")
+    )))
     .bind(page_id)
     .fetch_optional(pool)
     .await
@@ -192,6 +213,9 @@ async fn load_idempotent_page_create(
     let stored_folder_id: Option<String> = existing
         .try_get("folder_id")
         .map_err(|e| format!("read existing notes page folder: {e}"))?;
+    let stored_project_id: Option<String> = existing
+        .try_get("project_id")
+        .map_err(|e| format!("read existing notes page project: {e}"))?;
     let stored_title: String = existing
         .try_get("title")
         .map_err(|e| format!("read existing notes page title: {e}"))?;
@@ -200,14 +224,19 @@ async fn load_idempotent_page_create(
         && stored_parent_block_id.as_deref() == parent_block_id
         && stored_folder_id.as_deref() == page.folder_id.as_deref().map(str::trim)
         && stored_title == title
-        && stored_properties == *properties;
+        && stored_properties == *properties
+        && project_matches(
+            &page.parent,
+            stored_project_id.as_deref(),
+            requested_project_id,
+        );
     if !page_matches {
         return Err("notes page create id already belongs to different data".to_string());
     }
 
     let initial_payload = default_text_payload("");
     let initial = sqlx::query(
-        "SELECT page_id, parent_type, parent_page_id, type, payload, sort_order
+        "SELECT page_id, parent_type, parent_page_id, type, attrs, text, order_key
          FROM notes_blocks WHERE id = ?",
     )
     .bind(page.first_block_id.trim())
@@ -217,11 +246,19 @@ async fn load_idempotent_page_create(
     let Some(initial) = initial else {
         return Err("existing notes page is missing its initial block".to_string());
     };
-    let stored_payload: String = initial
-        .try_get("payload")
-        .map_err(|e| format!("read existing initial notes block payload: {e}"))?;
-    let stored_payload: Value = serde_json::from_str(&stored_payload)
-        .map_err(|e| format!("parse existing initial notes block payload: {e}"))?;
+    let stored_attrs: String = initial
+        .try_get("attrs")
+        .map_err(|e| format!("read existing initial notes block attributes: {e}"))?;
+    let stored_text: String = initial
+        .try_get("text")
+        .map_err(|e| format!("read existing initial notes block text: {e}"))?;
+    let stored_payload = compose_block_payload(
+        "paragraph",
+        &stored_attrs,
+        &stored_text,
+        BlockViewState::default(),
+        None,
+    )?;
     let stored_page_id: String = initial
         .try_get("page_id")
         .map_err(|e| format!("read existing initial block page: {e}"))?;
@@ -234,14 +271,14 @@ async fn load_idempotent_page_create(
     let stored_type: String = initial
         .try_get("type")
         .map_err(|e| format!("read existing initial block type: {e}"))?;
-    let stored_sort_order: f64 = initial
-        .try_get("sort_order")
-        .map_err(|e| format!("read existing initial block sort order: {e}"))?;
+    let stored_order_key: String = initial
+        .try_get("order_key")
+        .map_err(|e| format!("read existing initial block order key: {e}"))?;
     let block_matches = stored_page_id == page_id
         && stored_parent_type == "page_id"
         && stored_parent_page_id.as_deref() == Some(page_id)
         && stored_type == "paragraph"
-        && stored_sort_order == 1000.0
+        && stored_order_key == OrderKey::first().as_str()
         && stored_payload == initial_payload;
     if !block_matches {
         return Err("initial notes block id already belongs to different data".to_string());
@@ -304,15 +341,17 @@ pub async fn create_child_page_from_block(
             parent_type,
             parent_page_id,
             parent_block_id,
+            child_block_id,
             title,
             properties
          )
-         VALUES (?, ?, ?, ?, ?, ?)",
+         VALUES (?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(block_id)
     .bind(page_parent_type)
     .bind(&current.parent_page_id)
     .bind(&current.parent_block_id)
+    .bind(block_id)
     .bind(&title)
     .bind(properties.to_string())
     .execute(&mut *tx)
@@ -329,42 +368,31 @@ pub async fn create_child_page_from_block(
     if child_count == 0 {
         let first_payload = default_text_payload("");
         let first_plain_text = plain_text_from_payload("paragraph", &first_payload);
-        sqlx::query(
-            "INSERT INTO notes_blocks (
-                id,
-                page_id,
-                parent_type,
-                parent_page_id,
-                type,
-                payload,
-                plain_text,
-                sort_order
-             )
-             VALUES (?, ?, 'page_id', ?, 'paragraph', ?, ?, 1000)",
+        insert_initial_block(
+            &mut tx,
+            request.first_block_id.trim(),
+            block_id,
+            &first_payload,
+            &first_plain_text,
         )
-        .bind(request.first_block_id.trim())
-        .bind(block_id)
-        .bind(block_id)
-        .bind(first_payload.to_string())
-        .bind(first_plain_text)
-        .execute(&mut *tx)
         .await
         .map_err(|e| format!("create initial notes child page block: {e}"))?;
     } else {
         sqlx::query(
-            "WITH RECURSIVE subtree(id) AS (
-                SELECT id FROM notes_blocks WHERE parent_block_id = ? AND in_trash = 0
-                UNION ALL
-                SELECT child.id
+            "WITH RECURSIVE subtree(id, depth) AS (
+                SELECT id, 1 FROM notes_blocks WHERE parent_block_id = ? AND in_trash = 0
+                UNION
+                SELECT child.id, subtree.depth + 1
                 FROM notes_blocks AS child
                 JOIN subtree ON child.parent_block_id = subtree.id
-                WHERE child.in_trash = 0
+                WHERE child.in_trash = 0 AND subtree.depth < ?
              )
              UPDATE notes_blocks
              SET page_id = ?
              WHERE id IN (SELECT id FROM subtree)",
         )
         .bind(block_id)
+        .bind(crate::writes::MAX_BLOCK_DEPTH)
         .bind(block_id)
         .execute(&mut *tx)
         .await
@@ -383,19 +411,13 @@ pub async fn create_child_page_from_block(
         .map_err(|e| format!("move notes child page root blocks: {e}"))?;
     }
 
-    sqlx::query(
-        "UPDATE notes_blocks
-         SET has_children = 0,
-             type = 'child_page',
-             payload = ?,
-             plain_text = ?,
-             last_edited_time = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-         WHERE id = ? AND in_trash = 0",
+    write_block_content(
+        &mut tx,
+        block_id,
+        "child_page",
+        &child_payload,
+        &child_plain_text,
     )
-    .bind(child_payload.to_string())
-    .bind(child_plain_text)
-    .bind(block_id)
-    .execute(&mut *tx)
     .await
     .map_err(|e| format!("convert notes block to child page: {e}"))?;
     touch_page(&mut tx, &current.page_id).await?;
@@ -412,6 +434,16 @@ pub async fn create_child_page_from_block(
     reads::load_page(pool, block_id).await
 }
 
+/// Compare a stored page project with a retried create request.
+///
+/// Nested pages inherit their project, so a retry may omit it.
+fn project_matches(parent: &NoteParent, stored: Option<&str>, requested: Option<&str>) -> bool {
+    match parent {
+        NoteParent::Workspace { .. } => stored == requested,
+        _ => requested.is_none() || stored == requested,
+    }
+}
+
 fn page_properties_for_create(
     title: &str,
     extra_properties: Option<&Value>,
@@ -420,6 +452,7 @@ fn page_properties_for_create(
     let Some(extra_properties) = extra_properties else {
         return Ok(properties);
     };
+    crate::validation::validate_page_properties(extra_properties)?;
     let extra_object = extra_properties
         .as_object()
         .ok_or_else(|| "properties must be an object".to_string())?;
@@ -461,6 +494,7 @@ pub async fn update_page(
                  parent_page_id = ?,
                  parent_block_id = ?,
                  parent_data_source_id = ?,
+                 child_block_id = ?,
                  folder_id = NULL,
                  last_edited_time = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
              WHERE id = ? AND in_trash = 0 AND archived = 0",
@@ -469,10 +503,12 @@ pub async fn update_page(
         .bind(parent_page_id)
         .bind(parent_block_id)
         .bind(parent_data_source_id)
+        .bind(crate::structure::nested_page_block_id(parent_type, page_id))
         .bind(page_id)
         .execute(&mut *tx)
         .await
         .map_err(|e| format!("update notes page parent: {e}"))?;
+        crate::structure::detach_row_hierarchy_tx(&mut tx, page_id).await?;
     }
     if let Some(title) = update.title {
         let title = title.trim().to_string();
@@ -497,12 +533,10 @@ pub async fn update_page(
         let child_payload = child_page_payload(&title);
         sqlx::query(
             "UPDATE notes_blocks
-             SET payload = ?,
-                 plain_text = ?,
+             SET plain_text = ?,
                  last_edited_time = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
              WHERE id = ? AND type = 'child_page'",
         )
-        .bind(child_payload.to_string())
         .bind(plain_text_from_payload("child_page", &child_payload))
         .bind(page_id)
         .execute(&mut *tx)
@@ -584,12 +618,42 @@ pub(super) async fn load_page_row(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     page_id: &str,
 ) -> Result<NotePageRow, String> {
-    sqlx::query_as::<_, NotePageRow>(
-        "SELECT * FROM notes_pages WHERE id = ? AND in_trash = 0 AND archived = 0",
-    )
+    sqlx::query_as::<_, NotePageRow>(sqlx::AssertSqlSafe(format!(
+        "SELECT {} FROM notes_pages WHERE id = ? AND in_trash = 0 AND archived = 0",
+        crate::structure::page_row_columns("notes_pages")
+    )))
     .bind(page_id)
     .fetch_optional(&mut **tx)
     .await
     .map_err(|e| format!("load notes page row: {e}"))?
     .ok_or_else(|| "notes page not found".to_string())
+}
+
+/// Inserts the first paragraph of a new page at the first order key.
+async fn insert_initial_block(
+    conn: &mut SqliteConnection,
+    block_id: &str,
+    page_id: &str,
+    payload: &Value,
+    plain_text: &str,
+) -> Result<(), String> {
+    let order_key = OrderKey::first().into_string();
+    insert_block_row(
+        conn,
+        BlockRowInsert {
+            id: block_id,
+            page_id,
+            parent_type: "page_id",
+            parent_page_id: Some(page_id),
+            parent_block_id: None,
+            block_type: "paragraph",
+            payload,
+            plain_text,
+            order_key: &order_key,
+            source_provider: None,
+            source_object_id: None,
+            source_last_edited_time: None,
+        },
+    )
+    .await
 }

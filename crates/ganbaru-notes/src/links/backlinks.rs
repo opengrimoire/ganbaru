@@ -228,26 +228,12 @@ async fn append_block_entries(
     link_resolver: &LocalLinkResolver,
     entries: &mut Vec<BacklinkIndexEntry>,
 ) -> Result<(), String> {
-    let rows = sqlx::query_as::<_, NoteBlockRow>(
-        "SELECT
-            id,
-            page_id,
-            parent_type,
-            parent_page_id,
-            parent_block_id,
-            has_children,
-            in_trash,
-            type AS block_type,
-            payload,
-            plain_text,
-            sort_order,
-            source_provider,
-            source_object_id,
-            source_last_edited_time,
-            created_time,
-            last_edited_time
-         FROM notes_blocks",
-    )
+    let rows = sqlx::query_as::<_, NoteBlockRow>(concat!(
+        "SELECT ",
+        crate::note_block_row_columns!("notes_blocks"),
+        "
+         FROM notes_blocks"
+    ))
     .fetch_all(pool)
     .await
     .map_err(|e| format!("load notes blocks for backlink index: {e}"))?;

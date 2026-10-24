@@ -61,7 +61,7 @@ pub(super) async fn initialize_project_history(
              SELECT 1 FROM notes_folders WHERE project_id = ?
              UNION ALL
              SELECT 1 FROM notes_pages
-             WHERE trim(json_extract(properties, '$.__ganbaru_project_id')) = ?
+             WHERE project_id = ?
          )",
     )
     .bind(&project_id)

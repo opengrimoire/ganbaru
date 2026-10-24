@@ -158,8 +158,19 @@ fn database_subitems_report_unloaded_ancestors_and_counts_and_restore_trashed_re
             .await
             .unwrap();
         assert_eq!(metadata(&pool, &[PAGE_C]).await[PAGE_C]["depth"], 1);
-        sqlx::query("UPDATE notes_pages SET parent_type = 'workspace', parent_data_source_id = NULL WHERE id = ?")
-            .bind(PAGE_B).execute(&pool).await.unwrap();
+        writes::update_page(
+            &pool,
+            PAGE_B,
+            NotePageUpdate {
+                title: None,
+                parent: Some(workspace_parent()),
+                properties: None,
+                icon: OptionalJsonValue::Unset,
+                cover: OptionalJsonValue::Unset,
+            },
+        )
+        .await
+        .unwrap();
         assert_eq!(metadata(&pool, &[PAGE_C]).await[PAGE_C]["depth"], 0);
         let edge_count: i64 =
             sqlx::query_scalar("SELECT COUNT(*) FROM notes_data_source_row_hierarchy")

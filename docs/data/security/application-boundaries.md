@@ -78,7 +78,7 @@ Notification payloads and platform callbacks are untrusted. They identify a boun
 
 Desktop Pomodoro blockers and overlays are native windows controlled by Rust and narrowly scoped frontend events. They do not expose a general click-capture or arbitrary window-creation API. Enforcement follows canonical Pomodoro transitions, so a stale window event cannot resume, stop, or mutate a newer run.
 
-Browser and desktop anti-distraction enforcement receive only the rule and focus state their surface needs. The Chrome native-messaging host validates message shape, size, and the allowed command set; it is not a generic shell bridge.
+Browser and desktop anti-distraction enforcement receive only the rule and focus state their surface needs. The Chrome native-messaging host validates message shape, size, and the allowed command set; it is not a generic shell bridge. It never opens the vault database: it reads only the device identity and the vault marker, and writes usage samples and block events to the device-local spool, which the app validates before moving them into the vault.
 
 Mobile enforcement plugins expose only launchable-app discovery, selected settings intents, foreground checks, and durable usage operations. Accessibility or usage-access grants do not authorize unrelated data collection.
 

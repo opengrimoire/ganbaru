@@ -5,12 +5,14 @@ use ganbaru_sync_contracts::{Field, GroupId, TableId, Value};
 use sqlx::SqliteConnection;
 
 use crate::adapter::{AdapterError, DomainAdapter, Presentation};
+use crate::codec;
 use crate::hooks::{ChangeSink, HookFuture, Hooks, MaterializeHook};
 use crate::manifest::TableSpec;
 use crate::manifest::vault::distractions::{
-    ADAPTER, APP_RULES_TABLE, CUSTOM_CATEGORIES_TABLE, DOMAIN, HOST_RULES_TABLE, SETTINGS_TABLE,
-    USAGE_LIMITS_TABLE, USAGE_TOTALS_TABLE, app_group, custom_category_group, host_group,
-    limit_group, settings_group, usage_total_group,
+    ADAPTER, APP_RULES_TABLE, BLOCK_EVENTS_TABLE, BLOCK_RULE_SNAPSHOTS, CUSTOM_CATEGORIES_TABLE,
+    DOMAIN, HOST_RULES_TABLE, SETTINGS_TABLE, USAGE_LIMITS_TABLE, USAGE_TOTALS_TABLE, app_group,
+    block_event_group, custom_category_group, host_group, limit_group, settings_group,
+    usage_total_group,
 };
 
 /// Most characters of an enumerated value: a mode, list kind, or platform.
@@ -70,6 +72,48 @@ pub const MAX_USAGE_DAY_SECONDS: i64 = 25 * 60 * 60;
 
 /// Usage source types: a website host, a desktop app, or a mobile app package.
 pub const USAGE_SOURCE_TYPES: &[&str] = &["website", "desktop-app", "mobile-app"];
+
+/// Most characters of an enumerated block event or rule snapshot value.
+pub const MAX_BLOCK_ENUM_CHARS: usize = 32;
+
+/// Most characters of a free block event or rule snapshot text: a source key, label, or id.
+/// One snapshot row of every such column stays within one blob field.
+pub const MAX_BLOCK_TEXT_CHARS: usize = 1_024;
+
+/// Block event source types.
+pub const BLOCK_SOURCE_TYPES: &[&str] = &["browser", "desktop_app", "mobile_app"];
+
+/// Focus phases a block event records, including the pause kinds.
+pub const BLOCK_PHASES: &[&str] = &[
+    "focus",
+    "short_break",
+    "long_break",
+    "manual_pause",
+    "idle_pause",
+    "suspend_pause",
+];
+
+/// Block event decisions.
+pub const BLOCK_DECISIONS: &[&str] = &[
+    "blocked",
+    "temporary_allowed",
+    "false_positive_reported",
+    "limit_exhausted",
+];
+
+/// Rule kinds a block event's rule snapshot names.
+pub const SNAPSHOT_RULE_KINDS: &[&str] = &[
+    "domain",
+    "url_pattern",
+    "category",
+    "custom_category",
+    "usage_limit",
+    "desktop_app",
+    "mobile_app",
+];
+
+/// Blocker modes a block event's rule snapshot names.
+pub const SNAPSHOT_BLOCKER_MODES: &[&str] = &["blacklist", "whitelist", "limit"];
 
 /// Change notice topic of a replicated rule table; the notice key is the table name.
 pub const RULES_TOPIC: &str = "distractions_rules";
@@ -159,6 +203,69 @@ fn is_usage_date(date: &str) -> bool {
     )
 }
 
+fn optional_one_of(
+    field: Option<&Field>,
+    allowed: &[&str],
+    what: &'static str,
+) -> Result<(), AdapterError> {
+    match field {
+        Some(Field::Null) => Ok(()),
+        field => one_of(field, allowed, what),
+    }
+}
+
+/// The source type, phase, and decision of a block event, and a source key that is never a URL.
+fn validate_block_event(value: &Value) -> Result<(), AdapterError> {
+    let [
+        _,
+        source_type,
+        Field::Text(source_key),
+        _,
+        phase,
+        decision,
+        _,
+        _,
+        _,
+    ] = value.fields()
+    else {
+        return Err(AdapterError("distraction block event"));
+    };
+    one_of(
+        Some(source_type),
+        BLOCK_SOURCE_TYPES,
+        "distraction block source type",
+    )?;
+    if source_key.contains("://") {
+        return Err(AdapterError("distraction block source key"));
+    }
+    optional_one_of(Some(phase), BLOCK_PHASES, "distraction block phase")?;
+    one_of(
+        Some(decision),
+        BLOCK_DECISIONS,
+        "distraction block decision",
+    )
+}
+
+/// The rule kind and blocker mode of a block event's rule snapshot.
+fn validate_block_snapshot(value: &Value) -> Result<(), AdapterError> {
+    let [Field::Blob(bytes)] = value.fields() else {
+        return Err(AdapterError("distraction block rule snapshot"));
+    };
+    let rows = codec::decode(&BLOCK_RULE_SNAPSHOTS, bytes)
+        .map_err(|_| AdapterError("distraction block rule snapshot"))?;
+    rows.iter().try_for_each(|row| match row.fields.as_slice() {
+        [_, kind, _, _, mode] => {
+            optional_one_of(Some(kind), SNAPSHOT_RULE_KINDS, "distraction rule kind")?;
+            optional_one_of(
+                Some(mode),
+                SNAPSHOT_BLOCKER_MODES,
+                "distraction blocker mode",
+            )
+        }
+        _ => Err(AdapterError("distraction block rule snapshot")),
+    })
+}
+
 fn validate_usage_bucket(value: &Value) -> Result<(), AdapterError> {
     let [_, source_type, _, Field::Text(date)] = value.fields() else {
         return Err(AdapterError("distraction usage bucket"));
@@ -217,6 +324,10 @@ impl DomainAdapter for DistractionsAdapter {
             }
         } else if table == USAGE_TOTALS_TABLE && group == usage_total_group::BUCKET {
             validate_usage_bucket(value)
+        } else if table == BLOCK_EVENTS_TABLE && group == block_event_group::EVENT {
+            validate_block_event(value)
+        } else if table == BLOCK_EVENTS_TABLE && group == block_event_group::SNAPSHOT {
+            validate_block_snapshot(value)
         } else {
             Ok(())
         }
@@ -265,13 +376,13 @@ impl MaterializeHook for DistractionsHook {
     }
 }
 
-/// `hooks` with the rules hook on every rule table of the domain. Usage totals carry no rules,
-/// and limit evaluation reads them at every observation, so they report nothing.
+/// `hooks` with the rules hook on every rule table of the domain. Usage totals and block events
+/// carry no rules, and their readers query them when they need them, so they report nothing.
 pub fn with_hooks(hooks: Hooks) -> Hooks {
     DOMAIN
         .tables
         .iter()
-        .filter(|table| table.id != USAGE_TOTALS_TABLE)
+        .filter(|table| table.id != USAGE_TOTALS_TABLE && table.id != BLOCK_EVENTS_TABLE)
         .fold(hooks, |hooks, table| {
             hooks.with(table.id, Box::new(DistractionsHook))
         })
@@ -280,6 +391,7 @@ pub fn with_hooks(hooks: Hooks) -> Hooks {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::codec::OwnedRow;
     use crate::manifest::vault::distractions::CATEGORY_RULES_TABLE;
 
     fn text(value: &str) -> Field {
@@ -364,6 +476,63 @@ mod tests {
         assert!(bucket("website", "2026/10/23").is_err());
         assert!(bucket("website", "26-10-2023").is_err());
         assert!(bucket("website", "2026-1a-23").is_err());
+
+        let block = |source_type: &str, source_key: &str, phase: Field, decision: &str| {
+            adapter.validate(
+                BLOCK_EVENTS_TABLE,
+                block_event_group::EVENT,
+                &value(vec![
+                    text("2027-01-05T09:10:00.000Z"),
+                    text(source_type),
+                    text(source_key),
+                    Field::Null,
+                    phase,
+                    text(decision),
+                    Field::Null,
+                    Field::Null,
+                    text("2027-01-05T09:10:00.000Z"),
+                ]),
+            )
+        };
+        assert_eq!(
+            block("browser", "video.example.com", text("focus"), "blocked"),
+            Ok(())
+        );
+        assert_eq!(
+            block(
+                "mobile_app",
+                "com.example.video",
+                Field::Null,
+                "limit_exhausted"
+            ),
+            Ok(())
+        );
+        assert!(
+            block(
+                "browser",
+                "https://video.example.com",
+                Field::Null,
+                "blocked"
+            )
+            .is_err()
+        );
+        assert!(block("tablet_app", "video.example.com", Field::Null, "blocked").is_err());
+        assert!(block("browser", "video.example.com", text("lunch"), "blocked").is_err());
+        assert!(block("browser", "video.example.com", Field::Null, "ignored").is_err());
+
+        let snapshot = |kind: Field, mode: Field| {
+            let row = OwnedRow::flat(vec![Field::Null, kind, Field::Null, Field::Null, mode]);
+            let blob = codec::encode(&BLOCK_RULE_SNAPSHOTS, &[row]).unwrap();
+            adapter.validate(
+                BLOCK_EVENTS_TABLE,
+                block_event_group::SNAPSHOT,
+                &value(vec![Field::Blob(blob)]),
+            )
+        };
+        assert_eq!(snapshot(text("domain"), text("blacklist")), Ok(()));
+        assert_eq!(snapshot(Field::Null, Field::Null), Ok(()));
+        assert!(snapshot(text("screen_content"), text("blacklist")).is_err());
+        assert!(snapshot(text("domain"), text("graylist")).is_err());
     }
 
     #[test]

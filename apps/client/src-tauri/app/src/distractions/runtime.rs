@@ -6,6 +6,7 @@ use super::authorization::configured_close_authorization;
 use super::catalog::{DesktopCatalogIndex, desktop_catalog_index};
 use super::*;
 use ganbaru_distractions::accounting;
+use ganbaru_sync::manifest::vault::distractions::DOMAIN_NAME as DISTRACTIONS_DOMAIN;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::sync::{Notify, mpsc, oneshot};
@@ -490,6 +491,9 @@ impl Owner {
             return Ok(());
         };
         self.publish_rules_file(&context).await;
+        if let Err(error) = self.ingest_block_events(&context).await {
+            eprintln!("native Distractions block event import: {error}");
+        }
         if self.session.is_none() {
             self.session = Some(crate::distractions::spool::new_accounting_session()?);
         }
@@ -541,6 +545,37 @@ impl Owner {
             Ok(())
         })?;
         self.enforce(context, projection.totals).await
+    }
+
+    /// Moves the block events the browser host spooled into the vault when this device may write
+    /// Distractions. A failure leaves them spooled for the next observation.
+    async fn ingest_block_events(&self, context: &Context) -> Result<(), String> {
+        let device_id = &context.ownership.device_id;
+        if !context.ownership.can_write_domain(DISTRACTIONS_DOMAIN)
+            || !crate::distractions::spool::has_pending_block_events(
+                &self.app,
+                &context.vault_id,
+                device_id,
+            )
+            .await?
+        {
+            return Ok(());
+        }
+        let _permit = self
+            .app
+            .state::<vault::ownership::VaultOwnershipManager>()
+            .acquire_replicated_write(&context.vault_id, DISTRACTIONS_DOMAIN)?;
+        context.validate_binding(&self.app)?;
+        let pool = crate::db::connect_vault(&self.app).await?;
+        context.validate_binding(&self.app)?;
+        crate::distractions::spool::ingest_block_events(
+            &self.app,
+            &pool,
+            &context.vault_id,
+            device_id,
+        )
+        .await
+        .map(|_| ())
     }
 
     /// Writes the rules file the browser host reads when the vault or its rules changed since
@@ -674,11 +709,11 @@ impl Owner {
             }
         }
         for (observed, limit_name) in closed {
-            if context.ownership.can_write {
+            if context.ownership.can_write_domain(DISTRACTIONS_DOMAIN) {
                 let _permit = self
                     .app
                     .state::<vault::ownership::VaultOwnershipManager>()
-                    .acquire_managed_write(&context.vault_id)?;
+                    .acquire_replicated_write(&context.vault_id, DISTRACTIONS_DOMAIN)?;
                 context.validate_binding(&self.app)?;
                 let pool = crate::db::connect_vault(&self.app).await?;
                 context.validate_binding(&self.app)?;

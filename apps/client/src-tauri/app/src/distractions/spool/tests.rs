@@ -87,7 +87,7 @@ async fn idle_drain_does_not_create_a_spool_before_any_samples_exist() {
 }
 
 #[tokio::test]
-async fn a_fresh_spool_holds_only_pending_samples_and_batch_receipts() {
+async fn a_fresh_spool_holds_only_pending_samples_block_events_and_batch_receipts() {
     let path = temporary_spool("tables");
     let pool = open_spool(&path).await.unwrap();
     let tables: Vec<String> = sqlx::query_scalar(
@@ -99,7 +99,11 @@ async fn a_fresh_spool_holds_only_pending_samples_and_batch_receipts() {
     pool.close().await;
     assert_eq!(
         tables,
-        ["native_usage_batch_receipts", "pending_usage_samples"]
+        [
+            "native_usage_batch_receipts",
+            "pending_block_events",
+            "pending_usage_samples"
+        ]
     );
     remove(&path);
 }
@@ -309,5 +313,111 @@ async fn pending_usage_sums_per_source_and_day_inside_the_week() {
             elapsed_seconds: 30,
         }]
     );
+    remove(&path);
+}
+
+async fn spool_block_event(path: &Path, vault_id: &str, event_id: &str, source_key: &str) {
+    let pool = open_spool(path).await.unwrap();
+    sqlx::query(
+        "INSERT INTO pending_block_events
+            (event_id, vault_id, device_id, run_id, occurred_at, source_type, source_key,
+             display_name, phase, decision, rule_kind, rule_label, blocker_mode)
+         VALUES (?, ?, ?, 'run-gone', '2026-09-13T10:00:00.000Z', 'browser', ?, ?, 'focus',
+                 'blocked', 'domain', 'Video', 'blacklist')",
+    )
+    .bind(event_id)
+    .bind(vault_id)
+    .bind(DEVICE)
+    .bind(source_key)
+    .bind(source_key)
+    .execute(&pool)
+    .await
+    .unwrap();
+    pool.close().await;
+}
+
+async fn spooled_block_event_ids(path: &Path) -> Vec<String> {
+    let pool = open_spool(path).await.unwrap();
+    let ids = sqlx::query_scalar("SELECT event_id FROM pending_block_events ORDER BY event_id")
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+    pool.close().await;
+    ids
+}
+
+async fn vault_block_events(pool: &SqlitePool) -> Vec<(String, Option<String>, String)> {
+    sqlx::query_as(
+        "SELECT event.id, event.run_id, snapshot.rule_label
+         FROM distractions_block_events event
+         JOIN distractions_block_event_rule_snapshots snapshot
+           ON snapshot.block_event_id = event.id
+         ORDER BY event.id",
+    )
+    .fetch_all(pool)
+    .await
+    .unwrap()
+}
+
+#[tokio::test]
+async fn spooled_block_events_reach_the_vault_once_and_leave_the_spool() {
+    let path = temporary_spool("blocks");
+    let vault = vault_pool().await;
+    assert_eq!(
+        ingest_block_events_at(&path, &vault, VAULT, DEVICE)
+            .await
+            .unwrap(),
+        0
+    );
+    assert!(!path.parent().unwrap().exists());
+
+    spool_block_event(&path, VAULT, "block-1", "youtube.com").await;
+    spool_block_event(&path, VAULT, "block-2", "https://youtube.com/watch").await;
+    spool_block_event(&path, "other-vault", "block-3", "reddit.com").await;
+    assert_eq!(
+        ingest_block_events_at(&path, &vault, VAULT, DEVICE)
+            .await
+            .unwrap(),
+        2
+    );
+    let expected = vec![("block-1".to_string(), None, "Video".to_string())];
+    assert_eq!(vault_block_events(&vault).await, expected);
+    assert_eq!(spooled_block_event_ids(&path).await, ["block-3"]);
+
+    // A batch the vault committed but the spool kept ingests again without a second row.
+    spool_block_event(&path, VAULT, "block-1", "youtube.com").await;
+    assert_eq!(
+        ingest_block_events_at(&path, &vault, VAULT, DEVICE)
+            .await
+            .unwrap(),
+        1
+    );
+    assert_eq!(vault_block_events(&vault).await, expected);
+    assert_eq!(spooled_block_event_ids(&path).await, ["block-3"]);
+    vault.close().await;
+    remove(&path);
+}
+
+#[tokio::test]
+async fn a_failed_block_event_import_keeps_the_batch_in_the_spool() {
+    let path = temporary_spool("failed-blocks");
+    let vault = vault_pool().await;
+    sqlx::raw_sql(
+        "CREATE TRIGGER reject_block BEFORE INSERT ON distractions_block_events
+         WHEN NEW.id = 'block-2' BEGIN SELECT RAISE(ABORT, 'injected failure'); END",
+    )
+    .execute(&vault)
+    .await
+    .unwrap();
+    spool_block_event(&path, VAULT, "block-1", "youtube.com").await;
+    spool_block_event(&path, VAULT, "block-2", "reddit.com").await;
+    assert!(
+        ingest_block_events_at(&path, &vault, VAULT, DEVICE)
+            .await
+            .is_err()
+    );
+    assert_eq!(spooled_block_event_ids(&path).await, ["block-1", "block-2"]);
+    assert!(vault_block_events(&vault).await.is_empty());
+    vault.close().await;
     remove(&path);
 }

@@ -59,7 +59,7 @@ Local audio uses a Media3 session service and ExoPlayer, which own background pl
 
 Selected-app rules run in a private `:guardian` process that holds alarm handling, ongoing notification coordination, Usage Access reads, the opt-in Accessibility Service, validated rule projections, and a bounded native journal. Only the guardian opens its private preferences and journal database, and non-exported providers validate rule projections and journal imports.
 
-The current owner writes normalized usage and block history to canonical SQLite. A non-owner keeps usage in the private journal and exchanges stable sample IDs through the authenticated coordinator, as described in [device linking](../../data/sync.md). Rules are replicated vault data in SQLite; Android reads the assembled rules natively.
+A device that may write the Distractions domain imports its journaled usage and block history into canonical SQLite, where they replicate as described in [device linking](../../data/sync.md); until then they stay in the private journal. Rules are replicated vault data in SQLite; Android reads the assembled rules natively.
 
 One serialized Rust publisher synchronizes the journal and derives budgets from persisted configuration. The guardian captures its counter baseline and pending journal under one lock so usage is never counted twice. The frontend supplies only localized copy and reads cached budgets; it has no accounting or enforcement authority. Configuration, vault, handoff, and failed-publication boundaries revoke obsolete rules. If the application process exits, the guardian keeps enforcing its last accepted local policy.
 

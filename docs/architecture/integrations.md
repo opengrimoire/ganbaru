@@ -18,7 +18,7 @@ A separately authorized MCP service for external clients is planned. It must not
 
 ## Browser extension
 
-The Chromium Manifest V3 extension communicates with a separate local native messaging host. It receives bounded blocker state, reports redacted events, and opens an extension-owned block page. The extension does not turn the browser into a general data bridge.
+The Chromium Manifest V3 extension communicates with a separate local native messaging host. It receives bounded blocker state, reports redacted events, and opens an extension-owned block page. The host never opens the vault; it writes redacted block events and usage to a device-local spool that the app ingests. The extension does not turn the browser into a general data bridge.
 
 Firefox support is planned behind the same product-level rule semantics. See [Distraction blocker](../features/distractions/README.md).
 

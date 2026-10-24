@@ -223,9 +223,10 @@ pub(crate) fn validate_import_block_depth(blocks: &[ImportBlock]) -> Result<(), 
 /// Splits every block whose rich text is above the stored text bound into consecutive blocks of
 /// the same type, so long imported text becomes several blocks instead of failing the import.
 ///
-/// The first block keeps the children and source identity; the continuations carry only text.
-/// Blocks whose oversized text lives in `cells` or `caption` are left whole and are refused when
-/// stored.
+/// The first block keeps the source identity and its own attributes. The continuations follow it
+/// in text order with neutral attributes, and the last one takes the children so they still come
+/// after all of the text. Blocks whose oversized text lives in `cells` or `caption` are left whole
+/// and are refused when stored.
 pub(crate) fn split_oversized_import_blocks(
     blocks: Vec<ImportBlock>,
 ) -> Result<Vec<ImportBlock>, String> {
@@ -246,18 +247,47 @@ pub(crate) fn split_oversized_import_blocks(
         }
         let mut chunks = split_rich_text_to_bounds(rich_text)?.into_iter();
         let first = chunks.next().unwrap_or_default();
-        let continuations: Vec<ImportBlock> = chunks
+        let mut continuations: Vec<ImportBlock> = chunks
             .map(|chunk| {
-                let mut payload = block.payload.clone();
-                payload["rich_text"] = Value::Array(chunk);
-                ImportBlock::new(block.block_type, payload, None, Vec::new())
+                ImportBlock::new(
+                    block.block_type,
+                    continuation_payload(block.block_type, &block.payload, chunk),
+                    None,
+                    Vec::new(),
+                )
             })
             .collect();
+        if let Some(last) = continuations.last_mut() {
+            if !block.children.is_empty() {
+                last.children = std::mem::take(&mut block.children);
+                if let Some(toggleable) = block.payload.get("is_toggleable") {
+                    last.payload["is_toggleable"] = toggleable.clone();
+                }
+            }
+        }
         block.payload["rich_text"] = Value::Array(first);
         output.push(block);
         output.extend(continuations);
     }
     Ok(output)
+}
+
+/// Payload for a continuation of a split block: the text chunk, the presentation every chunk
+/// shares (`color`, indent, code `language`), and the neutral value of any field the block type
+/// requires, so state such as a to-do's `checked` or a code caption stays on the first block.
+fn continuation_payload(block_type: &str, source: &Value, chunk: Vec<Value>) -> Value {
+    let mut payload = json!({ "rich_text": chunk });
+    for key in ["color", "ganbaru_indent", "language"] {
+        if let Some(value) = source.get(key) {
+            payload[key] = value.clone();
+        }
+    }
+    match block_type {
+        "to_do" => payload["checked"] = Value::Bool(false),
+        "code" => payload["caption"] = Value::Array(Vec::new()),
+        _ => {}
+    }
+    payload
 }
 
 /// Largest raw source an importer should keep on an `unsupported` block, leaving room in the

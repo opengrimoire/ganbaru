@@ -102,10 +102,7 @@ pub(super) fn refuse_outdated_bundle(rows: &BTreeMap<String, Vec<Value>>) -> Res
         .flatten()
         .any(|row| row.get("child_block_id").is_none());
     if outdated_block || outdated_page {
-        return Err(
-            "this project version predates the current Notes format and cannot be restored"
-                .to_string(),
-        );
+        return Err(crate::project_history::OLDER_NOTES_FORMAT_ERROR.to_string());
     }
     Ok(())
 }
@@ -285,10 +282,29 @@ pub(super) async fn write_bundle_rows_tx(
             {
                 continue;
             }
+            if table == "notes_blocks" {
+                check_bundle_block_bounds(row)?;
+            }
             upsert_json_row_tx(tx, table, key_columns, row).await?;
         }
     }
     Ok(())
+}
+
+/// Refuses a bundle block whose stored parts exceed the bounds every other block write enforces.
+/// A bundle keeps each JSON column either as its stored text or as the decoded JSON value, so
+/// both are measured as the text the row writes.
+fn check_bundle_block_bounds(row: &Value) -> Result<(), String> {
+    let block_type = json_optional_string(row, "type")
+        .ok_or_else(|| "Notes history block row has no type".to_string())?;
+    let part = |column: &str| match row.get(column) {
+        Some(Value::String(value)) => Ok(value.clone()),
+        Some(Value::Null) | None => Err(format!(
+            "Notes history {block_type} block row has no {column}"
+        )),
+        Some(value) => Ok(value.to_string()),
+    };
+    crate::block_storage::check_block_content_bounds(&block_type, &part("attrs")?, &part("text")?)
 }
 
 /// Orders rows so that each write satisfies the unique constraints a later write relies on:
@@ -454,7 +470,7 @@ fn quoted_identifier(name: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::refuse_outdated_bundle;
+    use super::{check_bundle_block_bounds, refuse_outdated_bundle};
     use serde_json::json;
     use std::collections::BTreeMap;
 
@@ -482,5 +498,18 @@ mod tests {
             vec![json!({ "id": "page", "child_block_id": null })],
         );
         assert!(refuse_outdated_bundle(&rows).is_ok());
+    }
+
+    #[test]
+    fn bundle_blocks_above_the_stored_bounds_are_refused() {
+        let within = json!({ "id": "block", "type": "paragraph", "attrs": "{}", "text": "{}" });
+        assert!(check_bundle_block_bounds(&within).is_ok());
+        let oversized_text = "x".repeat(crate::block_storage::MAX_BLOCK_TEXT_BYTES + 1);
+        let oversized =
+            json!({ "id": "block", "type": "paragraph", "attrs": "{}", "text": oversized_text });
+        let error = check_bundle_block_bounds(&oversized).unwrap_err();
+        assert!(error.contains("byte limit"), "{error}");
+        let missing_text = json!({ "id": "block", "type": "paragraph", "attrs": "{}" });
+        assert!(check_bundle_block_bounds(&missing_text).is_err());
     }
 }

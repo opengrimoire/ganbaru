@@ -272,8 +272,10 @@ pub async fn delete_database_view(
     if attrs.get("view_id").and_then(Value::as_str) == Some(view_id) {
         attrs["view_id"] = Value::String(replacement.0);
         attrs["data_source_id"] = Value::String(replacement.1);
+        let attrs = attrs.to_string();
+        crate::block_storage::check_block_content_bounds("child_database", &attrs, "{}")?;
         sqlx::query("UPDATE notes_blocks SET attrs = ?, last_edited_time = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?")
-            .bind(attrs.to_string())
+            .bind(attrs)
             .bind(database_id)
             .execute(&mut *tx)
             .await

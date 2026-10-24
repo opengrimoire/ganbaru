@@ -359,3 +359,47 @@ fn markdown_import_splits_oversized_text_and_keeps_large_unsupported_source_as_t
         assert_eq!(html_row.1, html);
     });
 }
+
+#[test]
+fn split_import_blocks_keep_text_before_children_and_give_continuations_neutral_attributes() {
+    use crate::transfers::import_writer::{ImportBlock, split_oversized_import_blocks};
+    let long = "word ".repeat(crate::block_storage::MAX_BLOCK_TEXT_BYTES / 3);
+    let mut payload = writes::default_text_payload(&long);
+    payload["checked"] = serde_json::Value::Bool(true);
+    payload["color"] = serde_json::Value::String("blue".to_string());
+    let child = ImportBlock::new(
+        "paragraph",
+        writes::default_text_payload("Child"),
+        None,
+        Vec::new(),
+    );
+    let todo = ImportBlock::new(
+        "to_do",
+        payload,
+        Some("source-todo".to_string()),
+        vec![child],
+    );
+
+    let split = split_oversized_import_blocks(vec![todo]).unwrap();
+
+    assert!(split.len() > 1, "{}", split.len());
+    let (first, continuations) = split.split_first().unwrap();
+    assert_eq!(first.source_object_id.as_deref(), Some("source-todo"));
+    assert_eq!(first.payload["checked"], true);
+    assert!(first.children.is_empty());
+    for (index, continuation) in continuations.iter().enumerate() {
+        assert_eq!(continuation.block_type, "to_do");
+        assert_eq!(continuation.source_object_id, None);
+        assert_eq!(continuation.payload["checked"], false);
+        assert_eq!(continuation.payload["color"], "blue");
+        crate::validation::validate_block_payload("to_do", &continuation.payload).unwrap();
+        let holds_children = index + 1 == continuations.len();
+        assert_eq!(!continuation.children.is_empty(), holds_children);
+    }
+    let joined: String = split
+        .iter()
+        .flat_map(|block| block.payload["rich_text"].as_array().unwrap())
+        .map(|item| item["text"]["content"].as_str().unwrap())
+        .collect();
+    assert_eq!(joined, long);
+}

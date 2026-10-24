@@ -9,8 +9,6 @@ use crate::vault;
 use ganbaru_mobile_distractions::MobileDistractionsExt;
 use serde_json::Value;
 use std::{
-    io::Read,
-    path::Path,
     sync::{
         Arc, Mutex, MutexGuard, TryLockError,
         atomic::{AtomicBool, Ordering},
@@ -22,7 +20,6 @@ use tauri::{Manager, Runtime};
 const REFRESH_INTERVAL: Duration = Duration::from_secs(5);
 const MAX_VIEW_AGE: Duration = Duration::from_secs(10);
 const DRAIN_WAIT: Duration = Duration::from_secs(5);
-const MAX_CONFIG_BYTES: u64 = crate::vault::MAX_VAULT_CONFIG_BYTES;
 
 struct Frame {
     generation: u64,
@@ -51,30 +48,6 @@ fn current_frame(control: &Control) -> Result<MutexGuard<'_, Frame>, String> {
         TryLockError::WouldBlock => "Guardian publication is busy; retry this operation".into(),
         TryLockError::Poisoned(_) => "Guardian publication control is unavailable".into(),
     })
-}
-
-fn read_config(path: &Path) -> Result<Value, String> {
-    if !path
-        .try_exists()
-        .map_err(|error| format!("inspect Guardian config: {error}"))?
-    {
-        return Ok(serde_json::json!({}));
-    }
-    let mut bytes = Vec::new();
-    std::fs::File::open(path)
-        .map_err(|error| format!("open Guardian config: {error}"))?
-        .take(MAX_CONFIG_BYTES + 1)
-        .read_to_end(&mut bytes)
-        .map_err(|error| format!("read Guardian config: {error}"))?;
-    if bytes.len() as u64 > MAX_CONFIG_BYTES {
-        return Err("Guardian configuration exceeds its byte limit".into());
-    }
-    let root: Value = serde_json::from_slice(&bytes)
-        .map_err(|error| format!("decode Guardian config: {error}"))?;
-    if !root.is_object() {
-        return Err("Guardian configuration root must be an object".into());
-    }
-    Ok(root)
 }
 
 fn revise(frame: &mut Frame) -> Result<(), String> {
@@ -306,11 +279,15 @@ async fn refresh<R: Runtime>(
     let status = app
         .state::<vault::ownership::VaultOwnershipManager>()
         .status(&vault_id)?;
+    let rules = crate::distractions::rule_store::snapshot(app).await?;
+    if rules.vault_id != vault_id {
+        return Err("Guardian vault changed while its rules were read".into());
+    }
+    let rules_revision = rules.revision;
+    let root = rules.root;
     let capture_app = app.clone();
     let capture_vault = vault_id.clone();
-    let config_path = vault::config_path(&path);
-    let read_path = config_path.clone();
-    let (capture, root) = tauri::async_runtime::spawn_blocking(move || {
+    let capture = tauri::async_runtime::spawn_blocking(move || {
         let encoded = capture_app
             .mobile_distractions()
             .accounting_snapshot(&capture_vault)?;
@@ -319,7 +296,7 @@ async fn refresh<R: Runtime>(
             &capture_vault,
             jiff::Timestamp::now().as_millisecond(),
         )?;
-        Ok::<_, String>((capture, read_config(&read_path)?))
+        Ok::<_, String>(capture)
     })
     .await
     .map_err(|error| format!("Guardian capture worker: {error}"))??;
@@ -394,7 +371,7 @@ async fn refresh<R: Runtime>(
                 .state::<vault::ownership::VaultOwnershipManager>()
                 .status(&vault_id)?
                 != status
-            || read_config(&config_path)?.get("distractions") != root.get("distractions")
+            || !crate::distractions::rule_store::is_current(rules_revision)
         {
             return Err("Guardian publication context changed during accounting".into());
         }

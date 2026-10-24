@@ -209,10 +209,7 @@ mod tests {
         let mut stripped = config.clone();
         assert!(has_moved_branches(&stripped));
         retain_vault_config_branches(&mut stripped);
-        assert_eq!(
-            stripped,
-            json!({ "distractions": { "rules": [] }, "chat": { "schemaVersion": 1 } })
-        );
+        assert_eq!(stripped, json!({ "chat": { "schemaVersion": 1 } }));
         assert!(!has_moved_branches(&stripped));
         assert!(portable_entries(&stripped).is_empty());
     }

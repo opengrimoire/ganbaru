@@ -13,6 +13,7 @@ use serde_json::Value;
 
 use crate::rules::{app_name_key, is_protected_desktop_app_name, normalize_app_candidate_name};
 
+pub mod recovery;
 pub mod store;
 
 /// Built-in category definitions shared with the frontend and the native messaging host.

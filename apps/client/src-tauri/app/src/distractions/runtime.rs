@@ -62,6 +62,7 @@ struct Context {
     vault_id: String,
     root_path: PathBuf,
     ownership: vault::ownership::VaultOwnershipStatus,
+    rules_revision: u64,
     config: Value,
     limits: limits::LimitsConfig,
     observation: accounting::Observation,
@@ -96,8 +97,7 @@ impl Context {
     /// Guard projection publication, which stays valid while the vault and rules are unchanged.
     fn validate_configuration(&self, app: &tauri::AppHandle) -> Result<(), String> {
         self.validate_binding(app)?;
-        let config = limits_read::config_at(&self.root_path.join(VAULT_CONFIG_FILE))?;
-        if config.get("distractions") != self.config.get("distractions") {
+        if !rule_store::is_current(self.rules_revision) {
             return Err("Distractions configuration changed".into());
         }
         Ok(())
@@ -142,6 +142,7 @@ pub(crate) fn setup(app: &tauri::AppHandle) {
             attempts: HashMap::new(),
             notifications: Vec::new(),
             last_error: None,
+            published_rules: None,
         };
         loop {
             tokio::select! {
@@ -361,6 +362,7 @@ struct Owner {
     attempts: HashMap<String, Instant>,
     notifications: Vec<Instant>,
     last_error: Option<String>,
+    published_rules: Option<(PathBuf, Value)>,
 }
 
 impl Owner {
@@ -399,16 +401,31 @@ impl Owner {
             return Ok(());
         }
         let app = self.app.clone();
+        let available = tauri::async_runtime::spawn_blocking(move || {
+            vault::available_active_vault_path(&app).map(|path| path.is_some())
+        })
+        .await
+        .map_err(|error| format!("desktop vault check worker: {error}"))??;
+        if !available {
+            self.accounting.clear();
+            self.binding = None;
+            return Ok(());
+        }
+        let rules = rule_store::snapshot(&self.app).await?;
+        let app = self.app.clone();
         let control = self.control.clone();
         let context = tauri::async_runtime::spawn_blocking(move || {
             let Some(root_path) = vault::available_active_vault_path(&app)? else {
                 return Ok(None);
             };
             let vault_id = vault::active_vault_id(&app)?;
+            if vault_id != rules.vault_id {
+                return Err("Distractions vault changed while its rules were read".into());
+            }
             let ownership = app
                 .state::<vault::ownership::VaultOwnershipManager>()
                 .status(&vault_id)?;
-            let config = limits_read::config_at(&root_path.join(VAULT_CONFIG_FILE))?;
+            let config = rules.root;
             let limits = limits::parse_config(&config)?;
             let phase = read_fresh_runtime_state(&state_path(&app)?, now_utc());
             let catalog = desktop_catalog_index();
@@ -452,6 +469,7 @@ impl Owner {
                 vault_id,
                 root_path,
                 ownership,
+                rules_revision: rules.revision,
                 config,
                 limits,
                 observation,
@@ -471,6 +489,7 @@ impl Owner {
             self.binding = None;
             return Ok(());
         };
+        self.publish_rules_file(&context).await;
         if self.session.is_none() {
             self.session = Some(crate::distractions::linked::new_accounting_session()?);
         }
@@ -524,6 +543,29 @@ impl Owner {
         self.enforce(context, projection.totals).await
     }
 
+    /// Writes the rules file the browser host reads when the vault or its rules changed since
+    /// the last write. A failed write is logged and retried on the next observation so browser
+    /// publication never holds back desktop enforcement.
+    async fn publish_rules_file(&mut self, context: &Context) {
+        let published = (context.root_path.clone(), context.config.clone());
+        if self.published_rules.as_ref() == Some(&published) {
+            return;
+        }
+        let app = self.app.clone();
+        let (root_path, config) = published.clone();
+        let result = tauri::async_runtime::spawn_blocking(move || {
+            let contents = state_files::rules_file_contents(&root_path, &config)?;
+            state_files::write_text_file_atomically(&state_files::rules_path(&app)?, &contents)
+        })
+        .await
+        .map_err(|error| format!("browser rules file worker: {error}"))
+        .and_then(|result| result);
+        match result {
+            Ok(()) => self.published_rules = Some(published),
+            Err(error) => eprintln!("native Distractions browser rules file: {error}"),
+        }
+    }
+
     async fn enforce(
         &mut self,
         context: Context,
@@ -570,6 +612,7 @@ impl Owner {
                 let mut guard = None;
                 let signalled = process_control::close_desktop_process_checked(
                     &app,
+                    &context.config,
                     DistractionsCloseDesktopAppRequest {
                         process_id: observed.process_id,
                         process_name: observed.process_name.clone(),
@@ -613,7 +656,7 @@ impl Owner {
                     guard = None;
                     guard = Some(control.current(context.generation)?);
                     context.validate(&app)?;
-                    let authorization = load_close_authorization(&app, &identity)?;
+                    let authorization = load_close_authorization(&app, &context.config, &identity)?;
                     validate_names_authorized(
                         foreground_status_match_names(current),
                         &authorization,

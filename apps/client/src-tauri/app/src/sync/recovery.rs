@@ -3,7 +3,7 @@
 
 use std::sync::LazyLock;
 
-use ganbaru_sync::manifest::vault::{calendar, music, projects, quick_notes, themes};
+use ganbaru_sync::manifest::vault::{calendar, distractions, music, projects, quick_notes, themes};
 use ganbaru_sync::{DeviceRef, Engine, local};
 pub(crate) use ganbaru_sync_replica::recovery::{
     RecoveredRow, RecoveryAction, RecoveryChoice, RecoveryRestorers, RestoreFuture, close,
@@ -29,6 +29,12 @@ static RESTORERS: LazyLock<RecoveryRestorers> = LazyLock::new(|| {
         .with(&calendar::OBJECTS, refuse_calendar_source)
         .with(&calendar::COMPONENTS, refuse_calendar_source)
         .with(&calendar::EVENTS, restore_calendar_event)
+        .with(&distractions::SETTINGS, refuse_distraction_settings)
+        .with(
+            &distractions::CUSTOM_CATEGORIES,
+            restore_distraction_category,
+        )
+        .with(&distractions::USAGE_LIMITS, restore_usage_limit)
 });
 
 /// The recovery restorers of the vault domains.
@@ -126,6 +132,37 @@ fn restore_calendar(conn: &mut SqliteConnection, row: RecoveredRow) -> RestoreFu
 fn refuse_calendar_source(_: &mut SqliteConnection, _: RecoveredRow) -> RestoreFuture<'_> {
     Box::pin(async {
         Err("preserved iCalendar data comes back by importing the file again".to_string())
+    })
+}
+
+/// Refuses to restore the distraction settings row, which is seeded and never deleted.
+fn refuse_distraction_settings(_: &mut SqliteConnection, _: RecoveredRow) -> RestoreFuture<'_> {
+    Box::pin(async { Err("distraction settings are never deleted".to_string()) })
+}
+
+/// Restores a deleted custom distraction category as a new category with its deleted hosts.
+fn restore_distraction_category(
+    conn: &mut SqliteConnection,
+    row: RecoveredRow,
+) -> RestoreFuture<'_> {
+    Box::pin(async move {
+        let now_ms = crate::vault::now_utc().timestamp_millis();
+        ganbaru_distractions::config::recovery::restore_recovered_category(
+            conn,
+            &row.values,
+            &row.descendants,
+            now_ms,
+        )
+        .await
+    })
+}
+
+/// Restores a deleted usage limit as a new limit with its retained budget and entries.
+fn restore_usage_limit(conn: &mut SqliteConnection, row: RecoveredRow) -> RestoreFuture<'_> {
+    Box::pin(async move {
+        let now_ms = crate::vault::now_utc().timestamp_millis();
+        ganbaru_distractions::config::recovery::restore_recovered_limit(conn, &row.values, now_ms)
+            .await
     })
 }
 

@@ -4,7 +4,7 @@
 //! are rows of `vault_preferences`, shared by every device of the vault and written by the owner
 //! and by linked replicas, since the preferences sync domain replicates concurrently. Device
 //! values live in a file per vault in the app config directory and are written on every device.
-//! `distractions` and `chat` stay in `config.json`, which native features own.
+//! `chat` stays in `config.json`, which native Chat commands own.
 //!
 //! [`PreferencesState`] caches the effective view: the portable rows and device entries
 //! composed into the nested object the frontend and native readers expect. The first load of a
@@ -23,7 +23,7 @@ mod view;
 
 pub(crate) use view::value_at;
 
-use super::config::{VaultConfigPatch, apply_config_patch, validate_config_patch_path};
+use super::config::{NATIVE_OWNED_BRANCH_ERROR, VaultConfigPatch, validate_config_patch_path};
 use super::ownership::VaultOwnershipStatus;
 use super::{
     active_replicated_asset_path, active_vault_id, mutate_active_vault_config, now_utc,
@@ -259,7 +259,6 @@ enum DeviceOp {
 struct PatchPlan {
     portable: Vec<PortableOp>,
     device: Vec<DeviceOp>,
-    vault_config: Vec<VaultConfigPatch>,
     /// The dotted path of every patch, in batch order.
     changed_paths: Vec<String>,
 }
@@ -277,7 +276,7 @@ fn plan_patches(patches: Vec<VaultConfigPatch>) -> Result<PatchPlan, String> {
         };
         let value = (!patch.remove).then_some(&patch.value);
         match (spec.scope, child) {
-            (Scope::VaultConfig, _) => plan.vault_config.push(patch),
+            (Scope::VaultConfig, _) => return Err(NATIVE_OWNED_BRANCH_ERROR.to_owned()),
             (Scope::Device, _) => plan.device.push(match value {
                 Some(value) => DeviceOp::Set {
                     key: spec.path.to_owned(),
@@ -446,8 +445,8 @@ fn apply_device_ops(entries: &mut Map<String, Value>, ops: Vec<DeviceOp>) -> boo
     changed
 }
 
-/// Applies a validated patch batch: portable values in one transaction, device values in one
-/// file write, and `distractions` patches through `config.json`. The import runs first, so it
+/// Applies a validated patch batch: portable values in one transaction and device values in one
+/// file write. The import runs first, so it
 /// never overwrites values of this batch. The view is composed again afterwards and the side
 /// effects of the changed paths run, also when a later store failed after an earlier one
 /// committed.
@@ -486,22 +485,6 @@ async fn write_plan<R: Runtime>(
         let ops = plan.device;
         blocking(move || {
             device::update_device_file(&device_path, |entries| apply_device_ops(entries, ops))
-        })
-        .await?;
-    }
-    if !plan.vault_config.is_empty() {
-        let config_app = app.clone();
-        let patches = plan.vault_config;
-        blocking(move || {
-            mutate_active_vault_config(
-                &config_app,
-                |root| {
-                    patches
-                        .into_iter()
-                        .try_for_each(|patch| apply_config_patch(root, patch))
-                },
-                |error| error,
-            )
         })
         .await?;
     }
@@ -666,7 +649,6 @@ pub(crate) mod tests {
         let plan = plan_patches(vec![
             patch("profile.displayName", json!("Ada")),
             patch("theme.activeId", json!("dark")),
-            patch("distractions.rules", json!([])),
             removal("preferences.calendarTimeFormat"),
             removal("projects.activeProjectId"),
             patch("notes.customOrderByProject.p1", json!(["a"])),
@@ -710,10 +692,8 @@ pub(crate) mod tests {
                 },
             ]
         );
-        assert_eq!(plan.vault_config.len(), 1);
-        assert_eq!(plan.vault_config[0].path, ["distractions", "rules"]);
-        assert_eq!(plan.changed_paths.len(), 8);
-        assert_eq!(plan.changed_paths[2], "distractions.rules");
+        assert_eq!(plan.changed_paths.len(), 7);
+        assert_eq!(plan.changed_paths[2], "preferences.calendarTimeFormat");
     }
 
     #[test]
@@ -725,6 +705,7 @@ pub(crate) mod tests {
                 "preferences.unknownKey",
             ),
             ("preferences", json!({}), "preferences"),
+            ("distractions.rules", json!([]), "distractions.rules"),
             ("profile.color", json!(32), "profile.color"),
             ("theme.activeId", json!(7), "theme.activeId"),
             (
@@ -845,7 +826,6 @@ pub(crate) mod tests {
             json!({
                 "profile": { "color": 7 },
                 "theme": { "activeId": "dark" },
-                "distractions": { "rules": [] },
                 "chat": { "schemaVersion": 1 },
             })
         );
@@ -888,7 +868,7 @@ pub(crate) mod tests {
         let config = json!({
             "profile": { "displayName": "Ada" },
             "theme": { "activeId": "dark" },
-            "distractions": { "rules": [] },
+            "chat": { "schemaVersion": 1 },
         });
         let pool = memory_pool().await;
         let mut device = Map::new();
@@ -900,7 +880,7 @@ pub(crate) mod tests {
         let view = compose_with_vault_config(&view::compose(&rows(&pool).await, &device), &config);
         assert_eq!(
             view,
-            json!({ "theme": { "activeId": "dark" }, "distractions": { "rules": [] } })
+            json!({ "theme": { "activeId": "dark" }, "chat": { "schemaVersion": 1 } })
         );
     }
 }

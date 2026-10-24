@@ -1186,3 +1186,36 @@ fn host_created_configuration_directories_are_private() {
     }
     let _ = std::fs::remove_dir_all(&root);
 }
+
+#[test]
+fn published_rules_apply_only_to_the_vault_they_were_read_from() {
+    let root = std::env::temp_dir().join(format!(
+        "ganbaru-native-rules-{}-{}",
+        std::process::id(),
+        super::now_epoch_ms()
+    ));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    let rules_path = root.join("distractions-rules.json");
+    let vault = root.join("vault");
+    let rules = serde_json::json!({
+        "vaultPath": vault,
+        "distractions": {
+            "mode": "whitelist",
+            "blockedHosts": [{ "host": "example.com", "enabled": true }],
+            "limits": { "enabled": true, "items": [] },
+        },
+    });
+    std::fs::write(&rules_path, rules.to_string()).unwrap();
+
+    let read = super::config::read_rules(&rules_path, &vault).expect("rules of the vault");
+    assert!(matches!(read.mode, DistractionsMode::Whitelist));
+    assert_eq!(read.blocked_hosts, vec!["example.com"]);
+    assert!(read.limit_configuration_digest.is_some());
+    assert!(super::config::read_rules(&rules_path, &root.join("other")).is_none());
+
+    let defaults = super::config::default_config();
+    assert!(!defaults.blocked_category_ids.is_empty());
+    assert!(!defaults.blocked_category_ids.iter().any(|id| id == "news"));
+    let _ = std::fs::remove_dir_all(&root);
+}

@@ -1,6 +1,5 @@
 use super::catalog::{DesktopCatalogIndex, desktop_catalog_index};
 use super::*;
-use std::io::Read;
 
 #[derive(Clone, Debug)]
 pub(super) struct DesktopCloseAuthorization {
@@ -218,30 +217,14 @@ pub(super) fn validate_names_authorized(
     }
 }
 
-pub(super) fn read_bounded_authorization_config(path: &Path) -> Result<Value, String> {
-    let file = std::fs::File::open(path)
-        .map_err(|_| "persisted distraction configuration is unavailable".to_string())?;
-    let mut contents = Vec::new();
-    file.take(MAX_AUTHORIZATION_CONFIG_BYTES + 1)
-        .read_to_end(&mut contents)
-        .map_err(|_| "persisted distraction configuration is unavailable".to_string())?;
-    if contents.len() as u64 > MAX_AUTHORIZATION_CONFIG_BYTES {
-        return Err("persisted distraction configuration is too large".to_string());
-    }
-    serde_json::from_slice(&contents)
-        .map_err(|_| "persisted distraction configuration is invalid".to_string())
-}
-
-fn read_authorization_config<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<Value, String> {
-    read_bounded_authorization_config(&vault::active_vault_path(app)?.join(VAULT_CONFIG_FILE))
-}
-
+/// Authorizes closing apps for `rule_identity` under `config`, the rules snapshot the caller
+/// observed with and has checked is still current.
 pub(super) fn load_close_authorization<R: Runtime>(
     app: &tauri::AppHandle<R>,
+    config: &Value,
     rule_identity: &DistractionsDesktopRuleIdentity,
 ) -> Result<DesktopCloseAuthorization, String> {
     let checked_at = now_utc();
-    let config = read_authorization_config(app)?;
     let runtime = matches!(
         rule_identity,
         DistractionsDesktopRuleIdentity::DesktopApp { .. }
@@ -279,7 +262,7 @@ pub(super) fn load_close_authorization<R: Runtime>(
         }
     }
     configured_close_authorization(
-        &config,
+        config,
         runtime.as_ref(),
         limit_state.as_ref(),
         rule_identity,

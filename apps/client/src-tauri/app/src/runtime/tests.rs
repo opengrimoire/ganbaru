@@ -50,6 +50,7 @@ fn mobile_runtime_registers_portable_core_commands() {
         "pomodoro::native_runtime::focus_unsubscribe",
         "crate::distractions::android::distractions_mobile_update_copy",
         "crate::distractions::android::distractions_mobile_load_usage_projection",
+        "crate::distractions::rule_commands::distractions_rules_save_usage_limit",
         "music::session::runtime::music_session_subscribe",
         "music::session::runtime::music_session_read_frame",
         "music::session::runtime::music_session_acknowledge",

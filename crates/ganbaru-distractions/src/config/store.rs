@@ -10,6 +10,9 @@
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 
+use ganbaru_sync::manifest::vault::distractions::{
+    APP_RULE_KEY_PREFIX, HOST_RULE_KEY_PREFIX, SETTINGS_KEY,
+};
 use ganbaru_sync_contracts::bounds::MAX_BLOB_FIELD_BYTES;
 use ganbaru_sync_contracts::derived_key;
 use serde::{Deserialize, Serialize};
@@ -24,15 +27,6 @@ use super::{
     normalize_package,
 };
 use crate::rules::{app_name_key, is_protected_desktop_app_name};
-
-/// Row key of the settings singleton.
-const SETTINGS_KEY: &str = "vault";
-
-/// Key prefix of a host rule, as the sync manifest derives it.
-const HOST_RULE_KEY_PREFIX: &str = "host";
-
-/// Key prefix of an app rule, as the sync manifest derives it.
-const APP_RULE_KEY_PREFIX: &str = "app";
 
 /// List kind and platform values stored in the rule tables.
 const CATEGORY_LIST_KIND: &str = "category";
@@ -344,10 +338,14 @@ async fn apply_edit(
         }
         RuleEdit::Remove(target) => remove(conn, target).await,
         RuleEdit::SaveCustomCategory { id, name, hosts } => {
-            save_custom_category(conn, id.as_deref(), name, hosts, now_ms).await
+            save_custom_category(conn, id.as_deref(), name, hosts, now_ms)
+                .await
+                .map(drop)
         }
         RuleEdit::SaveUsageLimit { id, draft } => {
-            save_usage_limit(conn, id.as_deref(), draft, now_ms).await
+            save_usage_limit(conn, id.as_deref(), draft, now_ms)
+                .await
+                .map(drop)
         }
         RuleEdit::Reset => reset(conn).await,
     }
@@ -381,7 +379,7 @@ async fn execute(
         .map_err(storage(context))
 }
 
-async fn set_enabled(
+pub(super) async fn set_enabled(
     conn: &mut SqliteConnection,
     target: &RuleTarget,
     enabled: bool,
@@ -673,13 +671,14 @@ async fn new_rule_id(conn: &mut SqliteConnection) -> Result<String, RulesError> 
         .map_err(storage("generate distraction rule id"))
 }
 
-async fn save_custom_category(
+/// Creates or replaces a custom category and returns its id.
+pub(super) async fn save_custom_category(
     conn: &mut SqliteConnection,
     id: Option<&str>,
     name: &str,
     hosts: &[String],
     now_ms: i64,
-) -> Result<(), RulesError> {
+) -> Result<String, RulesError> {
     let name = normalize_name(name, MAX_CATEGORY_NAME_CHARS).ok_or(RuleRefusal::InvalidName)?;
     let hosts = normalize_hosts(hosts)
         .filter(|hosts| !hosts.is_empty())
@@ -750,7 +749,8 @@ async fn save_custom_category(
         )
         .await?;
     }
-    insert_hosts(conn, CATEGORY_LIST_KIND, &id, Some(&id), &hosts, now_ms).await
+    insert_hosts(conn, CATEGORY_LIST_KIND, &id, Some(&id), &hosts, now_ms).await?;
+    Ok(id)
 }
 
 /// A limit entry ready to store.
@@ -810,10 +810,7 @@ fn source_keys(entry: &LimitEntryRule) -> Vec<String> {
     {
         keys.push(format!("mobile-app:{}", app.to_lowercase()));
     }
-    if let Some(name) = &entry.desktop_app_name {
-        if entry.desktop_app_match_names.is_empty() {
-            keys.push(format!("desktop-app:{}", app_name_key(name)));
-        }
+    if entry.desktop_app_name.is_some() {
         for match_name in &entry.desktop_app_match_names {
             keys.push(format!("desktop-app:{}", app_name_key(match_name)));
         }
@@ -936,12 +933,13 @@ fn normalize_limit(draft: &LimitDraft) -> Result<NormalizedLimit, RuleRefusal> {
     })
 }
 
-async fn save_usage_limit(
+/// Creates or replaces a usage limit and returns its id.
+pub(super) async fn save_usage_limit(
     conn: &mut SqliteConnection,
     id: Option<&str>,
     draft: &LimitDraft,
     now_ms: i64,
-) -> Result<(), RulesError> {
+) -> Result<String, RulesError> {
     let limit = normalize_limit(draft)?;
     let (limit_count, entry_count): (i64, i64) = sqlx::query_as(
         "SELECT
@@ -1003,7 +1001,7 @@ async fn save_usage_limit(
             .zip(&limit.entries)
             .all(|(stored, entry)| stored == &entry.rule);
     if unchanged {
-        return Ok(());
+        return Ok(id);
     }
     execute(
         conn,
@@ -1034,7 +1032,7 @@ async fn save_usage_limit(
         .await
         .map_err(storage("add usage limit entry"))?;
     }
-    Ok(())
+    Ok(id)
 }
 
 async fn reset(conn: &mut SqliteConnection) -> Result<(), RulesError> {

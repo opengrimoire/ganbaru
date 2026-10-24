@@ -1,7 +1,14 @@
+use ganbaru_sync::RecoveryDescendant;
+use ganbaru_sync::codec::{self, OwnedRow};
+use ganbaru_sync::manifest::vault::distractions::{
+    HOST_RULES_TABLE, LIMIT_ENTRIES, custom_category_group, host_group, limit_group,
+};
+use ganbaru_sync_contracts::{Field, Value};
 use serde_json::json;
 use sqlx::SqlitePool;
 use sqlx::sqlite::SqlitePoolOptions;
 
+use super::recovery::{restore_recovered_category, restore_recovered_limit};
 use super::store::{
     HostList, LimitDraft, LimitEntryDraft, RuleEdit, RuleRefusal, RuleTarget, RulesError, apply,
     read,
@@ -319,5 +326,125 @@ fn assembly_skips_rows_another_device_left_incomplete() {
         .expect("insert partial rows");
         let config = read(&pool).await.expect("read rules");
         assert_eq!(config, DistractionsConfig::default());
+    });
+}
+
+fn sync_value(fields: Vec<Field>) -> Value {
+    Value::new(fields).expect("valid sync value")
+}
+
+fn sync_text(text: &str) -> Field {
+    Field::Text(text.to_string())
+}
+
+fn recovered_host(host: &str, created_at_ms: i64) -> RecoveryDescendant {
+    RecoveryDescendant {
+        table: HOST_RULES_TABLE,
+        row_key: format!("old:{host}"),
+        values: vec![
+            (
+                host_group::RULE,
+                sync_value(vec![
+                    sync_text("category"),
+                    sync_text("deleted"),
+                    sync_text(host),
+                ]),
+            ),
+            (
+                host_group::CREATED,
+                sync_value(vec![Field::Integer(created_at_ms)]),
+            ),
+        ],
+    }
+}
+
+#[test]
+fn recovery_restores_a_category_under_a_free_name_and_a_limit_with_its_entries() {
+    block_on(async {
+        let pool = migrated_pool().await;
+        let edit = RuleEdit::SaveCustomCategory {
+            id: None,
+            name: "Social".to_string(),
+            hosts: vec!["example.org".to_string()],
+        };
+        apply(&pool, &edit, NOW_MS).await.expect("save category");
+        let mut conn = pool.acquire().await.expect("acquire connection");
+
+        let category = vec![
+            (
+                custom_category_group::NAME,
+                sync_value(vec![sync_text("social")]),
+            ),
+            (
+                custom_category_group::ENABLED,
+                sync_value(vec![Field::Integer(0)]),
+            ),
+        ];
+        let hosts = vec![
+            recovered_host("b.example", 20),
+            recovered_host("a.example", 10),
+        ];
+        let category_id = restore_recovered_category(&mut conn, &category, &hosts, NOW_MS)
+            .await
+            .expect("restore category");
+
+        let entries = vec![OwnedRow::flat(vec![
+            sync_text("entry"),
+            Field::Null,
+            Field::Integer(3),
+            sync_text("video.example"),
+            Field::Null,
+            Field::Null,
+            sync_text("Player"),
+            sync_text(r#"["player"]"#),
+        ])];
+        let limit = vec![
+            (limit_group::NAME, sync_value(vec![sync_text("Video")])),
+            (
+                limit_group::BUDGET,
+                sync_value(vec![Field::Integer(45), Field::Null]),
+            ),
+            (
+                limit_group::ENTRIES,
+                sync_value(vec![Field::Blob(
+                    codec::encode(&LIMIT_ENTRIES, &entries).expect("encode entries"),
+                )]),
+            ),
+        ];
+        let limit_id = restore_recovered_limit(&mut conn, &limit, NOW_MS)
+            .await
+            .expect("restore limit");
+        drop(conn);
+
+        let config = read(&pool).await.expect("read rules");
+        let restored = config
+            .custom_category_stacks
+            .iter()
+            .find(|stack| stack.id == category_id)
+            .expect("restored category");
+        assert_eq!(restored.name, "social 2");
+        assert!(!restored.enabled);
+        let restored_hosts: Vec<&str> = restored
+            .hosts
+            .iter()
+            .map(|rule| rule.host.as_str())
+            .collect();
+        assert_eq!(restored_hosts, vec!["a.example", "b.example"]);
+
+        let [restored_limit] = config.limits.items.as_slice() else {
+            panic!("expected one limit, got {:?}", config.limits.items);
+        };
+        assert_eq!(restored_limit.id, limit_id);
+        assert_eq!(restored_limit.name, "Video");
+        assert!(restored_limit.enabled);
+        assert_eq!(restored_limit.minutes_per_day, Some(45));
+        assert_eq!(restored_limit.minutes_per_week, None);
+        let [entry] = restored_limit.entries.as_slice() else {
+            panic!("expected one entry, got {:?}", restored_limit.entries);
+        };
+        assert_eq!(entry.website_host.as_deref(), Some("video.example"));
+        assert_eq!(entry.desktop_app_name.as_deref(), Some("Player"));
+        assert_eq!(entry.desktop_app_match_names, vec!["Player"]);
+        assert_eq!(entry.color, Some(3));
     });
 }

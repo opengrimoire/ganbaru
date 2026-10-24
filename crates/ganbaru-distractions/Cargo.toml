@@ -16,6 +16,7 @@ workspace = true
 [dependencies]
 chrono = { workspace = true }
 ganbaru-civil-time = { workspace = true }
+ganbaru-sync = { workspace = true }
 ganbaru-sync-contracts = { workspace = true }
 jiff = { workspace = true }
 serde = { workspace = true }

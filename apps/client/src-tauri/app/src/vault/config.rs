@@ -1,9 +1,8 @@
 //! The frontend's configuration commands and the vault's `config.json`.
 //!
-//! `config.json` holds only the `distractions` and `chat` branches, which native features
-//! own. The frontend reads and patches one composed object; [`super::preferences`] routes each
-//! patch to the store its registry path names and composes the preferences with these
-//! branches on read.
+//! `config.json` holds only the `chat` branch, which native Chat commands own. The frontend
+//! reads and patches one composed object; [`super::preferences`] routes each patch to the store
+//! its registry path names and composes the preferences with that branch on read.
 
 use super::{
     CONFIG_LOCK, FileAccess, MAX_VAULT_CONFIG_BYTES, active_vault_path, active_writable_vault_path,
@@ -20,6 +19,9 @@ const MAX_CONFIG_PATCH_BATCH_BYTES: usize = 1024 * 1024;
 /// Top-level branches that only native commands write, through their own validation and locks.
 /// The webview reaches them through those commands, never through generic patches.
 const NATIVE_OWNED_CONFIG_BRANCHES: &[&str] = &["chat"];
+/// The refusal for a generic patch that reaches a branch of `config.json`.
+pub(super) const NATIVE_OWNED_BRANCH_ERROR: &str =
+    "vault config patch targets a native-owned branch";
 
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -31,8 +33,8 @@ pub struct VaultConfigPatch {
     pub value: serde_json::Value,
 }
 
-/// Read the active vault's effective preference view with the `distractions` and `chat`
-/// branches of `config.json`, as one JSON object. Missing stores read as defaults.
+/// Read the active vault's effective preference view with the `chat` branch of
+/// `config.json`, as one JSON object. Missing stores read as defaults.
 #[tauri::command]
 pub async fn vault_read_config(app: tauri::AppHandle) -> Result<String, String> {
     let view = super::preferences::effective_view(&app).await?;
@@ -102,8 +104,6 @@ pub(crate) fn mutate_active_vault_config<R: Runtime, T, E>(
             "config payload root must be an object".to_string(),
         ));
     }
-    #[cfg(not(target_os = "ios"))]
-    let previous_distractions = root.get("distractions").cloned();
     let result = mutate(&mut root)?;
     ganbaru_chat_contracts::config::parse_chat_config_branch(&root)
         .map_err(|error| map_storage_error(format!("config Chat branch is invalid: {error}")))?;
@@ -114,22 +114,8 @@ pub(crate) fn mutate_active_vault_config<R: Runtime, T, E>(
             "vault config would exceed {MAX_VAULT_CONFIG_BYTES} bytes"
         )));
     }
-    let write = || write_text_file_atomically(&path, &serialized, FileAccess::OwnerOnly);
-    #[cfg(desktop)]
-    let write_result = if previous_distractions.as_ref() != root.get("distractions") {
-        crate::distractions::runtime::commit_configuration(app, write)
-    } else {
-        write()
-    };
-    #[cfg(target_os = "android")]
-    let write_result = if previous_distractions.as_ref() != root.get("distractions") {
-        crate::distractions::android::runtime::commit_configuration(app, write)
-    } else {
-        write()
-    };
-    #[cfg(target_os = "ios")]
-    let write_result = write();
-    write_result.map_err(map_storage_error)?;
+    write_text_file_atomically(&path, &serialized, FileAccess::OwnerOnly)
+        .map_err(map_storage_error)?;
     Ok(result)
 }
 
@@ -147,38 +133,7 @@ pub(super) fn validate_config_patch_path(path: &[String]) -> Result<(), String> 
         return Err("vault config patch path is invalid".to_string());
     }
     if NATIVE_OWNED_CONFIG_BRANCHES.contains(&path[0].as_str()) {
-        return Err("vault config patch targets a native-owned branch".to_string());
-    }
-    Ok(())
-}
-
-pub(super) fn apply_config_patch(
-    root: &mut serde_json::Value,
-    patch: VaultConfigPatch,
-) -> Result<(), String> {
-    validate_config_patch_path(&patch.path)?;
-    let mut current = root
-        .as_object_mut()
-        .ok_or_else(|| "config payload root must be an object".to_string())?;
-    let (leaf, parents) = patch
-        .path
-        .split_last()
-        .ok_or_else(|| "vault config patch path is invalid".to_string())?;
-    for segment in parents {
-        let next = current
-            .entry(segment.clone())
-            .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
-        if !next.is_object() {
-            *next = serde_json::Value::Object(serde_json::Map::new());
-        }
-        current = next
-            .as_object_mut()
-            .ok_or_else(|| "vault config patch target is invalid".to_string())?;
-    }
-    if patch.remove {
-        current.remove(leaf);
-    } else {
-        current.insert(leaf.clone(), patch.value);
+        return Err(NATIVE_OWNED_BRANCH_ERROR.to_string());
     }
     Ok(())
 }
@@ -231,78 +186,30 @@ mod tests {
     }
 
     #[test]
-    fn config_patches_preserve_unrelated_branches() {
-        let chat = serde_json::json!({
-            "schemaVersion": 1,
-            "providers": [{ "instanceId": "codex" }]
-        });
-        let mut root = serde_json::json!({
-            "chat": chat.clone(),
-            "distractions": { "enabled": false }
-        });
-
-        apply_config_patch(
-            &mut root,
-            VaultConfigPatch {
-                path: vec!["distractions".to_string(), "enabled".to_string()],
-                remove: false,
-                value: serde_json::json!(true),
-            },
-        )
-        .unwrap();
-
-        assert_eq!(root["chat"], chat);
-        assert_eq!(root["distractions"]["enabled"], true);
-    }
-
-    #[test]
-    fn config_patches_reject_prototype_paths() {
-        let mut root = serde_json::json!({});
-        let error = apply_config_patch(
-            &mut root,
-            VaultConfigPatch {
-                path: vec!["__proto__".to_string(), "polluted".to_string()],
-                remove: false,
-                value: serde_json::json!(true),
-            },
-        )
-        .unwrap_err();
-
-        assert_eq!(error, "vault config patch path is invalid");
-        assert_eq!(root, serde_json::json!({}));
-    }
-
-    #[test]
-    fn config_patches_refuse_native_owned_branches_and_keep_webview_branches() {
-        let chat = serde_json::json!({ "schemaVersion": 1, "providers": [] });
-        let mut root = serde_json::json!({ "chat": chat.clone() });
-        for (path, remove) in [
-            (vec!["chat"], true),
-            (vec!["chat", "providers"], false),
-            (vec!["chat", "behavior", "sendKey"], false),
+    fn config_patch_paths_refuse_prototype_segments_and_native_owned_branches() {
+        let path = |segments: &[&str]| {
+            segments
+                .iter()
+                .map(|segment| (*segment).to_owned())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            validate_config_patch_path(&path(&["__proto__", "polluted"])).unwrap_err(),
+            "vault config patch path is invalid"
+        );
+        for refused in [
+            &["chat"][..],
+            &["chat", "providers"],
+            &["chat", "behavior", "sendKey"],
         ] {
-            let error = apply_config_patch(
-                &mut root,
-                VaultConfigPatch {
-                    path: path.into_iter().map(str::to_owned).collect(),
-                    remove,
-                    value: serde_json::json!("replaced"),
-                },
-            )
-            .unwrap_err();
-            assert_eq!(error, "vault config patch targets a native-owned branch");
+            assert_eq!(
+                validate_config_patch_path(&path(refused)).unwrap_err(),
+                NATIVE_OWNED_BRANCH_ERROR
+            );
         }
-        assert_eq!(root, serde_json::json!({ "chat": chat }));
-
-        apply_config_patch(
-            &mut root,
-            VaultConfigPatch {
-                path: vec!["distractions".to_string(), "rules".to_string()],
-                remove: false,
-                value: serde_json::json!([]),
-            },
-        )
-        .unwrap();
-        assert_eq!(root["distractions"]["rules"], serde_json::json!([]));
+        assert_eq!(
+            validate_config_patch_path(&path(&["profile", "displayName"])),
+            Ok(())
+        );
     }
 }

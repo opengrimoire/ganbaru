@@ -1872,6 +1872,7 @@ dependencies = [
  "chrono",
  "ganbaru-civil-time",
  "ganbaru-db",
+ "ganbaru-sync",
  "ganbaru-sync-contracts",
  "jiff",
  "serde",

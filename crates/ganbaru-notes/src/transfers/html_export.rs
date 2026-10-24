@@ -317,26 +317,16 @@ async fn load_blocks(pool: &SqlitePool, page_ids: &[String]) -> Result<Vec<NoteB
     }
     let placeholders = placeholders(page_ids.len());
     let sql = format!(
-        "SELECT id,
-                page_id,
-                parent_type,
-                parent_page_id,
-                parent_block_id,
-                has_children,
-                in_trash,
-                type AS block_type,
-                payload,
-                plain_text,
-                sort_order,
-                source_provider,
-                source_object_id,
-                source_last_edited_time,
-                created_time,
-                last_edited_time
+        concat!(
+            "SELECT ",
+            crate::note_block_row_columns!("notes_blocks"),
+            "
          FROM notes_blocks
-         WHERE page_id IN ({placeholders})
+         WHERE page_id IN ({})
            AND in_trash = 0
-         ORDER BY page_id ASC, sort_order ASC, id ASC"
+         ORDER BY page_id ASC, order_key ASC, id ASC"
+        ),
+        placeholders
     );
     let mut query = sqlx::query_as::<_, NoteBlockRow>(AssertSqlSafe(sql.as_str()));
     for page_id in page_ids {

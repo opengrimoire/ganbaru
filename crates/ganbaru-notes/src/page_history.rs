@@ -1,3 +1,4 @@
+use crate::block_storage::{BlockRowInsert, insert_block_row, replace_block_payload};
 use crate::local_user;
 use crate::models::{
     NoteBlockDto, NoteBlockRow, NoteLoadedPage, NotePageDto, NotePageHistoryCopyBlocks,
@@ -5,13 +6,13 @@ use crate::models::{
     NotePageHistorySnapshotDto, NotePageHistorySnapshotRow, NotePageRow, NotePaginatedBlockList,
 };
 use crate::validation::{
-    plain_text_from_payload, require_uuid, validate_block_payload, validate_sort_order,
+    plain_text_from_payload, require_uuid, validate_block_payload, validate_order_key,
 };
+use ganbaru_sync_contracts::OrderKey;
 use serde_json::{Value, json};
 use sqlx::{Sqlite, SqlitePool, Transaction};
 use std::collections::{HashMap, HashSet};
 
-const DEFAULT_BLOCK_SORT_STEP: f64 = 1000.0;
 const EDIT_SESSION_SNAPSHOT_WINDOW_MINUTES: i64 = 5;
 
 /// How restored snapshot blocks choose their ids.
@@ -329,12 +330,19 @@ async fn insert_snapshot_blocks(
         .iter()
         .filter(|block| block.parent_type == "page_id")
         .collect::<Vec<_>>();
-    let root_sort_orders =
-        next_page_root_sort_orders(tx, page_id, after_block_id, root_blocks.len()).await?;
-    let mut root_sort_order_by_source = root_blocks
+    let root_parent = crate::writes::ParentTarget {
+        parent_type: "page_id",
+        parent_page_id: Some(page_id.to_string()),
+        parent_block_id: None,
+        parent_block_type: None,
+        page_id: page_id.to_string(),
+    };
+    let root_order_keys =
+        crate::writes::next_order_keys(tx, &root_parent, after_block_id, root_blocks.len()).await?;
+    let mut root_order_key_by_source = root_blocks
         .iter()
-        .zip(root_sort_orders)
-        .map(|(block, sort_order)| (block.id.as_str(), sort_order))
+        .zip(root_order_keys)
+        .map(|(block, order_key)| (block.id.as_str(), order_key))
         .collect::<HashMap<_, _>>();
     let mut reserved_ids = HashSet::new();
     let mut id_map = HashMap::with_capacity(blocks.len());
@@ -404,52 +412,41 @@ async fn insert_snapshot_blocks(
                 .ok_or_else(|| "snapshot child block parent was not restored".to_string())?;
             ("block_id", None, Some(parent_block_id))
         };
-        let sort_order = if block.parent_type == "page_id" {
-            root_sort_order_by_source
+        let order_key = if block.parent_type == "page_id" {
+            root_order_key_by_source
                 .remove(block.id.as_str())
-                .ok_or_else(|| "snapshot root sort order is missing".to_string())?
+                .ok_or_else(|| "snapshot root order key is missing".to_string())?
         } else {
-            block.sort_order
+            block.order_key.clone()
         };
-        validate_sort_order(sort_order)?;
-        sqlx::query(
-            "INSERT INTO notes_blocks (
-                id,
+        validate_order_key(&order_key)?;
+        let payload: Value = serde_json::from_str(&block.payload)
+            .map_err(|e| format!("parse notes page history block payload: {e}"))?;
+        insert_block_row(
+            tx,
+            BlockRowInsert {
+                id: &block_id,
                 page_id,
                 parent_type,
-                parent_page_id,
-                parent_block_id,
-                has_children,
-                type,
-                payload,
-                plain_text,
-                sort_order,
-                source_provider,
-                source_object_id,
-                source_last_edited_time,
-                created_time,
-                last_edited_time
-             )
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                parent_page_id: parent_page_id.as_deref(),
+                parent_block_id: parent_block_id.as_deref(),
+                block_type: &block.block_type,
+                payload: &payload,
+                plain_text: &block.plain_text,
+                order_key: &order_key,
+                source_provider: block.source_provider.as_deref(),
+                source_object_id: block.source_object_id.as_deref(),
+                source_last_edited_time: block.source_last_edited_time.as_deref(),
+            },
         )
-        .bind(&block_id)
-        .bind(page_id)
-        .bind(parent_type)
-        .bind(parent_page_id.as_deref())
-        .bind(parent_block_id.as_deref())
-        .bind(block.has_children)
-        .bind(&block.block_type)
-        .bind(&block.payload)
-        .bind(&block.plain_text)
-        .bind(sort_order)
-        .bind(&block.source_provider)
-        .bind(&block.source_object_id)
-        .bind(&block.source_last_edited_time)
-        .bind(&block.created_time)
-        .bind(&block.last_edited_time)
-        .execute(&mut **tx)
-        .await
-        .map_err(|e| format!("insert notes page history block: {e}"))?;
+        .await?;
+        sqlx::query("UPDATE notes_blocks SET created_time = ?, last_edited_time = ? WHERE id = ?")
+            .bind(&block.created_time)
+            .bind(&block.last_edited_time)
+            .bind(&block_id)
+            .execute(&mut **tx)
+            .await
+            .map_err(|e| format!("restore notes page history block times: {e}"))?;
         if block.parent_type == "page_id" {
             root_ids.push(block_id.clone());
         }
@@ -467,12 +464,14 @@ async fn insert_snapshot_blocks(
         }
     }
     for database_copy in &database_copies {
-        sqlx::query("UPDATE notes_blocks SET payload = ? WHERE id = ?")
-            .bind(database_copy.payload.to_string())
-            .bind(&database_copy.id)
-            .execute(&mut **tx)
-            .await
-            .map_err(|e| format!("set copied history database references: {e}"))?;
+        replace_block_payload(
+            tx,
+            &database_copy.id,
+            "child_database",
+            &database_copy.payload,
+        )
+        .await
+        .map_err(|e| format!("set copied history database references: {e}"))?;
         crate::writes::database_copy::insert_database_copy(tx, database_copy).await?;
     }
     crate::writes::database_copy::finalize_copies(tx, &database_copies, &[], &id_map).await?;
@@ -651,38 +650,25 @@ async fn load_page_block_subtree_rows(
     tx: &mut Transaction<'_, Sqlite>,
     page_id: &str,
 ) -> Result<Vec<NoteBlockRow>, String> {
-    sqlx::query_as::<_, NoteBlockRow>(
+    // A space separates each order key from its id and a slash separates levels. Both sort below
+    // every order key and id character, so the path order is the depth-first sibling order.
+    sqlx::query_as::<_, NoteBlockRow>(concat!(
         "WITH RECURSIVE subtree(id, path) AS (
-            SELECT id, printf('%020.6f:%s', sort_order, id)
+            SELECT id, order_key || ' ' || id
             FROM notes_blocks
             WHERE parent_type = 'page_id' AND parent_page_id = ? AND in_trash = 0
             UNION ALL
-            SELECT child.id, subtree.path || '/' || printf('%020.6f:%s', child.sort_order, child.id)
+            SELECT child.id, subtree.path || '/' || child.order_key || ' ' || child.id
             FROM notes_blocks AS child
             JOIN subtree ON child.parent_block_id = subtree.id
             WHERE child.in_trash = 0
          )
-         SELECT
-            notes_blocks.id,
-            notes_blocks.page_id,
-            notes_blocks.parent_type,
-            notes_blocks.parent_page_id,
-            notes_blocks.parent_block_id,
-            notes_blocks.has_children,
-            notes_blocks.in_trash,
-            notes_blocks.type AS block_type,
-            notes_blocks.payload,
-            notes_blocks.plain_text,
-            notes_blocks.sort_order,
-            notes_blocks.source_provider,
-            notes_blocks.source_object_id,
-            notes_blocks.source_last_edited_time,
-            notes_blocks.created_time,
-            notes_blocks.last_edited_time
-         FROM notes_blocks
+         SELECT ",
+        crate::note_block_row_columns!("notes_blocks"),
+        " FROM notes_blocks
          JOIN subtree ON subtree.id = notes_blocks.id
          ORDER BY subtree.path ASC",
-    )
+    ))
     .bind(page_id)
     .fetch_all(&mut **tx)
     .await
@@ -691,7 +677,7 @@ async fn load_page_block_subtree_rows(
 
 fn serialize_snapshot_blocks(blocks: &[NoteBlockRow]) -> Result<String, String> {
     for block in blocks {
-        validate_sort_order(block.sort_order)?;
+        validate_order_key(&block.order_key)?;
         let payload: Value = serde_json::from_str(&block.payload)
             .map_err(|e| format!("parse history block payload: {e}"))?;
         validate_block_payload(&block.block_type, &payload)?;
@@ -705,7 +691,7 @@ fn parse_snapshot_blocks(
     let blocks: Vec<NoteBlockRow> = serde_json::from_str(&snapshot.blocks)
         .map_err(|e| format!("parse notes page history blocks: {e}"))?;
     for block in &blocks {
-        validate_sort_order(block.sort_order)?;
+        validate_order_key(&block.order_key)?;
         let payload: Value = serde_json::from_str(&block.payload)
             .map_err(|e| format!("parse notes page history block payload: {e}"))?;
         validate_block_payload(&block.block_type, &payload)?;
@@ -884,78 +870,6 @@ async fn trash_current_child_pages(
     Ok(())
 }
 
-async fn next_page_root_sort_orders(
-    tx: &mut Transaction<'_, Sqlite>,
-    page_id: &str,
-    after_block_id: Option<&str>,
-    count: usize,
-) -> Result<Vec<f64>, String> {
-    if count == 0 {
-        return Ok(Vec::new());
-    }
-    if let Some(after_id) = after_block_id
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
-        require_uuid(after_id, "after_block_id")?;
-        let after_order: f64 = sqlx::query_scalar(
-            "SELECT sort_order
-             FROM notes_blocks
-             WHERE id = ?
-               AND parent_type = 'page_id'
-               AND parent_page_id = ?
-               AND page_id = ?
-               AND in_trash = 0",
-        )
-        .bind(after_id)
-        .bind(page_id)
-        .bind(page_id)
-        .fetch_optional(&mut **tx)
-        .await
-        .map_err(|e| format!("load notes history copy anchor: {e}"))?
-        .ok_or_else(|| "after block not found".to_string())?;
-        let next_order: Option<f64> = sqlx::query_scalar(
-            "SELECT sort_order
-             FROM notes_blocks
-             WHERE parent_type = 'page_id'
-               AND parent_page_id = ?
-               AND in_trash = 0
-               AND sort_order > ?
-             ORDER BY sort_order ASC, id ASC
-             LIMIT 1",
-        )
-        .bind(page_id)
-        .bind(after_order)
-        .fetch_optional(&mut **tx)
-        .await
-        .map_err(|e| format!("load next notes history copy sibling: {e}"))?;
-        let step = match next_order {
-            Some(next_order) if next_order > after_order => {
-                (next_order - after_order) / (count as f64 + 1.0)
-            }
-            _ => DEFAULT_BLOCK_SORT_STEP,
-        };
-        return Ok((1..=count)
-            .map(|index| after_order + step * index as f64)
-            .collect());
-    }
-    let max_order: Option<f64> = sqlx::query_scalar(
-        "SELECT MAX(sort_order)
-         FROM notes_blocks
-         WHERE parent_type = 'page_id'
-           AND parent_page_id = ?
-           AND in_trash = 0",
-    )
-    .bind(page_id)
-    .fetch_one(&mut **tx)
-    .await
-    .map_err(|e| format!("load notes history root sort order: {e}"))?;
-    let base = max_order.unwrap_or(0.0);
-    Ok((1..=count)
-        .map(|index| base + DEFAULT_BLOCK_SORT_STEP * index as f64)
-        .collect())
-}
-
 /// Loads the pages whose parent is `page_id` or one of its blocks, trashed ones included, so a
 /// restore can bring back its own children without taking pages that moved elsewhere.
 async fn load_owned_child_pages(
@@ -1046,28 +960,26 @@ async fn insert_default_page_block(
 ) -> Result<(), String> {
     let block_id = new_note_id(tx, reserved_ids).await?;
     let payload = default_text_payload("");
-    sqlx::query(
-        "INSERT INTO notes_blocks (
-            id,
+    let order_key = OrderKey::first().into_string();
+    insert_block_row(
+        tx,
+        BlockRowInsert {
+            id: &block_id,
             page_id,
-            parent_type,
-            parent_page_id,
-            type,
-            payload,
-            plain_text,
-            sort_order
-         )
-         VALUES (?, ?, 'page_id', ?, 'paragraph', ?, ?, 1000)",
+            parent_type: "page_id",
+            parent_page_id: Some(page_id),
+            parent_block_id: None,
+            block_type: "paragraph",
+            payload: &payload,
+            plain_text: &plain_text_from_payload("paragraph", &payload),
+            order_key: &order_key,
+            source_provider: None,
+            source_object_id: None,
+            source_last_edited_time: None,
+        },
     )
-    .bind(block_id)
-    .bind(page_id)
-    .bind(page_id)
-    .bind(payload.to_string())
-    .bind(plain_text_from_payload("paragraph", &payload))
-    .execute(&mut **tx)
     .await
-    .map_err(|e| format!("create notes history fallback block: {e}"))?;
-    Ok(())
+    .map_err(|e| format!("create notes history fallback block: {e}"))
 }
 
 async fn load_blocks_by_ids(

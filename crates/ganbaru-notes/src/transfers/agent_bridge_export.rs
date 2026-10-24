@@ -360,13 +360,13 @@ async fn load_database_views(
     let sql = format!(
         "SELECT block.id AS block_id,
                 page.title AS page_title,
-                block.payload AS payload
+                block.attrs AS payload
          FROM notes_blocks block
          JOIN notes_pages page ON page.id = block.page_id
          WHERE block.in_trash = 0
            AND block.type = 'child_database'
            AND block.page_id IN ({})
-         ORDER BY lower(page.title) ASC, block.sort_order ASC, block.id ASC",
+         ORDER BY lower(page.title) ASC, block.order_key ASC, block.id ASC",
         placeholders(page_ids.len())
     );
     let mut query = sqlx::query(AssertSqlSafe(sql.as_str()));

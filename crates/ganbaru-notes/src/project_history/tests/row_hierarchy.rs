@@ -4,7 +4,7 @@ use crate::{data_sources, databases};
 
 async fn seed_snapshot_hierarchy(pool: &SqlitePool) -> (&'static str, &'static str, &'static str) {
     seed_project(pool).await;
-    sqlx::query("UPDATE notes_blocks SET payload = ? WHERE id = ?")
+    sqlx::query("UPDATE notes_blocks SET text = json_object('rich_text', json_extract(?, '$.rich_text')) WHERE id = ?")
         .bind(crate::writes::default_text_payload("First version").to_string())
         .bind(BLOCK_ID)
         .execute(pool)
@@ -134,7 +134,7 @@ fn database_subitems_history_restores_canonical_edges_and_copies_moved_graphs_in
     crate::test_block_on(async {
         let pool = migrated_pool().await;
         seed_project(&pool).await;
-        sqlx::query("UPDATE notes_blocks SET payload = ? WHERE id = ?")
+        sqlx::query("UPDATE notes_blocks SET text = json_object('rich_text', json_extract(?, '$.rich_text')) WHERE id = ?")
             .bind(crate::writes::default_text_payload("First version").to_string())
             .bind(BLOCK_ID)
             .execute(&pool)

@@ -153,11 +153,12 @@ fn update_block_persists_supported_block_color() {
         .await
         .unwrap();
 
-        let payload: String = sqlx::query_scalar("SELECT payload FROM notes_blocks WHERE id = ?")
-            .bind(BLOCK_A)
-            .fetch_one(&pool)
-            .await
-            .unwrap();
+        let payload: String =
+            sqlx::query_scalar("SELECT json_patch(attrs, text) FROM notes_blocks WHERE id = ?")
+                .bind(BLOCK_A)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
         assert!(payload.contains("\"color\":\"red_background\""));
         assert!(payload.contains("Colored"));
     });
@@ -287,7 +288,7 @@ fn rich_text_paste_payloads_round_trip_current_and_appended_blocks() {
         assert_eq!(second_rich_text[1]["href"], "mailto:team@example.com");
 
         let stored_plain_text: Vec<String> = sqlx::query_scalar(
-            "SELECT plain_text FROM notes_blocks WHERE id IN (?, ?) ORDER BY sort_order",
+            "SELECT plain_text FROM notes_blocks WHERE id IN (?, ?) ORDER BY order_key, id",
         )
         .bind(BLOCK_A)
         .bind(BLOCK_B)

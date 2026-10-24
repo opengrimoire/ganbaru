@@ -1,16 +1,13 @@
 use super::block_tree::load_child_page_block_row_including_trashed;
 use super::pages::load_page_row;
-use super::parents::{
-    ParentTarget, parent_target_from_block_row, refresh_parent_has_children, touch_page,
-};
+use super::parents::{ParentTarget, parent_target_from_block_row, touch_page, touch_parent_block};
 use super::payloads::child_page_payload;
-use super::sort::next_sort_orders;
+use super::sort::{moved_order_keys, next_order_keys};
+use crate::block_storage::{BlockRowInsert, insert_block_row, replace_block_payload};
 use crate::models::{
     NoteBlockRow, NoteLoadedPage, NoteMovePage, NotePageDto, NoteParent, page_parent_columns,
 };
-use crate::validation::{
-    plain_text_from_payload, require_uuid, validate_parent, validate_sort_order,
-};
+use crate::validation::{plain_text_from_payload, require_uuid, validate_parent};
 use crate::{data_sources, page_history, reads};
 use sqlx::SqlitePool;
 use std::collections::HashSet;
@@ -88,7 +85,7 @@ pub async fn move_page(
                 child_block,
             )
             .await?;
-            refresh_parent_has_children(&mut tx, parent).await?;
+            touch_parent_block(&mut tx, parent).await?;
             touch_page(&mut tx, &parent.page_id).await?;
         }
         None => {
@@ -110,7 +107,7 @@ pub async fn move_page(
         }
     }
     if let Some(parent) = &old_parent {
-        refresh_parent_has_children(&mut tx, parent).await?;
+        touch_parent_block(&mut tx, parent).await?;
         touch_page(&mut tx, &parent.page_id).await?;
     }
     touch_page(&mut tx, page_id).await?;
@@ -156,7 +153,7 @@ pub async fn trash_page(
     }
     set_root_child_page_block_visibility(&mut tx, page_id, root_child_page_block_visible).await?;
     for parent in child_parents {
-        refresh_parent_has_children(&mut tx, &parent).await?;
+        touch_parent_block(&mut tx, &parent).await?;
         touch_page(&mut tx, &parent.page_id).await?;
     }
     data_sources::rollups::invalidate_rollup_cache_for_page_tx(&mut tx, page_id).await?;
@@ -296,7 +293,7 @@ pub async fn permanently_delete_page(
     .await
     .map_err(|e| format!("delete notes pages permanently: {e}"))?;
     for parent in child_parents {
-        refresh_parent_has_children(&mut tx, &parent).await?;
+        touch_parent_block(&mut tx, &parent).await?;
         touch_page(&mut tx, &parent.page_id).await?;
     }
     tx.commit()
@@ -551,7 +548,7 @@ pub async fn archive_page(
     .await
     .map_err(|e| format!("archive notes child page block: {e}"))?;
     if let Some(parent) = child_parent {
-        refresh_parent_has_children(&mut tx, &parent).await?;
+        touch_parent_block(&mut tx, &parent).await?;
         touch_page(&mut tx, &parent.page_id).await?;
     }
     data_sources::rollups::invalidate_rollup_cache_for_page_tx(&mut tx, page_id).await?;
@@ -646,61 +643,56 @@ pub(super) async fn upsert_moved_child_page_block(
     parent: &ParentTarget,
     existing_block: Option<NoteBlockRow>,
 ) -> Result<(), String> {
-    let sort_order = next_sort_orders(tx, parent, None, 1).await?[0];
-    validate_sort_order(sort_order)?;
     let payload = child_page_payload(title);
     let plain_text = plain_text_from_payload("child_page", &payload);
     if let Some(block) = existing_block {
         if block.block_type != "child_page" {
             return Err("page block id is not a child_page block".to_string());
         }
+        let order_key = moved_order_keys(tx, parent, None, None, &[page_id])
+            .await?
+            .remove(0);
         sqlx::query(
             "UPDATE notes_blocks
              SET page_id = ?,
                  parent_type = 'page_id',
                  parent_page_id = ?,
                  parent_block_id = NULL,
-                 has_children = 0,
                  in_trash = 0,
-                 type = 'child_page',
-                 payload = ?,
+                 trash_owner = NULL,
                  plain_text = ?,
-                 sort_order = ?,
+                 order_key = ?,
                  last_edited_time = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
              WHERE id = ?",
         )
         .bind(&parent.page_id)
         .bind(&parent.parent_page_id)
-        .bind(payload.to_string())
-        .bind(plain_text)
-        .bind(sort_order)
+        .bind(&plain_text)
+        .bind(&order_key)
         .bind(page_id)
         .execute(&mut **tx)
         .await
         .map_err(|e| format!("move notes child page block: {e}"))?;
+        replace_block_payload(tx, page_id, "child_page", &payload).await?;
     } else {
-        sqlx::query(
-            "INSERT INTO notes_blocks (
-                id,
-                page_id,
-                parent_type,
-                parent_page_id,
-                parent_block_id,
-                has_children,
-                type,
-                payload,
-                plain_text,
-                sort_order
-             )
-             VALUES (?, ?, 'page_id', ?, NULL, 0, 'child_page', ?, ?, ?)",
+        let order_key = next_order_keys(tx, parent, None, 1).await?.remove(0);
+        insert_block_row(
+            tx,
+            BlockRowInsert {
+                id: page_id,
+                page_id: &parent.page_id,
+                parent_type: "page_id",
+                parent_page_id: parent.parent_page_id.as_deref(),
+                parent_block_id: None,
+                block_type: "child_page",
+                payload: &payload,
+                plain_text: &plain_text,
+                order_key: &order_key,
+                source_provider: None,
+                source_object_id: None,
+                source_last_edited_time: None,
+            },
         )
-        .bind(page_id)
-        .bind(&parent.page_id)
-        .bind(&parent.parent_page_id)
-        .bind(payload.to_string())
-        .bind(plain_text)
-        .bind(sort_order)
-        .execute(&mut **tx)
         .await
         .map_err(|e| format!("create moved notes child page block: {e}"))?;
     }

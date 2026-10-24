@@ -422,20 +422,9 @@ async fn update_child_database_payload(
     });
     validate_block_payload("child_database", &payload)?;
     let plain_text = plain_text_from_payload("child_database", &payload);
-    sqlx::query(
-        "UPDATE notes_blocks
-         SET payload = ?,
-             plain_text = ?,
-             last_edited_time = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-         WHERE id = ?",
-    )
-    .bind(payload.to_string())
-    .bind(plain_text)
-    .bind(block_id)
-    .execute(&mut **tx)
-    .await
-    .map_err(|e| format!("update imported Notion database block: {e}"))?;
-    Ok(())
+    crate::block_storage::write_block_content(tx, block_id, "child_database", &payload, &plain_text)
+        .await
+        .map_err(|e| format!("update imported Notion database block: {e}"))
 }
 
 async fn refresh_data_source_after_rows(

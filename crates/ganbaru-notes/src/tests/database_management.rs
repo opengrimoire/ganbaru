@@ -141,11 +141,12 @@ fn deleting_default_view_replaces_its_source_pair_and_linked_creation_uses_that_
         databases::view_management::delete_database_view(&pool, DATABASE_A, DATABASE_VIEW_A)
             .await
             .unwrap();
-        let raw: String = sqlx::query_scalar("SELECT payload FROM notes_blocks WHERE id = ?")
-            .bind(DATABASE_A)
-            .fetch_one(&pool)
-            .await
-            .unwrap();
+        let raw: String =
+            sqlx::query_scalar("SELECT json_patch(attrs, text) FROM notes_blocks WHERE id = ?")
+                .bind(DATABASE_A)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
         let payload: Value = serde_json::from_str(&raw).unwrap();
         assert_eq!(payload["view_id"], DATABASE_VIEW_B);
         assert_eq!(payload["data_source_id"], DATA_SOURCE_B);

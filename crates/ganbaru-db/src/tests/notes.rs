@@ -37,9 +37,9 @@ fn schema_creates_normalized_notes_database_tables() {
                 parent_type,
                 parent_page_id,
                 type,
-                payload,
+                attrs,
                 plain_text,
-                sort_order
+                order_key
              )
              VALUES (
                 'database-a',
@@ -49,7 +49,7 @@ fn schema_creates_normalized_notes_database_tables() {
                 'child_database',
                 '{\"title\":\"Tasks\"}',
                 'Tasks',
-                1000
+                'a0'
              )",
         )
         .execute(&pool)
@@ -479,11 +479,11 @@ fn schema_creates_notes_mention_notifications() {
         );
         sqlx::query(
             "INSERT INTO notes_blocks (
-                id, page_id, parent_type, parent_page_id, type, payload, plain_text, sort_order
+                id, page_id, parent_type, parent_page_id, type, attrs, plain_text, order_key
              )
              VALUES (
                 'block-a', 'page-a', 'page_id', 'page-a', 'paragraph',
-                json_object('rich_text', json_array()), '', 1
+                json_object('rich_text', json_array()), '', 'a0'
              )",
         )
         .execute(&pool)
@@ -602,9 +602,9 @@ fn schema_creates_notes_suggestions() {
                 parent_type,
                 parent_page_id,
                 type,
-                payload,
+                attrs,
                 plain_text,
-                sort_order
+                order_key
              )
              VALUES (
                 'block-a',
@@ -614,7 +614,7 @@ fn schema_creates_notes_suggestions() {
                 'paragraph',
                 json_object('rich_text', json_array()),
                 'Original',
-                1
+                'a0'
              )",
         )
         .execute(&pool)
@@ -683,9 +683,9 @@ fn schema_creates_notes_assets_and_references() {
                 parent_type,
                 parent_page_id,
                 type,
-                payload,
+                attrs,
                 plain_text,
-                sort_order
+                order_key
              )
              VALUES (
                 'block-1',
@@ -695,7 +695,7 @@ fn schema_creates_notes_assets_and_references() {
                 'paragraph',
                 '{\"paragraph\":{\"rich_text\":[]}}',
                 '',
-                1000
+                'a0'
              )",
         )
         .execute(&pool)
@@ -1028,9 +1028,9 @@ fn schema_creates_notes_backlink_index() {
                 parent_type,
                 parent_page_id,
                 type,
-                payload,
+                attrs,
                 plain_text,
-                sort_order
+                order_key
              )
              VALUES (
                 'block-1',
@@ -1040,7 +1040,7 @@ fn schema_creates_notes_backlink_index() {
                 'paragraph',
                 '{\"paragraph\":{\"rich_text\":[]}}',
                 'Mention target',
-                1000
+                'a0'
              )",
         )
         .execute(&pool)
@@ -1173,9 +1173,9 @@ fn schema_creates_notes_link_facts() {
                 parent_type,
                 parent_page_id,
                 type,
-                payload,
+                attrs,
                 plain_text,
-                sort_order
+                order_key
              )
              VALUES (
                 'block-1',
@@ -1185,7 +1185,7 @@ fn schema_creates_notes_link_facts() {
                 'paragraph',
                 '{\"paragraph\":{\"rich_text\":[]}}',
                 'Task mention',
-                1000
+                'a0'
              )",
         )
         .execute(&pool)
@@ -1440,10 +1440,10 @@ fn notes_block_types_accept_six_heading_levels_in_blocks_and_templates() {
         let pool = migrated_memory_pool().await;
         sqlx::raw_sql(
             "INSERT INTO notes_pages (id, parent_type, title, properties) VALUES ('page', 'workspace', 'Headings', '{}');
-             INSERT INTO notes_blocks (id, page_id, parent_type, parent_page_id, type, payload, has_children)
-               VALUES ('parent', 'page', 'page_id', 'page', 'heading_4', '{\"rich_text\":[],\"is_toggleable\":true}', 1);
-             INSERT INTO notes_blocks (id, page_id, parent_type, parent_block_id, type, payload)
-               VALUES ('child', 'page', 'block_id', 'parent', 'paragraph', '{\"rich_text\":[]}');
+             INSERT INTO notes_blocks (id, page_id, parent_type, parent_page_id, type, attrs, order_key)
+               VALUES ('parent', 'page', 'page_id', 'page', 'heading_4', '{\"is_toggleable\":true}', 'a0');
+             INSERT INTO notes_blocks (id, page_id, parent_type, parent_block_id, type, text, order_key)
+               VALUES ('child', 'page', 'block_id', 'parent', 'paragraph', '{\"rich_text\":[]}', 'a0');
              INSERT INTO notes_page_templates (id, name) VALUES ('template', 'Headings');
              INSERT INTO notes_page_template_blocks (template_id, id, parent_type, type, payload, has_children)
                VALUES ('template', 'parent', 'template', 'heading_4', '{\"rich_text\":[],\"is_toggleable\":true}', 1);
@@ -1490,5 +1490,315 @@ fn notes_block_types_accept_six_heading_levels_in_blocks_and_templates() {
                 .unwrap(),
             "ok"
         );
+    });
+}
+
+/// A migrated block: id, type, attrs, text, trash owner, open, and editing lock.
+type MigratedFixtureBlock = (
+    String,
+    String,
+    String,
+    String,
+    Option<String>,
+    Option<i64>,
+    Option<i64>,
+);
+
+/// Last migration before the Notes structure preparation.
+const BEFORE_NOTES_SYNC_STRUCTURE: i64 = 20261024045821;
+
+/// Every block type the Notes schema accepts.
+const FIXTURE_BLOCK_TYPES: [&str; 37] = [
+    "paragraph",
+    "heading_1",
+    "heading_2",
+    "heading_3",
+    "heading_4",
+    "heading_5",
+    "heading_6",
+    "bulleted_list_item",
+    "numbered_list_item",
+    "to_do",
+    "toggle",
+    "callout",
+    "quote",
+    "child_page",
+    "child_database",
+    "breadcrumb",
+    "table_of_contents",
+    "column_list",
+    "column",
+    "table",
+    "table_row",
+    "tab",
+    "image",
+    "video",
+    "audio",
+    "file",
+    "pdf",
+    "bookmark",
+    "link_preview",
+    "synced_block",
+    "template",
+    "button",
+    "embed",
+    "equation",
+    "divider",
+    "code",
+    "unsupported",
+];
+
+/// Page property values of every Notes property type.
+fn fixture_page_properties() -> serde_json::Value {
+    serde_json::json!({
+        "title": { "type": "title", "title": [{ "type": "text", "text": { "content": "Fixture" }, "plain_text": "Fixture" }] },
+        "Notes": { "type": "rich_text", "rich_text": [{ "type": "text", "text": { "content": "Body" }, "plain_text": "Body" }] },
+        "Estimate": { "type": "number", "number": 3.5 },
+        "Stage": { "type": "select", "select": { "id": "s1", "name": "Doing", "color": "blue" } },
+        "Tags": { "type": "multi_select", "multi_select": [{ "id": "t1", "name": "Home", "color": "red" }] },
+        "Status": { "type": "status", "status": { "id": "st", "name": "Done", "color": "green" } },
+        "Due": { "type": "date", "date": { "start": "2026-10-24", "end": null, "time_zone": null } },
+        "Owner": { "type": "people", "people": [{ "object": "user", "id": "user-1" }] },
+        "Files": { "type": "files", "files": [{ "name": "a.pdf", "type": "file", "file": { "url": "assets/notes/files/a.pdf" } }] },
+        "Done": { "type": "checkbox", "checkbox": true },
+        "Link": { "type": "url", "url": "https://example.com" },
+        "Mail": { "type": "email", "email": "a@example.com" },
+        "Phone": { "type": "phone_number", "phone_number": "+1 555 0100" },
+        "Score": { "type": "formula", "formula": { "type": "number", "number": 7 } },
+        "Related": { "type": "relation", "relation": [{ "id": "page-2" }], "has_more": false },
+        "Total": { "type": "rollup", "rollup": { "type": "number", "number": 2, "function": "count" } },
+        "Created": { "type": "created_time", "created_time": "2026-10-01T00:00:00.000Z" },
+        "Creator": { "type": "created_by", "created_by": { "object": "user", "id": "user-1" } },
+        "Edited": { "type": "last_edited_time", "last_edited_time": "2026-10-02T00:00:00.000Z" },
+        "Editor": { "type": "last_edited_by", "last_edited_by": { "object": "user", "id": "user-1" } },
+        "Number": { "type": "unique_id", "unique_id": { "prefix": "TASK", "number": 4 } },
+        "Place": { "type": "place", "place": { "name": "Office", "lat": 1.5, "lon": 2.5 } },
+        "Verified": { "type": "verification", "verification": { "state": "verified" } },
+        "Action": { "type": "button", "button": {} }
+    })
+}
+
+/// A previous-shape block payload carrying text keys, attributes, and view state for `block_type`.
+fn fixture_block_payload(block_type: &str) -> serde_json::Value {
+    let mut payload = serde_json::json!({
+        "rich_text": [{ "type": "text", "text": { "content": block_type }, "plain_text": block_type }],
+        "caption": [],
+        "color": "gray_background",
+        "url": format!("https://example.com/{block_type}")
+    });
+    match block_type {
+        "toggle" => payload["ganbaru_open"] = serde_json::json!(true),
+        "child_database" => payload["editing_locked"] = serde_json::json!(true),
+        "child_page" => payload["title"] = serde_json::json!("Stale title"),
+        "table_row" => payload["cells"] = serde_json::json!([[], []]),
+        _ => {}
+    }
+    payload
+}
+
+#[test]
+fn notes_sync_structure_migration_keeps_every_block_and_property_type() {
+    super::block_on(async {
+        let pool = super::helpers::memory_pool_migrated_through(BEFORE_NOTES_SYNC_STRUCTURE).await;
+        sqlx::raw_sql(
+            "INSERT INTO project_groups (id, name, order_key) VALUES ('group', 'Group', 'a0');
+             INSERT INTO projects (id, group_id, name, order_key) VALUES ('project', 'group', 'P', 'a0');",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let mut properties = fixture_page_properties();
+        properties["__ganbaru_project_id"] = serde_json::json!("project");
+        properties["__ganbaru_trash_owner"] = serde_json::json!("owner-page");
+        sqlx::query(
+            "INSERT INTO notes_pages (id, parent_type, title, properties)
+             VALUES ('page', 'workspace', 'Fixture', ?)",
+        )
+        .bind(properties.to_string())
+        .execute(&pool)
+        .await
+        .unwrap();
+        let block_count = FIXTURE_BLOCK_TYPES.len();
+        for (index, block_type) in FIXTURE_BLOCK_TYPES.iter().enumerate() {
+            let mut payload = fixture_block_payload(block_type);
+            if index == 0 {
+                payload["__ganbaru_trash_owner"] = serde_json::json!("owner-block");
+            }
+            // Reverse order so the order keys must follow `sort_order`, not the ids.
+            let sort_order = (block_count - index) as f64 * 10.0;
+            sqlx::query(
+                "INSERT INTO notes_blocks (
+                    id, page_id, parent_type, parent_page_id, in_trash, type, payload, plain_text,
+                    sort_order
+                 ) VALUES (printf('block-%02d', ?), 'page', 'page_id', 'page', ?, ?, ?, ?, ?)",
+            )
+            .bind(index as i64)
+            .bind(i64::from(index == 0))
+            .bind(block_type)
+            .bind(payload.to_string())
+            .bind(block_type)
+            .bind(sort_order)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+        sqlx::query(
+            "INSERT INTO notes_blocks (
+                id, page_id, parent_type, parent_block_id, type, payload, plain_text, sort_order
+             ) VALUES ('nested', 'page', 'block_id', 'block-10', 'paragraph', '{\"rich_text\":[]}', '', 1)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        crate::run_migrations(&pool).await.unwrap();
+
+        let (project_id, trash_owner, stored_properties): (Option<String>, Option<String>, String) =
+            sqlx::query_as(
+                "SELECT project_id, trash_owner, properties FROM notes_pages WHERE id = 'page'",
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(project_id.as_deref(), Some("project"));
+        assert_eq!(trash_owner.as_deref(), Some("owner-page"));
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&stored_properties).unwrap(),
+            fixture_page_properties()
+        );
+
+        let rows: Vec<MigratedFixtureBlock> = sqlx::query_as(
+            "SELECT block.id, block.type, block.attrs, block.text, block.trash_owner,
+                        view.open, view.editing_locked
+                 FROM notes_blocks AS block
+                 LEFT JOIN notes_block_view_state AS view ON view.block_id = block.id
+                 WHERE block.parent_page_id = 'page'
+                 ORDER BY block.order_key, block.id",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(rows.len(), block_count);
+        for (position, (id, block_type, attrs, text, block_trash_owner, open, locked)) in
+            rows.into_iter().enumerate()
+        {
+            let index = block_count - 1 - position;
+            assert_eq!(id, format!("block-{index:02}"), "order follows sort_order");
+            assert_eq!(block_type, FIXTURE_BLOCK_TYPES[index]);
+            let mut expected = fixture_block_payload(&block_type);
+            let expected_open = expected
+                .as_object_mut()
+                .unwrap()
+                .remove("ganbaru_open")
+                .map(|value| i64::from(value == true));
+            let expected_locked = expected
+                .as_object_mut()
+                .unwrap()
+                .remove("editing_locked")
+                .map(|value| i64::from(value == true));
+            expected.as_object_mut().unwrap().remove("title");
+            let mut stored: serde_json::Value = serde_json::from_str(&attrs).unwrap();
+            let text: serde_json::Value = serde_json::from_str(&text).unwrap();
+            for (key, value) in text.as_object().unwrap() {
+                assert!(
+                    ["rich_text", "cells", "caption"].contains(&key.as_str()),
+                    "{key}"
+                );
+                stored[key] = value.clone();
+            }
+            assert_eq!(stored, expected, "{block_type}");
+            assert_eq!(open, expected_open, "{block_type}");
+            assert_eq!(locked, expected_locked, "{block_type}");
+            let expected_owner = (index == 0).then(|| "owner-block".to_string());
+            assert_eq!(block_trash_owner, expected_owner, "{block_type}");
+        }
+        let nested: (String, String) = sqlx::query_as(
+            "SELECT parent_block_id, order_key FROM notes_blocks WHERE id = 'nested'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(nested, ("block-10".to_string(), "c000".to_string()));
+        let violations: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM pragma_foreign_key_check")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(violations, 0);
+    });
+}
+
+#[test]
+fn fresh_vault_notes_blocks_store_split_content_and_order_keys() {
+    super::block_on(async {
+        let pool = migrated_memory_pool().await;
+        let columns: Vec<String> =
+            sqlx::query_scalar("SELECT name FROM pragma_table_info('notes_blocks') ORDER BY cid")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        for present in ["attrs", "text", "order_key", "trash_owner"] {
+            assert!(columns.iter().any(|column| column == present), "{present}");
+        }
+        for absent in ["payload", "sort_order", "has_children"] {
+            assert!(!columns.iter().any(|column| column == absent), "{absent}");
+        }
+        let page_columns: Vec<String> =
+            sqlx::query_scalar("SELECT name FROM pragma_table_info('notes_pages')")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        for present in ["project_id", "trash_owner"] {
+            assert!(
+                page_columns.iter().any(|column| column == present),
+                "{present}"
+            );
+        }
+        let notes_triggers: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM sqlite_schema WHERE type = 'trigger' AND tbl_name IN ('notes_blocks', 'notes_pages', 'notes_folders')",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(notes_triggers, 0);
+
+        sqlx::raw_sql(
+            "INSERT INTO notes_pages (id, parent_type, title, properties) VALUES ('page', 'workspace', 'P', '{}');
+             INSERT INTO notes_blocks (id, page_id, parent_type, parent_page_id, type, order_key)
+               VALUES ('block', 'page', 'page_id', 'page', 'toggle', 'a0');",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        for (column, value) in [("attrs", "[]"), ("text", "\"x\""), ("order_key", "")] {
+            let rejected = sqlx::query(AssertSqlSafe(format!(
+                "UPDATE notes_blocks SET {column} = ? WHERE id = 'block'"
+            )))
+            .bind(value)
+            .execute(&pool)
+            .await;
+            assert!(rejected.is_err(), "{column} accepted {value}");
+        }
+        assert!(
+            sqlx::query("INSERT INTO notes_block_view_state (block_id) VALUES ('block')")
+                .execute(&pool)
+                .await
+                .is_err(),
+            "an empty view state row is refused"
+        );
+        sqlx::query("INSERT INTO notes_block_view_state (block_id, open) VALUES ('block', 1)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM notes_pages WHERE id = 'page'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let remaining: i64 = sqlx::query_scalar(
+            "SELECT (SELECT COUNT(*) FROM notes_blocks) + (SELECT COUNT(*) FROM notes_block_view_state)",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(remaining, 0);
     });
 }

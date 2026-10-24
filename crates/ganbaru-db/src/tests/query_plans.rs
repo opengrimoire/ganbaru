@@ -22,7 +22,7 @@ fn hot_domain_queries_use_expected_indexes() {
             ),
             (
                 "Notes block children",
-                "SELECT id FROM notes_blocks WHERE parent_block_id = 'block-1' AND in_trash = 0 ORDER BY sort_order, id",
+                "SELECT id FROM notes_blocks WHERE parent_block_id = 'block-1' AND in_trash = 0 ORDER BY order_key, id",
                 "idx_notes_blocks_parent_block",
             ),
             (

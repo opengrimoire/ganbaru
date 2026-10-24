@@ -108,29 +108,15 @@ async fn load_active_page_blocks(
     pool: &SqlitePool,
     page_id: &str,
 ) -> Result<Vec<NoteBlockRow>, String> {
-    sqlx::query_as::<_, NoteBlockRow>(
-        "SELECT
-            id,
-            page_id,
-            parent_type,
-            parent_page_id,
-            parent_block_id,
-            has_children,
-            in_trash,
-            type AS block_type,
-            payload,
-            plain_text,
-            sort_order,
-            source_provider,
-            source_object_id,
-            source_last_edited_time,
-            created_time,
-            last_edited_time
+    sqlx::query_as::<_, NoteBlockRow>(concat!(
+        "SELECT ",
+        crate::note_block_row_columns!("notes_blocks"),
+        "
          FROM notes_blocks
          WHERE page_id = ?
            AND in_trash = 0
-         ORDER BY sort_order ASC, id ASC",
-    )
+         ORDER BY order_key ASC, id ASC"
+    ))
     .bind(page_id)
     .fetch_all(pool)
     .await

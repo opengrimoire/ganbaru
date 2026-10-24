@@ -17,7 +17,7 @@ pub async fn load_local_user(pool: &SqlitePool) -> Result<NoteLocalUserDto, Stri
         .await
         .map_err(|e| format!("begin notes local user load: {e}"))?;
     let row = ensure_local_user_tx(&mut tx).await?;
-    let display_name = local_author_name(&mut *tx).await?;
+    let display_name = local_author_name(&mut tx).await?;
     tx.commit()
         .await
         .map_err(|e| format!("commit notes local user load: {e}"))?;
@@ -52,7 +52,7 @@ pub async fn local_author_name_from_pool(pool: &SqlitePool) -> Result<String, St
         .acquire()
         .await
         .map_err(|e| format!("acquire profile display name connection: {e}"))?;
-    local_author_name(&mut *connection).await
+    local_author_name(&mut connection).await
 }
 
 pub fn comment_display_name_json(display_name: &str) -> String {

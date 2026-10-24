@@ -201,7 +201,7 @@ async fn load_navigation_databases(
          FROM notes_databases AS database
          JOIN notes_blocks AS block ON block.id = database.id
          JOIN notes_pages AS page ON page.id = block.page_id
-         JOIN notes_data_sources AS source ON source.id = json_extract(block.payload, '$.data_source_id')
+         JOIN notes_data_sources AS source ON source.id = json_extract(block.attrs, '$.data_source_id')
          WHERE database.in_trash = 0 AND block.in_trash = 0
            AND block.type = 'child_database' AND page.in_trash = 0 AND page.archived = 0
            AND source.in_trash = 0",

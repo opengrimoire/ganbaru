@@ -1,6 +1,7 @@
 pub mod editing_lock;
 pub mod view_management;
 
+use crate::block_storage::{BlockRowInsert, insert_block_row, write_block_content};
 use crate::models::{
     NoteBlockRow, NoteCreatedDatabaseDto, NoteDataSourceRow, NoteDatabaseCreate,
     NoteDatabaseDuplicate, NoteDatabaseReferenceDto, NoteDatabaseRename, NoteDatabaseRow,
@@ -8,7 +9,7 @@ use crate::models::{
 };
 use crate::validation::{
     plain_text_from_payload, require_uuid, validate_block_payload, validate_database_create,
-    validate_parent, validate_sort_order,
+    validate_parent,
 };
 use crate::{page_history, project_history, writes};
 use serde_json::{Value, json};
@@ -153,7 +154,7 @@ pub(crate) async fn duplicate_database_tx(
     writes::database_copy::insert_database_copy(tx, &copy).await?;
     writes::database_copy::finalize_copies(tx, std::slice::from_ref(&copy), &[], &HashMap::new())
         .await?;
-    writes::refresh_parent_has_children(tx, &placement.parent).await?;
+    writes::touch_parent_block(tx, &placement.parent).await?;
     writes::touch_page(tx, &placement.parent.page_id).await?;
     let (source_id, view_id) =
         source_database_refs(&load_active_block_row_tx(tx, &request.id).await?)?;
@@ -163,7 +164,7 @@ pub(crate) async fn duplicate_database_tx(
 
 struct DatabasePlacement {
     parent: writes::ParentTarget,
-    sort_order: f64,
+    order_key: String,
     replacing: bool,
 }
 
@@ -235,7 +236,7 @@ async fn resolve_database_destination(
         writes::validate_block_for_parent(&parent, "child_database", &json!({}))?;
         return Ok(DatabasePlacement {
             parent,
-            sort_order: current.sort_order,
+            order_key: current.order_key.clone(),
             replacing: true,
         });
     }
@@ -252,11 +253,12 @@ async fn resolve_database_destination(
     .await?;
     writes::validate_block_for_parent(&destination, "child_database", &json!({}))?;
     let after = after.or_else(|| parent.is_none().then_some(source.id.as_str()));
-    let sort_order = writes::next_sort_orders(tx, &destination, after, 1).await?[0];
-    validate_sort_order(sort_order)?;
+    let order_key = writes::next_order_keys(tx, &destination, after, 1)
+        .await?
+        .remove(0);
     Ok(DatabasePlacement {
         parent: destination,
-        sort_order,
+        order_key,
         replacing: false,
     })
 }
@@ -293,17 +295,29 @@ async fn place_database_block(
     validate_block_payload("child_database", payload)?;
     let plain_text = plain_text_from_payload("child_database", payload);
     if placement.replacing {
-        sqlx::query("UPDATE notes_blocks SET type = 'child_database', payload = ?, plain_text = ?, has_children = 0,
-            last_edited_time = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ? AND in_trash = 0")
-            .bind(payload.to_string()).bind(plain_text).bind(id.trim()).execute(&mut **tx).await
+        write_block_content(tx, id.trim(), "child_database", payload, &plain_text)
+            .await
             .map_err(|e| format!("replace Notes block with database: {e}"))?;
     } else {
-        sqlx::query("INSERT INTO notes_blocks (id, page_id, parent_type, parent_page_id, parent_block_id, type, payload, plain_text, sort_order)
-            VALUES (?, ?, ?, ?, ?, 'child_database', ?, ?, ?)")
-            .bind(id.trim()).bind(&placement.parent.page_id).bind(placement.parent.parent_type)
-            .bind(&placement.parent.parent_page_id).bind(&placement.parent.parent_block_id)
-            .bind(payload.to_string()).bind(plain_text).bind(placement.sort_order).execute(&mut **tx).await
-            .map_err(|e| format!("insert Notes database destination: {e}"))?;
+        insert_block_row(
+            tx,
+            BlockRowInsert {
+                id: id.trim(),
+                page_id: &placement.parent.page_id,
+                parent_type: placement.parent.parent_type,
+                parent_page_id: placement.parent.parent_page_id.as_deref(),
+                parent_block_id: placement.parent.parent_block_id.as_deref(),
+                block_type: "child_database",
+                payload,
+                plain_text: &plain_text,
+                order_key: &placement.order_key,
+                source_provider: None,
+                source_object_id: None,
+                source_last_edited_time: None,
+            },
+        )
+        .await
+        .map_err(|e| format!("insert Notes database destination: {e}"))?;
     }
     crate::assets::sync_block_asset_reference_tx(
         tx,
@@ -352,11 +366,7 @@ pub async fn rename_database(
         .map_err(|error| format!("parse Notes database block: {error}"))?;
     payload["title"] = Value::String(title.to_string());
     validate_block_payload("child_database", &payload)?;
-    sqlx::query("UPDATE notes_blocks SET payload = ?, plain_text = ?, last_edited_time = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?")
-        .bind(payload.to_string())
-        .bind(title)
-        .bind(database_id)
-        .execute(&mut *tx)
+    write_block_content(&mut tx, database_id, "child_database", &payload, title)
         .await
         .map_err(|error| format!("rename Notes database block: {error}"))?;
     sqlx::query("UPDATE notes_databases SET title = ?, title_rich_text = ?, last_edited_time = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?")
@@ -433,18 +443,14 @@ pub(crate) async fn create_database_tx(
             .ok_or_else(|| "parent is required".to_string())?;
         let parent = writes::resolve_block_parent(tx, request_parent).await?;
         let title = request.title.trim().to_string();
-        let sort_order =
-            writes::next_sort_orders(tx, &parent, request.after_block_id.as_deref(), 1)
-                .await?
-                .into_iter()
-                .next()
-                .ok_or_else(|| "database sort order was not prepared".to_string())?;
-        validate_sort_order(sort_order)?;
+        let order_key = writes::next_order_keys(tx, &parent, request.after_block_id.as_deref(), 1)
+            .await?
+            .remove(0);
         if record_history {
             page_history::record_page_snapshot_tx(tx, &parent.page_id, "create_database").await?;
         }
-        insert_database_block(tx, &parent, &request, &title, sort_order).await?;
-        writes::refresh_parent_has_children(tx, &parent).await?;
+        insert_database_block(tx, &parent, &request, &title, &order_key).await?;
+        writes::touch_parent_block(tx, &parent).await?;
         (parent, title)
     };
     insert_database_objects(tx, &parent, &request, &title).await?;
@@ -515,7 +521,7 @@ pub(crate) async fn create_linked_database_view_tx(
         &source_view_id,
     )
     .await?;
-    writes::refresh_parent_has_children(tx, parent).await?;
+    writes::touch_parent_block(tx, parent).await?;
     writes::touch_page(tx, &parent.page_id).await?;
     let created =
         load_created_linked_database_tx(tx, &request.id, &source_data_source_id, &request.view_id)
@@ -532,21 +538,9 @@ async fn replace_block_with_database(
     let payload = child_database_payload(request, title);
     validate_block_payload("child_database", &payload)?;
     let plain_text = plain_text_from_payload("child_database", &payload);
-    sqlx::query(
-        "UPDATE notes_blocks
-         SET type = 'child_database',
-             payload = ?,
-             plain_text = ?,
-             last_edited_time = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-         WHERE id = ? AND in_trash = 0",
-    )
-    .bind(payload.to_string())
-    .bind(plain_text)
-    .bind(&current.id)
-    .execute(&mut **tx)
-    .await
-    .map_err(|e| format!("convert notes block to database: {e}"))?;
-    Ok(())
+    write_block_content(tx, &current.id, "child_database", &payload, &plain_text)
+        .await
+        .map_err(|e| format!("convert notes block to database: {e}"))
 }
 
 async fn insert_database_block(
@@ -554,37 +548,30 @@ async fn insert_database_block(
     parent: &writes::ParentTarget,
     request: &NoteDatabaseCreate,
     title: &str,
-    sort_order: f64,
+    order_key: &str,
 ) -> Result<(), String> {
     let payload = child_database_payload(request, title);
     validate_block_payload("child_database", &payload)?;
     let plain_text = plain_text_from_payload("child_database", &payload);
-    sqlx::query(
-        "INSERT INTO notes_blocks (
-            id,
-            page_id,
-            parent_type,
-            parent_page_id,
-            parent_block_id,
-            type,
-            payload,
-            plain_text,
-            sort_order
-         )
-         VALUES (?, ?, ?, ?, ?, 'child_database', ?, ?, ?)",
+    insert_block_row(
+        tx,
+        BlockRowInsert {
+            id: request.id.trim(),
+            page_id: &parent.page_id,
+            parent_type: parent.parent_type,
+            parent_page_id: parent.parent_page_id.as_deref(),
+            parent_block_id: parent.parent_block_id.as_deref(),
+            block_type: "child_database",
+            payload: &payload,
+            plain_text: &plain_text,
+            order_key,
+            source_provider: None,
+            source_object_id: None,
+            source_last_edited_time: None,
+        },
     )
-    .bind(request.id.trim())
-    .bind(&parent.page_id)
-    .bind(parent.parent_type)
-    .bind(&parent.parent_page_id)
-    .bind(&parent.parent_block_id)
-    .bind(payload.to_string())
-    .bind(plain_text)
-    .bind(sort_order)
-    .execute(&mut **tx)
     .await
-    .map_err(|e| format!("insert notes database block: {e}"))?;
-    Ok(())
+    .map_err(|e| format!("insert notes database block: {e}"))
 }
 
 async fn insert_database_objects(
@@ -726,26 +713,13 @@ async fn load_active_block_row_tx(
     tx: &mut Transaction<'_, Sqlite>,
     block_id: &str,
 ) -> Result<NoteBlockRow, String> {
-    sqlx::query_as::<_, NoteBlockRow>(
-        "SELECT id,
-                page_id,
-                parent_type,
-                parent_page_id,
-                parent_block_id,
-                has_children,
-                in_trash,
-                type AS block_type,
-                payload,
-                plain_text,
-                sort_order,
-                source_provider,
-                source_object_id,
-                source_last_edited_time,
-                created_time,
-                last_edited_time
+    sqlx::query_as::<_, NoteBlockRow>(concat!(
+        "SELECT ",
+        crate::note_block_row_columns!("notes_blocks"),
+        "
          FROM notes_blocks
-         WHERE id = ? AND in_trash = 0",
-    )
+         WHERE id = ? AND in_trash = 0"
+    ))
     .bind(block_id.trim())
     .fetch_optional(&mut **tx)
     .await

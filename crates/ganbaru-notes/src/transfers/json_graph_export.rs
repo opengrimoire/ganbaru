@@ -307,6 +307,7 @@ fn table_family(name: &str) -> TableFamily {
             | "notes_comment_thread_mutes"
             | "notes_page_notification_settings"
             | "notes_mention_notifications"
+            | "notes_block_view_state"
     ) {
         return TableFamily::LocalState;
     }
@@ -353,7 +354,8 @@ fn json_column(table: &str, column: &str) -> bool {
         ("notes_pages", "properties")
             | ("notes_pages", "icon")
             | ("notes_pages", "cover")
-            | ("notes_blocks", "payload")
+            | ("notes_blocks", "attrs")
+            | ("notes_blocks", "text")
             | ("notes_databases", "title_rich_text")
             | ("notes_databases", "description")
             | ("notes_databases", "icon")
@@ -403,7 +405,7 @@ fn order_by_columns(table: &str, columns: &[String]) -> String {
             "parent_type",
             "parent_page_id",
             "parent_block_id",
-            "sort_order",
+            "order_key",
             "id",
         ],
         "notes_asset_references" => vec!["owner_type", "owner_id", "role", "asset_id"],

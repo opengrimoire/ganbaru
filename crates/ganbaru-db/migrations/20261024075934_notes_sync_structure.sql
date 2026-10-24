@@ -658,13 +658,168 @@ CREATE INDEX idx_notes_pages_source
 CREATE INDEX idx_notes_pages_trash_retention
     ON notes_pages(in_trash, trashed_time);
 
--- notes_blocks: the trash owner moves out of the payload into a column.
-ALTER TABLE notes_blocks ADD COLUMN trash_owner TEXT
-    CHECK (trash_owner IS NULL OR trim(trash_owner) <> '');
-UPDATE notes_blocks
-SET trash_owner = NULLIF(trim(json_extract(payload, '$.__ganbaru_trash_owner')), ''),
-    payload = json_remove(payload, '$.__ganbaru_trash_owner')
-WHERE json_type(payload, '$.__ganbaru_trash_owner') IS NOT NULL;
+-- notes_blocks: the payload splits into `text` (the type's text keys) and `attrs` (every other
+-- key); toggle open state and the database editing lock move to the device-local
+-- notes_block_view_state; a child_page title is read from its page; `has_children` is derived;
+-- the trash owner moves into a column; and siblings order by fractional order keys. Existing
+-- blocks get rank keys ('c' and three base 62 digits, 238,328 per sibling group) from their
+-- previous order, trashed blocks included so a restore returns them where they were. `page_id`
+-- is written by Rust from the placement and has no foreign key; the parent references cascade.
+CREATE TEMP TABLE notes_block_rank_capacity (
+    row_count INTEGER NOT NULL CHECK (row_count <= 238328)
+);
+INSERT INTO notes_block_rank_capacity (row_count)
+SELECT count(*) FROM notes_blocks GROUP BY parent_page_id, parent_block_id;
+DROP TABLE notes_block_rank_capacity;
+
+CREATE TABLE notes_blocks_next (
+    id TEXT PRIMARY KEY CHECK (trim(id) <> ''),
+    page_id TEXT NOT NULL CHECK (trim(page_id) <> ''),
+    parent_type TEXT NOT NULL CHECK (parent_type IN ('page_id', 'block_id')),
+    parent_page_id TEXT REFERENCES notes_pages(id) ON DELETE CASCADE,
+    parent_block_id TEXT REFERENCES "notes_blocks"(id) ON DELETE CASCADE,
+    in_trash INTEGER NOT NULL DEFAULT 0 CHECK (in_trash IN (0, 1)),
+    trash_owner TEXT CHECK (trash_owner IS NULL OR trim(trash_owner) <> ''),
+    type TEXT NOT NULL DEFAULT 'paragraph' CHECK (
+        type IN (
+            'paragraph',
+            'heading_1',
+            'heading_2',
+            'heading_3',
+            'heading_4',
+            'heading_5',
+            'heading_6',
+            'bulleted_list_item',
+            'numbered_list_item',
+            'to_do',
+            'toggle',
+            'callout',
+            'quote',
+            'child_page',
+            'child_database',
+            'breadcrumb',
+            'table_of_contents',
+            'column_list',
+            'column',
+            'table',
+            'table_row',
+            'tab',
+            'image',
+            'video',
+            'audio',
+            'file',
+            'pdf',
+            'bookmark',
+            'link_preview',
+            'synced_block',
+            'template',
+            'button',
+            'embed',
+            'equation',
+            'divider',
+            'code',
+            'unsupported'
+        )
+    ),
+    attrs TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(attrs) AND json_type(attrs) = 'object'),
+    text TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(text) AND json_type(text) = 'object'),
+    plain_text TEXT NOT NULL DEFAULT '',
+    order_key TEXT NOT NULL CHECK (length(order_key) BETWEEN 1 AND 128),
+    source_provider TEXT,
+    source_object_id TEXT,
+    source_last_edited_time TEXT,
+    created_time TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')) CHECK (trim(created_time) <> ''),
+    last_edited_time TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')) CHECK (trim(last_edited_time) <> ''),
+    CHECK (
+        (
+            parent_type = 'page_id'
+            AND parent_page_id IS NOT NULL
+            AND parent_block_id IS NULL
+            AND parent_page_id = page_id
+        )
+        OR (
+            parent_type = 'block_id'
+            AND parent_page_id IS NULL
+            AND parent_block_id IS NOT NULL
+        )
+    )
+);
+INSERT INTO notes_blocks_next (
+    id, page_id, parent_type, parent_page_id, parent_block_id, in_trash, trash_owner, type,
+    attrs, text, plain_text, order_key, source_provider, source_object_id,
+    source_last_edited_time, created_time, last_edited_time
+)
+SELECT
+    block.id,
+    block.page_id,
+    block.parent_type,
+    block.parent_page_id,
+    block.parent_block_id,
+    block.in_trash,
+    NULLIF(trim(json_extract(block.payload, '$.__ganbaru_trash_owner')), ''),
+    block.type,
+    CASE
+        WHEN block.type = 'child_page' THEN json_remove(
+            block.payload, '$.rich_text', '$.cells', '$.caption', '$.ganbaru_open',
+            '$.editing_locked', '$.__ganbaru_trash_owner', '$.title'
+        )
+        ELSE json_remove(
+            block.payload, '$.rich_text', '$.cells', '$.caption', '$.ganbaru_open',
+            '$.editing_locked', '$.__ganbaru_trash_owner'
+        )
+    END,
+    COALESCE(
+        (
+            SELECT json_group_object(
+                item.key,
+                CASE WHEN item.type IN ('array', 'object') THEN json(item.value) ELSE item.value END
+            )
+            FROM json_each(block.payload) AS item
+            WHERE item.key IN ('rich_text', 'cells', 'caption')
+        ),
+        '{}'
+    ),
+    block.plain_text,
+    'c'
+        || substr('0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz', ranked.rank / 3844 % 62 + 1, 1)
+        || substr('0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz', ranked.rank / 62 % 62 + 1, 1)
+        || substr('0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz', ranked.rank % 62 + 1, 1),
+    block.source_provider,
+    block.source_object_id,
+    block.source_last_edited_time,
+    block.created_time,
+    block.last_edited_time
+FROM notes_blocks AS block
+JOIN (
+    SELECT
+        id,
+        ROW_NUMBER() OVER (
+            PARTITION BY parent_page_id, parent_block_id ORDER BY sort_order, id
+        ) - 1 AS rank
+    FROM notes_blocks
+) AS ranked ON ranked.id = block.id;
+
+CREATE TABLE notes_block_view_state (
+    block_id TEXT PRIMARY KEY REFERENCES "notes_blocks"(id) ON DELETE CASCADE,
+    open INTEGER CHECK (open IS NULL OR open IN (0, 1)),
+    editing_locked INTEGER CHECK (editing_locked IS NULL OR editing_locked IN (0, 1)),
+    CHECK (open IS NOT NULL OR editing_locked IS NOT NULL)
+);
+INSERT INTO notes_block_view_state (block_id, open, editing_locked)
+SELECT
+    id,
+    CASE json_type(payload, '$.ganbaru_open') WHEN 'true' THEN 1 WHEN 'false' THEN 0 END,
+    CASE json_type(payload, '$.editing_locked') WHEN 'true' THEN 1 WHEN 'false' THEN 0 END
+FROM notes_blocks
+WHERE json_type(payload, '$.ganbaru_open') IN ('true', 'false')
+   OR json_type(payload, '$.editing_locked') IN ('true', 'false');
+
+DROP TABLE notes_blocks;
+ALTER TABLE notes_blocks_next RENAME TO notes_blocks;
+CREATE INDEX idx_notes_blocks_page ON notes_blocks(page_id, in_trash, order_key, id);
+CREATE INDEX idx_notes_blocks_parent_block ON notes_blocks(parent_block_id, in_trash, order_key, id);
+CREATE INDEX idx_notes_blocks_parent_page ON notes_blocks(parent_page_id, in_trash, order_key, id);
+CREATE INDEX idx_notes_blocks_source ON notes_blocks(source_provider, source_object_id);
 
 -- Page history keeps page properties in the current shape; the page's project is not versioned.
 UPDATE notes_page_history_snapshots

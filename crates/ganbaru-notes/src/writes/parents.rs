@@ -1,7 +1,6 @@
+use crate::block_storage::{split_block_payload, write_block_view_state};
 use crate::models::{NoteBlockRow, NoteBlockWrite, NoteParent};
-use crate::validation::{
-    block_payload_supports_children, plain_text_from_payload, require_uuid, validate_sort_order,
-};
+use crate::validation::{block_payload_supports_children, plain_text_from_payload, require_uuid};
 use crate::{assets, mention_notifications};
 use serde_json::Value;
 
@@ -111,17 +110,17 @@ pub async fn resolve_block_parent(
             let block_id = block_id.trim();
             require_uuid(block_id, "block_id")?;
             let parent: Option<(String, String, String)> = sqlx::query_as(
-                "SELECT page_id, type, payload FROM notes_blocks WHERE id = ? AND in_trash = 0",
+                "SELECT page_id, type, attrs FROM notes_blocks WHERE id = ? AND in_trash = 0",
             )
             .bind(block_id)
             .fetch_optional(&mut **tx)
             .await
             .map_err(|e| format!("load block parent block: {e}"))?;
-            let (page_id, block_type, payload) =
+            let (page_id, block_type, attrs) =
                 parent.ok_or_else(|| "parent block not found".to_string())?;
-            let payload: Value = serde_json::from_str(&payload)
-                .map_err(|e| format!("parse parent block payload: {e}"))?;
-            if !block_payload_supports_children(&block_type, &payload) {
+            let attrs: Value = serde_json::from_str(&attrs)
+                .map_err(|e| format!("parse parent block attributes: {e}"))?;
+            if !block_payload_supports_children(&block_type, &attrs) {
                 return Err(format!("{block_type} blocks cannot have children"));
             }
             let target = ParentTarget {
@@ -442,13 +441,13 @@ pub(super) async fn insert_block(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     parent: &ParentTarget,
     block: &NoteBlockWrite,
-    sort_order: f64,
+    order_key: &str,
 ) -> Result<(), String> {
-    validate_sort_order(sort_order)?;
     let payload = block
         .payload()
         .ok_or_else(|| format!("{} payload is required", block.block_type))?;
     let plain_text = plain_text_from_payload(&block.block_type, payload);
+    let content = split_block_payload(block.block_type.trim(), payload)?;
     sqlx::query(
         "INSERT INTO notes_blocks (
             id,
@@ -457,11 +456,12 @@ pub(super) async fn insert_block(
             parent_page_id,
             parent_block_id,
             type,
-            payload,
+            attrs,
+            text,
             plain_text,
-            sort_order
+            order_key
          )
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(block.id.trim())
     .bind(&parent.page_id)
@@ -469,12 +469,14 @@ pub(super) async fn insert_block(
     .bind(&parent.parent_page_id)
     .bind(&parent.parent_block_id)
     .bind(block.block_type.trim())
-    .bind(payload.to_string())
+    .bind(&content.attrs)
+    .bind(&content.text)
     .bind(&plain_text)
-    .bind(sort_order)
+    .bind(order_key)
     .execute(&mut **tx)
     .await
     .map_err(|e| format!("insert notes block: {e}"))?;
+    write_block_view_state(tx, block.id.trim(), content.view).await?;
     mention_notifications::sync_block_tx(
         tx,
         block.id.trim(),
@@ -495,7 +497,8 @@ pub(super) async fn insert_block(
     Ok(())
 }
 
-pub async fn refresh_parent_has_children(
+/// Marks a parent block edited after its children changed.
+pub async fn touch_parent_block(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     parent: &ParentTarget,
 ) -> Result<(), String> {
@@ -504,20 +507,13 @@ pub async fn refresh_parent_has_children(
     };
     sqlx::query(
         "UPDATE notes_blocks
-         SET has_children = CASE
-             WHEN EXISTS (
-                 SELECT 1 FROM notes_blocks AS child
-                 WHERE child.parent_block_id = notes_blocks.id
-                   AND child.in_trash = 0
-             )
-             THEN 1 ELSE 0 END,
-             last_edited_time = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+         SET last_edited_time = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
          WHERE id = ?",
     )
     .bind(block_id)
     .execute(&mut **tx)
     .await
-    .map_err(|e| format!("refresh notes parent has_children: {e}"))?;
+    .map_err(|e| format!("touch notes parent block: {e}"))?;
     Ok(())
 }
 

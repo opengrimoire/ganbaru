@@ -1,6 +1,7 @@
 //! Notes domain, persistence, transfers, history, assets, and validation.
 
 pub mod assets;
+pub mod block_storage;
 pub mod blocking;
 pub mod comments;
 pub mod data_sources;

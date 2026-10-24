@@ -463,8 +463,8 @@ fn database_replacement_is_atomic_and_missing_or_structural_targets_leave_no_obj
         request.parent = None;
         request.after_block_id = None;
         request.replace_block_id = Some(BLOCK_C.into());
-        let original_order: f64 =
-            sqlx::query_scalar("SELECT sort_order FROM notes_blocks WHERE id = ?")
+        let original_order: String =
+            sqlx::query_scalar("SELECT order_key FROM notes_blocks WHERE id = ?")
                 .bind(BLOCK_C)
                 .fetch_one(&pool)
                 .await
@@ -472,7 +472,7 @@ fn database_replacement_is_atomic_and_missing_or_structural_targets_leave_no_obj
         databases::create_linked_database_view(&pool, request)
             .await
             .unwrap();
-        let order: f64 = sqlx::query_scalar("SELECT sort_order FROM notes_blocks WHERE id = ?")
+        let order: String = sqlx::query_scalar("SELECT order_key FROM notes_blocks WHERE id = ?")
             .bind(BLOCK_C)
             .fetch_one(&pool)
             .await
@@ -887,7 +887,7 @@ fn duplicating_imported_database_placeholders_preserves_the_placeholder_without_
         .unwrap();
         let page = copied["page"]["id"].as_str().unwrap();
         let payload: String = sqlx::query_scalar(
-            "SELECT payload FROM notes_blocks WHERE page_id = ? AND type = 'child_database'",
+            "SELECT json_patch(attrs, text) FROM notes_blocks WHERE page_id = ? AND type = 'child_database'",
         )
         .bind(page)
         .fetch_one(&pool)

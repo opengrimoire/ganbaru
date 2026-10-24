@@ -191,7 +191,7 @@ async fn root_trash_owner(
 fn root_location(root: &TrashObject) -> (&'static str, &'static str, &str) {
     match root {
         TrashObject::Page(id) => ("notes_pages", "properties", id),
-        TrashObject::Block(id) => ("notes_blocks", "payload", id),
+        TrashObject::Block(id) => ("notes_blocks", "attrs", id),
         TrashObject::Database(id) => ("notes_databases", "description", id),
         TrashObject::Source(id) => ("notes_data_sources", "properties", id),
     }

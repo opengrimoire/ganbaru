@@ -713,16 +713,15 @@ pub async fn open_page(pool: &SqlitePool, page_id: &str) -> Result<NotePageOpenD
     .map_err(|error| format!("load notes page: {error}"))?
     .ok_or_else(|| "notes page not found".to_string())?;
     let breadcrumb = page_breadcrumb_tx(&mut transaction, page_id).await?;
-    let rows = sqlx::query_as::<_, NoteBlockRow>(
-        "SELECT
-            id, page_id, parent_type, parent_page_id, parent_block_id, has_children,
-            in_trash, type AS block_type, payload, plain_text, sort_order, source_provider,
-            source_object_id, source_last_edited_time, created_time, last_edited_time
+    let rows = sqlx::query_as::<_, NoteBlockRow>(concat!(
+        "SELECT ",
+        crate::note_block_row_columns!("notes_blocks"),
+        "
          FROM notes_blocks
          WHERE parent_type = 'page_id' AND parent_page_id = ? AND in_trash = 0
-         ORDER BY sort_order ASC, id ASC
-         LIMIT ?",
-    )
+         ORDER BY order_key ASC, id ASC
+         LIMIT ?"
+    ))
     .bind(page_id)
     .bind(DEFAULT_PAGE_SIZE + 1)
     .fetch_all(&mut *transaction)
@@ -730,10 +729,10 @@ pub async fn open_page(pool: &SqlitePool, page_id: &str) -> Result<NotePageOpenD
     .map_err(|error| format!("load notes page blocks: {error}"))?;
     let outline_rows = sqlx::query_as::<_, BlockOutlineRow>(
         "SELECT id, page_id, parent_type, parent_page_id, parent_block_id,
-                type AS block_type, sort_order, has_children, COALESCE(json_extract(payload, '$.ganbaru_indent'), 0) AS ganbaru_indent
+                type AS block_type, CAST(ROW_NUMBER() OVER (PARTITION BY parent_page_id, parent_block_id ORDER BY order_key, id) AS REAL) AS sort_order, EXISTS (SELECT 1 FROM notes_blocks AS has_child WHERE has_child.parent_block_id = notes_blocks.id AND has_child.in_trash = 0) AS has_children, COALESCE(json_extract(attrs, '$.ganbaru_indent'), 0) AS ganbaru_indent
          FROM notes_blocks
          WHERE parent_type = 'page_id' AND parent_page_id = ? AND in_trash = 0
-         ORDER BY sort_order ASC, id ASC",
+         ORDER BY order_key ASC, id ASC",
     )
     .bind(page_id)
     .fetch_all(&mut *transaction)
@@ -767,7 +766,7 @@ pub async fn block_outline_frontier(
     for parent_batch in parent_ids.chunks(BLOCK_FRONTIER_PARENT_BATCH_SIZE) {
         let mut query = QueryBuilder::<Sqlite>::new(
             "SELECT id, page_id, parent_type, parent_page_id, parent_block_id, \
-                    type AS block_type, sort_order, has_children, COALESCE(json_extract(payload, '$.ganbaru_indent'), 0) AS ganbaru_indent \
+                    type AS block_type, CAST(ROW_NUMBER() OVER (PARTITION BY parent_page_id, parent_block_id ORDER BY order_key, id) AS REAL) AS sort_order, EXISTS (SELECT 1 FROM notes_blocks AS has_child WHERE has_child.parent_block_id = notes_blocks.id AND has_child.in_trash = 0) AS has_children, COALESCE(json_extract(attrs, '$.ganbaru_indent'), 0) AS ganbaru_indent \
              FROM notes_blocks WHERE page_id = ",
         );
         query.push_bind(page_id);
@@ -776,7 +775,7 @@ pub async fn block_outline_frontier(
         for parent_id in parent_batch {
             separated.push_bind(parent_id);
         }
-        query.push(") ORDER BY parent_block_id ASC, sort_order ASC, id ASC");
+        query.push(") ORDER BY parent_block_id ASC, order_key ASC, id ASC");
         rows.extend(
             query
                 .build_query_as::<BlockOutlineRow>()
@@ -803,19 +802,18 @@ pub async fn hydrate_blocks(
     if block_ids.is_empty() {
         return Ok(Vec::new());
     }
-    let mut query = QueryBuilder::<Sqlite>::new(
-        "SELECT id, page_id, parent_type, parent_page_id, parent_block_id, has_children, \
-                in_trash, type AS block_type, payload, plain_text, sort_order, source_provider, \
-                source_object_id, source_last_edited_time, created_time, last_edited_time \
-         FROM notes_blocks WHERE page_id = ",
-    );
+    let mut query = QueryBuilder::<Sqlite>::new(concat!(
+        "SELECT ",
+        crate::note_block_row_columns!("notes_blocks"),
+        " FROM notes_blocks WHERE page_id = "
+    ));
     query.push_bind(page_id);
     query.push(" AND in_trash = 0 AND id IN (");
     let mut separated = query.separated(", ");
     for block_id in &block_ids {
         separated.push_bind(block_id);
     }
-    query.push(") ORDER BY sort_order ASC, id ASC");
+    query.push(") ORDER BY order_key ASC, id ASC");
     query
         .build_query_as::<NoteBlockRow>()
         .fetch_all(pool)
@@ -899,17 +897,16 @@ pub async fn block_frontier(
     }
     let mut rows = Vec::new();
     for parent_batch in normalized.chunks(BLOCK_FRONTIER_PARENT_BATCH_SIZE) {
-        let mut query = QueryBuilder::<Sqlite>::new(
-            "SELECT id, page_id, parent_type, parent_page_id, parent_block_id, has_children, \
-             in_trash, type AS block_type, payload, plain_text, sort_order, source_provider, \
-             source_object_id, source_last_edited_time, created_time, last_edited_time \
-             FROM notes_blocks WHERE parent_type = 'block_id' AND in_trash = 0 AND parent_block_id IN (",
-        );
+        let mut query = QueryBuilder::<Sqlite>::new(concat!(
+            "SELECT ",
+            crate::note_block_row_columns!("notes_blocks"),
+            " FROM notes_blocks WHERE parent_type = 'block_id' AND in_trash = 0 AND parent_block_id IN ("
+        ));
         let mut separated = query.separated(", ");
         for parent_id in parent_batch {
             separated.push_bind(parent_id);
         }
-        query.push(") ORDER BY parent_block_id ASC, sort_order ASC, id ASC");
+        query.push(") ORDER BY parent_block_id ASC, order_key ASC, id ASC");
         rows.extend(
             query
                 .build_query_as::<NoteBlockRow>()
@@ -1050,52 +1047,24 @@ pub async fn get_block_row(
     include_trash: bool,
 ) -> Result<NoteBlockRow, String> {
     let row = if include_trash {
-        sqlx::query_as::<_, NoteBlockRow>(
-            "SELECT
-                id,
-                page_id,
-                parent_type,
-                parent_page_id,
-                parent_block_id,
-                has_children,
-                in_trash,
-                type AS block_type,
-                payload,
-                plain_text,
-                sort_order,
-                source_provider,
-                source_object_id,
-                source_last_edited_time,
-                created_time,
-                last_edited_time
+        sqlx::query_as::<_, NoteBlockRow>(concat!(
+            "SELECT ",
+            crate::note_block_row_columns!("notes_blocks"),
+            "
              FROM notes_blocks
-             WHERE id = ?",
-        )
+             WHERE id = ?"
+        ))
         .bind(block_id)
         .fetch_optional(pool)
         .await
     } else {
-        sqlx::query_as::<_, NoteBlockRow>(
-            "SELECT
-                id,
-                page_id,
-                parent_type,
-                parent_page_id,
-                parent_block_id,
-                has_children,
-                in_trash,
-                type AS block_type,
-                payload,
-                plain_text,
-                sort_order,
-                source_provider,
-                source_object_id,
-                source_last_edited_time,
-                created_time,
-                last_edited_time
+        sqlx::query_as::<_, NoteBlockRow>(concat!(
+            "SELECT ",
+            crate::note_block_row_columns!("notes_blocks"),
+            "
              FROM notes_blocks
-             WHERE id = ? AND in_trash = 0",
-        )
+             WHERE id = ? AND in_trash = 0"
+        ))
         .bind(block_id)
         .fetch_optional(pool)
         .await
@@ -1146,68 +1115,40 @@ async fn get_child_blocks_by_parent_page(
     start_cursor: Option<&str>,
     page_size: Option<i64>,
 ) -> Result<NotePaginatedBlockList, String> {
-    let cursor_order = cursor_sort_order(pool, start_cursor).await?;
+    let cursor_order = cursor_order_key(pool, start_cursor).await?;
     let size = normalized_page_size(page_size)?;
-    let rows = if let Some((sort_order, cursor_id)) = cursor_order {
-        sqlx::query_as::<_, NoteBlockRow>(
-            "SELECT
-                id,
-                page_id,
-                parent_type,
-                parent_page_id,
-                parent_block_id,
-                has_children,
-                in_trash,
-                type AS block_type,
-                payload,
-                plain_text,
-                sort_order,
-                source_provider,
-                source_object_id,
-                source_last_edited_time,
-                created_time,
-                last_edited_time
+    let rows = if let Some((order_key, cursor_id)) = cursor_order {
+        sqlx::query_as::<_, NoteBlockRow>(concat!(
+            "SELECT ",
+            crate::note_block_row_columns!("notes_blocks"),
+            "
              FROM notes_blocks
              WHERE parent_type = 'page_id'
                AND parent_page_id = ?
                AND in_trash = 0
-               AND (sort_order > ? OR (sort_order = ? AND id > ?))
-             ORDER BY sort_order ASC, id ASC
-             LIMIT ?",
-        )
+               AND (order_key > ? OR (order_key = ? AND id > ?))
+             ORDER BY order_key ASC, id ASC
+             LIMIT ?"
+        ))
         .bind(page_id)
-        .bind(sort_order)
-        .bind(sort_order)
+        .bind(&order_key)
+        .bind(&order_key)
         .bind(cursor_id)
         .bind(size + 1)
         .fetch_all(pool)
         .await
     } else {
-        sqlx::query_as::<_, NoteBlockRow>(
-            "SELECT
-                id,
-                page_id,
-                parent_type,
-                parent_page_id,
-                parent_block_id,
-                has_children,
-                in_trash,
-                type AS block_type,
-                payload,
-                plain_text,
-                sort_order,
-                source_provider,
-                source_object_id,
-                source_last_edited_time,
-                created_time,
-                last_edited_time
+        sqlx::query_as::<_, NoteBlockRow>(concat!(
+            "SELECT ",
+            crate::note_block_row_columns!("notes_blocks"),
+            "
              FROM notes_blocks
              WHERE parent_type = 'page_id'
                AND parent_page_id = ?
                AND in_trash = 0
-             ORDER BY sort_order ASC, id ASC
-             LIMIT ?",
-        )
+             ORDER BY order_key ASC, id ASC
+             LIMIT ?"
+        ))
         .bind(page_id)
         .bind(size + 1)
         .fetch_all(pool)
@@ -1223,68 +1164,40 @@ async fn get_child_blocks_by_parent_block(
     start_cursor: Option<&str>,
     page_size: Option<i64>,
 ) -> Result<NotePaginatedBlockList, String> {
-    let cursor_order = cursor_sort_order(pool, start_cursor).await?;
+    let cursor_order = cursor_order_key(pool, start_cursor).await?;
     let size = normalized_page_size(page_size)?;
-    let rows = if let Some((sort_order, cursor_id)) = cursor_order {
-        sqlx::query_as::<_, NoteBlockRow>(
-            "SELECT
-                id,
-                page_id,
-                parent_type,
-                parent_page_id,
-                parent_block_id,
-                has_children,
-                in_trash,
-                type AS block_type,
-                payload,
-                plain_text,
-                sort_order,
-                source_provider,
-                source_object_id,
-                source_last_edited_time,
-                created_time,
-                last_edited_time
+    let rows = if let Some((order_key, cursor_id)) = cursor_order {
+        sqlx::query_as::<_, NoteBlockRow>(concat!(
+            "SELECT ",
+            crate::note_block_row_columns!("notes_blocks"),
+            "
              FROM notes_blocks
              WHERE parent_type = 'block_id'
                AND parent_block_id = ?
                AND in_trash = 0
-               AND (sort_order > ? OR (sort_order = ? AND id > ?))
-             ORDER BY sort_order ASC, id ASC
-             LIMIT ?",
-        )
+               AND (order_key > ? OR (order_key = ? AND id > ?))
+             ORDER BY order_key ASC, id ASC
+             LIMIT ?"
+        ))
         .bind(block_id)
-        .bind(sort_order)
-        .bind(sort_order)
+        .bind(&order_key)
+        .bind(&order_key)
         .bind(cursor_id)
         .bind(size + 1)
         .fetch_all(pool)
         .await
     } else {
-        sqlx::query_as::<_, NoteBlockRow>(
-            "SELECT
-                id,
-                page_id,
-                parent_type,
-                parent_page_id,
-                parent_block_id,
-                has_children,
-                in_trash,
-                type AS block_type,
-                payload,
-                plain_text,
-                sort_order,
-                source_provider,
-                source_object_id,
-                source_last_edited_time,
-                created_time,
-                last_edited_time
+        sqlx::query_as::<_, NoteBlockRow>(concat!(
+            "SELECT ",
+            crate::note_block_row_columns!("notes_blocks"),
+            "
              FROM notes_blocks
              WHERE parent_type = 'block_id'
                AND parent_block_id = ?
                AND in_trash = 0
-             ORDER BY sort_order ASC, id ASC
-             LIMIT ?",
-        )
+             ORDER BY order_key ASC, id ASC
+             LIMIT ?"
+        ))
         .bind(block_id)
         .bind(size + 1)
         .fetch_all(pool)
@@ -1294,10 +1207,10 @@ async fn get_child_blocks_by_parent_block(
     paginated_rows(rows, size as usize)
 }
 
-async fn cursor_sort_order(
+async fn cursor_order_key(
     pool: &SqlitePool,
     start_cursor: Option<&str>,
-) -> Result<Option<(f64, String)>, String> {
+) -> Result<Option<(String, String)>, String> {
     let Some(cursor) = start_cursor
         .map(str::trim)
         .filter(|value| !value.is_empty())
@@ -1305,8 +1218,8 @@ async fn cursor_sort_order(
         return Ok(None);
     };
     require_uuid(cursor, "start_cursor")?;
-    let row: Option<(f64, String)> =
-        sqlx::query_as("SELECT sort_order, id FROM notes_blocks WHERE id = ? AND in_trash = 0")
+    let row: Option<(String, String)> =
+        sqlx::query_as("SELECT order_key, id FROM notes_blocks WHERE id = ? AND in_trash = 0")
             .bind(cursor)
             .fetch_optional(pool)
             .await

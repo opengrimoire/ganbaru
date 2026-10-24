@@ -1,20 +1,20 @@
 use super::block_tree::{
     load_child_page_block_row, load_page_block_subtree_rows, load_page_block_subtree_rows_for_copy,
-    refresh_duplicated_has_children,
 };
 use super::copy_budget::{CopyBudget, CopyContext};
 use super::database_copy::{DatabaseCopy, insert_database_copy, plan_database_copy};
 use super::ids::new_note_id;
 use super::pages::load_page_row;
-use super::parents::{parent_target_from_block_row, refresh_parent_has_children, touch_page};
+use super::parents::{parent_target_from_block_row, touch_page, touch_parent_block};
 use super::payloads::{child_page_payload, page_row_properties_for_title};
-use super::sort::next_sort_orders;
+use super::sort::next_order_keys;
+use crate::block_storage::{
+    BlockRowInsert, insert_block_row, load_block_content_payload, replace_block_payload,
+};
 use crate::models::{
     NoteBlockRow, NoteDuplicatePage, NoteLoadedPage, NotePageRow, NoteParent, page_parent_columns,
 };
-use crate::validation::{
-    plain_text_from_payload, require_uuid, validate_parent, validate_sort_order,
-};
+use crate::validation::{plain_text_from_payload, require_uuid, validate_parent};
 use crate::{assets, page_history, project_history, reads};
 use sqlx::SqlitePool;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -107,16 +107,11 @@ impl DuplicatePageGraph {
             .await?;
             for row in &plan.blocks {
                 let id = &self.block_ids[&row.id];
-                super::database_copy::remap_column(tx, "notes_blocks", "payload", id, &identities)
-                    .await?;
-                let raw: String =
-                    sqlx::query_scalar("SELECT payload FROM notes_blocks WHERE id = ?")
-                        .bind(id)
-                        .fetch_one(&mut **tx)
-                        .await
-                        .map_err(|e| format!("read copied block assets: {e}"))?;
-                let payload = serde_json::from_str(&raw)
-                    .map_err(|e| format!("parse copied block assets: {e}"))?;
+                for column in ["attrs", "text"] {
+                    super::database_copy::remap_column(tx, "notes_blocks", column, id, &identities)
+                        .await?;
+                }
+                let payload = load_block_content_payload(tx, id).await?;
                 assets::sync_block_asset_reference_tx(
                     tx,
                     id,
@@ -277,15 +272,10 @@ pub(crate) async fn insert_child_page_copy(
             .await?;
     }
     for database in &graph.databases {
-        sqlx::query("UPDATE notes_blocks SET payload = ? WHERE id = ?")
-            .bind(database.payload.to_string())
-            .bind(&database.id)
-            .execute(&mut **tx)
-            .await
-            .map_err(|e| format!("set copied database identities: {e}"))?;
+        replace_block_payload(tx, &database.id, "child_database", &database.payload).await?;
         Box::pin(insert_database_copy(tx, database)).await?;
     }
-    refresh_duplicated_has_children(tx, &inserted).await
+    Ok(())
 }
 
 pub async fn duplicate_page(
@@ -463,15 +453,9 @@ pub async fn duplicate_page(
         .await?;
     }
     for database in &databases {
-        sqlx::query("UPDATE notes_blocks SET payload = ? WHERE id = ?")
-            .bind(database.payload.to_string())
-            .bind(&database.id)
-            .execute(&mut *tx)
-            .await
-            .map_err(|e| format!("set duplicated page database identities: {e}"))?;
+        replace_block_payload(&mut tx, &database.id, "child_database", &database.payload).await?;
         insert_database_copy(&mut tx, database).await?;
     }
-    refresh_duplicated_has_children(&mut tx, &inserted_block_ids).await?;
     let graph = DuplicatePageGraph {
         plans,
         block_ids,
@@ -594,35 +578,29 @@ pub(super) async fn insert_root_duplicate_child_page_block(
     }
     let source_block = load_child_page_block_row(tx, &plan.source_page.id).await?;
     let parent = parent_target_from_block_row(&source_block);
-    let sort_order = next_sort_orders(tx, &parent, Some(source_block.id.as_str()), 1).await?[0];
-    validate_sort_order(sort_order)?;
+    let order_key = next_order_keys(tx, &parent, Some(source_block.id.as_str()), 1)
+        .await?
+        .remove(0);
     let payload = child_page_payload(&plan.duplicate_title);
-    sqlx::query(
-        "INSERT INTO notes_blocks (
-            id,
-            page_id,
-            parent_type,
-            parent_page_id,
-            parent_block_id,
-            type,
-            payload,
-            plain_text,
-            sort_order
-         )
-         VALUES (?, ?, ?, ?, ?, 'child_page', ?, ?, ?)",
+    insert_block_row(
+        tx,
+        BlockRowInsert {
+            id: &plan.duplicate_id,
+            page_id: &source_block.page_id,
+            parent_type: parent.parent_type,
+            parent_page_id: parent.parent_page_id.as_deref(),
+            parent_block_id: parent.parent_block_id.as_deref(),
+            block_type: "child_page",
+            payload: &payload,
+            plain_text: &plain_text_from_payload("child_page", &payload),
+            order_key: &order_key,
+            source_provider: None,
+            source_object_id: None,
+            source_last_edited_time: None,
+        },
     )
-    .bind(&plan.duplicate_id)
-    .bind(&source_block.page_id)
-    .bind(parent.parent_type)
-    .bind(&parent.parent_page_id)
-    .bind(&parent.parent_block_id)
-    .bind(payload.to_string())
-    .bind(plain_text_from_payload("child_page", &payload))
-    .bind(sort_order)
-    .execute(&mut **tx)
-    .await
-    .map_err(|e| format!("duplicate notes child page block: {e}"))?;
-    refresh_parent_has_children(tx, &parent).await?;
+    .await?;
+    touch_parent_block(tx, &parent).await?;
     touch_page(tx, &source_block.page_id).await?;
     Ok(())
 }
@@ -656,45 +634,32 @@ pub(super) async fn insert_duplicated_page_blocks(
                 .get(&row.id)
                 .ok_or_else(|| "duplicated child page title is missing".to_string())?;
             let payload = child_page_payload(title);
-            (
-                payload.to_string(),
-                plain_text_from_payload("child_page", &payload),
-            )
+            let plain_text = plain_text_from_payload("child_page", &payload);
+            (payload, plain_text)
         } else {
             let mut payload: serde_json::Value = serde_json::from_str(&row.payload)
                 .map_err(|e| format!("parse copied block: {e}"))?;
             super::database_copy::strip_trash_metadata(&mut payload);
-            (payload.to_string(), row.plain_text.clone())
+            (payload, row.plain_text.clone())
         };
-        validate_sort_order(row.sort_order)?;
-        sqlx::query(
-            "INSERT INTO notes_blocks (
-                id,
-                page_id,
+        insert_block_row(
+            tx,
+            BlockRowInsert {
+                id: duplicate_id,
+                page_id: &plan.duplicate_id,
                 parent_type,
-                parent_page_id,
-                parent_block_id,
-                has_children,
-                type,
-                payload,
-                plain_text,
-                sort_order
-             )
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                parent_page_id: parent_page_id.as_deref(),
+                parent_block_id: parent_block_id.as_deref(),
+                block_type: &row.block_type,
+                payload: &payload,
+                plain_text: &plain_text,
+                order_key: &row.order_key,
+                source_provider: None,
+                source_object_id: None,
+                source_last_edited_time: None,
+            },
         )
-        .bind(duplicate_id)
-        .bind(&plan.duplicate_id)
-        .bind(parent_type)
-        .bind(parent_page_id)
-        .bind(parent_block_id)
-        .bind(row.has_children)
-        .bind(&row.block_type)
-        .bind(payload)
-        .bind(plain_text)
-        .bind(row.sort_order)
-        .execute(&mut **tx)
-        .await
-        .map_err(|e| format!("duplicate notes page block: {e}"))?;
+        .await?;
         inserted_block_ids.insert(duplicate_id.clone());
     }
     Ok(())

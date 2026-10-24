@@ -212,7 +212,7 @@ pub async fn apply_compound_edit(
         }
     }
     for list_id in column_lists {
-        let columns: Vec<String> = sqlx::query_scalar("SELECT id FROM notes_blocks WHERE parent_block_id = ? AND in_trash = 0 ORDER BY sort_order, id LIMIT ?")
+        let columns: Vec<String> = sqlx::query_scalar("SELECT id FROM notes_blocks WHERE parent_block_id = ? AND in_trash = 0 ORDER BY order_key, id LIMIT ?")
             .bind(list_id).bind((MAX_REFERENCES + 1) as i64).fetch_all(&mut *tx).await
             .map_err(|error| format!("read canonical Notes columns: {error}"))?;
         if columns.len() > MAX_REFERENCES
@@ -470,7 +470,7 @@ pub async fn apply_compound_edit(
     rows.sort_by(|left, right| {
         (&left.parent_page_id, &left.parent_block_id)
             .cmp(&(&right.parent_page_id, &right.parent_block_id))
-            .then(left.sort_order.total_cmp(&right.sort_order))
+            .then(left.order_key.cmp(&right.order_key))
             .then(left.id.cmp(&right.id))
     });
     let mut placements = Vec::new();

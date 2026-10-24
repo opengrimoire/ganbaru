@@ -173,14 +173,16 @@ pub async fn refresh_all(pool: &SqlitePool) -> Result<i64, String> {
     .map_err(|e| format!("clear pending notes mention notifications: {e}"))?
     .rows_affected() as i64;
 
-    let block_rows = sqlx::query_as::<_, (String, String, String, String, String)>(
-        "SELECT block.id, block.page_id, block.type, block.payload, block.plain_text
-         FROM notes_blocks AS block
-         JOIN notes_pages AS page ON page.id = block.page_id
-         WHERE block.in_trash = 0
-           AND page.in_trash = 0
-           AND page.archived = 0",
-    )
+    let block_rows = sqlx::query_as::<_, (String, String, String, String, String)>(concat!(
+        "SELECT block.id, block.page_id, block.type, ",
+        crate::note_block_content_sql!("block"),
+        ", block.plain_text
+             FROM notes_blocks AS block
+             JOIN notes_pages AS page ON page.id = block.page_id
+             WHERE block.in_trash = 0
+               AND page.in_trash = 0
+               AND page.archived = 0"
+    ))
     .fetch_all(&mut *tx)
     .await
     .map_err(|e| format!("load notes blocks for mention notification refresh: {e}"))?;

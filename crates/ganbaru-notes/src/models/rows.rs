@@ -215,7 +215,10 @@ pub struct NoteUnresolvedLinkRow {
     pub last_edited_time: String,
 }
 
-#[derive(Clone, Deserialize, Serialize, sqlx::FromRow)]
+/// A block as the API sees it. The payload is composed from the stored `attrs`, `text`, view
+/// state, and `child_page` title, and `has_children` is derived, so rows are read with the select
+/// list from [`crate::note_block_row_columns`].
+#[derive(Clone, Deserialize, Serialize)]
 pub struct NoteBlockRow {
     pub id: String,
     pub page_id: String,
@@ -228,12 +231,36 @@ pub struct NoteBlockRow {
     pub block_type: String,
     pub payload: String,
     pub plain_text: String,
-    pub sort_order: f64,
+    pub order_key: String,
     pub source_provider: Option<String>,
     pub source_object_id: Option<String>,
     pub source_last_edited_time: Option<String>,
     pub created_time: String,
     pub last_edited_time: String,
+}
+
+impl<'r> sqlx::FromRow<'r, sqlx::sqlite::SqliteRow> for NoteBlockRow {
+    fn from_row(row: &'r sqlx::sqlite::SqliteRow) -> Result<Self, sqlx::Error> {
+        use sqlx::Row;
+        Ok(Self {
+            id: row.try_get("id")?,
+            page_id: row.try_get("page_id")?,
+            parent_type: row.try_get("parent_type")?,
+            parent_page_id: row.try_get("parent_page_id")?,
+            parent_block_id: row.try_get("parent_block_id")?,
+            has_children: row.try_get("has_children")?,
+            in_trash: row.try_get("in_trash")?,
+            block_type: row.try_get("block_type")?,
+            payload: crate::block_storage::payload_from_row(row)?,
+            plain_text: row.try_get("plain_text")?,
+            order_key: row.try_get("order_key")?,
+            source_provider: row.try_get("source_provider")?,
+            source_object_id: row.try_get("source_object_id")?,
+            source_last_edited_time: row.try_get("source_last_edited_time")?,
+            created_time: row.try_get("created_time")?,
+            last_edited_time: row.try_get("last_edited_time")?,
+        })
+    }
 }
 
 impl NoteBlockRow {

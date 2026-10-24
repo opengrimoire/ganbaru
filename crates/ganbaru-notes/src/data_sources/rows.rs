@@ -1,6 +1,8 @@
+use crate::block_storage::{BlockRowInsert, insert_block_row};
 use crate::models::{NoteDataSourceRowPageCreate, NoteLoadedPage, NotePageDto, NotePageRow};
 use crate::validation::{plain_text_from_payload, require_uuid};
 use crate::{assets, data_sources, reads, writes};
+use ganbaru_sync_contracts::OrderKey;
 use serde_json::{Map, Value, json};
 use sqlx::{Sqlite, SqlitePool, Transaction};
 
@@ -94,25 +96,24 @@ pub(crate) async fn create_data_source_row_page_tx(
     .execute(&mut **tx)
     .await
     .map_err(|e| format!("create notes data source row page: {e}"))?;
-    sqlx::query(
-        "INSERT INTO notes_blocks (
-            id,
-            page_id,
-            parent_type,
-            parent_page_id,
-            type,
-            payload,
-            plain_text,
-            sort_order
-         )
-         VALUES (?, ?, 'page_id', ?, 'paragraph', ?, ?, 1000)",
+    let first_order_key = OrderKey::first().into_string();
+    insert_block_row(
+        tx,
+        BlockRowInsert {
+            id: request.first_block_id.trim(),
+            page_id: request.id.trim(),
+            parent_type: "page_id",
+            parent_page_id: Some(request.id.trim()),
+            parent_block_id: None,
+            block_type: "paragraph",
+            payload: &first_payload,
+            plain_text: &first_plain_text,
+            order_key: &first_order_key,
+            source_provider: None,
+            source_object_id: None,
+            source_last_edited_time: None,
+        },
     )
-    .bind(request.first_block_id.trim())
-    .bind(request.id.trim())
-    .bind(request.id.trim())
-    .bind(first_payload.to_string())
-    .bind(first_plain_text)
-    .execute(&mut **tx)
     .await
     .map_err(|e| format!("create initial notes data source row block: {e}"))?;
     data_sources::relations::replace_row_relation_links_tx(

@@ -48,22 +48,24 @@ pub(crate) async fn ensure_folder_parent_acyclic_tx(
     Ok(())
 }
 
+/// A page's parent type, folder, and project, with the folder's project.
+type PageFolderPlacement = (String, Option<String>, Option<String>, Option<String>);
+
 /// Require a page placed in a folder to be a workspace page of the folder's project.
 pub(crate) async fn validate_page_folder_tx(
     tx: &mut Transaction<'_, Sqlite>,
     page_id: &str,
 ) -> Result<(), String> {
-    let placement: Option<(String, Option<String>, Option<String>, Option<String>)> =
-        sqlx::query_as(
-            "SELECT page.parent_type, page.folder_id, page.project_id, folder.project_id
+    let placement: Option<PageFolderPlacement> = sqlx::query_as(
+        "SELECT page.parent_type, page.folder_id, page.project_id, folder.project_id
              FROM notes_pages AS page
              LEFT JOIN notes_folders AS folder ON folder.id = page.folder_id
              WHERE page.id = ?",
-        )
-        .bind(page_id)
-        .fetch_optional(&mut **tx)
-        .await
-        .map_err(|e| format!("load notes page folder placement: {e}"))?;
+    )
+    .bind(page_id)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(|e| format!("load notes page folder placement: {e}"))?;
     let Some((parent_type, folder_id, page_project_id, folder_project_id)) = placement else {
         return Err("notes page not found".to_string());
     };

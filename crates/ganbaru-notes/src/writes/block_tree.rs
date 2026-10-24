@@ -69,27 +69,13 @@ pub(super) async fn load_block_row_tx(
     block_id: &str,
     include_trashed: bool,
 ) -> Result<NoteBlockRow, String> {
-    sqlx::query_as::<_, NoteBlockRow>(
-        "SELECT
-            id,
-            page_id,
-            parent_type,
-            parent_page_id,
-            parent_block_id,
-            has_children,
-            in_trash,
-            type AS block_type,
-            payload,
-            plain_text,
-            sort_order,
-            source_provider,
-            source_object_id,
-            source_last_edited_time,
-            created_time,
-            last_edited_time
+    sqlx::query_as::<_, NoteBlockRow>(concat!(
+        "SELECT ",
+        crate::note_block_row_columns!("notes_blocks"),
+        "
          FROM notes_blocks
-         WHERE id = ? AND (? = 1 OR in_trash = 0)",
-    )
+         WHERE id = ? AND (? = 1 OR in_trash = 0)"
+    ))
     .bind(block_id)
     .bind(if include_trashed { 1_i64 } else { 0_i64 })
     .fetch_optional(&mut **tx)
@@ -122,18 +108,18 @@ pub(super) async fn load_block_subtree_rows_including_trashed(
 ) -> Result<Vec<NoteBlockRow>, String> {
     let descriptors = sqlx::query_as::<_, CopyBlockDescriptor>(
         "WITH RECURSIVE subtree(id, path, depth) AS (
-            SELECT id, printf('%020.6f:%s', sort_order, id), 0
+            SELECT id, order_key || ' ' || id, 0
             FROM notes_blocks
             WHERE id = ? AND (? = 1 OR in_trash = 0)
             UNION ALL
-            SELECT child.id, subtree.path || '/' || printf('%020.6f:%s', child.sort_order, child.id), subtree.depth + 1
+            SELECT child.id, subtree.path || '/' || child.order_key || ' ' || child.id, subtree.depth + 1
             FROM notes_blocks AS child
             JOIN subtree ON child.parent_block_id = subtree.id
             WHERE (? = 1 OR child.in_trash = 0) AND subtree.depth <= ?
             LIMIT ?
          )
          SELECT notes_blocks.id, subtree.depth,
-            length(CAST(payload AS BLOB)) + length(CAST(plain_text AS BLOB))
+            length(CAST(attrs AS BLOB)) + length(CAST(text AS BLOB)) + length(CAST(plain_text AS BLOB))
                 + coalesce(length(CAST(source_provider AS BLOB)), 0)
                 + coalesce(length(CAST(source_object_id AS BLOB)), 0)
                 + coalesce(length(CAST(source_last_edited_time AS BLOB)), 0) AS bytes
@@ -169,7 +155,7 @@ pub(super) async fn load_page_block_subtree_rows_for_copy(
 ) -> Result<Vec<NoteBlockRow>, String> {
     let descriptors = sqlx::query_as::<_, CopyBlockDescriptor>(
         "WITH RECURSIVE eligible AS (
-            SELECT block.id, block.parent_type, block.parent_page_id, block.parent_block_id, block.sort_order
+            SELECT block.id, block.parent_type, block.parent_page_id, block.parent_block_id, block.order_key
             FROM notes_blocks AS block
             WHERE block.page_id = ? AND (block.in_trash = 0 OR (
                 ? AND EXISTS (
@@ -186,17 +172,17 @@ pub(super) async fn load_page_block_subtree_rows_for_copy(
                     AND block.trash_owner = parent.trash_owner)
             ))
          ), subtree(id, path, depth) AS (
-            SELECT id, printf('%020.6f:%s', sort_order, id), 0
+            SELECT id, order_key || ' ' || id, 0
             FROM eligible
             WHERE parent_type = 'page_id' AND parent_page_id = ?
             UNION ALL
-            SELECT child.id, subtree.path || '/' || printf('%020.6f:%s', child.sort_order, child.id), subtree.depth + 1
+            SELECT child.id, subtree.path || '/' || child.order_key || ' ' || child.id, subtree.depth + 1
             FROM eligible AS child
             JOIN subtree ON child.parent_block_id = subtree.id
             WHERE subtree.depth <= ? LIMIT ?
          )
          SELECT notes_blocks.id, subtree.depth,
-            length(CAST(payload AS BLOB)) + length(CAST(plain_text AS BLOB))
+            length(CAST(attrs AS BLOB)) + length(CAST(text AS BLOB)) + length(CAST(plain_text AS BLOB))
                 + coalesce(length(CAST(source_provider AS BLOB)), 0)
                 + coalesce(length(CAST(source_object_id AS BLOB)), 0)
                 + coalesce(length(CAST(source_last_edited_time AS BLOB)), 0) AS bytes
@@ -261,14 +247,13 @@ async fn load_admitted_copy_blocks(
     let encoded_ids = serde_json::to_string(&ids)
         .map_err(|error| format!("encode copied block identities: {error}"))?;
     budget.block_comments(tx, &encoded_ids).await?;
-    sqlx::query_as::<_, NoteBlockRow>(
-        "SELECT block.id, block.page_id, block.parent_type, block.parent_page_id,
-            block.parent_block_id, block.has_children, block.in_trash, block.type AS block_type,
-            block.payload, block.plain_text, block.sort_order, block.source_provider,
-            block.source_object_id, block.source_last_edited_time, block.created_time, block.last_edited_time
+    sqlx::query_as::<_, NoteBlockRow>(concat!(
+        "SELECT ",
+        crate::note_block_row_columns!("block"),
+        "
          FROM json_each(?) AS selected JOIN notes_blocks AS block ON block.id = selected.value
-         ORDER BY CAST(selected.key AS INTEGER)",
-    )
+         ORDER BY CAST(selected.key AS INTEGER)"
+    ))
     .bind(encoded_ids)
     .fetch_all(&mut **tx)
     .await
@@ -279,27 +264,13 @@ pub(super) async fn load_child_page_block_row(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     block_id: &str,
 ) -> Result<NoteBlockRow, String> {
-    sqlx::query_as::<_, NoteBlockRow>(
-        "SELECT
-            id,
-            page_id,
-            parent_type,
-            parent_page_id,
-            parent_block_id,
-            has_children,
-            in_trash,
-            type AS block_type,
-            payload,
-            plain_text,
-            sort_order,
-            source_provider,
-            source_object_id,
-            source_last_edited_time,
-            created_time,
-            last_edited_time
+    sqlx::query_as::<_, NoteBlockRow>(concat!(
+        "SELECT ",
+        crate::note_block_row_columns!("notes_blocks"),
+        "
          FROM notes_blocks
-         WHERE id = ? AND type = 'child_page' AND in_trash = 0",
-    )
+         WHERE id = ? AND type = 'child_page' AND in_trash = 0"
+    ))
     .bind(block_id)
     .fetch_optional(&mut **tx)
     .await
@@ -311,55 +282,17 @@ pub(super) async fn load_child_page_block_row_including_trashed(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     block_id: &str,
 ) -> Result<Option<NoteBlockRow>, String> {
-    sqlx::query_as::<_, NoteBlockRow>(
-        "SELECT
-            id,
-            page_id,
-            parent_type,
-            parent_page_id,
-            parent_block_id,
-            has_children,
-            in_trash,
-            type AS block_type,
-            payload,
-            plain_text,
-            sort_order,
-            source_provider,
-            source_object_id,
-            source_last_edited_time,
-            created_time,
-            last_edited_time
+    sqlx::query_as::<_, NoteBlockRow>(concat!(
+        "SELECT ",
+        crate::note_block_row_columns!("notes_blocks"),
+        "
          FROM notes_blocks
-         WHERE id = ? AND type = 'child_page'",
-    )
+         WHERE id = ? AND type = 'child_page'"
+    ))
     .bind(block_id)
     .fetch_optional(&mut **tx)
     .await
     .map_err(|e| format!("load notes child page block: {e}"))
-}
-
-pub(super) async fn refresh_duplicated_has_children(
-    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
-    block_ids: &HashSet<String>,
-) -> Result<(), String> {
-    for block_id in block_ids {
-        sqlx::query(
-            "UPDATE notes_blocks
-             SET has_children = CASE
-                 WHEN EXISTS (
-                     SELECT 1 FROM notes_blocks AS child
-                     WHERE child.parent_block_id = notes_blocks.id
-                       AND child.in_trash = 0
-                 )
-                 THEN 1 ELSE 0 END
-             WHERE id = ?",
-        )
-        .bind(block_id)
-        .execute(&mut **tx)
-        .await
-        .map_err(|e| format!("refresh duplicated notes block children: {e}"))?;
-    }
-    Ok(())
 }
 
 pub(super) async fn load_blocks_by_ids(

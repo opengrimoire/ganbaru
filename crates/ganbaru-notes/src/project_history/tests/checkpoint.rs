@@ -28,7 +28,7 @@ fn checkpoints_deduplicate_rows_and_skip_unchanged_manifests() {
         sqlx::query(
             "UPDATE notes_blocks
              SET plain_text = 'Second version',
-                 payload = json_set(payload, '$.paragraph.rich_text[0].text.content', 'Second version')
+                 text = json_set(text, '$.rich_text[0].text.content', 'Second version')
              WHERE id = ?",
         )
         .bind(BLOCK_ID)

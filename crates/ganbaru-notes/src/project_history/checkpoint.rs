@@ -124,7 +124,7 @@ where
         .ok_or_else(|| "Notes history actor is unavailable".to_string())?;
     let local_author_name = match actor_display_name {
         Some(_) => None,
-        None => Some(local_user::local_author_name(&mut *tx).await?),
+        None => Some(local_user::local_author_name(&mut tx).await?),
     };
     let resolved_display_name = actor_display_name
         .or(local_author_name.as_deref())

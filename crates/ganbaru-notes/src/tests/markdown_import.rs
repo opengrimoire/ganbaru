@@ -307,3 +307,55 @@ fn markdown_import_stops_table_rows_at_the_block_budget() {
     assert!(started.elapsed() < ADVERSARIAL_PARSE_LIMIT);
     assert!(error.contains("up to 1000 blocks"), "{error}");
 }
+
+#[test]
+fn markdown_import_splits_oversized_text_and_keeps_large_unsupported_source_as_text() {
+    crate::test_block_on(async {
+        let pool = migrated_memory_pool().await;
+        let long = "word \u{e9}".repeat(crate::block_storage::MAX_BLOCK_TEXT_BYTES / 5);
+        let html = format!(
+            "<div>{}</div>",
+            "y".repeat(crate::block_storage::MAX_BLOCK_ATTRS_BYTES)
+        );
+        let result = transfers::markdown_import::import_page(
+            &pool,
+            NoteMarkdownImportRequest {
+                parent: workspace_parent(),
+                title: Some("Long".to_string()),
+                source_name: None,
+                after_block_id: None,
+                markdown: format!("{long}\n\n{html}\n"),
+            },
+        )
+        .await
+        .unwrap();
+        let page_id = serde_json::to_value(&result).unwrap()["page"]["page"]["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let rows: Vec<(String, String, i64, i64)> = sqlx::query_as(
+            "SELECT type, plain_text, length(CAST(text AS BLOB)), length(CAST(attrs AS BLOB))
+             FROM notes_blocks WHERE page_id = ? ORDER BY order_key, id",
+        )
+        .bind(&page_id)
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert!(rows.len() > 2, "{}", rows.len());
+        assert!(
+            rows.iter()
+                .all(|(block_type, ..)| block_type == "paragraph")
+        );
+        for (_, _, text_bytes, attrs_bytes) in &rows {
+            assert!(*text_bytes as usize <= crate::block_storage::MAX_BLOCK_TEXT_BYTES);
+            assert!(*attrs_bytes as usize <= crate::block_storage::MAX_BLOCK_ATTRS_BYTES);
+        }
+        let (html_row, text_rows) = rows.split_last().unwrap();
+        let joined: String = text_rows
+            .iter()
+            .map(|(_, plain, ..)| plain.as_str())
+            .collect();
+        assert_eq!(joined.trim_end(), long.trim_end());
+        assert_eq!(html_row.1, html);
+    });
+}

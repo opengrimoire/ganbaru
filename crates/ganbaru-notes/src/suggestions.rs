@@ -104,7 +104,7 @@ pub async fn create_suggestion(
     let row = load_suggestion_row_tx(&mut tx, request.id.trim()).await?;
     crate::project_history::mark_page_dirty_tx(&mut tx, &row.page_id, "suggestion_create", false)
         .await?;
-    let local_author_name = local_user::local_author_name(&mut *tx).await?;
+    let local_author_name = local_user::local_author_name(&mut tx).await?;
     tx.commit()
         .await
         .map_err(|e| format!("commit notes suggestion create: {e}"))?;
@@ -188,7 +188,7 @@ async fn decide_suggestion(
     };
     crate::project_history::mark_page_dirty_tx(&mut tx, &row.page_id, operation_type, false)
         .await?;
-    let local_author_name = local_user::local_author_name(&mut *tx).await?;
+    let local_author_name = local_user::local_author_name(&mut tx).await?;
     tx.commit()
         .await
         .map_err(|e| format!("commit notes suggestion decision: {e}"))?;

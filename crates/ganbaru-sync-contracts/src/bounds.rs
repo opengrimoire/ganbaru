@@ -68,7 +68,9 @@ pub const MAX_LATE_RESOLUTIONS: usize = MAX_CHANGES_PER_OPERATION;
 /// ends a group of them after a few operations.
 pub const MAX_OPERATIONS_PER_GROUP: usize = 64;
 /// Envelope bytes at which an apply group ends: the operation that reaches them closes it
-/// whatever its header says, so a group holds at most this plus one operation.
+/// whatever its header says, so a group holds at most this plus one operation. The densest group
+/// a writer can force, small Music updates each marked as continuing, holds about 15,000 changes
+/// and applies in about 7 seconds on a release build.
 pub const MAX_GROUP_BYTES: usize = 1 << 20;
 /// Most operations of one chain: a run of a writer's operations that each mark the next as
 /// continuing, which a local edit too large for one group seals as. A receiver applies the

@@ -9,7 +9,7 @@ use std::time::Instant;
 use ganbaru_sync_contracts::bounds::{
     MAX_GROUP_BYTES, MAX_OPERATIONS_PER_CHAIN, MAX_OPERATIONS_PER_GROUP,
 };
-use ganbaru_sync_contracts::{Content, Envelope, WriterId, ends_group};
+use ganbaru_sync_contracts::{Content, Envelope, Operation, WriterId, ends_group};
 
 use super::block_on;
 use super::calendar::{calendar_sql, event_sql};
@@ -21,7 +21,7 @@ const CHILDREN: usize = 10;
 const PARENT: &str = "task-p";
 const NOW_MS: i64 = 1_800_000_000_000;
 
-async fn replicas(count: usize) -> Vec<Replica> {
+pub(super) async fn replicas(count: usize) -> Vec<Replica> {
     let mut replicas = Vec::with_capacity(count);
     for index in 0..count {
         replicas.push(Replica::new(index, 112).await);
@@ -34,7 +34,7 @@ fn child(index: usize) -> String {
 }
 
 /// The shared project with a parent task and [`CHILDREN`] root tasks, on every replica.
-async fn shared_tasks(count: usize) -> Vec<Replica> {
+pub(super) async fn shared_tasks(count: usize) -> Vec<Replica> {
     let mut sql = project_sql();
     sql.push_str(&task_sql(PARENT, "Parent", 1));
     for index in 0..CHILDREN {
@@ -49,7 +49,7 @@ async fn shared_tasks(count: usize) -> Vec<Replica> {
 
 /// One edit that nests every child under the parent and gives each a description near the
 /// longest allowed, so its changes only hold together and fill more than one operation.
-fn move_and_nest_sql() -> String {
+pub(super) fn move_and_nest_sql() -> String {
     format!(
         "UPDATE project_tasks
          SET parent_task_id = {parent}, description = id || hex(zeroblob(30000))
@@ -59,7 +59,7 @@ fn move_and_nest_sql() -> String {
 }
 
 /// Every task as `id>parent`, with `-` for a root task.
-async fn task_parents(replica: &mut Replica) -> Vec<String> {
+pub(super) async fn task_parents(replica: &mut Replica) -> Vec<String> {
     sqlx::query_scalar(
         "SELECT id || '>' || coalesce(parent_task_id, '-') FROM project_tasks ORDER BY id",
     )
@@ -68,7 +68,7 @@ async fn task_parents(replica: &mut Replica) -> Vec<String> {
     .unwrap()
 }
 
-fn nested() -> Vec<String> {
+pub(super) fn nested() -> Vec<String> {
     let mut parents: Vec<String> = (0..CHILDREN)
         .map(|index| format!("{}>{PARENT}", child(index)))
         .collect();
@@ -77,7 +77,7 @@ fn nested() -> Vec<String> {
     parents
 }
 
-async fn assert_converged(replicas: &mut [Replica]) {
+pub(super) async fn assert_converged(replicas: &mut [Replica]) {
     let first = replicas[0].domain_dump().await;
     for replica in replicas.iter_mut().skip(1) {
         assert_eq!(
@@ -90,7 +90,7 @@ async fn assert_converged(replicas: &mut [Replica]) {
 }
 
 /// Operations of `writer` that `replica` stores and `known` lacks.
-async fn new_ops(
+pub(super) async fn new_ops(
     replica: &mut Replica,
     known: &ganbaru_sync_contracts::VersionVector,
 ) -> Vec<Vec<u8>> {
@@ -103,7 +103,7 @@ async fn new_ops(
         .collect()
 }
 
-fn continues(bytes: &[u8]) -> bool {
+pub(super) fn continues(bytes: &[u8]) -> bool {
     Envelope::decode(bytes)
         .unwrap()
         .operation()
@@ -130,7 +130,7 @@ fn group_sizes(ops: &[Vec<u8>]) -> Vec<usize> {
     sizes
 }
 
-async fn applied_seq(replica: &mut Replica, writer: &WriterId) -> u64 {
+pub(super) async fn applied_seq(replica: &mut Replica, writer: &WriterId) -> u64 {
     replica.applied_vector().await.get(writer)
 }
 
@@ -395,7 +395,7 @@ fn an_honest_chain_past_the_group_bounds_seals_no_repair_between_its_groups() {
 }
 
 /// Stores `ops` on `to` and applies everything ready, returning how many operations applied.
-async fn take(to: &mut Replica, ops: &[Vec<u8>]) -> usize {
+pub(super) async fn take(to: &mut Replica, ops: &[Vec<u8>]) -> usize {
     to.receive(ops).await;
     let reports = to.apply_all().await.unwrap();
     reports.iter().map(|report| report.applied).sum()
@@ -457,7 +457,7 @@ fn a_writer_marking_every_operation_continuing_defers_repairs_for_the_chain_boun
     });
 }
 
-fn insert_note(writer: usize, index: usize) -> String {
+pub(super) fn insert_note(writer: usize, index: usize) -> String {
     format!(
         "INSERT INTO quick_notes (id, title, order_key) VALUES ({}, 'Note', {});",
         quoted(&format!("note-{writer}-{index:04}")),
@@ -478,22 +478,37 @@ pub(super) async fn continuing_ops(replica: &mut Replica, count: usize) -> Vec<V
         replica.exec(&insert_note(replica.index, index)).await;
         assert_eq!(replica.seal().await.unwrap().sealed_ops, 1);
     }
-    let mut previous_hash = Envelope::decode(&previous).unwrap().hash();
-    let mut forged = Vec::with_capacity(count);
-    for bytes in new_ops(replica, &known).await {
-        let mut operation = Envelope::decode(&bytes).unwrap().operation().unwrap();
+    let ops = new_ops(replica, &known).await;
+    assert_eq!(ops.len(), count);
+    reseal_chain(replica, &previous, &ops, &vec![true; count], |_, _| {})
+}
+
+/// Re-seals `ops`, which `replica` sealed right after `previous`, as one chain whose operations
+/// mark their groups with `flags`, after `forge` changes each, as a writer may sign anything.
+pub(super) fn reseal_chain(
+    replica: &Replica,
+    previous: &[u8],
+    ops: &[Vec<u8>],
+    flags: &[bool],
+    mut forge: impl FnMut(usize, &mut Operation),
+) -> Vec<Vec<u8>> {
+    assert_eq!(ops.len(), flags.len());
+    let mut previous_hash = Envelope::decode(previous).unwrap().hash();
+    let mut forged = Vec::with_capacity(ops.len());
+    for (index, (bytes, flag)) in ops.iter().zip(flags).enumerate() {
+        let mut operation = Envelope::decode(bytes).unwrap().operation().unwrap();
         assert!(matches!(operation.content, Content::Changes(_)));
-        operation.header.group_continues = true;
+        operation.header.group_continues = *flag;
         operation.previous_hash = previous_hash;
+        forge(index, &mut operation);
         let sealed = operation.seal(&replica.identity.key).unwrap();
         previous_hash = sealed.hash();
         forged.push(sealed.into_bytes());
     }
-    assert_eq!(forged.len(), count);
     forged
 }
 
-async fn notes_of(replica: &mut Replica, writer: usize) -> i64 {
+pub(super) async fn notes_of(replica: &mut Replica, writer: usize) -> i64 {
     replica
         .count(&format!(
             "SELECT count(*) FROM quick_notes WHERE id LIKE 'note-{writer}-%'"
@@ -597,7 +612,12 @@ async fn measure_chain(label: &str, author: &mut Replica, reader: &mut Replica, 
         ops.len(),
         group_sizes(&ops),
     );
-    reader.receive(&ops).await;
+    measure_apply(reader, &ops).await;
+}
+
+/// Stores `ops` on `reader` and prints what each apply call takes until nothing is left.
+async fn measure_apply(reader: &mut Replica, ops: &[Vec<u8>]) {
+    reader.receive(ops).await;
     loop {
         let started = Instant::now();
         let report = reader.apply_once().await.unwrap();
@@ -612,6 +632,32 @@ async fn measure_chain(label: &str, author: &mut Replica, reader: &mut Replica, 
             break;
         }
     }
+}
+
+/// The largest group a writer can force: the smallest changes a table with a unique rule seals
+/// at the wire limits, over edits whose operations are re-sealed as one chain, so only the
+/// group bounds end it. Prints the group and what applying it takes.
+async fn measure_hostile_group(author: &mut Replica, reader: &mut Replica) {
+    let known = reader.stored_vector().await;
+    let previous = author.own_ops().await.pop().expect("the author has sealed");
+    let mut ops = Vec::new();
+    while ops.iter().map(Vec::len).sum::<usize>() < 2 * MAX_GROUP_BYTES
+        && ops.len() <= MAX_OPERATIONS_PER_GROUP
+    {
+        author
+            .exec("UPDATE music_library_items SET updated_at_ms = updated_at_ms + 1;")
+            .await;
+        while author.seal().await.unwrap().more {}
+        ops = new_ops(author, &known).await;
+    }
+    let forged = reseal_chain(author, &previous, &ops, &vec![true; ops.len()], |_, _| {});
+    println!(
+        "hostile group: {} operations, {} bytes, groups {:?}",
+        forged.len(),
+        forged.iter().map(Vec::len).sum::<usize>(),
+        group_sizes(&forged),
+    );
+    measure_apply(reader, &forged).await;
 }
 
 const SHORT_FIELDS: [&str; 3] = ["original_title", "original_artist", "original_album"];
@@ -637,6 +683,8 @@ fn chain_sizes_are_measured() {
         measure_chain("dense refresh", &mut author[0], &mut reader[0], &refresh).await;
         let longest = refresh_fields_sql(&SHORT_FIELDS, METADATA_CHARS);
         measure_chain("longest refresh", &mut author[0], &mut reader[0], &longest).await;
+        // Last on this pair: the reader then holds forged operations the author never stored.
+        measure_hostile_group(&mut author[0], &mut reader[0]).await;
 
         // One field near 440 characters per change fills operations near both wire bounds.
         let mut wide_pair = replicas(2).await;

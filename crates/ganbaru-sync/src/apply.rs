@@ -271,11 +271,12 @@ enum GroupScan {
     Invalid(Seq),
 }
 
-/// Reads the rest of the apply group that `first` starts, see [`ends_group`]. Only stored
-/// operations within the writer's cutoff join it. An operation the selected state excludes
-/// ends the group before it, so what a removal or fork keeps of a group still applies. Each
-/// operation must be ready once the ones before it applied, without operations of other
-/// writers between them, and sealed against a revision the candidates were read against.
+/// Reads the rest of the apply group that `first` starts, see [`ends_group`]. The writer's
+/// cutoff ends the group, whether or not the operations past it are stored, and so does an
+/// operation the selected state excludes, so what a removal or fork keeps of a group still
+/// applies. Each operation must be ready once the ones before it applied, without operations
+/// of other writers between them, and sealed against a revision the candidates were read
+/// against.
 async fn scan_group(
     engine: &Engine,
     conn: &mut SqliteConnection,
@@ -287,13 +288,16 @@ async fn scan_group(
     if ends_group(first.continues, 1, first.bytes) {
         return Ok(GroupScan::Complete(Vec::new()));
     }
+    let cutoff = log::writer(conn, ctx.space, first.writer)
+        .await?
+        .ok_or_else(|| corrupt("operation of an unknown writer reached apply"))?
+        .cutoff;
     let rows = sqlx::query(
-        "SELECT o.seq, o.kind, o.state, o.excluded_revision IS NOT NULL, o.group_continues,
-            length(o.envelope), o.clock, o.context, w.cutoff_seq, o.authorization_revision
-         FROM sync_ops o JOIN sync_writers w
-            ON w.space_id = o.space_id AND w.writer_id = o.writer_id
-         WHERE o.space_id = ? AND o.writer_id = ? AND o.seq > ?
-         ORDER BY o.seq LIMIT ?",
+        "SELECT seq, kind, state, excluded_revision IS NOT NULL, group_continues,
+            length(envelope), clock, context, authorization_revision
+         FROM sync_ops
+         WHERE space_id = ? AND writer_id = ? AND seq > ?
+         ORDER BY seq LIMIT ?",
     )
     .bind(ctx.space.as_bytes().as_slice())
     .bind(first.writer.as_bytes().as_slice())
@@ -307,18 +311,15 @@ async fn scan_group(
     let mut operations = 1usize;
     let mut bytes = first.bytes;
     let mut expected = first.seq;
+    let past_cutoff = |seq: Seq| cutoff.is_some_and(|cutoff| seq > cutoff);
     for row in &rows {
         expected += 1;
+        if past_cutoff(expected) {
+            return Ok(GroupScan::Complete(rest));
+        }
         let seq = stored_u64(row.try_get(0)?, "sequence")?;
         if seq != expected {
             return Ok(GroupScan::Waiting { on_others: false });
-        }
-        let cutoff = row
-            .try_get::<Option<i64>, _>(8)?
-            .map(|cutoff| stored_u64(cutoff, "cutoff sequence"))
-            .transpose()?;
-        if cutoff.is_some_and(|cutoff| seq > cutoff) {
-            return Ok(GroupScan::Complete(rest));
         }
         let state: String = row.try_get(2)?;
         if state == "held" {
@@ -351,7 +352,7 @@ async fn scan_group(
                 None => return Ok(GroupScan::Invalid(seq)),
             },
         };
-        let revision = stored_u64(row.try_get(9)?, "authorization revision")?;
+        let revision = stored_u64(row.try_get(8)?, "authorization revision")?;
         if revision > heads.revision || !exclusion::ready(&applied, &context, &heads.excluding) {
             return Ok(GroupScan::Waiting { on_others: true });
         }
@@ -372,6 +373,11 @@ async fn scan_group(
         if ends_group(continues, operations, bytes) {
             return Ok(GroupScan::Complete(rest));
         }
+    }
+    // A cutoff right after the stored operations ends the group though nothing past it is
+    // stored: a removed device's later operations may never arrive.
+    if past_cutoff(expected + 1) {
+        return Ok(GroupScan::Complete(rest));
     }
     Ok(GroupScan::Waiting { on_others: false })
 }
@@ -1150,6 +1156,9 @@ impl Engine {
         let mut blocked = BTreeSet::new();
         // A group waits on an operation of another writer that may apply later in the call.
         let mut deferred = false;
+        // Writers whose group waits on its own writer. A cutoff or exclusion an entry selects
+        // later in the call may end the group, so they are scanned again after each selection.
+        let mut waiting = BTreeSet::new();
         let mut taken = 0usize;
         let mut bytes = 0usize;
         let mut heads = Heads::load(&mut tx, ctx).await?;
@@ -1168,6 +1177,9 @@ impl Engine {
                 GroupScan::Complete(rest) => rest,
                 GroupScan::Waiting { on_others } => {
                     deferred |= on_others;
+                    if !on_others {
+                        waiting.insert(candidate.writer);
+                    }
                     blocked.insert(candidate.writer);
                     continue;
                 }
@@ -1315,6 +1327,9 @@ impl Engine {
                         retention.flush(&mut tx, ctx.space).await?;
                         retention = Retention::load(&mut tx, ctx.space).await?;
                         heads = Heads::load(&mut tx, ctx).await?;
+                        for writer in std::mem::take(&mut waiting) {
+                            blocked.remove(&writer);
+                        }
                     } else {
                         heads
                             .advance(&mut tx, ctx, candidate.writer, candidate.seq)
@@ -1326,6 +1341,9 @@ impl Engine {
                     retention.flush(&mut tx, ctx.space).await?;
                     retention = Retention::load(&mut tx, ctx.space).await?;
                     heads = Heads::load(&mut tx, ctx).await?;
+                    for writer in std::mem::take(&mut waiting) {
+                        blocked.remove(&writer);
+                    }
                 }
                 Outcome::Held => {
                     hold_invalid(&mut tx, ctx, candidate.writer, candidate.seq).await?;

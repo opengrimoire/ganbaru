@@ -439,6 +439,13 @@ fn validate_extra_page_properties(extra_properties: Option<&Value>) -> Result<()
     }
 }
 
+/// Applies the fields set in `update` to an active page and returns the updated page.
+///
+/// `properties` replaces the page's stored values as a whole: a value whose property the object
+/// omits is deleted, so a caller that edits one property sends the full object it read. Relation
+/// entries in the object are ignored and the page's relation links stay as they are; relations
+/// change through the row property and relation commands. See
+/// [`write_page_properties`](crate::page_property_storage::write_page_properties).
 pub async fn update_page(
     pool: &SqlitePool,
     page_id: &str,

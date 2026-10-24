@@ -332,8 +332,7 @@ export function notesDatabaseTimelineResizedDateValue(
   end: string,
 ): Record<string, unknown> {
   const next = notesDatabaseTimelineDateValue(start, end);
-  const property = Object.values(row.properties).find((value) => isRecord(value) && value.id === datePropertyId);
-  const previous = isRecord(property) ? notesDatabaseDateValue(property.date) : null;
+  const previous = notesDatabaseDateValue(notesDatabaseMatchingPayload(row, { id: datePropertyId, type: "date" }));
   const dates = notesDatabaseDateValue(next);
   return previous && dates ? { ...notesDateMentionValueWithDates(previous, dates) } : next;
 }

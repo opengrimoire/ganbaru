@@ -165,13 +165,15 @@ async fn root_trash_owner(
     Ok(owner.flatten())
 }
 
-/// The table of a trash root and the JSON column that holds its trash journal, if any.
+/// The table of a trash graph object and the JSON column that holds its trash journal when it is
+/// the root. Only block roots keep a journal: page roots restore through their trash owner token,
+/// and databases and sources are trashed only as part of a page or block graph.
 fn root_location(root: &TrashObject) -> (&'static str, Option<&'static str>, &str) {
     match root {
         TrashObject::Page(id) => ("notes_pages", None, id),
         TrashObject::Block(id) => ("notes_blocks", Some("attrs"), id),
-        TrashObject::Database(id) => ("notes_databases", Some("description"), id),
-        TrashObject::Source(id) => ("notes_data_sources", Some("description"), id),
+        TrashObject::Database(id) => ("notes_databases", None, id),
+        TrashObject::Source(id) => ("notes_data_sources", None, id),
     }
 }
 

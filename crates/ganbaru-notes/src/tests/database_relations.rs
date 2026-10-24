@@ -371,6 +371,115 @@ async fn relation_edge_count(pool: &sqlx::SqlitePool) -> i64 {
         .unwrap()
 }
 
+async fn replace_page_properties(
+    pool: &sqlx::SqlitePool,
+    page_id: &str,
+    properties: serde_json::Value,
+) -> serde_json::Value {
+    let page = writes::update_page(
+        pool,
+        page_id,
+        NotePageUpdate {
+            title: None,
+            parent: None,
+            properties: Some(properties),
+            icon: OptionalJsonValue::Unset,
+            cover: OptionalJsonValue::Unset,
+        },
+    )
+    .await
+    .unwrap();
+    serde_json::to_value(page).unwrap()["properties"].clone()
+}
+
+#[test]
+fn database_relations_page_update_replaces_values_and_leaves_relation_links() {
+    crate::test_block_on(async {
+        let pool = migrated_memory_pool().await;
+        create_page(&pool, PAGE_A, BLOCK_A).await;
+        create_database(
+            &pool,
+            DATABASE_A,
+            DATA_SOURCE_A,
+            DATABASE_VIEW_A,
+            "Tasks",
+            BLOCK_A,
+        )
+        .await;
+        data_sources::schema::update_data_source_schema(
+            &pool,
+            DATA_SOURCE_A,
+            None,
+            None,
+            NoteDataSourceSchemaUpdate {
+                properties: json!({
+                    "Name": { "id": "title", "name": "Name", "type": "title", "title": {} },
+                    "Count": { "id": "count", "name": "Count", "type": "number", "number": {} },
+                    "Done": { "id": "done", "name": "Done", "type": "checkbox", "checkbox": {} },
+                    "Related": {
+                        "id": "related",
+                        "name": "Related",
+                        "type": "relation",
+                        "relation": { "data_source_id": DATA_SOURCE_A }
+                    }
+                }),
+            },
+        )
+        .await
+        .unwrap();
+        for (page_id, block_id) in [(PAGE_B, BLOCK_B), (PAGE_C, BLOCK_C)] {
+            data_sources::rows::create_data_source_row_page(
+                &pool,
+                DATA_SOURCE_A,
+                NoteDataSourceRowPageCreate {
+                    id: page_id.to_string(),
+                    title: page_id.to_string(),
+                    first_block_id: block_id.to_string(),
+                    properties: None,
+                },
+            )
+            .await
+            .unwrap();
+        }
+        set_self_relation(&pool, PAGE_B, json!([PAGE_C])).await;
+        let written = replace_page_properties(
+            &pool,
+            PAGE_B,
+            json!({
+                "Count": { "id": "count", "type": "number", "number": 3 },
+                "Done": { "id": "done", "type": "checkbox", "checkbox": true },
+                "Related": { "id": "related", "type": "relation", "relation": [] }
+            }),
+        )
+        .await;
+        assert_eq!(written["Count"]["number"], 3);
+        assert_eq!(written["Done"]["checkbox"], true);
+        assert_eq!(
+            self_relation_targets(&pool, PAGE_B).await,
+            vec![PAGE_C.to_string()],
+            "relation entries in the payload do not change links"
+        );
+
+        // Sending the full object read back keeps every value.
+        let round_trip = replace_page_properties(&pool, PAGE_B, written.clone()).await;
+        assert_eq!(round_trip, written);
+
+        // A partial object replaces the stored values, deleting the omitted ones.
+        let partial = replace_page_properties(
+            &pool,
+            PAGE_B,
+            json!({ "Count": { "id": "count", "type": "number", "number": 4 } }),
+        )
+        .await;
+        assert_eq!(partial["Count"]["number"], 4);
+        assert_ne!(partial["Done"]["checkbox"], true);
+        assert_eq!(
+            self_relation_targets(&pool, PAGE_B).await,
+            vec![PAGE_C.to_string()]
+        );
+    });
+}
+
 #[test]
 fn database_relations_removing_a_self_relation_link_keeps_links_its_pairing_does_not_share() {
     crate::test_block_on(async {

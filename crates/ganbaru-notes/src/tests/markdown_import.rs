@@ -405,7 +405,7 @@ fn split_import_blocks_keep_text_before_children_and_give_continuations_neutral_
 }
 
 #[test]
-fn split_callout_and_button_continuations_keep_their_required_attributes() {
+fn split_callouts_keep_their_icon_and_split_buttons_continue_as_paragraphs() {
     use crate::transfers::import_writer::{ImportBlock, split_oversized_import_blocks};
     let long = "word ".repeat(crate::block_storage::MAX_BLOCK_TEXT_BYTES / 3);
     let mut callout = writes::default_text_payload(&long);
@@ -419,16 +419,37 @@ fn split_callout_and_button_continuations_keep_their_required_attributes() {
 
     let split = split_oversized_import_blocks(blocks).unwrap();
 
-    for (block_type, source) in [("callout", &callout), ("button", &button)] {
-        let parts: Vec<_> = split
-            .iter()
-            .filter(|block| block.block_type == block_type)
-            .collect();
-        assert!(parts.len() > 1, "{block_type} split into {}", parts.len());
-        for part in parts {
-            crate::validation::validate_block_payload(block_type, &part.payload).unwrap();
-            assert_eq!(part.payload["icon"], source["icon"]);
-        }
+    let callouts: Vec<_> = split
+        .iter()
+        .filter(|block| block.block_type == "callout")
+        .collect();
+    assert!(callouts.len() > 1, "callout split into {}", callouts.len());
+    for part in callouts {
+        crate::validation::validate_block_payload("callout", &part.payload).unwrap();
+        assert_eq!(part.payload["icon"], callout["icon"]);
     }
-    assert_eq!(split.last().unwrap().payload["actions"], button["actions"]);
+    // Only the first part of a split button stays actionable; the rest of its label continues as
+    // paragraphs.
+    let button_start = split
+        .iter()
+        .position(|block| block.block_type == "button")
+        .unwrap();
+    assert_eq!(
+        split
+            .iter()
+            .filter(|block| block.block_type == "button")
+            .count(),
+        1
+    );
+    let first = &split[button_start];
+    crate::validation::validate_block_payload("button", &first.payload).unwrap();
+    assert_eq!(first.payload["icon"], button["icon"]);
+    assert_eq!(first.payload["actions"], button["actions"]);
+    let continuations = &split[button_start + 1..];
+    assert!(!continuations.is_empty());
+    for part in continuations {
+        assert_eq!(part.block_type, "paragraph");
+        assert!(part.payload.get("actions").is_none());
+        crate::validation::validate_block_payload("paragraph", &part.payload).unwrap();
+    }
 }

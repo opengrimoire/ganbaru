@@ -220,8 +220,9 @@ pub(crate) fn validate_import_block_depth(blocks: &[ImportBlock]) -> Result<(), 
     Ok(())
 }
 
-/// Splits every block whose rich text is above the stored text bound into consecutive blocks of
-/// the same type, so long imported text becomes several blocks instead of failing the import.
+/// Splits every block whose rich text is above the stored text bound into consecutive blocks, so
+/// long imported text becomes several blocks instead of failing the import. Continuations take the
+/// source block's type, except that a button continues as paragraphs.
 ///
 /// The first block keeps the source identity and its own attributes. The continuations follow it
 /// in text order with neutral attributes, and the last one takes the children so they still come
@@ -250,7 +251,7 @@ pub(crate) fn split_oversized_import_blocks(
         let mut continuations: Vec<ImportBlock> = chunks
             .map(|chunk| {
                 ImportBlock::new(
-                    block.block_type,
+                    continuation_type(block.block_type),
                     continuation_payload(block.block_type, &block.payload, chunk),
                     None,
                     Vec::new(),
@@ -272,10 +273,20 @@ pub(crate) fn split_oversized_import_blocks(
     Ok(output)
 }
 
+/// Block type of the continuations of a split block. A continuation keeps a presentational type
+/// such as a callout, but a button's continuations are paragraphs so only the first part runs the
+/// button's actions.
+fn continuation_type(block_type: &'static str) -> &'static str {
+    match block_type {
+        "button" => "paragraph",
+        _ => block_type,
+    }
+}
+
 /// Payload for a continuation of a split block: the text chunk, the presentation every chunk
-/// shares (`color`, indent, code `language`), the attributes the block type requires (a callout
-/// or button `icon` and button `actions`), and the neutral value of any required state, so state
-/// such as a to-do's `checked` or a code caption stays on the first block.
+/// shares (`color`, indent, code `language`), the attributes the continuation type requires (a
+/// callout `icon`), and the neutral value of any required state, so state such as a to-do's
+/// `checked` or a code caption stays on the first block.
 fn continuation_payload(block_type: &str, source: &Value, chunk: Vec<Value>) -> Value {
     let mut payload = json!({ "rich_text": chunk });
     for key in ["color", "ganbaru_indent", "language"] {
@@ -287,12 +298,6 @@ fn continuation_payload(block_type: &str, source: &Value, chunk: Vec<Value>) -> 
         "to_do" => payload["checked"] = Value::Bool(false),
         "code" => payload["caption"] = Value::Array(Vec::new()),
         "callout" => payload["icon"] = source.get("icon").cloned().unwrap_or(Value::Null),
-        "button" => {
-            payload["icon"] = source.get("icon").cloned().unwrap_or(Value::Null);
-            if let Some(actions) = source.get("actions") {
-                payload["actions"] = actions.clone();
-            }
-        }
         _ => {}
     }
     payload

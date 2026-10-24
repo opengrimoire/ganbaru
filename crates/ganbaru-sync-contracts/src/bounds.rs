@@ -73,10 +73,12 @@ pub const MAX_OPERATIONS_PER_GROUP: usize = 64;
 /// and applies in about 7 seconds on a release build.
 pub const MAX_GROUP_BYTES: usize = 1 << 20;
 /// Most operations of one chain: a run of a writer's operations that each mark the next as
-/// continuing, which a local edit too large for one group seals as. A receiver applies the
-/// chain in bounded groups and seals no repair while a chain it applied part of is open, so a
-/// state between two groups of one edit never becomes a repair. Past this many operations the
-/// chain counts as closed, so a writer that marks every operation as continuing defers repairs
-/// for a bounded run only. A dense Music library refresh of 6,000 items spans 9 operations and
-/// one of the longest metadata 19.
+/// continuing, which a local edit too large for one group seals as. A receiver applies no
+/// group of a chain until the whole chain is stored and closed, then applies it in bounded
+/// groups over several transactions and seals the repairs of all of it once, after its last
+/// group, so a state between two groups of one edit never becomes a repair. A chain closes at
+/// an operation that does not continue, before its writer's cutoff, an excluded operation, or
+/// an invalid one, and at this many operations. A chain that never closes applies nothing and
+/// holds back only its writer's later operations. A dense Music library refresh of 6,000 items
+/// spans 9 operations and one of the longest metadata 19.
 pub const MAX_OPERATIONS_PER_CHAIN: usize = 256;

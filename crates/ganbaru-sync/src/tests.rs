@@ -3,6 +3,7 @@ mod authorization;
 mod budgets;
 mod calendar;
 mod capture;
+mod chains;
 mod compaction;
 mod conformance;
 mod distractions;

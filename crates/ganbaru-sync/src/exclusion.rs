@@ -1084,8 +1084,27 @@ pub(crate) async fn mark_stale(
     Ok(())
 }
 
-/// Moves the rows [`mark_stale`] listed into `dirty`, so the engine write materializes them
-/// again.
+/// Lists `rows` as stale, so an engine write after the open chain closes materializes and
+/// repairs them; see [`crate::apply`] for chains.
+pub(crate) async fn defer_stale(
+    conn: &mut SqliteConnection,
+    rows: &BTreeSet<(TableId, String)>,
+) -> SyncResult<()> {
+    for (table, key) in rows {
+        sqlx::query(
+            "INSERT INTO sync_stale_rows (table_id, row_key) VALUES (?, ?)
+             ON CONFLICT (table_id, row_key) DO NOTHING",
+        )
+        .bind(table_param(*table))
+        .bind(key.as_str())
+        .execute(&mut *conn)
+        .await?;
+    }
+    Ok(())
+}
+
+/// Moves the rows [`mark_stale`] and [`defer_stale`] listed into `dirty`, so the engine write
+/// materializes them again.
 pub(crate) async fn take_stale(
     conn: &mut SqliteConnection,
     dirty: &mut BTreeSet<(TableId, String)>,

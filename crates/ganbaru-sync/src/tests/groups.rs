@@ -2,7 +2,8 @@
 //! apply in one transaction once every operation of their group is stored, across store passes
 //! and restarts, honest changes past the group bounds apply as a chain of bounded groups with no
 //! repair sealed between them, and a writer that marks every operation as continuing cannot
-//! hold back other writers, grow a group past its bounds, or defer repairs past the chain bound.
+//! hold back other writers or their repairs, grow a group past its bounds, or show part of a
+//! chain that never closes.
 
 use std::time::Instant;
 
@@ -217,7 +218,7 @@ fn identity(index: usize) -> String {
     format!("local:{index:05}")
 }
 
-fn insert_keyed_item(id: &str, identity: &str) -> String {
+pub(super) fn insert_keyed_item(id: &str, identity: &str) -> String {
     format!(
         "INSERT INTO music_library_items
             (id, identity_key, source_kind, media_kind, original_title, discovered_at_ms, updated_at_ms)
@@ -428,31 +429,34 @@ async fn duplicate_on(replicas: &mut [Replica], key: &str) -> usize {
 }
 
 #[test]
-fn a_writer_marking_every_operation_continuing_defers_repairs_for_the_chain_bound_only() {
+fn a_stalled_chain_applies_nothing_and_defers_no_repair_of_other_writers() {
     block_on(async {
         let mut replicas = replicas(3).await;
         for (index, replica) in replicas.iter_mut().enumerate() {
             replica.exec(&insert_note(index, 9_999)).await;
         }
         converge(&mut replicas).await;
-        // Every group of the forged run ends at the operation bound, so all of it applies
-        // without a closing operation.
-        assert_eq!(MAX_OPERATIONS_PER_CHAIN % MAX_OPERATIONS_PER_GROUP, 0);
+        let hostile = replicas[0].writer();
+        let boundary = applied_seq(&mut replicas[2], &hostile).await;
         let forged = continuing_ops(&mut replicas[0], MAX_OPERATIONS_PER_CHAIN).await;
+        // A full group of continuing operations arrives and the writer goes silent.
         let (open, rest) = forged.split_at(MAX_OPERATIONS_PER_GROUP);
-        assert_eq!(take(&mut replicas[2], open).await, open.len());
+        assert_eq!(take(&mut replicas[2], open).await, 0);
+        assert_eq!(notes_of(&mut replicas[2], 0).await, 1, "no part is visible");
+        assert_eq!(applied_seq(&mut replicas[2], &hostile).await, boundary);
 
-        assert_eq!(
-            duplicate_on(&mut replicas, "local:dup-1").await,
-            0,
-            "an open chain defers the repair"
-        );
-
-        assert_eq!(take(&mut replicas[2], rest).await, rest.len());
         assert!(
-            duplicate_on(&mut replicas, "local:dup-2").await > 0,
-            "past the chain bound the repair is sealed"
+            duplicate_on(&mut replicas, "local:dup-1").await > 0,
+            "a chain that is not closed defers no repair"
         );
+
+        // The chain bound closes the chain once the rest is stored, and all of it applies.
+        assert_eq!(take(&mut replicas[2], rest).await, forged.len());
+        assert_eq!(
+            notes_of(&mut replicas[2], 0).await,
+            i64::try_from(forged.len() + 1).unwrap()
+        );
+        assert!(duplicate_on(&mut replicas, "local:dup-2").await > 0);
         replicas[2].check_invariants().await;
     });
 }
@@ -468,6 +472,13 @@ pub(super) fn insert_note(writer: usize, index: usize) -> String {
 /// `count` operations of one note each, sealed by `replica` and then re-sealed with every
 /// operation marking its group as continuing, chained after the replica's earlier operations.
 pub(super) async fn continuing_ops(replica: &mut Replica, count: usize) -> Vec<Vec<u8>> {
+    flagged_ops(replica, &vec![true; count]).await
+}
+
+/// One operation of one note per flag, sealed by `replica` and then re-sealed with each
+/// operation marking its group with its flag, chained after the replica's earlier operations.
+pub(super) async fn flagged_ops(replica: &mut Replica, flags: &[bool]) -> Vec<Vec<u8>> {
+    let count = flags.len();
     let known = replica.stored_vector().await;
     let previous = replica
         .own_ops()
@@ -480,7 +491,7 @@ pub(super) async fn continuing_ops(replica: &mut Replica, count: usize) -> Vec<V
     }
     let ops = new_ops(replica, &known).await;
     assert_eq!(ops.len(), count);
-    reseal_chain(replica, &previous, &ops, &vec![true; count], |_, _| {})
+    reseal_chain(replica, &previous, &ops, flags, |_, _| {})
 }
 
 /// Re-seals `ops`, which `replica` sealed right after `previous`, as one chain whose operations
@@ -554,7 +565,10 @@ fn a_writer_marking_every_operation_continuing_forms_groups_of_the_operation_bou
         converge(&mut replicas).await;
         let hostile = replicas[0].writer();
         let boundary = applied_seq(&mut replicas[1], &hostile).await;
-        let forged = continuing_ops(&mut replicas[0], MAX_OPERATIONS_PER_GROUP + 1).await;
+        // Only the last operation closes the chain, so the bound alone cuts the groups.
+        let mut flags = vec![true; MAX_OPERATIONS_PER_GROUP + 1];
+        flags[MAX_OPERATIONS_PER_GROUP] = false;
+        let forged = flagged_ops(&mut replicas[0], &flags).await;
         assert_eq!(
             group_sizes(&forged),
             vec![MAX_OPERATIONS_PER_GROUP, 1],
@@ -565,14 +579,14 @@ fn a_writer_marking_every_operation_continuing_forms_groups_of_the_operation_bou
         let report = replicas[1].apply_once().await.unwrap();
         assert_eq!(report.applied, MAX_OPERATIONS_PER_GROUP);
         replicas[1].apply_all().await.unwrap();
-        let bound = u64::try_from(MAX_OPERATIONS_PER_GROUP).unwrap();
+        let chain = u64::try_from(forged.len()).unwrap();
         assert_eq!(
             applied_seq(&mut replicas[1], &hostile).await,
-            boundary + bound
+            boundary + chain
         );
         assert_eq!(
             notes_of(&mut replicas[1], 0).await,
-            i64::try_from(MAX_OPERATIONS_PER_GROUP + 1).unwrap()
+            i64::try_from(forged.len() + 1).unwrap()
         );
         replicas[1].check_invariants().await;
     });

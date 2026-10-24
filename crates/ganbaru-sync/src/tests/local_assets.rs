@@ -3,7 +3,7 @@
 
 use super::block_on;
 use super::fixture::{FIXTURE_CLASS, FIXTURE_DOMAIN, fixture_pool, test_engine};
-use crate::assets::{LocalAssetColumn, LocalDigest, local_asset_problems};
+use crate::assets::{AssetClass, LocalAssetColumn, LocalDigest, local_asset_problems};
 use crate::manifest::{DeviceTable, DomainManifest};
 
 fn digest(seed: char) -> String {
@@ -118,4 +118,76 @@ fn malformed_local_asset_columns_are_refused() {
         vec!["fixture_asset_pins: only a Local table declares asset columns"]
     );
     assert!(local_asset_problems(&FIXTURE_DOMAIN).is_empty());
+}
+
+/// A second class the fixture domain could declare, which its asset id columns do not list.
+const OTHER_CLASS: AssetClass = AssetClass {
+    name: "fixture/others",
+    max_bytes: 1024,
+};
+
+#[test]
+fn an_asset_id_names_only_the_classes_its_column_lists() {
+    let domain = DomainManifest {
+        assets: &[FIXTURE_CLASS, OTHER_CLASS],
+        ..FIXTURE_DOMAIN
+    };
+    let listed = LocalDigest::AssetId {
+        classes: &[FIXTURE_CLASS.name],
+    };
+    let sha = digest('a');
+
+    let (class, named) = listed
+        .resolve(&domain, &format!("{}:{sha}", FIXTURE_CLASS.name))
+        .unwrap();
+    assert_eq!((class.name, named), (FIXTURE_CLASS.name, sha.clone()));
+    assert!(
+        listed
+            .resolve(&domain, &format!("{}:{sha}", OTHER_CLASS.name))
+            .is_none()
+    );
+    let bare = LocalDigest::Sha256 {
+        class: OTHER_CLASS.name,
+    };
+    assert!(
+        bare.resolve(&domain, &sha)
+            .is_some_and(|(class, _)| class.name == OTHER_CLASS.name)
+    );
+}
+
+const UNLISTED: &[LocalAssetColumn] = &[
+    LocalAssetColumn {
+        column: "asset_id",
+        json_path: None,
+        digest: LocalDigest::AssetId { classes: &[] },
+    },
+    LocalAssetColumn {
+        column: "attrs",
+        json_path: Some("$.files"),
+        digest: LocalDigest::AssetId {
+            classes: &["fixture/missing"],
+        },
+    },
+];
+
+#[test]
+fn an_asset_id_column_lists_declared_classes() {
+    let local = [DeviceTable {
+        name: "fixture_asset_pins",
+        triggers: &[],
+        assets: UNLISTED,
+    }];
+    let leaked: &'static [DeviceTable] = Box::leak(Box::new(local));
+    let domain = DomainManifest {
+        local: leaked,
+        ..FIXTURE_DOMAIN
+    };
+
+    assert_eq!(
+        local_asset_problems(&domain),
+        vec![
+            "fixture_asset_pins.asset_id: names no asset class",
+            "fixture_asset_pins.attrs: names undeclared asset class fixture/missing",
+        ]
+    );
 }

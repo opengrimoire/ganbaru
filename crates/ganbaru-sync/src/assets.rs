@@ -14,7 +14,7 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 
 use ganbaru_sync_contracts::{GroupId, Value};
-use sqlx::{AssertSqlSafe, SqliteConnection};
+use sqlx::{AssertSqlSafe, Connection, SqliteConnection};
 
 use crate::Engine;
 use crate::error::{SyncResult, corrupt};
@@ -116,13 +116,17 @@ pub enum LocalDigest {
         /// Name of a class the domain declares.
         class: &'static str,
     },
-    /// An asset id `{class}:{sha256}`, where the class is one the domain declares, for example
-    /// `notes/page-covers:{sha256}`.
-    AssetId,
+    /// An asset id `{class}:{sha256}` of one of the listed classes, for example
+    /// `notes/page-covers:{sha256}`. An id of any other class names no file, so a column keeps
+    /// only the classes it is meant to hold.
+    AssetId {
+        /// Names of classes the domain declares.
+        classes: &'static [&'static str],
+    },
 }
 
 impl LocalDigest {
-    /// The class and digest a reference names, among the domain's classes.
+    /// The class and digest a reference names, among the domain's classes this shape may name.
     pub fn resolve<'d>(
         &self,
         domain: &'d DomainManifest,
@@ -130,33 +134,42 @@ impl LocalDigest {
     ) -> Option<(&'d AssetClass, String)> {
         let (class, digest) = match self {
             Self::Sha256 { class } => (*class, value),
-            Self::AssetId => value.rsplit_once(':')?,
+            Self::AssetId { .. } => value.rsplit_once(':')?,
         };
         let class = domain.assets.iter().find(|known| known.name == class)?;
-        is_sha256_hex(digest).then(|| (class, digest.to_string()))
+        (self.names(class) && is_sha256_hex(digest)).then(|| (class, digest.to_string()))
     }
 
     /// Whether a reference of this shape may name a file of `class`.
     fn names(&self, class: &AssetClass) -> bool {
+        self.classes().contains(&class.name)
+    }
+
+    /// Names of the classes a reference of this shape may name.
+    fn classes(&self) -> &[&'static str] {
         match self {
-            Self::Sha256 { class: name } => *name == class.name,
-            Self::AssetId => true,
+            Self::Sha256 { class } => std::slice::from_ref(class),
+            Self::AssetId { classes } => classes,
         }
     }
 }
 
-/// Why a domain's `Local` asset columns are malformed: a bare digest names a class the domain
-/// does not declare, a JSON path does not start at the root `$`, or the domain declares no
-/// class at all.
+/// Why a domain's `Local` asset columns are malformed: a reference names a class the domain
+/// does not declare, an asset id lists no class, a JSON path does not start at the root `$`,
+/// or the domain declares no class at all.
 pub(crate) fn local_asset_problems(domain: &DomainManifest) -> Vec<String> {
     let mut problems = Vec::new();
     for table in domain.local {
         for column in table.assets {
             let name = format!("{}.{}", table.name, column.column);
-            if let LocalDigest::Sha256 { class } = column.digest
-                && !domain.assets.iter().any(|known| known.name == class)
-            {
-                problems.push(format!("{name}: names undeclared asset class {class}"));
+            let classes = column.digest.classes();
+            if classes.is_empty() {
+                problems.push(format!("{name}: names no asset class"));
+            }
+            for class in classes {
+                if !domain.assets.iter().any(|known| known.name == *class) {
+                    problems.push(format!("{name}: names undeclared asset class {class}"));
+                }
             }
             if domain.assets.is_empty() {
                 problems.push(format!("{name}: the domain declares no asset class"));
@@ -384,7 +397,20 @@ impl Engine {
     /// The class name and digest of every file the asset sweep keeps: each
     /// [`Engine::referenced_assets`] reference, and each file a row of a `Local` table names
     /// through a declared [`LocalAssetColumn`].
+    ///
+    /// Every read runs in one transaction, so the set describes one database state even while
+    /// a pass applies or seals on another connection.
     pub async fn kept_asset_digests(
+        &self,
+        conn: &mut SqliteConnection,
+    ) -> SyncResult<BTreeSet<(&'static str, String)>> {
+        let mut tx = conn.begin().await?;
+        let kept = self.read_kept_asset_digests(&mut tx).await?;
+        tx.commit().await?;
+        Ok(kept)
+    }
+
+    async fn read_kept_asset_digests(
         &self,
         conn: &mut SqliteConnection,
     ) -> SyncResult<BTreeSet<(&'static str, String)>> {

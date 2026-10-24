@@ -1351,12 +1351,16 @@ pub(super) const FIXTURE_DOMAIN: DomainManifest = DomainManifest {
                 LocalAssetColumn {
                     column: "asset_id",
                     json_path: None,
-                    digest: LocalDigest::AssetId,
+                    digest: LocalDigest::AssetId {
+                        classes: &[FIXTURE_CLASS.name],
+                    },
                 },
                 LocalAssetColumn {
                     column: "attrs",
                     json_path: Some("$.files"),
-                    digest: LocalDigest::AssetId,
+                    digest: LocalDigest::AssetId {
+                        classes: &[FIXTURE_CLASS.name],
+                    },
                 },
             ],
         },

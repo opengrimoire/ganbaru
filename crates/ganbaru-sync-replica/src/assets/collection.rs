@@ -4,8 +4,10 @@
 //! row or retained version references its digest, while a row of a `Local` table names it
 //! through a declared asset column, while a transfer touched it within the grace,
 //! or while it is younger than the grace, which covers a file written just before the row that
-//! references it commits. The sweep holds the [`ArchiveGate`], so no archive reads the vault
-//! while files go.
+//! references it commits. References are read before and after the directories are listed,
+//! and a file goes only when neither read keeps it, so a row that commits during the listing
+//! keeps its file. The sweep holds the [`ArchiveGate`], so no archive reads the vault while
+//! files go.
 
 use crate::backup::ArchiveGate;
 use ganbaru_atomic_files::is_temporary_file_name;
@@ -15,7 +17,7 @@ use sqlx::SqlitePool;
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::ErrorKind;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 
@@ -105,25 +107,23 @@ pub async fn collect_unreferenced_assets<P>(
     if classes.is_empty() {
         return Ok(0);
     }
-    let live = {
-        let mut conn = sweep
-            .pool
-            .acquire()
-            .await
-            .map_err(|error| format!("acquire vault connection: {error}"))?;
-        sweep
-            .engine
-            .kept_asset_digests(&mut conn)
-            .await
-            .map_err(|error| format!("read referenced assets: {error}"))?
-            .into_iter()
-            .collect::<HashSet<DigestKey>>()
-    };
+    let before = kept_digests(sweep).await?;
     let root = sweep.vault_root.to_path_buf();
-    let in_flight = Arc::clone(sweep.in_flight);
     let (grace, now) = (sweep.grace, sweep.now);
+    let candidates = tokio::task::spawn_blocking(move || {
+        unreferenced_candidates(&root, &classes, &before, grace, now)
+    })
+    .await
+    .map_err(|error| format!("asset sweep worker: {error}"))??;
+    if candidates.is_empty() {
+        return Ok(0);
+    }
+    // A row that commits while the directories are listed names a file the first read missed,
+    // so only files that neither read keeps go.
+    let after = kept_digests(sweep).await?;
+    let in_flight = Arc::clone(sweep.in_flight);
     let removed = tokio::task::spawn_blocking(move || {
-        remove_unreferenced(&root, &classes, &live, &in_flight, grace, now)
+        remove_candidates(candidates, &after, &in_flight, grace)
     })
     .await
     .map_err(|error| format!("asset sweep worker: {error}"))?;
@@ -131,15 +131,35 @@ pub async fn collect_unreferenced_assets<P>(
     removed
 }
 
-fn remove_unreferenced(
+/// A file the sweep may remove: its class and digest, and its path.
+type Candidate = (DigestKey, PathBuf);
+
+/// The class and digest of every file the sweep keeps, read in one transaction.
+async fn kept_digests(sweep: AssetSweep<'_>) -> Result<HashSet<DigestKey>, String> {
+    let mut conn = sweep
+        .pool
+        .acquire()
+        .await
+        .map_err(|error| format!("acquire vault connection: {error}"))?;
+    Ok(sweep
+        .engine
+        .kept_asset_digests(&mut conn)
+        .await
+        .map_err(|error| format!("read referenced assets: {error}"))?
+        .into_iter()
+        .collect())
+}
+
+/// Files of `classes` named `{sha256}.{ext}` that `live` does not keep and that are regular
+/// files older than the grace.
+fn unreferenced_candidates(
     root: &Path,
     classes: &[&'static AssetClass],
     live: &HashSet<DigestKey>,
-    in_flight: &InFlightAssets,
     grace: Duration,
     now: SystemTime,
-) -> Result<usize, String> {
-    let mut removed = 0;
+) -> Result<Vec<Candidate>, String> {
+    let mut candidates = Vec::new();
     for class in classes {
         let directory = class.directory(root);
         let entries = match fs::read_dir(&directory) {
@@ -157,12 +177,26 @@ fn remove_unreferenced(
                 continue;
             }
             let path = entry.path();
-            if !aged_regular_file(&path, grace, now)? {
-                continue;
+            if aged_regular_file(&path, grace, now)? {
+                candidates.push((key, path));
             }
-            if remove_unless_touched(in_flight, &key, &path, grace)? {
-                removed += 1;
-            }
+        }
+    }
+    Ok(candidates)
+}
+
+/// Removes each candidate that `live` does not keep and no transfer touched within `grace`,
+/// and returns how many it removed.
+fn remove_candidates(
+    candidates: Vec<Candidate>,
+    live: &HashSet<DigestKey>,
+    in_flight: &InFlightAssets,
+    grace: Duration,
+) -> Result<usize, String> {
+    let mut removed = 0;
+    for (key, path) in candidates {
+        if !live.contains(&key) && remove_unless_touched(in_flight, &key, &path, grace)? {
+            removed += 1;
         }
     }
     Ok(removed)

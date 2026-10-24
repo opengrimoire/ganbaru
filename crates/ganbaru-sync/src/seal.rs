@@ -20,6 +20,7 @@ use sqlx::{AssertSqlSafe, Connection, Row, SqliteConnection};
 use crate::apply::{Constrained, MAX_BYTES_PER_APPLY, MAX_OPS_PER_APPLY, finish_sealed};
 use crate::authorization::{self, Enrollment};
 use crate::error::{SyncResult, corrupt, failpoint};
+use crate::exclusion::{self, Excluding};
 use crate::hooks::ChangeNotice;
 use crate::log::{self, WriterState, clamp_ms, seq_i64};
 use crate::manifest::{GroupSpec, MergeKind, TableSpec};
@@ -160,7 +161,7 @@ pub(crate) async fn insert_applied_op(
 /// Header fields an operation keeps when a new writer re-seals it, so it merges exactly as the
 /// original did.
 #[derive(Debug, Clone)]
-pub(crate) struct Replay {
+pub(crate) struct Replay<'a> {
     /// Original clock.
     pub(crate) clock: Hlc,
     /// Original manifest version.
@@ -168,6 +169,9 @@ pub(crate) struct Replay {
     /// Original causal context with the replaced writer's operations renamed to their
     /// replacements.
     pub(crate) context: VersionVector,
+    /// Writers the selected state excludes operations of. The original context may cover
+    /// operations past a removal cutoff that never apply, which the replacement still names.
+    pub(crate) excluding: &'a BTreeMap<WriterId, Excluding>,
 }
 
 /// The kind of an operation that only advances its dependencies.
@@ -351,11 +355,13 @@ impl Sealer {
     /// unless a replay names one, adds to the head context, in writer id order.
     ///
     /// Without a replay the head context joins the target: a removal exclusion can take back
-    /// applied operations the head context saw, and a context never shrinks along a chain.
+    /// applied operations the head context saw, and a context never shrinks along a chain. A
+    /// replayed context may name operations the selected state excludes, as far as an honest
+    /// operation may wait for them, see [`exclusion::ready`].
     fn dependencies(
         &self,
         batch: &Batch,
-        replay: Option<&Replay>,
+        replay: Option<&Replay<'_>>,
     ) -> SyncResult<Vec<(WriterId, Seq)>> {
         let mut head = self.head_context.clone();
         head.set(self.id, 0);
@@ -368,11 +374,15 @@ impl Sealer {
             }
         };
         target.set(self.id, 0);
-        let mut bound = batch.applied.clone();
-        if replay.is_none() {
-            bound.merge(&head);
-        }
-        if !target.dominates(&head) || !bound.dominates(&target) {
+        let bounded = match replay {
+            Some(replay) => exclusion::ready(&batch.applied, &target, replay.excluding),
+            None => {
+                let mut bound = batch.applied.clone();
+                bound.merge(&head);
+                bound.dominates(&target)
+            }
+        };
+        if !target.dominates(&head) || !bounded {
             return Err(corrupt(
                 "an operation context must lie between its head and the applied state",
             ));
@@ -392,7 +402,7 @@ impl Sealer {
         batch: &mut Batch,
         writer: &mut LocalWriter<'_>,
         advance: Advance,
-        replay: Option<&Replay>,
+        replay: Option<&Replay<'_>>,
         now_ms: u64,
         report: &mut SealReport,
     ) -> SyncResult<Vec<(WriterId, Seq)>> {
@@ -432,7 +442,7 @@ impl Sealer {
         batch: &mut Batch,
         writer: &mut LocalWriter<'_>,
         advance: Advance,
-        replay: Option<&Replay>,
+        replay: Option<&Replay<'_>>,
         now_ms: u64,
         report: &mut SealReport,
     ) -> SyncResult<()> {
@@ -471,7 +481,7 @@ impl Sealer {
         writer: &mut LocalWriter<'_>,
         dependencies: Vec<(WriterId, Seq)>,
         content: Content,
-        replay: Option<&Replay>,
+        replay: Option<&Replay<'_>>,
         now_ms: u64,
     ) -> SyncResult<(Seq, Hlc, VersionVector)> {
         let seq = self.stored + 1;
@@ -557,7 +567,7 @@ impl Sealer {
         batch: &mut Batch,
         writer: &mut LocalWriter<'_>,
         changes: Vec<Change>,
-        replay: Option<&Replay>,
+        replay: Option<&Replay<'_>>,
         now_ms: u64,
         report: &mut SealReport,
     ) -> SyncResult<()> {
@@ -838,6 +848,36 @@ impl<'a, 'k> SealSlot<'a, 'k> {
 
     pub(crate) fn frozen(&self) -> bool {
         self.frozen
+    }
+
+    /// Whether the slot could seal now: it has a writer, is not frozen, and the writer is active
+    /// or, before its genesis, its device is enrolled. Unlike [`Self::try_open`] it never
+    /// freezes the slot or seals a genesis.
+    pub(crate) async fn may_seal(
+        &mut self,
+        conn: &mut SqliteConnection,
+        ctx: &SpaceContext,
+    ) -> SyncResult<bool> {
+        let Some(writer) = self.writer.as_deref() else {
+            return Ok(false);
+        };
+        if self.frozen {
+            return Ok(false);
+        }
+        if self.sealer.is_some() {
+            return Ok(true);
+        }
+        let cert = &writer.certificate.certificate;
+        Ok(
+            match log::writer(conn, ctx.space, cert.writer_id()).await? {
+                Some(row) => row.state == WriterState::Active,
+                None => matches!(
+                    authorization::enrollment(conn, ctx.space, &cert.device_id, &cert.device_key)
+                        .await?,
+                    Enrollment::Enrolled
+                ),
+            },
+        )
     }
 
     /// Stops sealing for the rest of the call because the local writer is no longer active.
@@ -1864,6 +1904,33 @@ pub(crate) async fn force_capture(
     .bind(key)
     .bind(mask_param(mask))
     .bind(mask_param(mask))
+    .bind(clamp_ms(now_ms))
+    .execute(&mut *conn)
+    .await?;
+    Ok(())
+}
+
+/// Records a delete capture for a live row of a derived-key table that its domain table does
+/// not hold, so the next seal writes its existence register as absent again.
+pub(crate) async fn force_delete_capture(
+    conn: &mut SqliteConnection,
+    table: TableId,
+    key: &str,
+    exists: GroupMask,
+    now_ms: u64,
+) -> SyncResult<()> {
+    sqlx::query(
+        "INSERT INTO sync_capture
+            (table_id, row_key, mask, forced_mask, created, deleted, replaced_by, captured_at_ms)
+         VALUES (?, ?, ?, ?, 0, 1, NULL, ?)
+         ON CONFLICT (table_id, row_key) DO UPDATE SET
+            mask = mask | excluded.mask, forced_mask = forced_mask | excluded.forced_mask,
+            deleted = 1",
+    )
+    .bind(table_param(table))
+    .bind(key)
+    .bind(mask_param(exists))
+    .bind(mask_param(exists))
     .bind(clamp_ms(now_ms))
     .execute(&mut *conn)
     .await?;

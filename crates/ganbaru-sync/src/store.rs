@@ -4,6 +4,8 @@
 //! writer and continues that writer's chain; whether it can be applied is decided separately, so
 //! an operation this version cannot read is kept, forwarded to peers, and held.
 
+use std::collections::BTreeMap;
+
 use ganbaru_sync_contracts::bounds::{MAX_WRITERS_PER_DEVICE, MAX_WRITERS_PER_SPACE};
 use ganbaru_sync_contracts::op::FORMAT_VERSION;
 use ganbaru_sync_contracts::{
@@ -472,6 +474,14 @@ async fn store_next(
                     &operation.content,
                 )
                 .await?;
+                exclusion::mark_stale(engine, conn, &operation.content).await?;
+                // An earlier anchor may have stored the operation, which released what it
+                // displaced, so the anchor seals the groups it writes again.
+                if fork::reseals_excluded(conn, ctx.space).await? {
+                    let mut groups = BTreeMap::new();
+                    fork::written_groups(engine, &operation.content, &mut groups);
+                    fork::capture_groups(engine, conn, groups, now_ms).await?;
+                }
             }
             held = Some(HoldReason::Invalid);
             Some(removal)

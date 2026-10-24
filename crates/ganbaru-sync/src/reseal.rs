@@ -81,20 +81,27 @@ async fn replaced_ops(
 /// A replaced operation's context with removed operations of the old writer renamed to the
 /// replacement of the latest one it saw. Authorization operations are dropped rather than
 /// replaced, so a context that saw only dropped ones past `keep_through` keeps the old writer at
-/// `keep_through`.
+/// `keep_through`. Every other forked writer stays at the last sequence its copies share, since
+/// no replica applies either copy past it.
 fn remap(
     context: &VersionVector,
     old: WriterId,
     keep_through: Seq,
     new: WriterId,
     renamed: &BTreeMap<Seq, Seq>,
+    prefixes: &BTreeMap<WriterId, Seq>,
 ) -> SyncResult<VersionVector> {
     let mut remapped = VersionVector::new();
     for (writer, seq) in context.iter() {
         if writer == new {
             return Err(corrupt("a replaced operation saw its replacement writer"));
         }
-        if writer != old || seq <= keep_through {
+        if writer != old {
+            let seq = prefixes.get(&writer).map_or(seq, |keep| seq.min(*keep));
+            remapped.advance(writer, seq);
+            continue;
+        }
+        if seq <= keep_through {
             remapped.advance(writer, seq);
             continue;
         }
@@ -106,10 +113,10 @@ fn remap(
     Ok(remapped)
 }
 
-/// Removes the versions and tombstones of a writer's operations past `keep_through`, revives
-/// rows left without tombstones, and marks every touched row dirty. A re-seal replaces what it
-/// removes; a removal cutoff leaves rows its excluded operations created without merge state,
-/// which late changes keep hidden.
+/// Removes the versions, tombstones, and row creations of a writer's operations past
+/// `keep_through`, revives rows left without tombstones, and marks every touched row dirty. A
+/// re-seal replaces what it removes; a removal cutoff leaves rows its excluded operations
+/// created without merge state, which late changes keep hidden.
 pub(crate) async fn remove_effects(
     conn: &mut SqliteConnection,
     batch: &mut Batch,
@@ -127,7 +134,11 @@ pub(crate) async fn remove_effects(
     .bind(keep)
     .fetch_all(&mut *conn)
     .await?;
-    for table in ["sync_register_versions", "sync_tombstones"] {
+    for table in [
+        "sync_register_versions",
+        "sync_tombstones",
+        "sync_row_creations",
+    ] {
         sqlx::query(sqlx::AssertSqlSafe(format!(
             "DELETE FROM {table} WHERE writer_id = ? AND seq > ?"
         )))
@@ -199,10 +210,8 @@ impl Engine {
                 "the old writer has operations that are not applied",
             ));
         }
-        let proven = fork::shared_prefixes(&mut tx, ctx.space)
-            .await?
-            .get(&old)
-            .copied();
+        let prefixes = fork::shared_prefixes(&mut tx, ctx.space).await?;
+        let proven = prefixes.get(&old).copied();
         let keep_through = proven.map_or(keep_through, |proven| keep_through.min(proven));
         if (keep_through < 1 && proven != Some(0)) || keep_through > row.stored {
             return Err(SyncError::InvalidReseal(
@@ -244,12 +253,14 @@ impl Engine {
             .open(self, &mut tx, ctx, &mut batch, now_ms)
             .await?
             .ok_or_else(|| corrupt("sealer slot has no writer"))?;
+        let excluding = exclusion::excluding(&mut tx, ctx.space).await?;
         let mut renamed = BTreeMap::new();
         for op in replaced {
             let replay = Replay {
                 clock: op.operation.header.clock,
                 manifest_version: op.operation.header.manifest_version,
-                context: remap(&op.context, old, keep_through, new, &renamed)?,
+                context: remap(&op.context, old, keep_through, new, &renamed, &prefixes)?,
+                excluding: &excluding,
             };
             match op.operation.content {
                 Content::Changes(changes) if changes.is_empty() => {

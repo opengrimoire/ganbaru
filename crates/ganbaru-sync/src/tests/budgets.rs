@@ -250,11 +250,11 @@ async fn removal_excluding_applied_operations() -> Duration {
     elapsed
 }
 
-/// Time for a member to apply fork evidence of a writer whose `MAX_EXCLUDED_PER_WRITER` applied
-/// operations past the shared prefix each superseded a version the member retained.
-async fn fork_excluding_applied_operations() -> Duration {
+/// Time for `member` to apply fork evidence of a writer whose `MAX_EXCLUDED_PER_WRITER` applied
+/// operations past the shared prefix each superseded a version. A member restores the versions
+/// it retained; the anchor retained none and captures every group the branch wrote instead.
+async fn fork_excluding_applied_operations(mut member: Replica, anchor: bool) -> Duration {
     let mut original = Replica::new(1, 14).await;
-    let mut member = Replica::new(2, 14).await;
     for id in 0..APPLY_OPS {
         original.exec(&insert_note(id, "seed")).await;
     }
@@ -309,10 +309,15 @@ async fn fork_excluding_applied_operations() -> Duration {
         keep,
         "both branches are excluded"
     );
-    let restored = member
-        .count("SELECT count(*) FROM quick_notes WHERE title = 'seed'")
-        .await;
-    assert_eq!(restored, i64::from(APPLY_OPS));
+    if anchor {
+        let captured = member.count("SELECT count(*) FROM sync_capture").await;
+        assert_eq!(captured, i64::from(APPLY_OPS));
+    } else {
+        let restored = member
+            .count("SELECT count(*) FROM quick_notes WHERE title = 'seed'")
+            .await;
+        assert_eq!(restored, i64::from(APPLY_OPS));
+    }
     elapsed
 }
 
@@ -352,13 +357,16 @@ async fn view_revision(replica: &mut Replica) -> u64 {
 #[ignore = "timing budgets are meaningful only in the release profile"]
 fn removal_and_retention_budgets_hold() {
     block_on(async {
-        let (mut retaining, mut anchor, mut removal, mut fork, mut rederive) =
-            (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
+        let (mut retaining, mut anchor, mut removal, mut rederive) =
+            (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+        let (mut fork, mut anchor_fork) = (Vec::new(), Vec::new());
         for _ in 0..RUNS {
             retaining.push(apply_of_superseding_updates(Replica::new(1, 11).await).await);
             anchor.push(apply_of_superseding_updates(Replica::anchor(1, 11).await).await);
             removal.push(removal_excluding_applied_operations().await);
-            fork.push(fork_excluding_applied_operations().await);
+            fork.push(fork_excluding_applied_operations(Replica::new(2, 14).await, false).await);
+            anchor_fork
+                .push(fork_excluding_applied_operations(Replica::anchor(2, 14).await, true).await);
             rederive.push(rederive_of_a_long_log().await);
         }
         retaining.sort();
@@ -381,6 +389,11 @@ fn removal_and_retention_budgets_hold() {
             check(
                 "fork exclusion of 1,024 applied operations",
                 fork,
+                REMOVAL_BUDGET,
+            ),
+            check(
+                "fork exclusion of 1,024 applied operations on the anchor",
+                anchor_fork,
                 REMOVAL_BUDGET,
             ),
         ]

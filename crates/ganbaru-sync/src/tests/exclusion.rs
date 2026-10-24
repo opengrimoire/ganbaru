@@ -5,8 +5,9 @@
 
 use ganbaru_sync_contracts::{Entry, LateResolution, LateRow, ResolveLate, RowKey};
 
+use super::authorization::admin_entry;
 use super::block_on;
-use super::replica::{Replica, quoted, rank};
+use super::replica::{Replica, device_admin, quoted, rank};
 use crate::acknowledge::ACKNOWLEDGEMENT_INTERVAL_MS;
 use crate::domains::themes::PALETTE_SIZE;
 use crate::manifest::vault::music::PLAYLISTS_TABLE;
@@ -411,6 +412,77 @@ fn restoring_late_values_and_a_late_deletion_writes_them_as_the_admin() {
             assert!(late_changes(replica).await.is_empty());
         }
         assert!(listed.iter().any(|late| late.table == PLAYLISTS_TABLE));
+    });
+}
+
+/// Restores every late change `anchor` lists for `removal` and sequences the decision.
+async fn restore_all(anchor: &mut Replica, removal: u64) {
+    let mut rows = Vec::new();
+    for late in late_changes(anchor).await {
+        anchor
+            .engine
+            .restore_late_change(
+                &mut anchor.conn,
+                &anchor.ctx,
+                &late,
+                &mut anchor.identity.local(),
+                anchor.now_ms,
+            )
+            .await
+            .unwrap();
+        rows.push(LateRow {
+            table: late.table,
+            row: RowKey::new(late.row_key.clone()).unwrap(),
+            resolution: LateResolution::Restore,
+        });
+    }
+    anchor
+        .sequence(Entry::ResolveLate(ResolveLate {
+            removal_revision: removal,
+            rows,
+        }))
+        .await
+        .unwrap()
+        .unwrap();
+    anchor.apply_all().await.unwrap();
+}
+
+#[test]
+fn an_anchor_a_handover_installed_still_restores_late_values_of_a_removal() {
+    block_on(async {
+        let (mut charter, mut removed, mut honest) = trio(205).await;
+        charter.sequence(admin_entry(20)).await.unwrap().unwrap();
+        let mut anchor = Replica::new(20, 205).await;
+        edit(&mut honest, &note("note-kept", "Draft", 0)).await;
+        spread(&mut charter, &mut honest).await;
+        deliver(&mut anchor, &mut charter).await;
+        deliver(&mut removed, &mut charter).await;
+        let signed = anchor.handover_proposal(&device_admin(20)).await;
+        let vector = charter.stored_vector().await;
+        anchor
+            .seal_handover(&signed, Some(vector))
+            .await
+            .unwrap()
+            .unwrap();
+        edit(
+            &mut removed,
+            "UPDATE quick_notes SET title = 'Late' WHERE id = 'note-kept';",
+        )
+        .await;
+        let removal = anchor.remove(&removed.device_id.clone()).await.unwrap();
+        deliver(&mut anchor, &mut removed).await;
+        assert_eq!(
+            title(&mut anchor, "note-kept").await.as_deref(),
+            Some("Draft")
+        );
+        assert_eq!(late_changes(&mut anchor).await.len(), 1);
+
+        restore_all(&mut anchor, removal).await;
+        deliver(&mut honest, &mut anchor).await;
+        for replica in [&mut anchor, &mut honest] {
+            assert_eq!(title(replica, "note-kept").await.as_deref(), Some("Late"));
+            assert!(late_changes(replica).await.is_empty());
+        }
     });
 }
 

@@ -13,6 +13,8 @@
 //! test run takes about one minute. A failing run prints its seed, and `GANBARU_SYNC_SEED` replays
 //! that seed alone in the shard that owns it.
 
+mod peer;
+
 use std::collections::{BTreeMap, BTreeSet};
 
 use ganbaru_sync_contracts::{Envelope, Field, VersionVector, WriterId};
@@ -150,34 +152,38 @@ const RECOVERY_FAILPOINTS: &[&str] = &[
     "elide.before_commit",
 ];
 
-/// Seals pending captures, rotating the writer once when it is no longer active.
+/// Seals pending captures, recovering the writer once when it is no longer active. A removed
+/// device seals nothing more, like the app once it learns of its removal.
 async fn seal(rng: &mut Rng, replica: &mut Replica) {
     let before = replica.seal_snapshot().await;
-    seal_rotating(rng, replica).await;
-    replica.check_sealed_writes(&before).await;
+    if seal_rotating(rng, replica).await {
+        replica.check_sealed_writes(&before).await;
+    }
 }
 
-async fn seal_rotating(rng: &mut Rng, replica: &mut Replica) {
-    let result = crashing(rng, replica, SEAL_FAILPOINTS, async |r: &mut Replica| {
-        r.seal().await
-    })
-    .await;
-    match result {
-        Ok(_) => {}
-        Err(SyncError::WriterInactive(_)) => {
-            replica.rotate();
-            crashing(rng, replica, SEAL_FAILPOINTS, async |r: &mut Replica| {
-                r.seal().await
-            })
-            .await
-            .unwrap();
+/// Returns false when the device turned out to be removed.
+async fn seal_rotating(rng: &mut Rng, replica: &mut Replica) -> bool {
+    let mut rotated = false;
+    loop {
+        let result = crashing(rng, replica, SEAL_FAILPOINTS, async |r: &mut Replica| {
+            r.seal().await
+        })
+        .await;
+        match result {
+            Ok(_) => return true,
+            Err(SyncError::DeviceRemoved) if replica.device_removed().await => return false,
+            Err(SyncError::WriterInactive(_)) if !rotated => {
+                replica.recover_inactive().await;
+                rotated = true;
+            }
+            Err(error) => panic!("replica {} failed to seal: {error:?}", replica.index),
         }
-        Err(error) => panic!("replica {} failed to seal: {error:?}", replica.index),
     }
 }
 
 /// Applies until nothing ready remains, rotating like the app while the device stays enrolled.
 async fn apply_all(rng: &mut Rng, replica: &mut Replica) {
+    let mut last = ApplyReport::default();
     for _ in 0..1_000 {
         let report: ApplyReport =
             crashing(rng, replica, APPLY_FAILPOINTS, async |r: &mut Replica| {
@@ -185,19 +191,52 @@ async fn apply_all(rng: &mut Rng, replica: &mut Replica) {
             })
             .await
             .unwrap_or_else(|error| panic!("replica {} failed to apply: {error:?}", replica.index));
+        // Fork evidence reaches an installation without freezing its writer when the apply
+        // seals nothing, so every round re-seals its own forks, as the app does.
+        let resealed = replica.reseal_own_forks().await;
         if report.local_writer_frozen && !replica.device_removed().await {
-            if !replica.reseal_own_forks().await {
+            if !resealed {
                 replica.rotate();
             }
         } else if !report.more {
             return;
         }
+        last = report;
     }
-    panic!("replica {} never finished applying", replica.index);
+    let writers = replica
+        .scalar_text(
+            "SELECT group_concat(device_id || ' ' || hex(writer_id) || ' ' || state || ' '
+                || stored_seq || ' ' || applied_seq, ', ')
+             FROM sync_writers",
+        )
+        .await;
+    let sealed = replica.seal().await;
+    panic!(
+        "replica {} never finished applying, last report {last:?}, local writer {}, device \
+         writers {writers:?}, seal {sealed:?}",
+        replica.index,
+        replica.writer()
+    );
 }
 
 /// Stores delivered operations and applies them. Returns whether anything new was stored.
 async fn deliver(rng: &mut Rng, to: &mut Replica, ops: &[Vec<u8>]) -> bool {
+    let (stored, refusals) = store(rng, to, ops).await;
+    if let Some(fork) = refusals
+        .iter()
+        .find(|refusal| matches!(refusal, StoreRefusal::Fork { .. }))
+    {
+        panic!("replica {} refused an operation: {fork:?}", to.index);
+    }
+    apply_all(rng, to).await;
+    acknowledge(rng, to).await;
+    stored
+}
+
+/// Stores delivered operations without applying them. Returns whether anything new was stored
+/// and, in order, the refusals that stop an exchange's direction: a gap, an unknown writer, or a
+/// fork. Any other refusal is a defect.
+async fn store(rng: &mut Rng, to: &mut Replica, ops: &[Vec<u8>]) -> (bool, Vec<StoreRefusal>) {
     let outcomes = crashing(
         rng,
         to,
@@ -211,6 +250,7 @@ async fn deliver(rng: &mut Rng, to: &mut Replica, ops: &[Vec<u8>]) -> bool {
     .await
     .unwrap_or_else(|error| panic!("replica {} failed to store: {error:?}", to.index));
     let mut stored = false;
+    let mut refusals = Vec::new();
     for (op, outcome) in ops.iter().zip(outcomes) {
         match outcome {
             StoreOutcome::Stored { held } => {
@@ -230,18 +270,20 @@ async fn deliver(rng: &mut Rng, to: &mut Replica, ops: &[Vec<u8>]) -> bool {
                 }
                 stored = true;
             }
-            StoreOutcome::Duplicate
-            | StoreOutcome::Refused(
-                StoreRefusal::Gap { .. } | StoreRefusal::UnknownWriter | StoreRefusal::Revoked,
-            ) => {}
+            StoreOutcome::Duplicate | StoreOutcome::Refused(StoreRefusal::Revoked) => {}
+            StoreOutcome::Refused(
+                refusal @ (StoreRefusal::Gap { .. }
+                | StoreRefusal::UnknownWriter
+                | StoreRefusal::Fork { .. }),
+            ) => {
+                refusals.push(refusal);
+            }
             StoreOutcome::Refused(refusal) => {
                 panic!("replica {} refused an operation: {refusal:?}", to.index)
             }
         }
     }
-    apply_all(rng, to).await;
-    acknowledge(rng, to).await;
-    stored
+    (stored, refusals)
 }
 
 const ACKNOWLEDGE_FAILPOINTS: &[&str] = &["acknowledge.before_commit", "seal.reserve"];
@@ -261,9 +303,12 @@ async fn acknowledge(rng: &mut Rng, replica: &mut Replica) {
             .await
     };
     match crashing(rng, replica, failpoints, &mut call).await {
-        Ok(_) => {}
+        // A removed device seals nothing and keeps its revoked writer; its installation stops
+        // once it notices.
+        Ok(_) | Err(SyncError::DeviceRemoved) => {}
+        Err(SyncError::WriterInactive(_)) if replica.device_removed().await => {}
         Err(SyncError::WriterInactive(_)) => {
-            replica.rotate();
+            replica.recover_inactive().await;
             crashing(rng, replica, failpoints, call)
                 .await
                 .unwrap_or_else(|error| {
@@ -1443,7 +1488,7 @@ impl Sim {
         match crashing(&mut self.rng, replica, RECOVERY_FAILPOINTS, &mut close).await {
             Ok(_) => {}
             Err(SyncError::WriterInactive(_)) => {
-                replica.rotate();
+                replica.recover_inactive().await;
                 crashing(&mut self.rng, replica, RECOVERY_FAILPOINTS, close)
                     .await
                     .unwrap();
@@ -1788,6 +1833,8 @@ impl Sim {
         self.offline.fill(false);
         for _ in 0..32 {
             let mut changed = false;
+            // The anchor republishes groups of operations it excludes, so it seals too.
+            seal(&mut self.rng, &mut self.hub).await;
             for index in 0..self.replicas.len() {
                 seal(&mut self.rng, &mut self.replicas[index]).await;
                 changed |= send(
@@ -1808,7 +1855,13 @@ impl Sim {
                 .await;
             }
             let expected = self.hub.stored_vector().await;
-            let mut same = true;
+            let hub = self
+                .hub
+                .engine
+                .status(&mut self.hub.conn, &self.hub.ctx)
+                .await
+                .unwrap();
+            let mut same = hub.pending_captures == 0;
             for replica in &mut self.replicas {
                 let status = replica
                     .engine

@@ -6,9 +6,15 @@
   import PlayIcon from "@lucide/svelte/icons/play";
   import SkipBack from "@lucide/svelte/icons/skip-back";
   import SkipForward from "@lucide/svelte/icons/skip-forward";
+  import { onMount } from "svelte";
+  import { readFocusDeviceActivity } from "$lib/api/focus";
+  import { listenSyncApplied } from "$lib/api/sync";
   import Loading from "$lib/components/ui/Loading.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import type { PlaybackStatus } from "$lib/music/playback";
+  import {
+    focusActivityChanged, focusActivityLines, type FocusOtherDeviceActivity,
+  } from "$lib/pomodoro/device-activity";
   import { getMusicPlayer } from "$lib/stores/music-player.svelte";
   import { getPomodoro } from "$lib/stores/pomodoro.svelte";
 
@@ -27,6 +33,9 @@
   const { t } = getLocalization();
   let starting = $state(false);
   let startMessage = $state("");
+  let otherActivity = $state<FocusOtherDeviceActivity[]>([]);
+  let confirmingStart = $state(false);
+  const activityLines = $derived(focusActivityLines(t, otherActivity));
   const MENU_ICON_SIZE = 14;
   const MENU_ICON_STROKE_WIDTH = 1.8;
   const volumeStep = 0.05;
@@ -94,6 +103,44 @@
     onOpenMusic();
   }
 
+  /** Read what other linked devices are focusing on; a failed read shows no activity. */
+  async function refreshActivity(): Promise<void> {
+    try {
+      otherActivity = await readFocusDeviceActivity();
+    } catch (error) {
+      console.warn("Failed to read Focus activity of other devices:", error);
+      otherActivity = [];
+    }
+  }
+
+  onMount(() => {
+    void refreshActivity();
+    let disposed = false;
+    let stopListening: (() => void) | null = null;
+    listenSyncApplied((tables) => {
+      if (focusActivityChanged(tables)) void refreshActivity();
+    })
+      .then((stop) => {
+        if (disposed) stop();
+        else stopListening = stop;
+      })
+      .catch((error: unknown) => console.warn("Failed to follow Focus activity of other devices:", error));
+    return () => {
+      disposed = true;
+      stopListening?.();
+    };
+  });
+
+  /** An explicit start while another device is focusing asks for confirmation first. */
+  function requestScheduledStart(): void {
+    if (otherActivity.length > 0 && !confirmingStart) {
+      confirmingStart = true;
+      return;
+    }
+    confirmingStart = false;
+    void startScheduledSession();
+  }
+
   /** Start an eligible commitment only after native persistence acknowledges it. */
   async function startScheduledSession(): Promise<void> {
     if (starting) return;
@@ -122,15 +169,30 @@
   <div class="menu-label">
     {t("titleBar.pomodoro.noActiveSession")}
   </div>
-  <button
-    type="button"
-    disabled={starting}
-    onclick={() => { void startScheduledSession(); }}
-    class={MENU_ITEM_CLASS}
-  >
-    <span>{t("pomodoroNotification.startScheduledSession")}</span>
-    <PlayIcon class="shrink-0 opacity-70" size={MENU_ICON_SIZE} strokeWidth={MENU_ICON_STROKE_WIDTH} />
-  </button>
+{/if}
+
+{#each activityLines as line, index (index)}
+  <p class="px-2 py-1.5 text-panel-detail text-muted-foreground" data-focus-activity>{line}</p>
+{/each}
+
+{#if !isActive}
+  {#if confirmingStart}
+    <p class="px-2 py-1.5 text-panel-detail text-foreground" role="status">
+      {t("pomodoroNotification.startElsewhereQuestion")}
+    </p>
+    <button type="button" disabled={starting} onclick={requestScheduledStart} class={MENU_ITEM_CLASS}>
+      <span>{t("pomodoroNotification.startAnyway")}</span>
+      <PlayIcon class="shrink-0 opacity-70" size={MENU_ICON_SIZE} strokeWidth={MENU_ICON_STROKE_WIDTH} />
+    </button>
+    <button type="button" onclick={() => { confirmingStart = false; }} class={MENU_ITEM_CLASS}>
+      <span>{t("pomodoroNotification.cancelStart")}</span>
+    </button>
+  {:else}
+    <button type="button" disabled={starting} onclick={requestScheduledStart} class={MENU_ITEM_CLASS}>
+      <span>{t("pomodoroNotification.startScheduledSession")}</span>
+      <PlayIcon class="shrink-0 opacity-70" size={MENU_ICON_SIZE} strokeWidth={MENU_ICON_STROKE_WIDTH} />
+    </button>
+  {/if}
   {#if startMessage}
     <p class="px-2 py-1.5 text-panel-detail text-muted-foreground" role="status">{startMessage}</p>
   {/if}

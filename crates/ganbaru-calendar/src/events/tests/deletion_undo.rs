@@ -199,6 +199,7 @@ fn calendar_undo_restores_active_run_projections_without_restarting_or_rewinding
             foreground: true,
             commitment: calendar.commitment,
             planned_blocks: Vec::new(),
+            device_id: None,
             local_time: None,
         };
         let before = focus_execute_command_tx(

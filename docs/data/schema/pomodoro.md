@@ -9,6 +9,7 @@ Pomodoro persistence separates planned rhythm, one run's configuration snapshot,
 | Configuration | `calendar_event_pomodoro_configs`, `calendar_event_pomodoro_config_count_rhythms`, `calendar_event_pomodoro_config_sequence_steps` |
 | Run history | `pomodoro_runs`, `pomodoro_run_count_rhythms`, `pomodoro_run_sequence_steps`, `pomodoro_segments`, `pomodoro_pauses`, `pomodoro_run_events`, `pomodoro_run_adaptive_snapshots` |
 | Native execution | `pomodoro_execution_state` (one revisioned accepted state), `pomodoro_execution_receipts` (command ID, request, and result) |
+| Device activity | `pomodoro_device_activity` (what each device is focusing on, one row per stable device id) |
 | Adaptive | `pomodoro_adaptive_*` policies, bounds, experiments, variants, assignments, outcomes, decisions with values, reasons, and state scores, context snapshots and states, data quality flags, and planned blocks |
 | Calendar archive | `calendar_event_archive_pomodoro_*` copies of Pomodoro configuration kept with archived Calendar events |
 
@@ -28,7 +29,7 @@ Calendar edits may retarget a run through separate current-reference columns (`c
 
 Recurrence protection uses original home-zone occurrence identities, not the run's device-local planning date. The two can differ around midnight and must not be substituted for each other.
 
-A partial unique constraint permits at most one globally active segment. Multiple runs may refer to the same event and are never merged by title, time range, or event identity. A cross-block transition or reconfiguration closes the current run and starts a new one.
+Triggers that skip sync apply permit at most one open run, one active segment, and one open pause per segment on a device; partial unique indexes cannot replicate. Multiple runs may refer to the same event and are never merged by title, time range, or event identity. A cross-block transition or reconfiguration closes the current run and starts a new one.
 
 ## Segments and pauses
 
@@ -56,6 +57,10 @@ Adaptive Pomodoro is local and explicit opt-in. Storage separates:
 - Terminal experiment state and cooldown.
 
 A decision records the previous and selected value, reason codes, state scores, policy version, and target phase or run. It commits in the same transaction that starts the affected segment or run. Outcomes are appended later and never rewrite the decision. See [Adaptive policy](../../algorithms/pomodoro/adaptive-policy.md) and [Adaptive experiments](../../algorithms/pomodoro/adaptive-experiments.md).
+
+## Replication
+
+Run history and device activity replicate as the Focus sync domain; execution, receipts, and adaptive tables stay local. A run publishes when `ended_at` is set, together with its rhythm, segments, pauses, and run events, so open runs and heartbeats never leave their device. Pauses are keyed by their position in start order within the run, and `inherited_from_run_id` is plain text because the run it names may not be present on every device. The activity row carries state, occurrence, event title, phase bounds, and an expiry; it is rewritten only when that projection changes on a lifecycle transition, never on heartbeat. Exact merge kinds are in the Focus domain manifest of `crates/ganbaru-sync/`.
 
 ## Time and deletion
 

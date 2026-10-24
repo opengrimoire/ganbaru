@@ -50,8 +50,8 @@ fn close_run_clamps_end_to_the_latest_open_activity_boundary() {
         .await
         .unwrap();
         sqlx::query(
-            "INSERT INTO pomodoro_pauses (id, segment_id, started_at, reason)
-                 VALUES ('pause-1', 'segment-1', '2026-05-29T10:07:00Z', 'idle')",
+            "INSERT INTO pomodoro_pauses (ordinal, segment_id, started_at, reason)
+                 VALUES (0, 'segment-1', '2026-05-29T10:07:00Z', 'idle')",
         )
         .execute(&pool)
         .await

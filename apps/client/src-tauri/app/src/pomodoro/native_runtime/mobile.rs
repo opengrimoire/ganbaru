@@ -435,7 +435,7 @@ impl AndroidPresentation {
             let status = app
                 .state::<crate::vault::ownership::VaultOwnershipManager>()
                 .status(&vault_id)?;
-            if !status.can_write
+            if !crate::pomodoro::focus_writable(&status)
                 || status.generation != ownership_generation
                 || crate::vault::active_vault_id(&app)? != vault_id
             {

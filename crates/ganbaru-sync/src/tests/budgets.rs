@@ -11,6 +11,7 @@ use ganbaru_sync_contracts::DeviceRole;
 
 use super::block_on;
 use super::calendar::{calendar_sql, event_sql};
+use super::focus::{close_run_sql, open_run_sql};
 use super::projects::{project_sql, task_sql};
 use super::replica::{Replica, enroll_entry, person, quoted, rank};
 use crate::exclusion::MAX_EXCLUDED_PER_WRITER;
@@ -597,5 +598,50 @@ fn calendar_import_budgets_are_recorded() {
             apply,
             CALENDAR_APPLY_BUDGET,
         );
+    });
+}
+
+/// Segments and run events of the closed run whose seal is timed.
+const FOCUS_SEGMENTS: u32 = 40;
+const FOCUS_RUN_EVENTS: u32 = 300;
+/// Block events publish with their run in a later Focus step and are not part of this seal.
+const FOCUS_SEAL_BUDGET: Duration = Duration::from_millis(100);
+
+/// Seals one closed run with `FOCUS_SEGMENTS` segments and `FOCUS_RUN_EVENTS` run events.
+async fn seal_of_a_closed_run() -> Duration {
+    let mut author = Replica::new(0, 17).await;
+    author
+        .exec(&format!(
+            "{}{}{}",
+            calendar_sql(),
+            event_sql("event-a", "uid-a", "Deep work"),
+            open_run_sql("run-a", "event-a", FOCUS_SEGMENTS, FOCUS_RUN_EVENTS)
+        ))
+        .await;
+    author.seal().await.unwrap();
+    author.exec(&close_run_sql("run-a", FOCUS_SEGMENTS)).await;
+    let started = Instant::now();
+    let report = author.seal().await.unwrap();
+    let elapsed = started.elapsed();
+    assert!(report.invalid_rows.is_empty(), "{:?}", report.invalid_rows);
+    assert_eq!(report.sealed_ops, 1);
+    assert!(!report.more);
+    elapsed
+}
+
+#[test]
+#[ignore = "timing budgets are meaningful only in the release profile"]
+fn focus_seal_of_a_closed_run_holds_its_budget() {
+    block_on(async {
+        let mut seal = Vec::new();
+        for _ in 0..RUNS {
+            seal.push(seal_of_a_closed_run().await);
+        }
+        let failure = check(
+            "seal of a closed run with 40 segments and 300 run events",
+            seal,
+            FOCUS_SEAL_BUDGET,
+        );
+        assert!(failure.is_none(), "{failure:?}");
     });
 }

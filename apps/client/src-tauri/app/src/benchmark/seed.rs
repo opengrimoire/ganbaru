@@ -329,10 +329,11 @@ async fn insert_segment(
     for (index, pause) in segment.pauses.iter().enumerate() {
         sqlx::query(
             "INSERT INTO pomodoro_pauses
-                (id, segment_id, started_at, ended_at, reason)
-             VALUES (lower(hex(randomblob(16))), ?, ?, ?, ?)",
+                (segment_id, ordinal, started_at, ended_at, reason)
+             VALUES (?, ?, ?, ?, ?)",
         )
         .bind(&segment.id)
+        .bind(i64::try_from(index).map_err(|e| format!("benchmark pause ordinal {index}: {e}"))?)
         .bind(&pause.started_at)
         .bind(&pause.ended_at)
         .bind(&pause.reason)

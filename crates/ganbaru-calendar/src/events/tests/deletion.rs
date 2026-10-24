@@ -230,6 +230,7 @@ fn native_stop_archival_and_receipts_roll_back_together_and_retry_the_exact_run(
             foreground: true,
             commitment: calendar.commitment,
             planned_blocks: Vec::new(),
+            device_id: None,
             local_time: None,
         };
         let before = focus_execute_command_tx(

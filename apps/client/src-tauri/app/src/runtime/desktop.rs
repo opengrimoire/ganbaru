@@ -655,6 +655,7 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
             calendar::conflicts::calendar_resolve_conflict,
             themes::themes_load_all,
             pomodoro::pomodoro_load_segments_for_events,
+            pomodoro::focus_device_activity,
             pomodoro::native_runtime::focus_snapshot,
             pomodoro::native_runtime::focus_command,
             pomodoro::native_runtime::focus_idle_overlay_visible,

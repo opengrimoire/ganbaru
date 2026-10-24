@@ -90,7 +90,7 @@ fn canonical_effect<R: Runtime>(
     let status = app
         .state::<crate::vault::ownership::VaultOwnershipManager>()
         .status(&effect.vault_id)?;
-    if !status.can_write
+    if !crate::pomodoro::focus_writable(&status)
         || status.generation != effect.ownership_generation
         || state.lifecycle.is_revoked()
     {
@@ -238,7 +238,10 @@ fn callback_owner_is_current<R: Runtime>(
         return false;
     };
     match ownership.cached_status(&effect.vault_id) {
-        Ok(Some(status)) => status.can_write && status.generation == effect.ownership_generation,
+        Ok(Some(status)) => {
+            crate::pomodoro::focus_writable(&status)
+                && status.generation == effect.ownership_generation
+        }
         Ok(None) => false,
         Err(error) => {
             eprintln!("Native Focus callback ownership is unavailable: {error}");

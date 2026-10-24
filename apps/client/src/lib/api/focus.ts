@@ -1,5 +1,7 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
+import { ensureDbUrl } from "$lib/api/db";
 import type { Translate } from "$lib/i18n/translator.svelte";
+import { parseFocusDeviceActivity, type FocusOtherDeviceActivity } from "$lib/pomodoro/device-activity";
 import {
   focusProjectionIsCurrent, parseFocusCommandResult, parseFocusNotice, parseFocusProjection,
   type FocusIntent, type FocusProjection, type FocusRequest,
@@ -44,6 +46,12 @@ export interface FocusIdleOverlayScope extends FocusControlScope {
 /** Acknowledge a painted native warning or its authorized main-window fallback. */
 export function reportIdleOverlayVisible(scope: FocusIdleOverlayScope): Promise<void> {
   return invoke("focus_idle_overlay_visible", { scope });
+}
+
+/** Read what other linked devices are focusing on, validated before the UI uses it. */
+export async function readFocusDeviceActivity(): Promise<FocusOtherDeviceActivity[]> {
+  const dbUrl = await ensureDbUrl();
+  return parseFocusDeviceActivity(await invoke<unknown>("focus_device_activity", { dbUrl }));
 }
 
 /** One window's command and presentation connection. Native code owns execution. */

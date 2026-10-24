@@ -69,7 +69,6 @@ struct AccountingVaultRequest<'a> {
 #[serde(rename_all = "camelCase")]
 struct PendingEventsRequest<'a> {
     vault_id: &'a str,
-    usage_only: bool,
 }
 
 pub(crate) fn init<R: Runtime, C: serde::de::DeserializeOwned>(
@@ -119,19 +118,9 @@ impl<R: Runtime> MobileDistractions<R> {
     }
 
     /// Read a vault-scoped batch and mark its identities immutable before transport.
-    pub fn pending_events(
-        &self,
-        vault_id: &str,
-        usage_only: bool,
-    ) -> Result<Vec<PendingEvent>, String> {
+    pub fn pending_events(&self, vault_id: &str) -> Result<Vec<PendingEvent>, String> {
         self.0
-            .run_mobile_plugin(
-                "pendingEvents",
-                PendingEventsRequest {
-                    vault_id,
-                    usage_only,
-                },
-            )
+            .run_mobile_plugin("pendingEvents", PendingEventsRequest { vault_id })
             .map_err(|error| format!("read mobile Distractions journal: {error}"))
     }
 

@@ -333,13 +333,6 @@ fn database_path_is_allowed(path: &Path, vault_path: Option<&Path>) -> bool {
     }
 }
 
-pub(super) fn usage_db_path(vault_path: &Path, limit_state: Option<&LimitState>) -> PathBuf {
-    limit_state
-        .map(|state| PathBuf::from(&state.database_path))
-        .filter(|path| database_path_is_allowed(path, Some(vault_path)))
-        .unwrap_or_else(|| vault_path.join(APP_SQLITE_FILE))
-}
-
 fn limit_state_is_fresh(state: &LimitState, vault_path: Option<&Path>) -> bool {
     let now = now_utc();
     let Ok(zone) = jiff::tz::TimeZone::try_system() else {

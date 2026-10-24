@@ -1,4 +1,4 @@
-//! Usage sample and desktop block event normalization, and their bounded SQLite writes.
+//! Usage sample and block event normalization, and their bounded SQLite writes.
 
 pub mod totals;
 
@@ -8,8 +8,13 @@ use crate::contracts::{
 };
 use crate::limits::{is_valid_local_date, normalize_usage_host};
 use crate::rules::{is_protected_desktop_app_name, normalize_app_candidate_name};
+use ganbaru_sync::domains::distractions::{
+    BLOCK_DECISIONS, BLOCK_PHASES, BLOCK_SOURCE_TYPES, MAX_BLOCK_TEXT_CHARS,
+    SNAPSHOT_BLOCKER_MODES, SNAPSHOT_RULE_KINDS,
+};
+use ganbaru_sync_contracts::bounds::MAX_ROW_KEY_BYTES;
 use sha2::{Digest, Sha256};
-use sqlx::SqlitePool;
+use sqlx::{SqliteConnection, SqlitePool};
 
 /// Days of usage history kept, far beyond the weekly budget window so yearly trends survive.
 pub const USAGE_RETENTION_DAYS: u64 = 400;
@@ -202,7 +207,7 @@ pub async fn insert_desktop_block_event(
     .map_err(|e| format!("record desktop block event: {e}"))?;
 
     sqlx::query(
-        "INSERT OR REPLACE INTO distractions_block_event_rule_snapshots
+        "INSERT OR IGNORE INTO distractions_block_event_rule_snapshots
             (block_event_id, rule_id, rule_kind, rule_label, environment_id, blocker_mode)
          VALUES (?, NULL, 'desktop_app', ?, NULL, 'blacklist')",
     )
@@ -215,6 +220,137 @@ pub async fn insert_desktop_block_event(
         .await
         .map_err(|error| format!("commit desktop block event: {error}"))?;
 
+    Ok(())
+}
+
+/// A block event another process left in the device spool for the app to record in the vault,
+/// with the single rule snapshot it carries.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SpooledBlockEvent {
+    pub id: String,
+    pub run_id: Option<String>,
+    pub occurred_at: String,
+    pub source_type: String,
+    pub source_key: String,
+    pub display_name: Option<String>,
+    pub phase: Option<String>,
+    pub decision: String,
+    pub rule_kind: Option<String>,
+    pub rule_label: Option<String>,
+    pub blocker_mode: Option<String>,
+}
+
+fn bounded_text(value: &str, max_chars: usize, what: &str) -> Result<(), String> {
+    if value.trim().is_empty() || value.chars().count() > max_chars {
+        return Err(format!("spooled block event {what} is invalid"));
+    }
+    Ok(())
+}
+
+fn optional_choice(value: Option<&str>, allowed: &[&str], what: &str) -> Result<(), String> {
+    match value {
+        Some(value) if !allowed.contains(&value) => {
+            Err(format!("spooled block event {what} is invalid"))
+        }
+        _ => Ok(()),
+    }
+}
+
+/// Checks a spooled block event against the bounds the vault's capture triggers enforce and the
+/// values the replicated table accepts, so a malformed spool row never aborts a vault write.
+pub fn validate_spooled_block_event(event: &SpooledBlockEvent) -> Result<(), String> {
+    if event.id.trim().is_empty() || event.id.len() > MAX_ROW_KEY_BYTES {
+        return Err("spooled block event id is invalid".into());
+    }
+    if let Some(run_id) = &event.run_id
+        && (run_id.trim().is_empty() || run_id.len() > MAX_ROW_KEY_BYTES)
+    {
+        return Err("spooled block event run is invalid".into());
+    }
+    chrono::DateTime::parse_from_rfc3339(&event.occurred_at)
+        .map_err(|_| "spooled block event time is invalid".to_string())?;
+    optional_choice(Some(&event.source_type), BLOCK_SOURCE_TYPES, "source type")?;
+    bounded_text(&event.source_key, MAX_BLOCK_TEXT_CHARS, "source key")?;
+    if event.source_key.trim() != event.source_key
+        || event.source_key.contains("://")
+        || event.source_key.contains('/')
+        || (event.source_type == "browser"
+            && normalize_usage_host(&event.source_key).as_deref() != Some(&event.source_key))
+    {
+        return Err("spooled block event source key is invalid".into());
+    }
+    for (value, what) in [
+        (&event.display_name, "display name"),
+        (&event.rule_label, "rule label"),
+    ] {
+        if let Some(value) = value {
+            bounded_text(value, MAX_BLOCK_TEXT_CHARS, what)?;
+        }
+    }
+    optional_choice(event.phase.as_deref(), BLOCK_PHASES, "phase")?;
+    optional_choice(Some(&event.decision), BLOCK_DECISIONS, "decision")?;
+    optional_choice(event.rule_kind.as_deref(), SNAPSHOT_RULE_KINDS, "rule kind")?;
+    optional_choice(
+        event.blocker_mode.as_deref(),
+        SNAPSHOT_BLOCKER_MODES,
+        "blocker mode",
+    )
+}
+
+/// Records one spooled block event and its rule snapshot. Recording an event the vault already
+/// holds changes nothing, so a spool batch that committed but was not removed records again
+/// harmlessly. A run the vault no longer holds leaves the event without a run.
+pub async fn record_spooled_block_event(
+    connection: &mut SqliteConnection,
+    event: &SpooledBlockEvent,
+) -> Result<(), String> {
+    validate_spooled_block_event(event)?;
+    let run_id = match &event.run_id {
+        Some(run_id) => {
+            let exists: bool =
+                sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pomodoro_runs WHERE id = ?)")
+                    .bind(run_id)
+                    .fetch_one(&mut *connection)
+                    .await
+                    .map_err(|error| format!("find spooled block event run: {error}"))?;
+            exists.then_some(run_id.as_str())
+        }
+        None => None,
+    };
+    let inserted = sqlx::query(
+        "INSERT OR IGNORE INTO distractions_block_events
+            (id, run_id, segment_id, occurred_at, source_type, source_key,
+             display_name, phase, decision, rule_id, category_id, created_at)
+         VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, NULL, NULL, ?)",
+    )
+    .bind(&event.id)
+    .bind(run_id)
+    .bind(&event.occurred_at)
+    .bind(&event.source_type)
+    .bind(&event.source_key)
+    .bind(&event.display_name)
+    .bind(&event.phase)
+    .bind(&event.decision)
+    .bind(&event.occurred_at)
+    .execute(&mut *connection)
+    .await
+    .map_err(|error| format!("record spooled block event: {error}"))?
+    .rows_affected();
+    if inserted == 0 {
+        return Ok(());
+    }
+    sqlx::query(
+        "INSERT OR IGNORE INTO distractions_block_event_rule_snapshots
+            (block_event_id, rule_id, rule_kind, rule_label, environment_id, blocker_mode)
+         VALUES (?, NULL, ?, ?, NULL, ?)",
+    )
+    .bind(&event.id)
+    .bind(&event.rule_kind)
+    .bind(&event.rule_label)
+    .bind(&event.blocker_mode)
+    .execute(&mut *connection)
+    .await
+    .map_err(|error| format!("record spooled block event rule snapshot: {error}"))?;
     Ok(())
 }
 

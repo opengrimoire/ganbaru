@@ -1,13 +1,17 @@
-//! Device-local spool of desktop usage samples awaiting the vault's usage journal.
+//! Device-local spool of desktop usage samples and browser block events awaiting the vault.
 //!
 //! The native owner records each interval batch here first, so a batch survives a restart or a
 //! vault that is briefly unavailable. Draining moves the samples into this device's
 //! `distractions_usage_samples` journal, from which the replicated daily totals are flushed.
+//! The browser host never opens the vault; it spools its block events here, and ingestion moves
+//! them into the replicated `distractions_block_events`.
 
 use crate::distractions::DistractionsUsageSampleRow;
 use crate::distractions::limits::{MAX_SOURCE_GROUPS, UsageSourceDay};
-use ganbaru_distractions::usage::UsageDateWindow;
 use ganbaru_distractions::usage::totals::insert_own_samples;
+use ganbaru_distractions::usage::{
+    SpooledBlockEvent, UsageDateWindow, record_spooled_block_event, validate_spooled_block_event,
+};
 use sha2::{Digest, Sha256};
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use sqlx::{Row, SqliteConnection, SqlitePool};
@@ -17,6 +21,9 @@ use tauri::{Manager, Runtime};
 const SPOOL_FILE: &str = "distractions-device-spool.sqlite";
 const MAX_PENDING_SAMPLES: i64 = 4_000;
 const DRAIN_BATCH_SAMPLES: i64 = 200;
+/// Block events the browser host keeps waiting per device before it stops recording more.
+const MAX_PENDING_BLOCK_EVENTS: i64 = 4_000;
+const INGEST_BATCH_BLOCK_EVENTS: i64 = 200;
 const ACCOUNTING_SESSION_BYTES: usize = 16;
 /// Longest elapsed time one compacted sample carries.
 const MAX_COMPACTED_SECONDS: i64 = 86_400;
@@ -62,6 +69,21 @@ async fn open_spool(path: &Path) -> Result<SqlitePool, String> {
             batch_id TEXT NOT NULL,
             digest TEXT NOT NULL,
             PRIMARY KEY (vault_id, device_id)
+        );
+        CREATE TABLE IF NOT EXISTS pending_block_events (
+            event_id TEXT PRIMARY KEY,
+            vault_id TEXT NOT NULL,
+            device_id TEXT NOT NULL,
+            run_id TEXT,
+            occurred_at TEXT NOT NULL,
+            source_type TEXT NOT NULL,
+            source_key TEXT NOT NULL,
+            display_name TEXT,
+            phase TEXT,
+            decision TEXT NOT NULL,
+            rule_kind TEXT,
+            rule_label TEXT,
+            blocker_mode TEXT
         );",
     )
     .execute(&pool)
@@ -407,6 +429,154 @@ async fn drain_at(
             drained += batch.len();
         }
         Err("native usage drain exceeds the bounded pending window".to_string())
+    }
+    .await;
+    spool.close().await;
+    result
+}
+
+/// Whether the browser host left block events of this device in `vault_id` for the vault.
+pub(crate) async fn has_pending_block_events<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    vault_id: &str,
+    device_id: &str,
+) -> Result<bool, String> {
+    let path = spool_path(app)?;
+    if !tokio::fs::try_exists(&path)
+        .await
+        .map_err(|error| format!("inspect Distractions spool: {error}"))?
+    {
+        return Ok(false);
+    }
+    let spool = open_spool(&path).await?;
+    let pending = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM pending_block_events WHERE vault_id = ? AND device_id = ?)",
+    )
+    .bind(vault_id)
+    .bind(device_id)
+    .fetch_one(&spool)
+    .await
+    .map_err(|error| format!("check spooled block events: {error}"));
+    spool.close().await;
+    pending
+}
+
+/// Moves the block events the browser host spooled for this device into the vault. Returns how
+/// many events left the spool.
+pub(crate) async fn ingest_block_events<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    pool: &SqlitePool,
+    vault_id: &str,
+    device_id: &str,
+) -> Result<usize, String> {
+    ingest_block_events_at(&spool_path(app)?, pool, vault_id, device_id).await
+}
+
+async fn read_pending_block_events(
+    connection: &mut SqliteConnection,
+    vault_id: &str,
+    device_id: &str,
+) -> Result<Vec<SpooledBlockEvent>, String> {
+    let rows = sqlx::query(
+        "SELECT event_id, run_id, occurred_at, source_type, source_key, display_name, phase,
+                decision, rule_kind, rule_label, blocker_mode
+         FROM pending_block_events
+         WHERE vault_id = ? AND device_id = ?
+         ORDER BY occurred_at ASC, event_id ASC LIMIT ?",
+    )
+    .bind(vault_id)
+    .bind(device_id)
+    .bind(INGEST_BATCH_BLOCK_EVENTS)
+    .fetch_all(connection)
+    .await
+    .map_err(|error| format!("read spooled block events: {error}"))?;
+    rows.into_iter()
+        .map(|row| {
+            let read = |error: sqlx::Error| format!("read spooled block event: {error}");
+            Ok(SpooledBlockEvent {
+                id: row.try_get("event_id").map_err(read)?,
+                run_id: row.try_get("run_id").map_err(read)?,
+                occurred_at: row.try_get("occurred_at").map_err(read)?,
+                source_type: row.try_get("source_type").map_err(read)?,
+                source_key: row.try_get("source_key").map_err(read)?,
+                display_name: row.try_get("display_name").map_err(read)?,
+                phase: row.try_get("phase").map_err(read)?,
+                decision: row.try_get("decision").map_err(read)?,
+                rule_kind: row.try_get("rule_kind").map_err(read)?,
+                rule_label: row.try_get("rule_label").map_err(read)?,
+                blocker_mode: row.try_get("blocker_mode").map_err(read)?,
+            })
+        })
+        .collect()
+}
+
+/// Each batch commits to the vault before it leaves the spool; the vault ignores events it
+/// already holds, so a batch that committed but stayed in the spool ingests again harmlessly. A
+/// spooled row the vault would refuse is dropped with a log line instead of blocking the rest.
+async fn ingest_block_events_at(
+    path: &Path,
+    pool: &SqlitePool,
+    vault_id: &str,
+    device_id: &str,
+) -> Result<usize, String> {
+    if !tokio::fs::try_exists(path)
+        .await
+        .map_err(|error| format!("inspect Distractions spool: {error}"))?
+    {
+        return Ok(0);
+    }
+    let spool = open_spool(path).await?;
+    let result = async {
+        let mut ingested = 0;
+        for _ in 0..=(MAX_PENDING_BLOCK_EVENTS / INGEST_BATCH_BLOCK_EVENTS) {
+            let mut connection = spool
+                .acquire()
+                .await
+                .map_err(|error| format!("open spooled block event batch: {error}"))?;
+            let batch = read_pending_block_events(&mut connection, vault_id, device_id).await?;
+            // The spool pool holds one connection, which the cleanup transaction needs.
+            drop(connection);
+            if batch.is_empty() {
+                return Ok(ingested);
+            }
+            let mut transaction = pool
+                .begin()
+                .await
+                .map_err(|error| format!("begin block event import: {error}"))?;
+            for event in &batch {
+                if let Err(error) = validate_spooled_block_event(event) {
+                    eprintln!("dropped spooled Distractions block event: {error}");
+                    continue;
+                }
+                record_spooled_block_event(&mut transaction, event).await?;
+            }
+            transaction
+                .commit()
+                .await
+                .map_err(|error| format!("commit block event import: {error}"))?;
+            let mut transaction = spool
+                .begin()
+                .await
+                .map_err(|error| format!("begin block event spool cleanup: {error}"))?;
+            for event in &batch {
+                sqlx::query(
+                    "DELETE FROM pending_block_events
+                     WHERE vault_id = ? AND device_id = ? AND event_id = ?",
+                )
+                .bind(vault_id)
+                .bind(device_id)
+                .bind(&event.id)
+                .execute(&mut *transaction)
+                .await
+                .map_err(|error| format!("remove ingested block event: {error}"))?;
+            }
+            transaction
+                .commit()
+                .await
+                .map_err(|error| format!("commit block event spool cleanup: {error}"))?;
+            ingested += batch.len();
+        }
+        Err("block event ingestion exceeds the bounded pending window".to_string())
     }
     .await;
     spool.close().await;

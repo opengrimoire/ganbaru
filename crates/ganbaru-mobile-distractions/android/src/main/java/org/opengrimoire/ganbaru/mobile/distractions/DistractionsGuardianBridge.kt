@@ -55,11 +55,10 @@ internal class DistractionsGuardianClient(private val context: Context) {
 
   fun invalidateRules() { call(METHOD_INVALIDATE_RULES) }
 
-  fun pendingEvents(vaultId: String, usageOnly: Boolean): List<JournalEvent> {
+  fun pendingEvents(vaultId: String): List<JournalEvent> {
     @Suppress("DEPRECATION")
     val values = call(METHOD_PENDING_EVENTS, Bundle().apply {
       putString(KEY_VAULT_ID, vaultId)
-      putBoolean("usageOnly", usageOnly)
     }).getParcelableArrayList<Bundle>(KEY_EVENTS)
       ?: arrayListOf()
     return values.map { value -> value.toJournalEvent() }
@@ -140,7 +139,7 @@ class DistractionsGuardianProvider : ContentProvider() {
           putParcelableArrayList(
             KEY_EVENTS,
             ArrayList(DistractionsJournal(appContext).use { journal ->
-              journal.exportPending(extras.requireVaultId(), extras?.getBoolean("usageOnly", false) ?: false)
+              journal.exportPending(extras.requireVaultId())
                 .map { event -> event.toBundle() }
             }),
           )

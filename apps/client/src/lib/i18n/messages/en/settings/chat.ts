@@ -328,10 +328,6 @@ export const chatSettings = {
     restoring: "Restoring...",
     restoreFailed: "The agent could not be restored.",
     historyPreserved: "Work history preserved",
-    deletePermanently: "Delete permanently",
-    deleteTitle: (name: string) => `Delete ${name} permanently?`,
-    deleteMessage: (_name: string) => "This cannot be undone.",
-    deleteFailed: "The agent could not be deleted.",
   },
   providers: {
     heading: "Providers",

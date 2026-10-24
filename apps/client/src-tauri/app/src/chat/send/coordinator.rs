@@ -733,6 +733,7 @@ pub(super) async fn load_internal_mcp_scope(
          JOIN chat_teammate_channel_memberships channel_access
            ON channel_access.conversation_id = live.conversation_id
           AND channel_access.teammate_id = live.teammate_id
+          AND channel_access.removed_at IS NULL
          WHERE frozen.authorization_revision_id = ?
          ORDER BY frozen.working_folder_id",
     )

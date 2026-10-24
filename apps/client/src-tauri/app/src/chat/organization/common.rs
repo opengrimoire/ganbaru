@@ -2,12 +2,12 @@
 
 use super::super::channels::{identifier_error, persistence_error, u64_value};
 use ganbaru_chat::coordination::contracts::*;
+pub(super) use ganbaru_chat::ids::new_id;
+use ganbaru_chat::ids::{REPLY_THREAD_ID_PREFIX, derived_id};
 use ganbaru_chat_contracts::models::*;
 use serde_json::Value;
 #[cfg(desktop)]
 use sha2::{Digest, Sha256};
-pub(super) use ganbaru_chat::ids::new_id;
-use ganbaru_chat::ids::{REPLY_THREAD_ID_PREFIX, derived_id};
 use std::collections::BTreeSet;
 
 pub(super) const MAX_MESSAGE_BYTES: usize = 128 * 1024;
@@ -285,7 +285,10 @@ pub(super) fn reply_thread_id(
 /// most one input whichever device writes it.
 #[cfg(desktop)]
 pub(super) fn assignment_input_id(message_item_id: &str) -> ChatResult<String> {
-    derived_id(ganbaru_chat::ids::ASSIGNMENT_INPUT_ID_PREFIX, &[message_item_id])
+    derived_id(
+        ganbaru_chat::ids::ASSIGNMENT_INPUT_ID_PREFIX,
+        &[message_item_id],
+    )
 }
 
 #[cfg(desktop)]

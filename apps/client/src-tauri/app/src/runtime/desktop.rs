@@ -368,7 +368,6 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
             chat::organization::chat_read_teammate,
             chat::organization::chat_create_teammate,
             chat::organization::chat_archive_teammate,
-            chat::organization::chat_delete_unused_teammate,
             chat::organization::access::chat_list_access_profiles,
             chat::organization::access::chat_create_access_profile,
             chat::organization::access::chat_duplicate_access_profile,

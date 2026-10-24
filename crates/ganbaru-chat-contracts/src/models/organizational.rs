@@ -636,7 +636,6 @@ pub struct ChatAiTeammateRead {
     pub latest_policy: Option<ChatTeammatePolicyRead>,
     pub channel_count: u64,
     pub active_assignment_count: u64,
-    pub has_durable_history: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]

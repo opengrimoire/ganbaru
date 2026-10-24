@@ -69,7 +69,6 @@ commands.allow = [
   "chat_delete_diagnostics",
   "chat_delete_draft",
   "chat_delete_thread_permanently",
-  "chat_delete_unused_teammate",
   "chat_discover_default_providers",
   "chat_discover_source_control",
   "chat_dispatch_due_scheduled_messages",

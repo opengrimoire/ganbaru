@@ -59,7 +59,7 @@ use reads::{
     read_teammate,
 };
 #[cfg(desktop)]
-use teammate_lifecycle::{delete_unused_teammate, set_teammate_archived};
+use teammate_lifecycle::set_teammate_archived;
 #[cfg(desktop)]
 use workflow::insert_policy_revision;
 use workflow::{
@@ -184,18 +184,6 @@ pub async fn chat_archive_teammate(
 ) -> ChatResult<ChatAiTeammateRead> {
     let pool = chat_pool(app, db_url).await?;
     set_teammate_archived(&pool, &teammate_id, expected_revision, archived).await
-}
-
-#[tauri::command]
-#[cfg(desktop)]
-pub async fn chat_delete_unused_teammate(
-    app: tauri::AppHandle,
-    db_url: String,
-    teammate_id: ChatParticipantId,
-    expected_revision: u64,
-) -> ChatResult<()> {
-    let pool = chat_pool(app, db_url).await?;
-    delete_unused_teammate(&pool, &teammate_id, expected_revision).await
 }
 
 #[tauri::command]

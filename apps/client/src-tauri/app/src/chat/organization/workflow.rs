@@ -1,12 +1,12 @@
 //! Assignment routing, frozen context, and durable organizational messages.
 
-use super::common::{
-    conversation_item_id, has_thread_eligible_mention, json_object, message_revision_id, new_id,
-    parse_participant_kind, reply_thread_id, serialization_error, wire_participant_kind,
-};
 #[cfg(desktop)]
 use super::common::{
     assignment_input_id, wire_approval_policy, wire_work_state, work_assignment_id,
+};
+use super::common::{
+    conversation_item_id, has_thread_eligible_mention, json_object, message_revision_id, new_id,
+    parse_participant_kind, reply_thread_id, serialization_error, wire_participant_kind,
 };
 #[cfg(desktop)]
 use super::context::freeze_context_package;
@@ -500,6 +500,7 @@ async fn insert_message_reference(
                  LEFT JOIN chat_teammate_channel_memberships destination_ai
                    ON destination_ai.conversation_id = destination.conversation_id
                   AND destination_ai.teammate_id = destination.participant_id
+                  AND destination_ai.removed_at IS NULL
                  LEFT JOIN chat_access_profiles destination_profile
                    ON destination_profile.id = destination_ai.access_profile_id
                  LEFT JOIN chat_access_profile_revisions destination_revision
@@ -523,6 +524,7 @@ async fn insert_message_reference(
                      LEFT JOIN chat_teammate_channel_memberships source_ai
                        ON source_ai.conversation_id = source_membership.conversation_id
                       AND source_ai.teammate_id = source_membership.participant_id
+                      AND source_ai.removed_at IS NULL
                      LEFT JOIN chat_access_profiles source_profile
                        ON source_profile.id = source_ai.access_profile_id
                      LEFT JOIN chat_access_profile_revisions source_revision
@@ -573,6 +575,7 @@ async fn insert_message_reference(
                  LEFT JOIN chat_teammate_channel_memberships destination_ai
                    ON destination_ai.conversation_id = destination.conversation_id
                   AND destination_ai.teammate_id = destination.participant_id
+                  AND destination_ai.removed_at IS NULL
                  LEFT JOIN chat_access_profiles destination_profile
                    ON destination_profile.id = destination_ai.access_profile_id
                  LEFT JOIN chat_access_profile_revisions destination_revision
@@ -585,6 +588,7 @@ async fn insert_message_reference(
                  LEFT JOIN chat_teammate_channel_memberships source_ai
                    ON source_ai.conversation_id = source_membership.conversation_id
                   AND source_ai.teammate_id = source_membership.participant_id
+                  AND source_ai.removed_at IS NULL
                  LEFT JOIN chat_access_profiles source_profile
                    ON source_profile.id = source_ai.access_profile_id
                  LEFT JOIN chat_access_profile_revisions source_revision
@@ -625,6 +629,7 @@ async fn insert_message_reference(
                         JOIN chat_teammate_channel_memberships ai_membership
                           ON ai_membership.conversation_id = membership.conversation_id
                          AND ai_membership.teammate_id = membership.participant_id
+                         AND ai_membership.removed_at IS NULL
                         JOIN chat_access_profiles profile
                           ON profile.id = ai_membership.access_profile_id
                         JOIN chat_access_profile_revisions profile_revision
@@ -947,6 +952,7 @@ pub(super) async fn require_participating_teammate(
          JOIN chat_teammate_channel_memberships ai_membership
            ON ai_membership.conversation_id = membership.conversation_id
           AND ai_membership.teammate_id = membership.participant_id
+          AND ai_membership.removed_at IS NULL
          JOIN chat_access_profiles profile ON profile.id = ai_membership.access_profile_id
          JOIN chat_access_profile_revisions profile_revision
            ON profile_revision.access_profile_id = profile.id

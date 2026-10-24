@@ -347,7 +347,7 @@ pub async fn chat_replace_teammate_access(
         .collect::<BTreeSet<_>>();
     let existing_conversations = sqlx::query_scalar::<_, String>(
         "SELECT conversation_id FROM chat_teammate_channel_memberships
-         WHERE teammate_id = ?",
+         WHERE teammate_id = ? AND removed_at IS NULL",
     )
     .bind(request.teammate_id.as_str())
     .fetch_all(&mut *transaction)
@@ -355,38 +355,13 @@ pub async fn chat_replace_teammate_access(
     .map_err(persistence_error)?;
     for conversation_id in existing_conversations {
         if !proposed_conversations.contains(conversation_id.as_str()) {
-            sqlx::query(
-                "UPDATE chat_teammate_working_folder_grants
-                 SET revoked_at = ?, is_default = 0, revision = revision + 1
-                 WHERE conversation_id = ? AND teammate_id = ? AND revoked_at IS NULL",
+            remove_teammate_from_conversation(
+                &mut transaction,
+                &request.teammate_id,
+                &conversation_id,
+                &now,
             )
-            .bind(now.as_str())
-            .bind(&conversation_id)
-            .bind(request.teammate_id.as_str())
-            .execute(&mut *transaction)
-            .await
-            .map_err(persistence_error)?;
-            sqlx::query(
-                "DELETE FROM chat_teammate_channel_memberships
-                 WHERE conversation_id = ? AND teammate_id = ?",
-            )
-            .bind(&conversation_id)
-            .bind(request.teammate_id.as_str())
-            .execute(&mut *transaction)
-            .await
-            .map_err(persistence_error)?;
-            sqlx::query(
-                "UPDATE chat_conversation_memberships
-                 SET removed_at = ?, revision = revision + 1, updated_at = ?
-                 WHERE conversation_id = ? AND participant_id = ?",
-            )
-            .bind(now.as_str())
-            .bind(now.as_str())
-            .bind(&conversation_id)
-            .bind(request.teammate_id.as_str())
-            .execute(&mut *transaction)
-            .await
-            .map_err(persistence_error)?;
+            .await?;
         }
     }
 
@@ -445,7 +420,7 @@ pub async fn chat_replace_teammate_access(
                 history_from_ordinal = excluded.history_from_ordinal,
                 runtime_approval_policy = excluded.runtime_approval_policy,
                 scratch_runtime_approval_policy = excluded.scratch_runtime_approval_policy,
-                updated_at = excluded.updated_at",
+                removed_at = NULL, updated_at = excluded.updated_at",
         )
         .bind(channel.conversation_id.as_str())
         .bind(request.teammate_id.as_str())
@@ -821,55 +796,67 @@ fn runtime_approval_is_reduction(
     }
 }
 
+/// Removes a teammate from one channel conversation: revokes its folder grants there and marks
+/// its teammate channel membership and conversation membership removed.
+///
+/// The rows stay, so a removal is an ordinary replicated update rather than a delete, and adding
+/// the teammate back clears the removal.
+pub(in crate::chat::organization) async fn remove_teammate_from_conversation(
+    transaction: &mut Transaction<'_, Sqlite>,
+    teammate_id: &ChatParticipantId,
+    conversation_id: &str,
+    now: &UtcTimestamp,
+) -> ChatResult<()> {
+    sqlx::query(
+        "UPDATE chat_teammate_working_folder_grants
+         SET revoked_at = ?, is_default = 0, revision = revision + 1
+         WHERE conversation_id = ? AND teammate_id = ? AND revoked_at IS NULL",
+    )
+    .bind(now.as_str())
+    .bind(conversation_id)
+    .bind(teammate_id.as_str())
+    .execute(&mut **transaction)
+    .await
+    .map_err(persistence_error)?;
+    sqlx::query(
+        "UPDATE chat_teammate_channel_memberships SET removed_at = ?, updated_at = ?
+         WHERE conversation_id = ? AND teammate_id = ? AND removed_at IS NULL",
+    )
+    .bind(now.as_str())
+    .bind(now.as_str())
+    .bind(conversation_id)
+    .bind(teammate_id.as_str())
+    .execute(&mut **transaction)
+    .await
+    .map_err(persistence_error)?;
+    sqlx::query(
+        "UPDATE chat_conversation_memberships
+         SET removed_at = ?, revision = revision + 1, updated_at = ?
+         WHERE conversation_id = ? AND participant_id = ?",
+    )
+    .bind(now.as_str())
+    .bind(now.as_str())
+    .bind(conversation_id)
+    .bind(teammate_id.as_str())
+    .execute(&mut **transaction)
+    .await
+    .map_err(persistence_error)?;
+    Ok(())
+}
+
 async fn revoke_teammate_authorizations(
     transaction: &mut Transaction<'_, Sqlite>,
     teammate_id: &ChatParticipantId,
     now: &UtcTimestamp,
     reason: &str,
 ) -> ChatResult<()> {
-    sqlx::query(
-        "UPDATE chat_assignment_authorization_revisions
-         SET decision_state = 'revoked', reason = ?, revoked_at = ?
-         WHERE id IN (
-             SELECT authorization.id
-             FROM chat_assignment_authorization_revisions authorization
-             JOIN chat_work_assignments assignment
-               ON assignment.id = authorization.assignment_id
-             WHERE assignment.teammate_id = ?
-               AND authorization.decision_state = 'allowed'
-               AND authorization.revoked_at IS NULL
-         )",
+    ganbaru_chat::coordination::revocation::revoke_teammate_authorizations(
+        transaction,
+        teammate_id.as_str(),
+        now.as_str(),
+        reason,
     )
-    .bind(reason)
-    .bind(now.as_str())
-    .bind(teammate_id.as_str())
-    .execute(&mut **transaction)
-    .await
-    .map_err(persistence_error)?;
-    sqlx::query(
-        "INSERT INTO chat_access_revocation_jobs
-            (id, teammate_id, authorization_revision_id, reason,
-             available_at, created_at, updated_at)
-         SELECT 'access-revocation:' || lower(hex(randomblob(16))), ?, authorization.id, ?, ?, ?, ?
-         FROM chat_assignment_authorization_revisions authorization
-         JOIN chat_work_assignments assignment ON assignment.id = authorization.assignment_id
-         WHERE assignment.teammate_id = ? AND authorization.revoked_at = ?
-           AND NOT EXISTS (
-               SELECT 1 FROM chat_access_revocation_jobs existing
-               WHERE existing.authorization_revision_id = authorization.id
-                 AND existing.state IN ('queued', 'claimed')
-           )",
-    )
-    .bind(teammate_id.as_str())
-    .bind(reason)
-    .bind(now.as_str())
-    .bind(now.as_str())
-    .bind(now.as_str())
-    .bind(teammate_id.as_str())
-    .bind(now.as_str())
-    .execute(&mut **transaction)
-    .await
-    .map_err(persistence_error)?;
+    .await?;
     Ok(())
 }
 

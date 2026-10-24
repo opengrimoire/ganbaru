@@ -273,10 +273,10 @@ pub(crate) async fn insert_database_copy(
     tx: &mut Transaction<'_, Sqlite>,
     copy: &DatabaseCopy,
 ) -> Result<(), String> {
-    sqlx::query("INSERT INTO notes_databases (id, parent_type, parent_page_id, parent_block_id, title, title_rich_text, description, icon, cover, is_inline)
-        SELECT ?, block.parent_type, block.parent_page_id, block.parent_block_id, source.title, source.title_rich_text, source.description, source.icon, source.cover, source.is_inline
+    sqlx::query("INSERT INTO notes_databases (id, block_id, parent_type, parent_page_id, parent_block_id, title, title_rich_text, description, icon, cover, is_inline)
+        SELECT block.id, block.id, block.parent_type, block.parent_page_id, block.parent_block_id, source.title, source.title_rich_text, source.description, source.icon, source.cover, source.is_inline
         FROM notes_databases AS source JOIN notes_blocks AS block ON block.id = ? WHERE source.id = ?")
-        .bind(&copy.id).bind(&copy.id).bind(&copy.source_id).execute(&mut **tx).await
+        .bind(&copy.id).bind(&copy.source_id).execute(&mut **tx).await
         .map_err(|e| format!("copy Notes database: {e}"))?;
     for (source, id) in &copy.sources {
         sqlx::query("INSERT INTO notes_data_sources (id, database_id, title, title_rich_text, description, icon, properties)
@@ -297,10 +297,21 @@ pub(crate) async fn insert_database_copy(
         Box::pin(insert_child_page_copy(tx, graph)).await?;
     }
     for (source, id, data_source) in &copy.templates {
-        sqlx::query("INSERT INTO notes_data_source_templates (id, data_source_id, source_page_id, name, properties, is_default)
-            SELECT ?, ?, NULL, name, properties, is_default FROM notes_data_source_templates WHERE id = ?")
+        sqlx::query("INSERT INTO notes_data_source_templates (id, data_source_id, source_page_id, name, properties)
+            SELECT ?, ?, NULL, name, properties FROM notes_data_source_templates WHERE id = ?")
             .bind(id).bind(data_source).bind(source).execute(&mut **tx).await
             .map_err(|e| format!("copy Notes database template: {e}"))?;
+        sqlx::query(
+            "UPDATE notes_data_sources SET default_template_id = ?1
+             WHERE id = ?2
+               AND EXISTS (SELECT 1 FROM notes_data_sources WHERE default_template_id = ?3)",
+        )
+        .bind(id)
+        .bind(data_source)
+        .bind(source)
+        .execute(&mut **tx)
+        .await
+        .map_err(|e| format!("copy Notes database default template: {e}"))?;
         let source_page: Option<String> = sqlx::query_scalar(
             "SELECT source_page_id FROM notes_data_source_templates WHERE id = ?",
         )
@@ -320,17 +331,17 @@ pub(crate) async fn insert_database_copy(
                 .map_err(|e| format!("copy template row reference: {e}"))?;
         }
         let blocks = sqlx::query_as::<_, crate::models::NoteDataSourceTemplateBlockRow>(
-            "SELECT template_id, id, parent_type, parent_block_id, has_children, type AS block_type, payload, plain_text, sort_order, created_time, last_edited_time
-             FROM notes_data_source_template_blocks WHERE template_id = ? ORDER BY sort_order, id")
+            "SELECT template_id, id, parent_type, parent_block_id, has_children, type AS block_type, payload, plain_text, ordinal, created_time, last_edited_time
+             FROM notes_data_source_template_blocks WHERE template_id = ? ORDER BY ordinal")
             .bind(source).fetch_all(&mut **tx).await.map_err(|e| format!("read template copy: {e}"))?;
         for block in blocks {
             let payload: Value = serde_json::from_str(&block.payload)
                 .map_err(|e| format!("parse copied template: {e}"))?;
             let block_ids = &copy.template_block_ids[source];
-            sqlx::query("INSERT INTO notes_data_source_template_blocks (template_id, id, parent_type, parent_block_id, has_children, type, payload, plain_text, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
+            sqlx::query("INSERT INTO notes_data_source_template_blocks (template_id, id, parent_type, parent_block_id, has_children, type, payload, plain_text, ordinal) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
                 .bind(id).bind(&block_ids[&block.id]).bind(block.parent_type)
                 .bind(block.parent_block_id.as_ref().and_then(|id| block_ids.get(id)))
-                .bind(block.has_children).bind(block.block_type).bind(payload.to_string()).bind(block.plain_text).bind(block.sort_order)
+                .bind(block.has_children).bind(block.block_type).bind(payload.to_string()).bind(block.plain_text).bind(block.ordinal)
                 .execute(&mut **tx).await.map_err(|e| format!("copy template body: {e}"))?;
         }
     }

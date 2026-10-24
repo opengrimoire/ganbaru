@@ -7,6 +7,7 @@ mod distractions;
 mod helpers;
 mod music;
 mod notes;
+mod notes_databases;
 mod pomodoro;
 mod preferences;
 mod project_fk_actions;

@@ -6,7 +6,6 @@ use crate::models::{
 };
 use crate::validation::{
     plain_text_from_payload, require_uuid, validate_block_payload, validate_parent,
-    validate_sort_order,
 };
 use crate::{page_history, reads};
 use ganbaru_sync_contracts::OrderKey;
@@ -392,26 +391,23 @@ async fn replace_template_blocks_from_page(
         .await
         .map_err(|e| format!("clear notes page template blocks: {e}"))?;
     let source_blocks = load_page_block_subtree_rows(tx, source_page_id).await?;
-    let mut positions = SiblingPositions::default();
-    for block in &source_blocks {
+    for (ordinal, block) in (0_i64..).zip(&source_blocks) {
         validate_block_payload(
             &block.block_type,
             &serde_json::from_str(&block.payload)
                 .map_err(|e| format!("parse notes source block payload: {e}"))?,
         )?;
-        let sort_order = positions.next_sort_order(block.parent_block_id.as_deref());
-        insert_source_block_snapshot(tx, template_id, block, sort_order).await?;
+        insert_source_block_snapshot(tx, template_id, block, ordinal).await?;
     }
-    Ok(())
+    ensure_template_content_size_tx(tx, TemplateKind::Page, template_id).await
 }
 
 async fn insert_source_block_snapshot(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     template_id: &str,
     block: &NoteBlockRow,
-    sort_order: f64,
+    ordinal: i64,
 ) -> Result<(), String> {
-    validate_sort_order(sort_order)?;
     let (parent_type, parent_block_id): (&str, Option<&str>) = if block.parent_type == "page_id" {
         ("template", None)
     } else {
@@ -435,7 +431,7 @@ async fn insert_source_block_snapshot(
             type,
             payload,
             plain_text,
-            sort_order
+            ordinal
          )
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
@@ -447,7 +443,7 @@ async fn insert_source_block_snapshot(
     .bind(&block.block_type)
     .bind(&block.payload)
     .bind(&block.plain_text)
-    .bind(sort_order)
+    .bind(ordinal)
     .execute(&mut **tx)
     .await
     .map_err(|e| format!("snapshot notes page template block: {e}"))?;
@@ -469,7 +465,7 @@ async fn insert_template_block_snapshot(
             type,
             payload,
             plain_text,
-            sort_order
+            ordinal
          )
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
@@ -481,7 +477,7 @@ async fn insert_template_block_snapshot(
     .bind(&block.block_type)
     .bind(&block.payload)
     .bind(&block.plain_text)
-    .bind(block.sort_order)
+    .bind(block.ordinal)
     .execute(&mut **tx)
     .await
     .map_err(|e| format!("copy notes page template block: {e}"))?;
@@ -518,7 +514,6 @@ async fn insert_template_blocks_as_page_blocks(
                 .ok_or_else(|| "template child block parent was not cloned".to_string())?;
             ("block_id", None, Some(duplicate_parent_id))
         };
-        validate_sort_order(block.sort_order)?;
         let order_key = positions.next_order_key(parent_block_id.as_deref())?;
         let payload: Value = serde_json::from_str(&block.payload)
             .map_err(|e| format!("parse notes page template block payload: {e}"))?;
@@ -711,24 +706,73 @@ async fn resolve_page_template_parent(
     }
 }
 
+/// Upper bound on the encoded size of one template: its row plus every snapshot block.
+///
+/// A template replicates as one owned snapshot, so the whole snapshot must fit one operation.
+pub const MAX_TEMPLATE_CONTENT_BYTES: i64 = 256 * 1024;
+
+/// The template tables whose snapshots share [`MAX_TEMPLATE_CONTENT_BYTES`].
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum TemplateKind {
+    Page,
+    DataSource,
+}
+
+/// Rejects a saved template whose row and snapshot blocks exceed [`MAX_TEMPLATE_CONTENT_BYTES`].
+pub(crate) async fn ensure_template_content_size_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    kind: TemplateKind,
+    template_id: &str,
+) -> Result<(), String> {
+    let query = match kind {
+        TemplateKind::Page => {
+            "SELECT
+                (SELECT length(CAST(id AS BLOB)) + length(CAST(name AS BLOB))
+                        + length(CAST(properties AS BLOB))
+                        + coalesce(length(CAST(source_page_id AS BLOB)), 0)
+                        + coalesce(length(CAST(icon AS BLOB)), 0)
+                        + coalesce(length(CAST(cover AS BLOB)), 0)
+                 FROM notes_page_templates WHERE id = ?1)
+              + (SELECT coalesce(sum(length(CAST(id AS BLOB)) + length(CAST(parent_type AS BLOB))
+                        + coalesce(length(CAST(parent_block_id AS BLOB)), 0)
+                        + length(CAST(type AS BLOB)) + length(CAST(payload AS BLOB))
+                        + length(CAST(plain_text AS BLOB))), 0)
+                 FROM notes_page_template_blocks WHERE template_id = ?1)"
+        }
+        TemplateKind::DataSource => {
+            "SELECT
+                (SELECT length(CAST(id AS BLOB)) + length(CAST(name AS BLOB))
+                        + length(CAST(properties AS BLOB))
+                        + length(CAST(data_source_id AS BLOB))
+                        + coalesce(length(CAST(source_page_id AS BLOB)), 0)
+                 FROM notes_data_source_templates WHERE id = ?1)
+              + (SELECT coalesce(sum(length(CAST(id AS BLOB)) + length(CAST(parent_type AS BLOB))
+                        + coalesce(length(CAST(parent_block_id AS BLOB)), 0)
+                        + length(CAST(type AS BLOB)) + length(CAST(payload AS BLOB))
+                        + length(CAST(plain_text AS BLOB))), 0)
+                 FROM notes_data_source_template_blocks WHERE template_id = ?1)"
+        }
+    };
+    let bytes: Option<i64> = sqlx::query_scalar(query)
+        .bind(template_id)
+        .fetch_one(&mut **tx)
+        .await
+        .map_err(|e| format!("measure notes template size: {e}"))?;
+    let bytes = bytes.ok_or_else(|| "notes template not found".to_string())?;
+    if bytes > MAX_TEMPLATE_CONTENT_BYTES {
+        return Err(format!(
+            "template content is {bytes} bytes, above the {MAX_TEMPLATE_CONTENT_BYTES} byte limit"
+        ));
+    }
+    Ok(())
+}
+
 async fn load_template_block_rows(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     template_id: &str,
 ) -> Result<Vec<NotePageTemplateBlockRow>, String> {
     sqlx::query_as::<_, NotePageTemplateBlockRow>(
-        "WITH RECURSIVE subtree(id, path, depth) AS (
-            SELECT id, printf('%020.6f:%s', sort_order, id), 1
-            FROM notes_page_template_blocks
-            WHERE template_id = ? AND parent_type = 'template'
-            UNION
-            SELECT child.id,
-                   subtree.path || '/' || printf('%020.6f:%s', child.sort_order, child.id),
-                   subtree.depth + 1
-            FROM notes_page_template_blocks AS child
-            JOIN subtree ON child.parent_block_id = subtree.id
-            WHERE child.template_id = ? AND subtree.depth < ?
-         )
-         SELECT
+        "SELECT
             block.template_id,
             block.id,
             block.parent_type,
@@ -737,24 +781,20 @@ async fn load_template_block_rows(
             block.type AS block_type,
             block.payload,
             block.plain_text,
-            block.sort_order,
+            block.ordinal,
             block.created_time,
             block.last_edited_time
          FROM notes_page_template_blocks AS block
-         JOIN subtree ON subtree.id = block.id
          WHERE block.template_id = ?
-         ORDER BY subtree.path ASC",
+         ORDER BY block.ordinal ASC",
     )
-    .bind(template_id)
-    .bind(template_id)
-    .bind(crate::writes::MAX_BLOCK_DEPTH)
     .bind(template_id)
     .fetch_all(&mut **tx)
     .await
     .map_err(|e| format!("load notes page template blocks: {e}"))
 }
 
-async fn load_page_block_subtree_rows(
+pub(crate) async fn load_page_block_subtree_rows(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     page_id: &str,
 ) -> Result<Vec<NoteBlockRow>, String> {

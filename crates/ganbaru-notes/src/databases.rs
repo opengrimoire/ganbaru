@@ -587,6 +587,7 @@ async fn insert_database_objects(
     sqlx::query(
         "INSERT INTO notes_databases (
             id,
+            block_id,
             parent_type,
             parent_page_id,
             parent_block_id,
@@ -597,7 +598,7 @@ async fn insert_database_objects(
             cover,
             is_inline
          )
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)",
+         VALUES (?1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 1)",
     )
     .bind(request.id.trim())
     .bind(parent.parent_type)
@@ -778,6 +779,7 @@ async fn insert_linked_database_objects(
     sqlx::query(
         "INSERT INTO notes_databases (
             id,
+            block_id,
             parent_type,
             parent_page_id,
             parent_block_id,
@@ -786,7 +788,7 @@ async fn insert_linked_database_objects(
             description,
             is_inline
          )
-         VALUES (?, ?, ?, ?, ?, ?, ?, 1)",
+         VALUES (?1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, 1)",
     )
     .bind(request.id.trim())
     .bind(parent.parent_type)

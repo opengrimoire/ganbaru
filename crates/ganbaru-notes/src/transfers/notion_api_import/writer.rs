@@ -312,6 +312,7 @@ async fn insert_database_objects(
     sqlx::query(
         "INSERT INTO notes_databases (
             id,
+            block_id,
             parent_type,
             parent_page_id,
             parent_block_id,
@@ -326,7 +327,7 @@ async fn insert_database_objects(
             source_last_edited_time,
             url
          )
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 'notion', ?, ?, ?, ?)",
+         VALUES (?1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 1, 'notion', ?9, ?10, ?11, ?12)",
     )
     .bind(&block.id)
     .bind(&block.parent_type)

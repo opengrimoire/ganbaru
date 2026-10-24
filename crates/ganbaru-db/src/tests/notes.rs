@@ -58,13 +58,14 @@ fn schema_creates_normalized_notes_database_tables() {
         sqlx::query(
             "INSERT INTO notes_databases (
                 id,
+                block_id,
                 parent_type,
                 parent_page_id,
                 title,
                 title_rich_text,
                 description
              )
-             VALUES ('database-a', 'page_id', 'page-a', 'Tasks', '[]', '[]')",
+             VALUES ('database-a', 'database-a', 'page_id', 'page-a', 'Tasks', '[]', '[]')",
         )
         .execute(&pool)
         .await
@@ -1458,10 +1459,10 @@ fn notes_block_types_accept_six_heading_levels_in_blocks_and_templates() {
              INSERT INTO notes_blocks (id, page_id, parent_type, parent_block_id, type, text, order_key)
                VALUES ('child', 'page', 'block_id', 'parent', 'paragraph', '{\"rich_text\":[]}', 'a0');
              INSERT INTO notes_page_templates (id, name) VALUES ('template', 'Headings');
-             INSERT INTO notes_page_template_blocks (template_id, id, parent_type, type, payload, has_children)
-               VALUES ('template', 'parent', 'template', 'heading_4', '{\"rich_text\":[],\"is_toggleable\":true}', 1);
-             INSERT INTO notes_page_template_blocks (template_id, id, parent_type, parent_block_id, type, payload)
-               VALUES ('template', 'child', 'block_id', 'parent', 'paragraph', '{\"rich_text\":[]}');",
+             INSERT INTO notes_page_template_blocks (template_id, id, ordinal, parent_type, type, payload, has_children)
+               VALUES ('template', 'parent', 0, 'template', 'heading_4', '{\"rich_text\":[],\"is_toggleable\":true}', 1);
+             INSERT INTO notes_page_template_blocks (template_id, id, ordinal, parent_type, parent_block_id, type, payload)
+               VALUES ('template', 'child', 1, 'block_id', 'parent', 'paragraph', '{\"rich_text\":[]}');",
         ).execute(&pool).await.unwrap();
         for table in ["notes_blocks", "notes_page_template_blocks"] {
             for heading in ["heading_5", "heading_6"] {
@@ -1521,7 +1522,7 @@ type MigratedFixtureBlock = (
 const BEFORE_NOTES_SYNC_STRUCTURE: i64 = 20261024045821;
 
 /// The Notes structure preparation migration.
-const NOTES_SYNC_STRUCTURE: i64 = 20261024075934;
+pub(super) const NOTES_SYNC_STRUCTURE: i64 = 20261024075934;
 
 /// Every block type the Notes schema accepts.
 const FIXTURE_BLOCK_TYPES: [&str; 37] = [
@@ -1565,7 +1566,7 @@ const FIXTURE_BLOCK_TYPES: [&str; 37] = [
 ];
 
 /// Page property values of every Notes property type.
-fn fixture_page_properties() -> serde_json::Value {
+pub(super) fn fixture_page_properties() -> serde_json::Value {
     serde_json::json!({
         "title": { "type": "title", "title": [{ "type": "text", "text": { "content": "Fixture" }, "plain_text": "Fixture" }] },
         "Notes": { "type": "rich_text", "rich_text": [{ "type": "text", "text": { "content": "Body" }, "plain_text": "Body" }] },

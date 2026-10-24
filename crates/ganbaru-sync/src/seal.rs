@@ -1591,7 +1591,7 @@ async fn local_causes(
     conn: &mut SqliteConnection,
     deletions: &BTreeMap<RowRef, (usize, Change)>,
 ) -> SyncResult<BTreeMap<RowRef, RowRef>> {
-    let visibility = Visibility::default();
+    let mut visibility = Visibility::default();
     let rows: Vec<&RowRef> = deletions.keys().collect();
     let position: BTreeMap<&RowRef, usize> = rows
         .iter()
@@ -2041,7 +2041,7 @@ async fn cascaded_deletions(
     if found.is_empty() {
         return Ok(BTreeSet::new());
     }
-    let visibility = Visibility::default();
+    let mut visibility = Visibility::default();
     let mut edges: BTreeMap<RowRef, BTreeSet<RowRef>> = BTreeMap::new();
     for row in &deleted {
         let Some(table) = engine.manifest().table(row.0) else {

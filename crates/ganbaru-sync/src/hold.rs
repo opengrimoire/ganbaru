@@ -179,7 +179,7 @@ async fn cascade_children(
         sqlx::query_as("SELECT table_id, row_key FROM sync_capture WHERE deleted = 1")
             .fetch_all(&mut *conn)
             .await?;
-    let visibility = Visibility::default();
+    let mut visibility = Visibility::default();
     let mut parents: Vec<(RowRef, Vec<RowRef>)> = Vec::new();
     for (table, key) in deleted {
         let table = u16::try_from(table)

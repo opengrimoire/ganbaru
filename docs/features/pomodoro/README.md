@@ -2,7 +2,7 @@
 
 Pomodoro turns a calendar commitment into an adaptive sequence of focus and recovery phases. It protects attention without rewarding exhaustion or treating one fixed interval as universally correct.
 
-**Status: Partial.** The native owner in `ganbaru-pomodoro` handles admission, execution, recovery, and adaptive decisions on desktop and Android, and Svelte only displays accepted state and sends commands. Physical platform acceptance and linked-device control remain open.
+**Status: Partial.** The native owner in `ganbaru-pomodoro` handles admission, execution, recovery, and adaptive decisions on desktop and Android, and Svelte only displays accepted state and sends commands. Closed runs and per-device activity replicate between linked devices. Physical platform acceptance and linked-device control remain open.
 
 ## Current scope
 
@@ -16,6 +16,7 @@ Pomodoro turns a calendar commitment into an adaptive sequence of focus and reco
 | Break screen, title-bar ring, tray ring, and Calendar rail | Implemented; desktop acceptance pending |
 | Android accepted-phase notification and Guardian publication | Implemented; device acceptance pending |
 | Native notifications and deadline reminders | Implemented; delivery acceptance pending |
+| Linked-device history and activity | Implemented; physical acceptance pending |
 | Linked-device controller and companion status | Planned |
 
 ## Philosophy
@@ -38,6 +39,8 @@ Detailed logic lives in [Pomodoro algorithms](../../algorithms/pomodoro/README.m
 ## Run lifecycle
 
 A run starts explicitly from a currently due Pomodoro-enabled Calendar event ("Start scheduled session"), or automatically on desktop when the event is due and fresh local input activity is observed. Android never starts a run from a Calendar alarm. Each run records one configuration snapshot so later preference edits do not rewrite active or historical runs.
+
+Every linked device runs Focus on its own. Closed runs replicate, so Calendar history shows sessions from every device, and the Focus menu shows what other devices are focusing on. Automatic admission passes over an event another device is focusing on, and starting one explicitly first asks for confirmation that names that device and event.
 
 UI countdowns render the accepted phase. A missed event or an unanswered break return never creates a later focus interval. See [Focus authority and evidence](../../algorithms/pomodoro/focus-authority.md).
 

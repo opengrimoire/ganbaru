@@ -385,7 +385,7 @@ fn distractions_usage_totals_converge_to_each_devices_largest_flush() {
 }
 
 /// SQL recording a browser block of `HOST` with its rule snapshot, during `run` when given.
-fn block_sql(id: &str, run: Option<&str>) -> String {
+pub(super) fn block_sql(id: &str, run: Option<&str>) -> String {
     let (run, phase) = match run {
         Some(run) => (quoted(run), "'focus'"),
         None => ("NULL".to_owned(), "NULL"),

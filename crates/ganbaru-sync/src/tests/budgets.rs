@@ -12,6 +12,7 @@ use ganbaru_sync_contracts::bounds::MAX_OPERATIONS_PER_GROUP;
 
 use super::block_on;
 use super::calendar::{calendar_sql, event_sql};
+use super::distractions::block_sql;
 use super::focus::{close_run_sql, open_run_sql};
 use super::groups::continuing_ops;
 use super::projects::{project_sql, task_sql};
@@ -603,18 +604,22 @@ fn calendar_import_budgets_are_recorded() {
     });
 }
 
-/// Segments and run events of the closed run whose seal is timed.
+/// Segments, run events, and distraction block events of the closed run whose seal is timed.
 const FOCUS_SEGMENTS: u32 = 40;
 const FOCUS_RUN_EVENTS: u32 = 300;
-/// Block events publish with their run in a later Focus step and are not part of this seal.
+const FOCUS_BLOCK_EVENTS: u32 = 200;
 const FOCUS_SEAL_BUDGET: Duration = Duration::from_millis(100);
 
-/// Seals one closed run with `FOCUS_SEGMENTS` segments and `FOCUS_RUN_EVENTS` run events.
+/// Seals one closed run with `FOCUS_SEGMENTS` segments, `FOCUS_RUN_EVENTS` run events, and
+/// `FOCUS_BLOCK_EVENTS` block events, which publish with the run.
 async fn seal_of_a_closed_run() -> Duration {
     let mut author = Replica::new(0, 17).await;
+    let blocks: String = (0..FOCUS_BLOCK_EVENTS)
+        .map(|block| block_sql(&format!("block-{block}"), Some("run-a")))
+        .collect();
     author
         .exec(&format!(
-            "{}{}{}",
+            "{}{}{}{blocks}",
             calendar_sql(),
             event_sql("event-a", "uid-a", "Deep work"),
             open_run_sql("run-a", "event-a", FOCUS_SEGMENTS, FOCUS_RUN_EVENTS)
@@ -626,7 +631,8 @@ async fn seal_of_a_closed_run() -> Duration {
     let report = author.seal().await.unwrap();
     let elapsed = started.elapsed();
     assert!(report.invalid_rows.is_empty(), "{:?}", report.invalid_rows);
-    assert_eq!(report.sealed_ops, 1);
+    // The run seals in a Focus operation and its block events in a Distractions operation.
+    assert_eq!(report.sealed_ops, 2);
     assert!(!report.more);
     elapsed
 }
@@ -640,7 +646,7 @@ fn focus_seal_of_a_closed_run_holds_its_budget() {
             seal.push(seal_of_a_closed_run().await);
         }
         let failure = check(
-            "seal of a closed run with 40 segments and 300 run events",
+            "seal of a closed run with 40 segments, 300 run events, and 200 block events",
             seal,
             FOCUS_SEAL_BUDGET,
         );

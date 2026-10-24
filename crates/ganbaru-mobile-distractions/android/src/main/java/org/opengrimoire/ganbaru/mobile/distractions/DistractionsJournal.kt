@@ -171,10 +171,10 @@ internal class DistractionsJournal(context: Context) : SQLiteOpenHelper(
     }
   }
 
-  fun exportPending(vaultId: String, usageOnly: Boolean, limit: Int = 200): List<JournalEvent> {
+  fun exportPending(vaultId: String, limit: Int = 200): List<JournalEvent> {
     writableDatabase.beginTransaction()
     try {
-      val selection = if (usageOnly) "vault_id = ? AND kind = 'usage'" else "vault_id = ?"
+      val selection = "vault_id = ?"
       val events = readEvents(selection, arrayOf(vaultId), limit.coerceIn(1, 500))
       for (event in events) {
         writableDatabase.execSQL("UPDATE journal_events SET exported = 1 WHERE id = ?", arrayOf(event.id))

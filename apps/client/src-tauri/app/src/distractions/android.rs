@@ -312,8 +312,8 @@ pub(crate) async fn drain_and_flush_usage<R: Runtime>(
 }
 
 /// Imports one Guardian journal batch into the vault, then flushes this device's due usage
-/// totals; `force` flushes every stale total. A device that may not write usage leaves the
-/// journal pending. Block history is owner-only, so other devices import usage alone.
+/// totals; `force` flushes every stale total. A device that may not write Distractions leaves
+/// the journal pending. Usage and block history both replicate, so every writer imports both.
 #[cfg(target_os = "android")]
 async fn synchronize_locked<R: Runtime>(
     app: tauri::AppHandle<R>,
@@ -331,11 +331,10 @@ async fn synchronize_locked<R: Runtime>(
     }
     let pending_app = app.clone();
     let pending_vault = active_vault_id.clone();
-    let usage_only = !ownership.can_write;
     let events = tauri::async_runtime::spawn_blocking(move || {
         pending_app
             .mobile_distractions()
-            .pending_events(&pending_vault, usage_only)
+            .pending_events(&pending_vault)
     })
     .await
     .map_err(|error| format!("Guardian pending worker: {error}"))??;
@@ -348,9 +347,9 @@ async fn synchronize_locked<R: Runtime>(
         .collect::<Result<Vec<_>, _>>()?;
     if normalized
         .iter()
-        .any(|event| event.vault_id != active_vault_id || (usage_only && event.kind != "usage"))
+        .any(|event| event.vault_id != active_vault_id)
     {
-        return Err("Guardian returned events from a different vault or kind".into());
+        return Err("Guardian returned events from a different vault".into());
     }
     let _permit = app
         .state::<VaultOwnershipManager>()

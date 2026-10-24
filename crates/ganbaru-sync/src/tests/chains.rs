@@ -240,7 +240,10 @@ fn chains_of_two_writers_open_one_at_a_time_and_repair_between() {
             }
         }
         let repaired = finished_first.expect("the first chain finishes before the second");
-        assert!(repaired > own, "the first chain's repair is sealed before the second opens");
+        assert!(
+            repaired > own,
+            "the first chain's repair is sealed before the second opens"
+        );
         for (index, writer) in writers.iter().enumerate() {
             assert_eq!(applied_seq(receiver, writer).await, ends[index]);
         }
@@ -323,7 +326,11 @@ fn a_replica_without_a_writer_defers_no_rows_for_a_chain() {
         receiver.receive(&chain).await;
         let first = apply_without_writer(receiver).await;
         assert_eq!(first.applied, MAX_OPERATIONS_PER_GROUP);
-        assert_eq!(stale_rows(receiver).await, 0, "a call that cannot seal defers nothing");
+        assert_eq!(
+            stale_rows(receiver).await,
+            0,
+            "a call that cannot seal defers nothing"
+        );
         while apply_without_writer(receiver).await.more {}
         assert_eq!(applied_seq(receiver, &writer).await, end);
         assert_eq!(stale_rows(receiver).await, 0);
@@ -345,12 +352,18 @@ fn stale_rows_are_taken_back_a_bounded_number_at_a_time_in_order() {
             .await;
         let mut dirty = BTreeSet::new();
         assert!(take_stale(&mut replica.conn, &mut dirty, 2).await.unwrap());
-        let first: Vec<_> = dirty.iter().map(|(table, key)| (table.0, key.as_str())).collect();
+        let first: Vec<_> = dirty
+            .iter()
+            .map(|(table, key)| (table.0, key.as_str()))
+            .collect();
         assert_eq!(first, [(1, "row-a"), (1, "row-c")]);
         assert_eq!(stale_rows(&mut replica).await, 1);
         dirty.clear();
         assert!(!take_stale(&mut replica.conn, &mut dirty, 2).await.unwrap());
-        let rest: Vec<_> = dirty.iter().map(|(table, key)| (table.0, key.as_str())).collect();
+        let rest: Vec<_> = dirty
+            .iter()
+            .map(|(table, key)| (table.0, key.as_str()))
+            .collect();
         assert_eq!(rest, [(2, "row-b")]);
         assert_eq!(stale_rows(&mut replica).await, 0);
     });

@@ -571,6 +571,7 @@ const fn device(name: &'static str) -> DeviceTable {
     DeviceTable {
         name,
         triggers: &[],
+        assets: &[],
     }
 }
 

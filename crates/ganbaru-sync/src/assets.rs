@@ -6,8 +6,10 @@
 //! function owns asset paths. A domain adapter reports the references a group value holds
 //! ([`crate::DomainAdapter::asset_refs`]), and [`crate::Engine::referenced_assets`] lists every
 //! reference of live rows, open conflicts, and recovery offers, which sync moves between devices.
+//! A `Local` table may also declare [`LocalAssetColumn`]s, whose files the sweep keeps without
+//! moving them, and [`crate::Engine::kept_asset_digests`] lists both kinds.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::path::{Path, PathBuf};
 
@@ -85,6 +87,94 @@ impl AssetClass {
             None
         }
     }
+}
+
+/// A column of a `Local` table whose values name managed asset files of its domain. The sweep
+/// keeps every file a row names, see [`Engine::kept_asset_digests`]. `Local` rows never
+/// replicate, so the declaration moves no file between devices: it only keeps the files this
+/// device already holds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LocalAssetColumn {
+    /// Column name.
+    pub column: &'static str,
+    /// A SQLite JSON path into a JSON column, such as `$.assets`, or `None` for a column whose
+    /// whole value is the reference. With a path, every text value at or under it is a
+    /// reference, so one path covers a single value and an array alike, and a row whose column
+    /// is not valid JSON names nothing.
+    pub json_path: Option<&'static str>,
+    /// How a reference yields its class and digest.
+    pub digest: LocalDigest,
+}
+
+/// How a `Local` asset reference names its file. A value that does not have the declared
+/// shape names no file, which keeps nothing and refuses nothing, since the sweep only removes
+/// files named `{sha256}.{ext}`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LocalDigest {
+    /// A bare lowercase hex SHA-256 of a file of the named class.
+    Sha256 {
+        /// Name of a class the domain declares.
+        class: &'static str,
+    },
+    /// An asset id `{class}:{sha256}`, where the class is one the domain declares, for example
+    /// `notes/page-covers:{sha256}`.
+    AssetId,
+}
+
+impl LocalDigest {
+    /// The class and digest a reference names, among the domain's classes.
+    pub fn resolve<'d>(
+        &self,
+        domain: &'d DomainManifest,
+        value: &str,
+    ) -> Option<(&'d AssetClass, String)> {
+        let (class, digest) = match self {
+            Self::Sha256 { class } => (*class, value),
+            Self::AssetId => value.rsplit_once(':')?,
+        };
+        let class = domain.assets.iter().find(|known| known.name == class)?;
+        is_sha256_hex(digest).then(|| (class, digest.to_string()))
+    }
+
+    /// Whether a reference of this shape may name a file of `class`.
+    fn names(&self, class: &AssetClass) -> bool {
+        match self {
+            Self::Sha256 { class: name } => *name == class.name,
+            Self::AssetId => true,
+        }
+    }
+}
+
+/// Why a domain's `Local` asset columns are malformed: a bare digest names a class the domain
+/// does not declare, a JSON path does not start at the root `$`, or the domain declares no
+/// class at all.
+pub(crate) fn local_asset_problems(domain: &DomainManifest) -> Vec<String> {
+    let mut problems = Vec::new();
+    for table in domain.local {
+        for column in table.assets {
+            let name = format!("{}.{}", table.name, column.column);
+            if let LocalDigest::Sha256 { class } = column.digest
+                && !domain.assets.iter().any(|known| known.name == class)
+            {
+                problems.push(format!("{name}: names undeclared asset class {class}"));
+            }
+            if domain.assets.is_empty() {
+                problems.push(format!("{name}: the domain declares no asset class"));
+            }
+            if column.json_path.is_some_and(|path| !path.starts_with('$')) {
+                problems.push(format!("{name}: a JSON path starts at $"));
+            }
+        }
+    }
+    for table in domain.engine {
+        if !table.assets.is_empty() {
+            problems.push(format!(
+                "{}: only a Local table declares asset columns",
+                table.name
+            ));
+        }
+    }
+    problems
 }
 
 /// An asset reference the engine refuses.
@@ -273,6 +363,51 @@ impl Engine {
         tables
     }
 
+    /// `Local` tables whose declared asset columns may name files of `class`, so a sweep knows
+    /// the class has references even when no replicated table holds one. Empty for an
+    /// unregistered class.
+    pub fn local_asset_tables(&self, class: &AssetClass) -> Vec<&'static str> {
+        let mut tables = Vec::new();
+        for domain in self.manifest().domains {
+            if !domain.assets.contains(class) {
+                continue;
+            }
+            for table in domain.local {
+                if table.assets.iter().any(|column| column.digest.names(class)) {
+                    tables.push(table.name);
+                }
+            }
+        }
+        tables
+    }
+
+    /// The class name and digest of every file the asset sweep keeps: each
+    /// [`Engine::referenced_assets`] reference, and each file a row of a `Local` table names
+    /// through a declared [`LocalAssetColumn`].
+    pub async fn kept_asset_digests(
+        &self,
+        conn: &mut SqliteConnection,
+    ) -> SyncResult<BTreeSet<(&'static str, String)>> {
+        let mut kept = self
+            .referenced_assets(conn)
+            .await?
+            .into_iter()
+            .map(|asset| (asset.class.name, asset.sha256))
+            .collect::<BTreeSet<_>>();
+        for domain in self.manifest().domains {
+            for table in domain.local {
+                for column in table.assets {
+                    for value in local_asset_values(conn, table.name, column).await? {
+                        if let Some((class, digest)) = column.digest.resolve(domain, &value) {
+                            kept.insert((class.name, digest));
+                        }
+                    }
+                }
+            }
+        }
+        Ok(kept)
+    }
+
     /// References of one group value, checked against the domain's classes.
     fn asset_refs(
         &self,
@@ -329,6 +464,38 @@ async fn live_group_values(
             values.push(value);
         }
     }
+    Ok(values)
+}
+
+/// The distinct text values a `Local` asset column holds: the column itself, or every text
+/// value at or under its JSON path in rows whose column is valid JSON.
+async fn local_asset_values(
+    conn: &mut SqliteConnection,
+    table: &str,
+    column: &LocalAssetColumn,
+) -> SyncResult<Vec<String>> {
+    let name = ident(column.column);
+    let table = ident(table);
+    let values = match column.json_path {
+        None => {
+            let sql = format!("SELECT DISTINCT {name} FROM {table} WHERE typeof({name}) = 'text'");
+            sqlx::query_scalar(AssertSqlSafe(sql))
+                .fetch_all(&mut *conn)
+                .await?
+        }
+        Some(path) => {
+            let sql = format!(
+                "SELECT DISTINCT tree.atom FROM {table} AS source,
+                     json_tree(CASE WHEN json_valid(source.{name}) THEN source.{name} END, ?)
+                         AS tree
+                 WHERE tree.type = 'text'"
+            );
+            sqlx::query_scalar(AssertSqlSafe(sql))
+                .bind(path)
+                .fetch_all(&mut *conn)
+                .await?
+        }
+    };
     Ok(values)
 }
 

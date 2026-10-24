@@ -17,7 +17,7 @@ use sqlx::{AssertSqlSafe, SqliteConnection, SqlitePool};
 use super::{execute, migrated_pool};
 use crate::Engine;
 use crate::adapter::{AdapterError, Adapters, DomainAdapter, Presentation};
-use crate::assets::AssetClass;
+use crate::assets::{AssetClass, LocalAssetColumn, LocalDigest};
 use crate::domains::{vault_adapters, vault_hooks};
 use crate::hooks::{ChangeSink, HookFuture, MaterializeHook};
 use crate::manifest::vault::{
@@ -1328,19 +1328,48 @@ pub(super) const FIXTURE_DOMAIN: DomainManifest = DomainManifest {
         SCROLLS,
     ],
     derived: &["fixture_items_index", "fixture_list_counts"],
-    local: &[DeviceTable {
-        name: "fixture_item_marks",
-        triggers: &[DomainTrigger {
-            name: "fixture_item_marks_refuse_negative",
-            policy: TriggerPolicy::ApplierVisible,
-        }],
-    }],
+    local: &[
+        DeviceTable {
+            name: "fixture_item_marks",
+            triggers: &[DomainTrigger {
+                name: "fixture_item_marks_refuse_negative",
+                policy: TriggerPolicy::ApplierVisible,
+            }],
+            assets: &[],
+        },
+        DeviceTable {
+            name: "fixture_asset_pins",
+            triggers: &[],
+            assets: &[
+                LocalAssetColumn {
+                    column: "sha256",
+                    json_path: None,
+                    digest: LocalDigest::Sha256 {
+                        class: FIXTURE_CLASS.name,
+                    },
+                },
+                LocalAssetColumn {
+                    column: "asset_id",
+                    json_path: None,
+                    digest: LocalDigest::AssetId,
+                },
+                LocalAssetColumn {
+                    column: "attrs",
+                    json_path: Some("$.files"),
+                    digest: LocalDigest::AssetId,
+                },
+            ],
+        },
+    ],
     engine: &[],
     replica_writable: true,
-    assets: &[AssetClass {
-        name: "fixture/files",
-        max_bytes: 1024 * 1024,
-    }],
+    assets: &[FIXTURE_CLASS],
+};
+
+/// The fixture asset class, named only by `Local` rows of `fixture_asset_pins`.
+pub(super) const FIXTURE_CLASS: AssetClass = AssetClass {
+    name: "fixture/files",
+    max_bytes: 1024 * 1024,
 };
 
 /// The vault domains followed by the fixture domain.
@@ -1390,6 +1419,12 @@ fn fixture_schema() -> String {
          CREATE TABLE fixture_item_marks (
              item_id TEXT PRIMARY KEY REFERENCES fixture_items(id) ON DELETE CASCADE,
              mark INTEGER NOT NULL
+         );
+         CREATE TABLE fixture_asset_pins (
+             id TEXT PRIMARY KEY,
+             sha256 TEXT,
+             asset_id TEXT,
+             attrs TEXT
          );
          CREATE TABLE fixture_cycle_a (
              id TEXT PRIMARY KEY CHECK (trim(id) <> ''),

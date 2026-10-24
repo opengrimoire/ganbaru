@@ -17,7 +17,7 @@ use ganbaru_sync_contracts::bounds::{
 };
 use ganbaru_sync_contracts::{GroupId, GroupMask, TableId, derived_key};
 
-use crate::assets::AssetClass;
+use crate::assets::{AssetClass, LocalAssetColumn, local_asset_problems};
 
 pub mod order;
 pub mod summary;
@@ -98,6 +98,9 @@ pub struct DeviceTable {
     pub name: &'static str,
     /// Domain triggers on the table.
     pub triggers: &'static [DomainTrigger],
+    /// Columns of a `Local` table naming managed asset files the sweep keeps. Empty on engine
+    /// tables.
+    pub assets: &'static [LocalAssetColumn],
 }
 
 /// A column of a replicated table kept per device and never replicated.
@@ -965,7 +968,8 @@ impl Manifest {
 
     /// Checks the facts the engine relies on: table ids are nonzero, unique, and inside their
     /// domain's range; domain names are unique and ranges disjoint; asset class names are unique
-    /// relative paths within the asset byte limit; every `Local` column
+    /// relative paths within the asset byte limit, and `Local` asset columns name them; every
+    /// `Local` column
     /// declares a SQL literal; key-derived columns are named apart from the key of a
     /// single-column key; references, owned tables, derived keys, trees, edges, and
     /// publication are well formed; and tables follow the dependency order of their references.
@@ -996,6 +1000,9 @@ impl Manifest {
                 if repeated {
                     let _ = writeln!(problems, "{}: asset class named twice", class.name);
                 }
+            }
+            for problem in local_asset_problems(domain) {
+                let _ = writeln!(problems, "{}: {problem}", domain.name);
             }
             for other in &self.domains[index + 1..] {
                 if other.name == domain.name {

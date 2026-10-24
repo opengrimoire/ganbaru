@@ -1,7 +1,8 @@
 //! Collection of managed asset files that nothing references any more.
 //!
 //! One sweep covers every asset class the vault manifest registers. A file stays while any live
-//! row or retained version references its digest, while a transfer touched it within the grace,
+//! row or retained version references its digest, while a row of a `Local` table names it
+//! through a declared asset column, while a transfer touched it within the grace,
 //! or while it is younger than the grace, which covers a file written just before the row that
 //! references it commits. The sweep holds the [`ArchiveGate`], so no archive reads the vault
 //! while files go.
@@ -89,8 +90,11 @@ pub async fn collect_unreferenced_assets<P>(
     let mut permits = Vec::new();
     let mut classes = Vec::new();
     for class in sweep.engine.manifest().asset_classes() {
-        // A class no adapter reports references for would look wholly unreferenced.
-        if sweep.engine.asset_tables(class).is_empty() {
+        // A class no adapter or `Local` column reports references for would look wholly
+        // unreferenced.
+        if sweep.engine.asset_tables(class).is_empty()
+            && sweep.engine.local_asset_tables(class).is_empty()
+        {
             continue;
         }
         if let Some(permit) = admit(class) {
@@ -109,11 +113,10 @@ pub async fn collect_unreferenced_assets<P>(
             .map_err(|error| format!("acquire vault connection: {error}"))?;
         sweep
             .engine
-            .referenced_assets(&mut conn)
+            .kept_asset_digests(&mut conn)
             .await
             .map_err(|error| format!("read referenced assets: {error}"))?
             .into_iter()
-            .map(|asset| (asset.class().name, asset.sha256().to_string()))
             .collect::<HashSet<DigestKey>>()
     };
     let root = sweep.vault_root.to_path_buf();
@@ -215,3 +218,6 @@ fn remove_unless_touched(
         Err(error) => Err(format!("remove unreferenced asset: {error}")),
     }
 }
+
+#[cfg(test)]
+mod tests;

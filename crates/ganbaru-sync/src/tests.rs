@@ -16,6 +16,7 @@ mod groups;
 mod guards;
 mod holds;
 mod local;
+mod local_assets;
 mod music;
 mod owned;
 mod preferences;

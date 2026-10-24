@@ -1,21 +1,27 @@
-//! Distraction rules: table ids 272 to 287.
+//! Distraction rules and usage: table ids 272 to 287.
 //!
 //! Vault settings, built-in category toggles, custom categories, host and app rules, and usage
 //! limits replicate. Rule edits are low-stakes toggles, so no group is surfaced and every mutable
 //! group is recoverable. Host and app rules are keyed by their content, so a rule removed on one
-//! device can be added again on another under the same key. Usage samples, block events, and
-//! runtime state stay on the device. Ids 278 to 287 are reserved.
+//! device can be added again on another under the same key.
+//!
+//! Daily usage replicates as one total per device, source, and local day, which only its device
+//! writes and which only grows. Usage samples stay on the device as its accounting journal; block
+//! events and runtime state stay on the device. Ids 279 to 287 are reserved.
 
+use ganbaru_sync_contracts::bounds::MAX_DEVICE_ID_BYTES;
 use ganbaru_sync_contracts::{GroupId, TableId};
 
 use crate::domains::distractions::{
     MAX_APP_IDENTITY_CHARS, MAX_APP_NAME_CHARS, MAX_CATEGORY_NAME_CHARS, MAX_COLOR, MAX_ENUM_CHARS,
     MAX_HOST_CHARS, MAX_ID_CHARS, MAX_LIMIT_ENTRIES, MAX_LIMIT_NAME_CHARS,
     MAX_MATCH_NAMES_JSON_CHARS, MAX_MINUTES_PER_DAY, MAX_MINUTES_PER_WEEK, MAX_PACKAGE_CHARS,
+    MAX_USAGE_DAY_SECONDS, MAX_USAGE_LABEL_CHARS, MAX_USAGE_SOURCE_KEY_CHARS, USAGE_DATE_CHARS,
 };
 use crate::manifest::{
-    ColumnSpec, ColumnType, DerivedKey, DomainManifest, GroupSpec, GroupStorage, MergeKind,
-    OnDelete, OwnedBound, OwnedCodec, OwnedOrder, OwnedTable, TableIdRange, TableSpec, group_id,
+    ColumnSpec, ColumnType, DerivedKey, DeviceTable, DomainManifest, GroupSpec, GroupStorage,
+    MergeKind, OnDelete, OwnedBound, OwnedCodec, OwnedOrder, OwnedTable, TableIdRange, TableSpec,
+    group_id,
 };
 
 /// Domain name for distraction rules.
@@ -36,6 +42,11 @@ pub const HOST_RULES_TABLE: TableId = TableId(275);
 pub const APP_RULES_TABLE: TableId = TableId(276);
 /// `distractions_usage_limits`.
 pub const USAGE_LIMITS_TABLE: TableId = TableId(277);
+/// `distractions_usage_totals`.
+pub const USAGE_TOTALS_TABLE: TableId = TableId(278);
+
+/// The device's journal of usage samples, which never replicates.
+pub const USAGE_SAMPLES_LOCAL: &str = "distractions_usage_samples";
 
 /// Owned entries of a usage limit, in display order.
 pub const LIMIT_ENTRIES_OWNED: &str = "distractions_usage_limit_entries";
@@ -48,6 +59,10 @@ pub const HOST_RULE_KEY_PREFIX: &str = "host";
 
 /// Key prefix of an app rule, derived from its platform and identity.
 pub const APP_RULE_KEY_PREFIX: &str = "app";
+
+/// Key prefix of a usage total, derived from its device, source type, source key, and local
+/// date.
+pub const USAGE_TOTAL_KEY_PREFIX: &str = "usage";
 
 /// Settings field groups.
 pub mod settings_group {
@@ -135,6 +150,18 @@ pub mod limit_group {
     pub const BUDGET: GroupId = group_id(3);
     /// Owned entries.
     pub const ENTRIES: GroupId = group_id(4);
+}
+
+/// Usage total field groups.
+pub mod usage_total_group {
+    use super::{GroupId, group_id};
+
+    /// `device_id`, `source_type`, `source_key`, and `local_date`, the key inputs.
+    pub const BUCKET: GroupId = group_id(0);
+    /// `elapsed_seconds`.
+    pub const ELAPSED: GroupId = group_id(1);
+    /// `display_name`.
+    pub const LABEL: GroupId = group_id(2);
 }
 
 /// A hidden, non-recoverable group without references.
@@ -492,7 +519,56 @@ pub const USAGE_LIMITS: TableSpec = TableSpec {
     ..BASE
 };
 
-/// The distraction rules domain.
+/// `distractions_usage_totals`, the seconds one device spent on one source during one local day,
+/// keyed by those four values under [`USAGE_TOTAL_KEY_PREFIX`]. Only the device the row names
+/// writes it and its total only grows, so `Max` converges. Rows are never deleted, so the table
+/// declares no existence group and the retention window is a read filter.
+pub const USAGE_TOTALS: TableSpec = TableSpec {
+    id: USAGE_TOTALS_TABLE,
+    name: "distractions_usage_totals",
+    groups: &[
+        group(
+            usage_total_group::BUCKET,
+            "bucket",
+            MergeKind::Immutable,
+            &[
+                trimmed("device_id", MAX_DEVICE_ID_BYTES),
+                text("source_type", MAX_ENUM_CHARS),
+                trimmed("source_key", MAX_USAGE_SOURCE_KEY_CHARS),
+                text("local_date", USAGE_DATE_CHARS),
+            ],
+        ),
+        group(
+            usage_total_group::ELAPSED,
+            "elapsed",
+            MergeKind::Max,
+            &[ColumnSpec {
+                name: "elapsed_seconds",
+                ty: ColumnType::Integer {
+                    min: 1,
+                    max: MAX_USAGE_DAY_SECONDS,
+                },
+            }],
+        ),
+        group(
+            usage_total_group::LABEL,
+            "label",
+            MergeKind::Register,
+            &[optional_text("display_name", MAX_USAGE_LABEL_CHARS)],
+        ),
+    ],
+    ..BASE
+};
+
+/// A device table without domain triggers.
+const fn device(name: &'static str) -> DeviceTable {
+    DeviceTable {
+        name,
+        triggers: &[],
+    }
+}
+
+/// The distraction rules and usage domain.
 pub const DOMAIN: DomainManifest = DomainManifest {
     name: DOMAIN_NAME,
     table_ids: TableIdRange {
@@ -506,9 +582,10 @@ pub const DOMAIN: DomainManifest = DomainManifest {
         HOST_RULES,
         APP_RULES,
         USAGE_LIMITS,
+        USAGE_TOTALS,
     ],
     derived: &[],
-    local: &[],
+    local: &[device(USAGE_SAMPLES_LOCAL)],
     engine: &[],
     replica_writable: true,
     assets: &[],

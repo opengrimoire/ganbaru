@@ -27,10 +27,13 @@ pub(crate) const MAX_CONTENT_WALK_DEPTH: i64 =
 /// source row) stores none and belongs to the project of its nearest ancestor that stores
 /// one. The walk follows the same containers as the content tree and stops at
 /// [`MAX_TREE_DEPTH`], so a corrupt parent cycle resolves to no project instead of looping.
+/// A workspace page reads its stored column without walking, and the walk stops at the
+/// first workspace page it reaches.
 /// `page` is a table alias or table name of `notes_pages` in the enclosing query.
 pub(crate) fn page_project_sql(page: &str) -> String {
     format!(
-        "(WITH RECURSIVE project_walk(id, project_id, depth) AS (
+        "(CASE WHEN {page}.parent_type = 'workspace' THEN {page}.project_id ELSE
+         (WITH RECURSIVE project_walk(id, project_id, depth) AS (
              SELECT {page}.id, {page}.project_id, 0
              UNION
              SELECT project_container.id, project_container.project_id, project_walk.depth + 1
@@ -48,12 +51,14 @@ pub(crate) fn page_project_sql(page: &str) -> String {
                     ON project_database_block.id = project_database.id
                   WHERE project_data_source.id = project_walked.parent_data_source_id)
              )
-             WHERE project_walk.project_id IS NULL AND project_walk.depth < {MAX_TREE_DEPTH}
+             WHERE project_walk.project_id IS NULL
+               AND project_walked.parent_type <> 'workspace'
+               AND project_walk.depth < {MAX_TREE_DEPTH}
          )
          SELECT project_walk.project_id FROM project_walk
          WHERE project_walk.project_id IS NOT NULL
          ORDER BY project_walk.depth
-         LIMIT 1)"
+         LIMIT 1) END)"
     )
 }
 

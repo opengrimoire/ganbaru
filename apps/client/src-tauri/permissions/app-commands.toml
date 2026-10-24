@@ -234,6 +234,7 @@ commands.allow = [
   "distractions_rules_set_enabled",
   "distractions_rules_set_mode",
   "focus_command",
+  "focus_device_activity",
   "focus_idle_overlay_visible",
   "focus_notification_copy",
   "focus_renew_subscription",

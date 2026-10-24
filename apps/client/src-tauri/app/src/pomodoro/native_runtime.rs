@@ -235,6 +235,8 @@ struct Owner {
     ownership_generation: Option<u64>,
     recovered_vault: Option<(String, u64)>,
     foreground: bool,
+    /// Cached stable device id for the activity row.
+    device_id: Option<String>,
     frozen: bool,
     resume_pending: Option<u64>,
     next_heartbeat_ms: i64,
@@ -345,6 +347,7 @@ pub(crate) fn setup(app: &tauri::AppHandle) {
             ownership_generation: None,
             recovered_vault: None,
             foreground: platform() == FocusPlatform::Desktop,
+            device_id: None,
             frozen: false,
             resume_pending: None,
             next_heartbeat_ms: 0,
@@ -975,7 +978,7 @@ impl Owner {
         })
         .await
         .map_err(|error| error.to_string())??;
-        if !status.can_write {
+        if !crate::pomodoro::focus_writable(&status) {
             return Err(error(
                 FocusErrorCode::ReadOnly,
                 "This vault is read-only on this device",
@@ -1036,13 +1039,24 @@ impl Owner {
                 "Active vault changed during Focus execution",
             ));
         }
-        if !status.can_write {
+        if !crate::pomodoro::focus_writable(&status) {
             return Err(error(
                 FocusErrorCode::ReadOnly,
                 "This vault is read-only on this device",
             ));
         }
         Ok(())
+    }
+
+    /// The stable device id that keys this device's Focus activity row, read once per owner.
+    fn device_id(&mut self) -> Result<String, String> {
+        if let Some(device_id) = &self.device_id {
+            return Ok(device_id.clone());
+        }
+        let device_id = crate::vault::ensure_device_id(&self.app)
+            .map_err(|error| format!("Read the Focus device identity: {error}"))?;
+        self.device_id = Some(device_id.clone());
+        Ok(device_id)
     }
 
     fn logical_now(&self, observed_at_ms: i64) -> i64 {
@@ -1080,7 +1094,7 @@ impl Owner {
         let _permit = self
             .app
             .state::<crate::vault::ownership::VaultOwnershipManager>()
-            .acquire_managed_write(vault_id)?;
+            .acquire_replicated_write(vault_id, crate::pomodoro::FOCUS_DOMAIN)?;
         let pool = self
             .pool
             .as_ref()
@@ -1146,6 +1160,7 @@ impl Owner {
             now_ms: now,
             platform: platform(),
             foreground: self.foreground,
+            device_id: Some(self.device_id()?),
             commitment: calendar.commitment,
             local_time: Some(Arc::new(local_time::NativeLocalTime(self.app.clone()))),
             planned_blocks: calendar
@@ -1221,7 +1236,7 @@ impl Owner {
         let _permit = self
             .app
             .state::<crate::vault::ownership::VaultOwnershipManager>()
-            .acquire_managed_write(vault_id)?;
+            .acquire_replicated_write(vault_id, crate::pomodoro::FOCUS_DOMAIN)?;
         let pool = self
             .pool
             .as_ref()
@@ -1230,12 +1245,14 @@ impl Owner {
             .begin_with("BEGIN IMMEDIATE")
             .await
             .map_err(|error| error.to_string())?;
-        let calendar = calendar::resolve(&mut tx, now, None).await?;
+        let device_id = self.device_id()?;
+        let calendar = calendar::resolve_for_admission(&mut tx, now, &device_id).await?;
         let calendar_commitment = calendar.commitment.is_some();
         let context = FocusExecutionContext {
             now_ms: now,
             platform: platform(),
             foreground: self.foreground,
+            device_id: Some(device_id),
             commitment: calendar.commitment,
             local_time: Some(Arc::new(local_time::NativeLocalTime(self.app.clone()))),
             planned_blocks: calendar

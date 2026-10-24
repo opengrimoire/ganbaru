@@ -273,8 +273,9 @@ pub(crate) fn split_oversized_import_blocks(
 }
 
 /// Payload for a continuation of a split block: the text chunk, the presentation every chunk
-/// shares (`color`, indent, code `language`), and the neutral value of any field the block type
-/// requires, so state such as a to-do's `checked` or a code caption stays on the first block.
+/// shares (`color`, indent, code `language`), the attributes the block type requires (a callout
+/// or button `icon` and button `actions`), and the neutral value of any required state, so state
+/// such as a to-do's `checked` or a code caption stays on the first block.
 fn continuation_payload(block_type: &str, source: &Value, chunk: Vec<Value>) -> Value {
     let mut payload = json!({ "rich_text": chunk });
     for key in ["color", "ganbaru_indent", "language"] {
@@ -285,6 +286,13 @@ fn continuation_payload(block_type: &str, source: &Value, chunk: Vec<Value>) -> 
     match block_type {
         "to_do" => payload["checked"] = Value::Bool(false),
         "code" => payload["caption"] = Value::Array(Vec::new()),
+        "callout" => payload["icon"] = source.get("icon").cloned().unwrap_or(Value::Null),
+        "button" => {
+            payload["icon"] = source.get("icon").cloned().unwrap_or(Value::Null);
+            if let Some(actions) = source.get("actions") {
+                payload["actions"] = actions.clone();
+            }
+        }
         _ => {}
     }
     payload

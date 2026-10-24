@@ -403,3 +403,32 @@ fn split_import_blocks_keep_text_before_children_and_give_continuations_neutral_
         .collect();
     assert_eq!(joined, long);
 }
+
+#[test]
+fn split_callout_and_button_continuations_keep_their_required_attributes() {
+    use crate::transfers::import_writer::{ImportBlock, split_oversized_import_blocks};
+    let long = "word ".repeat(crate::block_storage::MAX_BLOCK_TEXT_BYTES / 3);
+    let mut callout = writes::default_text_payload(&long);
+    callout["icon"] = serde_json::json!({ "type": "emoji", "emoji": "💡" });
+    let mut button = button_payload("");
+    button["rich_text"] = writes::default_text_payload(&long)["rich_text"].clone();
+    let blocks = vec![
+        ImportBlock::new("callout", callout.clone(), None, Vec::new()),
+        ImportBlock::new("button", button.clone(), None, Vec::new()),
+    ];
+
+    let split = split_oversized_import_blocks(blocks).unwrap();
+
+    for (block_type, source) in [("callout", &callout), ("button", &button)] {
+        let parts: Vec<_> = split
+            .iter()
+            .filter(|block| block.block_type == block_type)
+            .collect();
+        assert!(parts.len() > 1, "{block_type} split into {}", parts.len());
+        for part in parts {
+            crate::validation::validate_block_payload(block_type, &part.payload).unwrap();
+            assert_eq!(part.payload["icon"], source["icon"]);
+        }
+    }
+    assert_eq!(split.last().unwrap().payload["actions"], button["actions"]);
+}

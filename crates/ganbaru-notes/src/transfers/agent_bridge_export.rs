@@ -278,9 +278,6 @@ async fn load_exact_pages(
     for id in requested_page_ids {
         query = query.bind(id);
     }
-    query = query
-        .bind(crate::structure::MAX_CONTENT_WALK_DEPTH)
-        .bind(crate::structure::MAX_CONTENT_WALK_DEPTH);
     rows_to_pages(
         query
             .fetch_all(pool)
@@ -330,6 +327,9 @@ async fn load_pages_with_descendants(
     for id in requested_page_ids {
         query = query.bind(id);
     }
+    query = query
+        .bind(crate::structure::MAX_CONTENT_WALK_DEPTH)
+        .bind(crate::structure::MAX_CONTENT_WALK_DEPTH);
     rows_to_pages(
         query
             .fetch_all(pool)

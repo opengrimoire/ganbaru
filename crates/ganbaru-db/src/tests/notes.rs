@@ -1520,6 +1520,9 @@ type MigratedFixtureBlock = (
 /// Last migration before the Notes structure preparation.
 const BEFORE_NOTES_SYNC_STRUCTURE: i64 = 20261024045821;
 
+/// The Notes structure preparation migration.
+const NOTES_SYNC_STRUCTURE: i64 = 20261024075934;
+
 /// Every block type the Notes schema accepts.
 const FIXTURE_BLOCK_TYPES: [&str; 37] = [
     "paragraph",
@@ -1663,20 +1666,23 @@ fn notes_sync_structure_migration_keeps_every_block_and_property_type() {
         .execute(&pool)
         .await
         .unwrap();
-        // `block-13` is the fixture's child_page block; `orphan` names no block.
+        // `block-13` is the fixture's child_page block; `orphan` names no block. The nested page
+        // carries a stale project property, which the migration must not keep in the column.
         sqlx::raw_sql(
-            "INSERT INTO notes_pages (id, parent_type, parent_page_id, title)
-             VALUES ('block-13', 'page_id', 'page', 'Nested'),
-                    ('orphan', 'page_id', 'page', 'Orphan');",
+            "INSERT INTO notes_pages (id, parent_type, parent_page_id, title, properties)
+             VALUES ('block-13', 'page_id', 'page', 'Nested', '{\"__ganbaru_project_id\":\"project\"}'),
+                    ('orphan', 'page_id', 'page', 'Orphan', '{}');",
         )
         .execute(&pool)
         .await
         .unwrap();
 
-        crate::run_migrations(&pool).await.unwrap();
+        super::helpers::migrate_through(&pool, NOTES_SYNC_STRUCTURE)
+            .await
+            .unwrap();
 
-        let placements: Vec<(String, String, Option<String>)> = sqlx::query_as(
-            "SELECT id, parent_type, child_block_id FROM notes_pages
+        let placements: Vec<(String, String, Option<String>, Option<String>)> = sqlx::query_as(
+            "SELECT id, parent_type, child_block_id, project_id FROM notes_pages
              WHERE id IN ('block-13', 'orphan') ORDER BY id",
         )
         .fetch_all(&pool)
@@ -1688,9 +1694,10 @@ fn notes_sync_structure_migration_keeps_every_block_and_property_type() {
                 (
                     "block-13".to_string(),
                     "page_id".to_string(),
-                    Some("block-13".to_string())
+                    Some("block-13".to_string()),
+                    None
                 ),
-                ("orphan".to_string(), "workspace".to_string(), None),
+                ("orphan".to_string(), "workspace".to_string(), None, None),
             ]
         );
 
@@ -1810,7 +1817,9 @@ fn notes_sync_structure_migration_merges_duplicate_assets_into_the_available_row
         .await
         .unwrap();
 
-        crate::run_migrations(&pool).await.unwrap();
+        super::helpers::migrate_through(&pool, NOTES_SYNC_STRUCTURE)
+            .await
+            .unwrap();
 
         let merged_id = format!("notes/files:{sha256}");
         let assets: Vec<(String, String, String, Option<String>)> =

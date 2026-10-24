@@ -145,15 +145,28 @@ pub struct StoredOption {
 /// Splits an API schema object into stored properties, in object order.
 ///
 /// Options move out of the type config, and status group membership moves from the groups'
-/// `option_ids` onto the options; a status option no group lists has no group.
+/// `option_ids` onto the options; a status option no group lists has no group. Property ids
+/// and names must be unique, because reads key the composed schema by name and rows by id, so
+/// a duplicate would hide one property and let the next diff delete it.
 pub fn decompose_schema(schema: &Value) -> Result<Vec<StoredProperty>, String> {
     let object = schema
         .as_object()
         .ok_or_else(|| "data source properties must be an object".to_string())?;
-    object
+    let properties = object
         .iter()
         .map(|(key, value)| decompose_property(key, value))
-        .collect()
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut ids = HashSet::new();
+    let mut names = HashSet::new();
+    for property in &properties {
+        if !ids.insert(property.property_id.as_str()) {
+            return Err("property ids must be unique".to_string());
+        }
+        if !names.insert(property.name.as_str()) {
+            return Err("property names must be unique".to_string());
+        }
+    }
+    Ok(properties)
 }
 
 fn decompose_property(key: &str, value: &Value) -> Result<StoredProperty, String> {
@@ -693,6 +706,26 @@ mod tests {
             "Tag": {"id": "tag", "type": "select", "select": {"options": [{"name": "A"}]}}
         });
         assert!(decompose_schema(&schema).is_err());
+    }
+
+    #[test]
+    fn decompose_refuses_duplicate_property_names_and_ids() {
+        let same_name = json!({
+            "Stage": {"id": "stage", "name": "Owner", "type": "rich_text"},
+            "Owner": {"id": "owner", "type": "rich_text"}
+        });
+        assert_eq!(
+            decompose_schema(&same_name).err().as_deref(),
+            Some("property names must be unique")
+        );
+        let same_id = json!({
+            "Stage": {"id": "shared", "type": "rich_text"},
+            "Owner": {"id": "shared", "type": "number"}
+        });
+        assert_eq!(
+            decompose_schema(&same_id).err().as_deref(),
+            Some("property ids must be unique")
+        );
     }
 
     #[test]

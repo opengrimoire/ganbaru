@@ -274,8 +274,8 @@ CREATE INDEX idx_notes_data_source_template_blocks_parent
 -- into rows. The schema object is keyed by property name, so the name is the object key; the
 -- property row keeps every other field in `config` except the options and the status group
 -- membership, which the option rows carry. Properties and options keep their JSON order as rank
--- order keys. Rows get a placeholder sync key that the Notes conversion pass replaces at vault
--- open.
+-- order keys; when two entries share an id, the first in JSON order is kept. Rows get a
+-- placeholder sync key that the Notes conversion pass replaces at vault open.
 CREATE TABLE notes_data_source_properties (
     data_source_id TEXT NOT NULL REFERENCES notes_data_sources(id) ON DELETE CASCADE,
     property_id TEXT NOT NULL CHECK (trim(property_id) <> ''),
@@ -354,7 +354,8 @@ SELECT
         || substr('0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz', source.rank / 62 % 62 + 1, 1)
         || substr('0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz', source.rank % 62 + 1, 1)
 FROM notes_data_source_property_sources AS source
-WHERE typeof(source.property_id) = 'text' AND trim(source.property_id) <> '';
+WHERE typeof(source.property_id) = 'text' AND trim(source.property_id) <> ''
+ORDER BY source.data_source_id, source.rank;
 
 INSERT OR IGNORE INTO notes_data_source_property_options (
     data_source_id, property_id, option_id, sync_key, name, color, status_group, position
@@ -402,11 +403,14 @@ JOIN notes_data_source_properties AS property
 DROP TABLE notes_data_source_property_sources;
 ALTER TABLE notes_data_sources DROP COLUMN properties;
 
--- Row page property values move out of the page properties JSON into one row per page and
--- property. A value keeps the type it was written with, which can differ from the property type
--- after a concurrent type change. The title lives in the page title column and relations in edge
--- rows, so neither is stored as a value; computed properties are never stored. Entries name their
--- property by `id`, or by name when the id does not match a property of the row's data source.
+-- Page property values move out of the page properties JSON into one row per page and property.
+-- A value keeps the type it was written with, which can differ from the property type after a
+-- concurrent type change. The title lives in the page title column and relations in edge rows, so
+-- neither is stored as a value; computed properties are never stored. Entries name their property
+-- by `id`, or by name only when they carry no id, so a value whose id names a deleted property is
+-- not attached to a later property that reuses its name. An entry whose id names no property of
+-- the page's data source, including every entry of a page outside a data source, is kept under
+-- its id as an orphan value, as writers keep the values of rows that leave a data source.
 CREATE TABLE notes_page_property_values (
     page_id TEXT NOT NULL REFERENCES notes_pages(id) ON DELETE CASCADE,
     property_id TEXT NOT NULL CHECK (trim(property_id) <> ''),
@@ -423,8 +427,8 @@ CREATE INDEX idx_notes_page_property_values_property
 CREATE TEMP TABLE notes_page_property_value_sources AS
 SELECT
     entry.page_id,
-    COALESCE(by_id.property_id, by_name.property_id) AS property_id,
-    CASE WHEN by_id.property_id IS NOT NULL THEN 0 ELSE 1 END AS preference,
+    COALESCE(by_id.property_id, by_name.property_id, entry.property_id) AS property_id,
+    CASE WHEN by_name.property_id IS NULL THEN 0 ELSE 1 END AS preference,
     entry.value_type,
     COALESCE(entry.value -> ('$."' || entry.value_type || '"'), 'null') AS value,
     entry.entry_rank
@@ -439,21 +443,21 @@ FROM (
             THEN json_extract(item.value, '$.id') END END AS property_id,
         CASE WHEN item.type = 'object' THEN json_extract(item.value, '$.type') END AS value_type
     FROM notes_pages AS page, json_each(page.properties) AS item
-    WHERE page.parent_type = 'data_source_id'
-      AND json_valid(page.properties)
+    WHERE json_valid(page.properties)
       AND item.type = 'object'
 ) AS entry
 LEFT JOIN notes_data_source_properties AS by_id
   ON by_id.data_source_id = entry.data_source_id
  AND by_id.property_id = entry.property_id
 LEFT JOIN notes_data_source_properties AS by_name
-  ON by_name.data_source_id = entry.data_source_id
+  ON entry.property_id IS NULL
+ AND by_name.data_source_id = entry.data_source_id
  AND by_name.name = entry.name
 WHERE typeof(entry.value_type) = 'text'
   AND trim(entry.value_type) <> ''
   AND entry.value_type NOT IN ('title', 'relation', 'formula', 'rollup', 'button')
-  AND COALESCE(by_id.property_id, by_name.property_id) IS NOT NULL
-  AND COALESCE(by_id.type, by_name.type) NOT IN ('title', 'relation', 'formula', 'rollup', 'button');
+  AND trim(COALESCE(by_id.property_id, by_name.property_id, entry.property_id, '')) <> ''
+  AND COALESCE(by_id.type, by_name.type, '') NOT IN ('title', 'relation', 'formula', 'rollup', 'button');
 
 INSERT OR IGNORE INTO notes_page_property_values (page_id, property_id, sync_key, value_type, value)
 SELECT
@@ -540,6 +544,57 @@ CREATE UNIQUE INDEX idx_notes_relation_edges_sync_key ON notes_relation_edges(sy
 CREATE INDEX idx_notes_relation_edges_target
     ON notes_relation_edges(target_page_id, source_property_id, source_page_id);
 
+-- Links come from the link index and from the relation values in page JSON, which also list
+-- trashed and archived targets the index may omit. A JSON reference on a row is kept while its target page
+-- exists and resolves its property like a stored value; one the index lacks takes the source
+-- page's last edit time as its creation time.
+CREATE TEMP TABLE notes_relation_link_inputs AS
+SELECT source_page_id, source_data_source_id, source_property_id, target_page_id, created_time
+FROM notes_data_source_relation_links
+UNION ALL
+SELECT
+    entry.page_id,
+    entry.data_source_id,
+    COALESCE(by_id.property_id, by_name.property_id, entry.property_id),
+    json_extract(reference.value, '$.id'),
+    entry.last_edited_time
+FROM (
+    SELECT
+        page.id AS page_id,
+        page.parent_data_source_id AS data_source_id,
+        page.last_edited_time,
+        item.key AS name,
+        item.value AS value,
+        CASE WHEN json_type(item.value, '$.id') = 'text'
+            THEN json_extract(item.value, '$.id') END AS property_id
+    FROM notes_pages AS page, json_each(page.properties) AS item
+    WHERE page.parent_type = 'data_source_id'
+      AND page.parent_data_source_id IS NOT NULL
+      AND json_valid(page.properties)
+      AND item.type = 'object'
+      AND json_extract(item.value, '$.type') = 'relation'
+      AND json_type(item.value, '$.relation') = 'array'
+) AS entry
+LEFT JOIN notes_data_source_properties AS by_id
+  ON by_id.data_source_id = entry.data_source_id
+ AND by_id.property_id = entry.property_id
+LEFT JOIN notes_data_source_properties AS by_name
+  ON entry.property_id IS NULL
+ AND by_name.data_source_id = entry.data_source_id
+ AND by_name.name = entry.name
+JOIN json_each(entry.value, '$.relation') AS reference
+WHERE trim(COALESCE(by_id.property_id, by_name.property_id, entry.property_id, '')) <> ''
+  AND COALESCE(by_id.type, by_name.type, 'relation') = 'relation'
+  AND reference.type = 'object'
+  AND json_type(reference.value, '$.id') = 'text'
+  AND EXISTS (SELECT 1 FROM notes_pages AS target WHERE target.id = json_extract(reference.value, '$.id'))
+  AND NOT EXISTS (
+      SELECT 1 FROM notes_data_source_relation_links AS link
+      WHERE link.source_page_id = entry.page_id
+        AND link.source_property_id = COALESCE(by_id.property_id, by_name.property_id, entry.property_id)
+        AND link.target_page_id = json_extract(reference.value, '$.id')
+  );
+
 CREATE TEMP TABLE notes_relation_edge_sources AS
 SELECT
     CASE WHEN swap THEN target_page_id ELSE source_page_id END AS source_page_id,
@@ -562,7 +617,7 @@ FROM (
               OR (pair.peer_data_source_id = link.source_data_source_id
                   AND pair.peer_property_id < link.source_property_id)
         END AS swap
-    FROM notes_data_source_relation_links AS link
+    FROM notes_relation_link_inputs AS link
     LEFT JOIN notes_relation_pairs AS pair
       ON pair.data_source_id = link.source_data_source_id
      AND pair.property_id = link.source_property_id
@@ -582,6 +637,7 @@ SELECT
 FROM notes_relation_edge_sources AS source
 ORDER BY source.source_page_id, source.source_property_id, source.target_page_id, source.created_time;
 DROP TABLE notes_relation_edge_sources;
+DROP TABLE notes_relation_link_inputs;
 DROP TABLE notes_data_source_relation_links;
 ALTER TABLE notes_pages DROP COLUMN properties;
 

@@ -456,7 +456,7 @@ fn notes_sync_databases_migration_moves_row_values_and_relation_links_into_rows(
         let mut expected = Vec::new();
         for (key, entry) in full_row.as_object().unwrap() {
             let property_type = entry["type"].as_str().unwrap();
-            if ["Name", "Calc", "Projects", "Total", "Gone"].contains(&key.as_str()) {
+            if ["Name", "Calc", "Projects", "Total"].contains(&key.as_str()) {
                 continue;
             }
             expected.push((
@@ -560,6 +560,123 @@ fn notes_sync_databases_migration_moves_row_values_and_relation_links_into_rows(
         .await
         .unwrap();
         assert_eq!(columns, 0);
+    });
+}
+
+#[test]
+fn notes_sync_databases_migration_keeps_orphans_and_live_json_links_and_resolves_ids_first() {
+    super::block_on(async {
+        let pool = super::helpers::memory_pool_migrated_through(NOTES_SYNC_STRUCTURE).await;
+        // Both `dup` entries share an id; the first in the stored object order (`A dup`) wins.
+        let schema = serde_json::json!({
+            "Name": {"id": "title", "name": "Name", "type": "title", "title": {}},
+            "A dup": {"id": "dup", "name": "A dup", "type": "number", "number": {}},
+            "B dup": {"id": "dup", "name": "B dup", "type": "rich_text", "rich_text": {}},
+            "Owner": {"id": "owner-new", "name": "Owner", "type": "rich_text", "rich_text": {}},
+            "Code": {"id": "code", "name": "Code", "type": "unique_id", "unique_id": {"prefix": "T"}},
+            "Made": {"id": "made", "name": "Made", "type": "created_time", "created_time": {}},
+            "Links": {"id": "links", "name": "Links", "type": "relation", "relation": {"data_source_id": "ds"}}
+        });
+        insert_database_graph(&pool, &schema).await;
+        // `Owner` was written under a deleted property that a later property reuses the name of.
+        let first_row = serde_json::json!({
+            "Owner": {"id": "owner-old", "type": "rich_text", "rich_text": [{"plain_text": "Old"}]},
+            "Code": {"id": "code", "type": "unique_id", "unique_id": {"prefix": "T", "number": 7}},
+            "Made": {"id": "made", "type": "created_time", "created_time": "2026-01-01T00:00:00.000Z"},
+            "Links": {"id": "links", "type": "relation", "relation": [{"id": "r2"}, {"id": "missing"}]}
+        });
+        let loose_page = serde_json::json!({
+            "title": {"id": "title", "type": "title", "title": [{"plain_text": "Loose"}]},
+            "Extra": {"id": "extra", "type": "rich_text", "rich_text": [{"plain_text": "Kept"}]}
+        });
+        sqlx::query(
+            "INSERT INTO notes_pages (id, parent_type, parent_data_source_id, title, properties, in_trash, last_edited_time)
+             VALUES ('r1', 'data_source_id', 'ds', 'First', ?, 0, '2026-02-01T00:00:00.000Z'),
+                    ('r2', 'data_source_id', 'ds', 'Trashed', '{}', 1, '2026-02-01T00:00:00.000Z'),
+                    ('loose', 'workspace', NULL, 'Loose', ?, 0, '2026-02-01T00:00:00.000Z')",
+        )
+        .bind(first_row.to_string())
+        .bind(loose_page.to_string())
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        super::helpers::migrate_through(&pool, NOTES_SYNC_DATABASES)
+            .await
+            .unwrap();
+
+        let duplicate: (String, String) = sqlx::query_as(
+            "SELECT name, type FROM notes_data_source_properties
+             WHERE data_source_id = 'ds' AND property_id = 'dup'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(duplicate, ("A dup".to_string(), "number".to_string()));
+
+        let values: Vec<(String, String, String, String)> = sqlx::query_as(
+            "SELECT page_id, property_id, value_type, value
+             FROM notes_page_property_values ORDER BY page_id, property_id",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        let value = |page: &str, property: &str, value_type: &str, value: serde_json::Value| {
+            (
+                page.to_string(),
+                property.to_string(),
+                value_type.to_string(),
+                value.to_string(),
+            )
+        };
+        assert_eq!(
+            values,
+            vec![
+                value(
+                    "loose",
+                    "extra",
+                    "rich_text",
+                    serde_json::json!([{"plain_text": "Kept"}])
+                ),
+                value(
+                    "r1",
+                    "code",
+                    "unique_id",
+                    serde_json::json!({"number": 7, "prefix": "T"})
+                ),
+                value(
+                    "r1",
+                    "made",
+                    "created_time",
+                    serde_json::json!("2026-01-01T00:00:00.000Z")
+                ),
+                value(
+                    "r1",
+                    "owner-old",
+                    "rich_text",
+                    serde_json::json!([{"plain_text": "Old"}])
+                ),
+            ]
+        );
+
+        // The link only page JSON held survives because its trashed target still exists; the
+        // reference to a page that does not exist is dropped.
+        let edges: Vec<(String, String, String, String)> = sqlx::query_as(
+            "SELECT source_page_id, source_property_id, target_page_id, created_time
+             FROM notes_relation_edges ORDER BY target_page_id",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            edges,
+            vec![(
+                "r1".to_string(),
+                "links".to_string(),
+                "r2".to_string(),
+                "2026-02-01T00:00:00.000Z".to_string()
+            )]
+        );
     });
 }
 

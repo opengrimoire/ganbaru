@@ -118,7 +118,8 @@ struct SchemaProperty {
 /// are ignored: the title is written through the page row and relations through
 /// [`replace_relation_targets`]. A stored value whose property the object omits is deleted; a
 /// value whose property no longer exists is kept so a concurrent schema change can restore it.
-/// Pages outside a data source store no values.
+/// Pages outside a data source take no new values; values they already hold stay hidden because
+/// reads resolve values through the parent data source's schema.
 pub async fn write_page_properties(
     connection: &mut SqliteConnection,
     page_id: &str,

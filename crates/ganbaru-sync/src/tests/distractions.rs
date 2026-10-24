@@ -1,16 +1,30 @@
 //! Distraction rules across replicas: toggles of different settings groups both survive,
 //! concurrent toggles of one rule converge, a host rule removed on one replica and added again
 //! on another comes back under the same key everywhere, and remote rule changes report the
-//! changed tables.
+//! changed tables. Daily usage totals converge to each device's largest flush whatever order
+//! flushes and exchanges interleave in, and usage samples never leave their device.
+
+use std::collections::BTreeMap;
 
 use ganbaru_sync_contracts::derived_key;
 
 use super::block_on;
 use super::replica::{Replica, converge, pair, quoted};
+use super::sim::Rng;
 use crate::ChangeNotice;
 use crate::domains::distractions::RULES_TOPIC;
+use crate::manifest::vault::distractions::USAGE_TOTAL_KEY_PREFIX;
 
 const HOST: &str = "video.example.com";
+
+/// Seeds of the interleaved usage flush scenario.
+const USAGE_SEEDS: u64 = 6;
+
+/// Steps of one usage scenario: a flush or a one-way exchange each.
+const USAGE_STEPS: usize = 24;
+
+/// Local day every usage scenario records.
+const USAGE_DATE: &str = "2026-10-23";
 
 /// Replicas that each seeded their settings row at vault open, as the app does once the
 /// tables start to replicate, with operations exchanged.
@@ -248,6 +262,120 @@ fn distractions_removed_limit_takes_its_entries_and_custom_category_its_hosts() 
                         .await,
                     0,
                     "{table}"
+                );
+            }
+        }
+    });
+}
+
+/// The key of a usage total, as the flushing device derives it.
+fn usage_key(device_id: &str, source_key: &str) -> String {
+    derived_key(
+        USAGE_TOTAL_KEY_PREFIX,
+        &[device_id, "website", source_key, USAGE_DATE],
+    )
+    .expect("usage parts are valid")
+    .to_string()
+}
+
+/// SQL flushing a usage total the way a device recomputes its own bucket: the total only grows
+/// and the label follows the latest flush.
+fn flush_sql(device_id: &str, source_key: &str, elapsed_seconds: i64) -> String {
+    format!(
+        "INSERT INTO distractions_usage_totals
+            (id, device_id, source_type, source_key, local_date, elapsed_seconds, display_name)
+         VALUES ({key}, {device}, 'website', {source}, '{USAGE_DATE}', {elapsed_seconds}, {source})
+         ON CONFLICT (id) DO UPDATE SET
+            elapsed_seconds = max(elapsed_seconds, excluded.elapsed_seconds),
+            display_name = excluded.display_name
+         WHERE excluded.elapsed_seconds > elapsed_seconds
+            OR excluded.display_name IS NOT display_name;",
+        key = quoted(&usage_key(device_id, source_key)),
+        device = quoted(device_id),
+        source = quoted(source_key),
+    )
+}
+
+/// SQL recording one local usage sample, which never replicates.
+fn sample_sql(id: &str, source_key: &str) -> String {
+    format!(
+        "INSERT INTO distractions_usage_samples
+            (id, source_type, source_key, started_at_ms, elapsed_seconds, local_date, created_at_ms)
+         VALUES ({}, 'website', {}, 1, 1, '{USAGE_DATE}', 1);",
+        quoted(id),
+        quoted(source_key),
+    )
+}
+
+async fn usage_totals(replica: &mut Replica) -> BTreeMap<String, i64> {
+    sqlx::query_as::<_, (String, i64)>("SELECT id, elapsed_seconds FROM distractions_usage_totals")
+        .fetch_all(&mut replica.conn)
+        .await
+        .unwrap()
+        .into_iter()
+        .collect()
+}
+
+#[test]
+fn distractions_usage_totals_converge_to_each_devices_largest_flush() {
+    const SOURCES: [&str; 2] = ["video.example.com", "news.example.com"];
+    block_on(async {
+        for seed in 0..USAGE_SEEDS {
+            let mut rng = Rng(seed);
+            let mut replicas = replicas(3).await;
+            let mut expected = BTreeMap::new();
+            let mut samples = vec![0_i64; replicas.len()];
+            for step in 0..USAGE_STEPS {
+                let device = rng.below(replicas.len());
+                if rng.chance(60) {
+                    let device_id = format!("device-{device}");
+                    let source = SOURCES[rng.below(SOURCES.len())];
+                    let key = usage_key(&device_id, source);
+                    let total = expected.get(&key).copied().unwrap_or(0)
+                        + 1
+                        + i64::try_from(rng.below(600)).unwrap();
+                    replicas[device]
+                        .exec(&format!(
+                            "{} {}",
+                            sample_sql(&format!("sample-{step}"), source),
+                            flush_sql(&device_id, source, total),
+                        ))
+                        .await;
+                    samples[device] += 1;
+                    expected.insert(key, total);
+                    if rng.chance(50) {
+                        replicas[device].seal().await.unwrap();
+                    }
+                } else {
+                    let from = (device + 1 + rng.below(replicas.len() - 1)) % replicas.len();
+                    replicas[from].seal().await.unwrap();
+                    let notices = pull_notices(&mut replicas, device, from).await;
+                    assert!(
+                        notices
+                            .iter()
+                            .all(|notice| notice.key != "distractions_usage_totals"),
+                        "usage totals report no rule change at seed {seed}"
+                    );
+                }
+            }
+            // A cloned installation shares one device id; the larger flush wins everywhere.
+            replicas[1]
+                .exec(&flush_sql("cloned", SOURCES[0], 500))
+                .await;
+            replicas[2]
+                .exec(&flush_sql("cloned", SOURCES[0], 200))
+                .await;
+            expected.insert(usage_key("cloned", SOURCES[0]), 500);
+            converge(&mut replicas).await;
+            assert_converged(&mut replicas).await;
+            for (index, replica) in replicas.iter_mut().enumerate() {
+                assert_eq!(usage_totals(replica).await, expected, "seed {seed}");
+                assert_eq!(
+                    replica
+                        .count("SELECT count(*) FROM distractions_usage_samples")
+                        .await,
+                    samples[index],
+                    "samples stay on the device that recorded them at seed {seed}"
                 );
             }
         }

@@ -83,15 +83,7 @@ impl<R: Runtime> CoordinatorState<R> {
         if status.can_write {
             // A relayed refresh was counted when its upload was requested.
             self.bundle_preparations.admit(&device_id, Instant::now())?;
-            let pool = crate::db::connect_vault(&self.app).await?;
-            crate::distractions::linked::drain_local_spool(
-                &self.app,
-                &pool,
-                &vault_id,
-                &status.device_id,
-            )
-            .await?;
-            drop(pool);
+            crate::distractions::usage_totals::flush_active_vault(&self.app).await?;
         }
         let transfer_id = random_token("transfer")?;
         let next_generation = match purpose {

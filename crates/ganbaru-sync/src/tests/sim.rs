@@ -54,7 +54,7 @@ const SHARED_ROWS: usize = 5;
 const SHARED_ITEM: &str = "item-0-shared-";
 
 /// SplitMix64: small, fast, and stable across platforms, so a seed always replays the same run.
-struct Rng(u64);
+pub(super) struct Rng(pub(super) u64);
 
 impl Rng {
     fn next(&mut self) -> u64 {
@@ -65,11 +65,11 @@ impl Rng {
         z ^ (z >> 31)
     }
 
-    fn below(&mut self, bound: usize) -> usize {
+    pub(super) fn below(&mut self, bound: usize) -> usize {
         (self.next() % bound as u64) as usize
     }
 
-    fn chance(&mut self, percent: u64) -> bool {
+    pub(super) fn chance(&mut self, percent: u64) -> bool {
         self.next() % 100 < percent
     }
 

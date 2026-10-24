@@ -1045,6 +1045,11 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
             ) {
                 eprintln!("Distractions shutdown flush failed: {error}");
             }
+            if let Err(error) = tauri::async_runtime::block_on(
+                distractions::usage_totals::flush_active_vault(app_handle),
+            ) {
+                eprintln!("Distractions usage totals exit flush failed: {error}");
+            }
         }
     });
 }

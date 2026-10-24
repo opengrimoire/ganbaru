@@ -1,5 +1,5 @@
-//! Distraction rules adapter: value checks the column types cannot express, recovery titles,
-//! and the hook that reports rule changes so the app republishes what its blockers read.
+//! Distraction rules and usage adapter: value checks the column types cannot express, recovery
+//! titles, and the hook that reports rule changes so the app republishes what its blockers read.
 
 use ganbaru_sync_contracts::{Field, GroupId, TableId, Value};
 use sqlx::SqliteConnection;
@@ -9,7 +9,8 @@ use crate::hooks::{ChangeSink, HookFuture, Hooks, MaterializeHook};
 use crate::manifest::TableSpec;
 use crate::manifest::vault::distractions::{
     ADAPTER, APP_RULES_TABLE, CUSTOM_CATEGORIES_TABLE, DOMAIN, HOST_RULES_TABLE, SETTINGS_TABLE,
-    USAGE_LIMITS_TABLE, app_group, custom_category_group, host_group, limit_group, settings_group,
+    USAGE_LIMITS_TABLE, USAGE_TOTALS_TABLE, app_group, custom_category_group, host_group,
+    limit_group, settings_group, usage_total_group,
 };
 
 /// Most characters of an enumerated value: a mode, list kind, or platform.
@@ -53,6 +54,22 @@ pub const MAX_MINUTES_PER_DAY: i64 = 1_440;
 
 /// Largest weekly budget in minutes.
 pub const MAX_MINUTES_PER_WEEK: i64 = 10_080;
+
+/// Most characters of a usage source key: a host, a desktop app name, or a package name.
+pub const MAX_USAGE_SOURCE_KEY_CHARS: usize = MAX_PACKAGE_CHARS;
+
+/// Most characters of a usage display name, as sample normalization truncates it.
+pub const MAX_USAGE_LABEL_CHARS: usize = 120;
+
+/// Characters of a `yyyy-mm-dd` local date.
+pub const USAGE_DATE_CHARS: usize = 10;
+
+/// Most seconds one usage total holds: a 25-hour local day, which a daylight saving change can
+/// produce. Overlapping samples cannot push a total past one day of wall time.
+pub const MAX_USAGE_DAY_SECONDS: i64 = 25 * 60 * 60;
+
+/// Usage source types: a website host, a desktop app, or a mobile app package.
+pub const USAGE_SOURCE_TYPES: &[&str] = &["website", "desktop-app", "mobile-app"];
 
 /// Change notice topic of a replicated rule table; the notice key is the table name.
 pub const RULES_TOPIC: &str = "distractions_rules";
@@ -119,7 +136,45 @@ fn validate_host_rule(value: &Value) -> Result<(), AdapterError> {
     Ok(())
 }
 
-/// Adapter of the distraction rules domain.
+/// Whether `date` is a `yyyy-mm-dd` date with a month of 1 to 12 and a day of 1 to 31, the form
+/// usage writers store. Days past a month's end are left to the writer's calendar check.
+fn is_usage_date(date: &str) -> bool {
+    let bytes = date.as_bytes();
+    let digits = |range: std::ops::Range<usize>| {
+        bytes[range.clone()]
+            .iter()
+            .all(u8::is_ascii_digit)
+            .then(|| {
+                bytes[range]
+                    .iter()
+                    .fold(0_u32, |value, digit| value * 10 + u32::from(digit - b'0'))
+            })
+    };
+    if bytes.len() != USAGE_DATE_CHARS || bytes[4] != b'-' || bytes[7] != b'-' {
+        return false;
+    }
+    matches!(
+        (digits(0..4), digits(5..7), digits(8..10)),
+        (Some(_), Some(1..=12), Some(1..=31))
+    )
+}
+
+fn validate_usage_bucket(value: &Value) -> Result<(), AdapterError> {
+    let [_, source_type, _, Field::Text(date)] = value.fields() else {
+        return Err(AdapterError("distraction usage bucket"));
+    };
+    one_of(
+        Some(source_type),
+        USAGE_SOURCE_TYPES,
+        "distraction usage source type",
+    )?;
+    if !is_usage_date(date) {
+        return Err(AdapterError("distraction usage date"));
+    }
+    Ok(())
+}
+
+/// Adapter of the distraction rules and usage domain.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct DistractionsAdapter;
 
@@ -160,6 +215,8 @@ impl DomainAdapter for DistractionsAdapter {
                 [Field::Null, Field::Null] => Err(AdapterError("distraction limit budget")),
                 _ => Ok(()),
             }
+        } else if table == USAGE_TOTALS_TABLE && group == usage_total_group::BUCKET {
+            validate_usage_bucket(value)
         } else {
             Ok(())
         }
@@ -208,11 +265,16 @@ impl MaterializeHook for DistractionsHook {
     }
 }
 
-/// `hooks` with the rules hook on every table of the domain.
+/// `hooks` with the rules hook on every rule table of the domain. Usage totals carry no rules,
+/// and limit evaluation reads them at every observation, so they report nothing.
 pub fn with_hooks(hooks: Hooks) -> Hooks {
-    DOMAIN.tables.iter().fold(hooks, |hooks, table| {
-        hooks.with(table.id, Box::new(DistractionsHook))
-    })
+    DOMAIN
+        .tables
+        .iter()
+        .filter(|table| table.id != USAGE_TOTALS_TABLE)
+        .fold(hooks, |hooks, table| {
+            hooks.with(table.id, Box::new(DistractionsHook))
+        })
 }
 
 #[cfg(test)]
@@ -281,6 +343,27 @@ mod tests {
         assert_eq!(budget(Field::Integer(30), Field::Null), Ok(()));
         assert_eq!(budget(Field::Null, Field::Integer(300)), Ok(()));
         assert!(budget(Field::Null, Field::Null).is_err());
+
+        let bucket = |source_type: &str, date: &str| {
+            adapter.validate(
+                USAGE_TOTALS_TABLE,
+                usage_total_group::BUCKET,
+                &value(vec![
+                    text("device-a"),
+                    text(source_type),
+                    text("video.example.com"),
+                    text(date),
+                ]),
+            )
+        };
+        assert_eq!(bucket("website", "2026-10-23"), Ok(()));
+        assert_eq!(bucket("mobile-app", "2026-02-01"), Ok(()));
+        assert!(bucket("tablet-app", "2026-10-23").is_err());
+        assert!(bucket("website", "2026-13-01").is_err());
+        assert!(bucket("website", "2026-10-00").is_err());
+        assert!(bucket("website", "2026/10/23").is_err());
+        assert!(bucket("website", "26-10-2023").is_err());
+        assert!(bucket("website", "2026-1a-23").is_err());
     }
 
     #[test]

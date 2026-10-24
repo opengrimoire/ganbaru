@@ -1,7 +1,8 @@
 //! Distraction blocking. Rules live in the vault's SQLite database; desktop modules enforce
-//! browser and app rules from local state files, and Android drives the native blocker. Contracts, application rules, budget matching, usage
-//! normalization, and elapsed accounting come from `ganbaru-distractions`; linked-device
-//! accounting is shared.
+//! browser and app rules from local state files, and Android drives the native blocker.
+//! Contracts, application rules, budget matching, usage normalization, and elapsed accounting
+//! come from `ganbaru-distractions`. Each device keeps its usage samples and replicates daily
+//! usage totals, so budgets count every linked device.
 
 #[cfg(desktop)]
 use crate::vault;
@@ -33,7 +34,6 @@ pub(crate) mod commands;
 mod foreground;
 #[cfg(desktop)]
 pub(crate) mod limits_read;
-pub(crate) mod linked;
 #[cfg(desktop)]
 mod process_control;
 #[cfg(desktop)]
@@ -43,7 +43,10 @@ pub(crate) mod rule_store;
 #[cfg(desktop)]
 pub(crate) mod runtime;
 #[cfg(desktop)]
+pub(crate) mod spool;
+#[cfg(desktop)]
 pub(crate) mod state_files;
+pub(crate) mod usage_totals;
 
 pub(crate) use ganbaru_distractions::limits;
 #[cfg(desktop)]

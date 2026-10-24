@@ -9,6 +9,14 @@ export const distractions = {
     mobile: "Apps móviles",
     desktop: "Apps de escritorio",
   },
+  editStatus: {
+    missing: "Esa regla ya no existe, así que las reglas se actualizaron",
+    invalid: "Ese cambio no es válido, así que no se guardó",
+    duplicate: "Ese nombre o esa fuente ya se usa, así que el cambio no se guardó",
+    protectedSource: "Ganbaru no puede bloquearse a sí mismo, así que el cambio no se guardó",
+    tooLarge: "Hay demasiadas reglas para guardar este cambio",
+    failed: "No se pudo guardar el cambio. Inténtalo de nuevo",
+  },
   shared: {
     blockingSchedule: "Horario de bloqueo",
     blockDuringFocus: "Bloquear durante enfoque",

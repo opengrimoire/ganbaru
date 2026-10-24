@@ -238,11 +238,18 @@ fn usage_sample_batch_rolls_back_when_a_late_insert_fails() {
             .unwrap()
         };
 
+        let window = usage_date_window(chrono::NaiveDate::from_ymd_opt(2026, 5, 26).unwrap());
+        let mut transaction = pool.begin().await.unwrap();
         assert!(
-            insert_usage_samples(&pool, vec![sample("first", 10), sample("second", 200)])
-                .await
-                .is_err()
+            totals::insert_own_samples(
+                &mut transaction,
+                &[sample("first", 10), sample("second", 200)],
+                &window,
+            )
+            .await
+            .is_err()
         );
+        drop(transaction);
         let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM distractions_usage_samples")
             .fetch_one(&pool)
             .await

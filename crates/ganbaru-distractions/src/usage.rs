@@ -1,5 +1,7 @@
 //! Usage sample and desktop block event normalization, and their bounded SQLite writes.
 
+pub mod totals;
+
 use crate::contracts::{
     DistractionsDesktopBlockEventInput, DistractionsRuntimeState, DistractionsUsageSampleInput,
     DistractionsUsageSampleRow, NormalizedDesktopBlockEvent,
@@ -159,34 +161,6 @@ pub fn normalize_usage_sample(
         local_date: sample.local_date,
         created_at_ms: now_epoch_ms(),
     })
-}
-
-#[cfg(test)]
-pub async fn insert_usage_samples(
-    pool: &SqlitePool,
-    samples: Vec<DistractionsUsageSampleRow>,
-) -> Result<(), String> {
-    let mut tx = pool.begin().await.map_err(|e| format!("begin: {e}"))?;
-    for sample in samples {
-        sqlx::query(
-            "INSERT OR IGNORE INTO distractions_usage_samples
-                (id, source_type, source_key, display_name, started_at_ms, elapsed_seconds, local_date, created_at_ms)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-        )
-        .bind(sample.id)
-        .bind(sample.source_type)
-        .bind(sample.source_key)
-        .bind(sample.display_name)
-        .bind(sample.started_at_ms)
-        .bind(sample.elapsed_seconds)
-        .bind(sample.local_date)
-        .bind(sample.created_at_ms)
-        .execute(&mut *tx)
-        .await
-        .map_err(|e| format!("record distraction usage sample: {e}"))?;
-    }
-    tx.commit().await.map_err(|e| format!("commit: {e}"))?;
-    Ok(())
 }
 
 pub async fn insert_desktop_block_event(

@@ -368,7 +368,7 @@ struct Owner {
 impl Owner {
     async fn flush_pending(&mut self) -> Result<(), String> {
         if let Some(pending) = &self.pending {
-            crate::distractions::linked::enqueue_native_samples(
+            crate::distractions::spool::enqueue_native_samples(
                 &self.app,
                 &pending.vault_id,
                 &pending.device_id,
@@ -491,7 +491,7 @@ impl Owner {
         };
         self.publish_rules_file(&context).await;
         if self.session.is_none() {
-            self.session = Some(crate::distractions::linked::new_accounting_session()?);
+            self.session = Some(crate::distractions::spool::new_accounting_session()?);
         }
         let binding = (
             generation,

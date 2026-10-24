@@ -59,16 +59,17 @@ Portable rules are SQLite rows in replicated tables, with separate browser, desk
 - `distractions_custom_categories` holds named custom categories; their hosts are `distractions_host_rules` rows scoped by the category id.
 - `distractions_host_rules` and `distractions_app_rules` are keyed by content (list, scope, and host; the lowercase desktop app name or the Android package), so a rule removed on one device can be added again on another.
 - `distractions_usage_limits` owns its entries in `distractions_usage_limit_entries`, ordered by ordinal, and the limit and its entries merge as one value.
+- `distractions_usage_totals` holds one row per device, source, and local date, keyed by a hash of those four values. Only its device writes it, its seconds merge by maximum and never shrink, and rows are never deleted; reads keep the usage retention window.
 
-Native commands make each edit in one transaction and return the assembled rules or a refusal reason; every reader (desktop blocker, browser host, Android projection, Settings) reads that one assembled snapshot. Assembly skips rows it cannot use instead of failing. SQLite also stores usage samples and block events for daily limits, reports, and recovery; they stay on the device that owns the vault. Local-date grouping keeps the date basis, so a later device timezone change never reassigns historical usage. Browser rules, desktop application rules, and Android app rules have separate source identities and validation.
+Native commands make each edit in one transaction and return the assembled rules or a refusal reason; every reader (desktop blocker, browser host, Android projection, Settings) reads that one assembled snapshot. Assembly skips rows it cannot use instead of failing. `distractions_usage_samples` is a local table: each device keeps its own usage journal there and derives its totals from it. Block events stay owner-only. Local-date grouping keeps the date basis, so a later device timezone change never reassigns historical usage. Browser rules, desktop application rules, and Android app rules have separate source identities and validation.
 
 Device-local state supports enforcement without replacing portable policy:
 
 - Runtime and budget snapshots are native derivatives of the persisted rules and accepted usage. Their configuration fingerprint, local day, week, and totals are admission checks, not policy.
-- The desktop native owner spools captured usage batches with retry receipts before publishing totals, and sent sample IDs are immutable until acknowledged.
+- The desktop native owner spools captured usage batches with retry receipts, and the spool drains into the usage journal whenever this device may write usage. A batch leaves the spool only after the journal committed it, and the journal ignores sample IDs it already holds.
 - Android's Guardian journal records usage, totals, and its observation checkpoint in one transaction. A full journal rejects new evidence without advancing the checkpoint, and rows from another vault stay pending until that vault is active again.
 
-Linked-device accounting follows [Sync](../sync.md#distraction-usage-exception). Accepted totals and acknowledgement identities commit together, so a failed acknowledgement is retried before new evidence is sent and never double-counts usage. A capture with inconsistent identities, vault attribution, dates, or oversized evidence fails explicitly instead of publishing a truncated total. Vault and configuration changes revoke the old native publication before the new one becomes visible.
+Combined accounting across devices follows [Sync](../sync.md#mixed-mode). Limits add other devices' totals to this device's journal and its pending spool or Guardian events, each counted once. A capture with inconsistent identities, vault attribution, dates, or oversized evidence fails explicitly instead of publishing a truncated total. Vault and configuration changes revoke the old native publication before the new one becomes visible.
 
 ## Profile and managed icons
 

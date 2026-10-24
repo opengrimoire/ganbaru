@@ -4,9 +4,7 @@ mod incoming;
 mod outgoing;
 
 use super::pairing::{LinkedPeer, PairingManager};
-use super::protocol::{
-    BundleMetadata, BundlePurpose, DistractionsSampleMessage, HandoffCompatibility,
-};
+use super::protocol::{BundleMetadata, BundlePurpose, HandoffCompatibility};
 use crate::vault::ownership::VaultOwnershipManager;
 use crate::vault::quiescence::SourceQuiescence;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -41,13 +39,6 @@ pub(crate) enum CoordinatorOperation {
     },
     RequestUpload {
         purpose: BundlePurpose,
-    },
-    DistractionsExchange {
-        vault_id: String,
-        device_id: String,
-        samples: Vec<DistractionsSampleMessage>,
-        acknowledged_peer_sample_ids: Vec<String>,
-        owner_snapshot: Vec<DistractionsSampleMessage>,
     },
     Uploaded {
         metadata: BundleMetadata,
@@ -110,11 +101,6 @@ pub(crate) enum CoordinatorResponse {
     UploadAuthorized {
         transfer_id: String,
         already_received: bool,
-    },
-    DistractionsAcknowledged {
-        acknowledged_sample_ids: Vec<String>,
-        peer_samples: Vec<DistractionsSampleMessage>,
-        combined_samples: Vec<DistractionsSampleMessage>,
     },
     PersonKeyReleased {
         public_key: String,
@@ -339,22 +325,6 @@ impl<R: Runtime> CoordinatorState<R> {
                 self.poll_upload(vault_id, device_id, generation)
             }
             CoordinatorOperation::RequestUpload { purpose } => self.request_upload(purpose),
-            CoordinatorOperation::DistractionsExchange {
-                vault_id,
-                device_id,
-                samples,
-                acknowledged_peer_sample_ids,
-                owner_snapshot,
-            } => {
-                self.distractions_exchange(
-                    vault_id,
-                    device_id,
-                    samples,
-                    acknowledged_peer_sample_ids,
-                    owner_snapshot,
-                )
-                .await
-            }
             CoordinatorOperation::Uploaded {
                 metadata,
                 source_device_id,
@@ -469,78 +439,6 @@ impl<R: Runtime> CoordinatorState<R> {
             self.pairing.cancel_requested_upload(purpose)?;
             Err("the current vault owner is unreachable".to_string())
         }
-    }
-
-    async fn distractions_exchange(
-        &mut self,
-        vault_id: String,
-        device_id: String,
-        samples: Vec<DistractionsSampleMessage>,
-        acknowledged_peer_sample_ids: Vec<String>,
-        owner_snapshot: Vec<DistractionsSampleMessage>,
-    ) -> Result<CoordinatorResponse, String> {
-        let status = self
-            .app
-            .state::<VaultOwnershipManager>()
-            .status(&vault_id)?;
-        if status.can_write {
-            if !owner_snapshot.is_empty() || !acknowledged_peer_sample_ids.is_empty() {
-                return Err(
-                    "the non-owner cannot publish authoritative Distractions state".to_string(),
-                );
-            }
-            let pool = crate::db::connect_vault(&self.app).await?;
-            crate::distractions::linked::drain_local_spool(
-                &self.app,
-                &pool,
-                &vault_id,
-                &status.device_id,
-            )
-            .await?;
-            let acknowledged_sample_ids =
-                crate::distractions::linked::import_linked_samples(&pool, &device_id, &samples)
-                    .await?;
-            let combined_samples =
-                crate::distractions::linked::aggregate_owner_samples(&pool).await?;
-            return Ok(CoordinatorResponse::DistractionsAcknowledged {
-                acknowledged_sample_ids,
-                peer_samples: Vec::new(),
-                combined_samples,
-            });
-        }
-        if status.owner_device_id != device_id || !samples.is_empty() {
-            return Err("Distractions exchange does not match the current vault owner".to_string());
-        }
-        if !owner_snapshot.is_empty() {
-            crate::distractions::linked::apply_owner_snapshot(
-                &self.app,
-                &vault_id,
-                &status.device_id,
-                &acknowledged_peer_sample_ids,
-                &owner_snapshot,
-            )
-            .await?;
-        } else {
-            crate::distractions::linked::acknowledge(
-                &self.app,
-                &vault_id,
-                &status.device_id,
-                &acknowledged_peer_sample_ids,
-            )
-            .await?;
-        }
-        let peer_samples =
-            crate::distractions::linked::pending(&self.app, &vault_id, &status.device_id).await?;
-        let combined_samples = if peer_samples.is_empty() {
-            crate::distractions::linked::accepted(&self.app, &vault_id).await?
-        } else {
-            Vec::new()
-        };
-        Ok(CoordinatorResponse::DistractionsAcknowledged {
-            acknowledged_sample_ids: Vec::new(),
-            peer_samples,
-            combined_samples,
-        })
     }
 
     fn cleanup_prepared(&mut self) {

@@ -17,7 +17,7 @@ use ganbaru_sync_contracts::{
 use sqlx::sqlite::SqliteRow;
 use sqlx::{AssertSqlSafe, Connection, Row, SqliteConnection};
 
-use crate::apply::{Constrained, MAX_BYTES_PER_APPLY, MAX_OPS_PER_APPLY, finish_sealed};
+use crate::apply::{Constrained, MAX_BYTES_PER_APPLY, MAX_CHANGES_PER_APPLY, finish_sealed};
 use crate::authorization::{self, Enrollment};
 use crate::error::{SyncResult, corrupt, failpoint};
 use crate::exclusion::{self, Excluding};
@@ -557,7 +557,8 @@ impl Sealer {
         Ok((seq, clock, context))
     }
 
-    /// Seals changes into as few operations as their exact sizes allow and applies them.
+    /// Seals changes into as few operations as their exact sizes and
+    /// [`MAX_CHANGES_PER_SEALED_OPERATION`] allow and applies them.
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn seal_changes(
         &mut self,
@@ -571,6 +572,11 @@ impl Sealer {
         now_ms: u64,
         report: &mut SealReport,
     ) -> SyncResult<()> {
+        // A replay keeps the operation it re-seals whole, as its changes share one clock.
+        let per_operation = match replay {
+            Some(_) => MAX_CHANGES_PER_OPERATION,
+            None => MAX_CHANGES_PER_SEALED_OPERATION,
+        };
         let mut pending = changes.into_iter().peekable();
         while pending.peek().is_some() {
             let dependencies = self
@@ -591,7 +597,7 @@ impl Sealer {
             let mut chunk = Vec::new();
             while let Some(change) = pending.peek() {
                 let (change_header, change_body) = change_size(change);
-                let full = chunk.len() == MAX_CHANGES_PER_OPERATION
+                let full = chunk.len() == per_operation
                     || !fits(header + change_header, body + change_body);
                 if full {
                     break;
@@ -707,8 +713,8 @@ impl Sealer {
         Ok(report)
     }
 
-    /// Like [`Self::seal_captures`], taking one batch of at most [`MAX_OPS_PER_SEAL`]
-    /// operations and [`MAX_BYTES_PER_SEAL`] change bytes. Captures of changes left for the
+    /// Like [`Self::seal_captures`], taking one batch of at most [`MAX_CHANGES_PER_SEAL`]
+    /// changes and [`MAX_BYTES_PER_SEAL`] change bytes. Captures of changes left for the
     /// next batch stay, and the report says more remain.
     pub(crate) async fn seal_capture_batch(
         &mut self,
@@ -1059,14 +1065,30 @@ struct PlannedCaptures {
     held: bool,
 }
 
-/// Most operations one seal transaction commits, matching what one apply transaction takes.
-pub const MAX_OPS_PER_SEAL: usize = MAX_OPS_PER_APPLY;
-/// Most change bytes one seal transaction commits, matching what one apply transaction takes,
-/// so a large first seal reaches other devices in batches they apply whole.
+/// Most operations one seal transaction commits. A receiver applies them over several
+/// transactions of at most [`crate::MAX_OPS_PER_APPLY`] operations each.
+///
+/// The seal cap stays well above the apply cap because every seal call plans the whole
+/// capture backlog before it selects a batch, and deletions cascade only among deletions
+/// planned together. Small seal batches would make a large first seal quadratic and split
+/// cascade families across operations.
+pub const MAX_OPS_PER_SEAL: usize = 256;
+/// Most change bytes one seal transaction commits, matching what one apply transaction takes
+/// after its first operation.
 pub const MAX_BYTES_PER_SEAL: usize = MAX_BYTES_PER_APPLY;
 
-/// Most changes one seal transaction commits: [`MAX_OPS_PER_SEAL`] full operations.
-const MAX_CHANGES_PER_SEAL: usize = MAX_OPS_PER_SEAL.saturating_mul(MAX_CHANGES_PER_OPERATION);
+/// Most changes one sealed operation carries, so every operation applies within one apply
+/// transaction of [`MAX_CHANGES_PER_APPLY`] changes. The wire format allows more.
+const MAX_CHANGES_PER_SEALED_OPERATION: usize = if MAX_CHANGES_PER_APPLY < MAX_CHANGES_PER_OPERATION
+{
+    MAX_CHANGES_PER_APPLY
+} else {
+    MAX_CHANGES_PER_OPERATION
+};
+
+/// Most changes one seal transaction commits: [`MAX_OPS_PER_SEAL`] full sealed operations.
+pub const MAX_CHANGES_PER_SEAL: usize =
+    MAX_OPS_PER_SEAL.saturating_mul(MAX_CHANGES_PER_SEALED_OPERATION);
 
 /// Encoded bytes of `change` in its operation, header and body.
 fn change_cost(change: &Change) -> usize {
@@ -1288,7 +1310,7 @@ fn constrained_first(engine: &Engine, changes: Vec<Change>) -> Vec<Change> {
 }
 
 /// The changes one seal transaction takes, in planned order, within [`MAX_BYTES_PER_SEAL`]
-/// and [`MAX_OPS_PER_SEAL`] full operations, and whether changes remain. A change is taken
+/// and [`MAX_CHANGES_PER_SEAL`], and whether changes remain. A change is taken
 /// together with the planned changes of every row it depends on, so a batch never names a
 /// row that a later batch creates.
 ///
@@ -1943,9 +1965,10 @@ pub(crate) async fn force_delete_capture(
 impl Engine {
     /// Seals local captures with the local writer, sealing its genesis first when needed.
     ///
-    /// One call commits at most [`MAX_OPS_PER_SEAL`] operations and [`MAX_BYTES_PER_SEAL`]
-    /// change bytes; [`SealReport::more`] asks the caller to seal again at once. Captures held
-    /// past `now_ms` stay captured; [`crate::hold::next_hold_expiry`] says when to seal them.
+    /// One call commits at most [`MAX_OPS_PER_SEAL`] operations, [`MAX_CHANGES_PER_SEAL`]
+    /// changes, and [`MAX_BYTES_PER_SEAL`] change bytes; [`SealReport::more`] asks the caller
+    /// to seal again at once. Captures held past `now_ms` stay captured;
+    /// [`crate::hold::next_hold_expiry`] says when to seal them.
     pub async fn seal(
         &self,
         conn: &mut SqliteConnection,

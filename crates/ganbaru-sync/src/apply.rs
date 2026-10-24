@@ -27,8 +27,22 @@ use crate::{
     repair, sql, store,
 };
 
-/// Most operations one apply transaction takes.
-pub const MAX_OPS_PER_APPLY: usize = 256;
+/// Most operations one apply transaction takes, so a batch of single-change operations stays
+/// within the 50 ms desktop apply budget.
+///
+/// Apply cost grows with each operation and each change it carries, at roughly 1 to 2 ms per
+/// single-change Projects operation in release builds on an in-memory replica, against a small
+/// fixed cost per transaction. Operations without changes still count, since an
+/// authorization entry reloads the writer heads and retention.
+pub const MAX_OPS_PER_APPLY: usize = 16;
+/// Changes after which one apply transaction takes no further operation. The operation that
+/// crosses it still applies whole, so a transaction takes at least one operation however many
+/// changes it carries.
+///
+/// A sealed operation carries at most this many changes, so each one applies in one
+/// transaction within the budget. The transaction may also seal local changes of the rows the
+/// remote changes touch, within [`crate::MAX_CHANGES_PER_SEAL`].
+pub const MAX_CHANGES_PER_APPLY: usize = 16;
 /// Most envelope bytes one apply transaction takes after its first operation.
 pub const MAX_BYTES_PER_APPLY: usize = 1 << 20;
 /// Largest envelope read ahead with its writer's next candidate. Each writer holds at most one.
@@ -48,6 +62,8 @@ pub struct ClockWarning {
 pub struct ApplyReport {
     /// Operations applied.
     pub applied: usize,
+    /// Changes the applied operations carried.
+    pub changes: usize,
     /// Operations held as invalid in the call.
     pub held: usize,
     /// Domain tables the call changed.
@@ -524,6 +540,7 @@ async fn apply_one(
                 )
                 .await?;
             }
+            report.changes += changes.len();
             Ok(Outcome::Applied)
         }
         Content::Authorization(record) => {
@@ -951,6 +968,7 @@ impl Engine {
             .await?
         {
             if taken >= MAX_OPS_PER_APPLY
+                || report.changes >= MAX_CHANGES_PER_APPLY
                 || (taken > 0 && bytes.saturating_add(candidate.bytes) > MAX_BYTES_PER_APPLY)
             {
                 report.more = true;

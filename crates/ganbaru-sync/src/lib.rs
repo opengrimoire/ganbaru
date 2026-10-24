@@ -61,7 +61,7 @@ mod visibility;
 mod tests;
 
 pub use adapter::{AdapterError, Adapters, DomainAdapter, Presentation};
-pub use apply::{ApplyReport, ClockWarning};
+pub use apply::{ApplyReport, ClockWarning, MAX_CHANGES_PER_APPLY, MAX_OPS_PER_APPLY};
 pub use authorization::{AuthorizationView, EnrolledDevice};
 pub use compact::{
     COMPACTION_BATCH_OPS, COMPACTION_TIME_BUDGET, CompactionReport, compaction_limit,
@@ -77,7 +77,9 @@ pub use local::{CarryReport, LocalRestoreReport, LocalWriterHead};
 pub use log::{OpsPage, WriterState};
 pub use recovery::{RecoveryDescendant, RecoveryEntry};
 pub use reseal::ResealReport;
-pub use seal::{InvalidRow, MAX_BYTES_PER_SEAL, MAX_OPS_PER_SEAL, SealReport};
+pub use seal::{
+    InvalidRow, MAX_BYTES_PER_SEAL, MAX_CHANGES_PER_SEAL, MAX_OPS_PER_SEAL, SealReport,
+};
 pub use status::{HeldCounts, HeldOp, SyncStatus, WriterSummary};
 pub use store::{HoldReason, StoreOutcome, StoreRefusal};
 

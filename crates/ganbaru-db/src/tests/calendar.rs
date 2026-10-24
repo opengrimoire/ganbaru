@@ -1,4 +1,10 @@
-use super::helpers::{insert_event, insert_open_run, migrated_memory_pool};
+use super::helpers::{
+    insert_event, insert_open_run, memory_pool_migrated_through, migrated_memory_pool,
+};
+use crate::run_migrations;
+
+/// Last migration before Calendar tables replicate.
+const BEFORE_CALENDAR_REPLICATION: i64 = 20261023162759;
 
 #[test]
 fn schema_creates_normalized_calendar_archive_tables() {
@@ -193,5 +199,173 @@ fn deleting_calendar_event_preserves_pomodoro_segments() {
                 .unwrap();
         assert_eq!(segment_count, 1);
         assert_eq!(event_id, None);
+    });
+}
+
+async fn insert_legacy_calendar_graph(pool: &sqlx::SqlitePool) {
+    sqlx::raw_sql(
+        "INSERT INTO calendars (id, name, source, created_at, updated_at)
+         VALUES ('imported', 'Imported', 'ics', '2026-05-23T00:00:00Z', '2026-05-23T00:00:00Z');
+         INSERT INTO calendar_events (id, title, start_time, end_time, calendar_id, geo_lat, geo_lng)
+         VALUES ('event-geo', 'Geo', '2026-05-23T09:00:00Z', '2026-05-23T10:00:00Z', 'imported', 45.1234567, -93.5),
+                ('event-plain', 'Plain', '2026-05-23T11:00:00Z', '2026-05-23T12:00:00Z', 'imported', NULL, NULL);
+         INSERT INTO icalendar_objects (id, calendar_id, source_kind, source_name, source_fingerprint, created_at, updated_at)
+         VALUES ('object-a', 'imported', 'import-file', 'a.ics', 'fingerprint-a', '2026-05-23T00:00:00Z', '2026-05-23T00:00:00Z'),
+                ('object-b', 'imported', 'import-file', 'a.ics', 'fingerprint-b', '2026-05-23T00:00:00Z', '2026-05-23T00:00:00Z'),
+                ('object-c', 'imported', 'import-file', 'a.ics', 'fingerprint-c', '2026-05-24T00:00:00Z', '2026-05-24T00:00:00Z');
+         INSERT INTO icalendar_components (id, object_id, calendar_id, component_type, preservation_status, created_at, updated_at)
+         VALUES ('component-a', 'object-a', 'imported', 'vevent', 'lossless', 'now', 'now'),
+                ('component-c', 'object-c', 'imported', 'vevent', 'lossless', 'now', 'now');
+         INSERT INTO icalendar_component_properties (id, component_id, name, value_type)
+         VALUES ('property-a', 'component-a', 'x-count', 'integer');
+         INSERT INTO icalendar_property_parameters (id, property_id, name)
+         VALUES ('parameter-a', 'property-a', 'x-unit');
+         INSERT INTO icalendar_value_nodes (id, property_id, parameter_id, value_kind, number_value)
+         VALUES ('node-a', 'property-a', NULL, 'number', 1.5),
+                ('node-b', 'property-a', 'parameter-a', 'text', NULL);
+         INSERT INTO calendar_event_archives
+             (id, source_event_id, archived_at, start_time, end_time, calendar_id, geo_lat, geo_lng, created_at, updated_at)
+         VALUES ('archive-a', 'event-gone', '2026-05-23T00:00:00Z', '2026-05-23T09:00:00Z',
+                 '2026-05-23T10:00:00Z', 'imported', -0.0000004, 179.9999996, 'now', 'now');
+         INSERT INTO calendar_event_archive_import_objects (archive_event_id, object_id)
+         VALUES ('archive-a', 'object-a');
+         INSERT INTO project_groups (id, name, icon, order_key) VALUES ('group-1', 'Work', 'lucide:folder', 'a0');
+         INSERT INTO projects (id, group_id, name, icon, order_key)
+         VALUES ('project-1', 'group-1', 'Launch', 'lucide:folder', 'a0');
+         INSERT INTO project_sections (id, project_id, name, order_key)
+         VALUES ('section-1', 'project-1', 'Now', 'a0');
+         INSERT INTO project_statuses (id, project_id, name, category, order_key)
+         VALUES ('status-1', 'project-1', 'To do', 'not_started', 'a0');
+         INSERT INTO project_tasks (id, project_id, section_id, status_id, title, section_order_key, status_order_key)
+         VALUES ('task-1', 'project-1', 'section-1', 'status-1', 'Plan', 'a0', 'a0');
+         INSERT INTO project_task_event_links (task_id, event_id) VALUES ('task-1', 'event-plain');",
+    )
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
+#[test]
+fn calendar_replication_migration_keeps_rows_and_converts_reals() {
+    super::block_on(async {
+        let pool = memory_pool_migrated_through(BEFORE_CALENDAR_REPLICATION).await;
+        insert_legacy_calendar_graph(&pool).await;
+
+        run_migrations(&pool).await.unwrap();
+
+        let counts: (i64, i64, i64, i64, i64, i64, i64) = sqlx::query_as(
+            "SELECT (SELECT COUNT(*) FROM calendar_events),
+                    (SELECT COUNT(*) FROM icalendar_objects),
+                    (SELECT COUNT(*) FROM icalendar_components),
+                    (SELECT COUNT(*) FROM icalendar_component_properties),
+                    (SELECT COUNT(*) FROM icalendar_property_parameters),
+                    (SELECT COUNT(*) FROM icalendar_value_nodes),
+                    (SELECT COUNT(*) FROM calendar_event_archive_import_objects)",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(counts, (2, 3, 2, 1, 1, 2, 1));
+
+        let geo: Vec<(String, Option<i64>, Option<i64>)> = sqlx::query_as(
+            "SELECT id, geo_lat, geo_lng FROM calendar_events
+             UNION ALL SELECT id, geo_lat, geo_lng FROM calendar_event_archives ORDER BY 1",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            geo,
+            vec![
+                ("archive-a".into(), Some(0), Some(180_000_000)),
+                ("event-geo".into(), Some(45_123_457), Some(-93_500_000)),
+                ("event-plain".into(), None, None),
+            ],
+            "coordinates round to the nearest millionth of a degree"
+        );
+
+        let nodes: Vec<(String, String, String, Option<String>)> = sqlx::query_as(
+            "SELECT id, component_id, typeof(number_value), number_value
+             FROM icalendar_value_nodes ORDER BY id",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            nodes,
+            vec![
+                (
+                    "node-a".into(),
+                    "component-a".into(),
+                    "text".into(),
+                    Some("1.5".into())
+                ),
+                ("node-b".into(), "component-a".into(), "null".into(), None),
+            ]
+        );
+        let parameter_component: String =
+            sqlx::query_scalar("SELECT component_id FROM icalendar_property_parameters")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(parameter_component, "component-a");
+
+        let imports: Vec<String> =
+            sqlx::query_scalar("SELECT import_id FROM icalendar_objects ORDER BY id")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        assert_eq!(imports[0], imports[1], "one import id per earlier batch");
+        assert_ne!(
+            imports[0], imports[2],
+            "a later batch takes its own import id"
+        );
+
+        let placeholders: i64 = sqlx::query_scalar(
+            "SELECT (SELECT COUNT(*) FROM calendar_event_archive_import_objects
+                     WHERE sync_key GLOB 'pending:*')
+                  + (SELECT COUNT(*) FROM project_task_event_links WHERE sync_key GLOB 'pending:*')",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            placeholders, 2,
+            "the conversion pass rewrites placeholder keys"
+        );
+
+        sqlx::query("DELETE FROM calendars WHERE id = 'imported'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let remaining: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM calendar_events")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(remaining, 0, "events cascade with their calendar");
+    });
+}
+
+#[test]
+fn calendar_replication_migration_refuses_a_dangling_reference() {
+    super::block_on(async {
+        let pool = memory_pool_migrated_through(BEFORE_CALENDAR_REPLICATION).await;
+        sqlx::raw_sql(
+            "PRAGMA foreign_keys = OFF;
+             INSERT INTO calendar_events (id, title, start_time, end_time, calendar_id)
+             VALUES ('orphan', 'Orphan', '2026-05-23T09:00:00Z', '2026-05-23T10:00:00Z', 'missing');
+             PRAGMA foreign_keys = ON;",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let error = run_migrations(&pool)
+            .await
+            .expect_err("the foreign key guard refuses a dangling calendar");
+        assert!(
+            error.to_string().contains("CHECK constraint failed"),
+            "{error}"
+        );
     });
 }

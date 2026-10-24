@@ -32,6 +32,7 @@ zip = { workspace = true }
 keyring = { workspace = true }
 
 [dev-dependencies]
+ganbaru-calendar = { workspace = true }
 ganbaru-db = { workspace = true, features = ["test-support"] }
 ganbaru-music-library = { workspace = true }
 ganbaru-projects = { workspace = true }

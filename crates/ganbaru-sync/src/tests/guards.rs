@@ -41,6 +41,9 @@ fn guarded_set_excludes_replicated_owned_derived_and_engine_tables() {
             "projects",
             "project_tasks",
             "project_custom_field_option_values",
+            "calendars",
+            "calendar_events",
+            "project_task_event_links",
             "sync_ops",
             "sync_capture",
             "_sqlx_migrations",
@@ -51,8 +54,8 @@ fn guarded_set_excludes_replicated_owned_derived_and_engine_tables() {
             );
         }
         assert!(
-            tables.iter().any(|table| table == "calendar_events"),
-            "calendar_events is not guarded"
+            tables.iter().any(|table| table == "notes_pages"),
+            "notes_pages is not guarded"
         );
     });
 }
@@ -106,7 +109,7 @@ fn guards_let_engine_apply_transactions_write_guarded_tables() {
     block_on(async {
         let pool = migrated_pool().await;
         guard(&pool).await;
-        let insert = "INSERT INTO calendars (id, name) VALUES ('calendar-1', 'Calendar')";
+        let insert = "INSERT INTO notes_local_users (id, display_name) VALUES ('user-1', 'Writer')";
         let error = refusal(&pool, insert).await;
         assert!(is_guard_abort(&error), "{error}");
 
@@ -114,17 +117,18 @@ fn guards_let_engine_apply_transactions_write_guarded_tables() {
         execute(&pool, insert).await;
         execute(
             &pool,
-            "UPDATE calendars SET name = 'Renamed' WHERE id = 'calendar-1'",
+            "UPDATE notes_local_users SET display_name = 'Renamed' WHERE id = 'user-1'",
         )
         .await;
         set_applying(&pool, false).await;
 
-        let error = refusal(&pool, "DELETE FROM calendars").await;
+        let error = refusal(&pool, "DELETE FROM notes_local_users").await;
         assert!(is_guard_abort(&error), "{error}");
-        let name: String = sqlx::query_scalar("SELECT name FROM calendars WHERE id = 'calendar-1'")
-            .fetch_one(&pool)
-            .await
-            .unwrap();
+        let name: String =
+            sqlx::query_scalar("SELECT display_name FROM notes_local_users WHERE id = 'user-1'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
         assert_eq!(name, "Renamed");
     });
 }
@@ -137,7 +141,7 @@ fn guards_hold_when_the_apply_state_row_is_missing() {
         execute(&pool, "DELETE FROM sync_apply_state").await;
         let error = refusal(
             &pool,
-            "INSERT INTO calendars (id, name) VALUES ('calendar-1', 'Calendar')",
+            "INSERT INTO notes_local_users (id, display_name) VALUES ('user-1', 'Writer')",
         )
         .await;
         assert!(is_guard_abort(&error), "{error}");
@@ -273,7 +277,7 @@ fn a_guarded_vault_pool_installs_guards_on_its_connection() {
         .await;
         let error = refusal(
             &pool,
-            "INSERT INTO calendars (id, name) VALUES ('calendar-1', 'Calendar')",
+            "INSERT INTO notes_local_users (id, display_name) VALUES ('user-1', 'Writer')",
         )
         .await;
         assert!(is_guard_abort(&error), "{error}");

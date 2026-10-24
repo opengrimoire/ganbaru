@@ -20,9 +20,9 @@ use crate::domains::projects::{
 use crate::manifest::AcyclicSpec;
 use crate::manifest::{
     ColumnSpec, ColumnType, DerivedKey, DeviceTable, DomainManifest, DomainTrigger, GroupSpec,
-    GroupStorage, KeyDerivedColumn, LocalColumn, MergeKind, OnDelete, OwnedCodec, OwnedOrder,
-    OwnedReference, OwnedTable, ReferenceColumn, Resolution, SYNC_KEY_COLUMN, TableIdRange,
-    TableSpec, TreeSpec, TriggerPolicy, group_id,
+    GroupStorage, KeyDerivedColumn, LocalColumn, MergeKind, OnDelete, OwnedBound, OwnedCodec,
+    OwnedOrder, OwnedReference, OwnedTable, ReferenceColumn, Resolution, SYNC_KEY_COLUMN,
+    TableIdRange, TableSpec, TreeSpec, TriggerPolicy, group_id,
 };
 
 /// Domain name for Projects.
@@ -1360,6 +1360,7 @@ pub const OPTION_VALUES: OwnedTable = OwnedTable {
     max_rows: MAX_SELECTED_OPTIONS,
     codec: OwnedCodec::Generic,
     nested: &[],
+    bound: OwnedBound::Static,
 };
 
 /// `project_custom_field_values`. Clearing a value removes its row.

@@ -1,7 +1,9 @@
 //! Calendar Save shares the Focus owner queue, transaction and publication fence.
 
 use super::*;
-use ganbaru_calendar::events::commit::{CommitFailure, CommitReceipt, CommitReply, CommitRequest};
+use ganbaru_calendar::events::commit::{
+    CommitFailure, CommitReceipt, CommitReply, CommitRequest, DeletionLease,
+};
 
 const DELETE_UNDO_LIFETIME: Duration = Duration::from_secs(5);
 
@@ -94,6 +96,18 @@ impl UndoSlot {
             .prepare(tx, request.command_id())
             .await
     }
+}
+
+/// Sync holds a deleted event as long as its Undo opportunity, on the wall clock sync seals by.
+fn deletion_lease() -> Result<DeletionLease, String> {
+    let now_ms = u64::try_from(now_ms().map_err(|error| error.message)?)
+        .map_err(|_| "The system clock is before 1970")?;
+    let lifetime = u64::try_from(DELETE_UNDO_LIFETIME.as_millis())
+        .map_err(|_| "Calendar Undo lifetime is out of range")?;
+    Ok(DeletionLease {
+        now_ms,
+        until_ms: now_ms.saturating_add(lifetime),
+    })
 }
 
 /// A civil clock can shorten this lease, but cannot extend it across sleep or
@@ -529,7 +543,7 @@ impl Owner {
                 .map_err(|error| error.message)?;
         }
         let (prepared, mut undo) = prepared.into_write();
-        let receipt = prepared.write(&mut tx).await?;
+        let receipt = prepared.write_held(&mut tx, deletion_lease()?).await?;
         self.refresh_foreground();
         let (snapshot, next_boundary) = if receipt.changed {
             let calendar = calendar::resolve(

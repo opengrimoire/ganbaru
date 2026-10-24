@@ -1,3 +1,4 @@
+import { CALENDAR_SYNC_PRESENTATION } from "$lib/calendar/sync-presentation";
 import { MUSIC_SYNC_PRESENTATION } from "$lib/music/sync-presentation";
 import { PROJECTS_SYNC_PRESENTATION } from "$lib/projects/sync-presentation";
 import { QUICK_NOTES_SYNC_PRESENTATION } from "$lib/quick-notes/sync-presentation";
@@ -11,4 +12,5 @@ export const syncPresentations = new SyncPresentationRegistry()
   .register(PREFERENCES_SYNC_PRESENTATION)
   .register(THEMES_SYNC_PRESENTATION)
   .register(MUSIC_SYNC_PRESENTATION)
-  .register(PROJECTS_SYNC_PRESENTATION);
+  .register(PROJECTS_SYNC_PRESENTATION)
+  .register(CALENDAR_SYNC_PRESENTATION);

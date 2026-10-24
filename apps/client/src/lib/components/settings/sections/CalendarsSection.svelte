@@ -1,6 +1,10 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { timingTooLargeImportLabel } from "$lib/calendar/timing-bound-error";
+  import {
+    isPreservedDataOmissionMessage,
+    timingTooLargeImportLabel,
+    valueTooLargeImportLabel,
+  } from "$lib/calendar/bound-errors";
   import Upload from "@lucide/svelte/icons/upload";
   import Download from "@lucide/svelte/icons/download";
   import Trash2 from "@lucide/svelte/icons/trash";
@@ -116,10 +120,12 @@
 
   function visibleImportWarnings(warnings: string[]): string[] {
     const uniqueWarnings = Array.from(new Set(warnings)).map((warning) => {
-      const label = timingTooLargeImportLabel(warning);
-      return label === null
-        ? warning
-        : t("settings.calendars.eventTooManyChangedOccurrences", label);
+      const timingLabel = timingTooLargeImportLabel(warning);
+      if (timingLabel !== null) return t("settings.calendars.eventTooManyChangedOccurrences", timingLabel);
+      const valueLabel = valueTooLargeImportLabel(warning);
+      if (valueLabel !== null) return t("settings.calendars.eventTooMuchData", valueLabel);
+      if (isPreservedDataOmissionMessage(warning)) return t("settings.calendars.preservedDataTrimmed");
+      return warning;
     });
     const visibleWarnings = uniqueWarnings.slice(0, MAX_VISIBLE_IMPORT_WARNINGS);
     const hiddenCount = uniqueWarnings.length - visibleWarnings.length;

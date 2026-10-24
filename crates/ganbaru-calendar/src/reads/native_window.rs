@@ -308,18 +308,29 @@ pub async fn read(
         }
     }
     let mut fields: BTreeMap<(String, String), Vec<String>> = BTreeMap::new();
-    for (table, field, column) in [
+    for (table, field, column, order) in [
         (
             "calendar_event_notifications",
             "notifications",
             "offset_minutes",
+            "sort_order",
         ),
-        ("calendar_event_exdates", "exceptions", "occurrence_date"),
-        ("calendar_event_rdates", "rdate", "occurrence_start"),
+        (
+            "calendar_event_exdates",
+            "exceptions",
+            "occurrence_date",
+            "occurrence_date",
+        ),
+        (
+            "calendar_event_rdates",
+            "rdate",
+            "occurrence_start",
+            "occurrence_start",
+        ),
     ] {
         let rows: Vec<ProjectionField> = budget.read(connection, &ids,
             &format!("SELECT event_id, '{field}' AS field, CAST({column} AS TEXT) AS value FROM {table}
-             WHERE event_id IN (SELECT value FROM json_each(?1)) ORDER BY event_id, sort_order, id"),
+             WHERE event_id IN (SELECT value FROM json_each(?1)) ORDER BY event_id, {order}, id"),
             &["event_id", "field", "value"],
         ).await?;
         for row in rows {

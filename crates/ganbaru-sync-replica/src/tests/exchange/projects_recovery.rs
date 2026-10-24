@@ -9,6 +9,7 @@ use crate::recovery::{
 };
 use ganbaru_sync::Engine;
 use ganbaru_sync::manifest::TableSpec;
+use ganbaru_sync::manifest::vault::calendar;
 use ganbaru_sync::manifest::vault::projects::{GROUPS, PROJECTS, SECTIONS, STATUSES, TASKS};
 use ganbaru_sync_contracts::OrderKey;
 use sqlx::SqliteConnection;
@@ -25,6 +26,26 @@ fn restore_projects_row(conn: &mut SqliteConnection, row: RecoveredRow) -> Resto
             &row.descendants,
         )
         .await
+    })
+}
+
+/// Restores a recovered event through Calendar persistence, as the app does.
+fn restore_calendar_event(conn: &mut SqliteConnection, row: RecoveredRow) -> RestoreFuture<'_> {
+    Box::pin(async move {
+        ganbaru_calendar::recovery::restore_recovered_event(
+            conn,
+            &row.row_key,
+            &row.values,
+            &row.descendants,
+        )
+        .await
+    })
+}
+
+/// Restores the events of a recovered calendar through Calendar persistence, as the app does.
+fn restore_calendar(conn: &mut SqliteConnection, row: RecoveredRow) -> RestoreFuture<'_> {
+    Box::pin(async move {
+        ganbaru_calendar::recovery::restore_recovered_calendar(conn, &row.descendants).await
     })
 }
 
@@ -117,7 +138,7 @@ impl Pair {
     }
 
     /// Keys of the open recovery offers, the same on both replicas.
-    async fn offers(&self) -> Vec<String> {
+    pub(super) async fn offers(&self) -> Vec<String> {
         let keys = |titles: Vec<(String, String)>| {
             titles.into_iter().map(|(key, _)| key).collect::<Vec<_>>()
         };
@@ -127,7 +148,7 @@ impl Pair {
     }
 
     /// Restores or discards an offer on the hub.
-    async fn close(
+    pub(super) async fn close(
         &mut self,
         table: &TableSpec,
         row_key: &str,
@@ -138,7 +159,9 @@ impl Pair {
             .with(&PROJECTS, restore_projects_row)
             .with(&SECTIONS, restore_projects_row)
             .with(&STATUSES, restore_projects_row)
-            .with(&TASKS, restore_projects_row);
+            .with(&TASKS, restore_projects_row)
+            .with(&calendar::CALENDARS, restore_calendar)
+            .with(&calendar::EVENTS, restore_calendar_event);
         crate::recovery::close(
             &Engine::vault(),
             &self.hub.pool,
@@ -156,7 +179,7 @@ impl Pair {
     }
 
     /// Restores an offer on the hub and converges, returning the new root id.
-    async fn restore(&mut self, table: &TableSpec, row_key: &str) -> String {
+    pub(super) async fn restore(&mut self, table: &TableSpec, row_key: &str) -> String {
         let restored = self
             .close(table, row_key, RecoveryAction::Restore)
             .await
@@ -176,7 +199,7 @@ impl Pair {
     }
 
     /// A refused restore keeps the offer, which a discard then closes on both replicas.
-    async fn refuse_then_discard(&mut self, table: &TableSpec, row_key: &str) {
+    pub(super) async fn refuse_then_discard(&mut self, table: &TableSpec, row_key: &str) {
         let refused = self.close(table, row_key, RecoveryAction::Restore).await;
         assert!(refused.is_err(), "restore without a parent: {refused:?}");
         assert_eq!(self.offers().await, [row_key.to_string()]);

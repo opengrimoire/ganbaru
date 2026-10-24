@@ -2,13 +2,16 @@ import { describe, expect, it } from "vitest";
 import {
   DEFAULT_DISTRACTIONS_CONFIG,
   DISTRACTIONS_PROTECTED_DESKTOP_PROCESS_NAMES,
+  DISTRACTIONS_RULE_REFUSALS,
   evaluateDistractionsUrl,
   isProtectedDistractionsDesktopAppName,
   normalizeDistractionsAppName,
   normalizeDistractionsConfig,
   normalizeDistractionsHost,
   normalizeDistractionsMobilePackage,
+  parseDistractionsConfig,
   parseDistractionsHosts,
+  parseDistractionsRulesEditOutcome,
   type DistractionsAppRule,
   type DistractionsCategoryId,
   type DistractionsConfig,
@@ -16,6 +19,7 @@ import {
   type DistractionsUsageLimit,
 } from "./rules";
 import nativeRulesSource from "../../../../../crates/ganbaru-distractions/src/rules.rs?raw";
+import nativeStoreSource from "../../../../../crates/ganbaru-distractions/src/config/store.rs?raw";
 
 function appRule(name: string, enabled = true): DistractionsAppRule {
   return { name, enabled, matchNames: [name] };
@@ -584,5 +588,72 @@ describe("protected desktop process names", () => {
     const nativeNames = [...(nativeList ?? "").matchAll(/"([^"]+)"/g)].map((match) => match[1]);
     expect([...DISTRACTIONS_PROTECTED_DESKTOP_PROCESS_NAMES].sort()).toEqual(nativeNames.sort());
     expect(nativeNames).toContain("tmux");
+  });
+});
+
+describe("parseDistractionsConfig", () => {
+  function nativeRules(): Record<string, unknown> {
+    return JSON.parse(JSON.stringify({
+      ...DEFAULT_DISTRACTIONS_CONFIG,
+      mode: "whitelist",
+      allowedHosts: [hostRule("docs.rs"), hostRule("example.com", false)],
+      desktop: { ...DEFAULT_DISTRACTIONS_CONFIG.desktop, blockedApps: [{ name: "Steam", enabled: true, matchNames: ["Steam", "steamwebhelper"] }] },
+      limits: {
+        enabled: false,
+        items: [{
+          id: "video", name: "Video", enabled: true, minutesPerDay: null, minutesPerWeek: 120,
+          entries: [{
+            id: "tube", name: null, color: 3, websiteHost: "youtube.com", mobileAppName: null,
+            mobileAppPackage: null, desktopAppName: null, desktopAppMatchNames: [],
+          }],
+        }],
+      },
+    })) as Record<string, unknown>;
+  }
+
+  it("keeps every section of the assembled native rules", () => {
+    const parsed = parseDistractionsConfig(nativeRules());
+    expect(parsed.mode).toBe("whitelist");
+    expect(parsed.allowedHosts).toEqual([hostRule("docs.rs"), hostRule("example.com", false)]);
+    expect(parsed.desktop.blockedApps).toEqual([{ name: "Steam", enabled: true, matchNames: ["Steam", "steamwebhelper"] }]);
+    expect(parsed.limits.enabled).toBe(false);
+    expect(parsed.limits.items[0]).toMatchObject({ id: "video", minutesPerDay: null, minutesPerWeek: 120 });
+    expect(parsed.limits.items[0]?.entries[0]).toMatchObject({ id: "tube", color: 3, websiteHost: "youtube.com" });
+    expect(parsed.blockedCategories).toEqual(DEFAULT_DISTRACTIONS_CONFIG.blockedCategories);
+  });
+
+  it("refuses responses with a missing section or switch instead of showing defaults", () => {
+    for (const broken of [
+      null,
+      { ...nativeRules(), mode: "allow" },
+      { ...nativeRules(), blockDuringFocus: "yes" },
+      { ...nativeRules(), blockedHosts: undefined },
+      { ...nativeRules(), desktop: { ...DEFAULT_DISTRACTIONS_CONFIG.desktop, pauseDuringFocusPause: undefined } },
+      { ...nativeRules(), mobile: [] },
+      { ...nativeRules(), limits: { enabled: true } },
+    ]) {
+      expect(() => parseDistractionsConfig(broken)).toThrow();
+    }
+  });
+});
+
+describe("parseDistractionsRulesEditOutcome", () => {
+  it("reads saved rules and every native refusal code", () => {
+    const nativeConfig: unknown = JSON.parse(JSON.stringify(DEFAULT_DISTRACTIONS_CONFIG));
+    expect(parseDistractionsRulesEditOutcome({ status: "saved", config: nativeConfig }))
+      .toEqual({ status: "saved", config: DEFAULT_DISTRACTIONS_CONFIG });
+    const codeBody = /pub fn code\(self\)[^{]*\{([\s\S]*?)\n {4}\}/.exec(nativeStoreSource)?.[1] ?? "";
+    const nativeCodes = [...codeBody.matchAll(/=> "([^"]+)"/g)].map((match) => match[1]);
+    expect(nativeCodes.length).toBeGreaterThan(0);
+    expect([...DISTRACTIONS_RULE_REFUSALS].sort()).toEqual([...nativeCodes].sort());
+    for (const reason of nativeCodes) {
+      expect(parseDistractionsRulesEditOutcome({ status: "refused", reason })).toEqual({ status: "refused", reason });
+    }
+  });
+
+  it("rejects unknown statuses, unknown reasons, and saved outcomes without valid rules", () => {
+    expect(() => parseDistractionsRulesEditOutcome({ status: "refused", reason: "nope" })).toThrow();
+    expect(() => parseDistractionsRulesEditOutcome({ status: "applied", config: DEFAULT_DISTRACTIONS_CONFIG })).toThrow();
+    expect(() => parseDistractionsRulesEditOutcome({ status: "saved" })).toThrow();
   });
 });

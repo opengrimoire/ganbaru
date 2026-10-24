@@ -197,10 +197,50 @@ pub async fn link_task_event(
     event_link_mutation(pool, link.task_id.trim(), link.event_id.trim()).await
 }
 
+/// Most tasks one Calendar event links.
+///
+/// A deleted event keeps a copy of its links in one replicated value, so the count and the id
+/// lengths below keep that copy far inside the Calendar sync value bound, with room for links
+/// added concurrently on other devices.
+pub const MAX_TASK_LINKS_PER_EVENT: usize = 100;
+
+/// Longest task or event id a task event link accepts.
+pub const MAX_TASK_EVENT_LINK_ID_BYTES: usize = 256;
+
+/// Refuses a link whose ids are too long, or a new link to an event that already links the most
+/// tasks. Relinking an existing pair only changes its kind and is always allowed.
+async fn check_task_event_link_bound(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    link: &ProjectTaskEventLinkCreate,
+) -> Result<(), String> {
+    if link.task_id.len() > MAX_TASK_EVENT_LINK_ID_BYTES
+        || link.event_id.len() > MAX_TASK_EVENT_LINK_ID_BYTES
+    {
+        return Err(format!(
+            "task event link ids must be at most {MAX_TASK_EVENT_LINK_ID_BYTES} bytes"
+        ));
+    }
+    let others: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM project_task_event_links WHERE event_id = ? AND task_id <> ?",
+    )
+    .bind(&link.event_id)
+    .bind(&link.task_id)
+    .fetch_one(&mut **tx)
+    .await
+    .map_err(|e| format!("count calendar event task links: {e}"))?;
+    if usize::try_from(others).unwrap_or(usize::MAX) >= MAX_TASK_LINKS_PER_EVENT {
+        return Err(format!(
+            "a calendar event links at most {MAX_TASK_LINKS_PER_EVENT} tasks"
+        ));
+    }
+    Ok(())
+}
+
 pub(super) async fn link_task_event_with_project_assignment(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     link: &ProjectTaskEventLinkCreate,
 ) -> Result<(), String> {
+    check_task_event_link_bound(tx, link).await?;
     let task_project_id: String =
         sqlx::query_scalar("SELECT project_id FROM project_tasks WHERE id = ?")
             .bind(&link.task_id)
@@ -229,14 +269,16 @@ pub(super) async fn link_task_event_with_project_assignment(
                 .map_err(|e| format!("assign calendar event project: {e}"))?;
         }
     }
+    let sync_key = crate::keys::task_event_key(&link.task_id, &link.event_id)?;
     sqlx::query(
-        "INSERT INTO project_task_event_links (task_id, event_id, link_kind)
-         VALUES (?, ?, ?)
+        "INSERT INTO project_task_event_links (task_id, event_id, link_kind, sync_key)
+         VALUES (?, ?, ?, ?)
          ON CONFLICT(task_id, event_id) DO UPDATE SET link_kind = excluded.link_kind",
     )
     .bind(&link.task_id)
     .bind(&link.event_id)
     .bind(&link.link_kind)
+    .bind(&sync_key)
     .execute(&mut **tx)
     .await
     .map_err(|e| format!("link project task event: {e}"))?;

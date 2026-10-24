@@ -23,12 +23,14 @@
 //! that would close a cycle with the dependencies that exist now, or a value whose field is
 //! gone, is left out. Retained managed working folders are left out
 //! because the restored project creates its own; external folders return with new ids and are
-//! bound again on each device.
+//! bound again on each device. A restored task's Calendar event links return for the events that
+//! still exist.
 
 use std::collections::HashMap;
 
 use ganbaru_sync::RecoveryDescendant;
 use ganbaru_sync::codec;
+use ganbaru_sync::manifest::vault::calendar::TASK_EVENT_LINKS;
 use ganbaru_sync::manifest::vault::projects::{
     DEPENDENCIES_TABLE, DOMAIN, FOLDERS_TABLE, GROUPS_TABLE, PRIORITIES_TABLE, PROJECTS_TABLE,
     SECTIONS_TABLE, STATUSES_TABLE, TAG_LINKS_TABLE, TASKS_TABLE, VALUES_TABLE,
@@ -68,6 +70,15 @@ impl RestoredRow {
             .iter()
             .find(|spec| spec.id == table)
             .ok_or_else(|| format!("table {} is not a Projects table", table.0))?;
+        Self::of(spec, old_key, values)
+    }
+
+    /// Maps retained group values of a row of `spec` to columns in manifest order.
+    fn of(
+        spec: &'static TableSpec,
+        old_key: &str,
+        values: &[(GroupId, Value)],
+    ) -> Result<Self, String> {
         let mut columns = Vec::new();
         let mut owned = Vec::new();
         for (group_id, value) in values {
@@ -251,6 +262,9 @@ pub async fn restore_recovered_row(
         ));
     }
     let root = RestoredRow::new(table, row_key, values)?;
+    let (event_links, descendants): (Vec<_>, Vec<_>) = descendants
+        .iter()
+        .partition(|descendant| descendant.table == TASK_EVENT_LINKS.id);
     let mut rows = descendants
         .iter()
         .map(|descendant| {
@@ -279,7 +293,49 @@ pub async fn restore_recovered_row(
                 .map_err(|error| format!("roll back restore descendant: {error}"))?,
         }
     }
+    for link in event_links {
+        restore_event_link(conn, &ids, link).await?;
+    }
     Ok(root_id)
+}
+
+/// Inserts a deleted task's Calendar event link for its restored task when the event still
+/// exists. Calendar owns the link table, so its rows are not Projects descendants to restore.
+async fn restore_event_link(
+    conn: &mut SqliteConnection,
+    ids: &RestoredIds,
+    link: &RecoveryDescendant,
+) -> Result<(), String> {
+    let row = RestoredRow::of(&TASK_EVENT_LINKS, &link.row_key, &link.values)?;
+    let Some(task_id) = row
+        .text("task_id")
+        .and_then(|task| ids.0.get(&(TASKS_TABLE, task.to_string())))
+    else {
+        return Ok(());
+    };
+    let event_id = row.required_text("event_id")?;
+    let event_exists: Option<i64> =
+        sqlx::query_scalar("SELECT 1 FROM calendar_events WHERE id = ?")
+            .bind(&event_id)
+            .fetch_optional(&mut *conn)
+            .await
+            .map_err(|error| format!("look up a restored task's event: {error}"))?;
+    if event_exists.is_none() {
+        return Ok(());
+    }
+    sqlx::query(
+        "INSERT INTO project_task_event_links (task_id, event_id, link_kind, created_at, sync_key)
+         VALUES (?, ?, ?, ?, ?)",
+    )
+    .bind(task_id)
+    .bind(&event_id)
+    .bind(row.required_text("link_kind")?)
+    .bind(row.required_text("created_at")?)
+    .bind(keys::task_event_key(task_id, &event_id)?)
+    .execute(&mut *conn)
+    .await
+    .map_err(|error| format!("restore a task's event link: {error}"))?;
+    Ok(())
 }
 
 fn table_name(table: TableId) -> &'static str {

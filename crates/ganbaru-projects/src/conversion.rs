@@ -1,6 +1,7 @@
 //! Projects conversion pass run at vault open, before sync captures are seeded.
 //!
-//! The order keys migration leaves `'pending:' || rowid` placeholders in every `sync_key` and dependency id, and
+//! The order keys and Calendar replication migrations leave `'pending:' || rowid` placeholders in every `sync_key`
+//! and dependency id, task event links included, and the order keys migration leaves
 //! icon references without the file size they now carry. This pass rewrites each placeholder to the key every device
 //! derives from the same row, and fills icon sizes from the vault files. It is idempotent, so a vault that is
 //! already converted is left unchanged.
@@ -15,7 +16,8 @@ use crate::icons::{
     inspect_project_icon, is_project_icon_path, project_icon_byte_size,
 };
 use crate::keys::{
-    custom_field_value_key, dependency_key, priority_key, task_tag_key, view_preference_key,
+    custom_field_value_key, dependency_key, priority_key, task_event_key, task_tag_key,
+    view_preference_key,
 };
 
 /// What one conversion pass changed.
@@ -42,7 +44,7 @@ struct KeyedTable {
     id_is_key: bool,
 }
 
-const KEYED_TABLES: [KeyedTable; 5] = [
+const KEYED_TABLES: [KeyedTable; 6] = [
     KeyedTable {
         table: "project_priorities",
         parts: ["project_id", "id"],
@@ -71,6 +73,12 @@ const KEYED_TABLES: [KeyedTable; 5] = [
         table: "project_view_preferences",
         parts: ["view_id", "preference_key"],
         derive: view_preference_key,
+        id_is_key: false,
+    },
+    KeyedTable {
+        table: "project_task_event_links",
+        parts: ["task_id", "event_id"],
+        derive: task_event_key,
         id_is_key: false,
     },
 ];

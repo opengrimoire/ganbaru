@@ -15,6 +15,7 @@ use super::{
     DbFullEventRow, DbFullOverrideRow, FULL_EVENT_SELECT_SQL, sanitize_full_override_rows,
 };
 use crate::description::sanitize_calendar_description_html;
+use crate::geo::{GeoUnits, geo_json};
 use crate::work_gate::WorkGate;
 
 pub(super) const MAX_EXPORT_RECORDS: usize = 500_000;
@@ -324,20 +325,36 @@ async fn read_projection_fields(
     budget: &mut ExportBudget,
 ) -> Result<Vec<ExportField>, String> {
     let mut fields = Vec::new();
-    for (table, field, value) in [
+    for (table, field, value, order) in [
         (
             "calendar_event_notifications",
             "notifications",
             "offset_minutes",
+            "sort_order",
         ),
-        ("calendar_event_exdates", "exceptions", "occurrence_date"),
-        ("calendar_event_rdates", "rdate", "occurrence_start"),
-        ("calendar_event_categories", "categories", "category"),
+        (
+            "calendar_event_exdates",
+            "exceptions",
+            "occurrence_date",
+            "occurrence_date",
+        ),
+        (
+            "calendar_event_rdates",
+            "rdate",
+            "occurrence_start",
+            "occurrence_start",
+        ),
+        (
+            "calendar_event_categories",
+            "categories",
+            "category",
+            "sort_order",
+        ),
     ] {
         let sql = format!(
             "SELECT c.event_id AS owner_id, '{field}' AS field, NULL AS property_key, CAST(c.{value} AS TEXT) AS value
              FROM {table} c JOIN calendar_events e ON e.id = c.event_id WHERE e.calendar_id = ?1
-             ORDER BY c.event_id, c.sort_order, c.id"
+             ORDER BY c.event_id, c.{order}, c.id"
         );
         fields.extend(
             budget
@@ -360,7 +377,7 @@ async fn read_projection_fields(
         (
             "calendar_event_override_extended_properties",
             "override_id",
-            "JOIN calendar_event_overrides o ON o.id = c.override_id JOIN calendar_events e ON e.id = o.parent_event_id",
+            "JOIN calendar_events e ON e.id = c.event_id",
             "override_properties",
         ),
     ] {
@@ -490,6 +507,22 @@ fn group_rows<T>(rows: Vec<T>, owner: impl Fn(&T) -> &str) -> BTreeMap<String, V
     grouped
 }
 
+/// Stored coordinates as the geo export query reads them, in millionths of a degree.
+#[derive(serde::Deserialize)]
+struct StoredGeo {
+    lat: i64,
+    lng: i64,
+}
+
+impl From<StoredGeo> for GeoUnits {
+    fn from(value: StoredGeo) -> Self {
+        Self {
+            lat: value.lat,
+            lng: value.lng,
+        }
+    }
+}
+
 fn assemble_fields(rows: Vec<ExportField>) -> Result<BTreeMap<(String, String), String>, String> {
     let mut fields: BTreeMap<(String, String), Value> = BTreeMap::new();
     for row in rows {
@@ -502,7 +535,15 @@ fn assemble_fields(rows: Vec<ExportField>) -> Result<BTreeMap<(String, String), 
                 .as_object_mut()
                 .ok_or("Invalid Calendar export property list")?
                 .insert(property_key, Value::String(row.value));
-        } else if matches!(row.field.as_str(), "organizer" | "geo") {
+        } else if row.field == "geo" {
+            let units: GeoUnits = serde_json::from_str::<StoredGeo>(&row.value)
+                .map_err(|error| error.to_string())?
+                .into();
+            fields.insert(
+                key,
+                serde_json::from_str(&geo_json(units)?).map_err(|error| error.to_string())?,
+            );
+        } else if row.field == "organizer" {
             fields.insert(
                 key,
                 serde_json::from_str(&row.value).map_err(|error| error.to_string())?,

@@ -10,8 +10,8 @@ use crate::domains::quick_notes::{
 };
 use crate::manifest::{
     Collation, ColumnSpec, ColumnType, DomainManifest, DomainTrigger, GroupSpec, GroupStorage,
-    LocalColumn, MergeKind, OnDelete, OwnedCodec, OwnedOrder, OwnedTable, Resolution, TableIdRange,
-    TableSpec, TriggerPolicy, group_id,
+    LocalColumn, MergeKind, OnDelete, OwnedBound, OwnedCodec, OwnedOrder, OwnedTable, Resolution,
+    TableIdRange, TableSpec, TriggerPolicy, group_id,
 };
 
 /// Domain name for Quick notes.
@@ -210,6 +210,7 @@ const NOTE_GROUPS: [GroupSpec; 9] = [
                 max_rows: MAX_RUNS,
                 codec: OwnedCodec::Custom,
                 nested: &[],
+                bound: OwnedBound::Static,
             }],
         },
         true,
@@ -288,6 +289,7 @@ const NOTE_GROUPS: [GroupSpec; 9] = [
                 max_rows: MAX_IMAGES,
                 codec: OwnedCodec::Custom,
                 nested: &[],
+                bound: OwnedBound::Static,
             }],
         },
         true,

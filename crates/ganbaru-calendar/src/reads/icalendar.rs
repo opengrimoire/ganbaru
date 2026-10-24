@@ -240,12 +240,14 @@ fn load_value_node<'a>(
                 Ok(Value::String(value.unwrap_or_default()))
             }
             "number" => {
-                let value: Option<f64> = row
+                let value: Option<String> = row
                     .try_get("number_value")
                     .map_err(|e| format!("read number_value: {e}"))?;
-                Ok(serde_json::Number::from_f64(value.unwrap_or(0.0))
-                    .map(Value::Number)
-                    .unwrap_or(Value::Null))
+                value
+                    .as_deref()
+                    .map(crate::stored_number::parse)
+                    .transpose()
+                    .map(|number| number.map_or(Value::Null, Value::Number))
             }
             "boolean" => {
                 let value: Option<i64> = row

@@ -1,7 +1,7 @@
 use super::*;
 use crate::conversion::{ConversionReport, assert_converted, convert};
 use crate::icons::MISSING_ICON_FALLBACK;
-use crate::keys::{dependency_key, task_tag_key};
+use crate::keys::{dependency_key, task_event_key, task_tag_key};
 use std::fs;
 
 fn conversion_vault(name: &str) -> std::path::PathBuf {
@@ -26,6 +26,9 @@ async fn insert_placeholder_rows(pool: &SqlitePool) {
          INSERT INTO project_task_dependencies (id, sync_key, blocking_task_id, blocked_task_id, dependency_type)
              VALUES ('pending:1', 'pending:1', 'task-a', 'task-b', 'blocks');
          INSERT INTO project_task_tag_links (task_id, tag_id, sync_key) VALUES ('task-a', 'tag-a', 'pending:2');
+         INSERT INTO calendar_events (id, title, start_time, end_time, project_id)
+             VALUES ('event-a', 'Scheduled', '2026-06-11T09:00:00Z', '2026-06-11T10:00:00Z', 'project-a');
+         INSERT INTO project_task_event_links (task_id, event_id, sync_key) VALUES ('task-a', 'event-a', 'pending:3');
          UPDATE project_groups SET icon = 'asset:project-icons/cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc.png', icon_byte_size = NULL WHERE id = 'group-a';
          UPDATE projects SET icon = 'asset:project-icons/dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd.png', icon_byte_size = NULL WHERE id = 'project-a';
          INSERT INTO project_custom_emojis (id, name, asset_path, order_key)
@@ -49,7 +52,7 @@ fn conversion_rewrites_placeholder_keys_and_icon_sizes_and_a_second_pass_changes
         assert!(error.contains("placeholder keys"), "{error}");
 
         let first = convert(&pool, &vault_root).await.unwrap();
-        assert!(first.rekeyed_rows >= 2, "{first:?}");
+        assert!(first.rekeyed_rows >= 3, "{first:?}");
         assert_eq!(first.sized_icons, 2);
         assert_eq!(first.reset_icons, 1);
         assert_eq!(first.removed_emojis, 1);
@@ -67,6 +70,12 @@ fn conversion_rewrites_placeholder_keys_and_icon_sizes_and_a_second_pass_changes
             .await
             .unwrap();
         assert_eq!(link, task_tag_key("task-a", "tag-a").unwrap());
+        let event_link: String =
+            sqlx::query_scalar("SELECT sync_key FROM project_task_event_links")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(event_link, task_event_key("task-a", "event-a").unwrap());
         let group: (String, Option<i64>) =
             sqlx::query_as("SELECT icon, icon_byte_size FROM project_groups WHERE id = 'group-a'")
                 .fetch_one(&pool)

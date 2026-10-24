@@ -233,7 +233,7 @@ fn collect_targets(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::manifest::{ColumnSpec, ColumnType, OwnedOrder, OwnedReference};
+    use crate::manifest::{ColumnSpec, ColumnType, OwnedBound, OwnedOrder, OwnedReference};
 
     const NESTED: OwnedTable = OwnedTable {
         table: "codec_steps",
@@ -257,6 +257,7 @@ mod tests {
         max_rows: 2,
         codec: OwnedCodec::Generic,
         nested: &[],
+        bound: OwnedBound::Static,
     };
 
     const OWNED: OwnedTable = OwnedTable {
@@ -285,6 +286,7 @@ mod tests {
         max_rows: 3,
         codec: OwnedCodec::Generic,
         nested: &[NESTED],
+        bound: OwnedBound::Static,
     };
 
     fn text(value: &str) -> Field {

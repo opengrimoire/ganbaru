@@ -1,7 +1,12 @@
 //! Prepared scoped deletion rows over complete canonical metadata.
 
 use chrono::{DateTime, SecondsFormat};
+use ganbaru_sync::Engine;
+use ganbaru_sync::hold::hold_deletes;
+use ganbaru_sync::manifest::vault::calendar::EVENTS_TABLE;
 use sqlx::{Sqlite, Transaction};
+
+use super::super::commit::DeletionLease;
 
 use super::super::metadata::{PreparedArchive, PreparedMutation, revision};
 use super::super::scope::ScopeSnapshot;
@@ -122,9 +127,11 @@ impl PreparedDeletion {
 
     /// Stopping Focus precedes this writer in the same transaction. Original
     /// execution IDs, timestamps, pauses and segment outcomes are never rewritten.
+    /// A `lease` holds the sync delete of a removed source until it ends.
     pub(in crate::events) async fn write(
         self,
         tx: &mut Transaction<'_, Sqlite>,
+        lease: Option<DeletionLease>,
     ) -> Result<(), String> {
         for archive in &self.archives {
             archive.write(tx, &self.archived_at).await?;
@@ -159,6 +166,18 @@ impl PreparedDeletion {
                 .map_err(|error| format!("delete Calendar source: {error}"))?;
             if deleted.rows_affected() != 1 {
                 return Err("Calendar source disappeared before deletion".into());
+            }
+            if let Some(lease) = lease {
+                hold_deletes(
+                    &Engine::vault(),
+                    tx,
+                    EVENTS_TABLE,
+                    &[&self.source_id],
+                    lease.now_ms,
+                    lease.until_ms,
+                )
+                .await
+                .map_err(|error| format!("hold Calendar deletion: {error}"))?;
             }
         }
         Ok(())

@@ -3,7 +3,7 @@
 
 use std::sync::LazyLock;
 
-use ganbaru_sync::manifest::vault::{music, projects, quick_notes, themes};
+use ganbaru_sync::manifest::vault::{calendar, distractions, music, projects, quick_notes, themes};
 use ganbaru_sync::{DeviceRef, Engine, local};
 pub(crate) use ganbaru_sync_replica::recovery::{
     RecoveredRow, RecoveryAction, RecoveryChoice, RecoveryRestorers, RestoreFuture, close,
@@ -25,6 +25,16 @@ static RESTORERS: LazyLock<RecoveryRestorers> = LazyLock::new(|| {
         .with(&projects::SECTIONS, restore_projects_row)
         .with(&projects::STATUSES, restore_projects_row)
         .with(&projects::TASKS, restore_projects_row)
+        .with(&calendar::CALENDARS, restore_calendar)
+        .with(&calendar::OBJECTS, refuse_calendar_source)
+        .with(&calendar::COMPONENTS, refuse_calendar_source)
+        .with(&calendar::EVENTS, restore_calendar_event)
+        .with(&distractions::SETTINGS, refuse_distraction_settings)
+        .with(
+            &distractions::CUSTOM_CATEGORIES,
+            restore_distraction_category,
+        )
+        .with(&distractions::USAGE_LIMITS, restore_usage_limit)
 });
 
 /// The recovery restorers of the vault domains.
@@ -92,6 +102,67 @@ fn restore_projects_row(conn: &mut SqliteConnection, row: RecoveredRow) -> Resto
             &row.descendants,
         )
         .await
+    })
+}
+
+/// Restores a deleted event as a new event with its task links; its calendar becomes Local when
+/// the retained one is gone.
+fn restore_calendar_event(conn: &mut SqliteConnection, row: RecoveredRow) -> RestoreFuture<'_> {
+    Box::pin(async move {
+        ganbaru_calendar::recovery::restore_recovered_event(
+            conn,
+            &row.row_key,
+            &row.values,
+            &row.descendants,
+        )
+        .await
+    })
+}
+
+/// Restores the deleted events of a removed calendar into Local. The calendar itself comes back
+/// by adding or subscribing to it again.
+fn restore_calendar(conn: &mut SqliteConnection, row: RecoveredRow) -> RestoreFuture<'_> {
+    Box::pin(async move {
+        ganbaru_calendar::recovery::restore_recovered_calendar(conn, &row.descendants).await
+    })
+}
+
+/// Refuses to restore preserved iCalendar source data, which comes back by importing the file
+/// again; its offer can only be discarded.
+fn refuse_calendar_source(_: &mut SqliteConnection, _: RecoveredRow) -> RestoreFuture<'_> {
+    Box::pin(async {
+        Err("preserved iCalendar data comes back by importing the file again".to_string())
+    })
+}
+
+/// Refuses to restore the distraction settings row, which is seeded and never deleted.
+fn refuse_distraction_settings(_: &mut SqliteConnection, _: RecoveredRow) -> RestoreFuture<'_> {
+    Box::pin(async { Err("distraction settings are never deleted".to_string()) })
+}
+
+/// Restores a deleted custom distraction category as a new category with its deleted hosts.
+fn restore_distraction_category(
+    conn: &mut SqliteConnection,
+    row: RecoveredRow,
+) -> RestoreFuture<'_> {
+    Box::pin(async move {
+        let now_ms = crate::vault::now_utc().timestamp_millis();
+        ganbaru_distractions::config::recovery::restore_recovered_category(
+            conn,
+            &row.values,
+            &row.descendants,
+            now_ms,
+        )
+        .await
+    })
+}
+
+/// Restores a deleted usage limit as a new limit with its retained budget and entries.
+fn restore_usage_limit(conn: &mut SqliteConnection, row: RecoveredRow) -> RestoreFuture<'_> {
+    Box::pin(async move {
+        let now_ms = crate::vault::now_utc().timestamp_millis();
+        ganbaru_distractions::config::recovery::restore_recovered_limit(conn, &row.values, now_ms)
+            .await
     })
 }
 
@@ -170,12 +241,18 @@ pub(crate) async fn list<R: Runtime>(app: &AppHandle<R>) -> Result<Vec<RecoveryE
 mod tests {
     use super::*;
 
+    /// Only replica-writable domains have concurrent writers, so only they can open offers.
     #[test]
     fn sync_recovery_restorers_cover_every_table_that_can_root_an_offer() {
-        let mut roots: Vec<&str> = Engine::vault()
-            .manifest()
+        let manifest = Engine::vault().manifest();
+        let mut roots: Vec<&str> = manifest
             .recovery_root_tables()
             .into_iter()
+            .filter(|table| {
+                manifest
+                    .domain_of(table.name)
+                    .is_some_and(|domain| domain.replica_writable)
+            })
             .map(|table| table.name)
             .collect();
         roots.sort_unstable();

@@ -21,13 +21,15 @@ use crate::assets::AssetClass;
 use crate::domains::{vault_adapters, vault_hooks};
 use crate::hooks::{ChangeSink, HookFuture, MaterializeHook};
 use crate::manifest::vault::{
-    VAULT_MANIFEST_VERSION, contacts, music, preferences, projects, quick_notes, themes,
+    VAULT_MANIFEST_VERSION, calendar, contacts, distractions, music, preferences, projects,
+    quick_notes, themes,
 };
 use crate::manifest::{
     AcyclicSpec, Collation, ColumnSpec, ColumnType, DerivedKey, DeviceTable, DomainManifest,
     DomainTrigger, GroupSpec, GroupStorage, KeyDerivedColumn, LocalColumn, Manifest, MergeKind,
-    OnDelete, OwnedCodec, OwnedOrder, OwnedReference, OwnedTable, PublishedWith, ReferenceColumn,
-    Resolution, SYNC_KEY_COLUMN, TableIdRange, TableSpec, TreeSpec, TriggerPolicy, group_id,
+    OnDelete, OwnedBound, OwnedCodec, OwnedOrder, OwnedReference, OwnedTable, PublishedWith,
+    ReferenceColumn, Resolution, SYNC_KEY_COLUMN, TableIdRange, TableSpec, TreeSpec, TriggerPolicy,
+    group_id,
 };
 use crate::triggers::{self, NOT_APPLYING};
 
@@ -907,6 +909,7 @@ pub(super) const LIST_ENTRIES: OwnedTable = OwnedTable {
     max_rows: MAX_LIST_ENTRIES,
     codec: OwnedCodec::Generic,
     nested: &[],
+    bound: OwnedBound::Static,
 };
 
 /// Field groups of [`LISTS`].
@@ -973,6 +976,7 @@ pub(super) const BOARD_CHECKS: OwnedTable = OwnedTable {
     max_rows: 3,
     codec: OwnedCodec::Generic,
     nested: &[],
+    bound: OwnedBound::Static,
 };
 
 /// Cards of a board. A card naming a deleted item is left out with its checks.
@@ -1002,6 +1006,7 @@ pub(super) const BOARD_CARDS: OwnedTable = OwnedTable {
     max_rows: 4,
     codec: OwnedCodec::Generic,
     nested: &[BOARD_CHECKS],
+    bound: OwnedBound::Static,
 };
 
 /// Field groups of [`BOARDS`].
@@ -1067,6 +1072,57 @@ pub(super) const BOARDS_TABLE: TableId = TableId(FIXTURE_TABLE_IDS + 13);
 
 /// Last board stage.
 pub(super) const MAX_BOARD_STAGE: i64 = 2;
+
+/// Pages of a scroll, whose declared limits allow far more than one blob field: the fixture
+/// domain stands for write validation that keeps the value within it.
+pub(super) const SCROLL_PAGES: OwnedTable = OwnedTable {
+    table: "fixture_scroll_pages",
+    parent_column: "scroll_id",
+    order: OwnedOrder::Ordinal("ordinal"),
+    columns: &[ColumnSpec {
+        name: "body",
+        ty: ColumnType::Text {
+            max_chars: MAX_SCROLL_PAGE_CHARS,
+        },
+    }],
+    references: &[],
+    unique: &[],
+    max_rows: 4,
+    codec: OwnedCodec::Generic,
+    nested: &[],
+    bound: OwnedBound::Domain,
+};
+
+/// Most characters of one scroll page.
+pub(super) const MAX_SCROLL_PAGE_CHARS: usize = 256 * 1024;
+
+/// Scrolls, whose pages form one register bounded by the domain.
+pub(super) const SCROLLS: TableSpec = TableSpec {
+    id: SCROLLS_TABLE,
+    name: "fixture_scrolls",
+    key_column: "id",
+    groups: &[
+        CREATED,
+        GroupSpec {
+            id: group_id(1),
+            name: "pages",
+            kind: MergeKind::Register,
+            storage: GroupStorage::Owned {
+                columns: &[],
+                tables: &[SCROLL_PAGES],
+            },
+            references: &[],
+            surfaced: false,
+            recoverable: false,
+            bumps_revision: false,
+        },
+    ],
+    holds_deletes: false,
+    ..MEMOS
+};
+
+/// `fixture_scrolls`.
+pub(super) const SCROLLS_TABLE: TableId = TableId(FIXTURE_TABLE_IDS + 15);
 
 /// Name of [`FixtureAdapter`].
 const FIXTURE_ADAPTER: &str = "fixture";
@@ -1252,6 +1308,7 @@ pub(super) const FIXTURE_DOMAIN: DomainManifest = DomainManifest {
         MEMO_TAGS,
         LISTS,
         BOARDS,
+        SCROLLS,
     ],
     derived: &["fixture_items_index", "fixture_list_counts"],
     local: &[DeviceTable {
@@ -1277,6 +1334,8 @@ pub(super) const TEST_DOMAINS: &[&DomainManifest] = &[
     &contacts::DOMAIN,
     &music::DOMAIN,
     &projects::DOMAIN,
+    &calendar::DOMAIN,
+    &distractions::DOMAIN,
     &FIXTURE_DOMAIN,
 ];
 
@@ -1430,6 +1489,16 @@ fn fixture_schema() -> String {
              FOREIGN KEY (board_id, card_ordinal)
                  REFERENCES fixture_board_cards(board_id, ordinal)
                  ON DELETE CASCADE ON UPDATE CASCADE
+         );
+         CREATE TABLE fixture_scrolls (
+             id TEXT PRIMARY KEY CHECK (trim(id) <> ''),
+             created_at TEXT NOT NULL
+         );
+         CREATE TABLE fixture_scroll_pages (
+             scroll_id TEXT NOT NULL REFERENCES fixture_scrolls(id) ON DELETE CASCADE,
+             ordinal INTEGER NOT NULL,
+             body TEXT NOT NULL CHECK (length(body) <= {MAX_SCROLL_PAGE_CHARS}),
+             PRIMARY KEY (scroll_id, ordinal)
          );
          CREATE TABLE fixture_items_index (
              item_id TEXT PRIMARY KEY,

@@ -9,7 +9,8 @@
 use std::fmt::Write as _;
 
 use super::{
-    ColumnType, Manifest, MergeKind, OnDelete, OwnedCodec, OwnedOrder, OwnedTable, Resolution,
+    ColumnType, Manifest, MergeKind, OnDelete, OwnedBound, OwnedCodec, OwnedOrder, OwnedTable,
+    Resolution,
 };
 
 impl Manifest {
@@ -137,6 +138,10 @@ fn owned_lines(text: &mut String, owned: &OwnedTable, indent: &str) {
     }
     if !owned.unique.is_empty() {
         let _ = write!(line, " unique {}", owned.unique.join(","));
+    }
+    // The static bound is the default and adds nothing to the line.
+    if owned.bound == OwnedBound::Domain {
+        line.push_str(" bound domain");
     }
     let _ = writeln!(text, "{line}");
     let nested_indent = format!("{indent}  ");

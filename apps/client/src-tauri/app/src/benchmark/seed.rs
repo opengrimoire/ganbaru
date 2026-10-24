@@ -114,11 +114,19 @@ async fn insert_config(
     tx: &mut Transaction<'_, Sqlite>,
     config: &BenchmarkPomodoroConfigSeed,
 ) -> Result<(), String> {
-    sqlx::query("DELETE FROM calendar_event_pomodoro_configs WHERE event_id = ?")
+    for table in [
+        "calendar_event_pomodoro_configs",
+        "calendar_event_pomodoro_config_count_rhythms",
+        "calendar_event_pomodoro_config_sequence_steps",
+    ] {
+        sqlx::query(sqlx::AssertSqlSafe(format!(
+            "DELETE FROM {table} WHERE event_id = ?"
+        )))
         .bind(&config.event_id)
         .execute(&mut **tx)
         .await
         .map_err(|e| format!("clear benchmark pomodoro config: {e}"))?;
+    }
 
     sqlx::query(
         "INSERT INTO calendar_event_pomodoro_configs

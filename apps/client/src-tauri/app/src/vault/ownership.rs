@@ -1281,13 +1281,9 @@ mod tests {
                 .collect::<Vec<_>>()
         );
         assert!(status.can_write_domain(QUICK_NOTES));
-        assert!(!status.can_write_domain("calendar"));
+        assert!(!status.can_write_domain("notes"));
         assert_eq!(replica.cached_status("vault").unwrap().unwrap(), status);
-        assert!(
-            replica
-                .acquire_replicated_write("vault", "calendar")
-                .is_err()
-        );
+        assert!(replica.acquire_replicated_write("vault", "notes").is_err());
         assert_eq!(
             replica.database_access("vault").unwrap(),
             VaultDatabaseAccess::Guarded

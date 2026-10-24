@@ -12,8 +12,9 @@ use crate::description::{
 mod preservation;
 mod validation;
 
+use crate::geo::parse_geo;
 use preservation::{PreservationOutcome, ProjectedRow, preservation_link_id, replace_preservation};
-use validation::{require_non_empty, skip_reason, timing_refusal, validate_payload};
+use validation::{require_non_empty, skip_reason, timing_refusal, validate_payload, value_refusal};
 
 const PALETTE_SIZE: i64 = 32;
 
@@ -165,12 +166,6 @@ struct CalendarImportOverride {
     transparency: Option<String>,
     visibility: Option<String>,
     extended_properties: Option<String>,
-}
-
-#[derive(Deserialize)]
-struct CalendarGeoPayload {
-    lat: f64,
-    lng: f64,
 }
 
 #[derive(Deserialize)]
@@ -342,7 +337,7 @@ fn plan_events<'a>(
             plan.warnings.push(format!("Event skipped: {reason}."));
             continue;
         }
-        if let Some(refusal) = timing_refusal(event) {
+        if let Some(refusal) = timing_refusal(event).or_else(|| value_refusal(event)) {
             plan.warnings.push(refusal.clone());
             plan.oversized.push((event, refusal));
             continue;
@@ -537,8 +532,8 @@ async fn insert_event(
     .bind(&event.source_uid)
     .bind(&event.visibility)
     .bind(event.priority)
-    .bind(geo.map(|value| value.0))
-    .bind(geo.map(|value| value.1))
+    .bind(geo.map(|value| value.lat))
+    .bind(geo.map(|value| value.lng))
     .bind(event.sequence)
     .bind(if event.meeting_enabled { 1_i64 } else { 0_i64 })
     .bind(if event.guest_can_modify { 1_i64 } else { 0_i64 })
@@ -606,8 +601,8 @@ async fn update_event(
     .bind(&event.status)
     .bind(&event.visibility)
     .bind(event.priority)
-    .bind(geo.map(|value| value.0))
-    .bind(geo.map(|value| value.1))
+    .bind(geo.map(|value| value.lat))
+    .bind(geo.map(|value| value.lng))
     .bind(event.sequence)
     .bind(if event.meeting_enabled { 1_i64 } else { 0_i64 })
     .bind(if event.guest_can_modify { 1_i64 } else { 0_i64 })
@@ -698,6 +693,7 @@ async fn replace_child_rows(
         "DELETE FROM calendar_event_attendees WHERE event_id = ?",
         "DELETE FROM calendar_event_alarms WHERE event_id = ?",
         "DELETE FROM calendar_event_overrides WHERE parent_event_id = ?",
+        "DELETE FROM calendar_event_override_extended_properties WHERE event_id = ?",
     ] {
         sqlx::query(query)
             .bind(event_id)
@@ -795,17 +791,41 @@ async fn insert_child_rows(
         .execute(&mut **tx)
         .await
         .map_err(|e| format!("insert imported override: {e}"))?;
-        replace_extended_properties(
+        insert_override_properties(
             tx,
+            event_id,
             &override_row.id,
-            "calendar_event_override_extended_properties",
-            "override_id",
             parse_string_map(
                 &override_row.extended_properties,
                 "override.extended_properties",
             )?,
         )
         .await?;
+    }
+    Ok(())
+}
+
+/// Inserts the extended properties of a freshly inserted override under its parent event.
+async fn insert_override_properties(
+    tx: &mut Transaction<'_, Sqlite>,
+    event_id: &str,
+    override_id: &str,
+    values: Vec<(String, String)>,
+) -> Result<(), String> {
+    for (sort_order, (key, value)) in values.into_iter().enumerate() {
+        sqlx::query(
+            "INSERT INTO calendar_event_override_extended_properties
+                (id, event_id, override_id, property_key, property_value, sort_order)
+             VALUES (lower(hex(randomblob(16))), ?, ?, ?, ?, ?)",
+        )
+        .bind(event_id)
+        .bind(override_id)
+        .bind(key)
+        .bind(value)
+        .bind(sort_order as i64)
+        .execute(&mut **tx)
+        .await
+        .map_err(|e| format!("insert calendar override property: {e}"))?;
     }
     Ok(())
 }
@@ -833,18 +853,6 @@ fn parse_string_map(value: &Option<String>, field: &str) -> Result<Vec<(String, 
     let map = serde_json::from_str::<std::collections::BTreeMap<String, String>>(json)
         .map_err(|e| format!("{field} is not a valid string map: {e}"))?;
     Ok(map.into_iter().collect())
-}
-
-fn parse_geo(value: &Option<String>) -> Result<Option<(f64, f64)>, String> {
-    let Some(json) = value else {
-        return Ok(None);
-    };
-    let geo = serde_json::from_str::<CalendarGeoPayload>(json)
-        .map_err(|e| format!("geo is not valid coordinates: {e}"))?;
-    if !geo.lat.is_finite() || !geo.lng.is_finite() {
-        return Err("geo coordinates must be finite".to_string());
-    }
-    Ok(Some((geo.lat, geo.lng)))
 }
 
 fn parse_organizer(value: &Option<String>) -> Result<Option<CalendarOrganizerPayload>, String> {
@@ -899,20 +907,43 @@ async fn replace_string_list(
         .execute(&mut **tx)
         .await
         .map_err(|e| format!("clear calendar {table}: {e}"))?;
-    let insert = format!(
-        "INSERT INTO {table} (id, event_id, {column}, sort_order)
-         VALUES (lower(hex(randomblob(16))), ?, ?, ?)"
-    );
+    let insert = string_list_insert(table, column);
     for (sort_order, value) in values.into_iter().enumerate() {
-        sqlx::query(AssertSqlSafe(insert.as_str()))
+        let query = sqlx::query(AssertSqlSafe(insert.as_str()))
             .bind(event_id)
-            .bind(value)
-            .bind(sort_order as i64)
+            .bind(value);
+        let query = if is_date_set(table) {
+            query
+        } else {
+            query.bind(sort_order as i64)
+        };
+        query
             .execute(&mut **tx)
             .await
             .map_err(|e| format!("insert calendar {table}: {e}"))?;
     }
     Ok(())
+}
+
+/// Whether a list table is a date set keyed by its date, which repeats at most once and has no
+/// stored order.
+pub(crate) fn is_date_set(table: &str) -> bool {
+    matches!(table, "calendar_event_exdates" | "calendar_event_rdates")
+}
+
+/// Insert statement for one value of a list table. A date set ignores a repeated date.
+pub(crate) fn string_list_insert(table: &str, column: &str) -> String {
+    if is_date_set(table) {
+        format!(
+            "INSERT INTO {table} (id, event_id, {column})
+             VALUES (lower(hex(randomblob(16))), ?, ?) ON CONFLICT DO NOTHING"
+        )
+    } else {
+        format!(
+            "INSERT INTO {table} (id, event_id, {column}, sort_order)
+             VALUES (lower(hex(randomblob(16))), ?, ?, ?)"
+        )
+    }
 }
 
 async fn replace_extended_properties(
@@ -977,7 +1008,7 @@ mod tests {
     use super::preservation::{PreservationOutcome, replace_preservation};
     use super::validation::{
         timing_refusal, validate_color, validate_enum, validate_event, validate_json_option,
-        validate_payload, validate_preservation, validate_priority,
+        validate_payload, validate_preservation, validate_priority, value_refusal,
     };
     use super::{
         CalendarBulkImportPayload, CalendarImportAlarm, CalendarImportAttendee,
@@ -1223,6 +1254,47 @@ mod tests {
                     .await
                     .unwrap();
             assert_eq!(ids, vec!["object-2".to_string()]);
+        });
+    }
+
+    #[test]
+    fn every_object_of_one_import_shares_an_import_id_that_differs_between_imports() {
+        crate::test_support::block_on(async {
+            let pool = in_memory_pool().await;
+            let mut tx = pool.begin().await.unwrap();
+            let multiple = CalendarImportPreservation {
+                objects: vec![preserved_object("object-1"), preserved_object("object-2")],
+                ..preservation_payload("first.ics")
+            };
+            let other = CalendarImportPreservation {
+                objects: vec![preserved_object("object-3")],
+                ..preservation_payload("second.ics")
+            };
+            for payload in [&multiple, &other] {
+                replace_preservation(
+                    &mut tx,
+                    "local",
+                    "2026-05-09 10:00:00",
+                    payload,
+                    &PreservationOutcome::default(),
+                )
+                .await
+                .unwrap();
+            }
+            tx.commit().await.unwrap();
+
+            let imports: Vec<String> =
+                sqlx::query_scalar("SELECT import_id FROM icalendar_objects ORDER BY id")
+                    .fetch_all(&pool)
+                    .await
+                    .unwrap();
+            assert_eq!(imports.len(), 3);
+            assert_eq!(imports[0], imports[1], "one import command, one import id");
+            assert_ne!(imports[0], imports[2], "each import command takes a new id");
+            sqlx::query("UPDATE icalendar_objects SET import_id = 'changed'")
+                .execute(&pool)
+                .await
+                .expect_err("an import id never changes");
         });
     }
 
@@ -1631,6 +1703,130 @@ mod tests {
         event
     }
 
+    /// Exported GEO payloads of the local calendar, by source UID.
+    async fn exported_geo(pool: &sqlx::SqlitePool) -> Vec<(String, Option<String>)> {
+        let snapshot = crate::reads::load_export_snapshot(pool, "local".to_string())
+            .await
+            .unwrap();
+        let snapshot = serde_json::to_value(snapshot).unwrap();
+        let mut geo = snapshot["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|rows| {
+                let event = &rows["event"];
+                (
+                    event["source_uid"].as_str().unwrap().to_string(),
+                    event["geo"].as_str().map(str::to_string),
+                )
+            })
+            .collect::<Vec<_>>();
+        geo.sort();
+        geo
+    }
+
+    #[test]
+    fn geo_round_trips_through_import_and_export_at_stored_precision() {
+        crate::test_support::block_on(async {
+            let pool = in_memory_pool().await;
+            let with_geo = |id: &str, geo: Option<&str>| CalendarImportEvent {
+                geo: geo.map(str::to_string),
+                ..import_event(id, "")
+            };
+            let first = vec![
+                with_geo("fine", Some(r#"{"lat":37.3860134,"lng":-122.0829316}"#)),
+                with_geo("edge", Some(r#"{"lat":-90,"lng":180}"#)),
+                with_geo("none", None),
+            ];
+            bulk_import(&pool, bulk_payload(first)).await.unwrap();
+
+            let exported = exported_geo(&pool).await;
+            let payload = |uid: &str| {
+                exported
+                    .iter()
+                    .find(|(source_uid, _)| source_uid == uid)
+                    .and_then(|(_, geo)| geo.clone())
+            };
+            let fine: serde_json::Value = serde_json::from_str(&payload("fine").unwrap()).unwrap();
+            assert_eq!(
+                fine,
+                serde_json::json!({"lat": 37.386013, "lng": -122.082932})
+            );
+            let edge: serde_json::Value = serde_json::from_str(&payload("edge").unwrap()).unwrap();
+            assert_eq!(edge, serde_json::json!({"lat": -90.0, "lng": 180.0}));
+            assert_eq!(payload("none"), None);
+
+            // Importing the exported payloads again changes no stored coordinate.
+            let stored = || async {
+                sqlx::query_as::<_, (String, Option<i64>, Option<i64>)>(
+                    "SELECT source_uid, geo_lat, geo_lng FROM calendar_events ORDER BY source_uid",
+                )
+                .fetch_all(&pool)
+                .await
+                .unwrap()
+            };
+            let before = stored().await;
+            assert!(before.contains(&("fine".to_string(), Some(37_386_013), Some(-122_082_932))));
+            let again = exported
+                .iter()
+                .map(|(uid, geo)| with_geo(uid, geo.as_deref()))
+                .collect();
+            bulk_import(&pool, bulk_payload(again)).await.unwrap();
+            assert_eq!(stored().await, before);
+            assert_eq!(exported_geo(&pool).await, exported);
+        });
+    }
+
+    #[test]
+    fn import_keeps_owned_row_keys_unique_without_table_constraints() {
+        crate::test_support::block_on(async {
+            let pool = in_memory_pool().await;
+            let mut repeated = recurring_event_with_overrides("repeated", 2, 1);
+            repeated.overrides[1].recurrence_id = repeated.overrides[0].recurrence_id.clone();
+            let mut shared_id = recurring_event_with_overrides("shared-id", 2, 1);
+            shared_id.overrides[1].id = shared_id.overrides[0].id.clone();
+            let mut properties = recurring_event_with_overrides("properties", 1, 1);
+            properties.extended_properties = Some(r#"{"X-A":"first","X-A":"second"}"#.to_string());
+            properties.overrides[0].extended_properties =
+                Some(r#"{"X-B":"first","X-B":"second"}"#.to_string());
+            properties.exceptions = Some(r#"["2027-01-03","2027-01-03"]"#.to_string());
+
+            let summary = bulk_import(&pool, bulk_payload(vec![repeated, shared_id, properties]))
+                .await
+                .unwrap();
+
+            assert_eq!(summary.added, 1, "{:?}", summary.warnings);
+            assert_eq!(summary.warnings.len(), 2, "{:?}", summary.warnings);
+            assert!(summary.warnings[0].contains("UID repeated"));
+            assert!(summary.warnings[0].contains("override recurrence id"));
+            assert!(summary.warnings[1].contains("UID shared-id"));
+            assert!(summary.warnings[1].contains("override id"));
+            let duplicates: i64 = sqlx::query_scalar(
+                "SELECT
+                    (SELECT COUNT(*) FROM (SELECT 1 FROM calendar_event_overrides
+                        GROUP BY parent_event_id, recurrence_id HAVING COUNT(*) > 1))
+                  + (SELECT COUNT(*) FROM (SELECT 1 FROM calendar_event_extended_properties
+                        GROUP BY event_id, property_key HAVING COUNT(*) > 1))
+                  + (SELECT COUNT(*) FROM (SELECT 1 FROM calendar_event_override_extended_properties
+                        GROUP BY override_id, property_key HAVING COUNT(*) > 1))
+                  + (SELECT COUNT(*) FROM (SELECT 1 FROM calendar_event_exdates
+                        GROUP BY event_id, occurrence_date HAVING COUNT(*) > 1))",
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            assert_eq!(duplicates, 0);
+            let values: Vec<String> = sqlx::query_scalar(
+                "SELECT property_value FROM calendar_event_extended_properties
+                 UNION ALL SELECT property_value FROM calendar_event_override_extended_properties",
+            )
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+            assert_eq!(values, ["second", "second"]);
+        });
+    }
+
     #[test]
     fn import_refuses_an_event_over_the_timing_bound_and_keeps_its_source() {
         crate::test_support::block_on(async {
@@ -1647,7 +1843,7 @@ mod tests {
             assert_eq!(summary.added, 1);
             assert_eq!(summary.warnings.len(), 1, "{:?}", summary.warnings);
             assert!(
-                summary.warnings[0].starts_with(crate::timing_bound::TIMING_TOO_LARGE_CODE),
+                summary.warnings[0].starts_with(crate::value_bound::TIMING_TOO_LARGE_CODE),
                 "{:?}",
                 summary.warnings
             );
@@ -1680,6 +1876,65 @@ mod tests {
             .unwrap();
             assert_eq!(diagnostics.len(), 1);
             assert!(diagnostics[0].contains("UID big"));
+        });
+    }
+
+    #[test]
+    fn import_leaves_an_event_with_oversized_categories_unprojected_and_imports_the_rest() {
+        crate::test_support::block_on(async {
+            let pool = in_memory_pool().await;
+            let mut oversized = import_event("big", "");
+            let categories = vec!["c".repeat(1_000); 300];
+            oversized.categories = Some(serde_json::to_string(&categories).unwrap());
+            let summary = bulk_import(
+                &pool,
+                bulk_payload(vec![import_event("normal", ""), oversized]),
+            )
+            .await
+            .unwrap();
+
+            assert_eq!(summary.added, 1);
+            assert_eq!(summary.warnings.len(), 1, "{:?}", summary.warnings);
+            assert!(
+                summary.warnings[0].starts_with(crate::value_bound::VALUE_TOO_LARGE_CODE),
+                "{:?}",
+                summary.warnings
+            );
+            assert!(summary.warnings[0].contains("UID big"));
+            assert!(summary.warnings[0].contains("categories"));
+            let stored: Vec<String> =
+                sqlx::query_scalar("SELECT source_uid FROM calendar_events ORDER BY source_uid")
+                    .fetch_all(&pool)
+                    .await
+                    .unwrap();
+            assert_eq!(stored, ["normal"]);
+        });
+    }
+
+    #[test]
+    fn imported_rows_are_charged_at_least_as_much_as_stored_rows() {
+        crate::test_support::block_on(async {
+            let pool = in_memory_pool().await;
+            let mut event = import_event("charged", "");
+            let fits = |categories: usize| {
+                let mut event = import_event("charged", "");
+                event.categories =
+                    Some(serde_json::to_string(&vec!["c".repeat(500); categories]).unwrap());
+                value_refusal(&event).is_none()
+            };
+            let largest = (1..).take_while(|count| fits(*count)).last().unwrap();
+            event.categories =
+                Some(serde_json::to_string(&vec!["c".repeat(500); largest]).unwrap());
+            bulk_import(&pool, bulk_payload(vec![event])).await.unwrap();
+            let id: String =
+                sqlx::query_scalar("SELECT id FROM calendar_events WHERE source_uid = 'charged'")
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+            let mut connection = pool.acquire().await.unwrap();
+            crate::events::check_stored_value_bounds(&mut connection, &id)
+                .await
+                .unwrap();
         });
     }
 

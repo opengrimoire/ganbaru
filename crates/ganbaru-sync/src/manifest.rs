@@ -344,6 +344,21 @@ pub struct OwnedTable {
     /// Nested owned tables whose rows belong to one row of this table. Their blobs are written
     /// inside each row of this table.
     pub nested: &'static [OwnedTable],
+    /// Who keeps the encoded rows within one blob field.
+    pub bound: OwnedBound,
+}
+
+/// Who keeps the encoded rows of an owned table within [`MAX_BLOB_FIELD_BYTES`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OwnedBound {
+    /// The manifest: the largest encoding the generic codec can write for the declared columns
+    /// and row limits fits one blob field.
+    Static,
+    /// The owning domain: its write validation keeps every group value holding the table within
+    /// [`MAX_BLOB_FIELD_BYTES`], although the declared columns and row limits allow more. A
+    /// value that still exceeds the bound is reported by seal as an invalid row and stays
+    /// captured, so it is never published.
+    Domain,
 }
 
 /// How the rows of an owned table are keyed and ordered.
@@ -1388,8 +1403,9 @@ fn owned_group_problems(group: &GroupSpec) -> Vec<String> {
 
 /// Why an owned table is malformed. Nesting is one level deep under the generic codec, a
 /// custom codec has no references or nested tables, columns are distinct, and the rows the
-/// generic codec writes fit one blob field.
-fn owned_table_problems(owned: &OwnedTable, nested: bool) -> Vec<String> {
+/// generic codec writes fit one blob field unless the domain bounds them. Nested tables take the
+/// bound of their parent table.
+pub(crate) fn owned_table_problems(owned: &OwnedTable, nested: bool) -> Vec<String> {
     let mut problems = Vec::new();
     if owned.columns.is_empty() {
         problems.push("no data columns".to_string());
@@ -1453,7 +1469,10 @@ fn owned_table_problems(owned: &OwnedTable, nested: bool) -> Vec<String> {
             if owned.columns.len() > MAX_FIELDS_PER_VALUE {
                 problems.push("a row has too many fields for one value".to_string());
             }
-            if !nested && owned.max_encoded_bytes() > MAX_BLOB_FIELD_BYTES {
+            if !nested
+                && owned.bound == OwnedBound::Static
+                && owned.max_encoded_bytes() > MAX_BLOB_FIELD_BYTES
+            {
                 problems.push("the largest encoding exceeds the blob field bound".to_string());
             }
         }

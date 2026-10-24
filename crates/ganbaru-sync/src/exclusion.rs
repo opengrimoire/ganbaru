@@ -472,7 +472,7 @@ pub(crate) async fn restore_displaced(
 /// neither the anchor nor the local device and the anchor has not confirmed storing it: only
 /// such an operation can still fall past a removal cutoff. The anchor and a replica that does
 /// not know its own device retain nothing.
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 pub(crate) struct Retention {
     /// Writers of devices other than the anchor and the local one.
     retained: BTreeSet<WriterId>,

@@ -12,6 +12,7 @@ mod exclusion;
 mod fixture;
 mod focus;
 mod fork;
+mod groups;
 mod guards;
 mod holds;
 mod local;

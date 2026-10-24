@@ -8,7 +8,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use ganbaru_sync_contracts::bounds::{
     MAX_CHANGES_PER_OPERATION, MAX_DEPENDENCIES, MAX_HEADER_BYTES, MAX_OPERATION_BYTES,
 };
-use ganbaru_sync_contracts::op::{ENVELOPE_OVERHEAD, GENESIS_PREVIOUS_HASH};
+use ganbaru_sync_contracts::op::{ENVELOPE_OVERHEAD, GENESIS_PREVIOUS_HASH, ends_group};
 use ganbaru_sync_contracts::{
     AuthorizationRecord, Cause, Change, ChangeAction, Content, Digest32, Field, GroupId, GroupMask,
     GroupValue, Header, Hlc, HlcClock, Operation, PENDING_KEY_PREFIX, RowKey, Seq,
@@ -135,13 +135,14 @@ pub(crate) async fn insert_applied_op(
     revision: u64,
     context: &VersionVector,
     bytes: &[u8],
+    continues: bool,
     now_ms: u64,
 ) -> SyncResult<()> {
     sqlx::query(
         "INSERT INTO sync_ops
             (space_id, writer_id, seq, kind, hash, clock, authorization_revision, context,
-             envelope, state, hold_reason, stored_at_ms)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'applied', NULL, ?)",
+             envelope, state, hold_reason, stored_at_ms, group_continues)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'applied', NULL, ?, ?)",
     )
     .bind(ctx.space.as_bytes().as_slice())
     .bind(writer.as_bytes().as_slice())
@@ -153,6 +154,7 @@ pub(crate) async fn insert_applied_op(
     .bind(context.encode())
     .bind(bytes)
     .bind(clamp_ms(now_ms))
+    .bind(continues)
     .execute(&mut *conn)
     .await?;
     Ok(())
@@ -172,6 +174,9 @@ pub(crate) struct Replay<'a> {
     /// Writers the selected state excludes operations of. The original context may cover
     /// operations past a removal cutoff that never apply, which the replacement still names.
     pub(crate) excluding: &'a BTreeMap<WriterId, Excluding>,
+    /// Whether the original operation's apply group continues into a later replayed
+    /// operation.
+    pub(crate) continues: bool,
 }
 
 /// The kind of an operation that only advances its dependencies.
@@ -202,6 +207,9 @@ pub(crate) struct Sealer {
     clock: HlcClock,
     /// Selected authorization revision when the sealer opened, stamped on content operations.
     revision: u64,
+    /// Operations and envelope bytes of the apply group the last sealed operation left open.
+    /// Every call closes its groups, so a sealer opens with none.
+    group: Option<(usize, usize)>,
 }
 
 impl Sealer {
@@ -260,6 +268,7 @@ impl Sealer {
             head_context,
             clock,
             revision,
+            group: None,
         })
     }
 
@@ -299,6 +308,7 @@ impl Sealer {
                 manifest_version: u32::from(engine.manifest().version),
                 authorization_revision: revision,
                 key_epoch: 0,
+                group_continues: false,
                 dependencies: Vec::new(),
             },
             content: Content::Genesis(certificate.clone()),
@@ -336,6 +346,7 @@ impl Sealer {
             revision,
             &context,
             sealed.bytes(),
+            false,
             now_ms,
         )
         .await?;
@@ -348,6 +359,7 @@ impl Sealer {
             head_context: context,
             clock,
             revision,
+            group: None,
         })
     }
 
@@ -392,7 +404,8 @@ impl Sealer {
 
     /// Dependencies of the next operation once they fit one header. While more writers
     /// advanced than a header lists, this seals operations of the `advance` kind, each taking
-    /// the next [`MAX_DEPENDENCIES`] writers in id order.
+    /// the next [`MAX_DEPENDENCIES`] writers in id order. Inside an open apply group they join
+    /// it, so the operation that follows them still applies with the group.
     #[allow(clippy::too_many_arguments)]
     async fn catch_up(
         &mut self,
@@ -412,6 +425,7 @@ impl Sealer {
                 return Ok(dependencies);
             }
             dependencies.truncate(MAX_DEPENDENCIES);
+            let continues = self.group.is_some() && advance == Advance::Changes;
             let (seq, _, _) = self
                 .seal_operation(
                     engine,
@@ -422,6 +436,7 @@ impl Sealer {
                     dependencies,
                     advance.content(),
                     replay,
+                    continues,
                     now_ms,
                 )
                 .await?;
@@ -451,6 +466,8 @@ impl Sealer {
                 engine, conn, ctx, batch, writer, advance, replay, now_ms, report,
             )
             .await?;
+        let continues =
+            advance == Advance::Changes && replay.is_some_and(|replay| replay.continues);
         let (seq, _, _) = self
             .seal_operation(
                 engine,
@@ -461,6 +478,7 @@ impl Sealer {
                 dependencies,
                 advance.content(),
                 replay,
+                continues,
                 now_ms,
             )
             .await?;
@@ -470,7 +488,8 @@ impl Sealer {
     }
 
     /// Seals one operation with `content`, returning its sequence, clock, and context. Changes
-    /// are not applied here.
+    /// are not applied here. With `continues` the writer's next operation joins its apply
+    /// group, unless the group reached a bound of [`ends_group`], which receivers apply alike.
     #[allow(clippy::too_many_arguments)]
     async fn seal_operation(
         &mut self,
@@ -482,6 +501,7 @@ impl Sealer {
         dependencies: Vec<(WriterId, Seq)>,
         content: Content,
         replay: Option<&Replay<'_>>,
+        continues: bool,
         now_ms: u64,
     ) -> SyncResult<(Seq, Hlc, VersionVector)> {
         let seq = self.stored + 1;
@@ -517,11 +537,14 @@ impl Sealer {
                 manifest_version,
                 authorization_revision: revision,
                 key_epoch: 0,
+                group_continues: continues,
                 dependencies,
             },
             content,
         };
         let sealed = operation.seal(writer.key).map_err(SyncError::Seal)?;
+        let (operations, bytes) = self.group.unwrap_or((0, 0));
+        let group = (operations + 1, bytes + sealed.bytes().len());
         insert_applied_op(
             conn,
             ctx,
@@ -533,6 +556,7 @@ impl Sealer {
             revision,
             &context,
             sealed.bytes(),
+            continues,
             now_ms,
         )
         .await?;
@@ -554,6 +578,7 @@ impl Sealer {
         self.stored = seq;
         self.head_hash = sealed.hash();
         self.head_context = context.clone();
+        self.group = (!ends_group(continues, group.0, group.1)).then_some(group);
         Ok((seq, clock, context))
     }
 
@@ -581,10 +606,11 @@ impl Sealer {
     }
 
     /// Seals changes into as few operations as their exact sizes allow and applies them. The
-    /// first `whole` changes fill operations up to the wire limits, so a receiver applies them
-    /// in one transaction; an operation that carries more than
-    /// [`MAX_CHANGES_PER_SEALED_OPERATION`] changes holds only such changes. The rest take at
-    /// most [`MAX_CHANGES_PER_SEALED_OPERATION`] changes each.
+    /// first `whole` changes fill operations up to the wire limits and form one apply group, so
+    /// a receiver applies them in one transaction within the bounds of [`ends_group`]; an
+    /// operation that carries more than [`MAX_CHANGES_PER_SEALED_OPERATION`] changes holds only
+    /// such changes. The rest take at most [`MAX_CHANGES_PER_SEALED_OPERATION`] changes each.
+    /// A replay keeps the group of the operation it re-seals.
     #[allow(clippy::too_many_arguments)]
     async fn seal_leading(
         &mut self,
@@ -639,6 +665,11 @@ impl Sealer {
             }
             let count = chunk.len();
             whole = whole.saturating_sub(count);
+            // The leading changes form one apply group; a replay keeps the original group.
+            let continues = match replay {
+                Some(replay) => pending.peek().is_some() || replay.continues,
+                None => whole > 0,
+            };
             let (seq, op_clock, context) = self
                 .seal_operation(
                     engine,
@@ -649,6 +680,7 @@ impl Sealer {
                     dependencies,
                     Content::Changes(chunk.clone()),
                     replay,
+                    continues,
                     now_ms,
                 )
                 .await?;
@@ -706,6 +738,7 @@ impl Sealer {
                 dependencies,
                 Content::Authorization(Box::new(record)),
                 None,
+                false,
                 now_ms,
             )
             .await?;
@@ -906,6 +939,18 @@ impl<'a, 'k> SealSlot<'a, 'k> {
                 ),
             },
         )
+    }
+
+    /// What the slot may still seal, for [`Self::rewind`] after a savepoint rolls back.
+    pub(crate) fn checkpoint(&self) -> Option<SealBudget> {
+        self.budget.clone()
+    }
+
+    /// Returns to a checkpoint once the savepoint it was taken before rolled back. The sealer
+    /// reopens from the stored chain on next use, since operations it sealed since are gone.
+    pub(crate) fn rewind(&mut self, budget: Option<SealBudget>) {
+        self.budget = budget;
+        self.sealer = None;
     }
 
     /// Stops sealing for the rest of the call because the local writer is no longer active.
@@ -1122,7 +1167,7 @@ fn change_cost(change: &Change) -> usize {
 }
 
 /// Change bytes and changes one call has sealed, within one seal transaction.
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 pub(crate) struct SealBudget {
     bytes: usize,
     changes: usize,

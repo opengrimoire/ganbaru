@@ -93,6 +93,7 @@ async fn forge(replica: &mut Replica, content: Content, authorization_revision: 
             manifest_version: previous.header.manifest_version,
             authorization_revision,
             key_epoch: 0,
+            group_continues: false,
             dependencies: Vec::new(),
         },
         content,

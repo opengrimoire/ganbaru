@@ -60,3 +60,13 @@ pub const MAX_CHARTER_BYTES: usize = 1
 pub const MAX_REMOVAL_CUTOFFS: usize = MAX_WRITERS_PER_DEVICE;
 /// Rows one late change resolution decides.
 pub const MAX_LATE_RESOLUTIONS: usize = MAX_CHANGES_PER_OPERATION;
+/// Most operations one apply group spans. A group is a run of one writer's operations that a
+/// receiver applies in one transaction, see [`crate::op::ends_group`]. [`MAX_GROUP_BYTES`]
+/// bounds the changes of a group; this bound caps the per-operation work, such as decoding and
+/// readiness checks, that a writer marking every operation as continuing adds to one transaction.
+/// Honest groups stay far below it: an operation of the most changes reaches tens of KiB, so
+/// the byte bound ends a group of filled operations first.
+pub const MAX_OPERATIONS_PER_GROUP: usize = 64;
+/// Envelope bytes at which an apply group ends: the operation that reaches them closes it
+/// whatever its header says, so a group holds at most this plus one operation.
+pub const MAX_GROUP_BYTES: usize = 1 << 20;

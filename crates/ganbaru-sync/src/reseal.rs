@@ -255,12 +255,16 @@ impl Engine {
             .ok_or_else(|| corrupt("sealer slot has no writer"))?;
         let excluding = exclusion::excluding(&mut tx, ctx.space).await?;
         let mut renamed = BTreeMap::new();
-        for op in replaced {
+        let last = replaced.len();
+        for (index, op) in replaced.into_iter().enumerate() {
+            // The replacement chain closes every group by its last replayed operation, so later
+            // operations of the new writer never join it.
             let replay = Replay {
                 clock: op.operation.header.clock,
                 manifest_version: op.operation.header.manifest_version,
                 context: remap(&op.context, old, keep_through, new, &renamed, &prefixes)?,
                 excluding: &excluding,
+                continues: op.operation.header.group_continues && index + 1 < last,
             };
             match op.operation.content {
                 Content::Changes(changes) if changes.is_empty() => {

@@ -7,9 +7,10 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use ganbaru_sync_contracts::bounds::MAX_OPERATIONS_PER_GROUP;
 use ganbaru_sync_contracts::{
-    AuthorizationRecord, Change, ChangeAction, Content, Envelope, Hlc, Seq, TableId, VersionVector,
-    WriterId, hlc,
+    AuthorizationRecord, Change, ChangeAction, Content, Envelope, Hlc, OperationKind, Seq, TableId,
+    VersionVector, WriterId, ends_group, hlc,
 };
 use sqlx::sqlite::SqliteRow;
 use sqlx::{Connection, Row, SqliteConnection};
@@ -20,7 +21,7 @@ use crate::hooks::ChangeNotice;
 use crate::log::{self, WriterState, seq_i64, stored_u64};
 use crate::materialize::Materialized;
 use crate::merge::{self, Batch};
-use crate::seal::{self, MAX_CHANGES_PER_SEALED_OPERATION, SealReport, SealSlot};
+use crate::seal::{self, SealReport, SealSlot};
 use crate::visibility::{RowRef, Visibility};
 use crate::{
     Engine, LocalWriter, SpaceContext, authorization, exclusion, fork, hydrate, materialize,
@@ -42,12 +43,11 @@ pub const MAX_OPS_PER_APPLY: usize = 16;
 /// A sealed operation carries at most this many changes, unless its changes hold only whole:
 /// writes and tombstones of a table whose constraint reads several rows together, cascaded
 /// deletions, the changes they depend on, and repairs. Those fill operations up to the wire
-/// limits, so they usually seal in one operation, and every operation of them but the last
-/// carries more than this many changes unless the wire byte limit cuts it first. After an
-/// operation that carries more, the transaction goes on with the next operation of the same
-/// writer past every cap, so its repairs never see part of such changes. The transaction
-/// may also seal local changes of the rows the remote changes touch, within
-/// [`crate::MAX_CHANGES_PER_SEAL`].
+/// limits and form one apply group, which the header of each operation but the last marks as
+/// continuing. A group starts only once every operation of it is stored and ready, and then
+/// applies whole past every cap, so repairs never see part of it; see
+/// [`ganbaru_sync_contracts::ends_group`] for its bounds. The transaction may also seal local
+/// changes of the rows the remote changes touch, within [`crate::MAX_CHANGES_PER_SEAL`].
 pub const MAX_CHANGES_PER_APPLY: usize = 16;
 /// Most envelope bytes one apply transaction takes after its first operation.
 pub const MAX_BYTES_PER_APPLY: usize = 1 << 20;
@@ -98,6 +98,8 @@ struct Candidate {
     bytes: usize,
     /// The envelope, when it was read with the candidate.
     envelope: Option<Vec<u8>>,
+    /// Whether its header says the writer's next operation joins its apply group.
+    continues: bool,
 }
 
 /// What applying one operation did.
@@ -173,7 +175,8 @@ async fn candidates(
     revision: u64,
 ) -> SyncResult<Vec<Candidate>> {
     let rows = sqlx::query(
-        "SELECT o.writer_id, o.seq, o.clock, o.context, o.state, length(o.envelope), NULL
+        "SELECT o.writer_id, o.seq, o.clock, o.context, o.state, length(o.envelope), NULL,
+            o.group_continues
          FROM sync_writers w JOIN sync_ops o
             ON o.space_id = w.space_id AND o.writer_id = w.writer_id AND o.seq = w.applied_seq + 1
          WHERE w.space_id = ? AND o.state <> 'held' AND o.authorization_revision <= ?
@@ -203,7 +206,7 @@ async fn writer_candidate(
 ) -> SyncResult<Option<Candidate>> {
     let row = sqlx::query(
         "SELECT writer_id, seq, clock, context, state, length(envelope),
-            CASE WHEN length(envelope) <= ? THEN envelope END
+            CASE WHEN length(envelope) <= ? THEN envelope END, group_continues
          FROM sync_ops o
          WHERE space_id = ? AND writer_id = ? AND seq = ? AND state <> 'held'
             AND authorization_revision <= ?
@@ -227,8 +230,8 @@ async fn writer_candidate(
     row.as_ref().map(candidate_from_row).transpose()
 }
 
-/// A candidate from the columns `writer_id, seq, clock, context, state, length(envelope)`, and
-/// the envelope or null.
+/// A candidate from the columns `writer_id, seq, clock, context, state, length(envelope)`, the
+/// envelope or null, and `group_continues`.
 fn candidate_from_row(row: &SqliteRow) -> SyncResult<Candidate> {
     let state: String = row.try_get(4)?;
     if state != "waiting" {
@@ -248,7 +251,127 @@ fn candidate_from_row(row: &SqliteRow) -> SyncResult<Candidate> {
         context: log::decode_context(&context)?,
         bytes: usize::try_from(row.try_get::<i64, _>(5)?).unwrap_or(usize::MAX),
         envelope: row.try_get(6)?,
+        continues: row.try_get(7)?,
     })
+}
+
+/// How the apply group a candidate starts stands.
+enum GroupScan {
+    /// Every operation after the candidate is stored and ready in turn, in sequence order.
+    Complete(Vec<(Candidate, VersionVector)>),
+    /// An operation of the group is not stored yet, is held, or waits on another writer.
+    Waiting {
+        /// It waits on an operation of another writer, which the call may still apply.
+        on_others: bool,
+    },
+    /// The operation at this sequence can never apply inside a group: it is not a changes or
+    /// acknowledgement operation, or its header cannot be read.
+    Invalid(Seq),
+}
+
+/// Reads the rest of the apply group that `first` starts, see [`ends_group`]. Only stored
+/// operations within the writer's cutoff join it. An operation the selected state excludes
+/// ends the group before it, so what a removal or fork keeps of a group still applies. Each
+/// operation must be ready once the ones before it applied, without operations of other
+/// writers between them, and sealed against a revision the candidates were read against.
+async fn scan_group(
+    engine: &Engine,
+    conn: &mut SqliteConnection,
+    ctx: &SpaceContext,
+    batch: &Batch,
+    first: &Candidate,
+    heads: &Heads,
+) -> SyncResult<GroupScan> {
+    if ends_group(first.continues, 1, first.bytes) {
+        return Ok(GroupScan::Complete(Vec::new()));
+    }
+    let rows = sqlx::query(
+        "SELECT o.seq, o.kind, o.state, o.excluded_revision IS NOT NULL, o.group_continues,
+            length(o.envelope), o.clock, o.context, w.cutoff_seq, o.authorization_revision
+         FROM sync_ops o JOIN sync_writers w
+            ON w.space_id = o.space_id AND w.writer_id = o.writer_id
+         WHERE o.space_id = ? AND o.writer_id = ? AND o.seq > ?
+         ORDER BY o.seq LIMIT ?",
+    )
+    .bind(ctx.space.as_bytes().as_slice())
+    .bind(first.writer.as_bytes().as_slice())
+    .bind(seq_i64(first.seq)?)
+    .bind(i64::try_from(MAX_OPERATIONS_PER_GROUP - 1).unwrap_or(i64::MAX))
+    .fetch_all(&mut *conn)
+    .await?;
+    let mut rest = Vec::new();
+    let mut applied = batch.applied.clone();
+    applied.set(first.writer, first.seq);
+    let mut operations = 1usize;
+    let mut bytes = first.bytes;
+    let mut expected = first.seq;
+    for row in &rows {
+        expected += 1;
+        let seq = stored_u64(row.try_get(0)?, "sequence")?;
+        if seq != expected {
+            return Ok(GroupScan::Waiting { on_others: false });
+        }
+        let cutoff = row
+            .try_get::<Option<i64>, _>(8)?
+            .map(|cutoff| stored_u64(cutoff, "cutoff sequence"))
+            .transpose()?;
+        if cutoff.is_some_and(|cutoff| seq > cutoff) {
+            return Ok(GroupScan::Complete(rest));
+        }
+        let state: String = row.try_get(2)?;
+        if state == "held" {
+            return Ok(match row.try_get::<bool, _>(3)? {
+                true => GroupScan::Complete(rest),
+                false => GroupScan::Waiting { on_others: false },
+            });
+        }
+        if state != "waiting" {
+            return Err(corrupt("an operation past the applied sequence is applied"));
+        }
+        let kind = u8::try_from(row.try_get::<i64, _>(1)?)
+            .ok()
+            .and_then(OperationKind::from_u8);
+        if !matches!(
+            kind,
+            Some(OperationKind::Changes | OperationKind::Acknowledgement)
+        ) {
+            return Ok(GroupScan::Invalid(seq));
+        }
+        let length = usize::try_from(row.try_get::<i64, _>(5)?).unwrap_or(usize::MAX);
+        if length == 0 {
+            return Err(corrupt("a waiting operation has no body"));
+        }
+        let stored: Vec<u8> = row.try_get(7)?;
+        let context = match log::decode_context(&stored)? {
+            Some(context) => context,
+            None => match resolve_context(engine, conn, ctx, first.writer, seq).await? {
+                Some(context) => context,
+                None => return Ok(GroupScan::Invalid(seq)),
+            },
+        };
+        let revision = stored_u64(row.try_get(9)?, "authorization revision")?;
+        if revision > heads.revision || !exclusion::ready(&applied, &context, &heads.excluding) {
+            return Ok(GroupScan::Waiting { on_others: true });
+        }
+        applied.set(first.writer, seq);
+        let continues: bool = row.try_get(4)?;
+        let member = Candidate {
+            writer: first.writer,
+            seq,
+            clock: Hlc::from_u64(stored_u64(row.try_get(6)?, "clock")?),
+            context: None,
+            bytes: length,
+            envelope: None,
+            continues,
+        };
+        rest.push((member, context));
+        operations += 1;
+        bytes = bytes.saturating_add(length);
+        if ends_group(continues, operations, bytes) {
+            return Ok(GroupScan::Complete(rest));
+        }
+    }
+    Ok(GroupScan::Waiting { on_others: false })
 }
 
 async fn envelope_bytes(
@@ -966,9 +1089,8 @@ impl Engine {
             report.local_writer_frozen = true;
         }
         let mut blocked = BTreeSet::new();
-        // Writers whose last operation here carried more changes than a sealed operation takes
-        // alone: changes that hold only whole, which may continue in the next operation.
-        let mut continuing = BTreeSet::new();
+        // A group waits on an operation of another writer that may apply later in the call.
+        let mut deferred = false;
         let mut taken = 0usize;
         let mut bytes = 0usize;
         let mut heads = Heads::load(&mut tx, ctx).await?;
@@ -981,16 +1103,116 @@ impl Engine {
                 || (taken > 0 && bytes.saturating_add(candidate.bytes) > MAX_BYTES_PER_APPLY)
             {
                 report.more = true;
-                if continuing.is_empty() {
-                    break;
-                }
-                if !continuing.contains(&candidate.writer) {
+                break;
+            }
+            let rest = match scan_group(self, &mut tx, ctx, &batch, &candidate, &heads).await? {
+                GroupScan::Complete(rest) => rest,
+                GroupScan::Waiting { on_others } => {
+                    deferred |= on_others;
                     blocked.insert(candidate.writer);
                     continue;
                 }
+                GroupScan::Invalid(seq) => {
+                    hold_invalid(&mut tx, ctx, candidate.writer, seq).await?;
+                    report.held += 1;
+                    blocked.insert(candidate.writer);
+                    continue;
+                }
+            };
+            if !rest.is_empty() {
+                // The group applies past every cap inside a savepoint, and nothing of it stays
+                // when one of its operations cannot apply now.
+                let writer = candidate.writer;
+                let saved = (
+                    batch.clone(),
+                    retention.clone(),
+                    report.clone(),
+                    sealed.clone(),
+                    advanced.clone(),
+                    taken,
+                    bytes,
+                );
+                let budget = slot.checkpoint();
+                let mut savepoint = tx.begin().await?;
+                let mut failure = None;
+                let mut last = candidate.seq;
+                for (mut member, member_context) in
+                    std::iter::once((candidate, context)).chain(rest)
+                {
+                    taken += 1;
+                    bytes = bytes.saturating_add(member.bytes);
+                    let mut sealing = Sealing {
+                        slot: &mut slot,
+                        advanced: &mut advanced,
+                        report: &mut sealed,
+                        now_ms,
+                    };
+                    let reach = Reach {
+                        beyond: exclusion::beyond_bound(&member_context, &heads.excluding),
+                        past_fork: exclusion::past_fork(&member_context, &heads.excluding),
+                    };
+                    match apply_one(
+                        self,
+                        &mut savepoint,
+                        ctx,
+                        &mut batch,
+                        &mut sealing,
+                        &mut member,
+                        (&member_context, reach),
+                        &retention,
+                        &mut report,
+                    )
+                    .await?
+                    {
+                        Outcome::Applied => {
+                            mark_applied(
+                                &mut savepoint,
+                                ctx,
+                                &mut batch,
+                                &member,
+                                member_context,
+                                &mut retention,
+                            )
+                            .await?;
+                            warn_clock(&mut report, member.writer, member.clock, now_ms);
+                            report.applied += 1;
+                            advanced.insert(member.writer);
+                            last = member.seq;
+                        }
+                        Outcome::Authorized | Outcome::Excluded => {
+                            return Err(corrupt("an authorization entry applied inside a group"));
+                        }
+                        Outcome::Held => {
+                            failure = Some(Some(member.seq));
+                            break;
+                        }
+                        Outcome::PendingCaptures => {
+                            failure = Some(None);
+                            break;
+                        }
+                    }
+                }
+                match failure {
+                    None => {
+                        savepoint.commit().await?;
+                        heads.advance(&mut tx, ctx, writer, last).await?;
+                    }
+                    Some(held) => {
+                        savepoint.rollback().await?;
+                        (batch, retention, report, sealed, advanced, taken, bytes) = saved;
+                        slot.rewind(budget);
+                        match held {
+                            Some(seq) => {
+                                hold_invalid(&mut tx, ctx, writer, seq).await?;
+                                report.held += 1;
+                            }
+                            None => report.pending_captures = true,
+                        }
+                        blocked.insert(writer);
+                    }
+                }
+                continue;
             }
-            continuing.remove(&candidate.writer);
-            let changes_before = report.changes;
             taken += 1;
             bytes = bytes.saturating_add(candidate.bytes);
             let mut sealing = Sealing {
@@ -1029,9 +1251,6 @@ impl Engine {
                     warn_clock(&mut report, candidate.writer, candidate.clock, now_ms);
                     report.applied += 1;
                     advanced.insert(candidate.writer);
-                    if report.changes - changes_before > MAX_CHANGES_PER_SEALED_OPERATION {
-                        continuing.insert(candidate.writer);
-                    }
                     if matches!(outcome, Outcome::Authorized) {
                         flush_applied(&mut tx, ctx, &batch, &mut advanced).await?;
                         retention.flush(&mut tx, ctx.space).await?;
@@ -1058,6 +1277,9 @@ impl Engine {
                     blocked.insert(candidate.writer);
                 }
             }
+        }
+        if deferred && report.applied > 0 {
+            report.more = true;
         }
         flush_applied(&mut tx, ctx, &batch, &mut advanced).await?;
         retention.flush(&mut tx, ctx.space).await?;

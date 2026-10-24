@@ -637,6 +637,9 @@ async fn validate_restored_hierarchy_tx(
             );
         }
     }
+    if crate::structure::misplaced_folder_page_count_tx(tx).await? != 0 {
+        return Err("Restored folder notes must belong to their folder project".to_string());
+    }
     crate::data_sources::row_hierarchy::validate_sources_tx(
         tx,
         &source_ids.into_iter().collect::<Vec<_>>(),
@@ -819,9 +822,8 @@ mod tests {
             .await
             .unwrap();
             sqlx::query(
-                "INSERT INTO notes_pages (id, parent_type, folder_id, title, properties)
-                 VALUES (?, 'workspace', ?, 'Folder note',
-                         json_object('__ganbaru_project_id', ?, 'title', json_object()))",
+                "INSERT INTO notes_pages (id, parent_type, folder_id, project_id, title, properties)
+                 VALUES (?, 'workspace', ?, ?, 'Folder note', json_object('title', json_object()))",
             )
             .bind(PAGE_ID)
             .bind(ROOT_FOLDER_ID)

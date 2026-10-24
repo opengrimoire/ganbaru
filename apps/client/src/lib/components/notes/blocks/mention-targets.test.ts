@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import type { Translate } from "$lib/i18n/translator.svelte";
-import { NOTES_PAGE_PROJECT_ID_PROPERTY } from "$lib/notes/project-membership";
 import { createTextRichText } from "$lib/notes/rich-text/core";
 import type { NotesDataSourceListItem, NotesFolder, NotesPage } from "$lib/notes/types";
 import {
@@ -24,9 +23,9 @@ function page(
     in_trash: false,
     icon: null,
     cover: null,
+    project_id: options.projectId ?? null,
     properties: {
       title: { title: title ? [createTextRichText(title)] : [] },
-      ...(options.projectId ? { [NOTES_PAGE_PROJECT_ID_PROPERTY]: options.projectId } : {}),
     },
     url: null,
     public_url: null,

@@ -36,7 +36,7 @@ pub use primitives::{
 pub use requests::{
     require_uuid, validate_block_update, validate_block_write, validate_database_create,
     validate_folder_create, validate_folder_project_id, validate_folder_update,
-    validate_page_create, validate_page_update, validate_parent,
+    validate_page_create, validate_page_properties, validate_page_update, validate_parent,
 };
 pub use rich_text::{
     date_mention_reminder_minutes_before, validate_comment_body_rich_text,

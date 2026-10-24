@@ -196,7 +196,7 @@ pub(crate) async fn resolve_project_id_for_page_tx(
     page_id: &str,
 ) -> Result<Option<String>, String> {
     sqlx::query_scalar(
-        "WITH RECURSIVE ancestors(id, parent_page_id, properties) AS (
+        "WITH RECURSIVE ancestors(id, parent_page_id, project_id, depth) AS (
              SELECT page.id,
                     COALESCE(
                         page.parent_page_id,
@@ -208,10 +208,11 @@ pub(crate) async fn resolve_project_id_for_page_tx(
                          LEFT JOIN notes_blocks AS database_block ON database_block.id = database.id
                          WHERE data_source.id = page.parent_data_source_id)
                     ),
-                    page.properties
+                    page.project_id,
+                    0
              FROM notes_pages AS page
              WHERE page.id = ?
-             UNION ALL
+             UNION
              SELECT parent.id,
                     COALESCE(
                         parent.parent_page_id,
@@ -223,17 +224,21 @@ pub(crate) async fn resolve_project_id_for_page_tx(
                          LEFT JOIN notes_blocks AS database_block ON database_block.id = database.id
                          WHERE data_source.id = parent.parent_data_source_id)
                     ),
-                    parent.properties
+                    parent.project_id,
+                    child.depth + 1
              FROM notes_pages AS parent
              JOIN ancestors AS child ON child.parent_page_id = parent.id
+             WHERE child.depth < ?
          )
          SELECT project.id
          FROM ancestors
          JOIN projects AS project
-           ON project.id = trim(json_extract(ancestors.properties, '$.__ganbaru_project_id'))
+           ON project.id = ancestors.project_id
+         ORDER BY ancestors.depth
          LIMIT 1",
     )
     .bind(page_id)
+    .bind(crate::structure::MAX_TREE_DEPTH)
     .fetch_optional(&mut **tx)
     .await
     .map_err(|e| format!("resolve Notes history project for page: {e}"))

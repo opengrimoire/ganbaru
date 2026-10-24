@@ -63,7 +63,7 @@ vi.mock("$lib/api/notes", async (importOriginal) => ({
   loadNotesWorkspaceShell: async (request: NotesWorkspaceShellRequest): Promise<NotesWorkspaceShell> => {
     backend.workspaceRequests.push(request);
     const allPages = [...backend.pages.values()].map(({ page }) => page);
-    const pages = allPages.filter((page) => page.properties.__ganbaru_project_id === request.project_id);
+    const pages = allPages.filter((page) => page.project_id === request.project_id);
     return {
       pages, folders: [], navigation_pages: request.include_navigation_index ? allPages : [],
       navigation_folders: [], navigation_page_ids_with_children: [],
@@ -126,7 +126,7 @@ function page(id: string, title: string, parentId?: string, projectId = "project
   const loaded = createProvisionalNotesPage({
     id, title, first_block_id: `${id}-body`, folder_id: null,
     parent: parentId ? { type: "page_id", page_id: parentId } : { type: "workspace", workspace: true },
-    properties: { __ganbaru_project_id: projectId },
+    project_id: projectId,
   });
   loaded.blocks.results[0] = { ...applyBlockUpdate(loaded.blocks.results[0], createBlockUpdate("paragraph", `${title} content`)), edit_revision: "1".padStart(64, "0") };
   return {

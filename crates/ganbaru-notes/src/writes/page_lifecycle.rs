@@ -76,6 +76,8 @@ pub async fn move_page(
     .execute(&mut *tx)
     .await
     .map_err(|e| format!("move notes page: {e}"))?;
+    crate::structure::validate_page_folder_tx(&mut tx, page_id).await?;
+    crate::structure::detach_row_hierarchy_tx(&mut tx, page_id).await?;
     match &new_parent {
         Some(parent) => {
             upsert_moved_child_page_block(
@@ -424,6 +426,7 @@ pub(super) async fn move_page_to_workspace_parent(
     .execute(&mut **tx)
     .await
     .map_err(|e| format!("move restored notes page to workspace: {e}"))?;
+    crate::structure::detach_row_hierarchy_tx(tx, page_id).await?;
     Ok(())
 }
 

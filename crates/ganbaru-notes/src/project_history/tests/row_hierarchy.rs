@@ -66,8 +66,11 @@ fn database_subitems_history_rejects_corrupt_cycles_and_foreign_edges_without_re
         let pool = migrated_pool().await;
         let (source, parent, child) = seed_snapshot_hierarchy(&pool).await;
         insert_project_page(&pool, LATER_PAGE_ID, LATER_BLOCK_ID, "Outside project").await;
-        sqlx::query("UPDATE notes_pages SET properties = json_remove(properties, '$.__ganbaru_project_id') WHERE id = ?")
-            .bind(LATER_PAGE_ID).execute(&pool).await.unwrap();
+        sqlx::query("UPDATE notes_pages SET project_id = NULL WHERE id = ?")
+            .bind(LATER_PAGE_ID)
+            .execute(&pool)
+            .await
+            .unwrap();
         for (index, invalid_parent) in [child, LATER_PAGE_ID, PAGE_ID].into_iter().enumerate() {
             if invalid_parent == child {
                 sqlx::query("INSERT INTO notes_data_source_row_hierarchy(row_page_id, data_source_id, parent_row_page_id) VALUES (?, ?, ?)")
@@ -212,8 +215,11 @@ fn database_subitems_history_restores_canonical_edges_and_copies_moved_graphs_in
         assert_eq!(restored_parent, parent_id);
 
         // Moving the owning note outside this project leaves its graph intact, so restore inserts a copy with new identities.
-        sqlx::query("UPDATE notes_pages SET properties = json_remove(properties, '$.__ganbaru_project_id') WHERE id = ?")
-            .bind(PAGE_ID).execute(&pool).await.unwrap();
+        sqlx::query("UPDATE notes_pages SET project_id = NULL WHERE id = ?")
+            .bind(PAGE_ID)
+            .execute(&pool)
+            .await
+            .unwrap();
         restore::restore_version(&pool, PROJECT_ID, &version.id)
             .await
             .unwrap();

@@ -7,6 +7,9 @@ pub struct NotePageCreate {
     pub parent: NoteParent,
     #[serde(default)]
     pub folder_id: Option<String>,
+    /// Project for a workspace page; nested pages inherit their parent page project.
+    #[serde(default)]
+    pub project_id: Option<String>,
     pub first_block_id: String,
     pub after_block_id: Option<String>,
     pub properties: Option<Value>,

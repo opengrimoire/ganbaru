@@ -27,15 +27,17 @@ pub async fn create_page(
     }
     let title = page.title.trim().to_string();
     let properties = page_properties_for_create(&title, page.properties.as_ref())?;
-    if let Some(existing) = load_idempotent_page_create(pool, &page, &title, &properties).await? {
+    let requested_project_id = page
+        .project_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    if let Some(existing) =
+        load_idempotent_page_create(pool, &page, &title, &properties, requested_project_id).await?
+    {
         return Ok(existing);
     }
-    if let Some(project_id) = properties
-        .get("__ganbaru_project_id")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
+    if let Some(project_id) = requested_project_id {
         project_history::ensure_project_baseline_for_mutation(pool, project_id).await?;
     } else {
         project_history::ensure_parent_baseline_for_mutation(pool, &page.parent).await?;
@@ -53,6 +55,23 @@ pub async fn create_page(
         NoteParent::Workspace { .. } => None,
         _ => Some(resolve_block_parent(&mut tx, &page.parent).await?),
     };
+    let project_id = match &child_page_parent {
+        None => {
+            if let Some(project_id) = requested_project_id {
+                crate::structure::require_page_project_tx(&mut tx, project_id).await?;
+            }
+            requested_project_id.map(str::to_string)
+        }
+        Some(parent) => {
+            let inherited = crate::structure::page_project_id_tx(&mut tx, &parent.page_id).await?;
+            if requested_project_id
+                .is_some_and(|project_id| inherited.as_deref() != Some(project_id))
+            {
+                return Err("nested notes pages inherit their parent project".to_string());
+            }
+            inherited
+        }
+    };
     let child_page_sort_order = if let Some(parent) = &child_page_parent {
         Some(next_sort_orders(&mut tx, parent, page.after_block_id.as_deref(), 1).await?[0])
     } else {
@@ -69,21 +88,24 @@ pub async fn create_page(
             parent_page_id,
             parent_block_id,
             folder_id,
+            project_id,
             title,
             properties
          )
-         VALUES (?, ?, ?, ?, ?, ?, ?)",
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(page.id.trim())
     .bind(parent_type)
     .bind(parent_page_id)
     .bind(parent_block_id)
     .bind(folder_id)
+    .bind(&project_id)
     .bind(&title)
     .bind(properties.to_string())
     .execute(&mut *tx)
     .await
     .map_err(|e| format!("create notes page: {e}"))?;
+    crate::structure::validate_page_folder_tx(&mut tx, page.id.trim()).await?;
     sqlx::query(
         "INSERT INTO notes_blocks (
             id,
@@ -151,10 +173,11 @@ async fn load_idempotent_page_create(
     page: &NotePageCreate,
     title: &str,
     properties: &Value,
+    requested_project_id: Option<&str>,
 ) -> Result<Option<NoteLoadedPage>, String> {
     let page_id = page.id.trim();
     let existing = sqlx::query(
-        "SELECT parent_type, parent_page_id, parent_block_id, folder_id, title, properties
+        "SELECT parent_type, parent_page_id, parent_block_id, folder_id, project_id, title, properties
          FROM notes_pages WHERE id = ?",
     )
     .bind(page_id)
@@ -192,6 +215,9 @@ async fn load_idempotent_page_create(
     let stored_folder_id: Option<String> = existing
         .try_get("folder_id")
         .map_err(|e| format!("read existing notes page folder: {e}"))?;
+    let stored_project_id: Option<String> = existing
+        .try_get("project_id")
+        .map_err(|e| format!("read existing notes page project: {e}"))?;
     let stored_title: String = existing
         .try_get("title")
         .map_err(|e| format!("read existing notes page title: {e}"))?;
@@ -200,7 +226,12 @@ async fn load_idempotent_page_create(
         && stored_parent_block_id.as_deref() == parent_block_id
         && stored_folder_id.as_deref() == page.folder_id.as_deref().map(str::trim)
         && stored_title == title
-        && stored_properties == *properties;
+        && stored_properties == *properties
+        && project_matches(
+            &page.parent,
+            stored_project_id.as_deref(),
+            requested_project_id,
+        );
     if !page_matches {
         return Err("notes page create id already belongs to different data".to_string());
     }
@@ -298,21 +329,24 @@ pub async fn create_child_page_from_block(
         "create_child_page_from_block",
     )
     .await?;
+    let project_id = crate::structure::page_project_id_tx(&mut tx, &current.page_id).await?;
     sqlx::query(
         "INSERT INTO notes_pages (
             id,
             parent_type,
             parent_page_id,
             parent_block_id,
+            project_id,
             title,
             properties
          )
-         VALUES (?, ?, ?, ?, ?, ?)",
+         VALUES (?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(block_id)
     .bind(page_parent_type)
     .bind(&current.parent_page_id)
     .bind(&current.parent_block_id)
+    .bind(&project_id)
     .bind(&title)
     .bind(properties.to_string())
     .execute(&mut *tx)
@@ -412,6 +446,16 @@ pub async fn create_child_page_from_block(
     reads::load_page(pool, block_id).await
 }
 
+/// Compare a stored page project with a retried create request.
+///
+/// Nested pages inherit their project, so a retry may omit it.
+fn project_matches(parent: &NoteParent, stored: Option<&str>, requested: Option<&str>) -> bool {
+    match parent {
+        NoteParent::Workspace { .. } => stored == requested,
+        _ => requested.is_none() || stored == requested,
+    }
+}
+
 fn page_properties_for_create(
     title: &str,
     extra_properties: Option<&Value>,
@@ -420,6 +464,7 @@ fn page_properties_for_create(
     let Some(extra_properties) = extra_properties else {
         return Ok(properties);
     };
+    crate::validation::validate_page_properties(extra_properties)?;
     let extra_object = extra_properties
         .as_object()
         .ok_or_else(|| "properties must be an object".to_string())?;
@@ -473,6 +518,7 @@ pub async fn update_page(
         .execute(&mut *tx)
         .await
         .map_err(|e| format!("update notes page parent: {e}"))?;
+        crate::structure::detach_row_hierarchy_tx(&mut tx, page_id).await?;
     }
     if let Some(title) = update.title {
         let title = title.trim().to_string();

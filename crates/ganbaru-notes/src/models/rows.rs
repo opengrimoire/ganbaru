@@ -74,6 +74,7 @@ pub struct NotePageRow {
     pub parent_block_id: Option<String>,
     pub parent_data_source_id: Option<String>,
     pub folder_id: Option<String>,
+    pub project_id: Option<String>,
     pub title: String,
     pub properties: String,
     pub icon: Option<String>,

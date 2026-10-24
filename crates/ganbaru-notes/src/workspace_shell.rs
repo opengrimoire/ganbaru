@@ -346,15 +346,15 @@ fn add_unique(
 }
 
 pub(super) fn page_projection() -> &'static str {
-    "id, parent_type, parent_page_id, parent_block_id, parent_data_source_id, folder_id, title, json_extract(properties, '$.__ganbaru_project_id') AS project_id, icon, in_trash, archived, created_time, last_edited_time"
+    "id, parent_type, parent_page_id, parent_block_id, parent_data_source_id, folder_id, title, project_id, icon, in_trash, archived, created_time, last_edited_time"
 }
 
 fn push_project_filter(query: &mut QueryBuilder<Sqlite>, project_id: Option<&str>) {
     if let Some(project_id) = project_id {
-        query.push(" AND json_extract(properties, '$.__ganbaru_project_id') = ");
+        query.push(" AND project_id = ");
         query.push_bind(project_id.to_string());
     } else {
-        query.push(" AND json_extract(properties, '$.__ganbaru_project_id') IS NULL");
+        query.push(" AND project_id IS NULL");
     }
 }
 

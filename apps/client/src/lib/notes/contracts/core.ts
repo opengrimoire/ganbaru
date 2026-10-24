@@ -340,6 +340,8 @@ export interface NotesPage {
   last_edited_time: string;
   parent: NotesParent;
   folder_id: string | null;
+  /** Project that owns the page; nested pages carry their root page project. */
+  project_id?: string | null;
   in_trash: boolean;
   archived?: boolean;
   icon: NotesPageIcon | null;
@@ -638,6 +640,8 @@ export interface NotesPageCreate {
   folder_id: string | null;
   first_block_id: string;
   after_block_id?: string | null;
+  /** Project for a workspace page; nested pages inherit their parent project. */
+  project_id?: string | null;
   properties?: Record<string, unknown> | null;
 }
 

@@ -383,14 +383,13 @@ async fn ancestry_pages(pool: &SqlitePool, page_id: &str) -> Result<Vec<Location
                  JOIN notes_databases AS database ON database.id = data_source.database_id
                  WHERE data_source.id = page.parent_data_source_id) AS row_database_title,
                 page.folder_id,
-                NULLIF(trim(CAST(json_extract(page.properties, ?) AS TEXT)), '') AS project_id
+                page.project_id
          FROM path
          JOIN notes_pages AS page ON page.id = path.page_id
          ORDER BY path.depth DESC",
     )
     .bind(page_id)
     .bind(PAGE_LOCATION_MAX_DEPTH)
-    .bind(format!("$.{}", crate::PAGE_PROJECT_ID_PROPERTY))
     .fetch_all(pool)
     .await
     .map_err(|e| format!("load notes page location: {e}"))

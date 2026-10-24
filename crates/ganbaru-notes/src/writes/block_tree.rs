@@ -177,13 +177,13 @@ pub(super) async fn load_page_block_subtree_rows_for_copy(
                     JOIN notes_pages AS parent ON parent.id = block.page_id
                     WHERE child.id = block.id AND parent.in_trash = 1
                       AND child.trashed_time = parent.trashed_time
-                      AND json_extract(block.payload, '$.__ganbaru_trash_owner') IS NULL
-                      AND json_extract(parent.properties, '$.__ganbaru_trash_owner') IS NULL
+                      AND block.trash_owner IS NULL
+                      AND parent.trash_owner IS NULL
                 )
             ) OR (
                 ? AND EXISTS (SELECT 1 FROM notes_pages AS parent WHERE parent.id = block.page_id
                     AND parent.in_trash = 1
-                    AND json_extract(block.payload, '$.__ganbaru_trash_owner') = json_extract(parent.properties, '$.__ganbaru_trash_owner'))
+                    AND block.trash_owner = parent.trash_owner)
             ))
          ), subtree(id, path, depth) AS (
             SELECT id, printf('%020.6f:%s', sort_order, id), 0

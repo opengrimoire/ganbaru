@@ -29,6 +29,7 @@ fn exact_page_create_retry_returns_the_existing_page() {
             title: "First page".to_string(),
             parent: workspace_parent(),
             folder_id: None,
+            project_id: None,
             first_block_id: BLOCK_A.to_string(),
             after_block_id: None,
             properties: None,
@@ -61,6 +62,7 @@ fn page_create_retry_rejects_mismatched_or_partial_data() {
                 title: "Different title".to_string(),
                 parent: workspace_parent(),
                 folder_id: None,
+                project_id: None,
                 first_block_id: BLOCK_A.to_string(),
                 after_block_id: None,
                 properties: None,
@@ -83,6 +85,7 @@ fn page_create_retry_rejects_mismatched_or_partial_data() {
                 title: "First page".to_string(),
                 parent: workspace_parent(),
                 folder_id: None,
+                project_id: None,
                 first_block_id: BLOCK_A.to_string(),
                 after_block_id: None,
                 properties: None,
@@ -96,9 +99,17 @@ fn page_create_retry_rejects_mismatched_or_partial_data() {
 }
 
 #[test]
-fn page_rename_preserves_project_metadata_properties() {
+fn page_rename_preserves_project_and_custom_properties() {
     crate::test_block_on(async {
         let pool = migrated_memory_pool().await;
+        sqlx::query("INSERT INTO project_groups (id, name, order_key) VALUES ('rename-group', 'Rename', 'a1')")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO projects (id, group_id, name, order_key) VALUES ('project-a', 'rename-group', 'Project A', 'a1')")
+            .execute(&pool)
+            .await
+            .unwrap();
         writes::create_page(
             &pool,
             NotePageCreate {
@@ -106,10 +117,10 @@ fn page_rename_preserves_project_metadata_properties() {
                 title: "Untitled".to_string(),
                 parent: workspace_parent(),
                 folder_id: None,
+                project_id: Some("project-a".to_string()),
                 first_block_id: BLOCK_A.to_string(),
                 after_block_id: None,
                 properties: Some(json!({
-                    "__ganbaru_project_id": "project-a",
                     "custom": "value"
                 })),
             },
@@ -132,10 +143,7 @@ fn page_rename_preserves_project_metadata_properties() {
         .unwrap();
         let renamed_json = serde_json::to_value(renamed).unwrap();
 
-        assert_eq!(
-            renamed_json["properties"]["__ganbaru_project_id"],
-            "project-a"
-        );
+        assert_eq!(renamed_json["project_id"], "project-a");
         assert_eq!(renamed_json["properties"]["custom"], "value");
         assert_eq!(
             renamed_json["properties"]["title"]["title"][0]["plain_text"],
@@ -157,6 +165,7 @@ fn create_nested_page_appends_child_page_block_to_parent_page() {
                 title: "Nested page".to_string(),
                 parent: page_parent(PAGE_A),
                 folder_id: None,
+                project_id: None,
                 first_block_id: BLOCK_B.to_string(),
                 after_block_id: Some(BLOCK_A.to_string()),
                 properties: None,
@@ -606,6 +615,7 @@ fn sidebar_pages_load_roots_expanded_children_and_selected_ancestors() {
                 title: "Nested".to_string(),
                 parent: page_parent(PAGE_A),
                 folder_id: None,
+                project_id: None,
                 first_block_id: BLOCK_B.to_string(),
                 after_block_id: None,
                 properties: None,
@@ -620,6 +630,7 @@ fn sidebar_pages_load_roots_expanded_children_and_selected_ancestors() {
                 title: "Leaf".to_string(),
                 parent: page_parent(PAGE_B),
                 folder_id: None,
+                project_id: None,
                 first_block_id: BLOCK_C.to_string(),
                 after_block_id: None,
                 properties: None,
@@ -703,6 +714,7 @@ fn sidebar_pages_report_trashed_parents_for_seed_pages() {
                 title: "Nested".to_string(),
                 parent: page_parent(PAGE_A),
                 folder_id: None,
+                project_id: None,
                 first_block_id: BLOCK_B.to_string(),
                 after_block_id: None,
                 properties: None,
@@ -756,6 +768,7 @@ fn create_nested_page_can_insert_after_block_parent_sibling() {
                 title: "Nested under block".to_string(),
                 parent: block_parent(BLOCK_A),
                 folder_id: None,
+                project_id: None,
                 first_block_id: BLOCK_D.to_string(),
                 after_block_id: Some(BLOCK_B.to_string()),
                 properties: None,

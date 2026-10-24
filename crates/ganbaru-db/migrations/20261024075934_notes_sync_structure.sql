@@ -557,6 +557,121 @@ WHERE rowid IN (SELECT row_key FROM rewritten);
 DROP TABLE notes_asset_path_rewrites;
 DROP TABLE notes_asset_id_map;
 
+-- Folder parents, folder and page project membership, and row hierarchy detachment are checked by
+-- Notes writes instead of triggers, so applying a replicated row never aborts on a rule that a
+-- concurrent edit broke; the Notes repair pass restores the rule instead.
+DROP TRIGGER notes_folders_validate_parent_insert;
+DROP TRIGGER notes_folders_validate_parent_update;
+DROP TRIGGER notes_folders_validate_project_update;
+DROP TRIGGER notes_pages_validate_folder_insert;
+DROP TRIGGER notes_pages_validate_folder_update;
+DROP TRIGGER notes_row_hierarchy_detach_moved_page;
+
+-- notes_pages: the project and the trash owner move out of the properties JSON into columns. A
+-- project id that names no project is dropped.
+CREATE TABLE notes_pages_next (
+    id TEXT PRIMARY KEY CHECK (trim(id) <> ''),
+    parent_type TEXT NOT NULL CHECK (parent_type IN ('workspace', 'page_id', 'block_id', 'data_source_id')),
+    parent_page_id TEXT REFERENCES notes_pages(id) ON DELETE CASCADE,
+    parent_block_id TEXT,
+    parent_data_source_id TEXT REFERENCES notes_data_sources(id) ON DELETE CASCADE,
+    project_id TEXT REFERENCES projects(id) ON DELETE CASCADE,
+    title TEXT NOT NULL DEFAULT '',
+    properties TEXT NOT NULL DEFAULT '{"title":{"id":"title","type":"title","title":[]}}' CHECK (json_valid(properties)),
+    icon TEXT CHECK (icon IS NULL OR json_valid(icon)),
+    cover TEXT CHECK (cover IS NULL OR json_valid(cover)),
+    in_trash INTEGER NOT NULL DEFAULT 0 CHECK (in_trash IN (0, 1)),
+    trash_owner TEXT CHECK (trash_owner IS NULL OR trim(trash_owner) <> ''),
+    archived INTEGER NOT NULL DEFAULT 0 CHECK (archived IN (0, 1)),
+    source_provider TEXT,
+    source_object_id TEXT,
+    source_workspace_id TEXT,
+    source_last_edited_time TEXT,
+    url TEXT,
+    public_url TEXT,
+    created_time TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')) CHECK (trim(created_time) <> ''),
+    last_edited_time TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')) CHECK (trim(last_edited_time) <> ''),
+    trashed_time TEXT CHECK (trashed_time IS NULL OR trim(trashed_time) <> ''),
+    folder_id TEXT REFERENCES notes_folders(id) ON DELETE SET NULL,
+    CHECK (
+        (
+            parent_type = 'workspace'
+            AND parent_page_id IS NULL
+            AND parent_block_id IS NULL
+            AND parent_data_source_id IS NULL
+        )
+        OR (
+            parent_type = 'page_id'
+            AND parent_page_id IS NOT NULL
+            AND parent_block_id IS NULL
+            AND parent_data_source_id IS NULL
+        )
+        OR (
+            parent_type = 'block_id'
+            AND parent_page_id IS NULL
+            AND parent_block_id IS NOT NULL
+            AND parent_data_source_id IS NULL
+        )
+        OR (
+            parent_type = 'data_source_id'
+            AND parent_page_id IS NULL
+            AND parent_block_id IS NULL
+            AND parent_data_source_id IS NOT NULL
+        )
+    )
+);
+INSERT INTO notes_pages_next (
+    id, parent_type, parent_page_id, parent_block_id, parent_data_source_id, project_id, title,
+    properties, icon, cover, in_trash, trash_owner, archived, source_provider, source_object_id,
+    source_workspace_id, source_last_edited_time, url, public_url, created_time, last_edited_time,
+    trashed_time, folder_id
+)
+SELECT
+    page.id, page.parent_type, page.parent_page_id, page.parent_block_id,
+    page.parent_data_source_id,
+    (SELECT project.id FROM projects AS project
+     WHERE json_type(page.properties, '$.__ganbaru_project_id') = 'text'
+       AND project.id = trim(json_extract(page.properties, '$.__ganbaru_project_id'))),
+    page.title,
+    json_remove(page.properties, '$.__ganbaru_project_id', '$.__ganbaru_trash_owner'),
+    page.icon, page.cover, page.in_trash,
+    CASE WHEN json_type(page.properties, '$.__ganbaru_trash_owner') = 'text'
+        THEN NULLIF(trim(json_extract(page.properties, '$.__ganbaru_trash_owner')), '') END,
+    page.archived, page.source_provider, page.source_object_id, page.source_workspace_id,
+    page.source_last_edited_time, page.url, page.public_url, page.created_time,
+    page.last_edited_time, page.trashed_time, page.folder_id
+FROM notes_pages AS page;
+DROP TABLE notes_pages;
+ALTER TABLE notes_pages_next RENAME TO notes_pages;
+CREATE INDEX idx_notes_pages_active
+    ON notes_pages(in_trash, archived, last_edited_time DESC, title);
+CREATE INDEX idx_notes_pages_data_source
+    ON notes_pages(parent_data_source_id, in_trash, archived, last_edited_time DESC, title);
+CREATE INDEX idx_notes_pages_folder
+    ON notes_pages(folder_id, in_trash, archived, last_edited_time DESC, title);
+CREATE INDEX idx_notes_pages_parent
+    ON notes_pages(parent_type, parent_page_id, parent_block_id, parent_data_source_id);
+CREATE INDEX idx_notes_pages_project
+    ON notes_pages(project_id, in_trash, archived);
+CREATE INDEX idx_notes_pages_source
+    ON notes_pages(source_provider, source_workspace_id, source_object_id);
+CREATE INDEX idx_notes_pages_trash_retention
+    ON notes_pages(in_trash, trashed_time);
+
+-- notes_blocks: the trash owner moves out of the payload into a column.
+ALTER TABLE notes_blocks ADD COLUMN trash_owner TEXT
+    CHECK (trash_owner IS NULL OR trim(trash_owner) <> '');
+UPDATE notes_blocks
+SET trash_owner = NULLIF(trim(json_extract(payload, '$.__ganbaru_trash_owner')), ''),
+    payload = json_remove(payload, '$.__ganbaru_trash_owner')
+WHERE json_type(payload, '$.__ganbaru_trash_owner') IS NOT NULL;
+
+-- Page history keeps page properties in the current shape; the page's project is not versioned.
+UPDATE notes_page_history_snapshots
+SET properties = json_remove(properties, '$.__ganbaru_project_id', '$.__ganbaru_trash_owner')
+WHERE json_type(properties, '$.__ganbaru_project_id') IS NOT NULL
+   OR json_type(properties, '$.__ganbaru_trash_owner') IS NOT NULL;
+
 CREATE TEMP TABLE notes_sync_structure_guard (violations INTEGER NOT NULL CHECK (violations = 0));
 INSERT INTO notes_sync_structure_guard SELECT COUNT(*) FROM pragma_foreign_key_check;
 DROP TABLE notes_sync_structure_guard;

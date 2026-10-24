@@ -836,6 +836,7 @@ fn loaded_page_from_snapshot(
         parent_block_id: snapshot.parent_block_id,
         parent_data_source_id: snapshot.parent_data_source_id,
         folder_id: snapshot.folder_id,
+        project_id: None,
         title: snapshot.title,
         properties: snapshot.properties,
         icon: snapshot.icon,
@@ -1115,7 +1116,7 @@ pub async fn cleanup_history_retention_tx(tx: &mut Transaction<'_, Sqlite>) -> R
     let retention_days = retention_days.unwrap_or(30);
     validate_retention_days(Some(retention_days))?;
     sqlx::query(
-        "WITH RECURSIVE page_ancestors(snapshot_id, page_id, parent_page_id, properties) AS (
+        "WITH RECURSIVE page_ancestors(snapshot_id, page_id, parent_page_id, project_id, depth) AS (
              SELECT snapshot.id,
                     page.id,
                     COALESCE(
@@ -1128,10 +1129,11 @@ pub async fn cleanup_history_retention_tx(tx: &mut Transaction<'_, Sqlite>) -> R
                          LEFT JOIN notes_blocks AS database_block ON database_block.id = database.id
                          WHERE data_source.id = page.parent_data_source_id)
                     ),
-                    page.properties
+                    page.project_id,
+                    0
              FROM notes_page_history_snapshots AS snapshot
              JOIN notes_pages AS page ON page.id = snapshot.page_id
-             UNION ALL
+             UNION
              SELECT child.snapshot_id,
                     parent.id,
                     COALESCE(
@@ -1144,9 +1146,11 @@ pub async fn cleanup_history_retention_tx(tx: &mut Transaction<'_, Sqlite>) -> R
                          LEFT JOIN notes_blocks AS database_block ON database_block.id = database.id
                          WHERE data_source.id = parent.parent_data_source_id)
                     ),
-                    parent.properties
+                    parent.project_id,
+                    child.depth + 1
              FROM page_ancestors AS child
              JOIN notes_pages AS parent ON parent.id = child.parent_page_id
+             WHERE child.depth < ?
          ),
          snapshot_retention(snapshot_id, retention_days) AS (
              SELECT snapshot.id,
@@ -1154,7 +1158,7 @@ pub async fn cleanup_history_retention_tx(tx: &mut Transaction<'_, Sqlite>) -> R
              FROM notes_page_history_snapshots AS snapshot
              LEFT JOIN page_ancestors AS ancestor ON ancestor.snapshot_id = snapshot.id
              LEFT JOIN projects AS project
-               ON project.id = trim(json_extract(ancestor.properties, '$.__ganbaru_project_id'))
+               ON project.id = ancestor.project_id
              GROUP BY snapshot.id
          )
          DELETE FROM notes_page_history_snapshots
@@ -1170,6 +1174,7 @@ pub async fn cleanup_history_retention_tx(tx: &mut Transaction<'_, Sqlite>) -> R
                 )
          )",
     )
+    .bind(crate::structure::MAX_TREE_DEPTH)
     .bind(retention_days)
     .execute(&mut **tx)
     .await

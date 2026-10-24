@@ -36,9 +36,10 @@ async fn create_project_page(
             title: title.to_string(),
             parent: workspace_parent(),
             folder_id: folder_id.map(str::to_string),
+            project_id: Some(PROJECT_A.to_string()),
             first_block_id: block_id.to_string(),
             after_block_id: None,
-            properties: Some(json!({ "__ganbaru_project_id": PROJECT_A })),
+            properties: None,
         },
     )
     .await

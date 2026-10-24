@@ -19,6 +19,21 @@ pub fn require_uuid(value: &str, field: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Page property keys that name columns, which writes set through their own fields.
+const COLUMN_PAGE_PROPERTY_KEYS: [&str; 2] = ["__ganbaru_project_id", "__ganbaru_trash_owner"];
+
+/// Validate a page properties object that a request writes.
+pub fn validate_page_properties(properties: &Value) -> Result<(), String> {
+    validate_json_object(properties, "properties")?;
+    if COLUMN_PAGE_PROPERTY_KEYS
+        .iter()
+        .any(|key| properties.get(key).is_some())
+    {
+        return Err("page properties cannot set the page project or trash owner".to_string());
+    }
+    Ok(())
+}
+
 pub fn validate_page_create(page: &NotePageCreate) -> Result<(), String> {
     require_uuid(&page.id, "id")?;
     require_uuid(&page.first_block_id, "first_block_id")?;
@@ -29,7 +44,10 @@ pub fn validate_page_create(page: &NotePageCreate) -> Result<(), String> {
         require_uuid(after_block_id, "after_block_id")?;
     }
     if let Some(properties) = &page.properties {
-        validate_json_object(properties, "properties")?;
+        validate_page_properties(properties)?;
+    }
+    if let Some(project_id) = page.project_id.as_deref() {
+        validate_folder_project_id(project_id)?;
     }
     if let Some(folder_id) = page.folder_id.as_deref() {
         require_uuid(folder_id, "folder_id")?;
@@ -83,7 +101,7 @@ pub fn validate_page_update(update: &NotePageUpdate) -> Result<(), String> {
         validate_parent(parent)?;
     }
     if let Some(properties) = &update.properties {
-        validate_json_object(properties, "properties")?;
+        validate_page_properties(properties)?;
     }
     if let Some(icon) = update.icon.value() {
         validate_icon_value(icon, "icon")?;

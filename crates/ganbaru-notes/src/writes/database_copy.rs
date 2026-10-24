@@ -90,13 +90,13 @@ pub(crate) async fn plan_database_copy(
          JOIN notes_blocks AS owner_block ON owner_block.id = owner.id
          WHERE ((source.in_trash = 0 AND owner.in_trash = 0) OR
              (? AND source.in_trash = 1 AND owner.in_trash = 1
-              AND json_extract(owner_block.payload, '$.__ganbaru_trash_owner') = ?))
+              AND owner_block.trash_owner = (SELECT trash_owner FROM notes_blocks WHERE id = ?)))
          AND (source.database_id = ? OR source.id IN (
              SELECT data_source_id FROM notes_database_views WHERE database_id = ?))
          ORDER BY source.id LIMIT ?",
     )
     .bind(include_trashed)
-    .bind(payload.get("__ganbaru_trash_owner").and_then(Value::as_str))
+    .bind(&block.id)
     .bind(&block.id)
     .bind(&block.id)
     .bind((MAX_COPY_OBJECTS + 1) as i64)
@@ -191,10 +191,15 @@ pub(crate) async fn plan_database_copy(
              JOIN notes_blocks AS owner ON owner.id = source.database_id
              WHERE page.parent_data_source_id = ? AND (page.in_trash = 0 OR
                  (? AND source.in_trash = 1 AND page.in_trash = 1
-                  AND json_extract(page.properties, '$.__ganbaru_trash_owner') = json_extract(owner.payload, '$.__ganbaru_trash_owner')))
+                  AND page.trash_owner = owner.trash_owner))
              ORDER BY page.id LIMIT ?",
-        ).bind(source).bind(include_trashed).bind((MAX_COPY_OBJECTS + 1) as i64).fetch_all(&mut **tx).await
-            .map_err(|e| format!("load copied database rows: {e}"))?;
+        )
+        .bind(source)
+        .bind(include_trashed)
+        .bind((MAX_COPY_OBJECTS + 1) as i64)
+        .fetch_all(&mut **tx)
+        .await
+        .map_err(|e| format!("load copied database rows: {e}"))?;
         for page_id in page_ids {
             let new_page = new_note_id(tx, context.reserved_ids).await?;
             let graph = Box::pin(plan_child_page_copy(
@@ -726,11 +731,7 @@ fn remap_local_notes_url(url: &str, identities: &HashMap<String, String>) -> Str
 /// An independent copy never inherits its source's trash ownership or restore journal.
 pub(super) fn strip_trash_metadata(value: &mut Value) {
     if let Some(object) = value.as_object_mut() {
-        for key in [
-            "__ganbaru_database_trash",
-            "__ganbaru_trash",
-            "__ganbaru_trash_owner",
-        ] {
+        for key in ["__ganbaru_database_trash", "__ganbaru_trash"] {
             object.remove(key);
         }
     }

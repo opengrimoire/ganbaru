@@ -118,23 +118,20 @@ fn schema_creates_normalized_notes_database_tables() {
 }
 
 #[test]
-fn schema_enforces_notes_folder_placement_invariants() {
+fn schema_keeps_notes_page_project_and_trash_owner_in_columns() {
     super::block_on(async {
         let pool = migrated_memory_pool().await;
-        let folder_table: Option<i64> = sqlx::query_scalar(
-            "SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'notes_folders'",
+        let notes_triggers: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM sqlite_schema
+             WHERE type = 'trigger' AND tbl_name LIKE 'notes_%'",
         )
-        .fetch_optional(&pool)
+        .fetch_one(&pool)
         .await
         .unwrap();
-        assert_eq!(folder_table, Some(1));
-        let folder_column: Option<i64> = sqlx::query_scalar(
-            "SELECT 1 FROM pragma_table_info('notes_pages') WHERE name = 'folder_id'",
-        )
-        .fetch_optional(&pool)
-        .await
-        .unwrap();
-        assert_eq!(folder_column, Some(1));
+        assert_eq!(
+            notes_triggers, 0,
+            "Notes rules are checked by writes, not triggers"
+        );
 
         sqlx::query("INSERT INTO project_groups (id, name, order_key) VALUES ('folder-group', 'Folders', 'a0')")
             .execute(&pool)
@@ -150,93 +147,50 @@ fn schema_enforces_notes_folder_placement_invariants() {
         .unwrap();
         sqlx::query(
             "INSERT INTO notes_folders (id, project_id, name)
-             VALUES ('folder-a', 'folder-project-a', 'A'),
-                    ('folder-b', 'folder-project-b', 'B')",
+             VALUES ('folder-a', 'folder-project-a', 'A')",
         )
         .execute(&pool)
         .await
         .unwrap();
-        assert!(
-            sqlx::query(
-                "INSERT INTO notes_folders (id, project_id, parent_folder_id, name)
-             VALUES ('folder-cross', 'folder-project-a', 'folder-b', 'Cross project')",
-            )
-            .execute(&pool)
-            .await
-            .is_err()
-        );
-
         sqlx::query(
-            "INSERT INTO notes_folders (id, project_id, parent_folder_id, name)
-             VALUES ('folder-child', 'folder-project-a', 'folder-a', 'Child')",
+            "INSERT INTO notes_pages (id, parent_type, folder_id, project_id, title)
+             VALUES ('folder-page', 'workspace', 'folder-a', 'folder-project-a', 'Folder page'),
+                    ('loose-page', 'workspace', NULL, 'folder-project-b', 'Loose page'),
+                    ('unassigned-page', 'workspace', NULL, NULL, 'Unassigned page')",
         )
         .execute(&pool)
         .await
         .unwrap();
         assert!(
             sqlx::query(
-                "UPDATE notes_folders SET parent_folder_id = 'folder-child' WHERE id = 'folder-a'",
+                "INSERT INTO notes_pages (id, parent_type, project_id, title)
+                 VALUES ('missing-project-page', 'workspace', 'missing-project', 'Missing')",
             )
             .execute(&pool)
             .await
-            .is_err()
+            .is_err(),
+            "a page project must name an existing project"
         );
+        for blank_owner in ["", "   "] {
+            assert!(
+                sqlx::query("UPDATE notes_pages SET trash_owner = ? WHERE id = 'loose-page'")
+                    .bind(blank_owner)
+                    .execute(&pool)
+                    .await
+                    .is_err(),
+                "a page trash owner may not be blank"
+            );
+        }
 
-        sqlx::query(
-            "INSERT INTO notes_pages (id, parent_type, folder_id, title, properties)
-             VALUES (
-                 'folder-page',
-                 'workspace',
-                 'folder-a',
-                 'Folder page',
-                 json_object('__ganbaru_project_id', 'folder-project-a')
-             )",
-        )
-        .execute(&pool)
-        .await
-        .unwrap();
-        assert!(
-            sqlx::query(
-                "INSERT INTO notes_pages (id, parent_type, folder_id, title, properties)
-             VALUES (
-                 'wrong-project-page',
-                 'workspace',
-                 'folder-a',
-                 'Wrong project',
-                 json_object('__ganbaru_project_id', 'folder-project-b')
-             )",
-            )
+        sqlx::query("DELETE FROM projects WHERE id = 'folder-project-a'")
             .execute(&pool)
             .await
-            .is_err()
-        );
-        assert!(
-            sqlx::query(
-                "INSERT INTO notes_pages (
-                id, parent_type, parent_page_id, folder_id, title, properties
-             ) VALUES (
-                 'nested-folder-page',
-                 'page_id',
-                 'folder-page',
-                 'folder-a',
-                 'Invalid nested folder page',
-                 json_object('__ganbaru_project_id', 'folder-project-a')
-             )",
-            )
-            .execute(&pool)
+            .unwrap();
+        let remaining: Vec<String> = sqlx::query_scalar("SELECT id FROM notes_pages ORDER BY id")
+            .fetch_all(&pool)
             .await
-            .is_err()
-        );
-        assert!(
-            sqlx::query(
-                "UPDATE notes_pages
-             SET properties = json_object('__ganbaru_project_id', 'folder-project-b')
-             WHERE id = 'folder-page'",
-            )
-            .execute(&pool)
-            .await
-            .is_err()
-        );
+            .unwrap();
+        assert_eq!(remaining, ["loose-page", "unassigned-page"]);
     });
 }
 

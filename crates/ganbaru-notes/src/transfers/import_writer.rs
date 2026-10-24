@@ -301,6 +301,7 @@ async fn insert_import_page(
             parent_type,
             parent_page_id,
             parent_block_id,
+            project_id,
             title,
             properties,
             source_provider,
@@ -312,14 +313,15 @@ async fn insert_import_page(
             url,
             public_url
          )
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(page_id)
     .bind(parent_type)
     .bind(parent_page_id)
     .bind(parent_block_id)
+    .bind(request.project_id)
     .bind(request.title)
-    .bind(import_page_properties(request.title, request.project_id)?.to_string())
+    .bind(writes::page_title_properties(request.title).to_string())
     .bind(request.source_provider)
     .bind(request.source_object_id)
     .bind(request.source_workspace_id)
@@ -358,21 +360,6 @@ pub(crate) fn normalized_import_project_id(project_id: Option<String>) -> Option
     project_id
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
-}
-
-fn import_page_properties(title: &str, project_id: Option<&str>) -> Result<Value, String> {
-    let mut properties = writes::page_title_properties(title);
-    let Some(project_id) = project_id else {
-        return Ok(properties);
-    };
-    let object = properties
-        .as_object_mut()
-        .ok_or_else(|| "page properties must be an object".to_string())?;
-    object.insert(
-        crate::PAGE_PROJECT_ID_PROPERTY.to_string(),
-        Value::String(project_id.to_string()),
-    );
-    Ok(properties)
 }
 
 async fn insert_import_row_page(

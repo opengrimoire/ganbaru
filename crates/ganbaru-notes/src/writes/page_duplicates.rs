@@ -166,12 +166,8 @@ pub(crate) async fn plan_child_page_copy(
         let mut properties: serde_json::Map<String, serde_json::Value> =
             serde_json::from_str(&source_page.properties)
                 .map_err(|e| format!("parse copied note properties: {e}"))?;
-        properties.remove("__ganbaru_project_id");
         properties.remove("__ganbaru_trash");
-        properties.remove("__ganbaru_trash_owner");
-        if let Some(project_id) = destination_project_id {
-            properties.insert("__ganbaru_project_id".to_string(), project_id.into());
-        }
+        source_page.project_id = destination_project_id.map(str::to_string);
         source_page.properties = serde_json::Value::Object(properties).to_string();
         let blocks = load_page_block_subtree_rows_for_copy(
             tx,
@@ -560,13 +556,14 @@ pub(super) async fn insert_duplicated_page(
             parent_block_id,
             parent_data_source_id,
             folder_id,
+            project_id,
             title,
             properties,
             icon,
             cover,
             archived
          )
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(&plan.duplicate_id)
     .bind(parent_type)
@@ -574,6 +571,7 @@ pub(super) async fn insert_duplicated_page(
     .bind(parent_block_id)
     .bind(parent_data_source_id)
     .bind(folder_id)
+    .bind(&plan.source_page.project_id)
     .bind(&plan.duplicate_title)
     .bind(properties)
     .bind(&plan.source_page.icon)

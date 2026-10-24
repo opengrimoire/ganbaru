@@ -316,7 +316,7 @@ fn database_sources_create_attach_and_keep_shared_rows_with_independent_views() 
         .await
         .unwrap();
         create_page(&pool, PAGE_C, "99999999-9999-4999-8999-999999999999").await;
-        sqlx::query("UPDATE notes_pages SET title = 'Projects', folder_id = ?, properties = json_set(properties, '$.__ganbaru_project_id', 'project') WHERE id = ?")
+        sqlx::query("UPDATE notes_pages SET title = 'Projects', folder_id = ?, project_id = 'project' WHERE id = ?")
             .bind(folder_id)
             .bind(PAGE_C)
             .execute(&pool)

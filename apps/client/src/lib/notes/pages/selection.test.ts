@@ -7,7 +7,6 @@ import {
   parseStoredNotesPageId,
   restoredNotesPageSelection,
 } from "./selection";
-import { NOTES_PAGE_PROJECT_ID_PROPERTY } from "$lib/notes/project-membership";
 
 describe("notes page selection", () => {
   it("parses stored page ids defensively", () => {
@@ -26,7 +25,7 @@ describe("notes page selection", () => {
   it("replaces a removed page only with a page from the same project", () => {
     const inProject = (id: string, projectId: string | null) => ({
       id,
-      properties: projectId ? { [NOTES_PAGE_PROJECT_ID_PROPERTY]: projectId } : {},
+      project_id: projectId,
     });
     const pages = [
       inProject("social-only", "social"),

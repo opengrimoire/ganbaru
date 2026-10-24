@@ -521,7 +521,7 @@ fn callout_icon_assets_follow_icon_changes_and_block_conversion() {
 async fn callout_icon_reference_count(pool: &SqlitePool, asset_path: &str) -> i64 {
     sqlx::query_scalar::<_, i64>(
         "SELECT COUNT(*) FROM notes_asset_references
-         WHERE owner_type = 'block' AND owner_id = ? AND asset_id = ?
+         WHERE owner_type = 'block' AND owner_id = ? AND asset_id = (SELECT id FROM notes_assets WHERE asset_path = ?)
            AND role = 'callout_icon'",
     )
     .bind(BLOCK_B)

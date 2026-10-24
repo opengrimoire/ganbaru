@@ -218,24 +218,6 @@ pub async fn save_page_cover_bytes(
         .begin()
         .await
         .map_err(|e| format!("begin page cover asset record: {e}"))?;
-    sqlx::query(
-        "INSERT INTO notes_page_cover_assets
-            (id, asset_path, original_name, content_type, byte_size, sha256)
-         VALUES (?, ?, ?, ?, ?, ?)
-         ON CONFLICT(asset_path)
-         DO UPDATE SET
-            original_name = COALESCE(excluded.original_name, notes_page_cover_assets.original_name),
-            updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')",
-    )
-    .bind(&sha256)
-    .bind(&relative_path)
-    .bind(&original_name)
-    .bind(kind.mime_type())
-    .bind(byte_size)
-    .bind(&sha256)
-    .execute(&mut *tx)
-    .await
-    .map_err(|e| format!("record page cover asset: {e}"))?;
     assets::upsert_managed_asset_tx(
         &mut tx,
         ManagedAssetWrite {

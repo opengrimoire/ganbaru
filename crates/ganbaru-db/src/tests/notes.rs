@@ -711,178 +711,6 @@ fn schema_creates_notes_suggestions() {
 }
 
 #[test]
-fn schema_creates_notes_page_icon_assets() {
-    super::block_on(async {
-        let pool = migrated_memory_pool().await;
-
-        sqlx::query(
-            "INSERT INTO notes_page_icon_assets
-                (id, asset_path, original_name, content_type, byte_size, sha256)
-             VALUES (
-                'asset-1',
-                'notes/page-icons/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.png',
-                'focus.png',
-                'image/png',
-                42,
-                'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
-             )",
-        )
-        .execute(&pool)
-        .await
-        .unwrap();
-
-        let asset_path: String = sqlx::query_scalar(
-            "SELECT asset_path FROM notes_page_icon_assets WHERE id = 'asset-1'",
-        )
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-        assert_eq!(
-            asset_path,
-            "notes/page-icons/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.png",
-        );
-
-        for (id, asset_path, content_type, byte_size, sha256) in [
-            (
-                "bad-prefix",
-                "project-icons/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.png",
-                "image/png",
-                1,
-                "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-            ),
-            (
-                "bad-nested",
-                "notes/page-icons/nested/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.png",
-                "image/png",
-                1,
-                "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-            ),
-            (
-                "bad-type",
-                "notes/page-icons/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.gif",
-                "image/gif",
-                1,
-                "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-            ),
-            (
-                "bad-size",
-                "notes/page-icons/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.png",
-                "image/png",
-                0,
-                "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-            ),
-            (
-                "bad-hash",
-                "notes/page-icons/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.png",
-                "image/png",
-                1,
-                "short",
-            ),
-        ] {
-            let inserted = sqlx::query(
-                "INSERT INTO notes_page_icon_assets
-                    (id, asset_path, content_type, byte_size, sha256)
-                 VALUES (?, ?, ?, ?, ?)",
-            )
-            .bind(id)
-            .bind(asset_path)
-            .bind(content_type)
-            .bind(byte_size)
-            .bind(sha256)
-            .execute(&pool)
-            .await;
-            assert!(inserted.is_err());
-        }
-    });
-}
-
-#[test]
-fn schema_creates_notes_page_cover_assets() {
-    super::block_on(async {
-        let pool = migrated_memory_pool().await;
-
-        sqlx::query(
-            "INSERT INTO notes_page_cover_assets
-                (id, asset_path, original_name, content_type, byte_size, sha256)
-             VALUES (
-                'asset-1',
-                'notes/page-covers/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.png',
-                'cover.png',
-                'image/png',
-                42,
-                'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
-             )",
-        )
-        .execute(&pool)
-        .await
-        .unwrap();
-
-        let asset_path: String = sqlx::query_scalar(
-            "SELECT asset_path FROM notes_page_cover_assets WHERE id = 'asset-1'",
-        )
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-        assert_eq!(
-            asset_path,
-            "notes/page-covers/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.png",
-        );
-
-        for (id, asset_path, content_type, byte_size, sha256) in [
-            (
-                "bad-prefix",
-                "notes/page-icons/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.png",
-                "image/png",
-                1,
-                "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-            ),
-            (
-                "bad-nested",
-                "notes/page-covers/nested/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.png",
-                "image/png",
-                1,
-                "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-            ),
-            (
-                "bad-type",
-                "notes/page-covers/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.gif",
-                "image/gif",
-                1,
-                "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-            ),
-            (
-                "bad-size",
-                "notes/page-covers/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.png",
-                "image/png",
-                0,
-                "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-            ),
-            (
-                "bad-hash",
-                "notes/page-covers/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.png",
-                "image/png",
-                1,
-                "short",
-            ),
-        ] {
-            let inserted = sqlx::query(
-                "INSERT INTO notes_page_cover_assets
-                    (id, asset_path, content_type, byte_size, sha256)
-                 VALUES (?, ?, ?, ?, ?)",
-            )
-            .bind(id)
-            .bind(asset_path)
-            .bind(content_type)
-            .bind(byte_size)
-            .bind(sha256)
-            .execute(&pool)
-            .await;
-            assert!(inserted.is_err());
-        }
-    });
-}
-
-#[test]
 fn schema_creates_notes_assets_and_references() {
     super::block_on(async {
         let pool = migrated_memory_pool().await;
@@ -932,7 +760,7 @@ fn schema_creates_notes_assets_and_references() {
                 sha256
              )
              VALUES (
-                'notes/page-icons/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.png',
+                'notes/page-icons:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
                 'notes/page-icons/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.png',
                 'image',
                 'local_upload',
@@ -959,7 +787,7 @@ fn schema_creates_notes_assets_and_references() {
                 missing_at
              )
              VALUES (
-                'notes/files/report.pdf',
+                'notes/files:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
                 'notes/files/report.pdf',
                 'pdf',
                 'imported',
@@ -978,7 +806,7 @@ fn schema_creates_notes_assets_and_references() {
         sqlx::query(
             "INSERT INTO notes_asset_references (asset_id, owner_type, owner_id, page_id, role)
              VALUES (
-                'notes/page-icons/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.png',
+                'notes/page-icons:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
                 'page',
                 'page-1',
                 'page-1',
@@ -998,7 +826,7 @@ fn schema_creates_notes_assets_and_references() {
                 role
              )
              VALUES (
-                'notes/files/report.pdf',
+                'notes/files:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
                 'block',
                 'block-1',
                 'page-1',
@@ -1094,7 +922,26 @@ fn schema_creates_notes_assets_and_references() {
                 "missing",
                 None::<&str>,
             ),
+            (
+                "bad-id",
+                "notes/page-covers/cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc.png",
+                "image",
+                "local_upload",
+                "image/png",
+                1,
+                "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+                "available",
+                None::<&str>,
+            ),
         ] {
+            let class = asset_path
+                .rsplit_once('/')
+                .map_or(asset_path, |(class, _)| class);
+            let asset_id = if id == "bad-id" {
+                format!("notes/files:{sha256}")
+            } else {
+                format!("{class}:{sha256}")
+            };
             let inserted = sqlx::query(
                 "INSERT INTO notes_assets (
                     id,
@@ -1109,7 +956,7 @@ fn schema_creates_notes_assets_and_references() {
                  )
                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             )
-            .bind(id)
+            .bind(asset_id)
             .bind(asset_path)
             .bind(kind)
             .bind(source_type)
@@ -1126,7 +973,7 @@ fn schema_creates_notes_assets_and_references() {
         let invalid_reference = sqlx::query(
             "INSERT INTO notes_asset_references (asset_id, owner_type, owner_id, role)
              VALUES (
-                'notes/page-icons/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.png',
+                'notes/page-icons:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
                 'page',
                 'page-1',
                 'page_icon'
@@ -1402,7 +1249,7 @@ fn schema_creates_notes_link_facts() {
                 sha256
              )
              VALUES (
-                'asset-1',
+                'notes/files:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
                 'notes/files/asset-1.png',
                 'image',
                 'local_upload',
@@ -1468,8 +1315,8 @@ fn schema_creates_notes_link_facts() {
                 'page-1',
                 'block-1',
                 'file',
-                'asset-1',
-                'asset-1',
+                'notes/files:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+                'notes/files:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
                 'block_file',
                 'diagram.png',
                 '2026-07-02T12:00:00.000Z',
@@ -1519,7 +1366,7 @@ fn schema_creates_notes_link_facts() {
                 'page-1',
                 'block-1',
                 'file',
-                'asset-1',
+                'notes/files:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
                 'block_file',
                 'diagram.png',
                 '2026-07-02T12:00:00.000Z',

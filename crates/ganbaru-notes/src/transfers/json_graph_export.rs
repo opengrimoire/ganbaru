@@ -329,13 +329,7 @@ fn table_section(name: &str) -> &'static str {
     {
         return "data_sources";
     }
-    if matches!(
-        name,
-        "notes_assets"
-            | "notes_asset_references"
-            | "notes_page_icon_assets"
-            | "notes_page_cover_assets"
-    ) {
+    if matches!(name, "notes_assets" | "notes_asset_references") {
         return "files";
     }
     if table_family(name) == TableFamily::Index {

@@ -979,7 +979,7 @@ fn copying_database_rows_preserves_assets_literal_values_and_unavailable_relatio
         .await
         .unwrap();
         assert_eq!(links, 1);
-        let pins: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM notes_asset_references WHERE asset_id = ? AND owner_type = 'block' AND page_id = ?")
+        let pins: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM notes_asset_references WHERE asset_id = (SELECT id FROM notes_assets WHERE asset_path = ?) AND owner_type = 'block' AND page_id = ?")
             .bind(asset).bind(&row).fetch_one(&pool).await.unwrap();
         assert_eq!(pins, 1);
         writes::trash_block(&pool, DATABASE_A, true).await.unwrap();

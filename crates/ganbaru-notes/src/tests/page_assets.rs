@@ -416,7 +416,7 @@ fn page_media_asset_references_follow_local_file_payloads() {
             let reference_count: i64 = sqlx::query_scalar(
                 "SELECT COUNT(*)
                  FROM notes_asset_references
-                 WHERE asset_id = ? AND owner_type = 'page' AND owner_id = ? AND role = ?",
+                 WHERE asset_id = (SELECT id FROM notes_assets WHERE asset_path = ?) AND owner_type = 'page' AND owner_id = ? AND role = ?",
             )
             .bind(asset_path)
             .bind(PAGE_A)

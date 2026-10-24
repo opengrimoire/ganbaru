@@ -95,15 +95,16 @@ fn checkpoint_pins_assets_referenced_by_project_pages() {
     crate::test_block_on(async {
         let pool = migrated_pool().await;
         seed_project(&pool).await;
-        let asset_id = "60606060-6060-4060-8060-606060606060";
+        let sha256 = "a".repeat(64);
+        let asset_id = format!("notes/page-icons:{sha256}");
         sqlx::query(
             "INSERT INTO notes_assets (
                 id, asset_path, kind, source_type, content_type, byte_size, sha256
              ) VALUES (?, 'notes/page-icons/history.png', 'image', 'local_upload',
                        'image/png', 1, ?)",
         )
-        .bind(asset_id)
-        .bind("a".repeat(64))
+        .bind(&asset_id)
+        .bind(&sha256)
         .execute(&pool)
         .await
         .unwrap();
@@ -112,7 +113,7 @@ fn checkpoint_pins_assets_referenced_by_project_pages() {
                 asset_id, owner_type, owner_id, page_id, role
              ) VALUES (?, 'page', ?, ?, 'page_icon')",
         )
-        .bind(asset_id)
+        .bind(&asset_id)
         .bind(PAGE_ID)
         .bind(PAGE_ID)
         .execute(&pool)
@@ -129,7 +130,7 @@ fn checkpoint_pins_assets_referenced_by_project_pages() {
              WHERE version_id = ? AND asset_id = ?",
         )
         .bind(version.id)
-        .bind(asset_id)
+        .bind(&asset_id)
         .fetch_one(&pool)
         .await
         .unwrap();

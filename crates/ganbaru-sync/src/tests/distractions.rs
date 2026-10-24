@@ -9,6 +9,8 @@ use std::collections::BTreeMap;
 use ganbaru_sync_contracts::derived_key;
 
 use super::block_on;
+use super::calendar::{calendar_sql, event_sql};
+use super::focus::{close_run_sql, open_run_sql};
 use super::replica::{Replica, converge, pair, quoted};
 use super::sim::Rng;
 use crate::ChangeNotice;
@@ -378,6 +380,96 @@ fn distractions_usage_totals_converge_to_each_devices_largest_flush() {
                     "samples stay on the device that recorded them at seed {seed}"
                 );
             }
+        }
+    });
+}
+
+/// SQL recording a browser block of `HOST` with its rule snapshot, during `run` when given.
+fn block_sql(id: &str, run: Option<&str>) -> String {
+    let (run, phase) = match run {
+        Some(run) => (quoted(run), "'focus'"),
+        None => ("NULL".to_owned(), "NULL"),
+    };
+    format!(
+        "INSERT INTO distractions_block_events
+             (id, run_id, occurred_at, source_type, source_key, display_name, phase, decision,
+              created_at)
+         VALUES ({id}, {run}, '2027-01-05T09:10:00.000Z', 'browser', {host}, {host}, {phase},
+                 'blocked', '2027-01-05T09:10:00.000Z');
+         INSERT INTO distractions_block_event_rule_snapshots
+             (block_event_id, rule_kind, rule_label, blocker_mode)
+         VALUES ({id}, 'domain', {label}, 'blacklist');",
+        id = quoted(id),
+        host = quoted(HOST),
+        label = quoted(&format!("blocked host: {HOST}")),
+    )
+}
+
+/// Block events on `replica` as `id run rule_kind`, in id order.
+async fn block_history(replica: &mut Replica) -> Vec<String> {
+    sqlx::query_scalar(
+        "SELECT e.id || ' ' || coalesce(e.run_id, '-') || ' ' || coalesce(s.rule_kind, '-')
+         FROM distractions_block_events e
+         LEFT JOIN distractions_block_event_rule_snapshots s ON s.block_event_id = e.id
+         ORDER BY e.id",
+    )
+    .fetch_all(&mut replica.conn)
+    .await
+    .unwrap()
+}
+
+#[test]
+fn distractions_block_events_publish_at_once_or_with_their_focus_run_and_leave_with_it() {
+    block_on(async {
+        let mut replicas = replicas(2).await;
+        replicas[0]
+            .exec(&format!(
+                "{}{}{}{}",
+                calendar_sql(),
+                event_sql("event-a", "uid-a", "Deep work"),
+                open_run_sql("run-a", "event-a", 2, 1),
+                block_sql("block-free", None),
+            ))
+            .await;
+        replicas[0]
+            .exec(&block_sql("block-during", Some("run-a")))
+            .await;
+        converge(&mut replicas).await;
+        assert_eq!(
+            block_history(&mut replicas[1]).await,
+            ["block-free - domain"],
+            "an event outside a run publishes at once and one during an open run waits"
+        );
+
+        replicas[0].exec(&close_run_sql("run-a", 2)).await;
+        converge(&mut replicas).await;
+        replicas[0]
+            .exec(&block_sql("block-late", Some("run-a")))
+            .await;
+        converge(&mut replicas).await;
+        assert_converged(&mut replicas).await;
+        assert_eq!(
+            block_history(&mut replicas[1]).await,
+            [
+                "block-during run-a domain",
+                "block-free - domain",
+                "block-late run-a domain"
+            ],
+            "events publish with their closed run, also when they arrive after it"
+        );
+
+        replicas[1]
+            .exec("DELETE FROM pomodoro_runs WHERE id = 'run-a'")
+            .await;
+        converge(&mut replicas).await;
+        assert_converged(&mut replicas).await;
+        for replica in &mut replicas {
+            assert_eq!(
+                block_history(replica).await,
+                ["block-free - domain"],
+                "deleting a run deletes its block events on replica {}",
+                replica.index
+            );
         }
     });
 }

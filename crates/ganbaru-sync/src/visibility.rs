@@ -95,7 +95,32 @@ pub(crate) struct CascadeTarget {
     pub(crate) identity: bool,
 }
 
+/// The sync state of one row and whether it waits for a creation.
+#[derive(Debug, Clone, Copy)]
+struct RowFacts {
+    state: Option<RowState>,
+    creation_pending: bool,
+}
+
+/// Why a live row is hidden by its own merged values, apart from duplicates and edges.
+#[derive(Debug, Clone, Copy)]
+struct OwnHiding {
+    removed: bool,
+    unpublished: bool,
+    late: bool,
+}
+
+impl OwnHiding {
+    /// Whether any of them hides the row.
+    const fn any(self) -> bool {
+        self.removed || self.unpublished || self.late
+    }
+}
+
 /// Rows hidden by merge state, and the cascade roots computed so far.
+///
+/// Merge state stays fixed while a visibility is in use, so the merge state it reads for a row
+/// is read once and kept with the cascade roots.
 #[derive(Debug, Default)]
 pub(crate) struct Visibility {
     /// Hidden duplicates.
@@ -108,6 +133,10 @@ pub(crate) struct Visibility {
     cascade: HashMap<RowRef, Roots>,
     /// No late change is recorded, so no row is hidden as one. Unknown unless loaded.
     no_late: bool,
+    /// Sync state per row read so far.
+    facts: HashMap<RowRef, RowFacts>,
+    /// Own hiding per live row read so far.
+    own: HashMap<RowRef, OwnHiding>,
 }
 
 impl Visibility {
@@ -166,7 +195,7 @@ impl Visibility {
     ) -> SyncResult<Self> {
         let mut visibility = Self::with_duplicates(duplicates);
         visibility.no_late = !exclusion::any_late(conn).await?;
-        visibility.detached = tree::detached(engine, conn, &visibility, dirty).await?;
+        visibility.detached = tree::detached(engine, conn, &mut visibility, dirty).await?;
         visibility.severed = edges::severed(engine, conn, &visibility, dirty).await?;
         Ok(visibility)
     }
@@ -183,14 +212,13 @@ impl Visibility {
         for (table, classes) in contested {
             let keys: BTreeSet<&String> = classes.iter().flatten().collect();
             for key in keys {
-                if merge::row_state(conn, *table, key).await? != Some(RowState::Live) {
+                let facts = self.facts(conn, *table, key).await?;
+                if facts.state != Some(RowState::Live) {
                     continue;
                 }
                 if self.is_severed(*table, key)
-                    || removed(engine, conn, *table, key).await?
-                    || unpublished(engine, conn, *table, key).await?
-                    || self.late(engine, conn, *table, key).await?
-                    || merge::creation_pending(conn, *table, key).await?
+                    || self.own_hiding(engine, conn, *table, key).await?.any()
+                    || facts.creation_pending
                     || self.cascade_roots(engine, conn, *table, key).await?.hides()
                 {
                     hidden.insert((*table, key.clone()));
@@ -257,14 +285,14 @@ impl Visibility {
     /// tombstoned row without one. `None` when the chain reaches a row that was never published
     /// or exceeds [`MAX_REDIRECT_DEPTH`].
     pub(crate) async fn follow(
-        &self,
+        &mut self,
         conn: &mut SqliteConnection,
         table: TableId,
         key: &str,
     ) -> SyncResult<Option<String>> {
         let mut current = key.to_string();
         for _ in 0..MAX_REDIRECT_DEPTH {
-            match merge::row_state(conn, table, &current).await? {
+            match self.state(conn, table, &current).await? {
                 None => return Ok(None),
                 Some(RowState::Live) => match self.keeper(table, &current) {
                     Some(keeper) => current = keeper.clone(),
@@ -281,33 +309,35 @@ impl Visibility {
 
     /// Why a row reached by a cascading reference hides its referrer, if it does by itself.
     async fn root_kind(
-        &self,
+        &mut self,
         engine: &Engine,
         conn: &mut SqliteConnection,
         row: &RowRef,
         identity: bool,
     ) -> SyncResult<Option<RootKind>> {
         let (table, key) = row;
-        Ok(match merge::row_state(conn, *table, key).await? {
+        let facts = self.facts(conn, *table, key).await?;
+        Ok(match facts.state {
             None => Some(RootKind::Missing),
             Some(RowState::Tombstoned) => Some(RootKind::Tombstoned),
-            Some(RowState::Live) if removed(engine, conn, *table, key).await? => {
-                Some(RootKind::Removed)
+            Some(RowState::Live) => {
+                let own = self.own_hiding(engine, conn, *table, key).await?;
+                if own.removed {
+                    Some(RootKind::Removed)
+                } else if self.is_severed(*table, key) {
+                    Some(RootKind::Severed)
+                } else if own.unpublished {
+                    Some(RootKind::Unpublished)
+                } else if own.late {
+                    Some(RootKind::Late)
+                } else if facts.creation_pending {
+                    Some(RootKind::Uncreated)
+                } else if identity && self.is_duplicate(*table, key) {
+                    Some(RootKind::Duplicate)
+                } else {
+                    None
+                }
             }
-            Some(RowState::Live) if self.is_severed(*table, key) => Some(RootKind::Severed),
-            Some(RowState::Live) if unpublished(engine, conn, *table, key).await? => {
-                Some(RootKind::Unpublished)
-            }
-            Some(RowState::Live) if self.late(engine, conn, *table, key).await? => {
-                Some(RootKind::Late)
-            }
-            Some(RowState::Live) if merge::creation_pending(conn, *table, key).await? => {
-                Some(RootKind::Uncreated)
-            }
-            Some(RowState::Live) if identity && self.is_duplicate(*table, key) => {
-                Some(RootKind::Duplicate)
-            }
-            Some(RowState::Live) => None,
         })
     }
 
@@ -315,12 +345,18 @@ impl Visibility {
     /// references name their row as stored, and the others go through [`Self::follow`] and are
     /// dropped when it reaches nothing. The parent of a detached tree row is not followed.
     pub(crate) async fn cascade_targets(
-        &self,
+        &mut self,
         engine: &Engine,
         conn: &mut SqliteConnection,
         table: &TableSpec,
         key: &str,
     ) -> SyncResult<Vec<CascadeTarget>> {
+        let cascades = table
+            .references()
+            .any(|(_, _, reference)| reference.on_delete == OnDelete::Cascade);
+        if !cascades {
+            return Ok(Vec::new());
+        }
         let versions = merge::versions(engine, conn, table.id, key).await?;
         let winners = merge::winners(engine, table, &versions);
         let detached_parent = self
@@ -407,38 +443,95 @@ impl Visibility {
     /// severed, a hidden duplicate, waiting for a creation, failing its publication predicate,
     /// or a late change.
     pub(crate) async fn self_hidden(
-        &self,
+        &mut self,
         engine: &Engine,
         conn: &mut SqliteConnection,
         table: TableId,
         key: &str,
     ) -> SyncResult<bool> {
-        Ok(match merge::row_state(conn, table, key).await? {
+        let facts = self.facts(conn, table, key).await?;
+        Ok(match facts.state {
             None => false,
             Some(RowState::Tombstoned) => true,
             Some(RowState::Live) => {
                 self.is_duplicate(table, key)
-                    || merge::creation_pending(conn, table, key).await?
+                    || facts.creation_pending
                     || self.is_severed(table, key)
-                    || removed(engine, conn, table, key).await?
-                    || unpublished(engine, conn, table, key).await?
-                    || self.late(engine, conn, table, key).await?
+                    || self.own_hiding(engine, conn, table, key).await?.any()
             }
         })
     }
 
-    /// Whether a live row is hidden as a late change of a removed device.
-    async fn late(
-        &self,
+    /// The sync state of a row, read once per visibility.
+    pub(crate) async fn state(
+        &mut self,
+        conn: &mut SqliteConnection,
+        table: TableId,
+        key: &str,
+    ) -> SyncResult<Option<RowState>> {
+        Ok(self.facts(conn, table, key).await?.state)
+    }
+
+    /// The sync state of a row and whether it waits for a creation, read once per visibility.
+    async fn facts(
+        &mut self,
+        conn: &mut SqliteConnection,
+        table: TableId,
+        key: &str,
+    ) -> SyncResult<RowFacts> {
+        let row = (table, key.to_string());
+        if let Some(facts) = self.facts.get(&row) {
+            return Ok(*facts);
+        }
+        let stored: Option<(String, i64)> = sqlx::query_as(
+            "SELECT state, creation_pending FROM sync_rows WHERE table_id = ? AND row_key = ?",
+        )
+        .bind(table_param(table))
+        .bind(key)
+        .fetch_optional(&mut *conn)
+        .await?;
+        let facts = match stored {
+            None => RowFacts {
+                state: None,
+                creation_pending: false,
+            },
+            Some((state, pending)) => RowFacts {
+                state: merge::parse_row_state(Some(&state))?,
+                creation_pending: pending == 1,
+            },
+        };
+        self.facts.insert(row, facts);
+        Ok(facts)
+    }
+
+    /// Whether a live row is removed, fails its publication predicate, or is hidden as a late
+    /// change of a removed device, read once per visibility.
+    async fn own_hiding(
+        &mut self,
         engine: &Engine,
         conn: &mut SqliteConnection,
         table: TableId,
         key: &str,
-    ) -> SyncResult<bool> {
-        if self.no_late {
-            return Ok(false);
+    ) -> SyncResult<OwnHiding> {
+        let row = (table, key.to_string());
+        if let Some(own) = self.own.get(&row) {
+            return Ok(*own);
         }
-        exclusion::hides(engine, conn, table, key).await
+        let Some(spec) = engine.manifest().table(table) else {
+            return Err(corrupt("reference to an unknown table"));
+        };
+        let versions = if spec.exists_group().is_some() || spec.publish_when.is_some() {
+            merge::versions(engine, conn, table, key).await?
+        } else {
+            Vec::new()
+        };
+        let own = OwnHiding {
+            removed: removed_by(engine, spec, &versions),
+            unpublished: publication::unpublished(engine, conn, spec, key, &versions).await?,
+            late: !self.no_late && exclusion::hides(engine, conn, table, key).await?,
+        };
+        self.own.insert(row, own);
+        Ok(own)
     }
 
     /// Whether a row without merge state was created by a removed device's excluded operation,
@@ -463,7 +556,7 @@ impl Visibility {
         table: TableId,
         key: &str,
     ) -> SyncResult<bool> {
-        if merge::row_state(conn, table, key).await?.is_none() {
+        if self.state(conn, table, key).await?.is_none() {
             return Ok(false);
         }
         Ok(self.self_hidden(engine, conn, table, key).await?
@@ -486,19 +579,6 @@ pub(crate) async fn lowest_redirect(
     .await?)
 }
 
-/// Whether a live row fails its table's publication predicate.
-async fn unpublished(
-    engine: &Engine,
-    conn: &mut SqliteConnection,
-    table: TableId,
-    key: &str,
-) -> SyncResult<bool> {
-    let Some(spec) = engine.manifest().table(table) else {
-        return Err(corrupt("reference to an unknown table"));
-    };
-    publication::unpublished(engine, conn, spec, key).await
-}
-
 /// Whether the existence register of a derived-key row holds 0. Such a row is deleted for
 /// every reference to it, like a tombstone without a redirect.
 pub(crate) async fn removed(
@@ -510,15 +590,23 @@ pub(crate) async fn removed(
     let Some(spec) = engine.manifest().table(table) else {
         return Err(corrupt("reference to an unknown table"));
     };
-    let Some(exists) = spec.exists_group() else {
+    if spec.exists_group().is_none() {
         return Ok(false);
-    };
+    }
     let versions = merge::versions(engine, conn, table, key).await?;
+    Ok(removed_by(engine, spec, &versions))
+}
+
+/// Whether the winning existence value among a row's retained `versions` records a removal.
+fn removed_by(engine: &Engine, spec: &TableSpec, versions: &[merge::Version]) -> bool {
+    let Some(exists) = spec.exists_group() else {
+        return false;
+    };
     let winner = merge::winner(
         engine,
         spec,
         exists,
         versions.iter().filter(|version| version.group == exists.id),
     );
-    Ok(merge::is_removal(winner.map(|version| &version.value)))
+    merge::is_removal(winner.map(|version| &version.value))
 }

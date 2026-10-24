@@ -23,7 +23,7 @@
 | `sync_late_changes` | Rows a removed device changed past its cutoff, per removal, until an admin restores or discards them. |
 | `sync_fork_evidence` | Two signed operations of one writer at one sequence with different hashes. |
 | `sync_row_creations` | The applied operations that created each published row, so excluding a forked branch can tell whether another operation still creates a row. `sync_rows.creation_pending` marks a row that holds honest changes but no creation and stays hidden until an operation creates it. |
-| `sync_stale_rows` | Rows whose domain state storing an excluded operation may have made stale, materialized again by the next engine write. |
+| `sync_stale_rows` | Rows whose domain state storing an excluded operation may have made stale, and rows an applied chain group left for repair. Engine writes take them back a bounded number at a time once no chain is between groups. |
 | `sync_anchor_marks` | Per writer, the highest sequence the anchor confirmed storing. Device-local; never replicates. |
 | `sync_restated_groups` | Per group, the value hash the anchor sealed again without a newer edit, so restoring a late change does not count that version as newer. Kept while the row has an undecided late change. Device-local; never replicates. |
 

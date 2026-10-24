@@ -94,19 +94,19 @@ pub(crate) fn condition_in(manifest: &Manifest, table: &TableSpec, alias: &str) 
     ))
 }
 
-/// Whether a live row of a predicate table fails its predicate with its merged winners, which
-/// hides it and the children published with it.
+/// Whether a live row of a predicate table fails its predicate with the winners of its retained
+/// `versions`, which hides it and the children published with it.
 pub(crate) async fn unpublished(
     engine: &Engine,
     conn: &mut SqliteConnection,
     table: &TableSpec,
     key: &str,
+    versions: &[merge::Version],
 ) -> SyncResult<bool> {
     let Some(predicate) = table.publish_when else {
         return Ok(false);
     };
-    let versions = merge::versions(engine, conn, table.id, key).await?;
-    let winners = merge::winners(engine, table, &versions);
+    let winners = merge::winners(engine, table, versions);
     let mut fields = vec![Field::Text(key.to_string())];
     let mut names = vec![table.key_column];
     for group in table.groups {

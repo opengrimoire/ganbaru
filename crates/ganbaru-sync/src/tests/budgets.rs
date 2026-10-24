@@ -14,7 +14,7 @@ use super::block_on;
 use super::calendar::{calendar_sql, event_sql};
 use super::distractions::block_sql;
 use super::focus::{close_run_sql, open_run_sql};
-use super::groups::continuing_ops;
+use super::groups::flagged_ops;
 use super::projects::{project_sql, task_sql};
 use super::replica::{Replica, enroll_entry, person, quoted, rank};
 use crate::exclusion::MAX_EXCLUDED_PER_WRITER;
@@ -656,13 +656,15 @@ fn focus_seal_of_a_closed_run_holds_its_budget() {
 
 /// Time of one apply transaction over a group of [`MAX_OPERATIONS_PER_GROUP`] single-note
 /// operations from a writer that marks every operation as continuing, the most operations one
-/// group can hold.
+/// group can hold. One more operation closes the chain, since a chain applies only once closed.
 async fn apply_of_a_continuing_group() -> Duration {
     let mut author = Replica::new(0, 19).await;
     let mut reader = Replica::new(1, 19).await;
     warm_seal(&mut author, SEEDED_OPS).await;
     assert_eq!(deliver(&mut author, &mut reader).await.0, 2);
-    let forged = continuing_ops(&mut author, MAX_OPERATIONS_PER_GROUP).await;
+    let mut flags = vec![true; MAX_OPERATIONS_PER_GROUP];
+    flags.push(false);
+    let forged = flagged_ops(&mut author, &flags).await;
     reader.receive(&forged).await;
     let started = Instant::now();
     let report = reader.apply_once().await.unwrap();

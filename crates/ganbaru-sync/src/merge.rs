@@ -145,13 +145,14 @@ pub(crate) fn parse_row_state(state: Option<&str>) -> SyncResult<Option<RowState
 }
 
 /// Records that operation `seq` of `writer` created a row, which no longer waits for a
-/// creation.
+/// creation. A `fresh` row got its merge state from this creation, so it never waited.
 async fn record_creation(
     conn: &mut SqliteConnection,
     table: TableId,
     key: &str,
     writer: WriterId,
     seq: Seq,
+    fresh: bool,
 ) -> SyncResult<()> {
     sqlx::query(
         "INSERT INTO sync_row_creations (table_id, row_key, writer_id, seq) VALUES (?, ?, ?, ?)
@@ -163,6 +164,9 @@ async fn record_creation(
     .bind(seq_i64(seq)?)
     .execute(&mut *conn)
     .await?;
+    if fresh {
+        return Ok(());
+    }
     sqlx::query(
         "UPDATE sync_rows SET creation_pending = 0
          WHERE table_id = ? AND row_key = ? AND creation_pending = 1",
@@ -213,22 +217,6 @@ pub(crate) async fn mark_uncreated(
         .await?;
     }
     Ok(())
-}
-
-/// Whether a row's merge state holds no creation yet, so it is not materialized.
-pub(crate) async fn creation_pending(
-    conn: &mut SqliteConnection,
-    table: TableId,
-    key: &str,
-) -> SyncResult<bool> {
-    let pending: Option<i64> = sqlx::query_scalar(
-        "SELECT creation_pending FROM sync_rows WHERE table_id = ? AND row_key = ?",
-    )
-    .bind(table_param(table))
-    .bind(key)
-    .fetch_optional(&mut *conn)
-    .await?;
-    Ok(pending == Some(1))
 }
 
 /// Retained versions of a row with elided values read back, ordered by group and writer.
@@ -452,7 +440,7 @@ pub(crate) async fn restore_version(
         hash: stored.hash,
         value,
     };
-    replace_version_refs(conn, table.id, key, stored.writer, &[(&group, spec)]).await
+    replace_version_refs(conn, table.id, key, stored.writer, &[(&group, spec)], false).await
 }
 
 /// Records one change of an applied operation in the merge state. With `retain`, the versions
@@ -497,7 +485,7 @@ pub(crate) async fn apply_change(
         return Err(corrupt("change for an unpublished row reached apply"));
     };
     if change.action == ChangeAction::Create {
-        record_creation(conn, change.table, key, writer, seq).await?;
+        record_creation(conn, change.table, key, writer, seq, created).await?;
     }
     if change.action == ChangeAction::Tombstone {
         sqlx::query(
@@ -578,13 +566,13 @@ pub(crate) async fn apply_change(
             upserts.push((group, spec));
         }
     }
-    upsert_versions(conn, change, writer, seq, clock, &upserts).await?;
+    upsert_versions(conn, change, writer, seq, clock, &upserts, created).await?;
     batch.dirty.insert((change.table, key.to_string()));
     Ok(())
 }
 
 /// Records the versions a change writes in one statement, then replaces their reference
-/// targets.
+/// targets. A `fresh` row got its merge state from this change.
 async fn upsert_versions(
     conn: &mut SqliteConnection,
     change: &Change,
@@ -592,6 +580,7 @@ async fn upsert_versions(
     seq: Seq,
     clock: Hlc,
     upserts: &[(&GroupValue, &GroupSpec)],
+    fresh: bool,
 ) -> SyncResult<()> {
     if upserts.is_empty() {
         return Ok(());
@@ -622,17 +611,27 @@ async fn upsert_versions(
             .bind(group.value.encode());
     }
     query.execute(&mut *conn).await?;
-    replace_version_refs(conn, change.table, change.row.as_str(), writer, upserts).await
+    replace_version_refs(
+        conn,
+        change.table,
+        change.row.as_str(),
+        writer,
+        upserts,
+        fresh,
+    )
+    .await
 }
 
 /// Replaces the reference targets of the versions a change wrote: one row per reference column
-/// holding a row key, and one per distinct key the owned rows of a blob field reference.
+/// holding a row key, and one per distinct key the owned rows of a blob field reference. A
+/// `fresh` row got its merge state from this change, so it has no targets to replace.
 async fn replace_version_refs(
     conn: &mut SqliteConnection,
     table: TableId,
     row: &str,
     writer: WriterId,
     upserts: &[(&GroupValue, &GroupSpec)],
+    fresh: bool,
 ) -> SyncResult<()> {
     let referencing = upserts
         .iter()
@@ -643,19 +642,21 @@ async fn replace_version_refs(
     if referencing.is_empty() {
         return Ok(());
     }
-    let groups = vec!["?"; referencing.len()].join(", ");
-    let sql = format!(
-        "DELETE FROM sync_version_refs
-         WHERE table_id = ? AND row_key = ? AND writer_id = ? AND group_id IN ({groups})"
-    );
-    let mut query = sqlx::query(sqlx::AssertSqlSafe(sql.as_str()))
-        .bind(table_param(table))
-        .bind(row)
-        .bind(writer.as_bytes().as_slice());
-    for (group, _) in &referencing {
-        query = query.bind(i64::from(group.group.get()));
+    if !fresh {
+        let groups = vec!["?"; referencing.len()].join(", ");
+        let sql = format!(
+            "DELETE FROM sync_version_refs
+             WHERE table_id = ? AND row_key = ? AND writer_id = ? AND group_id IN ({groups})"
+        );
+        let mut query = sqlx::query(sqlx::AssertSqlSafe(sql.as_str()))
+            .bind(table_param(table))
+            .bind(row)
+            .bind(writer.as_bytes().as_slice());
+        for (group, _) in &referencing {
+            query = query.bind(i64::from(group.group.get()));
+        }
+        query.execute(&mut *conn).await?;
     }
-    query.execute(&mut *conn).await?;
 
     let mut targets = BTreeSet::new();
     for (group, spec) in &referencing {

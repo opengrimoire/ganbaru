@@ -11,6 +11,8 @@ import {
   normalizeDistractionsUsageLimitName,
   normalizeDistractionsHost,
   parseDistractionsHosts,
+  distractionsEditProblem,
+  type DistractionsEditProblem,
   type DistractionsAppRule,
   type DistractionsCategoryId,
   type DistractionsCategoryRule,
@@ -87,6 +89,8 @@ export type SaveDistractionsUsageLimitResult =
   | "protected-source";
 
 let config = $state<DistractionsConfig>(normalizeDistractionsConfig(undefined));
+/** Why the latest rule edit was not saved; the next saved edit clears it. */
+let editProblem = $state<DistractionsEditProblem | null>(null);
 
 /** Edits and reloads run one at a time, in the order they were made. */
 let queue: Promise<void> = Promise.resolve();
@@ -121,6 +125,7 @@ function edit(next: DistractionsConfig | null, run: () => Promise<DistractionsRu
   queue = queue.then(async () => {
     try {
       const outcome = await run();
+      editProblem = distractionsEditProblem(outcome);
       if (outcome.status === "saved") {
         ruleChanges.publish([RULES_CHANGE_KEY]);
         if (generation === editGeneration) config = outcome.config;
@@ -128,6 +133,7 @@ function edit(next: DistractionsConfig | null, run: () => Promise<DistractionsRu
       }
       console.warn("Distractions rule edit was refused", outcome.reason);
     } catch (error) {
+      editProblem = { kind: "failed" };
       console.warn("Distractions rule edit could not be saved", error);
     }
     if (generation === editGeneration) await reloadRules();
@@ -452,6 +458,10 @@ export function getDistractions() {
   return {
     get enabled(): boolean {
       return config.enabled;
+    },
+    /** Why the latest rule edit was not saved, or `null` once an edit saves. */
+    get editProblem(): DistractionsEditProblem | null {
+      return editProblem;
     },
     get mode(): DistractionsMode {
       return config.mode;

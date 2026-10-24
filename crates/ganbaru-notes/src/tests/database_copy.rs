@@ -999,6 +999,62 @@ fn copying_database_rows_preserves_assets_and_literal_values_and_drops_uncopied_
 }
 
 #[test]
+fn copying_a_database_drops_links_to_archived_rows_instead_of_failing() {
+    crate::test_block_on(async {
+        let pool = migrated_memory_pool().await;
+        seed_database(&pool).await;
+        data_sources::rows::create_data_source_row_page(
+            &pool,
+            DATA_SOURCE_A,
+            NoteDataSourceRowPageCreate {
+                id: COMMENT_B.into(),
+                title: "Archived target".into(),
+                first_block_id: COMMENT_C.into(),
+                properties: None,
+            },
+        )
+        .await
+        .unwrap();
+        data_sources::layouts::table::update_data_source_row_property(
+            &pool,
+            DATA_SOURCE_A,
+            PAGE_B,
+            NoteDataSourceRowPropertyUpdate {
+                property_id: "related".into(),
+                value: json!([PAGE_B, COMMENT_B]),
+            },
+        )
+        .await
+        .unwrap();
+        writes::archive_page(&pool, COMMENT_B, true).await.unwrap();
+
+        let copied = serde_json::to_value(
+            databases::duplicate_database(&pool, duplicate_request(DATABASE_B))
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        let row: String = sqlx::query_scalar(
+            "SELECT id FROM notes_pages WHERE parent_data_source_id = ? AND title = 'First row'",
+        )
+        .bind(copied["data_source"]["id"].as_str().unwrap())
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        let page =
+            serde_json::to_value(reads::get_page(&pool, &row, false).await.unwrap()).unwrap();
+        assert_eq!(page["properties"]["Related"]["relation"], json!([{"id": row}]));
+        let source = serde_json::to_value(reads::get_page(&pool, PAGE_B, false).await.unwrap())
+            .unwrap();
+        assert_eq!(
+            source["properties"]["Related"]["relation"],
+            json!([{"id": PAGE_B}, {"id": COMMENT_B}]),
+            "the source row keeps its link to the archived row"
+        );
+    });
+}
+
+#[test]
 fn page_history_restore_refuses_to_delete_database_graphs() {
     crate::test_block_on(async {
         let pool = migrated_memory_pool().await;

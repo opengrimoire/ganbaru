@@ -510,9 +510,24 @@ async fn delete_link(
     property_id: &str,
     target_page_id: &str,
 ) -> Result<(), String> {
+    // A one-way property reads only its forward edges, so an edge stored the other way under
+    // the same property is a separate link and must survive.
     let reverse_property_id = match pairing {
         RelationPairing::Peer(peer_property_id) => peer_property_id.as_str(),
-        _ => property_id,
+        RelationPairing::SelfSynced => property_id,
+        RelationPairing::Own | RelationPairing::Missing => {
+            sqlx::query(
+                "DELETE FROM notes_relation_edges
+                 WHERE source_page_id = ? AND source_property_id = ? AND target_page_id = ?",
+            )
+            .bind(page_id)
+            .bind(property_id)
+            .bind(target_page_id)
+            .execute(&mut *connection)
+            .await
+            .map_err(|e| format!("delete notes relation edge: {e}"))?;
+            return Ok(());
+        }
     };
     sqlx::query(
         "DELETE FROM notes_relation_edges

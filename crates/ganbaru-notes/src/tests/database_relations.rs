@@ -339,3 +339,115 @@ fn database_relations_sync_two_way_when_inverse_property_is_configured() {
         }
     });
 }
+
+async fn self_relation_targets(pool: &sqlx::SqlitePool, page_id: &str) -> Vec<String> {
+    let page = reads::get_page(pool, page_id, false).await.unwrap();
+    serde_json::to_value(page).unwrap()["properties"]["Related"]["relation"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|item| item["id"].as_str().unwrap().to_string())
+        .collect()
+}
+
+async fn set_self_relation(pool: &sqlx::SqlitePool, page_id: &str, targets: serde_json::Value) {
+    data_sources::layouts::table::update_data_source_row_property(
+        pool,
+        DATA_SOURCE_A,
+        page_id,
+        NoteDataSourceRowPropertyUpdate {
+            property_id: "related".to_string(),
+            value: targets,
+        },
+    )
+    .await
+    .unwrap();
+}
+
+async fn relation_edge_count(pool: &sqlx::SqlitePool) -> i64 {
+    sqlx::query_scalar("SELECT COUNT(*) FROM notes_relation_edges")
+        .fetch_one(pool)
+        .await
+        .unwrap()
+}
+
+#[test]
+fn database_relations_removing_a_self_relation_link_keeps_links_its_pairing_does_not_share() {
+    crate::test_block_on(async {
+        for synced in [false, true] {
+            let pool = migrated_memory_pool().await;
+            create_page(&pool, PAGE_A, BLOCK_A).await;
+            create_database(
+                &pool,
+                DATABASE_A,
+                DATA_SOURCE_A,
+                DATABASE_VIEW_A,
+                "Tasks",
+                BLOCK_A,
+            )
+            .await;
+            let mut relation = json!({ "data_source_id": DATA_SOURCE_A });
+            if synced {
+                relation["dual_property"] = json!({
+                    "synced_property_id": "related",
+                    "synced_property_name": "Related"
+                });
+            }
+            data_sources::schema::update_data_source_schema(
+                &pool,
+                DATA_SOURCE_A,
+                None,
+                None,
+                NoteDataSourceSchemaUpdate {
+                    properties: json!({
+                        "Name": { "id": "title", "name": "Name", "type": "title", "title": {} },
+                        "Related": {
+                            "id": "related",
+                            "name": "Related",
+                            "type": "relation",
+                            "relation": relation
+                        }
+                    }),
+                },
+            )
+            .await
+            .unwrap();
+            for (page_id, block_id) in [(PAGE_B, BLOCK_B), (PAGE_C, BLOCK_C)] {
+                data_sources::rows::create_data_source_row_page(
+                    &pool,
+                    DATA_SOURCE_A,
+                    NoteDataSourceRowPageCreate {
+                        id: page_id.to_string(),
+                        title: page_id.to_string(),
+                        first_block_id: block_id.to_string(),
+                        properties: None,
+                    },
+                )
+                .await
+                .unwrap();
+            }
+
+            set_self_relation(&pool, PAGE_B, json!([PAGE_C])).await;
+            set_self_relation(&pool, PAGE_C, json!([PAGE_B])).await;
+            assert_eq!(
+                relation_edge_count(&pool).await,
+                if synced { 1 } else { 2 },
+                "synced: {synced}"
+            );
+
+            set_self_relation(&pool, PAGE_B, json!([])).await;
+            assert!(self_relation_targets(&pool, PAGE_B).await.is_empty());
+            let reverse = self_relation_targets(&pool, PAGE_C).await;
+            if synced {
+                assert!(reverse.is_empty(), "a synced self relation drops both sides");
+            } else {
+                assert_eq!(reverse, vec![PAGE_B.to_string()], "a one-way link survives");
+            }
+            assert_eq!(
+                relation_edge_count(&pool).await,
+                if synced { 0 } else { 1 },
+                "synced: {synced}"
+            );
+        }
+    });
+}

@@ -566,8 +566,8 @@ async fn live_relation_schema(
 }
 
 /// The relation values of `properties` under `schema`, keeping only related pages that are still
-/// rows of each relation's target data source. Trashed and archived rows stay linked, as they
-/// do on the source row, so restoring them restores the link on both rows.
+/// active rows of each relation's target data source. Relation writes accept only active
+/// targets, so a trashed or archived related row is left out of the copy instead of failing it.
 async fn related_row_values(
     tx: &mut Transaction<'_, Sqlite>,
     schema: &Value,
@@ -597,7 +597,8 @@ async fn related_row_values(
                     .and_then(Value::as_str)
                     .ok_or("copied relation has no page id")?;
                 let active: bool = sqlx::query_scalar(
-                    "SELECT EXISTS(SELECT 1 FROM notes_pages WHERE id = ? AND parent_data_source_id = ?)",
+                    "SELECT EXISTS(SELECT 1 FROM notes_pages WHERE id = ? AND parent_data_source_id = ?
+                    AND in_trash = 0 AND archived = 0)",
                 )
                 .bind(page_id)
                 .bind(&relation.target_data_source_id)

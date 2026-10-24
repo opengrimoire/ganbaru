@@ -1,4 +1,4 @@
-//! Deletion holds for domain Undo and sealing split into batches.
+//! Deletion and insert holds for domain Undo and sealing split into batches.
 
 use sqlx::Connection;
 
@@ -7,7 +7,7 @@ use super::fixture::{
     CYCLE_A_TABLE, CYCLE_B_TABLE, ITEMS_TABLE, MEMO_LINES_TABLE, MEMO_TAGS_TABLE, MEMOS_TABLE,
     TEST_MANIFEST, edge_key, memo_tag_key,
 };
-use super::replica::{Replica, converge, rank};
+use super::replica::{Replica, connection_from, converge, rank};
 use crate::error::failpoints;
 use crate::hold::{self, MAX_HOLD_MS};
 use crate::{MAX_OPS_PER_SEAL, SyncError};
@@ -414,6 +414,152 @@ fn undo_of_the_held_row_alone_with_its_old_values_seals_nothing_and_keeps_its_ch
         assert_eq!(memo_captures(author).await, 0);
         assert_eq!(held_until(author, start + MAX_HOLD_MS).await, held);
         assert_eq!(memo_rows(author).await, [1, 0, 0]);
+    });
+}
+
+/// Inserts `memo-1` with its lines and tag and holds the inserts until `until_ms`, in one
+/// transaction like a domain deletion that writes rows Undo removes again.
+async fn create_held(replica: &mut Replica, until_ms: u64) {
+    let now = replica.now_ms;
+    let mut tx = replica.conn.begin().await.unwrap();
+    sqlx::raw_sql(sqlx::AssertSqlSafe(memo_with_children()))
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    hold::hold_creates(
+        &replica.engine,
+        &mut tx,
+        MEMOS_TABLE,
+        &["memo-1"],
+        now,
+        until_ms,
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+}
+
+/// Captured inserts held until `until_ms`.
+async fn held_creates(replica: &mut Replica, until_ms: u64) -> i64 {
+    replica
+        .count(&format!(
+            "SELECT count(*) FROM sync_capture
+             WHERE created = 1 AND deleted = 0 AND held_until_ms = {until_ms}"
+        ))
+        .await
+}
+
+#[test]
+fn held_inserts_removed_inside_the_lease_publish_nothing() {
+    block_on(async {
+        let mut replicas = replicas(2).await;
+        let author = &mut replicas[0];
+        let start = author.now_ms;
+        create_held(author, start + MAX_HOLD_MS).await;
+        assert_eq!(
+            held_creates(author, start + MAX_HOLD_MS).await,
+            4,
+            "the lines and the tag share the memo's lease"
+        );
+        assert_eq!(author.seal().await.unwrap().changes, 0);
+
+        author.now_ms = start + MAX_HOLD_MS / 2;
+        author
+            .exec("DELETE FROM fixture_memos WHERE id = 'memo-1'")
+            .await;
+        assert_eq!(author.seal().await.unwrap().changes, 0);
+        author.now_ms = start + MAX_HOLD_MS;
+        assert_eq!(author.seal().await.unwrap().changes, 0);
+        assert_eq!(author.count("SELECT count(*) FROM sync_capture").await, 0);
+        converge(&mut replicas).await;
+        for replica in &mut replicas {
+            assert_eq!(memo_rows(replica).await, [0, 0, 0]);
+            assert_eq!(replica.count("SELECT count(*) FROM sync_rows").await, 0);
+            assert_eq!(
+                replica.count("SELECT count(*) FROM sync_tombstones").await,
+                0
+            );
+        }
+    });
+}
+
+#[test]
+fn held_inserts_publish_once_at_expiry_across_a_crash_and_a_restart() {
+    block_on(async {
+        let mut replicas = replicas(2).await;
+        let author = &mut replicas[0];
+        let start = author.now_ms;
+        create_held(author, start + 1_000).await;
+        author.conn = connection_from(&author.snapshot().await).await;
+        assert_eq!(held_creates(author, start + 1_000).await, 4);
+        author.now_ms = start + 999;
+        assert_eq!(author.seal().await.unwrap().changes, 0);
+
+        author.now_ms = start + 1_000;
+        let before = author.snapshot().await;
+        failpoints::arm("hold.before_seal");
+        let crashed = author.seal().await;
+        failpoints::clear();
+        assert!(
+            matches!(crashed, Err(SyncError::Failpoint("hold.before_seal"))),
+            "{crashed:?}"
+        );
+        assert!(author.snapshot().await == before, "the crash left changes");
+        author.conn = connection_from(&before).await;
+        assert_eq!(held_creates(author, start + 1_000).await, 4);
+
+        assert_eq!(author.seal().await.unwrap().changes, 4);
+        assert_eq!(author.count("SELECT count(*) FROM sync_capture").await, 0);
+        assert_eq!(author.seal().await.unwrap().sealed_ops, 0);
+        converge(&mut replicas).await;
+        for replica in &mut replicas {
+            assert_eq!(memo_rows(replica).await, [1, 2, 1]);
+        }
+        let first = replicas[0].dump().await;
+        assert_eq!(replicas[1].dump().await, first);
+    });
+}
+
+#[test]
+fn holding_inserts_leaves_published_rows_and_refuses_tables_without_holds() {
+    block_on(async {
+        let mut replicas = shared_memo().await;
+        let author = &mut replicas[0];
+        let now = author.now_ms;
+        author
+            .exec("UPDATE fixture_memos SET label = 'Two' WHERE id = 'memo-1'")
+            .await;
+        hold::hold_creates(
+            &author.engine,
+            &mut author.conn,
+            MEMOS_TABLE,
+            &["memo-1"],
+            now,
+            now + MAX_HOLD_MS,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            author
+                .count("SELECT count(*) FROM sync_capture WHERE held_until_ms IS NOT NULL")
+                .await,
+            0,
+            "a published row's write is not held"
+        );
+        assert_eq!(author.seal().await.unwrap().changes, 1);
+        let refused = hold::hold_creates(
+            &author.engine,
+            &mut author.conn,
+            ITEMS_TABLE,
+            &["item-1"],
+            now,
+            now,
+        )
+        .await;
+        assert!(
+            matches!(refused, Err(SyncError::InvalidRequest(_))),
+            "{refused:?}"
+        );
     });
 }
 

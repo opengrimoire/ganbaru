@@ -272,6 +272,55 @@ fn focus_closing_a_run_publishes_it_with_its_children_in_one_seal() {
     });
 }
 
+#[test]
+fn focus_a_long_closed_run_applies_without_repairs() {
+    block_on(async {
+        const LONG_SEGMENTS: u32 = 40;
+        const LONG_EVENTS: u32 = 300;
+        let mut replicas = shared(2).await;
+        replicas[0]
+            .exec(&format!(
+                "{}{}",
+                open_run_sql(RUN, EVENT, LONG_SEGMENTS, LONG_EVENTS),
+                close_run_sql(RUN, LONG_SEGMENTS)
+            ))
+            .await;
+        let sealed = replicas[0].seal().await.unwrap();
+        assert!(sealed.invalid_rows.is_empty(), "{:?}", sealed.invalid_rows);
+        assert!(sealed.changes > crate::MAX_CHANGES_PER_APPLY);
+        assert_eq!(
+            sealed.sealed_ops, 1,
+            "the run and its children seal together"
+        );
+
+        let (author, rest) = replicas.split_at_mut(1);
+        let reader = &mut rest[0];
+        let known = reader.stored_vector().await;
+        let ops = author[0].ops_since(&known).await;
+        reader.receive(&ops).await;
+        let closed = [1, i64::from(LONG_SEGMENTS), 1, i64::from(LONG_EVENTS) + 1];
+        for _ in 0..ops.len() {
+            let report = reader.apply_once().await.unwrap();
+            assert!(
+                report.seal.is_none(),
+                "a receiver should seal no repair: {:?}",
+                report.seal
+            );
+            let seen = history(reader).await;
+            assert!(
+                seen == [0; 4] || seen == closed,
+                "a closed run applies whole: {seen:?}"
+            );
+            if !report.more {
+                break;
+            }
+        }
+        assert_eq!(history(reader).await, closed);
+        converge(&mut replicas).await;
+        assert_converged(&mut replicas).await;
+    });
+}
+
 /// Arms `name`, checks that `call` fails there leaving `replica` exactly as it was, then runs
 /// the call again disarmed.
 async fn after_rollback<T: std::fmt::Debug>(

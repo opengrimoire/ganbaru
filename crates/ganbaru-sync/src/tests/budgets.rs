@@ -14,15 +14,19 @@ use super::calendar::{calendar_sql, event_sql};
 use super::focus::{close_run_sql, open_run_sql};
 use super::projects::{project_sql, task_sql};
 use super::replica::{Replica, enroll_entry, person, quoted, rank};
-use crate::authorization;
 use crate::exclusion::MAX_EXCLUDED_PER_WRITER;
+use crate::{MAX_CHANGES_PER_APPLY, MAX_OPS_PER_APPLY, authorization};
 
 /// Domain writes timed for the capture overhead.
 const CAPTURE_WRITES: u32 = 500;
-/// Changed notes in one seal.
+/// Changed notes in one seal transaction, a burst of interactive edits.
 const SEAL_NOTES: u32 = 100;
-/// Operations in one apply batch.
-const APPLY_OPS: u32 = 256;
+/// Single-change operations in one apply transaction: a full batch.
+const APPLY_OPS: u32 = MAX_OPS_PER_APPLY as u32;
+/// Changes of one operation applied in one transaction: a full batch.
+const APPLY_CHANGES: u32 = MAX_CHANGES_PER_APPLY as u32;
+/// Operations of the workloads that apply over several transactions.
+const SEEDED_OPS: u32 = 256;
 /// Runs of each measurement; the median is checked so one scheduling stall does not decide it.
 const RUNS: usize = 5;
 
@@ -40,6 +44,10 @@ const CALENDAR_SEAL_BUDGET: Duration = Duration::from_secs(3);
 const CALENDAR_APPLY_BUDGET: Duration = Duration::from_secs(10);
 /// Most a member's apply may take relative to the anchor's, which retains no displaced versions.
 const RETENTION_MARGIN: f64 = 1.1;
+/// Adjacent member and anchor runs whose median ratio is checked against the margin. More
+/// than [`RUNS`], because one stalled run moves a ratio of two short runs further than a
+/// median of either side alone.
+const RETENTION_PAIRS: usize = 11;
 
 fn insert_note(id: u32, title: &str) -> String {
     format!(
@@ -121,53 +129,85 @@ async fn deliver(from: &mut Replica, to: &mut Replica) -> (usize, Duration) {
     (applied, started.elapsed())
 }
 
-async fn seal_of_changed_notes() -> Duration {
+/// Time of one seal transaction over `notes` changed notes, each written by its own domain
+/// transaction.
+async fn seal_of_changed_notes(notes: u32) -> Duration {
     let mut replica = Replica::new(0, 8).await;
-    warm_seal(&mut replica, SEAL_NOTES).await;
-    for id in 0..SEAL_NOTES {
+    warm_seal(&mut replica, notes).await;
+    for id in 0..notes {
         replica.exec(&insert_note(id, &format!("note {id}"))).await;
     }
     let started = Instant::now();
     let report = replica.seal().await.unwrap();
     let elapsed = started.elapsed();
-    assert!(report.changes >= SEAL_NOTES as usize);
+    assert_eq!(report.changes, notes as usize);
+    assert!(!report.more, "one seal transaction takes every note");
     elapsed
 }
 
-async fn apply_of_a_batch() -> Duration {
+/// Receives every operation `from` holds that `to` lacks and times one apply transaction,
+/// which must take all `ops` of them.
+async fn apply_one_batch(from: &mut Replica, to: &mut Replica, ops: u32) -> Duration {
+    let known = to.stored_vector().await;
+    let received = from.ops_since(&known).await;
+    to.receive(&received).await;
+    let started = Instant::now();
+    let report = to.apply_once().await.unwrap();
+    let elapsed = started.elapsed();
+    assert_eq!(report.applied, ops as usize);
+    assert!(!report.more, "one apply transaction takes every operation");
+    elapsed
+}
+
+/// Time of one apply transaction over `ops` Quick notes inserts.
+async fn apply_of_a_batch(ops: u32) -> Duration {
     let mut author = Replica::new(0, 9).await;
     let mut reader = Replica::new(1, 9).await;
-    warm_seal(&mut author, APPLY_OPS).await;
+    warm_seal(&mut author, ops).await;
     // The genesis and the warm-up operation prepare the reader's statements.
     assert_eq!(deliver(&mut author, &mut reader).await.0, 2);
-    for id in 0..APPLY_OPS {
+    for id in 0..ops {
         author.exec(&insert_note(id, &format!("note {id}"))).await;
         assert_eq!(author.seal().await.unwrap().sealed_ops, 1);
     }
-    let (applied, elapsed) = deliver(&mut author, &mut reader).await;
-    assert_eq!(applied, APPLY_OPS as usize);
-    elapsed
+    apply_one_batch(&mut author, &mut reader, ops).await
 }
 
-/// Applies a batch of Projects task inserts after the project they join has arrived.
-async fn apply_of_a_projects_batch() -> Duration {
+/// Time of one apply transaction over `ops` Projects task inserts, after the project they
+/// join has arrived.
+async fn apply_of_a_projects_batch(ops: u32) -> Duration {
     let mut author = Replica::new(0, 11).await;
     let mut reader = Replica::new(1, 11).await;
     author.exec(&project_sql()).await;
     author.seal().await.unwrap();
-    author.exec(&task_sql("task-warm", "warm", APPLY_OPS)).await;
+    author.exec(&task_sql("task-warm", "warm", ops)).await;
     assert_eq!(author.seal().await.unwrap().sealed_ops, 1);
     // The genesis, the project rows, and the warm-up task prepare the reader's statements.
     assert!(deliver(&mut author, &mut reader).await.0 > 2);
-    for id in 0..APPLY_OPS {
+    for id in 0..ops {
         author
             .exec(&task_sql(&format!("task-{id}"), &format!("task {id}"), id))
             .await;
         assert_eq!(author.seal().await.unwrap().sealed_ops, 1);
     }
-    let (applied, elapsed) = deliver(&mut author, &mut reader).await;
-    assert_eq!(applied, APPLY_OPS as usize);
-    elapsed
+    apply_one_batch(&mut author, &mut reader, ops).await
+}
+
+/// Time of one apply transaction over one operation of `changes` Quick notes inserts sealed
+/// together, as a full seal batch arrives.
+async fn apply_of_one_operation(changes: u32) -> Duration {
+    let mut author = Replica::new(0, 9).await;
+    let mut reader = Replica::new(1, 9).await;
+    warm_seal(&mut author, changes).await;
+    // The genesis and the warm-up operation prepare the reader's statements.
+    assert_eq!(deliver(&mut author, &mut reader).await.0, 2);
+    let notes: String = (0..changes)
+        .map(|id| insert_note(id, &format!("note {id}")))
+        .collect();
+    author.exec(&notes).await;
+    let sealed = author.seal().await.unwrap();
+    assert_eq!((sealed.sealed_ops, sealed.changes), (1, changes as usize));
+    apply_one_batch(&mut author, &mut reader, 1).await
 }
 
 /// Retained value bytes of the author and a reader after a Quick notes seed, as stored and with
@@ -175,7 +215,7 @@ async fn apply_of_a_projects_batch() -> Duration {
 async fn version_bytes_after_a_seed() -> [(usize, usize); 2] {
     let mut author = Replica::new(0, 10).await;
     let mut reader = Replica::new(1, 10).await;
-    for id in 0..APPLY_OPS {
+    for id in 0..SEEDED_OPS {
         author
             .exec(&format!(
                 "{} INSERT INTO quick_note_text_runs (note_id, sort_order, content)
@@ -194,17 +234,17 @@ async fn version_bytes_after_a_seed() -> [(usize, usize); 2] {
     ]
 }
 
-/// Time to apply a batch of `APPLY_OPS` updates that each supersede an applied version, on
+/// Time to apply a batch of `SEEDED_OPS` updates that each supersede an applied version, on
 /// `reader`. A member keeps the superseded versions until the anchor confirms the update; the
 /// anchor keeps none, so the difference is the cost of that retention.
 async fn apply_of_superseding_updates(mut reader: Replica) -> Duration {
     let mut author = Replica::new(0, 11).await;
-    for id in 0..APPLY_OPS {
+    for id in 0..SEEDED_OPS {
         author.exec(&insert_note(id, "seed")).await;
     }
     author.seal().await.unwrap();
     deliver(&mut author, &mut reader).await;
-    for id in 0..APPLY_OPS {
+    for id in 0..SEEDED_OPS {
         author
             .exec(&format!(
                 "UPDATE quick_notes SET title = 'update {id}' WHERE id = 'note-{id}'"
@@ -213,7 +253,7 @@ async fn apply_of_superseding_updates(mut reader: Replica) -> Duration {
         assert_eq!(author.seal().await.unwrap().sealed_ops, 1);
     }
     let (applied, elapsed) = deliver(&mut author, &mut reader).await;
-    assert_eq!(applied, APPLY_OPS as usize);
+    assert_eq!(applied, SEEDED_OPS as usize);
     elapsed
 }
 
@@ -223,13 +263,13 @@ async fn removal_excluding_applied_operations() -> Duration {
     let mut hub = Replica::anchor(0, 12).await;
     let mut removed = Replica::new(1, 12).await;
     let mut member = Replica::new(2, 12).await;
-    for id in 0..APPLY_OPS {
+    for id in 0..SEEDED_OPS {
         removed.exec(&insert_note(id, "seed")).await;
     }
     removed.seal().await.unwrap();
     hub.pull(&mut removed).await;
     for write in 0..MAX_EXCLUDED_PER_WRITER {
-        let id = u32::try_from(write).unwrap() % APPLY_OPS;
+        let id = u32::try_from(write).unwrap() % SEEDED_OPS;
         removed
             .exec(&format!(
                 "UPDATE quick_notes SET title = 'late {write}' WHERE id = 'note-{id}'"
@@ -247,7 +287,7 @@ async fn removal_excluding_applied_operations() -> Duration {
     let restored = member
         .count("SELECT count(*) FROM quick_notes WHERE title = 'seed'")
         .await;
-    assert_eq!(restored, i64::from(APPLY_OPS));
+    assert_eq!(restored, i64::from(SEEDED_OPS));
     elapsed
 }
 
@@ -256,7 +296,7 @@ async fn removal_excluding_applied_operations() -> Duration {
 /// it retained; the anchor retained none and captures every group the branch wrote instead.
 async fn fork_excluding_applied_operations(mut member: Replica, anchor: bool) -> Duration {
     let mut original = Replica::new(1, 14).await;
-    for id in 0..APPLY_OPS {
+    for id in 0..SEEDED_OPS {
         original.exec(&insert_note(id, "seed")).await;
     }
     original.seal().await.unwrap();
@@ -265,7 +305,7 @@ async fn fork_excluding_applied_operations(mut member: Replica, anchor: bool) ->
     let writer = original.writer();
     let keep = original.stored_vector().await.get(&writer);
     for write in 0..MAX_EXCLUDED_PER_WRITER {
-        let id = u32::try_from(write).unwrap() % APPLY_OPS;
+        let id = u32::try_from(write).unwrap() % SEEDED_OPS;
         original
             .exec(&format!(
                 "UPDATE quick_notes SET title = 'branch {write}' WHERE id = 'note-{id}'"
@@ -312,12 +352,12 @@ async fn fork_excluding_applied_operations(mut member: Replica, anchor: bool) ->
     );
     if anchor {
         let captured = member.count("SELECT count(*) FROM sync_capture").await;
-        assert_eq!(captured, i64::from(APPLY_OPS));
+        assert_eq!(captured, i64::from(SEEDED_OPS));
     } else {
         let restored = member
             .count("SELECT count(*) FROM quick_notes WHERE title = 'seed'")
             .await;
-        assert_eq!(restored, i64::from(APPLY_OPS));
+        assert_eq!(restored, i64::from(SEEDED_OPS));
     }
     elapsed
 }
@@ -354,34 +394,64 @@ async fn view_revision(replica: &mut Replica) -> u64 {
         .revision
 }
 
+/// Member over anchor ratios of [`apply_of_superseding_updates`], one per pair of adjacent
+/// runs. Which side runs first alternates, so load that drifts across a pair weighs on both
+/// sides alike.
+async fn retention_ratios() -> (Vec<f64>, Vec<Duration>, Vec<Duration>) {
+    let (mut ratios, mut members, mut anchors) = (Vec::new(), Vec::new(), Vec::new());
+    for pair in 0..RETENTION_PAIRS {
+        let (member, anchor) = if pair % 2 == 0 {
+            let member = apply_of_superseding_updates(Replica::new(1, 11).await).await;
+            (
+                member,
+                apply_of_superseding_updates(Replica::anchor(1, 11).await).await,
+            )
+        } else {
+            let anchor = apply_of_superseding_updates(Replica::anchor(1, 11).await).await;
+            (
+                apply_of_superseding_updates(Replica::new(1, 11).await).await,
+                anchor,
+            )
+        };
+        ratios.push(member.as_secs_f64() / anchor.as_secs_f64());
+        members.push(member);
+        anchors.push(anchor);
+    }
+    (ratios, members, anchors)
+}
+
 #[test]
 #[ignore = "timing budgets are meaningful only in the release profile"]
 fn removal_and_retention_budgets_hold() {
     block_on(async {
-        let (mut retaining, mut anchor, mut removal, mut rederive) =
-            (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+        let (mut removal, mut rederive) = (Vec::new(), Vec::new());
         let (mut fork, mut anchor_fork) = (Vec::new(), Vec::new());
+        let (mut ratios, mut members, mut anchors) = retention_ratios().await;
         for _ in 0..RUNS {
-            retaining.push(apply_of_superseding_updates(Replica::new(1, 11).await).await);
-            anchor.push(apply_of_superseding_updates(Replica::anchor(1, 11).await).await);
             removal.push(removal_excluding_applied_operations().await);
             fork.push(fork_excluding_applied_operations(Replica::new(2, 14).await, false).await);
             anchor_fork
                 .push(fork_excluding_applied_operations(Replica::anchor(2, 14).await, true).await);
             rederive.push(rederive_of_a_long_log().await);
         }
-        retaining.sort();
-        anchor.sort();
-        let (kept, none) = (retaining[RUNS / 2], anchor[RUNS / 2]);
+        ratios.sort_by(f64::total_cmp);
+        members.sort();
+        anchors.sort();
+        let ratio = ratios[ratios.len() / 2];
         println!(
-            "apply of 256 superseding updates: member median {kept:?}, anchor median {none:?}"
+            "apply of {SEEDED_OPS} superseding updates: member median {:?}, anchor median {:?}, \
+             median ratio {ratio:.3} of {ratios:.3?} (budget {RETENTION_MARGIN})",
+            members[members.len() / 2],
+            anchors[anchors.len() / 2],
         );
+        let retention = (!cfg!(debug_assertions) && ratio > RETENTION_MARGIN).then(|| {
+            format!(
+                "apply retaining displaced versions took {ratio:.3} times the anchor's, \
+                 budget {RETENTION_MARGIN}"
+            )
+        });
         let failures: Vec<String> = [
-            check(
-                "apply of 256 superseding updates retaining displaced versions",
-                retaining,
-                none.mul_f64(RETENTION_MARGIN),
-            ),
+            retention,
             check(
                 "removal excluding 1,024 applied operations",
                 removal,
@@ -426,20 +496,34 @@ fn elision_keeps_at_most_half_of_the_version_values_after_a_seed() {
 fn budgets_hold_for_capture_seal_and_apply() {
     block_on(async {
         let (mut capture, mut seal, mut apply) = (Vec::new(), Vec::new(), Vec::new());
-        let mut apply_projects = Vec::new();
+        let (mut apply_projects, mut apply_changes) = (Vec::new(), Vec::new());
         for _ in 0..RUNS {
             capture.push(capture_overhead().await);
-            seal.push(seal_of_changed_notes().await);
-            apply.push(apply_of_a_batch().await);
-            apply_projects.push(apply_of_a_projects_batch().await);
+            seal.push(seal_of_changed_notes(SEAL_NOTES).await);
+            apply.push(apply_of_a_batch(APPLY_OPS).await);
+            apply_projects.push(apply_of_a_projects_batch(APPLY_OPS).await);
+            apply_changes.push(apply_of_one_operation(APPLY_CHANGES).await);
         }
         let failures: Vec<String> = [
             check("capture overhead per write", capture, CAPTURE_BUDGET),
-            check("seal of 100 changed notes", seal, SEAL_BUDGET),
-            check("apply of a 256-operation batch", apply, APPLY_BUDGET),
             check(
-                "apply of a 256-operation Projects batch",
+                &format!("seal of a {SEAL_NOTES}-change batch"),
+                seal,
+                SEAL_BUDGET,
+            ),
+            check(
+                &format!("apply of a {APPLY_OPS}-operation batch"),
+                apply,
+                APPLY_BUDGET,
+            ),
+            check(
+                &format!("apply of a {APPLY_OPS}-operation Projects batch"),
                 apply_projects,
+                APPLY_BUDGET,
+            ),
+            check(
+                &format!("apply of one {APPLY_CHANGES}-change operation"),
+                apply_changes,
                 APPLY_BUDGET,
             ),
         ]

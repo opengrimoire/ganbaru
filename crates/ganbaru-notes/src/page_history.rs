@@ -15,16 +15,7 @@ use std::collections::{HashMap, HashSet};
 
 const EDIT_SESSION_SNAPSHOT_WINDOW_MINUTES: i64 = 5;
 
-/// How restored snapshot blocks choose their ids.
-enum SnapshotInsertMode<'a> {
-    /// Keeps a snapshot id when it is free. A `child_page` id keeps its page only when that page
-    /// does not exist or is one of `owned_child_pages`, the pages that belonged to the restored
-    /// page before the restore, so a restore never pulls in a page that now lives elsewhere.
-    PreserveAvailableIds {
-        owned_child_pages: &'a HashSet<String>,
-    },
-    CopyWithFreshIds,
-}
+mod restore;
 
 pub async fn load_page_history_settings(
     pool: &SqlitePool,
@@ -152,7 +143,6 @@ pub async fn copy_page_history_blocks(
         &mut tx,
         &page_id,
         &blocks,
-        SnapshotInsertMode::CopyWithFreshIds,
         request.after_block_id.as_deref(),
     )
     .await?;
@@ -273,13 +263,6 @@ async fn replace_page_from_snapshot(
     if owns_database || snapshot_has_database {
         return Err("This page contains database content. Restore a project version to recover its complete database graph.".to_string());
     }
-    let owned_child_pages = load_owned_child_pages(tx, page_id).await?;
-    trash_current_child_pages(tx, page_id).await?;
-    sqlx::query("DELETE FROM notes_blocks WHERE page_id = ?")
-        .bind(page_id)
-        .execute(&mut **tx)
-        .await
-        .map_err(|e| format!("clear notes page before history restore: {e}"))?;
     sqlx::query(
         "UPDATE notes_pages
          SET title = ?,
@@ -300,16 +283,7 @@ async fn replace_page_from_snapshot(
     .execute(&mut **tx)
     .await
     .map_err(|e| format!("restore notes page history metadata: {e}"))?;
-    insert_snapshot_blocks(
-        tx,
-        page_id,
-        &blocks,
-        SnapshotInsertMode::PreserveAvailableIds {
-            owned_child_pages: &owned_child_pages,
-        },
-        None,
-    )
-    .await?;
+    restore::restore_blocks_from_snapshot(tx, page_id, &blocks).await?;
     if blocks.is_empty() {
         insert_default_page_block(tx, page_id, &mut HashSet::new()).await?;
     }
@@ -320,7 +294,6 @@ async fn insert_snapshot_blocks(
     tx: &mut Transaction<'_, Sqlite>,
     page_id: &str,
     blocks: &[NoteBlockRow],
-    mode: SnapshotInsertMode<'_>,
     after_block_id: Option<&str>,
 ) -> Result<Vec<String>, String> {
     if blocks.is_empty() {
@@ -347,19 +320,7 @@ async fn insert_snapshot_blocks(
     let mut reserved_ids = HashSet::new();
     let mut id_map = HashMap::with_capacity(blocks.len());
     for block in blocks {
-        let next_id = match mode {
-            SnapshotInsertMode::CopyWithFreshIds => new_note_id(tx, &mut reserved_ids).await?,
-            SnapshotInsertMode::PreserveAvailableIds { owned_child_pages } => {
-                let foreign_page = block.block_type == "child_page"
-                    && !owned_child_pages.contains(&block.id)
-                    && page_id_exists(tx, &block.id).await?;
-                if foreign_page || block_id_exists(tx, &block.id).await? {
-                    new_note_id(tx, &mut reserved_ids).await?
-                } else {
-                    block.id.clone()
-                }
-            }
-        };
+        let next_id = new_note_id(tx, &mut reserved_ids).await?;
         reserved_ids.insert(next_id.clone());
         id_map.insert(block.id.clone(), next_id);
     }
@@ -370,26 +331,23 @@ async fn insert_snapshot_blocks(
         reserved_ids: &mut reserved_ids,
         budget: &mut budget,
     };
-    if matches!(mode, SnapshotInsertMode::CopyWithFreshIds) {
-        let project_id =
-            crate::project_history::resolve_project_id_for_page_tx(tx, page_id).await?;
-        for block in blocks
-            .iter()
-            .filter(|block| block.block_type == "child_database")
-        {
-            if crate::writes::database_copy::has_database_graph(block)? {
-                database_copies.push(
-                    crate::writes::database_copy::plan_database_copy(
-                        tx,
-                        block,
-                        &id_map[&block.id],
-                        &mut copy_context,
-                        project_id.as_deref(),
-                        false,
-                    )
-                    .await?,
-                );
-            }
+    let project_id = crate::project_history::resolve_project_id_for_page_tx(tx, page_id).await?;
+    for block in blocks
+        .iter()
+        .filter(|block| block.block_type == "child_database")
+    {
+        if crate::writes::database_copy::has_database_graph(block)? {
+            database_copies.push(
+                crate::writes::database_copy::plan_database_copy(
+                    tx,
+                    block,
+                    &id_map[&block.id],
+                    &mut copy_context,
+                    project_id.as_deref(),
+                    false,
+                )
+                .await?,
+            );
         }
     }
 
@@ -851,66 +809,6 @@ fn loaded_page_from_snapshot(
         page,
         NotePaginatedBlockList::new(block_dtos, None, false),
     ))
-}
-
-async fn trash_current_child_pages(
-    tx: &mut Transaction<'_, Sqlite>,
-    page_id: &str,
-) -> Result<(), String> {
-    sqlx::query(
-        "UPDATE notes_pages
-         SET in_trash = 1,
-             archived = 0,
-             trashed_time = COALESCE(trashed_time, strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-             last_edited_time = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-         WHERE id IN (
-             SELECT id FROM notes_blocks
-             WHERE page_id = ? AND type = 'child_page' AND in_trash = 0
-         )",
-    )
-    .bind(page_id)
-    .execute(&mut **tx)
-    .await
-    .map_err(|e| format!("trash current child pages before history restore: {e}"))?;
-    Ok(())
-}
-
-/// Loads the pages whose parent is `page_id` or one of its blocks, trashed ones included, so a
-/// restore can bring back its own children without taking pages that moved elsewhere.
-async fn load_owned_child_pages(
-    tx: &mut Transaction<'_, Sqlite>,
-    page_id: &str,
-) -> Result<HashSet<String>, String> {
-    let ids: Vec<String> = sqlx::query_scalar(
-        "SELECT id FROM notes_pages
-         WHERE (parent_type = 'page_id' AND parent_page_id = ?)
-            OR (parent_type = 'block_id'
-                AND parent_block_id IN (SELECT id FROM notes_blocks WHERE page_id = ?))",
-    )
-    .bind(page_id)
-    .bind(page_id)
-    .fetch_all(&mut **tx)
-    .await
-    .map_err(|e| format!("load child pages before history restore: {e}"))?;
-    Ok(ids.into_iter().collect())
-}
-
-async fn page_id_exists(tx: &mut Transaction<'_, Sqlite>, page_id: &str) -> Result<bool, String> {
-    let exists: Option<i64> = sqlx::query_scalar("SELECT 1 FROM notes_pages WHERE id = ?")
-        .bind(page_id)
-        .fetch_optional(&mut **tx)
-        .await
-        .map_err(|e| format!("check notes history page id: {e}"))?;
-    Ok(exists.is_some())
-}
-
-async fn block_id_exists(tx: &mut Transaction<'_, Sqlite>, block_id: &str) -> Result<bool, String> {
-    let exists: Option<i64> = sqlx::query_scalar("SELECT 1 FROM notes_blocks WHERE id = ?")
-        .bind(block_id)
-        .fetch_optional(&mut **tx)
-        .await
-        .map_err(|e| format!("check notes history block id: {e}"))?;
-    Ok(exists.is_some())
 }
 
 async fn new_note_id(

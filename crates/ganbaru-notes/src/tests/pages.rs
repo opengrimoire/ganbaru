@@ -623,6 +623,65 @@ fn page_history_snapshots_in_an_older_notes_format_stay_listed_but_refuse_to_ope
 }
 
 #[test]
+fn page_history_restore_revives_a_child_page_with_its_own_properties() {
+    crate::test_block_on(async {
+        let pool = migrated_memory_pool().await;
+        create_page(&pool, PAGE_A, BLOCK_A).await;
+        writes::create_page(
+            &pool,
+            NotePageCreate {
+                id: PAGE_B.to_string(),
+                title: "Child".to_string(),
+                parent: page_parent(PAGE_A),
+                folder_id: None,
+                project_id: None,
+                first_block_id: BLOCK_C.to_string(),
+                after_block_id: None,
+                properties: None,
+            },
+        )
+        .await
+        .unwrap();
+        let mut tx = pool.begin().await.unwrap();
+        let snapshot_id = page_history::record_page_snapshot_tx(&mut tx, PAGE_A, "manual")
+            .await
+            .unwrap()
+            .expect("the page snapshot is recorded");
+        tx.commit().await.unwrap();
+        sqlx::query(
+            "UPDATE notes_pages
+             SET in_trash = 1,
+                 trash_owner = 'bulk-trash',
+                 trashed_time = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
+                 title = 'Renamed',
+                 properties = json_set(properties, '$.status', 'kept')
+             WHERE id = ?",
+        )
+        .bind(PAGE_B)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        page_history::restore_page_history_snapshot(&pool, PAGE_A, &snapshot_id)
+            .await
+            .unwrap();
+
+        let (in_trash, trash_owner, title, properties): (i64, Option<String>, String, String) =
+            sqlx::query_as(
+                "SELECT in_trash, trash_owner, title, properties FROM notes_pages WHERE id = ?",
+            )
+            .bind(PAGE_B)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!((in_trash, trash_owner, title.as_str()), (0, None, "Child"));
+        let properties: serde_json::Value = serde_json::from_str(&properties).unwrap();
+        assert_eq!(properties["status"], "kept");
+        assert_eq!(properties["title"]["title"][0]["plain_text"], "Child");
+    });
+}
+
+#[test]
 fn page_history_coalesces_rapid_editor_snapshots() {
     crate::test_block_on(async {
         let pool = migrated_memory_pool().await;

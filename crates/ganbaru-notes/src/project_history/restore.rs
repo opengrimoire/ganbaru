@@ -213,12 +213,18 @@ struct CopyScope {
 /// Collects the bundle rows restored as copies: every bundle page and block that is not part of
 /// the current project graph, and everything nested under them. A page, its `child_page` block,
 /// and a database and its `child_database` block share an id, so each pair is copied together.
+/// A pair whose page or database is still in the current graph keeps its id even when the paired
+/// block is gone, so restore mints fresh ids only for rows that now live elsewhere.
 fn copied_graph_scope(
     rows: &BTreeMap<String, Vec<Value>>,
     current: &BTreeMap<String, Vec<Value>>,
 ) -> CopyScope {
     let current_page_ids = ids(current, "notes_pages");
     let current_block_ids = ids(current, "notes_blocks");
+    let current_database_ids = ids(current, "notes_databases");
+    let in_current_graph = |row: &Value| {
+        value_in(row, "id", &current_page_ids) || value_in(row, "id", &current_database_ids)
+    };
     let mut scope = CopyScope {
         page_ids: ids(rows, "notes_pages")
             .difference(&current_page_ids)
@@ -226,6 +232,7 @@ fn copied_graph_scope(
             .collect(),
         block_ids: ids(rows, "notes_blocks")
             .difference(&current_block_ids)
+            .filter(|id| !current_page_ids.contains(*id) && !current_database_ids.contains(*id))
             .cloned()
             .collect(),
         ..CopyScope::default()
@@ -238,6 +245,9 @@ fn copied_graph_scope(
             scope.data_source_ids.len(),
         );
         for row in rows.get("notes_blocks").into_iter().flatten() {
+            if in_current_graph(row) {
+                continue;
+            }
             if value_in(row, "page_id", &scope.page_ids)
                 || value_in(row, "id", &scope.page_ids)
                 || value_in(row, "parent_block_id", &scope.block_ids)
@@ -246,6 +256,9 @@ fn copied_graph_scope(
             }
         }
         for row in rows.get("notes_databases").into_iter().flatten() {
+            if in_current_graph(row) {
+                continue;
+            }
             if value_in(row, "id", &scope.block_ids)
                 || value_in(row, "parent_page_id", &scope.page_ids)
                 || value_in(row, "parent_block_id", &scope.block_ids)
@@ -259,6 +272,9 @@ fn copied_graph_scope(
             }
         }
         for row in rows.get("notes_pages").into_iter().flatten() {
+            if in_current_graph(row) {
+                continue;
+            }
             if value_in(row, "id", &scope.block_ids)
                 || value_in(row, "parent_page_id", &scope.page_ids)
                 || value_in(row, "parent_block_id", &scope.block_ids)

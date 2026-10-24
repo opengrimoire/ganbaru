@@ -216,3 +216,107 @@ fn project_restore_rewrites_rows_in_place_and_keeps_nested_content_and_page_hist
         assert_eq!(snapshot_kept, 1);
     });
 }
+
+#[test]
+fn project_restore_nests_a_page_unnested_within_the_project_in_place_instead_of_copying_it() {
+    crate::test_block_on(async {
+        const NESTED_PAGE_ID: &str = "a1a1a1a1-a1a1-41a1-81a1-a1a1a1a1a1a1";
+        const NESTED_BLOCK_ID: &str = "b1b1b1b1-b1b1-41b1-81b1-b1b1b1b1b1b1";
+        let pool = migrated_pool().await;
+        seed_project(&pool).await;
+        crate::writes::create_page(
+            &pool,
+            crate::models::NotePageCreate {
+                id: NESTED_PAGE_ID.to_string(),
+                title: "Nested".to_string(),
+                parent: crate::NoteParent::PageId {
+                    page_id: PAGE_ID.to_string(),
+                },
+                folder_id: None,
+                project_id: None,
+                first_block_id: NESTED_BLOCK_ID.to_string(),
+                after_block_id: None,
+                properties: None,
+            },
+        )
+        .await
+        .unwrap();
+        let version = create_checkpoint(&pool, PROJECT_ID, "manual", None, None, "Nested")
+            .await
+            .unwrap()
+            .unwrap();
+        crate::writes::move_page(
+            &pool,
+            NESTED_PAGE_ID,
+            crate::models::NoteMovePage {
+                parent: crate::NoteParent::Workspace { workspace: true },
+                folder_id: None,
+            },
+        )
+        .await
+        .unwrap();
+        let unnested: (String, Option<String>) =
+            sqlx::query_as("SELECT parent_type, project_id FROM notes_pages WHERE id = ?")
+                .bind(NESTED_PAGE_ID)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            unnested,
+            ("workspace".to_string(), Some(PROJECT_ID.to_string()))
+        );
+        // Trash retention purges the hidden `child_page` block, so the current graph keeps the
+        // page while its paired block is gone.
+        sqlx::query("DELETE FROM notes_blocks WHERE id = ? AND in_trash = 1")
+            .bind(NESTED_PAGE_ID)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let pages_before: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM notes_pages")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+
+        let plan = restore::preview_restore(&pool, PROJECT_ID, &version.id)
+            .await
+            .unwrap();
+        assert_eq!(plan.copy_count, 0);
+        restore::restore_version(&pool, PROJECT_ID, &version.id)
+            .await
+            .unwrap();
+
+        let pages_after: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM notes_pages")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(pages_after, pages_before);
+        let restored: (String, Option<String>, Option<String>, i64) = sqlx::query_as(
+            "SELECT parent_type, parent_page_id, project_id, in_trash
+             FROM notes_pages WHERE id = ?",
+        )
+        .bind(NESTED_PAGE_ID)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            restored,
+            ("page_id".to_string(), Some(PAGE_ID.to_string()), None, 0)
+        );
+        let child_page_block: (String, String) =
+            sqlx::query_as("SELECT type, page_id FROM notes_blocks WHERE id = ?")
+                .bind(NESTED_PAGE_ID)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            child_page_block,
+            ("child_page".to_string(), PAGE_ID.to_string())
+        );
+        let body_page: String = sqlx::query_scalar("SELECT page_id FROM notes_blocks WHERE id = ?")
+            .bind(NESTED_BLOCK_ID)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(body_page, NESTED_PAGE_ID);
+    });
+}

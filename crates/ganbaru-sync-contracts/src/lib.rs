@@ -41,7 +41,7 @@ pub use ids::{
 pub use keys::{AdminKeyPair, AdminPublicKey, DeviceKeyPair, DevicePublicKey, KeyError};
 pub use op::{
     Cause, Change, ChangeAction, Content, Envelope, Field, GroupValue, Header, Operation,
-    OperationError, OperationKind, PayloadError, SealedOperation, Value,
+    OperationError, OperationKind, PayloadError, SealedOperation, Value, ends_group,
 };
 pub use order_key::{OrderKey, OrderKeyError};
 pub use order_placement::{OrderPlacementError, OrderedRow};

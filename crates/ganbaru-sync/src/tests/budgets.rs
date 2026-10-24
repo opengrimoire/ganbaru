@@ -8,10 +8,12 @@
 use std::time::{Duration, Instant};
 
 use ganbaru_sync_contracts::DeviceRole;
+use ganbaru_sync_contracts::bounds::MAX_OPERATIONS_PER_GROUP;
 
 use super::block_on;
 use super::calendar::{calendar_sql, event_sql};
 use super::focus::{close_run_sql, open_run_sql};
+use super::groups::continuing_ops;
 use super::projects::{project_sql, task_sql};
 use super::replica::{Replica, enroll_entry, person, quoted, rank};
 use crate::exclusion::MAX_EXCLUDED_PER_WRITER;
@@ -643,5 +645,40 @@ fn focus_seal_of_a_closed_run_holds_its_budget() {
             FOCUS_SEAL_BUDGET,
         );
         assert!(failure.is_none(), "{failure:?}");
+    });
+}
+
+/// Time of one apply transaction over a group of [`MAX_OPERATIONS_PER_GROUP`] single-note
+/// operations from a writer that marks every operation as continuing, the most operations one
+/// group can hold.
+async fn apply_of_a_continuing_group() -> Duration {
+    let mut author = Replica::new(0, 19).await;
+    let mut reader = Replica::new(1, 19).await;
+    warm_seal(&mut author, SEEDED_OPS).await;
+    assert_eq!(deliver(&mut author, &mut reader).await.0, 2);
+    let forged = continuing_ops(&mut author, MAX_OPERATIONS_PER_GROUP).await;
+    reader.receive(&forged).await;
+    let started = Instant::now();
+    let report = reader.apply_once().await.unwrap();
+    let elapsed = started.elapsed();
+    assert_eq!(report.applied, MAX_OPERATIONS_PER_GROUP);
+    elapsed
+}
+
+/// A group past the apply caps is recorded against the apply budget, not enforced: its size
+/// is a protocol bound rather than a tuned batch.
+#[test]
+#[ignore = "timing budgets are meaningful only in the release profile"]
+fn apply_of_a_continuing_group_is_recorded() {
+    block_on(async {
+        let mut apply = Vec::new();
+        for _ in 0..RUNS {
+            apply.push(apply_of_a_continuing_group().await);
+        }
+        record(
+            &format!("apply of a {MAX_OPERATIONS_PER_GROUP}-operation continuing group"),
+            apply,
+            APPLY_BUDGET,
+        );
     });
 }

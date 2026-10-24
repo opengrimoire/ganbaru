@@ -1,4 +1,4 @@
-//! The signed operation format, versions 1 to 3.
+//! The signed operation format, versions 1 to 4.
 //!
 //! Envelope, big endian and stable across format versions: magic `GBSO` (4) | format version (1)
 //! | kind (1) | space id (16) | writer id (16) | sequence (8) | previous operation hash (32) |
@@ -9,15 +9,15 @@
 //! excluded so a later compaction can drop superseded values; each value stays bound to the
 //! signature through its hash in the header.
 //!
-//! Header: clock (8) | manifest version (4) | authorization revision (8) | key epoch (4) |
-//! dependency count (2) and `(writer id, sequence)` pairs | kind payload. A changes payload is a
-//! change count (2) and, per change, table id (2) | row key length (1) and key | action (1) |
-//! group mask (8) | one value hash (32) per set group in ascending order | for tombstones a
-//! successor byte (1): `0` none, `1` followed by the redirect row key, or `2` followed by the
-//! cause's table id (2) and row key. A genesis payload is a certificate length (2) and the
-//! writer certificate. Wire kind 2 is unassigned and decodes as an unknown kind. An
-//! acknowledgement has no payload. An authorization payload is the entry hash (32) of the record
-//! the body carries.
+//! Header: clock (8) | manifest version (4) | authorization revision (8) | key epoch (4) | from
+//! version 4 a flags byte (1) | dependency count (2) and `(writer id, sequence)` pairs | kind
+//! payload. A changes payload is a change count (2) and, per change, table id (2) | row key
+//! length (1) and key | action (1) | group mask (8) | one value hash (32) per set group in
+//! ascending order | for tombstones a successor byte (1): `0` none, `1` followed by the redirect
+//! row key, or `2` followed by the cause's table id (2) and row key. A genesis payload is a
+//! certificate length (2) and the writer certificate. Wire kind 2 is unassigned and decodes as
+//! an unknown kind. An acknowledgement has no payload. An authorization payload is the entry hash
+//! (32) of the record the body carries.
 //!
 //! Body: for changes, per change and set group, a presence byte (1) and the value: field count
 //! (1) and typed fields, tag `0` null, `1` i64 (8), `2` text with length (4), `3` blob with
@@ -26,17 +26,20 @@
 //! it. Every other kind has an empty body.
 //!
 //! Version 2 adds the cause successor and is otherwise version 1. Version 3 adds kind 4,
-//! authorization, and is otherwise version 2. Each operation seals at the lowest version that
-//! can express it, so older builds keep reading everything else and hold the rest as a newer
-//! format.
+//! authorization, and is otherwise version 2. Version 4 adds the header flags byte, whose bit 0
+//! says the writer's next operation belongs to the same apply group (see [`ends_group`]); every
+//! other bit is zero, and only a changes operation sets it. Each operation seals at the lowest
+//! version that can express it, so older builds keep reading everything else and hold the rest
+//! as a newer format.
 //!
 //! An authorization operation creating revision R carries header authorization revision R − 1:
 //! the revision it was ordered against.
 
 use crate::authorization::{AuthorizationError, AuthorizationRecord, entry_hash};
 use crate::bounds::{
-    MAX_BLOB_FIELD_BYTES, MAX_CHANGES_PER_OPERATION, MAX_FIELDS_PER_VALUE, MAX_HEADER_BYTES,
-    MAX_OPERATION_BYTES, MAX_ROW_KEY_BYTES, MAX_TEXT_FIELD_BYTES,
+    MAX_BLOB_FIELD_BYTES, MAX_CHANGES_PER_OPERATION, MAX_FIELDS_PER_VALUE, MAX_GROUP_BYTES,
+    MAX_HEADER_BYTES, MAX_OPERATION_BYTES, MAX_OPERATIONS_PER_GROUP, MAX_ROW_KEY_BYTES,
+    MAX_TEXT_FIELD_BYTES,
 };
 use crate::certificate::{CertificateError, SignedCertificate};
 use crate::codec::{CodecError, Reader, Writer};
@@ -53,13 +56,15 @@ use std::fmt;
 /// Leading bytes of every operation.
 pub const OPERATION_MAGIC: &[u8; 4] = b"GBSO";
 /// Newest operation format this build encodes and fully decodes.
-pub const FORMAT_VERSION: u8 = 3;
+pub const FORMAT_VERSION: u8 = 4;
 /// Format of operations whose tombstones name no cause.
 pub const BASE_FORMAT_VERSION: u8 = 1;
 /// First format whose tombstones may name a cause.
 pub const CAUSE_FORMAT_VERSION: u8 = 2;
 /// First format with authorization operations.
 pub const AUTHORIZATION_FORMAT_VERSION: u8 = 3;
+/// First format with header flags, which mark an operation whose apply group continues.
+pub const GROUP_FORMAT_VERSION: u8 = 4;
 /// Previous hash of a writer genesis.
 pub const GENESIS_PREVIOUS_HASH: Digest32 = [0u8; DIGEST_BYTES];
 
@@ -71,6 +76,8 @@ const FIELD_BLOB: u8 = 3;
 const SUCCESSOR_NONE: u8 = 0;
 const SUCCESSOR_REDIRECT: u8 = 1;
 const SUCCESSOR_CAUSE: u8 = 2;
+/// Header flag: the writer's next operation belongs to the same apply group.
+const FLAG_GROUP_CONTINUES: u8 = 1;
 
 /// What an operation does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -382,9 +389,22 @@ pub struct Header {
     pub authorization_revision: u64,
     /// Key epoch; zero until operation encryption.
     pub key_epoch: u32,
+    /// Whether the writer's next operation belongs to the same apply group, so a receiver
+    /// applies both in one transaction. Only a changes operation sets it; see [`ends_group`].
+    pub group_continues: bool,
     /// Writers whose applied sequence advanced since this writer's previous operation, ascending
     /// by writer.
     pub dependencies: Vec<(WriterId, Seq)>,
+}
+
+/// Whether an apply group ends with an operation, given whether its header says the group
+/// continues, how many operations the group holds with it, and their envelope bytes. A group
+/// ends at an operation that does not continue, at its [`MAX_OPERATIONS_PER_GROUP`]th operation,
+/// or at the operation whose bytes reach [`MAX_GROUP_BYTES`], whatever its header says. Every
+/// receiver computes the same boundaries from the same stored operations, so a writer that marks
+/// every operation as continuing only forms bounded groups.
+pub fn ends_group(continues: bool, operations: usize, bytes: usize) -> bool {
+    !continues || operations >= MAX_OPERATIONS_PER_GROUP || bytes >= MAX_GROUP_BYTES
 }
 
 /// Kind-specific contents.
@@ -486,10 +506,14 @@ impl Operation {
         }
     }
 
-    /// Format version the operation seals at: [`AUTHORIZATION_FORMAT_VERSION`] for an
-    /// authorization, [`CAUSE_FORMAT_VERSION`] when a tombstone names a cause,
-    /// [`BASE_FORMAT_VERSION`] otherwise.
+    /// Format version the operation seals at: [`GROUP_FORMAT_VERSION`] when its apply group
+    /// continues, [`AUTHORIZATION_FORMAT_VERSION`] for an authorization,
+    /// [`CAUSE_FORMAT_VERSION`] when a tombstone names a cause, [`BASE_FORMAT_VERSION`]
+    /// otherwise.
     pub fn format_version(&self) -> u8 {
+        if self.header.group_continues {
+            return GROUP_FORMAT_VERSION;
+        }
         match &self.content {
             Content::Authorization(_) => AUTHORIZATION_FORMAT_VERSION,
             Content::Changes(changes) if changes.iter().any(|change| change.cause.is_some()) => {
@@ -509,6 +533,9 @@ impl Operation {
             return Err(CodecError::Malformed("previous hash").into());
         }
         validate_dependencies(&self.header.dependencies, &self.writer)?;
+        if self.header.group_continues && self.kind() != OperationKind::Changes {
+            return Err(CodecError::Malformed("header flags").into());
+        }
         match &self.content {
             Content::Changes(changes) => {
                 if changes.len() > MAX_CHANGES_PER_OPERATION {
@@ -547,6 +574,13 @@ impl Operation {
         writer.u32(self.header.manifest_version);
         writer.u64(self.header.authorization_revision);
         writer.u32(self.header.key_epoch);
+        if self.format_version() >= GROUP_FORMAT_VERSION {
+            writer.u8(if self.header.group_continues {
+                FLAG_GROUP_CONTINUES
+            } else {
+                0
+            });
+        }
         writer.u16(self.header.dependencies.len() as u16);
         for (dependency, seq) in &self.header.dependencies {
             writer.raw(dependency.as_bytes());
@@ -817,6 +851,14 @@ impl<'a> Envelope<'a> {
         let manifest_version = header.u32()?;
         let authorization_revision = header.u64()?;
         let key_epoch = header.u32()?;
+        let flags = if self.format_version >= GROUP_FORMAT_VERSION {
+            header.u8()?
+        } else {
+            0
+        };
+        if flags & !FLAG_GROUP_CONTINUES != 0 {
+            return Err(CodecError::Malformed("header flags").into());
+        }
         let dependency_count = usize::from(header.u16()?);
         let mut dependencies = Vec::with_capacity(dependency_count.min(header.remaining() / 24));
         for _ in 0..dependency_count {
@@ -867,6 +909,7 @@ impl<'a> Envelope<'a> {
                 manifest_version,
                 authorization_revision,
                 key_epoch,
+                group_continues: flags & FLAG_GROUP_CONTINUES != 0,
                 dependencies,
             },
             content,

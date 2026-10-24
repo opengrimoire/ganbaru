@@ -3,7 +3,7 @@
 use super::notes::NOTES_SYNC_STRUCTURE;
 
 /// The Notes databases preparation migration.
-const NOTES_SYNC_DATABASES: i64 = 20261024161650;
+const NOTES_SYNC_DATABASES: i64 = 20261024234744;
 
 /// Inserts a page with a `child_database` block, its database, and one data source.
 async fn insert_database_graph(pool: &sqlx::SqlitePool, schema: &serde_json::Value) {

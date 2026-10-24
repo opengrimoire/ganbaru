@@ -679,7 +679,7 @@ impl Sealer {
         Ok(seq)
     }
 
-    /// Seals every valid capture except deletes still held at `now_ms`, and deletes the
+    /// Seals every valid capture except those still held at `now_ms`, and deletes the
     /// captures it consumed.
     pub(crate) async fn seal_captures(
         &mut self,
@@ -748,7 +748,7 @@ impl Sealer {
         Ok(report)
     }
 
-    /// Seals the captures of `rows`, held deletes included, with the captured creates they
+    /// Seals the captures of `rows`, held ones included, with the captured creates they
     /// depend on, before a remote operation or a materialization changes those rows.
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn seal_rows(
@@ -1044,7 +1044,7 @@ struct Capture {
     /// Whether the row was inserted locally since the last seal.
     created: bool,
     deleted: bool,
-    /// Whether the delete is held for Undo, expired or not.
+    /// Whether the capture is held for Undo, expired or not.
     held: bool,
     replaced_by: Option<String>,
     /// Sync state of the row when planning started.
@@ -1055,7 +1055,7 @@ struct Capture {
 struct PlannedCaptures {
     changes: Vec<Change>,
     consumed: Vec<(i64, String)>,
-    /// Whether a held delete is among the captures.
+    /// Whether a held capture is among the captures.
     held: bool,
 }
 
@@ -1119,7 +1119,7 @@ fn capture_from_row(row: &SqliteRow) -> SyncResult<Capture> {
     })
 }
 
-/// Every capture except deletes still held at `now_ms`, in table and key order.
+/// Every capture except those still held at `now_ms`, in table and key order.
 async fn pending_captures(conn: &mut SqliteConnection, now_ms: u64) -> SyncResult<Vec<Capture>> {
     let sql = format!(
         "{CAPTURE_SELECT}
@@ -1133,7 +1133,7 @@ async fn pending_captures(conn: &mut SqliteConnection, now_ms: u64) -> SyncResul
     rows.iter().map(capture_from_row).collect()
 }
 
-/// The captures of `rows`, held deletes included.
+/// The captures of `rows`, held ones included.
 async fn row_captures(
     conn: &mut SqliteConnection,
     rows: &BTreeSet<RowRef>,
@@ -1179,8 +1179,10 @@ pub(crate) async fn captured(
     Ok(found)
 }
 
-/// Captured rows of `tables` without a held delete. A held row stays live in merge state, so
-/// repairs already account for it, and it seals early only when a change or plan names it.
+/// Captured rows of `tables` without a held delete. A row with a held delete stays live in
+/// merge state, so repairs already account for it, and it seals early only when a change or
+/// plan names it. A held insert is returned: merge state does not know the row, so it seals
+/// early when a constraint over its table must read it.
 pub(crate) async fn captured_in(
     conn: &mut SqliteConnection,
     tables: &BTreeSet<TableId>,
@@ -1188,7 +1190,8 @@ pub(crate) async fn captured_in(
     let mut found = BTreeSet::new();
     for table in tables {
         let keys: Vec<String> = sqlx::query_scalar(
-            "SELECT row_key FROM sync_capture WHERE table_id = ? AND held_until_ms IS NULL",
+            "SELECT row_key FROM sync_capture
+             WHERE table_id = ? AND (held_until_ms IS NULL OR deleted = 0)",
         )
         .bind(table_param(*table))
         .fetch_all(&mut *conn)
@@ -1941,7 +1944,7 @@ impl Engine {
     /// Seals local captures with the local writer, sealing its genesis first when needed.
     ///
     /// One call commits at most [`MAX_OPS_PER_SEAL`] operations and [`MAX_BYTES_PER_SEAL`]
-    /// change bytes; [`SealReport::more`] asks the caller to seal again at once. Deletes held
+    /// change bytes; [`SealReport::more`] asks the caller to seal again at once. Captures held
     /// past `now_ms` stay captured; [`crate::hold::next_hold_expiry`] says when to seal them.
     pub async fn seal(
         &self,

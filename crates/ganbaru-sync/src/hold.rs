@@ -7,16 +7,22 @@
 //! and inserts the row again; the insert capture turns the held delete into an ordinary write.
 //! Rows the delete removed through `ON DELETE CASCADE` share the hold: Undo inserts them
 //! again too, and expiry or an early seal publishes the whole set.
+//!
+//! A deletion that also inserts rows, such as the archive a Calendar deletion writes, holds
+//! those inserts with [`hold_creates`] under the same lease. Undo inside the lease deletes them
+//! again, so the hold ends with nothing to publish; expiry publishes them once with the delete.
 
 use std::collections::BTreeSet;
 
 use ganbaru_sync_contracts::TableId;
-use sqlx::SqliteConnection;
+use sqlx::{AssertSqlSafe, SqliteConnection};
 
 use crate::Engine;
 use crate::error::{SyncError, SyncResult, corrupt};
 use crate::log;
+use crate::manifest::OnDelete;
 use crate::merge::{self, table_param};
+use crate::sql::ident;
 use crate::visibility::{RowRef, Visibility};
 
 /// Longest lease a hold keeps a delete unsealed, in milliseconds.
@@ -57,6 +63,89 @@ pub async fn hold_deletes(
         hold_row(conn, child_table, &child_key, until).await?;
     }
     Ok(())
+}
+
+/// Holds the captured inserts of `keys` in `table` until `until_ms`, clamped like
+/// [`hold_deletes`], so rows a held deletion wrote stay local with it. Call it in the
+/// transaction that inserts the rows. Only inserts of rows sync has never published are held;
+/// any other key is left alone.
+///
+/// Captured inserts of rows that reference a held row through `ON DELETE CASCADE`, at any
+/// depth, inherit the lease: Undo removes them with the held row, so they never publish.
+///
+/// Refuses a table whose deletes cannot be held, see [`crate::manifest::Manifest::may_hold_deletes`].
+pub async fn hold_creates(
+    engine: &Engine,
+    conn: &mut SqliteConnection,
+    table: TableId,
+    keys: &[&str],
+    now_ms: u64,
+    until_ms: u64,
+) -> SyncResult<()> {
+    if !engine.manifest().may_hold_deletes(table) {
+        return Err(SyncError::InvalidRequest("the table does not hold deletes"));
+    }
+    let until = log::clamp_ms(until_ms.min(now_ms.saturating_add(MAX_HOLD_MS)));
+    let mut pending: Vec<RowRef> = Vec::new();
+    for key in keys {
+        if hold_created_row(conn, table, key, until).await? {
+            pending.push((table, (*key).to_string()));
+        }
+    }
+    while let Some((parent, parent_key)) = pending.pop() {
+        for child in engine.manifest().tables {
+            for (_, _, reference) in child.references() {
+                if reference.table != parent
+                    || reference.on_delete != OnDelete::Cascade
+                    || !engine.manifest().may_hold_deletes(child.id)
+                {
+                    continue;
+                }
+                let sql = format!(
+                    "SELECT c.row_key FROM sync_capture c
+                     JOIN {table} t ON t.{key} = c.row_key
+                     WHERE c.table_id = ? AND c.created = 1 AND c.deleted = 0
+                       AND c.held_until_ms IS NULL AND t.{column} = ?",
+                    table = ident(child.name),
+                    key = ident(child.key_column),
+                    column = ident(reference.column),
+                );
+                let keys: Vec<String> = sqlx::query_scalar(AssertSqlSafe(sql))
+                    .bind(table_param(child.id))
+                    .bind(parent_key.as_str())
+                    .fetch_all(&mut *conn)
+                    .await?;
+                for key in keys {
+                    if hold_created_row(conn, child.id, &key, until).await? {
+                        pending.push((child.id, key));
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Holds the captured insert of one row sync has never published; whether it had one.
+async fn hold_created_row(
+    conn: &mut SqliteConnection,
+    table: TableId,
+    key: &str,
+    until: i64,
+) -> SyncResult<bool> {
+    let held = sqlx::query(
+        "UPDATE sync_capture SET held_until_ms = ?
+         WHERE table_id = ? AND row_key = ? AND created = 1 AND deleted = 0
+           AND NOT EXISTS (SELECT 1 FROM sync_rows r
+                           WHERE r.table_id = sync_capture.table_id
+                             AND r.row_key = sync_capture.row_key)",
+    )
+    .bind(until)
+    .bind(table_param(table))
+    .bind(key)
+    .execute(&mut *conn)
+    .await?;
+    Ok(held.rows_affected() > 0)
 }
 
 /// Holds the captured delete of one row; whether it had one.
@@ -161,7 +250,7 @@ pub async fn release_hold(
     Ok(true)
 }
 
-/// The earliest lease expiry among held deletes, so the service can schedule a seal for it.
+/// The earliest lease expiry among held captures, so the service can schedule a seal for it.
 pub async fn next_hold_expiry(conn: &mut SqliteConnection) -> SyncResult<Option<u64>> {
     let next: Option<i64> = sqlx::query_scalar(
         "SELECT MIN(held_until_ms) FROM sync_capture WHERE held_until_ms IS NOT NULL",
@@ -172,8 +261,8 @@ pub async fn next_hold_expiry(conn: &mut SqliteConnection) -> SyncResult<Option<
         .transpose()
 }
 
-/// Ends every hold, so the next seal publishes held deletes. Quiescing before a handoff or a
-/// backup calls it so no delete stays local.
+/// Ends every hold, so the next seal publishes held captures. Quiescing before a handoff or a
+/// backup calls it so no held change stays local.
 pub async fn expire_holds(conn: &mut SqliteConnection) -> SyncResult<()> {
     sqlx::query("UPDATE sync_capture SET held_until_ms = NULL WHERE held_until_ms IS NOT NULL")
         .execute(&mut *conn)

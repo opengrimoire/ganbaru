@@ -1,14 +1,18 @@
 //! Calendar across replicas: edits of different groups both survive, concurrent timing edits
 //! surface one conflict everywhere, one file imported on two replicas keeps one event per UID,
 //! a re-import after removal keeps the new event, removals that missed a concurrent add or edit
-//! are offered for recovery, and a deletion undone inside its hold publishes no event tombstone.
+//! are offered for recovery, a deletion undone inside its hold publishes neither the event
+//! tombstone nor its archive, and an expired hold publishes the archive once.
 
+use ganbaru_sync_contracts::TableId;
 use sqlx::Connection;
 
 use super::block_on;
-use super::replica::{Replica, converge, device_id, quoted};
+use super::replica::{Replica, connection_from, converge, device_id, quoted};
+use crate::SyncError;
+use crate::error::failpoints;
 use crate::hold::{self, MAX_HOLD_MS};
-use crate::manifest::vault::calendar::{CALENDARS_TABLE, EVENTS_TABLE};
+use crate::manifest::vault::calendar::{ARCHIVES_TABLE, CALENDARS_TABLE, EVENTS_TABLE};
 
 const CREATED: &str = "2027-01-01T00:00:00.000Z";
 const EDITED: &str = "2027-01-02T00:00:00.000Z";
@@ -314,7 +318,8 @@ fn calendar_an_event_deleted_while_edited_is_offered_for_recovery() {
     });
 }
 
-/// Archives the shared event and deletes it under a hold, in one transaction like Calendar.
+/// Archives the shared event and deletes it under a hold, in one transaction like Calendar:
+/// the event delete and the archive insert share one lease.
 async fn delete_held(replica: &mut Replica) {
     let now = replica.now_ms;
     let mut tx = replica.conn.begin().await.unwrap();
@@ -330,6 +335,16 @@ async fn delete_held(replica: &mut Replica) {
         edited = quoted(EDITED),
     )))
     .execute(&mut *tx)
+    .await
+    .unwrap();
+    hold::hold_creates(
+        &replica.engine,
+        &mut tx,
+        ARCHIVES_TABLE,
+        &[ARCHIVE],
+        now,
+        now + MAX_HOLD_MS / 2,
+    )
     .await
     .unwrap();
     hold::hold_deletes(
@@ -365,18 +380,49 @@ async fn undo(replica: &mut Replica) {
     tx.commit().await.unwrap();
 }
 
-/// A seal inside the lease still publishes the archive insert, so Undo tombstones the archive;
-/// holding that insert with the event delete is open engine work.
+/// Merge state rows and tombstones of `table` on `replica`.
+async fn sync_state(replica: &mut Replica, table: TableId) -> [i64; 2] {
+    [
+        replica
+            .count(&format!(
+                "SELECT count(*) FROM sync_rows WHERE table_id = {}",
+                table.0
+            ))
+            .await,
+        replica
+            .count(&format!(
+                "SELECT count(*) FROM sync_tombstones WHERE table_id = {}",
+                table.0
+            ))
+            .await,
+    ]
+}
+
+/// Captures still held on `replica`.
+async fn held_captures(replica: &mut Replica) -> i64 {
+    replica
+        .count("SELECT count(*) FROM sync_capture WHERE held_until_ms IS NOT NULL")
+        .await
+}
+
 #[test]
 fn calendar_a_deletion_undone_inside_its_hold_publishes_no_event_tombstone() {
     block_on(async {
         let mut replicas = shared(2, &event_sql(EVENT, "uid-a", "Draft")).await;
         let author = &mut replicas[0];
         delete_held(author).await;
-        author.seal().await.unwrap();
+        assert_eq!(held_captures(author).await, 2);
+        assert_eq!(author.seal().await.unwrap().changes, 0);
         author.now_ms += MAX_HOLD_MS / 4;
         undo(author).await;
         author.seal().await.unwrap();
+        author.now_ms += MAX_HOLD_MS;
+        author.seal().await.unwrap();
+        assert_eq!(
+            author.count("SELECT count(*) FROM sync_capture").await,
+            0,
+            "the expired archive hold ends with nothing to publish"
+        );
         converge(&mut replicas).await;
         assert_converged(&mut replicas).await;
         for replica in &mut replicas {
@@ -395,6 +441,68 @@ fn calendar_a_deletion_undone_inside_its_hold_publishes_no_event_tombstone() {
                 0
             );
             assert_eq!(
+                sync_state(replica, ARCHIVES_TABLE).await,
+                [0, 0],
+                "the archive is never published"
+            );
+            assert_eq!(
+                replica.count("SELECT count(*) FROM sync_tombstones").await,
+                0,
+                "nothing is tombstoned"
+            );
+        }
+    });
+}
+
+#[test]
+fn calendar_an_expired_deletion_hold_publishes_the_archive_once_and_survives_a_restart() {
+    block_on(async {
+        let mut replicas = shared(2, &event_sql(EVENT, "uid-a", "Draft")).await;
+        let author = &mut replicas[0];
+        let start = author.now_ms;
+        delete_held(author).await;
+
+        // A restart inside the lease keeps both holds, and a crash while sealing them at
+        // expiry leaves them held.
+        author.conn = connection_from(&author.snapshot().await).await;
+        assert_eq!(held_captures(author).await, 2);
+        assert_eq!(author.seal().await.unwrap().changes, 0);
+        author.now_ms = start + MAX_HOLD_MS / 2;
+        let before = author.snapshot().await;
+        failpoints::arm("hold.before_seal");
+        let crashed = author.seal().await;
+        failpoints::clear();
+        assert!(
+            matches!(crashed, Err(SyncError::Failpoint("hold.before_seal"))),
+            "{crashed:?}"
+        );
+        assert!(author.snapshot().await == before, "the crash left changes");
+        author.conn = connection_from(&before).await;
+        assert_eq!(held_captures(author).await, 2);
+
+        assert_eq!(author.seal().await.unwrap().changes, 2);
+        assert_eq!(author.count("SELECT count(*) FROM sync_capture").await, 0);
+        assert_eq!(
+            author.seal().await.unwrap().sealed_ops,
+            0,
+            "expiry publishes once"
+        );
+        let now = author.now_ms;
+        assert!(
+            !hold::release_hold(&mut author.conn, EVENTS_TABLE, &[EVENT], now)
+                .await
+                .unwrap(),
+            "Undo refuses an expired hold"
+        );
+        converge(&mut replicas).await;
+        assert_converged(&mut replicas).await;
+        for replica in &mut replicas {
+            assert_eq!(
+                texts(replica, "SELECT id FROM calendar_event_archives").await,
+                [ARCHIVE]
+            );
+            assert_eq!(sync_state(replica, ARCHIVES_TABLE).await, [1, 0]);
+            assert_eq!(
                 texts(
                     replica,
                     &format!(
@@ -403,8 +511,7 @@ fn calendar_a_deletion_undone_inside_its_hold_publishes_no_event_tombstone() {
                     ),
                 )
                 .await,
-                Vec::<String>::new(),
-                "the event is not tombstoned"
+                [EVENT]
             );
         }
     });

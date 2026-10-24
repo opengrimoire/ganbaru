@@ -283,16 +283,16 @@ fn schema_allows_only_one_open_pause_per_segment() {
         .unwrap();
 
         sqlx::query(
-            "INSERT INTO pomodoro_pauses (id, segment_id, started_at, reason)
-             VALUES ('pause-1', 'segment-1', '2026-05-23T09:10:00Z', 'manual')",
+            "INSERT INTO pomodoro_pauses (segment_id, ordinal, started_at, reason)
+             VALUES ('segment-1', 0, '2026-05-23T09:10:00Z', 'manual')",
         )
         .execute(&pool)
         .await
         .unwrap();
 
         let second_open_pause = sqlx::query(
-            "INSERT INTO pomodoro_pauses (id, segment_id, started_at, reason)
-             VALUES ('pause-2', 'segment-1', '2026-05-23T09:15:00Z', 'idle')",
+            "INSERT INTO pomodoro_pauses (segment_id, ordinal, started_at, reason)
+             VALUES ('segment-1', 1, '2026-05-23T09:15:00Z', 'idle')",
         )
         .execute(&pool)
         .await;

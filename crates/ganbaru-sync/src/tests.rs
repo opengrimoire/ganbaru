@@ -10,6 +10,7 @@ mod elision;
 mod engine;
 mod exclusion;
 mod fixture;
+mod focus;
 mod fork;
 mod guards;
 mod holds;

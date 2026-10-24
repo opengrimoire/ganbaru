@@ -149,6 +149,9 @@ pub struct FocusExecutionContext {
     pub commitment: Option<FocusCommitment>,
     pub local_time: Option<std::sync::Arc<dyn FocusLocalTimeResolver>>,
     pub planned_blocks: Vec<super::super::PomodoroAdaptivePlannedBlockWrite>,
+    /// Stable device id whose activity row each transition writes; `None` writes no activity,
+    /// as in a vault without a device identity.
+    pub device_id: Option<String>,
 }
 
 /// Native platform adapter for historical local dates. No WebView data is accepted.

@@ -239,6 +239,7 @@ fn end_now_detach_completion_and_receipt_commit_or_roll_back_together() {
             foreground: true,
             commitment: calendar.commitment,
             planned_blocks: Vec::new(),
+            device_id: None,
             local_time: None,
         };
         let before = focus_execute_command_tx(
@@ -418,6 +419,7 @@ fn enable_focus_configuration_start_and_receipts_are_atomic_after_an_earlier_run
                 foreground: true,
                 commitment: calendar.commitment,
                 planned_blocks: Vec::new(),
+                device_id: None,
                 local_time: None,
             };
             let result = focus_execute_command_tx(&mut tx, &command, &context).await;
@@ -999,6 +1001,7 @@ fn active_detach_and_recurrence_creation_share_atomic_focus_identity_and_receipt
                 foreground: true,
                 commitment: calendar.commitment,
                 planned_blocks: Vec::new(),
+                device_id: None,
                 local_time: None,
             };
             let before = focus_execute_command_tx(
@@ -1049,6 +1052,7 @@ fn active_detach_and_recurrence_creation_share_atomic_focus_identity_and_receipt
                     foreground: true,
                     commitment: Some(commitment),
                     planned_blocks: Vec::new(),
+                    device_id: None,
                     local_time: None,
                 };
                 if inject_failure {

@@ -383,6 +383,9 @@ impl Visibility {
                         key: next.1,
                         kind,
                     });
+                } else if let Some(known) = self.cascade.get(&next) {
+                    // The roots a row reaches are cached whole, so they stand for its walk.
+                    roots.extend(known.0.iter().cloned());
                 } else if visited.insert(next.clone()) {
                     pending.push(next);
                 }

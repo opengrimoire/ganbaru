@@ -16,7 +16,7 @@ pub use sync::{
     validate_discovery_key,
 };
 
-pub const PROTOCOL_VERSION: u16 = 11;
+pub const PROTOCOL_VERSION: u16 = 12;
 pub const MAX_CONTROL_BYTES: usize = 1024 * 1024;
 /// Frame bound before the peer presents a linked certificate. Enrollment (with its 8 KiB
 /// certificate) and contact requests fit well inside it.
@@ -25,7 +25,6 @@ pub const MAX_ARCHIVE_BYTES: u64 = 100 * 1024 * 1024 * 1024;
 pub const MAX_IDENTIFIER_BYTES: usize = 160;
 pub const MAX_DEVICE_LABEL_BYTES: usize = 128;
 const MAX_APP_VERSION_BYTES: usize = 64;
-pub const MAX_DISTRACTIONS_SAMPLES: usize = 1_024;
 pub const TRANSFER_CHUNK_BYTES: usize = 64 * 1024;
 /// LAN port the coordinator of a production build listens on.
 pub const COORDINATOR_PORT: u16 = 43_821;
@@ -197,20 +196,6 @@ impl BundleMetadata {
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct DistractionsSampleMessage {
-    pub sample_id: String,
-    pub device_id: String,
-    pub source_type: String,
-    pub source_key: String,
-    pub display_name: Option<String>,
-    pub started_at_ms: i64,
-    pub elapsed_seconds: i64,
-    pub local_date: String,
-    pub created_at_ms: i64,
-}
-
-#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase", tag = "kind")]
 pub enum ControlMessage {
     Enroll {
@@ -311,19 +296,6 @@ pub enum ControlMessage {
         generation: u64,
         transfer_id: Option<String>,
         requested_upload: Option<BundlePurpose>,
-    },
-    DistractionsExchange {
-        protocol_version: u16,
-        vault_id: String,
-        device_id: String,
-        samples: Vec<DistractionsSampleMessage>,
-        acknowledged_peer_sample_ids: Vec<String>,
-        owner_snapshot: Vec<DistractionsSampleMessage>,
-    },
-    DistractionsAcknowledged {
-        acknowledged_sample_ids: Vec<String>,
-        peer_samples: Vec<DistractionsSampleMessage>,
-        combined_samples: Vec<DistractionsSampleMessage>,
     },
     /// Unauthenticated: a person asks the recipient (whose card they hold) to become a contact.
     ContactRequest {
@@ -675,44 +647,6 @@ impl ControlMessage {
                     validate_identifier("transfer id", transfer_id)?;
                 }
             }
-            Self::DistractionsExchange {
-                protocol_version,
-                vault_id,
-                device_id,
-                samples,
-                acknowledged_peer_sample_ids,
-                owner_snapshot,
-            } => {
-                validate_protocol(*protocol_version)?;
-                validate_identifier("vault id", vault_id)?;
-                validate_identifier("device id", device_id)?;
-                if samples.len() > MAX_DISTRACTIONS_SAMPLES {
-                    return Err("too many Distractions samples".to_string());
-                }
-                for sample in samples {
-                    validate_distractions_sample(sample)?;
-                    if sample.device_id != *device_id {
-                        return Err("Distractions sample metadata is invalid".to_string());
-                    }
-                }
-                validate_distractions_sample_ids(acknowledged_peer_sample_ids)?;
-                validate_distractions_samples(owner_snapshot)?;
-                if samples.len() + owner_snapshot.len() > MAX_DISTRACTIONS_SAMPLES {
-                    return Err("Distractions exchange exceeds the sample limit".to_string());
-                }
-            }
-            Self::DistractionsAcknowledged {
-                acknowledged_sample_ids,
-                peer_samples,
-                combined_samples,
-            } => {
-                validate_distractions_sample_ids(acknowledged_sample_ids)?;
-                validate_distractions_samples(peer_samples)?;
-                validate_distractions_samples(combined_samples)?;
-                if peer_samples.len() + combined_samples.len() > MAX_DISTRACTIONS_SAMPLES {
-                    return Err("Distractions response exceeds the sample limit".to_string());
-                }
-            }
             Self::ContactRequest {
                 protocol_version,
                 recipient_card_nonce,
@@ -960,52 +894,6 @@ fn validate_card_text(label: &str, value: &str) -> Result<(), String> {
         return Err(format!("{label} is invalid"));
     }
     Ok(())
-}
-
-fn validate_distractions_sample_ids(sample_ids: &[String]) -> Result<(), String> {
-    if sample_ids.len() > MAX_DISTRACTIONS_SAMPLES {
-        return Err("too many acknowledged Distractions samples".to_string());
-    }
-    for sample_id in sample_ids {
-        validate_identifier("sample id", sample_id)?;
-    }
-    Ok(())
-}
-
-fn validate_distractions_samples(samples: &[DistractionsSampleMessage]) -> Result<(), String> {
-    if samples.len() > MAX_DISTRACTIONS_SAMPLES {
-        return Err("too many Distractions samples".to_string());
-    }
-    for sample in samples {
-        validate_distractions_sample(sample)?;
-    }
-    Ok(())
-}
-
-fn validate_distractions_sample(sample: &DistractionsSampleMessage) -> Result<(), String> {
-    validate_identifier("sample id", &sample.sample_id)?;
-    validate_identifier("sample device id", &sample.device_id)?;
-    if !matches!(
-        sample.source_type.as_str(),
-        "website" | "desktop-app" | "mobile-app"
-    ) || sample.source_key.trim().is_empty()
-        || sample.source_key.len() > 255
-        || sample
-            .display_name
-            .as_ref()
-            .is_some_and(|name| name.len() > 120)
-        || sample.started_at_ms < 0
-        || !(1..=86_400).contains(&sample.elapsed_seconds)
-        || !is_valid_local_date(&sample.local_date)
-        || sample.created_at_ms < 0
-    {
-        return Err("Distractions sample metadata is invalid".to_string());
-    }
-    Ok(())
-}
-
-fn is_valid_local_date(value: &str) -> bool {
-    chrono::NaiveDate::parse_from_str(value, "%Y-%m-%d").is_ok()
 }
 
 pub async fn write_control<W>(writer: &mut W, message: &ControlMessage) -> Result<(), String>
@@ -1440,6 +1328,30 @@ mod tests {
         let decoded: ControlMessage =
             serde_json::from_value(serialized).expect("decode enrollment");
         assert_eq!(decoded, enroll);
+    }
+
+    #[test]
+    fn usage_exchange_messages_are_not_part_of_the_protocol() {
+        // Usage reaches other devices as replicated daily totals, so the control channel
+        // carries no usage samples in either direction.
+        for kind in ["distractionsExchange", "distractionsAcknowledged"] {
+            let message = serde_json::json!({
+                "kind": kind,
+                "protocolVersion": PROTOCOL_VERSION,
+                "vaultId": "vault-abcdefghijklmnopqrstuv",
+                "deviceId": "device-phone",
+                "samples": [],
+                "acknowledgedPeerSampleIds": [],
+                "ownerSnapshot": [],
+                "acknowledgedSampleIds": [],
+                "peerSamples": [],
+                "combinedSamples": [],
+            });
+            assert!(
+                serde_json::from_value::<ControlMessage>(message).is_err(),
+                "{kind} must not decode"
+            );
+        }
     }
 
     #[test]

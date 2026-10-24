@@ -691,64 +691,6 @@ async fn authenticated_control_flow_prepares_commits_and_acknowledges() {
 }
 
 #[tokio::test]
-async fn authenticated_distractions_exchange_returns_acknowledged_and_combined_samples() {
-    use super::super::coordinator::{CoordinatorOperation, CoordinatorResponse};
-    use super::super::protocol::DistractionsSampleMessage;
-
-    let (pair, mut requests) = LocalPair::start_with_coordinator().await;
-    pair.enroll().await;
-    let sample = DistractionsSampleMessage {
-        sample_id: "phone-sample".to_string(),
-        device_id: "device-phone".to_string(),
-        source_type: "mobile-app".to_string(),
-        source_key: "com.example.video".to_string(),
-        display_name: Some("Video".to_string()),
-        started_at_ms: 1_700_000_000_000,
-        elapsed_seconds: 30,
-        local_date: "2026-09-13".to_string(),
-        created_at_ms: 1_700_000_030_000,
-    };
-    let expected = sample.clone();
-    let response_sample = sample.clone();
-    let coordinator = tokio::spawn(async move {
-        let request = requests.recv().await.expect("Distractions request");
-        match request.operation {
-            CoordinatorOperation::DistractionsExchange {
-                vault_id,
-                device_id,
-                samples,
-                acknowledged_peer_sample_ids,
-                owner_snapshot,
-            } => {
-                assert_eq!(vault_id, "vault-1");
-                assert_eq!(device_id, "device-phone");
-                assert_eq!(samples, vec![expected]);
-                assert!(acknowledged_peer_sample_ids.is_empty());
-                assert!(owner_snapshot.is_empty());
-            }
-            operation => panic!("unexpected coordinator operation: {operation:?}"),
-        }
-        request
-            .response
-            .send(Ok(CoordinatorResponse::DistractionsAcknowledged {
-                acknowledged_sample_ids: vec!["phone-sample".to_string()],
-                peer_samples: Vec::new(),
-                combined_samples: vec![response_sample],
-            }))
-            .expect("send Distractions response");
-    });
-
-    let (acknowledged, peer, combined) =
-        exchange_distractions(&pair.phone, vec![sample.clone()], Vec::new(), Vec::new())
-            .await
-            .expect("exchange Distractions usage");
-    assert_eq!(acknowledged, vec![sample.sample_id]);
-    assert!(peer.is_empty());
-    assert_eq!(combined.len(), 1);
-    coordinator.await.expect("coordinator task");
-}
-
-#[tokio::test]
 async fn android_upload_resumes_from_durable_desktop_staging() {
     use super::super::coordinator::{CoordinatorOperation, CoordinatorResponse};
     use super::super::pairing::StoredOutgoingTransfer;

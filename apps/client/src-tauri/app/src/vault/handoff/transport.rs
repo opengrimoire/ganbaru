@@ -453,47 +453,6 @@ pub(crate) async fn probe_coordinator(
     }
 }
 
-#[cfg(any(target_os = "android", all(test, not(target_os = "ios"))))]
-pub(crate) async fn exchange_distractions(
-    manager: &PairingManager,
-    samples: Vec<super::protocol::DistractionsSampleMessage>,
-    acknowledged_peer_sample_ids: Vec<String>,
-    owner_snapshot: Vec<super::protocol::DistractionsSampleMessage>,
-) -> Result<
-    (
-        Vec<String>,
-        Vec<super::protocol::DistractionsSampleMessage>,
-        Vec<super::protocol::DistractionsSampleMessage>,
-    ),
-    String,
-> {
-    let coordinator = manager
-        .coordinator_pin()?
-        .ok_or_else(|| "this device is not linked to a coordinator".to_string())?;
-    let device_id = manager.device_id()?;
-    match authenticated_exchange(
-        manager,
-        ControlMessage::DistractionsExchange {
-            protocol_version: PROTOCOL_VERSION,
-            vault_id: coordinator.vault_id,
-            device_id,
-            samples,
-            acknowledged_peer_sample_ids,
-            owner_snapshot,
-        },
-    )
-    .await?
-    {
-        ControlMessage::DistractionsAcknowledged {
-            acknowledged_sample_ids,
-            peer_samples,
-            combined_samples,
-        } => Ok((acknowledged_sample_ids, peer_samples, combined_samples)),
-        ControlMessage::Error { message, .. } => Err(message),
-        _ => Err("coordinator returned an invalid Distractions response".to_string()),
-    }
-}
-
 /// Sends one Contacts message to a coordinator reached through a contact card hint. The
 /// connection pins the hinted certificate but presents no client identity.
 pub(crate) async fn unauthenticated_exchange(

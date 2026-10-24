@@ -1,9 +1,13 @@
 #[cfg(target_os = "android")]
-#[cfg(target_os = "android")]
-use crate::vault::{self, handoff::pairing::PairingManager, ownership::VaultOwnershipManager};
+use crate::vault::{self, ownership::VaultOwnershipManager};
 use chrono::{DateTime, SecondsFormat, Utc};
+use ganbaru_distractions::contracts::DistractionsUsageSampleRow;
+use ganbaru_distractions::usage::UsageDateWindow;
+use ganbaru_distractions::usage::totals::insert_own_samples;
 #[cfg(target_os = "android")]
 use ganbaru_mobile_distractions::{MobileDistractionsExt, PendingEvent};
+#[cfg(target_os = "android")]
+use ganbaru_sync::manifest::vault::distractions::DOMAIN_NAME as DISTRACTIONS_DOMAIN;
 #[cfg(not(target_os = "android"))]
 use serde::Deserialize;
 use serde::Serialize;
@@ -171,32 +175,33 @@ fn normalize_event(mut event: PendingEvent) -> Result<PendingEvent, String> {
     Ok(event)
 }
 
-async fn import_events(pool: &SqlitePool, events: &[PendingEvent]) -> Result<(), String> {
+/// Imports one Guardian journal batch in one transaction: usage into this device's usage journal
+/// inside `window`, and block events with their rule snapshots.
+async fn import_events(
+    pool: &SqlitePool,
+    events: &[PendingEvent],
+    window: &UsageDateWindow,
+) -> Result<(), String> {
     let mut transaction = pool
         .begin()
         .await
         .map_err(|error| format!("begin mobile Distractions import: {error}"))?;
-    for event in events {
-        if event.kind == "usage" {
-            sqlx::query(
-                "INSERT OR IGNORE INTO distractions_usage_samples
-                    (id, source_type, source_key, display_name, started_at_ms,
-                     elapsed_seconds, local_date, created_at_ms)
-                 VALUES (?, 'mobile-app', ?, ?, ?, ?, ?, ?)",
-            )
-            .bind(&event.id)
-            .bind(&event.package_name)
-            .bind(&event.display_name)
-            .bind(event.started_at_ms)
-            .bind(event.elapsed_seconds)
-            .bind(&event.local_date)
-            .bind(event.occurred_at_ms)
-            .execute(&mut *transaction)
-            .await
-            .map_err(|error| format!("import mobile Distractions usage: {error}"))?;
-            continue;
-        }
-
+    let usage = events
+        .iter()
+        .filter(|event| event.kind == "usage")
+        .map(|event| DistractionsUsageSampleRow {
+            id: event.id.clone(),
+            source_type: "mobile-app".to_string(),
+            source_key: event.package_name.clone(),
+            display_name: Some(event.display_name.clone()),
+            started_at_ms: event.started_at_ms,
+            elapsed_seconds: event.elapsed_seconds,
+            local_date: event.local_date.clone(),
+            created_at_ms: event.occurred_at_ms,
+        })
+        .collect::<Vec<_>>();
+    insert_own_samples(&mut transaction, &usage, window).await?;
+    for event in events.iter().filter(|event| event.kind != "usage") {
         let run_id = if let Some(run_id) = &event.run_id {
             let exists =
                 sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM pomodoro_runs WHERE id = ?")
@@ -265,14 +270,13 @@ async fn import_events(pool: &SqlitePool, events: &[PendingEvent]) -> Result<(),
         .map_err(|error| format!("commit mobile Distractions import: {error}"))
 }
 
-/// Exclude both canonical local identities and peer receipts retained across ownership transfer.
+/// The pending Guardian identities the usage journal already holds, which must not count twice.
 #[cfg(any(target_os = "android", test))]
 async fn canonical_pending_ids(
     connection: &mut sqlx::SqliteConnection,
     capture: &projection::GuardianCapture,
-    retained: Vec<String>,
 ) -> Result<std::collections::HashSet<String>, String> {
-    let mut ids: std::collections::HashSet<_> = retained.into_iter().collect();
+    let mut ids = std::collections::HashSet::new();
     for batch in capture.pending.chunks(MAX_BATCH) {
         let mut query = sqlx::QueryBuilder::<sqlx::Sqlite>::new(
             "SELECT id FROM distractions_usage_samples WHERE id IN (",
@@ -292,43 +296,38 @@ async fn canonical_pending_ids(
     Ok(ids)
 }
 
+/// Imports the whole bounded Guardian journal and forces this device's stale usage totals into
+/// the vault, before a vault snapshot or when the app moves to the background.
 #[cfg(target_os = "android")]
-/// Drain the bounded native journal before a canonical vault snapshot, without a frontend command.
-pub(crate) async fn synchronize_for_snapshot<R: Runtime>(
+pub(crate) async fn drain_and_flush_usage<R: Runtime>(
     app: tauri::AppHandle<R>,
 ) -> Result<(), String> {
     let _sync = GUARDIAN_SYNC.lock().await;
     for _ in 0..MAX_DRAIN_BATCHES {
-        if !synchronize_locked(app.clone()).await?.full_batch {
+        if !synchronize_locked(app.clone(), true).await?.full_batch {
             return Ok(());
         }
     }
-    Err("Guardian journal still has a full batch; retry the vault snapshot".into())
+    Err("Guardian journal still has a full batch; retry the usage flush".into())
 }
 
+/// Imports one Guardian journal batch into the vault, then flushes this device's due usage
+/// totals; `force` flushes every stale total. A device that may not write usage leaves the
+/// journal pending. Block history is owner-only, so other devices import usage alone.
 #[cfg(target_os = "android")]
 async fn synchronize_locked<R: Runtime>(
     app: tauri::AppHandle<R>,
+    force: bool,
 ) -> Result<MobileDistractionsSyncResult, String> {
     let active_vault_id = vault::active_vault_id(&app)?;
     let ownership = app
         .state::<VaultOwnershipManager>()
         .status(&active_vault_id)?;
-    let retained = crate::distractions::linked::guardian_acknowledgements(
-        &app,
-        &active_vault_id,
-        &ownership.device_id,
-    )
-    .await?;
-    for ids in retained.chunks(MAX_BATCH) {
-        acknowledge_guardian(&app, ids).await?;
-        crate::distractions::linked::forget_guardian_acknowledgements(
-            &app,
-            &active_vault_id,
-            &ownership.device_id,
-            ids,
-        )
-        .await?;
+    if !ownership.can_write_domain(DISTRACTIONS_DOMAIN) {
+        return Ok(MobileDistractionsSyncResult {
+            imported: 0,
+            full_batch: false,
+        });
     }
     let pending_app = app.clone();
     let pending_vault = active_vault_id.clone();
@@ -343,96 +342,44 @@ async fn synchronize_locked<R: Runtime>(
     if events.len() > MAX_BATCH {
         return Err("mobile Distractions journal batch is too large".to_string());
     }
-    let normalized_events = events
+    let normalized = events
         .into_iter()
         .map(normalize_event)
         .collect::<Result<Vec<_>, _>>()?;
-    if normalized_events
+    if normalized
         .iter()
-        .any(|event| event.vault_id != active_vault_id)
+        .any(|event| event.vault_id != active_vault_id || (usage_only && event.kind != "usage"))
     {
-        return Err("Guardian returned events from a different vault".into());
+        return Err("Guardian returned events from a different vault or kind".into());
     }
-    let normalized = normalized_events
-        .into_iter()
-        .filter(|event| event.vault_id == active_vault_id)
-        .collect::<Vec<_>>();
-    let pairing = app.state::<PairingManager>().inner().clone();
-    let linked = pairing.coordinator_pin()?.is_some();
-    let mut imported = 0;
-    let mut full_batch = false;
-
-    if ownership.can_write {
-        full_batch = normalized.len() == MAX_BATCH;
-        if !normalized.is_empty() {
-            let _permit = app
-                .state::<VaultOwnershipManager>()
-                .acquire_managed_write(&active_vault_id)?;
-            if vault::active_vault_id(&app)? != active_vault_id {
-                return Err("mobile Distractions vault changed before import".into());
-            }
-            let pool = crate::db::connect_vault(&app).await?;
-            if vault::active_vault_id(&app)? != active_vault_id {
-                return Err("mobile Distractions vault changed while connecting".into());
-            }
-            import_events(&pool, &normalized).await?;
-            let processed_ids = normalized
-                .iter()
-                .map(|event| event.id.clone())
-                .collect::<Vec<_>>();
-            acknowledge_guardian(&app, &processed_ids).await?;
-            imported += normalized.len();
-        }
-        if linked {
-            if let Err(error) = exchange_as_owner(&app, &pairing, &active_vault_id).await {
-                eprintln!("linked Distractions exchange deferred: {error}");
-            }
-        }
-    } else if linked {
-        let usage_events = normalized
-            .iter()
-            .filter(|event| event.kind == "usage")
-            .cloned()
-            .collect::<Vec<_>>();
-        let samples = usage_events
-            .iter()
-            .map(|event| pending_event_message(event, &ownership.device_id))
-            .collect();
-        match crate::vault::handoff::transport::exchange_distractions(
-            &pairing,
-            samples,
-            Vec::new(),
-            Vec::new(),
+    let _permit = app
+        .state::<VaultOwnershipManager>()
+        .acquire_replicated_write(&active_vault_id, DISTRACTIONS_DOMAIN)?;
+    if vault::active_vault_id(&app)? != active_vault_id {
+        return Err("mobile Distractions vault changed before import".into());
+    }
+    let pool = crate::db::connect_vault(&app).await?;
+    if vault::active_vault_id(&app)? != active_vault_id {
+        return Err("mobile Distractions vault changed while connecting".into());
+    }
+    if !normalized.is_empty() {
+        import_events(
+            &pool,
+            &normalized,
+            &crate::distractions::usage_totals::current_usage_date_window(),
         )
-        .await
-        {
-            Ok((acknowledged, _, combined)) => {
-                validate_guardian_acknowledgements(&usage_events, &acknowledged)?;
-                crate::distractions::linked::apply_guardian_owner_snapshot(
-                    &app,
-                    &active_vault_id,
-                    &ownership.device_id,
-                    &acknowledged,
-                    &combined,
-                )
-                .await?;
-                acknowledge_guardian(&app, &acknowledged).await?;
-                crate::distractions::linked::forget_guardian_acknowledgements(
-                    &app,
-                    &active_vault_id,
-                    &ownership.device_id,
-                    &acknowledged,
-                )
-                .await?;
-                imported += acknowledged.len();
-                full_batch = acknowledged.len() == MAX_BATCH;
-            }
-            Err(error) => eprintln!("linked Distractions exchange deferred: {error}"),
-        }
+        .await?;
+        let processed_ids = normalized
+            .iter()
+            .map(|event| event.id.clone())
+            .collect::<Vec<_>>();
+        acknowledge_guardian(&app, &processed_ids).await?;
     }
+    crate::distractions::usage_totals::flush(&pool, &active_vault_id, &ownership.device_id, force)
+        .await?;
     Ok(MobileDistractionsSyncResult {
-        imported,
-        full_batch,
+        imported: normalized.len(),
+        full_batch: normalized.len() == MAX_BATCH,
     })
 }
 
@@ -447,112 +394,6 @@ async fn acknowledge_guardian<R: Runtime>(
     tauri::async_runtime::spawn_blocking(move || app.mobile_distractions().acknowledge_events(&ids))
         .await
         .map_err(|error| format!("Guardian acknowledgement worker: {error}"))?
-}
-
-/// An owner may acknowledge only identities in this immutable outgoing batch.
-#[cfg(any(target_os = "android", test))]
-fn validate_guardian_acknowledgements(
-    events: &[PendingEvent],
-    ids: &[String],
-) -> Result<(), String> {
-    let sent: std::collections::HashSet<&str> =
-        events.iter().map(|event| event.id.as_str()).collect();
-    let mut seen = std::collections::HashSet::new();
-    if ids.len() > MAX_BATCH
-        || ids
-            .iter()
-            .any(|id| !sent.contains(id.as_str()) || !seen.insert(id.as_str()))
-    {
-        return Err("owner acknowledged an unknown or repeated Guardian usage identity".into());
-    }
-    Ok(())
-}
-
-#[cfg(target_os = "android")]
-async fn exchange_as_owner<R: Runtime>(
-    app: &tauri::AppHandle<R>,
-    pairing: &PairingManager,
-    vault_id: &str,
-) -> Result<(), String> {
-    let _permit = app
-        .state::<VaultOwnershipManager>()
-        .acquire_managed_write(vault_id)?;
-    if vault::active_vault_id(app)? != vault_id {
-        return Err("mobile Distractions vault changed before owner exchange".into());
-    }
-    let pool = crate::db::connect_vault(app).await?;
-    if vault::active_vault_id(app)? != vault_id {
-        return Err("mobile Distractions vault changed while connecting for owner exchange".into());
-    }
-    let snapshot = owner_snapshot(&pool).await?;
-    let (_, peer_samples, combined) = crate::vault::handoff::transport::exchange_distractions(
-        pairing,
-        Vec::new(),
-        Vec::new(),
-        snapshot,
-    )
-    .await?;
-    if peer_samples.is_empty() {
-        let device = app
-            .state::<VaultOwnershipManager>()
-            .status(vault_id)?
-            .device_id;
-        return crate::distractions::linked::apply_owner_snapshot(
-            app,
-            vault_id,
-            &device,
-            &[],
-            &combined,
-        )
-        .await;
-    }
-    let coordinator = pairing
-        .coordinator_pin()?
-        .ok_or_else(|| "this device is not linked to a coordinator".to_string())?;
-    let acknowledged = crate::distractions::linked::import_linked_samples(
-        &pool,
-        &coordinator.device_id,
-        &peer_samples,
-    )
-    .await?;
-    let refreshed = owner_snapshot(&pool).await?;
-    let (_, _, combined) = crate::vault::handoff::transport::exchange_distractions(
-        pairing,
-        Vec::new(),
-        acknowledged,
-        refreshed,
-    )
-    .await?;
-    let device = app
-        .state::<VaultOwnershipManager>()
-        .status(vault_id)?
-        .device_id;
-    crate::distractions::linked::apply_owner_snapshot(app, vault_id, &device, &[], &combined).await
-}
-
-#[cfg(target_os = "android")]
-async fn owner_snapshot(
-    pool: &SqlitePool,
-) -> Result<Vec<crate::vault::handoff::protocol::DistractionsSampleMessage>, String> {
-    crate::distractions::linked::aggregate_owner_samples(pool).await
-}
-
-#[cfg(target_os = "android")]
-fn pending_event_message(
-    event: &PendingEvent,
-    device_id: &str,
-) -> crate::vault::handoff::protocol::DistractionsSampleMessage {
-    crate::vault::handoff::protocol::DistractionsSampleMessage {
-        sample_id: event.id.clone(),
-        device_id: device_id.to_string(),
-        source_type: "mobile-app".to_string(),
-        source_key: event.package_name.clone(),
-        display_name: Some(event.display_name.clone()),
-        started_at_ms: event.started_at_ms,
-        elapsed_seconds: event.elapsed_seconds,
-        local_date: event.local_date.clone(),
-        created_at_ms: event.occurred_at_ms,
-    }
 }
 
 #[cfg(test)]
@@ -588,14 +429,6 @@ mod tests {
     }
 
     #[test]
-    fn owner_acknowledgements_are_unique_and_belong_to_the_sent_batch() {
-        let sent = vec![event("one"), event("two")];
-        assert!(validate_guardian_acknowledgements(&sent, &["two".into()]).is_ok());
-        assert!(validate_guardian_acknowledgements(&sent, &["unknown".into()]).is_err());
-        assert!(validate_guardian_acknowledgements(&sent, &["one".into(), "one".into()]).is_err());
-    }
-
-    #[test]
     fn package_validation_requires_bounded_java_segments() {
         assert!(is_valid_package_name("com.example.video"));
         assert!(is_valid_package_name("app_1.social.feed2"));
@@ -605,7 +438,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn writable_accounting_retains_peer_receipt_exclusions_after_ownership_transfer() {
+    async fn pending_guardian_usage_counts_once_beside_the_imported_journal() {
         let pool = sqlx::sqlite::SqlitePoolOptions::new()
             .max_connections(1)
             .connect("sqlite::memory:")
@@ -634,13 +467,8 @@ mod tests {
             "localSources": [], "pending": pending,
         }).to_string(), "vault", now).unwrap();
         let mut tx = pool.begin().await.unwrap();
-        let excluded = canonical_pending_ids(&mut tx, &capture, vec!["peer".into()])
-            .await
-            .unwrap();
-        assert_eq!(
-            excluded,
-            std::collections::HashSet::from(["local".into(), "peer".into()])
-        );
+        let excluded = canonical_pending_ids(&mut tx, &capture).await.unwrap();
+        assert_eq!(excluded, std::collections::HashSet::from(["local".into()]));
         let sources = projection::include_pending(
             vec![crate::distractions::limits::UsageSourceDay {
                 source_type: "mobile-app".into(),
@@ -652,7 +480,7 @@ mod tests {
             &excluded,
         )
         .unwrap();
-        assert_eq!(sources[0].elapsed_seconds, 31);
+        assert_eq!(sources[0].elapsed_seconds, 32);
         tx.commit().await.unwrap();
         sqlx::query("DROP TABLE distractions_usage_samples")
             .execute(&pool)
@@ -660,7 +488,7 @@ mod tests {
             .unwrap();
         let mut connection = pool.acquire().await.unwrap();
         assert!(
-            canonical_pending_ids(&mut connection, &capture, vec!["peer".into()])
+            canonical_pending_ids(&mut connection, &capture)
                 .await
                 .is_err()
         );
@@ -688,10 +516,13 @@ mod tests {
         block.elapsed_seconds = 0;
         block.reason = Some("usage_limit".into());
         let batch = vec![usage, block];
+        let window = ganbaru_distractions::usage::usage_date_window(
+            chrono::NaiveDate::from_ymd_opt(2026, 10, 2).unwrap(),
+        );
         sqlx::raw_sql("CREATE TRIGGER reject_mobile_rule_snapshot BEFORE INSERT ON distractions_block_event_rule_snapshots
             BEGIN SELECT RAISE(ABORT, 'rule snapshot failure'); END")
             .execute(&pool).await.unwrap();
-        assert!(import_events(&pool, &batch).await.is_err());
+        assert!(import_events(&pool, &batch, &window).await.is_err());
         for table in [
             "distractions_usage_samples",
             "distractions_block_events",
@@ -712,7 +543,7 @@ mod tests {
             .await
             .unwrap();
         for _ in 0..2 {
-            import_events(&pool, &batch).await.unwrap();
+            import_events(&pool, &batch, &window).await.unwrap();
             for table in [
                 "distractions_usage_samples",
                 "distractions_block_events",

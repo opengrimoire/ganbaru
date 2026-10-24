@@ -496,6 +496,23 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
             tauri::Manager::state::<crate::sync::SyncRuntime>(_app).sync_now();
             crate::distractions::android::runtime::wake(_app);
         }
+        // Moving to the background forces this device's usage totals into the vault, because
+        // Android may end the process without an exit event.
+        #[cfg(target_os = "android")]
+        if matches!(
+            event,
+            tauri::RunEvent::WindowEvent {
+                event: tauri::WindowEvent::Suspended,
+                ..
+            }
+        ) {
+            let app = _app.clone();
+            tauri::async_runtime::spawn(async move {
+                if let Err(error) = crate::distractions::android::drain_and_flush_usage(app).await {
+                    eprintln!("Distractions usage totals background flush failed: {error}");
+                }
+            });
+        }
         #[cfg(target_os = "android")]
         if matches!(event, tauri::RunEvent::Exit) {
             crate::distractions::android::runtime::stop(_app);

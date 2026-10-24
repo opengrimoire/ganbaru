@@ -153,8 +153,13 @@ async fn canonical_sqlite_read_groups_the_complete_window_and_retains_recorded_d
         .connect("sqlite::memory:")
         .await
         .unwrap();
-    sqlx::query("CREATE TABLE distractions_usage_samples (source_type TEXT, source_key TEXT, local_date TEXT, elapsed_seconds INTEGER)")
-        .execute(&pool).await.unwrap();
+    sqlx::raw_sql(
+        "CREATE TABLE distractions_usage_samples (source_type TEXT, source_key TEXT, local_date TEXT, elapsed_seconds INTEGER);
+         CREATE TABLE distractions_usage_totals (device_id TEXT, source_type TEXT, source_key TEXT, local_date TEXT, elapsed_seconds INTEGER);",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
     let mut tx = pool.begin().await.unwrap();
     for _ in 0..250 {
         sqlx::query("INSERT INTO distractions_usage_samples VALUES ('website', 'example.com', '2026-10-02', 2)")
@@ -164,13 +169,57 @@ async fn canonical_sqlite_read_groups_the_complete_window_and_retains_recorded_d
         .execute(&mut *tx).await.unwrap();
     tx.commit().await.unwrap();
     let mut tx = pool.begin().await.unwrap();
-    let rows = crate::limits::store::read_source_days(&mut tx, "2026-09-28", "2026-10-02")
-        .await
-        .unwrap();
+    let rows =
+        crate::limits::store::read_source_days(&mut tx, "device-own", "2026-09-28", "2026-10-02")
+            .await
+            .unwrap();
     tx.commit().await.unwrap();
     assert_eq!(rows.len(), 2);
     let result = totals(&parse_config(&root()).unwrap(), &rows, "2026-10-02").unwrap();
     assert_eq!(result[0].used_seconds, 500);
     assert_eq!(result[1].used_seconds, 550);
+    pool.close().await;
+}
+
+#[tokio::test]
+async fn budgets_count_other_devices_totals_with_own_samples_but_not_own_totals() {
+    let pool = sqlx::sqlite::SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .unwrap();
+    sqlx::raw_sql(
+        "CREATE TABLE distractions_usage_samples (source_type TEXT, source_key TEXT, local_date TEXT, elapsed_seconds INTEGER);
+         CREATE TABLE distractions_usage_totals (device_id TEXT, source_type TEXT, source_key TEXT, local_date TEXT, elapsed_seconds INTEGER);
+         INSERT INTO distractions_usage_samples VALUES
+            ('website', 'video.example.com', '2026-10-02', 120),
+            ('website', 'video.example.com', '2026-10-02', 60);
+         INSERT INTO distractions_usage_totals VALUES
+            ('device-own', 'website', 'video.example.com', '2026-10-02', 150),
+            ('device-laptop', 'website', 'video.example.com', '2026-10-02', 200),
+            ('device-phone', 'mobile-app', 'com.example.video', '2026-10-02', 40),
+            ('device-phone', 'website', 'example.com', '2026-09-28', 300),
+            ('device-phone', 'website', 'example.com', '2026-09-27', 900);",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    let mut tx = pool.begin().await.unwrap();
+    let rows =
+        crate::limits::store::read_source_days(&mut tx, "device-own", "2026-09-28", "2026-10-02")
+            .await
+            .unwrap();
+    tx.commit().await.unwrap();
+    assert_eq!(
+        rows,
+        vec![
+            source("website", "example.com", "2026-09-28", 300),
+            source("mobile-app", "com.example.video", "2026-10-02", 40),
+            source("website", "video.example.com", "2026-10-02", 380),
+        ]
+    );
+    let result = totals(&parse_config(&root()).unwrap(), &rows, "2026-10-02").unwrap();
+    assert_eq!(result[0].used_seconds, 420);
+    assert_eq!(result[1].used_seconds, 720);
     pool.close().await;
 }

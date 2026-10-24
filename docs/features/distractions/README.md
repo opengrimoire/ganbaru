@@ -39,7 +39,7 @@ The distraction blocker adds calm, explainable friction when a selected website 
 
 ## Data ownership
 
-Rules, schedules, selected apps, categories, allowlists, and usage-limit definitions are active-vault data in SQLite, editable on every linked device and synced between them. Usage samples and normalized block history are canonical SQLite data. Small device-local runtime snapshots let the extension and Android enforce while the main UI is absent; their reads are size-bounded, they expire, and never become rule authority.
+Rules, schedules, selected apps, categories, allowlists, and usage-limit definitions are active-vault data in SQLite, editable on every linked device and synced between them. Each device keeps its own usage samples in SQLite and syncs one daily total per source, so limits count usage from every linked device. Normalized block history is canonical SQLite data kept by the vault owner. A rule edit that is refused or cannot be saved leaves the stored rules in place and shows why in Settings until the next saved edit. Small device-local runtime snapshots let the extension and Android enforce while the main UI is absent; their reads are size-bounded, they expire, and never become rule authority.
 
 Observation, accounting, and enforcement are native: one desktop owner in Rust, and the Android Guardian service with a Rust publisher for shared totals. Settings only read native projections. Phase rules require a fresh committed Focus phase and never infer a later phase from elapsed time. See [Usage limits](usage-limits.md).
 

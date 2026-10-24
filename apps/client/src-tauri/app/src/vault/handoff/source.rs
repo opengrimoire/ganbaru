@@ -214,17 +214,12 @@ async fn prepare(
 
 #[cfg(target_os = "android")]
 async fn prepare_local_state_for_snapshot(app: &tauri::AppHandle) -> Result<(), String> {
-    crate::distractions::android::synchronize_for_snapshot(app.clone()).await
+    crate::distractions::android::drain_and_flush_usage(app.clone()).await
 }
 
 #[cfg(desktop)]
 async fn prepare_local_state_for_snapshot(app: &tauri::AppHandle) -> Result<(), String> {
-    let vault_id = crate::vault::active_vault_id(app)?;
-    let device_id = app.state::<PairingManager>().device_id()?;
-    let pool = crate::db::connect_vault(app).await?;
-    crate::distractions::linked::drain_local_spool(app, &pool, &vault_id, &device_id)
-        .await
-        .map(|_| ())
+    crate::distractions::usage_totals::flush_active_vault(app).await
 }
 
 #[cfg(target_os = "ios")]

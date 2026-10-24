@@ -265,7 +265,7 @@ async fn refresh<R: Runtime>(
 ) -> Result<(), String> {
     let _sync = GUARDIAN_SYNC.lock().await;
     for _ in 0..MAX_DRAIN_BATCHES {
-        match synchronize_locked(app.clone()).await {
+        match synchronize_locked(app.clone(), false).await {
             Ok(result) if result.full_batch => continue,
             Ok(_) => break,
             Err(error) => {
@@ -305,56 +305,28 @@ async fn refresh<R: Runtime>(
         .clone()
         .or_else(|| capture.copy.clone())
         .ok_or("Guardian notification language is not ready")?;
-    let sources = if status.can_write {
-        let _permit = app
-            .state::<vault::ownership::VaultOwnershipManager>()
-            .acquire_managed_write(&vault_id)?;
-        if vault::active_vault_path(app)? != path {
-            return Err("Guardian vault changed before accounting".into());
-        }
-        let pool = crate::db::connect_vault(app).await?;
-        let mut tx = pool
-            .begin()
-            .await
-            .map_err(|error| format!("begin Guardian native accounting: {error}"))?;
-        let sources = crate::distractions::limits::store::read_source_days(
-            &mut tx,
-            &capture.week_start_local_date,
-            &capture.local_date,
-        )
-        .await?;
-        // Retained peer receipts still cover Guardian identities after this device becomes the writer.
-        let retained = crate::distractions::linked::guardian_acknowledgements(
-            app,
-            &vault_id,
-            &status.device_id,
-        )
-        .await?;
-        let already_imported = super::canonical_pending_ids(&mut tx, &capture, retained).await?;
-        let sources = super::projection::include_pending(sources, &capture, &already_imported)?;
-        tx.commit()
-            .await
-            .map_err(|error| format!("finish Guardian native accounting: {error}"))?;
-        sources
-    } else {
-        let sources = crate::distractions::linked::accounting_source_days(
-            app,
-            &vault_id,
-            &status.device_id,
-            &capture.week_start_local_date,
-            &capture.local_date,
-        )
-        .await?;
-        let accepted = crate::distractions::linked::guardian_acknowledgements(
-            app,
-            &vault_id,
-            &status.device_id,
-        )
-        .await?
-        .into_iter()
-        .collect();
-        super::projection::include_pending(sources, &capture, &accepted)?
-    };
+    // Other devices' replicated totals, this device's own journal, and Guardian events not yet
+    // imported form one bounded source window; a read needs no write permit.
+    let pool = crate::db::connect_vault(app).await?;
+    if vault::active_vault_path(app)? != path {
+        return Err("Guardian vault changed before accounting".into());
+    }
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|error| format!("begin Guardian native accounting: {error}"))?;
+    let sources = crate::distractions::limits::store::read_source_days(
+        &mut tx,
+        &status.device_id,
+        &capture.week_start_local_date,
+        &capture.local_date,
+    )
+    .await?;
+    let already_imported = super::canonical_pending_ids(&mut tx, &capture).await?;
+    let sources = super::projection::include_pending(sources, &capture, &already_imported)?;
+    tx.commit()
+        .await
+        .map_err(|error| format!("finish Guardian native accounting: {error}"))?;
     // The pure engine enforces the complete bounded source window, including newly pending rows.
     let publication_app = app.clone();
     let publication_control = Arc::clone(control);

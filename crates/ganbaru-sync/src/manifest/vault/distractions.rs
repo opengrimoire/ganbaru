@@ -7,7 +7,7 @@
 //!
 //! Daily usage replicates as one total per device, source, and local day, which only its device
 //! writes and which only grows. Usage samples stay on the device as its accounting journal; block
-//! events and runtime state stay on the device. Ids 279 to 287 are reserved.
+//! events stay owner-only. Ids 279 to 287 are reserved.
 
 use ganbaru_sync_contracts::bounds::MAX_DEVICE_ID_BYTES;
 use ganbaru_sync_contracts::{GroupId, TableId};

@@ -112,7 +112,9 @@ pub struct SelectedHead {
 /// that reserved it was retired because the database lost part of its chain. A record of another
 /// charter belongs to a log a Reset cleared and is current. Every chain this installation sealed
 /// an epoch of stays stored, and selection prefers the highest epoch, so a selected head of a
-/// lower epoch than the record means the database lost that epoch.
+/// lower epoch than the record means the database lost that epoch. A record of an earlier
+/// epoch than the selected head is current: a handover sealed elsewhere continued the log, and
+/// entries this installation sealed past its starting revision were superseded, not lost.
 pub fn sequenced_check(
     sequenced: Option<&SequencedEntry>,
     selected: SelectedHead,
@@ -120,6 +122,9 @@ pub fn sequenced_check(
     let Some(entry) = sequenced.filter(|entry| entry.charter() == Some(selected.charter)) else {
         return SequencedCheck::Current;
     };
+    if entry.epoch < selected.epoch {
+        return SequencedCheck::Current;
+    }
     let next = selected.revision.saturating_add(1);
     if entry.revision == next && !entry.restored {
         SequencedCheck::RolledBack

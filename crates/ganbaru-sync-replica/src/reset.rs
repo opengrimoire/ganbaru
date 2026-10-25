@@ -31,13 +31,15 @@ pub fn forget_high_water(files: &SyncFiles) -> Result<(), String> {
 }
 
 /// Refuses to found a new space while the writer record still names the high-water of a log:
-/// the database lost its charter to a restore from before the space was founded, and a new
-/// charter would leave every linked device refusing it. Only Reset sync state founds anew.
+/// the database lost its charter, to a backup from before the space was founded or to Reset
+/// local data, and a new charter would leave every linked device refusing it. Restoring a
+/// database that holds the log lets sync continue; only Reset sync state founds anew.
 pub fn refuse_refounding(record: Option<&WriterRecord>) -> Result<(), String> {
     if record.is_some_and(|record| record.sequenced.is_some()) {
         return Err(
-            "this database was restored from before the vault's sync space was founded; restore \
-             a newer backup or reset sync state"
+            "this vault's database no longer holds the sync space this device anchors; restore \
+             a database copy that holds it, or use Reset sync state to start a new one and link \
+             the other devices again"
                 .to_string(),
         );
     }

@@ -686,3 +686,17 @@ pub async fn seal_handover_here(
 fn millis(now_ms: u64) -> Result<i64, String> {
     i64::try_from(now_ms).map_err(|_| "clock is out of range".to_string())
 }
+
+/// `vector` without the writers `excluded` names. A desktop taking the anchor merges the
+/// coordinator's stored vector into the old anchor vector without the writers of devices it
+/// quarantined: it never stores those writers, so naming them would make every removal wait as
+/// `catching_up`, including the removal of the quarantined device.
+pub fn without_writers(vector: &VersionVector, excluded: &VersionVector) -> VersionVector {
+    let mut kept = VersionVector::new();
+    for (writer, seq) in vector.iter() {
+        if excluded.get(&writer) == 0 {
+            kept.advance(writer, seq);
+        }
+    }
+    kept
+}

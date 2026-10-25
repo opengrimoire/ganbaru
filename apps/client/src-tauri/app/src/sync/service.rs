@@ -657,6 +657,10 @@ struct OnlineWait {
     transport: PairedTransport,
     ids: PeerIds,
     known: VersionVector,
+    /// The coordinator's stored vector from the exchange, without writers of devices this
+    /// installation quarantined.
+    #[cfg(desktop)]
+    hub: VersionVector,
 }
 
 struct Signals {
@@ -1151,6 +1155,8 @@ impl ServiceState {
                             transport: assets.transport.clone(),
                             ids: assets.ids.clone(),
                             known: VersionVector::new(),
+                            #[cfg(desktop)]
+                            hub: VersionVector::new(),
                         };
                         self.exchange(&session, wait, view).await?
                     }
@@ -1174,7 +1180,7 @@ impl ServiceState {
             #[cfg(desktop)]
             {
                 let hub_stored = match &next {
-                    Next::Online(wait) if view.state == SyncState::Idle => Some(wait.known.clone()),
+                    Next::Online(wait) if view.state == SyncState::Idle => Some(wait.hub.clone()),
                     _ => None,
                 };
                 for request in take_anchor.drain(..) {
@@ -1516,7 +1522,16 @@ impl ServiceState {
                         None if done.more => return Ok(Next::Continue),
                         None => {}
                     }
+                    // Operations of devices this client quarantined count as known, so the long
+                    // poll does not return for what it turns away; the coordinator's stored
+                    // vector without those writers is what taking the anchor merges.
+                    let skipped = self.pull_skips.for_quarantine(quarantine.devices());
+                    #[cfg(desktop)]
+                    {
+                        wait.hub = authority::without_writers(&done.hub, &skipped);
+                    }
                     wait.known = done.known;
+                    wait.known.merge(&skipped);
                     return Ok(Next::Online(Box::new(wait)));
                 }
                 Ok(Exchange::Fork(fork)) => {
@@ -2530,14 +2545,15 @@ impl<'a, H: SyncHost> Session<'a, H> {
     ) -> Result<(), String> {
         let path = self.files.outbox_path();
         let mut outbox = blocking(move || Outbox::load(&path)).await?;
-        if outbox.entries().iter().all(|entry| !entry.pending()) {
-            return Ok(());
-        }
-        {
-            let mut conn = acquire(&self.pool).await?;
-            outbox.prune(&self.engine, &mut conn, &self.ctx).await?;
-        }
-        super::client::replay_outbox(transport, ids, &mut outbox).await?;
+        super::client::prune_and_replay_outbox(
+            &self.engine,
+            &self.pool,
+            &self.ctx,
+            transport,
+            ids,
+            &mut outbox,
+        )
+        .await?;
         Ok(())
     }
 

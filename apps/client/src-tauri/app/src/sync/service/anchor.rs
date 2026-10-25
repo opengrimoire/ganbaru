@@ -380,8 +380,9 @@ impl<H: SyncHost> Session<'_, H> {
     /// Seals a handover that makes this linked desktop the anchor. Runs only after an exchange
     /// that left this device current with the coordinator. The old anchor vector is the
     /// per-writer maximum of this device's stored vector and `hub_stored`, what the coordinator
-    /// reported storing in that exchange, so the new anchor refuses removals until it knows
-    /// every writer either stored. Proposals the coordinator sequenced after the exchange are
+    /// reported storing in that exchange without the writers of devices this desktop
+    /// quarantined, so the new anchor refuses removals until it knows every writer either
+    /// stored. Proposals the coordinator sequenced after the exchange are
     /// superseded by the handover and return from the outboxes that hold them.
     pub(super) async fn take_anchor(
         &self,

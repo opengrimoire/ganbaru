@@ -691,6 +691,30 @@ pub async fn replay_outbox<T: SyncTransport>(
     Ok(sequenced)
 }
 
+/// Follows the local replica's selected chain with [`Outbox::prune`], which also puts a held
+/// proposal a handover superseded back to waiting, then sends what waits with
+/// [`replay_outbox`]. A member runs this after each exchange, even when nothing waited before.
+pub async fn prune_and_replay_outbox<T: SyncTransport>(
+    engine: &Engine,
+    pool: &SqlitePool,
+    ctx: &SpaceContext,
+    transport: &T,
+    ids: &PeerIds,
+    outbox: &mut Outbox,
+) -> Result<usize, String> {
+    if outbox.entries().is_empty() {
+        return Ok(0);
+    }
+    {
+        let mut conn = acquire(pool).await?;
+        outbox.prune(engine, &mut conn, ctx).await?;
+    }
+    if outbox.pending().is_empty() {
+        return Ok(0);
+    }
+    replay_outbox(transport, ids, outbox).await
+}
+
 /// On an anchor that is not the hub, reports the final rejections it gave proposals of an
 /// earlier forward and collects the proposals the hub holds for it. The hub answers only the
 /// device the selected log names as anchor; anyone else receives none.

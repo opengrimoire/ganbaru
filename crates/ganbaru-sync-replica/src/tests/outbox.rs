@@ -337,6 +337,21 @@ fn a_record_one_entry_ahead_is_a_rolled_back_seal_and_further_ahead_is_a_restore
         "a log another anchor extended is not a restore"
     );
     assert_eq!(
+        sequenced_check(Some(&at(0, 9)), head(1, 7)),
+        SequencedCheck::Current,
+        "entries a handover superseded past its starting revision were not lost"
+    );
+    assert_eq!(
+        sequenced_check(
+            Some(&SequencedEntry {
+                restored: true,
+                ..at(0, 8)
+            }),
+            head(1, 7)
+        ),
+        SequencedCheck::Current
+    );
+    assert_eq!(
         sequenced_check(Some(&at(0, 8)), head(0, 7)),
         SequencedCheck::RolledBack
     );

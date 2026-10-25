@@ -287,6 +287,7 @@ fn spooled(id: &str, run_id: Option<&str>) -> super::SpooledBlockEvent {
         display_name: Some("youtube.com".to_string()),
         phase: run_id.map(|_| "focus".to_string()),
         decision: "blocked".to_string(),
+        rule_id: Some("rule-1".to_string()),
         rule_kind: Some("domain".to_string()),
         rule_label: Some("YouTube".to_string()),
         blocker_mode: Some("blacklist".to_string()),
@@ -296,7 +297,7 @@ fn spooled(id: &str, run_id: Option<&str>) -> super::SpooledBlockEvent {
 #[test]
 fn spooled_block_events_reject_values_the_vault_would_refuse() {
     assert!(super::validate_spooled_block_event(&spooled("block-1", Some("run-1"))).is_ok());
-    let cases: [fn(&mut super::SpooledBlockEvent); 16] = [
+    let cases: [fn(&mut super::SpooledBlockEvent); 17] = [
         |event| event.id = " ".to_string(),
         |event| event.id = "x".repeat(MAX_ROW_KEY_BYTES + 1),
         |event| event.id = "block\0one".to_string(),
@@ -312,6 +313,7 @@ fn spooled_block_events_reject_values_the_vault_would_refuse() {
         |event| event.source_key = "you\0tube.com".to_string(),
         |event| event.display_name = Some("You\0Tube".to_string()),
         |event| event.rule_label = Some("Video\0".to_string()),
+        |event| event.rule_id = Some("rule\0one".to_string()),
         |event| event.source_type = "website".to_string(),
         |event| event.source_key = "youtube.com/watch".to_string(),
         |event| event.source_key = "YouTube.com".to_string(),
@@ -368,19 +370,24 @@ fn spooled_block_events_record_once_and_lose_a_missing_run() {
                 ("block-2".to_string(), None, orphan.occurred_at.clone()),
             ]
         );
-        let labels: Vec<(String, i64, String)> = sqlx::query_as(
-            "SELECT block_event_id, ordinal, rule_label
-             FROM distractions_block_event_rule_snapshots ORDER BY block_event_id",
+        let labels: Vec<(String, i64, String, String)> = sqlx::query_as(
+            "SELECT snapshot.block_event_id, snapshot.ordinal, snapshot.rule_label, event.rule_id
+             FROM distractions_block_event_rule_snapshots AS snapshot
+             JOIN distractions_block_events AS event ON event.id = snapshot.block_event_id
+             WHERE snapshot.rule_id IS event.rule_id
+             ORDER BY snapshot.block_event_id",
         )
         .fetch_all(&mut *connection)
         .await
         .unwrap();
-        assert_eq!(
-            labels,
-            vec![
-                ("block-1".to_string(), 0, "YouTube".to_string()),
-                ("block-2".to_string(), 0, "YouTube".to_string()),
-            ]
-        );
+        let label = |id: &str| {
+            (
+                id.to_string(),
+                0,
+                "YouTube".to_string(),
+                "rule-1".to_string(),
+            )
+        };
+        assert_eq!(labels, vec![label("block-1"), label("block-2")]);
     });
 }

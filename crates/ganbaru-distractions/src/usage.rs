@@ -236,6 +236,8 @@ pub struct SpooledBlockEvent {
     pub display_name: Option<String>,
     pub phase: Option<String>,
     pub decision: String,
+    /// The rule that blocked the source, recorded on the event and its snapshot.
+    pub rule_id: Option<String>,
     pub rule_kind: Option<String>,
     pub rule_label: Option<String>,
     pub blocker_mode: Option<String>,
@@ -290,6 +292,7 @@ pub fn validate_spooled_block_event(event: &SpooledBlockEvent) -> Result<(), Str
     }
     for (value, what) in [
         (&event.display_name, "display name"),
+        (&event.rule_id, "rule"),
         (&event.rule_label, "rule label"),
     ] {
         if let Some(value) = value {
@@ -388,7 +391,7 @@ async fn write_spooled_block_event(
         "INSERT OR IGNORE INTO distractions_block_events
             (id, run_id, segment_id, occurred_at, source_type, source_key,
              display_name, phase, decision, rule_id, category_id, created_at)
-         VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, NULL, NULL, ?)",
+         VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, NULL, ?)",
     )
     .bind(&event.id)
     .bind(run_id)
@@ -398,6 +401,7 @@ async fn write_spooled_block_event(
     .bind(&event.display_name)
     .bind(&event.phase)
     .bind(&event.decision)
+    .bind(&event.rule_id)
     .bind(&event.occurred_at)
     .execute(&mut *connection)
     .await
@@ -409,9 +413,10 @@ async fn write_spooled_block_event(
     sqlx::query(
         "INSERT OR IGNORE INTO distractions_block_event_rule_snapshots
             (block_event_id, rule_id, rule_kind, rule_label, environment_id, blocker_mode)
-         VALUES (?, NULL, ?, ?, NULL, ?)",
+         VALUES (?, ?, ?, ?, NULL, ?)",
     )
     .bind(&event.id)
+    .bind(&event.rule_id)
     .bind(&event.rule_kind)
     .bind(&event.rule_label)
     .bind(&event.blocker_mode)

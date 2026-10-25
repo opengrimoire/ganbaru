@@ -502,6 +502,7 @@ async fn read_pending_block_events(
                 display_name: row.try_get("display_name").map_err(read)?,
                 phase: row.try_get("phase").map_err(read)?,
                 decision: row.try_get("decision").map_err(read)?,
+                rule_id: None,
                 rule_kind: row.try_get("rule_kind").map_err(read)?,
                 rule_label: row.try_get("rule_label").map_err(read)?,
                 blocker_mode: row.try_get("blocker_mode").map_err(read)?,

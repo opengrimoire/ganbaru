@@ -29,17 +29,14 @@ pub struct AnchorKeys {
     pub recovery: RecoverySeed,
 }
 
-/// Reads the anchor keys of a vault, creating each missing one once. Key stores may block, so
-/// callers run this off the async runtime.
+/// Reads the anchor keys of a vault, creating each missing one once. Only founding a charter
+/// calls this: a recovery seed the user saved and the store forgot is created anew, for the
+/// next charter's kit. Key stores may block, so callers run this off the async runtime.
 pub fn ensure_anchor_keys(keys: &dyn SyncKeyStore, vault_id: &str) -> Result<AnchorKeys, String> {
     let device = ensure_device_key(keys, vault_id)?;
     let admin = ensure_admin_key(keys, vault_id)?;
-    let recovery = match keys.read(vault_id, SyncKey::RecoverySeed)? {
-        Some(bytes) => RecoverySeed::from_bytes(
-            bytes
-                .try_into()
-                .map_err(|_| "sync recovery seed is malformed".to_string())?,
-        ),
+    let recovery = match pending_recovery_seed(keys, vault_id)? {
+        Some(seed) => seed,
         None => {
             let seed = RecoverySeed::generate()
                 .map_err(|error| format!("create sync recovery seed: {error}"))?;
@@ -403,6 +400,57 @@ pub fn rotate_recovery_seed(
         RecoverySeed::generate().map_err(|error| format!("create sync recovery seed: {error}"))?;
     keys.write(vault_id, SyncKey::RecoverySeed, seed.as_bytes())?;
     Ok(seed)
+}
+
+/// The recovery seed whose kit waits for the user to save it, if the key store still holds
+/// one. Key stores may block, so callers run this off the async runtime.
+pub fn pending_recovery_seed(
+    keys: &dyn SyncKeyStore,
+    vault_id: &str,
+) -> Result<Option<RecoverySeed>, String> {
+    keys.read(vault_id, SyncKey::RecoverySeed)?
+        .map(|bytes| {
+            bytes
+                .try_into()
+                .map(RecoverySeed::from_bytes)
+                .map_err(|_| "sync recovery seed is malformed".to_string())
+        })
+        .transpose()
+}
+
+/// Deletes the recovery seed once the user saved its kit, so no device keeps it. Key stores may
+/// block, so callers run this off the async runtime.
+pub fn forget_recovery_seed(keys: &dyn SyncKeyStore, vault_id: &str) -> Result<(), String> {
+    keys.remove(vault_id, SyncKey::RecoverySeed)
+}
+
+/// Signs, with the recovery admin key `kit_code` derives, the proposal that makes the enrolled
+/// desktop `device_id` an admin with `admin_key`, so it can take the anchor. The derived key
+/// lives only inside this call. Refuses a code that does not parse or a kit whose key the
+/// selected log does not name.
+pub fn recovery_promotion(
+    view: &AuthorizationView,
+    space: SpaceId,
+    kit_code: &str,
+    device_id: &str,
+    admin_key: AdminPublicKey,
+    now_ms: u64,
+) -> Result<SignedProposal, String> {
+    let seed = RecoverySeed::parse_kit_code(kit_code)
+        .map_err(|error| format!("read the recovery kit: {error}"))?;
+    let recovery = seed
+        .recovery_admin_key()
+        .map_err(|error| format!("derive the recovery admin key: {error}"))?;
+    if recovery.public_key() != view.recovery_admin_key {
+        return Err("this recovery kit does not belong to the vault's current log".to_string());
+    }
+    propose(
+        space,
+        view.charter,
+        &recovery,
+        promote_entry(device_id, admin_key),
+        now_ms,
+    )
 }
 
 /// The enrolled devices other than `own_device_id` and the anchor that are not removed and

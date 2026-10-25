@@ -69,6 +69,8 @@ pub struct AuthorizationView {
     pub catch_up: Option<VersionVector>,
     /// Hash of the charter the selected chain starts from, which every proposal names.
     pub charter: Digest32,
+    /// The recovery admin key the selected chain names, which the current recovery kit derives.
+    pub recovery_admin_key: AdminPublicKey,
     /// Every device the selected chain enrolled, removed ones included, by device id.
     pub devices: Vec<EnrolledDevice>,
 }
@@ -331,6 +333,7 @@ impl AuthState {
             frozen_at: self.frozen_at,
             catch_up: self.catch_up.as_deref().cloned(),
             charter: self.charter,
+            recovery_admin_key: self.recovery_admin_key,
             devices: self
                 .devices
                 .iter()

@@ -4,7 +4,7 @@
 use super::host::SyncHost;
 use super::recovery::{self, RecoveryAction, RecoveryChoice, RecoveryEntryView};
 #[cfg(desktop)]
-use super::service::{AuthorityAction, AuthorityAnswer};
+use super::service::{AuthorityAction, AuthorityAnswer, PendingRecoveryKit};
 use super::service::{SyncRuntime, blocking};
 use super::status::{SyncNotice, SyncStatusView, SyncSubscribers};
 use ganbaru_sync_replica::quarantine::Quarantine;
@@ -216,6 +216,42 @@ pub async fn sync_regenerate_recovery_kit(
         AuthorityAnswer::RecoveryKit(code) => Ok(code),
         _ => Err("sync answered the recovery kit request with something else".to_string()),
     }
+}
+
+/// The recovery kit whose seed this desktop still holds because the user has not confirmed
+/// saving it, such as the kit founding a charter creates, or none.
+#[cfg(desktop)]
+#[tauri::command]
+pub async fn sync_recovery_kit_pending(
+    runtime: State<'_, SyncRuntime>,
+) -> Result<Option<PendingRecoveryKit>, String> {
+    match run_authority(&runtime, AuthorityAction::PendingRecoveryKit).await? {
+        AuthorityAnswer::PendingRecoveryKit(kit) => Ok(kit),
+        _ => Err("sync answered the recovery kit request with something else".to_string()),
+    }
+}
+
+/// Deletes the recovery seed after the user confirmed saving the kit, so no device keeps it.
+#[cfg(desktop)]
+#[tauri::command]
+pub async fn sync_recovery_kit_saved(runtime: State<'_, SyncRuntime>) -> Result<(), String> {
+    run_authority(&runtime, AuthorityAction::RecoveryKitSaved)
+        .await
+        .map(|_| ())
+}
+
+/// Uses a recovery kit on this enrolled desktop: proposes, signed with the recovery admin key
+/// the code derives, making this desktop an admin, so it can take the anchor once the anchor
+/// sequences the proposal. The derived key is never stored.
+#[cfg(desktop)]
+#[tauri::command]
+pub async fn sync_use_recovery_kit(
+    runtime: State<'_, SyncRuntime>,
+    code: String,
+) -> Result<(), String> {
+    run_authority(&runtime, AuthorityAction::UseRecoveryKit(code))
+        .await
+        .map(|_| ())
 }
 
 #[cfg(desktop)]

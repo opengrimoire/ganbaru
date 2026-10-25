@@ -355,3 +355,164 @@ fn a_regenerated_recovery_kit_replaces_the_recovery_admin_key() {
         hub_replica.close().await;
     });
 }
+
+#[test]
+fn the_key_store_forgets_a_saved_recovery_kit_until_the_next_charter() {
+    block_on(async {
+        let replica = Replica::new("recovery-kit-store", HUB_DEVICE).await;
+        let keys = replica.directory.keys();
+        let founding = authority::ensure_anchor_keys(&keys, VAULT_ID).expect("anchor keys");
+        assert_eq!(
+            authority::pending_recovery_seed(&keys, VAULT_ID).expect("pending seed"),
+            Some(founding.recovery.clone()),
+            "the founding kit waits until the user saves it"
+        );
+        authority::forget_recovery_seed(&keys, VAULT_ID).expect("forget seed");
+        assert_eq!(
+            authority::pending_recovery_seed(&keys, VAULT_ID).expect("pending seed"),
+            None
+        );
+        authority::ensure_admin_key(&keys, VAULT_ID).expect("admin key");
+        assert_eq!(
+            authority::pending_recovery_seed(&keys, VAULT_ID).expect("pending seed"),
+            None,
+            "signing as an admin never recreates the seed"
+        );
+        let next = authority::ensure_anchor_keys(&keys, VAULT_ID).expect("anchor keys");
+        assert_ne!(
+            next.recovery, founding.recovery,
+            "a later charter founds with a fresh kit"
+        );
+        assert_eq!(
+            next.admin.public_key(),
+            founding.admin.public_key(),
+            "the admin key survives"
+        );
+        replica.close().await;
+    });
+}
+
+#[test]
+fn a_recovery_kit_promotes_a_member_desktop_that_then_takes_the_anchor() {
+    block_on(async {
+        let mut hub_replica = Replica::new("hub-kit-use", HUB_DEVICE).await;
+        let mut laptop = Replica::new("laptop-kit-use", LAPTOP_DEVICE).await;
+        let laptop_admin = AdminKeyPair::from_seed(&[31; 32]).expect("admin seed");
+        let charter = hub_replica.charter().await;
+        let space = hub_replica.ctx.space;
+        let enroll = authority::propose(
+            space,
+            charter,
+            &hub_keys().admin,
+            authority::enroll_entry(Enrollment {
+                device_id: LAPTOP_DEVICE.to_string(),
+                device_key: device_key(LAPTOP_DEVICE).public_key(),
+                tls_fingerprint: [33; 32],
+                label: "Laptop".to_string(),
+                device_kind: DeviceKind::Desktop,
+            }),
+            NOW_MS,
+        )
+        .expect("sign enrollment");
+        sequence_here(&mut hub_replica, &enroll).await;
+        let transport = forwarding_hub(&hub_replica);
+        laptop
+            .exchange(&transport, &laptop_ids())
+            .await
+            .expect("pull the log");
+        laptop.apply().await;
+        let view = {
+            let mut conn = acquire(&laptop.pool).await;
+            laptop
+                .engine
+                .authorization(&mut conn, &laptop.ctx)
+                .await
+                .expect("read authorization")
+                .expect("charter")
+        };
+        assert!(!authority::is_admin(
+            &view,
+            LAPTOP_DEVICE,
+            &laptop_admin.public_key()
+        ));
+
+        // A kit the log does not name, or a mistyped code, signs nothing.
+        let foreign = RecoverySeed::from_bytes([77; 32]).kit_code();
+        assert!(
+            authority::recovery_promotion(
+                &view,
+                space,
+                &foreign,
+                LAPTOP_DEVICE,
+                laptop_admin.public_key(),
+                NOW_MS,
+            )
+            .is_err()
+        );
+        let code = hub_keys().recovery.kit_code();
+        assert!(
+            authority::recovery_promotion(
+                &view,
+                space,
+                &format!("{code}0"),
+                LAPTOP_DEVICE,
+                laptop_admin.public_key(),
+                NOW_MS,
+            )
+            .is_err()
+        );
+
+        // The member desktop proposes its own promotion with the kit and the anchor sequences it.
+        let promotion = authority::recovery_promotion(
+            &view,
+            space,
+            &code,
+            LAPTOP_DEVICE,
+            laptop_admin.public_key(),
+            NOW_MS,
+        )
+        .expect("sign with the kit");
+        let outcome = client::propose(&transport, &laptop_ids(), &promotion)
+            .await
+            .expect("propose through the hub");
+        assert_eq!(
+            outcome,
+            Err(ProposalRejection::NotAnchor),
+            "the test hub has no anchor service, so the anchor sequences it directly"
+        );
+        sequence_here(&mut hub_replica, &promotion).await;
+        laptop
+            .exchange(&transport, &laptop_ids())
+            .await
+            .expect("pull the promotion");
+        laptop.apply().await;
+        let stored = laptop.stored().await;
+        let mut conn = acquire(&laptop.pool).await;
+        let view = laptop
+            .engine
+            .authorization(&mut conn, &laptop.ctx)
+            .await
+            .expect("read authorization")
+            .expect("charter");
+        assert!(authority::is_admin(
+            &view,
+            LAPTOP_DEVICE,
+            &laptop_admin.public_key()
+        ));
+        authority::seal_handover_here(
+            &laptop.engine,
+            &mut conn,
+            &laptop.ctx,
+            &laptop_admin,
+            &mut laptop.writer.local(),
+            Some(stored),
+            NOW_MS,
+        )
+        .await
+        .expect("seal handover")
+        .expect("the desktop the kit promoted takes the anchor");
+        drop(conn);
+        hub_replica.close().await;
+        laptop.close().await;
+    });
+}

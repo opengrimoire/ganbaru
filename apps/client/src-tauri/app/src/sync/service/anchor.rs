@@ -11,7 +11,9 @@ use super::{Session, SyncHost, acquire, blocking};
 use crate::vault::handoff::pairing::PairingManager;
 use ganbaru_handoff::protocol::decode_sync_admin_key;
 use ganbaru_sync::AuthorizationView;
-use ganbaru_sync_contracts::{AdminKeyPair, Digest32, Entry, ProposalRejection, SignedProposal};
+use ganbaru_sync_contracts::{
+    AdminKeyPair, DeviceKind, Digest32, Entry, ProposalRejection, SignedProposal,
+};
 use ganbaru_sync_replica::authority::{self, ensure_admin_key};
 use ganbaru_sync_replica::client::{self, PeerIds, SyncTransport};
 use ganbaru_sync_replica::now_ms;
@@ -28,6 +30,13 @@ pub(crate) enum AuthorityAction {
     Promote(String),
     /// Replace the recovery kit and propose its recovery admin key.
     RegenerateRecoveryKit,
+    /// Read the recovery kit whose seed waits for the user to save it.
+    PendingRecoveryKit,
+    /// Forget the recovery seed after the user saved its kit.
+    RecoveryKitSaved,
+    /// Propose, signed with the recovery admin key the kit code derives, making this enrolled
+    /// desktop an admin with its own admin key.
+    UseRecoveryKit(String),
     /// Propose removing a device this desktop quarantined.
     ProposeRemoval(String),
 }
@@ -35,12 +44,25 @@ pub(crate) enum AuthorityAction {
 /// What an authority action produced.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum AuthorityAnswer {
-    /// The proposal waits in the outbox for the anchor.
+    /// The proposal waits in the outbox for the anchor, or the action needed none.
     Proposed,
     /// The authorization revision of the handover this desktop sealed.
     Anchored(u64),
     /// The code of the regenerated recovery kit, shown once.
     RecoveryKit(String),
+    /// The recovery kit waiting to be saved, if any.
+    PendingRecoveryKit(Option<PendingRecoveryKit>),
+}
+
+/// A recovery kit whose seed the key store holds until the user saves it.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PendingRecoveryKit {
+    /// The grouped kit code with its checksum.
+    pub(crate) code: String,
+    /// Whether the selected log names the kit's recovery admin key; a regenerated kit is
+    /// inactive until the anchor sequences it.
+    pub(crate) active: bool,
 }
 
 /// An authority action with where its answer goes, if anyone waits for it.
@@ -123,6 +145,11 @@ impl<H: SyncHost> Session<'_, H> {
             entry,
             now_ms()?,
         )?;
+        self.place_proposal(proposal).await
+    }
+
+    /// Places a signed proposal in the outbox.
+    async fn place_proposal(&self, proposal: SignedProposal) -> Result<(), String> {
         let path = self.files.outbox_path();
         blocking(move || {
             let mut outbox = Outbox::load(&path)?;
@@ -165,12 +192,36 @@ impl<H: SyncHost> Session<'_, H> {
         action: &AuthorityAction,
     ) -> Result<AuthorityAnswer, String> {
         let admin = self.admin_context(manager).await?;
+        match action {
+            AuthorityAction::PendingRecoveryKit => {
+                return self.pending_recovery_kit(&admin).await;
+            }
+            AuthorityAction::RecoveryKitSaved => {
+                let keys = self.keys.clone();
+                let vault_id = self.files.vault_id.clone();
+                blocking(move || authority::forget_recovery_seed(keys.as_ref(), &vault_id)).await?;
+                return Ok(AuthorityAnswer::Proposed);
+            }
+            AuthorityAction::UseRecoveryKit(code) => {
+                return self.use_recovery_kit(&admin, code).await;
+            }
+            // A quarantine on a device that is not an admin stays local.
+            AuthorityAction::ProposeRemoval(_) if !admin.is_admin() => {
+                return Ok(AuthorityAnswer::Proposed);
+            }
+            _ => {}
+        }
         if !admin.is_admin() {
             return Err("only an admin desktop can change who belongs to the vault".to_string());
         }
         match action {
             AuthorityAction::TakeAnchor => {
                 Err("taking the anchor runs after an exchange with the coordinator".to_string())
+            }
+            AuthorityAction::PendingRecoveryKit
+            | AuthorityAction::RecoveryKitSaved
+            | AuthorityAction::UseRecoveryKit(_) => {
+                Err("the recovery kit action ran on the admin path".to_string())
             }
             AuthorityAction::Promote(device_id) => {
                 if !is_hub {
@@ -217,6 +268,61 @@ impl<H: SyncHost> Session<'_, H> {
                 Ok(AuthorityAnswer::Proposed)
             }
         }
+    }
+
+    /// The recovery kit whose seed the key store still holds, and whether the selected log
+    /// names its recovery admin key.
+    async fn pending_recovery_kit(&self, admin: &AdminContext) -> Result<AuthorityAnswer, String> {
+        let keys = self.keys.clone();
+        let vault_id = self.files.vault_id.clone();
+        let Some(seed) =
+            blocking(move || authority::pending_recovery_seed(keys.as_ref(), &vault_id)).await?
+        else {
+            return Ok(AuthorityAnswer::PendingRecoveryKit(None));
+        };
+        let active = seed
+            .recovery_admin_key()
+            .map_err(|error| format!("derive the recovery admin key: {error}"))?
+            .public_key()
+            == admin.view.recovery_admin_key;
+        Ok(AuthorityAnswer::PendingRecoveryKit(Some(
+            PendingRecoveryKit {
+                code: seed.kit_code(),
+                active,
+            },
+        )))
+    }
+
+    /// Uses the recovery kit on this enrolled desktop: proposes, signed with the recovery admin
+    /// key, making it an admin with its own admin key, so it can take the anchor once the
+    /// anchor sequences the proposal. The derived key is dropped at once.
+    async fn use_recovery_kit(
+        &self,
+        admin: &AdminContext,
+        code: &str,
+    ) -> Result<AuthorityAnswer, String> {
+        if admin.is_admin() {
+            return Err("this desktop is already an admin".to_string());
+        }
+        let device = admin
+            .view
+            .devices
+            .iter()
+            .find(|device| device.device_id == admin.device_id && device.removed_revision.is_none())
+            .ok_or_else(|| "this desktop is not enrolled in the vault's sync space".to_string())?;
+        if device.kind != DeviceKind::Desktop {
+            return Err("only a desktop can become an admin".to_string());
+        }
+        let proposal = authority::recovery_promotion(
+            &admin.view,
+            self.ctx.space,
+            code,
+            &admin.device_id,
+            admin.admin.public_key(),
+            now_ms()?,
+        )?;
+        self.place_proposal(proposal).await?;
+        Ok(AuthorityAnswer::Proposed)
     }
 
     /// Seals a handover that makes this linked desktop the anchor. Runs only after an exchange

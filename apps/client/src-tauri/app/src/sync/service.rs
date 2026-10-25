@@ -26,7 +26,7 @@ use super::writer::{
 };
 use crate::vault::handoff::pairing::{PairingManager, PinnedCharter};
 #[cfg(desktop)]
-pub(crate) use anchor::{AuthorityAction, AuthorityAnswer};
+pub(crate) use anchor::{AuthorityAction, AuthorityAnswer, PendingRecoveryKit};
 #[cfg(desktop)]
 use anchor::{AuthorityRequest, ForwardRequest};
 use ganbaru_db::{DatabaseAccessMode, DatabasePoolRegistry};
@@ -886,12 +886,13 @@ impl ServiceState {
             );
             return Ok(false);
         }
-        let anchor = session.anchor_keys().await?;
+        // Only the admin key: the recovery seed may be gone once the user saved the kit.
+        let admin = session.admin_key().await?;
         let revision = authority::seal_handover_here(
             &session.engine,
             &mut conn,
             &session.ctx,
-            &anchor.admin,
+            &admin,
             &mut active.local(),
             None,
             now,

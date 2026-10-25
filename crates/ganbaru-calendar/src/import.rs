@@ -3,16 +3,13 @@
 use std::collections::{HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
-use sqlx::{AssertSqlSafe, Row, Sqlite, SqlitePool, Transaction};
+use sqlx::{AssertSqlSafe, Connection, Row, Sqlite, SqliteConnection, SqlitePool, Transaction};
 
-use crate::description::{
-    sanitize_calendar_description_html, sanitize_optional_calendar_description,
-};
-
+mod diff;
 mod preservation;
 mod validation;
 
-use crate::geo::parse_geo;
+use diff::{EventPlan, LinkMode, plan_event, write_event};
 use preservation::{PreservationOutcome, ProjectedRow, preservation_link_id, replace_preservation};
 use validation::{require_non_empty, skip_reason, timing_refusal, validate_payload, value_refusal};
 
@@ -209,19 +206,39 @@ pub async fn bulk_import(
     pool: &SqlitePool,
     payload: CalendarBulkImportPayload,
 ) -> Result<CalendarBulkImportSummary, String> {
+    let mut conn = pool.acquire().await.map_err(|e| format!("acquire: {e}"))?;
+    bulk_import_on(&mut conn, payload).await
+}
+
+/// Imports like [`bulk_import`] on one connection, in a transaction of its own.
+///
+/// Each event is written as a diff against its stored rows: rows whose content the source still
+/// carries keep their ids, and an event whose rows all match is not written. Re-importing the
+/// source its preserved components came from, unchanged, keeps those components and writes
+/// nothing.
+pub async fn bulk_import_on(
+    conn: &mut SqliteConnection,
+    payload: CalendarBulkImportPayload,
+) -> Result<CalendarBulkImportSummary, String> {
     validate_payload(&payload)?;
-    let mut tx = pool.begin().await.map_err(|e| format!("begin: {e}"))?;
+    let mut tx = conn.begin().await.map_err(|e| format!("begin: {e}"))?;
     let existing = load_existing_events(&mut tx, &payload).await?;
-    let mut applied = Vec::new();
     let apply_preservation_links =
         payload.preservation.is_some() && !contains_older_revisions(&existing, &payload.events);
     let plan = plan_events(&payload.events, &existing);
     let skipped_older = plan.skipped_older;
     let mut warnings = Vec::new();
 
+    let mut writes = plan_writes(&mut tx, &payload, &plan, LinkMode::Keep).await?;
     if let Some(preservation) = &payload.preservation {
-        if apply_preservation_links {
-            let outcome = preservation_outcome(preservation, &plan);
+        if !apply_preservation_links {
+            warnings.push(
+                "iCalendar preservation was not replaced because the import contains older event revisions."
+                    .to_string(),
+            );
+        } else if !preservation_is_current(&mut tx, &payload, preservation, &writes).await? {
+            writes = plan_writes(&mut tx, &payload, &plan, LinkMode::Relink).await?;
+            let outcome = preservation_outcome(preservation, &plan, &writes);
             replace_preservation(
                 &mut tx,
                 &payload.target_calendar_id,
@@ -230,59 +247,30 @@ pub async fn bulk_import(
                 &outcome,
             )
             .await?;
-        } else {
-            warnings.push(
-                "iCalendar preservation was not replaced because the import contains older event revisions."
-                    .to_string(),
-            );
         }
     }
 
     warnings.extend(plan.warnings.iter().cloned());
 
-    for (event, decision) in &plan.decisions {
-        match decision {
-            EventDecision::Update(existing_row) => {
-                update_event(
-                    &mut tx,
-                    &payload.target_calendar_id,
-                    &payload.now,
-                    event,
-                    &existing_row.id,
-                    apply_preservation_links,
-                )
-                .await?;
-                replace_child_rows(&mut tx, &existing_row.id, event, apply_preservation_links)
-                    .await?;
-                applied.push(CalendarImportApplied {
-                    candidate_id: event.candidate_id.clone(),
-                    event_id: existing_row.id.clone(),
-                    action: CalendarImportAction::Updated,
-                });
-            }
-            EventDecision::Insert => {
-                insert_event(
-                    &mut tx,
-                    &payload.target_calendar_id,
-                    &payload.now,
-                    event,
-                    apply_preservation_links,
-                )
-                .await?;
-                insert_child_rows(
-                    &mut tx,
-                    &event.candidate_id,
-                    event,
-                    apply_preservation_links,
-                )
-                .await?;
-                applied.push(CalendarImportApplied {
-                    candidate_id: event.candidate_id.clone(),
-                    event_id: event.candidate_id.clone(),
-                    action: CalendarImportAction::Added,
-                });
-            }
-        }
+    let mut applied = Vec::new();
+    for ((event, decision), write) in plan.decisions.iter().zip(writes) {
+        let (event_id, action) = match decision {
+            EventDecision::Update(row) => (row.id.clone(), CalendarImportAction::Updated),
+            EventDecision::Insert => (event.candidate_id.clone(), CalendarImportAction::Added),
+        };
+        write_event(
+            &mut tx,
+            &payload.target_calendar_id,
+            &payload.now,
+            event,
+            write,
+        )
+        .await?;
+        applied.push(CalendarImportApplied {
+            candidate_id: event.candidate_id.clone(),
+            event_id,
+            action,
+        });
     }
 
     tx.commit().await.map_err(|e| format!("commit: {e}"))?;
@@ -298,6 +286,65 @@ pub async fn bulk_import(
         warnings,
         applied,
     })
+}
+
+/// Plans the writes of every decided event, in decision order.
+async fn plan_writes(
+    conn: &mut SqliteConnection,
+    payload: &CalendarBulkImportPayload,
+    plan: &ImportPlan<'_>,
+    mode: LinkMode,
+) -> Result<Vec<EventPlan>, String> {
+    let mut writes = Vec::with_capacity(plan.decisions.len());
+    for (event, decision) in &plan.decisions {
+        let (event_id, stored) = match decision {
+            EventDecision::Update(row) => (row.id.as_str(), true),
+            EventDecision::Insert => (event.candidate_id.as_str(), false),
+        };
+        writes.push(
+            plan_event(
+                &mut *conn,
+                &payload.target_calendar_id,
+                event_id,
+                stored,
+                event,
+                mode,
+                &payload.now,
+            )
+            .await?,
+        );
+    }
+    Ok(writes)
+}
+
+/// Whether the stored preserved components already hold this source: the import adds no event,
+/// changes no row, and every stored object of the source carries the source's fingerprint.
+async fn preservation_is_current(
+    conn: &mut SqliteConnection,
+    payload: &CalendarBulkImportPayload,
+    preservation: &CalendarImportPreservation,
+    writes: &[EventPlan],
+) -> Result<bool, String> {
+    if writes
+        .iter()
+        .any(|write| write.inserts() || write.changes())
+    {
+        return Ok(false);
+    }
+    let fingerprints: Vec<String> = sqlx::query_scalar(
+        "SELECT source_fingerprint FROM icalendar_objects
+         WHERE calendar_id = ? AND source_kind = ? AND source_name = ?",
+    )
+    .bind(&payload.target_calendar_id)
+    .bind(&preservation.source_kind)
+    .bind(&preservation.source_name)
+    .fetch_all(&mut *conn)
+    .await
+    .map_err(|e| format!("load stored iCalendar preservation: {e}"))?;
+    Ok(fingerprints.len() == preservation.objects.len()
+        && fingerprints
+            .iter()
+            .all(|fingerprint| *fingerprint == preservation.source_fingerprint))
 }
 
 /// What one importable event does to the vault.
@@ -368,9 +415,10 @@ fn plan_events<'a>(
 fn preservation_outcome(
     preservation: &CalendarImportPreservation,
     plan: &ImportPlan<'_>,
+    writes: &[EventPlan],
 ) -> PreservationOutcome {
     let mut outcome = PreservationOutcome::default();
-    for (event, decision) in &plan.decisions {
+    for ((event, decision), write) in plan.decisions.iter().zip(writes) {
         let event_id = match decision {
             EventDecision::Update(row) => row.id.as_str(),
             EventDecision::Insert => event.candidate_id.as_str(),
@@ -388,13 +436,17 @@ fn preservation_outcome(
         };
         project(&event.icalendar_component_id, "event", event_id);
         for alarm in &event.alarms {
-            project(&alarm.icalendar_component_id, "alarm", &alarm.id);
+            project(
+                &alarm.icalendar_component_id,
+                "alarm",
+                write.row_id(&alarm.id),
+            );
         }
         for override_row in &event.overrides {
             project(
                 &override_row.icalendar_component_id,
                 "override",
-                &override_row.id,
+                write.row_id(&override_row.id),
             );
         }
     }
@@ -491,345 +543,6 @@ fn contains_older_revisions(
     })
 }
 
-async fn insert_event(
-    tx: &mut Transaction<'_, Sqlite>,
-    target_calendar_id: &str,
-    now: &str,
-    event: &CalendarImportEvent,
-    apply_preservation_links: bool,
-) -> Result<(), String> {
-    let description = sanitize_calendar_description_html(&event.description);
-    let geo = parse_geo(&event.geo)?;
-    let icalendar_component_id =
-        preservation_link_id(&event.icalendar_component_id, apply_preservation_links);
-    sqlx::query(
-        "INSERT INTO calendar_events
-            (id, title, start_time, end_time, timezone, calendar_id,
-             color, description, rrule, repeat_until,
-             all_day, location, url, transparency, status,
-             source_uid, visibility, priority, geo_lat, geo_lng,
-             sequence,
-             meeting_enabled,
-             guest_can_modify, guest_can_invite_others, guest_can_see_other_guests,
-             icalendar_component_id, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-    )
-    .bind(&event.candidate_id)
-    .bind(&event.title)
-    .bind(&event.start_time)
-    .bind(&event.end_time)
-    .bind(&event.timezone)
-    .bind(target_calendar_id)
-    .bind(event.color)
-    .bind(&description)
-    .bind(&event.rrule)
-    .bind(&event.repeat_until)
-    .bind(if event.all_day { 1_i64 } else { 0_i64 })
-    .bind(&event.location)
-    .bind(&event.url)
-    .bind(&event.transparency)
-    .bind(&event.status)
-    .bind(&event.source_uid)
-    .bind(&event.visibility)
-    .bind(event.priority)
-    .bind(geo.map(|value| value.lat))
-    .bind(geo.map(|value| value.lng))
-    .bind(event.sequence)
-    .bind(if event.meeting_enabled { 1_i64 } else { 0_i64 })
-    .bind(if event.guest_can_modify { 1_i64 } else { 0_i64 })
-    .bind(if event.guest_can_invite_others {
-        1_i64
-    } else {
-        0_i64
-    })
-    .bind(if event.guest_can_see_other_guests {
-        1_i64
-    } else {
-        0_i64
-    })
-    .bind(icalendar_component_id)
-    .bind(now)
-    .bind(now)
-    .execute(&mut **tx)
-    .await
-    .map_err(|e| format!("insert imported event: {e}"))?;
-    replace_import_event_metadata(tx, &event.candidate_id, event).await?;
-    Ok(())
-}
-
-async fn update_event(
-    tx: &mut Transaction<'_, Sqlite>,
-    target_calendar_id: &str,
-    now: &str,
-    event: &CalendarImportEvent,
-    event_id: &str,
-    apply_preservation_links: bool,
-) -> Result<(), String> {
-    let description = sanitize_calendar_description_html(&event.description);
-    let geo = parse_geo(&event.geo)?;
-    let icalendar_component_id =
-        preservation_link_id(&event.icalendar_component_id, apply_preservation_links);
-    let result = sqlx::query(
-        "UPDATE calendar_events
-            SET title = ?, start_time = ?, end_time = ?, timezone = ?,
-                color = ?, description = ?,
-                rrule = ?, repeat_until = ?,
-                all_day = ?, location = ?, url = ?,
-                transparency = ?, status = ?,
-                visibility = ?, priority = ?,
-                geo_lat = ?, geo_lng = ?,
-                sequence = ?,
-                meeting_enabled = ?,
-                guest_can_modify = ?, guest_can_invite_others = ?,
-                guest_can_see_other_guests = ?,
-                icalendar_component_id = CASE WHEN ? = 1 THEN ? ELSE icalendar_component_id END,
-                updated_at = ?
-          WHERE id = ? AND calendar_id = ?",
-    )
-    .bind(&event.title)
-    .bind(&event.start_time)
-    .bind(&event.end_time)
-    .bind(&event.timezone)
-    .bind(event.color)
-    .bind(&description)
-    .bind(&event.rrule)
-    .bind(&event.repeat_until)
-    .bind(if event.all_day { 1_i64 } else { 0_i64 })
-    .bind(&event.location)
-    .bind(&event.url)
-    .bind(&event.transparency)
-    .bind(&event.status)
-    .bind(&event.visibility)
-    .bind(event.priority)
-    .bind(geo.map(|value| value.lat))
-    .bind(geo.map(|value| value.lng))
-    .bind(event.sequence)
-    .bind(if event.meeting_enabled { 1_i64 } else { 0_i64 })
-    .bind(if event.guest_can_modify { 1_i64 } else { 0_i64 })
-    .bind(if event.guest_can_invite_others {
-        1_i64
-    } else {
-        0_i64
-    })
-    .bind(if event.guest_can_see_other_guests {
-        1_i64
-    } else {
-        0_i64
-    })
-    .bind(if apply_preservation_links {
-        1_i64
-    } else {
-        0_i64
-    })
-    .bind(icalendar_component_id)
-    .bind(now)
-    .bind(event_id)
-    .bind(target_calendar_id)
-    .execute(&mut **tx)
-    .await
-    .map_err(|e| format!("update imported event: {e}"))?;
-    if result.rows_affected() == 0 {
-        return Err(format!("import target event '{event_id}' not found"));
-    }
-    replace_import_event_metadata(tx, event_id, event).await?;
-    Ok(())
-}
-
-async fn replace_import_event_metadata(
-    tx: &mut Transaction<'_, Sqlite>,
-    event_id: &str,
-    event: &CalendarImportEvent,
-) -> Result<(), String> {
-    replace_i64_list(
-        tx,
-        event_id,
-        "calendar_event_notifications",
-        "offset_minutes",
-        parse_i64_list(&event.notifications, "notifications")?,
-    )
-    .await?;
-    replace_string_list(
-        tx,
-        event_id,
-        "calendar_event_exdates",
-        "occurrence_date",
-        parse_string_list(&event.exceptions, "exceptions")?,
-    )
-    .await?;
-    replace_string_list(
-        tx,
-        event_id,
-        "calendar_event_categories",
-        "category",
-        parse_string_list(&event.categories, "categories")?,
-    )
-    .await?;
-    replace_string_list(
-        tx,
-        event_id,
-        "calendar_event_rdates",
-        "occurrence_start",
-        parse_string_list(&event.rdate, "rdate")?,
-    )
-    .await?;
-    replace_extended_properties(
-        tx,
-        event_id,
-        "calendar_event_extended_properties",
-        "event_id",
-        parse_string_map(&event.extended_properties, "extended_properties")?,
-    )
-    .await?;
-    replace_organizer(tx, event_id, parse_organizer(&event.organizer)?).await
-}
-
-async fn replace_child_rows(
-    tx: &mut Transaction<'_, Sqlite>,
-    event_id: &str,
-    event: &CalendarImportEvent,
-    apply_preservation_links: bool,
-) -> Result<(), String> {
-    for query in [
-        "DELETE FROM calendar_event_attendees WHERE event_id = ?",
-        "DELETE FROM calendar_event_alarms WHERE event_id = ?",
-        "DELETE FROM calendar_event_overrides WHERE parent_event_id = ?",
-        "DELETE FROM calendar_event_override_extended_properties WHERE event_id = ?",
-    ] {
-        sqlx::query(query)
-            .bind(event_id)
-            .execute(&mut **tx)
-            .await
-            .map_err(|e| format!("delete imported event children: {e}"))?;
-    }
-    insert_child_rows(tx, event_id, event, apply_preservation_links).await
-}
-
-async fn insert_child_rows(
-    tx: &mut Transaction<'_, Sqlite>,
-    event_id: &str,
-    event: &CalendarImportEvent,
-    apply_preservation_links: bool,
-) -> Result<(), String> {
-    for (sort_order, attendee) in event.attendees.iter().enumerate() {
-        let icalendar_component_id =
-            preservation_link_id(&attendee.icalendar_component_id, apply_preservation_links);
-        sqlx::query(
-            "INSERT INTO calendar_event_attendees
-                (id, event_id, icalendar_component_id, icalendar_property_index,
-                 name, email, role, status, rsvp, sort_order)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        )
-        .bind(&attendee.id)
-        .bind(event_id)
-        .bind(icalendar_component_id)
-        .bind(if apply_preservation_links {
-            attendee.icalendar_property_index
-        } else {
-            None
-        })
-        .bind(&attendee.name)
-        .bind(&attendee.email)
-        .bind(&attendee.role)
-        .bind(&attendee.status)
-        .bind(if attendee.rsvp { 1_i64 } else { 0_i64 })
-        .bind(sort_order as i64)
-        .execute(&mut **tx)
-        .await
-        .map_err(|e| format!("insert imported attendee: {e}"))?;
-    }
-
-    for (sort_order, alarm) in event.alarms.iter().enumerate() {
-        let icalendar_component_id =
-            preservation_link_id(&alarm.icalendar_component_id, apply_preservation_links);
-        sqlx::query(
-            "INSERT INTO calendar_event_alarms
-                (id, event_id, icalendar_component_id, action, trigger_type,
-                 trigger_value, description, sort_order)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-        )
-        .bind(&alarm.id)
-        .bind(event_id)
-        .bind(icalendar_component_id)
-        .bind(&alarm.action)
-        .bind(&alarm.trigger_type)
-        .bind(&alarm.trigger_value)
-        .bind(&alarm.description)
-        .bind(sort_order as i64)
-        .execute(&mut **tx)
-        .await
-        .map_err(|e| format!("insert imported alarm: {e}"))?;
-    }
-
-    for override_row in &event.overrides {
-        let description = sanitize_optional_calendar_description(&override_row.description);
-        let icalendar_component_id = preservation_link_id(
-            &override_row.icalendar_component_id,
-            apply_preservation_links,
-        );
-        sqlx::query(
-            "INSERT INTO calendar_event_overrides
-                (id, parent_event_id, recurrence_id, recurrence_range, title, start_time, end_time,
-                 description, location, url, color, status, transparency, visibility,
-                 icalendar_component_id)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        )
-        .bind(&override_row.id)
-        .bind(event_id)
-        .bind(&override_row.recurrence_id)
-        .bind(&override_row.recurrence_range)
-        .bind(&override_row.title)
-        .bind(&override_row.start_time)
-        .bind(&override_row.end_time)
-        .bind(&description)
-        .bind(&override_row.location)
-        .bind(&override_row.url)
-        .bind(override_row.color)
-        .bind(&override_row.status)
-        .bind(&override_row.transparency)
-        .bind(&override_row.visibility)
-        .bind(icalendar_component_id)
-        .execute(&mut **tx)
-        .await
-        .map_err(|e| format!("insert imported override: {e}"))?;
-        insert_override_properties(
-            tx,
-            event_id,
-            &override_row.id,
-            parse_string_map(
-                &override_row.extended_properties,
-                "override.extended_properties",
-            )?,
-        )
-        .await?;
-    }
-    Ok(())
-}
-
-/// Inserts the extended properties of a freshly inserted override under its parent event.
-async fn insert_override_properties(
-    tx: &mut Transaction<'_, Sqlite>,
-    event_id: &str,
-    override_id: &str,
-    values: Vec<(String, String)>,
-) -> Result<(), String> {
-    for (sort_order, (key, value)) in values.into_iter().enumerate() {
-        sqlx::query(
-            "INSERT INTO calendar_event_override_extended_properties
-                (id, event_id, override_id, property_key, property_value, sort_order)
-             VALUES (lower(hex(randomblob(16))), ?, ?, ?, ?, ?)",
-        )
-        .bind(event_id)
-        .bind(override_id)
-        .bind(key)
-        .bind(value)
-        .bind(sort_order as i64)
-        .execute(&mut **tx)
-        .await
-        .map_err(|e| format!("insert calendar override property: {e}"))?;
-    }
-    Ok(())
-}
-
 fn parse_i64_list(value: &Option<String>, field: &str) -> Result<Vec<i64>, String> {
     match value {
         Some(json) => serde_json::from_str::<Vec<i64>>(json)
@@ -865,73 +578,15 @@ fn parse_organizer(value: &Option<String>) -> Result<Option<CalendarOrganizerPay
     Ok(Some(organizer))
 }
 
-async fn replace_i64_list(
-    tx: &mut Transaction<'_, Sqlite>,
-    event_id: &str,
-    table: &'static str,
-    column: &'static str,
-    values: Vec<i64>,
-) -> Result<(), String> {
-    let delete = format!("DELETE FROM {table} WHERE event_id = ?");
-    sqlx::query(AssertSqlSafe(delete.as_str()))
-        .bind(event_id)
-        .execute(&mut **tx)
-        .await
-        .map_err(|e| format!("clear calendar {table}: {e}"))?;
-    let insert = format!(
-        "INSERT INTO {table} (id, event_id, {column}, sort_order)
-         VALUES (lower(hex(randomblob(16))), ?, ?, ?)"
-    );
-    for (sort_order, value) in values.into_iter().enumerate() {
-        sqlx::query(AssertSqlSafe(insert.as_str()))
-            .bind(event_id)
-            .bind(value)
-            .bind(sort_order as i64)
-            .execute(&mut **tx)
-            .await
-            .map_err(|e| format!("insert calendar {table}: {e}"))?;
-    }
-    Ok(())
-}
-
-async fn replace_string_list(
-    tx: &mut Transaction<'_, Sqlite>,
-    event_id: &str,
-    table: &'static str,
-    column: &'static str,
-    values: Vec<String>,
-) -> Result<(), String> {
-    let delete = format!("DELETE FROM {table} WHERE event_id = ?");
-    sqlx::query(AssertSqlSafe(delete.as_str()))
-        .bind(event_id)
-        .execute(&mut **tx)
-        .await
-        .map_err(|e| format!("clear calendar {table}: {e}"))?;
-    let insert = string_list_insert(table, column);
-    for (sort_order, value) in values.into_iter().enumerate() {
-        let query = sqlx::query(AssertSqlSafe(insert.as_str()))
-            .bind(event_id)
-            .bind(value);
-        let query = if is_date_set(table) {
-            query
-        } else {
-            query.bind(sort_order as i64)
-        };
-        query
-            .execute(&mut **tx)
-            .await
-            .map_err(|e| format!("insert calendar {table}: {e}"))?;
-    }
-    Ok(())
-}
-
 /// Whether a list table is a date set keyed by its date, which repeats at most once and has no
 /// stored order.
+#[cfg(test)]
 pub(crate) fn is_date_set(table: &str) -> bool {
     matches!(table, "calendar_event_exdates" | "calendar_event_rdates")
 }
 
 /// Insert statement for one value of a list table. A date set ignores a repeated date.
+#[cfg(test)]
 pub(crate) fn string_list_insert(table: &str, column: &str) -> String {
     if is_date_set(table) {
         format!(
@@ -946,65 +601,11 @@ pub(crate) fn string_list_insert(table: &str, column: &str) -> String {
     }
 }
 
-async fn replace_extended_properties(
-    tx: &mut Transaction<'_, Sqlite>,
-    owner_id: &str,
-    table: &'static str,
-    owner_column: &'static str,
-    values: Vec<(String, String)>,
-) -> Result<(), String> {
-    let delete = format!("DELETE FROM {table} WHERE {owner_column} = ?");
-    sqlx::query(AssertSqlSafe(delete.as_str()))
-        .bind(owner_id)
-        .execute(&mut **tx)
-        .await
-        .map_err(|e| format!("clear calendar {table}: {e}"))?;
-    let insert = format!(
-        "INSERT INTO {table} (id, {owner_column}, property_key, property_value, sort_order)
-         VALUES (lower(hex(randomblob(16))), ?, ?, ?, ?)"
-    );
-    for (sort_order, (key, value)) in values.into_iter().enumerate() {
-        sqlx::query(AssertSqlSafe(insert.as_str()))
-            .bind(owner_id)
-            .bind(key)
-            .bind(value)
-            .bind(sort_order as i64)
-            .execute(&mut **tx)
-            .await
-            .map_err(|e| format!("insert calendar {table}: {e}"))?;
-    }
-    Ok(())
-}
-
-async fn replace_organizer(
-    tx: &mut Transaction<'_, Sqlite>,
-    event_id: &str,
-    organizer: Option<CalendarOrganizerPayload>,
-) -> Result<(), String> {
-    sqlx::query("DELETE FROM calendar_event_organizers WHERE event_id = ?")
-        .bind(event_id)
-        .execute(&mut **tx)
-        .await
-        .map_err(|e| format!("clear calendar organizer: {e}"))?;
-    if let Some(organizer) = organizer {
-        sqlx::query(
-            "INSERT INTO calendar_event_organizers (event_id, name, email)
-             VALUES (?, ?, ?)",
-        )
-        .bind(event_id)
-        .bind(organizer.name)
-        .bind(organizer.email)
-        .execute(&mut **tx)
-        .await
-        .map_err(|e| format!("insert calendar organizer: {e}"))?;
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
 
+    use super::diff::{LinkMode, plan_event, write_event};
     use super::preservation::{PreservationOutcome, replace_preservation};
     use super::validation::{
         timing_refusal, validate_color, validate_enum, validate_event, validate_json_option,
@@ -1015,9 +616,22 @@ mod tests {
         CalendarImportEvent, CalendarImportOverride, CalendarImportPreservation,
         CalendarImportPreservedComponent, CalendarImportPreservedObject, ExistingEventRow,
         MAX_ICALENDAR_COMPONENT_DEPTH, MAX_IMPORT_EVENT_ATTENDEES, MAX_IMPORT_EVENTS,
-        MAX_PRESERVED_JCAL_BYTES, bulk_import, contains_older_revisions, insert_child_rows,
-        insert_event, update_event,
+        MAX_PRESERVED_JCAL_BYTES, bulk_import, contains_older_revisions,
     };
+
+    /// Writes `event` as the local calendar's `event-1`, as a new event or over the stored one.
+    async fn write_one(
+        conn: &mut sqlx::SqliteConnection,
+        now: &str,
+        event: &CalendarImportEvent,
+        stored: bool,
+        mode: LinkMode,
+    ) {
+        let plan = plan_event(conn, "local", "event-1", stored, event, mode, now)
+            .await
+            .unwrap();
+        write_event(conn, "local", now, event, plan).await.unwrap();
+    }
 
     #[test]
     fn validates_calendar_import_enums() {
@@ -1299,6 +913,203 @@ mod tests {
     }
 
     #[test]
+    fn reimporting_an_unchanged_source_changes_no_row() {
+        crate::test_support::block_on(async {
+            let pool = in_memory_pool().await;
+            let first = bulk_import(&pool, linked_import("first", "2026-05-09 10:00:00"))
+                .await
+                .unwrap();
+            assert_eq!(first.added, 1, "{:?}", first.warnings);
+            let before = calendar_rows(&pool).await;
+
+            // The parser mints fresh row and component ids on every read of the same file.
+            let again = bulk_import(&pool, linked_import("second", "2026-05-09 11:00:00"))
+                .await
+                .unwrap();
+
+            assert_eq!(again.updated, 1, "{:?}", again.warnings);
+            assert_eq!(calendar_rows(&pool).await, before);
+        });
+    }
+
+    #[test]
+    fn reimporting_a_changed_event_keeps_the_ids_of_its_unchanged_rows() {
+        crate::test_support::block_on(async {
+            let pool = in_memory_pool().await;
+            bulk_import(&pool, linked_import("first", "2026-05-09 10:00:00"))
+                .await
+                .unwrap();
+            let mut changed = linked_import("second", "2026-05-09 11:00:00");
+            changed.events[0].title = "Renamed".to_string();
+            changed.events[0].alarms[1].trigger_value = "-PT30M".to_string();
+
+            bulk_import(&pool, changed).await.unwrap();
+
+            let event: (String, String) = sqlx::query_as(
+                "SELECT title, updated_at FROM calendar_events WHERE id = 'event-first'",
+            )
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            assert_eq!(
+                event,
+                ("Renamed".to_string(), "2026-05-09 11:00:00".to_string())
+            );
+            let alarms: Vec<(String, String)> = sqlx::query_as(
+                "SELECT id, trigger_value FROM calendar_event_alarms ORDER BY sort_order",
+            )
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+            assert_eq!(
+                alarms,
+                [
+                    ("alarm-1-first".to_string(), "-PT15M".to_string()),
+                    ("alarm-2-second".to_string(), "-PT30M".to_string()),
+                ]
+            );
+            let kept: Vec<String> = sqlx::query_scalar(
+                "SELECT id FROM calendar_event_attendees
+                 UNION ALL SELECT id FROM calendar_event_overrides",
+            )
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+            assert_eq!(kept, ["attendee-first", "override-first"]);
+            let projected: Vec<(String, String)> = sqlx::query_as(
+                "SELECT id, projected_id FROM icalendar_components
+                 WHERE projected_kind IN ('alarm', 'override') ORDER BY id",
+            )
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+            assert_eq!(
+                projected,
+                [
+                    (
+                        "component-alarm-second".to_string(),
+                        "alarm-1-first".to_string()
+                    ),
+                    (
+                        "component-override-second".to_string(),
+                        "override-first".to_string()
+                    ),
+                ]
+            );
+        });
+    }
+
+    /// An import of one linked recurring event with every owned row kind, whose payload and
+    /// component ids end in `suffix` as a fresh parse of the same file would mint them.
+    fn linked_import(suffix: &str, now: &str) -> CalendarBulkImportPayload {
+        let id = |name: &str| format!("{name}-{suffix}");
+        let preservation = CalendarImportPreservation {
+            objects: vec![CalendarImportPreservedObject {
+                components: vec![
+                    CalendarImportPreservedComponent {
+                        components: vec![preserved_component(&id("component-alarm"), "valarm")],
+                        ..preserved_component(&id("component-event"), "vevent")
+                    },
+                    CalendarImportPreservedComponent {
+                        recurrence_id: Some("20260510T100000Z".to_string()),
+                        ..preserved_component(&id("component-override"), "vevent")
+                    },
+                ],
+                ..preserved_object(&id("object"))
+            }],
+            ..linked_preservation_payload()
+        };
+        let alarm = |name: &str, trigger: &str, component: Option<String>| CalendarImportAlarm {
+            id: id(name),
+            icalendar_component_id: component,
+            action: "display".to_string(),
+            trigger_type: "relative".to_string(),
+            trigger_value: trigger.to_string(),
+            description: Some("Reminder".to_string()),
+        };
+        let mut event = import_event(&id("event"), "Parent");
+        event.source_uid = Some("linked@example.com".to_string());
+        event.rrule = Some("FREQ=DAILY;COUNT=5".to_string());
+        event.icalendar_component_id = Some(id("component-event"));
+        event.notifications = Some("[15, 5]".to_string());
+        event.exceptions = Some(r#"["2026-05-12"]"#.to_string());
+        event.categories = Some(r#"["Work", "Deep"]"#.to_string());
+        event.extended_properties = Some(r#"{"X-A":"a"}"#.to_string());
+        event.organizer = Some(r#"{"name":"Org","email":"org@example.com"}"#.to_string());
+        event.attendees = vec![CalendarImportAttendee {
+            id: id("attendee"),
+            icalendar_component_id: Some(id("component-event")),
+            icalendar_property_index: Some(3),
+            name: Some("User".to_string()),
+            email: "user@example.com".to_string(),
+            role: "req-participant".to_string(),
+            status: "accepted".to_string(),
+            rsvp: true,
+        }];
+        event.alarms = vec![
+            alarm("alarm-1", "-PT15M", Some(id("component-alarm"))),
+            alarm("alarm-2", "-PT5M", None),
+        ];
+        event.overrides = vec![CalendarImportOverride {
+            id: id("override"),
+            icalendar_component_id: Some(id("component-override")),
+            recurrence_id: "2026-05-10T10:00:00Z".to_string(),
+            recurrence_range: None,
+            title: Some("Moved".to_string()),
+            start_time: None,
+            end_time: None,
+            description: None,
+            location: None,
+            url: None,
+            color: None,
+            status: None,
+            transparency: None,
+            visibility: None,
+            extended_properties: Some(r#"{"X-B":"b"}"#.to_string()),
+        }];
+        let mut payload = bulk_payload(vec![event]);
+        payload.now = now.to_string();
+        payload.preservation = Some(preservation);
+        payload
+    }
+
+    /// Every row of the Calendar event and iCalendar preservation tables, quoted, in table order.
+    async fn calendar_rows(pool: &sqlx::SqlitePool) -> Vec<String> {
+        let tables: Vec<String> = sqlx::query_scalar(
+            "SELECT name FROM sqlite_master
+             WHERE type = 'table' AND (name LIKE 'calendar_event%' OR name LIKE 'icalendar_%')
+             ORDER BY name",
+        )
+        .fetch_all(pool)
+        .await
+        .unwrap();
+        let mut rows = Vec::new();
+        for table in tables {
+            let columns: Vec<String> =
+                sqlx::query_scalar("SELECT name FROM pragma_table_info(?) ORDER BY cid")
+                    .bind(&table)
+                    .fetch_all(pool)
+                    .await
+                    .unwrap();
+            let values: Vec<String> = columns
+                .iter()
+                .map(|column| format!("quote({column})"))
+                .collect();
+            let sql = format!(
+                "SELECT '{table}: ' || {} FROM {table} ORDER BY rowid",
+                values.join(" || ', ' || ")
+            );
+            rows.extend(
+                sqlx::query_scalar::<_, String>(sqlx::AssertSqlSafe(sql))
+                    .fetch_all(pool)
+                    .await
+                    .unwrap(),
+            );
+        }
+        rows
+    }
+
+    #[test]
     fn linked_import_rows_reference_preserved_components() {
         crate::test_support::block_on(async {
             let pool = in_memory_pool().await;
@@ -1416,19 +1227,15 @@ mod tests {
             )
             .await
             .unwrap();
-            insert_event(&mut tx, "local", "2026-05-09 10:00:00", &initial, true)
-                .await
-                .unwrap();
-            update_event(
+            write_one(
                 &mut tx,
-                "local",
-                "2026-05-09 10:05:00",
-                &older,
-                "event-1",
+                "2026-05-09 10:00:00",
+                &initial,
                 false,
+                LinkMode::Relink,
             )
-            .await
-            .unwrap();
+            .await;
+            write_one(&mut tx, "2026-05-09 10:05:00", &older, true, LinkMode::Keep).await;
             tx.commit().await.unwrap();
 
             let event_component: String = sqlx::query_scalar(
@@ -1469,9 +1276,14 @@ mod tests {
             );
             let mut tx = pool.begin().await.unwrap();
 
-            insert_event(&mut tx, "local", "2026-05-09 10:00:00", &event, false)
-                .await
-                .unwrap();
+            write_one(
+                &mut tx,
+                "2026-05-09 10:00:00",
+                &event,
+                false,
+                LinkMode::Keep,
+            )
+            .await;
             tx.commit().await.unwrap();
 
             let description: String =
@@ -1494,19 +1306,22 @@ mod tests {
             );
             let mut tx = pool.begin().await.unwrap();
 
-            insert_event(&mut tx, "local", "2026-05-09 10:00:00", &initial, false)
-                .await
-                .unwrap();
-            update_event(
+            write_one(
                 &mut tx,
-                "local",
+                "2026-05-09 10:00:00",
+                &initial,
+                false,
+                LinkMode::Keep,
+            )
+            .await;
+            write_one(
+                &mut tx,
                 "2026-05-09 10:05:00",
                 &updated,
-                "event-1",
-                false,
+                true,
+                LinkMode::Keep,
             )
-            .await
-            .unwrap();
+            .await;
             tx.commit().await.unwrap();
 
             let description: String =
@@ -1542,12 +1357,14 @@ mod tests {
             }];
             let mut tx = pool.begin().await.unwrap();
 
-            insert_event(&mut tx, "local", "2026-05-09 10:00:00", &event, false)
-                .await
-                .unwrap();
-            insert_child_rows(&mut tx, "event-1", &event, false)
-                .await
-                .unwrap();
+            write_one(
+                &mut tx,
+                "2026-05-09 10:00:00",
+                &event,
+                false,
+                LinkMode::Keep,
+            )
+            .await;
             tx.commit().await.unwrap();
 
             let description: String = sqlx::query_scalar(

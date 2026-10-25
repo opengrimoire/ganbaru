@@ -35,7 +35,7 @@ struct Parent {
 async fn parents(
     engine: &Engine,
     conn: &mut SqliteConnection,
-    visibility: &Visibility,
+    visibility: &mut Visibility,
     table: &TableSpec,
     tree: TreeSpec,
 ) -> SyncResult<BTreeMap<String, Parent>> {
@@ -71,7 +71,7 @@ async fn parents(
         let Some(parent) = visibility.follow(conn, table.id, named).await? else {
             continue;
         };
-        if merge::row_state(conn, table.id, &parent).await? == Some(RowState::Live) {
+        if visibility.state(conn, table.id, &parent).await? == Some(RowState::Live) {
             parents.insert(
                 key,
                 Parent {
@@ -196,7 +196,7 @@ async fn mark_mismatches(
 pub(crate) async fn detached(
     engine: &Engine,
     conn: &mut SqliteConnection,
-    visibility: &Visibility,
+    visibility: &mut Visibility,
     dirty: &mut BTreeSet<RowRef>,
 ) -> SyncResult<BTreeSet<RowRef>> {
     let mut detached = BTreeSet::new();

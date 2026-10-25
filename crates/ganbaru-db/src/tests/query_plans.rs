@@ -55,6 +55,11 @@ fn hot_domain_queries_use_expected_indexes() {
                 "SELECT id FROM quick_notes WHERE tag_id = 'tag-1' AND archived = 0 AND trashed_at IS NULL ORDER BY pinned DESC, order_key ASC, id ASC LIMIT 60",
                 "idx_quick_notes_tag_active",
             ),
+            (
+                "sync apply chain start",
+                "SELECT seq FROM sync_ops WHERE space_id = zeroblob(16) AND writer_id = zeroblob(16) AND seq < 300 AND group_continues = 0 ORDER BY seq DESC LIMIT 1",
+                "idx_sync_ops_chain_ends",
+            ),
         ];
         for (name, sql, expected) in cases {
             let plan = query_plan(&pool, sql).await;

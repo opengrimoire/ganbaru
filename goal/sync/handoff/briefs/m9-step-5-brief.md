@@ -1,6 +1,6 @@
 You implement milestone 9 step 5 (Chat timeline: group C, `chat` track, not engine: do not edit `crates/ganbaru-sync/src/{apply,merge,materialize,seal,triggers,repair,tree,visibility}.rs` or Notes code) of Ganbaru's concurrent sync work, plus the step 4 follow-ups.
 
-Follow `/tmp/claude-0/-home-user-ganbaru/801a952b-bd25-5890-82d7-9ac7c14fac3d/scratchpad/implementer-brief.md` exactly (path mapping, build lock, target dir with CARGO_INCREMENTAL=0, unsigned commits approved by the user for this goal, no Android toolchain). Worktree and target dir are named in your task message; the branch `feat/sync-chat-timeline` is already cut from feat/sync.
+Follow `<SCRATCHPAD>/implementer-brief.md` exactly (path mapping, build lock, target dir with CARGO_INCREMENTAL=0, unsigned commits approved by the user for this goal, no Android toolchain). Worktree and target dir are named in your task message; the branch `feat/sync-chat-timeline` is already cut from feat/sync.
 
 Plan: `/home/user/ganbaru/goal/sync/milestone_9.md`: Outcome, Scope, the whole Design section, Testing, the step 5 row, Risks, Implementation checks, and every Progress entry for steps 1 to 4 (including step 4's "Notes for step 5" and "For step 5" lines). Verify every plan claim against source before relying on it. If the step needs an engine shape that does not exist, stop and report the exact need instead of adding it.
 

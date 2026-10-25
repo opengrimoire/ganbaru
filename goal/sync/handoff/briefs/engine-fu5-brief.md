@@ -1,6 +1,6 @@
 You implement engine follow-up 5 of Ganbaru's concurrent sync work: an engine shape that lets a domain's after-apply hook see and settle concurrent values of a register group. You are on the engine track and may edit engine files (`crates/ganbaru-sync/src/{apply,merge,materialize,seal,triggers,repair,tree,visibility}.rs`, `hooks.rs`), but no domain code outside test fixtures.
 
-Follow `/tmp/claude-0/-home-user-ganbaru/801a952b-bd25-5890-82d7-9ac7c14fac3d/scratchpad/implementer-brief.md` exactly (path mapping, build lock, target dir with CARGO_INCREMENTAL=0, unsigned commits approved by the user for this goal, no Android toolchain). Worktree, branch, and target dir are named in your task message.
+Follow `<SCRATCHPAD>/implementer-brief.md` exactly (path mapping, build lock, target dir with CARGO_INCREMENTAL=0, unsigned commits approved by the user for this goal, no Android toolchain). Worktree, branch, and target dir are named in your task message.
 
 Read: `/home/user/ganbaru/goal/sync/README.md` (decisions), `/home/user/ganbaru/goal/sync/milestone_2.md` (engine design: hooks, conflicts, surfaced groups, winner elision, priorities), `/home/user/ganbaru/goal/sync/milestone_9.md` (Design on approvals and revocation-wins priorities, step 4 progress, especially the coordinator decision and "For step 5" lines), `docs/data/access-control.md` (Runtime approvals), `docs/data/schema/chat.md` (the documented gap), and `crates/ganbaru-sync/src/hooks.rs`.
 

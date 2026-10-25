@@ -1,6 +1,6 @@
 You implement milestone 11 step 7 (Android Keystore wrapping, engine track) of Ganbaru's concurrent sync work.
 
-Follow `/tmp/claude-0/-home-user-ganbaru/801a952b-bd25-5890-82d7-9ac7c14fac3d/scratchpad/implementer-brief.md` exactly (path mapping, build lock, target dir with CARGO_INCREMENTAL=0, unsigned commits approved by the user for this goal). Worktree, branch, and target dir are named in your task message.
+Follow `<SCRATCHPAD>/implementer-brief.md` exactly (path mapping, build lock, target dir with CARGO_INCREMENTAL=0, unsigned commits approved by the user for this goal). Worktree, branch, and target dir are named in your task message.
 
 Plan: `/home/user/ganbaru/goal/sync/milestone_11.md`: Outcome, Scope, Design (Keys, Android Keystore), Testing, Documentation, Performance budgets, Risks (Keystore key invalidated), the step 7 row, Implementation checks, and the Progress entries for steps 1 to 6 (keys moved to `SyncKeyStore`, `FileKeyStore` on Android, the device key, pairing TLS key). Also `docs/data/security/unsafe-rust.md` (procedure and inventory) and the milestone 3 `runPass` export in `apps/client/src-tauri/app/src/sync/headless.rs` with its Kotlin side in `crates/ganbaru-mobile-sync`. Verify every plan claim against source.
 

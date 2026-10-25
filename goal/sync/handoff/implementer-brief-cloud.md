@@ -4,7 +4,7 @@ You implement one plan step (or fix round) of the concurrent sync goal in the Ga
 
 ## Path mapping
 
-Older briefs name paths on a previous host. Map them: `/home/victor/ganbaru` is `/home/user/ganbaru` (main checkout, the orchestrator's; never edit or build there), `/home/victor/.cache` is `/root/.cache`, `/home/victor/.claude/CLAUDE.md` is `/root/.claude/CLAUDE.md`, and `<SCRATCHPAD>` is `/tmp/claude-0/-home-user-ganbaru/801a952b-bd25-5890-82d7-9ac7c14fac3d/scratchpad`.
+Older briefs name paths on a previous host. Map them: `/home/victor/ganbaru` is `/home/user/ganbaru` (main checkout, the orchestrator's; never edit or build there), `/home/victor/.cache` is `/root/.cache`, `/home/victor/.claude/CLAUDE.md` is `/root/.claude/CLAUDE.md`, and `<SCRATCHPAD>` is `<SCRATCHPAD>`.
 
 ## Read first
 

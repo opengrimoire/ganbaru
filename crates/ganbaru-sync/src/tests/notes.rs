@@ -260,6 +260,85 @@ fn received_rows_get_their_hook_derived_parents_pages_and_text() {
 }
 
 #[test]
+fn notes_rows_replicate_without_the_notes_hook() {
+    block_on(async {
+        let mut replicas = replicas(2).await;
+        replicas[1].engine = crate::Engine::with(
+            &super::fixture::TEST_MANIFEST,
+            super::fixture::test_adapters(),
+            crate::domains::vault_hooks().with(
+                super::fixture::LISTS_TABLE,
+                Box::new(super::fixture::FixtureHook),
+            ),
+        )
+        .unwrap();
+        let nested = format!(
+            "{shared}
+             BEGIN;
+             INSERT INTO notes_pages
+                 (id, parent_type, parent_block_id, child_block_id, title, created_time,
+                  last_edited_time)
+             VALUES ('child', 'block_id', {a}, 'child', 'Child', {created}, {created});
+             INSERT INTO notes_blocks
+                 (id, page_id, parent_type, parent_block_id, type, plain_text, order_key,
+                  created_time, last_edited_time)
+             VALUES ('child', {page}, 'block_id', {a}, 'child_page', 'Child', {order},
+                     {created}, {created});
+             COMMIT;",
+            shared = page_sql(),
+            page = quoted(PAGE),
+            a = quoted(BLOCK_A),
+            order = quoted(&rank(1)),
+            created = quoted(CREATED),
+        );
+        replicas[0].exec(&nested).await;
+        converge(&mut replicas).await;
+
+        let replicated = "SELECT id || '|' || coalesce(parent_page_id, '-') || '|'
+                || coalesce(parent_block_id, '-') || '|' || order_key || '|' || type || '|'
+                || text || '|' || in_trash
+            FROM notes_blocks ORDER BY id";
+        let pages = "SELECT id || '|' || coalesce(child_block_id, '-') || '|' || title
+            FROM notes_pages ORDER BY id";
+        assert_eq!(
+            texts(&mut replicas[1], replicated).await,
+            texts(&mut replicas[0], replicated).await
+        );
+        assert_eq!(
+            texts(&mut replicas[1], pages).await,
+            texts(&mut replicas[0], pages).await
+        );
+        let receiver = &mut replicas[1];
+        assert_eq!(
+            block_placements(receiver).await,
+            vec![
+                "block-a>page-shared@".to_string(),
+                "block-b>page-shared@".to_string(),
+                "child>block-a@".to_string(),
+            ],
+            "without the hook, received blocks keep the empty page the hook would fill"
+        );
+        assert_eq!(
+            texts(
+                receiver,
+                "SELECT parent_type || ':' || coalesce(parent_block_id, '-')
+                 FROM notes_pages WHERE id = 'child'",
+            )
+            .await,
+            vec!["workspace:-".to_string()]
+        );
+        for table in ["notes_page_history_pending", "notes_sync_repair_pending"] {
+            let queued = texts(
+                receiver,
+                &format!("SELECT CAST(COUNT(*) AS TEXT) FROM {table}"),
+            )
+            .await;
+            assert_eq!(queued, vec!["0".to_string()], "{table}");
+        }
+    });
+}
+
+#[test]
 fn a_block_cycle_from_concurrent_moves_is_repaired_and_the_repair_replicates() {
     block_on(async {
         let mut replicas = shared(2, "").await;

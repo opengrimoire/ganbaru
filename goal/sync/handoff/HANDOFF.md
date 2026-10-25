@@ -63,8 +63,8 @@ Cloud host notes: `implementer-brief-cloud.md` is the brief used there (per-work
 
 1. Review and land the two in-flight branches above.
 2. Milestone 9 steps 5 to 9 and the docs part of 10, one at a time on the `chat` track.
-3. Milestone 8 steps 4 to 8 on the `domain` track (step 4 needs the notes from `progress/milestone-8-step-3-progress.md`: `parent_data_source_id` gains its replicated Cascade reference, row page orphan handling moves to the engine reference).
-4. Milestone 10 steps 5 and 6 and milestone 11 steps 7 to 10, serially on the `engine` track. Step 9 uses the internal Opus security review (user decision).
+3. Milestone 8 steps 5 to 8 on the `domain` track, after step 4 lands.
+4. On the `engine` track, serially: milestone 11 steps 7 to 10 (step 9 uses the internal Opus security review, a user decision), then milestone 10 steps 5 to 7. Engine follow-up 5 must land before milestone 9 step 9.
 5. Milestone 12 steps 1 to 11.
 6. Close each milestone (validate, review, advisor), then a final clean `pnpm -w run validate` on feat/sync.
 7. Final report: the pending physical acceptance checklists, deduplicated from each milestone's Manual acceptance section and `final-report-notes.md`, plus the pre-release items recorded there (Calendar duplicate repair references, the untested `drain_and_flush`, step 9 notes on the discovery key and trust in final rejections). If time allows, the Calendar duplicate repair follow-up.
@@ -76,6 +76,7 @@ Cloud host notes: `implementer-brief-cloud.md` is the brief used there (per-work
 - After each step: a fresh read-only Opus review with a brief like `briefs/m8-step-3-review-brief.md` (verdict merge, merge with follow-ups, or fix first, findings by severity with file:line and a failure scenario). On "fix first", send the implementer a fix message (`briefs/*-fix-message.md` pattern), then a delta review. Follow-ups that are safe to defer go into the next step's brief.
 - Landing: `git merge-base --is-ancestor feat/sync <branch>`, `git merge --no-ff --no-commit <branch>`, check the diff, versions, and migration order, `git commit -qS -m "merge: <title> (sync milestone M step K)"`, confirm `git log -1 --format=%G?` is `G`, run `tick.sh M K <progress file>` (it replaces the step's unticked line in the plan with the progress entry), remove the worktree and branches, prune, delete the Android target dir of that worktree, update the README status line, and commit the goal changes (`docs(goal): record sync milestone M step K`). `land.sh` does most of this.
 - Decisions the plan does not cover are taken by the orchestrator, recorded in the step's progress entry, and listed in `final-report-notes.md`.
+- Cloud session variant (2026-10-25): commits and merges were unsigned (user-approved), so landing used `git merge --no-ff --no-commit` and a plain `git commit` instead of `land.sh` (which signs and checks `G`); worktrees were created by hand under one folder (one per track, reused across steps by switching to the next branch from `feat/sync`) instead of `isolation: "worktree"`; no advisor tool existed, so reviews replaced advisor calls. Push `feat/sync` and every unlanded topic branch after each landing; the proxy there refused deleting remote branches.
 
 ## Machine setup (the old host, adapt to yours)
 
@@ -84,9 +85,17 @@ Cloud host notes: `implementer-brief-cloud.md` is the brief used there (per-work
 - Android: `cargo check --target aarch64-linux-android` only, no APK builds. The env script (`~/Android/android-check-env.sh` on the old host) set `JAVA_HOME` (OpenJDK 21), `ANDROID_HOME`, `NDK_HOME` (NDK 30.0.15729638), the `aarch64-linux-android29-clang` compiler, linker, and `llvm-ar` variables, and a per-checkout `CARGO_TARGET_DIR`. The check command and its baseline warnings are in `implementer-brief.md`. Without the toolchain, record the Android check as not run.
 - On the old host commits were SSH-signed with the user's key. Elsewhere, follow the signing policy in the goal prompt; without one, an unsigned commit means stop and report.
 
+## Cloud setup (Claude Code on the web)
+
+- pnpm: if `pnpm` fails with "Cannot find module .../pnpm.cjs" (bundled corepack cannot start pnpm 12), put a wrapper earlier on `PATH`: `~/.local/bin/pnpm` containing `exec sh ~/.cache/node/corepack/v1/pnpm/12.10.1/pnpm "$@"`, then `pnpm install --frozen-lockfile` in each checkout.
+- Git: if the container's signing key is unusable, `git config commit.gpgsign false` (only under the goal prompt's unsigned approval) and set `user.name VictorBenitoGR` and `user.email victorbenitogr@gmail.com` to match history.
+- Disk was the binding limit (about 40 GB allowance; one non-incremental target dir with tests is about 10 GB). Keep at most two or three target dirs, always `CARGO_INCREMENTAL=0`, never share one dir between checkouts and never rename one (build-script outputs embed absolute paths). To hand a dir to another worktree, touch every tracked file of that worktree (`git ls-files -z | xargs -0 touch`). Old workspace artifacts (`ganbaru*` in `debug/deps` older than the last touch) may be deleted. Reviewers read without building.
+- Before the final `pnpm -w run validate`, delete the worktree target dirs so one clean build fits.
+- `implementer-brief-cloud.md` is the implementer brief for such a host.
+
 ## Files here
 
-- `implementer-brief.md`: the rules every implementing agent follows.
+- `implementer-brief.md`: the rules every implementing agent follows; `implementer-brief-cloud.md` is its variant for a cloud host (paths, disk, unsigned commits, no Android toolchain).
 - `briefs/`: the briefs, review briefs, and fix messages of the in-flight steps, usable as templates.
 - `progress/`: progress entries of the unlanded steps.
 - `wip/`: uncommitted work of agents that stopped mid-change (empty: the earlier patches were applied and landed).

@@ -22,11 +22,12 @@ const POLICY_SEEDS: u64 = 8;
 /// Edit rounds of one policy scenario.
 const POLICY_ROUNDS: usize = 4;
 
-/// Teammate safety modes, least restrictive first, as the adapter ranks them.
+/// Teammate safety modes, least restrictive first, as the adapter ranks them. Custom defers to the
+/// provider's own configuration, which can grant anything, so it ranks lowest.
 const SAFETY_MODES: [&str; 4] = [
+    "custom",
     "full_access",
     "approve_for_me",
-    "custom",
     "ask_for_approval",
 ];
 

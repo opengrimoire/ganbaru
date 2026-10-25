@@ -33,11 +33,12 @@ pub const MIN_TIMESTAMP_CHARS: usize = 20;
 
 /// Participant kinds.
 pub const PARTICIPANT_KINDS: [&str; 3] = ["local_user", "ai_teammate", "human"];
-/// Teammate safety modes, least restrictive first.
+/// Teammate safety modes, least restrictive first. Custom defers to the
+/// provider's own configuration, which can grant anything, so it ranks lowest.
 pub const SAFETY_MODES: [&str; 4] = [
+    "custom",
     "full_access",
     "approve_for_me",
-    "custom",
     "ask_for_approval",
 ];
 /// Reasoning effort levels.
@@ -419,10 +420,10 @@ mod tests {
         let adapter = ChatAdapter;
         let safety =
             |mode| adapter.priority(TEAMMATES_TABLE, teammate_group::POLICY, &policy(mode));
-        assert!(safety(Some("ask_for_approval")) > safety(Some("custom")));
-        assert!(safety(Some("custom")) > safety(Some("approve_for_me")));
+        assert!(safety(Some("ask_for_approval")) > safety(Some("approve_for_me")));
         assert!(safety(Some("approve_for_me")) > safety(Some("full_access")));
-        assert!(safety(Some("full_access")) > safety(None));
+        assert!(safety(Some("full_access")) > safety(Some("custom")));
+        assert!(safety(Some("custom")) > safety(None));
 
         let capability =
             |level| adapter.priority(PROFILES_TABLE, profile_group::CURRENT, &current(level));

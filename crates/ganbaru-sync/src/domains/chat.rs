@@ -443,11 +443,14 @@ const ENDED: u8 = u8::MAX;
 
 /// Rank of an approval override, 1 for the least restrictive.
 ///
-/// No override inherits: a folder grant's falls back to the channel override and a channel
-/// override to the teammate's default, which an explicit override can only narrow (the runtime
-/// keeps the narrower of the default and the override). The default can be unattended or defer
-/// to the provider, so inheriting is never stricter than an explicit override and ranks lowest,
-/// below the explicit policies in [`APPROVAL_POLICIES`] order.
+/// No override inherits: a folder grant's or scratch override falls back to the channel
+/// override and a channel override to the teammate's default, which an explicit override can
+/// only narrow (the runtime keeps the narrower of the default and the override). The default
+/// can be unattended or defer to the provider, so inheriting ranks lowest, below the explicit
+/// policies in [`APPROVAL_POLICIES`] order. A folder or scratch override replaces the channel
+/// override instead of narrowing it, so when the channel override is stricter than a concurrent
+/// explicit folder or scratch override, inheriting was the stricter intent; a static rank cannot
+/// see the channel row, and the loser's value is not available to Chat after the merge.
 fn approval_rank(field: Option<&Field>) -> u8 {
     match field {
         None | Some(Field::Null) => INHERITED_APPROVAL_RANK,

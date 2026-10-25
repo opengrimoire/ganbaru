@@ -810,6 +810,72 @@ fn chat_concurrent_inherited_approval_does_not_replace_an_explicit_narrowing() {
     });
 }
 
+/// SQL setting [`TEAMMATE`]'s scratch runtime approval override.
+fn scratch_approval_sql(approval: Option<&str>, updated_at: &str) -> String {
+    format!(
+        "UPDATE chat_teammate_channel_memberships
+         SET scratch_runtime_approval_policy = {approval}, updated_at = {updated_at}
+         WHERE teammate_id = {teammate};",
+        approval = optional(approval),
+        updated_at = quoted(updated_at),
+        teammate = quoted(TEAMMATE),
+    )
+}
+
+/// [`TEAMMATE`]'s scratch runtime approval override, or `inherit`.
+async fn scratch_state(replica: &mut Replica) -> String {
+    replica
+        .scalar_text(
+            "SELECT coalesce(scratch_runtime_approval_policy, 'inherit')
+             FROM chat_teammate_channel_memberships
+             WHERE teammate_id = 'participant:reviewer'",
+        )
+        .await
+        .expect("the access arrived")
+}
+
+/// With a looser channel override, clearing a folder or scratch override inherits the looser
+/// value, so a concurrent explicit stricter override is the stricter intent and wins.
+#[test]
+fn chat_concurrent_explicit_target_override_beats_inheriting_a_looser_channel_override() {
+    block_on(async {
+        let mut replicas = replicas(2).await;
+        replicas[0]
+            .exec(&format!(
+                "{}{}{}{}{}",
+                identity_sql(),
+                conversation_sql(),
+                access_approval_sql(Some("unattended"), &at(0, 30)),
+                grant_sql("edit", Some("auto_approve"), None),
+                scratch_approval_sql(Some("auto_approve"), &at(0, 40)),
+            ))
+            .await;
+        converge(&mut replicas).await;
+
+        replicas[0]
+            .exec(&format!(
+                "{}{}",
+                grant_sql("edit", None, None),
+                scratch_approval_sql(None, &at(1, 0)),
+            ))
+            .await;
+        replicas[1]
+            .exec(&format!(
+                "{}{}",
+                grant_sql("edit", Some("ask"), None),
+                scratch_approval_sql(Some("ask"), &at(2, 0)),
+            ))
+            .await;
+        converge(&mut replicas).await;
+        assert_converged(&mut replicas).await;
+        for replica in &mut replicas {
+            assert_eq!(grant_state(replica).await, "edit ask active");
+            assert_eq!(scratch_state(replica).await, "ask");
+            assert_eq!(access_state(replica).await, "1 1 unattended");
+        }
+    });
+}
+
 #[test]
 fn chat_concurrent_capability_clear_outranks_a_stricter_approval() {
     block_on(async {

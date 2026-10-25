@@ -1,7 +1,7 @@
 //! Distraction rules and usage adapter: value checks the column types cannot express, recovery
 //! titles, and the hook that reports rule changes so the app republishes what its blockers read.
 
-use ganbaru_sync_contracts::{Field, GroupId, TableId, Value};
+use ganbaru_sync_contracts::{Field, GroupId, GroupValue, TableId, Value};
 use sqlx::SqliteConnection;
 
 use crate::adapter::{AdapterError, DomainAdapter, Presentation};
@@ -333,6 +333,29 @@ impl DomainAdapter for DistractionsAdapter {
         }
     }
 
+    /// A block event names a segment only together with its run: a segment of no published run
+    /// would never arrive, so the reference would stay dangling.
+    fn validate_row(&self, table: TableId, groups: &[GroupValue]) -> Result<(), AdapterError> {
+        if table != BLOCK_EVENTS_TABLE {
+            return Ok(());
+        }
+        let first_field = |group: GroupId| {
+            groups
+                .iter()
+                .find(|value| value.group == group)
+                .and_then(|value| value.value.fields().first())
+        };
+        match (
+            first_field(block_event_group::RUN),
+            first_field(block_event_group::SEGMENT),
+        ) {
+            (Some(Field::Null), Some(segment)) if *segment != Field::Null => {
+                Err(AdapterError("distraction block segment without run"))
+            }
+            _ => Ok(()),
+        }
+    }
+
     /// Recovery titles of custom categories and usage limits come from their names.
     fn presentation(&self, table: TableId, values: &[(GroupId, Value)]) -> Presentation {
         let name_group = if table == CUSTOM_CATEGORIES_TABLE {
@@ -533,6 +556,28 @@ mod tests {
         assert_eq!(snapshot(Field::Null, Field::Null), Ok(()));
         assert!(snapshot(text("screen_content"), text("blacklist")).is_err());
         assert!(snapshot(text("domain"), text("graylist")).is_err());
+    }
+
+    #[test]
+    fn a_block_event_names_a_segment_only_with_its_run() {
+        let adapter = DistractionsAdapter;
+        let row = |run: Field, segment: Field| {
+            adapter.validate_row(
+                BLOCK_EVENTS_TABLE,
+                &[
+                    GroupValue::new(BLOCK_EVENTS_TABLE, block_event_group::RUN, value(vec![run])),
+                    GroupValue::new(
+                        BLOCK_EVENTS_TABLE,
+                        block_event_group::SEGMENT,
+                        value(vec![segment]),
+                    ),
+                ],
+            )
+        };
+        assert_eq!(row(text("run-1"), text("segment-1")), Ok(()));
+        assert_eq!(row(text("run-1"), Field::Null), Ok(()));
+        assert_eq!(row(Field::Null, Field::Null), Ok(()));
+        assert!(row(Field::Null, text("segment-1")).is_err());
     }
 
     #[test]

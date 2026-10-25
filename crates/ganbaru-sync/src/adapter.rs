@@ -4,7 +4,7 @@
 
 use std::fmt;
 
-use ganbaru_sync_contracts::{Field, GroupId, TableId, Value};
+use ganbaru_sync_contracts::{Field, GroupId, GroupValue, TableId, Value};
 
 use crate::assets::AssetRef;
 
@@ -100,6 +100,13 @@ pub trait DomainAdapter: Send + Sync {
 
     /// Checks rules the column types cannot express. Called for every group of the table.
     fn validate(&self, table: TableId, group: GroupId, value: &Value) -> Result<(), AdapterError>;
+
+    /// Checks rules that span groups of one row. Called after [`DomainAdapter::validate`] for a
+    /// change that writes every group, with the groups in ascending order.
+    fn validate_row(&self, table: TableId, groups: &[GroupValue]) -> Result<(), AdapterError> {
+        let _ = (table, groups);
+        Ok(())
+    }
 
     /// Presentation of a retained row from its winning group values.
     fn presentation(&self, table: TableId, values: &[(GroupId, Value)]) -> Presentation;

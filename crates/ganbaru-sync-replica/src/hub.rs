@@ -39,9 +39,7 @@ const _: () = assert!(
     "a sweep of stale staged assets must spare uploads the hub still waits for"
 );
 
-/// Error code of a pull the hub can no longer answer because it compacted operations the peer
-/// lacks. The peer stops pulling until it bootstraps from a fresh copy of the vault.
-pub const BOOTSTRAP_REQUIRED: &str = "bootstrap_required";
+pub use super::wire::BOOTSTRAP_REQUIRED;
 
 /// The vault database the hub serves.
 pub struct HubVault {

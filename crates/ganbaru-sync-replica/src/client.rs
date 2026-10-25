@@ -1,7 +1,7 @@
 //! The device side of sync: one exchange pushes what the hub lacks, pulls what this replica
 //! lacks, and reports a fork of this installation's writers so the service can re-seal.
 
-use super::hub::BOOTSTRAP_REQUIRED;
+use super::wire::BOOTSTRAP_REQUIRED;
 use super::wire::{
     forked_from_wire, hash_from_wire, hash_to_wire, ops_from_wire, ops_to_wire, vector_from_wire,
     vector_to_wire, writer_from_wire,

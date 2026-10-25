@@ -14,9 +14,8 @@ use super::client::{ClientSession, Exchange, ForkPoint, PeerIds};
 #[cfg(mobile)]
 use super::host::HeadlessHost;
 use super::host::SyncHost;
-use super::hub::HubStability;
 #[cfg(desktop)]
-use super::hub::{HubVault, OpenHubVault, SyncHub};
+use super::hub::{HubStability, HubVault, OpenHubVault, SyncHub};
 use super::recovery::{RecoveryChoice, RecoveryRequest};
 use super::status::{DegradedReasons, SyncErrorCode, SyncRole, SyncState, SyncStatusView};
 use super::transport::PairedTransport;
@@ -100,6 +99,7 @@ pub(crate) struct RuntimeState {
     /// Bumped after each pass, so hub waits recheck the log.
     changes: watch::Sender<u64>,
     /// Stability the coordinator pass last computed, reported in every sync state.
+    #[cfg(desktop)]
     stability: HubStability,
     /// A pause change waiting for the writer record.
     pause_request: Mutex<Option<bool>>,
@@ -118,6 +118,7 @@ impl Default for RuntimeState {
         Self {
             now: Arc::default(),
             changes: watch::Sender::new(0),
+            #[cfg(desktop)]
             stability: HubStability::default(),
             pause_request: Mutex::default(),
             recovery: Mutex::default(),
@@ -655,6 +656,7 @@ impl ServiceState {
                 vault_id: Some(vault_id.clone()),
                 ..Self::default()
             };
+            #[cfg(desktop)]
             runtime.stability.clear();
         }
         let manager = host.pairing();
@@ -764,9 +766,11 @@ impl ServiceState {
             let stable = self
                 .stability(host, &session, &manager, &vault_id, view)
                 .await?;
+            #[cfg(desktop)]
             runtime.stability.publish(&vault_id, stable.clone());
             next = Self::compact(&session, &stable, next).await?;
         } else {
+            #[cfg(desktop)]
             runtime.stability.clear();
             if acknowledged.sealed_ops > 0 && matches!(next, Next::Online(_)) {
                 // The hub learns of the acknowledgement on the next exchange, which runs now.

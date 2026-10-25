@@ -172,6 +172,28 @@ CREATE TABLE notes_page_history_pending (
     queued_at TEXT NOT NULL CHECK (trim(queued_at) <> '')
 );
 
+-- Local writes keep a nested page paired with its `child_page` block: a page nested under a
+-- page or a block names the block that shares its id, and no other page names a block. Remote
+-- placement is paired by the Notes structure repair, because apply derives the parent columns
+-- only after the rows land.
+CREATE TRIGGER notes_pages_local_nesting_insert
+BEFORE INSERT ON notes_pages
+WHEN (SELECT applying FROM sync_apply_state WHERE singleton = 1) = 0
+    AND NOT ((NEW.child_block_id IS NULL OR NEW.child_block_id = NEW.id)
+        AND (NEW.child_block_id IS NOT NULL) = (NEW.parent_type IN ('page_id', 'block_id')))
+BEGIN
+    SELECT RAISE(ABORT, 'A nested Notes page must name its own child_page block');
+END;
+
+CREATE TRIGGER notes_pages_local_nesting_update
+BEFORE UPDATE OF id, parent_type, child_block_id ON notes_pages
+WHEN (SELECT applying FROM sync_apply_state WHERE singleton = 1) = 0
+    AND NOT ((NEW.child_block_id IS NULL OR NEW.child_block_id = NEW.id)
+        AND (NEW.child_block_id IS NOT NULL) = (NEW.parent_type IN ('page_id', 'block_id')))
+BEGIN
+    SELECT RAISE(ABORT, 'A nested Notes page must name its own child_page block');
+END;
+
 -- Row pages leave with their data source on every path that removes it, including foreign key
 -- cascades from a purged block or database. The walk collects the whole content subtree in
 -- this one statement because SQLite does not fire this trigger again for data sources that

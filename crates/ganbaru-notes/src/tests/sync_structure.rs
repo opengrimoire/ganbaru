@@ -178,7 +178,7 @@ fn repair_lifts_the_block_past_the_depth_bound_to_its_page_root() {
 }
 
 #[test]
-fn repair_moves_the_smallest_page_of_a_nesting_cycle_to_the_workspace() {
+fn repair_moves_the_smallest_page_of_a_nesting_cycle_to_the_root_and_trashes_its_block() {
     crate::test_block_on(async {
         let pool = migrated_memory_pool().await;
         create_page(&pool, PAGE_A, BLOCK_A).await;
@@ -203,30 +203,37 @@ fn repair_moves_the_smallest_page_of_a_nesting_cycle_to_the_workspace() {
         .execute(&pool)
         .await
         .unwrap();
-        sqlx::query("UPDATE notes_pages SET child_block_id = id WHERE id = ?")
-            .bind(PAGE_A)
-            .execute(&pool)
-            .await
-            .unwrap();
+        sqlx::query(
+            "UPDATE notes_pages
+             SET parent_type = 'page_id', parent_page_id = ?, child_block_id = id, project_id = NULL
+             WHERE id = ?",
+        )
+        .bind(PAGE_B)
+        .bind(PAGE_A)
+        .execute(&pool)
+        .await
+        .unwrap();
 
         let report = repair_structure(&pool, &[PAGE_A.to_string()], &[])
             .await
             .unwrap();
 
         assert_eq!(report.detached_pages, vec![PAGE_A.to_string()]);
-        let page_a: (String, Option<String>) =
-            sqlx::query_as("SELECT parent_type, child_block_id FROM notes_pages WHERE id = ?")
-                .bind(PAGE_A)
-                .fetch_one(&pool)
-                .await
-                .unwrap();
-        assert_eq!(page_a, ("workspace".to_string(), None));
-        let block_a: i64 = sqlx::query_scalar("SELECT count(*) FROM notes_blocks WHERE id = ?")
+        let page_a: (String, Option<String>, Option<String>) = sqlx::query_as(
+            "SELECT parent_type, parent_page_id, child_block_id FROM notes_pages WHERE id = ?",
+        )
+        .bind(PAGE_A)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(page_a, ("workspace".to_string(), None, None));
+        // The block stays as a trashed row, the way a move out of a parent page leaves it.
+        let block_a: i64 = sqlx::query_scalar("SELECT in_trash FROM notes_blocks WHERE id = ?")
             .bind(PAGE_A)
             .fetch_one(&pool)
             .await
             .unwrap();
-        assert_eq!(block_a, 0);
+        assert_eq!(block_a, 1);
         let page_b: (String, Option<String>) =
             sqlx::query_as("SELECT parent_type, parent_page_id FROM notes_pages WHERE id = ?")
                 .bind(PAGE_B)
@@ -234,6 +241,160 @@ fn repair_moves_the_smallest_page_of_a_nesting_cycle_to_the_workspace() {
                 .await
                 .unwrap();
         assert_eq!(page_b, ("page_id".to_string(), Some(PAGE_A.to_string())));
+    });
+}
+
+async fn set_applying(pool: &SqlitePool, applying: bool) {
+    sqlx::query("UPDATE sync_apply_state SET applying = ? WHERE singleton = 1")
+        .bind(i64::from(applying))
+        .execute(pool)
+        .await
+        .unwrap();
+}
+
+/// Stores `PAGE_B` at the root of a project and nests `PAGE_A` under it.
+async fn nest_a_under_project_page_b(pool: &SqlitePool) {
+    sqlx::query("INSERT INTO project_groups (id, name, order_key) VALUES ('group', 'Group', 'a1')")
+        .execute(pool)
+        .await
+        .unwrap();
+    sqlx::query(
+        "INSERT INTO projects (id, group_id, name, order_key) VALUES ('project', 'group', 'Project', 'a1')",
+    )
+    .execute(pool)
+    .await
+    .unwrap();
+    create_page(pool, PAGE_A, BLOCK_A).await;
+    create_page(pool, PAGE_B, BLOCK_B).await;
+    sqlx::query("UPDATE notes_pages SET project_id = 'project' WHERE id = ?")
+        .bind(PAGE_B)
+        .execute(pool)
+        .await
+        .unwrap();
+    writes::move_page(
+        pool,
+        PAGE_A,
+        NoteMovePage {
+            parent: page_parent(PAGE_B),
+            folder_id: None,
+        },
+    )
+    .await
+    .unwrap();
+}
+
+async fn page_nesting(
+    pool: &SqlitePool,
+    id: &str,
+) -> (String, Option<String>, Option<String>, Option<String>) {
+    sqlx::query_as(
+        "SELECT parent_type, parent_page_id, child_block_id, project_id FROM notes_pages WHERE id = ?",
+    )
+    .bind(id)
+    .fetch_one(pool)
+    .await
+    .unwrap()
+}
+
+#[test]
+fn repair_moves_a_page_whose_block_is_not_a_child_page_block_to_its_project_root() {
+    crate::test_block_on(async {
+        let pool = migrated_memory_pool().await;
+        nest_a_under_project_page_b(&pool).await;
+        // A merged block kind that no longer pairs with the page.
+        set_applying(&pool, true).await;
+        sqlx::query("UPDATE notes_blocks SET type = 'paragraph' WHERE id = ?")
+            .bind(PAGE_A)
+            .execute(&pool)
+            .await
+            .unwrap();
+        set_applying(&pool, false).await;
+
+        let report = repair_structure(&pool, &[], &[PAGE_A.to_string()])
+            .await
+            .unwrap();
+
+        assert_eq!(report.unpaired_pages, vec![PAGE_A.to_string()]);
+        assert_eq!(
+            page_nesting(&pool, PAGE_A).await,
+            (
+                "workspace".to_string(),
+                None,
+                None,
+                Some("project".to_string())
+            )
+        );
+        let again = repair_structure(&pool, &[PAGE_A.to_string()], &[PAGE_A.to_string()])
+            .await
+            .unwrap();
+        assert!(again.is_empty());
+    });
+}
+
+#[test]
+fn repair_nests_a_page_again_under_its_own_child_page_block() {
+    crate::test_block_on(async {
+        let pool = migrated_memory_pool().await;
+        nest_a_under_project_page_b(&pool).await;
+        // A merged page placement that lost its block while the block stayed in place.
+        set_applying(&pool, true).await;
+        sqlx::query(
+            "UPDATE notes_pages
+             SET parent_type = 'workspace', parent_page_id = NULL, child_block_id = NULL
+             WHERE id = ?",
+        )
+        .bind(PAGE_A)
+        .execute(&pool)
+        .await
+        .unwrap();
+        set_applying(&pool, false).await;
+
+        let report = repair_structure(&pool, &[PAGE_A.to_string()], &[])
+            .await
+            .unwrap();
+
+        assert_eq!(report.paired_pages, vec![PAGE_A.to_string()]);
+        assert_eq!(
+            page_nesting(&pool, PAGE_A).await,
+            (
+                "page_id".to_string(),
+                Some(PAGE_B.to_string()),
+                Some(PAGE_A.to_string()),
+                None
+            )
+        );
+        let queued: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM notes_page_history_pending WHERE page_id = ?")
+                .bind(PAGE_A)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(queued, 1);
+    });
+}
+
+#[test]
+fn a_page_moved_out_of_its_parent_is_not_nested_again() {
+    crate::test_block_on(async {
+        let pool = migrated_memory_pool().await;
+        nest_a_under_project_page_b(&pool).await;
+        writes::move_page(
+            &pool,
+            PAGE_A,
+            NoteMovePage {
+                parent: workspace_parent(),
+                folder_id: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        let report = repair_structure(&pool, &[PAGE_A.to_string()], &[PAGE_A.to_string()])
+            .await
+            .unwrap();
+
+        assert!(report.is_empty());
+        assert_eq!(page_nesting(&pool, PAGE_A).await.0, "workspace");
     });
 }
 
@@ -277,6 +438,7 @@ fn sync_hook_recomputes_derived_columns_queues_history_and_drops_index_fingerpri
                 .await
                 .unwrap();
         // A received row carries only replicated columns; hook columns hold their defaults.
+        set_applying(&pool, true).await;
         sqlx::query("UPDATE notes_blocks SET page_id = '', plain_text = '' WHERE id = ?")
             .bind(BLOCK_C)
             .execute(&pool)
@@ -289,6 +451,7 @@ fn sync_hook_recomputes_derived_columns_queues_history_and_drops_index_fingerpri
         .execute(&pool)
         .await
         .unwrap();
+        set_applying(&pool, false).await;
 
         let mut conn = pool.acquire().await.unwrap();
         refresh_after_apply(&mut conn, BLOCKS_TABLE, &[BLOCK_C.to_string()])

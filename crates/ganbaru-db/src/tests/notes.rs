@@ -132,8 +132,13 @@ fn schema_keeps_notes_page_project_and_trash_owner_in_columns() {
         .unwrap();
         assert_eq!(
             notes_triggers,
-            ["notes_data_sources_delete_row_pages"],
-            "Notes rules are checked by writes; only row page removal follows foreign key cascades"
+            [
+                "notes_data_sources_delete_row_pages",
+                "notes_pages_local_nesting_insert",
+                "notes_pages_local_nesting_update",
+            ],
+            "Notes rules are checked by writes, except row page removal through foreign key \
+             cascades and local nested page pairing"
         );
 
         sqlx::query("INSERT INTO project_groups (id, name, order_key) VALUES ('folder-group', 'Folders', 'a0')")
@@ -1892,7 +1897,7 @@ fn fresh_vault_notes_blocks_store_split_content_and_order_keys() {
             );
         }
         let notes_triggers: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM sqlite_schema WHERE type = 'trigger' AND tbl_name IN ('notes_blocks', 'notes_pages', 'notes_folders') AND name NOT LIKE 'sync\\_%' ESCAPE '\\'",
+            "SELECT COUNT(*) FROM sqlite_schema WHERE type = 'trigger' AND tbl_name IN ('notes_blocks', 'notes_pages', 'notes_folders') AND name NOT LIKE 'sync\\_%' ESCAPE '\\' AND name NOT LIKE 'notes\\_pages\\_local\\_nesting\\_%' ESCAPE '\\'",
         )
         .fetch_one(&pool)
         .await
@@ -1973,8 +1978,11 @@ fn fresh_vault_nested_pages_follow_their_child_page_block() {
             .await
             .expect("the block reference is checked at commit");
 
-        // Parent columns are derived from `child_block_id`, so no check ties them to it.
+        // Local writes keep the parent columns paired with `child_block_id`; remote placement
+        // is paired by the Notes structure repair.
         for statement in [
+            "UPDATE notes_pages SET child_block_id = NULL WHERE id = 'child'",
+            "UPDATE notes_pages SET parent_type = 'workspace', parent_page_id = NULL WHERE id = 'child'",
             "UPDATE notes_pages SET child_block_id = 'parent' WHERE id = 'child'",
             "UPDATE notes_pages SET child_block_id = 'parent' WHERE id = 'parent'",
             "UPDATE notes_pages SET folder_id = 'folder' WHERE id = 'child'",
@@ -1997,6 +2005,15 @@ fn fresh_vault_nested_pages_follow_their_child_page_block() {
             .is_err(),
             "a nested page needs its child_page block"
         );
+        sqlx::raw_sql(
+            "UPDATE sync_apply_state SET applying = 1;
+             UPDATE notes_pages SET child_block_id = NULL WHERE id = 'child';
+             UPDATE notes_pages SET child_block_id = 'child' WHERE id = 'child';
+             UPDATE sync_apply_state SET applying = 0;",
+        )
+        .execute(&pool)
+        .await
+        .expect("apply writes placement before the hook derives the parent columns");
 
         sqlx::query("DELETE FROM notes_blocks WHERE id = 'child'")
             .execute(&pool)

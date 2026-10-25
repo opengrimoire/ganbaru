@@ -1,7 +1,7 @@
 //! Notes structure across replicas: concurrent edits to different block groups merge, received
 //! rows get their hook-derived parents, pages, and plain text from the real Notes hook, a block
 //! cycle from concurrent moves is repaired by the Notes repair pass and the repair replicates,
-//! a trashed page keeps a concurrent title edit and restores, and duplicate page aliases settle
+//! a remote delete of a parent block removes the page nested under it everywhere, a trashed page keeps a concurrent title edit and restores, and duplicate page aliases settle
 //! on one row.
 
 use sqlx::SqliteConnection;
@@ -306,6 +306,61 @@ fn a_block_cycle_from_concurrent_moves_is_repaired_and_the_repair_replicates() {
                 vec!["page_id".to_string()]
             );
         }
+        assert_converged(&mut replicas).await;
+    });
+}
+
+#[test]
+fn a_remote_delete_of_the_parent_block_removes_the_nested_page_everywhere() {
+    block_on(async {
+        let child = format!(
+            "BEGIN;
+             INSERT INTO notes_pages
+                 (id, parent_type, parent_block_id, child_block_id, title, created_time,
+                  last_edited_time)
+             VALUES ('child', 'block_id', {a}, 'child', 'Child', {created}, {created});
+             INSERT INTO notes_blocks
+                 (id, page_id, parent_type, parent_block_id, type, plain_text, order_key,
+                  created_time, last_edited_time)
+             VALUES ('child', {page}, 'block_id', {a}, 'child_page', 'Child', {order},
+                     {created}, {created});
+             COMMIT;",
+            page = quoted(PAGE),
+            a = quoted(BLOCK_A),
+            order = quoted(&rank(1)),
+            created = quoted(CREATED),
+        );
+        let mut replicas = shared(2, &child).await;
+        replicas[1]
+            .exec(&format!(
+                "DELETE FROM notes_blocks WHERE id = {};",
+                quoted(BLOCK_A)
+            ))
+            .await;
+        converge(&mut replicas).await;
+
+        for replica in replicas.iter_mut() {
+            assert_eq!(
+                block_placements(replica).await,
+                vec!["block-b>page-shared@page-shared".to_string()],
+                "replica {}",
+                replica.index
+            );
+            assert_eq!(
+                texts(replica, "SELECT id FROM notes_pages ORDER BY id").await,
+                vec![PAGE.to_string()],
+                "replica {}",
+                replica.index
+            );
+        }
+        let report = ganbaru_notes::sync_repair::repair_structure_on(
+            &mut replicas[0].conn,
+            &["child".to_string()],
+            &[BLOCK_A.to_string(), "child".to_string()],
+        )
+        .await
+        .unwrap();
+        assert!(report.is_empty());
         assert_converged(&mut replicas).await;
     });
 }

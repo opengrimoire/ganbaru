@@ -27,6 +27,7 @@ mod preferences;
 mod projects;
 mod publication;
 mod replica;
+mod settle;
 mod sim;
 mod stability;
 mod trigger_policies;

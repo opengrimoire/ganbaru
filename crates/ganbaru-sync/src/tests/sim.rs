@@ -6,7 +6,8 @@
 //! writer and re-seal once fork evidence reaches them, and conflicts and recovery offers are
 //! resolved along the way. Exchanges sometimes end with the hub and the exchanging replica compacting what is stable, except one replica that never
 //! compacts; compaction never changes domain rows. After every step the databases keep their
-//! invariants; at quiescence every installation holds the same replicated state.
+//! invariants; at quiescence every installation holds the same replicated state, and every
+//! override policy the fixture hook settles shows its strictest concurrent version.
 //!
 //! Seeds are split across four test functions that the harness runs in parallel.
 //! `GANBARU_SYNC_SOAK_SEEDS` sets the number of seeds for a soak run; the default debug
@@ -17,18 +18,20 @@ mod peer;
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use ganbaru_sync_contracts::{Envelope, Field, VersionVector, WriterId};
+use ganbaru_sync_contracts::{Envelope, Field, Value, VersionVector, WriterId};
 
 use super::block_on;
 use super::fixture::{
-    BOARD_CARDS, BOARD_CHECKS, BOARD_HANDLE_PREFIX, MAX_BOARD_STAGE, MAX_LIST_ENTRIES, MEMOS_TABLE,
-    NODE_MAX_DEPTH, edge_key, membership_key, memo_tag_key,
+    ASK, BOARD_CARDS, BOARD_CHECKS, BOARD_HANDLE_PREFIX, MAX_BOARD_STAGE, MAX_LIST_ENTRIES,
+    MEMOS_TABLE, NODE_MAX_DEPTH, OVERRIDES_TABLE, UNATTENDED, edge_key, membership_key,
+    memo_tag_key, override_group, policy_rank,
 };
 use super::replica::{ENROLLED_DEVICES, Replica, START_MS, device_id, quoted, rank};
 use crate::acknowledge::{ACKNOWLEDGEMENT_INTERVAL_MS, KEEPALIVE_INTERVAL_MS};
 use crate::error::failpoints;
 use crate::hold::{self, MAX_HOLD_MS};
 use crate::manifest::vault::quick_notes::{NOTES_TABLE, TAGS_TABLE, note_group};
+use crate::merge;
 use crate::stability::{CountedDevice, DeviceStanding};
 use crate::{
     ApplyReport, EvidenceOutcome, HoldReason, StoreOutcome, StoreRefusal, SyncError, SyncResult,
@@ -99,7 +102,30 @@ struct Sim {
     created: usize,
     /// Devices enrolled beyond the replicas and the hub that a removal used up.
     spares: usize,
+    /// Override edits, drawn apart from `rng` and keyed apart from `created`, so they leave
+    /// every other choice of a seed as it was.
+    overrides: Overrides,
 }
+
+/// Choices and ids of fixture override edits.
+struct Overrides {
+    rng: Rng,
+    created: usize,
+}
+
+impl Overrides {
+    fn new(seed: u64) -> Self {
+        Self {
+            rng: Rng(seed ^ OVERRIDE_SEED_MIX),
+            created: 0,
+        }
+    }
+}
+
+/// Mixed into a seed for the override edit stream.
+const OVERRIDE_SEED_MIX: u64 = 0x6f76_6572_7269_6465;
+/// Chance in percent that a local edit is followed by an override edit.
+const OVERRIDE_EDIT_PERCENT: u64 = 6;
 
 /// Runs `call`, first crashing it at a random failpoint now and then. A crashed call must leave
 /// the database exactly as it was; the call then runs again without a failpoint.
@@ -486,6 +512,7 @@ impl Sim {
             clock_ms: START_MS,
             created: 0,
             spares: 0,
+            overrides: Overrides::new(seed),
         }
     }
 
@@ -573,6 +600,9 @@ impl Sim {
         let note = self.rng.pick(&notes).map(|id| quoted(id));
         let tag = self.rng.pick(&tags).map(|id| quoted(id));
         let touch = format!("updated_at = {now}, revision = revision + 1");
+        if self.overrides.rng.chance(OVERRIDE_EDIT_PERCENT) {
+            self.edit_overrides(index, now.clone()).await;
+        }
         let kind = self.rng.below(45);
         if kind >= 43 {
             return self.edit_lists(index, now).await;
@@ -1075,6 +1105,44 @@ impl Sim {
                      {cards}",
                     quoted(&id),
                     quoted(&format!("{BOARD_HANDLE_PREFIX}{id}"))
+                )
+            }
+        };
+        self.replicas[index].try_exec(&sql).await;
+    }
+
+    /// One local edit of fixture approval overrides, whose hook settles an explicit policy
+    /// that wins over a stricter inherited one: create an override, set or clear its policy,
+    /// change the fallback it inherits, or delete it.
+    async fn edit_overrides(&mut self, index: usize, now: String) {
+        let overrides = ids(
+            &mut self.replicas[index],
+            "SELECT id FROM fixture_overrides ORDER BY id",
+        )
+        .await;
+        let rng = &mut self.overrides.rng;
+        let policy = match rng.below(3) {
+            0 => "NULL".to_string(),
+            1 => quoted(ASK),
+            _ => quoted(UNATTENDED),
+        };
+        let fallback = quoted(if rng.chance(50) { ASK } else { UNATTENDED });
+        let sql = match (rng.below(8), rng.pick(&overrides)) {
+            (0..=3, Some(id)) => format!(
+                "UPDATE fixture_overrides SET policy = {policy} WHERE id = {}",
+                quoted(id)
+            ),
+            (4..=5, Some(id)) => format!(
+                "UPDATE fixture_overrides SET fallback = {fallback} WHERE id = {}",
+                quoted(id)
+            ),
+            (6, Some(id)) => format!("DELETE FROM fixture_overrides WHERE id = {}", quoted(id)),
+            _ => {
+                self.overrides.created += 1;
+                format!(
+                    "INSERT INTO fixture_overrides (id, created_at, fallback, policy)
+                     VALUES ({}, {now}, {fallback}, {policy})",
+                    quoted(&format!("override-{index}-{}", self.overrides.created))
                 )
             }
         };
@@ -1901,7 +1969,40 @@ impl Sim {
         panic!("replicas did not quiesce:\n{}", states.join("\n"));
     }
 
+    /// Every override policy on the hub satisfies the fixture hook's settle rule: no retained
+    /// version resolves stricter than the winner, whose value the domain row holds.
+    async fn assert_overrides_settled(&mut self) {
+        let hub = &mut self.hub;
+        let rows: Vec<(String, String, Option<String>)> =
+            sqlx::query_as("SELECT id, fallback, policy FROM fixture_overrides ORDER BY id")
+                .fetch_all(&mut hub.conn)
+                .await
+                .unwrap();
+        for (key, fallback, policy) in rows {
+            let versions = merge::versions(&hub.engine, &mut hub.conn, OVERRIDES_TABLE, &key)
+                .await
+                .unwrap();
+            let resolved = |value: &Value| match value.fields().first() {
+                Some(Field::Text(policy)) => policy_rank(policy),
+                _ => policy_rank(&fallback),
+            };
+            let strictest = versions
+                .iter()
+                .filter(|version| version.group == override_group::POLICY)
+                .map(|version| resolved(&version.value))
+                .max()
+                .unwrap_or(0);
+            let shown = policy.as_deref().unwrap_or(fallback.as_str());
+            assert_eq!(
+                policy_rank(shown),
+                strictest,
+                "override {key} shows a looser policy than a concurrent version"
+            );
+        }
+    }
+
     async fn assert_converged(&mut self) {
+        self.assert_overrides_settled().await;
         let expected = self.hub.dump().await;
         for replica in &mut self.replicas {
             assert_eq!(

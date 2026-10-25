@@ -6,7 +6,8 @@
 //! edge set between items, drafts that publish by predicate with parts published with them,
 //! and memos whose deletes can be held, with lines and derived-key tags that inherit the hold,
 //! lists with generic owned entries referencing memberships and a hook-maintained entry count,
-//! and boards whose coupled group owns cards with nested checks beside a reference column.
+//! boards whose coupled group owns cards with nested checks beside a reference column, and
+//! approval overrides whose hook settles concurrent policies.
 //! Fixture table ids start at [`FIXTURE_TABLE_IDS`], above every vault domain.
 
 use std::sync::LazyLock;
@@ -19,7 +20,7 @@ use crate::Engine;
 use crate::adapter::{AdapterError, Adapters, DomainAdapter, Presentation};
 use crate::assets::{AssetClass, LocalAssetColumn, LocalDigest};
 use crate::domains::{vault_adapters, vault_hooks};
-use crate::hooks::{ChangeSink, HookFuture, MaterializeHook};
+use crate::hooks::{ChangeSink, ConcurrentVersion, HookFuture, MaterializeHook, SettleFuture};
 use crate::manifest::vault::{
     VAULT_MANIFEST_VERSION, calendar, chat, contacts, distractions, focus, music, notes,
     preferences, projects, quick_notes, themes,
@@ -1140,6 +1141,76 @@ pub(super) const SCROLLS: TableSpec = TableSpec {
 /// `fixture_scrolls`.
 pub(super) const SCROLLS_TABLE: TableId = TableId(FIXTURE_TABLE_IDS + 15);
 
+/// Field groups of [`OVERRIDES`].
+pub(super) mod override_group {
+    use super::{GroupId, group_id};
+
+    /// The policy an inheriting override resolves to.
+    pub const FALLBACK: GroupId = group_id(1);
+    /// The override, null to inherit the fallback.
+    pub const POLICY: GroupId = group_id(2);
+}
+
+/// Strictest override policy.
+pub(super) const ASK: &str = "ask";
+/// Loosest override policy.
+pub(super) const UNATTENDED: &str = "unattended";
+
+/// Strictness of a policy, which also ranks an explicit override among concurrent ones; zero
+/// for an unknown policy.
+pub(super) fn policy_rank(policy: &str) -> u8 {
+    match policy {
+        ASK => 2,
+        UNATTENDED => 1,
+        _ => 0,
+    }
+}
+
+/// Approval overrides, standing for the Chat grant and scratch overrides: the policy group is
+/// coupled with an inheriting (null) override ranked least strict, though the fallback it
+/// resolves to may be stricter than a concurrent explicit value. [`OverrideHook`] settles such
+/// a policy on the stricter resolved value.
+pub(super) const OVERRIDES: TableSpec = TableSpec {
+    id: OVERRIDES_TABLE,
+    name: "fixture_overrides",
+    key_column: "id",
+    groups: &[
+        CREATED,
+        GroupSpec {
+            id: override_group::FALLBACK,
+            name: "fallback",
+            kind: MergeKind::Register,
+            storage: GroupStorage::Columns(&[ColumnSpec {
+                name: "fallback",
+                ty: ColumnType::Text { max_chars: 20 },
+            }]),
+            references: &[],
+            surfaced: false,
+            recoverable: false,
+            bumps_revision: false,
+        },
+        GroupSpec {
+            id: override_group::POLICY,
+            name: "policy",
+            kind: MergeKind::Coupled,
+            storage: GroupStorage::Columns(&[ColumnSpec {
+                name: "policy",
+                ty: ColumnType::OptionalText { max_chars: 20 },
+            }]),
+            references: &[],
+            surfaced: false,
+            recoverable: false,
+            bumps_revision: false,
+        },
+    ],
+    adapter: Some(FIXTURE_ADAPTER),
+    holds_deletes: false,
+    ..MEMOS
+};
+
+/// `fixture_overrides`.
+pub(super) const OVERRIDES_TABLE: TableId = TableId(FIXTURE_TABLE_IDS + 17);
+
 /// Name of [`FixtureAdapter`].
 const FIXTURE_ADAPTER: &str = "fixture";
 
@@ -1162,21 +1233,35 @@ impl DomainAdapter for FixtureAdapter {
     }
 
     fn priority(&self, table: TableId, group: GroupId, value: &Value) -> u8 {
-        match (table, group, value.fields().get(1)) {
-            (BOARDS_TABLE, board_group::STATE, Some(Field::Integer(stage))) => {
-                u8::try_from(*stage).unwrap_or(0)
-            }
+        match (table, group) {
+            (BOARDS_TABLE, board_group::STATE) => match value.fields().get(1) {
+                Some(Field::Integer(stage)) => u8::try_from(*stage).unwrap_or(0),
+                _ => 0,
+            },
+            (OVERRIDES_TABLE, override_group::POLICY) => match value.fields().first() {
+                Some(Field::Text(policy)) => policy_rank(policy),
+                _ => 0,
+            },
             _ => 0,
         }
     }
 
-    fn validate(
-        &self,
-        _table: TableId,
-        _group: GroupId,
-        _value: &Value,
-    ) -> Result<(), AdapterError> {
-        Ok(())
+    fn validate(&self, table: TableId, group: GroupId, value: &Value) -> Result<(), AdapterError> {
+        let known = match (table, group, value.fields().first()) {
+            (OVERRIDES_TABLE, override_group::POLICY, Some(Field::Null)) => true,
+            (
+                OVERRIDES_TABLE,
+                override_group::POLICY | override_group::FALLBACK,
+                Some(Field::Text(policy)),
+            ) => policy_rank(policy) > 0,
+            (OVERRIDES_TABLE, override_group::POLICY | override_group::FALLBACK, _) => false,
+            _ => true,
+        };
+        if known {
+            Ok(())
+        } else {
+            Err(AdapterError("unknown policy"))
+        }
     }
 
     fn presentation(&self, _table: TableId, _values: &[(GroupId, Value)]) -> Presentation {
@@ -1301,12 +1386,78 @@ impl MaterializeHook for FixtureHook {
     }
 }
 
+/// Topic of the change notices [`OverrideHook`] reports.
+pub(super) const OVERRIDE_TOPIC: &str = "fixture_overrides";
+
+/// The override hook: settles concurrent policies on the strictest resolved one, where an
+/// inheriting policy resolves to the row's fallback, and reports each changed override.
+/// `replacement` settles with that fixed policy instead, for tests of refused values.
+#[derive(Debug, Default)]
+pub(super) struct OverrideHook {
+    pub(super) replacement: Option<&'static str>,
+}
+
+impl MaterializeHook for OverrideHook {
+    fn after_materialize<'a>(
+        &'a self,
+        _conn: &'a mut SqliteConnection,
+        _table: &'static TableSpec,
+        changed_keys: &'a [String],
+        changes: &'a mut dyn ChangeSink,
+    ) -> HookFuture<'a> {
+        Box::pin(async move {
+            for key in changed_keys {
+                changes.report(OVERRIDE_TOPIC, key.clone());
+            }
+            Ok(())
+        })
+    }
+
+    fn settled_groups(&self, _table: &'static TableSpec) -> &'static [GroupId] {
+        &[override_group::POLICY]
+    }
+
+    fn settle<'a>(
+        &'a self,
+        conn: &'a mut SqliteConnection,
+        _table: &'static TableSpec,
+        key: &'a str,
+        _group: GroupId,
+        versions: &'a [ConcurrentVersion],
+    ) -> SettleFuture<'a> {
+        Box::pin(async move {
+            let fallback: String =
+                sqlx::query_scalar("SELECT fallback FROM fixture_overrides WHERE id = ?")
+                    .bind(key)
+                    .fetch_one(&mut *conn)
+                    .await?;
+            let resolved = |version: &ConcurrentVersion| match version.value.fields().first() {
+                Some(Field::Text(policy)) => policy.clone(),
+                _ => fallback.clone(),
+            };
+            let Some(strictest) = versions
+                .iter()
+                .map(resolved)
+                .max_by_key(|policy| policy_rank(policy))
+            else {
+                return Ok(None);
+            };
+            let winner = versions.iter().find(|version| version.won).map(resolved);
+            if winner.is_some_and(|policy| policy_rank(&policy) >= policy_rank(&strictest)) {
+                return Ok(None);
+            }
+            let settled = self.replacement.map_or(strictest, str::to_string);
+            Ok(Some(Value::new(vec![Field::Text(settled)])?))
+        })
+    }
+}
+
 /// The fixture domain.
 pub(super) const FIXTURE_DOMAIN: DomainManifest = DomainManifest {
     name: "fixture",
     table_ids: TableIdRange {
         first: FIXTURE_TABLE_IDS,
-        last: FIXTURE_TABLE_IDS + 16,
+        last: FIXTURE_TABLE_IDS + 17,
     },
     tables: &[
         ITEMS,
@@ -1326,6 +1477,7 @@ pub(super) const FIXTURE_DOMAIN: DomainManifest = DomainManifest {
         LISTS,
         BOARDS,
         SCROLLS,
+        OVERRIDES,
     ],
     derived: &["fixture_items_index", "fixture_list_counts"],
     local: &[
@@ -1401,15 +1553,22 @@ pub(super) fn test_adapters() -> Adapters {
     vault_adapters().with(Box::new(FixtureAdapter))
 }
 
-/// An engine for [`TEST_MANIFEST`] with [`test_adapters`], the vault hooks, the Notes hooks, and
-/// [`FixtureHook`] on lists.
-pub(super) fn test_engine() -> Engine {
+/// An engine for [`TEST_MANIFEST`] with [`test_adapters`], the vault hooks, the Notes hooks,
+/// [`FixtureHook`] on lists, and `overrides` on overrides.
+pub(super) fn test_engine_with(overrides: OverrideHook) -> Engine {
     Engine::with(
         &TEST_MANIFEST,
         test_adapters(),
-        super::notes::with_notes_hooks(vault_hooks()).with(LISTS_TABLE, Box::new(FixtureHook)),
+        super::notes::with_notes_hooks(vault_hooks())
+            .with(LISTS_TABLE, Box::new(FixtureHook))
+            .with(OVERRIDES_TABLE, Box::new(overrides)),
     )
     .expect("the test manifest, adapters, and hooks should agree")
+}
+
+/// [`test_engine_with`] the default [`OverrideHook`].
+pub(super) fn test_engine() -> Engine {
+    test_engine_with(OverrideHook::default())
 }
 
 /// Schema of the fixture domain. `label_edits` has no default, so every insert must name it and
@@ -1563,6 +1722,12 @@ fn fixture_schema() -> String {
              ordinal INTEGER NOT NULL,
              body TEXT NOT NULL CHECK (length(body) <= {MAX_SCROLL_PAGE_CHARS}),
              PRIMARY KEY (scroll_id, ordinal)
+         );
+         CREATE TABLE fixture_overrides (
+             id TEXT PRIMARY KEY CHECK (trim(id) <> ''),
+             created_at TEXT NOT NULL,
+             fallback TEXT NOT NULL CHECK (length(fallback) <= 20),
+             policy TEXT CHECK (length(policy) <= 20)
          );
          CREATE TABLE fixture_items_index (
              item_id TEXT PRIMARY KEY,

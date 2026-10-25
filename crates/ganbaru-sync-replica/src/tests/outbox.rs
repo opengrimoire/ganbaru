@@ -418,7 +418,8 @@ fn a_restored_anchor_sees_its_lost_entries_and_hands_over_to_itself() {
             .await
             .expect("open backup");
         let mut conn = acquire(&restored).await;
-        // Authorization entries are not writer operations, so the writer chain still matches.
+        // Sequencing leaves the record's committed sequence behind the entries, so the backup's
+        // shorter chain still matches it; a successor writer would carry the record too.
         let WriterCheck::Ready(writer) = check(&engine, &mut conn, &ctx, &directory).await else {
             panic!("the restored database still holds the writer chain");
         };

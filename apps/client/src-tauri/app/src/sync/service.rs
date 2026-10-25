@@ -769,6 +769,21 @@ impl ServiceState {
             );
             return Ok(false);
         }
+        let head = session
+            .engine
+            .authorization(&mut conn, &session.ctx)
+            .await
+            .map_err(|error| format!("read sync authorization: {error}"))?
+            .map_or(0, |view| view.revision);
+        if head == 0 {
+            // A handover continues from an entry, so a log holding only its charter stays
+            // unsequenced while content keeps syncing; linking the devices again founds anew.
+            eprintln!(
+                "sync: the database was restored to its bare charter behind authorization \
+                 revision {recorded}; link the devices again to sequence authorization"
+            );
+            return Ok(false);
+        }
         let anchor = session.anchor_keys().await?;
         let revision = authority::seal_handover_here(
             &session.engine,

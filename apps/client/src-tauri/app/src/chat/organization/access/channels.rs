@@ -2,11 +2,11 @@
 
 use super::profiles::read_access_profile;
 use super::{
-    ChatAccessIssueCode, ChatAccessProfileId, ChatAccessValidationIssue, ChatChannelCapabilities,
-    ChatChannelId, ChatConversationId, ChatError, ChatErrorCode, ChatFolderGrantRead,
-    ChatHistoryBoundary, ChatParticipantId, ChatResult, ChatRuntimeApprovalPolicy,
-    ChatTeammateAccessRead, ChatTeammateChannelAccessInput, ChatTeammateChannelAccessRead,
-    ProjectWorkingFolderId,
+    ChatAccessIssueCode, ChatAccessProfileId, ChatAccessProfileRevisionId,
+    ChatAccessValidationIssue, ChatChannelCapabilities, ChatChannelId, ChatConversationId,
+    ChatError, ChatErrorCode, ChatFolderGrantRead, ChatHistoryBoundary, ChatParticipantId,
+    ChatResult, ChatRuntimeApprovalPolicy, ChatTeammateAccessRead, ChatTeammateChannelAccessInput,
+    ChatTeammateChannelAccessRead, ProjectWorkingFolderId,
 };
 use super::{ResolvedChannelAccess, history_boundary_is_expansion, issue};
 use crate::chat::channels::{identifier_error, optional_timestamp, persistence_error, u64_value};
@@ -37,7 +37,8 @@ pub(in crate::chat::organization) async fn read_teammate_access(
     let rows = sqlx::query(
         "SELECT channel.id AS channel_id, channel.project_id, project.group_id,
                 channel.conversation_id, channel.name AS channel_name,
-                ai.access_profile_id, profile_revision.revision AS access_profile_revision,
+                ai.access_profile_id, profile_revision.id AS access_profile_revision_id,
+                profile_revision.revision AS access_profile_revision,
                 profile_revision.default_read_history AS profile_read_history,
                 profile_revision.default_participate AS profile_participate,
                 profile_revision.default_history_boundary AS profile_history_boundary,
@@ -189,6 +190,11 @@ pub(in crate::chat::organization) async fn read_teammate_access(
                     .map_err(persistence_error)?,
             )
             .map_err(identifier_error)?,
+            access_profile_revision_id: ChatAccessProfileRevisionId::new(
+                row.try_get::<String, _>("access_profile_revision_id")
+                    .map_err(persistence_error)?,
+            )
+            .map_err(identifier_error)?,
             access_profile_revision: u64_value(
                 row.try_get("access_profile_revision")
                     .map_err(persistence_error)?,
@@ -326,7 +332,7 @@ pub(super) async fn resolve_channel_access(
                 continue;
             }
         };
-        if profile.latest_revision.revision != input.access_profile_revision {
+        if profile.latest_revision.id != input.access_profile_revision_id {
             return Err(ChatError::new(
                 ChatErrorCode::StaleRevision,
                 "An access profile changed before teammate access could be previewed",
@@ -471,6 +477,7 @@ pub(super) async fn resolve_channel_access(
             conversation_id,
             channel_name: channel_row.try_get("name").map_err(persistence_error)?,
             access_profile_id: input.access_profile_id.clone(),
+            access_profile_revision_id: profile.latest_revision.id.clone(),
             access_profile_revision: profile.latest_revision.revision,
             profile_maximum_folder_capability: profile.latest_revision.maximum_folder_capability,
             profile_default_channel_capabilities: profile
@@ -506,6 +513,7 @@ pub(super) fn proposed_access_read(
                 conversation_id: channel.conversation_id.clone(),
                 channel_name: channel.channel_name.clone(),
                 access_profile_id: channel.access_profile_id.clone(),
+                access_profile_revision_id: channel.access_profile_revision_id.clone(),
                 access_profile_revision: channel.access_profile_revision,
                 capabilities: channel.capabilities,
                 history_boundary: channel.history_boundary.clone(),

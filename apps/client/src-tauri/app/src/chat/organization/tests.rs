@@ -1180,3 +1180,90 @@ fn removing_a_teammate_from_a_channel_keeps_the_rows_and_hides_them_from_readers
         );
     });
 }
+
+/// Runs the save-time profile revision check for one channel draft made against `revision_id`.
+async fn check_draft_profile_revision(
+    pool: &SqlitePool,
+    revision_id: &str,
+) -> Result<(), ChatErrorCode> {
+    let draft = ChatTeammateChannelAccessInput {
+        channel_id: ChatChannelId::new("channel:draft").unwrap(),
+        access_profile_id: ChatAccessProfileId::new("access-profile:draft").unwrap(),
+        access_profile_revision_id: ChatAccessProfileRevisionId::new(revision_id).unwrap(),
+        capabilities: ChatChannelCapabilities {
+            read_history: true,
+            participate: true,
+        },
+        history_boundary: ChatHistoryBoundary::Entire,
+        runtime_approval_override: None,
+        scratch_runtime_approval_override: None,
+        folder_grants: Vec::new(),
+    };
+    let mut transaction = pool.begin().await.unwrap();
+    access::require_expected_profile_revisions_in_transaction(&mut transaction, &[draft])
+        .await
+        .map_err(|error| error.code)
+}
+
+#[test]
+fn saved_access_drafts_compare_effective_profile_revision_ids_not_numbers() {
+    tauri::async_runtime::block_on(async {
+        let pool = migrated_pool().await;
+        sqlx::raw_sql(
+            "INSERT INTO chat_access_profiles (id, display_name, created_at, updated_at)
+             VALUES ('access-profile:draft', 'Draft profile', '2026-10-24T09:00:00.000Z',
+                     '2026-10-24T09:00:00.000Z');
+             INSERT INTO chat_access_profile_revisions
+                (id, access_profile_id, default_read_history, default_participate,
+                 default_history_boundary, maximum_folder_capability, created_at)
+             VALUES ('revision:first', 'access-profile:draft', 1, 1, 'entire', 'edit',
+                     '2026-10-24T09:01:00.000Z'),
+                    ('revision:seen', 'access-profile:draft', 1, 1, 'entire', 'publish',
+                     '2026-10-24T09:03:00.000Z');
+             UPDATE chat_access_profiles
+             SET current_revision_id = 'revision:seen',
+                 current_maximum_folder_capability = 'publish'
+             WHERE id = 'access-profile:draft';",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            check_draft_profile_revision(&pool, "revision:seen").await,
+            Ok(())
+        );
+
+        // A synced revision created between the two shifts the numbers, so the stricter one the
+        // pointer now names carries number 2, the number the draft saw.
+        sqlx::raw_sql(
+            "INSERT INTO chat_access_profile_revisions
+                (id, access_profile_id, default_read_history, default_participate,
+                 default_history_boundary, maximum_folder_capability, created_at)
+             VALUES ('revision:synced', 'access-profile:draft', 1, 1, 'entire', 'read',
+                     '2026-10-24T09:02:00.000Z');
+             UPDATE chat_access_profiles
+             SET current_revision_id = 'revision:synced',
+                 current_maximum_folder_capability = 'read'
+             WHERE id = 'access-profile:draft';",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let synced_number: i64 = sqlx::query_scalar(
+            "SELECT revision FROM chat_access_profile_effective_revisions
+             WHERE access_profile_id = 'access-profile:draft'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(synced_number, 2);
+        assert_eq!(
+            check_draft_profile_revision(&pool, "revision:seen").await,
+            Err(ChatErrorCode::StaleRevision)
+        );
+        assert_eq!(
+            check_draft_profile_revision(&pool, "revision:synced").await,
+            Ok(())
+        );
+    });
+}

@@ -29,6 +29,7 @@ struct ResolvedChannelAccess {
     conversation_id: ChatConversationId,
     channel_name: String,
     access_profile_id: ChatAccessProfileId,
+    access_profile_revision_id: ChatAccessProfileRevisionId,
     access_profile_revision: u64,
     profile_default_channel_capabilities: ChatChannelCapabilities,
     profile_default_history_boundary: ChatHistoryBoundary,
@@ -558,7 +559,11 @@ async fn preview_teammate_access(
     })
 }
 
-async fn require_expected_profile_revisions_in_transaction(
+/// Refuses the save unless every channel's profile still has the effective revision the draft
+/// names. Revision ids are compared because display numbers follow creation order, so a synced
+/// revision created earlier can shift the numbers and give another revision the number the draft
+/// saw.
+pub(super) async fn require_expected_profile_revisions_in_transaction(
     transaction: &mut Transaction<'_, Sqlite>,
     channels: &[ChatTeammateChannelAccessInput],
 ) -> ChatResult<()> {
@@ -567,13 +572,13 @@ async fn require_expected_profile_revisions_in_transaction(
         .map(|channel| {
             (
                 channel.access_profile_id.as_str(),
-                channel.access_profile_revision,
+                channel.access_profile_revision_id.as_str(),
             )
         })
         .collect::<BTreeSet<_>>();
-    for (access_profile_id, expected_revision) in expected {
-        let latest_revision = sqlx::query_scalar::<_, i64>(
-            "SELECT revision.revision
+    for (access_profile_id, expected_revision_id) in expected {
+        let effective_revision_id = sqlx::query_scalar::<_, String>(
+            "SELECT revision.id
              FROM chat_access_profiles profile
              JOIN chat_access_profile_effective_revisions revision
                ON revision.access_profile_id = profile.id
@@ -583,14 +588,14 @@ async fn require_expected_profile_revisions_in_transaction(
         .fetch_optional(&mut **transaction)
         .await
         .map_err(persistence_error)?;
-        let Some(latest_revision) = latest_revision else {
+        let Some(effective_revision_id) = effective_revision_id else {
             return Err(ChatError::new(
                 ChatErrorCode::StaleRevision,
                 "An access profile became unavailable before teammate access could be saved",
                 true,
             ));
         };
-        if u64_value(latest_revision)? != expected_revision {
+        if effective_revision_id != expected_revision_id {
             return Err(ChatError::new(
                 ChatErrorCode::StaleRevision,
                 "An access profile changed before teammate access could be saved",

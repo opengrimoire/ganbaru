@@ -13,7 +13,11 @@ This folder lets a new orchestrating agent, on another machine with no earlier c
 > - You have full autonomy in making decisions after assessing them properly as a Rust senior developer would.
 > Done when every step except physical acceptance is complete in Progress, validate passes on feat/sync, and you list the pending physical acceptance checklists for me.
 
-The user pushed `feat/sync` and the in-flight branches once, for this handoff only. Do not push again or open PRs unless the user asks.
+The goal prompt of the new session sets the push and commit signing policies and overrides the "Don't push" line above. Relay the signing policy into every sub-agent prompt, since `implementer-brief.md` defers to it. Never open PRs or push to `dev` or `main`.
+
+Paths: `<REPO>` in these files is the repository root and `<SCRATCHPAD>` is your session scratch directory. Worktree paths, agent ids, and old heads named in `briefs/` belong to the previous machine; when you reuse a brief, name the new worktree and head.
+
+Out of scope: the multi-person sharing goal. Its plans (`goal/sharing/`) are not in the repository, so links to them from these plans do not resolve, and the README item about writing its first plan is not part of this goal.
 
 ## User decisions already taken
 
@@ -24,7 +28,7 @@ The user pushed `feat/sync` and the in-flight branches once, for this handoff on
 - Sub-agents may edit when their tasks do not conflict.
 - Always pass `model` and `effort: medium` to sub-agents: Opus for data-safety work and every review, Sonnet for exploration and ordinary edits, Haiku for mechanical tasks.
 - Anything in the Cargo target directories may be deleted.
-- Commit every finished phase or fix without asking (signed, conventional, one line, scoped, no AI attribution). Never amend, rebase, or rewrite history: other machines pull fast-forward only.
+- Commit every finished phase or fix without asking (conventional, one line, scoped, no AI attribution). Never amend, rebase, or rewrite history: other machines pull fast-forward only.
 - Approvals inside the goal are delegated to the orchestrator; ask the user only for destructive, credential, security-protection, or dependency decisions as AGENTS.md and the user's global rules require.
 
 ## Binding rules (short list; AGENTS.md is authoritative)
@@ -79,7 +83,7 @@ Version conflict: the Notes and Chat branches both use manifest 14. Whichever la
 - Every Cargo, Vitest, or pnpm check ran under one lock so two agents never built at once: `exec 9>$HOME/.cache/ganbaru-checks.lock; flock 9; <command>`, in the background with a long timeout. That host had 7.6 GiB of memory; set `GANBARU_VALIDATE_PROFILE=low-memory` if yours is small.
 - Target dirs per track under `$HOME/.cache/ganbaru-targets/`: `engine`, `domain`, `chat`, `review`, and `android-<checkout folder>`.
 - Android: `cargo check --target aarch64-linux-android` only, no APK builds. The env script (`~/Android/android-check-env.sh` on the old host) set `JAVA_HOME` (OpenJDK 21), `ANDROID_HOME`, `NDK_HOME` (NDK 30.0.15729638), the `aarch64-linux-android29-clang` compiler, linker, and `llvm-ar` variables, and a per-checkout `CARGO_TARGET_DIR`. The check command and its baseline warnings are in `implementer-brief.md`. Without the toolchain, record the Android check as not run.
-- Commits must be SSH-signed with the user's configured key; if signing fails, stop and report.
+- On the old host commits were SSH-signed with the user's key. Elsewhere, follow the signing policy in the goal prompt; without one, an unsigned commit means stop and report.
 
 ## Files here
 

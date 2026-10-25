@@ -44,7 +44,7 @@ Re-import identity:
 
 - Within one file, duplicate master `VEVENT`s with the same `UID` resolve to the highest `SEQUENCE`, then the newest `LAST-MODIFIED`, `DTSTAMP`, or `CREATED`.
 - Against stored rows, import matches `calendar_id` plus `source_uid`. A lower incoming `SEQUENCE` is skipped; an equal or higher one updates the row.
-- An update writes only what differs from the stored rows: a child row whose content matches a stored row keeps that row and its id, and an event whose fields and children all match is not written, so re-importing an unchanged file changes nothing and leaves concurrent edits from other devices intact.
+- An update writes only what differs from the stored rows: a child row whose content matches a stored row keeps that row and its id, and an event whose fields and children all match is not written, so re-importing a file whose events match the stored rows changes nothing. Where stored rows differ, the file wins, including over edits from other devices that have already arrived; edits that arrive after the import merge as usual.
 - Preservation objects are replaced by calendar, `source_kind`, and source name only when the import contains no older event revision and the source differs from the stored objects. A replacement relinks every row of that source to the new components, so a changed file still rewrites its link columns.
 - Overrides stay children of their selected master. Component type and `RECURRENCE-ID` are not independent upsert keys, and `source_fingerprint` is provenance, not an upsert key. A broader key (source, component type, `UID`, recurrence identity, sequence) may be needed if non-event components gain independent projections.
 

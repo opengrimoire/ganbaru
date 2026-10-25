@@ -2,10 +2,9 @@
 //! surface one conflict everywhere, one file imported on two replicas keeps one event per UID,
 //! duplicate repair moves Focus runs to the surviving event while the duplicate's task links
 //! stay hidden and its Music assignments keep its id, a re-import after removal keeps the new
-//! event, an unchanged re-import keeps a row another
-//! replica added, removals that missed a concurrent add or edit
-//! are offered for recovery, a deletion undone inside its hold publishes neither the event
-//! tombstone nor its archive, and an expired hold publishes the archive once.
+//! event, an unchanged re-import keeps a row another replica added, removals that missed a
+//! concurrent add or edit are offered for recovery, a deletion undone inside its hold publishes
+//! neither the event tombstone nor its archive, and an expired hold publishes the archive once.
 
 use ganbaru_sync_contracts::TableId;
 use sqlx::Connection;

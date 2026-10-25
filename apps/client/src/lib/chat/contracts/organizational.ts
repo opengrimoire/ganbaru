@@ -162,6 +162,7 @@ export interface ChatTeammateChannelAccess {
   groupId: string;
   channelName: string;
   accessProfileId: ChatAccessProfileId;
+  accessProfileRevisionId: ChatAccessProfileRevisionId;
   accessProfileRevision: number;
   capabilities: ChatChannelCapabilities;
   historyBoundary: ChatHistoryBoundary;
@@ -182,7 +183,8 @@ export interface ChatTeammateAccessRead {
 export interface ChatTeammateChannelAccessInput {
   channelId: ChatChannelId;
   accessProfileId: ChatAccessProfileId;
-  accessProfileRevision: number;
+  /** Effective profile revision the draft was made against; saving refuses any other. */
+  accessProfileRevisionId: ChatAccessProfileRevisionId;
   capabilities: ChatChannelCapabilities;
   historyBoundary: ChatHistoryBoundary;
   runtimeApprovalOverride: ChatRuntimeApprovalPolicy | null;

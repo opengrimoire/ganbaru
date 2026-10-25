@@ -128,27 +128,85 @@ const NUMBERED_POLICY_REVISION: &str = "INSERT INTO chat_teammate_policy_revisio
     (id, teammate_id, revision, provider_instance_id, model_selection_data, created_at)
 VALUES ('policy-1', 'participant-teammate', 1, 'codex-personal', '{}', '2026-10-23T00:00:00.000Z');";
 
+/// Creates the default channel of `project-routine-learning` with its owner membership, as
+/// Chat does on first use, since fresh vaults seed no conversations. Returns the conversation
+/// and channel ids.
+pub(super) async fn insert_default_channel(pool: &SqlitePool) -> (String, String) {
+    sqlx::raw_sql(
+        "INSERT INTO chat_conversations
+            (id, project_id, conversation_kind, last_activity_at, created_at, updated_at)
+         VALUES ('conversation-default-learning', 'project-routine-learning', 'channel',
+                 '2026-10-23T00:00:00.000Z', '2026-10-23T00:00:00.000Z',
+                 '2026-10-23T00:00:00.000Z');
+         INSERT INTO chat_channels
+            (id, project_id, conversation_id, name, is_default, created_at, updated_at)
+         VALUES ('channel-default-learning', 'project-routine-learning',
+                 'conversation-default-learning', 'general', 1, '2026-10-23T00:00:00.000Z',
+                 '2026-10-23T00:00:00.000Z');
+         INSERT INTO chat_conversation_memberships
+            (conversation_id, participant_id, sync_key, membership_role, created_at, updated_at)
+         VALUES ('conversation-default-learning', 'participant:local-owner',
+                 'membership-default-learning-owner', 'owner', '2026-10-23T00:00:00.000Z',
+                 '2026-10-23T00:00:00.000Z');",
+    )
+    .execute(pool)
+    .await
+    .unwrap();
+    (
+        "conversation-default-learning".to_owned(),
+        "channel-default-learning".to_owned(),
+    )
+}
+
+/// Whether `table` in the schema of `pool` has `column`.
+async fn has_column(pool: &SqlitePool, table: &str, column: &str) -> bool {
+    sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pragma_table_info(?) WHERE name = ?)")
+        .bind(table)
+        .bind(column)
+        .fetch_one(pool)
+        .await
+        .unwrap()
+}
+
+/// Fragments of the graph's membership and grant inserts that name their `sync_key`, removed
+/// for schemas before Chat conversations replication, which have no such column.
+const SYNC_KEY_FRAGMENTS: [&str; 8] = [
+    ", sync_key, membership_role",
+    ", sync_key, access_profile_id",
+    ", sync_key, capability",
+    "'membership-owner', ",
+    "'membership-teammate', ",
+    "'channel-membership-teammate',\n        ",
+    "'grant-managed', ",
+    "'grant-archived', ",
+];
+
 /// Loads the project and Chat graph in the shape the schema of `pool` stores, so upgrade tests
-/// that stop before Chat identity replication share the graph with current schema tests.
+/// that stop before Chat identity or conversations replication share the graph with current
+/// schema tests.
 pub(super) async fn load_project_chat_graph(pool: &SqlitePool) {
     assert!(
         PROJECT_CHAT_GRAPH.contains(POLICY_REVISION),
         "the graph inserts its policy revision in the current shape"
     );
-    let numbered: bool = sqlx::query_scalar(
-        "SELECT EXISTS(
-           SELECT 1 FROM pragma_table_info('chat_teammate_policy_revisions')
-           WHERE name = 'revision'
-         )",
-    )
-    .fetch_one(pool)
-    .await
-    .unwrap();
-    let graph = if numbered {
+    let numbered = has_column(pool, "chat_teammate_policy_revisions", "revision").await;
+    let keyed = has_column(pool, "chat_conversation_memberships", "sync_key").await;
+    let mut graph = if numbered {
         PROJECT_CHAT_GRAPH.replace(POLICY_REVISION, NUMBERED_POLICY_REVISION)
     } else {
         PROJECT_CHAT_GRAPH.to_string()
     };
+    if !keyed {
+        for fragment in SYNC_KEY_FRAGMENTS {
+            let keyless = match fragment.strip_prefix(", sync_key") {
+                Some(rest) => rest.to_string(),
+                None => String::new(),
+            };
+            let replaced = graph.replace(fragment, &keyless);
+            assert_ne!(replaced, graph, "the graph names {fragment:?}");
+            graph = replaced;
+        }
+    }
     sqlx::raw_sql(sqlx::AssertSqlSafe(graph))
         .execute(pool)
         .await

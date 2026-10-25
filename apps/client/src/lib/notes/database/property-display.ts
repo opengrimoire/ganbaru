@@ -4,6 +4,7 @@ import { formatDateTime, formatList, formatNumber } from "$lib/i18n/formatters";
 import type { NotesDataSourceNumberFormat, NotesPage } from "$lib/notes/types";
 import { notesDatabaseDateBoundaryOrder, notesDatabaseIsDateBoundaryValid, notesDatabaseDateValue, notesDatabaseIsTimeZoneValid, type NotesDatabaseDateValue } from "./date";
 import { notesDatabaseTableCellText, type NotesDatabaseTableColumn } from "./table";
+import { notesDatabaseMatchingPayload } from "./table";
 
 export type NotesDatabaseDateFormat = "locale" | "iso" | "relative";
 export type NotesDatabaseTimeFormat = "locale" | "12_hour" | "24_hour" | "hidden";
@@ -34,8 +35,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 /** Obtain the canonical property payload by its stable identity and type. */
 export function notesDatabasePropertyPayload(row: NotesPage, column: NotesDatabaseTableColumn): unknown {
-  const property = Object.values(row.properties).find((value) => isRecord(value) && value.id === column.id && value.type === column.type);
-  return isRecord(property) ? property[column.type] : null;
+  return notesDatabaseMatchingPayload(row, column);
 }
 
 /** Read safe file labels and usable URLs while retaining non-linkable files in display. */

@@ -1,6 +1,6 @@
 # Focus authority and evidence
 
-**Status: Partial.** A native owner on desktop and Android drives admission, transactional execution, adaptive decisions, recovery, and accepted-phase publication. Physical platform acceptance remains open. Linked-device ownership, remote commands, and live companion status are planned.
+**Status: Partial.** A native owner on desktop and Android drives admission, transactional execution, adaptive decisions, recovery, and accepted-phase publication. Physical platform acceptance remains open. Each linked device runs its own sessions, and closed runs and device activity replicate. Live companion status is planned.
 
 ## Independent facts
 
@@ -57,20 +57,7 @@ Idle failure is measured from the first committed visibility acknowledgement of 
 
 ## Linked devices
 
-Each linked device runs its own native owner and writes only its own runs, so Focus works on replicas as well as the owner. A run replicates once closed, and the device activity row is rewritten in the same transaction as each start, phase change, pause, resume, and stop, never on heartbeat. A running row expires 10 minutes after its planned phase end and a paused row 30 minutes after the pause began, so a device that goes silent stops blocking admission elsewhere. Expiry is compared with the reading device's clock, so clock skew between devices shortens or lengthens that window. Activity is advisory: it never counts as activity evidence for this device.
-
-## Planned: device controller ownership
-
-A linked vault will have one explicitly selected focus controller, defaulting to the pairing desktop. This is separate from coordination among windows on one device. Disconnection never elects a replacement; the current controller may continue offline. An unlinked phone supports explicit local sessions.
-
-A live handoff must:
-
-1. Commit final state and fence further execution under the old ownership epoch.
-2. Issue a transfer identifying the recipient and checkpoint.
-3. Persist the transfer on the recipient before it executes.
-4. Retry the same transfer after lost acknowledgements without reactivating the old controller.
-
-Lost-device recovery creates a new generation. Records recovered from the old generation remain historical evidence and receive overlap review. Remote commands require command ID, ownership epoch, expected run revision, and expiry. Only an acknowledged committed result is success; expired commands cannot run after reconnection. Replication must never cause native execution.
+Each linked device runs its own native owner and writes only its own runs, so Focus works on replicas as well as the owner. A run replicates once closed, and the device activity row is rewritten in the same transaction as each start, phase change, pause, resume, and stop, never on heartbeat. A running row expires 10 minutes after its planned phase end and a paused row 30 minutes after the pause began, so a device that goes silent stops blocking admission elsewhere. Expiry is compared with the reading device's clock, so clock skew between devices shortens or lengthens that window. Activity is advisory: it never counts as activity evidence for this device. There is no controller ownership and no remote control: a device never starts, stops, or retargets another device's run, and replication never causes native execution.
 
 ## Planned: companion freshness
 

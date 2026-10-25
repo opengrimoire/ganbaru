@@ -10,6 +10,8 @@ History retention can be off or use a supported day window, with 30 days as the 
 
 Shortening retention or turning it off previews the number of versions and reclaimable bytes before confirmation. Turning history off stops new page snapshots and project checkpoints for that scope and prunes according to the confirmed policy.
 
+Page and project versions saved in an older Notes storage format stay listed until retention removes them, but they cannot be opened or restored.
+
 ## Page history
 
 Mutations to page details, placement, lifecycle, child links, or blocks record a deduplicated pre-change snapshot when history is enabled. Rapid editor writes coalesce into a meaningful editing checkpoint rather than one version per debounced save.

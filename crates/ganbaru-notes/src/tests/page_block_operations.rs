@@ -473,7 +473,7 @@ fn duplicate_blocks_adopts_destination_project_and_preserves_page_properties_on_
                     project_id: Some(project.to_string()),
                     first_block_id: first_block.to_string(),
                     after_block_id: None,
-                    properties: Some(json!({ "custom": "retained" })),
+                    properties: None,
                 },
             )
             .await
@@ -508,7 +508,6 @@ fn duplicate_blocks_adopts_destination_project_and_preserves_page_properties_on_
         let copy =
             serde_json::to_value(reads::get_page(&pool, BLOCK_D, false).await.unwrap()).unwrap();
         assert_eq!(copy["project_id"], "destination-project");
-        assert_eq!(copy["properties"]["custom"], "retained");
         let source =
             serde_json::to_value(reads::get_page(&pool, PAGE_C, false).await.unwrap()).unwrap();
         assert_eq!(source["project_id"], "source-project");

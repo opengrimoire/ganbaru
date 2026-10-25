@@ -1,4 +1,5 @@
 use super::*;
+use ganbaru_sync_contracts::bounds::MAX_ROW_KEY_BYTES;
 use sqlx::Row;
 
 fn state(phase: &str) -> DistractionsRuntimeState {
@@ -295,10 +296,22 @@ fn spooled(id: &str, run_id: Option<&str>) -> super::SpooledBlockEvent {
 #[test]
 fn spooled_block_events_reject_values_the_vault_would_refuse() {
     assert!(super::validate_spooled_block_event(&spooled("block-1", Some("run-1"))).is_ok());
-    let cases: [fn(&mut super::SpooledBlockEvent); 9] = [
+    let cases: [fn(&mut super::SpooledBlockEvent); 16] = [
         |event| event.id = " ".to_string(),
         |event| event.id = "x".repeat(MAX_ROW_KEY_BYTES + 1),
+        |event| event.id = "block\0one".to_string(),
+        |event| event.run_id = Some("run\0one".to_string()),
+        |event| event.run_id = Some(" ".to_string()),
+        |event| {
+            event.occurred_at = format!(
+                "2026-06-10T12:00:00.{}Z",
+                "0".repeat(ganbaru_sync::manifest::MAX_TIMESTAMP_BYTES)
+            )
+        },
         |event| event.occurred_at = "yesterday".to_string(),
+        |event| event.source_key = "you\0tube.com".to_string(),
+        |event| event.display_name = Some("You\0Tube".to_string()),
+        |event| event.rule_label = Some("Video\0".to_string()),
         |event| event.source_type = "website".to_string(),
         |event| event.source_key = "youtube.com/watch".to_string(),
         |event| event.source_key = "YouTube.com".to_string(),

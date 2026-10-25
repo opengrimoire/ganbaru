@@ -158,6 +158,11 @@ pub(crate) fn change(engine: &Engine, change: &Change) -> Result<(), Invalid> {
     if let Some(derived) = table.derived_key.filter(|_| writes_every_group) {
         derived_row_key(table, derived, change)?;
     }
+    if writes_every_group && let Some(adapter) = engine.adapter(table) {
+        adapter
+            .validate_row(table.id, &change.groups)
+            .map_err(|error| error.0)?;
+    }
     Ok(())
 }
 

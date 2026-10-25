@@ -17,15 +17,15 @@ pub struct PropertySearchEntry {
 pub async fn property_search_entries(
     pool: &SqlitePool,
 ) -> Result<Vec<PropertySearchEntry>, String> {
-    let data_sources = sqlx::query_as::<_, PropertySearchDataSourceRow>(
-        "SELECT data_source.id,
-            data_source.properties,
-            data_source.last_edited_time
+    let data_sources = sqlx::query_as::<_, PropertySearchDataSourceRow>(concat!(
+        "SELECT data_source.id, ",
+        crate::note_data_source_properties_json!("data_source"),
+        " AS properties, data_source.last_edited_time
          FROM notes_data_sources AS data_source
          JOIN notes_databases AS database ON database.id = data_source.database_id
          WHERE data_source.in_trash = 0
-           AND database.in_trash = 0",
-    )
+           AND database.in_trash = 0"
+    ))
     .fetch_all(pool)
     .await
     .map_err(|e| format!("load notes data sources for property search: {e}"))?;

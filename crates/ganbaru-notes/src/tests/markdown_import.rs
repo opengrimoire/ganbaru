@@ -403,3 +403,53 @@ fn split_import_blocks_keep_text_before_children_and_give_continuations_neutral_
         .collect();
     assert_eq!(joined, long);
 }
+
+#[test]
+fn split_callouts_keep_their_icon_and_split_buttons_continue_as_paragraphs() {
+    use crate::transfers::import_writer::{ImportBlock, split_oversized_import_blocks};
+    let long = "word ".repeat(crate::block_storage::MAX_BLOCK_TEXT_BYTES / 3);
+    let mut callout = writes::default_text_payload(&long);
+    callout["icon"] = serde_json::json!({ "type": "emoji", "emoji": "💡" });
+    let mut button = button_payload("");
+    button["rich_text"] = writes::default_text_payload(&long)["rich_text"].clone();
+    let blocks = vec![
+        ImportBlock::new("callout", callout.clone(), None, Vec::new()),
+        ImportBlock::new("button", button.clone(), None, Vec::new()),
+    ];
+
+    let split = split_oversized_import_blocks(blocks).unwrap();
+
+    let callouts: Vec<_> = split
+        .iter()
+        .filter(|block| block.block_type == "callout")
+        .collect();
+    assert!(callouts.len() > 1, "callout split into {}", callouts.len());
+    for part in callouts {
+        crate::validation::validate_block_payload("callout", &part.payload).unwrap();
+        assert_eq!(part.payload["icon"], callout["icon"]);
+    }
+    // Only the first part of a split button stays actionable; the rest of its label continues as
+    // paragraphs.
+    let button_start = split
+        .iter()
+        .position(|block| block.block_type == "button")
+        .unwrap();
+    assert_eq!(
+        split
+            .iter()
+            .filter(|block| block.block_type == "button")
+            .count(),
+        1
+    );
+    let first = &split[button_start];
+    crate::validation::validate_block_payload("button", &first.payload).unwrap();
+    assert_eq!(first.payload["icon"], button["icon"]);
+    assert_eq!(first.payload["actions"], button["actions"]);
+    let continuations = &split[button_start + 1..];
+    assert!(!continuations.is_empty());
+    for part in continuations {
+        assert_eq!(part.block_type, "paragraph");
+        assert!(part.payload.get("actions").is_none());
+        crate::validation::validate_block_payload("paragraph", &part.payload).unwrap();
+    }
+}

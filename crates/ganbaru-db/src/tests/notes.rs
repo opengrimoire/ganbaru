@@ -9,7 +9,8 @@ fn schema_creates_normalized_notes_database_tables() {
             "notes_databases",
             "notes_data_sources",
             "notes_database_views",
-            "notes_data_source_relation_links",
+            "notes_relation_edges",
+            "notes_page_property_values",
             "notes_data_source_rollup_cache",
             "notes_data_source_templates",
             "notes_data_source_template_blocks",
@@ -24,8 +25,8 @@ fn schema_creates_normalized_notes_database_tables() {
         }
 
         sqlx::query(
-            "INSERT INTO notes_pages (id, parent_type, title, properties)
-             VALUES ('page-a', 'workspace', 'Inbox', '{}')",
+            "INSERT INTO notes_pages (id, parent_type, title)
+             VALUES ('page-a', 'workspace', 'Inbox')",
         )
         .execute(&pool)
         .await
@@ -58,13 +59,14 @@ fn schema_creates_normalized_notes_database_tables() {
         sqlx::query(
             "INSERT INTO notes_databases (
                 id,
+                block_id,
                 parent_type,
                 parent_page_id,
                 title,
                 title_rich_text,
                 description
              )
-             VALUES ('database-a', 'page_id', 'page-a', 'Tasks', '[]', '[]')",
+             VALUES ('database-a', 'database-a', 'page_id', 'page-a', 'Tasks', '[]', '[]')",
         )
         .execute(&pool)
         .await
@@ -75,10 +77,9 @@ fn schema_creates_normalized_notes_database_tables() {
                 database_id,
                 title,
                 title_rich_text,
-                description,
-                properties
+                description
              )
-             VALUES ('source-a', 'database-a', 'Tasks', '[]', '[]', '{}')",
+             VALUES ('source-a', 'database-a', 'Tasks', '[]', '[]')",
         )
         .execute(&pool)
         .await
@@ -317,8 +318,8 @@ fn schema_creates_notes_comment_reactions_and_notification_preferences() {
                 .await
                 .unwrap();
         for statement in [
-            "INSERT INTO notes_pages (id, parent_type, title, properties)
-             VALUES ('page-a', 'workspace', 'Inbox', '{}')",
+            "INSERT INTO notes_pages (id, parent_type, title)
+             VALUES ('page-a', 'workspace', 'Inbox')",
             "INSERT INTO notes_comment_threads (id, page_id, parent_type, parent_page_id)
              VALUES ('thread-a', 'page-a', 'page_id', 'page-a')",
             "INSERT INTO notes_comments (id, thread_id, rich_text, created_by)
@@ -457,8 +458,8 @@ fn schema_creates_notes_mention_notifications() {
         assert_eq!(page_fk, Some(1));
 
         sqlx::query(
-            "INSERT INTO notes_pages (id, parent_type, title, properties)
-             VALUES ('page-a', 'workspace', 'Inbox', '{}')",
+            "INSERT INTO notes_pages (id, parent_type, title)
+             VALUES ('page-a', 'workspace', 'Inbox')",
         )
         .execute(&pool)
         .await
@@ -602,8 +603,8 @@ fn schema_creates_notes_suggestions() {
         }
 
         sqlx::query(
-            "INSERT INTO notes_pages (id, parent_type, title, properties)
-             VALUES ('page-a', 'workspace', 'Inbox', '{}')",
+            "INSERT INTO notes_pages (id, parent_type, title)
+             VALUES ('page-a', 'workspace', 'Inbox')",
         )
         .execute(&pool)
         .await
@@ -1452,16 +1453,16 @@ fn notes_block_types_accept_six_heading_levels_in_blocks_and_templates() {
     super::block_on(async {
         let pool = migrated_memory_pool().await;
         sqlx::raw_sql(
-            "INSERT INTO notes_pages (id, parent_type, title, properties) VALUES ('page', 'workspace', 'Headings', '{}');
+            "INSERT INTO notes_pages (id, parent_type, title) VALUES ('page', 'workspace', 'Headings');
              INSERT INTO notes_blocks (id, page_id, parent_type, parent_page_id, type, attrs, order_key)
                VALUES ('parent', 'page', 'page_id', 'page', 'heading_4', '{\"is_toggleable\":true}', 'a0');
              INSERT INTO notes_blocks (id, page_id, parent_type, parent_block_id, type, text, order_key)
                VALUES ('child', 'page', 'block_id', 'parent', 'paragraph', '{\"rich_text\":[]}', 'a0');
              INSERT INTO notes_page_templates (id, name) VALUES ('template', 'Headings');
-             INSERT INTO notes_page_template_blocks (template_id, id, parent_type, type, payload, has_children)
-               VALUES ('template', 'parent', 'template', 'heading_4', '{\"rich_text\":[],\"is_toggleable\":true}', 1);
-             INSERT INTO notes_page_template_blocks (template_id, id, parent_type, parent_block_id, type, payload)
-               VALUES ('template', 'child', 'block_id', 'parent', 'paragraph', '{\"rich_text\":[]}');",
+             INSERT INTO notes_page_template_blocks (template_id, id, ordinal, parent_type, type, payload, has_children)
+               VALUES ('template', 'parent', 0, 'template', 'heading_4', '{\"rich_text\":[],\"is_toggleable\":true}', 1);
+             INSERT INTO notes_page_template_blocks (template_id, id, ordinal, parent_type, parent_block_id, type, payload)
+               VALUES ('template', 'child', 1, 'block_id', 'parent', 'paragraph', '{\"rich_text\":[]}');",
         ).execute(&pool).await.unwrap();
         for table in ["notes_blocks", "notes_page_template_blocks"] {
             for heading in ["heading_5", "heading_6"] {
@@ -1520,6 +1521,9 @@ type MigratedFixtureBlock = (
 /// Last migration before the Notes structure preparation.
 const BEFORE_NOTES_SYNC_STRUCTURE: i64 = 20261024045821;
 
+/// The Notes structure preparation migration.
+pub(super) const NOTES_SYNC_STRUCTURE: i64 = 20261024075934;
+
 /// Every block type the Notes schema accepts.
 const FIXTURE_BLOCK_TYPES: [&str; 37] = [
     "paragraph",
@@ -1562,7 +1566,7 @@ const FIXTURE_BLOCK_TYPES: [&str; 37] = [
 ];
 
 /// Page property values of every Notes property type.
-fn fixture_page_properties() -> serde_json::Value {
+pub(super) fn fixture_page_properties() -> serde_json::Value {
     serde_json::json!({
         "title": { "type": "title", "title": [{ "type": "text", "text": { "content": "Fixture" }, "plain_text": "Fixture" }] },
         "Notes": { "type": "rich_text", "rich_text": [{ "type": "text", "text": { "content": "Body" }, "plain_text": "Body" }] },
@@ -1663,20 +1667,23 @@ fn notes_sync_structure_migration_keeps_every_block_and_property_type() {
         .execute(&pool)
         .await
         .unwrap();
-        // `block-13` is the fixture's child_page block; `orphan` names no block.
+        // `block-13` is the fixture's child_page block; `orphan` names no block. The nested page
+        // carries a stale project property, which the migration must not keep in the column.
         sqlx::raw_sql(
-            "INSERT INTO notes_pages (id, parent_type, parent_page_id, title)
-             VALUES ('block-13', 'page_id', 'page', 'Nested'),
-                    ('orphan', 'page_id', 'page', 'Orphan');",
+            "INSERT INTO notes_pages (id, parent_type, parent_page_id, title, properties)
+             VALUES ('block-13', 'page_id', 'page', 'Nested', '{\"__ganbaru_project_id\":\"project\"}'),
+                    ('orphan', 'page_id', 'page', 'Orphan', '{}');",
         )
         .execute(&pool)
         .await
         .unwrap();
 
-        crate::run_migrations(&pool).await.unwrap();
+        super::helpers::migrate_through(&pool, NOTES_SYNC_STRUCTURE)
+            .await
+            .unwrap();
 
-        let placements: Vec<(String, String, Option<String>)> = sqlx::query_as(
-            "SELECT id, parent_type, child_block_id FROM notes_pages
+        let placements: Vec<(String, String, Option<String>, Option<String>)> = sqlx::query_as(
+            "SELECT id, parent_type, child_block_id, project_id FROM notes_pages
              WHERE id IN ('block-13', 'orphan') ORDER BY id",
         )
         .fetch_all(&pool)
@@ -1688,9 +1695,10 @@ fn notes_sync_structure_migration_keeps_every_block_and_property_type() {
                 (
                     "block-13".to_string(),
                     "page_id".to_string(),
-                    Some("block-13".to_string())
+                    Some("block-13".to_string()),
+                    None
                 ),
-                ("orphan".to_string(), "workspace".to_string(), None),
+                ("orphan".to_string(), "workspace".to_string(), None, None),
             ]
         );
 
@@ -1810,7 +1818,9 @@ fn notes_sync_structure_migration_merges_duplicate_assets_into_the_available_row
         .await
         .unwrap();
 
-        crate::run_migrations(&pool).await.unwrap();
+        super::helpers::migrate_through(&pool, NOTES_SYNC_STRUCTURE)
+            .await
+            .unwrap();
 
         let merged_id = format!("notes/files:{sha256}");
         let assets: Vec<(String, String, String, Option<String>)> =
@@ -1882,7 +1892,7 @@ fn fresh_vault_notes_blocks_store_split_content_and_order_keys() {
         assert_eq!(notes_triggers, 0);
 
         sqlx::raw_sql(
-            "INSERT INTO notes_pages (id, parent_type, title, properties) VALUES ('page', 'workspace', 'P', '{}');
+            "INSERT INTO notes_pages (id, parent_type, title) VALUES ('page', 'workspace', 'P');
              INSERT INTO notes_blocks (id, page_id, parent_type, parent_page_id, type, order_key)
                VALUES ('block', 'page', 'page_id', 'page', 'toggle', 'a0');",
         )

@@ -7,7 +7,7 @@
   import SkipBack from "@lucide/svelte/icons/skip-back";
   import SkipForward from "@lucide/svelte/icons/skip-forward";
   import { onMount } from "svelte";
-  import { readFocusDeviceActivity } from "$lib/api/focus";
+  import { readFocusDeviceActivity } from "$lib/api/focus-device-activity";
   import { listenSyncApplied } from "$lib/api/sync";
   import Loading from "$lib/components/ui/Loading.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";

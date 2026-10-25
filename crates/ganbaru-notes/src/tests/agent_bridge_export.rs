@@ -280,6 +280,68 @@ async fn seed_project_context(pool: &SqlitePool) {
     .unwrap();
 }
 
+#[test]
+fn agent_bridge_export_with_descendants_includes_nested_pages_at_every_depth() {
+    crate::test_block_on(async {
+        let pool = migrated_memory_pool().await;
+        create_page(&pool, PAGE_A, BLOCK_A).await;
+        for (id, title, parent, first_block, after) in [
+            (
+                PAGE_B,
+                "Nested child",
+                page_parent(PAGE_A),
+                BLOCK_B,
+                Some(BLOCK_A),
+            ),
+            (
+                PAGE_C,
+                "Grandchild in a block",
+                block_parent(BLOCK_B),
+                BLOCK_C,
+                None,
+            ),
+        ] {
+            writes::create_page(
+                &pool,
+                NotePageCreate {
+                    id: id.to_string(),
+                    title: title.to_string(),
+                    parent,
+                    folder_id: None,
+                    project_id: None,
+                    first_block_id: first_block.to_string(),
+                    after_block_id: after.map(str::to_string),
+                    properties: None,
+                },
+            )
+            .await
+            .unwrap();
+        }
+        let request = |include_descendants| NoteAgentBridgeExportRequest {
+            page_ids: vec![PAGE_A.to_string()],
+            project_ids: Vec::new(),
+            include_descendants: Some(include_descendants),
+            include_backlinks: Some(false),
+            include_database_views: Some(false),
+            include_task_context: Some(false),
+            include_page_comments: Some(false),
+            include_resolved_comments: Some(false),
+        };
+
+        let exact = transfers::agent_bridge_export::export_bridge(&pool, request(false))
+            .await
+            .unwrap();
+        let nested = transfers::agent_bridge_export::export_bridge(&pool, request(true))
+            .await
+            .unwrap();
+
+        assert_eq!(exact.exported_page_count, 1);
+        assert_eq!(nested.exported_page_count, 3);
+        assert!(nested.markdown.contains(PAGE_B));
+        assert!(nested.markdown.contains(PAGE_C));
+    });
+}
+
 #[cfg(unix)]
 #[test]
 fn agent_bridge_save_leaves_a_symlink_at_the_predictable_temporary_name_untouched() {

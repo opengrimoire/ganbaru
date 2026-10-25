@@ -35,8 +35,9 @@ pub async fn row_metadata_tx(
             UNION
             SELECT ancestors.row_id, hierarchy.parent_row_page_id, ancestors.depth + 1
             FROM ancestors
-            JOIN notes_data_source_row_hierarchy AS hierarchy
-              ON hierarchy.row_page_id = ancestors.ancestor_id AND hierarchy.data_source_id = ?
+            JOIN notes_pages AS hierarchy
+              ON hierarchy.id = ancestors.ancestor_id AND hierarchy.parent_type = 'data_source_id'
+             AND hierarchy.parent_data_source_id = ?
             JOIN notes_pages AS parent ON parent.id = hierarchy.parent_row_page_id
               AND parent.parent_type = 'data_source_id' AND parent.parent_data_source_id = ?
               AND parent.in_trash = 0 AND parent.archived = 0
@@ -47,14 +48,14 @@ pub async fn row_metadata_tx(
              SELECT chain.ancestor_id FROM ancestors AS chain
              WHERE chain.row_id = ancestors.row_id AND chain.depth > 0 ORDER BY chain.depth
             )) AS ancestor_row_page_ids,
-            (SELECT hierarchy.parent_row_page_id FROM notes_data_source_row_hierarchy AS hierarchy
+            (SELECT hierarchy.parent_row_page_id FROM notes_pages AS hierarchy
              JOIN notes_pages AS parent ON parent.id = hierarchy.parent_row_page_id
-             WHERE hierarchy.row_page_id = ancestors.row_id AND hierarchy.data_source_id = ?
+             WHERE hierarchy.id = ancestors.row_id AND hierarchy.parent_type = 'data_source_id'
+               AND hierarchy.parent_data_source_id = ?
                AND parent.parent_type = 'data_source_id' AND parent.parent_data_source_id = ?
                AND parent.in_trash = 0 AND parent.archived = 0) AS parent_row_page_id,
-            (SELECT COUNT(*) FROM notes_data_source_row_hierarchy AS hierarchy
-             JOIN notes_pages AS child ON child.id = hierarchy.row_page_id
-             WHERE hierarchy.parent_row_page_id = ancestors.row_id AND hierarchy.data_source_id = ?
+            (SELECT COUNT(*) FROM notes_pages AS child
+             WHERE child.parent_row_page_id = ancestors.row_id
                AND child.parent_type = 'data_source_id' AND child.parent_data_source_id = ?
                AND child.in_trash = 0 AND child.archived = 0) AS child_count
          FROM ancestors GROUP BY ancestors.row_id",
@@ -66,7 +67,6 @@ pub async fn row_metadata_tx(
     .bind(source_id)
     .bind(source_id)
     .bind(MAX_ROW_HIERARCHY_DEPTH)
-    .bind(source_id)
     .bind(source_id)
     .bind(source_id)
     .bind(source_id)
@@ -124,9 +124,12 @@ pub(crate) async fn set_parent_tx(
     parent_id: Option<&str>,
 ) -> Result<(), String> {
     require_active_row_tx(tx, source_id, row_id).await?;
-    let previous: Option<String> = sqlx::query_scalar("SELECT parent_row_page_id FROM notes_data_source_row_hierarchy WHERE row_page_id = ? AND data_source_id = ?")
-        .bind(row_id).bind(source_id).fetch_optional(&mut **tx).await
-        .map_err(|error| format!("read Notes sub-item parent: {error}"))?;
+    let previous: Option<String> =
+        sqlx::query_scalar("SELECT parent_row_page_id FROM notes_pages WHERE id = ?")
+            .bind(row_id)
+            .fetch_one(&mut **tx)
+            .await
+            .map_err(|error| format!("read Notes sub-item parent: {error}"))?;
     if previous.as_deref() == parent_id {
         return Ok(());
     }
@@ -136,8 +139,9 @@ pub(crate) async fn set_parent_tx(
             "WITH RECURSIVE ancestors(id, depth) AS (
                 SELECT ?, 0 UNION
                 SELECT hierarchy.parent_row_page_id, ancestors.depth + 1 FROM ancestors
-                JOIN notes_data_source_row_hierarchy AS hierarchy ON hierarchy.row_page_id = ancestors.id
-                 AND hierarchy.data_source_id = ? WHERE ancestors.depth <= ?
+                JOIN notes_pages AS hierarchy ON hierarchy.id = ancestors.id
+                 AND hierarchy.parent_type = 'data_source_id' AND hierarchy.parent_data_source_id = ?
+                WHERE hierarchy.parent_row_page_id IS NOT NULL AND ancestors.depth <= ?
              ) SELECT id, depth FROM ancestors",
         ).bind(parent_id).bind(source_id).bind(MAX_ROW_HIERARCHY_DEPTH).fetch_all(&mut **tx).await
             .map_err(|error| format!("check Notes sub-item ancestors: {error}"))?;
@@ -156,23 +160,23 @@ pub(crate) async fn set_parent_tx(
         let descendant_depth: i64 = sqlx::query_scalar(
             "WITH RECURSIVE descendants(id, depth) AS (
                 SELECT ?, 0 UNION
-                SELECT hierarchy.row_page_id, descendants.depth + 1 FROM descendants
-                JOIN notes_data_source_row_hierarchy AS hierarchy ON hierarchy.parent_row_page_id = descendants.id
-                 AND hierarchy.data_source_id = ? WHERE descendants.depth <= ?
+                SELECT hierarchy.id, descendants.depth + 1 FROM descendants
+                JOIN notes_pages AS hierarchy ON hierarchy.parent_row_page_id = descendants.id
+                 AND hierarchy.parent_type = 'data_source_id' AND hierarchy.parent_data_source_id = ?
+                WHERE descendants.depth <= ?
              ) SELECT COALESCE(MAX(depth), 0) FROM descendants",
         ).bind(row_id).bind(source_id).bind(MAX_ROW_HIERARCHY_DEPTH).fetch_one(&mut **tx).await
             .map_err(|error| format!("check Notes sub-item depth: {error}"))?;
         if parent_depth + 1 + descendant_depth > MAX_ROW_HIERARCHY_DEPTH {
             return Err(format!("Sub-item depth exceeds {MAX_ROW_HIERARCHY_DEPTH}"));
         }
-        sqlx::query("INSERT INTO notes_data_source_row_hierarchy(row_page_id, data_source_id, parent_row_page_id) VALUES (?, ?, ?) ON CONFLICT(row_page_id) DO UPDATE SET data_source_id = excluded.data_source_id, parent_row_page_id = excluded.parent_row_page_id")
-            .bind(row_id).bind(source_id).bind(parent_id).execute(&mut **tx).await
-            .map_err(|error| format!("save Notes sub-item parent: {error}"))?;
-    } else {
-        sqlx::query("DELETE FROM notes_data_source_row_hierarchy WHERE row_page_id = ? AND data_source_id = ?")
-            .bind(row_id).bind(source_id).execute(&mut **tx).await
-            .map_err(|error| format!("remove Notes sub-item parent: {error}"))?;
     }
+    sqlx::query("UPDATE notes_pages SET parent_row_page_id = ? WHERE id = ?")
+        .bind(parent_id)
+        .bind(row_id)
+        .execute(&mut **tx)
+        .await
+        .map_err(|error| format!("save Notes sub-item parent: {error}"))?;
     project_history::mark_data_source_dirty_tx(tx, source_id, "Sub-items", false).await?;
     sqlx::query("UPDATE notes_pages SET last_edited_time = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?")
         .bind(row_id).execute(&mut **tx).await.map_err(|error| format!("touch Notes sub-item row: {error}"))?;
@@ -241,7 +245,9 @@ pub(crate) async fn copy_edges_tx(
         return Ok(());
     }
     let source_ids: Vec<&String> = identities.keys().collect();
-    let edges = sqlx::query("SELECT row_page_id, parent_row_page_id, data_source_id FROM notes_data_source_row_hierarchy WHERE row_page_id IN (SELECT value FROM json_each(?))")
+    let edges = sqlx::query("SELECT id AS row_page_id, parent_row_page_id, parent_data_source_id AS data_source_id FROM notes_pages
+        WHERE id IN (SELECT value FROM json_each(?)) AND parent_row_page_id IS NOT NULL
+          AND parent_type = 'data_source_id' AND parent_data_source_id IS NOT NULL")
         .bind(serde_json::to_string(&source_ids).map_err(|error| format!("encode copied sub-item ids: {error}"))?)
         .fetch_all(&mut **tx).await.map_err(|error| format!("read copied Notes sub-item edges: {error}"))?;
     let source_ids = edges
@@ -263,17 +269,32 @@ pub(crate) async fn copy_edges_tx(
             continue;
         };
         let new_parent_id = identities.get(&parent_id).unwrap_or(&parent_id);
-        sqlx::query("INSERT INTO notes_data_source_row_hierarchy(row_page_id, data_source_id, parent_row_page_id)
-            SELECT child.id, child.parent_data_source_id, parent.id FROM notes_pages AS child JOIN notes_pages AS parent ON parent.id = ?
-            WHERE child.id = ? AND child.parent_type = 'data_source_id' AND parent.parent_type = 'data_source_id'
-              AND child.parent_data_source_id = parent.parent_data_source_id")
-            .bind(new_parent_id).bind(new_row_id).execute(&mut **tx).await
-            .map_err(|error| format!("copy Notes sub-item relationship: {error}"))?;
+        sqlx::query(
+            "UPDATE notes_pages AS child SET parent_row_page_id = parent.id
+            FROM notes_pages AS parent
+            WHERE parent.id = ?1 AND child.id = ?2 AND child.id <> parent.id
+              AND child.parent_type = 'data_source_id' AND parent.parent_type = 'data_source_id'
+              AND child.parent_data_source_id = parent.parent_data_source_id",
+        )
+        .bind(new_parent_id)
+        .bind(new_row_id)
+        .execute(&mut **tx)
+        .await
+        .map_err(|error| format!("copy Notes sub-item relationship: {error}"))?;
     }
     let destination_ids: Vec<&String> = identities.values().collect();
-    let copied_sources: Vec<String> = sqlx::query_scalar("SELECT DISTINCT data_source_id FROM notes_data_source_row_hierarchy WHERE row_page_id IN (SELECT value FROM json_each(?))")
-        .bind(serde_json::to_string(&destination_ids).map_err(|error| format!("encode copied destination ids: {error}"))?)
-        .fetch_all(&mut **tx).await.map_err(|error| format!("read copied sub-item sources: {error}"))?;
+    let copied_sources: Vec<String> = sqlx::query_scalar(
+        "SELECT DISTINCT parent_data_source_id FROM notes_pages
+        WHERE id IN (SELECT value FROM json_each(?)) AND parent_row_page_id IS NOT NULL
+          AND parent_type = 'data_source_id' AND parent_data_source_id IS NOT NULL",
+    )
+    .bind(
+        serde_json::to_string(&destination_ids)
+            .map_err(|error| format!("encode copied destination ids: {error}"))?,
+    )
+    .fetch_all(&mut **tx)
+    .await
+    .map_err(|error| format!("read copied sub-item sources: {error}"))?;
     validate_sources_tx(tx, &copied_sources).await?;
     Ok(())
 }
@@ -286,14 +307,15 @@ pub(crate) async fn validate_sources_tx(
     if source_ids.is_empty() {
         return Ok(());
     }
-    let edges = sqlx::query("SELECT hierarchy.row_page_id, hierarchy.parent_row_page_id, hierarchy.data_source_id,
+    let edges = sqlx::query("SELECT child.id AS row_page_id, child.parent_row_page_id, child.parent_data_source_id AS data_source_id,
         child.parent_type AS child_type, child.parent_data_source_id AS child_source,
         parent.parent_type AS parent_type, parent.parent_data_source_id AS parent_source, source.id AS source_exists
-        FROM notes_data_source_row_hierarchy AS hierarchy
-        LEFT JOIN notes_pages AS child ON child.id = hierarchy.row_page_id
-        LEFT JOIN notes_pages AS parent ON parent.id = hierarchy.parent_row_page_id
-        LEFT JOIN notes_data_sources AS source ON source.id = hierarchy.data_source_id
-        WHERE hierarchy.data_source_id IN (SELECT value FROM json_each(?))")
+        FROM notes_pages AS child
+        LEFT JOIN notes_pages AS parent ON parent.id = child.parent_row_page_id
+        LEFT JOIN notes_data_sources AS source ON source.id = child.parent_data_source_id
+        WHERE child.parent_row_page_id IS NOT NULL
+          AND (child.parent_data_source_id IN (SELECT value FROM json_each(?1))
+            OR parent.parent_data_source_id IN (SELECT value FROM json_each(?1)))")
         .bind(serde_json::to_string(source_ids).map_err(|error| format!("encode validated sub-item sources: {error}"))?)
         .fetch_all(&mut **tx).await.map_err(|error| format!("read canonical Notes sub-item integrity: {error}"))?;
     let mut parents = HashMap::<String, String>::new();
@@ -305,11 +327,11 @@ pub(crate) async fn validate_sources_tx(
             .try_get("parent_row_page_id")
             .map_err(|error| error.to_string())?;
         let source_id: String = edge
-            .try_get("data_source_id")
-            .map_err(|error| error.to_string())?;
+            .try_get::<Option<String>, _>("data_source_id")
+            .map_err(|error| error.to_string())?
+            .unwrap_or_default();
         require_uuid(&row_id, "sub-item row identity")?;
         require_uuid(&parent_id, "sub-item parent identity")?;
-        require_uuid(&source_id, "sub-item source identity")?;
         let child_type: Option<String> = edge
             .try_get("child_type")
             .map_err(|error| error.to_string())?;

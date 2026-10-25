@@ -604,10 +604,11 @@ fn calendar_import_budgets_are_recorded() {
     });
 }
 
-/// Segments, run events, and distraction block events of the closed run whose seal is timed.
+/// Segments and distraction block events of the closed run whose seal is timed, as the budget
+/// names them, with one run lifecycle event per segment.
 const FOCUS_SEGMENTS: u32 = 40;
-const FOCUS_RUN_EVENTS: u32 = 300;
-const FOCUS_BLOCK_EVENTS: u32 = 200;
+const FOCUS_RUN_EVENTS: u32 = FOCUS_SEGMENTS;
+const FOCUS_BLOCK_EVENTS: u32 = 300;
 const FOCUS_SEAL_BUDGET: Duration = Duration::from_millis(100);
 
 /// Seals one closed run with `FOCUS_SEGMENTS` segments, `FOCUS_RUN_EVENTS` run events, and
@@ -631,8 +632,10 @@ async fn seal_of_a_closed_run() -> Duration {
     let report = author.seal().await.unwrap();
     let elapsed = started.elapsed();
     assert!(report.invalid_rows.is_empty(), "{:?}", report.invalid_rows);
-    // The run seals in a Focus operation and its block events in a Distractions operation.
-    assert_eq!(report.sealed_ops, 2);
+    // The seal publishes the run with every segment, run event (the stop event among them), and
+    // block event.
+    let published = 1 + FOCUS_SEGMENTS + FOCUS_RUN_EVENTS + 1 + FOCUS_BLOCK_EVENTS;
+    assert_eq!(report.changes, published as usize);
     assert!(!report.more);
     elapsed
 }
@@ -646,7 +649,7 @@ fn focus_seal_of_a_closed_run_holds_its_budget() {
             seal.push(seal_of_a_closed_run().await);
         }
         let failure = check(
-            "seal of a closed run with 40 segments, 300 run events, and 200 block events",
+            "seal of a closed run with 40 segments and 300 block events",
             seal,
             FOCUS_SEAL_BUDGET,
         );

@@ -17,6 +17,8 @@ use std::time::SystemTime;
 pub const TEAMMATES_TABLE: &str = "chat_teammates";
 /// Replicated table of conversations, keyed by id.
 pub const CONVERSATIONS_TABLE: &str = "chat_conversations";
+/// Replicated table of access profiles, keyed by id.
+pub const ACCESS_PROFILES_TABLE: &str = "chat_access_profiles";
 /// Replicated table of access profile revisions, keyed by id.
 pub const ACCESS_PROFILE_REVISIONS_TABLE: &str = "chat_access_profile_revisions";
 /// Replicated table of messages, keyed by item id.
@@ -58,14 +60,14 @@ impl ChatSyncEffects {
 /// `changed_keys`, after sync inserted, updated, or deleted them.
 ///
 /// It mirrors the gated command triggers: a teammate gets its access state and a conversation
-/// its audience state, an access profile revision bumps the audience of the conversations whose
-/// teammates use that profile, and a message or revision rebuilds the message's search row (a
-/// deleted message loses it). A profile revision narrower than the revision before it also bumps
-/// the access revision of those teammates and revokes their active authorizations, as the
-/// command that saves a reduction does. Timestamps come from the changed rows, except
-/// revocations, which happen now on this device. Running it again for the same keys leaves the
-/// same rows, apart from the counters a profile revision bumps again. Tables without derived
-/// state return no effects.
+/// its audience state, a profile whose effective revision arrived or changed bumps the audience
+/// of the conversations whose teammates use that profile, and a message or revision rebuilds the
+/// message's search row (a deleted message loses it). An effective profile revision that narrows
+/// authority also bumps the access revision of those teammates and revokes the active
+/// authorizations granted under a wider revision, as the command that saves a reduction does.
+/// Timestamps come from the changed rows, except revocations, which happen now on this device.
+/// Running it again for the same keys leaves the same rows, apart from the counters a profile
+/// revision bumps again. Tables without derived state return no effects.
 pub async fn after_materialize(
     connection: &mut SqliteConnection,
     table: &str,
@@ -84,9 +86,29 @@ pub async fn after_materialize(
                 create_audience_state(connection, key, &mut effects).await?;
             }
         }
-        ACCESS_PROFILE_REVISIONS_TABLE => {
+        ACCESS_PROFILES_TABLE => {
             for key in keys {
-                apply_profile_revision(connection, key, &mut effects).await?;
+                apply_effective_profile_revision(connection, key, &mut effects).await?;
+            }
+        }
+        ACCESS_PROFILE_REVISIONS_TABLE => {
+            let mut profile_ids = BTreeSet::new();
+            for key in keys {
+                let profile_id: Option<String> = sqlx::query_scalar(
+                    "SELECT revision.access_profile_id
+                     FROM chat_access_profile_revisions revision
+                     JOIN chat_access_profile_effective_revisions effective
+                       ON effective.id = revision.id
+                     WHERE revision.id = ?",
+                )
+                .bind(key)
+                .fetch_optional(&mut *connection)
+                .await
+                .map_err(persistence_error)?;
+                profile_ids.extend(profile_id);
+            }
+            for profile_id in profile_ids {
+                apply_effective_profile_revision(connection, &profile_id, &mut effects).await?;
             }
         }
         MESSAGES_TABLE => {
@@ -156,24 +178,30 @@ async fn create_audience_state(
     Ok(())
 }
 
-/// Bumps the audiences a profile revision changes and, when it narrows the revision before it,
-/// the access of the teammates that use the profile, revoking their active authorizations.
+/// Bumps the audiences of the conversations whose teammates use the profile and, when the
+/// profile's effective revision narrows authority, the access of those teammates.
 ///
-/// Applying the same revision again bumps the audience revisions again: they are change
-/// counters, so an extra bump only makes readers refresh.
-async fn apply_profile_revision(
+/// The effective revision is the one the profile's current pointer names, or the newest arrived
+/// revision while that one is missing. It narrows authority when it is narrower than the revision
+/// before it or than any later revision, since a pointer that names an older revision chose it as
+/// the more restrictive one. Teammates are revoked only while one of their active authorizations
+/// was granted under a wider revision of the profile, so applying the same effective revision
+/// again never revokes authorizations granted under it. The audience and access revisions are
+/// change counters, so an extra bump only makes readers refresh.
+async fn apply_effective_profile_revision(
     connection: &mut SqliteConnection,
-    revision_id: &str,
+    profile_id: &str,
     effects: &mut ChatSyncEffects,
 ) -> ChatResult<()> {
-    let revision: Option<(String, String)> = sqlx::query_as(
-        "SELECT access_profile_id, created_at FROM chat_access_profile_revisions WHERE id = ?",
+    let effective: Option<(String, String)> = sqlx::query_as(
+        "SELECT id, created_at FROM chat_access_profile_effective_revisions
+         WHERE access_profile_id = ?",
     )
-    .bind(revision_id)
+    .bind(profile_id)
     .fetch_optional(&mut *connection)
     .await
     .map_err(persistence_error)?;
-    let Some((profile_id, created_at)) = revision else {
+    let Some((revision_id, created_at)) = effective else {
         return Ok(());
     };
     let audiences: Vec<String> = sqlx::query_scalar(
@@ -187,12 +215,12 @@ async fn apply_profile_revision(
          RETURNING conversation_id",
     )
     .bind(&created_at)
-    .bind(&profile_id)
+    .bind(profile_id)
     .fetch_all(&mut *connection)
     .await
     .map_err(persistence_error)?;
     effects.audience_revised.extend(audiences);
-    if !profile_revision_narrows(connection, revision_id).await? {
+    if !effective_revision_narrows(connection, &revision_id).await? {
         return Ok(());
     }
     let teammates: Vec<String> = sqlx::query_scalar(
@@ -205,65 +233,117 @@ async fn apply_profile_revision(
          RETURNING teammate_id",
     )
     .bind(&created_at)
-    .bind(&profile_id)
+    .bind(profile_id)
     .fetch_all(&mut *connection)
     .await
     .map_err(persistence_error)?;
     let now: DateTime<Utc> = SystemTime::now().into();
     let now = now.to_rfc3339_opts(SecondsFormat::Millis, true);
     for teammate_id in teammates {
-        let revoked = revoke_teammate_authorizations(
-            connection,
-            &teammate_id,
-            &now,
-            PROFILE_REDUCTION_REASON,
-        )
-        .await?;
-        if revoked > 0 {
-            effects.revoked_teammates.insert(teammate_id.clone());
+        if holds_wider_authorization(connection, &teammate_id, &revision_id).await? {
+            let revoked = revoke_teammate_authorizations(
+                connection,
+                &teammate_id,
+                &now,
+                PROFILE_REDUCTION_REASON,
+            )
+            .await?;
+            if revoked > 0 {
+                effects.revoked_teammates.insert(teammate_id.clone());
+            }
         }
         effects.access_revised.insert(teammate_id);
     }
     Ok(())
 }
 
-/// Returns whether the revision removes a default capability, narrows the default history
-/// boundary, or lowers the folder capability ceiling of the profile's previous revision.
-async fn profile_revision_narrows(
+/// SQL ranks of folder capabilities, from no access to publishing.
+const CAPABILITY_RANKS: &str = "capability_rank(capability, rank) AS (
+    VALUES ('none', 0), ('read', 1), ('edit', 2), ('execute', 3), ('publish', 4)
+)";
+
+/// SQL condition that holds when revision `next` removes a default capability, narrows the
+/// default history boundary, or lowers the folder capability ceiling of revision `previous`,
+/// with their ranks joined as `next_rank` and `previous_rank`.
+const NARROWER_THAN_PREVIOUS: &str = "(
+    (previous.default_read_history = 1 AND next.default_read_history = 0)
+    OR (previous.default_participate = 1 AND next.default_participate = 0)
+    OR (previous.default_history_boundary = 'entire'
+        AND next.default_history_boundary = 'from_grant')
+    OR next_rank.rank < previous_rank.rank
+)";
+
+/// Returns whether the effective revision is narrower than the revision before it or than any
+/// later revision of its profile, in `(created_at, id)` order.
+async fn effective_revision_narrows(
     connection: &mut SqliteConnection,
     revision_id: &str,
 ) -> ChatResult<bool> {
-    sqlx::query_scalar(
-        "WITH capability_rank(capability, rank) AS (
-             VALUES ('none', 0), ('read', 1), ('edit', 2), ('execute', 3), ('publish', 4)
-         )
+    let sql = format!(
+        "WITH {CAPABILITY_RANKS}
          SELECT EXISTS (
              SELECT 1
              FROM chat_access_profile_revisions next
              JOIN chat_access_profile_revisions previous
                ON previous.access_profile_id = next.access_profile_id
-              AND previous.revision = (
-                  SELECT max(earlier.revision) FROM chat_access_profile_revisions earlier
-                  WHERE earlier.access_profile_id = next.access_profile_id
-                    AND earlier.revision < next.revision
+              AND previous.id <> next.id
+              AND (
+                  (previous.created_at, previous.id) > (next.created_at, next.id)
+                  OR previous.id = (
+                      SELECT earlier.id FROM chat_access_profile_revisions earlier
+                      WHERE earlier.access_profile_id = next.access_profile_id
+                        AND (earlier.created_at, earlier.id) < (next.created_at, next.id)
+                      ORDER BY earlier.created_at DESC, earlier.id DESC
+                      LIMIT 1
+                  )
               )
              JOIN capability_rank next_rank ON next_rank.capability = next.maximum_folder_capability
              JOIN capability_rank previous_rank
                ON previous_rank.capability = previous.maximum_folder_capability
-             WHERE next.id = ?
-               AND (
-                   (previous.default_read_history = 1 AND next.default_read_history = 0)
-                   OR (previous.default_participate = 1 AND next.default_participate = 0)
-                   OR (previous.default_history_boundary = 'entire'
-                       AND next.default_history_boundary = 'from_grant')
-                   OR next_rank.rank < previous_rank.rank
-               )
-         )",
-    )
-    .bind(revision_id)
-    .fetch_one(&mut *connection)
-    .await
-    .map_err(persistence_error)
+             WHERE next.id = ? AND {NARROWER_THAN_PREVIOUS}
+         )"
+    );
+    sqlx::query_scalar(sqlx::AssertSqlSafe(sql))
+        .bind(revision_id)
+        .fetch_one(&mut *connection)
+        .await
+        .map_err(persistence_error)
+}
+
+/// Returns whether the teammate holds an active authorization granted under a revision of the
+/// same profile that is wider than the effective revision.
+async fn holds_wider_authorization(
+    connection: &mut SqliteConnection,
+    teammate_id: &str,
+    revision_id: &str,
+) -> ChatResult<bool> {
+    let sql = format!(
+        "WITH {CAPABILITY_RANKS}
+         SELECT EXISTS (
+             SELECT 1
+             FROM chat_assignment_authorization_revisions authorization
+             JOIN chat_work_assignments assignment
+               ON assignment.id = authorization.assignment_id
+             JOIN chat_access_profile_revisions next ON next.id = ?
+             JOIN chat_access_profile_revisions previous
+               ON previous.id = authorization.access_profile_revision_id
+              AND previous.access_profile_id = next.access_profile_id
+              AND previous.id <> next.id
+             JOIN capability_rank next_rank ON next_rank.capability = next.maximum_folder_capability
+             JOIN capability_rank previous_rank
+               ON previous_rank.capability = previous.maximum_folder_capability
+             WHERE assignment.teammate_id = ?
+               AND authorization.decision_state = 'allowed'
+               AND authorization.revoked_at IS NULL
+               AND {NARROWER_THAN_PREVIOUS}
+         )"
+    );
+    sqlx::query_scalar(sqlx::AssertSqlSafe(sql))
+        .bind(revision_id)
+        .bind(teammate_id)
+        .fetch_one(&mut *connection)
+        .await
+        .map_err(persistence_error)
 }
 
 /// Replaces the search row of a message with its current revision, or removes it when the

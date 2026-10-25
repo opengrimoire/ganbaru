@@ -959,7 +959,8 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
             }
             clear_distractions_enforcement_state_best_effort(app.handle(), "during startup");
             schedule_main_window_reveal_fallback(app.handle());
-            chat::revocation::start_startup_recovery(app.handle());
+            app.manage(chat::sync::RevocationWaker::new(app.handle().clone()));
+            chat::revocation::start_job_drain(app.handle());
             chat::cleanup_service::start(app.handle());
             music::setup_youtube_host(app.handle())?;
             music::session::setup(app.handle());

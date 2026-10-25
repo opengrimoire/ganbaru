@@ -151,7 +151,9 @@ pub(crate) async fn drain_access_revocation_jobs(
     Ok(completed)
 }
 
-pub(crate) fn start_startup_recovery(app: &tauri::AppHandle) {
+/// Drains queued access revocation jobs in the background, at startup and whenever sync
+/// revoked authorizations on this device.
+pub(crate) fn start_job_drain(app: &tauri::AppHandle) {
     if crate::vault::active_vault_path(app).is_err() {
         return;
     }
@@ -161,15 +163,12 @@ pub(crate) fn start_startup_recovery(app: &tauri::AppHandle) {
         let pool = match crate::db::connect_sqlite(app.clone(), db_url).await {
             Ok(pool) => pool,
             Err(error) => {
-                eprintln!("Chat revocation startup recovery could not open the database: {error}");
+                eprintln!("Chat revocation drain could not open the database: {error}");
                 return;
             }
         };
         if let Err(error) = drain_access_revocation_jobs(&app, &pool).await {
-            eprintln!(
-                "Chat revocation startup recovery failed with code {:?}",
-                error.code
-            );
+            eprintln!("Chat revocation drain failed with code {:?}", error.code);
         }
     });
 }
@@ -653,8 +652,8 @@ pub(crate) mod tests {
              INSERT INTO chat_teammates (participant_id, role, created_at, updated_at)
              VALUES ('{TEAMMATE}', 'Test', '{NOW}', '{NOW}');
              INSERT INTO chat_teammate_policy_revisions
-                (id, teammate_id, revision, provider_instance_id, model_selection_data, created_at)
-             VALUES ('policy:folders', '{TEAMMATE}', 1, 'codex-personal', '{{}}', '{NOW}');
+                (id, teammate_id, provider_instance_id, model_selection_data, created_at)
+             VALUES ('policy:folders', '{TEAMMATE}', 'codex-personal', '{{}}', '{NOW}');
              INSERT INTO chat_conversation_memberships
                 (conversation_id, participant_id, membership_role, created_at, updated_at)
              VALUES ('conversation:folders', '{TEAMMATE}', 'member', '{NOW}', '{NOW}');

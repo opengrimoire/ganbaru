@@ -300,9 +300,8 @@ async fn require_edit_folder_grant(
           AND access.teammate_id = membership.participant_id
           AND access.removed_at IS NULL
          JOIN chat_access_profiles profile ON profile.id = access.access_profile_id
-         JOIN chat_access_profile_revisions revision
+         JOIN chat_access_profile_effective_revisions revision
            ON revision.access_profile_id = profile.id
-          AND revision.revision = profile.latest_revision
          JOIN chat_teammate_working_folder_grants grant_row
            ON grant_row.conversation_id = membership.conversation_id
           AND grant_row.teammate_id = membership.participant_id

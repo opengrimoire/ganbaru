@@ -21,8 +21,8 @@ use crate::assets::{AssetClass, LocalAssetColumn, LocalDigest};
 use crate::domains::{vault_adapters, vault_hooks};
 use crate::hooks::{ChangeSink, HookFuture, MaterializeHook};
 use crate::manifest::vault::{
-    VAULT_MANIFEST_VERSION, calendar, contacts, distractions, focus, music, preferences, projects,
-    quick_notes, themes,
+    VAULT_MANIFEST_VERSION, calendar, chat, contacts, distractions, focus, music, preferences,
+    projects, quick_notes, themes,
 };
 use crate::manifest::{
     AcyclicSpec, Collation, ColumnSpec, ColumnType, DerivedKey, DeviceTable, DomainManifest,
@@ -1387,6 +1387,7 @@ pub(super) const TEST_DOMAINS: &[&DomainManifest] = &[
     &calendar::DOMAIN,
     &focus::DOMAIN,
     &distractions::DOMAIN,
+    &chat::DOMAIN,
     &FIXTURE_DOMAIN,
 ];
 

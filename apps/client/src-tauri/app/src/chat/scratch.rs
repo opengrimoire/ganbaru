@@ -404,9 +404,8 @@ pub(crate) async fn generation_constraints_hold_in_connection(
           AND channel_access.teammate_id = membership.participant_id
           AND channel_access.removed_at IS NULL
          LEFT JOIN chat_access_profiles profile ON profile.id = channel_access.access_profile_id
-         LEFT JOIN chat_access_profile_revisions profile_revision
+         LEFT JOIN chat_access_profile_effective_revisions profile_revision
            ON profile_revision.access_profile_id = profile.id
-          AND profile_revision.revision = profile.latest_revision
          WHERE membership.conversation_id = ?
            AND membership.removed_at IS NULL
            AND (
@@ -481,9 +480,8 @@ async fn participant_can_read_source(
             AND channel_access.teammate_id = membership.participant_id
             AND channel_access.removed_at IS NULL
            LEFT JOIN chat_access_profiles profile ON profile.id = channel_access.access_profile_id
-           LEFT JOIN chat_access_profile_revisions profile_revision
+           LEFT JOIN chat_access_profile_effective_revisions profile_revision
              ON profile_revision.access_profile_id = profile.id
-            AND profile_revision.revision = profile.latest_revision
            WHERE membership.conversation_id = ?
              AND membership.participant_id = ?
              AND membership.removed_at IS NULL
@@ -736,8 +734,8 @@ mod tests {
         }
         sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
             "INSERT INTO chat_teammate_policy_revisions
-                (id, teammate_id, revision, provider_instance_id, model_selection_data, created_at)
-             VALUES ('policy:scratch', '{TEAMMATE}', 1, 'codex-personal', '{{}}', '{NOW}');
+                (id, teammate_id, provider_instance_id, model_selection_data, created_at)
+             VALUES ('policy:scratch', '{TEAMMATE}', 'codex-personal', '{{}}', '{NOW}');
              INSERT INTO chat_conversation_memberships
                 (conversation_id, participant_id, membership_role, created_at, updated_at)
              VALUES ('conversation:scratch', '{TEAMMATE}', 'member', '{NOW}', '{NOW}');

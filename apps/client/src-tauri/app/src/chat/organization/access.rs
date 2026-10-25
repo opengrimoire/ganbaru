@@ -287,6 +287,12 @@ pub async fn chat_replace_teammate_access(
     require_expected_profile_revisions_in_transaction(&mut transaction, &request.channels).await?;
 
     if let Some(configuration) = validated_configuration {
+        require_unused_teammate_name(
+            &mut transaction,
+            &configuration.display_name,
+            request.teammate_id.as_str(),
+        )
+        .await?;
         let updated = sqlx::query(
             "UPDATE chat_participants
              SET display_name = ?, avatar_schema_version = ?, avatar_data = ?,
@@ -301,7 +307,7 @@ pub async fn chat_replace_teammate_access(
         .bind(i64_value(configuration.expected_revision)?)
         .execute(&mut *transaction)
         .await
-        .map_err(map_teammate_write_error)?;
+        .map_err(persistence_error)?;
         if updated.rows_affected() != 1 {
             return Err(ChatError::new(
                 ChatErrorCode::StaleRevision,
@@ -320,18 +326,9 @@ pub async fn chat_replace_teammate_access(
         .execute(&mut *transaction)
         .await
         .map_err(persistence_error)?;
-        let next_policy_revision: i64 = sqlx::query_scalar(
-            "SELECT latest_policy_revision + 1
-             FROM chat_teammates WHERE participant_id = ?",
-        )
-        .bind(request.teammate_id.as_str())
-        .fetch_one(&mut *transaction)
-        .await
-        .map_err(persistence_error)?;
         insert_policy_revision(
             &mut transaction,
             &request.teammate_id,
-            u64_value(next_policy_revision)?,
             request
                 .policy
                 .as_ref()
@@ -576,8 +573,11 @@ async fn require_expected_profile_revisions_in_transaction(
         .collect::<BTreeSet<_>>();
     for (access_profile_id, expected_revision) in expected {
         let latest_revision = sqlx::query_scalar::<_, i64>(
-            "SELECT latest_revision FROM chat_access_profiles
-             WHERE id = ? AND archived_at IS NULL",
+            "SELECT revision.revision
+             FROM chat_access_profiles profile
+             JOIN chat_access_profile_effective_revisions revision
+               ON revision.access_profile_id = profile.id
+             WHERE profile.id = ? AND profile.archived_at IS NULL",
         )
         .bind(access_profile_id)
         .fetch_optional(&mut **transaction)

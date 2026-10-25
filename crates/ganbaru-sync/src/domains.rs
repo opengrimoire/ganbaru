@@ -5,6 +5,7 @@ use crate::hooks::Hooks;
 use crate::manifest::vault::preferences::PREFERENCES_TABLE;
 
 pub mod calendar;
+pub mod chat;
 pub mod contacts;
 pub mod distractions;
 pub mod focus;
@@ -26,6 +27,7 @@ pub fn vault_adapters() -> Adapters {
         .with(Box::new(calendar::CalendarAdapter))
         .with(Box::new(focus::FocusAdapter))
         .with(Box::new(distractions::DistractionsAdapter))
+        .with(Box::new(chat::ChatAdapter))
 }
 
 /// The hooks of the vault manifest's tables, one line per hooked table or domain.

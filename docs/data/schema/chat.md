@@ -53,6 +53,8 @@ Portable rows store participants, memberships, channel capabilities, history cut
 
 Historical runs retain the revision and target under which they were authorized. A later profile edit does not retroactively change that meaning. A reduction may revoke active work, but a more permissive revision does not silently upgrade it.
 
+Participants, AI teammates, teammate policy revisions, access profiles, and profile revisions replicate. Revision rows are immutable and carry no stored number: the displayed revision counts the rows of the teammate or profile in `(created_at, id)` order. A teammate and a profile name their current revision with a pointer that the command writing a revision sets, together with the revision's safety mode or folder capability ceiling, so concurrent edits resolve to the more restrictive revision; readers use the pointed revision, or the newest arrived one while it is missing. A teammate records its home device, the device that created it and runs its native sessions. Commands refuse a teammate or custom profile name the device already holds, but devices that edit concurrently can end up with equal names, so readers tell them apart by id. After sync applies these rows, a materialize hook creates the device-local access state of arrived teammates, bumps the audience and access counters an arrived profile revision affects, and revokes authorizations a narrowing revision no longer allows; on desktop the revocation drain then stops their runs.
+
 Resource IDs and references are not grants. Every privileged service resolves current effective authority from the stored relationships and device-local target state.
 
 ## Drafts, attachments, and context
@@ -107,4 +109,4 @@ The active vault database may store logical provider configuration, credential r
 
 The platform app config directory stores device-local bindings and nonsecret runtime bootstrap data. Secrets are resolved from the operating-system credential store only at the native boundary that needs them.
 
-Remote synchronization is not implemented. A future sync layer may synchronize portable organization and authorization records, but never device-local bindings, process state, or credentials.
+LAN sync replicates Chat identity and policy rows (participants, AI teammates, policy revisions, access profiles, and profile revisions); replicating the rest of the portable organization and authorization records is later work. Device-local bindings, process state, and credentials never replicate.

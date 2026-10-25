@@ -261,6 +261,10 @@ pub async fn permanently_delete_page(
             FROM notes_blocks AS child_block
             JOIN page_subtree AS parent ON child_block.page_id = parent.id
             WHERE child_block.type = 'child_page' AND parent.depth < ?
+              AND EXISTS (
+                  SELECT 1 FROM notes_pages AS nested
+                  WHERE nested.id = child_block.id AND nested.child_block_id = child_block.id
+              )
             UNION
             SELECT row_page.id, parent.depth + 1
             FROM notes_pages AS row_page
@@ -301,6 +305,10 @@ pub async fn permanently_delete_page(
             FROM notes_blocks AS child_block
             JOIN page_subtree AS parent ON child_block.page_id = parent.id
             WHERE child_block.type = 'child_page' AND parent.depth < ?
+              AND EXISTS (
+                  SELECT 1 FROM notes_pages AS nested
+                  WHERE nested.id = child_block.id AND nested.child_block_id = child_block.id
+              )
             UNION
             SELECT row_page.id, parent.depth + 1
             FROM notes_pages AS row_page
@@ -340,6 +348,10 @@ pub async fn permanently_delete_page(
             FROM notes_blocks AS child_block
             JOIN page_subtree AS parent ON child_block.page_id = parent.id
             WHERE child_block.type = 'child_page' AND parent.depth < ?
+              AND EXISTS (
+                  SELECT 1 FROM notes_pages AS nested
+                  WHERE nested.id = child_block.id AND nested.child_block_id = child_block.id
+              )
             UNION
             SELECT row_page.id, parent.depth + 1
             FROM notes_pages AS row_page
@@ -540,6 +552,10 @@ pub(super) async fn load_external_child_page_block_parents(
             FROM notes_blocks AS child_block
             JOIN page_subtree AS parent ON child_block.page_id = parent.id
             WHERE child_block.type = 'child_page' AND parent.depth < ?
+              AND EXISTS (
+                  SELECT 1 FROM notes_pages AS nested
+                  WHERE nested.id = child_block.id AND nested.child_block_id = child_block.id
+              )
             UNION
             SELECT row_page.id, parent.depth + 1
             FROM notes_pages AS row_page

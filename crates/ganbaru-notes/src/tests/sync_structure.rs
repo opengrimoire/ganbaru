@@ -345,3 +345,167 @@ fn sync_hook_recomputes_derived_columns_queues_history_and_drops_index_fingerpri
         );
     });
 }
+
+#[test]
+fn removing_a_database_block_removes_its_row_pages_through_nested_databases() {
+    crate::test_block_on(async {
+        let pool = migrated_memory_pool().await;
+        create_page(&pool, PAGE_A, BLOCK_A).await;
+        create_database(
+            &pool,
+            DATABASE_A,
+            DATA_SOURCE_A,
+            DATABASE_VIEW_A,
+            "Outer",
+            BLOCK_A,
+        )
+        .await;
+        insert_row_page(&pool, PAGE_B, DATA_SOURCE_A, "Row", json!({})).await;
+        databases::create_database(
+            &pool,
+            NoteDatabaseCreate {
+                id: DATABASE_B.to_string(),
+                data_source_id: DATA_SOURCE_B.to_string(),
+                view_id: DATABASE_VIEW_B.to_string(),
+                title: "Inner".to_string(),
+                parent: Some(page_parent(PAGE_B)),
+                after_block_id: None,
+                replace_block_id: None,
+                icon: None,
+                cover: None,
+            },
+        )
+        .await
+        .unwrap();
+        insert_row_page(&pool, PAGE_C, DATA_SOURCE_B, "Inner row", json!({})).await;
+
+        // A received block delete purges the block the way a sync apply does.
+        sqlx::query("UPDATE sync_apply_state SET applying = 1 WHERE singleton = 1")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM notes_blocks WHERE id = ?")
+            .bind(DATABASE_A)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("UPDATE sync_apply_state SET applying = 0 WHERE singleton = 1")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let pages: Vec<String> = sqlx::query_scalar("SELECT id FROM notes_pages ORDER BY id")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+        assert_eq!(pages, vec![PAGE_A.to_string()]);
+        let sources: i64 = sqlx::query_scalar("SELECT count(*) FROM notes_data_sources")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(sources, 0);
+    });
+}
+
+#[test]
+fn a_row_page_for_an_unknown_data_source_is_not_listed_or_counted() {
+    crate::test_block_on(async {
+        let pool = migrated_memory_pool().await;
+        create_page(&pool, PAGE_A, BLOCK_A).await;
+        for (id, in_trash) in [(PAGE_B, 0_i64), (PAGE_C, 1_i64)] {
+            sqlx::query(
+                "INSERT INTO notes_pages
+                     (id, parent_type, parent_data_source_id, title, in_trash, trashed_time)
+                 VALUES (?1, 'data_source_id', 'absent-source', 'Unplaced', ?2,
+                         CASE WHEN ?2 = 1 THEN strftime('%Y-%m-%dT%H:%M:%fZ', 'now') END)",
+            )
+            .bind(id)
+            .bind(in_trash)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+
+        let listed = serde_json::to_value(reads::list_pages(&pool).await.unwrap()).unwrap();
+        assert_eq!(listed.as_array().map(Vec::len), Some(1));
+        assert_eq!(listed[0]["id"], PAGE_A);
+        let trash = serde_json::to_value(
+            reads::list_trashed_page_window(
+                &pool,
+                crate::models::NotePageSummaryWindowRequest {
+                    cursor: None,
+                    query: None,
+                    page_size: Some(25),
+                },
+            )
+            .await
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(trash["total_count"], 0);
+        assert_eq!(trash["pages"], json!([]));
+        for destination_candidates in [false, true] {
+            let request = serde_json::from_value(json!({
+                "project_id": null,
+                "destination_candidates": destination_candidates,
+            }))
+            .unwrap();
+            let shell = serde_json::to_value(
+                workspace_shell::load_workspace_shell(&pool, request)
+                    .await
+                    .unwrap(),
+            )
+            .unwrap();
+            assert_eq!(shell["total_page_count"], 1);
+            let ids: Vec<&str> = shell["pages"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter_map(|page| page["id"].as_str())
+                .collect();
+            assert_eq!(ids, vec![PAGE_A]);
+        }
+    });
+}
+
+#[test]
+fn purging_a_former_parent_keeps_a_page_moved_out_of_it() {
+    crate::test_block_on(async {
+        let pool = migrated_memory_pool().await;
+        create_page(&pool, PAGE_A, BLOCK_A).await;
+        create_page(&pool, PAGE_B, BLOCK_B).await;
+        create_page(&pool, PAGE_C, BLOCK_C).await;
+        let to = |parent: NoteParent| NoteMovePage {
+            parent,
+            folder_id: None,
+        };
+        writes::move_page(&pool, PAGE_B, to(page_parent(PAGE_A)))
+            .await
+            .unwrap();
+        writes::move_page(&pool, PAGE_B, to(workspace_parent()))
+            .await
+            .unwrap();
+        writes::trash_page(&pool, PAGE_A, true).await.unwrap();
+        let deleted = writes::permanently_delete_page(&pool, PAGE_A)
+            .await
+            .unwrap();
+
+        assert_eq!(deleted, vec![PAGE_A.to_string()]);
+        let page_b: i64 = sqlx::query_scalar("SELECT in_trash FROM notes_pages WHERE id = ?")
+            .bind(PAGE_B)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(page_b, 0);
+        writes::move_page(&pool, PAGE_B, to(page_parent(PAGE_C)))
+            .await
+            .unwrap();
+        let block: (String, i64) =
+            sqlx::query_as("SELECT page_id, in_trash FROM notes_blocks WHERE id = ?")
+                .bind(PAGE_B)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(block, (PAGE_C.to_string(), 0));
+    });
+}

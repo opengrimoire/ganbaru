@@ -172,6 +172,38 @@ CREATE TABLE notes_page_history_pending (
     queued_at TEXT NOT NULL CHECK (trim(queued_at) <> '')
 );
 
+-- Row pages leave with their data source on every path that removes it, including foreign key
+-- cascades from a purged block or database. The walk collects the whole content subtree in
+-- this one statement because SQLite does not fire this trigger again for data sources that
+-- the deleted pages cascade away while it runs.
+CREATE TRIGGER notes_data_sources_delete_row_pages
+AFTER DELETE ON notes_data_sources
+BEGIN
+    DELETE FROM notes_pages
+    WHERE id IN (
+        WITH RECURSIVE subtree(id) AS (
+            SELECT id FROM notes_pages WHERE parent_data_source_id = OLD.id
+            UNION
+            SELECT child.id
+            FROM notes_pages AS child
+            JOIN subtree AS parent ON child.parent_page_id = parent.id
+            UNION
+            SELECT child.id
+            FROM notes_pages AS child
+            JOIN notes_blocks AS parent_block ON child.parent_block_id = parent_block.id
+            JOIN subtree AS parent ON parent_block.page_id = parent.id
+            UNION
+            SELECT row_page.id
+            FROM notes_pages AS row_page
+            JOIN notes_data_sources AS source ON source.id = row_page.parent_data_source_id
+            JOIN notes_databases AS db ON db.id = source.database_id
+            JOIN notes_blocks AS db_block ON db_block.id = db.block_id
+            JOIN subtree AS parent ON db_block.page_id = parent.id
+        )
+        SELECT id FROM subtree
+    );
+END;
+
 CREATE TEMP TABLE notes_structure_replication_guard (violations INTEGER NOT NULL CHECK (violations = 0));
 INSERT INTO notes_structure_replication_guard SELECT COUNT(*) FROM pragma_foreign_key_check;
 DROP TABLE notes_structure_replication_guard;

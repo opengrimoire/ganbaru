@@ -122,16 +122,18 @@ fn schema_creates_normalized_notes_database_tables() {
 fn schema_keeps_notes_page_project_and_trash_owner_in_columns() {
     super::block_on(async {
         let pool = migrated_memory_pool().await;
-        let notes_triggers: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM sqlite_schema
-             WHERE type = 'trigger' AND tbl_name LIKE 'notes_%' AND name NOT LIKE 'sync\\_%' ESCAPE '\\'",
+        let notes_triggers: Vec<String> = sqlx::query_scalar(
+            "SELECT name FROM sqlite_schema
+             WHERE type = 'trigger' AND tbl_name LIKE 'notes_%' AND name NOT LIKE 'sync\\_%' ESCAPE '\\'
+             ORDER BY name",
         )
-        .fetch_one(&pool)
+        .fetch_all(&pool)
         .await
         .unwrap();
         assert_eq!(
-            notes_triggers, 0,
-            "Notes rules are checked by writes, not triggers"
+            notes_triggers,
+            ["notes_data_sources_delete_row_pages"],
+            "Notes rules are checked by writes; only row page removal follows foreign key cascades"
         );
 
         sqlx::query("INSERT INTO project_groups (id, name, order_key) VALUES ('folder-group', 'Folders', 'a0')")

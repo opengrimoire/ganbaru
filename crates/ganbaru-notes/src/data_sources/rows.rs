@@ -85,18 +85,17 @@ pub(crate) async fn create_data_source_row_page_tx(
             id,
             parent_type,
             parent_data_source_id,
-            title,
-            properties
+            title
          )
-         VALUES (?, 'data_source_id', ?, ?, ?)",
+         VALUES (?, 'data_source_id', ?, ?)",
     )
     .bind(request.id.trim())
     .bind(data_source_id)
     .bind(&title)
-    .bind(properties.to_string())
     .execute(&mut **tx)
     .await
     .map_err(|e| format!("create notes data source row page: {e}"))?;
+    crate::page_property_storage::write_page_properties(tx, request.id.trim(), &properties).await?;
     let first_order_key = OrderKey::first().into_string();
     insert_block_row(
         tx,
@@ -123,7 +122,6 @@ pub(crate) async fn create_data_source_row_page_tx(
         request.id.trim(),
         &schema_properties,
         &properties,
-        true,
     )
     .await?;
     assets::sync_data_source_property_asset_references_tx(tx, data_source_id, &schema_properties)
@@ -142,15 +140,16 @@ async fn load_active_data_source_tx(
     tx: &mut Transaction<'_, Sqlite>,
     data_source_id: &str,
 ) -> Result<DataSourceRow, String> {
-    sqlx::query_as::<_, DataSourceRow>(
-        "SELECT data_source.database_id,
-                data_source.properties
+    sqlx::query_as::<_, DataSourceRow>(concat!(
+        "SELECT data_source.database_id, ",
+        crate::note_data_source_properties_json!("data_source"),
+        " AS properties
          FROM notes_data_sources AS data_source
          JOIN notes_databases AS database ON database.id = data_source.database_id
          WHERE data_source.id = ?
            AND data_source.in_trash = 0
-           AND database.in_trash = 0",
-    )
+           AND database.in_trash = 0"
+    ))
     .bind(data_source_id)
     .fetch_optional(&mut **tx)
     .await

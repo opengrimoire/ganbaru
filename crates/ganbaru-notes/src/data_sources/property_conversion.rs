@@ -42,12 +42,13 @@ pub(crate) async fn load_rows_tx(
     tx: &mut Transaction<'_, Sqlite>,
     data_source_id: &str,
 ) -> Result<Vec<ConversionRow>, String> {
-    let rows = sqlx::query_as::<_, (String, String, String, String)>(
-        "SELECT id, properties, created_time, last_edited_time
-         FROM notes_pages
-         WHERE parent_type = 'data_source_id' AND parent_data_source_id = ?
-         ORDER BY created_time ASC, id ASC",
-    )
+    let rows = sqlx::query_as::<_, (String, String, String, String)>(sqlx::AssertSqlSafe(format!(
+        "SELECT page.id, {} AS properties, page.created_time, page.last_edited_time
+         FROM notes_pages AS page
+         WHERE page.parent_type = 'data_source_id' AND page.parent_data_source_id = ?
+         ORDER BY page.created_time ASC, page.id ASC",
+        crate::page_property_storage::page_properties_sql("page")
+    )))
     .bind(data_source_id)
     .fetch_all(&mut **tx)
     .await
@@ -69,18 +70,41 @@ pub(crate) async fn load_rows_tx(
         .collect()
 }
 
-/// Save each row's converted properties without changing its edit time, since the schema changed, not the row.
+/// Save each row's value of `property_id` without changing its edit time, since the schema changed, not
+/// the row. A value the property no longer stores as a value row, such as an empty relation, is deleted;
+/// relation links follow the schema write.
 pub(crate) async fn save_rows_tx(
     tx: &mut Transaction<'_, Sqlite>,
     rows: &[ConversionRow],
+    property_id: &str,
 ) -> Result<(), String> {
     for row in rows {
-        sqlx::query("UPDATE notes_pages SET properties = ? WHERE id = ?")
-            .bind(Value::Object(row.properties.clone()).to_string())
-            .bind(&row.id)
-            .execute(&mut **tx)
-            .await
-            .map_err(|e| format!("save converted row properties: {e}"))?;
+        let stored = row
+            .properties
+            .values()
+            .find(|value| value.get("id").and_then(Value::as_str) == Some(property_id))
+            .and_then(|value| {
+                let value_type = value.get("type").and_then(Value::as_str)?;
+                let inner = value.get(value_type)?;
+                (!crate::page_property_storage::UNSTORED_VALUE_TYPES.contains(&value_type))
+                    .then_some((value_type, inner))
+            });
+        match stored {
+            Some((value_type, value)) => {
+                crate::page_property_storage::write_page_property_value(
+                    tx,
+                    &row.id,
+                    property_id,
+                    value_type,
+                    value,
+                )
+                .await?
+            }
+            None => {
+                crate::page_property_storage::delete_page_property_value(tx, &row.id, property_id)
+                    .await?
+            }
+        }
     }
     Ok(())
 }

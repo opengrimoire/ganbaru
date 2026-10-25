@@ -483,8 +483,8 @@ pub async fn write_block_content(
 
 /// Numbers blocks within their sibling groups, in the order the caller visits them.
 ///
-/// Template tables still store a numeric `sort_order` while page blocks store order keys, so
-/// copies between them renumber each sibling group from its visiting order.
+/// Template snapshots store a flat ordinal while page blocks store order keys, so applying a
+/// template renumbers each sibling group from its visiting order.
 #[derive(Debug, Default)]
 pub struct SiblingPositions {
     next: std::collections::HashMap<Option<String>, u32>,
@@ -508,15 +508,7 @@ impl SiblingPositions {
             .map(ganbaru_sync_contracts::OrderKey::into_string)
             .map_err(|error| format!("rank notes block order key: {error}"))
     }
-
-    /// Template `sort_order` of the next block under `parent_block_id`.
-    pub fn next_sort_order(&mut self, parent_block_id: Option<&str>) -> f64 {
-        f64::from(self.next(parent_block_id) + 1) * TEMPLATE_SORT_STEP
-    }
 }
-
-/// Gap between consecutive template block `sort_order` values.
-const TEMPLATE_SORT_STEP: f64 = 1000.0;
 
 #[cfg(test)]
 mod tests {
@@ -686,9 +678,6 @@ mod tests {
         let second = positions.next_order_key(None).unwrap();
         assert!(first < second);
         assert_eq!(first, nested);
-        assert_eq!(
-            positions.next_sort_order(Some("parent")),
-            2.0 * TEMPLATE_SORT_STEP
-        );
+        assert!(nested < positions.next_order_key(Some("parent")).unwrap());
     }
 }

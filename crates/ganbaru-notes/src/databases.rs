@@ -587,6 +587,7 @@ async fn insert_database_objects(
     sqlx::query(
         "INSERT INTO notes_databases (
             id,
+            block_id,
             parent_type,
             parent_page_id,
             parent_block_id,
@@ -597,7 +598,7 @@ async fn insert_database_objects(
             cover,
             is_inline
          )
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)",
+         VALUES (?1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 1)",
     )
     .bind(request.id.trim())
     .bind(parent.parent_type)
@@ -619,10 +620,9 @@ async fn insert_database_objects(
             title,
             title_rich_text,
             description,
-            icon,
-            properties
+            icon
          )
-         VALUES (?, ?, ?, ?, ?, ?, ?)",
+         VALUES (?, ?, ?, ?, ?, ?)",
     )
     .bind(request.data_source_id.trim())
     .bind(request.id.trim())
@@ -630,10 +630,15 @@ async fn insert_database_objects(
     .bind(title_rich_text.to_string())
     .bind(description.to_string())
     .bind(icon)
-    .bind(default_data_source_properties().to_string())
     .execute(&mut **tx)
     .await
     .map_err(|e| format!("insert notes data source: {e}"))?;
+    crate::property_storage::write_data_source_properties(
+        tx,
+        request.data_source_id.trim(),
+        &default_data_source_properties(),
+    )
+    .await?;
 
     sqlx::query(
         "INSERT INTO notes_database_views (
@@ -669,13 +674,14 @@ async fn load_created_database_tx(
             .fetch_one(&mut **tx)
             .await
             .map_err(|e| format!("load created notes database: {e}"))?;
-    let data_source = sqlx::query_as::<_, NoteDataSourceRow>(
-        "SELECT *
-         FROM notes_data_sources
-         WHERE database_id = ?
-         ORDER BY created_time ASC, id ASC
+    let data_source = sqlx::query_as::<_, NoteDataSourceRow>(concat!(
+        "SELECT ",
+        crate::note_data_source_row_columns!("data_source"),
+        " FROM notes_data_sources AS data_source
+         WHERE data_source.database_id = ?
+         ORDER BY data_source.created_time ASC, data_source.id ASC
          LIMIT 1",
-    )
+    ))
     .bind(database_id)
     .fetch_one(&mut **tx)
     .await
@@ -778,6 +784,7 @@ async fn insert_linked_database_objects(
     sqlx::query(
         "INSERT INTO notes_databases (
             id,
+            block_id,
             parent_type,
             parent_page_id,
             parent_block_id,
@@ -786,7 +793,7 @@ async fn insert_linked_database_objects(
             description,
             is_inline
          )
-         VALUES (?, ?, ?, ?, ?, ?, ?, 1)",
+         VALUES (?1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, 1)",
     )
     .bind(request.id.trim())
     .bind(parent.parent_type)
@@ -890,14 +897,16 @@ async fn load_active_data_source_tx(
     tx: &mut Transaction<'_, Sqlite>,
     data_source_id: &str,
 ) -> Result<NoteDataSourceRow, String> {
-    sqlx::query_as::<_, NoteDataSourceRow>(
-        "SELECT data_source.*
+    sqlx::query_as::<_, NoteDataSourceRow>(concat!(
+        "SELECT ",
+        crate::note_data_source_row_columns!("data_source"),
+        "
          FROM notes_data_sources AS data_source
          JOIN notes_databases AS database ON database.id = data_source.database_id
          WHERE data_source.id = ?
            AND data_source.in_trash = 0
            AND database.in_trash = 0",
-    )
+    ))
     .bind(data_source_id.trim())
     .fetch_optional(&mut **tx)
     .await
@@ -917,12 +926,15 @@ async fn load_created_linked_database_tx(
             .fetch_one(&mut **tx)
             .await
             .map_err(|e| format!("load created linked notes database: {e}"))?;
-    let data_source =
-        sqlx::query_as::<_, NoteDataSourceRow>("SELECT * FROM notes_data_sources WHERE id = ?")
-            .bind(data_source_id.trim())
-            .fetch_one(&mut **tx)
-            .await
-            .map_err(|e| format!("load linked notes data source: {e}"))?;
+    let data_source = sqlx::query_as::<_, NoteDataSourceRow>(concat!(
+        "SELECT ",
+        crate::note_data_source_row_columns!("data_source"),
+        " FROM notes_data_sources AS data_source WHERE data_source.id = ?"
+    ))
+    .bind(data_source_id.trim())
+    .fetch_one(&mut **tx)
+    .await
+    .map_err(|e| format!("load linked notes data source: {e}"))?;
     let view = sqlx::query_as::<_, NoteDatabaseViewRow>(
         "SELECT id,
                 database_id,

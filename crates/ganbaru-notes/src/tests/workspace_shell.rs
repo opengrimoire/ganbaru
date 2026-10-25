@@ -238,11 +238,10 @@ fn dense_workspace_shell_stays_within_row_and_byte_caps() {
                  UNION ALL
                  SELECT value + 1 FROM sequence WHERE value < 10000
              )
-             INSERT INTO notes_pages (id, parent_type, title, properties)
+             INSERT INTO notes_pages (id, parent_type, title)
              SELECT printf('00000000-0000-4000-8000-%012d', value),
                     'workspace',
-                    printf('Page %05d', value),
-                    json_object('title', json_object('id', 'title', 'type', 'title', 'title', json_array()))
+                    printf('Page %05d', value)
              FROM sequence;",
         )
         .execute(&pool)
@@ -285,9 +284,8 @@ fn workspace_shell_keyset_is_stable_for_equal_times_and_titles() {
             "WITH RECURSIVE sequence(value) AS (
                  SELECT 1 UNION ALL SELECT value + 1 FROM sequence WHERE value < 120
              )
-             INSERT INTO notes_pages (id, parent_type, title, properties, last_edited_time)
+             INSERT INTO notes_pages (id, parent_type, title, last_edited_time)
              SELECT printf('00000000-0000-4000-8000-%012d', value), 'workspace', 'Same title',
-                    json_object('title', json_object('id', 'title', 'type', 'title', 'title', json_array())),
                     '2026-07-11T00:00:00.000Z'
              FROM sequence;",
         )
@@ -357,10 +355,9 @@ fn archive_summary_window_filters_and_pages_without_hidden_page_json() {
             "WITH RECURSIVE sequence(value) AS (
                  SELECT 1 UNION ALL SELECT value + 1 FROM sequence WHERE value < 75
              )
-             INSERT INTO notes_pages (id, parent_type, title, properties, cover, archived, last_edited_time)
+             INSERT INTO notes_pages (id, parent_type, title, cover, archived, last_edited_time)
              SELECT printf('20000000-0000-4000-8000-%012d', value), 'workspace',
                     CASE WHEN value <= 60 THEN 'Match same' ELSE 'Other' END,
-                    json_object('title', json_object('id', 'title', 'type', 'title', 'title', json_array()), 'secret', printf('payload-%d', value)),
                     json_object('type', 'external', 'external', json_object('url', 'https://example.com/private')),
                     1, '2026-07-11T00:00:00.000Z'
              FROM sequence;",

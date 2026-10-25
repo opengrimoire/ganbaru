@@ -292,7 +292,7 @@ pub struct NotePageTemplateBlockRow {
     pub block_type: String,
     pub payload: String,
     pub plain_text: String,
-    pub sort_order: f64,
+    pub ordinal: i64,
     pub created_time: String,
     pub last_edited_time: String,
 }
@@ -307,7 +307,7 @@ pub struct NoteDataSourceTemplateBlockRow {
     pub block_type: String,
     pub payload: String,
     pub plain_text: String,
-    pub sort_order: f64,
+    pub ordinal: i64,
     pub created_time: String,
     pub last_edited_time: String,
 }

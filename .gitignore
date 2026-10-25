@@ -47,7 +47,8 @@ coverage/
 .claude/
 
 # Local goal plans
-goal/
+goal/*
+!goal/sync/
 
 # Sample data
 sample/

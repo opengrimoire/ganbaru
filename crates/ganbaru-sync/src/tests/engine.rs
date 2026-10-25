@@ -2356,6 +2356,9 @@ fn recovery_root_tables_follow_cascades_and_leave_out_derived_keys() {
             crate::manifest::vault::distractions::SETTINGS_TABLE,
             crate::manifest::vault::distractions::CUSTOM_CATEGORIES_TABLE,
             crate::manifest::vault::distractions::USAGE_LIMITS_TABLE,
+            // Pages and blocks cascade into each other and carry recoverable content.
+            crate::manifest::vault::notes::PAGES_TABLE,
+            crate::manifest::vault::notes::BLOCKS_TABLE,
             // Participants and teammates carry recoverable names and roles.
             crate::manifest::vault::chat::PARTICIPANTS_TABLE,
             crate::manifest::vault::chat::TEAMMATES_TABLE,

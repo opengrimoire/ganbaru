@@ -22,5 +22,6 @@ sqlx = { workspace = true }
 
 [dev-dependencies]
 ganbaru-calendar = { workspace = true }
+ganbaru-notes = { workspace = true }
 ganbaru-db = { workspace = true, features = ["test-support"] }
 tokio = { workspace = true }

@@ -1,0 +1,13 @@
+You review branch `feat/sync-anchor-service` (worktree <REPO>/.claude/worktrees/agent-a09960e17387cceff, HEAD fac580f6, which already merges feat/sync c77db639) before it merges into feat/sync. It is milestone 11 step 6a of Ganbaru's sync work (anchor service: counted set from the authorization log, proposal outbox and anchor sequencing, charter at pairing, protocol 13 SyncPropose, reconciliation each pass, Reset sync state) plus engine follow-up 4 part C (stale cached winner, chain opening by per-space stored order). Read-only: do not edit, commit, or switch branches; use `git -C <worktree>` with absolute paths. Prefer reading over building; if you run Cargo, use `exec 9>$HOME/.cache/ganbaru-checks.lock; flock 9; CARGO_TARGET_DIR=$HOME/.cache/ganbaru-targets/review cargo ...` with `-j 4` and `--test-threads=4`.
+
+Inputs: the brief <SCRATCHPAD>/m11-step-6a-brief.md, the progress entry <SCRATCHPAD>/milestone-11-step-6a-progress.md, the plan <REPO>/goal/sync/milestone_11.md (Design, step 6 row, Risks, Implementation checks, Progress for steps 1 to 5), and `git diff c77db639...feat/sync-anchor-service`.
+
+Focus on security and data safety, ranked by severity, each with a concrete failure scenario and file:line:
+1. Authority: can a non-admin, a revoked or removed device, a replayed or reordered proposal, or a hostile paired peer get an entry sequenced, a device counted, or a charter replaced? Signature and hash checks on outbox load, proposals over the hub, and the pinned charter at pairing (TLS pinning, first-pass install, refusal of a different charter). The revision high-water write before sealing: crash between reserve and seal, restore of an old vault, successor writers.
+2. Protocol 13: message bounds, decoding of untrusted input, compatibility refusal for 12 peers, oneshot reply paths that could hang or leak a pass.
+3. Reset sync state: every replicated and local sync table cleared, `sync_apply_state` handling, atomicity with key and record removal, crash in the middle, what a client and Android do, unlink of peers, and whether any domain data is lost or left with dangling sync keys.
+4. Part C: `stored_order` migration (sorts last, idempotent, backfill for existing rows, per-space monotonic under concurrency), chain-opening fairness still holds, the cleared winner after heads reload.
+5. Reconciliation: idempotence across passes, crash between pairing and sequencing, removal proposals for peers the log does not hold, and the fresh random discovery key in removal entries.
+Note missing tests, docs that disagree with code, and the Android paths (`desktop`/`mobile` cfg).
+
+Final report under 350 words: verdict (merge, merge with follow-ups, or fix first) and findings by severity with suggested fixes.

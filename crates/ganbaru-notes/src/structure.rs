@@ -21,6 +21,20 @@ pub(crate) const MAX_TREE_DEPTH: i64 = 64;
 pub(crate) const MAX_CONTENT_WALK_DEPTH: i64 =
     MAX_TREE_DEPTH * (crate::writes::MAX_BLOCK_DEPTH + 3);
 
+/// SQL condition that holds unless the page row that `page` names is a row page whose data
+/// source is absent.
+///
+/// Data sources stay on the vault owner while row pages replicate, so a replica can hold a row
+/// page for a data source it never received. Such a page is unplaced: lists and counts skip it
+/// until its data source arrives. `page` is a table alias or table name of `notes_pages`.
+pub(crate) fn placed_page_sql(page: &str) -> String {
+    format!(
+        "({page}.parent_data_source_id IS NULL OR EXISTS (
+             SELECT 1 FROM notes_data_sources AS placed_source
+             WHERE placed_source.id = {page}.parent_data_source_id))"
+    )
+}
+
 /// SQL expression for the project of the page row that `page` names in the enclosing query.
 ///
 /// Only workspace pages store a project; a nested page (under a page, a block, or a data

@@ -1,0 +1,1 @@
+- M3 step 4: a leftover firewall state v2 file on a dev machine shows manual action required; delete it and use package revoke-all for old rules.

@@ -1,6 +1,9 @@
 //! Calendar across replicas: edits of different groups both survive, concurrent timing edits
 //! surface one conflict everywhere, one file imported on two replicas keeps one event per UID,
-//! a re-import after removal keeps the new event, removals that missed a concurrent add or edit
+//! duplicate repair moves Focus runs to the surviving event while the duplicate's task links
+//! stay hidden and its Music assignments keep its id, a re-import after removal keeps the new
+//! event, an unchanged re-import keeps a row another
+//! replica added, removals that missed a concurrent add or edit
 //! are offered for recovery, a deletion undone inside its hold publishes neither the event
 //! tombstone nor its archive, and an expired hold publishes the archive once.
 
@@ -12,7 +15,10 @@ use super::replica::{Replica, connection_from, converge, device_id, quoted};
 use crate::SyncError;
 use crate::error::failpoints;
 use crate::hold::{self, MAX_HOLD_MS};
-use crate::manifest::vault::calendar::{ARCHIVES_TABLE, CALENDARS_TABLE, EVENTS_TABLE};
+use crate::manifest::vault::calendar::{
+    ARCHIVES_TABLE, CALENDARS_TABLE, EVENTS_TABLE, TASK_EVENT_LINKS,
+};
+use crate::manifest::vault::music::ASSIGNMENTS;
 
 const CREATED: &str = "2027-01-01T00:00:00.000Z";
 const EDITED: &str = "2027-01-02T00:00:00.000Z";
@@ -215,6 +221,112 @@ fn calendar_one_file_imported_on_two_replicas_keeps_one_event_per_uid() {
     });
 }
 
+/// SQL attaching a closed Focus run, a link from `task`, and a Music assignment for `phase` to
+/// `event`, each named after the event.
+fn attachments_sql(event: &str, task: &str, phase: &str) -> String {
+    let run = format!("{event}-run");
+    format!(
+        "{open}{close}
+         INSERT INTO project_task_event_links (task_id, event_id, link_kind, sync_key)
+         VALUES ({task}, {event_id}, 'scheduled', {link});
+         INSERT INTO music_context_assignments
+             (owner_kind, owner_id, phase, behavior, provenance_kind, updated_at_ms, sync_key)
+         VALUES ('event-override', {event_id}, {phase_value}, 'pause-music', 'explicit', 1,
+                 {assignment});",
+        open = super::focus::open_run_sql(&run, event, 1, 1),
+        close = super::focus::close_run_sql(&run, 1),
+        task = quoted(task),
+        event_id = quoted(event),
+        link = quoted(&super::projects::key(&TASK_EVENT_LINKS, &[task, event])),
+        phase_value = quoted(phase),
+        assignment = quoted(&super::projects::key(
+            &ASSIGNMENTS,
+            &["event-override", event, phase]
+        )),
+    )
+}
+
+#[test]
+fn calendar_duplicate_repair_moves_runs_but_not_task_links_or_music_to_the_surviving_event() {
+    block_on(async {
+        let mut replicas = shared(
+            2,
+            &format!(
+                "{}{}{}",
+                super::projects::project_sql(),
+                super::projects::task_sql("task-left", "Left", 1),
+                super::projects::task_sql("task-right", "Right", 2),
+            ),
+        )
+        .await;
+        for (replica, (event, task, phase)) in replicas.iter_mut().zip([
+            ("event-left", "task-left", "focus"),
+            ("event-right", "task-right", "short-break"),
+        ]) {
+            replica
+                .exec(&format!(
+                    "{}{}",
+                    event_sql(event, "uid-shared", "Imported"),
+                    attachments_sql(event, task, phase),
+                ))
+                .await;
+            replica.seal().await.unwrap();
+        }
+        converge(&mut replicas).await;
+        assert_converged(&mut replicas).await;
+        for replica in &mut replicas {
+            let survivor = texts(
+                replica,
+                "SELECT id FROM calendar_events WHERE source_uid = 'uid-shared'",
+            )
+            .await;
+            assert_eq!(
+                survivor,
+                ["event-left"],
+                "duplicate repair keeps the lower key"
+            );
+            let survivor = &survivor[0];
+            assert_eq!(
+                texts(
+                    replica,
+                    "SELECT id || '>' || coalesce(event_id, '') FROM pomodoro_runs ORDER BY id",
+                )
+                .await,
+                [
+                    format!("event-left-run>{survivor}"),
+                    format!("event-right-run>{survivor}"),
+                ]
+            );
+            assert_eq!(
+                texts(
+                    replica,
+                    "SELECT task_id || '>' || event_id FROM project_task_event_links
+                     ORDER BY task_id",
+                )
+                .await,
+                [format!("task-left>{survivor}")],
+                "a link names the event in its identity, so the duplicate's link stays hidden"
+            );
+            assert_eq!(
+                texts(
+                    replica,
+                    "SELECT phase || '>' || owner_id FROM music_context_assignments
+                     ORDER BY phase",
+                )
+                .await,
+                ["focus>event-left", "short-break>event-right"],
+                "assignment owners are opaque ids, so the duplicate's assignment keeps its id"
+            );
+            let entries = replica
+                .engine
+                .recovery_entries(&mut replica.conn, &replica.ctx)
+                .await
+                .unwrap();
+            assert!(entries.is_empty(), "{entries:?}");
+        }
+    });
+}
+
 #[test]
 fn calendar_an_event_removed_and_imported_again_keeps_the_new_event() {
     block_on(async {
@@ -236,6 +348,81 @@ fn calendar_an_event_removed_and_imported_again_keeps_the_new_event() {
                 )
                 .await,
                 ["event-again:Second import"]
+            );
+            assert_eq!(conflicts(replica).await, 0);
+        }
+    });
+}
+
+/// Imports one event with one alarm into the shared calendar through the Calendar import, with
+/// payload ids ending in `suffix` as a fresh parse of the same file mints them.
+async fn import_file(replica: &mut Replica, suffix: &str) {
+    let payload = serde_json::from_value(serde_json::json!({
+        "targetCalendarId": CALENDAR,
+        "now": CREATED,
+        "events": [{
+            "candidateId": format!("event-{suffix}"),
+            "title": "Imported",
+            "startTime": "2027-01-05T09:00:00Z",
+            "endTime": "2027-01-05T10:00:00Z",
+            "timezone": "UTC",
+            "description": "",
+            "allDay": false,
+            "location": "",
+            "url": "",
+            "transparency": "opaque",
+            "status": "confirmed",
+            "sourceUid": "uid-file",
+            "visibility": "public",
+            "sequence": 0,
+            "notifications": "[10]",
+            "meetingEnabled": false,
+            "guestCanModify": false,
+            "guestCanInviteOthers": true,
+            "guestCanSeeOtherGuests": true,
+            "attendees": [],
+            "alarms": [{
+                "id": format!("alarm-{suffix}"),
+                "action": "display",
+                "triggerType": "relative",
+                "triggerValue": "-PT10M",
+            }],
+            "overrides": [],
+        }],
+    }))
+    .unwrap();
+    let summary = ganbaru_calendar::import::bulk_import_on(&mut replica.conn, payload)
+        .await
+        .unwrap();
+    assert_eq!(
+        serde_json::to_value(summary).unwrap()["warnings"],
+        serde_json::json!([])
+    );
+}
+
+#[test]
+fn calendar_an_unchanged_reimport_keeps_an_alarm_another_replica_added() {
+    block_on(async {
+        let mut replicas = shared(2, "").await;
+        import_file(&mut replicas[0], "first").await;
+        converge(&mut replicas).await;
+        replicas[1]
+            .exec(
+                "INSERT INTO calendar_event_alarms (event_id, id, trigger_value, sort_order)
+                 VALUES ('event-first', 'alarm-added', '-PT1H', 1)",
+            )
+            .await;
+        import_file(&mut replicas[0], "second").await;
+        converge(&mut replicas).await;
+        assert_converged(&mut replicas).await;
+        for replica in &mut replicas {
+            assert_eq!(
+                texts(
+                    replica,
+                    "SELECT event_id || '>' || id FROM calendar_event_alarms ORDER BY id",
+                )
+                .await,
+                ["event-first>alarm-added", "event-first>alarm-first"]
             );
             assert_eq!(conflicts(replica).await, 0);
         }

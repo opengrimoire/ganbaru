@@ -34,7 +34,7 @@ async fn replicas(count: usize) -> Vec<Replica> {
 }
 
 /// The derived row key of `table` for `parts`, in its key input order.
-fn key(table: &TableSpec, parts: &[&str]) -> String {
+pub(super) fn key(table: &TableSpec, parts: &[&str]) -> String {
     let derived = table
         .derived_key
         .as_ref()

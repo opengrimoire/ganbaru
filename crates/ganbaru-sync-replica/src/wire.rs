@@ -2,9 +2,9 @@
 
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use ganbaru_handoff::protocol::{SyncAsset, SyncAssetKey, SyncSeq};
+use ganbaru_handoff::protocol::{ControlMessage, SyncAsset, SyncAssetKey, SyncSeq};
 use ganbaru_sync::assets::AssetRef;
-use ganbaru_sync_contracts::{Digest32, Seq, VersionVector, WriterId};
+use ganbaru_sync_contracts::{Digest32, ProposalRejection, Seq, VersionVector, WriterId};
 
 /// Error code of a pull the hub can no longer answer because it compacted operations the peer
 /// lacks. The peer stops pulling until it bootstraps from a fresh copy of the vault.
@@ -128,6 +128,32 @@ pub fn bytes_from_wire(text: &str) -> Result<Vec<u8>, String> {
     URL_SAFE_NO_PAD
         .decode(text)
         .map_err(|_| "sync asset chunk is invalid".to_string())
+}
+
+/// The answer to a proposal: the revision that holds it, or the wire value of its rejection.
+pub fn proposed_to_wire(outcome: Result<u64, ProposalRejection>) -> ControlMessage {
+    match outcome {
+        Ok(revision) => ControlMessage::SyncProposed {
+            revision: Some(revision),
+            rejection: None,
+        },
+        Err(rejection) => ControlMessage::SyncProposed {
+            revision: None,
+            rejection: Some(rejection.as_u8()),
+        },
+    }
+}
+
+/// The outcome an answer to a proposal names.
+pub fn proposed_from_wire(
+    revision: Option<u64>,
+    rejection: Option<u8>,
+) -> Result<Result<u64, ProposalRejection>, String> {
+    match (revision, rejection.map(ProposalRejection::from_u8)) {
+        (Some(revision), None) => Ok(Ok(revision)),
+        (None, Some(Some(rejection))) => Ok(Err(rejection)),
+        _ => Err("the hub answered a proposal without one outcome".to_string()),
+    }
 }
 
 #[cfg(test)]

@@ -151,6 +151,51 @@ pub fn remove_entry(device_id: &str) -> Entry {
     })
 }
 
+/// The membership changes a reconciliation of linked devices with the space wants.
+#[derive(Default)]
+pub struct Reconciliation {
+    /// Linked devices the space does not know.
+    pub enroll: Vec<Enrollment>,
+    /// Enrolled devices that are no longer linked.
+    pub remove: Vec<String>,
+}
+
+/// Places a proposal signed by `admin` in the outbox for each change of `changes` that no
+/// proposal exists for yet, waiting or finally rejected, matched by change kind and device id.
+/// A finally rejected change is never proposed again, so a removed device that links again
+/// stays removed. Returns how many proposals it added.
+pub fn queue_reconciliation(
+    outbox: &mut Outbox,
+    space: SpaceId,
+    admin: &AdminKeyPair,
+    changes: Reconciliation,
+    now_ms: u64,
+) -> Result<usize, String> {
+    let entries = changes.enroll.into_iter().map(enroll_entry).chain(
+        changes
+            .remove
+            .iter()
+            .map(|device_id| remove_entry(device_id)),
+    );
+    let mut added = 0;
+    for entry in entries {
+        if outbox.find(|queued| same_change(queued, &entry)).is_some() {
+            continue;
+        }
+        added += usize::from(outbox.add(propose(space, admin, entry, now_ms)?)?);
+    }
+    Ok(added)
+}
+
+/// Whether two entries make the same membership change to the same device.
+fn same_change(left: &Entry, right: &Entry) -> bool {
+    match (left, right) {
+        (Entry::Enroll(left), Entry::Enroll(right)) => left.device_id == right.device_id,
+        (Entry::Remove(left), Entry::Remove(right)) => left.device_id == right.device_id,
+        _ => false,
+    }
+}
+
 /// Signs `entry` as a proposal of the admin key for the space.
 pub fn propose(
     space: SpaceId,

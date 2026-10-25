@@ -5,11 +5,13 @@ use crate::assets::{
 };
 use crate::authority::{self, AnchorKeys, Enrollment, Founding, ensure_charter};
 use crate::client::{
-    ClientSession, Exchange, Exchanged, MAX_EXCHANGE_BYTES, PeerIds, SyncTransport, wait,
+    self, ClientSession, Exchange, Exchanged, MAX_EXCHANGE_BYTES, PeerIds, SyncTransport, wait,
 };
 use crate::hub::{
-    BOOTSTRAP_REQUIRED, HubContact, HubContactSource, HubStability, HubVault, OpenHubVault, SyncHub,
+    BOOTSTRAP_REQUIRED, HubContact, HubContactSource, HubProposals, HubStability, HubVault,
+    OpenHubVault, SyncHub,
 };
+use crate::outbox::Outbox;
 use crate::recovery::{
     RecoveredRow, RecoveryAction, RecoveryChoice, RecoveryRestorers, RestoreFuture,
 };
@@ -973,6 +975,136 @@ fn only_the_anchor_sequences_authorization_entries() {
             .remove(PHONE_DEVICE)
             .await
             .expect("the anchor removes");
+        hub_replica.close().await;
+        phone.close().await;
+    });
+}
+
+#[test]
+fn proposals_reach_the_anchor_through_the_hub_until_the_chain_holds_them() {
+    block_on(async {
+        let hub_replica = Replica::new("hub-proposals", HUB_DEVICE).await;
+        let mut phone = Replica::new("phone-proposals", PHONE_DEVICE).await;
+        let laptop = Enrollment {
+            device_id: "device-laptop".to_string(),
+            device_key: device_key("device-laptop").public_key(),
+            tls_fingerprint: [27; 32],
+            label: "Laptop".to_string(),
+            device_kind: DeviceKind::Desktop,
+        };
+        let enroll = authority::propose(
+            hub_replica.ctx.space,
+            &hub_keys().admin,
+            authority::enroll_entry(laptop),
+            NOW_MS,
+        )
+        .expect("sign enrollment");
+
+        // A hub without the anchor service answers that it is not the anchor.
+        let (plain, _changes) = hub(&hub_replica);
+        assert_eq!(
+            client::propose(&plain, &phone_ids(), &enroll)
+                .await
+                .expect("answer"),
+            Err(ProposalRejection::NotAnchor)
+        );
+
+        // The anchor service sequences what the hub hands it with its own writer.
+        let anchor_writer = Arc::new(tokio::sync::Mutex::new(
+            create_writer(
+                &hub_replica.directory.files(),
+                &hub_replica.directory.keys(),
+                SuccessorPlan::default(),
+                &device_key(HUB_DEVICE),
+                HUB_DEVICE,
+                NOW_MS,
+            )
+            .expect("anchor writer"),
+        ));
+        let (pool, ctx) = (hub_replica.pool.clone(), hub_replica.ctx.clone());
+        let sequence: HubProposals = Arc::new(move |proposal| {
+            let (pool, ctx, writer) = (pool.clone(), ctx.clone(), Arc::clone(&anchor_writer));
+            Box::pin(async move {
+                let mut writer = writer.lock().await;
+                let mut conn = acquire(&pool).await;
+                let engine = Engine::vault();
+                let outcome = authority::sequence(
+                    &engine,
+                    &mut conn,
+                    &ctx,
+                    &mut writer.local(),
+                    &proposal,
+                    NOW_MS,
+                )
+                .await?;
+                let seq = engine
+                    .stored_vector(&mut conn, &ctx)
+                    .await
+                    .map_err(|error| error.to_string())?
+                    .get(&writer.id());
+                writer.committed(seq)?;
+                Ok(outcome)
+            })
+        });
+        let changes = watch::Sender::new(0);
+        let transport = DirectTransport(
+            SyncHub::new(open_hub(&hub_replica), changes.clone())
+                .with_contact(contact_source(test_contact()))
+                .with_proposals(sequence),
+        );
+
+        let path = phone.directory.files().outbox_path();
+        let mut outbox = Outbox::load(&path).expect("empty outbox");
+        let duplicate = authority::propose(
+            hub_replica.ctx.space,
+            &hub_keys().admin,
+            authority::enroll_entry(Enrollment {
+                device_id: PHONE_DEVICE.to_string(),
+                device_key: device_key(PHONE_DEVICE).public_key(),
+                tls_fingerprint: [28; 32],
+                label: PHONE_DEVICE.to_string(),
+                device_kind: DeviceKind::Mobile,
+            }),
+            NOW_MS,
+        )
+        .expect("sign duplicate");
+        outbox.add(enroll.clone()).expect("queue enrollment");
+        outbox.add(duplicate.clone()).expect("queue duplicate");
+        let sequenced = client::replay_outbox(&transport, &phone_ids(), &mut outbox)
+            .await
+            .expect("replay");
+        assert_eq!(sequenced, 1);
+        assert_eq!(*changes.borrow(), 1, "a sequenced proposal wakes waits");
+        assert_eq!(
+            outbox.entries()[1].rejection,
+            Some(ProposalRejection::AlreadyEnrolled)
+        );
+        // Replaying again is idempotent: the anchor answers the revision it already holds.
+        assert_eq!(
+            client::replay_outbox(&transport, &phone_ids(), &mut outbox)
+                .await
+                .expect("replay again"),
+            1
+        );
+        assert_eq!(outbox.pending(), vec![enroll.clone()]);
+
+        // Once the exchange brings the entry and the pass applies it, pruning drops the proposal.
+        phone
+            .exchange(&transport, &phone_ids())
+            .await
+            .expect("exchange");
+        phone.apply().await;
+        let mut conn = acquire(&phone.pool).await;
+        outbox
+            .prune(&phone.engine, &mut conn, &phone.ctx)
+            .await
+            .expect("prune");
+        drop(conn);
+        assert!(outbox.pending().is_empty());
+        assert_eq!(
+            Outbox::load(&path).expect("reload").entries(),
+            outbox.entries()
+        );
         hub_replica.close().await;
         phone.close().await;
     });

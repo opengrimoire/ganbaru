@@ -290,3 +290,56 @@ fn the_anchor_removes_an_enrolled_device_once() {
         registry.close_all().await.expect("close pools");
     });
 }
+
+#[test]
+fn reconciliation_proposes_each_membership_change_once() {
+    let directory = TestDirectory::new("outbox-reconcile");
+    let path = directory.files().outbox_path();
+    let mut outbox = Outbox::load(&path).expect("empty outbox");
+    let admin = anchor_keys().admin;
+    let space = SpaceId::personal(VAULT_ID);
+    let changes = || authority::Reconciliation {
+        enroll: vec![enrollment("device-phone", 40)],
+        remove: vec!["device-tablet".to_string()],
+    };
+
+    let added = authority::queue_reconciliation(&mut outbox, space, &admin, changes(), NOW_MS)
+        .expect("queue changes");
+    assert_eq!(added, 2);
+    // A later pass signs at a new time, which is a new proposal hash, yet proposes nothing.
+    let again = authority::queue_reconciliation(&mut outbox, space, &admin, changes(), NOW_MS + 1)
+        .expect("queue again");
+    assert_eq!(again, 0);
+
+    // A finally rejected change is never proposed again, even with a new label.
+    let enroll = outbox
+        .find(|entry| *entry == enroll_entry(enrollment("device-phone", 40)))
+        .expect("enrollment queued")
+        .proposal
+        .hash();
+    outbox
+        .settle(&enroll, Err(ProposalRejection::DeviceRemoved))
+        .expect("settle final");
+    let mut relabeled = enrollment("device-phone", 40);
+    relabeled.label = "renamed phone".to_string();
+    let relinked = authority::queue_reconciliation(
+        &mut outbox,
+        space,
+        &admin,
+        authority::Reconciliation {
+            enroll: vec![relabeled, enrollment("device-laptop", 41)],
+            remove: Vec::new(),
+        },
+        NOW_MS + 2,
+    )
+    .expect("queue relinked");
+    assert_eq!(relinked, 1, "only the new device is proposed");
+
+    let reloaded = Outbox::load(&path).expect("reload");
+    assert_eq!(reloaded.entries().len(), 3);
+    assert!(
+        reloaded
+            .find(|entry| *entry == remove_entry("device-tablet"))
+            .is_some_and(|entry| entry.pending())
+    );
+}

@@ -10,12 +10,12 @@
 
 use super::assets::{AssetMemory, AssetSession, AssetStore, AssetTransfer, MAX_ASSET_PASS_BYTES};
 use super::carry_forward;
-use super::client::{ClientSession, Exchange, ForkPoint, PeerIds};
+use super::client::{ClientSession, Exchange, ForkPoint, PeerIds, SyncTransport};
 #[cfg(mobile)]
 use super::host::HeadlessHost;
 use super::host::SyncHost;
 #[cfg(desktop)]
-use super::hub::{HubStability, HubVault, OpenHubVault, SyncHub};
+use super::hub::{HubProposals, HubStability, HubVault, OpenHubVault, SyncHub};
 use super::recovery::{RecoveryChoice, RecoveryRequest};
 use super::status::{DegradedReasons, SyncErrorCode, SyncRole, SyncState, SyncStatusView};
 use super::transport::PairedTransport;
@@ -31,14 +31,15 @@ use ganbaru_sync::stability::DeviceStanding;
 use ganbaru_sync::{
     ChangeNotice, Engine, SealReport, SpaceContext, SyncError, compaction_limit, hold, local,
 };
-#[cfg(desktop)]
-use ganbaru_sync_contracts::SignedCharter;
 use ganbaru_sync_contracts::{DevicePublicKey, Seq, VersionVector, WriterId};
+#[cfg(desktop)]
+use ganbaru_sync_contracts::{ProposalRejection, SignedCharter, SignedProposal};
 #[cfg(desktop)]
 use ganbaru_sync_replica::authority::{
     self, AnchorKeys, Founding, ensure_anchor_keys, ensure_charter,
 };
 use ganbaru_sync_replica::now_ms;
+use ganbaru_sync_replica::outbox::Outbox;
 use sqlx::SqlitePool;
 use std::collections::BTreeSet;
 #[cfg(any(mobile, test))]
@@ -107,6 +108,9 @@ pub(crate) struct RuntimeState {
     /// them, for the pairing reply.
     #[cfg(desktop)]
     pairing_charter: Mutex<Option<PinnedCharter>>,
+    /// Proposals linked devices sent, waiting for the anchor pass.
+    #[cfg(desktop)]
+    proposals: Mutex<Vec<ProposalRequest>>,
     /// A pause change waiting for the writer record.
     pause_request: Mutex<Option<bool>>,
     /// Recovery actions waiting for the next pass.
@@ -128,6 +132,8 @@ impl Default for RuntimeState {
             stability: HubStability::default(),
             #[cfg(desktop)]
             pairing_charter: Mutex::default(),
+            #[cfg(desktop)]
+            proposals: Mutex::default(),
             pause_request: Mutex::default(),
             recovery: Mutex::default(),
             status: Mutex::default(),
@@ -196,6 +202,29 @@ impl RuntimeState {
             .map_err(|_| "sync pairing charter lock is unavailable".to_string())
     }
 
+    /// Queues a proposal a linked device sent for the anchor pass and wakes the service.
+    #[cfg(desktop)]
+    fn request_proposal(
+        &self,
+        proposal: SignedProposal,
+    ) -> Result<oneshot::Receiver<ProposalOutcome>, String> {
+        let (reply, receiver) = oneshot::channel();
+        self.proposals
+            .lock()
+            .map_err(|_| "sync proposal lock is unavailable".to_string())?
+            .push(ProposalRequest { proposal, reply });
+        self.now.notify_one();
+        Ok(receiver)
+    }
+
+    #[cfg(desktop)]
+    fn take_proposal_requests(&self) -> Vec<ProposalRequest> {
+        self.proposals
+            .lock()
+            .map(|mut requests| std::mem::take(&mut *requests))
+            .unwrap_or_default()
+    }
+
     fn take_recovery_requests(&self) -> Vec<RecoveryRequest> {
         self.recovery
             .lock()
@@ -221,6 +250,18 @@ impl RuntimeState {
         self.passes_done
             .send_modify(|done| *done = (*done).max(number));
     }
+}
+
+/// The anchor's answer to a proposal: the revision that holds it or why it was rejected, or why
+/// the pass could not answer.
+#[cfg(desktop)]
+type ProposalOutcome = Result<Result<u64, ProposalRejection>, String>;
+
+/// A proposal a linked device sent through the hub, with where its answer goes.
+#[cfg(desktop)]
+struct ProposalRequest {
+    proposal: SignedProposal,
+    reply: oneshot::Sender<ProposalOutcome>,
 }
 
 struct ServiceTask {
@@ -260,7 +301,20 @@ pub(crate) fn sync_hub<R: Runtime>(app: &AppHandle<R>) -> SyncHub {
         Box::pin(async move { open_hub_vault(&app).await })
     });
     let runtime = app.state::<SyncRuntime>();
-    SyncHub::new(open, runtime.changes.clone()).with_stability(runtime.stability.clone())
+    let queue = runtime.inner().clone();
+    let proposals: HubProposals = Arc::new(move |proposal| {
+        let runtime = queue.clone();
+        Box::pin(async move {
+            let receiver = runtime.request_proposal(proposal)?;
+            tokio::time::timeout(DELEGATED_PASS_TIMEOUT, receiver)
+                .await
+                .map_err(|_| "the anchor did not sequence the proposal in time".to_string())?
+                .map_err(|_| "the anchor stopped before it sequenced the proposal".to_string())?
+        })
+    });
+    SyncHub::new(open, runtime.changes.clone())
+        .with_stability(runtime.stability.clone())
+        .with_proposals(proposals)
 }
 
 #[cfg(desktop)]
@@ -774,6 +828,11 @@ impl ServiceState {
             }
         }
         self.apply_new(&session).await?;
+        if let Some((assets, _)) = asset_peer.as_ref()
+            && view.state != SyncState::Offline
+        {
+            session.replay_outbox(&assets.transport, &assets.ids).await;
+        }
         if let Some((assets, mut transfer)) = asset_peer {
             next = self
                 .download_assets(&session, &assets, &mut transfer, next, view)
@@ -798,13 +857,22 @@ impl ServiceState {
             session
                 .reconcile_devices(&manager, &vault_id, &mut self.writer)
                 .await?;
+            #[cfg(desktop)]
+            session
+                .sequence_proposals(&manager, &mut self.writer, runtime.take_proposal_requests())
+                .await;
             let stable = self.stability(host, &session, &manager, view).await?;
             #[cfg(desktop)]
             runtime.stability.publish(&vault_id, stable.clone());
             next = Self::compact(&session, &stable, next).await?;
         } else {
             #[cfg(desktop)]
-            runtime.stability.clear();
+            {
+                runtime.stability.clear();
+                for request in runtime.take_proposal_requests() {
+                    let _ = request.reply.send(Ok(Err(ProposalRejection::NotAnchor)));
+                }
+            }
             if acknowledged.sealed_ops > 0 && matches!(next, Next::Online(_)) {
                 // The hub learns of the acknowledgement on the next exchange, which runs now.
                 next = Next::Continue;
@@ -1715,9 +1783,10 @@ impl<'a, H: SyncHost> Session<'a, H> {
 
     /// On the anchor, enrolls linked devices the space does not know yet and removes enrolled
     /// devices that are no longer linked, so a crash between linking and sealing heals on the
-    /// next pass. A device the space removed stays removed: linking it again under the same
-    /// device id enrolls nothing. A device that cannot be enrolled is reported and skipped, so
-    /// it never stops the pass.
+    /// next pass. Each change goes through the outbox as a proposal signed by the anchor admin key
+    /// and is sequenced like a proposal from any admin. A device the space removed stays
+    /// removed: linking it again under the same device id enrolls nothing. A device that cannot
+    /// be enrolled is reported and skipped, so it never stops the pass.
     async fn reconcile_devices(
         &self,
         manager: &PairingManager,
@@ -1751,7 +1820,7 @@ impl<'a, H: SyncHost> Session<'a, H> {
                         .any(|device| device.device_id == peer.device_id)
                 })
                 .collect();
-            let remove: Vec<&str> = view
+            let remove: Vec<String> = view
                 .devices
                 .iter()
                 .filter(|device| {
@@ -1759,45 +1828,44 @@ impl<'a, H: SyncHost> Session<'a, H> {
                         && device.device_id != view.anchor_device_id
                         && !peers.iter().any(|peer| peer.device_id == device.device_id)
                 })
-                .map(|device| device.device_id.as_str())
+                .map(|device| device.device_id.clone())
                 .collect();
-            if enroll.is_empty() && remove.is_empty() {
-                return Ok(());
-            }
-            let anchor = self.anchor_keys().await?;
+            let mut changes = authority::Reconciliation {
+                remove,
+                ..Default::default()
+            };
             for peer in enroll {
-                let result = match linked_enrollment(peer) {
-                    Ok(enrollment) => {
-                        authority::enroll(
-                            &self.engine,
-                            &mut conn,
-                            &self.ctx,
-                            &anchor.admin,
-                            &mut active.local(),
-                            enrollment,
-                            now_ms()?,
-                        )
-                        .await
+                match linked_enrollment(peer) {
+                    Ok(enrollment) => changes.enroll.push(enrollment),
+                    Err(error) => {
+                        eprintln!("sync: enroll linked device {}: {error}", peer.device_id);
                     }
-                    Err(error) => Err(error),
-                };
-                if let Err(error) = result {
-                    eprintln!("sync: enroll linked device {}: {error}", peer.device_id);
                 }
             }
-            for device_id in remove {
-                authority::remove(
-                    &self.engine,
-                    &mut conn,
-                    &self.ctx,
+            let path = self.files.outbox_path();
+            let mut outbox = blocking(move || Outbox::load(&path)).await?;
+            if !changes.enroll.is_empty() || !changes.remove.is_empty() {
+                let anchor = self.anchor_keys().await?;
+                authority::queue_reconciliation(
+                    &mut outbox,
+                    self.ctx.space,
                     &anchor.admin,
-                    &mut active.local(),
-                    device_id,
+                    changes,
                     now_ms()?,
-                )
-                .await
-                .map_err(|error| format!("remove unlinked device {device_id}: {error}"))?;
+                )?;
             }
+            if outbox.entries().iter().all(|entry| !entry.pending()) {
+                return Ok(());
+            }
+            authority::sequence_outbox(
+                &self.engine,
+                &mut conn,
+                &self.ctx,
+                &mut active.local(),
+                &mut outbox,
+                now_ms()?,
+            )
+            .await?;
             Ok(())
         }
         #[cfg(mobile)]
@@ -1805,6 +1873,86 @@ impl<'a, H: SyncHost> Session<'a, H> {
             let _ = (manager, vault_id, writer);
             Ok(())
         }
+    }
+
+    /// On the anchor, sequences the proposals linked devices sent through the hub with the
+    /// anchor writer and answers each. Anywhere else, or without a writer, each is answered as
+    /// not reaching the anchor, so the sender keeps it in its outbox.
+    #[cfg(desktop)]
+    async fn sequence_proposals(
+        &self,
+        manager: &PairingManager,
+        writer: &mut Option<ActiveWriter>,
+        requests: Vec<ProposalRequest>,
+    ) {
+        if requests.is_empty() {
+            return;
+        }
+        let anchor = self.anchors_here(manager).await;
+        for request in requests {
+            let outcome = match (&anchor, writer.as_mut()) {
+                (Err(error), _) => Err(error.clone()),
+                (Ok(true), Some(active)) => match acquire(&self.pool).await {
+                    Ok(mut conn) => match now_ms() {
+                        Ok(now) => {
+                            authority::sequence(
+                                &self.engine,
+                                &mut conn,
+                                &self.ctx,
+                                &mut active.local(),
+                                &request.proposal,
+                                now,
+                            )
+                            .await
+                        }
+                        Err(error) => Err(error),
+                    },
+                    Err(error) => Err(error),
+                },
+                _ => Ok(Err(ProposalRejection::NotAnchor)),
+            };
+            let _ = request.reply.send(outcome);
+        }
+    }
+
+    /// Whether the selected log names this installation's device as the anchor.
+    #[cfg(desktop)]
+    async fn anchors_here(&self, manager: &PairingManager) -> Result<bool, String> {
+        let device_id = manager.device_id()?;
+        let mut conn = acquire(&self.pool).await?;
+        Ok(self
+            .engine
+            .authorization(&mut conn, &self.ctx)
+            .await
+            .map_err(|error| format!("read sync authorization: {error}"))?
+            .is_some_and(|view| view.anchor_device_id == device_id))
+    }
+
+    /// On a client, drops outbox proposals the applied chain holds and sends the rest to the
+    /// hub, which hands them to the anchor. A failure is reported and the proposals wait for the
+    /// next pass.
+    async fn replay_outbox<T: SyncTransport>(&self, transport: &T, ids: &PeerIds) {
+        if let Err(error) = self.replay_outbox_inner(transport, ids).await {
+            eprintln!("sync: send waiting proposals: {error}");
+        }
+    }
+
+    async fn replay_outbox_inner<T: SyncTransport>(
+        &self,
+        transport: &T,
+        ids: &PeerIds,
+    ) -> Result<(), String> {
+        let path = self.files.outbox_path();
+        let mut outbox = blocking(move || Outbox::load(&path)).await?;
+        if outbox.entries().iter().all(|entry| !entry.pending()) {
+            return Ok(());
+        }
+        {
+            let mut conn = acquire(&self.pool).await?;
+            outbox.prune(&self.engine, &mut conn, &self.ctx).await?;
+        }
+        super::client::replay_outbox(transport, ids, &mut outbox).await?;
+        Ok(())
     }
 
     /// Restores or discards a recovery offer with the local writer.

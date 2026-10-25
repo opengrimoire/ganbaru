@@ -54,6 +54,7 @@ pub(crate) mod settings;
 pub mod settings_commands;
 #[cfg(desktop)]
 pub mod source_control;
+pub(crate) mod sync;
 #[cfg(desktop)]
 pub mod terminal;
 #[cfg(desktop)]

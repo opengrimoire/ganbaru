@@ -461,17 +461,23 @@ fn phone_ids() -> PeerIds {
 
 /// Opens the replica's vault as the vault a hub serves.
 fn open_hub(replica: &Replica) -> OpenHubVault {
+    open_hub_quarantining(replica, BTreeSet::new())
+}
+
+/// Opens the replica's vault as a hub that quarantined `quarantined`.
+fn open_hub_quarantining(replica: &Replica, quarantined: BTreeSet<String>) -> OpenHubVault {
     let pool = replica.pool.clone();
     let assets = Arc::clone(&replica.assets);
     Arc::new(move || {
         let pool = pool.clone();
         let assets = Arc::clone(&assets);
+        let quarantined = quarantined.clone();
         Box::pin(async move {
             Ok(Some(HubVault {
                 pool,
                 vault_id: VAULT_ID.to_string(),
                 assets,
-                quarantined: BTreeSet::new(),
+                quarantined,
             }))
         })
     })
@@ -557,6 +563,44 @@ fn exchange_pushes_and_pulls_until_both_replicas_hold_every_operation() {
                 .expect("exchange"),
         );
         assert_eq!((again.pushed, again.pulled), (0, 0));
+        hub_replica.close().await;
+        phone.close().await;
+    });
+}
+
+#[test]
+fn a_hub_stores_nothing_from_a_quarantined_device_until_the_quarantine_lifts() {
+    block_on(async {
+        let mut hub_replica = Replica::new("hub-quarantine", HUB_DEVICE).await;
+        let mut phone = Replica::new("phone-quarantine", PHONE_DEVICE).await;
+        let quarantining = DirectTransport(
+            SyncHub::new(
+                open_hub_quarantining(&hub_replica, BTreeSet::from([PHONE_DEVICE.to_string()])),
+                watch::Sender::new(0),
+            )
+            .with_contact(contact_source(test_contact())),
+        );
+        hub_replica.seal_note("note-hub").await;
+        phone.seal_note("note-phone").await;
+
+        // The exchange still completes: the phone pulls, and the hub skips what it pushes.
+        let exchanged = phone.exchange(&quarantining, &phone_ids()).await;
+        assert!(exchanged.is_ok(), "{exchanged:?}");
+        hub_replica.apply().await;
+        phone.apply().await;
+        assert!(phone.has_note("note-hub").await);
+        assert!(!hub_replica.has_note("note-phone").await);
+        assert_eq!(
+            hub_replica.stored().await.get(&phone.writer.id()),
+            0,
+            "no operation of the quarantined device is stored"
+        );
+
+        // Lifting the quarantine lets the same operations arrive.
+        let (lifted, _changes) = hub(&hub_replica);
+        converge(&mut hub_replica, &mut phone, &lifted).await;
+        assert!(hub_replica.has_note("note-phone").await);
+        assert_eq!(phone.stored().await, hub_replica.stored().await);
         hub_replica.close().await;
         phone.close().await;
     });

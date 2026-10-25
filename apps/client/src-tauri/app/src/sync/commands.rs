@@ -10,6 +10,9 @@ use tauri::{AppHandle, Runtime, State, Webview};
 
 /// How long a recovery action may wait for the service to run it.
 const RECOVERY_TIMEOUT: Duration = Duration::from_secs(60);
+/// How long Reset sync state may wait for the service to run it.
+#[cfg(desktop)]
+const RESET_TIMEOUT: Duration = Duration::from_secs(60);
 /// Longest subscription id, which fits a UUID.
 const MAX_SUBSCRIPTION_ID_BYTES: usize = 64;
 
@@ -102,6 +105,19 @@ pub async fn sync_recovery_discard(
     close_recovery(&runtime, target, RecoveryAction::Discard)
         .await
         .map(|_| ())
+}
+
+/// Resets sync state on the coordinating computer: unlinks every device linked for the vault,
+/// clears the engine tables and this installation's writer state, and founds a new space that
+/// republishes every current row. Unlinked devices pair again. A client refuses it.
+#[cfg(desktop)]
+#[tauri::command]
+pub async fn sync_reset_state(runtime: State<'_, SyncRuntime>) -> Result<(), String> {
+    let reply = runtime.request_reset()?;
+    tokio::time::timeout(RESET_TIMEOUT, reply)
+        .await
+        .map_err(|_| "sync did not reset its state in time".to_string())?
+        .map_err(|_| "sync stopped before resetting its state".to_string())?
 }
 
 async fn close_recovery(

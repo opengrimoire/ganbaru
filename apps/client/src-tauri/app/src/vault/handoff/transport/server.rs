@@ -13,7 +13,7 @@ use crate::vault::handoff::enrollment_approval::{
     ENROLLMENT_DECLINED_MESSAGE, ENROLLMENT_UNANSWERED_MESSAGE, EnrollmentApprovals,
     EnrollmentDecision,
 };
-use crate::vault::handoff::pairing::{Enrollment, PairingManager, TlsIdentity};
+use crate::vault::handoff::pairing::{Enrollment, PairingManager, PinnedCharter, TlsIdentity};
 use crate::vault::handoff::protocol::{
     BundleMetadata, BundlePurpose, ControlMessage, PROTOCOL_VERSION, TRANSFER_CHUNK_BYTES,
     read_control, read_control_limited, unix_time_ms, write_control,
@@ -83,9 +83,13 @@ impl ServerConfigCache {
 
 /// Seals the sync enrollment of linked devices. The listener runs it after linking an approved
 /// device and before replying, so the vault bundle the device downloads next already enrolls it.
-/// A failure leaves the enrollment to the next sync pass.
-pub(crate) type EnrollmentSealer =
-    Arc<dyn Fn() -> Pin<Box<dyn Future<Output = Result<(), String>> + Send>> + Send + Sync>;
+/// It returns the space charter and its person key for the reply, so the device pins the anchor
+/// it was told about. A failure leaves the enrollment to the next sync pass.
+pub(crate) type EnrollmentSealer = Arc<
+    dyn Fn() -> Pin<Box<dyn Future<Output = Result<Option<PinnedCharter>, String>> + Send>>
+        + Send
+        + Sync,
+>;
 
 /// Optional coordinator features a listener dispatches to, and the approvals enrollment asks.
 #[derive(Clone, Default)]
@@ -372,11 +376,16 @@ async fn handle_connection(
             if let Err(error) = manager.enroll_peer(enrollment, requested_at_ms) {
                 return send_error(&mut stream, "enrollment_rejected", &error, false).await;
             }
-            if let Some(seal) = enrollment_sealer.as_ref()
-                && let Err(error) = seal().await
-            {
-                eprintln!("sync: enroll the linked device: {error}");
-            }
+            let charter = match enrollment_sealer.as_ref() {
+                Some(seal) => seal().await.unwrap_or_else(|error| {
+                    eprintln!("sync: enroll the linked device: {error}");
+                    None
+                }),
+                None => None,
+            };
+            let (charter, person_key) = charter
+                .map(|pinned| (pinned.charter, pinned.person_key))
+                .unzip();
             let coordinator_device_id = manager.device_id()?;
             let coordinator_device_label = suggested_device_label();
             timeout_control(write_control(
@@ -385,6 +394,8 @@ async fn handle_connection(
                     protocol_version: PROTOCOL_VERSION,
                     coordinator_device_id,
                     coordinator_device_label: Some(coordinator_device_label),
+                    charter,
+                    person_key,
                 },
             ))
             .await

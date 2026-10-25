@@ -143,11 +143,12 @@ pub(crate) async fn insert_applied_op(
     continues: bool,
     now_ms: u64,
 ) -> SyncResult<()> {
+    let order = log::next_stored_order(conn, &ctx.space).await?;
     sqlx::query(
         "INSERT INTO sync_ops
             (space_id, writer_id, seq, kind, hash, clock, authorization_revision, context,
-             envelope, state, hold_reason, stored_at_ms, group_continues)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'applied', NULL, ?, ?)",
+             envelope, state, hold_reason, stored_at_ms, stored_order, group_continues)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'applied', NULL, ?, ?, ?)",
     )
     .bind(ctx.space.as_bytes().as_slice())
     .bind(writer.as_bytes().as_slice())
@@ -159,6 +160,7 @@ pub(crate) async fn insert_applied_op(
     .bind(context.encode())
     .bind(bytes)
     .bind(clamp_ms(now_ms))
+    .bind(order)
     .bind(continues)
     .execute(&mut *conn)
     .await?;

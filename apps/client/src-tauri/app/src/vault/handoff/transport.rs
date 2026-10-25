@@ -12,7 +12,8 @@ pub(crate) use server::{
 };
 
 use super::pairing::{
-    CoordinatorPin, PairingManager, TlsIdentity, certificate_fingerprint, encode_certificate,
+    CoordinatorPin, PairingManager, PinnedCharter, TlsIdentity, certificate_fingerprint,
+    encode_certificate,
 };
 use super::protocol::{
     BundleMetadata, BundlePurpose, ControlMessage, PROTOCOL_VERSION, PairingInvitation,
@@ -201,6 +202,8 @@ pub(crate) async fn enroll(
         ControlMessage::Enrolled {
             coordinator_device_id,
             coordinator_device_label,
+            charter,
+            person_key,
             ..
         } if coordinator_device_id == invitation.coordinator_device_id => {
             let coordinator_certificate = stream
@@ -209,10 +212,17 @@ pub(crate) async fn enroll(
                 .peer_certificates()
                 .and_then(|certificates| certificates.first())
                 .ok_or_else(|| "coordinator did not provide a certificate".to_string())?;
-            manager.record_coordinator(
+            let charter = charter
+                .zip(person_key)
+                .map(|(charter, person_key)| PinnedCharter {
+                    charter,
+                    person_key,
+                });
+            manager.record_enrolled(
                 invitation,
                 coordinator_certificate.as_ref(),
                 coordinator_device_label,
+                charter,
             )
         }
         ControlMessage::Error { message, .. } => Err(message),

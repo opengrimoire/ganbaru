@@ -6,12 +6,14 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use ganbaru_sync::local::LocalWriterHead;
 use ganbaru_sync::{Engine, LocalWriter, SequenceReservation, SpaceContext, WriterState};
 use ganbaru_sync_contracts::{
-    DeviceKeyPair, DevicePublicKey, SignedCertificate, WriterCertificate, WriterId, WriterKeyPair,
-    sign_certificate,
+    DeviceKeyPair, DevicePublicKey, Digest32, SignedCertificate, WriterCertificate, WriterId,
+    WriterKeyPair, sign_certificate,
 };
 use serde::{Deserialize, Serialize};
 use sqlx::SqliteConnection;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 const RECORD_SCHEMA_VERSION: u32 = 1;
 /// Sequences one reservation write makes durable ahead of sealing.
@@ -34,6 +36,30 @@ pub struct WriterRecord {
     pub paused: bool,
     /// Retired writers whose keys still wait to be removed.
     pub retired_keys: Vec<String>,
+    /// The last authorization entry this installation reserved as the anchor, kept across
+    /// successor writers, so a database restored behind it can be detected.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sequenced: Option<SequencedEntry>,
+}
+
+/// An authorization revision the anchor reserved before sealing its entry.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SequencedEntry {
+    /// Revision of the entry.
+    pub revision: u64,
+    /// Entry hash, base64url without padding.
+    pub entry_hash: String,
+}
+
+impl SequencedEntry {
+    /// The decoded entry hash, or `None` when the record holds a malformed one.
+    pub fn hash(&self) -> Option<Digest32> {
+        URL_SAFE_NO_PAD
+            .decode(&self.entry_hash)
+            .ok()
+            .and_then(|bytes| bytes.try_into().ok())
+    }
 }
 
 /// A secret the sync key store holds for one vault.
@@ -142,6 +168,37 @@ impl SyncKeyStore for FileKeyStore {
     }
 }
 
+/// Key store that keeps secrets in memory only, for tests and hosts without a keyring.
+#[derive(Debug, Default)]
+pub struct MemoryKeyStore {
+    secrets: Mutex<HashMap<String, Vec<u8>>>,
+}
+
+impl MemoryKeyStore {
+    fn secrets(&self) -> Result<std::sync::MutexGuard<'_, HashMap<String, Vec<u8>>>, String> {
+        self.secrets
+            .lock()
+            .map_err(|_| "sync memory key store is poisoned".to_string())
+    }
+}
+
+impl SyncKeyStore for MemoryKeyStore {
+    fn read(&self, vault_id: &str, key: SyncKey<'_>) -> Result<Option<Vec<u8>>, String> {
+        Ok(self.secrets()?.get(&key_reference(vault_id, key)).cloned())
+    }
+
+    fn write(&self, vault_id: &str, key: SyncKey<'_>, secret: &[u8]) -> Result<(), String> {
+        self.secrets()?
+            .insert(key_reference(vault_id, key), secret.to_vec());
+        Ok(())
+    }
+
+    fn remove(&self, vault_id: &str, key: SyncKey<'_>) -> Result<(), String> {
+        self.secrets()?.remove(&key_reference(vault_id, key));
+        Ok(())
+    }
+}
+
 /// The installation's device key for a vault, or `None` before the installation paired or
 /// founded the vault's space. Key stores may block, so callers run this off the async runtime.
 pub fn read_device_key(
@@ -198,6 +255,16 @@ impl SyncFiles {
 
     pub fn carry_path(&self) -> PathBuf {
         self.directory.join(format!("{}.carry", self.vault_id))
+    }
+
+    /// Directory of the vault's other device-local sync files.
+    pub fn vault_directory(&self) -> PathBuf {
+        self.directory.join(&self.vault_id)
+    }
+
+    /// The proposal outbox of this installation.
+    pub fn outbox_path(&self) -> PathBuf {
+        self.vault_directory().join("outbox.json")
     }
 }
 
@@ -329,6 +396,20 @@ impl SequenceReservation for RecordReservation {
             .ok_or_else(|| std::io::Error::other("writer sequence space is exhausted"))?;
         self.replace(next).map_err(std::io::Error::other)
     }
+
+    fn reserve_entry(&mut self, revision: u64, entry_hash: Digest32) -> std::io::Result<()> {
+        let entry = SequencedEntry {
+            revision,
+            entry_hash: URL_SAFE_NO_PAD.encode(entry_hash),
+        };
+        let current = self.record.sequenced.as_ref();
+        if current.is_some_and(|current| current.revision > revision || *current == entry) {
+            return Ok(());
+        }
+        let mut next = self.record.clone();
+        next.sequenced = Some(entry);
+        self.replace(next).map_err(std::io::Error::other)
+    }
 }
 
 /// The recorded writer with the key copy it names, read before the database check.
@@ -356,6 +437,7 @@ pub struct SuccessorPlan {
     predecessor: Option<WriterId>,
     paused: bool,
     retired_keys: Vec<String>,
+    sequenced: Option<SequencedEntry>,
 }
 
 impl SuccessorPlan {
@@ -369,7 +451,13 @@ impl SuccessorPlan {
             predecessor: WriterId::from_hex(&record.writer_id),
             paused: record.paused,
             retired_keys,
+            sequenced: record.sequenced.clone(),
         }
+    }
+
+    /// The last authorization entry the retired record reserved, which the successor keeps.
+    pub fn sequenced(&self) -> Option<&SequencedEntry> {
+        self.sequenced.as_ref()
     }
 
     /// The plan that replaces a writer the database no longer accepts.
@@ -464,6 +552,7 @@ pub fn create_writer(
         last_committed_seq: 0,
         paused: plan.paused,
         retired_keys: plan.retired_keys,
+        sequenced: plan.sequenced,
     };
     let path = files.record_path();
     write_record(&path, &record)?;

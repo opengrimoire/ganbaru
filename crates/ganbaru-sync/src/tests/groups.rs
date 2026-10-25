@@ -761,7 +761,7 @@ fn take_back_is_measured() {
 const DEFERRED_ROWS: &str = "SELECT count(*) FROM sync_stale_rows";
 
 #[test]
-fn a_planned_row_brings_every_row_that_references_it_whatever_the_count() {
+fn a_planned_row_brings_every_row_nested_under_it() {
     block_on(async {
         let mut replicas = shared_tasks(2).await;
         replicas[0].exec(&move_and_nest_sql()).await;
@@ -793,7 +793,7 @@ fn a_planned_row_brings_every_row_that_references_it_whatever_the_count() {
         )
         .await
         .unwrap();
-        // One listed row plans every child nested under it, past any count it was taken by.
+        // One listed row plans every child nested under it.
         let mut expected: BTreeSet<_> = (0..CHILDREN).map(|index| (table, child(index))).collect();
         expected.insert((table, PARENT.to_owned()));
         let planned: BTreeSet<_> = batch

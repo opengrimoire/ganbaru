@@ -228,8 +228,7 @@ fn schema_creates_chat_tables_indexes_and_no_device_paths() {
             "idx_chat_channels_project_name",
             "idx_chat_channels_project_default",
             "idx_chat_channels_active_project",
-            "idx_chat_participants_local_user",
-            "idx_chat_participants_teammate_display_name",
+            "chat_participants_local_user_identity",
             "idx_chat_teammate_working_folder_grants_default",
             "idx_chat_access_profiles_builtin",
             "idx_chat_teammate_channel_memberships_teammate",
@@ -497,18 +496,18 @@ fn access_profile_revisions_are_immutable_and_do_not_create_memberships() {
         .await;
         let extend_builtin = sqlx::query(
             "INSERT INTO chat_access_profile_revisions
-                (id, access_profile_id, revision, default_read_history,
+                (id, access_profile_id, default_read_history,
                  default_participate, default_history_boundary,
                  maximum_folder_capability, created_at)
              VALUES ('forbidden-built-in-revision', 'access-profile:conversation-only',
-                     2, 1, 1, 'entire', 'read', ?)",
+                     1, 1, 'entire', 'read', ?)",
         )
         .bind(NOW)
         .execute(&pool)
         .await;
         let rewrite_builtin = sqlx::query(
             "UPDATE chat_access_profiles
-             SET latest_revision = 2, revision = 2
+             SET current_revision_id = 'forbidden-built-in-revision', revision = 2
              WHERE id = 'access-profile:conversation-only'",
         )
         .execute(&pool)
@@ -569,11 +568,11 @@ fn live_profile_expansion_preserves_active_access_revision_and_membership_intent
         .unwrap();
         sqlx::query(
             "INSERT INTO chat_access_profile_revisions
-                (id, access_profile_id, revision, default_read_history,
+                (id, access_profile_id, default_read_history,
                  default_participate, default_history_boundary,
                  maximum_folder_capability, created_at)
              VALUES ('access-profile-revision:test:1', 'access-profile:test',
-                     1, 1, 1, 'entire', 'read', ?)",
+                     1, 1, 'entire', 'read', ?)",
         )
         .bind(NOW)
         .execute(&pool)
@@ -640,11 +639,11 @@ fn live_profile_expansion_preserves_active_access_revision_and_membership_intent
         .unwrap();
         sqlx::query(
             "INSERT INTO chat_access_profile_revisions
-                (id, access_profile_id, revision, default_read_history,
+                (id, access_profile_id, default_read_history,
                  default_participate, default_history_boundary,
                  maximum_folder_capability, created_at)
              VALUES ('access-profile-revision:test:2', 'access-profile:test',
-                     2, 1, 1, 'entire', 'edit', ?)",
+                     1, 1, 'entire', 'edit', ?)",
         )
         .bind("2026-07-20T12:01:00Z")
         .execute(&pool)
@@ -659,9 +658,10 @@ fn live_profile_expansion_preserves_active_access_revision_and_membership_intent
         .await
         .unwrap();
         let latest_profile_revision: i64 = sqlx::query_scalar(
-            "SELECT profile.latest_revision
+            "SELECT revision.revision
              FROM chat_teammate_channel_memberships membership
-             JOIN chat_access_profiles profile ON profile.id = membership.access_profile_id
+             JOIN chat_access_profile_effective_revisions revision
+               ON revision.access_profile_id = membership.access_profile_id
              WHERE membership.teammate_id = 'teammate:profile-test'",
         )
         .fetch_one(&pool)
@@ -691,9 +691,8 @@ fn live_profile_expansion_preserves_active_access_revision_and_membership_intent
                ON membership.conversation_id = grant_row.conversation_id
               AND membership.teammate_id = grant_row.teammate_id
              JOIN chat_access_profiles profile ON profile.id = membership.access_profile_id
-             JOIN chat_access_profile_revisions revision
+             JOIN chat_access_profile_effective_revisions revision
                ON revision.access_profile_id = profile.id
-              AND revision.revision = profile.latest_revision
              WHERE grant_row.teammate_id = 'teammate:profile-test'",
         )
         .fetch_one(&pool)

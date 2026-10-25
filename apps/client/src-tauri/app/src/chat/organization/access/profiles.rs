@@ -58,23 +58,30 @@ pub async fn chat_create_access_profile(
     validate_profile_revision_input(&request.revision)?;
     let pool = chat_pool(app, db_url).await?;
     let now = now_timestamp()?;
+    let revision_id = new_id("access-profile-revision")?;
     let mut transaction = pool.begin().await.map_err(persistence_error)?;
+    require_unused_access_profile_name(&mut transaction, &display_name).await?;
     sqlx::query(
         "INSERT INTO chat_access_profiles
-            (id, display_name, latest_revision, revision, created_at, updated_at)
-         VALUES (?, ?, 1, 1, ?, ?)",
+            (id, display_name, current_revision_id, current_maximum_folder_capability,
+             revision, created_at, updated_at)
+         VALUES (?, ?, ?, ?, 1, ?, ?)",
     )
     .bind(request.access_profile_id.as_str())
     .bind(display_name)
+    .bind(revision_id.as_str())
+    .bind(wire_folder_capability(
+        request.revision.maximum_folder_capability,
+    ))
     .bind(now.as_str())
     .bind(now.as_str())
     .execute(&mut *transaction)
     .await
-    .map_err(map_access_profile_write_error)?;
+    .map_err(persistence_error)?;
     insert_access_profile_revision(
         &mut transaction,
         &request.access_profile_id,
-        1,
+        &revision_id,
         &request.revision,
         &now,
     )
@@ -188,10 +195,9 @@ pub async fn chat_preview_access_profile_revision(
     if current.builtin_key.is_none() && is_expansion {
         let mut transaction = pool.begin().await.map_err(persistence_error)?;
         let preview_now = now_timestamp()?;
-        insert_access_profile_revision(
+        publish_access_profile_revision(
             &mut transaction,
             &request.access_profile_id,
-            current.latest_revision.revision + 1,
             &request.revision,
             &preview_now,
         )
@@ -251,7 +257,6 @@ pub async fn chat_publish_access_profile_revision(
         request.revision.maximum_folder_capability,
     );
     let is_reduction = profile_revision_is_reduction(&current.latest_revision, &request.revision);
-    let next_revision = current.latest_revision.revision + 1;
     let now = now_timestamp()?;
     let mut transaction = pool.begin().await.map_err(persistence_error)?;
     let locked = sqlx::query(
@@ -266,10 +271,9 @@ pub async fn chat_publish_access_profile_revision(
     if locked.rows_affected() != 1 {
         return Err(stale_access_profile_error());
     }
-    insert_access_profile_revision(
+    publish_access_profile_revision(
         &mut transaction,
         &request.access_profile_id,
-        next_revision,
         &request.revision,
         &now,
     )
@@ -413,16 +417,15 @@ pub(super) async fn read_access_profile(
     access_profile_id: &ChatAccessProfileId,
 ) -> ChatResult<ChatAccessProfileRead> {
     let row = sqlx::query(
-        "SELECT profile.builtin_key, profile.display_name, profile.latest_revision,
+        "SELECT profile.builtin_key, profile.display_name, revision.revision AS latest_revision,
                 profile.revision AS profile_revision, profile.archived_at,
                 revision.id AS access_profile_revision_id,
                 revision.default_read_history, revision.default_participate,
                 revision.default_history_boundary, revision.maximum_folder_capability,
                 revision.created_at
          FROM chat_access_profiles profile
-         JOIN chat_access_profile_revisions revision
+         JOIN chat_access_profile_effective_revisions revision
            ON revision.access_profile_id = profile.id
-          AND revision.revision = profile.latest_revision
          WHERE profile.id = ?",
     )
     .bind(access_profile_id.as_str())
@@ -494,23 +497,50 @@ fn profile_revision_is_reduction(
         || proposed.maximum_folder_capability.rank() < current.maximum_folder_capability.rank()
 }
 
+/// Appends a revision to an existing access profile, points the profile's current revision at
+/// it, and advances the profile's edit counter.
+async fn publish_access_profile_revision(
+    transaction: &mut Transaction<'_, Sqlite>,
+    access_profile_id: &ChatAccessProfileId,
+    input: &ChatAccessProfileRevisionInput,
+    now: &UtcTimestamp,
+) -> ChatResult<()> {
+    let revision_id = new_id("access-profile-revision")?;
+    insert_access_profile_revision(transaction, access_profile_id, &revision_id, input, now)
+        .await?;
+    sqlx::query(
+        "UPDATE chat_access_profiles
+         SET current_revision_id = ?, current_maximum_folder_capability = ?,
+             revision = revision + 1, updated_at = ?
+         WHERE id = ?",
+    )
+    .bind(revision_id.as_str())
+    .bind(wire_folder_capability(input.maximum_folder_capability))
+    .bind(now.as_str())
+    .bind(access_profile_id.as_str())
+    .execute(&mut **transaction)
+    .await
+    .map_err(persistence_error)?;
+    Ok(())
+}
+
+/// Inserts one immutable access profile revision row.
 async fn insert_access_profile_revision(
     transaction: &mut Transaction<'_, Sqlite>,
     access_profile_id: &ChatAccessProfileId,
-    revision: u64,
+    revision_id: &str,
     input: &ChatAccessProfileRevisionInput,
     now: &UtcTimestamp,
 ) -> ChatResult<()> {
     sqlx::query(
         "INSERT INTO chat_access_profile_revisions
-            (id, access_profile_id, revision, default_read_history,
+            (id, access_profile_id, default_read_history,
              default_participate, default_history_boundary,
              maximum_folder_capability, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+         VALUES (?, ?, ?, ?, ?, ?, ?)",
     )
-    .bind(new_id("access-profile-revision")?)
+    .bind(revision_id)
     .bind(access_profile_id.as_str())
-    .bind(i64_value(revision)?)
     .bind(input.default_channel_capabilities.read_history)
     .bind(input.default_channel_capabilities.participate)
     .bind(wire_history_boundary(&input.default_history_boundary))
@@ -569,15 +599,33 @@ fn validate_access_profile_name(value: &str) -> ChatResult<String> {
     Ok(value.to_string())
 }
 
-fn map_access_profile_write_error(error: sqlx::Error) -> ChatError {
-    if error
-        .to_string()
-        .contains("idx_chat_access_profiles_custom_name")
-    {
-        ChatError::validation("displayName", "Access profile name already in use")
-    } else {
-        persistence_error(error)
+/// Refuses a custom profile name that an active custom profile already uses, ignoring case and
+/// surrounding spaces.
+///
+/// The check covers the profiles this device holds. Devices that create profiles concurrently
+/// can still end up with equal names, which readers tell apart by id.
+async fn require_unused_access_profile_name(
+    transaction: &mut Transaction<'_, Sqlite>,
+    display_name: &str,
+) -> ChatResult<()> {
+    let in_use: bool = sqlx::query_scalar(
+        "SELECT EXISTS(
+           SELECT 1 FROM chat_access_profiles
+           WHERE builtin_key IS NULL AND archived_at IS NULL
+             AND lower(trim(display_name)) = lower(trim(?))
+         )",
+    )
+    .bind(display_name)
+    .fetch_one(&mut **transaction)
+    .await
+    .map_err(persistence_error)?;
+    if in_use {
+        return Err(ChatError::validation(
+            "displayName",
+            "Access profile name already in use",
+        ));
     }
+    Ok(())
 }
 
 fn stale_access_profile_error() -> ChatError {

@@ -547,15 +547,13 @@ async fn read_assignment_access(
          JOIN chat_access_profiles profile
            ON profile.id = channel_access.access_profile_id
           AND profile.archived_at IS NULL
-         JOIN chat_access_profile_revisions profile_revision
+         JOIN chat_access_profile_effective_revisions profile_revision
            ON profile_revision.access_profile_id = profile.id
-          AND profile_revision.revision = profile.latest_revision
           AND profile_revision.default_participate = 1
          JOIN chat_teammates teammate
            ON teammate.participant_id = membership.participant_id
-         JOIN chat_teammate_policy_revisions policy
+         JOIN chat_teammate_effective_policies policy
            ON policy.teammate_id = teammate.participant_id
-          AND policy.revision = teammate.latest_policy_revision
          JOIN chat_communication_messages message ON message.item_id = ?
          JOIN chat_conversation_memberships requester_membership
            ON requester_membership.conversation_id = membership.conversation_id
@@ -1139,9 +1137,8 @@ async fn verify_channel_disclosure(
            JOIN chat_access_profiles teammate_profile
              ON teammate_profile.id = teammate_access.access_profile_id
             AND teammate_profile.archived_at IS NULL
-           JOIN chat_access_profile_revisions teammate_profile_revision
+           JOIN chat_access_profile_effective_revisions teammate_profile_revision
              ON teammate_profile_revision.access_profile_id = teammate_profile.id
-            AND teammate_profile_revision.revision = teammate_profile.latest_revision
            WHERE audience.conversation_id = ? AND audience.revision >= ?
              AND CASE
                    WHEN teammate_access.read_history_inherits_profile = 1
@@ -1171,9 +1168,8 @@ async fn verify_channel_disclosure(
                  JOIN chat_access_profiles requester_profile
                    ON requester_profile.id = requester_access.access_profile_id
                   AND requester_profile.archived_at IS NULL
-                 JOIN chat_access_profile_revisions requester_profile_revision
+                 JOIN chat_access_profile_effective_revisions requester_profile_revision
                    ON requester_profile_revision.access_profile_id = requester_profile.id
-                  AND requester_profile_revision.revision = requester_profile.latest_revision
                  WHERE requester_access.conversation_id = ?
                    AND requester_access.teammate_id = ?
                    AND requester_access.removed_at IS NULL
@@ -1214,9 +1210,8 @@ async fn verify_channel_disclosure(
                      JOIN chat_access_profiles destination_profile
                        ON destination_profile.id = destination_ai.access_profile_id
                       AND destination_profile.archived_at IS NULL
-                     JOIN chat_access_profile_revisions destination_profile_revision
+                     JOIN chat_access_profile_effective_revisions destination_profile_revision
                        ON destination_profile_revision.access_profile_id = destination_profile.id
-                      AND destination_profile_revision.revision = destination_profile.latest_revision
                      WHERE destination_ai.conversation_id = ?
                        AND destination_ai.teammate_id = destination_member.participant_id
                        AND destination_ai.removed_at IS NULL
@@ -1257,9 +1252,8 @@ async fn verify_channel_disclosure(
                        JOIN chat_access_profiles source_profile
                          ON source_profile.id = source_ai.access_profile_id
                         AND source_profile.archived_at IS NULL
-                       JOIN chat_access_profile_revisions source_profile_revision
+                       JOIN chat_access_profile_effective_revisions source_profile_revision
                          ON source_profile_revision.access_profile_id = source_profile.id
-                        AND source_profile_revision.revision = source_profile.latest_revision
                        WHERE source_ai.conversation_id = ?
                          AND source_ai.teammate_id = destination_member.participant_id
                          AND source_ai.removed_at IS NULL

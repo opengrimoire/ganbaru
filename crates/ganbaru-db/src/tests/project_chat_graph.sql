@@ -42,8 +42,8 @@ VALUES ('participant-teammate', 'ai_teammate', 'Helper',
 INSERT INTO chat_teammates (participant_id, role, created_at, updated_at)
 VALUES ('participant-teammate', 'Builds things', '2026-10-23T00:00:00.000Z', '2026-10-23T00:00:00.000Z');
 INSERT INTO chat_teammate_policy_revisions
-    (id, teammate_id, revision, provider_instance_id, model_selection_data, created_at)
-VALUES ('policy-1', 'participant-teammate', 1, 'codex-personal', '{}', '2026-10-23T00:00:00.000Z');
+    (id, teammate_id, provider_instance_id, model_selection_data, created_at)
+VALUES ('policy-1', 'participant-teammate', 'codex-personal', '{}', '2026-10-23T00:00:00.000Z');
 
 INSERT INTO chat_conversations (id, project_id, conversation_kind, last_activity_at, created_at, updated_at)
 VALUES ('conversation-general', 'project-chat', 'channel', '2026-10-23T00:00:00.000Z',

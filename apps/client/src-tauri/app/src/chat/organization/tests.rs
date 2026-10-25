@@ -1,6 +1,6 @@
 use super::common::{
-    has_thread_eligible_mention, is_valid_teammate_effort, map_teammate_write_error,
-    normalized_fts_query, validate_message_request, validate_teammate_role,
+    has_thread_eligible_mention, is_valid_teammate_effort, normalized_fts_query,
+    require_unused_teammate_name, validate_message_request, validate_teammate_role,
 };
 use super::scheduling::{claim_scheduled_message_for_immediate_send, validate_scheduled_for};
 use super::workflow::{has_authority_bearing_references, require_continuation_scope_is_unchanged};
@@ -48,8 +48,8 @@ async fn seed_unused_teammate(pool: &SqlitePool, teammate_id: &str, policy_id: &
     .unwrap();
     sqlx::query(
         "INSERT INTO chat_teammates
-            (participant_id, role, instructions, latest_policy_revision, created_at, updated_at)
-         VALUES (?, 'General support', '', 1, ?, ?)",
+            (participant_id, role, instructions, created_at, updated_at)
+         VALUES (?, 'General support', '', ?, ?)",
     )
     .bind(teammate_id)
     .bind("2026-08-14T17:30:00.000Z")
@@ -59,9 +59,9 @@ async fn seed_unused_teammate(pool: &SqlitePool, teammate_id: &str, policy_id: &
     .unwrap();
     sqlx::query(
         "INSERT INTO chat_teammate_policy_revisions
-            (id, teammate_id, revision, provider_instance_id,
+            (id, teammate_id, provider_instance_id,
              model_selection_data, created_at)
-         VALUES (?, ?, 1, 'provider:test',
+         VALUES (?, ?, 'provider:test',
                  '{\"providerManagedModel\":true,\"modelId\":null,\"modelOptions\":[]}', ?)",
     )
     .bind(policy_id)
@@ -90,22 +90,27 @@ fn archived_ai_teammate_names_remain_reserved_case_insensitively() {
         .await
         .unwrap();
 
-        let error = sqlx::query(
-            "INSERT INTO chat_participants
-                (id, participant_kind, display_name, created_at, updated_at)
-             VALUES (?, 'ai_teammate', ?, ?, ?)",
+        let mut connection = pool.acquire().await.unwrap();
+        let error = require_unused_teammate_name(
+            &mut connection,
+            " review lead ",
+            "participant:active-reviewer",
         )
-        .bind("participant:active-reviewer")
-        .bind(" review lead ")
-        .bind("2026-08-14T17:31:00.000Z")
-        .bind("2026-08-14T17:31:00.000Z")
-        .execute(&pool)
         .await
         .unwrap_err();
+        assert_eq!(error.code, ChatErrorCode::Validation);
+        assert_eq!(error.field.as_deref(), Some("displayName"));
 
-        let mapped = map_teammate_write_error(error);
-        assert_eq!(mapped.code, ChatErrorCode::Validation);
-        assert_eq!(mapped.field.as_deref(), Some("displayName"));
+        require_unused_teammate_name(
+            &mut connection,
+            "Review Lead",
+            "participant:archived-reviewer",
+        )
+        .await
+        .unwrap();
+        require_unused_teammate_name(&mut connection, "Release lead", "participant:other")
+            .await
+            .unwrap();
     });
 }
 
@@ -198,10 +203,10 @@ async fn seed_review_assignment_with_stranded_replies(pool: &SqlitePool) {
              '2026-08-04T17:00:00.000Z', '2026-08-04T17:00:00.000Z'
          );
          INSERT INTO chat_teammate_policy_revisions
-             (id, teammate_id, revision, provider_instance_id,
+             (id, teammate_id, provider_instance_id,
               model_selection_data, created_at)
          VALUES (
-             'policy:review', 'participant:review-agent', 1, 'provider:review',
+             'policy:review', 'participant:review-agent', 'provider:review',
              '{\"providerManagedModel\":true,\"modelId\":null,\"modelOptions\":[]}',
              '2026-08-04T17:00:00.000Z'
          );

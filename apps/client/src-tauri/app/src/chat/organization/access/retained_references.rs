@@ -200,7 +200,7 @@ async fn read_effective_disclosure_access_in_transaction(
     let rows = sqlx::query(
         "SELECT channel.id AS channel_id, channel.project_id, project.group_id,
                 channel.conversation_id, channel.name AS channel_name,
-                ai.access_profile_id, profile.latest_revision AS access_profile_revision,
+                ai.access_profile_id, profile_revision.revision AS access_profile_revision,
                 profile_revision.default_read_history AS profile_read_history,
                 profile_revision.default_participate AS profile_participate,
                 profile_revision.default_history_boundary AS profile_history_boundary,
@@ -217,9 +217,8 @@ async fn read_effective_disclosure_access_in_transaction(
          JOIN chat_channels channel ON channel.conversation_id = ai.conversation_id
          JOIN projects project ON project.id = channel.project_id
          JOIN chat_access_profiles profile ON profile.id = ai.access_profile_id
-         JOIN chat_access_profile_revisions profile_revision
+         JOIN chat_access_profile_effective_revisions profile_revision
            ON profile_revision.access_profile_id = profile.id
-          AND profile_revision.revision = profile.latest_revision
          WHERE ai.teammate_id = ? AND ai.removed_at IS NULL AND membership.removed_at IS NULL
          ORDER BY project.group_id, channel.project_id, channel.name COLLATE NOCASE, channel.id",
     )

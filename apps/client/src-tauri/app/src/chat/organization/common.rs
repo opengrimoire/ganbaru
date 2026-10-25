@@ -200,16 +200,33 @@ pub(super) fn validate_profile_text(value: &str, maximum: usize, field: &str) ->
     Ok(())
 }
 
+/// Refuses a teammate name that another teammate, archived ones included, already uses, ignoring
+/// case and surrounding spaces.
+///
+/// The check covers the teammates this device holds. Devices that create or rename teammates
+/// concurrently can still end up with equal names, which readers tell apart by id.
 #[cfg(desktop)]
-pub(super) fn map_teammate_write_error(error: sqlx::Error) -> ChatError {
-    let detail = error.to_string();
-    if detail.contains("idx_chat_participants_teammate_display_name")
-        || detail.contains("chat_participants.display_name")
-    {
-        ChatError::validation("displayName", "Name already in use")
-    } else {
-        persistence_error(error)
+pub(super) async fn require_unused_teammate_name(
+    connection: &mut sqlx::SqliteConnection,
+    display_name: &str,
+    teammate_id: &str,
+) -> ChatResult<()> {
+    let in_use: bool = sqlx::query_scalar(
+        "SELECT EXISTS(
+           SELECT 1 FROM chat_participants
+           WHERE participant_kind = 'ai_teammate' AND id != ?
+             AND lower(trim(display_name)) = lower(trim(?))
+         )",
+    )
+    .bind(teammate_id)
+    .bind(display_name)
+    .fetch_one(connection)
+    .await
+    .map_err(persistence_error)?;
+    if in_use {
+        return Err(ChatError::validation("displayName", "Name already in use"));
     }
+    Ok(())
 }
 
 pub(super) fn json_object(value: &VersionedJson, field: &str) -> ChatResult<String> {

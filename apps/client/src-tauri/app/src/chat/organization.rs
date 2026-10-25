@@ -48,7 +48,7 @@ pub(crate) use common::{
 };
 #[cfg(desktop)]
 use common::{
-    json_object, map_teammate_write_error, validate_display_name, validate_policy,
+    json_object, require_unused_teammate_name, validate_display_name, validate_policy,
     validate_profile_text, validate_teammate_role,
 };
 #[cfg(desktop)]
@@ -130,9 +130,17 @@ pub async fn chat_create_teammate(
     validate_profile_text(&request.instructions, 65_536, "instructions")?;
     validate_policy(&app, &request.policy)?;
     let avatar_data = json_object(&request.avatar, "avatar")?;
+    let home_device_id = crate::sync::devices::stable_device_id(&app)
+        .map_err(crate::chat::settings::device_state_error)?;
     let pool = chat_pool(app, db_url).await?;
     let now = now_timestamp()?;
     let mut transaction = pool.begin().await.map_err(persistence_error)?;
+    require_unused_teammate_name(
+        &mut transaction,
+        &display_name,
+        request.teammate_id.as_str(),
+    )
+    .await?;
     sqlx::query(
         "INSERT INTO chat_participants
             (id, participant_kind, display_name, avatar_schema_version,
@@ -147,15 +155,16 @@ pub async fn chat_create_teammate(
     .bind(now.as_str())
     .execute(&mut *transaction)
     .await
-    .map_err(map_teammate_write_error)?;
+    .map_err(persistence_error)?;
     sqlx::query(
         "INSERT INTO chat_teammates
-            (participant_id, role, instructions, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?)",
+            (participant_id, role, instructions, home_device_id, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?)",
     )
     .bind(request.teammate_id.as_str())
     .bind(role)
     .bind(request.instructions.trim())
+    .bind(home_device_id)
     .bind(now.as_str())
     .bind(now.as_str())
     .execute(&mut *transaction)
@@ -164,7 +173,6 @@ pub async fn chat_create_teammate(
     insert_policy_revision(
         &mut transaction,
         &request.teammate_id,
-        1,
         &request.policy,
         &now,
     )

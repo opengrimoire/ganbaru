@@ -83,7 +83,7 @@ fn every_replicated_table_with_derived_chat_state_has_a_hook() {
 }
 
 #[test]
-fn only_revoked_teammates_are_reported() {
+fn only_revoked_teammates_and_removed_conversations_are_reported() {
     let mut sink = CollectingSink::default();
     report_effects(
         ChatSyncEffects {
@@ -96,6 +96,7 @@ fn only_revoked_teammates_are_reported() {
             ]),
             search_rebuilt: BTreeSet::from(["item:rebuilt".to_string()]),
             mismatched_pointers: BTreeSet::from(["participant:mismatched".to_string()]),
+            removed_conversations: BTreeSet::from(["conversation:removed".to_string()]),
         },
         &mut sink,
     );
@@ -109,6 +110,7 @@ fn only_revoked_teammates_are_reported() {
         vec![
             (CHAT_ACCESS_REVOKED_TOPIC, "participant:a"),
             (CHAT_ACCESS_REVOKED_TOPIC, "participant:b"),
+            (CHAT_CONVERSATION_REMOVED_TOPIC, "conversation:removed"),
         ]
     );
 }
@@ -124,7 +126,12 @@ fn revocation_notices_wake_the_drain_and_other_notices_do_not() {
         topic: "music-root",
         key: TEAMMATE_ID.to_string(),
     };
+    let removed = ChangeNotice {
+        topic: CHAT_CONVERSATION_REMOVED_TOPIC,
+        key: "conversation:removed".to_string(),
+    };
     assert!(waker::access_revoked(&[unrelated.clone(), revoked]));
+    assert!(waker::access_revoked(&[unrelated.clone(), removed]));
     assert!(!waker::access_revoked(&[unrelated]));
     assert!(!waker::access_revoked(&[]));
 }

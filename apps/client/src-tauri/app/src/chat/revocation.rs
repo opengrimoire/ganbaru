@@ -7,6 +7,7 @@ use ganbaru_chat_contracts::models::{
     ChatThreadId, ChatTurnId, ProjectWorkingFolderId,
 };
 use sqlx::{Row, SqlitePool};
+use std::collections::BTreeSet;
 use std::time::Duration;
 use tauri::Manager;
 
@@ -139,6 +140,7 @@ pub(crate) async fn drain_access_revocation_jobs(
     app: &tauri::AppHandle,
     pool: &SqlitePool,
 ) -> ChatResult<u64> {
+    stop_orphaned_run_scopes(app, pool).await?;
     recover_stale_claims(pool).await?;
     let completed = drain_ready_jobs(app, pool).await?;
     if has_pending_jobs(pool).await? {
@@ -151,8 +153,88 @@ pub(crate) async fn drain_access_revocation_jobs(
     Ok(completed)
 }
 
+/// Stops organizational runs whose authorization no longer exists.
+///
+/// Deleting a conversation, locally or by sync, cascades away the authorizations that target it
+/// together with their runs, so no revocation job can name those runs while the provider
+/// process and its host-tool scope keep running. The scope remembers its authorization, so
+/// each active scope whose authorization row is gone is revoked and its thread shut down.
+async fn stop_orphaned_run_scopes(app: &tauri::AppHandle, pool: &SqlitePool) -> ChatResult<()> {
+    let mcp = app.state::<super::internal_mcp::InternalMcpRegistry>();
+    let scopes = mcp.active_run_scopes().await;
+    if scopes.is_empty() {
+        return Ok(());
+    }
+    let authorization_ids: Vec<&str> = scopes
+        .iter()
+        .map(|(_, scope)| scope.authorization_revision_id.as_str())
+        .collect();
+    let missing = missing_authorizations(pool, &authorization_ids).await?;
+    let runtime = app.state::<ChatRuntimeRegistry>();
+    let mutations = app.state::<super::workspace::mutation::ChatWorkspaceMutationRegistry>();
+    let access = app.state::<super::terminal_access::ChatTerminalAccess>();
+    for (thread_id, scope) in scopes {
+        if !missing.contains(scope.authorization_revision_id.as_str()) {
+            continue;
+        }
+        let revoked = mcp
+            .revoke_matching_run_scope(
+                &thread_id,
+                &scope.run_id,
+                &scope.provider_turn_id,
+                &scope.authorization_revision_id,
+            )
+            .await;
+        if !revoked {
+            continue;
+        }
+        let has_runtime_owner = runtime
+            .owners()?
+            .into_iter()
+            .any(|owner| owner.thread_id() == &thread_id);
+        if has_runtime_owner {
+            runtime
+                .shutdown_thread_and_remove(&thread_id, REVOCATION_STOP_TIMEOUT, &mutations)
+                .await?;
+        }
+        let folder: Option<String> =
+            sqlx::query_scalar("SELECT working_folder_id FROM chat_threads WHERE id = ?")
+                .bind(thread_id.as_str())
+                .fetch_optional(pool)
+                .await
+                .map_err(persistence_error)?;
+        if let Some(folder) = folder {
+            let folder = ProjectWorkingFolderId::new(folder).map_err(|_| revocation_error())?;
+            access.clear_folder(&folder)?;
+        }
+    }
+    Ok(())
+}
+
+/// The ids among `authorization_ids` that name no authorization row.
+async fn missing_authorizations(
+    pool: &SqlitePool,
+    authorization_ids: &[&str],
+) -> ChatResult<BTreeSet<String>> {
+    let mut missing = BTreeSet::new();
+    for id in authorization_ids.iter().copied() {
+        let exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM chat_assignment_authorization_revisions WHERE id = ?)",
+        )
+        .bind(id)
+        .fetch_one(pool)
+        .await
+        .map_err(persistence_error)?;
+        if !exists {
+            missing.insert(id.to_string());
+        }
+    }
+    Ok(missing)
+}
+
 /// Drains queued access revocation jobs in the background, at startup and whenever sync
-/// revoked authorizations on this device.
+/// revoked authorizations or deleted conversations on this device. Each drain first stops runs
+/// whose authorization a conversation delete removed.
 pub(crate) fn start_job_drain(app: &tauri::AppHandle) {
     if crate::vault::active_vault_path(app).is_err() {
         return;
@@ -623,10 +705,12 @@ fn persistence_error<T>(_error: T) -> ChatError {
 pub(crate) mod tests {
     use super::{
         ActiveRunSelector, REVOCATION_DRAIN_BATCH_SIZE, REVOCATION_RETRY_MAX_POLLS,
-        REVOCATION_RETRY_MAX_SECONDS, retry_delay_seconds, revoke_active_run_authorizations,
+        REVOCATION_RETRY_MAX_SECONDS, missing_authorizations, retry_delay_seconds,
+        revoke_active_run_authorizations,
     };
     use ganbaru_chat_contracts::models::{ChatThreadId, ChatTurnId, ProjectWorkingFolderId};
     use sqlx::SqlitePool;
+    use std::collections::BTreeSet;
 
     const NOW: &str = "2026-10-20T12:00:00.000Z";
     const TEAMMATE: &str = "participant:folder-agent";
@@ -855,6 +939,79 @@ pub(crate) mod tests {
             queued_job_authorizations(&pool).await,
             vec!["authorization:working".to_string()]
         );
+    }
+
+    /// Deletes the seeded runs' conversation, with sync applying when `applying` holds.
+    async fn delete_run_conversation(pool: &SqlitePool, applying: bool) -> String {
+        let (conversation, _) =
+            ganbaru_chat::project_defaults::default_channel_ids("project-chat").unwrap();
+        sqlx::query("UPDATE sync_apply_state SET applying = ? WHERE singleton = 1")
+            .bind(applying)
+            .execute(pool)
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM chat_conversations WHERE id = ?")
+            .bind(&conversation)
+            .execute(pool)
+            .await
+            .unwrap();
+        conversation
+    }
+
+    /// The cascade leaves no row naming the runs, so only the active scopes' remembered
+    /// authorizations can find them.
+    #[tokio::test]
+    async fn a_local_conversation_delete_leaves_its_run_authorizations_missing() {
+        let pool = pool_with_folder_runs().await;
+        assert!(
+            missing_authorizations(&pool, &["authorization:working", "authorization:queued"])
+                .await
+                .unwrap()
+                .is_empty()
+        );
+
+        delete_run_conversation(&pool, false).await;
+
+        assert!(authorization_states(&pool).await.is_empty());
+        assert_eq!(
+            missing_authorizations(&pool, &["authorization:working", "authorization:queued"])
+                .await
+                .unwrap(),
+            BTreeSet::from([
+                "authorization:queued".to_string(),
+                "authorization:working".to_string()
+            ])
+        );
+    }
+
+    #[tokio::test]
+    async fn an_applied_conversation_delete_reports_the_conversation_and_its_missing_runs() {
+        let pool = pool_with_folder_runs().await;
+        let conversation = delete_run_conversation(&pool, true).await;
+        let mut connection = pool.acquire().await.unwrap();
+        let effects = ganbaru_chat::sync_effects::after_materialize(
+            &mut connection,
+            ganbaru_chat::sync_effects::CONVERSATIONS_TABLE,
+            std::slice::from_ref(&conversation),
+        )
+        .await
+        .unwrap();
+        drop(connection);
+
+        assert_eq!(
+            effects.removed_conversations,
+            BTreeSet::from([conversation])
+        );
+        assert_eq!(
+            missing_authorizations(&pool, &["authorization:working", "authorization:queued"])
+                .await
+                .unwrap(),
+            BTreeSet::from([
+                "authorization:queued".to_string(),
+                "authorization:working".to_string()
+            ])
+        );
+        assert!(effects.revoked_teammates.is_empty());
     }
 
     #[test]

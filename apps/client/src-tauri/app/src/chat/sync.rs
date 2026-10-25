@@ -9,8 +9,10 @@
 //! that copies restrictiveness differing from the revision it names has no effective revision,
 //! so its teammates are refused; the hook revokes their authorizations and logs the pointer
 //! rather than failing the apply, which would stop every later apply. It reports each teammate
-//! it revoked. On desktop the app host hands those reports to
-//! [`on_sync_notices`], which wakes the access revocation drain so the revoked runs stop. Android
+//! it revoked and each conversation the apply deleted, whose cascade removed the authorizations
+//! and runs that targeted it. On desktop the app host hands those reports to
+//! [`on_sync_notices`], which wakes the access revocation drain so the revoked runs and the runs
+//! whose authorization is gone stop. Android
 //! never holds an active authorization, since runs execute only on desktop, so it has no drain to
 //! wake. Dispatch and the readers of teammates and profiles read the effective rows
 //! when they run, and views learn about the changed tables from the applied tables event.
@@ -24,6 +26,9 @@ use sqlx::SqliteConnection;
 /// Change notice topic of a teammate whose authorizations an applied profile revision revoked;
 /// the key is the teammate participant id.
 pub(crate) const CHAT_ACCESS_REVOKED_TOPIC: &str = "chat-access-revoked";
+
+/// Change notice topic of a conversation an apply deleted; the key is the conversation id.
+pub(crate) const CHAT_CONVERSATION_REMOVED_TOPIC: &str = "chat-conversation-removed";
 
 /// Replicated tables whose applied rows feed device-local Chat state, each registered with
 /// [`ChatApplyHook`].
@@ -59,6 +64,9 @@ fn report_effects(effects: ChatSyncEffects, changes: &mut dyn ChangeSink) {
     for teammate_id in effects.revoked_teammates {
         changes.report(CHAT_ACCESS_REVOKED_TOPIC, teammate_id);
     }
+    for conversation_id in effects.removed_conversations {
+        changes.report(CHAT_CONVERSATION_REMOVED_TOPIC, conversation_id);
+    }
 }
 
 impl MaterializeHook for ChatApplyHook {
@@ -91,15 +99,17 @@ pub(crate) use waker::{RevocationWaker, on_sync_notices};
 
 #[cfg(desktop)]
 mod waker {
-    use super::CHAT_ACCESS_REVOKED_TOPIC;
+    use super::{CHAT_ACCESS_REVOKED_TOPIC, CHAT_CONVERSATION_REMOVED_TOPIC};
     use ganbaru_sync::ChangeNotice;
     use tauri::{AppHandle, Manager, Runtime};
 
-    /// Whether sync change `notices` report revoked Chat authorizations.
+    /// Whether sync change `notices` report revoked Chat authorizations or deleted
+    /// conversations, whose cascade removed the authorizations that targeted them.
     pub(super) fn access_revoked(notices: &[ChangeNotice]) -> bool {
-        notices
-            .iter()
-            .any(|notice| notice.topic == CHAT_ACCESS_REVOKED_TOPIC)
+        notices.iter().any(|notice| {
+            notice.topic == CHAT_ACCESS_REVOKED_TOPIC
+                || notice.topic == CHAT_CONVERSATION_REMOVED_TOPIC
+        })
     }
 
     /// Starts the access revocation drain of the running app.

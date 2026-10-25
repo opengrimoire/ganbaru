@@ -61,6 +61,10 @@ pub struct ChatSyncEffects {
     /// Teammates and access profiles whose current pointer copies restrictiveness that
     /// disagrees with the revision it names, so they have no effective revision.
     pub mismatched_pointers: BTreeSet<String>,
+    /// Conversations the apply deleted. The delete cascades away the authorizations that
+    /// target them, with their runs, so no revocation job can name those runs; the caller stops
+    /// running work whose authorization no longer exists.
+    pub removed_conversations: BTreeSet<String>,
 }
 
 impl ChatSyncEffects {
@@ -72,6 +76,7 @@ impl ChatSyncEffects {
             && self.revoked_teammates.is_empty()
             && self.search_rebuilt.is_empty()
             && self.mismatched_pointers.is_empty()
+            && self.removed_conversations.is_empty()
     }
 }
 
@@ -86,7 +91,9 @@ impl ChatSyncEffects {
 /// authorizations granted under a wider revision, as the command that saves a reduction does.
 /// A conversation membership, AI channel membership, or folder grant bumps the audience (for
 /// memberships) and the AI teammate's access revision, and revokes the teammate's authorizations
-/// once one of them is no longer covered by the rows sync kept. Timestamps come from the changed rows, except revocations, which happen now on this device.
+/// once one of them is no longer covered by the rows sync kept. A deleted conversation is
+/// reported, and deleted rows sweep every teammate with an active authorization. Timestamps
+/// come from the changed rows, except revocations, which happen now on this device.
 /// Running it again for the same keys leaves the same rows, apart from the counters a profile
 /// revision bumps again. Tables without derived state return no effects.
 ///
@@ -128,11 +135,12 @@ pub async fn after_materialize(
             }
         }
         CONVERSATIONS_TABLE => {
-            let mut deleted = false;
             for key in keys {
-                deleted |= !create_audience_state(connection, key, &mut effects).await?;
+                if !create_audience_state(connection, key, &mut effects).await? {
+                    effects.removed_conversations.insert(key.to_string());
+                }
             }
-            if deleted {
+            if !effects.removed_conversations.is_empty() {
                 sweep_uncovered_authorizations(connection, &mut effects).await?;
             }
         }
@@ -493,15 +501,40 @@ const READS_HISTORY_FROM: &str = "(
     )
 )";
 
+/// SQL expression for the runtime approval override that governs `authorization`, resolved
+/// from the destination channel membership `access` in the runtime's precedence: a scratch
+/// target takes the scratch override, a working folder target takes the execution target's
+/// grant override, and either falls back to the channel override. Null when none is set, so
+/// the teammate's own approval behavior applies.
+const RESOLVED_OVERRIDE: &str = "CASE
+    WHEN EXISTS (
+        SELECT 1 FROM chat_execution_environments environment
+        WHERE environment.id = authorization.execution_environment_id
+          AND environment.kind = 'scratch'
+    ) THEN coalesce(access.scratch_runtime_approval_policy, access.runtime_approval_policy)
+    ELSE coalesce(
+        (
+            SELECT folder_grant.runtime_approval_policy
+            FROM chat_assignment_authorized_folder_sources source
+            JOIN chat_teammate_working_folder_grants folder_grant
+              ON folder_grant.conversation_id = access.conversation_id
+             AND folder_grant.teammate_id = access.teammate_id
+             AND folder_grant.working_folder_id = source.working_folder_id
+            WHERE source.authorization_revision_id = authorization.id
+              AND source.is_execution_target = 1
+        ),
+        access.runtime_approval_policy
+    )
+END";
+
 /// Returns whether the teammate holds an active authorization that its current memberships and
 /// folder grants no longer cover.
 ///
 /// An authorization is uncovered when the teammate's conversation membership or AI channel
 /// membership of its destination has ended, when a channel it disclosed can no longer be read
 /// from the disclosed ordinal, when a folder it was granted has no active grant of at least the
-/// authorized capability, or when a runtime approval override on the destination membership,
-/// its scratch override for a scratch target, or the execution target's grant is now stricter
-/// than the authorized policy.
+/// authorized capability, or when the runtime approval override that governs its target (see
+/// [`RESOLVED_OVERRIDE`]) is now stricter than the authorized policy.
 async fn holds_uncovered_authorization(
     connection: &mut SqliteConnection,
     teammate_id: &str,
@@ -534,21 +567,9 @@ async fn holds_uncovered_authorization(
                    )
                    OR EXISTS (
                        SELECT 1 FROM chat_teammate_channel_memberships access
-                       JOIN approval_rank override
-                         ON override.policy = access.runtime_approval_policy
+                       JOIN approval_rank override ON override.policy = {RESOLVED_OVERRIDE}
                        WHERE access.conversation_id = authorization.destination_conversation_id
                          AND access.teammate_id = ?1
-                         AND override.rank > authorized_approval.rank
-                   )
-                   OR EXISTS (
-                       SELECT 1 FROM chat_execution_environments environment
-                       JOIN chat_teammate_channel_memberships access
-                         ON access.conversation_id = authorization.destination_conversation_id
-                        AND access.teammate_id = ?1
-                       JOIN approval_rank override
-                         ON override.policy = access.scratch_runtime_approval_policy
-                       WHERE environment.id = authorization.execution_environment_id
-                         AND environment.kind = 'scratch'
                          AND override.rank > authorized_approval.rank
                    )
                    OR EXISTS (
@@ -597,19 +618,6 @@ async fn holds_uncovered_authorization(
                                        ELSE min(grant_rank.rank, profile_rank.rank)
                                    END >= authorized_rank.rank
                          )
-                   )
-                   OR EXISTS (
-                       SELECT 1
-                       FROM chat_assignment_authorized_folder_sources source
-                       JOIN chat_teammate_working_folder_grants folder_grant
-                         ON folder_grant.conversation_id = authorization.destination_conversation_id
-                        AND folder_grant.teammate_id = ?1
-                        AND folder_grant.working_folder_id = source.working_folder_id
-                       JOIN approval_rank override
-                         ON override.policy = folder_grant.runtime_approval_policy
-                       WHERE source.authorization_revision_id = authorization.id
-                         AND source.is_execution_target = 1
-                         AND override.rank > authorized_approval.rank
                    )
                )
          )"

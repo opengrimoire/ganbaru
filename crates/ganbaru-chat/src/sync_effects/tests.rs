@@ -859,3 +859,291 @@ async fn set_scratch_override(pool: &SqlitePool, policy: &str) {
     .await
     .unwrap();
 }
+
+/// Seeds a managed folder, the teammate's default grant on it with the `grant_override`
+/// approval, and `authorization:folder`, which executes in that folder under the
+/// `authorized` approval.
+async fn seed_folder_authorization(pool: &SqlitePool, grant_override: &str, authorized: &str) {
+    let conversation = conversation_id();
+    sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
+        "INSERT INTO project_working_folders
+            (id, project_id, display_name, kind, managed_relative_path, created_at, updated_at)
+         VALUES ('folder:sync-effects', '{PROJECT_ID}', 'Sync', 'managed',
+                 'projects/{PROJECT_ID}-grant', '{NOW}', '{NOW}');
+         INSERT INTO chat_teammate_working_folder_grants
+            (conversation_id, teammate_id, working_folder_id, sync_key, project_id, capability,
+             is_default, runtime_approval_policy, created_at)
+         VALUES ('{conversation}', '{TEAMMATE_ID}', 'folder:sync-effects', 'grant:sync-effects',
+                 '{PROJECT_ID}', 'edit', 1, '{grant_override}', '{NOW}');
+         INSERT INTO chat_execution_environments
+            (id, working_folder_id, kind, display_name, created_at, updated_at)
+         VALUES ('environment:folder', 'folder:sync-effects', 'current_folder', 'Sync', '{NOW}',
+                 '{NOW}');"
+    )))
+    .execute(pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO chat_assignment_authorization_revisions
+            (id, assignment_id, revision, requester_participant_id,
+             teammate_policy_revision_id, teammate_access_revision,
+             destination_conversation_id, access_profile_revision_id, execution_environment_id,
+             working_folder_id, resolved_runtime_approval_policy, scope_digest, decision_state,
+             created_at)
+         VALUES ('authorization:folder', 'assignment:sync-effects', 2,
+                 'participant:local-owner', 'policy:sync-effects', 1, ?, ?,
+                 'environment:folder', 'folder:sync-effects', ?, printf('%064d', 0), 'allowed', ?)",
+    )
+    .bind(conversation_id())
+    .bind(FIRST_PROFILE_REVISION_ID)
+    .bind(authorized)
+    .bind(NOW)
+    .execute(pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO chat_assignment_authorized_folder_sources
+            (authorization_revision_id, root_handle, working_folder_id, capability,
+             is_execution_target, resolved_runtime_approval_policy, created_at)
+         VALUES ('authorization:folder', printf('%064d', 1), 'folder:sync-effects', 'edit', 1,
+                 ?, ?)",
+    )
+    .bind(authorized)
+    .bind(NOW)
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
+/// Sets the seeded channel membership's runtime approval override to `policy`.
+async fn set_channel_override(pool: &SqlitePool, policy: Option<&str>) {
+    sqlx::query(
+        "UPDATE chat_teammate_channel_memberships SET runtime_approval_policy = ?
+         WHERE sync_key = 'channel-membership:sync-effects'",
+    )
+    .bind(policy)
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
+async fn authorization_state(pool: &SqlitePool, id: &str) -> String {
+    sqlx::query_scalar(
+        "SELECT decision_state FROM chat_assignment_authorization_revisions WHERE id = ?",
+    )
+    .bind(id)
+    .fetch_one(pool)
+    .await
+    .unwrap()
+}
+
+/// A folder or scratch override replaces the channel override at runtime, so a stricter
+/// channel override does not revoke work granted under a looser target override, and clearing
+/// that override makes the channel override govern it.
+#[tokio::test]
+async fn target_overrides_govern_their_authorizations_before_the_channel_override() {
+    let pool = migrated_pool().await;
+    seed_organization(&pool).await;
+    seed_folder_authorization(&pool, "unattended", "unattended").await;
+
+    set_applying(&pool, true).await;
+    set_channel_override(&pool, Some("ask")).await;
+    let kept = run_hook(
+        &pool,
+        CHANNEL_MEMBERSHIPS_TABLE,
+        &["channel-membership:sync-effects"],
+    )
+    .await;
+    assert!(kept.revoked_teammates.is_empty());
+    assert_eq!(
+        authorization_state(&pool, "authorization:folder").await,
+        "allowed"
+    );
+    assert_eq!(
+        authorization_state(&pool, "authorization:first").await,
+        "allowed"
+    );
+
+    sqlx::query(
+        "UPDATE chat_teammate_working_folder_grants
+         SET runtime_approval_policy = NULL, revision = revision + 1
+         WHERE sync_key = 'grant:sync-effects'",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    let inherited = run_hook(&pool, FOLDER_GRANTS_TABLE, &["grant:sync-effects"]).await;
+    assert_eq!(
+        inherited.revoked_teammates,
+        BTreeSet::from([TEAMMATE_ID.to_string()])
+    );
+    assert_eq!(
+        authorization_state(&pool, "authorization:folder").await,
+        "revoked"
+    );
+}
+
+#[tokio::test]
+async fn a_looser_scratch_override_keeps_scratch_work_under_a_stricter_channel_override() {
+    let pool = migrated_pool().await;
+    seed_organization(&pool).await;
+    sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
+        "INSERT INTO chat_scratch_scopes (id, reply_thread_id, teammate_id, created_at, updated_at)
+         VALUES ('scratch:sync-effects', 'reply:sync-effects', '{TEAMMATE_ID}', '{NOW}', '{NOW}');
+         INSERT INTO chat_scratch_generations
+            (id, scratch_scope_id, generation, created_at, updated_at)
+         VALUES ('generation:sync-effects', 'scratch:sync-effects', 1, '{NOW}', '{NOW}');
+         INSERT INTO chat_execution_environments
+            (id, scratch_generation_id, kind, display_name, created_at, updated_at)
+         VALUES ('environment:scratch', 'generation:sync-effects', 'scratch', 'Scratch', '{NOW}',
+                 '{NOW}');"
+    )))
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO chat_assignment_authorization_revisions
+            (id, assignment_id, revision, requester_participant_id,
+             teammate_policy_revision_id, teammate_access_revision,
+             destination_conversation_id, access_profile_revision_id, execution_environment_id,
+             resolved_runtime_approval_policy, scope_digest, decision_state, created_at)
+         VALUES ('authorization:scratch', 'assignment:sync-effects', 2,
+                 'participant:local-owner', 'policy:sync-effects', 1, ?, ?,
+                 'environment:scratch', 'unattended', printf('%064d', 0), 'allowed', ?)",
+    )
+    .bind(conversation_id())
+    .bind(FIRST_PROFILE_REVISION_ID)
+    .bind(NOW)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    set_applying(&pool, true).await;
+    set_scratch_override(&pool, "unattended").await;
+    set_channel_override(&pool, Some("ask")).await;
+    let kept = run_hook(
+        &pool,
+        CHANNEL_MEMBERSHIPS_TABLE,
+        &["channel-membership:sync-effects"],
+    )
+    .await;
+    assert!(kept.revoked_teammates.is_empty());
+    assert_eq!(
+        authorization_state(&pool, "authorization:scratch").await,
+        "allowed"
+    );
+
+    sqlx::query(
+        "UPDATE chat_teammate_channel_memberships SET scratch_runtime_approval_policy = NULL
+         WHERE sync_key = 'channel-membership:sync-effects'",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    let inherited = run_hook(
+        &pool,
+        CHANNEL_MEMBERSHIPS_TABLE,
+        &["channel-membership:sync-effects"],
+    )
+    .await;
+    assert_eq!(
+        inherited.revoked_teammates,
+        BTreeSet::from([TEAMMATE_ID.to_string()])
+    );
+    assert_eq!(
+        authorization_state(&pool, "authorization:scratch").await,
+        "revoked"
+    );
+}
+
+#[tokio::test]
+async fn an_applied_grant_deletion_revokes_the_folder_authorization_it_covered() {
+    let pool = migrated_pool().await;
+    seed_organization(&pool).await;
+    seed_folder_authorization(&pool, "ask", "ask").await;
+
+    set_applying(&pool, true).await;
+    sqlx::query("DELETE FROM chat_teammate_working_folder_grants WHERE sync_key = ?")
+        .bind("grant:sync-effects")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let effects = run_hook(&pool, FOLDER_GRANTS_TABLE, &["grant:sync-effects"]).await;
+
+    assert_eq!(
+        effects.revoked_teammates,
+        BTreeSet::from([TEAMMATE_ID.to_string()])
+    );
+    assert_eq!(
+        authorization_state(&pool, "authorization:folder").await,
+        "revoked"
+    );
+    let jobs = queued_jobs(&pool).await.len();
+    assert!(jobs >= 1);
+
+    let replayed = run_hook(&pool, FOLDER_GRANTS_TABLE, &["grant:sync-effects"]).await;
+    assert!(replayed.revoked_teammates.is_empty());
+    assert_eq!(queued_jobs(&pool).await.len(), jobs);
+}
+
+/// A conversation delete reports the conversation and sweeps the authorizations that remain in
+/// other conversations, here one whose channel membership an earlier apply in the same batch
+/// deleted.
+#[tokio::test]
+async fn an_applied_conversation_deletion_reports_it_and_sweeps_remaining_authorizations() {
+    let pool = migrated_pool().await;
+    seed_organization(&pool).await;
+    sqlx::raw_sql(
+        "INSERT INTO projects (id, group_id, name, order_key)
+         VALUES ('project-sync-effects-other', 'group-sync', 'Other', 'a1');",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    let mut connection = pool.acquire().await.unwrap();
+    ensure_project_chat_defaults(
+        &mut connection,
+        "project-sync-effects-other",
+        &UtcTimestamp::new(NOW.to_string()).unwrap(),
+    )
+    .await
+    .unwrap();
+    drop(connection);
+    let other = default_channel_ids("project-sync-effects-other").unwrap().0;
+
+    set_applying(&pool, true).await;
+    sqlx::query("DELETE FROM chat_teammate_channel_memberships WHERE sync_key = ?")
+        .bind("channel-membership:sync-effects")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("DELETE FROM chat_channels WHERE conversation_id = ?")
+        .bind(&other)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("DELETE FROM chat_conversations WHERE id = ?")
+        .bind(&other)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let effects = run_hook(&pool, CONVERSATIONS_TABLE, &[&other]).await;
+
+    assert_eq!(
+        effects.removed_conversations,
+        BTreeSet::from([other.clone()])
+    );
+    assert_eq!(
+        effects.revoked_teammates,
+        BTreeSet::from([TEAMMATE_ID.to_string()])
+    );
+    assert_eq!(
+        authorization_state(&pool, "authorization:first").await,
+        "revoked"
+    );
+    assert_eq!(queued_jobs(&pool).await.len(), 1);
+
+    let replayed = run_hook(&pool, CONVERSATIONS_TABLE, &[&other]).await;
+    assert!(replayed.revoked_teammates.is_empty());
+    assert_eq!(queued_jobs(&pool).await.len(), 1);
+}

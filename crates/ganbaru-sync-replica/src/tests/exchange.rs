@@ -353,6 +353,7 @@ impl Replica {
             ctx: &self.ctx,
             writer: Some(active),
             own_writers,
+            quarantined: &BTreeSet::new(),
             max_bytes,
         }
         .exchange()
@@ -470,6 +471,7 @@ fn open_hub(replica: &Replica) -> OpenHubVault {
                 pool,
                 vault_id: VAULT_ID.to_string(),
                 assets,
+                quarantined: BTreeSet::new(),
             }))
         })
     })

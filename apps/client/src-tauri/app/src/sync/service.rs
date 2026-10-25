@@ -40,6 +40,7 @@ use ganbaru_sync_replica::authority::{
 };
 use ganbaru_sync_replica::now_ms;
 use ganbaru_sync_replica::outbox::Outbox;
+use ganbaru_sync_replica::quarantine::Quarantine;
 use ganbaru_sync_replica::reset;
 use sqlx::SqlitePool;
 use std::collections::BTreeSet;
@@ -343,6 +344,26 @@ pub(crate) fn sync_hub<R: Runtime>(app: &AppHandle<R>) -> SyncHub {
         .with_proposals(proposals)
 }
 
+/// The devices this installation quarantined in the active vault, which the coordinator
+/// listener refuses.
+#[cfg(desktop)]
+pub(crate) fn quarantined_devices<R: Runtime>(
+    app: &AppHandle<R>,
+) -> crate::vault::handoff::transport::QuarantinedDevices {
+    let app = app.clone();
+    Arc::new(move || {
+        let app = app.clone();
+        Box::pin(async move {
+            let vault_id = app.active_vault_id()?;
+            let path = app.sync_files(&vault_id)?.quarantine_path();
+            Ok(blocking(move || Quarantine::load(&path))
+                .await?
+                .devices()
+                .clone())
+        })
+    })
+}
+
 #[cfg(desktop)]
 async fn open_hub_vault<R: Runtime>(app: &AppHandle<R>) -> Result<Option<HubVault>, String> {
     if !app.sync_enabled()? {
@@ -353,10 +374,16 @@ async fn open_hub_vault<R: Runtime>(app: &AppHandle<R>) -> Result<Option<HubVaul
     };
     let vault_id = app.active_vault_id()?;
     let assets: Arc<dyn AssetStore> = Arc::new(ActiveVaultAssets::open(app, &vault_id)?);
+    let path = app.sync_files(&vault_id)?.quarantine_path();
+    let quarantined = blocking(move || Quarantine::load(&path))
+        .await?
+        .devices()
+        .clone();
     Ok(Some(HubVault {
         pool,
         vault_id,
         assets,
+        quarantined,
     }))
 }
 
@@ -848,6 +875,10 @@ impl ServiceState {
         match peer {
             None => {}
             Some(_) if view.paused => view.state = SyncState::Paused,
+            Some(_) if session.coordinator_quarantined(&manager).await? => {
+                view.state = SyncState::Offline;
+                view.last_error = Some("this device quarantined the coordinator".to_string());
+            }
             Some((linked_vault, device_id)) => {
                 self.publish(
                     host,
@@ -1074,6 +1105,8 @@ impl ServiceState {
         mut wait: OnlineWait,
         view: &mut SyncStatusView,
     ) -> Result<Next, String> {
+        let path = session.files.quarantine_path();
+        let quarantine = blocking(move || Quarantine::load(&path)).await?;
         for _ in 0..MAX_FORK_RECOVERIES {
             let own_writers = self
                 .writer
@@ -1088,6 +1121,7 @@ impl ServiceState {
                 ctx: &session.ctx,
                 writer: self.writer.as_ref().map(ActiveWriter::id),
                 own_writers: &own_writers,
+                quarantined: quarantine.devices(),
                 max_bytes: super::client::MAX_EXCHANGE_BYTES,
             };
             match client.exchange().await {
@@ -1794,8 +1828,7 @@ impl<'a, H: SyncHost> Session<'a, H> {
     /// On a desktop coordinator, founds the vault's sync space once the vault first links: it
     /// creates the anchor keys and installs a charter naming this installation as the anchor,
     /// signed by the person key. A space that has a charter is left as it is. Phones never found
-    /// a space. Returns the charter with its person key when this installation is the anchor, for
-    /// the pairing reply.
+    /// a space. Returns the charter with its person key for the pairing reply.
     async fn found_space(&self, manager: &PairingManager) -> Result<Option<PinnedCharter>, String> {
         #[cfg(desktop)]
         {
@@ -1809,7 +1842,7 @@ impl<'a, H: SyncHost> Session<'a, H> {
                     .map_err(|error| format!("read sync charter: {error}"))?
             };
             if let Some(charter) = installed {
-                return Ok(self.pinned_charter(&charter, &device_id));
+                return Ok(Some(self.pinned_charter(&charter)));
             }
             let Some(person) = self.host.person_key(&self.ctx.person_key).await? else {
                 return Err(
@@ -1838,7 +1871,7 @@ impl<'a, H: SyncHost> Session<'a, H> {
                 .map_err(|error| format!("open sync space: {error}"))?;
             let charter =
                 ensure_charter(&self.engine, &mut conn, &self.ctx, &anchor, &founding).await?;
-            Ok(self.pinned_charter(&charter, &device_id))
+            Ok(Some(self.pinned_charter(&charter)))
         }
         #[cfg(mobile)]
         {
@@ -1847,18 +1880,29 @@ impl<'a, H: SyncHost> Session<'a, H> {
         }
     }
 
-    /// The pairing form of `charter` when it names `device_id` as the anchor.
+    /// The pairing form of `charter`. The coordinator presents it whether or not it anchors the
+    /// space: a linked device learns the current anchor from the log the charter starts.
     #[cfg(desktop)]
-    fn pinned_charter(&self, charter: &SignedCharter, device_id: &str) -> Option<PinnedCharter> {
-        (charter.charter.anchor_device_id == device_id).then(|| PinnedCharter {
+    fn pinned_charter(&self, charter: &SignedCharter) -> PinnedCharter {
+        PinnedCharter {
             charter: ganbaru_handoff::protocol::encode_sync_charter(charter),
             person_key: self.ctx.person_key.to_text(),
-        })
+        }
+    }
+
+    /// Whether this device quarantined the coordinator it pinned, which it then never dials.
+    async fn coordinator_quarantined(&self, manager: &PairingManager) -> Result<bool, String> {
+        let Some(pin) = manager.coordinator_pin()? else {
+            return Ok(false);
+        };
+        let path = self.files.quarantine_path();
+        let quarantine = blocking(move || Quarantine::load(&path)).await?;
+        Ok(quarantine.contains(&pin.device_id))
     }
 
     /// On a client, installs the charter pinned at pairing when the space has none yet, and
-    /// refuses a space whose charter differs from it, because the pin names the anchor this
-    /// device agreed to follow.
+    /// refuses a space whose charter differs from it, because the pin names the log this device
+    /// agreed to follow.
     async fn install_pinned_charter(&self, manager: &PairingManager) -> Result<(), String> {
         let Some(pinned) = manager.coordinator_pin()?.and_then(|pin| pin.charter) else {
             return Ok(());
@@ -1875,7 +1919,7 @@ impl<'a, H: SyncHost> Session<'a, H> {
         {
             Some(installed) if installed == charter => Ok(()),
             Some(_) => Err(
-                "the sync space has a different anchor than the one pinned at pairing".to_string(),
+                "the sync space has a different charter than the one pinned at pairing".to_string(),
             ),
             None => self
                 .engine

@@ -23,7 +23,7 @@ use ganbaru_sync_contracts::{
     Envelope, ProposalRejection, Seq, SignedProposal, VersionVector, WriterId,
 };
 use sqlx::SqlitePool;
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
@@ -50,6 +50,8 @@ pub struct HubVault {
     pub vault_id: String,
     /// The vault's managed asset files.
     pub assets: Arc<dyn AssetStore>,
+    /// Devices this installation quarantined, whose writers' operations the hub does not store.
+    pub quarantined: BTreeSet<String>,
 }
 
 /// Opens the vault the hub serves, or `None` while it cannot replicate.
@@ -282,6 +284,7 @@ impl SyncHub {
             engine: Engine::vault(),
             pool: vault.pool,
             ctx,
+            quarantined: vault.quarantined,
         };
         let manifest = hub.engine.manifest();
         match request {
@@ -608,6 +611,7 @@ struct HubSession {
     engine: Engine,
     pool: SqlitePool,
     ctx: SpaceContext,
+    quarantined: BTreeSet<String>,
 }
 
 impl HubSession {
@@ -758,7 +762,13 @@ impl HubSession {
         } else {
             let mut conn = acquire(&self.pool).await?;
             self.engine
-                .store_many(&mut conn, &self.ctx, &ops[..accepted], now_ms()?)
+                .store_many_quarantined(
+                    &mut conn,
+                    &self.ctx,
+                    &ops[..accepted],
+                    &self.quarantined,
+                    now_ms()?,
+                )
                 .await
                 .map_err(|error| HubError::failed(format!("store sync operations: {error}")))?
         };
@@ -766,7 +776,8 @@ impl HubSession {
         for (op, outcome) in ops.iter().zip(&outcomes) {
             match outcome {
                 StoreOutcome::Stored { .. } => stored_any = true,
-                StoreOutcome::Duplicate => {}
+                // A writer of a quarantined device: the rest of the page still applies.
+                StoreOutcome::Duplicate | StoreOutcome::Refused(StoreRefusal::Quarantined) => {}
                 StoreOutcome::Refused(store_refusal) => {
                     refusal = Some(match Envelope::decode(op) {
                         Ok(envelope) => {
@@ -896,7 +907,7 @@ pub(crate) fn refusal_to_wire(
         }
         StoreRefusal::Fork { seq } => (SyncRefusalCode::Fork, seq),
         StoreRefusal::Gap { expected } => (SyncRefusalCode::Gap, expected),
-        StoreRefusal::Revoked => (SyncRefusalCode::Revoked, seq),
+        StoreRefusal::Revoked | StoreRefusal::Quarantined => (SyncRefusalCode::Revoked, seq),
         StoreRefusal::UnknownWriter | StoreRefusal::Unenrolled => {
             (SyncRefusalCode::UnknownWriter, seq)
         }

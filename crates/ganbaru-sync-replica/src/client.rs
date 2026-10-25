@@ -97,6 +97,8 @@ pub struct ClientSession<'a, T: SyncTransport> {
     pub writer: Option<WriterId>,
     /// Every writer this installation sealed with, the active one included.
     pub own_writers: &'a BTreeSet<WriterId>,
+    /// Devices this installation quarantined, whose writers' operations it does not store.
+    pub quarantined: &'a BTreeSet<String>,
     /// Operation bytes after which a direction stops, normally [`MAX_EXCHANGE_BYTES`].
     pub max_bytes: usize,
 }
@@ -189,11 +191,14 @@ impl<T: SyncTransport> ClientSession<'_, T> {
         exchanged: &mut Exchanged,
     ) -> Result<Option<ForkPoint>, String> {
         let mut moved = 0usize;
+        // What the hub stored plus the operations it took without a refusal, which include
+        // those of devices it quarantined, so the next page moves past them.
+        let mut cursor = hub.clone();
         loop {
             let page = {
                 let mut conn = acquire(self.pool).await?;
                 self.engine
-                    .ops_after(&mut conn, self.ctx, hub, self.page_limit(moved))
+                    .ops_after(&mut conn, self.ctx, &cursor, self.page_limit(moved))
                     .await
                     .map_err(|error| format!("read sync operations: {error}"))?
             };
@@ -214,7 +219,6 @@ impl<T: SyncTransport> ClientSession<'_, T> {
                     _ => None,
                 },
             )?;
-            let before = hub.clone();
             *hub = vector_from_wire(&stored)?;
             exchanged.pushed += page.ops.len();
             if let Some(refusal) = refusal {
@@ -231,7 +235,14 @@ impl<T: SyncTransport> ClientSession<'_, T> {
             if !page.more {
                 return Ok(None);
             }
-            if before.dominates(hub) {
+            let passed = cursor.clone();
+            cursor.merge(hub);
+            for op in &page.ops {
+                let envelope = Envelope::decode(op)
+                    .map_err(|_| "this device holds a malformed operation".to_string())?;
+                cursor.advance(envelope.writer, envelope.seq);
+            }
+            if passed.dominates(&cursor) {
                 exchanged.problem = Some("the hub stored nothing of a pushed page".to_string());
                 return Ok(None);
             }
@@ -245,8 +256,12 @@ impl<T: SyncTransport> ClientSession<'_, T> {
 
     async fn pull(&self, exchanged: &mut Exchanged) -> Result<Option<ForkPoint>, String> {
         let mut moved = 0usize;
+        // Operations this replica refuses without a fork, counted as known so the next page
+        // moves past them.
+        let mut skipped = VersionVector::new();
         loop {
-            let known = self.stored().await?;
+            let mut known = self.stored().await?;
+            known.merge(&skipped);
             let request = ControlMessage::SyncPull {
                 protocol_version: PROTOCOL_VERSION,
                 vault_id: self.ids.vault_id.clone(),
@@ -273,7 +288,13 @@ impl<T: SyncTransport> ClientSession<'_, T> {
             let outcomes = {
                 let mut conn = acquire(self.pool).await?;
                 self.engine
-                    .store_many(&mut conn, self.ctx, &ops, super::now_ms()?)
+                    .store_many_quarantined(
+                        &mut conn,
+                        self.ctx,
+                        &ops,
+                        self.quarantined,
+                        super::now_ms()?,
+                    )
                     .await
                     .map_err(|error| format!("store sync operations: {error}"))?
             };
@@ -281,8 +302,13 @@ impl<T: SyncTransport> ClientSession<'_, T> {
                 match outcome {
                     StoreOutcome::Stored { .. } => exchanged.pulled += 1,
                     // An operation past a cutoff this replica already knows, which a hub still
-                    // holds until its next apply excludes it.
-                    StoreOutcome::Duplicate | StoreOutcome::Refused(StoreRefusal::Revoked) => {}
+                    // holds until its next apply excludes it, or of a quarantined device.
+                    StoreOutcome::Duplicate => {}
+                    StoreOutcome::Refused(StoreRefusal::Revoked | StoreRefusal::Quarantined) => {
+                        if let Ok(envelope) = Envelope::decode(op) {
+                            skipped.advance(envelope.writer, envelope.seq);
+                        }
+                    }
                     StoreOutcome::Refused(refusal) => {
                         let envelope = Envelope::decode(op)
                             .map_err(|_| "the hub sent a malformed operation".to_string())?;
@@ -302,7 +328,9 @@ impl<T: SyncTransport> ClientSession<'_, T> {
             if !more {
                 return Ok(None);
             }
-            if known.dominates(&self.stored().await?) {
+            let mut reached = self.stored().await?;
+            reached.merge(&skipped);
+            if known.dominates(&reached) {
                 exchanged.problem = Some("the hub sent no new operations".to_string());
                 return Ok(None);
             }

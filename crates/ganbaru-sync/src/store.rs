@@ -4,7 +4,7 @@
 //! writer and continues that writer's chain; whether it can be applied is decided separately, so
 //! an operation this version cannot read is kept, forwarded to peers, and held.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use ganbaru_sync_contracts::bounds::{MAX_WRITERS_PER_DEVICE, MAX_WRITERS_PER_SPACE};
 use ganbaru_sync_contracts::op::FORMAT_VERSION;
@@ -99,6 +99,9 @@ pub enum StoreRefusal {
         /// Next sequence the writer's chain needs.
         expected: Seq,
     },
+    /// This device quarantined the device that certified the writer. Nothing is excluded: the
+    /// operation is stored once the quarantine is lifted, and dependents wait for it.
+    Quarantined,
 }
 
 /// How a stored operation enters the log.
@@ -312,6 +315,7 @@ async fn store_genesis(
     ctx: &SpaceContext,
     envelope: &Envelope<'_>,
     bytes: &[u8],
+    quarantined: &BTreeSet<String>,
     now_ms: u64,
 ) -> SyncResult<StoreOutcome> {
     if envelope.seq != 1 {
@@ -328,6 +332,9 @@ async fn store_genesis(
         Err(_) => return Ok(StoreOutcome::Refused(StoreRefusal::Malformed)),
     };
     let cert = &certificate.certificate;
+    if quarantined.contains(&cert.device_id) {
+        return Ok(StoreOutcome::Refused(StoreRefusal::Quarantined));
+    }
     // A writer of a removed device that this replica never stored has a removal cutoff of
     // zero: its chain is stored, excluded, so the late changes other replicas applied before
     // the removal are derived here too.
@@ -554,6 +561,7 @@ async fn store_one(
     conn: &mut SqliteConnection,
     ctx: &SpaceContext,
     bytes: &[u8],
+    quarantined: &BTreeSet<String>,
     now_ms: u64,
 ) -> SyncResult<StoreOutcome> {
     let Ok(envelope) = Envelope::decode(bytes) else {
@@ -563,7 +571,10 @@ async fn store_one(
         return Ok(StoreOutcome::Refused(StoreRefusal::WrongSpace));
     }
     match log::writer(conn, ctx.space, envelope.writer).await? {
-        None => store_genesis(conn, ctx, &envelope, bytes, now_ms).await,
+        None => store_genesis(conn, ctx, &envelope, bytes, quarantined, now_ms).await,
+        Some(writer) if quarantined.contains(&writer.device_id) => {
+            Ok(StoreOutcome::Refused(StoreRefusal::Quarantined))
+        }
         Some(writer) => store_next(engine, conn, ctx, &writer, &envelope, bytes, now_ms).await,
     }
 }
@@ -594,11 +605,38 @@ impl Engine {
         operations: &[Vec<u8>],
         now_ms: u64,
     ) -> SyncResult<Vec<StoreOutcome>> {
+        self.store_many_quarantined(conn, ctx, operations, &BTreeSet::new(), now_ms)
+            .await
+    }
+
+    /// Like [`Self::store_many`], refusing operations of writers certified by a device in
+    /// `quarantined` with [`StoreRefusal::Quarantined`], which does not stop the page.
+    pub async fn store_many_quarantined(
+        &self,
+        conn: &mut SqliteConnection,
+        ctx: &SpaceContext,
+        operations: &[Vec<u8>],
+        quarantined: &BTreeSet<String>,
+        now_ms: u64,
+    ) -> SyncResult<Vec<StoreOutcome>> {
         let mut tx = conn.begin().await?;
         log::ensure_space(&mut tx, ctx.space).await?;
         let mut outcomes = Vec::with_capacity(operations.len());
+        // Writers refused as quarantined in this page. A refused genesis stores no writer row,
+        // so the writer's later operations would otherwise read as unknown.
+        let mut refused_writers = BTreeSet::new();
         for bytes in operations {
-            let outcome = store_one(self, &mut tx, ctx, bytes, now_ms).await?;
+            let writer = Envelope::decode(bytes).ok().map(|envelope| envelope.writer);
+            if writer.is_some_and(|writer| refused_writers.contains(&writer)) {
+                outcomes.push(StoreOutcome::Refused(StoreRefusal::Quarantined));
+                continue;
+            }
+            let outcome = store_one(self, &mut tx, ctx, bytes, quarantined, now_ms).await?;
+            if let (StoreOutcome::Refused(StoreRefusal::Quarantined), Some(writer)) =
+                (outcome, writer)
+            {
+                refused_writers.insert(writer);
+            }
             outcomes.push(outcome);
             if matches!(outcome, StoreOutcome::Refused(StoreRefusal::Fork { .. })) {
                 break;

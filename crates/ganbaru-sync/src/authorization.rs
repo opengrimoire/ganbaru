@@ -38,6 +38,8 @@ pub struct EnrolledDevice {
     pub device_id: String,
     /// Key that certifies the device's writers.
     pub device_key: DevicePublicKey,
+    /// SHA-256 fingerprint of its TLS certificate.
+    pub tls_fingerprint: [u8; 32],
     /// Form factor.
     pub kind: DeviceKind,
     /// Role, with the admin key of an admin.
@@ -55,11 +57,16 @@ pub struct AuthorizationView {
     pub epoch: u32,
     /// Revision of the selected head; 0 when only the charter is known.
     pub revision: u64,
+    /// Entry hash of the selected head; the charter hash when only the charter is known.
+    pub entry_hash: Digest32,
     /// Device id of the current anchor.
     pub anchor_device_id: String,
     /// Revision past which the epoch is frozen because a writer of its anchor forked; only a
     /// handover continues the log then.
     pub frozen_at: Option<u64>,
+    /// The old anchor's stored vector the handover that opened this epoch carried. The new anchor must
+    /// know every writer it names before it sequences a removal.
+    pub catch_up: Option<VersionVector>,
     /// Hash of the charter the selected chain starts from, which every proposal names.
     pub charter: Digest32,
     /// Every device the selected chain enrolled, removed ones included, by device id.
@@ -98,6 +105,8 @@ pub(crate) struct AuthState {
     freezes: Arc<BTreeMap<String, Vec<u64>>>,
     /// Revision past which the current epoch is frozen.
     frozen_at: Option<u64>,
+    /// The old anchor's stored vector from the handover that opened the current epoch.
+    catch_up: Option<Arc<VersionVector>>,
 }
 
 /// Revision past which an epoch that `anchor` opened at revision `start` is frozen: the lowest
@@ -139,6 +148,7 @@ impl AuthState {
             devices: BTreeMap::from([(body.anchor_device_id.clone(), anchor)]),
             frozen_at: frozen_at(&freezes, &body.anchor_device_id, 0),
             freezes,
+            catch_up: None,
         }
     }
 
@@ -247,6 +257,12 @@ impl AuthState {
                 self.epoch_root = hash;
                 self.anchor_device_id = handover.new_anchor_device_id.clone();
                 self.frozen_at = frozen_at(&self.freezes, &self.anchor_device_id, record.revision);
+                self.catch_up = match &record.sequencing {
+                    Sequencing::Handover {
+                        old_anchor_vector: Some(vector),
+                    } => Some(Arc::new(vector.clone())),
+                    _ => None,
+                };
             }
             Entry::Enroll(enroll) => {
                 self.devices.insert(
@@ -310,8 +326,10 @@ impl AuthState {
         AuthorizationView {
             epoch: self.epoch,
             revision: self.revision,
+            entry_hash: self.entry_hash,
             anchor_device_id: self.anchor_device_id.clone(),
             frozen_at: self.frozen_at,
+            catch_up: self.catch_up.as_deref().cloned(),
             charter: self.charter,
             devices: self
                 .devices
@@ -319,6 +337,7 @@ impl AuthState {
                 .map(|(device_id, device)| EnrolledDevice {
                     device_id: device_id.clone(),
                     device_key: device.device_key,
+                    tls_fingerprint: device.tls_fingerprint,
                     kind: device.kind,
                     role: device.role,
                     enrolled_revision: device.enrolled,
@@ -936,10 +955,22 @@ impl Engine {
                     Entry::Enroll(_) | Entry::SetRole(_) | Entry::ResolveLate(_) => {
                         Sequencing::Empty
                     }
-                    Entry::Remove(remove) => Sequencing::Removal {
-                        cutoffs: removal_cutoffs(&mut tx, ctx.space, &remove.device_id).await?,
-                        discovery_key,
-                    },
+                    Entry::Remove(remove) => {
+                        let Some(cutoffs) = removal_cutoffs(
+                            &mut tx,
+                            ctx.space,
+                            &remove.device_id,
+                            state.catch_up.as_deref(),
+                        )
+                        .await?
+                        else {
+                            return Ok(Err(ProposalRejection::CatchingUp));
+                        };
+                        Sequencing::Removal {
+                            cutoffs,
+                            discovery_key,
+                        }
+                    }
                     Entry::Handover(_) | Entry::Unknown { .. } => {
                         return Ok(Err(ProposalRejection::UnsupportedEntry));
                     }
@@ -1048,12 +1079,33 @@ enum Ordering {
     },
 }
 
-/// Cutoffs of a removal of `device_id`: the stored sequence of each of its writers.
+/// Cutoffs of a removal of `device_id`: the stored sequence of each of its writers. In an epoch
+/// a handover opened with the old anchor's stored vector, a writer's cutoff is at least what the
+/// old anchor stored, because those operations are final. `None` while a writer of that vector is
+/// unknown here: it may belong to the removed device, whose cutoff could not be set.
 async fn removal_cutoffs(
     conn: &mut SqliteConnection,
     space: SpaceId,
     device_id: &str,
-) -> SyncResult<Vec<(WriterId, Seq)>> {
+    catch_up: Option<&VersionVector>,
+) -> SyncResult<Option<Vec<(WriterId, Seq)>>> {
+    if let Some(old_anchor) = catch_up {
+        let rows: Vec<Vec<u8>> =
+            sqlx::query_scalar("SELECT writer_id FROM sync_writers WHERE space_id = ?")
+                .bind(space.as_bytes().as_slice())
+                .fetch_all(&mut *conn)
+                .await?;
+        let mut writers = std::collections::BTreeSet::new();
+        for writer in &rows {
+            writers.insert(log::writer_id(writer)?);
+        }
+        if old_anchor
+            .iter()
+            .any(|(writer, seq)| seq > 0 && !writers.contains(&writer))
+        {
+            return Ok(None);
+        }
+    }
     let rows: Vec<(Vec<u8>, i64)> = sqlx::query_as(
         "SELECT writer_id, stored_seq FROM sync_writers
          WHERE space_id = ? AND device_id = ? ORDER BY writer_id",
@@ -1064,10 +1116,11 @@ async fn removal_cutoffs(
     .await?;
     rows.iter()
         .map(|(writer, seq)| {
-            Ok((
-                log::writer_id(writer)?,
-                stored_u64(*seq, "stored sequence")?,
-            ))
+            let writer = log::writer_id(writer)?;
+            let stored = stored_u64(*seq, "stored sequence")?;
+            let finalized = catch_up.map_or(0, |old_anchor| old_anchor.get(&writer));
+            Ok((writer, stored.max(finalized)))
         })
-        .collect()
+        .collect::<SyncResult<_>>()
+        .map(Some)
 }

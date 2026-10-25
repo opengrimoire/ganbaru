@@ -14,6 +14,7 @@ pub mod client;
 #[cfg(desktop)]
 pub mod hub;
 pub mod outbox;
+pub mod quarantine;
 pub mod recovery;
 pub mod reset;
 mod wire;

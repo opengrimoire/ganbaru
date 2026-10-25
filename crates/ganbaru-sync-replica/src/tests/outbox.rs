@@ -190,6 +190,7 @@ fn only_a_moved_chain_ends_a_waiting_proposal() {
         ProposalRejection::NotAnchor,
         ProposalRejection::EpochFrozen,
         ProposalRejection::HandoverConflict,
+        ProposalRejection::CatchingUp,
     ];
     for rejection in ProposalRejection::ALL {
         assert_eq!(

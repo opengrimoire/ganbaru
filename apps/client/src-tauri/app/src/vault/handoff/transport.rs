@@ -7,7 +7,7 @@ pub(crate) use dial_report::{CoordinatorDialReport, coordinator_dial_report};
 use dial_report::{DialOutcome, record_dial};
 #[cfg(desktop)]
 pub(crate) use server::{
-    CoordinatorListener, CoordinatorServices, EnrollmentSealer, LanAdmission,
+    CoordinatorListener, CoordinatorServices, EnrollmentSealer, LanAdmission, QuarantinedDevices,
     serve_with_coordinator,
 };
 
@@ -212,12 +212,15 @@ pub(crate) async fn enroll(
                 .peer_certificates()
                 .and_then(|certificates| certificates.first())
                 .ok_or_else(|| "coordinator did not provide a certificate".to_string())?;
-            let charter = charter
-                .zip(person_key)
-                .map(|(charter, person_key)| PinnedCharter {
-                    charter,
-                    person_key,
-                });
+            // A device that pinned no charter could not tell its anchor from any other, so a
+            // reply without one is refused.
+            let (Some(charter), Some(person_key)) = (charter, person_key) else {
+                return Err("the coordinator linked this device without a sync charter".to_string());
+            };
+            let charter = Some(PinnedCharter {
+                charter,
+                person_key,
+            });
             manager.record_enrolled(
                 invitation,
                 coordinator_certificate.as_ref(),

@@ -40,6 +40,35 @@ pub(crate) fn test_sync_device_key() -> ganbaru_sync_contracts::DevicePublicKey 
     ganbaru_sync_contracts::DevicePublicKey::from_bytes([3; 32])
 }
 
+/// An enrollment sealer that answers every enrollment with a charter of `vault-1`, signed by a
+/// test person key, as a coordinator that anchors the space does.
+pub(crate) fn test_enrollment_sealer() -> EnrollmentSealer {
+    std::sync::Arc::new(|| Box::pin(async { Ok(Some(test_pinned_charter())) }))
+}
+
+fn test_pinned_charter() -> PinnedCharter {
+    let person = ganbaru_contacts::PersonKeyPair::from_seed(&[8; 32]).expect("person key");
+    let admin = ganbaru_sync_contracts::AdminKeyPair::from_seed(&[5; 32]).expect("admin key");
+    let charter = ganbaru_sync_contracts::sign_charter(
+        &ganbaru_sync_contracts::Charter {
+            space: ganbaru_sync_contracts::SpaceId::personal("vault-1"),
+            anchor_device_id: "device-desktop".to_string(),
+            anchor_device_key: test_sync_device_key(),
+            anchor_tls_fingerprint: [0; 32],
+            anchor_admin_key: admin.public_key(),
+            recovery_admin_key: admin.public_key(),
+            discovery_key: [7; 32],
+            created_at_ms: 1,
+        },
+        &person,
+    )
+    .expect("sign charter");
+    PinnedCharter {
+        charter: crate::vault::handoff::protocol::encode_sync_charter(&charter),
+        person_key: person.public_key().to_text(),
+    }
+}
+
 pub(crate) struct LocalPair {
     _desktop_root: TestDirectory,
     _phone_root: TestDirectory,
@@ -57,6 +86,25 @@ impl LocalPair {
 
     pub(crate) async fn start_with_hub(hub: Option<crate::sync::hub::SyncHub>) -> Self {
         Self::start_with_limits(hub, server::limits::ConnectionLimits::default()).await
+    }
+
+    /// A coordinator serving `hub` that presents `charter` at pairing, as the coordinator of a
+    /// vault whose space it founded does.
+    pub(crate) async fn start_with_hub_charter(
+        hub: Option<crate::sync::hub::SyncHub>,
+        charter: PinnedCharter,
+    ) -> Self {
+        Self::start_with_sealer(
+            hub,
+            server::limits::ConnectionLimits::default(),
+            EnrollmentApprovals::default(),
+            LanAdmission::default(),
+            std::sync::Arc::new(move || {
+                let charter = charter.clone();
+                Box::pin(async move { Ok(Some(charter)) })
+            }),
+        )
+        .await
     }
 
     async fn start_with_limits(
@@ -77,6 +125,16 @@ impl LocalPair {
         limits: server::limits::ConnectionLimits,
         approvals: EnrollmentApprovals,
         admission: LanAdmission,
+    ) -> Self {
+        Self::start_with_sealer(hub, limits, approvals, admission, test_enrollment_sealer()).await
+    }
+
+    async fn start_with_sealer(
+        hub: Option<crate::sync::hub::SyncHub>,
+        limits: server::limits::ConnectionLimits,
+        approvals: EnrollmentApprovals,
+        admission: LanAdmission,
+        sealer: EnrollmentSealer,
     ) -> Self {
         let desktop_root = TestDirectory::new("desktop");
         let phone_root = TestDirectory::new("phone");
@@ -112,6 +170,7 @@ impl LocalPair {
             desktop.clone(),
             CoordinatorServices {
                 hub,
+                enrollment_sealer: Some(sealer),
                 approvals: approvals.clone(),
                 admission,
                 ..CoordinatorServices::default()
@@ -193,6 +252,7 @@ impl LocalPair {
             CoordinatorServices {
                 coordinator: Some(requests),
                 contacts: Some(contacts),
+                enrollment_sealer: Some(test_enrollment_sealer()),
                 approvals: approvals.clone(),
                 ..CoordinatorServices::default()
             },

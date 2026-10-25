@@ -1786,16 +1786,13 @@ fn pinned_charter(
 }
 
 #[test]
-fn pairing_pins_the_charter_that_names_the_coordinator_as_anchor() {
+fn pairing_pins_a_signed_charter_of_the_vault_whichever_device_founded_it() {
     let (phone_root, phone, invitation, certificate) = linked_phone("pin-charter");
     let person = ganbaru_contacts::PersonKeyPair::from_seed(&[8; 32]).expect("person");
     assert_eq!(pin_of(&phone).charter, None);
 
-    let other_certificate = b"another coordinator certificate".to_vec();
     for foreign in [
         pinned_charter("vault-2", "device-desktop", &certificate, &person),
-        pinned_charter("vault-1", "device-other", &certificate, &person),
-        pinned_charter("vault-1", "device-desktop", &other_certificate, &person),
         PinnedCharter {
             person_key: ganbaru_contacts::PersonKeyPair::from_seed(&[9; 32])
                 .expect("other person")
@@ -1816,6 +1813,24 @@ fn pairing_pins_the_charter_that_names_the_coordinator_as_anchor() {
         None,
         "a refused charter keeps the pin"
     );
+
+    // A charter founded by another device: the coordinator presents it after the anchor or
+    // the vault moved, and the log it starts names the current anchor.
+    let founded_elsewhere = pinned_charter(
+        "vault-1",
+        "device-other",
+        b"another coordinator certificate",
+        &person,
+    );
+    phone
+        .record_enrolled(
+            &invitation,
+            &certificate,
+            None,
+            Some(founded_elsewhere.clone()),
+        )
+        .expect("pin a charter founded elsewhere");
+    assert_eq!(pin_of(&phone).charter, Some(founded_elsewhere));
 
     let charter = pinned_charter("vault-1", "device-desktop", &certificate, &person);
     phone

@@ -576,10 +576,7 @@ impl ControlMessage {
                 }
                 match (charter, person_key) {
                     (Some(charter), Some(person_key)) => {
-                        let (charter, _) = decode_sync_charter(charter, person_key)?;
-                        if charter.charter.anchor_device_id != *coordinator_device_id {
-                            return Err("the sync charter names a different anchor".to_string());
-                        }
+                        decode_sync_charter(charter, person_key)?;
                     }
                     (None, None) => {}
                     _ => {
@@ -2068,8 +2065,13 @@ mod tests {
         let valid = enrolled(Some(charter.clone()), Some(person_key.clone()));
         assert_eq!(frame_round_trip(&valid), Ok(valid.clone()));
         assert_eq!(enrolled(None, None).validate(), Ok(()));
+        // The charter names the founding anchor, which need not be the coordinator presenting it.
+        let founded_elsewhere = encode_sync_charter(&signed_charter(&person, "device-other"));
+        assert_eq!(
+            enrolled(Some(founded_elsewhere), Some(person_key.clone())).validate(),
+            Ok(())
+        );
 
-        let foreign_anchor = encode_sync_charter(&signed_charter(&person, "device-other"));
         let mut tampered =
             base64::Engine::decode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, &charter)
                 .expect("charter bytes");
@@ -2081,7 +2083,6 @@ mod tests {
             enrolled(Some(charter.clone()), None),
             enrolled(None, Some(person_key.clone())),
             enrolled(Some(charter.clone()), Some(other.public_key().to_text())),
-            enrolled(Some(foreign_anchor), Some(person_key.clone())),
             enrolled(Some(tampered), Some(person_key.clone())),
             enrolled(Some("A".repeat(4096)), Some(person_key.clone())),
         ] {

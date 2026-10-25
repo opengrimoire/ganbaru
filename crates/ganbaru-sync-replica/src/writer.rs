@@ -309,6 +309,11 @@ impl SyncFiles {
     pub fn outbox_path(&self) -> PathBuf {
         self.vault_directory().join("outbox.json")
     }
+
+    /// The devices this installation quarantined.
+    pub fn quarantine_path(&self) -> PathBuf {
+        self.vault_directory().join("quarantine.json")
+    }
 }
 
 pub fn read_record(path: &Path) -> Result<Option<WriterRecord>, String> {

@@ -10,8 +10,8 @@ use crate::vault::handoff::contact_requests::{
     ContactJob, ContactOperation, ContactSender, MIN_CONTACT_REQUEST_RESPONSE,
 };
 use crate::vault::handoff::enrollment_approval::{
-    ENROLLMENT_DECLINED_MESSAGE, ENROLLMENT_UNANSWERED_MESSAGE, EnrollmentApprovals,
-    EnrollmentDecision,
+    ENROLLMENT_DECLINED_MESSAGE, ENROLLMENT_NO_CHARTER_MESSAGE, ENROLLMENT_UNANSWERED_MESSAGE,
+    EnrollmentApprovals, EnrollmentDecision,
 };
 use crate::vault::handoff::pairing::{Enrollment, PairingManager, PinnedCharter, TlsIdentity};
 use crate::vault::handoff::protocol::{
@@ -25,6 +25,7 @@ use ganbaru_handoff::dial::{LoopbackPolicy, admit_inbound_peer};
 use limits::{ConnectionLimits, PendingPermit};
 pub(crate) use listener::CoordinatorListener;
 use rustls::pki_types::CertificateDer;
+use std::collections::BTreeSet;
 use std::fs;
 use std::future::Future;
 use std::net::{IpAddr, SocketAddr};
@@ -91,6 +92,14 @@ pub(crate) type EnrollmentSealer = Arc<
         + Sync,
 >;
 
+/// The device ids this installation quarantined in the active vault. The listener turns their
+/// connections away right after the TLS handshake.
+pub(crate) type QuarantinedDevices = Arc<
+    dyn Fn() -> Pin<Box<dyn Future<Output = Result<BTreeSet<String>, String>> + Send>>
+        + Send
+        + Sync,
+>;
+
 /// Optional coordinator features a listener dispatches to, and the approvals enrollment asks.
 #[derive(Clone, Default)]
 pub(crate) struct CoordinatorServices {
@@ -102,6 +111,8 @@ pub(crate) struct CoordinatorServices {
     pub approvals: EnrollmentApprovals,
     /// Whether the network behind each local address may reach the listener at all.
     pub admission: LanAdmission,
+    /// Devices whose connections are refused while they stay quarantined.
+    pub quarantined: Option<QuarantinedDevices>,
 }
 
 pub(crate) async fn serve_with_coordinator(
@@ -237,6 +248,7 @@ async fn handle_connection(
                 enrollment_sealer,
                 approvals,
                 admission: _,
+                quarantined,
             },
         limits,
     } = services;
@@ -254,6 +266,13 @@ async fn handle_connection(
         .peer_certificates()
         .and_then(|certificates| certificates.first())
         .cloned();
+    if let Some(quarantined) = quarantined.as_ref()
+        && peer_certificate.is_some()
+        && let Ok(peer) = manager.authenticated_peer(peer_certificate.as_ref())
+        && refuses_quarantined(quarantined().await, &peer.device_id)
+    {
+        return Err(format!("refused quarantined device {}", peer.device_id));
+    }
     let revoked = manager.is_revoked_certificate(peer_certificate.as_ref())?;
     // A linked certificate moves the connection to the authenticated budget; anything else keeps
     // its pending slot and the small frame bound until it closes.
@@ -318,6 +337,7 @@ async fn handle_connection(
             device_kind,
             device_certificate,
             sync_device_key,
+            sync_admin_key,
             ..
         } => {
             if peer_certificate.is_some() {
@@ -338,6 +358,7 @@ async fn handle_connection(
                 device_kind,
                 certificate_b64: &device_certificate,
                 sync_device_key: &sync_device_key,
+                sync_admin_key: sync_admin_key.as_deref(),
             };
             // The invitation is checked when the request arrives, so time spent waiting for the
             // user does not expire it.
@@ -383,9 +404,23 @@ async fn handle_connection(
                 }),
                 None => None,
             };
-            let (charter, person_key) = charter
-                .map(|pinned| (pinned.charter, pinned.person_key))
-                .unzip();
+            // A device told nothing about the anchor could not pin it, so it is refused. The link
+            // stays: unlinking would make the anchor remove a device it may already have
+            // enrolled, and a removed device id never enrolls again. Pairing the same device
+            // again reuses the link.
+            let Some(PinnedCharter {
+                charter,
+                person_key,
+            }) = charter
+            else {
+                return send_error(
+                    &mut stream,
+                    "enrollment_rejected",
+                    ENROLLMENT_NO_CHARTER_MESSAGE,
+                    true,
+                )
+                .await;
+            };
             let coordinator_device_id = manager.device_id()?;
             let coordinator_device_label = suggested_device_label();
             timeout_control(write_control(
@@ -394,8 +429,8 @@ async fn handle_connection(
                     protocol_version: PROTOCOL_VERSION,
                     coordinator_device_id,
                     coordinator_device_label: Some(coordinator_device_label),
-                    charter,
-                    person_key,
+                    charter: Some(charter),
+                    person_key: Some(person_key),
                 },
             ))
             .await
@@ -1034,4 +1069,20 @@ where
         },
     ))
     .await
+}
+
+/// Whether the listener turns a linked device away as quarantined. A quarantine list that
+/// cannot be read is reported and refuses no one, so a damaged file never locks every linked
+/// device out, handoff recovery included.
+pub(crate) fn refuses_quarantined(
+    quarantined: Result<BTreeSet<String>, String>,
+    device_id: &str,
+) -> bool {
+    match quarantined {
+        Ok(devices) => devices.contains(device_id),
+        Err(error) => {
+            eprintln!("sync: read the quarantine list: {error}");
+            false
+        }
+    }
 }

@@ -247,6 +247,7 @@ fn a_handover_continues_the_log_it_names() {
         sign_proposal(
             &Proposal {
                 space: space(),
+                charter: golden_charter().hash(),
                 author: admin_key().public_key(),
                 created_at_ms: GOLDEN_CREATED_AT_MS,
                 entry: handover(0, GOLDEN_DEVICE_ID, 4, continues),
@@ -335,6 +336,7 @@ fn unknown_entry_kinds_round_trip_byte_for_byte() {
         };
         let proposal = Proposal {
             space: space(),
+            charter: golden_charter().hash(),
             author: admin_key().public_key(),
             created_at_ms: GOLDEN_CREATED_AT_MS,
             entry,
@@ -369,7 +371,7 @@ fn proposals_are_idempotent_by_hash_and_signed_by_their_author() {
         Err(AuthorizationError::Signature)
     );
     let mut version = first.encode();
-    version[0] = 2;
+    version[0] = 1;
     assert_eq!(
         SignedProposal::decode(&version),
         Err(AuthorizationError::Version)
@@ -414,6 +416,7 @@ fn enrollment_fields_are_validated() {
     for (enroll, error) in invalid {
         let proposal = Proposal {
             space: space(),
+            charter: golden_charter().hash(),
             author: admin_key().public_key(),
             created_at_ms: GOLDEN_CREATED_AT_MS,
             entry: Entry::Enroll(enroll),
@@ -445,6 +448,7 @@ fn late_resolutions_are_ascending_unique_and_nonempty() {
         sign_proposal(
             &Proposal {
                 space: space(),
+                charter: golden_charter().hash(),
                 author: admin_key().public_key(),
                 created_at_ms: GOLDEN_CREATED_AT_MS,
                 entry,

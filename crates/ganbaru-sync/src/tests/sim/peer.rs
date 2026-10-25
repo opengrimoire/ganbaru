@@ -593,7 +593,8 @@ impl PeerSim {
                 Err(
                     ProposalRejection::NotAnchor
                     | ProposalRejection::EpochFrozen
-                    | ProposalRejection::HandoverConflict,
+                    | ProposalRejection::HandoverConflict
+                    | ProposalRejection::CatchingUp,
                 ) => index += 1,
                 Err(rejection) => {
                     note(format!(

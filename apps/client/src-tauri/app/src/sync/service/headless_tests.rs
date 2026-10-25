@@ -212,6 +212,7 @@ fn serving_hub(pool: SqlitePool, assets: PathBuf) -> SyncHub {
                 pool,
                 vault_id: VAULT_ID.to_string(),
                 assets,
+                quarantined: std::collections::BTreeSet::new(),
             }))
         })
     });
@@ -315,10 +316,16 @@ async fn headless_pass_converges_with_the_hub_and_runs_hooks() {
     let hub_directory = TestDirectory::new("headless-hub");
     let hub_registry = DatabasePoolRegistry::default();
     let (hub_pool, mut hub_space) = hub_vault(hub_directory.path(), &hub_registry, &person).await;
-    let pair = LocalPair::start_with_hub(Some(serving_hub(
-        hub_pool.clone(),
-        hub_directory.path().join("assets"),
-    )))
+    let pair = LocalPair::start_with_hub_charter(
+        Some(serving_hub(
+            hub_pool.clone(),
+            hub_directory.path().join("assets"),
+        )),
+        PinnedCharter {
+            charter: ganbaru_handoff::protocol::encode_sync_charter(&hub_space.charter),
+            person_key: person.public_key().to_text(),
+        },
+    )
     .await;
     pair.enroll().await;
     let config_dir = pair.phone_config_dir().to_path_buf();

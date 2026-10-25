@@ -9,7 +9,9 @@ use ganbaru_sync_contracts::{DeviceRole, Envelope, ProposalRejection};
 use super::authorization::{admin_entry, forge_handover, remove_entry, superseded, view};
 use super::block_on;
 use super::exclusion::{deliver, displaced, edit, late_changes, note, title};
-use super::replica::{ANCHOR_DEVICE_ID, Replica, converge, device_id, enroll_entry, pair, person};
+use super::replica::{
+    ANCHOR_DEVICE_ID, Replica, anchor_admin, converge, device_id, enroll_entry, pair, person,
+};
 use crate::{
     EvidenceOutcome, EvidenceRefusal, MAX_EXCLUDED_PER_WRITER, StoreOutcome, StoreRefusal,
 };
@@ -929,5 +931,48 @@ fn a_creation_beyond_the_bound_is_offered_again_after_a_reselection_reverts_the_
         for replica in [&mut reverted, &mut direct] {
             replica.check_invariants().await;
         }
+    });
+}
+
+#[test]
+fn a_forked_anchor_continues_its_log_through_a_handover_to_itself() {
+    block_on(async {
+        let mut anchor = Replica::anchor(0, 311).await;
+        let mut member = Replica::new(2, 311).await;
+        deliver(&mut member, &mut anchor).await;
+        let base = view(&mut member).await.revision;
+        let mut copy = anchor.clone_device().await;
+        anchor
+            .sequence(enroll_entry(&person(), 21, DeviceRole::Member))
+            .await
+            .unwrap()
+            .unwrap();
+        copy.sequence(enroll_entry(&person(), 22, DeviceRole::Member))
+            .await
+            .unwrap()
+            .unwrap();
+        deliver(&mut member, &mut anchor).await;
+        cross(&mut member, &mut copy).await;
+        deliver(&mut anchor, &mut member).await;
+        let frozen = view(&mut anchor).await;
+        assert_eq!(frozen.frozen_at, Some(base));
+
+        // The anchor's own admin key hands the anchor to the same device in the next epoch,
+        // which lifts the freeze there and on every member.
+        let signed = anchor.handover_proposal(&anchor_admin(&person())).await;
+        anchor.seal_handover(&signed, None).await.unwrap().unwrap();
+        let continued = view(&mut anchor).await;
+        assert_eq!(
+            (continued.epoch, continued.frozen_at),
+            (frozen.epoch + 1, None)
+        );
+        assert_eq!(continued.anchor_device_id, ANCHOR_DEVICE_ID);
+        anchor
+            .sequence(enroll_entry(&person(), 23, DeviceRole::Member))
+            .await
+            .unwrap()
+            .unwrap();
+        deliver(&mut member, &mut anchor).await;
+        assert_eq!(view(&mut member).await, view(&mut anchor).await);
     });
 }

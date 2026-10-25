@@ -1,8 +1,13 @@
-//! Tauri commands for the sync status, controls, and recovery offers.
+//! Tauri commands for the sync status, controls, recovery offers, quarantine, and the
+//! authority actions of an admin desktop.
 
+use super::host::SyncHost;
 use super::recovery::{self, RecoveryAction, RecoveryChoice, RecoveryEntryView};
-use super::service::SyncRuntime;
+#[cfg(desktop)]
+use super::service::{AuthorityAction, AuthorityAnswer, PendingRecoveryKit};
+use super::service::{SyncRuntime, blocking};
 use super::status::{SyncNotice, SyncStatusView, SyncSubscribers};
+use ganbaru_sync_replica::quarantine::Quarantine;
 use serde::Deserialize;
 use std::time::Duration;
 use tauri::ipc::Channel;
@@ -13,6 +18,11 @@ const RECOVERY_TIMEOUT: Duration = Duration::from_secs(60);
 /// How long Reset sync state may wait for the service to run it.
 #[cfg(desktop)]
 const RESET_TIMEOUT: Duration = Duration::from_secs(60);
+/// How long an authority action may wait for the service to run it.
+#[cfg(desktop)]
+const AUTHORITY_TIMEOUT: Duration = Duration::from_secs(60);
+/// Serializes changes of the quarantine file, so two commands never drop each other's change.
+static QUARANTINE_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 /// Longest subscription id, which fits a UUID.
 const MAX_SUBSCRIPTION_ID_BYTES: usize = 64;
 
@@ -118,6 +128,147 @@ pub async fn sync_reset_state(runtime: State<'_, SyncRuntime>) -> Result<(), Str
         .await
         .map_err(|_| "sync did not reset its state in time".to_string())?
         .map_err(|_| "sync stopped before resetting its state".to_string())?
+}
+
+/// The devices this installation quarantined in the active vault.
+#[tauri::command]
+pub async fn sync_quarantine_list<R: Runtime>(app: AppHandle<R>) -> Result<Vec<String>, String> {
+    let path = quarantine_path(&app)?;
+    let quarantine = blocking(move || Quarantine::load(&path)).await?;
+    Ok(quarantine.devices().iter().cloned().collect())
+}
+
+/// Quarantines another device of the active vault on this installation at once: its
+/// connections are refused and the operations its writers sealed are not stored. On an admin
+/// desktop it also proposes removing the device from the vault, which is permanent once the
+/// anchor sequences it.
+#[tauri::command]
+pub async fn sync_quarantine_device<R: Runtime>(
+    app: AppHandle<R>,
+    runtime: State<'_, SyncRuntime>,
+    device_id: String,
+) -> Result<(), String> {
+    if device_id == app.device_id()? {
+        return Err("this device cannot quarantine itself".to_string());
+    }
+    let path = quarantine_path(&app)?;
+    {
+        let _guard = QUARANTINE_LOCK.lock().await;
+        let target = device_id.clone();
+        blocking(move || Quarantine::load(&path)?.add(&target)).await?;
+    }
+    #[cfg(desktop)]
+    runtime.request_authority_detached(AuthorityAction::ProposeRemoval(device_id))?;
+    runtime.sync_now();
+    Ok(())
+}
+
+/// Lifts the quarantine of a device on this installation, so its operations arrive again. A
+/// removal the anchor already sequenced stays.
+#[tauri::command]
+pub async fn sync_quarantine_lift<R: Runtime>(
+    app: AppHandle<R>,
+    runtime: State<'_, SyncRuntime>,
+    device_id: String,
+) -> Result<(), String> {
+    let path = quarantine_path(&app)?;
+    {
+        let _guard = QUARANTINE_LOCK.lock().await;
+        blocking(move || Quarantine::load(&path)?.lift(&device_id)).await?;
+    }
+    runtime.sync_now();
+    Ok(())
+}
+
+/// Seals a handover that makes this linked admin desktop the anchor of the vault's sync space,
+/// after an exchange that leaves it current with the coordinator. Returns the authorization
+/// revision of the handover.
+#[cfg(desktop)]
+#[tauri::command]
+pub async fn sync_take_anchor(runtime: State<'_, SyncRuntime>) -> Result<u64, String> {
+    match run_authority(&runtime, AuthorityAction::TakeAnchor).await? {
+        AuthorityAnswer::Anchored(revision) => Ok(revision),
+        _ => Err("sync answered taking the anchor with something else".to_string()),
+    }
+}
+
+/// On the coordinating computer, proposes making a linked desktop an admin with the admin key
+/// it sent at pairing, so it can take the anchor.
+#[cfg(desktop)]
+#[tauri::command]
+pub async fn sync_promote_device(
+    runtime: State<'_, SyncRuntime>,
+    device_id: String,
+) -> Result<(), String> {
+    run_authority(&runtime, AuthorityAction::Promote(device_id))
+        .await
+        .map(|_| ())
+}
+
+/// Replaces the vault's recovery kit on an admin desktop and returns the new kit code, which is
+/// shown once. The old kit stops signing once the anchor sequences the change.
+#[cfg(desktop)]
+#[tauri::command]
+pub async fn sync_regenerate_recovery_kit(
+    runtime: State<'_, SyncRuntime>,
+) -> Result<String, String> {
+    match run_authority(&runtime, AuthorityAction::RegenerateRecoveryKit).await? {
+        AuthorityAnswer::RecoveryKit(code) => Ok(code),
+        _ => Err("sync answered the recovery kit request with something else".to_string()),
+    }
+}
+
+/// The recovery kit whose seed this desktop still holds because the user has not confirmed
+/// saving it, such as the kit founding a charter creates, or none.
+#[cfg(desktop)]
+#[tauri::command]
+pub async fn sync_recovery_kit_pending(
+    runtime: State<'_, SyncRuntime>,
+) -> Result<Option<PendingRecoveryKit>, String> {
+    match run_authority(&runtime, AuthorityAction::PendingRecoveryKit).await? {
+        AuthorityAnswer::PendingRecoveryKit(kit) => Ok(kit),
+        _ => Err("sync answered the recovery kit request with something else".to_string()),
+    }
+}
+
+/// Deletes the recovery seed after the user confirmed saving the kit, so no device keeps it.
+#[cfg(desktop)]
+#[tauri::command]
+pub async fn sync_recovery_kit_saved(runtime: State<'_, SyncRuntime>) -> Result<(), String> {
+    run_authority(&runtime, AuthorityAction::RecoveryKitSaved)
+        .await
+        .map(|_| ())
+}
+
+/// Uses a recovery kit on this enrolled desktop: proposes, signed with the recovery admin key
+/// the code derives, making this desktop an admin, so it can take the anchor once the anchor
+/// sequences the proposal. The derived key is never stored.
+#[cfg(desktop)]
+#[tauri::command]
+pub async fn sync_use_recovery_kit(
+    runtime: State<'_, SyncRuntime>,
+    code: String,
+) -> Result<(), String> {
+    run_authority(&runtime, AuthorityAction::UseRecoveryKit(code))
+        .await
+        .map(|_| ())
+}
+
+#[cfg(desktop)]
+async fn run_authority(
+    runtime: &SyncRuntime,
+    action: AuthorityAction,
+) -> Result<AuthorityAnswer, String> {
+    let reply = runtime.request_authority(action)?;
+    tokio::time::timeout(AUTHORITY_TIMEOUT, reply)
+        .await
+        .map_err(|_| "sync did not run the request in time".to_string())?
+        .map_err(|_| "sync stopped before the request ran".to_string())?
+}
+
+fn quarantine_path<R: Runtime>(app: &AppHandle<R>) -> Result<std::path::PathBuf, String> {
+    let vault_id = app.active_vault_id()?;
+    Ok(app.sync_files(&vault_id)?.quarantine_path())
 }
 
 async fn close_recovery(

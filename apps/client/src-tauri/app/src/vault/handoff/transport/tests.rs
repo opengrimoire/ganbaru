@@ -40,6 +40,35 @@ pub(crate) fn test_sync_device_key() -> ganbaru_sync_contracts::DevicePublicKey 
     ganbaru_sync_contracts::DevicePublicKey::from_bytes([3; 32])
 }
 
+/// An enrollment sealer that answers every enrollment with a charter of `vault-1`, signed by a
+/// test person key, as a coordinator that anchors the space does.
+pub(crate) fn test_enrollment_sealer() -> EnrollmentSealer {
+    std::sync::Arc::new(|| Box::pin(async { Ok(Some(test_pinned_charter())) }))
+}
+
+fn test_pinned_charter() -> PinnedCharter {
+    let person = ganbaru_contacts::PersonKeyPair::from_seed(&[8; 32]).expect("person key");
+    let admin = ganbaru_sync_contracts::AdminKeyPair::from_seed(&[5; 32]).expect("admin key");
+    let charter = ganbaru_sync_contracts::sign_charter(
+        &ganbaru_sync_contracts::Charter {
+            space: ganbaru_sync_contracts::SpaceId::personal("vault-1"),
+            anchor_device_id: "device-desktop".to_string(),
+            anchor_device_key: test_sync_device_key(),
+            anchor_tls_fingerprint: [0; 32],
+            anchor_admin_key: admin.public_key(),
+            recovery_admin_key: admin.public_key(),
+            discovery_key: [7; 32],
+            created_at_ms: 1,
+        },
+        &person,
+    )
+    .expect("sign charter");
+    PinnedCharter {
+        charter: crate::vault::handoff::protocol::encode_sync_charter(&charter),
+        person_key: person.public_key().to_text(),
+    }
+}
+
 pub(crate) struct LocalPair {
     _desktop_root: TestDirectory,
     _phone_root: TestDirectory,
@@ -57,6 +86,39 @@ impl LocalPair {
 
     pub(crate) async fn start_with_hub(hub: Option<crate::sync::hub::SyncHub>) -> Self {
         Self::start_with_limits(hub, server::limits::ConnectionLimits::default()).await
+    }
+
+    /// A coordinator serving `hub` that presents `charter` at pairing, as the coordinator of a
+    /// vault whose space it founded does.
+    pub(crate) async fn start_with_hub_charter(
+        hub: Option<crate::sync::hub::SyncHub>,
+        charter: PinnedCharter,
+    ) -> Self {
+        Self::start_with_sealer(
+            hub,
+            server::limits::ConnectionLimits::default(),
+            EnrollmentApprovals::default(),
+            LanAdmission::default(),
+            std::sync::Arc::new(move || {
+                let charter = charter.clone();
+                Box::pin(async move { Ok(Some(charter)) })
+            }),
+            None,
+        )
+        .await
+    }
+
+    /// A coordinator whose listener reads the quarantined devices from `quarantined`.
+    async fn start_with_quarantine(quarantined: QuarantinedDevices) -> Self {
+        Self::start_with_sealer(
+            None,
+            server::limits::ConnectionLimits::default(),
+            EnrollmentApprovals::default(),
+            LanAdmission::default(),
+            test_enrollment_sealer(),
+            Some(quarantined),
+        )
+        .await
     }
 
     async fn start_with_limits(
@@ -77,6 +139,25 @@ impl LocalPair {
         limits: server::limits::ConnectionLimits,
         approvals: EnrollmentApprovals,
         admission: LanAdmission,
+    ) -> Self {
+        Self::start_with_sealer(
+            hub,
+            limits,
+            approvals,
+            admission,
+            test_enrollment_sealer(),
+            None,
+        )
+        .await
+    }
+
+    async fn start_with_sealer(
+        hub: Option<crate::sync::hub::SyncHub>,
+        limits: server::limits::ConnectionLimits,
+        approvals: EnrollmentApprovals,
+        admission: LanAdmission,
+        sealer: EnrollmentSealer,
+        quarantined: Option<QuarantinedDevices>,
     ) -> Self {
         let desktop_root = TestDirectory::new("desktop");
         let phone_root = TestDirectory::new("phone");
@@ -112,8 +193,10 @@ impl LocalPair {
             desktop.clone(),
             CoordinatorServices {
                 hub,
+                enrollment_sealer: Some(sealer),
                 approvals: approvals.clone(),
                 admission,
+                quarantined,
                 ..CoordinatorServices::default()
             },
             receiver,
@@ -138,6 +221,7 @@ impl LocalPair {
                 "Phone".to_string(),
                 DeviceKind::Phone,
                 &test_sync_device_key(),
+                None,
             ),
         )
         .await
@@ -193,6 +277,7 @@ impl LocalPair {
             CoordinatorServices {
                 coordinator: Some(requests),
                 contacts: Some(contacts),
+                enrollment_sealer: Some(test_enrollment_sealer()),
                 approvals: approvals.clone(),
                 ..CoordinatorServices::default()
             },
@@ -289,6 +374,7 @@ fn spawn_phone_enrollment(
             "Phone".to_string(),
             DeviceKind::Phone,
             &test_sync_device_key(),
+            None,
         )
         .await
     })
@@ -988,6 +1074,7 @@ async fn invitation_replay_is_rejected_by_coordinator() {
         "Phone".to_string(),
         DeviceKind::Phone,
         &test_sync_device_key(),
+        None,
     )
     .await
     .unwrap_err();
@@ -1019,6 +1106,9 @@ async fn several_enrolled_devices_authenticate_with_distinct_certificates() {
             unix_time_ms(),
         )
         .expect("create second invitation");
+    let laptop_admin = ganbaru_sync_contracts::AdminKeyPair::from_seed(&[6; 32])
+        .expect("admin key")
+        .public_key();
     approving(
         &pair.approvals,
         super::enroll(
@@ -1027,6 +1117,7 @@ async fn several_enrolled_devices_authenticate_with_distinct_certificates() {
             "Laptop".to_string(),
             DeviceKind::Computer,
             &test_sync_device_key(),
+            Some(&laptop_admin),
         ),
     )
     .await
@@ -1034,6 +1125,16 @@ async fn several_enrolled_devices_authenticate_with_distinct_certificates() {
 
     let peers = pair.desktop.linked_peers().expect("linked devices");
     assert_eq!(peers.len(), 2);
+    let admin_keys: Vec<(&str, Option<&str>)> = peers
+        .iter()
+        .map(|peer| (peer.device_label.as_str(), peer.sync_admin_key.as_deref()))
+        .collect();
+    let laptop_admin = super::super::protocol::encode_sync_admin_key(&laptop_admin);
+    assert!(admin_keys.contains(&("Phone", None)), "{admin_keys:?}");
+    assert!(
+        admin_keys.contains(&("Laptop", Some(laptop_admin.as_str()))),
+        "a linked desktop keeps the admin key it sent: {admin_keys:?}"
+    );
     assert_ne!(
         peers[0].certificate_fingerprint,
         peers[1].certificate_fingerprint
@@ -2024,5 +2125,51 @@ async fn sync_states_refresh_the_remembered_coordinator_contact() {
         linked_pin(&pair.phone).reported_endpoints,
         endpoints,
         "an unreportable endpoint list is not stored"
+    );
+}
+
+#[tokio::test]
+async fn the_listener_refuses_a_quarantined_device_and_survives_an_unreadable_list() {
+    type List = Result<std::collections::BTreeSet<String>, String>;
+    let list: std::sync::Arc<std::sync::Mutex<List>> =
+        std::sync::Arc::new(std::sync::Mutex::new(Ok(std::collections::BTreeSet::new())));
+    let source = list.clone();
+    let pair = LocalPair::start_with_quarantine(std::sync::Arc::new(move || {
+        let current = source.lock().expect("list").clone();
+        Box::pin(async move { current })
+    }))
+    .await;
+    pair.enroll().await;
+    // This listener serves no coordinator operations, so a device that passes admission gets
+    // that answer, while a refused one loses the connection after the handshake.
+    let served = || async {
+        let outcome =
+            probe_coordinator(&pair.phone, super::super::protocol::test_compatibility(), 0).await;
+        match outcome {
+            Ok(_) => true,
+            Err(error) => error.contains("coordinator operations are unavailable"),
+        }
+    };
+    assert!(served().await, "a linked device is served");
+
+    *list.lock().expect("list") = Ok(std::collections::BTreeSet::from([
+        "device-phone".to_string()
+    ]));
+    assert!(
+        !served().await,
+        "a quarantined device is turned away after the handshake"
+    );
+    assert!(
+        pair.phone
+            .coordinator_pin()
+            .expect("coordinator pin")
+            .is_some(),
+        "a quarantine is not an unlink"
+    );
+
+    *list.lock().expect("list") = Err("the quarantine list is damaged".to_string());
+    assert!(
+        served().await,
+        "an unreadable list turns no linked device away"
     );
 }

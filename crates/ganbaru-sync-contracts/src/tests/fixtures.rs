@@ -271,6 +271,7 @@ pub fn golden_charter() -> SignedCharter {
 pub fn proposal(entry: Entry, created_at_offset_ms: i64) -> SignedProposal {
     let proposal = Proposal {
         space: space(),
+        charter: golden_charter().hash(),
         author: admin_key().public_key(),
         created_at_ms: GOLDEN_CREATED_AT_MS + created_at_offset_ms,
         entry,

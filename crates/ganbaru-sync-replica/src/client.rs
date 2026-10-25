@@ -2,6 +2,7 @@
 //! lacks, and reports a fork of this installation's writers so the service can re-seal.
 
 use super::outbox::Outbox;
+use super::quarantine::PullSkips;
 use super::wire::BOOTSTRAP_REQUIRED;
 use super::wire::{
     forked_from_wire, hash_from_wire, hash_to_wire, ops_from_wire, ops_to_wire, proposed_from_wire,
@@ -9,13 +10,13 @@ use super::wire::{
 };
 use ganbaru_handoff::protocol::{
     ControlMessage, MAX_SYNC_HASHES, PROTOCOL_VERSION, SYNC_PAGE_BYTES, SyncProbe, SyncRefusal,
-    SyncRefusalCode, encode_sync_proposal,
+    SyncRefusalCode, SyncSettledProposal, decode_sync_proposal, encode_sync_proposal,
 };
 use ganbaru_sync::{
     Engine, EvidenceOutcome, EvidenceRefusal, SpaceContext, StoreOutcome, StoreRefusal,
 };
 use ganbaru_sync_contracts::{
-    Envelope, ProposalRejection, Seq, SignedProposal, VersionVector, WriterId,
+    Digest32, Envelope, ProposalRejection, Seq, SignedProposal, VersionVector, WriterId,
 };
 use sqlx::SqlitePool;
 use std::collections::{BTreeMap, BTreeSet};
@@ -97,6 +98,10 @@ pub struct ClientSession<'a, T: SyncTransport> {
     pub writer: Option<WriterId>,
     /// Every writer this installation sealed with, the active one included.
     pub own_writers: &'a BTreeSet<WriterId>,
+    /// Devices this installation quarantined, whose writers' operations it does not store.
+    pub quarantined: &'a BTreeSet<String>,
+    /// Operations of quarantined devices earlier pulls turned away, which later pulls move past.
+    pub pull_skips: Option<&'a PullSkips>,
     /// Operation bytes after which a direction stops, normally [`MAX_EXCHANGE_BYTES`].
     pub max_bytes: usize,
 }
@@ -189,11 +194,14 @@ impl<T: SyncTransport> ClientSession<'_, T> {
         exchanged: &mut Exchanged,
     ) -> Result<Option<ForkPoint>, String> {
         let mut moved = 0usize;
+        // What the hub stored plus the operations it took without a refusal, which include
+        // those of devices it quarantined, so the next page moves past them.
+        let mut cursor = hub.clone();
         loop {
             let page = {
                 let mut conn = acquire(self.pool).await?;
                 self.engine
-                    .ops_after(&mut conn, self.ctx, hub, self.page_limit(moved))
+                    .ops_after(&mut conn, self.ctx, &cursor, self.page_limit(moved))
                     .await
                     .map_err(|error| format!("read sync operations: {error}"))?
             };
@@ -214,7 +222,6 @@ impl<T: SyncTransport> ClientSession<'_, T> {
                     _ => None,
                 },
             )?;
-            let before = hub.clone();
             *hub = vector_from_wire(&stored)?;
             exchanged.pushed += page.ops.len();
             if let Some(refusal) = refusal {
@@ -231,7 +238,14 @@ impl<T: SyncTransport> ClientSession<'_, T> {
             if !page.more {
                 return Ok(None);
             }
-            if before.dominates(hub) {
+            let passed = cursor.clone();
+            cursor.merge(hub);
+            for op in &page.ops {
+                let envelope = Envelope::decode(op)
+                    .map_err(|_| "this device holds a malformed operation".to_string())?;
+                cursor.advance(envelope.writer, envelope.seq);
+            }
+            if passed.dominates(&cursor) {
                 exchanged.problem = Some("the hub stored nothing of a pushed page".to_string());
                 return Ok(None);
             }
@@ -245,8 +259,15 @@ impl<T: SyncTransport> ClientSession<'_, T> {
 
     async fn pull(&self, exchanged: &mut Exchanged) -> Result<Option<ForkPoint>, String> {
         let mut moved = 0usize;
+        // Operations this replica refuses without a fork, counted as known so the next page
+        // moves past them.
+        let mut skipped = self
+            .pull_skips
+            .map(|skips| skips.for_quarantine(self.quarantined))
+            .unwrap_or_default();
         loop {
-            let known = self.stored().await?;
+            let mut known = self.stored().await?;
+            known.merge(&skipped);
             let request = ControlMessage::SyncPull {
                 protocol_version: PROTOCOL_VERSION,
                 vault_id: self.ids.vault_id.clone(),
@@ -273,7 +294,13 @@ impl<T: SyncTransport> ClientSession<'_, T> {
             let outcomes = {
                 let mut conn = acquire(self.pool).await?;
                 self.engine
-                    .store_many(&mut conn, self.ctx, &ops, super::now_ms()?)
+                    .store_many_quarantined(
+                        &mut conn,
+                        self.ctx,
+                        &ops,
+                        self.quarantined,
+                        super::now_ms()?,
+                    )
                     .await
                     .map_err(|error| format!("store sync operations: {error}"))?
             };
@@ -281,8 +308,20 @@ impl<T: SyncTransport> ClientSession<'_, T> {
                 match outcome {
                     StoreOutcome::Stored { .. } => exchanged.pulled += 1,
                     // An operation past a cutoff this replica already knows, which a hub still
-                    // holds until its next apply excludes it.
-                    StoreOutcome::Duplicate | StoreOutcome::Refused(StoreRefusal::Revoked) => {}
+                    // holds until its next apply excludes it, or of a quarantined device.
+                    StoreOutcome::Duplicate => {}
+                    StoreOutcome::Refused(
+                        refusal @ (StoreRefusal::Revoked | StoreRefusal::Quarantined),
+                    ) => {
+                        if let Ok(envelope) = Envelope::decode(op) {
+                            skipped.advance(envelope.writer, envelope.seq);
+                            if *refusal == StoreRefusal::Quarantined
+                                && let Some(skips) = self.pull_skips
+                            {
+                                skips.advance(envelope.writer, envelope.seq);
+                            }
+                        }
+                    }
                     StoreOutcome::Refused(refusal) => {
                         let envelope = Envelope::decode(op)
                             .map_err(|_| "the hub sent a malformed operation".to_string())?;
@@ -302,7 +341,9 @@ impl<T: SyncTransport> ClientSession<'_, T> {
             if !more {
                 return Ok(None);
             }
-            if known.dominates(&self.stored().await?) {
+            let mut reached = self.stored().await?;
+            reached.merge(&skipped);
+            if known.dominates(&reached) {
                 exchanged.problem = Some("the hub sent no new operations".to_string());
                 return Ok(None);
             }
@@ -648,6 +689,64 @@ pub async fn replay_outbox<T: SyncTransport>(
         outbox.settle(&proposal.hash(), outcome)?;
     }
     Ok(sequenced)
+}
+
+/// Follows the local replica's selected chain with [`Outbox::prune`], which also puts a held
+/// proposal a handover superseded back to waiting, then sends what waits with
+/// [`replay_outbox`]. A member runs this after each exchange, even when nothing waited before.
+pub async fn prune_and_replay_outbox<T: SyncTransport>(
+    engine: &Engine,
+    pool: &SqlitePool,
+    ctx: &SpaceContext,
+    transport: &T,
+    ids: &PeerIds,
+    outbox: &mut Outbox,
+) -> Result<usize, String> {
+    if outbox.entries().is_empty() {
+        return Ok(0);
+    }
+    {
+        let mut conn = acquire(pool).await?;
+        outbox.prune(engine, &mut conn, ctx).await?;
+    }
+    if outbox.pending().is_empty() {
+        return Ok(0);
+    }
+    replay_outbox(transport, ids, outbox).await
+}
+
+/// On an anchor that is not the hub, reports the final rejections it gave proposals of an
+/// earlier forward and collects the proposals the hub holds for it. The hub answers only the
+/// device the selected log names as anchor; anyone else receives none.
+pub async fn forward<T: SyncTransport>(
+    transport: &T,
+    ids: &PeerIds,
+    settled: &[(Digest32, ProposalRejection)],
+) -> Result<Vec<SignedProposal>, String> {
+    let request = ControlMessage::SyncForward {
+        protocol_version: PROTOCOL_VERSION,
+        vault_id: ids.vault_id.clone(),
+        device_id: ids.device_id.clone(),
+        settled: settled
+            .iter()
+            .map(|(hash, rejection)| SyncSettledProposal {
+                proposal: hash_to_wire(hash),
+                rejection: rejection.as_u8(),
+            })
+            .collect(),
+    };
+    let proposals = answer(
+        transport.request(request).await?,
+        "SyncForwarded",
+        |response| match response {
+            ControlMessage::SyncForwarded { proposals } => Some(proposals),
+            _ => None,
+        },
+    )?;
+    proposals
+        .iter()
+        .map(|proposal| decode_sync_proposal(proposal))
+        .collect()
 }
 
 /// Extracts the expected response, or reports the hub's error.

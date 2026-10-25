@@ -103,11 +103,19 @@ pub trait SequenceReservation: Send {
     /// Ensures sequences up to `seq` are reserved, advancing the durable reservation if needed.
     fn ensure_reserved(&mut self, seq: u64) -> io::Result<()>;
 
-    /// Records the authorization revision and entry hash the anchor is about to seal, before it
-    /// signs the entry, so a database restored behind the record can be told apart from one that
-    /// never sequenced that far. The default records nothing.
-    fn reserve_entry(&mut self, revision: u64, entry_hash: Digest32) -> io::Result<()> {
-        let _ = (revision, entry_hash);
+    /// Records the epoch, authorization revision, and entry hash the anchor is about to seal
+    /// under the charter its log starts from, before it signs the entry, so a database restored
+    /// behind the record can be told apart from one that never sequenced that far. The seal can
+    /// still roll back, so the record may run ahead of the database by this one entry. The
+    /// default records nothing.
+    fn reserve_entry(
+        &mut self,
+        charter: Digest32,
+        epoch: u32,
+        revision: u64,
+        entry_hash: Digest32,
+    ) -> io::Result<()> {
+        let _ = (charter, epoch, revision, entry_hash);
         Ok(())
     }
 }

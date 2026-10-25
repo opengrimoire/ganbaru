@@ -12,6 +12,7 @@ use crate::hub::{
     OpenHubVault, SyncHub,
 };
 use crate::outbox::Outbox;
+use crate::quarantine::PullSkips;
 use crate::recovery::{
     RecoveredRow, RecoveryAction, RecoveryChoice, RecoveryRestorers, RestoreFuture,
 };
@@ -180,6 +181,14 @@ async fn shared_vault_image() -> Vec<u8> {
 }
 
 impl Replica {
+    /// Hash of the charter this replica holds, which its proposals name.
+    async fn charter(&self) -> ganbaru_sync_contracts::Digest32 {
+        let mut conn = acquire(&self.pool).await;
+        authority::charter_hash(&self.engine, &mut conn, &self.ctx)
+            .await
+            .expect("charter")
+    }
+
     async fn new(label: &str, device_id: &str) -> Self {
         let directory = TestDirectory::new(label);
         let registry = DatabasePoolRegistry::default();
@@ -345,7 +354,36 @@ impl Replica {
             ctx: &self.ctx,
             writer: Some(active),
             own_writers,
+            quarantined: &BTreeSet::new(),
+            pull_skips: None,
             max_bytes,
+        }
+        .exchange()
+        .await
+    }
+
+    /// Exchanges as an installation that quarantined `quarantined`, remembering what its pulls
+    /// turned away in `skips`.
+    async fn exchange_quarantining<T: SyncTransport>(
+        &self,
+        transport: &T,
+        ids: &PeerIds,
+        quarantined: &BTreeSet<String>,
+        skips: &PullSkips,
+    ) -> Result<Exchange, String> {
+        let engine = Engine::vault();
+        let own_writers = self.writer.own_writers();
+        ClientSession {
+            transport,
+            ids,
+            engine: &engine,
+            pool: &self.pool,
+            ctx: &self.ctx,
+            writer: Some(self.writer.id()),
+            own_writers: &own_writers,
+            quarantined,
+            pull_skips: Some(skips),
+            max_bytes: MAX_EXCHANGE_BYTES,
         }
         .exchange()
         .await
@@ -452,16 +490,23 @@ fn phone_ids() -> PeerIds {
 
 /// Opens the replica's vault as the vault a hub serves.
 fn open_hub(replica: &Replica) -> OpenHubVault {
+    open_hub_quarantining(replica, BTreeSet::new())
+}
+
+/// Opens the replica's vault as a hub that quarantined `quarantined`.
+fn open_hub_quarantining(replica: &Replica, quarantined: BTreeSet<String>) -> OpenHubVault {
     let pool = replica.pool.clone();
     let assets = Arc::clone(&replica.assets);
     Arc::new(move || {
         let pool = pool.clone();
         let assets = Arc::clone(&assets);
+        let quarantined = quarantined.clone();
         Box::pin(async move {
             Ok(Some(HubVault {
                 pool,
                 vault_id: VAULT_ID.to_string(),
                 assets,
+                quarantined,
             }))
         })
     })
@@ -547,6 +592,127 @@ fn exchange_pushes_and_pulls_until_both_replicas_hold_every_operation() {
                 .expect("exchange"),
         );
         assert_eq!((again.pushed, again.pulled), (0, 0));
+        hub_replica.close().await;
+        phone.close().await;
+    });
+}
+
+/// A transport that counts the operations pulls download.
+struct CountingTransport<'a> {
+    inner: &'a DirectTransport,
+    pulled: std::sync::atomic::AtomicUsize,
+}
+
+impl SyncTransport for CountingTransport<'_> {
+    async fn request(&self, message: ControlMessage) -> Result<ControlMessage, String> {
+        let response = self.inner.request(message).await?;
+        if let ControlMessage::SyncOps { ops, .. } = &response {
+            self.pulled
+                .fetch_add(ops.len(), std::sync::atomic::Ordering::Relaxed);
+        }
+        Ok(response)
+    }
+}
+
+#[test]
+fn a_client_pulls_a_quarantined_backlog_once_until_the_quarantine_changes() {
+    block_on(async {
+        let hub_replica = Replica::new("hub-pull-skips", HUB_DEVICE).await;
+        let mut phone = Replica::new("phone-pull-skips", PHONE_DEVICE).await;
+        let tablet = Replica::new("tablet-pull-skips", TABLET_DEVICE).await;
+        let (transport, _changes) = hub(&hub_replica);
+        phone.seal_note("note-phone-1").await;
+        phone.seal_note("note-phone-2").await;
+        done(
+            phone
+                .exchange(&transport, &phone_ids())
+                .await
+                .expect("push"),
+        );
+
+        let counting = CountingTransport {
+            inner: &transport,
+            pulled: std::sync::atomic::AtomicUsize::new(0),
+        };
+        let tablet_ids = PeerIds {
+            vault_id: VAULT_ID.to_string(),
+            device_id: TABLET_DEVICE.to_string(),
+        };
+        let quarantined = BTreeSet::from([PHONE_DEVICE.to_string()]);
+        let skips = PullSkips::default();
+        let first = done(
+            tablet
+                .exchange_quarantining(&counting, &tablet_ids, &quarantined, &skips)
+                .await
+                .expect("first exchange"),
+        );
+        assert_eq!(first.problem, None);
+        let downloaded = counting.pulled.load(std::sync::atomic::Ordering::Relaxed);
+        assert!(downloaded > 0);
+        assert_eq!(tablet.stored().await.get(&phone.writer.id()), 0);
+
+        done(
+            tablet
+                .exchange_quarantining(&counting, &tablet_ids, &quarantined, &skips)
+                .await
+                .expect("second exchange"),
+        );
+        assert_eq!(
+            counting.pulled.load(std::sync::atomic::Ordering::Relaxed),
+            downloaded,
+            "the turned away backlog is not downloaded again"
+        );
+
+        // Lifting the quarantine forgets the skips, so the operations arrive.
+        done(
+            tablet
+                .exchange_quarantining(&counting, &tablet_ids, &BTreeSet::new(), &skips)
+                .await
+                .expect("exchange after lifting"),
+        );
+        assert_eq!(
+            tablet.stored().await.get(&phone.writer.id()),
+            phone.stored().await.get(&phone.writer.id())
+        );
+        hub_replica.close().await;
+        phone.close().await;
+        tablet.close().await;
+    });
+}
+
+#[test]
+fn a_hub_stores_nothing_from_a_quarantined_device_until_the_quarantine_lifts() {
+    block_on(async {
+        let mut hub_replica = Replica::new("hub-quarantine", HUB_DEVICE).await;
+        let mut phone = Replica::new("phone-quarantine", PHONE_DEVICE).await;
+        let quarantining = DirectTransport(
+            SyncHub::new(
+                open_hub_quarantining(&hub_replica, BTreeSet::from([PHONE_DEVICE.to_string()])),
+                watch::Sender::new(0),
+            )
+            .with_contact(contact_source(test_contact())),
+        );
+        hub_replica.seal_note("note-hub").await;
+        phone.seal_note("note-phone").await;
+
+        // The exchange still completes: the phone pulls, and the hub skips what it pushes.
+        let exchanged = phone.exchange(&quarantining, &phone_ids()).await;
+        assert!(exchanged.is_ok(), "{exchanged:?}");
+        hub_replica.apply().await;
+        phone.apply().await;
+        assert!(phone.has_note("note-hub").await);
+        assert!(!hub_replica.has_note("note-phone").await);
+        assert_eq!(
+            hub_replica.stored().await.get(&phone.writer.id()),
+            0,
+            "no operation of the quarantined device is stored"
+        );
+
+        // Lifting the quarantine lets the same operations arrive.
+        let (lifted, _changes) = hub(&hub_replica);
+        converge(&mut hub_replica, &mut phone, &lifted).await;
+        assert!(hub_replica.has_note("note-phone").await);
+        assert_eq!(phone.stored().await, hub_replica.stored().await);
         hub_replica.close().await;
         phone.close().await;
     });
@@ -994,6 +1160,7 @@ fn proposals_reach_the_anchor_through_the_hub_until_the_chain_holds_them() {
         };
         let enroll = authority::propose(
             hub_replica.ctx.space,
+            hub_replica.charter().await,
             &hub_keys().admin,
             authority::enroll_entry(laptop),
             NOW_MS,
@@ -1057,6 +1224,7 @@ fn proposals_reach_the_anchor_through_the_hub_until_the_chain_holds_them() {
         let mut outbox = Outbox::load(&path).expect("empty outbox");
         let duplicate = authority::propose(
             hub_replica.ctx.space,
+            hub_replica.charter().await,
             &hub_keys().admin,
             authority::enroll_entry(Enrollment {
                 device_id: PHONE_DEVICE.to_string(),
@@ -2804,6 +2972,28 @@ fn reset_sync_state_founds_a_new_space_that_republishes_every_row() {
             .await
             .expect("read charter")
             .expect("charter");
+        let old_enroll = authority::propose(
+            hub.ctx.space,
+            old_charter.hash(),
+            &hub_keys().admin,
+            authority::enroll_entry(Enrollment {
+                device_id: "device-laptop".to_string(),
+                device_key: device_key("device-laptop").public_key(),
+                tls_fingerprint: [27; 32],
+                label: "Laptop".to_string(),
+                device_kind: DeviceKind::Desktop,
+            }),
+            NOW_MS,
+        )
+        .expect("sign enrollment");
+        let old_remove = authority::propose(
+            hub.ctx.space,
+            old_charter.hash(),
+            &hub_keys().admin,
+            authority::remove_entry(PHONE_DEVICE),
+            NOW_MS,
+        )
+        .expect("sign removal");
 
         reset::reset_database(&mut *acquire(&hub.pool).await)
             .await
@@ -2875,6 +3065,22 @@ fn reset_sync_state_founds_a_new_space_that_republishes_every_row() {
         .expect("create writer");
         hub.seal().await;
         let mut conn = acquire(&hub.pool).await;
+        for replayed in [&old_enroll, &old_remove] {
+            assert_eq!(
+                authority::sequence(
+                    &hub.engine,
+                    &mut conn,
+                    &hub.ctx,
+                    &mut hub.writer.local(),
+                    replayed,
+                    NOW_MS + 2,
+                )
+                .await
+                .expect("sequence"),
+                Err(ProposalRejection::WrongSpace),
+                "a proposal signed for the old charter does not replay into the new one"
+            );
+        }
         assert_eq!(
             local::pending_captures(&mut conn).await.expect("captures"),
             0
@@ -2890,7 +3096,209 @@ fn reset_sync_state_founds_a_new_space_that_republishes_every_row() {
     });
 }
 
+#[test]
+fn a_reset_interrupted_after_the_database_is_cleared_is_repaired_on_the_next_start() {
+    use crate::reset;
+    use crate::writer::{WriterCheck, check_writer, read_record, read_stored_writer};
+    block_on(async {
+        // The crash lands before the installation state goes, or after the outbox went but
+        // before the record and the writer keys did.
+        for outbox_removed in [false, true] {
+            let label = format!("reset-interrupted-{outbox_removed}");
+            let mut hub = Replica::new(&label, HUB_DEVICE).await;
+            hub.seal_note("note-before-reset").await;
+            let files = hub.directory.files();
+            let keys = hub.directory.keys();
+            let old_charter = hub.charter().await;
+            {
+                let mut conn = acquire(&hub.pool).await;
+                authority::enroll(
+                    &hub.engine,
+                    &mut conn,
+                    &hub.ctx,
+                    &hub_keys().admin,
+                    &mut hub.writer.local(),
+                    Enrollment {
+                        device_id: "laptop-before-reset".to_string(),
+                        device_key: device_key("laptop-before-reset").public_key(),
+                        tls_fingerprint: [27; 32],
+                        label: "Laptop".to_string(),
+                        device_kind: DeviceKind::Desktop,
+                    },
+                    NOW_MS,
+                )
+                .await
+                .expect("sequence an enrollment before the reset");
+            }
+            let recorded = hub
+                .writer
+                .record()
+                .sequenced
+                .clone()
+                .expect("the anchor recorded its high-water");
+            assert_eq!(recorded.charter(), Some(old_charter));
+            let mut outbox = Outbox::load(&files.outbox_path()).expect("empty outbox");
+            outbox
+                .add(
+                    authority::propose(
+                        hub.ctx.space,
+                        old_charter,
+                        &hub_keys().admin,
+                        authority::remove_entry(PHONE_DEVICE),
+                        NOW_MS,
+                    )
+                    .expect("sign removal"),
+                )
+                .expect("queue removal");
+
+            // A database without a charter beside a record naming a high-water was restored from
+            // before founding, so only the Reset's first step lets a new charter be founded.
+            let record = || read_record(&files.record_path()).expect("read record");
+            assert!(reset::refuse_refounding(record().as_ref()).is_err());
+            reset::forget_high_water(&files).expect("forget the high-water");
+            assert_eq!(record().and_then(|record| record.sequenced), None);
+            reset::refuse_refounding(record().as_ref()).expect("the reset may found anew");
+            reset::reset_database(&mut *acquire(&hub.pool).await)
+                .await
+                .expect("reset database");
+            if outbox_removed {
+                Outbox::remove(&files.outbox_path()).expect("remove outbox");
+            }
+
+            let mut conn = acquire(&hub.pool).await;
+            hub.engine
+                .init_space(&mut conn, VAULT_ID, NOW_MS + 1)
+                .await
+                .expect("initialize space");
+            hub.engine
+                .refuse_legacy_state(&mut conn, &hub.ctx)
+                .await
+                .expect("the reset space is current");
+            hub.engine
+                .seed_captures(&mut conn, NOW_MS + 1)
+                .await
+                .expect("seed captures");
+            let founding = Founding {
+                device_id: HUB_DEVICE,
+                tls_fingerprint: [23; 32],
+                discovery_key: [24; 32],
+                person: &person(),
+                now_ms: NOW_MS + 1,
+            };
+            ensure_charter(&hub.engine, &mut conn, &hub.ctx, &hub_keys(), &founding)
+                .await
+                .expect("found the space again");
+            let stored = read_stored_writer(&files, &keys).expect("read stored writer");
+            assert!(stored.is_some(), "the crash left the old record");
+            let check = check_writer(
+                &hub.engine,
+                &mut conn,
+                &hub.ctx,
+                &files,
+                &device_key(HUB_DEVICE).public_key(),
+                stored,
+            )
+            .await
+            .expect("check writer");
+            let WriterCheck::Successor(plan) = check else {
+                panic!("the cleared space lacks the recorded writer");
+            };
+            drop(conn);
+            hub.writer = create_writer(
+                &files,
+                &keys,
+                plan,
+                &device_key(HUB_DEVICE),
+                HUB_DEVICE,
+                NOW_MS + 1,
+            )
+            .expect("create successor");
+            assert_eq!(
+                hub.writer.record().sequenced,
+                None,
+                "a high-water of the cleared log never reads as a restore"
+            );
+            let new_charter = hub.charter().await;
+            assert_ne!(
+                new_charter, old_charter,
+                "the reset founded another charter"
+            );
+            // A record that still named the old charter is cleared against the new one.
+            let mut kept = hub.writer.record().clone();
+            kept.sequenced = Some(recorded.clone());
+            crate::writer::write_record(&files.record_path(), &kept).expect("write record");
+            let stored = read_stored_writer(&files, &keys).expect("read stored writer");
+            let mut conn = acquire(&hub.pool).await;
+            let WriterCheck::Ready(writer) = check_writer(
+                &hub.engine,
+                &mut conn,
+                &hub.ctx,
+                &files,
+                &device_key(HUB_DEVICE).public_key(),
+                stored,
+            )
+            .await
+            .expect("check writer") else {
+                panic!("the successor still matches its chain");
+            };
+            drop(conn);
+            hub.writer = *writer;
+            hub.writer
+                .settle_sequenced(None)
+                .expect("settle without a charter");
+            assert!(
+                hub.writer.record().sequenced.is_some(),
+                "a space without a charter keeps the high-water"
+            );
+            hub.writer
+                .settle_sequenced(Some(new_charter))
+                .expect("settle against the new charter");
+            assert_eq!(hub.writer.record().sequenced, None);
+            let stored = std::fs::read_to_string(files.record_path()).expect("read record");
+            assert!(
+                !stored.contains("\"sequenced\""),
+                "the cleared high-water is durable"
+            );
+
+            let mut outbox = Outbox::load(&files.outbox_path()).expect("load outbox");
+            let mut conn = acquire(&hub.pool).await;
+            let sequenced = authority::sequence_outbox(
+                &hub.engine,
+                &mut conn,
+                &hub.ctx,
+                &mut hub.writer.local(),
+                &mut outbox,
+                NOW_MS + 2,
+            )
+            .await
+            .expect("sequence outbox");
+            assert_eq!(sequenced, 0, "the old proposal does not replay");
+            assert!(
+                outbox
+                    .entries()
+                    .iter()
+                    .all(|entry| entry.rejection == Some(ProposalRejection::WrongSpace)),
+                "a proposal for the old charter is refused for good"
+            );
+            drop(conn);
+
+            hub.seal().await;
+            let mut conn = acquire(&hub.pool).await;
+            let published: i64 =
+                sqlx::query_scalar("SELECT COUNT(*) FROM sync_rows WHERE row_key = ?")
+                    .bind("note-before-reset")
+                    .fetch_one(&mut *conn)
+                    .await
+                    .expect("read rows");
+            assert_eq!(published, 1, "the successor publishes the note again");
+            drop(conn);
+            hub.close().await;
+        }
+    });
+}
+
 mod calendar_conflicts;
 mod calendar_recovery;
+mod handover;
 mod projects_conflicts;
 mod projects_recovery;

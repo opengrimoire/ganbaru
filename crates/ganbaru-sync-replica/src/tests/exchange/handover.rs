@@ -2,15 +2,17 @@
 //! an anchor it no longer is.
 
 use super::{
-    DirectTransport, HUB_DEVICE, PHONE_DEVICE, Replica, block_on, contact_source, device_key,
-    hub_keys, open_hub, phone_ids, test_contact,
+    DirectTransport, HUB_DEVICE, PHONE_DEVICE, Replica, TABLET_DEVICE, block_on, contact_source,
+    device_key, hub_keys, open_hub, phone_ids, test_contact,
 };
 use crate::authority::{self, Enrollment};
 use crate::client::{self, PeerIds};
 use crate::hub::{HubForwards, SyncHub};
 use crate::outbox::Outbox;
 use crate::tests::{NOW_MS, VAULT_ID, acquire};
+use crate::writer::{SyncKey, SyncKeyStore};
 use ganbaru_sync::Engine;
+use ganbaru_sync_contracts::RecoverySeed;
 use ganbaru_sync_contracts::{
     AdminKeyPair, DeviceKind, Digest32, ProposalRejection, SignedProposal, SpaceId,
 };
@@ -205,6 +207,12 @@ fn a_promoted_desktop_takes_the_anchor_and_collects_what_the_hub_holds() {
             ),
             (LAPTOP_DEVICE, 1, handover)
         );
+        // The admin hub still reconciles links, but never proposes removing itself or the
+        // anchor, which it does not link to as a peer.
+        assert_eq!(
+            authority::unlinked_devices(&hub_view, HUB_DEVICE, |device| device == PHONE_DEVICE),
+            vec![TABLET_DEVICE.to_string()]
+        );
 
         // The hub no longer anchors: it holds what devices propose for the laptop to collect.
         let wearable = enroll_mobile(space, charter, "device-watch", 40);
@@ -272,5 +280,78 @@ fn a_promoted_desktop_takes_the_anchor_and_collects_what_the_hub_holds() {
         );
         hub_replica.close().await;
         laptop.close().await;
+    });
+}
+
+#[test]
+fn a_regenerated_recovery_kit_replaces_the_recovery_admin_key() {
+    block_on(async {
+        let mut hub_replica = Replica::new("hub-recovery-kit", HUB_DEVICE).await;
+        let charter = hub_replica.charter().await;
+        let space = hub_replica.ctx.space;
+        let keys = hub_replica.directory.keys();
+        let seed = authority::rotate_recovery_seed(&keys, VAULT_ID).expect("rotate seed");
+        assert_eq!(
+            keys.read(VAULT_ID, SyncKey::RecoverySeed)
+                .expect("read seed")
+                .as_deref(),
+            Some(seed.as_bytes().as_slice()),
+            "the key store keeps the kit the user was shown"
+        );
+        assert_eq!(
+            RecoverySeed::parse_kit_code(&seed.kit_code())
+                .expect("parse kit code")
+                .as_bytes(),
+            seed.as_bytes()
+        );
+        let rotate = authority::propose(
+            space,
+            charter,
+            &hub_keys().admin,
+            authority::recovery_entry(&seed).expect("recovery entry"),
+            NOW_MS,
+        )
+        .expect("sign rotation");
+        sequence_here(&mut hub_replica, &rotate).await;
+
+        // Only the regenerated kit signs for the space now.
+        let enroll = |admin: &AdminKeyPair, device_id: &str| {
+            authority::propose(
+                space,
+                charter,
+                admin,
+                authority::enroll_entry(Enrollment {
+                    device_id: device_id.to_string(),
+                    device_key: device_key(device_id).public_key(),
+                    tls_fingerprint: [42; 32],
+                    label: device_id.to_string(),
+                    device_kind: DeviceKind::Mobile,
+                }),
+                NOW_MS + 1,
+            )
+            .expect("sign enrollment")
+        };
+        let old_kit = hub_keys()
+            .recovery
+            .recovery_admin_key()
+            .expect("old recovery key");
+        let new_kit = seed.recovery_admin_key().expect("new recovery key");
+        let mut conn = acquire(&hub_replica.pool).await;
+        assert_eq!(
+            authority::sequence(
+                &hub_replica.engine,
+                &mut conn,
+                &hub_replica.ctx,
+                &mut hub_replica.writer.local(),
+                &enroll(&old_kit, "device-old-kit"),
+                NOW_MS,
+            )
+            .await
+            .expect("sequence"),
+            Err(ProposalRejection::NotAdmin)
+        );
+        drop(conn);
+        sequence_here(&mut hub_replica, &enroll(&new_kit, "device-new-kit")).await;
+        hub_replica.close().await;
     });
 }

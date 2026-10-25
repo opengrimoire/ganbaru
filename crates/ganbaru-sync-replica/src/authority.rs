@@ -390,6 +390,41 @@ pub fn recovery_entry(recovery: &RecoverySeed) -> Result<Entry, String> {
     }))
 }
 
+/// Replaces the vault's recovery seed with a fresh one and returns it, for a regenerated
+/// recovery kit. The key store keeps the new seed, as it keeps the founding one, until the user
+/// saves the kit, so a later Reset founds its charter with the kit the user holds. The log names
+/// the new recovery admin key once the anchor sequences [`recovery_entry`]. Key stores may
+/// block, so callers run this off the async runtime.
+pub fn rotate_recovery_seed(
+    keys: &dyn SyncKeyStore,
+    vault_id: &str,
+) -> Result<RecoverySeed, String> {
+    let seed =
+        RecoverySeed::generate().map_err(|error| format!("create sync recovery seed: {error}"))?;
+    keys.write(vault_id, SyncKey::RecoverySeed, seed.as_bytes())?;
+    Ok(seed)
+}
+
+/// The enrolled devices other than `own_device_id` and the anchor that are not removed and
+/// for which `linked` is false. An admin hub proposes their removal, because the coordinator
+/// links every device of the space.
+pub fn unlinked_devices(
+    view: &AuthorizationView,
+    own_device_id: &str,
+    linked: impl Fn(&str) -> bool,
+) -> Vec<String> {
+    view.devices
+        .iter()
+        .filter(|device| {
+            device.removed_revision.is_none()
+                && device.device_id != view.anchor_device_id
+                && device.device_id != own_device_id
+                && !linked(&device.device_id)
+        })
+        .map(|device| device.device_id.clone())
+        .collect()
+}
+
 /// Whether the selected log names `admin_key` as the role of the enrolled, unremoved device
 /// `device_id`. Only such a device may take the anchor.
 pub fn is_admin(view: &AuthorizationView, device_id: &str, admin_key: &AdminPublicKey) -> bool {

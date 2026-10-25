@@ -15,7 +15,7 @@ use super::client::{ClientSession, Exchange, ForkPoint, PeerIds, SyncTransport};
 use super::host::HeadlessHost;
 use super::host::SyncHost;
 #[cfg(desktop)]
-use super::hub::{HubProposals, HubStability, HubVault, OpenHubVault, SyncHub};
+use super::hub::{HubForwards, HubProposals, HubStability, HubVault, OpenHubVault, SyncHub};
 use super::recovery::{RecoveryChoice, RecoveryRequest};
 use super::status::{DegradedReasons, SyncErrorCode, SyncRole, SyncState, SyncStatusView};
 use super::transport::PairedTransport;
@@ -25,6 +25,10 @@ use super::writer::{
     ensure_device_key as ensure_stored_device_key, read_stored_writer, remove_retired_keys,
 };
 use crate::vault::handoff::pairing::{PairingManager, PinnedCharter};
+#[cfg(desktop)]
+pub(crate) use anchor::{AuthorityAction, AuthorityAnswer};
+#[cfg(desktop)]
+use anchor::{AuthorityRequest, ForwardRequest};
 use ganbaru_db::{DatabaseAccessMode, DatabasePoolRegistry};
 use ganbaru_handoff::protocol::SyncRefusalCode;
 use ganbaru_sync::stability::DeviceStanding;
@@ -33,7 +37,7 @@ use ganbaru_sync::{
 };
 use ganbaru_sync_contracts::{DevicePublicKey, Seq, VersionVector, WriterId};
 #[cfg(desktop)]
-use ganbaru_sync_contracts::{ProposalRejection, SignedCharter, SignedProposal};
+use ganbaru_sync_contracts::{Digest32, ProposalRejection, SignedCharter, SignedProposal};
 #[cfg(desktop)]
 use ganbaru_sync_replica::authority::{
     self, AnchorKeys, Founding, ensure_admin_key as ensure_stored_admin_key, ensure_anchor_keys,
@@ -120,6 +124,12 @@ pub(crate) struct RuntimeState {
     /// Proposals linked devices sent, waiting for the anchor pass.
     #[cfg(desktop)]
     proposals: Mutex<Vec<ProposalRequest>>,
+    /// Forward requests of a linked desktop that anchors, waiting for the next pass.
+    #[cfg(desktop)]
+    forwards: Mutex<Vec<ForwardRequest>>,
+    /// Authority actions a person asked this desktop for, waiting for the next pass.
+    #[cfg(desktop)]
+    authority: Mutex<Vec<AuthorityRequest>>,
     /// A pause change waiting for the writer record.
     pause_request: Mutex<Option<bool>>,
     /// Recovery actions waiting for the next pass.
@@ -145,6 +155,10 @@ impl Default for RuntimeState {
             pairing_charter: Mutex::default(),
             #[cfg(desktop)]
             proposals: Mutex::default(),
+            #[cfg(desktop)]
+            forwards: Mutex::default(),
+            #[cfg(desktop)]
+            authority: Mutex::default(),
             pause_request: Mutex::default(),
             recovery: Mutex::default(),
             resets: Mutex::default(),
@@ -232,6 +246,77 @@ impl RuntimeState {
     #[cfg(desktop)]
     fn take_proposal_requests(&self) -> Vec<ProposalRequest> {
         self.proposals
+            .lock()
+            .map(|mut requests| std::mem::take(&mut *requests))
+            .unwrap_or_default()
+    }
+
+    /// Queues a forward request of a linked device for the next pass and wakes the service.
+    #[cfg(desktop)]
+    fn request_forward(
+        &self,
+        device_id: String,
+        settled: Vec<(Digest32, ProposalRejection)>,
+    ) -> Result<oneshot::Receiver<Result<Vec<SignedProposal>, String>>, String> {
+        let (reply, receiver) = oneshot::channel();
+        self.forwards
+            .lock()
+            .map_err(|_| "sync forward lock is unavailable".to_string())?
+            .push(ForwardRequest {
+                device_id,
+                settled,
+                reply,
+            });
+        self.now.notify_one();
+        Ok(receiver)
+    }
+
+    #[cfg(desktop)]
+    fn take_forward_requests(&self) -> Vec<ForwardRequest> {
+        self.forwards
+            .lock()
+            .map(|mut requests| std::mem::take(&mut *requests))
+            .unwrap_or_default()
+    }
+
+    /// Queues an authority action for the next pass and wakes the service. The receiver gets
+    /// what the action produced.
+    #[cfg(desktop)]
+    pub(crate) fn request_authority(
+        &self,
+        action: AuthorityAction,
+    ) -> Result<oneshot::Receiver<Result<AuthorityAnswer, String>>, String> {
+        let (reply, receiver) = oneshot::channel();
+        self.queue_authority(AuthorityRequest {
+            action,
+            reply: Some(reply),
+        })?;
+        Ok(receiver)
+    }
+
+    /// Queues an authority action nobody waits for, such as the removal proposal that
+    /// follows a quarantine.
+    #[cfg(desktop)]
+    pub(crate) fn request_authority_detached(&self, action: AuthorityAction) -> Result<(), String> {
+        self.queue_authority(AuthorityRequest {
+            action,
+            reply: None,
+        })
+    }
+
+    #[cfg(desktop)]
+    fn queue_authority(&self, request: AuthorityRequest) -> Result<(), String> {
+        self.authority
+            .lock()
+            .map_err(|_| "sync authority lock is unavailable".to_string())?
+            .push(request);
+        self.now.notify_one();
+        Ok(())
+    }
+
+    #[cfg(desktop)]
+    fn take_authority_requests(&self) -> Vec<AuthorityRequest> {
+        self.authority
             .lock()
             .map(|mut requests| std::mem::take(&mut *requests))
             .unwrap_or_default()
@@ -346,9 +431,21 @@ pub(crate) fn sync_hub<R: Runtime>(app: &AppHandle<R>) -> SyncHub {
                 .map_err(|_| "the anchor stopped before it sequenced the proposal".to_string())?
         })
     });
+    let queue = runtime.inner().clone();
+    let forwards: HubForwards = Arc::new(move |device_id, settled| {
+        let runtime = queue.clone();
+        Box::pin(async move {
+            let receiver = runtime.request_forward(device_id, settled)?;
+            tokio::time::timeout(DELEGATED_PASS_TIMEOUT, receiver)
+                .await
+                .map_err(|_| "the coordinator did not collect proposals in time".to_string())?
+                .map_err(|_| "the coordinator stopped before it collected proposals".to_string())?
+        })
+    });
     SyncHub::new(open, runtime.changes.clone())
         .with_stability(runtime.stability.clone())
         .with_proposals(proposals)
+        .with_forwards(forwards)
 }
 
 /// The devices this installation quarantined in the active vault, which the coordinator
@@ -685,6 +782,10 @@ struct ServiceState {
     /// milliseconds; it sequences nothing until the log catches up or it hands over to itself.
     #[cfg(desktop)]
     restored_since: Option<u64>,
+    /// Final rejections this desktop, anchoring as a linked device, gave forwarded proposals,
+    /// which the next forward request reports to the coordinator.
+    #[cfg(desktop)]
+    settled: Vec<(Digest32, ProposalRejection)>,
     view: SyncStatusView,
 }
 
@@ -855,13 +956,24 @@ impl ServiceState {
         for reply in resets {
             let _ = reply.send(Err("sync is not ready on this device".to_string()));
         }
-        // A pass that ended before the anchor step leaves hub proposal requests queued; each is
-        // answered so the sender keeps its proposal in its outbox instead of waiting.
+        // A pass that ended before the anchor step leaves hub proposal, forward, and authority
+        // requests queued; each is answered so no one waits, and a sender keeps its proposal in
+        // its outbox.
         #[cfg(desktop)]
-        for request in runtime.take_proposal_requests() {
-            let _ = request
-                .reply
-                .send(Err("sync is not ready on this device".to_string()));
+        {
+            for request in runtime.take_proposal_requests() {
+                let _ = request
+                    .reply
+                    .send(Err("sync is not ready on this device".to_string()));
+            }
+            for request in runtime.take_forward_requests() {
+                let _ = request
+                    .reply
+                    .send(Err("sync is not ready on this device".to_string()));
+            }
+            for request in runtime.take_authority_requests() {
+                request.answer(Err("sync is not ready on this device".to_string()));
+            }
         }
         self.publish(host, runtime, view);
         runtime
@@ -1008,10 +1120,64 @@ impl ServiceState {
             }
         }
         self.apply_new(&session).await?;
+        #[cfg(desktop)]
+        let mut take_anchor = session
+            .run_proposal_actions(
+                &manager,
+                &vault_id,
+                is_hub,
+                runtime.take_authority_requests(),
+            )
+            .await;
         if let Some((assets, _)) = asset_peer.as_ref()
             && view.state != SyncState::Offline
         {
+            #[cfg(desktop)]
+            {
+                let current = matches!(next, Next::Online(_)) && view.state == SyncState::Idle;
+                for request in take_anchor.drain(..) {
+                    let outcome = if current {
+                        session.take_anchor(&manager, &mut self.writer).await
+                    } else {
+                        Err(
+                            "taking the anchor needs a current exchange with the coordinator"
+                                .to_string(),
+                        )
+                    };
+                    if outcome.is_ok() {
+                        next = Next::Continue;
+                    }
+                    request.answer(outcome);
+                }
+                if session.anchors_here(&manager).await? {
+                    match session
+                        .anchor_as_member(
+                            &assets.transport,
+                            &assets.ids,
+                            &mut self.writer,
+                            &mut self.settled,
+                        )
+                        .await
+                    {
+                        // The coordinator learns of the entries on the next exchange.
+                        Ok(true) => next = Next::Continue,
+                        Ok(false) => {}
+                        Err(error) => eprintln!("sync: collect proposals for the anchor: {error}"),
+                    }
+                } else {
+                    session.replay_outbox(&assets.transport, &assets.ids).await;
+                }
+            }
+            #[cfg(mobile)]
             session.replay_outbox(&assets.transport, &assets.ids).await;
+        }
+        #[cfg(desktop)]
+        for request in take_anchor {
+            request.answer(Err(if is_hub {
+                "the coordinating computer cannot take the anchor back yet".to_string()
+            } else {
+                "taking the anchor needs a current exchange with the coordinator".to_string()
+            }));
         }
         if let Some((assets, mut transfer)) = asset_peer {
             next = self
@@ -1056,6 +1222,10 @@ impl ServiceState {
                     let _ = request.reply.send(Ok(Err(ProposalRejection::NotAnchor)));
                 }
             }
+            #[cfg(desktop)]
+            session
+                .answer_forwards(runtime.take_forward_requests())
+                .await;
             let stable = self.stability(host, &session, &manager, view).await?;
             #[cfg(desktop)]
             runtime.stability.publish(&vault_id, stable.clone());
@@ -2044,10 +2214,11 @@ impl<'a, H: SyncHost> Session<'a, H> {
         blocking(move || ensure_anchor_keys(keys.as_ref(), &vault_id)).await
     }
 
-    /// On the anchor, enrolls linked devices the space does not know yet and removes enrolled
-    /// devices that are no longer linked, so a crash between linking and sealing heals on the
-    /// next pass. Each change goes through the outbox as a proposal signed by the anchor admin key
-    /// and is sequenced like a proposal from any admin. A device the space removed stays
+    /// On an admin coordinator, enrolls linked devices the space does not know yet and removes
+    /// enrolled devices that are no longer linked, so a crash between linking and sealing heals
+    /// on the next pass. Each change goes through the outbox as a proposal signed by this
+    /// desktop's admin key; the coordinator sequences it while it anchors and holds it for the
+    /// anchor's forward request after a handover. A device the space removed stays
     /// removed: linking it again under the same device id enrolls nothing. A device that cannot
     /// be enrolled is reported and skipped, so it never stops the pass.
     async fn reconcile_devices(
@@ -2070,9 +2241,12 @@ impl<'a, H: SyncHost> Session<'a, H> {
             else {
                 return Ok(());
             };
-            if view.anchor_device_id != manager.device_id()? {
+            let own_device_id = manager.device_id()?;
+            let admin = self.admin_key().await?;
+            if !authority::is_admin(&view, &own_device_id, &admin.public_key()) {
                 return Ok(());
             }
+            let anchors = view.anchor_device_id == own_device_id;
             let peers = manager.linked_peers_for(vault_id)?;
             let enroll: Vec<_> = peers
                 .iter()
@@ -2083,16 +2257,9 @@ impl<'a, H: SyncHost> Session<'a, H> {
                         .any(|device| device.device_id == peer.device_id)
                 })
                 .collect();
-            let remove: Vec<String> = view
-                .devices
-                .iter()
-                .filter(|device| {
-                    device.removed_revision.is_none()
-                        && device.device_id != view.anchor_device_id
-                        && !peers.iter().any(|peer| peer.device_id == device.device_id)
-                })
-                .map(|device| device.device_id.clone())
-                .collect();
+            let remove = authority::unlinked_devices(&view, &own_device_id, |device_id| {
+                peers.iter().any(|peer| peer.device_id == device_id)
+            });
             let mut changes = authority::Reconciliation {
                 remove,
                 ..Default::default()
@@ -2108,17 +2275,18 @@ impl<'a, H: SyncHost> Session<'a, H> {
             let path = self.files.outbox_path();
             let mut outbox = blocking(move || Outbox::load(&path)).await?;
             if !changes.enroll.is_empty() || !changes.remove.is_empty() {
-                let anchor = self.anchor_keys().await?;
                 authority::queue_reconciliation(
                     &mut outbox,
                     self.ctx.space,
                     view.charter,
-                    &anchor.admin,
+                    &admin,
                     changes,
                     now_ms()?,
                 )?;
             }
-            if outbox.entries().iter().all(|entry| !entry.pending()) {
+            // A coordinator that handed the anchor over keeps the proposals for the anchor's
+            // forward request.
+            if !anchors || outbox.entries().iter().all(|entry| !entry.pending()) {
                 return Ok(());
             }
             authority::sequence_outbox(
@@ -2140,8 +2308,9 @@ impl<'a, H: SyncHost> Session<'a, H> {
     }
 
     /// On the anchor, sequences the proposals linked devices sent through the hub with the
-    /// anchor writer and answers each. Anywhere else, or without a writer, each is answered as
-    /// not reaching the anchor, so the sender keeps it in its outbox.
+    /// anchor writer and answers each. A coordinator that handed the anchor over holds each in
+    /// its outbox for the anchor's forward request. Without a writer, each is answered as not
+    /// reaching the anchor; the sender keeps it in its outbox either way.
     #[cfg(desktop)]
     async fn sequence_proposals(
         &self,
@@ -2153,9 +2322,29 @@ impl<'a, H: SyncHost> Session<'a, H> {
             return;
         }
         let anchor = self.anchors_here(manager).await;
+        let mut outbox = None;
+        if matches!(anchor, Ok(false)) {
+            let path = self.files.outbox_path();
+            outbox = Some(blocking(move || Outbox::load(&path)).await);
+        }
         for request in requests {
             let outcome = match (&anchor, writer.as_mut()) {
                 (Err(error), _) => Err(error.clone()),
+                (Ok(false), _) => match (outbox.as_mut(), acquire(&self.pool).await) {
+                    (Some(Ok(outbox)), Ok(mut conn)) => {
+                        authority::hold_for_anchor(
+                            &self.engine,
+                            &mut conn,
+                            &self.ctx,
+                            outbox,
+                            request.proposal.clone(),
+                        )
+                        .await
+                    }
+                    (Some(Err(error)), _) => Err(error.clone()),
+                    (_, Err(error)) => Err(error),
+                    (None, _) => Ok(Err(ProposalRejection::NotAnchor)),
+                },
                 (Ok(true), Some(active)) => match acquire(&self.pool).await {
                     Ok(mut conn) => match now_ms() {
                         Ok(now) => {
@@ -2340,6 +2529,8 @@ where
         .map_err(|error| format!("sync key worker: {error}"))?
 }
 
+#[cfg(desktop)]
+mod anchor;
 #[cfg(all(test, desktop))]
 mod headless_tests;
 

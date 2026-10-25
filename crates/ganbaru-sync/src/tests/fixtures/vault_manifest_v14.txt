@@ -523,7 +523,7 @@ table 356 chat_access_profile_revisions replicated key id
 table 360 chat_conversations replicated key id
   group 0 immutable project_id:optional_row_key->97:cascade conversation_kind:text(..=32) created_at:timestamp
   group 1 max last_activity_at:timestamp
-  group 2 register archived_at:optional_timestamp
+  group 2 coupled archived_at:optional_timestamp
   group 3 max updated_at:timestamp
 table 361 chat_conversation_memberships replicated key sync_key
   derived key exists 4 inputs conversation_id,participant_id prefix conversation-membership

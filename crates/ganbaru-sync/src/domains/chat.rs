@@ -78,12 +78,8 @@ pub const MEMBERSHIP_ROLES: [&str; 2] = ["owner", "member"];
 /// Runtime approval overrides, least restrictive first. Provider custom defers to the
 /// provider's own configuration, mirroring the custom safety mode.
 pub const APPROVAL_POLICIES: [&str; 4] = ["provider_custom", "unattended", "auto_approve", "ask"];
-/// The approval override that asks every time, which ranks above inheriting.
-const ASK_APPROVAL_POLICY: &str = "ask";
-/// How many [`APPROVAL_POLICIES`] rank below inheriting.
-const APPROVAL_RANKED_POLICIES: usize = 3;
-/// Rank of no approval override.
-const INHERITED_APPROVAL_RANK: u8 = 4;
+/// Rank of no approval override, the least restrictive.
+const INHERITED_APPROVAL_RANK: u8 = 1;
 
 fn text(field: &Field) -> Result<&str, AdapterError> {
     match field {
@@ -445,23 +441,31 @@ fn validate_channel(group: GroupId, fields: &[Field]) -> Result<(), AdapterError
 /// Priority of an ended row: a removal or revocation outranks every live value.
 const ENDED: u8 = u8::MAX;
 
-/// Rank of an approval override, 1 for the least restrictive: the explicit policies in
-/// [`APPROVAL_POLICIES`] order, then no override, which inherits the stricter default of asking,
-/// then an explicit `ask`.
+/// Rank of an approval override, 1 for the least restrictive.
+///
+/// No override inherits: a folder grant's falls back to the channel override and a channel
+/// override to the teammate's default, which an explicit override can only narrow (the runtime
+/// keeps the narrower of the default and the override). The default can be unattended or defer
+/// to the provider, so inheriting is never stricter than an explicit override and ranks lowest,
+/// below the explicit policies in [`APPROVAL_POLICIES`] order.
 fn approval_rank(field: Option<&Field>) -> u8 {
     match field {
         None | Some(Field::Null) => INHERITED_APPROVAL_RANK,
-        Some(Field::Text(text)) if text == ASK_APPROVAL_POLICY => INHERITED_APPROVAL_RANK + 1,
-        field => restrictiveness(field, &APPROVAL_POLICIES[..APPROVAL_RANKED_POLICIES]).max(1),
+        field => INHERITED_APPROVAL_RANK + restrictiveness(field, &APPROVAL_POLICIES),
     }
 }
 
 /// Number of approval override ranks.
-const APPROVAL_RANKS: u8 = INHERITED_APPROVAL_RANK + 1;
+const APPROVAL_RANKS: u8 = INHERITED_APPROVAL_RANK + APPROVAL_POLICIES.len() as u8;
 
 /// Whether the field at `index` is set, which marks a removal or revocation.
 fn ended(fields: &[Field], index: usize) -> bool {
     !matches!(fields.get(index), None | Some(Field::Null))
+}
+
+/// Whether the inherit flag at `index` is set, so the value beside it comes from the profile.
+fn inherits(fields: &[Field], index: usize) -> bool {
+    matches!(fields.get(index), Some(Field::Integer(1)))
 }
 
 /// A membership removal wins, then demotion to member over promotion to owner.
@@ -473,17 +477,23 @@ fn membership_priority(fields: &[Field]) -> u8 {
     }
 }
 
-/// A channel removal wins, then the stricter channel approval override, then the stricter
-/// scratch approval override, then the value that clears more of history reading,
-/// participation, and full history.
+/// A channel removal wins, then the value that clears more of history reading, participation,
+/// and full history, then the stricter channel approval override, then the stricter scratch
+/// approval override.
+///
+/// A capability counts as cleared only when it is set explicitly: an inherited one follows the
+/// profile, which may grant it, and an explicit grant is still capped by the profile, so only
+/// an explicit clear narrows. The access profile itself carries no rank, so concurrent edits
+/// that differ only in the profile keep the engine's tie order.
 fn channel_membership_priority(fields: &[Field]) -> u8 {
     if ended(fields, 10) {
         return ENDED;
     }
     let cleared = [
-        matches!(fields.get(1), Some(Field::Integer(0))),
-        matches!(fields.get(3), Some(Field::Integer(0))),
-        matches!(fields.get(5), Some(Field::Text(text)) if text == "from_grant"),
+        !inherits(fields, 2) && matches!(fields.get(1), Some(Field::Integer(0))),
+        !inherits(fields, 4) && matches!(fields.get(3), Some(Field::Integer(0))),
+        !inherits(fields, 6)
+            && matches!(fields.get(5), Some(Field::Text(text)) if text == "from_grant"),
     ]
     .into_iter()
     .filter(|cleared| *cleared)
@@ -491,23 +501,26 @@ fn channel_membership_priority(fields: &[Field]) -> u8 {
     let cleared = u8::try_from(cleared).unwrap_or(0);
     let approvals =
         (approval_rank(fields.get(8)) - 1) * APPROVAL_RANKS + (approval_rank(fields.get(9)) - 1);
-    1 + approvals * CLEARED_RANKS + cleared
+    1 + cleared * APPROVAL_RANKS * APPROVAL_RANKS + approvals
 }
 
-/// Number of cleared channel capability counts, zero to three.
-const CLEARED_RANKS: u8 = 4;
-
 /// A revocation wins, then the lower folder capability, then the stricter approval override.
+/// An inherited capability follows the profile's maximum, which may be publishing, so it ranks
+/// as the least restrictive capability.
 fn folder_grant_priority(fields: &[Field]) -> u8 {
     if ended(fields, 4) {
         return ENDED;
     }
-    let capability = restrictiveness(fields.first(), &FOLDER_CAPABILITIES).max(1);
+    let capability = if inherits(fields, 1) {
+        1
+    } else {
+        restrictiveness(fields.first(), &FOLDER_CAPABILITIES).max(1)
+    };
     1 + (capability - 1) * APPROVAL_RANKS + (approval_rank(fields.get(3)) - 1)
 }
 
 /// An archive wins over a concurrent unarchive.
-fn channel_lifecycle_priority(fields: &[Field]) -> u8 {
+fn lifecycle_priority(fields: &[Field]) -> u8 {
     if ended(fields, 0) { 2 } else { 1 }
 }
 
@@ -555,8 +568,10 @@ impl DomainAdapter for ChatAdapter {
             channel_membership_priority(value.fields())
         } else if table == FOLDER_GRANTS_TABLE && group == folder_grant_group::GRANT {
             folder_grant_priority(value.fields())
-        } else if table == CHANNELS_TABLE && group == channel_group::LIFECYCLE {
-            channel_lifecycle_priority(value.fields())
+        } else if (table == CHANNELS_TABLE && group == channel_group::LIFECYCLE)
+            || (table == CONVERSATIONS_TABLE && group == conversation_group::LIFECYCLE)
+        {
+            lifecycle_priority(value.fields())
         } else {
             0
         }
@@ -880,7 +895,7 @@ mod tests {
     }
 
     #[test]
-    fn chat_channel_membership_priorities_prefer_removal_then_stricter_approval_then_fewer_capabilities()
+    fn chat_channel_membership_priorities_prefer_removal_then_fewer_capabilities_then_stricter_approval()
      {
         let adapter = ChatAdapter;
         let priority = |value: &Value| {
@@ -894,48 +909,81 @@ mod tests {
         let removed = channel_access(true, true, false, Some("provider_custom"), None, true);
         let strictest_live = channel_access(false, false, true, Some("ask"), Some("ask"), false);
         assert!(priority(&removed) > priority(&strictest_live));
+        assert!(priority(&open) >= 1);
+        assert!(priority(&strictest_live) < u8::MAX);
 
-        // Approval overrides, least restrictive first, with no override between the explicit
-        // relaxing policies and an explicit ask.
+        // Clearing more capabilities wins over any approval override.
+        let cleared = [
+            channel_access(true, true, false, Some("ask"), Some("ask"), false),
+            channel_access(false, true, false, None, None, false),
+            channel_access(true, false, false, None, None, false),
+        ];
+        assert!(priority(&cleared[1]) > priority(&cleared[0]));
+        assert!(priority(&cleared[2]) > priority(&cleared[0]));
+        let more_cleared = [
+            channel_access(true, true, false, Some("ask"), Some("ask"), false),
+            channel_access(false, true, false, Some("ask"), Some("ask"), false),
+            channel_access(false, false, false, Some("ask"), Some("ask"), false),
+            channel_access(false, false, true, Some("ask"), Some("ask"), false),
+        ];
+        for (looser, stricter) in more_cleared.iter().zip(&more_cleared[1..]) {
+            assert!(priority(stricter) > priority(looser));
+        }
+        assert!(
+            priority(&channel_access(false, false, true, None, None, false))
+                > priority(&channel_access(
+                    false,
+                    false,
+                    false,
+                    Some("ask"),
+                    Some("ask"),
+                    false
+                ))
+        );
+
+        // With equal capabilities, the stricter approval override wins, and no override, which
+        // inherits the teammate default, is the least strict.
         let approvals = [
+            None,
             Some("provider_custom"),
             Some("unattended"),
             Some("auto_approve"),
-            None,
             Some("ask"),
         ];
         for pair in approvals.windows(2) {
-            let looser = channel_access(false, false, true, pair[0], Some("ask"), false);
+            let looser = channel_access(true, true, false, pair[0], Some("ask"), false);
             let stricter = channel_access(true, true, false, pair[1], None, false);
             assert!(priority(&stricter) > priority(&looser), "{pair:?}");
-            let looser = channel_access(false, false, true, None, pair[0], false);
+            let looser = channel_access(true, true, false, None, pair[0], false);
             let stricter = channel_access(true, true, false, None, pair[1], false);
             assert!(priority(&stricter) > priority(&looser), "scratch {pair:?}");
         }
-        // The channel override outranks the scratch override.
-        assert!(
-            priority(&channel_access(
-                true,
-                true,
-                false,
-                Some("ask"),
-                Some("unattended"),
-                false
-            )) > priority(&channel_access(true, true, false, None, Some("ask"), false))
-        );
+    }
 
-        // With equal overrides, clearing more capabilities wins.
-        let cleared = [
-            channel_access(true, true, false, None, None, false),
-            channel_access(false, true, false, None, None, false),
-            channel_access(false, false, false, None, None, false),
-            channel_access(false, false, true, None, None, false),
-        ];
-        for pair in cleared.windows(2) {
-            assert!(priority(&pair[1]) > priority(&pair[0]));
+    #[test]
+    fn chat_channel_membership_inherited_capabilities_rank_as_granted() {
+        let adapter = ChatAdapter;
+        let priority = |value: &Value| {
+            adapter.priority(
+                CHANNEL_MEMBERSHIPS_TABLE,
+                channel_membership_group::ACCESS,
+                value,
+            )
+        };
+        let explicit = channel_access(false, false, true, None, None, false);
+        let granted = channel_access(true, true, false, None, None, false);
+        for inherit in [2, 4, 6] {
+            let mut fields = explicit.fields().to_vec();
+            fields[inherit] = Field::Integer(1);
+            let inherited = value(fields);
+            assert!(priority(&explicit) > priority(&inherited), "{inherit}");
+            assert!(priority(&inherited) > priority(&granted), "{inherit}");
         }
-        assert!(priority(&open) >= 1);
-        assert!(priority(&strictest_live) < u8::MAX);
+        let mut fields = explicit.fields().to_vec();
+        for inherit in [2, 4, 6] {
+            fields[inherit] = Field::Integer(1);
+        }
+        assert_eq!(priority(&value(fields)), priority(&granted));
     }
 
     #[test]
@@ -955,10 +1003,10 @@ mod tests {
             );
         }
         let approvals = [
+            None,
             Some("provider_custom"),
             Some("unattended"),
             Some("auto_approve"),
-            None,
             Some("ask"),
         ];
         for pair in approvals.windows(2) {
@@ -968,19 +1016,28 @@ mod tests {
             );
         }
         assert!(priority(&grant("none", Some("ask"), false)) < u8::MAX);
+
+        // An inherited capability follows the profile's maximum, so it ranks as publishing.
+        let mut inherited = grant("none", Some("ask"), false).fields().to_vec();
+        inherited[1] = Field::Integer(1);
+        assert_eq!(
+            priority(&value(inherited)),
+            priority(&grant("publish", Some("ask"), false))
+        );
     }
 
     #[test]
-    fn chat_channel_archive_outranks_unarchive() {
+    fn chat_channel_and_conversation_archive_outranks_unarchive() {
         let adapter = ChatAdapter;
-        let priority = |archived: Option<&str>| {
-            adapter.priority(
-                CHANNELS_TABLE,
-                channel_group::LIFECYCLE,
-                &value(vec![optional(archived)]),
-            )
-        };
-        assert!(priority(Some(AT)) > priority(None));
+        for (table, group) in [
+            (CHANNELS_TABLE, channel_group::LIFECYCLE),
+            (CONVERSATIONS_TABLE, conversation_group::LIFECYCLE),
+        ] {
+            let priority = |archived: Option<&str>| {
+                adapter.priority(table, group, &value(vec![optional(archived)]))
+            };
+            assert!(priority(Some(AT)) > priority(None));
+        }
         assert_eq!(
             adapter.priority(
                 CHANNELS_TABLE,

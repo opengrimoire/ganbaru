@@ -476,7 +476,6 @@ pub async fn chat_replace_teammate_access(
                      revision, created_at, revoked_at)
                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, NULL)
                  ON CONFLICT(conversation_id, teammate_id, working_folder_id) DO UPDATE SET
-                    project_id = excluded.project_id,
                     capability = excluded.capability,
                     capability_inherits_profile = excluded.capability_inherits_profile,
                     is_default = excluded.is_default,

@@ -9,8 +9,8 @@
 //! Conversations, their memberships, AI channel memberships, working folder grants, and
 //! channels replicate too (tables 360 to 364). The three tables keyed by several columns use a
 //! `sync_key` derived from their key columns. Concurrent edits of one membership or grant keep
-//! the narrower access: removal and revocation win, then the stricter approval policy, folder
-//! capability, and channel capabilities.
+//! the narrower access: removal and revocation win, then the lower folder capability or more
+//! cleared channel capabilities, then the stricter approval override.
 //!
 //! Execution, drafts, review history, provider state, receipts, cleanup jobs, and the access
 //! and audience counters stay on the device as `Local` tables, and message search is `Derived`.
@@ -613,7 +613,8 @@ pub const PROFILE_REVISIONS: TableSpec = TableSpec {
     ..BASE
 };
 
-/// `chat_conversations`, archive-only and deleted only with their project.
+/// `chat_conversations`, archive-only and deleted only with their project. An archive wins over
+/// a concurrent unarchive.
 pub const CONVERSATIONS: TableSpec = TableSpec {
     id: CONVERSATIONS_TABLE,
     name: "chat_conversations",
@@ -633,7 +634,7 @@ pub const CONVERSATIONS: TableSpec = TableSpec {
             MergeKind::Max,
             &[timestamp("last_activity_at")],
         ),
-        bumps(register(
+        bumps(coupled(
             conversation_group::LIFECYCLE,
             "lifecycle",
             &[optional_timestamp("archived_at")],
@@ -694,8 +695,9 @@ pub const MEMBERSHIPS: TableSpec = TableSpec {
 
 /// `chat_teammate_channel_memberships`, removed by `removed_at`. The access profile, channel
 /// capabilities, history boundary, and approval overrides form one coupled value, so concurrent
-/// edits keep one whole setting: a removal first, then the stricter approval overrides, then
-/// the one that clears more capabilities.
+/// edits keep one whole setting: a removal first, then the one that clears more capabilities
+/// explicitly, then the stricter approval overrides, with no override counting as the least
+/// strict.
 pub const CHANNEL_MEMBERSHIPS: TableSpec = TableSpec {
     id: CHANNEL_MEMBERSHIPS_TABLE,
     name: "chat_teammate_channel_memberships",
@@ -757,7 +759,10 @@ pub const CHANNEL_MEMBERSHIPS: TableSpec = TableSpec {
 };
 
 /// `chat_teammate_working_folder_grants`, revoked by `revoked_at`. Concurrent edits keep a
-/// revocation first, then the lower capability, then the stricter approval override.
+/// revocation first, then the lower capability (an inherited one counting as the highest), then
+/// the stricter approval override, with no override counting as the least strict. Commands
+/// never rewrite the project or creation time, but the group stays a register because a derived
+/// key table admits only key columns in immutable groups, so concurrent creations converge.
 pub const FOLDER_GRANTS: TableSpec = TableSpec {
     id: FOLDER_GRANTS_TABLE,
     name: "chat_teammate_working_folder_grants",

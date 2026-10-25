@@ -491,12 +491,12 @@ const ACCESS_ROUNDS: usize = 4;
 const ROLES: [&str; 2] = ["owner", "member"];
 
 /// Runtime approval overrides, least restrictive first, as the adapter ranks them; `None`
-/// inherits the teammate's policy.
+/// inherits the teammate's policy, which an override can only narrow.
 const APPROVALS: [Option<&str>; 5] = [
+    None,
     Some("provider_custom"),
     Some("unattended"),
     Some("auto_approve"),
-    None,
     Some("ask"),
 ];
 
@@ -740,6 +740,97 @@ fn chat_concurrent_revocation_and_widening_keep_the_revocation() {
             assert_eq!(grant_state(replica).await, "edit inherit revoked");
             assert_eq!(membership_state(replica).await, "member removed");
             assert_eq!(access_cleared(replica).await, None);
+        }
+    });
+}
+
+/// SQL setting [`TEAMMATE`]'s AI channel approval override to `approval`, keeping its
+/// capabilities.
+fn access_approval_sql(approval: Option<&str>, updated_at: &str) -> String {
+    format!(
+        "UPDATE chat_teammate_channel_memberships
+         SET runtime_approval_policy = {approval}, updated_at = {updated_at}
+         WHERE teammate_id = {teammate};",
+        approval = optional(approval),
+        updated_at = quoted(updated_at),
+        teammate = quoted(TEAMMATE),
+    )
+}
+
+/// [`TEAMMATE`]'s AI channel access as `read_history participate approval`.
+async fn access_state(replica: &mut Replica) -> String {
+    replica
+        .scalar_text(
+            "SELECT read_history || ' ' || participate || ' '
+                    || coalesce(runtime_approval_policy, 'inherit')
+             FROM chat_teammate_channel_memberships
+             WHERE teammate_id = 'participant:reviewer'",
+        )
+        .await
+        .expect("the access arrived")
+}
+
+#[test]
+fn chat_concurrent_inherited_approval_does_not_replace_an_explicit_narrowing() {
+    block_on(async {
+        let mut replicas = replicas(2).await;
+        replicas[0]
+            .exec(&format!(
+                "{}{}{}{}",
+                identity_sql(),
+                conversation_sql(),
+                grant_sql("edit", Some("provider_custom"), None),
+                access_approval_sql(Some("provider_custom"), &at(0, 30)),
+            ))
+            .await;
+        converge(&mut replicas).await;
+
+        // Replica 0 narrows both overrides to unattended; replica 1 later clears them, which
+        // falls back to the teammate default that may be wider.
+        replicas[0]
+            .exec(&format!(
+                "{}{}",
+                grant_sql("edit", Some("unattended"), None),
+                access_approval_sql(Some("unattended"), &at(1, 0)),
+            ))
+            .await;
+        replicas[1]
+            .exec(&format!(
+                "{}{}",
+                grant_sql("edit", None, None),
+                access_approval_sql(None, &at(2, 0)),
+            ))
+            .await;
+        converge(&mut replicas).await;
+        assert_converged(&mut replicas).await;
+        for replica in &mut replicas {
+            assert_eq!(grant_state(replica).await, "edit unattended active");
+            assert_eq!(access_state(replica).await, "1 1 unattended");
+        }
+    });
+}
+
+#[test]
+fn chat_concurrent_capability_clear_outranks_a_stricter_approval() {
+    block_on(async {
+        let mut replicas = replicas(2).await;
+        replicas[0]
+            .exec(&format!("{}{}", identity_sql(), conversation_sql()))
+            .await;
+        converge(&mut replicas).await;
+
+        // Replica 1 stops participation; replica 0 later asks for every approval but keeps
+        // participating.
+        replicas[1]
+            .exec(&access_sql(true, false, None, &at(1, 0)))
+            .await;
+        replicas[0]
+            .exec(&access_approval_sql(Some("ask"), &at(2, 0)))
+            .await;
+        converge(&mut replicas).await;
+        assert_converged(&mut replicas).await;
+        for replica in &mut replicas {
+            assert_eq!(access_state(replica).await, "1 0 inherit");
         }
     });
 }

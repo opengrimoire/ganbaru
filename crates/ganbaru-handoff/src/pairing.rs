@@ -17,8 +17,9 @@ use storage::{
 #[cfg(desktop)]
 use super::protocol::HandoffCompatibility;
 use super::protocol::{
-    BundleMetadata, BundlePurpose, DeviceKind, PairingInvitation, validate_coordinator_endpoints,
-    validate_device_label, validate_discovery_key, validate_identifier,
+    BundleMetadata, BundlePurpose, DeviceKind, PairingInvitation, decode_sync_charter,
+    validate_coordinator_endpoints, validate_device_label, validate_discovery_key,
+    validate_identifier,
 };
 #[cfg(desktop)]
 use super::protocol::{DISCOVERY_KEY_BYTES, PROTOCOL_VERSION, decode_sync_device_key};
@@ -125,6 +126,44 @@ pub struct CoordinatorPin {
     /// The vault's discovery key from the coordinator's latest sync state.
     #[serde(default)]
     pub discovery_key: Option<String>,
+    /// The vault's space charter and the person key that signed it, as the coordinator presented
+    /// them when this device linked.
+    #[serde(default)]
+    pub charter: Option<PinnedCharter>,
+}
+
+/// A space charter a coordinator presented at linking, verified against the person key it
+/// carried, the coordinator device id, the vault, and the pinned certificate.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PinnedCharter {
+    /// Base64url charter encoding.
+    pub charter: String,
+    /// Base64url person public key.
+    pub person_key: String,
+}
+
+impl PinnedCharter {
+    /// Decodes the charter and verifies it against its person key, the vault's personal space,
+    /// the coordinator device id, and the SHA-256 of the coordinator certificate.
+    pub fn verify(
+        &self,
+        vault_id: &str,
+        coordinator_device_id: &str,
+        coordinator_certificate: &[u8],
+    ) -> Result<ganbaru_sync_contracts::SignedCharter, String> {
+        let (charter, _) = decode_sync_charter(&self.charter, &self.person_key)?;
+        let fingerprint: [u8; 32] = Sha256::digest(coordinator_certificate).into();
+        if charter.charter.space != ganbaru_sync_contracts::SpaceId::personal(vault_id)
+            || charter.charter.anchor_device_id != coordinator_device_id
+            || charter.charter.anchor_tls_fingerprint != fingerprint
+        {
+            return Err(
+                "the coordinator presented a charter for another vault or anchor".to_string(),
+            );
+        }
+        Ok(charter)
+    }
 }
 
 impl CoordinatorPin {
@@ -889,12 +928,36 @@ impl PairingManager {
         coordinator_certificate: &[u8],
         coordinator_device_label: Option<String>,
     ) -> Result<(), String> {
+        self.record_enrolled(
+            invitation,
+            coordinator_certificate,
+            coordinator_device_label,
+            None,
+        )
+    }
+
+    /// Pins the coordinator that just linked this device, with the space charter it presented,
+    /// which must name it as the anchor of the invitation's vault.
+    pub fn record_enrolled(
+        &self,
+        invitation: &PairingInvitation,
+        coordinator_certificate: &[u8],
+        coordinator_device_label: Option<String>,
+        charter: Option<PinnedCharter>,
+    ) -> Result<(), String> {
         let fingerprint = certificate_fingerprint(coordinator_certificate);
         if fingerprint != invitation.coordinator_fingerprint {
             return Err("coordinator certificate does not match the QR invitation".to_string());
         }
         if let Some(label) = coordinator_device_label.as_deref() {
             validate_device_label("coordinator device label", label)?;
+        }
+        if let Some(charter) = charter.as_ref() {
+            charter.verify(
+                &invitation.vault_id,
+                &invitation.coordinator_device_id,
+                coordinator_certificate,
+            )?;
         }
         let mut inner = self.lock()?;
         let previous = initialized_state(&inner)?.clone();
@@ -920,6 +983,7 @@ impl PairingManager {
             last_endpoint: Some(invitation.endpoint.clone()),
             reported_endpoints,
             discovery_key,
+            charter,
         });
         state.revoked_by_coordinator = false;
         if let Err(error) = persist_initialized_state(&inner) {

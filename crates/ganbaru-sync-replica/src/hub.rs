@@ -7,18 +7,21 @@ use super::assets::{
 };
 use super::wire::{
     asset_from_wire, asset_key, bytes_from_wire, bytes_to_wire, forked_to_wire, hash_to_wire,
-    ops_from_wire, ops_to_wire, vector_from_wire, vector_to_wire, writer_from_wire,
+    ops_from_wire, ops_to_wire, proposed_to_wire, vector_from_wire, vector_to_wire,
+    writer_from_wire,
 };
 use ganbaru_handoff::protocol::{
     ControlMessage, SYNC_ASSET_CHUNK_BYTES, SyncAsset, SyncAssetKey, SyncRefusal, SyncRefusalCode,
-    validate_coordinator_endpoints, validate_discovery_key,
+    decode_sync_proposal, validate_coordinator_endpoints, validate_discovery_key,
 };
 use ganbaru_sync::assets::AssetRef;
 use ganbaru_sync::manifest::Manifest;
 use ganbaru_sync::{
     Engine, EvidenceOutcome, SpaceContext, StoreOutcome, StoreRefusal, SyncError, local,
 };
-use ganbaru_sync_contracts::{Envelope, Seq, VersionVector, WriterId};
+use ganbaru_sync_contracts::{
+    Envelope, ProposalRejection, Seq, SignedProposal, VersionVector, WriterId,
+};
 use sqlx::SqlitePool;
 use std::collections::HashMap;
 use std::future::Future;
@@ -52,6 +55,18 @@ pub struct HubVault {
 /// Opens the vault the hub serves, or `None` while it cannot replicate.
 pub type OpenHubVault = Arc<
     dyn Fn() -> Pin<Box<dyn Future<Output = Result<Option<HubVault>, String>> + Send>>
+        + Send
+        + Sync,
+>;
+
+/// Sequences an admin-signed proposal a linked device sent, answering the revision that holds
+/// it or why the anchor rejected it. The coordinator's service owns the anchor writer, so the
+/// hub hands proposals to it instead of sealing them here.
+pub type HubProposals = Arc<
+    dyn Fn(
+            SignedProposal,
+        )
+            -> Pin<Box<dyn Future<Output = Result<Result<u64, ProposalRejection>, String>> + Send>>
         + Send
         + Sync,
 >;
@@ -157,6 +172,8 @@ pub struct SyncHub {
     contact: Option<HubContactSource>,
     /// The stable vector every sync state carries.
     stability: HubStability,
+    /// Where proposals go; without it the hub answers that it is not the anchor.
+    proposals: Option<HubProposals>,
 }
 
 /// The received prefix of an upload, staged in a temporary file beside its final path.
@@ -176,7 +193,14 @@ impl SyncHub {
             uploads: Arc::default(),
             contact: None,
             stability: HubStability::default(),
+            proposals: None,
         }
+    }
+
+    /// Sets where the hub hands the proposals linked devices send.
+    pub fn with_proposals(mut self, proposals: HubProposals) -> Self {
+        self.proposals = Some(proposals);
+        self
     }
 
     /// Sets where the hub reads the coordinator contact that each sync state reports.
@@ -316,6 +340,17 @@ impl SyncHub {
             } => {
                 let writer = writer_from_wire(&writer).map_err(invalid)?;
                 hub.hashes(writer, from_seq, limit).await
+            }
+            ControlMessage::SyncPropose { proposal, .. } => {
+                let proposal = decode_sync_proposal(&proposal).map_err(invalid)?;
+                let outcome = match self.proposals.as_ref() {
+                    Some(sequence) => sequence(proposal).await.map_err(HubError::unavailable)?,
+                    None => Err(ProposalRejection::NotAnchor),
+                };
+                if outcome.is_ok() {
+                    self.changes.send_modify(|generation| *generation += 1);
+                }
+                Ok(proposed_to_wire(outcome))
             }
             ControlMessage::SyncForkEvidence {
                 writer, evidence, ..

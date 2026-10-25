@@ -1228,7 +1228,7 @@ fn dumped(manifest: &'static Manifest) -> Vec<Dumped> {
 /// local too, so operation bodies and compacted sequences are left out.
 const ENGINE_DUMPED: &[(&str, &[&str])] = &[
     ("sync_writers", &["created_at_ms", "compacted_seq"]),
-    ("sync_ops", &["stored_at_ms", "envelope"]),
+    ("sync_ops", &["stored_at_ms", "stored_order", "envelope"]),
     ("sync_rows", &[]),
     ("sync_register_versions", &["value"]),
     ("sync_version_refs", &[]),

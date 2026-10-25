@@ -312,7 +312,7 @@ fn copy_verified(
     Ok(true)
 }
 
-fn remove_bundle(files: &SyncFiles) -> Result<(), String> {
+pub(crate) fn remove_bundle(files: &SyncFiles) -> Result<(), String> {
     match std::fs::remove_file(files.carry_path()) {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),

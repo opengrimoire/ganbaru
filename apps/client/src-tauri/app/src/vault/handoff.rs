@@ -849,6 +849,7 @@ mod tests {
             last_endpoint: None,
             reported_endpoints: Vec::new(),
             discovery_key: None,
+            charter: None,
         };
         assert_eq!(
             status_vault_id(Some(&coordinator), || Some("vault-local".to_string())).as_deref(),

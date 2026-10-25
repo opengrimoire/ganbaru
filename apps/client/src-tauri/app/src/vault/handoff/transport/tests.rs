@@ -1729,6 +1729,7 @@ fn pin_with(
             .map(|endpoint| endpoint.to_string())
             .collect(),
         discovery_key: None,
+        charter: None,
     }
 }
 

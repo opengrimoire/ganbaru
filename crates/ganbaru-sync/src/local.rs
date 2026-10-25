@@ -132,6 +132,31 @@ pub async fn reset_applying(conn: &mut SqliteConnection) -> SyncResult<()> {
     Ok(())
 }
 
+/// Clears every engine table in one transaction, which is the database half of Reset sync state
+/// on the coordinator: the space, its charter and authorization log, writers, operations, row
+/// state, captures, the record of seeded tables, and device-bound engine state. Domain rows and
+/// the apply flag row stay, so the next vault open founds a new space and republishes every
+/// current row through [`crate::seed::seed_captures`].
+pub async fn reset_sync_state(conn: &mut SqliteConnection) -> SyncResult<()> {
+    let mut tx = conn.begin().await?;
+    sql::begin_engine_write(&mut tx).await?;
+    for table in crate::manifest::SYNC_TABLES
+        .iter()
+        .chain(crate::manifest::SYNC_LOCAL_TABLES)
+        .filter(|table| **table != APPLY_STATE_TABLE)
+    {
+        sqlx::query(AssertSqlSafe(format!("DELETE FROM {}", sql::ident(table))))
+            .execute(&mut *tx)
+            .await?;
+    }
+    sql::set_applying(&mut tx, false).await?;
+    tx.commit().await?;
+    Ok(())
+}
+
+/// The singleton engine table whose flag domain triggers read, kept by [`reset_sync_state`].
+const APPLY_STATE_TABLE: &str = "sync_apply_state";
+
 /// Prepares a snapshot copy for another installation in one transaction: `Local` tables are
 /// emptied and every `Local` column is reset to its materialization value, because device state
 /// belongs to the device that wrote it; captures belong to the installation that made them, so

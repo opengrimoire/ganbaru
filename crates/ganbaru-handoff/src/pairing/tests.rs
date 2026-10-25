@@ -1757,3 +1757,74 @@ fn device_certificate_subject_names_the_device() {
         "certificate should not keep the generator's default subject"
     );
 }
+
+fn pinned_charter(
+    vault_id: &str,
+    anchor_device_id: &str,
+    certificate: &[u8],
+    person: &ganbaru_contacts::PersonKeyPair,
+) -> PinnedCharter {
+    let admin = ganbaru_sync_contracts::AdminKeyPair::from_seed(&[5; 32]).expect("admin");
+    let charter = ganbaru_sync_contracts::sign_charter(
+        &ganbaru_sync_contracts::Charter {
+            space: ganbaru_sync_contracts::SpaceId::personal(vault_id),
+            anchor_device_id: anchor_device_id.to_string(),
+            anchor_device_key: ganbaru_sync_contracts::DevicePublicKey::from_bytes([3; 32]),
+            anchor_tls_fingerprint: Sha256::digest(certificate).into(),
+            anchor_admin_key: admin.public_key(),
+            recovery_admin_key: admin.public_key(),
+            discovery_key: [7; 32],
+            created_at_ms: 1,
+        },
+        person,
+    )
+    .expect("sign charter");
+    PinnedCharter {
+        charter: crate::protocol::encode_sync_charter(&charter),
+        person_key: person.public_key().to_text(),
+    }
+}
+
+#[test]
+fn pairing_pins_the_charter_that_names_the_coordinator_as_anchor() {
+    let (phone_root, phone, invitation, certificate) = linked_phone("pin-charter");
+    let person = ganbaru_contacts::PersonKeyPair::from_seed(&[8; 32]).expect("person");
+    assert_eq!(pin_of(&phone).charter, None);
+
+    let other_certificate = b"another coordinator certificate".to_vec();
+    for foreign in [
+        pinned_charter("vault-2", "device-desktop", &certificate, &person),
+        pinned_charter("vault-1", "device-other", &certificate, &person),
+        pinned_charter("vault-1", "device-desktop", &other_certificate, &person),
+        PinnedCharter {
+            person_key: ganbaru_contacts::PersonKeyPair::from_seed(&[9; 32])
+                .expect("other person")
+                .public_key()
+                .to_text(),
+            ..pinned_charter("vault-1", "device-desktop", &certificate, &person)
+        },
+    ] {
+        assert!(
+            phone
+                .record_enrolled(&invitation, &certificate, None, Some(foreign.clone()))
+                .is_err(),
+            "{foreign:?}"
+        );
+    }
+    assert_eq!(
+        pin_of(&phone).charter,
+        None,
+        "a refused charter keeps the pin"
+    );
+
+    let charter = pinned_charter("vault-1", "device-desktop", &certificate, &person);
+    phone
+        .record_enrolled(&invitation, &certificate, None, Some(charter.clone()))
+        .expect("pin the charter");
+    drop(phone);
+    let reloaded = PairingManager::default();
+    reloaded
+        .initialize(phone_root.path().to_path_buf(), "device-phone".to_string())
+        .expect("reload phone");
+    assert_eq!(pin_of(&reloaded).charter, Some(charter));
+}

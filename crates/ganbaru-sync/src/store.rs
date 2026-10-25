@@ -279,11 +279,13 @@ async fn insert_op(
         continues,
     } = header;
     let state = if held.is_some() { "held" } else { "waiting" };
+    let order = log::next_stored_order(conn, &ctx.space).await?;
     sqlx::query(
         "INSERT INTO sync_ops
             (space_id, writer_id, seq, kind, hash, clock, authorization_revision, context,
-             envelope, state, hold_reason, stored_at_ms, excluded_revision, group_continues)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+             envelope, state, hold_reason, stored_at_ms, stored_order, excluded_revision,
+             group_continues)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(ctx.space.as_bytes().as_slice())
     .bind(envelope.writer.as_bytes().as_slice())
@@ -297,6 +299,7 @@ async fn insert_op(
     .bind(state)
     .bind(held.map(HoldReason::as_str))
     .bind(clamp_ms(now_ms))
+    .bind(order)
     .bind(excluded.map(seq_i64).transpose()?)
     .bind(continues)
     .execute(&mut *conn)

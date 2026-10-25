@@ -565,6 +565,7 @@ mod tests {
             reported_endpoints: Vec::new(),
             // The unpadded base64url form of 32 bytes of 7.
             discovery_key: Some(format!("{}Bwc", "BwcH".repeat(10))),
+            charter: None,
         }
     }
 

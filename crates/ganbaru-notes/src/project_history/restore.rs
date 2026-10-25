@@ -150,7 +150,9 @@ pub(super) async fn restore_version(
         .map_err(|e| format!("defer Notes restore foreign keys: {e}"))?;
     let copy_scope = copied_graph_scope(&historical, &current);
     let id_map = create_copy_id_map(&mut tx, &historical, &copy_scope).await?;
+    let renewed_ids = renew_deleted_published_ids_tx(&mut tx, &historical, &id_map).await?;
     remap_copy_rows(&mut historical, &id_map);
+    remap_copy_rows(&mut historical, &renewed_ids);
     refresh_derived_sync_keys(&mut historical)?;
     resolve_copied_alias_conflicts_tx(&mut tx, &mut historical, &id_map).await?;
     suppress_historical_notifications(&mut historical);
@@ -386,6 +388,46 @@ async fn create_copy_id_map(
         }
     }
     Ok(map)
+}
+
+/// Fresh ids for bundle folders and aliases that sync published and that have since been
+/// deleted. Sync never lets a deleted published key be created again, so these rows come back
+/// under new ids; rows sync never published keep their ids. Aliases already copied with their
+/// page are left to `copy_ids`.
+async fn renew_deleted_published_ids_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    rows: &BTreeMap<String, Vec<Value>>,
+    copy_ids: &HashMap<String, String>,
+) -> Result<HashMap<String, String>, String> {
+    use ganbaru_sync::manifest::vault::notes::{ALIASES_TABLE, FOLDERS_TABLE};
+
+    let mut renewed = HashMap::new();
+    let mut reserved = copy_ids.values().cloned().collect::<HashSet<_>>();
+    for (table, table_id) in [
+        ("notes_folders", FOLDERS_TABLE),
+        ("notes_page_aliases", ALIASES_TABLE),
+    ] {
+        let sql = format!(
+            "SELECT EXISTS (SELECT 1 FROM sync_rows WHERE table_id = ?1 AND row_key = ?2)
+                AND NOT EXISTS (SELECT 1 FROM {table} WHERE id = ?2)"
+        );
+        for id in ids(rows, table) {
+            if copy_ids.contains_key(&id) {
+                continue;
+            }
+            let deleted: bool = sqlx::query_scalar(sqlx::AssertSqlSafe(sql.as_str()))
+                .bind(i64::from(table_id.0))
+                .bind(&id)
+                .fetch_one(&mut **tx)
+                .await
+                .map_err(|e| format!("check deleted published Notes {table} row: {e}"))?;
+            if deleted {
+                let replacement = writes::new_note_id(tx, &mut reserved).await?;
+                renewed.insert(id, replacement);
+            }
+        }
+    }
+    Ok(renewed)
 }
 
 /// Points every bundle row at the copies, so restored rows that mention or nest under a copied
@@ -756,6 +798,158 @@ mod tests {
             assert_eq!(empty_parent_id.as_deref(), Some(ROOT_FOLDER_ID));
             assert_eq!(later_folder_count, 0);
             assert_eq!(page_folder_id.as_deref(), Some(ROOT_FOLDER_ID));
+        });
+    }
+
+    #[test]
+    fn project_restore_on_a_synced_vault_keeps_published_ids_alive_and_renews_deleted_ones() {
+        use ganbaru_sync::manifest::vault::notes::{ALIASES_TABLE, FOLDERS_TABLE};
+
+        const KEPT_ALIAS_ID: &str = "60606060-6060-4060-8060-606060606060";
+        const SWAPPED_ALIAS_ID: &str = "70707070-7070-4070-8070-707070707070";
+        const DELETED_ALIAS_ID: &str = "80808080-8080-4080-8080-808080808080";
+
+        crate::test_block_on(async {
+            let pool = migrated_pool().await;
+            sqlx::query("INSERT INTO project_groups (id, name, order_key) VALUES ('synced-history', 'Notes', 'a1')")
+                .execute(&pool)
+                .await
+                .unwrap();
+            sqlx::query(
+                "INSERT INTO projects (id, group_id, name, order_key)
+                 VALUES (?, 'synced-history', 'Synced history', 'a1')",
+            )
+            .bind(PROJECT_ID)
+            .execute(&pool)
+            .await
+            .unwrap();
+            sqlx::query("INSERT INTO notes_folders (id, project_id, name) VALUES (?, ?, 'Root')")
+                .bind(ROOT_FOLDER_ID)
+                .bind(PROJECT_ID)
+                .execute(&pool)
+                .await
+                .unwrap();
+            sqlx::query(
+                "INSERT INTO notes_folders (id, project_id, parent_folder_id, name)
+                 VALUES (?, ?, ?, 'Empty')",
+            )
+            .bind(EMPTY_FOLDER_ID)
+            .bind(PROJECT_ID)
+            .bind(ROOT_FOLDER_ID)
+            .execute(&pool)
+            .await
+            .unwrap();
+            sqlx::query(
+                "INSERT INTO notes_pages (id, parent_type, folder_id, project_id, title)
+                 VALUES (?, 'workspace', ?, ?, 'Folder note')",
+            )
+            .bind(PAGE_ID)
+            .bind(ROOT_FOLDER_ID)
+            .bind(PROJECT_ID)
+            .execute(&pool)
+            .await
+            .unwrap();
+            sqlx::query(
+                "INSERT INTO notes_page_aliases (id, page_id, alias, normalized_alias)
+                 VALUES (?1, ?4, 'First', 'first'), (?2, ?4, 'Second', 'second'),
+                        (?3, ?4, 'Gone', 'gone')",
+            )
+            .bind(KEPT_ALIAS_ID)
+            .bind(SWAPPED_ALIAS_ID)
+            .bind(DELETED_ALIAS_ID)
+            .bind(PAGE_ID)
+            .execute(&pool)
+            .await
+            .unwrap();
+            // Sync published every folder and alias key, so none of them can be created again.
+            for (table, id) in [
+                (FOLDERS_TABLE, ROOT_FOLDER_ID),
+                (FOLDERS_TABLE, EMPTY_FOLDER_ID),
+                (ALIASES_TABLE, KEPT_ALIAS_ID),
+                (ALIASES_TABLE, SWAPPED_ALIAS_ID),
+                (ALIASES_TABLE, DELETED_ALIAS_ID),
+            ] {
+                sqlx::query(
+                    "INSERT INTO sync_rows (table_id, row_key, state) VALUES (?, ?, 'live')",
+                )
+                .bind(i64::from(table.0))
+                .bind(id)
+                .execute(&pool)
+                .await
+                .unwrap();
+            }
+            let baseline = create_checkpoint(
+                &pool,
+                PROJECT_ID,
+                "baseline",
+                None,
+                None,
+                "Synced folder version",
+            )
+            .await
+            .unwrap()
+            .unwrap();
+
+            // The two kept aliases trade their texts, so writing either one back in place would
+            // collide with the other without the parked placeholder.
+            for (id, alias) in [
+                (KEPT_ALIAS_ID, "Swap"),
+                (SWAPPED_ALIAS_ID, "First"),
+                (KEPT_ALIAS_ID, "Second"),
+            ] {
+                sqlx::query(
+                    "UPDATE notes_page_aliases SET alias = ?, normalized_alias = lower(?) WHERE id = ?",
+                )
+                .bind(alias)
+                .bind(alias)
+                .bind(id)
+                .execute(&pool)
+                .await
+                .unwrap();
+            }
+            for (table, id) in [
+                ("notes_page_aliases", DELETED_ALIAS_ID),
+                ("notes_folders", EMPTY_FOLDER_ID),
+            ] {
+                sqlx::query(sqlx::AssertSqlSafe(format!(
+                    "DELETE FROM {table} WHERE id = ?"
+                )))
+                .bind(id)
+                .execute(&pool)
+                .await
+                .unwrap();
+            }
+
+            restore_version(&pool, PROJECT_ID, &baseline.id)
+                .await
+                .unwrap();
+
+            let aliases: Vec<(String, String)> = sqlx::query_as(
+                "SELECT id, normalized_alias FROM notes_page_aliases ORDER BY normalized_alias",
+            )
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+            assert_eq!(aliases.len(), 3);
+            assert_eq!(aliases[0].0, KEPT_ALIAS_ID);
+            assert_eq!(aliases[0].1, "first");
+            assert_eq!(aliases[1].1, "gone");
+            assert_ne!(aliases[1].0, DELETED_ALIAS_ID);
+            assert_eq!(
+                aliases[2],
+                (SWAPPED_ALIAS_ID.to_string(), "second".to_string())
+            );
+            let folders: Vec<(String, String, Option<String>)> = sqlx::query_as(
+                "SELECT id, name, parent_folder_id FROM notes_folders ORDER BY name",
+            )
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+            assert_eq!(folders.len(), 2);
+            assert_eq!(folders[0].1, "Empty");
+            assert_ne!(folders[0].0, EMPTY_FOLDER_ID);
+            assert_eq!(folders[0].2.as_deref(), Some(ROOT_FOLDER_ID));
+            assert_eq!(folders[1].0, ROOT_FOLDER_ID);
         });
     }
 }

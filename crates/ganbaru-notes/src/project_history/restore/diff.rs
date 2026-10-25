@@ -99,11 +99,14 @@ impl BundleOwners {
     }
 }
 
-/// What happens to a current row that the bundle omits.
+/// What happens to a current row before the bundle rows are written.
 enum Removal {
     Keep,
     Trash,
     Delete,
+    /// A changed alias moves its normalized alias aside, so the bundle rows can claim any
+    /// normalized alias while the alias keeps its id and is rewritten in place.
+    Park,
 }
 
 /// Refuses bundles recorded before the current Notes storage format, which split block content
@@ -147,7 +150,7 @@ pub(super) async fn remove_omitted_rows_tx(
             let key = row_key(row, table, key_columns)?;
             let removal = match bundle_rows.get(&key) {
                 Some(bundle_row) if table == "notes_page_aliases" && *bundle_row != row => {
-                    Removal::Delete
+                    Removal::Park
                 }
                 Some(_) if is_replaced_template_block(table, row, &replaced_templates) => {
                     Removal::Delete
@@ -159,6 +162,7 @@ pub(super) async fn remove_omitted_rows_tx(
                 Removal::Keep => {}
                 Removal::Trash => trash_row_tx(tx, table, &key).await?,
                 Removal::Delete => delete_row_tx(tx, table, key_columns, &key).await?,
+                Removal::Park => park_alias_tx(tx, &key).await?,
             }
         }
     }
@@ -203,8 +207,8 @@ fn is_replaced_template_block(table: &str, row: &Value, replaced: &HashSet<Strin
         && json_optional_string(row, "template_id").is_some_and(|id| replaced.contains(&id))
 }
 
-/// Changed aliases are deleted with the omitted ones, since their unique normalized alias could
-/// otherwise collide while the bundle rows are written one at a time.
+/// Omitted aliases that a bundle page or normalized alias owns are deleted, since their unique
+/// normalized alias could otherwise collide while the bundle rows are written one at a time.
 fn omitted_row_removal(table: &str, row: &Value, owners: &BundleOwners) -> Removal {
     let gated = |owned: bool| {
         if owned {
@@ -301,6 +305,20 @@ async fn trash_row_tx(
         .execute(&mut **tx)
         .await
         .map_err(|e| format!("trash Notes {table} row omitted by the restored version: {e}"))?;
+    Ok(())
+}
+
+/// Gives a changed alias a placeholder normalized alias until its bundle row is written. A
+/// normalized alias never starts with whitespace, so the placeholder cannot collide.
+async fn park_alias_tx(tx: &mut Transaction<'_, Sqlite>, key: &RowKey) -> Result<(), String> {
+    let id = key
+        .first()
+        .ok_or_else(|| "Notes history alias row key is empty".to_string())?;
+    sqlx::query("UPDATE notes_page_aliases SET normalized_alias = ' parked ' || id WHERE id = ?")
+        .bind(id)
+        .execute(&mut **tx)
+        .await
+        .map_err(|e| format!("set aside Notes alias changed by the restored version: {e}"))?;
     Ok(())
 }
 

@@ -53,7 +53,7 @@ const focusActivity = vi.hoisted(() => ({
   applied: [] as ((tables: string[]) => void)[],
 }));
 
-vi.mock("$lib/api/focus", () => ({
+vi.mock("$lib/api/focus-device-activity", () => ({
   readFocusDeviceActivity: focusActivity.read,
 }));
 

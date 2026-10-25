@@ -1,3 +1,4 @@
+#[cfg(desktop)]
 use ganbaru_chat::repository::project_files;
 use ganbaru_projects::structure_commands;
 use ganbaru_projects::{
@@ -6,7 +7,9 @@ use ganbaru_projects::{
     ProjectStatusCreate, ProjectStatusUpdate, ProjectTagCreate, ProjectTagUpdate,
     ProjectsMutationRows,
 };
+#[cfg(desktop)]
 use sqlx::SqlitePool;
+#[cfg(desktop)]
 use std::path::Path;
 use tauri::{AppHandle, Runtime};
 
@@ -48,18 +51,26 @@ pub async fn projects_delete_group<R: Runtime>(
     require_active_owner(&app)?;
     let pool = connect_sqlite(app.clone(), db_url).await?;
     let vault_root = vault::active_writable_vault_path(&app)?;
-    let project_ids = structure_commands::group_project_ids(&pool, &group_id).await?;
-    let chat_files = project_files::managed_file_paths_of_projects(&pool, &project_ids)
-        .await
-        .map_err(|error| format!("list Chat files of deleted projects: {}", error.message))?;
+    #[cfg(mobile)]
+    let _ = vault_root;
+    #[cfg(desktop)]
+    let chat_files = {
+        let project_ids = structure_commands::group_project_ids(&pool, &group_id).await?;
+        project_files::managed_file_paths_of_projects(&pool, &project_ids)
+            .await
+            .map_err(|error| format!("list Chat files of deleted projects: {}", error.message))?
+    };
     let mutation = structure_commands::delete_group(&pool, group_id).await?;
+    #[cfg(desktop)]
     remove_deleted_project_chat_files(&pool, &vault_root, &chat_files).await;
     Ok(mutation)
 }
 
 /// Removes the managed Chat files of deleted projects. The group deletion has already
 /// committed, so a file that cannot be removed is reported and left for manual cleanup
-/// instead of failing the command.
+/// instead of failing the command. Mobile builds have no Chat repository, so files a vault
+/// carried to a phone stay until a desktop owner deletes them.
+#[cfg(desktop)]
 async fn remove_deleted_project_chat_files(pool: &SqlitePool, vault_root: &Path, paths: &[String]) {
     match project_files::remove_unreferenced_managed_files(pool, vault_root, paths).await {
         Ok(failures) => {

@@ -6,6 +6,10 @@ use ganbaru_handoff::protocol::{SyncAsset, SyncAssetKey, SyncSeq};
 use ganbaru_sync::assets::AssetRef;
 use ganbaru_sync_contracts::{Digest32, Seq, VersionVector, WriterId};
 
+/// Error code of a pull the hub can no longer answer because it compacted operations the peer
+/// lacks. The peer stops pulling until it bootstraps from a fresh copy of the vault.
+pub const BOOTSTRAP_REQUIRED: &str = "bootstrap_required";
+
 /// Wire entries of a version vector, in writer order.
 pub fn vector_to_wire(vector: &VersionVector) -> Vec<SyncSeq> {
     vector
@@ -27,6 +31,7 @@ pub fn vector_from_wire(entries: &[SyncSeq]) -> Result<VersionVector, String> {
 }
 
 /// Wire entries of forked writers with their fork sequences.
+#[cfg(desktop)]
 pub fn forked_to_wire(forked: &[(WriterId, Seq)]) -> Vec<SyncSeq> {
     forked
         .iter()

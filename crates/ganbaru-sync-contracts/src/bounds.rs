@@ -78,10 +78,13 @@ pub const MAX_GROUP_BYTES: usize = 1 << 20;
 /// groups over several transactions. Between two of its groups, a receiver that can seal defers
 /// every repair, so a state between two groups of one edit never becomes a repair; after its
 /// last group, the rows it touched are taken back and repaired a bounded number per
-/// transaction. A receiver starts one chain at a time, and only once the rows the previous one
-/// deferred were taken back, so every deferral ends. A chain closes at an operation that does
-/// not continue, before its writer's cutoff, an excluded operation, or an invalid one, and at
-/// this many operations. A chain that never closes applies nothing and holds back only its
-/// writer's later operations. A dense Music library refresh of 6,000 items spans 9 operations
-/// and one of the longest metadata 19.
+/// transaction, together with the rows that reference them. A receiver that can seal starts one
+/// chain at a time, and only once the rows the previous one deferred were taken back, so every
+/// deferral ends. Of the chains that could start, the one whose last operation the receiver
+/// stored first starts, whatever the clocks say, so a writer cannot keep another writer's chain
+/// waiting by sending chains with low clocks. A chain closes at an operation that does not
+/// continue, before its writer's cutoff, an excluded operation, or an invalid one, and at this
+/// many operations. A chain that never closes applies nothing and holds back only its writer's
+/// later operations. A dense Music library refresh of 6,000 items spans 9 operations and one of
+/// the longest metadata 19.
 pub const MAX_OPERATIONS_PER_CHAIN: usize = 256;

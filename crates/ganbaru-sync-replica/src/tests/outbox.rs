@@ -114,7 +114,57 @@ fn the_outbox_is_bounded() {
             .expect("add within bound");
     }
     let extra = enroll_proposal("device-phone", 30, NOW_MS + 10_000);
-    assert!(outbox.add(extra).is_err());
+    assert!(!outbox.has_room());
+    assert!(outbox.add(extra.clone()).is_err());
+
+    // Full of waiting proposals, reconciliation leaves its changes for a later pass.
+    let admin = anchor_keys().admin;
+    let space = SpaceId::personal(VAULT_ID);
+    let deferred = authority::queue_reconciliation(
+        &mut outbox,
+        space,
+        &admin,
+        authority::Reconciliation {
+            enroll: vec![enrollment("device-laptop", 41)],
+            remove: vec!["device-tablet".to_string()],
+        },
+        NOW_MS + 20_000,
+    )
+    .expect("a full outbox does not fail the pass");
+    assert_eq!(deferred, 0);
+
+    // Final rejections make room, oldest first, and waiting proposals stay.
+    let oldest = outbox.entries()[0].proposal.hash();
+    let later = outbox.entries()[1].proposal.hash();
+    outbox
+        .settle(&later, Err(ProposalRejection::DeviceRemoved))
+        .expect("settle later");
+    outbox
+        .settle(&oldest, Err(ProposalRejection::DeviceRemoved))
+        .expect("settle oldest");
+    assert!(outbox.has_room());
+    assert!(outbox.add(extra.clone()).expect("add over a rejection"));
+    assert!(
+        outbox
+            .entries()
+            .iter()
+            .all(|entry| entry.proposal.hash() != oldest)
+    );
+    assert!(
+        outbox
+            .entries()
+            .iter()
+            .any(|entry| entry.proposal.hash() == later)
+    );
+    assert_eq!(outbox.entries().len(), MAX_OUTBOX_PROPOSALS);
+    let reloaded = Outbox::load(&directory.files().outbox_path()).expect("reload");
+    assert_eq!(reloaded.entries().len(), MAX_OUTBOX_PROPOSALS);
+    assert!(
+        reloaded
+            .entries()
+            .iter()
+            .any(|entry| entry.proposal.hash() == extra.hash())
+    );
 }
 
 #[test]

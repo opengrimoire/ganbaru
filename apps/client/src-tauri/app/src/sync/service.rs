@@ -736,6 +736,14 @@ impl ServiceState {
         for reply in resets {
             let _ = reply.send(Err("sync is not ready on this device".to_string()));
         }
+        // A pass that ended before the anchor step leaves hub proposal requests queued; each is
+        // answered so the sender keeps its proposal in its outbox instead of waiting.
+        #[cfg(desktop)]
+        for request in runtime.take_proposal_requests() {
+            let _ = request
+                .reply
+                .send(Err("sync is not ready on this device".to_string()));
+        }
         self.publish(host, runtime, view);
         runtime
             .changes

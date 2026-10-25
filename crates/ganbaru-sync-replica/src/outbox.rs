@@ -139,17 +139,29 @@ impl Outbox {
             .find(|entry| matches(&entry.proposal.proposal.entry))
     }
 
+    /// Whether [`Self::add`] can take another proposal: the outbox is below its bound or holds
+    /// a final rejection it can drop.
+    pub fn has_room(&self) -> bool {
+        self.entries.len() < MAX_OUTBOX_PROPOSALS
+            || self.entries.iter().any(|entry| !entry.pending())
+    }
+
     /// Adds a waiting proposal and writes the outbox. A proposal already present is left as it
-    /// is. Returns whether the proposal was added.
+    /// is. At the bound the oldest final rejection makes room, so rejections never block new
+    /// proposals; an outbox full of waiting proposals refuses. Returns whether the proposal was
+    /// added.
     pub fn add(&mut self, proposal: SignedProposal) -> Result<bool, String> {
         let hash = proposal.hash();
         if self.position(&hash).is_some() {
             return Ok(false);
         }
-        if self.entries.len() >= MAX_OUTBOX_PROPOSALS {
-            return Err("sync proposal outbox is full".to_string());
-        }
         let mut next = self.entries.clone();
+        if next.len() >= MAX_OUTBOX_PROPOSALS {
+            let Some(rejected) = next.iter().position(|entry| !entry.pending()) else {
+                return Err("sync proposal outbox is full".to_string());
+            };
+            next.remove(rejected);
+        }
         next.push(OutboxEntry {
             proposal,
             rejection: None,

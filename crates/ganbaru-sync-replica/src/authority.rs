@@ -162,8 +162,10 @@ pub struct Reconciliation {
 
 /// Places a proposal signed by `admin` in the outbox for each change of `changes` that no
 /// proposal exists for yet, waiting or finally rejected, matched by change kind and device id.
-/// A finally rejected change is never proposed again, so a removed device that links again
-/// stays removed. Returns how many proposals it added.
+/// A finally rejected change is not proposed again while its rejection stays in the outbox, so
+/// a removed device that links again stays removed. An outbox full of waiting proposals leaves
+/// the remaining changes for a later pass instead of failing it. Returns how many proposals it
+/// added.
 pub fn queue_reconciliation(
     outbox: &mut Outbox,
     space: SpaceId,
@@ -181,6 +183,9 @@ pub fn queue_reconciliation(
     for entry in entries {
         if outbox.find(|queued| same_change(queued, &entry)).is_some() {
             continue;
+        }
+        if !outbox.has_room() {
+            break;
         }
         added += usize::from(outbox.add(propose(space, admin, entry, now_ms)?)?);
     }

@@ -1199,9 +1199,16 @@ impl ServiceState {
     }
 
     /// Applies stored operations once the log grew since the last apply, or local captures
-    /// changed since an apply stopped on them. Apply always commits, so applying on every pass
-    /// would wake the service again.
+    /// changed since an apply stopped on them, then repairs the Notes structure that applies
+    /// left pending. Apply always commits, so applying on every pass would wake the service
+    /// again; the repair commits only when keys are pending.
     async fn apply_new<H: SyncHost>(&mut self, session: &Session<'_, H>) -> Result<(), String> {
+        let applied = self.apply_if_due(session).await;
+        session.repair_notes().await;
+        applied
+    }
+
+    async fn apply_if_due<H: SyncHost>(&mut self, session: &Session<'_, H>) -> Result<(), String> {
         let stored = {
             let mut conn = acquire(&session.pool).await?;
             session
@@ -1460,6 +1467,46 @@ impl<'a, H: SyncHost> Session<'a, H> {
         if imported.is_some_and(|report| report.pending_captures) {
             let applied = self.apply_ready(writer).await?;
             self.report(applied.tables, &applied.notices).await;
+        }
+        self.repair_notes().await;
+        Ok(())
+    }
+
+    /// Repairs the Notes structure around the Notes rows that applies changed, on a device that
+    /// may write Notes. The changed keys wait in `notes_sync_repair_pending`, which the repair
+    /// clears in its own transaction, so a failed repair is logged and retried on the next pass
+    /// or start without stopping the exchange. Keys stay pending on a device that may not write
+    /// Notes until it may.
+    async fn repair_notes(&self) {
+        if let Err(error) = self.try_repair_notes().await {
+            eprintln!("repair notes structure: {error}");
+        }
+    }
+
+    async fn try_repair_notes(&self) -> Result<(), String> {
+        if !ganbaru_notes::sync_repair::has_pending(&self.pool).await? {
+            return Ok(());
+        }
+        let config_dir = self.host.config_dir()?;
+        let status = crate::vault::ownership::active_status_in(&config_dir, self.host.ownership())?;
+        if !status.can_write_domain(ganbaru_sync::manifest::vault::notes::DOMAIN_NAME) {
+            return Ok(());
+        }
+        let repair = ganbaru_notes::sync_repair::repair_pending(&self.pool).await?;
+        if !repair.unplaced_blocks.is_empty() {
+            eprintln!(
+                "notes structure repair left {} block cycles without a page",
+                repair.unplaced_blocks.len()
+            );
+        }
+        if !repair.is_empty() {
+            let tables = vec![
+                ganbaru_sync::manifest::vault::notes::PAGES.name.to_string(),
+                ganbaru_sync::manifest::vault::notes::BLOCKS
+                    .name
+                    .to_string(),
+            ];
+            self.report(tables, &[]).await;
         }
         Ok(())
     }

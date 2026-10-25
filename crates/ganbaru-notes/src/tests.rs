@@ -54,6 +54,7 @@ mod schema_validation;
 mod search;
 mod suggestions;
 mod sync_key_conversion;
+mod sync_structure;
 mod undo;
 mod validation;
 mod workspace_shell;

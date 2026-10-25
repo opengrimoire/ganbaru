@@ -350,7 +350,12 @@ pub(super) fn page_projection() -> String {
     crate::structure::page_summary_columns("notes_pages")
 }
 
+/// Limits an unaliased `notes_pages` read to placed pages of `project_id`, or of no project.
 fn push_project_filter(query: &mut QueryBuilder<Sqlite>, project_id: Option<&str>) {
+    query.push(format!(
+        " AND {}",
+        crate::structure::placed_page_sql("notes_pages")
+    ));
     if let Some(project_id) = project_id {
         query.push(format!(
             " AND {} = ",

@@ -6,7 +6,7 @@ use sqlx::{AssertSqlSafe, Row};
 /// The migration before Chat conversations replication.
 const BEFORE_CONVERSATIONS_REPLICATION: i64 = 20261025015209;
 /// The migration that replicates Chat conversations and removes empty random default channels.
-const CONVERSATIONS_REPLICATION: i64 = 20261025060716;
+const CONVERSATIONS_REPLICATION: i64 = 20261025183055;
 
 const NOW: &str = "2026-07-20T12:00:00Z";
 

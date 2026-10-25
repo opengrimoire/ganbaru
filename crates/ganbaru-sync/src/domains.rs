@@ -10,6 +10,7 @@ pub mod contacts;
 pub mod distractions;
 pub mod focus;
 pub mod music;
+pub mod notes;
 pub mod preferences;
 pub mod projects;
 pub mod quick_notes;
@@ -27,6 +28,7 @@ pub fn vault_adapters() -> Adapters {
         .with(Box::new(calendar::CalendarAdapter))
         .with(Box::new(focus::FocusAdapter))
         .with(Box::new(distractions::DistractionsAdapter))
+        .with(Box::new(notes::NotesAdapter))
         .with(Box::new(chat::ChatAdapter))
 }
 

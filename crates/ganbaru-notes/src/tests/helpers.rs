@@ -130,13 +130,27 @@ pub(super) async fn insert_row_page(
     title: &str,
     properties: serde_json::Value,
 ) {
+    insert_row_page_created_at(pool, id, data_source_id, title, None, properties).await;
+}
+
+/// Inserts a row page created at `created_time`, or now when it is `None`. Replicated rows keep
+/// their creation time, so a fixture sets it on insert.
+pub(super) async fn insert_row_page_created_at(
+    pool: &SqlitePool,
+    id: &str,
+    data_source_id: &str,
+    title: &str,
+    created_time: Option<&str>,
+    properties: serde_json::Value,
+) {
     sqlx::query(
-        "INSERT INTO notes_pages (id, parent_type, parent_data_source_id, title)
-         VALUES (?, 'data_source_id', ?, ?)",
+        "INSERT INTO notes_pages (id, parent_type, parent_data_source_id, title, created_time)
+         VALUES (?, 'data_source_id', ?, ?, COALESCE(?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now')))",
     )
     .bind(id)
     .bind(data_source_id)
     .bind(title)
+    .bind(created_time)
     .execute(pool)
     .await
     .unwrap();

@@ -496,6 +496,42 @@ table 279 distractions_block_events replicated key id
   group 2 reference 225 set_null segment_id:optional_row_key
   group 3 immutable
     owned distractions_block_event_rule_snapshots parent block_event_id ordinal ordinal rows 1 codec generic rule_id:optional_text(..=1024) rule_kind:optional_text(..=32) rule_label:optional_text(..=1024) environment_id:optional_text(..=1024) blocker_mode:optional_text(..=32)
+table 288 notes_local_users replicated key id
+  group 0 immutable created_time:timestamp
+table 289 notes_folders replicated key id
+  tree parent 2 position none depth 64
+  group 0 immutable project_id:optional_row_key->97:cascade created_time:timestamp
+  group 1 register name:text(..=200)
+  group 2 reference 289 set_null parent_folder_id:optional_row_key
+  group 3 max last_edited_time:timestamp
+table 290 notes_pages replicated key id
+  tree parent 5 position none depth 32
+  group 0 immutable created_time:timestamp
+  group 1 register source_provider:optional_text(..=262144) source_object_id:optional_text(..=262144) source_workspace_id:optional_text(..=262144) source_last_edited_time:optional_text(..=262144) url:optional_text(..=262144) public_url:optional_text(..=262144)
+  group 2 register surfaced recoverable title:text(..=262144)
+  group 3 register child_block_id:optional_row_key->292:cascade parent_data_source_id:optional_row_key folder_id:optional_row_key->289:set_null
+  group 4 reference 97 set_null project_id:optional_row_key
+  group 5 reference 290 set_null parent_row_page_id:optional_row_key
+  group 6 register icon:optional_text(..=262144) cover:optional_text(..=262144)
+  group 7 coupled in_trash:flag trashed_time:optional_timestamp trash_owner:optional_text(..=262144)
+  group 8 register archived:flag
+  group 9 max last_edited_time:timestamp
+  check child_block_id,parent_data_source_id within 3
+  check folder_id,child_block_id,parent_data_source_id within 3
+table 292 notes_blocks replicated key id
+  group 0 register created_time:timestamp source_provider:optional_text(..=262144) source_object_id:optional_text(..=262144) source_last_edited_time:optional_text(..=262144)
+  group 1 register parent_page_id:optional_row_key->290:cascade parent_block_id:optional_row_key->292:cascade
+  group 2 position order_key:order_key
+  group 3 register type:text(..=200) attrs:text(..=65536)
+  group 4 register surfaced recoverable text:text(..=262144)
+  group 5 coupled in_trash:flag trash_owner:optional_text(..=262144)
+  group 6 max last_edited_time:timestamp
+  check parent_page_id,parent_block_id within 1
+table 291 notes_page_aliases replicated key id redirects
+  group 0 immutable page_id:optional_row_key->290:cascade created_time:timestamp
+  group 1 register alias:text(..=200) normalized_alias:text(..=262144)
+  group 2 max last_edited_time:timestamp
+  unique normalized_alias binary
 table 352 chat_participants replicated key id
   group 0 immutable participant_kind:text(..=32) created_at:timestamp
   group 1 register surfaced recoverable display_name:trimmed_text(1..=160) avatar_schema_version:integer(1..=9223372036854775807) avatar_data:text(..=16384)
@@ -520,34 +556,3 @@ table 355 chat_access_profiles replicated key id redirects
   check current_revision_id,current_maximum_folder_capability within 2
 table 356 chat_access_profile_revisions replicated key id
   group 0 immutable access_profile_id:optional_row_key->355:cascade default_read_history:flag default_participate:flag default_history_boundary:text(..=32) maximum_folder_capability:text(..=32) created_at:timestamp
-table 360 chat_conversations replicated key id
-  group 0 immutable project_id:optional_row_key->97:cascade conversation_kind:text(..=32) created_at:timestamp
-  group 1 max last_activity_at:timestamp
-  group 2 coupled archived_at:optional_timestamp
-  group 3 max updated_at:timestamp
-table 361 chat_conversation_memberships replicated key sync_key
-  derived key exists 4 inputs conversation_id,participant_id prefix conversation-membership
-  group 0 immutable conversation_id:optional_row_key->360:cascade participant_id:optional_row_key->352:cascade
-  group 1 coupled membership_role:text(..=32) removed_at:optional_timestamp
-  group 2 register created_at:timestamp
-  group 3 max updated_at:timestamp
-  group 4 register
-table 362 chat_teammate_channel_memberships replicated key sync_key
-  derived key exists 4 inputs conversation_id,teammate_id prefix ai-channel-membership
-  group 0 immutable conversation_id:optional_row_key->360:cascade teammate_id:optional_row_key->353:cascade
-  group 1 coupled access_profile_id:optional_row_key->355:cascade read_history:flag read_history_inherits_profile:flag participate:flag participate_inherits_profile:flag history_boundary:text(..=32) history_boundary_inherits_profile:flag history_from_ordinal:optional_integer(1..=9223372036854775807) runtime_approval_policy:optional_text(..=32) scratch_runtime_approval_policy:optional_text(..=32) removed_at:optional_timestamp
-  group 2 register created_at:timestamp
-  group 3 max updated_at:timestamp
-  group 4 register
-  check history_boundary,history_from_ordinal within 1
-table 363 chat_teammate_working_folder_grants replicated key sync_key
-  derived key exists 3 inputs conversation_id,teammate_id,working_folder_id prefix folder-grant
-  group 0 immutable conversation_id:optional_row_key->360:cascade teammate_id:optional_row_key->353:cascade working_folder_id:optional_row_key->98:cascade
-  group 1 coupled capability:text(..=32) capability_inherits_profile:flag is_default:flag runtime_approval_policy:optional_text(..=32) revoked_at:optional_timestamp
-  group 2 register project_id:optional_row_key created_at:timestamp
-  group 3 register
-table 364 chat_channels replicated key id
-  group 0 immutable project_id:optional_row_key->97:cascade conversation_id:optional_row_key->360:cascade is_default:flag created_at:timestamp
-  group 1 register surfaced recoverable name:text(..=80) topic:text(..=250)
-  group 2 coupled archived_at:optional_timestamp
-  group 3 max updated_at:timestamp

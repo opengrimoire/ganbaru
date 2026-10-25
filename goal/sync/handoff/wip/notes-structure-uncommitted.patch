@@ -1,0 +1,324 @@
+diff --git a/apps/client/src-tauri/app/src/sync/service.rs b/apps/client/src-tauri/app/src/sync/service.rs
+index 998d244c..bd0afeff 100644
+--- a/apps/client/src-tauri/app/src/sync/service.rs
++++ b/apps/client/src-tauri/app/src/sync/service.rs
+@@ -1199,9 +1199,16 @@ impl ServiceState {
+     }
+ 
+     /// Applies stored operations once the log grew since the last apply, or local captures
+-    /// changed since an apply stopped on them. Apply always commits, so applying on every pass
+-    /// would wake the service again.
++    /// changed since an apply stopped on them, then repairs the Notes structure that applies
++    /// left pending. Apply always commits, so applying on every pass would wake the service
++    /// again; the repair commits only when keys are pending.
+     async fn apply_new<H: SyncHost>(&mut self, session: &Session<'_, H>) -> Result<(), String> {
++        let applied = self.apply_if_due(session).await;
++        session.repair_notes().await;
++        applied
++    }
++
++    async fn apply_if_due<H: SyncHost>(&mut self, session: &Session<'_, H>) -> Result<(), String> {
+         let stored = {
+             let mut conn = acquire(&session.pool).await?;
+             session
+@@ -1216,7 +1223,6 @@ impl ServiceState {
+         }
+         let applied = session.apply_ready(&mut self.writer).await?;
+         session.report(applied.tables, &applied.notices).await;
+-        session.repair_notes(&applied.notices).await;
+         self.applied = ApplyMark {
+             stored: Some(stored),
+             blocked_at: applied.blocked_at,
+@@ -1460,32 +1466,24 @@ impl<'a, H: SyncHost> Session<'a, H> {
+         if imported.is_some_and(|report| report.pending_captures) {
+             let applied = self.apply_ready(writer).await?;
+             self.report(applied.tables, &applied.notices).await;
+-            self.repair_notes(&applied.notices).await;
+         }
++        self.repair_notes().await;
+         Ok(())
+     }
+ 
+-    /// Repairs the Notes structure around the Notes rows an apply changed, on a device that may
+-    /// write Notes. The repair is an ordinary local transaction, so its changes seal and
+-    /// replicate like an edit. A failed repair is logged and retried after the next apply that
+-    /// changes the same rows, so it never stops the exchange.
+-    async fn repair_notes(&self, notices: &[ChangeNotice]) {
+-        if let Err(error) = self.try_repair_notes(notices).await {
++    /// Repairs the Notes structure around the Notes rows that applies changed, on a device that
++    /// may write Notes. The changed keys wait in `notes_sync_repair_pending`, which the repair
++    /// clears in its own transaction, so a failed repair is logged and retried on the next pass
++    /// or start without stopping the exchange. Keys stay pending on a device that may not write
++    /// Notes until it may.
++    async fn repair_notes(&self) {
++        if let Err(error) = self.try_repair_notes().await {
+             eprintln!("repair notes structure: {error}");
+         }
+     }
+ 
+-    async fn try_repair_notes(&self, notices: &[ChangeNotice]) -> Result<(), String> {
+-        let keys = |table: &str| -> Vec<String> {
+-            notices
+-                .iter()
+-                .filter(|notice| notice.topic == table)
+-                .map(|notice| notice.key.clone())
+-                .collect()
+-        };
+-        let pages = keys(ganbaru_sync::manifest::vault::notes::PAGES.name);
+-        let blocks = keys(ganbaru_sync::manifest::vault::notes::BLOCKS.name);
+-        if pages.is_empty() && blocks.is_empty() {
++    async fn try_repair_notes(&self) -> Result<(), String> {
++        if !ganbaru_notes::sync_repair::has_pending(&self.pool).await? {
+             return Ok(());
+         }
+         let config_dir = self.host.config_dir()?;
+@@ -1493,8 +1491,7 @@ impl<'a, H: SyncHost> Session<'a, H> {
+         if !status.can_write_domain(ganbaru_sync::manifest::vault::notes::DOMAIN_NAME) {
+             return Ok(());
+         }
+-        let repair =
+-            ganbaru_notes::sync_repair::repair_structure(&self.pool, &pages, &blocks).await?;
++        let repair = ganbaru_notes::sync_repair::repair_pending(&self.pool).await?;
+         if !repair.unplaced_blocks.is_empty() {
+             eprintln!(
+                 "notes structure repair left {} block cycles without a page",
+diff --git a/crates/ganbaru-db/migrations/20261025091420_notes_structure_replication.sql b/crates/ganbaru-db/migrations/20261025091420_notes_structure_replication.sql
+index 27804416..1451a14e 100644
+--- a/crates/ganbaru-db/migrations/20261025091420_notes_structure_replication.sql
++++ b/crates/ganbaru-db/migrations/20261025091420_notes_structure_replication.sql
+@@ -172,6 +172,14 @@ CREATE TABLE notes_page_history_pending (
+     queued_at TEXT NOT NULL CHECK (trim(queued_at) <> '')
+ );
+ 
++-- Pages and blocks that remote changes touched and the Notes structure repair has not yet
++-- committed for. A failed or skipped repair keeps its keys for the next pass.
++CREATE TABLE notes_sync_repair_pending (
++    kind TEXT NOT NULL CHECK (kind IN ('page', 'block')),
++    row_key TEXT NOT NULL CHECK (trim(row_key) <> ''),
++    PRIMARY KEY (kind, row_key)
++) WITHOUT ROWID;
++
+ -- Local writes keep a nested page paired with its `child_page` block: a page nested under a
+ -- page or a block names the block that shares its id, and no other page names a block. Remote
+ -- placement is paired by the Notes structure repair, because apply derives the parent columns
+diff --git a/crates/ganbaru-notes/src/sync_apply.rs b/crates/ganbaru-notes/src/sync_apply.rs
+index ceba88b8..58f23380 100644
+--- a/crates/ganbaru-notes/src/sync_apply.rs
++++ b/crates/ganbaru-notes/src/sync_apply.rs
+@@ -6,7 +6,8 @@
+ //! hook-derived columns (a page's `parent_type`, `parent_page_id`, and `parent_block_id`, a
+ //! block's `page_id` and `plain_text`), refreshes the reminder candidates of changed blocks,
+ //! invalidates the fingerprints of the search and link indexes so the next read rebuilds them,
+-//! queues history snapshots of the touched pages in `notes_page_history_pending`, and reports
++//! queues history snapshots of the touched pages in `notes_page_history_pending`, queues the
++//! changed page and block keys for structure repair in `notes_sync_repair_pending`, and reports
+ //! every changed row under its table name. It writes only device-local rows and hook-derived
+ //! columns, which sync never captures.
+ 
+@@ -76,12 +77,34 @@ pub async fn refresh_after_apply(
+     }
+     if table == PAGES_TABLE {
+         refresh_pages(conn, keys).await?;
++        queue_repair(conn, "page", keys).await?;
+     } else if table == BLOCKS_TABLE {
+         refresh_blocks(conn, keys).await?;
++        queue_repair(conn, "block", keys).await?;
+     }
+     invalidate_indexes(conn).await
+ }
+ 
++/// Records `keys` of `kind` (`page` or `block`) for the Notes structure repair, which clears
++/// them in the transaction that repairs them.
++async fn queue_repair(
++    conn: &mut SqliteConnection,
++    kind: &str,
++    keys: &[String],
++) -> Result<(), String> {
++    sqlx::query(
++        "INSERT INTO notes_sync_repair_pending (kind, row_key)
++         SELECT ?1, value FROM json_each(?2) WHERE trim(value) <> ''
++         ON CONFLICT (kind, row_key) DO NOTHING",
++    )
++    .bind(kind)
++    .bind(keys_json(keys)?)
++    .execute(&mut *conn)
++    .await
++    .map_err(|error| format!("queue Notes structure repair: {error}"))?;
++    Ok(())
++}
++
+ fn keys_json(keys: &[String]) -> Result<String, String> {
+     serde_json::to_string(keys).map_err(|error| format!("encode Notes sync keys: {error}"))
+ }
+diff --git a/crates/ganbaru-notes/src/sync_repair.rs b/crates/ganbaru-notes/src/sync_repair.rs
+index 01efa8f8..dc65e0ea 100644
+--- a/crates/ganbaru-notes/src/sync_repair.rs
++++ b/crates/ganbaru-notes/src/sync_repair.rs
+@@ -107,16 +107,79 @@ pub async fn repair_structure_on(
+         .begin()
+         .await
+         .map_err(|error| format!("begin Notes structure repair: {error}"))?;
+-    let mut report = StructureRepair::default();
+-    repair_pairing(&mut tx, page_ids, block_ids, &mut report).await?;
+-    repair_blocks(&mut tx, block_ids, &mut report).await?;
+-    repair_page_nesting(&mut tx, page_ids, block_ids, &mut report).await?;
++    let report = repair_keys(&mut tx, page_ids, block_ids).await?;
++    tx.commit()
++        .await
++        .map_err(|error| format!("commit Notes structure repair: {error}"))?;
++    Ok(report)
++}
++
++/// Whether `notes_sync_repair_pending` holds keys still to repair.
++pub async fn has_pending(pool: &SqlitePool) -> Result<bool, String> {
++    sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM notes_sync_repair_pending)")
++        .fetch_one(pool)
++        .await
++        .map_err(|error| format!("check pending Notes structure repair: {error}"))
++}
++
++/// Repairs the structure around every key in `notes_sync_repair_pending` and clears those keys
++/// in the same transaction, so a failed repair keeps them for the next call.
++pub async fn repair_pending(pool: &SqlitePool) -> Result<StructureRepair, String> {
++    let mut conn = pool
++        .acquire()
++        .await
++        .map_err(|error| format!("acquire Notes structure repair connection: {error}"))?;
++    repair_pending_on(&mut conn).await
++}
++
++/// [`repair_pending`] on one connection.
++pub async fn repair_pending_on(conn: &mut SqliteConnection) -> Result<StructureRepair, String> {
++    let mut tx = conn
++        .begin()
++        .await
++        .map_err(|error| format!("begin Notes structure repair: {error}"))?;
++    let pending: Vec<(String, String)> = sqlx::query_as(
++        "SELECT kind, row_key FROM notes_sync_repair_pending ORDER BY kind, row_key",
++    )
++    .fetch_all(&mut *tx)
++    .await
++    .map_err(|error| format!("load pending Notes structure repair: {error}"))?;
++    if pending.is_empty() {
++        return Ok(StructureRepair::default());
++    }
++    let (pages, blocks): (Vec<_>, Vec<_>) =
++        pending.into_iter().partition(|(kind, _)| kind == "page");
++    let pages: Vec<String> = pages.into_iter().map(|(_, key)| key).collect();
++    let blocks: Vec<String> = blocks.into_iter().map(|(_, key)| key).collect();
++    let report = repair_keys(&mut tx, &pages, &blocks).await?;
++    sqlx::query(
++        "DELETE FROM notes_sync_repair_pending
++         WHERE (kind = 'page' AND row_key IN (SELECT value FROM json_each(?1)))
++            OR (kind = 'block' AND row_key IN (SELECT value FROM json_each(?2)))",
++    )
++    .bind(keys_json(&pages)?)
++    .bind(keys_json(&blocks)?)
++    .execute(&mut *tx)
++    .await
++    .map_err(|error| format!("clear pending Notes structure repair: {error}"))?;
+     tx.commit()
+         .await
+         .map_err(|error| format!("commit Notes structure repair: {error}"))?;
+     Ok(report)
+ }
+ 
++async fn repair_keys(
++    conn: &mut SqliteConnection,
++    page_ids: &[String],
++    block_ids: &[String],
++) -> Result<StructureRepair, String> {
++    let mut report = StructureRepair::default();
++    repair_pairing(conn, page_ids, block_ids, &mut report).await?;
++    repair_blocks(conn, block_ids, &mut report).await?;
++    repair_page_nesting(conn, page_ids, block_ids, &mut report).await?;
++    Ok(report)
++}
++
+ fn keys_json(keys: &[String]) -> Result<String, String> {
+     serde_json::to_string(keys).map_err(|error| format!("encode Notes repair keys: {error}"))
+ }
+diff --git a/crates/ganbaru-notes/src/tests/sync_structure.rs b/crates/ganbaru-notes/src/tests/sync_structure.rs
+index 1682e4a4..729f7df1 100644
+--- a/crates/ganbaru-notes/src/tests/sync_structure.rs
++++ b/crates/ganbaru-notes/src/tests/sync_structure.rs
+@@ -373,6 +373,67 @@ fn repair_nests_a_page_again_under_its_own_child_page_block() {
+     });
+ }
+ 
++#[test]
++fn a_failed_pending_repair_keeps_its_keys_and_the_next_pass_repairs_them() {
++    crate::test_block_on(async {
++        let pool = migrated_memory_pool().await;
++        nest_a_under_project_page_b(&pool).await;
++        set_applying(&pool, true).await;
++        sqlx::query(
++            "UPDATE notes_pages
++             SET parent_type = 'workspace', parent_page_id = NULL, child_block_id = NULL
++             WHERE id = ?",
++        )
++        .bind(PAGE_A)
++        .execute(&pool)
++        .await
++        .unwrap();
++        let mut conn = pool.acquire().await.unwrap();
++        refresh_after_apply(&mut conn, PAGES_TABLE, &[PAGE_A.to_string()])
++            .await
++            .unwrap();
++        drop(conn);
++        set_applying(&pool, false).await;
++        let pending = || async {
++            sqlx::query_scalar::<_, String>(
++                "SELECT kind || ':' || row_key FROM notes_sync_repair_pending ORDER BY kind, row_key",
++            )
++            .fetch_all(&pool)
++            .await
++            .unwrap()
++        };
++        assert_eq!(pending().await, vec![format!("page:{PAGE_A}")]);
++        assert!(crate::sync_repair::has_pending(&pool).await.unwrap());
++
++        sqlx::query(
++            "CREATE TEMP TRIGGER fail_repair BEFORE UPDATE ON notes_pages
++             BEGIN SELECT RAISE(ABORT, 'repair blocked'); END",
++        )
++        .execute(&pool)
++        .await
++        .unwrap();
++        let failed = crate::sync_repair::repair_pending(&pool).await;
++        assert!(failed.unwrap_err().contains("repair blocked"));
++        assert_eq!(pending().await, vec![format!("page:{PAGE_A}")]);
++        assert_eq!(page_nesting(&pool, PAGE_A).await.0, "workspace");
++
++        sqlx::query("DROP TRIGGER temp.fail_repair")
++            .execute(&pool)
++            .await
++            .unwrap();
++        let report = crate::sync_repair::repair_pending(&pool).await.unwrap();
++        assert_eq!(report.paired_pages, vec![PAGE_A.to_string()]);
++        assert!(pending().await.is_empty());
++        assert_eq!(page_nesting(&pool, PAGE_A).await.0, "page_id");
++        assert!(
++            crate::sync_repair::repair_pending(&pool)
++                .await
++                .unwrap()
++                .is_empty()
++        );
++    });
++}
++
+ #[test]
+ fn a_page_moved_out_of_its_parent_is_not_nested_again() {
+     crate::test_block_on(async {
+diff --git a/crates/ganbaru-sync/src/manifest/vault/notes.rs b/crates/ganbaru-sync/src/manifest/vault/notes.rs
+index c2485807..0356382b 100644
+--- a/crates/ganbaru-sync/src/manifest/vault/notes.rs
++++ b/crates/ganbaru-sync/src/manifest/vault/notes.rs
+@@ -561,6 +561,7 @@ pub const DOMAIN: DomainManifest = DomainManifest {
+         device("notes_project_history_bundle_references"),
+         device("notes_project_history_dirty"),
+         device("notes_project_history_versions"),
++        device("notes_sync_repair_pending"),
+         device("notes_undo_state"),
+     ],
+     engine: &[],

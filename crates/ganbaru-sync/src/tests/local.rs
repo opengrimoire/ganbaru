@@ -394,16 +394,17 @@ fn restore_copies_device_state_onto_carried_rows_and_drops_orphans() {
         let first = restore_local_state(&mut staged, manifest, &live)
             .await
             .unwrap();
-        // Two fixture marks, the Music soundscape and Focus execution states, and the execution
-        // environment of each of the twelve working folders every vault seeds.
-        assert_eq!(first.local_rows, 16);
+        // Two fixture marks, the Music soundscape and Focus execution states, the Notes history
+        // settings and maintenance state, and the execution environment of each of the twelve
+        // working folders every vault seeds.
+        assert_eq!(first.local_rows, 18);
         assert_eq!(first.repaired, 1);
         // A retry after a failure later in the replacement restores the same rows again.
         let second = restore_local_state(&mut staged, manifest, &live)
             .await
             .unwrap();
         std::fs::remove_file(&live).unwrap();
-        assert_eq!(second.local_rows, 16);
+        assert_eq!(second.local_rows, 18);
 
         let marks: Vec<(String, i64)> =
             sqlx::query_as("SELECT item_id, mark FROM fixture_item_marks ORDER BY item_id")

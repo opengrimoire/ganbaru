@@ -14,6 +14,17 @@ use std::collections::HashSet;
 
 const TRASH_RETENTION_DAYS: i64 = 7;
 
+/// Sets `in_trash` (first bind) of the `child_page` block of a page (second bind). Showing the
+/// block requires the page to be nested through it, so a moved-out page never shows the block
+/// it left behind, wherever that block is parked.
+const PAGE_BLOCK_VISIBILITY_SQL: &str = "UPDATE notes_blocks
+     SET in_trash = ?1,
+         last_edited_time = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+     WHERE id = ?2 AND type = 'child_page'
+       AND (?1 = 1 OR EXISTS (
+           SELECT 1 FROM notes_pages WHERE id = ?2 AND child_block_id = ?2
+       ))";
+
 pub(super) type PageParentColumns = (String, Option<String>, Option<String>, Option<String>);
 
 pub async fn move_page(
@@ -261,10 +272,23 @@ pub async fn permanently_delete_page(
             FROM notes_blocks AS child_block
             JOIN page_subtree AS parent ON child_block.page_id = parent.id
             WHERE child_block.type = 'child_page' AND parent.depth < ?
+              AND EXISTS (
+                  SELECT 1 FROM notes_pages AS nested
+                  WHERE nested.id = child_block.id AND nested.child_block_id = child_block.id
+              )
+            UNION
+            SELECT row_page.id, parent.depth + 1
+            FROM notes_pages AS row_page
+            JOIN notes_data_sources AS source ON source.id = row_page.parent_data_source_id
+            JOIN notes_databases AS db ON db.id = source.database_id
+            JOIN notes_blocks AS db_block ON db_block.id = db.block_id
+            JOIN page_subtree AS parent ON db_block.page_id = parent.id
+            WHERE parent.depth < ?
          )
          SELECT DISTINCT id FROM page_subtree ORDER BY id ASC",
     )
     .bind(page_id)
+    .bind(crate::structure::MAX_CONTENT_WALK_DEPTH)
     .bind(crate::structure::MAX_CONTENT_WALK_DEPTH)
     .bind(crate::structure::MAX_CONTENT_WALK_DEPTH)
     .bind(crate::structure::MAX_CONTENT_WALK_DEPTH)
@@ -292,11 +316,24 @@ pub async fn permanently_delete_page(
             FROM notes_blocks AS child_block
             JOIN page_subtree AS parent ON child_block.page_id = parent.id
             WHERE child_block.type = 'child_page' AND parent.depth < ?
+              AND EXISTS (
+                  SELECT 1 FROM notes_pages AS nested
+                  WHERE nested.id = child_block.id AND nested.child_block_id = child_block.id
+              )
+            UNION
+            SELECT row_page.id, parent.depth + 1
+            FROM notes_pages AS row_page
+            JOIN notes_data_sources AS source ON source.id = row_page.parent_data_source_id
+            JOIN notes_databases AS db ON db.id = source.database_id
+            JOIN notes_blocks AS db_block ON db_block.id = db.block_id
+            JOIN page_subtree AS parent ON db_block.page_id = parent.id
+            WHERE parent.depth < ?
          )
          DELETE FROM notes_blocks
          WHERE type = 'child_page' AND id IN (SELECT id FROM page_subtree)",
     )
     .bind(page_id)
+    .bind(crate::structure::MAX_CONTENT_WALK_DEPTH)
     .bind(crate::structure::MAX_CONTENT_WALK_DEPTH)
     .bind(crate::structure::MAX_CONTENT_WALK_DEPTH)
     .bind(crate::structure::MAX_CONTENT_WALK_DEPTH)
@@ -322,11 +359,24 @@ pub async fn permanently_delete_page(
             FROM notes_blocks AS child_block
             JOIN page_subtree AS parent ON child_block.page_id = parent.id
             WHERE child_block.type = 'child_page' AND parent.depth < ?
+              AND EXISTS (
+                  SELECT 1 FROM notes_pages AS nested
+                  WHERE nested.id = child_block.id AND nested.child_block_id = child_block.id
+              )
+            UNION
+            SELECT row_page.id, parent.depth + 1
+            FROM notes_pages AS row_page
+            JOIN notes_data_sources AS source ON source.id = row_page.parent_data_source_id
+            JOIN notes_databases AS db ON db.id = source.database_id
+            JOIN notes_blocks AS db_block ON db_block.id = db.block_id
+            JOIN page_subtree AS parent ON db_block.page_id = parent.id
+            WHERE parent.depth < ?
          )
          DELETE FROM notes_pages
          WHERE id IN (SELECT id FROM page_subtree)",
     )
     .bind(page_id)
+    .bind(crate::structure::MAX_CONTENT_WALK_DEPTH)
     .bind(crate::structure::MAX_CONTENT_WALK_DEPTH)
     .bind(crate::structure::MAX_CONTENT_WALK_DEPTH)
     .bind(crate::structure::MAX_CONTENT_WALK_DEPTH)
@@ -471,22 +521,19 @@ pub(super) async fn move_page_to_workspace_parent(
     Ok(())
 }
 
+/// Hides or shows the `child_page` block of `page_id`. Only a page nested through that block
+/// shows it; the block a moved-out page left behind stays in the trash.
 pub(super) async fn set_root_child_page_block_visibility(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     page_id: &str,
     visible: bool,
 ) -> Result<(), String> {
-    sqlx::query(
-        "UPDATE notes_blocks
-         SET in_trash = ?,
-             last_edited_time = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-         WHERE id = ? AND type = 'child_page'",
-    )
-    .bind(if visible { 0_i64 } else { 1_i64 })
-    .bind(page_id)
-    .execute(&mut **tx)
-    .await
-    .map_err(|e| format!("sync restored notes child page block: {e}"))?;
+    sqlx::query(PAGE_BLOCK_VISIBILITY_SQL)
+        .bind(if visible { 0_i64 } else { 1_i64 })
+        .bind(page_id)
+        .execute(&mut **tx)
+        .await
+        .map_err(|e| format!("sync restored notes child page block: {e}"))?;
     Ok(())
 }
 
@@ -513,6 +560,18 @@ pub(super) async fn load_external_child_page_block_parents(
             FROM notes_blocks AS child_block
             JOIN page_subtree AS parent ON child_block.page_id = parent.id
             WHERE child_block.type = 'child_page' AND parent.depth < ?
+              AND EXISTS (
+                  SELECT 1 FROM notes_pages AS nested
+                  WHERE nested.id = child_block.id AND nested.child_block_id = child_block.id
+              )
+            UNION
+            SELECT row_page.id, parent.depth + 1
+            FROM notes_pages AS row_page
+            JOIN notes_data_sources AS source ON source.id = row_page.parent_data_source_id
+            JOIN notes_databases AS db ON db.id = source.database_id
+            JOIN notes_blocks AS db_block ON db_block.id = db.block_id
+            JOIN page_subtree AS parent ON db_block.page_id = parent.id
+            WHERE parent.depth < ?
          )
          SELECT DISTINCT block.page_id,
                          block.parent_type,
@@ -524,6 +583,7 @@ pub(super) async fn load_external_child_page_block_parents(
            AND block.page_id NOT IN (SELECT id FROM page_subtree)",
     )
     .bind(page_id)
+    .bind(crate::structure::MAX_CONTENT_WALK_DEPTH)
     .bind(crate::structure::MAX_CONTENT_WALK_DEPTH)
     .bind(crate::structure::MAX_CONTENT_WALK_DEPTH)
     .bind(crate::structure::MAX_CONTENT_WALK_DEPTH)
@@ -581,21 +641,16 @@ pub async fn archive_page(
     if result.rows_affected() == 0 {
         return Err("notes page not found".to_string());
     }
-    sqlx::query(
-        "UPDATE notes_blocks
-         SET in_trash = ?,
-             last_edited_time = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-         WHERE id = ? AND type = 'child_page'",
-    )
-    .bind(if root_child_page_block_visible {
-        0_i64
-    } else {
-        1_i64
-    })
-    .bind(page_id)
-    .execute(&mut *tx)
-    .await
-    .map_err(|e| format!("archive notes child page block: {e}"))?;
+    sqlx::query(PAGE_BLOCK_VISIBILITY_SQL)
+        .bind(if root_child_page_block_visible {
+            0_i64
+        } else {
+            1_i64
+        })
+        .bind(page_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| format!("archive notes child page block: {e}"))?;
     if let Some(parent) = child_parent {
         touch_parent_block(&mut tx, &parent).await?;
         touch_page(&mut tx, &parent.page_id).await?;

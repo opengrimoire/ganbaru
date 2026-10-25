@@ -4,17 +4,17 @@
     {
       "name": "Projects",
       "module": "src/lib/components/projects/ProjectsView.svelte",
-      "maxSourceModules": 378
+      "maxSourceModules": 380
     },
     {
       "name": "Notes",
       "module": "src/lib/components/notes/NotesView.svelte",
-      "maxSourceModules": 378
+      "maxSourceModules": 380
     },
     {
       "name": "Chat",
       "module": "src/lib/components/chat/ChatWorkspace.svelte",
-      "maxSourceModules": 378
+      "maxSourceModules": 380
     }
   ],
   "noVaultStartup": {

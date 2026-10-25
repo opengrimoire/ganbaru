@@ -965,7 +965,7 @@ fn only_the_anchor_sequences_authorization_entries() {
             .await
             .expect_err("a member cannot sequence");
         assert!(
-            error.contains(&format!("{:?}", ProposalRejection::NotAnchor)),
+            error.contains(&ProposalRejection::NotAnchor.to_string()),
             "{error}"
         );
         assert_eq!(phone.stored().await, before);

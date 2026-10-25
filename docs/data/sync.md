@@ -2,7 +2,7 @@
 
 **Status: Partial.** The vault runs in mixed mode. Quick notes, portable preferences, user themes, contacts, the Music library, Projects with working folder bindings, Calendar, distraction rules, daily distraction usage totals, distraction block history, and closed Focus runs with device Focus activity replicate concurrently between linked devices as signed operations through the coordinator desktop, with conflicts and recovery entries where the domain surfaces them (contacts resolve silently by fixed precedence); this is implemented in source. Every other domain keeps single-writer whole-vault handoff: secure LAN pairing, one administration desktop, explicit write ownership, and read-only refresh. Physical multi-device acceptance is pending for both. Concurrent replication of the remaining domains, Notes text and tree merging, anchored authority with LAN peer exchange, operation encryption, and delivery beyond the LAN are planned.
 
-This contract links one person's devices; multi-person sharing is later work. The phone must provide full offline access to portable Notes, Projects, Calendar, and other synchronized content. Focus execution has its own controller and evidence rules in [Focus authority](../algorithms/pomodoro/focus-authority.md).
+This contract links one person's devices; multi-person sharing is later work. The phone must provide full offline access to portable Notes, Projects, Calendar, and other synchronized content. Each device runs its own Focus sessions with no controller ownership; execution and evidence rules live in [Focus authority](../algorithms/pomodoro/focus-authority.md).
 
 Related documents: [Sync engine decision](../architecture/decisions/sync-engine.md) explains why the engine is built this way, [Sync topology and authority](../architecture/decisions/sync-topology-and-authority.md) why authority is ordered by one anchor per space, [Sync merge rules](../algorithms/sync/README.md) owns merge semantics and worked examples, and [Sync schema](schema/sync.md) owns the engine tables.
 
@@ -211,7 +211,7 @@ Authoritative connections already use WAL with `synchronous=FULL`, because WAL w
 Valid concurrent operations converge regardless of delivery order; rejecting whichever arrives second is insufficient.
 
 - Independent fields merge. Concurrent values for one scalar keep alternatives, a deterministic displayed value, and a visible resolution action.
-- Calendar start, end, timezone, and recurrence form one coupled value. A conflict suspends automatic occurrence activation until resolved, while reminders and Android alarms follow the winning value.
+- Calendar start, end, timezone, and recurrence form one coupled value. A conflict suspends automatic occurrence activation until resolved, while reminders and Android alarms follow the winning value. A background Android sync pass runs without the app, so reminders, Android alarms, and Guardian rules it changes refresh when the app next opens; until then Guardian keeps enforcing the rules it last applied.
 - Notes and project placement use stable identities, a parent reference, and an order key per row. Cycles and rows past a maximum depth are repaired deterministically from merge state, as described in [Trees and acyclic edge sets](../algorithms/sync/README.md#trees-and-acyclic-edge-sets), instead of a [replicated move log](https://martin.kleppmann.com/papers/move-op.pdf) that every replica would have to undo and replay in one order.
 - Deletion creates tombstones. Concurrent edits stay recoverable in Trash or conflict recovery, and old operations never silently restore deleted content.
 - Database property type changes keep incompatible values for resolution.
@@ -251,7 +251,7 @@ Vault replacement must fence the generation across processes, not only within on
 
 ### Settings and Android delivery
 
-Onboarding and Settings will show linked devices, connection method, last successful sync, pending changes, unavailable assets, conflicts, recovery status, focus controller, anchor, and relay configuration, with pause, retry, removal, and recovery export.
+Onboarding and Settings will show linked devices, connection method, last successful sync, pending changes, unavailable assets, conflicts, recovery status, anchor, and relay configuration, with pause, retry, removal, and recovery export.
 
 The sync status already carries the network class (local or overlay) and address of the coordinator a linked device last reached in this app run, and the degraded reasons the device can detect: Android background and standby restrictions, a connection refused because local network access is denied, and a Linux firewall that blocks the coordinator listener or, on a linked desktop whose browse found nothing, may block discovery. Settings shows each reason with its recovery action where the app has one.
 

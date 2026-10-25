@@ -67,6 +67,8 @@ Secrets are different. Provider credentials live behind operating-system credent
 
 Sync writer keys are per installation and per vault. Desktop stores them in the operating-system keyring; Android stores them in private application files, with the same protection as the person key, until Keystore wrapping is implemented. Neither location is inside the vault, so writer keys never enter snapshots, backups, or device transfers. A restored or copied database is detected and gets a new writer instead of reusing an old key's sequence.
 
+Sync device and admin keys follow the same per-installation, per-vault rule and are never copied between devices; only desktops hold admin keys. The recovery seed, which derives the recovery admin key that can promote a desktop to admin, stays in the desktop keyring only until the user confirms saving the recovery kit, then is deleted, so afterwards only the kit the user keeps can sign with it. Using the kit derives the key in memory for one proposal and never stores it.
+
 The device linking TLS key follows the same rule. Desktop moves it from the private pairing state file into the operating-system keyring the first time linking needs it, and keeps it in the private file only when no keyring accepts it, so keyring-less Linux desktops can still link. Android keeps it in the private file until Keystore wrapping is implemented. A key that disappears from the keyring is never silently replaced while peers pin this device, because a new certificate would break every link; the device reports the problem and is relinked by the user.
 
 ## Future synchronization encryption

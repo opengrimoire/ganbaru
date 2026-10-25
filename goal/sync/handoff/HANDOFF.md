@@ -53,15 +53,16 @@ Updated at the end of the cloud session (2026-10-25). The three earlier in-fligh
 ## In-flight branches (pushed to origin)
 
 1. `feat/sync-notes-databases`: milestone 8 step 4 (brief `briefs/m8-step-4-brief.md`, progress `progress/milestone-8-step-4-progress.md`). Head 54e48d26: step 3 follow-ups (a666f5ab, e9ed247a), the step 4 tables (6da2e333), a row parent fix (bd05f22c), and a merge of feat/sync afdcb488 (manifest 16 expected; check that its migration still sorts last). Its agent was stopped while running the final check list after that merge; no uncommitted work. Next: rerun the brief's full check list, finish the progress entry, fresh Opus review, land.
-2. `feat/sync-hook-concurrent-groups`: engine follow-up 5 (brief `briefs/engine-fu5-brief.md`, progress `progress/engine-fu5-progress.md`). Head e3b653e8, all checks passed, no manifest or wire change. Its review was stopped before it reported. Next: fresh Opus review (the review prompt focus: determinism, crash safety, capture semantics, validation, tests), land. It must land before milestone 9 step 9, which uses its `settled_groups` and `settle` hook methods to settle the concurrent inherit versus explicit approval override case (see `final-report-notes.md`).
+2. `feat/sync-hook-concurrent-groups`: engine follow-up 5 (brief `briefs/engine-fu5-brief.md`, progress `progress/engine-fu5-progress.md`). Head e3b653e8, all checks passed, no manifest or wire change. A fresh review returned "fix first": the fix round is written in `briefs/engine-fu5-fix-message.md` and has not started (settles on devices that cannot seal, settles mid-chain, CHECK and derived errors aborting apply, docs on monotonic settles). Next: the fix round, a delta review, land.
+3. `feat/sync-android-keystore`: milestone 11 step 7, cut from feat/sync a6a0ca59 with no commits yet (its agent was stopped while reading). Start it from `briefs/m11-step-7-brief.md`. It must land before milestone 9 step 9, which uses its `settled_groups` and `settle` hook methods to settle the concurrent inherit versus explicit approval override case (see `final-report-notes.md`).
 
-Ready briefs not started: `briefs/m9-step-5-brief.md` (Chat timeline, with step 4 follow-ups) and `briefs/m11-step-7-brief.md` (Android Keystore, written for a host without the Android toolchain).
+Ready brief not started: `briefs/m9-step-5-brief.md` (Chat timeline, with step 4 follow-ups).
 
 Cloud host notes: `implementer-brief-cloud.md` is the brief used there (per-worktree Cargo target dirs with `CARGO_INCREMENTAL=0`, never renamed or shared; disk was the binding limit). Recommended scheduling: keep the engine track running continuously (it is the longest chain) and alternate Chat and Notes steps in the second implementer slot.
 
 ## Next steps in order
 
-1. Review and land the two in-flight branches above.
+1. Finish, review, and land the in-flight branches above (step 7 may run beside the others; at most two implementers).
 2. Milestone 9 steps 5 to 9 and the docs part of 10, one at a time on the `chat` track.
 3. Milestone 8 steps 5 to 8 on the `domain` track, after step 4 lands.
 4. On the `engine` track, serially: milestone 11 steps 7 to 10 (step 9 uses the internal Opus security review, a user decision), then milestone 10 steps 5 to 7. Engine follow-up 5 must land before milestone 9 step 9.

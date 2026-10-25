@@ -21,6 +21,7 @@ mod holds;
 mod local;
 mod local_assets;
 mod music;
+mod notes;
 mod owned;
 mod preferences;
 mod projects;

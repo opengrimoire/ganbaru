@@ -153,6 +153,46 @@ pub async fn copy_page_history_blocks(
     load_blocks_by_ids(pool, copied_root_ids).await
 }
 
+/// History reason of snapshots taken for pages another device changed.
+pub const REMOTE_CHANGE_REASON: &str = "remote_change";
+
+/// Most queued pages one flush snapshots, so a large apply spreads its snapshots over flushes.
+const MAX_PENDING_SNAPSHOTS_PER_FLUSH: i64 = 64;
+
+/// Takes the history snapshots sync queued in `notes_page_history_pending` for pages another
+/// device changed, oldest first and at most [`MAX_PENDING_SNAPSHOTS_PER_FLUSH`] per call. Each
+/// page is snapshotted and dequeued in one transaction. Returns how many pages were dequeued.
+pub async fn flush_pending_remote_snapshots(pool: &SqlitePool) -> Result<i64, String> {
+    let page_ids: Vec<String> = sqlx::query_scalar(
+        "SELECT page_id FROM notes_page_history_pending
+         ORDER BY queued_at, page_id LIMIT ?",
+    )
+    .bind(MAX_PENDING_SNAPSHOTS_PER_FLUSH)
+    .fetch_all(pool)
+    .await
+    .map_err(|e| format!("list queued notes page history snapshots: {e}"))?;
+    let mut flushed = 0_i64;
+    for page_id in page_ids {
+        let mut tx = pool
+            .begin()
+            .await
+            .map_err(|e| format!("begin queued notes page history snapshot: {e}"))?;
+        record_page_snapshot_tx(&mut tx, &page_id, REMOTE_CHANGE_REASON)
+            .await
+            .map_err(|e| format!("snapshot notes page {page_id} changed on another device: {e}"))?;
+        sqlx::query("DELETE FROM notes_page_history_pending WHERE page_id = ?")
+            .bind(&page_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| format!("dequeue notes page history snapshot: {e}"))?;
+        tx.commit()
+            .await
+            .map_err(|e| format!("commit queued notes page history snapshot: {e}"))?;
+        flushed += 1;
+    }
+    Ok(flushed)
+}
+
 pub async fn record_page_snapshot_tx(
     tx: &mut Transaction<'_, Sqlite>,
     page_id: &str,

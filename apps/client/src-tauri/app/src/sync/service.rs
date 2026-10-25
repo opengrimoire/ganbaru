@@ -1216,6 +1216,7 @@ impl ServiceState {
         }
         let applied = session.apply_ready(&mut self.writer).await?;
         session.report(applied.tables, &applied.notices).await;
+        session.repair_notes(&applied.notices).await;
         self.applied = ApplyMark {
             stored: Some(stored),
             blocked_at: applied.blocked_at,
@@ -1459,6 +1460,55 @@ impl<'a, H: SyncHost> Session<'a, H> {
         if imported.is_some_and(|report| report.pending_captures) {
             let applied = self.apply_ready(writer).await?;
             self.report(applied.tables, &applied.notices).await;
+            self.repair_notes(&applied.notices).await;
+        }
+        Ok(())
+    }
+
+    /// Repairs the Notes structure around the Notes rows an apply changed, on a device that may
+    /// write Notes. The repair is an ordinary local transaction, so its changes seal and
+    /// replicate like an edit. A failed repair is logged and retried after the next apply that
+    /// changes the same rows, so it never stops the exchange.
+    async fn repair_notes(&self, notices: &[ChangeNotice]) {
+        if let Err(error) = self.try_repair_notes(notices).await {
+            eprintln!("repair notes structure: {error}");
+        }
+    }
+
+    async fn try_repair_notes(&self, notices: &[ChangeNotice]) -> Result<(), String> {
+        let keys = |table: &str| -> Vec<String> {
+            notices
+                .iter()
+                .filter(|notice| notice.topic == table)
+                .map(|notice| notice.key.clone())
+                .collect()
+        };
+        let pages = keys(ganbaru_sync::manifest::vault::notes::PAGES.name);
+        let blocks = keys(ganbaru_sync::manifest::vault::notes::BLOCKS.name);
+        if pages.is_empty() && blocks.is_empty() {
+            return Ok(());
+        }
+        let config_dir = self.host.config_dir()?;
+        let status = crate::vault::ownership::active_status_in(&config_dir, self.host.ownership())?;
+        if !status.can_write_domain(ganbaru_sync::manifest::vault::notes::DOMAIN_NAME) {
+            return Ok(());
+        }
+        let repair =
+            ganbaru_notes::sync_repair::repair_structure(&self.pool, &pages, &blocks).await?;
+        if !repair.unplaced_blocks.is_empty() {
+            eprintln!(
+                "notes structure repair left {} block cycles without a page",
+                repair.unplaced_blocks.len()
+            );
+        }
+        if !repair.is_empty() {
+            let tables = vec![
+                ganbaru_sync::manifest::vault::notes::PAGES.name.to_string(),
+                ganbaru_sync::manifest::vault::notes::BLOCKS
+                    .name
+                    .to_string(),
+            ];
+            self.report(tables, &[]).await;
         }
         Ok(())
     }

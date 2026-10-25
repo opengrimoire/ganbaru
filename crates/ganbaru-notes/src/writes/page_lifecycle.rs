@@ -261,10 +261,19 @@ pub async fn permanently_delete_page(
             FROM notes_blocks AS child_block
             JOIN page_subtree AS parent ON child_block.page_id = parent.id
             WHERE child_block.type = 'child_page' AND parent.depth < ?
+            UNION
+            SELECT row_page.id, parent.depth + 1
+            FROM notes_pages AS row_page
+            JOIN notes_data_sources AS source ON source.id = row_page.parent_data_source_id
+            JOIN notes_databases AS db ON db.id = source.database_id
+            JOIN notes_blocks AS db_block ON db_block.id = db.block_id
+            JOIN page_subtree AS parent ON db_block.page_id = parent.id
+            WHERE parent.depth < ?
          )
          SELECT DISTINCT id FROM page_subtree ORDER BY id ASC",
     )
     .bind(page_id)
+    .bind(crate::structure::MAX_CONTENT_WALK_DEPTH)
     .bind(crate::structure::MAX_CONTENT_WALK_DEPTH)
     .bind(crate::structure::MAX_CONTENT_WALK_DEPTH)
     .bind(crate::structure::MAX_CONTENT_WALK_DEPTH)
@@ -292,11 +301,20 @@ pub async fn permanently_delete_page(
             FROM notes_blocks AS child_block
             JOIN page_subtree AS parent ON child_block.page_id = parent.id
             WHERE child_block.type = 'child_page' AND parent.depth < ?
+            UNION
+            SELECT row_page.id, parent.depth + 1
+            FROM notes_pages AS row_page
+            JOIN notes_data_sources AS source ON source.id = row_page.parent_data_source_id
+            JOIN notes_databases AS db ON db.id = source.database_id
+            JOIN notes_blocks AS db_block ON db_block.id = db.block_id
+            JOIN page_subtree AS parent ON db_block.page_id = parent.id
+            WHERE parent.depth < ?
          )
          DELETE FROM notes_blocks
          WHERE type = 'child_page' AND id IN (SELECT id FROM page_subtree)",
     )
     .bind(page_id)
+    .bind(crate::structure::MAX_CONTENT_WALK_DEPTH)
     .bind(crate::structure::MAX_CONTENT_WALK_DEPTH)
     .bind(crate::structure::MAX_CONTENT_WALK_DEPTH)
     .bind(crate::structure::MAX_CONTENT_WALK_DEPTH)
@@ -322,11 +340,20 @@ pub async fn permanently_delete_page(
             FROM notes_blocks AS child_block
             JOIN page_subtree AS parent ON child_block.page_id = parent.id
             WHERE child_block.type = 'child_page' AND parent.depth < ?
+            UNION
+            SELECT row_page.id, parent.depth + 1
+            FROM notes_pages AS row_page
+            JOIN notes_data_sources AS source ON source.id = row_page.parent_data_source_id
+            JOIN notes_databases AS db ON db.id = source.database_id
+            JOIN notes_blocks AS db_block ON db_block.id = db.block_id
+            JOIN page_subtree AS parent ON db_block.page_id = parent.id
+            WHERE parent.depth < ?
          )
          DELETE FROM notes_pages
          WHERE id IN (SELECT id FROM page_subtree)",
     )
     .bind(page_id)
+    .bind(crate::structure::MAX_CONTENT_WALK_DEPTH)
     .bind(crate::structure::MAX_CONTENT_WALK_DEPTH)
     .bind(crate::structure::MAX_CONTENT_WALK_DEPTH)
     .bind(crate::structure::MAX_CONTENT_WALK_DEPTH)
@@ -513,6 +540,14 @@ pub(super) async fn load_external_child_page_block_parents(
             FROM notes_blocks AS child_block
             JOIN page_subtree AS parent ON child_block.page_id = parent.id
             WHERE child_block.type = 'child_page' AND parent.depth < ?
+            UNION
+            SELECT row_page.id, parent.depth + 1
+            FROM notes_pages AS row_page
+            JOIN notes_data_sources AS source ON source.id = row_page.parent_data_source_id
+            JOIN notes_databases AS db ON db.id = source.database_id
+            JOIN notes_blocks AS db_block ON db_block.id = db.block_id
+            JOIN page_subtree AS parent ON db_block.page_id = parent.id
+            WHERE parent.depth < ?
          )
          SELECT DISTINCT block.page_id,
                          block.parent_type,
@@ -524,6 +559,7 @@ pub(super) async fn load_external_child_page_block_parents(
            AND block.page_id NOT IN (SELECT id FROM page_subtree)",
     )
     .bind(page_id)
+    .bind(crate::structure::MAX_CONTENT_WALK_DEPTH)
     .bind(crate::structure::MAX_CONTENT_WALK_DEPTH)
     .bind(crate::structure::MAX_CONTENT_WALK_DEPTH)
     .bind(crate::structure::MAX_CONTENT_WALK_DEPTH)

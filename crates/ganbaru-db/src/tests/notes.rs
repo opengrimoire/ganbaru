@@ -124,7 +124,7 @@ fn schema_keeps_notes_page_project_and_trash_owner_in_columns() {
         let pool = migrated_memory_pool().await;
         let notes_triggers: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM sqlite_schema
-             WHERE type = 'trigger' AND tbl_name LIKE 'notes_%'",
+             WHERE type = 'trigger' AND tbl_name LIKE 'notes_%' AND name NOT LIKE 'sync\\_%' ESCAPE '\\'",
         )
         .fetch_one(&pool)
         .await
@@ -1524,6 +1524,12 @@ const BEFORE_NOTES_SYNC_STRUCTURE: i64 = 20261024045821;
 /// The Notes structure preparation migration.
 pub(super) const NOTES_SYNC_STRUCTURE: i64 = 20261024075934;
 
+/// Last migration before Notes structure replication.
+const BEFORE_NOTES_STRUCTURE_REPLICATION: i64 = 20261025051154;
+
+/// The migration that makes Notes structure replicated.
+const NOTES_STRUCTURE_REPLICATION: i64 = 20261025091420;
+
 /// Every block type the Notes schema accepts.
 const FIXTURE_BLOCK_TYPES: [&str; 37] = [
     "paragraph",
@@ -1884,7 +1890,7 @@ fn fresh_vault_notes_blocks_store_split_content_and_order_keys() {
             );
         }
         let notes_triggers: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM sqlite_schema WHERE type = 'trigger' AND tbl_name IN ('notes_blocks', 'notes_pages', 'notes_folders')",
+            "SELECT COUNT(*) FROM sqlite_schema WHERE type = 'trigger' AND tbl_name IN ('notes_blocks', 'notes_pages', 'notes_folders') AND name NOT LIKE 'sync\\_%' ESCAPE '\\'",
         )
         .fetch_one(&pool)
         .await
@@ -1999,5 +2005,149 @@ fn fresh_vault_nested_pages_follow_their_child_page_block() {
             .await
             .unwrap();
         assert_eq!(pages, vec!["parent".to_string()]);
+    });
+}
+
+/// A page row as the replication migration test reads it back.
+type ReplicatedPageRow = (
+    String,
+    String,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    String,
+);
+
+/// A block row as the replication migration test reads it back.
+type ReplicatedBlockRow = (
+    String,
+    String,
+    Option<String>,
+    Option<String>,
+    String,
+    String,
+);
+
+#[test]
+fn notes_structure_replication_keeps_seeded_structure_and_adds_sync_state() {
+    super::block_on(async {
+        let pool =
+            super::helpers::memory_pool_migrated_through(BEFORE_NOTES_STRUCTURE_REPLICATION).await;
+        sqlx::raw_sql(
+            "INSERT INTO project_groups (id, name, order_key) VALUES ('group', 'G', 'a0');
+             INSERT INTO projects (id, group_id, name, order_key) VALUES ('project', 'group', 'P', 'a0');
+             INSERT INTO notes_folders (id, project_id, name) VALUES ('folder', 'project', 'F');
+             INSERT INTO notes_pages (id, parent_type, title, folder_id, created_time)
+                 VALUES ('parent', 'workspace', 'Parent', 'folder', '2026-10-01T00:00:00Z');
+             INSERT INTO notes_page_aliases (id, page_id, alias, normalized_alias)
+                 VALUES ('home', 'parent', 'Home', 'home');
+             INSERT INTO notes_blocks (id, page_id, parent_type, parent_page_id, type, plain_text, order_key)
+                 VALUES ('root', 'parent', 'page_id', 'parent', 'paragraph', 'root text', 'a0');
+             INSERT INTO notes_blocks (id, page_id, parent_type, parent_block_id, type, plain_text, order_key)
+                 VALUES ('nested', 'parent', 'block_id', 'root', 'paragraph', 'nested text', 'a0');",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let mut tx = pool.begin().await.unwrap();
+        sqlx::query(
+            "INSERT INTO notes_pages (id, parent_type, parent_page_id, child_block_id, title)
+             VALUES ('child', 'page_id', 'parent', 'child', 'Child')",
+        )
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO notes_blocks (id, page_id, parent_type, parent_page_id, type, order_key)
+             VALUES ('child', 'parent', 'page_id', 'parent', 'child_page', 'a1')",
+        )
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+
+        super::helpers::migrate_through(&pool, NOTES_STRUCTURE_REPLICATION)
+            .await
+            .unwrap();
+
+        let pages: Vec<ReplicatedPageRow> = sqlx::query_as(
+            "SELECT id, parent_type, parent_page_id, child_block_id, folder_id, created_time
+             FROM notes_pages ORDER BY id",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(pages.len(), 2);
+        assert_eq!(pages[0].0, "child");
+        assert_eq!(pages[0].1, "page_id");
+        assert_eq!(pages[0].2.as_deref(), Some("parent"));
+        assert_eq!(pages[0].3.as_deref(), Some("child"));
+        assert_eq!(pages[1].4.as_deref(), Some("folder"));
+        assert_eq!(pages[1].5, "2026-10-01T00:00:00Z");
+        let blocks: Vec<ReplicatedBlockRow> = sqlx::query_as(
+            "SELECT id, page_id, parent_page_id, parent_block_id, plain_text, order_key
+             FROM notes_blocks ORDER BY id",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            blocks
+                .iter()
+                .map(|block| (block.0.as_str(), block.1.as_str(), block.5.as_str()))
+                .collect::<Vec<_>>(),
+            vec![
+                ("child", "parent", "a1"),
+                ("nested", "parent", "a0"),
+                ("root", "parent", "a0")
+            ]
+        );
+        assert_eq!(blocks[1].3.as_deref(), Some("root"));
+        assert_eq!(blocks[1].4, "nested text");
+        assert_eq!(blocks[2].2.as_deref(), Some("parent"));
+        let names: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM notes_page_aliases")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(names, 1);
+
+        let pending: Option<i64> = sqlx::query_scalar(
+            "SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'notes_page_history_pending'",
+        )
+        .fetch_optional(&pool)
+        .await
+        .unwrap();
+        assert_eq!(pending, Some(1));
+        for table in [
+            "notes_local_users",
+            "notes_folders",
+            "notes_pages",
+            "notes_page_aliases",
+            "notes_blocks",
+        ] {
+            let sync_triggers: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM sqlite_schema
+                 WHERE type = 'trigger' AND tbl_name = ? AND name LIKE 'sync\\_%' ESCAPE '\\'",
+            )
+            .bind(table)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            assert_eq!(sync_triggers, 7, "{table}");
+        }
+        // Placement columns the Notes hook maintains carry no foreign key.
+        let page_keys: Vec<String> = sqlx::query_scalar(
+            "SELECT \"from\" FROM pragma_foreign_key_list('notes_pages') ORDER BY \"from\"",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert!(!page_keys.contains(&"parent_page_id".to_string()));
+        assert!(!page_keys.contains(&"parent_data_source_id".to_string()));
+        let violations: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM pragma_foreign_key_check")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(violations, 0);
     });
 }

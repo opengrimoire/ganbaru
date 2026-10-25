@@ -29,8 +29,10 @@ const SYNC_DIRECTORY: &str = "sync";
 /// The materialize hooks every sync engine of the app registers, so the service, a headless
 /// pass, and recovery run the same domain code.
 pub(crate) fn vault_hooks() -> Hooks {
-    crate::chat::sync::with_hooks(ganbaru_calendar::sync_apply::with_hooks(
-        crate::music::sync::with_hooks(ganbaru_sync::domains::vault_hooks()),
+    crate::chat::sync::with_hooks(ganbaru_notes::sync_apply::with_hooks(
+        ganbaru_calendar::sync_apply::with_hooks(crate::music::sync::with_hooks(
+            ganbaru_sync::domains::vault_hooks(),
+        )),
     ))
 }
 

@@ -50,18 +50,13 @@ async fn filter_pool() -> SqlitePool {
     {
         let tags = json!([{ "id": "tag", "name": "Tag", "color": "blue" }, { "id": "tag", "name": "Tag", "color": "blue" }]);
         let row_id = format!("60000000-0000-4000-8000-{index:012}");
-        insert_row_page(&pool, &row_id, DATA_SOURCE_A, title, json!({
+        insert_row_page_created_at(&pool, &row_id, DATA_SOURCE_A, title, Some("2026-09-30T12:00:00Z"), json!({
                 "Name": { "id": "title", "type": "title", "title": [{ "type": "text", "plain_text": title, "text": { "content": title, "link": null } }] },
                 "Amount's value": { "id": "amount", "type": "number", "number": amount },
                 "Due": { "id": "due", "type": "date", "date": if due.is_null() { Value::Null } else { json!({ "start": due, "end": null, "time_zone": null }) } },
                 "Done": { "id": "done", "type": "checkbox", "checkbox": checked },
                 "Tags": { "id": "tags", "type": "multi_select", "multi_select": tags }
             })).await;
-        sqlx::query("UPDATE notes_pages SET created_time = '2026-09-30T12:00:00Z' WHERE id = ?")
-            .bind(&row_id)
-            .execute(&pool)
-            .await
-            .unwrap();
     }
     pool
 }

@@ -1,9 +1,10 @@
 //! Chains of apply groups: a chain applies only once it is closed, repairs its groups need are
 //! kept across a restart between them and sealed once the chain applied or a cutoff ended it,
-//! chains open one at a time with repairs sealed between them, colliding chains of two writers
-//! end repaired on every replica, a replica that cannot seal defers nothing, deferred rows come
-//! back a bounded number at a time, and a hold for a newer manifest keeps a chain waiting
-//! instead of closing it.
+//! chains open one at a time with repairs sealed between them, in the order they were stored
+//! whole rather than by clock, one writer's back-to-back chains both apply, colliding chains of
+//! two writers end repaired on every replica, a replica that cannot seal defers nothing, even
+//! once its writer froze mid-chain, deferred rows come back a bounded number at a time through
+//! apply and seal, and a hold for a newer manifest keeps a chain waiting instead of closing it.
 
 use std::collections::BTreeSet;
 
@@ -12,8 +13,8 @@ use ganbaru_sync_contracts::bounds::MAX_OPERATIONS_PER_GROUP;
 use super::block_on;
 use super::exclusion::{deliver, edit};
 use super::groups::{
-    applied_seq, assert_converged, insert_keyed_item, insert_note, new_ops, notes_of, replicas,
-    reseal_chain, take,
+    applied_seq, assert_converged, flagged_ops, insert_keyed_item, insert_note, new_ops, notes_of,
+    replicas, reseal_chain, take,
 };
 use super::replica::{Replica, connection_from, converge, quoted};
 use crate::exclusion::take_stale;
@@ -22,9 +23,15 @@ use crate::{ApplyReport, HoldReason, StoreOutcome};
 /// Identity key the colliding items share.
 const CLASH: &str = "local:clash";
 
-/// Operations of a chain past the group bound that `replica` seals: one inserting the item
-/// `item` under [`CLASH`], then notes, each operation but the last marked as continuing.
+/// Operations of a chain one operation past the group bound that `replica` seals: one
+/// inserting the item `item` under [`CLASH`], then notes, each operation but the last marked as
+/// continuing.
 async fn clashing_chain(replica: &mut Replica, item: &str) -> Vec<Vec<u8>> {
+    clashing_chain_of(replica, item, MAX_OPERATIONS_PER_GROUP + 1).await
+}
+
+/// Operations of a chain like [`clashing_chain`] with `notes` operations of notes.
+async fn clashing_chain_of(replica: &mut Replica, item: &str, notes: usize) -> Vec<Vec<u8>> {
     let previous = replica
         .own_ops()
         .await
@@ -32,7 +39,7 @@ async fn clashing_chain(replica: &mut Replica, item: &str) -> Vec<Vec<u8>> {
         .expect("the replica has sealed");
     let known = replica.stored_vector().await;
     let mut edits = vec![insert_keyed_item(item, CLASH)];
-    edits.extend((0..=MAX_OPERATIONS_PER_GROUP).map(|index| insert_note(replica.index, index)));
+    edits.extend((0..notes).map(|index| insert_note(replica.index, index)));
     for sql in &edits {
         replica.exec(sql).await;
         assert_eq!(replica.seal().await.unwrap().sealed_ops, 1);
@@ -366,5 +373,228 @@ fn stale_rows_are_taken_back_a_bounded_number_at_a_time_in_order() {
             .collect();
         assert_eq!(rest, [(2, "row-b")]);
         assert_eq!(stale_rows(&mut replica).await, 0);
+    });
+}
+
+/// Flags of `chains` back-to-back chains of one writer, each one group past the group bound.
+fn chain_flags(chains: usize) -> Vec<bool> {
+    let mut chain = vec![true; MAX_OPERATIONS_PER_GROUP];
+    chain.push(false);
+    chain.repeat(chains)
+}
+
+#[test]
+fn a_writer_with_low_clocks_cannot_keep_another_chain_from_opening() {
+    block_on(async {
+        let mut replicas = replicas(3).await;
+        for (index, replica) in replicas.iter_mut().take(2).enumerate() {
+            replica.exec(&insert_note(index, 9_999)).await;
+        }
+        converge(&mut replicas).await;
+        // The hostile writer keeps its clocks low and sends a new chain each time the last one
+        // applied; the honest writer's clocks run ten seconds ahead of it.
+        let length = MAX_OPERATIONS_PER_GROUP + 1;
+        let hostile = flagged_ops(&mut replicas[0], &chain_flags(3)).await;
+        replicas[1].now_ms += 10_000;
+        let honest = flagged_ops(&mut replicas[1], &chain_flags(1)).await;
+        let writers = [replicas[0].writer(), replicas[1].writer()];
+        let receiver = &mut replicas[2];
+        receiver.now_ms += 10_000;
+        let starts = [
+            applied_seq(receiver, &writers[0]).await,
+            applied_seq(receiver, &writers[1]).await,
+        ];
+        let step = u64::try_from(length).unwrap();
+        let honest_end = starts[1] + step;
+        receiver.receive(&hostile[..length]).await;
+        receiver.now_ms += 1;
+        receiver.receive(&honest).await;
+
+        let mut sent = 1;
+        let mut honest_done_after = None;
+        for _ in 0..100 {
+            if sent < 3 && applied_seq(receiver, &writers[0]).await == starts[0] + step * sent {
+                receiver.now_ms += 1;
+                let next = usize::try_from(sent).unwrap() * length;
+                receiver.receive(&hostile[next..next + length]).await;
+                sent += 1;
+            }
+            let report = receiver.apply_once().await.unwrap();
+            let hostile_seq = applied_seq(receiver, &writers[0]).await;
+            let honest_seq = applied_seq(receiver, &writers[1]).await;
+            let hostile_between = (hostile_seq - starts[0]) % step != 0;
+            let honest_between = honest_seq > starts[1] && honest_seq < honest_end;
+            assert!(
+                !(hostile_between && honest_between),
+                "two chains are between groups at once"
+            );
+            if honest_seq == honest_end && honest_done_after.is_none() {
+                honest_done_after = Some(hostile_seq);
+            }
+            if !report.more && sent == 3 {
+                break;
+            }
+        }
+        assert_eq!(
+            honest_done_after,
+            Some(starts[0] + step),
+            "the honest chain opens once the hostile writer's first chain applied"
+        );
+        assert_eq!(
+            applied_seq(receiver, &writers[0]).await,
+            starts[0] + step * 3
+        );
+        assert_eq!(
+            notes_of(receiver, 0).await,
+            1 + 3 * i64::try_from(length).unwrap()
+        );
+        assert_eq!(
+            notes_of(receiver, 1).await,
+            1 + i64::try_from(length).unwrap()
+        );
+        receiver.check_invariants().await;
+    });
+}
+
+#[test]
+fn back_to_back_chains_of_one_writer_both_apply() {
+    block_on(async {
+        let mut replicas = replicas(2).await;
+        replicas[0].exec(&insert_note(0, 9_999)).await;
+        converge(&mut replicas).await;
+        let ops = flagged_ops(&mut replicas[0], &chain_flags(2)).await;
+        let writer = replicas[0].writer();
+        let receiver = &mut replicas[1];
+        let end = applied_seq(receiver, &writer).await + u64::try_from(ops.len()).unwrap();
+        receiver.receive(&ops).await;
+        let reports = receiver.apply_all().await.unwrap();
+        assert_eq!(
+            reports.iter().map(|report| report.applied).sum::<usize>(),
+            ops.len()
+        );
+        assert_eq!(applied_seq(receiver, &writer).await, end);
+        assert_eq!(
+            notes_of(receiver, 0).await,
+            1 + i64::try_from(ops.len()).unwrap()
+        );
+        assert_eq!(stale_rows(receiver).await, 0);
+        receiver.check_invariants().await;
+    });
+}
+
+#[test]
+fn stale_rows_past_one_write_are_taken_back_over_bounded_writes() {
+    block_on(async {
+        let mut replicas = replicas(2).await;
+        for index in 0..10 {
+            replicas[0].exec(&insert_note(0, index)).await;
+        }
+        replicas[0].seal().await.unwrap();
+        converge(&mut replicas).await;
+        let replica = &mut replicas[1];
+        let table = replica
+            .engine
+            .manifest()
+            .table_named("quick_notes")
+            .expect("the manifest replicates Quick notes")
+            .id
+            .0;
+        let bound = crate::apply::MAX_STALE_ROWS_PER_WRITE;
+        let listed = 2 * bound + 10;
+        // Real notes and rows that no longer exist are listed alike.
+        let keys = (0..10)
+            .map(|index| format!("note-0-{index:04}"))
+            .chain((10..listed).map(|index| format!("gone-{index:05}")));
+        let values: Vec<_> = keys
+            .map(|key| format!("({table}, {})", quoted(&key)))
+            .collect();
+        replica
+            .exec(&format!(
+                "INSERT INTO sync_stale_rows (table_id, row_key) VALUES {}",
+                values.join(", ")
+            ))
+            .await;
+        let before = replica.domain_dump().await;
+        let left = |taken: usize| i64::try_from(listed - taken).unwrap();
+
+        let report = replica.apply_once().await.unwrap();
+        assert!(report.more, "rows remain after the apply");
+        assert_eq!(stale_rows(replica).await, left(bound));
+        let sealed = replica.seal().await.unwrap();
+        assert!(sealed.more, "a seal reports the rows it left");
+        assert_eq!(stale_rows(replica).await, left(2 * bound));
+        let report = replica.apply_once().await.unwrap();
+        assert!(!report.more);
+        assert_eq!(stale_rows(replica).await, 0);
+        assert_eq!(replica.domain_dump().await, before);
+        replica.check_invariants().await;
+    });
+}
+
+#[test]
+fn a_frozen_local_writer_mid_chain_does_not_keep_other_chains_waiting() {
+    block_on(async {
+        let mut anchor = Replica::anchor(0, 317).await;
+        let mut first = Replica::new(1, 317).await;
+        let mut second = Replica::new(2, 317).await;
+        let mut member = Replica::new(3, 317).await;
+        for writer in [&mut first, &mut second] {
+            edit(writer, &insert_note(writer.index, 9_999)).await;
+            deliver(&mut anchor, writer).await;
+        }
+        deliver(&mut member, &mut anchor).await;
+        edit(&mut member, &insert_keyed_item("music-m", CLASH)).await;
+        deliver(&mut anchor, &mut member).await;
+        // Three groups, so the chain is still between groups once the removal applied.
+        let chain =
+            clashing_chain_of(&mut first, "music-a", 2 * MAX_OPERATIONS_PER_GROUP + 1).await;
+        let other = flagged_ops(&mut second, &chain_flags(1)).await;
+        let writers = [first.writer(), second.writer()];
+        let starts = [
+            applied_seq(&mut member, &writers[0]).await,
+            applied_seq(&mut member, &writers[1]).await,
+        ];
+        let ends = [
+            starts[0] + u64::try_from(chain.len()).unwrap(),
+            starts[1] + u64::try_from(other.len()).unwrap(),
+        ];
+
+        // The member applies the first group of a colliding chain and defers its repair.
+        member.receive(&chain).await;
+        let report = member.apply_once().await.unwrap();
+        assert_eq!(report.applied, MAX_OPERATIONS_PER_GROUP);
+        assert!(stale_rows(&mut member).await > 0);
+        member.receive(&other).await;
+
+        // The anchor removes the member's device, which freezes its writer mid-chain.
+        let device = member.device_id.clone();
+        anchor.remove(&device).await.unwrap();
+        anchor.apply_all().await.unwrap();
+        let known = member.stored_vector().await;
+        let entries = anchor.ops_since(&known).await;
+        member.receive(&entries).await;
+        let mut opened_beside = false;
+        for _ in 0..20 {
+            let before = applied_seq(&mut member, &writers[0]).await;
+            let other_before = applied_seq(&mut member, &writers[1]).await;
+            let report = member.apply_once().await.unwrap();
+            let other_after = applied_seq(&mut member, &writers[1]).await;
+            if before > starts[0] && before < ends[0] && other_before < other_after {
+                opened_beside = true;
+            }
+            if !report.more {
+                break;
+            }
+        }
+        assert!(member.device_removed().await);
+        assert!(
+            opened_beside,
+            "the other chain opens while the first is between groups"
+        );
+        for (index, writer) in writers.iter().enumerate() {
+            assert_eq!(applied_seq(&mut member, writer).await, ends[index]);
+        }
+        assert_eq!(stale_rows(&mut member).await, 0);
+        member.check_invariants().await;
     });
 }

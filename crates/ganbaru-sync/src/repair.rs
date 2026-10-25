@@ -341,7 +341,8 @@ async fn continues_through(
 /// Marks dirty every row whose reference may resolve differently because a referenced row, or
 /// a row redirecting to it, is dirty, and every row whose tombstone names a dirty row as its
 /// cause. The marking continues through referrers that are hidden or become shown, so a
-/// cascade reaches every descendant.
+/// cascade reaches every descendant. It is bounded by the rows reachable that way, not by a
+/// count: a row is planned with every row that follows it.
 pub(crate) async fn expand_references(
     engine: &Engine,
     conn: &mut SqliteConnection,

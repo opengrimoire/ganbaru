@@ -5,6 +5,7 @@
 //! hold back other writers, defer repairs for good, grow a group past its bounds, or show part
 //! of a chain that never closes.
 
+use std::collections::BTreeSet;
 use std::time::Instant;
 
 use ganbaru_sync_contracts::bounds::{
@@ -758,3 +759,49 @@ fn take_back_is_measured() {
 
 /// Rows a receiver keeps deferred for a later engine write.
 const DEFERRED_ROWS: &str = "SELECT count(*) FROM sync_stale_rows";
+
+#[test]
+fn a_planned_row_brings_every_row_that_references_it_whatever_the_count() {
+    block_on(async {
+        let mut replicas = shared_tasks(2).await;
+        replicas[0].exec(&move_and_nest_sql()).await;
+        replicas[0].seal().await.unwrap();
+        converge(&mut replicas).await;
+        let replica = &mut replicas[1];
+        let table = replica
+            .engine
+            .manifest()
+            .table_named("project_tasks")
+            .expect("the manifest replicates project tasks")
+            .id;
+        let mut batch = crate::merge::Batch::load(&mut replica.conn, replica.ctx.space)
+            .await
+            .unwrap();
+        batch.dirty.insert((table, PARENT.to_owned()));
+        let mut visibility = crate::visibility::Visibility::load(
+            &replica.engine,
+            &mut replica.conn,
+            &mut batch.dirty,
+        )
+        .await
+        .unwrap();
+        crate::repair::expand_references(
+            &replica.engine,
+            &mut replica.conn,
+            &mut batch,
+            &mut visibility,
+        )
+        .await
+        .unwrap();
+        // One listed row plans every child nested under it, past any count it was taken by.
+        let mut expected: BTreeSet<_> = (0..CHILDREN).map(|index| (table, child(index))).collect();
+        expected.insert((table, PARENT.to_owned()));
+        let planned: BTreeSet<_> = batch
+            .dirty
+            .iter()
+            .filter(|(dirty, _)| *dirty == table)
+            .cloned()
+            .collect();
+        assert_eq!(planned, expected);
+    });
+}

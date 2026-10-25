@@ -168,3 +168,45 @@ fn a_removed_calendar_restores_its_edited_events_into_local() {
         pair.finish().await;
     });
 }
+
+#[test]
+fn a_removed_calendar_restores_an_event_added_to_it_concurrently_into_local() {
+    block_on(async {
+        let mut pair = Pair::new("calendar-recovery-calendar-add").await;
+        publish_local_calendar(&mut pair).await;
+        pair.hub_edit("INSERT INTO calendars (id, name) VALUES ('calendar-1', 'Team')")
+            .await;
+        pair.converge().await;
+        pair.hub_edit("DELETE FROM calendars WHERE id = 'calendar-1'")
+            .await;
+        pair.phone_edit(&event_sql("event-added", "calendar-1"))
+            .await;
+        pair.converge().await;
+        assert!(
+            pair.texts("SELECT id FROM calendar_events".to_string())
+                .await
+                .is_empty()
+        );
+        assert_eq!(pair.offers().await, ["calendar-1"]);
+
+        let event = pair.restore(&CALENDARS, "calendar-1").await;
+        assert!(
+            pair.texts("SELECT id FROM calendars WHERE id = 'calendar-1'".to_string())
+                .await
+                .is_empty()
+        );
+        assert_eq!(
+            pair.texts("SELECT title || '|' || calendar_id FROM calendar_events".to_string())
+                .await,
+            ["Review|local"]
+        );
+        assert_eq!(
+            pair.texts(format!(
+                "SELECT trigger_value FROM calendar_event_alarms WHERE event_id = '{event}'"
+            ))
+            .await,
+            ["-PT15M"]
+        );
+        pair.finish().await;
+    });
+}

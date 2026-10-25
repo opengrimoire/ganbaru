@@ -390,5 +390,7 @@ impl SyncHost for HeadlessHost {
 
     fn emit_status(&self, _view: &SyncStatusView) {}
 
+    /// A background pass has no views, no Guardian runtime, and no notification scheduler, so
+    /// reminders, Android alarms, and Guardian rules it changes refresh when the app next opens.
     fn emit_applied(&self, _tables: Vec<String>) {}
 }

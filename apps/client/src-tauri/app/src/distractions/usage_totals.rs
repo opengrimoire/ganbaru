@@ -39,7 +39,9 @@ pub(crate) async fn flush(
 }
 
 /// Moves this device's spooled desktop samples into the journal and its spooled browser block
-/// events into the vault, then flushes its totals.
+/// events into the vault, then flushes its totals. The totals flush even when a spool step
+/// fails, so samples the journal already holds keep reaching the vault; the first error is
+/// returned afterwards.
 #[cfg(desktop)]
 pub(crate) async fn drain_and_flush<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
@@ -48,10 +50,20 @@ pub(crate) async fn drain_and_flush<R: tauri::Runtime>(
     device_id: &str,
     force: bool,
 ) -> Result<usize, String> {
-    crate::distractions::spool::drain(app, pool, vault_id, device_id, &current_usage_date_window())
-        .await?;
-    crate::distractions::spool::ingest_block_events(app, pool, vault_id, device_id).await?;
-    flush(pool, vault_id, device_id, force).await
+    let drained = crate::distractions::spool::drain(
+        app,
+        pool,
+        vault_id,
+        device_id,
+        &current_usage_date_window(),
+    )
+    .await;
+    let ingested =
+        crate::distractions::spool::ingest_block_events(app, pool, vault_id, device_id).await;
+    let flushed = flush(pool, vault_id, device_id, force).await;
+    drained?;
+    ingested?;
+    flushed
 }
 
 /// Forces the active vault's spooled samples, spooled block events, and stale totals out before

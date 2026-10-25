@@ -110,7 +110,7 @@ crates/
   ganbaru-music-player/: Tauri-free desktop local media inspection and decoding worker that executes committed Music session effects
   ganbaru-projects/: Tauri-free Projects persistence, structure, tasks, history, custom fields, dependency cascades, reordering, Calendar scheduling rows, and validation
   ganbaru-calendar/: Tauri-free Calendar persistence, iCalendar import and export, native reads, scoped edits, deletion and Undo, and recurrence expansion
-  ganbaru-distractions/: Tauri-free distraction blocker contracts, application rules, usage limits, usage normalization, and elapsed accounting
+  ganbaru-distractions/: Tauri-free distraction blocker contracts, rule persistence, application rules, usage limits, usage normalization, elapsed accounting, daily usage totals, and block history
   ganbaru-notes/: Notes domain, persistence, transfers, history, assets, and bounded filesystem operations
   ganbaru-chat-contracts/: provider-neutral Chat IDs, commands, events, DTOs, errors, and protected workspace path rules
   ganbaru-chat-providers/: provider processes, transports, drivers, cancellation, and registry

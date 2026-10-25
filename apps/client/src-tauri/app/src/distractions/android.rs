@@ -1,9 +1,5 @@
 #[cfg(target_os = "android")]
 use crate::vault::{self, ownership::VaultOwnershipManager};
-use chrono::{DateTime, SecondsFormat, Utc};
-use ganbaru_distractions::contracts::DistractionsUsageSampleRow;
-use ganbaru_distractions::usage::UsageDateWindow;
-use ganbaru_distractions::usage::totals::insert_own_samples;
 #[cfg(target_os = "android")]
 use ganbaru_mobile_distractions::{MobileDistractionsExt, PendingEvent};
 #[cfg(target_os = "android")]
@@ -11,7 +7,6 @@ use ganbaru_sync::manifest::vault::distractions::DOMAIN_NAME as DISTRACTIONS_DOM
 #[cfg(not(target_os = "android"))]
 use serde::Deserialize;
 use serde::Serialize;
-use sqlx::SqlitePool;
 #[cfg(target_os = "android")]
 use tauri::Manager;
 use tauri::Runtime;
@@ -21,6 +16,7 @@ const MAX_JOURNAL_EVENTS: usize = 2_000;
 #[cfg(target_os = "android")]
 const MAX_DRAIN_BATCHES: usize = MAX_JOURNAL_EVENTS / MAX_BATCH + 1;
 
+mod journal;
 mod projection;
 #[cfg(target_os = "android")]
 pub(crate) mod runtime;
@@ -175,101 +171,6 @@ fn normalize_event(mut event: PendingEvent) -> Result<PendingEvent, String> {
     Ok(event)
 }
 
-/// Imports one Guardian journal batch in one transaction: usage into this device's usage journal
-/// inside `window`, and block events with their rule snapshots.
-async fn import_events(
-    pool: &SqlitePool,
-    events: &[PendingEvent],
-    window: &UsageDateWindow,
-) -> Result<(), String> {
-    let mut transaction = pool
-        .begin()
-        .await
-        .map_err(|error| format!("begin mobile Distractions import: {error}"))?;
-    let usage = events
-        .iter()
-        .filter(|event| event.kind == "usage")
-        .map(|event| DistractionsUsageSampleRow {
-            id: event.id.clone(),
-            source_type: "mobile-app".to_string(),
-            source_key: event.package_name.clone(),
-            display_name: Some(event.display_name.clone()),
-            started_at_ms: event.started_at_ms,
-            elapsed_seconds: event.elapsed_seconds,
-            local_date: event.local_date.clone(),
-            created_at_ms: event.occurred_at_ms,
-        })
-        .collect::<Vec<_>>();
-    insert_own_samples(&mut transaction, &usage, window).await?;
-    for event in events.iter().filter(|event| event.kind != "usage") {
-        let run_id = if let Some(run_id) = &event.run_id {
-            let exists =
-                sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM pomodoro_runs WHERE id = ?")
-                    .bind(run_id)
-                    .fetch_one(&mut *transaction)
-                    .await
-                    .map_err(|error| format!("validate mobile Distractions run: {error}"))?
-                    > 0;
-            exists.then_some(run_id.clone())
-        } else {
-            None
-        };
-        let occurred_at = DateTime::<Utc>::from_timestamp_millis(event.occurred_at_ms)
-            .ok_or_else(|| "mobile Distractions block timestamp is invalid".to_string())?
-            .to_rfc3339_opts(SecondsFormat::Millis, true);
-        let decision = if event.reason.as_deref() == Some("usage_limit") {
-            "limit_exhausted"
-        } else {
-            "blocked"
-        };
-        sqlx::query(
-            "INSERT OR IGNORE INTO distractions_block_events
-                (id, run_id, segment_id, occurred_at, source_type, source_key,
-                 display_name, phase, decision, rule_id, category_id)
-             VALUES (?, ?, NULL, ?, 'mobile_app', ?, ?, ?, ?, ?, NULL)",
-        )
-        .bind(&event.id)
-        .bind(run_id)
-        .bind(occurred_at)
-        .bind(&event.package_name)
-        .bind(&event.display_name)
-        .bind(&event.phase)
-        .bind(decision)
-        .bind(&event.rule_id)
-        .execute(&mut *transaction)
-        .await
-        .map_err(|error| format!("import mobile Distractions block: {error}"))?;
-
-        let rule_kind = if event.reason.as_deref() == Some("usage_limit") {
-            "usage_limit"
-        } else {
-            "mobile_app"
-        };
-        let blocker_mode = if rule_kind == "usage_limit" {
-            "limit"
-        } else {
-            "blacklist"
-        };
-        sqlx::query(
-            "INSERT OR IGNORE INTO distractions_block_event_rule_snapshots
-                (block_event_id, rule_id, rule_kind, rule_label, environment_id, blocker_mode)
-             VALUES (?, ?, ?, ?, NULL, ?)",
-        )
-        .bind(&event.id)
-        .bind(&event.rule_id)
-        .bind(rule_kind)
-        .bind(&event.display_name)
-        .bind(blocker_mode)
-        .execute(&mut *transaction)
-        .await
-        .map_err(|error| format!("import mobile Distractions rule snapshot: {error}"))?;
-    }
-    transaction
-        .commit()
-        .await
-        .map_err(|error| format!("commit mobile Distractions import: {error}"))
-}
-
 /// The pending Guardian identities the usage journal already holds, which must not count twice.
 #[cfg(any(target_os = "android", test))]
 async fn canonical_pending_ids(
@@ -341,16 +242,7 @@ async fn synchronize_locked<R: Runtime>(
     if events.len() > MAX_BATCH {
         return Err("mobile Distractions journal batch is too large".to_string());
     }
-    let normalized = events
-        .into_iter()
-        .map(normalize_event)
-        .collect::<Result<Vec<_>, _>>()?;
-    if normalized
-        .iter()
-        .any(|event| event.vault_id != active_vault_id)
-    {
-        return Err("Guardian returned events from a different vault".into());
-    }
+    let full_batch = events.len() == MAX_BATCH;
     let _permit = app
         .state::<VaultOwnershipManager>()
         .acquire_replicated_write(&active_vault_id, DISTRACTIONS_DOMAIN)?;
@@ -361,24 +253,30 @@ async fn synchronize_locked<R: Runtime>(
     if vault::active_vault_id(&app)? != active_vault_id {
         return Err("mobile Distractions vault changed while connecting".into());
     }
-    if !normalized.is_empty() {
-        import_events(
-            &pool,
-            &normalized,
-            &crate::distractions::usage_totals::current_usage_date_window(),
-        )
-        .await?;
-        let processed_ids = normalized
-            .iter()
-            .map(|event| event.id.clone())
-            .collect::<Vec<_>>();
-        acknowledge_guardian(&app, &processed_ids).await?;
-    }
-    crate::distractions::usage_totals::flush(&pool, &active_vault_id, &ownership.device_id, force)
-        .await?;
+    let imported = if events.is_empty() {
+        Ok(0)
+    } else {
+        let window = crate::distractions::usage_totals::current_usage_date_window();
+        match journal::import_journal_batch(&pool, events, &active_vault_id, &window).await {
+            Ok(import) => acknowledge_guardian(&app, &import.processed_ids)
+                .await
+                .map(|()| import.processed_ids.len()),
+            Err(error) => Err(error),
+        }
+    };
+    // Totals already in the journal flush even when this batch failed, so limits keep holding.
+    let flushed = crate::distractions::usage_totals::flush(
+        &pool,
+        &active_vault_id,
+        &ownership.device_id,
+        force,
+    )
+    .await;
+    let imported = imported?;
+    flushed?;
     Ok(MobileDistractionsSyncResult {
-        imported: normalized.len(),
-        full_batch: normalized.len() == MAX_BATCH,
+        imported,
+        full_batch,
     })
 }
 
@@ -492,74 +390,6 @@ mod tests {
                 .is_err()
         );
         drop(connection);
-        pool.close().await;
-    }
-
-    #[tokio::test]
-    async fn journal_import_rolls_back_usage_and_block_history_when_rule_snapshot_fails() {
-        let pool = sqlx::sqlite::SqlitePoolOptions::new()
-            .max_connections(1)
-            .connect("sqlite::memory:")
-            .await
-            .unwrap();
-        sqlx::query("PRAGMA foreign_keys = ON")
-            .execute(&pool)
-            .await
-            .unwrap();
-        ganbaru_db::test_support::apply_migrated_template(&pool)
-            .await
-            .unwrap();
-        let usage = event("usage-one");
-        let mut block = event("block-one");
-        block.kind = "block".into();
-        block.elapsed_seconds = 0;
-        block.reason = Some("usage_limit".into());
-        let batch = vec![usage, block];
-        let window = ganbaru_distractions::usage::usage_date_window(
-            chrono::NaiveDate::from_ymd_opt(2026, 10, 2).unwrap(),
-        );
-        sqlx::raw_sql("CREATE TRIGGER reject_mobile_rule_snapshot BEFORE INSERT ON distractions_block_event_rule_snapshots
-            BEGIN SELECT RAISE(ABORT, 'rule snapshot failure'); END")
-            .execute(&pool).await.unwrap();
-        assert!(import_events(&pool, &batch, &window).await.is_err());
-        for table in [
-            "distractions_usage_samples",
-            "distractions_block_events",
-            "distractions_block_event_rule_snapshots",
-        ] {
-            let count: i64 =
-                sqlx::query_scalar(sqlx::AssertSqlSafe(format!("SELECT COUNT(*) FROM {table}")))
-                    .fetch_one(&pool)
-                    .await
-                    .unwrap();
-            assert_eq!(
-                count, 0,
-                "{table} must roll back with the rejected journal batch"
-            );
-        }
-        sqlx::query("DROP TRIGGER reject_mobile_rule_snapshot")
-            .execute(&pool)
-            .await
-            .unwrap();
-        for _ in 0..2 {
-            import_events(&pool, &batch, &window).await.unwrap();
-            for table in [
-                "distractions_usage_samples",
-                "distractions_block_events",
-                "distractions_block_event_rule_snapshots",
-            ] {
-                let count: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
-                    "SELECT COUNT(*) FROM {table}"
-                )))
-                .fetch_one(&pool)
-                .await
-                .unwrap();
-                assert_eq!(
-                    count, 1,
-                    "{table} must preserve identity on a lost-response retry"
-                );
-            }
-        }
         pool.close().await;
     }
 }

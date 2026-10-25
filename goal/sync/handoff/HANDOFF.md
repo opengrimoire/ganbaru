@@ -44,25 +44,24 @@ Out of scope: the multi-person sharing goal. Its plans (`goal/sharing/`) are not
 
 ## State on feat/sync
 
-Head at handoff: the commit that added this folder, on top of `419c6128 merge: anchor service and engine follow-up 4 part C (sync milestone 11 step 6a)`.
+Updated at the end of the cloud session (2026-10-25). The three earlier in-flight branches have landed: Notes structure (milestone 8 step 3, merge 9fce4b75), Chat conversations (milestone 9 step 4, merge 20b0aec3), and anchor handover (milestone 11 step 6b, merge 78910455). Their records are in the plans' Progress sections, `progress/`, and `final-report-notes.md`. Landed topic branches remain on origin because the cloud proxy refused remote branch deletion; they can be deleted.
 
-- `VAULT_MANIFEST_VERSION` is 13, handoff `PROTOCOL_VERSION` is 13, the last migration is `20261025051154_sync_stored_order.sql`.
-- Done in source: milestones 2 to 7 (only physical acceptance open), milestone 8 steps 1 and 2, milestone 9 steps 1 to 3, milestone 10 steps 1 to 4, milestone 11 steps 1 to 5 and part 6a. The README status line says the same.
-- Remaining steps (last step of each milestone is physical acceptance, deferred): milestone 8 steps 3 to 8, milestone 9 steps 4 to 10 (step 10 is docs plus physical acceptance; do the docs part), milestone 10 steps 5 to 6, milestone 11 steps 6b to 10, milestone 12 steps 1 to 11. Then a clean `pnpm -w run validate` on feat/sync and the final report.
+- `VAULT_MANIFEST_VERSION` is 15, handoff `PROTOCOL_VERSION` is 14, the last migration is `20261025183055_chat_conversations_replication.sql`.
+- Done in source: milestones 2 to 7, milestone 8 steps 1 to 3, milestone 9 steps 1 to 4, milestone 10 steps 1 to 4, milestone 11 steps 1 to 6.
+- Remaining: milestone 8 steps 4 to 8, milestone 9 steps 5 to 10 (docs part of 10), milestone 10 steps 5 to 7, milestone 11 steps 7 to 10, milestone 12 steps 1 to 11, milestone closes, a clean `pnpm -w run validate`, and the final report.
 
 ## In-flight branches (pushed to origin)
 
-Each was built by an agent that stopped when the previous session ran out of credit. Their briefs, fix messages, and progress files are in `briefs/` and `progress/`. To continue one, check out the branch, apply its WIP patch if it has one (`git apply --index wip/<name>.patch`), read the brief, the fix message, and the progress file, finish the work, run the brief's full check list, commit, then review and land.
+1. `feat/sync-notes-databases`: milestone 8 step 4 (brief `briefs/m8-step-4-brief.md`, progress `progress/milestone-8-step-4-progress.md`). Head 54e48d26: step 3 follow-ups (a666f5ab, e9ed247a), the step 4 tables (6da2e333), a row parent fix (bd05f22c), and a merge of feat/sync afdcb488 (manifest 16 expected; check that its migration still sorts last). Its agent was stopped while running the final check list after that merge; no uncommitted work. Next: rerun the brief's full check list, finish the progress entry, fresh Opus review, land.
+2. `feat/sync-hook-concurrent-groups`: engine follow-up 5 (brief `briefs/engine-fu5-brief.md`, progress `progress/engine-fu5-progress.md`). Head e3b653e8, all checks passed, no manifest or wire change. Its review was stopped before it reported. Next: fresh Opus review (the review prompt focus: determinism, crash safety, capture semantics, validation, tests), land. It must land before milestone 9 step 9, which uses its `settled_groups` and `settle` hook methods to settle the concurrent inherit versus explicit approval override case (see `final-report-notes.md`).
 
-1. `feat/sync-notes-structure`: milestone 8 step 3, Notes structure replication. Manifest 14, migration `20261025091420_notes_structure_replication.sql`. A review returned "fix first" (`briefs/m8-step-3-fix-message.md`). Committed fixes: `d86cdd93` (row pages removed with their data source, unplaced row pages hidden), `c0245185` (project history restore in place on synced vaults), `3c30f5af` (pairing repair, cycle pages detached to their project root). Uncommitted and unverified: `wip/notes-structure-uncommitted.patch` (the durable pending-repair marker, `has_pending` in `sync_repair`, and related test and manifest edits). Still open from the fix message: finish item 5, the Low items, the coverage items, then the full check list. Then a short delta review against the fix message, then land.
-2. `feat/sync-chat-conversations`: milestone 9 step 4, Chat group B. Manifest 14, migration `20261025060716_chat_conversations_replication.sql`. First fix round done (`61d787aa`, `8e83c802`, all checks passed). A delta review returned "fix first" for one remaining item; the second fix round is written in `briefs/m9-step-4-fix2-message.md` and has not started. The coordinator decision recorded there: keep the documented replace precedence of folder and scratch approval overrides (a folder grant may be looser than its channel), and fix only the concurrent inherit-versus-explicit case through a conflict-aware hook or a fail-closed effective view, or stop and report an engine need. Then a delta review, then land.
-3. `feat/sync-anchor-handover`: milestone 11 step 6b, engine track. Brief `briefs/m11-step-6b-brief.md` (part 1: 6a review follow-ups; part 2: handover and repin, restore detection and self-handover, recovery kit, quarantine, fork freeze clearing). Progress so far is in `progress/milestone-11-step-6b-progress.md` (part 1 items 1 to 8 done, quarantine, handover catch-up, restore detection, self-handover, and proposal forwarding done). Uncommitted and unverified: `wip/anchor-handover-uncommitted.patch` (a new `sync/service/anchor.rs`, sync commands, the command permission set, runtime registration, and replica handover tests; the agent was about to run fmt and a compile check). Check part 2 of the brief against the progress file for what remains (the recovery kit is the likely gap), finish, run the full check list including the Android check, then a fresh Opus review, then land as part 6b and tick step 6.
+Ready briefs not started: `briefs/m9-step-5-brief.md` (Chat timeline, with step 4 follow-ups) and `briefs/m11-step-7-brief.md` (Android Keystore, written for a host without the Android toolchain).
 
-Version conflict: the Notes and Chat branches both use manifest 14. Whichever lands second merges feat/sync, takes 15, renames its migration to a fresh UTC timestamp so it sorts last, regenerates its manifest fixture, and reruns its checks. The anchor branch changes the proposal format and takes the next handoff protocol number at merge.
+Cloud host notes: `implementer-brief-cloud.md` is the brief used there (per-worktree Cargo target dirs with `CARGO_INCREMENTAL=0`, never renamed or shared; disk was the binding limit). Recommended scheduling: keep the engine track running continuously (it is the longest chain) and alternate Chat and Notes steps in the second implementer slot.
 
 ## Next steps in order
 
-1. Finish and land the three in-flight branches as above (two implementers at a time).
+1. Review and land the two in-flight branches above.
 2. Milestone 9 steps 5 to 9 and the docs part of 10, one at a time on the `chat` track.
 3. Milestone 8 steps 4 to 8 on the `domain` track (step 4 needs the notes from `progress/milestone-8-step-3-progress.md`: `parent_data_source_id` gains its replicated Cascade reference, row page orphan handling moves to the engine reference).
 4. Milestone 10 steps 5 and 6 and milestone 11 steps 7 to 10, serially on the `engine` track. Step 9 uses the internal Opus security review (user decision).
@@ -90,7 +89,7 @@ Version conflict: the Notes and Chat branches both use manifest 14. Whichever la
 - `implementer-brief.md`: the rules every implementing agent follows.
 - `briefs/`: the briefs, review briefs, and fix messages of the in-flight steps, usable as templates.
 - `progress/`: progress entries of the unlanded steps.
-- `wip/`: uncommitted work of the two agents that stopped mid-change.
+- `wip/`: uncommitted work of agents that stopped mid-change (empty: the earlier patches were applied and landed).
 - `final-report-notes.md`: running notes for the final report (landings, decisions, deferred items, physical checks).
 - `user-notes.md`: notes for the user's manual checks.
 - `tick.sh`, `land.sh`: bookkeeping and landing scripts (`GANBARU_REPO` and `SCRATCHPAD` set the paths).

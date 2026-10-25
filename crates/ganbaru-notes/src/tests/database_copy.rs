@@ -1043,9 +1043,12 @@ fn copying_a_database_drops_links_to_archived_rows_instead_of_failing() {
         .unwrap();
         let page =
             serde_json::to_value(reads::get_page(&pool, &row, false).await.unwrap()).unwrap();
-        assert_eq!(page["properties"]["Related"]["relation"], json!([{"id": row}]));
-        let source = serde_json::to_value(reads::get_page(&pool, PAGE_B, false).await.unwrap())
-            .unwrap();
+        assert_eq!(
+            page["properties"]["Related"]["relation"],
+            json!([{"id": row}])
+        );
+        let source =
+            serde_json::to_value(reads::get_page(&pool, PAGE_B, false).await.unwrap()).unwrap();
         assert_eq!(
             source["properties"]["Related"]["relation"],
             json!([{"id": PAGE_B}, {"id": COMMENT_B}]),

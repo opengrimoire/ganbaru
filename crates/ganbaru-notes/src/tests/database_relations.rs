@@ -548,7 +548,10 @@ fn database_relations_removing_a_self_relation_link_keeps_links_its_pairing_does
             assert!(self_relation_targets(&pool, PAGE_B).await.is_empty());
             let reverse = self_relation_targets(&pool, PAGE_C).await;
             if synced {
-                assert!(reverse.is_empty(), "a synced self relation drops both sides");
+                assert!(
+                    reverse.is_empty(),
+                    "a synced self relation drops both sides"
+                );
             } else {
                 assert_eq!(reverse, vec![PAGE_B.to_string()], "a one-way link survives");
             }

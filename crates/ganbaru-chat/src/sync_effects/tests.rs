@@ -421,6 +421,89 @@ async fn point_profile_at(pool: &SqlitePool, revision_id: &str, capability: &str
     .unwrap();
 }
 
+/// Runs the hook for `keys` of `table` and returns the error code it refused them with.
+async fn hook_refusal(pool: &SqlitePool, table: &str, keys: &[&str]) -> Option<ChatErrorCode> {
+    let keys: Vec<String> = keys.iter().map(|key| (*key).to_string()).collect();
+    let mut connection = pool.acquire().await.unwrap();
+    after_materialize(&mut connection, table, &keys)
+        .await
+        .err()
+        .map(|error| error.code)
+}
+
+/// Points the seeded teammate at its seeded policy revision with a copied `safety_mode`.
+async fn point_teammate_policy_at(pool: &SqlitePool, safety_mode: &str) {
+    sqlx::query(
+        "UPDATE chat_teammates
+         SET current_policy_revision_id = 'policy:sync-effects', current_policy_safety_mode = ?
+         WHERE participant_id = ?",
+    )
+    .bind(safety_mode)
+    .bind(TEAMMATE_ID)
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn pointers_whose_copied_restrictiveness_differs_from_their_revision_are_refused() {
+    let pool = migrated_pool().await;
+    seed_organization(&pool).await;
+    set_applying(&pool, true).await;
+
+    point_teammate_policy_at(&pool, "full_access").await;
+    assert_eq!(
+        hook_refusal(&pool, TEAMMATES_TABLE, &[TEAMMATE_ID]).await,
+        Some(ChatErrorCode::Validation)
+    );
+    assert_eq!(
+        hook_refusal(&pool, POLICY_REVISIONS_TABLE, &["policy:sync-effects"]).await,
+        Some(ChatErrorCode::Validation)
+    );
+    point_teammate_policy_at(&pool, "ask_for_approval").await;
+    assert_eq!(
+        hook_refusal(&pool, TEAMMATES_TABLE, &[TEAMMATE_ID]).await,
+        None
+    );
+    assert_eq!(
+        hook_refusal(&pool, POLICY_REVISIONS_TABLE, &["policy:sync-effects"]).await,
+        None
+    );
+
+    point_profile_at(&pool, FIRST_PROFILE_REVISION_ID, "publish").await;
+    assert_eq!(
+        hook_refusal(&pool, ACCESS_PROFILES_TABLE, &[PROFILE_ID]).await,
+        Some(ChatErrorCode::Validation)
+    );
+    assert_eq!(
+        hook_refusal(
+            &pool,
+            ACCESS_PROFILE_REVISIONS_TABLE,
+            &[FIRST_PROFILE_REVISION_ID]
+        )
+        .await,
+        Some(ChatErrorCode::Validation)
+    );
+
+    // A pointer that arrives before its revision applies, and the revision is checked on arrival.
+    let pending = "profile-revision:sync-effects:2";
+    point_profile_at(&pool, pending, "read").await;
+    assert_eq!(
+        hook_refusal(&pool, ACCESS_PROFILES_TABLE, &[PROFILE_ID]).await,
+        None
+    );
+    insert_profile_revision(&pool, 2, "publish").await;
+    assert_eq!(
+        hook_refusal(&pool, ACCESS_PROFILE_REVISIONS_TABLE, &[pending]).await,
+        Some(ChatErrorCode::Validation)
+    );
+    point_profile_at(&pool, pending, "publish").await;
+    assert_eq!(
+        hook_refusal(&pool, ACCESS_PROFILE_REVISIONS_TABLE, &[pending]).await,
+        None
+    );
+}
+
 #[tokio::test]
 async fn search_follows_revisions_that_arrive_after_their_message_and_deleted_messages() {
     let pool = migrated_pool().await;

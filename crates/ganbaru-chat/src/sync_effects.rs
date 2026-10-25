@@ -15,6 +15,8 @@ use std::time::SystemTime;
 
 /// Replicated table of AI teammates, keyed by participant id.
 pub const TEAMMATES_TABLE: &str = "chat_teammates";
+/// Replicated table of teammate policy revisions, keyed by id.
+pub const POLICY_REVISIONS_TABLE: &str = "chat_teammate_policy_revisions";
 /// Replicated table of conversations, keyed by id.
 pub const CONVERSATIONS_TABLE: &str = "chat_conversations";
 /// Replicated table of access profiles, keyed by id.
@@ -68,6 +70,10 @@ impl ChatSyncEffects {
 /// Timestamps come from the changed rows, except revocations, which happen now on this device.
 /// Running it again for the same keys leaves the same rows, apart from the counters a profile
 /// revision bumps again. Tables without derived state return no effects.
+///
+/// It also refuses the applied rows, with an error that aborts the engine transaction, when a
+/// teammate or profile pointer copies a safety mode or maximum folder capability that differs
+/// from the revision it names, once both rows are present.
 pub async fn after_materialize(
     connection: &mut SqliteConnection,
     table: &str,
@@ -78,7 +84,13 @@ pub async fn after_materialize(
     match table {
         TEAMMATES_TABLE => {
             for key in keys {
+                require_matching_copies(connection, POLICY_COPY_MISMATCH_BY_TEAMMATE, key).await?;
                 create_access_state(connection, key, &mut effects).await?;
+            }
+        }
+        POLICY_REVISIONS_TABLE => {
+            for key in keys {
+                require_matching_copies(connection, POLICY_COPY_MISMATCH_BY_REVISION, key).await?;
             }
         }
         CONVERSATIONS_TABLE => {
@@ -88,12 +100,14 @@ pub async fn after_materialize(
         }
         ACCESS_PROFILES_TABLE => {
             for key in keys {
+                require_matching_copies(connection, PROFILE_COPY_MISMATCH_BY_PROFILE, key).await?;
                 apply_effective_profile_revision(connection, key, &mut effects).await?;
             }
         }
         ACCESS_PROFILE_REVISIONS_TABLE => {
             let mut profile_ids = BTreeSet::new();
             for key in keys {
+                require_matching_copies(connection, PROFILE_COPY_MISMATCH_BY_REVISION, key).await?;
                 let profile_id: Option<String> = sqlx::query_scalar(
                     "SELECT revision.access_profile_id
                      FROM chat_access_profile_revisions revision
@@ -383,6 +397,76 @@ async fn rebuild_message_search(
         effects.search_rebuilt.insert(message_item_id.to_string());
     }
     Ok(())
+}
+
+/// Teammates with key `?` whose copied safety mode or owner disagrees with the policy revision
+/// their pointer names.
+const POLICY_COPY_MISMATCH_BY_TEAMMATE: &str = "SELECT teammate.participant_id
+     FROM chat_teammates teammate
+     JOIN chat_teammate_policy_revisions policy ON policy.id = teammate.current_policy_revision_id
+     WHERE teammate.participant_id = ?
+       AND (policy.teammate_id IS NOT teammate.participant_id
+            OR policy.safety_mode IS NOT teammate.current_policy_safety_mode)";
+
+/// Teammates whose pointer names policy revision `?` and whose copied safety mode or owner
+/// disagrees with it.
+const POLICY_COPY_MISMATCH_BY_REVISION: &str = "SELECT teammate.participant_id
+     FROM chat_teammates teammate
+     JOIN chat_teammate_policy_revisions policy ON policy.id = teammate.current_policy_revision_id
+     WHERE policy.id = ?
+       AND (policy.teammate_id IS NOT teammate.participant_id
+            OR policy.safety_mode IS NOT teammate.current_policy_safety_mode)";
+
+/// Profiles with key `?` whose copied maximum folder capability or owner disagrees with the
+/// revision their pointer names.
+const PROFILE_COPY_MISMATCH_BY_PROFILE: &str = "SELECT profile.id
+     FROM chat_access_profiles profile
+     JOIN chat_access_profile_revisions revision ON revision.id = profile.current_revision_id
+     WHERE profile.id = ?
+       AND (revision.access_profile_id IS NOT profile.id
+            OR revision.maximum_folder_capability
+               IS NOT profile.current_maximum_folder_capability)";
+
+/// Profiles whose pointer names revision `?` and whose copied maximum folder capability or owner
+/// disagrees with it.
+const PROFILE_COPY_MISMATCH_BY_REVISION: &str = "SELECT profile.id
+     FROM chat_access_profiles profile
+     JOIN chat_access_profile_revisions revision ON revision.id = profile.current_revision_id
+     WHERE revision.id = ?
+       AND (revision.access_profile_id IS NOT profile.id
+            OR revision.maximum_folder_capability
+               IS NOT profile.current_maximum_folder_capability)";
+
+/// Refuses the applied rows when `mismatch` finds a pointer for `key` whose copied
+/// restrictiveness disagrees with the revision it names.
+///
+/// The copy exists only so the sync merge can rank concurrent pointers by restrictiveness, while
+/// readers enforce the revision row itself. Commands write the pointer and its copy together and
+/// the merge keeps them in one coupled group, so a disagreement can only come from a corrupt or
+/// dishonest operation that would let a wider revision outrank a stricter one. The check runs
+/// here rather than in a trigger because a pointer row may apply before the revision it names; a
+/// trigger would refuse that correct order, while this hook runs again when the revision arrives.
+async fn require_matching_copies(
+    connection: &mut SqliteConnection,
+    mismatch: &'static str,
+    key: &str,
+) -> ChatResult<()> {
+    let mismatched: Option<String> = sqlx::query_scalar(mismatch)
+        .bind(key)
+        .fetch_optional(&mut *connection)
+        .await
+        .map_err(persistence_error)?;
+    match mismatched {
+        Some(owner) => Err(ChatError::new(
+            ChatErrorCode::Validation,
+            format!(
+                "Synced Chat row {owner} copies restrictiveness that differs from the revision \
+                 it names"
+            ),
+            false,
+        )),
+        None => Ok(()),
+    }
 }
 
 fn persistence_error(_error: sqlx::Error) -> ChatError {

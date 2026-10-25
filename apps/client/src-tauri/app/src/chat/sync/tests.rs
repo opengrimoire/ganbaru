@@ -36,6 +36,7 @@ async fn migrated_pool() -> SqlitePool {
 fn every_replicated_table_with_derived_chat_state_has_a_hook() {
     let derived = [
         sync_effects::TEAMMATES_TABLE,
+        sync_effects::POLICY_REVISIONS_TABLE,
         sync_effects::CONVERSATIONS_TABLE,
         sync_effects::ACCESS_PROFILES_TABLE,
         sync_effects::ACCESS_PROFILE_REVISIONS_TABLE,

@@ -42,6 +42,8 @@ use ganbaru_sync_replica::now_ms;
 use ganbaru_sync_replica::outbox::Outbox;
 use ganbaru_sync_replica::quarantine::Quarantine;
 use ganbaru_sync_replica::reset;
+#[cfg(desktop)]
+use ganbaru_sync_replica::writer::SequencedCheck;
 use sqlx::SqlitePool;
 use std::collections::BTreeSet;
 #[cfg(any(mobile, test))]
@@ -76,6 +78,10 @@ const MAX_APPLY_ROUNDS: usize = 10_000;
 const MAX_SEAL_ROUNDS: usize = 10_000;
 /// Fork recoveries one pass may run before it reports an error.
 const MAX_FORK_RECOVERIES: usize = 3;
+/// How long an anchor whose database was restored behind its own log waits for linked devices
+/// to push back the entries it lost before it hands over to itself, which supersedes them.
+#[cfg(desktop)]
+const RESTORE_CATCH_UP_WINDOW: Duration = Duration::from_secs(10 * 60);
 
 /// Lets one sync pass of this process run at a time, whether the app service, a headless pass,
 /// or the seal before a vault transition runs it.
@@ -674,6 +680,10 @@ struct ServiceState {
     /// The head of the active writer the hub last confirmed holding with the same hash, which
     /// bounds compaction of this installation's own writers.
     confirmed: Option<(WriterId, Seq)>,
+    /// When this anchor first found its database restored behind its own log, in Unix
+    /// milliseconds; it sequences nothing until the log catches up or it hands over to itself.
+    #[cfg(desktop)]
+    restored_since: Option<u64>,
     view: SyncStatusView,
 }
 
@@ -719,6 +729,72 @@ impl ServiceState {
         let expiry = self.hold_expiry?;
         let now = now_ms().ok()?;
         (expiry > now).then(|| Duration::from_millis(expiry - now))
+    }
+
+    /// Whether this installation may sequence for the space. An anchor whose database holds
+    /// less of the log than its writer record says it sealed was restored from a backup or
+    /// copied: it sequences nothing while linked devices push back what it lost, and once the
+    /// catch-up window passes, or at once without linked devices, it seals a handover to itself
+    /// so the next epoch supersedes the entries it never got back. A device that is not the
+    /// anchor is always ready, since it sequences nothing.
+    #[cfg(desktop)]
+    async fn anchor_ready(
+        &mut self,
+        session: &Session<'_, impl SyncHost>,
+        manager: &PairingManager,
+        vault_id: &str,
+    ) -> Result<bool, String> {
+        let Some(active) = self.writer.as_mut() else {
+            return Ok(true);
+        };
+        if !session.anchors_here(manager).await? {
+            self.restored_since = None;
+            return Ok(true);
+        }
+        let mut conn = acquire(&session.pool).await?;
+        let check =
+            authority::restore_check(&session.engine, &mut conn, &session.ctx, active.record())
+                .await?;
+        let SequencedCheck::Restored { recorded } = check else {
+            self.restored_since = None;
+            return Ok(true);
+        };
+        let now = now_ms()?;
+        let since = *self.restored_since.get_or_insert(now);
+        let window = u64::try_from(RESTORE_CATCH_UP_WINDOW.as_millis()).unwrap_or(u64::MAX);
+        if now.saturating_sub(since) < window && !manager.linked_peers_for(vault_id)?.is_empty() {
+            eprintln!(
+                "sync: the database was restored behind authorization revision {recorded}; \
+                 waiting for linked devices to return the log"
+            );
+            return Ok(false);
+        }
+        let anchor = session.anchor_keys().await?;
+        let revision = authority::seal_handover_here(
+            &session.engine,
+            &mut conn,
+            &session.ctx,
+            &anchor.admin,
+            &mut active.local(),
+            None,
+            now,
+        )
+        .await?
+        .map_err(|rejection| format!("hand the restored anchor over to itself: {rejection}"))?;
+        eprintln!(
+            "sync: the database was restored behind authorization revision {recorded}; \
+             the anchor continued the log in a new epoch at revision {revision}"
+        );
+        // A record of a lost epoch the handover only reached can still name a later revision;
+        // the next pass then seals one more handover, whose epoch passes it.
+        let check =
+            authority::restore_check(&session.engine, &mut conn, &session.ctx, active.record())
+                .await?;
+        let ready = !matches!(check, SequencedCheck::Restored { .. });
+        if ready {
+            self.restored_since = None;
+        }
+        Ok(ready)
     }
 
     /// Runs one pass once `gate` lets it, then publishes the status and wakes hub waits.
@@ -942,13 +1018,28 @@ impl ServiceState {
         }
         let acknowledged = session.acknowledge(&mut self.writer).await?;
         if is_hub {
-            session
-                .reconcile_devices(&manager, &vault_id, &mut self.writer)
-                .await?;
             #[cfg(desktop)]
-            session
-                .sequence_proposals(&manager, &mut self.writer, runtime.take_proposal_requests())
-                .await;
+            let anchor_ready = self.anchor_ready(&session, &manager, &vault_id).await?;
+            #[cfg(mobile)]
+            let anchor_ready = true;
+            if anchor_ready {
+                session
+                    .reconcile_devices(&manager, &vault_id, &mut self.writer)
+                    .await?;
+                #[cfg(desktop)]
+                session
+                    .sequence_proposals(
+                        &manager,
+                        &mut self.writer,
+                        runtime.take_proposal_requests(),
+                    )
+                    .await;
+            } else {
+                #[cfg(desktop)]
+                for request in runtime.take_proposal_requests() {
+                    let _ = request.reply.send(Ok(Err(ProposalRejection::NotAnchor)));
+                }
+            }
             let stable = self.stability(host, &session, &manager, view).await?;
             #[cfg(desktop)]
             runtime.stability.publish(&vault_id, stable.clone());

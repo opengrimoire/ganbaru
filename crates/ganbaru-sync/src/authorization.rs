@@ -64,8 +64,8 @@ pub struct AuthorizationView {
     /// Revision past which the epoch is frozen because a writer of its anchor forked; only a
     /// handover continues the log then.
     pub frozen_at: Option<u64>,
-    /// The old anchor's stored vector the handover that opened this epoch carried. The new anchor must
-    /// know every writer it names before it sequences a removal.
+    /// The old anchor's stored vector the handover that opened this epoch carried. The new
+    /// anchor must know every writer it names before it sequences a removal.
     pub catch_up: Option<VersionVector>,
     /// Hash of the charter the selected chain starts from, which every proposal names.
     pub charter: Digest32,
@@ -1031,7 +1031,7 @@ impl Engine {
         let revision = record.revision;
         writer
             .reservation
-            .reserve_entry(state.charter, revision, record.hash())
+            .reserve_entry(state.charter, record.epoch, revision, record.hash())
             .map_err(SyncError::Reservation)?;
         let seq = sealer
             .seal_authorization(

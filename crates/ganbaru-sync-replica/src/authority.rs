@@ -3,7 +3,10 @@
 //! the engine.
 
 use super::outbox::Outbox;
-use super::writer::{SyncKey, SyncKeyStore, ensure_device_key};
+use super::writer::{
+    SelectedHead, SequencedCheck, SyncKey, SyncKeyStore, WriterRecord, ensure_device_key,
+    sequenced_check,
+};
 use ganbaru_contacts::PersonKeyPair;
 use ganbaru_handoff::discovery::DiscoveryKey;
 use ganbaru_handoff::protocol::DeviceKind as HandoffDeviceKind;
@@ -11,8 +14,8 @@ use ganbaru_sync::{Engine, LocalWriter, SpaceContext};
 use ganbaru_sync_contracts::bounds::{DISCOVERY_KEY_BYTES, TLS_FINGERPRINT_BYTES};
 use ganbaru_sync_contracts::{
     AdminKeyPair, Charter, DeviceKeyPair, DeviceKind, DevicePublicKey, DeviceRole, Digest32,
-    Enroll, Entry, Proposal, ProposalRejection, RecoverySeed, Remove, SignedCharter,
-    SignedProposal, SpaceId, sign_charter, sign_proposal,
+    Enroll, Entry, Handover, Proposal, ProposalRejection, RecoverySeed, Remove, SignedCharter,
+    SignedProposal, SpaceId, VersionVector, sign_charter, sign_proposal,
 };
 use sqlx::SqliteConnection;
 
@@ -336,6 +339,78 @@ async fn current_discovery_key(
         .map_err(|error| format!("read sync charter: {error}"))?
         .map(|charter| charter.charter.discovery_key)
         .ok_or_else(|| "the sync space has no charter".to_string())
+}
+
+/// Compares the anchor high-water `record` names with the selected head of the space. A space
+/// without a charter, or a record without a high-water, is current.
+pub async fn restore_check(
+    engine: &Engine,
+    conn: &mut SqliteConnection,
+    ctx: &SpaceContext,
+    record: &WriterRecord,
+) -> Result<SequencedCheck, String> {
+    let Some(view) = engine
+        .authorization(conn, ctx)
+        .await
+        .map_err(|error| format!("read sync authorization: {error}"))?
+    else {
+        return Ok(SequencedCheck::Current);
+    };
+    Ok(sequenced_check(
+        record.sequenced.as_ref(),
+        SelectedHead {
+            charter: view.charter,
+            epoch: view.epoch,
+            revision: view.revision,
+        },
+    ))
+}
+
+/// Signs with `admin` and seals a handover from the selected head to the device of the local
+/// writer, opening the next epoch. `old_anchor_vector` is the old anchor's stored
+/// vector when this device takes over from another anchor; a restored anchor handing over to
+/// itself passes `None`, since its own log is what it lost. Returns the revision, or why the
+/// engine rejected the handover. A log holding only its charter has no entry to continue from.
+pub async fn seal_handover_here(
+    engine: &Engine,
+    conn: &mut SqliteConnection,
+    ctx: &SpaceContext,
+    admin: &AdminKeyPair,
+    writer: &mut LocalWriter<'_>,
+    old_anchor_vector: Option<VersionVector>,
+    now_ms: u64,
+) -> Result<Result<u64, ProposalRejection>, String> {
+    let view = engine
+        .authorization(conn, ctx)
+        .await
+        .map_err(|error| format!("read sync authorization: {error}"))?
+        .ok_or_else(|| "the sync space has no charter".to_string())?;
+    if view.revision == 0 {
+        return Err(
+            "the log holds only its charter, so no epoch can continue it; link the devices again"
+                .to_string(),
+        );
+    }
+    let epoch = view
+        .epoch
+        .checked_add(1)
+        .ok_or_else(|| "the sync epoch is exhausted".to_string())?;
+    let proposal = propose(
+        ctx.space,
+        view.charter,
+        admin,
+        Entry::Handover(Handover {
+            new_anchor_device_id: writer.certificate.certificate.device_id.clone(),
+            epoch,
+            continues_from_revision: view.revision,
+            continues_from_hash: view.entry_hash,
+        }),
+        now_ms,
+    )?;
+    engine
+        .seal_handover(conn, ctx, &proposal, old_anchor_vector, writer, now_ms)
+        .await
+        .map_err(|error| format!("seal sync handover: {error}"))
 }
 
 fn millis(now_ms: u64) -> Result<i64, String> {

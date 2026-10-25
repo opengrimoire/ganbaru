@@ -48,6 +48,9 @@ pub struct WriterRecord {
 pub struct SequencedEntry {
     /// Hash of the charter the log starts from, base64url without padding.
     pub charter: String,
+    /// Epoch of the entry; a handover the anchor seals opens the next one.
+    #[serde(default)]
+    pub epoch: u32,
     /// Revision of the entry.
     pub revision: u64,
     /// Entry hash, base64url without padding.
@@ -80,28 +83,47 @@ pub enum SequencedCheck {
     Current,
     /// The record is ahead by exactly the entry it reserved last: that seal rolled back.
     RolledBack,
-    /// The record is ahead by more than one entry, so the database is older than the log this
-    /// installation sequenced: it was restored from a backup or copied.
+    /// The record is ahead by more than one entry, or names an epoch the selected log never
+    /// reached, so the database is older than the log this installation sequenced: it was
+    /// restored from a backup or copied.
     Restored {
         /// The revision the record reached.
         recorded: u64,
     },
 }
 
-/// Compares the recorded high-water with the revision of the selected head. A reservation is
-/// written before its seal commits, so being ahead by one is a rolled back seal, not a restore.
+/// The selected head the recorded high-water is compared with.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SelectedHead {
+    /// Hash of the charter the selected chain starts from.
+    pub charter: Digest32,
+    /// Epoch of the selected head.
+    pub epoch: u32,
+    /// Revision of the selected head.
+    pub revision: u64,
+}
+
+/// Compares the recorded high-water with the selected head. A reservation is written before its
+/// seal commits, so being ahead by one is a rolled back seal, not a restore. A record of another
+/// charter belongs to a log a Reset cleared and is current. Every chain this installation sealed
+/// an epoch of stays stored, and selection prefers the highest epoch, so a selected head of a
+/// lower epoch than the record means the database lost that epoch.
 pub fn sequenced_check(
     sequenced: Option<&SequencedEntry>,
-    selected_revision: u64,
+    selected: SelectedHead,
 ) -> SequencedCheck {
-    match sequenced.map(|entry| entry.revision) {
-        Some(recorded) if recorded > selected_revision.saturating_add(1) => {
-            SequencedCheck::Restored { recorded }
+    let Some(entry) = sequenced.filter(|entry| entry.charter() == Some(selected.charter)) else {
+        return SequencedCheck::Current;
+    };
+    let next = selected.revision.saturating_add(1);
+    if entry.revision == next {
+        SequencedCheck::RolledBack
+    } else if entry.revision > next || entry.epoch > selected.epoch {
+        SequencedCheck::Restored {
+            recorded: entry.revision,
         }
-        Some(recorded) if recorded == selected_revision.saturating_add(1) => {
-            SequencedCheck::RolledBack
-        }
-        _ => SequencedCheck::Current,
+    } else {
+        SequencedCheck::Current
     }
 }
 
@@ -462,21 +484,26 @@ impl SequenceReservation for RecordReservation {
     fn reserve_entry(
         &mut self,
         charter: Digest32,
+        epoch: u32,
         revision: u64,
         entry_hash: Digest32,
     ) -> std::io::Result<()> {
         let entry = SequencedEntry {
             charter: URL_SAFE_NO_PAD.encode(charter),
+            epoch,
             revision,
             entry_hash: URL_SAFE_NO_PAD.encode(entry_hash),
         };
         // A high-water of another charter belongs to a log a Reset cleared, so it never holds
-        // back the current one.
+        // back the current one. An entry of another epoch replaces the record even at a lower
+        // revision: the selected epoch never falls below one this installation sealed unless
+        // the database was restored, and then the service seals only the self-handover, which
+        // continues from the older head.
         let current = self
             .record
             .sequenced
             .as_ref()
-            .filter(|current| current.charter == entry.charter);
+            .filter(|current| current.charter == entry.charter && current.epoch == epoch);
         if current.is_some_and(|current| current.revision > revision || *current == entry) {
             return Ok(());
         }

@@ -3,7 +3,14 @@
 //! A [`MaterializeHook`] runs inside the engine transaction after merged rows of its table are
 //! written, so state a domain derives from several replicated rows, such as hook columns and
 //! count tables, is recomputed with the rows it reads. Hooks receive only the connection and a
-//! [`ChangeSink`]: they never see operations, versions, or engine state.
+//! [`ChangeSink`]: they never see operations or engine state.
+//!
+//! A hook may also settle the concurrent versions of groups it names in
+//! [`MaterializeHook::settled_groups`]: after each materialization, for every row the merge
+//! decided whose named group keeps several concurrent versions, the engine passes those versions
+//! to [`MaterializeHook::settle`]. A value it returns is written to the domain row and captured
+//! like a local edit of that group, so the next seal publishes it causally after every version
+//! the hook saw.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
@@ -11,16 +18,34 @@ use std::fmt;
 use std::future::Future;
 use std::pin::Pin;
 
-use ganbaru_sync_contracts::TableId;
+use ganbaru_sync_contracts::{GroupId, Hlc, TableId, Value, WriterId};
 use sqlx::SqliteConnection;
 
-use crate::manifest::TableSpec;
+use crate::manifest::{MergeKind, Resolution, TableSpec};
 
 /// Error a hook returns; it rolls the engine transaction back.
 pub type HookError = Box<dyn Error + Send + Sync>;
 
 /// Future a hook returns.
 pub type HookFuture<'a> = Pin<Box<dyn Future<Output = Result<(), HookError>> + Send + 'a>>;
+
+/// Future [`MaterializeHook::settle`] returns: the value that settles the group, or `None` to
+/// keep the merge's winner.
+pub type SettleFuture<'a> =
+    Pin<Box<dyn Future<Output = Result<Option<Value>, HookError>> + Send + 'a>>;
+
+/// One retained version of a settled group: the versions of a group are mutually concurrent.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConcurrentVersion {
+    /// Writer that sealed it.
+    pub writer: WriterId,
+    /// Clock of its operation.
+    pub clock: Hlc,
+    /// Group value, read back when it was elided.
+    pub value: Value,
+    /// Whether the merge picked it, so the domain row holds it.
+    pub won: bool,
+}
 
 /// A change a hook reports for the app to refresh, such as a recomputed aggregate.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -49,6 +74,45 @@ pub trait MaterializeHook: Send + Sync {
         changed_keys: &'a [String],
         changes: &'a mut dyn ChangeSink,
     ) -> HookFuture<'a>;
+
+    /// Groups of `table` whose concurrent versions [`MaterializeHook::settle`] decides. Each
+    /// must be a `Register` or `Coupled` group of plain columns, without owned tables,
+    /// references, or duplicate-repaired columns; [`crate::Engine::with`] refuses others.
+    /// None by default.
+    fn settled_groups(&self, table: &'static TableSpec) -> &'static [GroupId] {
+        let _ = table;
+        &[]
+    }
+
+    /// Decides the concurrent `versions` of a settled `group` of the live row `key`, after the
+    /// materialization wrote every row of the pass and before
+    /// [`MaterializeHook::after_materialize`] runs. Called for each row the merge decided in
+    /// the pass, whether or not its domain row changed, while the group keeps more than one
+    /// version.
+    ///
+    /// A returned value that differs from the winner's is written to the domain row and
+    /// captured like a local edit of the group, which the next seal publishes as a write that
+    /// supersedes every version passed here; one equal to the winner's writes nothing. The
+    /// engine skips the row while it holds a local capture, or when this connection may not
+    /// edit the table, and reports a value that breaks the group's rules as an invalid row
+    /// instead of writing it.
+    ///
+    /// Every device decides the same versions, so the result must depend only on `versions`
+    /// and on replicated rows, never on device-local state; devices that settle concurrently
+    /// then write equal values, which converge without a conflict. Return `None` whenever
+    /// the winner already satisfies the rule, so a group that only ever holds settled values
+    /// needs no further settle. The hook reads through `conn` and must not write.
+    fn settle<'a>(
+        &'a self,
+        conn: &'a mut SqliteConnection,
+        table: &'static TableSpec,
+        key: &'a str,
+        group: GroupId,
+        versions: &'a [ConcurrentVersion],
+    ) -> SettleFuture<'a> {
+        let _ = (conn, table, key, group, versions);
+        Box::pin(std::future::ready(Ok(None)))
+    }
 }
 
 /// Hooks the engine runs inside its transactions, at most one per table.
@@ -84,6 +148,44 @@ impl Hooks {
     pub(crate) fn get(&self, table: TableId) -> Option<&dyn MaterializeHook> {
         self.hooks.get(&table).map(|hook| hook.as_ref())
     }
+
+    /// Groups of a table whose concurrent versions its hook settles.
+    pub(crate) fn settled_groups(&self, table: &'static TableSpec) -> &'static [GroupId] {
+        self.get(table.id)
+            .map_or(&[], |hook| hook.settled_groups(table))
+    }
+}
+
+/// Why a hook may not settle `group` of `table`, see [`MaterializeHook::settled_groups`]. The
+/// engine writes a settled value into plain columns of the row only, so a group whose value
+/// resolves references, fills owned tables, or takes part in a duplicate repair is refused.
+pub(crate) fn settle_problem(table: &TableSpec, group: GroupId) -> Option<&'static str> {
+    let Some(spec) = table.group(group) else {
+        return Some("names an unknown group");
+    };
+    if !matches!(spec.kind, MergeKind::Register | MergeKind::Coupled) {
+        return Some("names a group that is neither a register nor coupled");
+    }
+    if table.is_exists_group(group) || spec.columns().is_empty() {
+        return Some("names a group without columns");
+    }
+    if !spec.owned_tables().is_empty() {
+        return Some("names a group with owned tables");
+    }
+    if spec.reference_columns().next().is_some() {
+        return Some("names a group with references");
+    }
+    let repaired = table.resolutions.iter().any(|resolution| match resolution {
+        Resolution::DuplicateRepair { columns, .. } => spec
+            .columns()
+            .iter()
+            .any(|column| columns.contains(&column.name)),
+        Resolution::WithinGroup { .. } => false,
+    });
+    if repaired {
+        return Some("names a group with duplicate-repaired columns");
+    }
+    None
 }
 
 /// A [`ChangeSink`] that keeps each reported change once.

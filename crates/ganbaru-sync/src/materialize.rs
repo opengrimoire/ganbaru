@@ -7,9 +7,10 @@
 //! reference reaches no shown row is left out with its nested rows, while it stays in the group
 //! value. Engine writes run with capture suppressed and foreign keys deferred, so rows of
 //! several tables, including the tables of one reference cycle and rows referencing their own
-//! table, can change in steps and are checked at commit. Registered hooks run after the writes
-//! with the keys of every row that changed. Values elided from a row are stored again before
-//! the row is updated or deleted, see [`crate::hydrate`].
+//! table, can change in steps and are checked at commit. After the writes, hooks settle the
+//! concurrent versions of the groups they name, then run with the keys of every row that
+//! changed. Values elided from a row are stored again before the row is updated or deleted,
+//! see [`crate::hydrate`].
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -19,11 +20,14 @@ use sqlx::{AssertSqlSafe, SqliteConnection};
 use crate::Engine;
 use crate::codec::{self, OwnedRow};
 use crate::error::{SyncError, SyncResult, corrupt};
-use crate::hooks::{ChangeNotice, Notices};
+use crate::guards;
+use crate::hooks::{ChangeNotice, ConcurrentVersion, Notices};
 use crate::hydrate::{self, Elision};
 use crate::manifest::{ColumnSpec, GroupSpec, MergeKind, OwnedTable, Resolution, TableSpec};
 use crate::merge::{self, Batch, MergedRows, RowState};
+use crate::seal::{self, InvalidRow};
 use crate::sql::{self, ident};
+use crate::validate;
 use crate::visibility::{RowRef, Visibility};
 
 /// Domain state a row must have.
@@ -32,6 +36,9 @@ enum Desired {
     Present(Present),
 }
 
+/// Groups a table's hook settles that keep several concurrent versions, with them.
+type Concurrent = Vec<(&'static GroupSpec, Vec<ConcurrentVersion>)>;
+
 /// Domain values of a live row.
 struct Present {
     columns: Vec<(&'static GroupSpec, Vec<Field>)>,
@@ -39,6 +46,7 @@ struct Present {
     derived: Vec<(&'static str, Field)>,
     /// Winning versions whose stored value the materialized row holds and may drop.
     elisions: Vec<(GroupId, WriterId)>,
+    concurrent: Concurrent,
 }
 
 /// What a materialization changed: the tables in manifest order and what hooks reported.
@@ -49,6 +57,10 @@ pub(crate) struct Materialized {
     /// Whether rows listed as stale remain for a later engine write, since one write takes
     /// back a bounded number of them.
     pub(crate) stale_left: bool,
+    /// Rows a hook settled, which now hold a captured value instead of the merge's winner.
+    pub(crate) settled: BTreeSet<RowRef>,
+    /// Settled values that break their group's rules, which were not written.
+    pub(crate) refused: Vec<InvalidRow>,
 }
 
 /// What a domain row needs to match its desired values.
@@ -175,6 +187,7 @@ async fn desired(
         owned: Vec::new(),
         derived: Vec::new(),
         elisions: Vec::new(),
+        concurrent: concurrent_versions(engine, table, &versions, &winners),
     };
     for group in table.groups {
         if table.is_exists_group(group.id) {
@@ -237,6 +250,43 @@ async fn desired(
         }
     }
     Ok(Some(Desired::Present(present)))
+}
+
+/// The concurrent versions of each group of `table` its hook settles, for groups that keep
+/// more than one.
+fn concurrent_versions(
+    engine: &Engine,
+    table: &'static TableSpec,
+    versions: &[merge::Version],
+    winners: &BTreeMap<GroupId, &merge::Version>,
+) -> Concurrent {
+    let mut concurrent = Vec::new();
+    for id in engine.hooks.settled_groups(table) {
+        let Some(group) = table.group(*id) else {
+            continue;
+        };
+        let retained: Vec<&merge::Version> = versions
+            .iter()
+            .filter(|version| version.group == *id)
+            .collect();
+        if retained.len() < 2 {
+            continue;
+        }
+        let won = winners.get(id).map(|version| version.writer);
+        concurrent.push((
+            group,
+            retained
+                .into_iter()
+                .map(|version| ConcurrentVersion {
+                    writer: version.writer,
+                    clock: version.clock,
+                    value: version.value.clone(),
+                    won: won == Some(version.writer),
+                })
+                .collect(),
+        ));
+    }
+    concurrent
 }
 
 pub(crate) async fn domain_exists(
@@ -647,12 +697,131 @@ pub(crate) async fn plan(
     Ok(Plan { plans, touched })
 }
 
-/// Writes a [`Plan`] into the domain tables, then runs the registered hooks, and returns what
-/// changed.
+/// Whether a local capture of the row waits to be sealed.
+async fn has_capture(conn: &mut SqliteConnection, table: TableId, key: &str) -> SyncResult<bool> {
+    let found: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM sync_capture WHERE table_id = ? AND row_key = ?")
+            .bind(merge::table_param(table))
+            .bind(key)
+            .fetch_one(&mut *conn)
+            .await?;
+    Ok(found > 0)
+}
+
+/// Lets each hook settle the concurrent versions of its settled groups on the live rows of the
+/// plan, see [`crate::hooks::MaterializeHook::settle`]. A settled value is written to the
+/// domain row, with the derived columns the adapter computes from it, and captured as a local
+/// edit of its group; its row joins `changed`.
+async fn settle(
+    engine: &Engine,
+    conn: &mut SqliteConnection,
+    plans: &[BTreeMap<String, Desired>],
+    changed: &mut [BTreeSet<String>],
+    now_ms: u64,
+    materialized: &mut Materialized,
+) -> SyncResult<()> {
+    for (index, table) in engine.manifest().tables.iter().enumerate() {
+        let Some(hook) = engine.hooks.get(table.id) else {
+            continue;
+        };
+        let rows: Vec<(&String, &Concurrent)> = plans[index]
+            .iter()
+            .filter_map(|(key, desired)| match desired {
+                Desired::Present(present) if !present.concurrent.is_empty() => {
+                    Some((key, &present.concurrent))
+                }
+                _ => None,
+            })
+            .collect();
+        // A device that may not edit the table leaves the settle to one that may.
+        if rows.is_empty() || guards::is_guarded_here(conn, table.name).await? {
+            continue;
+        }
+        for (key, concurrent) in rows {
+            if has_capture(conn, table.id, key).await? {
+                continue;
+            }
+            for (group, versions) in concurrent {
+                let decided = hook
+                    .settle(&mut *conn, table, key, group.id, versions)
+                    .await
+                    .map_err(|error| SyncError::Hook {
+                        table: table.name,
+                        error,
+                    })?;
+                let Some(value) = decided else {
+                    continue;
+                };
+                if versions
+                    .iter()
+                    .any(|version| version.won && version.value == value)
+                {
+                    continue;
+                }
+                if let Err(reason) = validate::group_value(engine, table, group, &value) {
+                    materialized.refused.push(InvalidRow {
+                        table: table.id,
+                        row_key: key.clone(),
+                        reason,
+                    });
+                    continue;
+                }
+                write_settled(engine, conn, table, key, group, &value).await?;
+                seal::capture_edit(conn, table.id, key, group.mask(), now_ms).await?;
+                changed[index].insert(key.clone());
+                materialized.settled.insert((table.id, key.clone()));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Writes a settled value into the columns of its group and the derived columns the adapter
+/// computes from it, storing again a winner the row held while its value was elided.
+async fn write_settled(
+    engine: &Engine,
+    conn: &mut SqliteConnection,
+    table: &'static TableSpec,
+    key: &str,
+    group: &'static GroupSpec,
+    value: &ganbaru_sync_contracts::Value,
+) -> SyncResult<()> {
+    let mut columns: Vec<(&'static str, Field)> = group
+        .columns()
+        .iter()
+        .zip(value.fields())
+        .map(|(column, field)| (column.name, field.clone()))
+        .collect();
+    if let Some(adapter) = engine.adapter(table) {
+        let derived = adapter
+            .derived(table.id, group.id, value)
+            .map_err(|error| corrupt(format!("settled value: {error}")))?;
+        if let Some((column, _)) = derived
+            .iter()
+            .find(|(column, _)| !table.derived_columns.contains(column))
+        {
+            return Err(corrupt(format!(
+                "adapter derived undeclared column {column}"
+            )));
+        }
+        columns.extend(derived);
+    }
+    hydrate::persist(engine, conn, table, key, Some(&BTreeSet::from([group.id]))).await?;
+    let update = Update {
+        columns,
+        owned: Vec::new(),
+        bump: group.bumps_revision,
+    };
+    execute_update(conn, table, key, &update).await
+}
+
+/// Writes a [`Plan`] into the domain tables, lets hooks settle concurrent versions, then runs
+/// the registered hooks, and returns what changed.
 pub(crate) async fn execute(
     engine: &Engine,
     conn: &mut SqliteConnection,
     plan: Plan,
+    now_ms: u64,
 ) -> SyncResult<Materialized> {
     let tables = engine.manifest().tables;
     let plans: Vec<BTreeMap<String, Desired>> = plan
@@ -748,6 +917,17 @@ pub(crate) async fn execute(
         }
     }
 
+    let mut materialized = Materialized::default();
+    settle(
+        engine,
+        conn,
+        &plans,
+        &mut changed,
+        now_ms,
+        &mut materialized,
+    )
+    .await?;
+
     let mut notices = Notices::default();
     for (table, keys) in tables.iter().zip(&changed) {
         let Some(hook) = engine.hooks.get(table.id) else {
@@ -764,14 +944,12 @@ pub(crate) async fn execute(
                 error,
             })?;
     }
-    Ok(Materialized {
-        tables: tables
-            .iter()
-            .zip(&changed)
-            .filter(|(_, keys)| !keys.is_empty())
-            .map(|(table, _)| table.name)
-            .collect(),
-        notices: notices.0.into_iter().collect(),
-        stale_left: false,
-    })
+    materialized.tables = tables
+        .iter()
+        .zip(&changed)
+        .filter(|(_, keys)| !keys.is_empty())
+        .map(|(table, _)| table.name)
+        .collect();
+    materialized.notices = notices.0.into_iter().collect();
+    Ok(materialized)
 }

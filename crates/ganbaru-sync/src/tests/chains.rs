@@ -176,6 +176,51 @@ fn receivers_storing_two_chains_in_opposite_orders_end_identical() {
     });
 }
 
+/// Rows stored before storage order existed all read 0. Chains closing at them tie on storage
+/// order and open by writer id, before any chain stored later, so receivers still converge.
+#[test]
+fn chains_stored_before_storage_order_existed_open_by_writer_and_converge() {
+    block_on(async {
+        let mut replicas = replicas(4).await;
+        for (index, replica) in replicas.iter_mut().take(2).enumerate() {
+            replica.exec(&insert_note(index, 9_999)).await;
+        }
+        converge(&mut replicas).await;
+        let a = clashing_chain(&mut replicas[0], "music-a").await;
+        let b = clashing_chain(&mut replicas[1], "music-b").await;
+        let receivers = &mut replicas[2..];
+        for (receiver, order) in receivers.iter_mut().zip([[&a, &b], [&b, &a]]) {
+            for chain in order {
+                receiver.receive(chain).await;
+            }
+            sqlx::query("UPDATE sync_ops SET stored_order = 0 WHERE space_id = ?")
+                .bind(receiver.ctx.space.as_bytes().as_slice())
+                .execute(&mut receiver.conn)
+                .await
+                .unwrap();
+            receiver.apply_all().await.unwrap();
+            assert_eq!(clashing(receiver).await, 1, "replica {}", receiver.index);
+            assert_eq!(stale_rows(receiver).await, 0);
+            receiver.check_invariants().await;
+            // A later operation numbers after the legacy rows.
+            receiver.exec(&insert_note(receiver.index, 9_998)).await;
+            receiver.seal().await.unwrap();
+            let latest: i64 = sqlx::query_scalar(
+                "SELECT stored_order FROM sync_ops WHERE space_id = ? ORDER BY rowid DESC LIMIT 1",
+            )
+            .bind(receiver.ctx.space.as_bytes().as_slice())
+            .fetch_one(&mut receiver.conn)
+            .await
+            .unwrap();
+            assert!(latest > 0);
+        }
+        let notes = notes_of(&mut receivers[0], 2).await + notes_of(&mut receivers[1], 3).await;
+        assert_eq!(notes, 2);
+        converge(receivers).await;
+        assert_converged(receivers).await;
+    });
+}
+
 #[test]
 fn storage_order_grows_when_the_wall_clock_steps_back() {
     block_on(async {

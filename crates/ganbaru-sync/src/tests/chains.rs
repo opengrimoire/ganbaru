@@ -151,6 +151,67 @@ fn colliding_chains_of_two_writers_end_repaired_on_every_replica() {
 }
 
 #[test]
+fn receivers_storing_two_chains_in_opposite_orders_end_identical() {
+    block_on(async {
+        let mut replicas = replicas(4).await;
+        for (index, replica) in replicas.iter_mut().take(2).enumerate() {
+            replica.exec(&insert_note(index, 9_999)).await;
+        }
+        converge(&mut replicas).await;
+        let a = clashing_chain(&mut replicas[0], "music-a").await;
+        let b = clashing_chain(&mut replicas[1], "music-b").await;
+        let receivers = &mut replicas[2..];
+        // Both chains are stored whole before either applies, at one wall clock reading, so
+        // only storage order tells them apart and each receiver opens a different one first.
+        for (receiver, order) in receivers.iter_mut().zip([[&a, &b], [&b, &a]]) {
+            for chain in order {
+                receiver.receive(chain).await;
+            }
+            receiver.apply_all().await.unwrap();
+            assert_eq!(clashing(receiver).await, 1, "replica {}", receiver.index);
+            assert_eq!(stale_rows(receiver).await, 0);
+            receiver.check_invariants().await;
+        }
+        assert_converged(receivers).await;
+    });
+}
+
+#[test]
+fn storage_order_grows_when_the_wall_clock_steps_back() {
+    block_on(async {
+        let mut replicas = replicas(3).await;
+        for (index, replica) in replicas.iter_mut().take(2).enumerate() {
+            replica.exec(&insert_note(index, 9_999)).await;
+            replica.seal().await.unwrap();
+        }
+        let first = replicas[0].own_ops().await;
+        let second = replicas[1].own_ops().await;
+        let receiver = &mut replicas[2];
+        receiver.receive(&first).await;
+        receiver.now_ms -= 60_000;
+        receiver.receive(&second).await;
+        receiver.now_ms -= 60_000;
+        receiver.exec(&insert_note(2, 9_999)).await;
+        receiver.seal().await.unwrap();
+        let stored: Vec<(i64, i64)> = sqlx::query_as(
+            "SELECT stored_order, stored_at_ms FROM sync_ops WHERE space_id = ? ORDER BY rowid",
+        )
+        .bind(receiver.ctx.space.as_bytes().as_slice())
+        .fetch_all(&mut receiver.conn)
+        .await
+        .unwrap();
+        assert!(stored.len() > first.len() + second.len());
+        assert!(
+            stored.windows(2).all(|pair| pair[0].0 < pair[1].0),
+            "storage order grows as operations are stored: {stored:?}"
+        );
+        // Stored time stays the wall clock, which acknowledgement intervals measure.
+        let last = stored.last().unwrap().1;
+        assert_eq!(u64::try_from(last).unwrap(), receiver.now_ms);
+    });
+}
+
+#[test]
 fn a_hold_for_a_newer_manifest_keeps_its_chain_waiting() {
     block_on(async {
         let mut replicas = replicas(2).await;

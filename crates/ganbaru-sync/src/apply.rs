@@ -315,7 +315,7 @@ async fn chain_position(
 
 /// Up to `limit` stored operations of `writer` after `after`, in sequence order, with the
 /// columns `seq, kind, state, hold_reason, excluded_revision IS NOT NULL, group_continues,
-/// length(envelope), clock, context, authorization_revision, stored_at_ms`.
+/// length(envelope), clock, context, authorization_revision, stored_order`.
 async fn chain_rows(
     conn: &mut SqliteConnection,
     ctx: &SpaceContext,
@@ -325,7 +325,7 @@ async fn chain_rows(
 ) -> SyncResult<Vec<SqliteRow>> {
     Ok(sqlx::query(
         "SELECT seq, kind, state, hold_reason, excluded_revision IS NOT NULL, group_continues,
-            length(envelope), clock, context, authorization_revision, stored_at_ms
+            length(envelope), clock, context, authorization_revision, stored_order
          FROM sync_ops
          WHERE space_id = ? AND writer_id = ? AND seq > ?
          ORDER BY seq LIMIT ?",
@@ -469,7 +469,7 @@ async fn scan_group(
     let opens = if position == 0 && rest.len() < extent {
         let mut closed_at = 0;
         for row in &rows[..extent] {
-            closed_at = closed_at.max(stored_u64(row.try_get(10)?, "stored time")?);
+            closed_at = closed_at.max(stored_u64(row.try_get(10)?, "storage order")?);
         }
         Some(closed_at)
     } else {
@@ -630,10 +630,11 @@ impl Heads {
         Ok(())
     }
 
-    /// The first chain the candidates not in `blocked` could open now, as `(stored time of its
+    /// The first chain the candidates not in `blocked` could open now, as `(storage order of its
     /// last operation, writer)`. Chains open in that order instead of clock order, so a writer
     /// whose clocks run low cannot open every chain before one that has waited longer: every
-    /// receiver stamps the stored time itself, and a chain sent later is stored later.
+    /// receiver numbers what it stores itself, and a chain sent later is stored later, however
+    /// the receiver's wall clock moves.
     async fn first_opener(
         &mut self,
         engine: &Engine,
@@ -1527,6 +1528,7 @@ impl Engine {
                         retention.flush(&mut tx, ctx.space).await?;
                         retention = Retention::load(&mut tx, ctx.space).await?;
                         heads = Heads::load(&mut tx, ctx).await?;
+                        winner = None;
                         for writer in std::mem::take(&mut waiting) {
                             blocked.remove(&writer);
                         }
@@ -1541,6 +1543,7 @@ impl Engine {
                     retention.flush(&mut tx, ctx.space).await?;
                     retention = Retention::load(&mut tx, ctx.space).await?;
                     heads = Heads::load(&mut tx, ctx).await?;
+                    winner = None;
                     for writer in std::mem::take(&mut waiting) {
                         blocked.remove(&writer);
                     }

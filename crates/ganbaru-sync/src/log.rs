@@ -83,6 +83,22 @@ pub(crate) fn clamp_ms(ms: u64) -> i64 {
     i64::try_from(ms).unwrap_or(i64::MAX)
 }
 
+/// Storage order of the next operation a space stores, one past the latest.
+///
+/// Chain opening follows storage order, which a wall clock step backward cannot reorder, while
+/// stored time stays the wall clock that acknowledgement intervals and dormancy measure.
+pub(crate) async fn next_stored_order(
+    conn: &mut SqliteConnection,
+    space: &SpaceId,
+) -> SyncResult<i64> {
+    let latest: Option<i64> =
+        sqlx::query_scalar("SELECT max(stored_order) FROM sync_ops WHERE space_id = ?")
+            .bind(space.as_bytes().as_slice())
+            .fetch_one(&mut *conn)
+            .await?;
+    Ok(latest.unwrap_or(0).saturating_add(1))
+}
+
 /// Converts a stored non-negative integer.
 pub(crate) fn stored_u64(value: i64, what: &str) -> SyncResult<u64> {
     u64::try_from(value).map_err(|_| corrupt(format!("negative {what}")))

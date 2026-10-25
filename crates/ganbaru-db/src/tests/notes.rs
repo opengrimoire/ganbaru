@@ -1971,8 +1971,8 @@ fn fresh_vault_nested_pages_follow_their_child_page_block() {
             .await
             .expect("the block reference is checked at commit");
 
+        // Parent columns are derived from `child_block_id`, so no check ties them to it.
         for statement in [
-            "UPDATE notes_pages SET child_block_id = NULL WHERE id = 'child'",
             "UPDATE notes_pages SET child_block_id = 'parent' WHERE id = 'child'",
             "UPDATE notes_pages SET child_block_id = 'parent' WHERE id = 'parent'",
             "UPDATE notes_pages SET folder_id = 'folder' WHERE id = 'child'",

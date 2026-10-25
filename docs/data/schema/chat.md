@@ -109,4 +109,4 @@ The active vault database may store logical provider configuration, credential r
 
 The platform app config directory stores device-local bindings and nonsecret runtime bootstrap data. Secrets are resolved from the operating-system credential store only at the native boundary that needs them.
 
-Remote synchronization is not implemented. A future sync layer may synchronize portable organization and authorization records, but never device-local bindings, process state, or credentials.
+LAN sync replicates Chat identity and policy rows (participants, AI teammates, policy revisions, access profiles, and profile revisions); replicating the rest of the portable organization and authorization records is later work. Device-local bindings, process state, and credentials never replicate.

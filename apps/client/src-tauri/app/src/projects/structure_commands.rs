@@ -13,6 +13,7 @@ use sqlx::SqlitePool;
 use std::path::Path;
 use tauri::{AppHandle, Runtime};
 
+use crate::chat::sync::RevocationWake;
 use crate::db::connect_sqlite;
 use crate::projects::PROJECTS_DOMAIN;
 use crate::vault;
@@ -60,9 +61,22 @@ pub async fn projects_delete_group<R: Runtime>(
             .await
             .map_err(|error| format!("list Chat files of deleted projects: {}", error.message))?
     };
-    let mutation = structure_commands::delete_group(&pool, group_id).await?;
+    let mutation = delete_group_and_wake(&pool, group_id, &app).await?;
     #[cfg(desktop)]
     remove_deleted_project_chat_files(&pool, &vault_root, &chat_files).await;
+    Ok(mutation)
+}
+
+/// Deletes a group with its projects, then wakes the access revocation drain: the cascade
+/// removes the projects' Chat conversations with the authorizations and runs that targeted
+/// them, so only the drain's orphaned run sweep can stop those runs.
+pub(crate) async fn delete_group_and_wake(
+    pool: &sqlx::SqlitePool,
+    group_id: String,
+    wake: &impl RevocationWake,
+) -> Result<ProjectsMutationRows, String> {
+    let mutation = structure_commands::delete_group(pool, group_id).await?;
+    wake.wake_revocation_drain();
     Ok(mutation)
 }
 

@@ -130,12 +130,33 @@ mod waker {
     /// Wakes the access revocation drain when sync change `notices` report revoked
     /// authorizations, so the runs they granted stop on this device.
     pub(crate) fn on_sync_notices<R: Runtime>(app: &AppHandle<R>, notices: &[ChangeNotice]) {
-        if !access_revoked(notices) {
-            return;
+        if access_revoked(notices) {
+            super::RevocationWake::wake_revocation_drain(app);
         }
+    }
+
+    /// Starts the drain through the waker desktop setup manages, if it is running.
+    pub(super) fn wake<R: Runtime>(app: &AppHandle<R>) {
         if let Some(waker) = app.try_state::<RevocationWaker>() {
             (waker.0)();
         }
+    }
+}
+
+/// Starts the access revocation drain after a change on this device that may have removed
+/// authorizations by cascade, so the runs they granted stop now instead of at the next
+/// unrelated drain. Every local command whose delete cascades into Chat conversations or
+/// authorizations calls it after committing. Android never holds an active authorization, so
+/// it has no drain and waking does nothing there.
+pub(crate) trait RevocationWake {
+    /// Starts the drain.
+    fn wake_revocation_drain(&self);
+}
+
+impl<R: tauri::Runtime> RevocationWake for tauri::AppHandle<R> {
+    fn wake_revocation_drain(&self) {
+        #[cfg(desktop)]
+        waker::wake(self);
     }
 }
 

@@ -1,6 +1,6 @@
 //! Immediate runtime cleanup for durable organizational access revocations.
 
-use super::internal_mcp::generate_opaque_handle;
+use super::internal_mcp::{InternalMcpRunScope, generate_opaque_handle};
 use ganbaru_chat::runtime::ChatRuntimeRegistry;
 use ganbaru_chat_contracts::models::{
     ChatAgentRunId, ChatAuthorizationRevisionId, ChatError, ChatErrorCode, ChatResult,
@@ -140,10 +140,10 @@ pub(crate) async fn drain_access_revocation_jobs(
     app: &tauri::AppHandle,
     pool: &SqlitePool,
 ) -> ChatResult<u64> {
-    stop_orphaned_run_scopes(app, pool).await?;
+    let orphans_left = stop_orphaned_runs_logged(&AppOrphanedRunHost(app), pool).await;
     recover_stale_claims(pool).await?;
     let completed = drain_ready_jobs(app, pool).await?;
-    if has_pending_jobs(pool).await? {
+    if orphans_left || has_pending_jobs(pool).await? {
         let retry_app = app.clone();
         let retry_pool = pool.clone();
         tauri::async_runtime::spawn(async move {
@@ -153,60 +153,152 @@ pub(crate) async fn drain_access_revocation_jobs(
     Ok(completed)
 }
 
-/// Stops organizational runs whose authorization no longer exists.
+/// Runtime services the orphaned run sweep acts on.
+pub(crate) trait OrphanedRunHost {
+    /// Every active organizational run scope, with the thread it serves.
+    async fn active_run_scopes(&self) -> Vec<(ChatThreadId, InternalMcpRunScope)>;
+    /// Revokes `scope` on `thread_id` if it is still the active one.
+    async fn revoke_run_scope(&self, thread_id: &ChatThreadId, scope: &InternalMcpRunScope);
+    /// Whether a provider runtime still owns `thread_id`.
+    fn has_runtime_owner(&self, thread_id: &ChatThreadId) -> ChatResult<bool>;
+    /// Shuts down the provider runtime of `thread_id`.
+    async fn shutdown_thread(&self, thread_id: &ChatThreadId) -> ChatResult<()>;
+    /// Clears terminal access granted in `folder`.
+    fn clear_folder_terminal_access(&self, folder: &ProjectWorkingFolderId) -> ChatResult<()>;
+}
+
+/// [`OrphanedRunHost`] over the running app's registries.
+struct AppOrphanedRunHost<'a>(&'a tauri::AppHandle);
+
+impl OrphanedRunHost for AppOrphanedRunHost<'_> {
+    async fn active_run_scopes(&self) -> Vec<(ChatThreadId, InternalMcpRunScope)> {
+        self.0
+            .state::<super::internal_mcp::InternalMcpRegistry>()
+            .active_run_scopes()
+            .await
+    }
+
+    async fn revoke_run_scope(&self, thread_id: &ChatThreadId, scope: &InternalMcpRunScope) {
+        self.0
+            .state::<super::internal_mcp::InternalMcpRegistry>()
+            .revoke_matching_run_scope(
+                thread_id,
+                &scope.run_id,
+                &scope.provider_turn_id,
+                &scope.authorization_revision_id,
+            )
+            .await;
+    }
+
+    fn has_runtime_owner(&self, thread_id: &ChatThreadId) -> ChatResult<bool> {
+        Ok(self
+            .0
+            .state::<ChatRuntimeRegistry>()
+            .owners()?
+            .into_iter()
+            .any(|owner| owner.thread_id() == thread_id))
+    }
+
+    async fn shutdown_thread(&self, thread_id: &ChatThreadId) -> ChatResult<()> {
+        let runtime = self.0.state::<ChatRuntimeRegistry>();
+        let mutations = self
+            .0
+            .state::<super::workspace::mutation::ChatWorkspaceMutationRegistry>();
+        runtime
+            .shutdown_thread_and_remove(thread_id, REVOCATION_STOP_TIMEOUT, &mutations)
+            .await
+    }
+
+    fn clear_folder_terminal_access(&self, folder: &ProjectWorkingFolderId) -> ChatResult<()> {
+        self.0
+            .state::<super::terminal_access::ChatTerminalAccess>()
+            .clear_folder(folder)
+    }
+}
+
+/// [`stop_orphaned_run_scopes`] with its failures logged, so one failure never skips the rest
+/// of a drain. Returns whether an orphaned run is left for the next drain to retry.
+async fn stop_orphaned_runs_logged(host: &impl OrphanedRunHost, pool: &SqlitePool) -> bool {
+    match stop_orphaned_run_scopes(host, pool).await {
+        Ok(left) => left > 0,
+        Err(error) => {
+            eprintln!(
+                "Chat revocation drain could not check orphaned runs: code {:?}",
+                error.code
+            );
+            true
+        }
+    }
+}
+
+/// Stops organizational runs whose authorization no longer exists, and returns how many are
+/// left for the next drain.
 ///
 /// Deleting a conversation, locally or by sync, cascades away the authorizations that target it
 /// together with their runs, so no revocation job can name those runs while the provider
-/// process and its host-tool scope keep running. The scope remembers its authorization, so
-/// each active scope whose authorization row is gone is revoked and its thread shut down.
-async fn stop_orphaned_run_scopes(app: &tauri::AppHandle, pool: &SqlitePool) -> ChatResult<()> {
-    let mcp = app.state::<super::internal_mcp::InternalMcpRegistry>();
-    let scopes = mcp.active_run_scopes().await;
+/// process and its host-tool scope keep running. The scope remembers its authorization, so the
+/// thread of each active scope whose authorization row is gone is shut down. The scope is
+/// revoked only once the shutdown succeeded (or no runtime owns the thread), so a failed
+/// shutdown leaves the scope for the next drain to find and retry; the host tools of that scope
+/// already refuse every call, because they check the missing authorization.
+pub(crate) async fn stop_orphaned_run_scopes(
+    host: &impl OrphanedRunHost,
+    pool: &SqlitePool,
+) -> ChatResult<usize> {
+    let scopes = host.active_run_scopes().await;
     if scopes.is_empty() {
-        return Ok(());
+        return Ok(0);
     }
     let authorization_ids: Vec<&str> = scopes
         .iter()
         .map(|(_, scope)| scope.authorization_revision_id.as_str())
         .collect();
     let missing = missing_authorizations(pool, &authorization_ids).await?;
-    let runtime = app.state::<ChatRuntimeRegistry>();
-    let mutations = app.state::<super::workspace::mutation::ChatWorkspaceMutationRegistry>();
-    let access = app.state::<super::terminal_access::ChatTerminalAccess>();
-    for (thread_id, scope) in scopes {
+    let mut left = 0;
+    for (thread_id, scope) in &scopes {
         if !missing.contains(scope.authorization_revision_id.as_str()) {
             continue;
         }
-        let revoked = mcp
-            .revoke_matching_run_scope(
-                &thread_id,
-                &scope.run_id,
-                &scope.provider_turn_id,
-                &scope.authorization_revision_id,
-            )
-            .await;
-        if !revoked {
+        let stopped = match host.has_runtime_owner(thread_id) {
+            Ok(false) => Ok(()),
+            Ok(true) => host.shutdown_thread(thread_id).await,
+            Err(error) => Err(error),
+        };
+        if let Err(error) = stopped {
+            eprintln!(
+                "Chat revocation drain could not stop an orphaned run: code {:?}",
+                error.code
+            );
+            left += 1;
             continue;
         }
-        let has_runtime_owner = runtime
-            .owners()?
-            .into_iter()
-            .any(|owner| owner.thread_id() == &thread_id);
-        if has_runtime_owner {
-            runtime
-                .shutdown_thread_and_remove(&thread_id, REVOCATION_STOP_TIMEOUT, &mutations)
-                .await?;
+        host.revoke_run_scope(thread_id, scope).await;
+        if let Err(error) = clear_thread_terminal_access(host, pool, thread_id).await {
+            eprintln!(
+                "Chat revocation drain could not clear terminal access of an orphaned run: code \
+                 {:?}",
+                error.code
+            );
         }
-        let folder: Option<String> =
-            sqlx::query_scalar("SELECT working_folder_id FROM chat_threads WHERE id = ?")
-                .bind(thread_id.as_str())
-                .fetch_optional(pool)
-                .await
-                .map_err(persistence_error)?;
-        if let Some(folder) = folder {
-            let folder = ProjectWorkingFolderId::new(folder).map_err(|_| revocation_error())?;
-            access.clear_folder(&folder)?;
-        }
+    }
+    Ok(left)
+}
+
+/// Clears the terminal access granted in the working folder of `thread_id`, if it has one.
+async fn clear_thread_terminal_access(
+    host: &impl OrphanedRunHost,
+    pool: &SqlitePool,
+    thread_id: &ChatThreadId,
+) -> ChatResult<()> {
+    let folder: Option<String> =
+        sqlx::query_scalar("SELECT working_folder_id FROM chat_threads WHERE id = ?")
+            .bind(thread_id.as_str())
+            .fetch_optional(pool)
+            .await
+            .map_err(persistence_error)?;
+    if let Some(folder) = folder {
+        let folder = ProjectWorkingFolderId::new(folder).map_err(|_| revocation_error())?;
+        host.clear_folder_terminal_access(&folder)?;
     }
     Ok(())
 }
@@ -298,9 +390,12 @@ async fn drain_ready_jobs(app: &tauri::AppHandle, pool: &SqlitePool) -> ChatResu
     Ok(completed)
 }
 
+/// Polls until no job and no orphaned run is left, retrying orphaned runs whose shutdown failed
+/// as well as pending jobs.
 async fn retry_pending_jobs(app: tauri::AppHandle, pool: SqlitePool) {
     for _ in 0..REVOCATION_RETRY_MAX_POLLS {
         tokio::time::sleep(REVOCATION_RETRY_POLL).await;
+        let orphans_left = stop_orphaned_runs_logged(&AppOrphanedRunHost(&app), &pool).await;
         if recover_stale_claims(&pool).await.is_err()
             || drain_ready_jobs(&app, &pool).await.is_err()
         {
@@ -308,6 +403,7 @@ async fn retry_pending_jobs(app: tauri::AppHandle, pool: SqlitePool) {
         }
         match has_pending_jobs(&pool).await {
             Ok(true) => {}
+            Ok(false) if orphans_left => {}
             Ok(false) | Err(_) => return,
         }
     }
@@ -704,13 +800,21 @@ fn persistence_error<T>(_error: T) -> ChatError {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::{
-        ActiveRunSelector, REVOCATION_DRAIN_BATCH_SIZE, REVOCATION_RETRY_MAX_POLLS,
-        REVOCATION_RETRY_MAX_SECONDS, missing_authorizations, retry_delay_seconds,
-        revoke_active_run_authorizations,
+        ActiveRunSelector, InternalMcpRunScope, OrphanedRunHost, REVOCATION_DRAIN_BATCH_SIZE,
+        REVOCATION_RETRY_MAX_POLLS, REVOCATION_RETRY_MAX_SECONDS, missing_authorizations,
+        retry_delay_seconds, revocation_error, revoke_active_run_authorizations,
+        stop_orphaned_run_scopes, stop_orphaned_runs_logged,
     };
-    use ganbaru_chat_contracts::models::{ChatThreadId, ChatTurnId, ProjectWorkingFolderId};
+    use crate::chat::sync::RevocationWake;
+    use ganbaru_chat_contracts::models::{
+        ChatAgentRunId, ChatAuthorizationRevisionId, ChatConversationId, ChatResult,
+        ChatRuntimeApprovalPolicy, ChatThreadId, ChatTurnId, ChatWorkAssignmentId,
+        ProjectWorkingFolderId,
+    };
     use sqlx::SqlitePool;
     use std::collections::BTreeSet;
+    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
     const NOW: &str = "2026-10-20T12:00:00.000Z";
     const TEAMMATE: &str = "participant:folder-agent";
@@ -958,35 +1062,163 @@ pub(crate) mod tests {
         conversation
     }
 
-    /// The cascade leaves no row naming the runs, so only the active scopes' remembered
-    /// authorizations can find them.
-    #[tokio::test]
-    async fn a_local_conversation_delete_leaves_its_run_authorizations_missing() {
-        let pool = pool_with_folder_runs().await;
-        assert!(
-            missing_authorizations(&pool, &["authorization:working", "authorization:queued"])
-                .await
-                .unwrap()
-                .is_empty()
-        );
+    /// Runtime registries as the orphaned run sweep sees them: active scopes, the threads a
+    /// provider runtime owns, and a number of shutdowns that fail before one succeeds.
+    #[derive(Default)]
+    struct FakeRunHost {
+        scopes: Mutex<Vec<(ChatThreadId, InternalMcpRunScope)>>,
+        owned_threads: Mutex<BTreeSet<String>>,
+        failing_shutdowns: AtomicUsize,
+        shutdowns: Mutex<Vec<String>>,
+    }
 
+    impl FakeRunHost {
+        /// A host whose runtime owns `thread-1`, running under `authorization:working`.
+        fn with_working_run() -> Self {
+            let host = Self::default();
+            host.scopes.lock().unwrap().push((
+                ChatThreadId::new("thread-1").unwrap(),
+                InternalMcpRunScope {
+                    run_id: ChatAgentRunId::new("run:working").unwrap(),
+                    provider_turn_id: ChatTurnId::new("turn:working").unwrap(),
+                    assignment_id: ChatWorkAssignmentId::new("assignment:folders").unwrap(),
+                    authorization_revision_id: ChatAuthorizationRevisionId::new(
+                        "authorization:working",
+                    )
+                    .unwrap(),
+                    destination_conversation_id: ChatConversationId::new(
+                        ganbaru_chat::project_defaults::default_channel_ids("project-chat")
+                            .unwrap()
+                            .0,
+                    )
+                    .unwrap(),
+                    authorization_scope_digest: "0".repeat(64),
+                    execution_environment_id: None,
+                    scratch_generation_id: None,
+                    runtime_approval_policy: ChatRuntimeApprovalPolicy::Ask,
+                    channel_sources: Vec::new(),
+                    folder_sources: Vec::new(),
+                },
+            ));
+            host.owned_threads
+                .lock()
+                .unwrap()
+                .insert("thread-1".to_string());
+            host
+        }
+
+        fn scope_count(&self) -> usize {
+            self.scopes.lock().unwrap().len()
+        }
+
+        fn shutdowns(&self) -> Vec<String> {
+            self.shutdowns.lock().unwrap().clone()
+        }
+    }
+
+    impl OrphanedRunHost for FakeRunHost {
+        async fn active_run_scopes(&self) -> Vec<(ChatThreadId, InternalMcpRunScope)> {
+            self.scopes.lock().unwrap().clone()
+        }
+
+        async fn revoke_run_scope(&self, thread_id: &ChatThreadId, scope: &InternalMcpRunScope) {
+            self.scopes
+                .lock()
+                .unwrap()
+                .retain(|(thread, active)| !(thread == thread_id && active == scope));
+        }
+
+        fn has_runtime_owner(&self, thread_id: &ChatThreadId) -> ChatResult<bool> {
+            Ok(self
+                .owned_threads
+                .lock()
+                .unwrap()
+                .contains(thread_id.as_str()))
+        }
+
+        async fn shutdown_thread(&self, thread_id: &ChatThreadId) -> ChatResult<()> {
+            let failing = self.failing_shutdowns.load(Ordering::SeqCst);
+            if failing > 0 {
+                self.failing_shutdowns.store(failing - 1, Ordering::SeqCst);
+                return Err(revocation_error());
+            }
+            self.owned_threads
+                .lock()
+                .unwrap()
+                .remove(thread_id.as_str());
+            self.shutdowns
+                .lock()
+                .unwrap()
+                .push(thread_id.as_str().to_string());
+            Ok(())
+        }
+
+        fn clear_folder_terminal_access(&self, _folder: &ProjectWorkingFolderId) -> ChatResult<()> {
+            Ok(())
+        }
+    }
+
+    /// Records whether the local delete path woke the revocation drain.
+    #[derive(Default)]
+    struct RecordingWake(AtomicBool);
+
+    impl RevocationWake for RecordingWake {
+        fn wake_revocation_drain(&self) {
+            self.0.store(true, Ordering::SeqCst);
+        }
+    }
+
+    /// Deleting a group cascades away the conversation, its authorizations, and its runs, so no
+    /// row names the run any more: the command wakes the drain, whose sweep finds the run
+    /// through the active scope's remembered authorization and stops it.
+    #[tokio::test]
+    async fn a_local_group_delete_wakes_the_drain_and_the_sweep_stops_the_orphaned_run() {
+        let pool = pool_with_folder_runs().await;
+        let host = FakeRunHost::with_working_run();
+        assert_eq!(stop_orphaned_run_scopes(&host, &pool).await.unwrap(), 0);
+        assert_eq!(host.scope_count(), 1);
+        assert!(host.shutdowns().is_empty());
+
+        let wake = RecordingWake::default();
+        crate::projects::structure_commands::delete_group_and_wake(
+            &pool,
+            "group-chat".to_string(),
+            &wake,
+        )
+        .await
+        .unwrap();
+
+        assert!(wake.0.load(Ordering::SeqCst));
+        assert!(authorization_states(&pool).await.is_empty());
+        assert_eq!(stop_orphaned_run_scopes(&host, &pool).await.unwrap(), 0);
+        assert_eq!(host.scope_count(), 0);
+        assert_eq!(host.shutdowns(), vec!["thread-1".to_string()]);
+    }
+
+    /// A failed shutdown keeps the scope, so the next drain finds the orphaned run again and
+    /// retries until the provider stops.
+    #[tokio::test]
+    async fn a_failed_orphan_shutdown_is_retried_by_the_next_drain() {
+        let pool = pool_with_folder_runs().await;
+        let host = FakeRunHost::with_working_run();
+        host.failing_shutdowns.store(1, Ordering::SeqCst);
         delete_run_conversation(&pool, false).await;
 
-        assert!(authorization_states(&pool).await.is_empty());
-        assert_eq!(
-            missing_authorizations(&pool, &["authorization:working", "authorization:queued"])
-                .await
-                .unwrap(),
-            BTreeSet::from([
-                "authorization:queued".to_string(),
-                "authorization:working".to_string()
-            ])
-        );
+        assert!(stop_orphaned_runs_logged(&host, &pool).await);
+        assert_eq!(host.scope_count(), 1);
+        assert!(host.shutdowns().is_empty());
+
+        assert!(!stop_orphaned_runs_logged(&host, &pool).await);
+        assert_eq!(host.scope_count(), 0);
+        assert_eq!(host.shutdowns(), vec!["thread-1".to_string()]);
+        assert_eq!(stop_orphaned_run_scopes(&host, &pool).await.unwrap(), 0);
+        assert_eq!(host.shutdowns().len(), 1);
     }
 
     #[tokio::test]
     async fn an_applied_conversation_delete_reports_the_conversation_and_its_missing_runs() {
         let pool = pool_with_folder_runs().await;
+        let host = FakeRunHost::with_working_run();
         let conversation = delete_run_conversation(&pool, true).await;
         let mut connection = pool.acquire().await.unwrap();
         let effects = ganbaru_chat::sync_effects::after_materialize(
@@ -1012,6 +1244,8 @@ pub(crate) mod tests {
             ])
         );
         assert!(effects.revoked_teammates.is_empty());
+        assert_eq!(stop_orphaned_run_scopes(&host, &pool).await.unwrap(), 0);
+        assert_eq!(host.shutdowns(), vec!["thread-1".to_string()]);
     }
 
     #[test]

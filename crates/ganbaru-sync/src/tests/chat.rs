@@ -834,10 +834,31 @@ async fn scratch_state(replica: &mut Replica) -> String {
         .expect("the access arrived")
 }
 
-/// With a looser channel override, clearing a folder or scratch override inherits the looser
-/// value, so a concurrent explicit stricter override is the stricter intent and wins.
+/// [`TEAMMATE`]'s folder and scratch approval overrides as the runtime resolves them, each
+/// falling back to the channel override: `folder scratch`.
+async fn resolved_target_approvals(replica: &mut Replica) -> String {
+    replica
+        .scalar_text(
+            "SELECT coalesce(folder_grant.runtime_approval_policy, access.runtime_approval_policy,
+                             'inherit')
+                    || ' ' || coalesce(access.scratch_runtime_approval_policy,
+                                       access.runtime_approval_policy, 'inherit')
+             FROM chat_teammate_channel_memberships access
+             JOIN chat_teammate_working_folder_grants folder_grant
+               ON folder_grant.conversation_id = access.conversation_id
+              AND folder_grant.teammate_id = access.teammate_id
+             WHERE access.teammate_id = 'participant:reviewer'",
+        )
+        .await
+        .expect("the access and grant arrived")
+}
+
+/// An explicit folder or scratch override beats a concurrent clear by static rank, whatever the
+/// channel override holds. With the channel override looser than the explicit value, as here,
+/// clearing would inherit the looser value, so the winner is also the stricter resolved
+/// approval; the opposite channel case is the open inherit residual.
 #[test]
-fn chat_concurrent_explicit_target_override_beats_inheriting_a_looser_channel_override() {
+fn chat_concurrent_explicit_target_override_beats_a_clear_under_a_looser_channel_override() {
     block_on(async {
         let mut replicas = replicas(2).await;
         replicas[0]
@@ -872,6 +893,7 @@ fn chat_concurrent_explicit_target_override_beats_inheriting_a_looser_channel_ov
             assert_eq!(grant_state(replica).await, "edit ask active");
             assert_eq!(scratch_state(replica).await, "ask");
             assert_eq!(access_state(replica).await, "1 1 unattended");
+            assert_eq!(resolved_target_approvals(replica).await, "ask ask");
         }
     });
 }

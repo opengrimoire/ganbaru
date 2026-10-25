@@ -24,13 +24,15 @@ use super::writer::{
     ActiveWriter, SuccessorPlan, SyncFiles, SyncKeyStore, WriterCheck, check_writer, create_writer,
     ensure_device_key as ensure_stored_device_key, read_stored_writer, remove_retired_keys,
 };
-use crate::vault::handoff::pairing::PairingManager;
+use crate::vault::handoff::pairing::{PairingManager, PinnedCharter};
 use ganbaru_db::{DatabaseAccessMode, DatabasePoolRegistry};
 use ganbaru_handoff::protocol::SyncRefusalCode;
 use ganbaru_sync::stability::DeviceStanding;
 use ganbaru_sync::{
     ChangeNotice, Engine, SealReport, SpaceContext, SyncError, compaction_limit, hold, local,
 };
+#[cfg(desktop)]
+use ganbaru_sync_contracts::SignedCharter;
 use ganbaru_sync_contracts::{DevicePublicKey, Seq, VersionVector, WriterId};
 #[cfg(desktop)]
 use ganbaru_sync_replica::authority::{
@@ -101,6 +103,10 @@ pub(crate) struct RuntimeState {
     /// Stability the coordinator pass last computed, reported in every sync state.
     #[cfg(desktop)]
     stability: HubStability,
+    /// The charter of the space this device anchors and its person key, as the last pass read
+    /// them, for the pairing reply.
+    #[cfg(desktop)]
+    pairing_charter: Mutex<Option<PinnedCharter>>,
     /// A pause change waiting for the writer record.
     pause_request: Mutex<Option<bool>>,
     /// Recovery actions waiting for the next pass.
@@ -120,6 +126,8 @@ impl Default for RuntimeState {
             changes: watch::Sender::new(0),
             #[cfg(desktop)]
             stability: HubStability::default(),
+            #[cfg(desktop)]
+            pairing_charter: Mutex::default(),
             pause_request: Mutex::default(),
             recovery: Mutex::default(),
             status: Mutex::default(),
@@ -167,6 +175,25 @@ impl RuntimeState {
             .push(RecoveryRequest { choice, reply });
         self.now.notify_one();
         Ok(receiver)
+    }
+
+    /// Records the charter the pairing reply carries, or none when this device anchors no space.
+    #[cfg(desktop)]
+    fn set_pairing_charter(&self, charter: Option<PinnedCharter>) -> Result<(), String> {
+        *self
+            .pairing_charter
+            .lock()
+            .map_err(|_| "sync pairing charter lock is unavailable".to_string())? = charter;
+        Ok(())
+    }
+
+    /// The charter the pairing reply carries, as the last pass read it.
+    #[cfg(desktop)]
+    fn pairing_charter(&self) -> Result<Option<PinnedCharter>, String> {
+        self.pairing_charter
+            .lock()
+            .map(|charter| charter.clone())
+            .map_err(|_| "sync pairing charter lock is unavailable".to_string())
     }
 
     fn take_recovery_requests(&self) -> Vec<RecoveryRequest> {
@@ -680,7 +707,15 @@ impl ServiceState {
             return Ok(Next::Idle);
         };
         if peer.is_none() {
-            session.found_space(&manager).await?;
+            let charter = session.found_space(&manager).await?;
+            #[cfg(desktop)]
+            runtime.set_pairing_charter(charter)?;
+            #[cfg(mobile)]
+            let _ = charter;
+        } else {
+            #[cfg(desktop)]
+            runtime.set_pairing_charter(None)?;
+            session.install_pinned_charter(&manager).await?;
         }
         if !self.started {
             session.start(&mut self.writer).await?;
@@ -1587,10 +1622,12 @@ impl<'a, H: SyncHost> Session<'a, H> {
     /// On a desktop coordinator, founds the vault's sync space once the vault first links: it
     /// creates the anchor keys and installs a charter naming this installation as the anchor,
     /// signed by the person key. A space that has a charter is left as it is. Phones never found
-    /// a space.
-    async fn found_space(&self, manager: &PairingManager) -> Result<(), String> {
+    /// a space. Returns the charter with its person key when this installation is the anchor, for
+    /// the pairing reply.
+    async fn found_space(&self, manager: &PairingManager) -> Result<Option<PinnedCharter>, String> {
         #[cfg(desktop)]
         {
+            let device_id = manager.device_id()?;
             let installed = {
                 let mut conn = acquire(&self.pool).await?;
                 self.engine
@@ -1598,8 +1635,8 @@ impl<'a, H: SyncHost> Session<'a, H> {
                     .await
                     .map_err(|error| format!("read sync charter: {error}"))?
             };
-            if installed.is_some() {
-                return Ok(());
+            if let Some(charter) = installed {
+                return Ok(self.pinned_charter(&charter, &device_id));
             }
             let Some(person) = self.host.person_key(&self.ctx.person_key).await? else {
                 return Err(
@@ -1608,7 +1645,6 @@ impl<'a, H: SyncHost> Session<'a, H> {
                 );
             };
             let anchor = self.anchor_keys().await?;
-            let device_id = manager.device_id()?;
             let tls_fingerprint = tls_fingerprint(manager.certificate()?.as_ref());
             let discovery_key = ganbaru_handoff::discovery::DiscoveryKey::decode(
                 &manager.discovery_key(&self.files.vault_id)?,
@@ -1621,13 +1657,51 @@ impl<'a, H: SyncHost> Session<'a, H> {
                 now_ms: now_ms()?,
             };
             let mut conn = acquire(&self.pool).await?;
-            ensure_charter(&self.engine, &mut conn, &self.ctx, &anchor, &founding).await?;
-            Ok(())
+            let charter =
+                ensure_charter(&self.engine, &mut conn, &self.ctx, &anchor, &founding).await?;
+            Ok(self.pinned_charter(&charter, &device_id))
         }
         #[cfg(mobile)]
         {
             let _ = manager;
-            Ok(())
+            Ok(None)
+        }
+    }
+
+    /// The pairing form of `charter` when it names `device_id` as the anchor.
+    #[cfg(desktop)]
+    fn pinned_charter(&self, charter: &SignedCharter, device_id: &str) -> Option<PinnedCharter> {
+        (charter.charter.anchor_device_id == device_id).then(|| PinnedCharter {
+            charter: ganbaru_handoff::protocol::encode_sync_charter(charter),
+            person_key: self.ctx.person_key.to_text(),
+        })
+    }
+
+    /// On a client, installs the charter pinned at pairing when the space has none yet, and
+    /// refuses a space whose charter differs from it, because the pin names the anchor this
+    /// device agreed to follow.
+    async fn install_pinned_charter(&self, manager: &PairingManager) -> Result<(), String> {
+        let Some(pinned) = manager.coordinator_pin()?.and_then(|pin| pin.charter) else {
+            return Ok(());
+        };
+        let (charter, _) =
+            ganbaru_handoff::protocol::decode_sync_charter(&pinned.charter, &pinned.person_key)?;
+        let mut conn = acquire(&self.pool).await?;
+        match self
+            .engine
+            .charter(&mut conn, &self.ctx)
+            .await
+            .map_err(|error| format!("read sync charter: {error}"))?
+        {
+            Some(installed) if installed == charter => Ok(()),
+            Some(_) => Err(
+                "the sync space has a different anchor than the one pinned at pairing".to_string(),
+            ),
+            None => self
+                .engine
+                .install_charter(&mut conn, &self.ctx, &charter)
+                .await
+                .map_err(|error| format!("install the pinned sync charter: {error}")),
         }
     }
 
@@ -1806,7 +1880,7 @@ pub(crate) fn enrollment_sealer<R: Runtime>(
                 SyncState::Error => Err(status
                     .last_error
                     .unwrap_or_else(|| "the sync pass failed".to_string())),
-                _ => Ok(()),
+                _ => runtime.pairing_charter(),
             }
         })
     })

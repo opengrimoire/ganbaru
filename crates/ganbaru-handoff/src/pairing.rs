@@ -22,7 +22,9 @@ use super::protocol::{
     validate_identifier,
 };
 #[cfg(desktop)]
-use super::protocol::{DISCOVERY_KEY_BYTES, PROTOCOL_VERSION, decode_sync_device_key};
+use super::protocol::{
+    DISCOVERY_KEY_BYTES, PROTOCOL_VERSION, decode_sync_admin_key, decode_sync_device_key,
+};
 use base64::Engine;
 use rcgen::{CertificateParams, DnType, KeyPair};
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
@@ -100,6 +102,10 @@ pub struct LinkedPeer {
     pub certificate_fingerprint: String,
     /// Public half of the device key the device enrolls in the vault's sync space, base64url.
     pub sync_device_key: String,
+    /// Public half of the admin key a linked computer sent, base64url, which an admin promotes
+    /// it with. Phones never hold one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sync_admin_key: Option<String>,
     /// Enrollment time; at the stored limit, the oldest memberships of other vaults are revoked first.
     #[serde(default)]
     pub linked_at_ms: i64,
@@ -133,7 +139,7 @@ pub struct CoordinatorPin {
 }
 
 /// A space charter a coordinator presented at linking, verified against the person key it
-/// carried, the coordinator device id, the vault, and the pinned certificate.
+/// carried and the vault.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PinnedCharter {
@@ -144,23 +150,13 @@ pub struct PinnedCharter {
 }
 
 impl PinnedCharter {
-    /// Decodes the charter and verifies it against its person key, the vault's personal space,
-    /// the coordinator device id, and the SHA-256 of the coordinator certificate.
-    pub fn verify(
-        &self,
-        vault_id: &str,
-        coordinator_device_id: &str,
-        coordinator_certificate: &[u8],
-    ) -> Result<ganbaru_sync_contracts::SignedCharter, String> {
+    /// Decodes the charter and verifies it against its person key and the vault's personal
+    /// space. The charter names the founding anchor, which need not be the coordinator that
+    /// presents it: the log the charter starts says which device anchors the space now.
+    pub fn verify(&self, vault_id: &str) -> Result<ganbaru_sync_contracts::SignedCharter, String> {
         let (charter, _) = decode_sync_charter(&self.charter, &self.person_key)?;
-        let fingerprint: [u8; 32] = Sha256::digest(coordinator_certificate).into();
-        if charter.charter.space != ganbaru_sync_contracts::SpaceId::personal(vault_id)
-            || charter.charter.anchor_device_id != coordinator_device_id
-            || charter.charter.anchor_tls_fingerprint != fingerprint
-        {
-            return Err(
-                "the coordinator presented a charter for another vault or anchor".to_string(),
-            );
+        if charter.charter.space != ganbaru_sync_contracts::SpaceId::personal(vault_id) {
+            return Err("the coordinator presented a charter for another vault".to_string());
         }
         Ok(charter)
     }
@@ -356,6 +352,8 @@ pub struct Enrollment<'a> {
     pub certificate_b64: &'a str,
     /// Public half of the device's sync device key, base64url.
     pub sync_device_key: &'a str,
+    /// Public half of a computer's sync admin key, base64url.
+    pub sync_admin_key: Option<&'a str>,
 }
 
 #[derive(Default)]
@@ -937,7 +935,7 @@ impl PairingManager {
     }
 
     /// Pins the coordinator that just linked this device, with the space charter it presented,
-    /// which must name it as the anchor of the invitation's vault.
+    /// which must belong to the invitation's vault.
     pub fn record_enrolled(
         &self,
         invitation: &PairingInvitation,
@@ -953,11 +951,7 @@ impl PairingManager {
             validate_device_label("coordinator device label", label)?;
         }
         if let Some(charter) = charter.as_ref() {
-            charter.verify(
-                &invitation.vault_id,
-                &invitation.coordinator_device_id,
-                coordinator_certificate,
-            )?;
+            charter.verify(&invitation.vault_id)?;
         }
         let mut inner = self.lock()?;
         let previous = initialized_state(&inner)?.clone();
@@ -1248,6 +1242,9 @@ fn admit_enrollment(
     validate_device_label("device label", enrollment.device_label)?;
     let certificate = decode_certificate(enrollment.certificate_b64)?;
     decode_sync_device_key(enrollment.sync_device_key)?;
+    if let Some(key) = enrollment.sync_admin_key {
+        decode_sync_admin_key(key)?;
+    }
     let pending = inner
         .invitations
         .get(enrollment.invitation_id)
@@ -1269,6 +1266,11 @@ fn admit_enrollment(
         certificate: enrollment.certificate_b64.to_string(),
         certificate_fingerprint: certificate_fingerprint(certificate.as_ref()),
         sync_device_key: enrollment.sync_device_key.to_string(),
+        // Only a computer can become an admin, so a phone's key is not kept.
+        sync_admin_key: enrollment
+            .sync_admin_key
+            .filter(|_| enrollment.device_kind == DeviceKind::Computer)
+            .map(str::to_string),
         linked_at_ms: now_ms,
     };
     let state = initialized_state(inner)?;

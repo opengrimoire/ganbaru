@@ -601,6 +601,66 @@ fn the_named_admin_desktop_seals_a_handover_from_the_head_it_continues() {
     });
 }
 
+#[test]
+fn a_new_anchor_keeps_what_the_old_anchor_stored_final_and_waits_for_writers_it_lacks() {
+    block_on(async {
+        let mut hub = Replica::anchor(0, 44).await;
+        hub.sequence(admin_entry(20)).await.unwrap().unwrap();
+        for index in [22, 23] {
+            hub.sequence(enroll_entry(&person(), index, DeviceRole::Member))
+                .await
+                .unwrap()
+                .unwrap();
+        }
+        let mut admin = Replica::new(20, 44).await;
+        let mut known = Replica::new(22, 44).await;
+        let mut unknown = Replica::new(23, 44).await;
+        admin.pull(&mut hub).await;
+        known.pull(&mut hub).await;
+        unknown.pull(&mut hub).await;
+        tag(&mut known, "first").await;
+        admin.pull(&mut known).await;
+        hub.pull(&mut known).await;
+        // The old anchor stores operations the new one lacks, of a writer it knows and of one
+        // it has never seen.
+        tag(&mut known, "second").await;
+        hub.pull(&mut known).await;
+        tag(&mut unknown, "third").await;
+        hub.pull(&mut unknown).await;
+
+        let signed = admin.handover_proposal(&device_admin(20)).await;
+        let old_vector = hub.stored_vector().await;
+        admin
+            .seal_handover(&signed, Some(old_vector))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            admin.sequence(remove_entry(&device_id(22))).await.unwrap(),
+            Err(ProposalRejection::CatchingUp)
+        );
+        admin.pull(&mut unknown).await;
+        admin
+            .sequence(remove_entry(&device_id(22)))
+            .await
+            .unwrap()
+            .unwrap();
+
+        // What the old anchor stored is final, so arriving after the removal keeps it.
+        admin.pull(&mut hub).await;
+        hub.pull(&mut admin).await;
+        for replica in [&mut admin, &mut hub] {
+            assert_eq!(
+                replica
+                    .count("SELECT COUNT(*) FROM quick_note_tags WHERE id = 'second'")
+                    .await,
+                1
+            );
+            assert!(late_changes(replica).await.is_empty());
+        }
+    });
+}
+
 /// Selected head, entries with their selected flag, and operation states with exclusions.
 type Settled = (
     (u32, u64, Digest32),

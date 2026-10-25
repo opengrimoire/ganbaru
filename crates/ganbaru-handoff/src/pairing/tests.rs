@@ -42,6 +42,7 @@ fn enrollment<'a>(invitation: &'a PairingInvitation, phone: &'a StoredIdentity) 
         device_kind: DeviceKind::Phone,
         certificate_b64: &phone.certificate,
         sync_device_key: &SYNC_DEVICE_KEY,
+        sync_admin_key: None,
     }
 }
 
@@ -80,6 +81,7 @@ fn enroll_identity(
             },
             certificate_b64: &identity.certificate,
             sync_device_key: &SYNC_DEVICE_KEY,
+            sync_admin_key: None,
         },
         now_ms + 1,
     )
@@ -1786,16 +1788,13 @@ fn pinned_charter(
 }
 
 #[test]
-fn pairing_pins_the_charter_that_names_the_coordinator_as_anchor() {
+fn pairing_pins_a_signed_charter_of_the_vault_whichever_device_founded_it() {
     let (phone_root, phone, invitation, certificate) = linked_phone("pin-charter");
     let person = ganbaru_contacts::PersonKeyPair::from_seed(&[8; 32]).expect("person");
     assert_eq!(pin_of(&phone).charter, None);
 
-    let other_certificate = b"another coordinator certificate".to_vec();
     for foreign in [
         pinned_charter("vault-2", "device-desktop", &certificate, &person),
-        pinned_charter("vault-1", "device-other", &certificate, &person),
-        pinned_charter("vault-1", "device-desktop", &other_certificate, &person),
         PinnedCharter {
             person_key: ganbaru_contacts::PersonKeyPair::from_seed(&[9; 32])
                 .expect("other person")
@@ -1817,6 +1816,24 @@ fn pairing_pins_the_charter_that_names_the_coordinator_as_anchor() {
         "a refused charter keeps the pin"
     );
 
+    // A charter founded by another device: the coordinator presents it after the anchor or
+    // the vault moved, and the log it starts names the current anchor.
+    let founded_elsewhere = pinned_charter(
+        "vault-1",
+        "device-other",
+        b"another coordinator certificate",
+        &person,
+    );
+    phone
+        .record_enrolled(
+            &invitation,
+            &certificate,
+            None,
+            Some(founded_elsewhere.clone()),
+        )
+        .expect("pin a charter founded elsewhere");
+    assert_eq!(pin_of(&phone).charter, Some(founded_elsewhere));
+
     let charter = pinned_charter("vault-1", "device-desktop", &certificate, &person);
     phone
         .record_enrolled(&invitation, &certificate, None, Some(charter.clone()))
@@ -1827,4 +1844,65 @@ fn pairing_pins_the_charter_that_names_the_coordinator_as_anchor() {
         .initialize(phone_root.path().to_path_buf(), "device-phone".to_string())
         .expect("reload phone");
     assert_eq!(pin_of(&reloaded).charter, Some(charter));
+}
+
+#[test]
+fn only_linked_desktops_keep_the_admin_key_they_send_across_restarts() {
+    let temporary = TestDirectory::new("admin-key");
+    let manager = PairingManager::default();
+    manager
+        .initialize(temporary.path().to_path_buf(), "device-desktop".to_string())
+        .expect("initialize");
+    let admin_key = crate::protocol::encode_sync_admin_key(
+        &ganbaru_sync_contracts::AdminKeyPair::from_seed(&[4; 32])
+            .expect("admin key")
+            .public_key(),
+    );
+    let enroll = |device_id: &str, device_kind: DeviceKind, admin: &str| {
+        let identity = create_identity(device_id.to_string()).expect("identity");
+        let invitation = manager
+            .create_invitation(
+                "127.0.0.1:41000".parse().expect("endpoint"),
+                "vault-1".to_string(),
+                0,
+                crate::protocol::test_compatibility(),
+                100,
+            )
+            .expect("invitation");
+        manager.enroll_peer(
+            Enrollment {
+                device_id,
+                device_kind,
+                certificate_b64: &identity.certificate,
+                sync_admin_key: Some(admin),
+                ..enrollment(&invitation, &identity)
+            },
+            101,
+        )
+    };
+    enroll("device-phone", DeviceKind::Phone, &admin_key).expect("enroll phone");
+    enroll("device-laptop", DeviceKind::Computer, &admin_key).expect("enroll laptop");
+    assert!(
+        enroll("device-other", DeviceKind::Computer, "not-a-key").is_err(),
+        "a malformed admin key refuses the enrollment"
+    );
+
+    let restarted = PairingManager::default();
+    restarted
+        .initialize(temporary.path().to_path_buf(), "device-desktop".to_string())
+        .expect("restart");
+    let mut keys: Vec<(String, Option<String>)> = restarted
+        .linked_peers()
+        .expect("linked devices")
+        .into_iter()
+        .map(|peer| (peer.device_id, peer.sync_admin_key))
+        .collect();
+    keys.sort();
+    assert_eq!(
+        keys,
+        vec![
+            ("device-laptop".to_string(), Some(admin_key)),
+            ("device-phone".to_string(), None),
+        ]
+    );
 }

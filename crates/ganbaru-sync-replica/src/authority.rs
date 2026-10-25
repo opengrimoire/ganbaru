@@ -2,17 +2,22 @@
 //! the admin-signed proposals it places in its outbox, and the sequencing of proposals through
 //! the engine.
 
-use super::outbox::Outbox;
-use super::writer::{SyncKey, SyncKeyStore, ensure_device_key};
+use super::outbox::{Outbox, is_final};
+use super::writer::{
+    SelectedHead, SequencedCheck, SyncKey, SyncKeyStore, WriterRecord, ensure_device_key,
+    sequenced_check,
+};
 use ganbaru_contacts::PersonKeyPair;
 use ganbaru_handoff::discovery::DiscoveryKey;
-use ganbaru_handoff::protocol::DeviceKind as HandoffDeviceKind;
-use ganbaru_sync::{Engine, LocalWriter, SpaceContext};
+use ganbaru_handoff::protocol::{
+    DeviceKind as HandoffDeviceKind, MAX_SYNC_FORWARDED_PROPOSALS, encode_sync_proposal,
+};
+use ganbaru_sync::{AuthorizationView, Engine, LocalWriter, SpaceContext};
 use ganbaru_sync_contracts::bounds::{DISCOVERY_KEY_BYTES, TLS_FINGERPRINT_BYTES};
 use ganbaru_sync_contracts::{
-    AdminKeyPair, Charter, DeviceKeyPair, DeviceKind, DevicePublicKey, DeviceRole, Enroll, Entry,
-    Proposal, ProposalRejection, RecoverySeed, Remove, SignedCharter, SignedProposal, SpaceId,
-    sign_charter, sign_proposal,
+    AdminKeyPair, AdminPublicKey, Charter, DeviceKeyPair, DeviceKind, DevicePublicKey, DeviceRole,
+    Digest32, Enroll, Entry, Handover, Proposal, ProposalRejection, RecoverySeed, Remove, SetRole,
+    SignedCharter, SignedProposal, SpaceId, VersionVector, sign_charter, sign_proposal,
 };
 use sqlx::SqliteConnection;
 
@@ -24,26 +29,14 @@ pub struct AnchorKeys {
     pub recovery: RecoverySeed,
 }
 
-/// Reads the anchor keys of a vault, creating each missing one once. Key stores may block, so
-/// callers run this off the async runtime.
+/// Reads the anchor keys of a vault, creating each missing one once. Only founding a charter
+/// calls this: a recovery seed the user saved and the store forgot is created anew, for the
+/// next charter's kit. Key stores may block, so callers run this off the async runtime.
 pub fn ensure_anchor_keys(keys: &dyn SyncKeyStore, vault_id: &str) -> Result<AnchorKeys, String> {
     let device = ensure_device_key(keys, vault_id)?;
-    let admin = match keys.read(vault_id, SyncKey::Admin)? {
-        Some(pkcs8) => AdminKeyPair::from_pkcs8(&pkcs8)
-            .map_err(|error| format!("decode sync admin key: {error}"))?,
-        None => {
-            let (pkcs8, admin) = AdminKeyPair::generate()
-                .map_err(|error| format!("create sync admin key: {error}"))?;
-            keys.write(vault_id, SyncKey::Admin, &pkcs8)?;
-            admin
-        }
-    };
-    let recovery = match keys.read(vault_id, SyncKey::RecoverySeed)? {
-        Some(bytes) => RecoverySeed::from_bytes(
-            bytes
-                .try_into()
-                .map_err(|_| "sync recovery seed is malformed".to_string())?,
-        ),
+    let admin = ensure_admin_key(keys, vault_id)?;
+    let recovery = match pending_recovery_seed(keys, vault_id)? {
+        Some(seed) => seed,
         None => {
             let seed = RecoverySeed::generate()
                 .map_err(|error| format!("create sync recovery seed: {error}"))?;
@@ -56,6 +49,22 @@ pub fn ensure_anchor_keys(keys: &dyn SyncKeyStore, vault_id: &str) -> Result<Anc
         admin,
         recovery,
     })
+}
+
+/// Reads the admin key of a vault, creating it once. A desktop that links to a coordinator
+/// sends its public half at pairing, so an admin can later promote it without another link.
+/// Key stores may block, so callers run this off the async runtime.
+pub fn ensure_admin_key(keys: &dyn SyncKeyStore, vault_id: &str) -> Result<AdminKeyPair, String> {
+    match keys.read(vault_id, SyncKey::Admin)? {
+        Some(pkcs8) => AdminKeyPair::from_pkcs8(&pkcs8)
+            .map_err(|error| format!("decode sync admin key: {error}")),
+        None => {
+            let (pkcs8, admin) = AdminKeyPair::generate()
+                .map_err(|error| format!("create sync admin key: {error}"))?;
+            keys.write(vault_id, SyncKey::Admin, &pkcs8)?;
+            Ok(admin)
+        }
+    }
 }
 
 /// What the first anchor founds a space with besides its keys.
@@ -162,11 +171,14 @@ pub struct Reconciliation {
 
 /// Places a proposal signed by `admin` in the outbox for each change of `changes` that no
 /// proposal exists for yet, waiting or finally rejected, matched by change kind and device id.
-/// A finally rejected change is never proposed again, so a removed device that links again
-/// stays removed. Returns how many proposals it added.
+/// A finally rejected change is not proposed again while its rejection stays in the outbox, so
+/// a removed device that links again stays removed. An outbox full of waiting proposals leaves
+/// the remaining changes for a later pass instead of failing it. Returns how many proposals it
+/// added.
 pub fn queue_reconciliation(
     outbox: &mut Outbox,
     space: SpaceId,
+    charter: Digest32,
     admin: &AdminKeyPair,
     changes: Reconciliation,
     now_ms: u64,
@@ -182,7 +194,10 @@ pub fn queue_reconciliation(
         if outbox.find(|queued| same_change(queued, &entry)).is_some() {
             continue;
         }
-        added += usize::from(outbox.add(propose(space, admin, entry, now_ms)?)?);
+        if !outbox.has_room() {
+            break;
+        }
+        added += usize::from(outbox.add(propose(space, charter, admin, entry, now_ms)?)?);
     }
     Ok(added)
 }
@@ -199,6 +214,7 @@ fn same_change(left: &Entry, right: &Entry) -> bool {
 /// Signs `entry` as a proposal of the admin key for the space.
 pub fn propose(
     space: SpaceId,
+    charter: Digest32,
     admin: &AdminKeyPair,
     entry: Entry,
     now_ms: u64,
@@ -206,6 +222,7 @@ pub fn propose(
     sign_proposal(
         &Proposal {
             space,
+            charter,
             author: admin.public_key(),
             created_at_ms: millis(now_ms)?,
             entry,
@@ -257,6 +274,270 @@ pub async fn sequence_outbox(
     Ok(sequenced)
 }
 
+/// Bytes of encoded proposals one forward answer carries at most, well inside a control frame.
+/// A single proposal larger than this still travels alone.
+const FORWARD_BUDGET_BYTES: usize = 768 * 1024;
+
+/// On a hub that is not the anchor, answers a proposal a linked device sent: the revision when
+/// the selected chain holds it, the final rejection the anchor gave it, or `NotAnchor` after
+/// keeping it in the outbox for the anchor to collect. A full outbox keeps nothing, and the
+/// sender keeps the proposal in its own outbox either way.
+pub async fn hold_for_anchor(
+    engine: &Engine,
+    conn: &mut SqliteConnection,
+    ctx: &SpaceContext,
+    outbox: &mut Outbox,
+    proposal: SignedProposal,
+) -> Result<Result<u64, ProposalRejection>, String> {
+    let hash = proposal.hash();
+    if let Some(revision) = engine
+        .proposal_revision(conn, ctx, &hash)
+        .await
+        .map_err(|error| format!("read sync proposal revision: {error}"))?
+    {
+        return Ok(Ok(revision));
+    }
+    if let Some(rejection) = outbox.get(&hash).and_then(|entry| entry.rejection) {
+        return Ok(Err(rejection));
+    }
+    if outbox.has_room() {
+        outbox.add(proposal)?;
+    }
+    Ok(Err(ProposalRejection::NotAnchor))
+}
+
+/// Answers a forward request of `requester`. Only the device the selected log names as anchor
+/// is answered: its final rejections are recorded, and the waiting proposals it should
+/// sequence next are returned, oldest first and bounded by count and bytes, after proposals
+/// the selected chain holds are dropped. Any other requester receives nothing and settles
+/// nothing.
+pub async fn collect_forwards(
+    engine: &Engine,
+    conn: &mut SqliteConnection,
+    ctx: &SpaceContext,
+    outbox: &mut Outbox,
+    requester: &str,
+    settled: &[(Digest32, ProposalRejection)],
+) -> Result<Vec<SignedProposal>, String> {
+    let anchors = engine
+        .authorization(conn, ctx)
+        .await
+        .map_err(|error| format!("read sync authorization: {error}"))?
+        .is_some_and(|view| view.anchor_device_id == requester);
+    if !anchors {
+        return Ok(Vec::new());
+    }
+    for (hash, rejection) in settled {
+        outbox.settle(hash, Err(*rejection))?;
+    }
+    outbox.prune(engine, conn, ctx).await?;
+    let mut bytes = 0;
+    let mut forwarded = Vec::new();
+    for proposal in outbox.pending() {
+        let size = encode_sync_proposal(&proposal).len();
+        if forwarded.len() == MAX_SYNC_FORWARDED_PROPOSALS
+            || (!forwarded.is_empty() && bytes + size > FORWARD_BUDGET_BYTES)
+        {
+            break;
+        }
+        bytes += size;
+        forwarded.push(proposal);
+    }
+    Ok(forwarded)
+}
+
+/// Sequences the proposals a hub forwarded through the anchor's writer and returns the final
+/// rejections, which the next forward reports so the hub stops holding them. Accepted
+/// proposals need no report: the hub finds them in the chain once it applies the entries.
+pub async fn sequence_forwarded(
+    engine: &Engine,
+    conn: &mut SqliteConnection,
+    ctx: &SpaceContext,
+    writer: &mut LocalWriter<'_>,
+    proposals: &[SignedProposal],
+    now_ms: u64,
+) -> Result<Vec<(Digest32, ProposalRejection)>, String> {
+    let mut rejected = Vec::new();
+    for proposal in proposals {
+        if let Err(rejection) = sequence(engine, conn, ctx, writer, proposal, now_ms).await?
+            && is_final(rejection)
+        {
+            rejected.push((proposal.hash(), rejection));
+        }
+    }
+    Ok(rejected)
+}
+
+/// The entry that makes an enrolled desktop an admin with `admin_key`, which lets it sign
+/// proposals and take the anchor.
+pub fn promote_entry(device_id: &str, admin_key: AdminPublicKey) -> Entry {
+    Entry::SetRole(SetRole::Device {
+        device_id: device_id.to_string(),
+        role: DeviceRole::Admin(admin_key),
+    })
+}
+
+/// The entry that names a new recovery admin key, as regenerating the recovery kit does.
+pub fn recovery_entry(recovery: &RecoverySeed) -> Result<Entry, String> {
+    Ok(Entry::SetRole(SetRole::Recovery {
+        recovery_admin_key: recovery
+            .recovery_admin_key()
+            .map_err(|error| format!("derive the recovery admin key: {error}"))?
+            .public_key(),
+    }))
+}
+
+/// Replaces the vault's recovery kit and returns the new seed. The `set role` proposal naming
+/// the new recovery admin key enters the outbox first and the seed is stored after, so a full
+/// outbox changes nothing and a failed store withdraws the proposal: the log never names a key
+/// whose seed is gone. The key store keeps the new seed until the user saves the kit. A kit
+/// that still waits is never overwritten while it may still sign: one the log names must be
+/// saved first, and one whose proposal still waits must be sequenced or rejected first. Key
+/// stores may block, so callers run this off the async runtime.
+pub fn regenerate_recovery_kit(
+    keys: &dyn SyncKeyStore,
+    vault_id: &str,
+    outbox: &mut Outbox,
+    view: &AuthorizationView,
+    space: SpaceId,
+    admin: &AdminKeyPair,
+    now_ms: u64,
+) -> Result<RecoverySeed, String> {
+    if let Some(waiting) = pending_recovery_seed(keys, vault_id)? {
+        let key = recovery_public_key(&waiting)?;
+        if key == view.recovery_admin_key {
+            return Err("save the waiting recovery kit before replacing it".to_string());
+        }
+        let proposed = outbox.entries().iter().any(|entry| {
+            entry.rejection.is_none()
+                && matches!(
+                    &entry.proposal.proposal.entry,
+                    Entry::SetRole(SetRole::Recovery { recovery_admin_key })
+                        if *recovery_admin_key == key
+                )
+        });
+        if proposed {
+            return Err("the waiting recovery kit is not sequenced yet".to_string());
+        }
+    }
+    let seed =
+        RecoverySeed::generate().map_err(|error| format!("create sync recovery seed: {error}"))?;
+    let proposal = propose(space, view.charter, admin, recovery_entry(&seed)?, now_ms)?;
+    let hash = proposal.hash();
+    outbox.add(proposal)?;
+    if let Err(error) = keys.write(vault_id, SyncKey::RecoverySeed, seed.as_bytes()) {
+        outbox.withdraw(&hash)?;
+        return Err(error);
+    }
+    Ok(seed)
+}
+
+fn recovery_public_key(seed: &RecoverySeed) -> Result<AdminPublicKey, String> {
+    Ok(seed
+        .recovery_admin_key()
+        .map_err(|error| format!("derive the recovery admin key: {error}"))?
+        .public_key())
+}
+
+/// Whether the selected log names the recovery admin key `seed` derives, so its kit signs.
+pub fn recovery_kit_active(view: &AuthorizationView, seed: &RecoverySeed) -> Result<bool, String> {
+    Ok(recovery_public_key(seed)? == view.recovery_admin_key)
+}
+
+/// The recovery seed whose kit waits for the user to save it, if the key store still holds
+/// one. Key stores may block, so callers run this off the async runtime.
+pub fn pending_recovery_seed(
+    keys: &dyn SyncKeyStore,
+    vault_id: &str,
+) -> Result<Option<RecoverySeed>, String> {
+    keys.read(vault_id, SyncKey::RecoverySeed)?
+        .map(|bytes| {
+            bytes
+                .try_into()
+                .map(RecoverySeed::from_bytes)
+                .map_err(|_| "sync recovery seed is malformed".to_string())
+        })
+        .transpose()
+}
+
+/// Deletes the recovery seed once the user saved its kit, so no device keeps it. A kit the
+/// selected log does not name yet is kept, because forgetting it could leave no kit that signs.
+/// Key stores may block, so callers run this off the async runtime.
+pub fn forget_recovery_seed(
+    keys: &dyn SyncKeyStore,
+    vault_id: &str,
+    view: &AuthorizationView,
+) -> Result<(), String> {
+    if let Some(seed) = pending_recovery_seed(keys, vault_id)?
+        && !recovery_kit_active(view, &seed)?
+    {
+        return Err(
+            "the anchor has not sequenced this recovery kit yet; keep it until it is active"
+                .to_string(),
+        );
+    }
+    keys.remove(vault_id, SyncKey::RecoverySeed)
+}
+
+/// Signs, with the recovery admin key `kit_code` derives, the proposal that makes the enrolled
+/// desktop `device_id` an admin with `admin_key`, so it can take the anchor. The derived key
+/// lives only inside this call. Refuses a code that does not parse or a kit whose key the
+/// selected log does not name.
+pub fn recovery_promotion(
+    view: &AuthorizationView,
+    space: SpaceId,
+    kit_code: &str,
+    device_id: &str,
+    admin_key: AdminPublicKey,
+    now_ms: u64,
+) -> Result<SignedProposal, String> {
+    let seed = RecoverySeed::parse_kit_code(kit_code)
+        .map_err(|error| format!("read the recovery kit: {error}"))?;
+    let recovery = seed
+        .recovery_admin_key()
+        .map_err(|error| format!("derive the recovery admin key: {error}"))?;
+    if recovery.public_key() != view.recovery_admin_key {
+        return Err("this recovery kit does not belong to the vault's current log".to_string());
+    }
+    propose(
+        space,
+        view.charter,
+        &recovery,
+        promote_entry(device_id, admin_key),
+        now_ms,
+    )
+}
+
+/// The enrolled devices other than `own_device_id` and the anchor that are not removed and
+/// for which `linked` is false. An admin hub proposes their removal, because the coordinator
+/// links every device of the space.
+pub fn unlinked_devices(
+    view: &AuthorizationView,
+    own_device_id: &str,
+    linked: impl Fn(&str) -> bool,
+) -> Vec<String> {
+    view.devices
+        .iter()
+        .filter(|device| {
+            device.removed_revision.is_none()
+                && device.device_id != view.anchor_device_id
+                && device.device_id != own_device_id
+                && !linked(&device.device_id)
+        })
+        .map(|device| device.device_id.clone())
+        .collect()
+}
+
+/// Whether the selected log names `admin_key` as the role of the enrolled, unremoved device
+/// `device_id`. Only such a device may take the anchor.
+pub fn is_admin(view: &AuthorizationView, device_id: &str, admin_key: &AdminPublicKey) -> bool {
+    view.devices.iter().any(|device| {
+        device.device_id == device_id
+            && device.removed_revision.is_none()
+            && matches!(&device.role, DeviceRole::Admin(key) if key == admin_key)
+    })
+}
+
 /// Enrolls a device as a member through the anchor's writer and returns the revision.
 pub async fn enroll(
     engine: &Engine,
@@ -267,7 +548,13 @@ pub async fn enroll(
     enrollment: Enrollment,
     now_ms: u64,
 ) -> Result<u64, String> {
-    let proposal = propose(ctx.space, admin, enroll_entry(enrollment), now_ms)?;
+    let proposal = propose(
+        ctx.space,
+        charter_hash(engine, conn, ctx).await?,
+        admin,
+        enroll_entry(enrollment),
+        now_ms,
+    )?;
     accepted(sequence(engine, conn, ctx, writer, &proposal, now_ms).await?)
 }
 
@@ -282,12 +569,32 @@ pub async fn remove(
     device_id: &str,
     now_ms: u64,
 ) -> Result<u64, String> {
-    let proposal = propose(ctx.space, admin, remove_entry(device_id), now_ms)?;
+    let proposal = propose(
+        ctx.space,
+        charter_hash(engine, conn, ctx).await?,
+        admin,
+        remove_entry(device_id),
+        now_ms,
+    )?;
     accepted(sequence(engine, conn, ctx, writer, &proposal, now_ms).await?)
 }
 
 fn accepted(outcome: Result<u64, ProposalRejection>) -> Result<u64, String> {
     outcome.map_err(|rejection| format!("sync proposal rejected: {rejection}"))
+}
+
+/// Hash of the installed charter, which every proposal for the space names.
+pub async fn charter_hash(
+    engine: &Engine,
+    conn: &mut SqliteConnection,
+    ctx: &SpaceContext,
+) -> Result<Digest32, String> {
+    engine
+        .charter(conn, ctx)
+        .await
+        .map_err(|error| format!("read sync charter: {error}"))?
+        .map(|charter| charter.hash())
+        .ok_or_else(|| "the sync space has no charter".to_string())
 }
 
 /// The discovery key of the charter, which a non-removal entry ignores.
@@ -304,6 +611,92 @@ async fn current_discovery_key(
         .ok_or_else(|| "the sync space has no charter".to_string())
 }
 
+/// Compares the anchor high-water `record` names with the selected head of the space. A space
+/// without a charter, or a record without a high-water, is current.
+pub async fn restore_check(
+    engine: &Engine,
+    conn: &mut SqliteConnection,
+    ctx: &SpaceContext,
+    record: &WriterRecord,
+) -> Result<SequencedCheck, String> {
+    let Some(view) = engine
+        .authorization(conn, ctx)
+        .await
+        .map_err(|error| format!("read sync authorization: {error}"))?
+    else {
+        return Ok(SequencedCheck::Current);
+    };
+    Ok(sequenced_check(
+        record.sequenced.as_ref(),
+        SelectedHead {
+            charter: view.charter,
+            epoch: view.epoch,
+            revision: view.revision,
+        },
+    ))
+}
+
+/// Signs with `admin` and seals a handover from the selected head to the device of the local
+/// writer, opening the next epoch. `old_anchor_vector` is the old anchor's stored
+/// vector when this device takes over from another anchor; a restored anchor handing over to
+/// itself passes `None`, since its own log is what it lost. Returns the revision, or why the
+/// engine rejected the handover. A log holding only its charter has no entry to continue from.
+pub async fn seal_handover_here(
+    engine: &Engine,
+    conn: &mut SqliteConnection,
+    ctx: &SpaceContext,
+    admin: &AdminKeyPair,
+    writer: &mut LocalWriter<'_>,
+    old_anchor_vector: Option<VersionVector>,
+    now_ms: u64,
+) -> Result<Result<u64, ProposalRejection>, String> {
+    let view = engine
+        .authorization(conn, ctx)
+        .await
+        .map_err(|error| format!("read sync authorization: {error}"))?
+        .ok_or_else(|| "the sync space has no charter".to_string())?;
+    if view.revision == 0 {
+        return Err(
+            "the log holds only its charter, so no epoch can continue it; link the devices again"
+                .to_string(),
+        );
+    }
+    let epoch = view
+        .epoch
+        .checked_add(1)
+        .ok_or_else(|| "the sync epoch is exhausted".to_string())?;
+    let proposal = propose(
+        ctx.space,
+        view.charter,
+        admin,
+        Entry::Handover(Handover {
+            new_anchor_device_id: writer.certificate.certificate.device_id.clone(),
+            epoch,
+            continues_from_revision: view.revision,
+            continues_from_hash: view.entry_hash,
+        }),
+        now_ms,
+    )?;
+    engine
+        .seal_handover(conn, ctx, &proposal, old_anchor_vector, writer, now_ms)
+        .await
+        .map_err(|error| format!("seal sync handover: {error}"))
+}
+
 fn millis(now_ms: u64) -> Result<i64, String> {
     i64::try_from(now_ms).map_err(|_| "clock is out of range".to_string())
+}
+
+/// `vector` without the writers `excluded` names. A desktop taking the anchor merges the
+/// coordinator's stored vector into the old anchor vector without the writers of devices it
+/// quarantined: it never stores those writers, so naming them would make every removal wait as
+/// `catching_up`, including the removal of the quarantined device.
+pub fn without_writers(vector: &VersionVector, excluded: &VersionVector) -> VersionVector {
+    let mut kept = VersionVector::new();
+    for (writer, seq) in vector.iter() {
+        if excluded.get(&writer) == 0 {
+            kept.advance(writer, seq);
+        }
+    }
+    kept
 }

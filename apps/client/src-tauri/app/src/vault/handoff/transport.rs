@@ -7,7 +7,7 @@ pub(crate) use dial_report::{CoordinatorDialReport, coordinator_dial_report};
 use dial_report::{DialOutcome, record_dial};
 #[cfg(desktop)]
 pub(crate) use server::{
-    CoordinatorListener, CoordinatorServices, EnrollmentSealer, LanAdmission,
+    CoordinatorListener, CoordinatorServices, EnrollmentSealer, LanAdmission, QuarantinedDevices,
     serve_with_coordinator,
 };
 
@@ -169,6 +169,7 @@ pub(crate) async fn enroll(
     device_label: String,
     device_kind: super::protocol::DeviceKind,
     sync_device_key: &ganbaru_sync_contracts::DevicePublicKey,
+    sync_admin_key: Option<&ganbaru_sync_contracts::AdminPublicKey>,
 ) -> Result<(), String> {
     invitation.validate(unix_time_ms())?;
     let endpoint = invitation
@@ -189,6 +190,7 @@ pub(crate) async fn enroll(
             device_kind,
             device_certificate: encode_certificate(&identity.certificate),
             sync_device_key: super::protocol::encode_sync_device_key(sync_device_key),
+            sync_admin_key: sync_admin_key.map(super::protocol::encode_sync_admin_key),
         },
     ))
     .await?;
@@ -212,12 +214,15 @@ pub(crate) async fn enroll(
                 .peer_certificates()
                 .and_then(|certificates| certificates.first())
                 .ok_or_else(|| "coordinator did not provide a certificate".to_string())?;
-            let charter = charter
-                .zip(person_key)
-                .map(|(charter, person_key)| PinnedCharter {
-                    charter,
-                    person_key,
-                });
+            // A device that pinned no charter could not tell its anchor from any other, so a
+            // reply without one is refused.
+            let (Some(charter), Some(person_key)) = (charter, person_key) else {
+                return Err("the coordinator linked this device without a sync charter".to_string());
+            };
+            let charter = Some(PinnedCharter {
+                charter,
+                person_key,
+            });
             manager.record_enrolled(
                 invitation,
                 coordinator_certificate.as_ref(),

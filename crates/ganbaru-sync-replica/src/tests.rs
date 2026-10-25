@@ -22,6 +22,7 @@ mod assets;
 mod backup;
 mod exchange;
 mod outbox;
+mod quarantine;
 
 fn block_on<F: std::future::Future>(future: F) -> F::Output {
     tokio::runtime::Builder::new_current_thread()

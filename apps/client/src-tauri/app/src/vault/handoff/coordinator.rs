@@ -546,6 +546,7 @@ mod tests {
             certificate: String::new(),
             certificate_fingerprint: String::new(),
             sync_device_key: String::new(),
+            sync_admin_key: None,
             linked_at_ms: 0,
         }
     }

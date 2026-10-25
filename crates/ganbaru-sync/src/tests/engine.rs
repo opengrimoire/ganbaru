@@ -13,7 +13,8 @@ use super::fixture::{
     MEMBERSHIPS_TABLE, NODES_TABLE, TEST_MANIFEST, edge_group, edge_key, membership_key,
 };
 use super::replica::{
-    Replica, START_MS, VAULT_ID, converge, mint_writers, pair, person, rank, spread_devices,
+    Replica, START_MS, VAULT_ID, converge, device_id, mint_writers, pair, person, rank,
+    spread_devices,
 };
 use crate::error::failpoints;
 use crate::manifest::vault::quick_notes::{NOTES_TABLE, TAGS_TABLE, note_group};
@@ -291,6 +292,44 @@ fn store_refuses_other_spaces_and_untrusted_writers() {
             vec![StoreOutcome::Refused(StoreRefusal::Untrusted)]
         );
         assert_eq!(vault.stored_vector().await, template);
+    });
+}
+
+#[test]
+fn store_refuses_a_quarantined_device_keeps_the_rest_of_the_page_and_stores_it_once_lifted() {
+    block_on(async {
+        let mut vault = Replica::new(0, 1).await;
+        let mut quarantined = Replica::new(1, 1).await;
+        let mut honest = Replica::new(2, 1).await;
+        quarantined
+            .exec("INSERT INTO quick_note_tags (id, name, order_key) VALUES ('tag-q', 'Q', 'a0')")
+            .await;
+        quarantined.seal().await.unwrap();
+        honest
+            .exec("INSERT INTO quick_note_tags (id, name, order_key) VALUES ('tag-h', 'H', 'a1')")
+            .await;
+        honest.seal().await.unwrap();
+        let held = quarantined.own_ops().await;
+        let honest_ops = honest.own_ops().await;
+        let page: Vec<Vec<u8>> = held.iter().chain(&honest_ops).cloned().collect();
+        let devices = std::collections::BTreeSet::from([device_id(1)]);
+        let outcomes = vault
+            .engine
+            .store_many_quarantined(&mut vault.conn, &vault.ctx, &page, &devices, vault.now_ms)
+            .await
+            .unwrap();
+        assert_eq!(
+            outcomes[..held.len()],
+            vec![StoreOutcome::Refused(StoreRefusal::Quarantined); held.len()]
+        );
+        assert_eq!(outcomes[held.len()..], vec![STORED; honest_ops.len()]);
+        assert_eq!(vault.stored_vector().await.get(&quarantined.writer()), 0);
+
+        assert_eq!(vault.receive(&held).await, vec![STORED; held.len()]);
+        assert_eq!(
+            vault.stored_vector().await.get(&quarantined.writer()),
+            u64::try_from(held.len()).unwrap()
+        );
     });
 }
 

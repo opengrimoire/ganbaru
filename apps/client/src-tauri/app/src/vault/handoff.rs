@@ -136,6 +136,7 @@ impl CoordinatorLifecycle {
                 .inner()
                 .clone(),
             admission: lan_admission(&app, port)?,
+            quarantined: Some(crate::sync::quarantined_devices(&app)),
         };
         tauri::async_runtime::spawn(contact_requests::run(app.clone(), contact_receiver));
         let advertiser_app = app.clone();
@@ -519,12 +520,17 @@ pub(crate) async fn handoff_enroll(
         protocol::DeviceKind::Computer
     };
     let sync_device_key = crate::sync::ensure_device_key(&app, &invitation.vault_id).await?;
+    #[cfg(desktop)]
+    let sync_admin_key = Some(crate::sync::ensure_admin_key(&app, &invitation.vault_id).await?);
+    #[cfg(mobile)]
+    let sync_admin_key: Option<ganbaru_sync_contracts::AdminPublicKey> = None;
     transport::enroll(
         &manager,
         &invitation,
         device_label,
         device_kind,
         &sync_device_key,
+        sync_admin_key.as_ref(),
     )
     .await?;
     app.state::<super::ownership::VaultOwnershipManager>()

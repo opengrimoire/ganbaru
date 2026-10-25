@@ -37,7 +37,7 @@ pub struct WriterRecord {
     /// Retired writers whose keys still wait to be removed.
     pub retired_keys: Vec<String>,
     /// The last authorization entry this installation reserved as the anchor, kept across
-    /// successor writers, so a database restored behind it can be detected.
+    /// successor writers of the same charter, so a database restored behind it can be detected.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sequenced: Option<SequencedEntry>,
 }
@@ -46,19 +46,94 @@ pub struct WriterRecord {
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SequencedEntry {
+    /// Hash of the charter the log starts from, base64url without padding.
+    pub charter: String,
+    /// Epoch of the entry; a handover the anchor seals opens the next one.
+    #[serde(default)]
+    pub epoch: u32,
     /// Revision of the entry.
     pub revision: u64,
     /// Entry hash, base64url without padding.
     pub entry_hash: String,
+    /// The writer that reserved the entry was retired because the database lost part of its
+    /// chain, so a selected head one revision behind is a restore, not a rolled back seal.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub restored: bool,
 }
 
 impl SequencedEntry {
     /// The decoded entry hash, or `None` when the record holds a malformed one.
     pub fn hash(&self) -> Option<Digest32> {
-        URL_SAFE_NO_PAD
-            .decode(&self.entry_hash)
-            .ok()
-            .and_then(|bytes| bytes.try_into().ok())
+        decode_digest(&self.entry_hash)
+    }
+
+    /// The decoded charter hash, or `None` when the record holds a malformed one.
+    pub fn charter(&self) -> Option<Digest32> {
+        decode_digest(&self.charter)
+    }
+}
+
+fn decode_digest(text: &str) -> Option<Digest32> {
+    URL_SAFE_NO_PAD
+        .decode(text)
+        .ok()
+        .and_then(|bytes| bytes.try_into().ok())
+}
+
+/// How the anchor's recorded high-water compares with the selected log.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SequencedCheck {
+    /// The log holds the recorded entry, or nothing is recorded.
+    Current,
+    /// The record is ahead by exactly the entry it reserved last: that seal rolled back.
+    RolledBack,
+    /// The record is ahead by more than one entry, or names an epoch the selected log never
+    /// reached, so the database is older than the log this installation sequenced: it was
+    /// restored from a backup or copied.
+    Restored {
+        /// The revision the record reached.
+        recorded: u64,
+    },
+}
+
+/// The selected head the recorded high-water is compared with.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SelectedHead {
+    /// Hash of the charter the selected chain starts from.
+    pub charter: Digest32,
+    /// Epoch of the selected head.
+    pub epoch: u32,
+    /// Revision of the selected head.
+    pub revision: u64,
+}
+
+/// Compares the recorded high-water with the selected head. A reservation is written before its
+/// seal commits, so being ahead by one is a rolled back seal, not a restore, unless the writer
+/// that reserved it was retired because the database lost part of its chain. A record of another
+/// charter belongs to a log a Reset cleared and is current. Every chain this installation sealed
+/// an epoch of stays stored, and selection prefers the highest epoch, so a selected head of a
+/// lower epoch than the record means the database lost that epoch. A record of an earlier
+/// epoch than the selected head is current: a handover sealed elsewhere continued the log, and
+/// entries this installation sealed past its starting revision were superseded, not lost.
+pub fn sequenced_check(
+    sequenced: Option<&SequencedEntry>,
+    selected: SelectedHead,
+) -> SequencedCheck {
+    let Some(entry) = sequenced.filter(|entry| entry.charter() == Some(selected.charter)) else {
+        return SequencedCheck::Current;
+    };
+    if entry.epoch < selected.epoch {
+        return SequencedCheck::Current;
+    }
+    let next = selected.revision.saturating_add(1);
+    if entry.revision == next && !entry.restored {
+        SequencedCheck::RolledBack
+    } else if entry.revision >= next || entry.epoch > selected.epoch {
+        SequencedCheck::Restored {
+            recorded: entry.revision,
+        }
+    } else {
+        SequencedCheck::Current
     }
 }
 
@@ -266,6 +341,11 @@ impl SyncFiles {
     pub fn outbox_path(&self) -> PathBuf {
         self.vault_directory().join("outbox.json")
     }
+
+    /// The devices this installation quarantined.
+    pub fn quarantine_path(&self) -> PathBuf {
+        self.vault_directory().join("quarantine.json")
+    }
 }
 
 pub fn read_record(path: &Path) -> Result<Option<WriterRecord>, String> {
@@ -291,7 +371,7 @@ fn names_writer(id: &str) -> bool {
     WriterId::from_hex(id).is_some_and(|writer| writer.to_hex() == id)
 }
 
-fn write_record(path: &Path, record: &WriterRecord) -> Result<(), String> {
+pub(crate) fn write_record(path: &Path, record: &WriterRecord) -> Result<(), String> {
     let bytes = serde_json::to_vec_pretty(record)
         .map_err(|error| format!("encode sync writer record: {error}"))?;
     ganbaru_handoff::pairing::write_private_file_atomically(path, &bytes)
@@ -346,6 +426,24 @@ impl ActiveWriter {
         self.reservation.replace(next)
     }
 
+    /// Clears the recorded high-water when the space starts from another charter, because it
+    /// then describes a log a Reset cleared. A space without a charter keeps it: the database
+    /// was restored from before the space was founded, and founding refuses to start a new log
+    /// over it until Reset sync state removes the record.
+    pub fn settle_sequenced(&mut self, charter: Option<Digest32>) -> Result<(), String> {
+        let (Some(sequenced), Some(charter)) =
+            (self.reservation.record.sequenced.as_ref(), charter)
+        else {
+            return Ok(());
+        };
+        if sequenced.charter() == Some(charter) {
+            return Ok(());
+        }
+        let mut next = self.reservation.record.clone();
+        next.sequenced = None;
+        self.reservation.replace(next)
+    }
+
     /// Records whether exchanges are paused on this device.
     pub fn set_paused(&mut self, paused: bool) -> Result<(), String> {
         if self.reservation.record.paused == paused {
@@ -397,12 +495,30 @@ impl SequenceReservation for RecordReservation {
         self.replace(next).map_err(std::io::Error::other)
     }
 
-    fn reserve_entry(&mut self, revision: u64, entry_hash: Digest32) -> std::io::Result<()> {
+    fn reserve_entry(
+        &mut self,
+        charter: Digest32,
+        epoch: u32,
+        revision: u64,
+        entry_hash: Digest32,
+    ) -> std::io::Result<()> {
         let entry = SequencedEntry {
+            charter: URL_SAFE_NO_PAD.encode(charter),
+            epoch,
             revision,
             entry_hash: URL_SAFE_NO_PAD.encode(entry_hash),
+            restored: false,
         };
-        let current = self.record.sequenced.as_ref();
+        // A high-water of another charter belongs to a log a Reset cleared, so it never holds
+        // back the current one. An entry of another epoch replaces the record even at a lower
+        // revision: the selected epoch never falls below one this installation sealed unless
+        // the database was restored, and then the service seals only the self-handover, which
+        // continues from the older head.
+        let current = self
+            .record
+            .sequenced
+            .as_ref()
+            .filter(|current| current.charter == entry.charter && current.epoch == epoch);
         if current.is_some_and(|current| current.revision > revision || *current == entry) {
             return Ok(());
         }
@@ -455,6 +571,17 @@ impl SuccessorPlan {
         }
     }
 
+    /// The plan that retires `record` because the database lost part of its chain or of the
+    /// log it sequenced: the successor keeps the high-water marked as restored, so the anchor
+    /// treats a head one revision behind it as a restore too.
+    fn restored(record: &WriterRecord) -> Self {
+        let mut plan = Self::retiring(record);
+        if let Some(sequenced) = plan.sequenced.as_mut() {
+            sequenced.restored = true;
+        }
+        plan
+    }
+
     /// The last authorization entry the retired record reserved, which the successor keeps.
     pub fn sequenced(&self) -> Option<&SequencedEntry> {
         self.sequenced.as_ref()
@@ -463,6 +590,12 @@ impl SuccessorPlan {
     /// The plan that replaces a writer the database no longer accepts.
     pub fn after(writer: &ActiveWriter) -> Self {
         Self::retiring(writer.record())
+    }
+
+    /// The plan that replaces the writer of an anchor whose database was restored behind the
+    /// log it sequenced.
+    pub fn after_restore(writer: &ActiveWriter) -> Self {
+        Self::restored(writer.record())
     }
 }
 
@@ -506,7 +639,28 @@ pub async fn check_writer(
         .await
         .map_err(|error| format!("check sync writer: {error}"))?;
     if !record_matches(&record, head) {
-        return Ok(WriterCheck::Successor(SuccessorPlan::retiring(&record)));
+        return Ok(WriterCheck::Successor(SuccessorPlan::restored(&record)));
+    }
+    // A database behind the anchor's authorization high-water lost entries members may hold
+    // at this writer's later sequences, so the writer must not seal again even when its own
+    // committed head survived, for instance when its commit was never recorded.
+    if let Some(view) = engine
+        .authorization(conn, ctx)
+        .await
+        .map_err(|error| format!("read sync authorization: {error}"))?
+        && matches!(
+            sequenced_check(
+                record.sequenced.as_ref(),
+                SelectedHead {
+                    charter: view.charter,
+                    epoch: view.epoch,
+                    revision: view.revision,
+                },
+            ),
+            SequencedCheck::Restored { .. }
+        )
+    {
+        return Ok(WriterCheck::Successor(SuccessorPlan::restored(&record)));
     }
     Ok(WriterCheck::Ready(Box::new(ActiveWriter {
         key,

@@ -8,22 +8,30 @@
 //! engine tree; the Notes repair pass on the vault owner breaks block cycles and flattens blocks
 //! nested too deep. Folders and database row parents are engine trees.
 //!
+//! Databases, data sources, properties, options, property values, relation edges, views, and
+//! page and data source templates replicate too. A database's parent columns are hook columns
+//! copied from its `child_database` block. Properties, options, values, and edges are keyed by
+//! the derived key of their identity with an existence register, so a removed row can be added
+//! again. A row page cascades from its data source. Template blocks are owned rows of their
+//! template's content group (ids 301 and 303 stay reserved for them).
+//!
 //! Search, link, backlink, asset reference, and rollup indexes and their state rows are derived.
 //! Undo state, edit receipts, read and mute state, notification settings and notifications, view
-//! state, and every history table stay on the device. Comments, suggestions, templates,
-//! databases, data sources, properties, values, views, and relation edges are not converted yet.
-//! Ids 293 to 351 are reserved.
+//! state, and every history table stay on the device. Comments and suggestions are not converted
+//! yet. Ids 304 to 351 are reserved.
 
 use ganbaru_sync_contracts::{GroupId, TableId};
 
 use crate::domains::notes::{
-    MAX_BLOCK_ATTRS_BYTES, MAX_BLOCK_TEXT_BYTES, MAX_NAME_CHARS, MAX_TEXT_CHARS,
+    MAX_BLOCK_ATTRS_BYTES, MAX_BLOCK_TEXT_BYTES, MAX_NAME_CHARS, MAX_TEMPLATE_CONTENT_BYTES,
+    MAX_TEXT_CHARS,
 };
 use crate::manifest::vault::projects::PROJECTS_TABLE;
 use crate::manifest::{
-    Collation, ColumnSpec, ColumnType, DeviceTable, DomainManifest, DomainTrigger, GroupSpec,
-    GroupStorage, MergeKind, OnDelete, ReferenceColumn, Resolution, TableIdRange, TableSpec,
-    TreeSpec, TriggerPolicy, group_id,
+    Collation, ColumnSpec, ColumnType, DerivedKey, DeviceTable, DomainManifest, DomainTrigger,
+    GroupSpec, GroupStorage, MergeKind, OnDelete, OwnedBound, OwnedCodec, OwnedOrder, OwnedTable,
+    ReferenceColumn, Resolution, SYNC_KEY_COLUMN, TableIdRange, TableSpec, TreeSpec, TriggerPolicy,
+    group_id,
 };
 
 /// Domain name for Notes.
@@ -42,6 +50,43 @@ pub const PAGES_TABLE: TableId = TableId(290);
 pub const ALIASES_TABLE: TableId = TableId(291);
 /// `notes_blocks`.
 pub const BLOCKS_TABLE: TableId = TableId(292);
+/// `notes_databases`.
+pub const DATABASES_TABLE: TableId = TableId(293);
+/// `notes_data_sources`.
+pub const DATA_SOURCES_TABLE: TableId = TableId(294);
+/// `notes_data_source_properties`.
+pub const PROPERTIES_TABLE: TableId = TableId(295);
+/// `notes_data_source_property_options`.
+pub const OPTIONS_TABLE: TableId = TableId(296);
+/// `notes_page_property_values`.
+pub const VALUES_TABLE: TableId = TableId(297);
+/// `notes_relation_edges`.
+pub const RELATION_EDGES_TABLE: TableId = TableId(298);
+/// `notes_database_views`.
+pub const VIEWS_TABLE: TableId = TableId(299);
+/// `notes_page_templates`.
+pub const PAGE_TEMPLATES_TABLE: TableId = TableId(300);
+/// `notes_data_source_templates`.
+pub const DATA_SOURCE_TEMPLATES_TABLE: TableId = TableId(302);
+
+/// Owned `notes_page_template_blocks` of a page template's content (id 301 is reserved for it).
+pub const PAGE_TEMPLATE_BLOCKS_OWNED: &str = "notes_page_template_blocks";
+/// Owned `notes_data_source_template_blocks` of a data source template's content (id 303 is
+/// reserved for it).
+pub const DATA_SOURCE_TEMPLATE_BLOCKS_OWNED: &str = "notes_data_source_template_blocks";
+
+/// Derived key prefix of `notes_data_source_properties`.
+pub const PROPERTY_KEY_PREFIX: &str = "notes-property";
+/// Derived key prefix of `notes_data_source_property_options`.
+pub const OPTION_KEY_PREFIX: &str = "notes-property-option";
+/// Derived key prefix of `notes_page_property_values`.
+pub const VALUE_KEY_PREFIX: &str = "notes-property-value";
+/// Derived key prefix of `notes_relation_edges`.
+pub const RELATION_EDGE_KEY_PREFIX: &str = "notes-relation-edge";
+
+/// Greatest number of blocks one template holds; template writes refuse more, so the smallest
+/// encoded blocks still fit one blob field.
+pub const MAX_TEMPLATE_BLOCKS: usize = 1_024;
 
 /// Greatest folder nesting depth, as Notes checks it.
 pub const MAX_FOLDER_DEPTH: u8 = 64;
@@ -126,6 +171,160 @@ pub mod block_group {
     pub const LIFECYCLE: GroupId = group_id(5);
     /// `last_edited_time`.
     pub const UPDATED: GroupId = group_id(6);
+}
+
+/// Database field groups.
+pub mod database_group {
+    use super::{GroupId, group_id};
+
+    /// `block_id` and `created_time`, fixed at creation.
+    pub const CREATED: GroupId = group_id(0);
+    /// Import source identity and the database URLs.
+    pub const ORIGIN: GroupId = group_id(1);
+    /// `title` and `title_rich_text`.
+    pub const TITLE: GroupId = group_id(2);
+    /// `description`.
+    pub const DESCRIPTION: GroupId = group_id(3);
+    /// `icon` and `cover`.
+    pub const APPEARANCE: GroupId = group_id(4);
+    /// `is_inline`.
+    pub const INLINE: GroupId = group_id(5);
+    /// `in_trash`.
+    pub const LIFECYCLE: GroupId = group_id(6);
+    /// `last_edited_time`.
+    pub const UPDATED: GroupId = group_id(7);
+}
+
+/// Data source field groups.
+pub mod data_source_group {
+    use super::{GroupId, group_id};
+
+    /// `database_id` and `created_time`, fixed at creation.
+    pub const CREATED: GroupId = group_id(0);
+    /// Import source identity.
+    pub const ORIGIN: GroupId = group_id(1);
+    /// `title` and `title_rich_text`.
+    pub const TITLE: GroupId = group_id(2);
+    /// `description`.
+    pub const DESCRIPTION: GroupId = group_id(3);
+    /// `icon`.
+    pub const ICON: GroupId = group_id(4);
+    /// `in_trash`.
+    pub const LIFECYCLE: GroupId = group_id(5);
+    /// `default_template_id`.
+    pub const DEFAULT_TEMPLATE: GroupId = group_id(6);
+    /// `last_edited_time`.
+    pub const UPDATED: GroupId = group_id(7);
+}
+
+/// Data source property field groups.
+pub mod property_group {
+    use super::{GroupId, group_id};
+
+    /// `data_source_id` and `property_id`.
+    pub const IDENTITY: GroupId = group_id(0);
+    /// `name`.
+    pub const NAME: GroupId = group_id(1);
+    /// `type` and `config`.
+    pub const CONFIG: GroupId = group_id(2);
+    /// `order_key` among the properties of the data source.
+    pub const POSITION: GroupId = group_id(3);
+    /// Existence register.
+    pub const EXISTS: GroupId = group_id(4);
+}
+
+/// Property option field groups.
+pub mod option_group {
+    use super::{GroupId, group_id};
+
+    /// `data_source_id`, `property_id`, and `option_id`.
+    pub const IDENTITY: GroupId = group_id(0);
+    /// `property_key`, the `sync_key` of the property.
+    pub const PROPERTY: GroupId = group_id(1);
+    /// `name`.
+    pub const NAME: GroupId = group_id(2);
+    /// `color`.
+    pub const COLOR: GroupId = group_id(3);
+    /// `status_group`.
+    pub const STATUS_GROUP: GroupId = group_id(4);
+    /// `position` among the options of the property.
+    pub const POSITION: GroupId = group_id(5);
+    /// Existence register.
+    pub const EXISTS: GroupId = group_id(6);
+}
+
+/// Page property value field groups.
+pub mod value_group {
+    use super::{GroupId, group_id};
+
+    /// `page_id` and `property_id`.
+    pub const IDENTITY: GroupId = group_id(0);
+    /// `value_type` and `value`.
+    pub const VALUE: GroupId = group_id(1);
+    /// Existence register.
+    pub const EXISTS: GroupId = group_id(2);
+}
+
+/// Relation edge field groups.
+pub mod relation_edge_group {
+    use super::{GroupId, group_id};
+
+    /// `source_page_id`, `source_property_id`, and `target_page_id`.
+    pub const IDENTITY: GroupId = group_id(0);
+    /// `created_time`, which orders the links of a property.
+    pub const CREATED: GroupId = group_id(1);
+    /// Existence register.
+    pub const EXISTS: GroupId = group_id(2);
+}
+
+/// Database view field groups.
+pub mod view_group {
+    use super::{GroupId, group_id};
+
+    /// `database_id`, `data_source_id`, and `created_time`, fixed at creation.
+    pub const PARENT: GroupId = group_id(0);
+    /// Import source identity and the view URL.
+    pub const ORIGIN: GroupId = group_id(1);
+    /// `name`.
+    pub const NAME: GroupId = group_id(2);
+    /// `type`, `filter`, `sorts`, and `configuration`, which only make sense together.
+    pub const LAYOUT: GroupId = group_id(3);
+    /// `order_key` among the views of the database.
+    pub const POSITION: GroupId = group_id(4);
+    /// `last_edited_time`.
+    pub const UPDATED: GroupId = group_id(5);
+}
+
+/// Page template field groups.
+pub mod page_template_group {
+    use super::{GroupId, group_id};
+
+    /// `created_time`.
+    pub const CREATED: GroupId = group_id(0);
+    /// `source_page_id`.
+    pub const SOURCE: GroupId = group_id(1);
+    /// `name`.
+    pub const NAME: GroupId = group_id(2);
+    /// `properties`, `icon`, `cover`, and the template blocks, edited as one snapshot.
+    pub const CONTENT: GroupId = group_id(3);
+    /// `last_edited_time`.
+    pub const UPDATED: GroupId = group_id(4);
+}
+
+/// Data source template field groups.
+pub mod data_source_template_group {
+    use super::{GroupId, group_id};
+
+    /// `data_source_id` and `created_time`, fixed at creation.
+    pub const CREATED: GroupId = group_id(0);
+    /// `source_page_id`.
+    pub const SOURCE: GroupId = group_id(1);
+    /// `name`.
+    pub const NAME: GroupId = group_id(2);
+    /// `properties` and the template blocks, edited as one snapshot.
+    pub const CONTENT: GroupId = group_id(3);
+    /// `last_edited_time`.
+    pub const UPDATED: GroupId = group_id(4);
 }
 
 /// A hidden, non-recoverable group.
@@ -359,6 +558,11 @@ pub const PAGES: TableSpec = TableSpec {
             ],
             &[
                 reference_column("child_block_id", BLOCKS_TABLE, OnDelete::Cascade),
+                reference_column(
+                    "parent_data_source_id",
+                    DATA_SOURCES_TABLE,
+                    OnDelete::Cascade,
+                ),
                 reference_column("folder_id", FOLDERS_TABLE, OnDelete::SetNull),
             ],
         ),
@@ -529,6 +733,483 @@ pub const BLOCKS: TableSpec = TableSpec {
     ..BASE
 };
 
+const fn trimmed(name: &'static str, max_chars: usize) -> ColumnSpec {
+    ColumnSpec {
+        name,
+        ty: ColumnType::TrimmedText {
+            min_chars: 1,
+            max_chars,
+        },
+    }
+}
+
+const fn order_key(name: &'static str) -> ColumnSpec {
+    ColumnSpec {
+        name,
+        ty: ColumnType::OrderKey,
+    }
+}
+
+/// An `Immutable` group with its reference columns.
+const fn immutable(
+    id: GroupId,
+    name: &'static str,
+    columns: &'static [ColumnSpec],
+    references: &'static [ReferenceColumn],
+) -> GroupSpec {
+    group(id, name, MergeKind::Immutable, columns, references)
+}
+
+/// A `Position` group holding one order key column.
+const fn position(id: GroupId, column: &'static [ColumnSpec]) -> GroupSpec {
+    group(id, "position", MergeKind::Position, column, &[])
+}
+
+/// The existence register of a derived-key table.
+const fn exists(id: GroupId) -> GroupSpec {
+    group(id, "exists", MergeKind::Register, &[], &[])
+}
+
+/// The `Coupled` trash flag of a database or data source, where trashing wins.
+const fn lifecycle(id: GroupId) -> GroupSpec {
+    group(id, "lifecycle", MergeKind::Coupled, &TRASH_FLAG, &[])
+}
+
+/// The trash flag of a database or data source.
+const TRASH_FLAG: [ColumnSpec; 1] = [flag("in_trash")];
+
+/// The import source identity columns every imported Notes object carries.
+const SOURCE_COLUMNS: [ColumnSpec; 4] = [
+    optional_text("source_provider", MAX_TEXT_CHARS),
+    optional_text("source_object_id", MAX_TEXT_CHARS),
+    optional_text("source_workspace_id", MAX_TEXT_CHARS),
+    optional_text("source_last_edited_time", MAX_TEXT_CHARS),
+];
+
+/// `notes_databases`, keyed by the id of its `child_database` block. Its parent columns are
+/// hook columns copied from that block's placement.
+pub const DATABASES: TableSpec = TableSpec {
+    id: DATABASES_TABLE,
+    name: "notes_databases",
+    groups: &[
+        immutable(
+            database_group::CREATED,
+            "created",
+            &[row_key("block_id"), CREATED_TIME],
+            &[reference_column(
+                "block_id",
+                BLOCKS_TABLE,
+                OnDelete::Cascade,
+            )],
+        ),
+        register(
+            database_group::ORIGIN,
+            "origin",
+            &[
+                SOURCE_COLUMNS[0],
+                SOURCE_COLUMNS[1],
+                SOURCE_COLUMNS[2],
+                SOURCE_COLUMNS[3],
+                optional_text("url", MAX_TEXT_CHARS),
+                optional_text("public_url", MAX_TEXT_CHARS),
+            ],
+        ),
+        register(
+            database_group::TITLE,
+            "title",
+            &[
+                text("title", MAX_TEXT_CHARS),
+                text("title_rich_text", MAX_TEXT_CHARS),
+            ],
+        ),
+        register(
+            database_group::DESCRIPTION,
+            "description",
+            &[text("description", MAX_TEXT_CHARS)],
+        ),
+        register(
+            database_group::APPEARANCE,
+            "appearance",
+            &[
+                optional_text("icon", MAX_TEXT_CHARS),
+                optional_text("cover", MAX_TEXT_CHARS),
+            ],
+        ),
+        register(database_group::INLINE, "inline", &[flag("is_inline")]),
+        lifecycle(database_group::LIFECYCLE),
+        updated(database_group::UPDATED),
+    ],
+    hook_columns: &["parent_type", "parent_page_id", "parent_block_id"],
+    ..BASE
+};
+
+/// `notes_data_sources`.
+pub const DATA_SOURCES: TableSpec = TableSpec {
+    id: DATA_SOURCES_TABLE,
+    name: "notes_data_sources",
+    groups: &[
+        immutable(
+            data_source_group::CREATED,
+            "created",
+            &[row_key("database_id"), CREATED_TIME],
+            &[reference_column(
+                "database_id",
+                DATABASES_TABLE,
+                OnDelete::Cascade,
+            )],
+        ),
+        register(data_source_group::ORIGIN, "origin", &SOURCE_COLUMNS),
+        register(
+            data_source_group::TITLE,
+            "title",
+            &[
+                text("title", MAX_TEXT_CHARS),
+                text("title_rich_text", MAX_TEXT_CHARS),
+            ],
+        ),
+        register(
+            data_source_group::DESCRIPTION,
+            "description",
+            &[text("description", MAX_TEXT_CHARS)],
+        ),
+        register(
+            data_source_group::ICON,
+            "icon",
+            &[optional_text("icon", MAX_TEXT_CHARS)],
+        ),
+        lifecycle(data_source_group::LIFECYCLE),
+        reference(
+            data_source_group::DEFAULT_TEMPLATE,
+            "default_template",
+            &[row_key("default_template_id")],
+            DATA_SOURCE_TEMPLATES_TABLE,
+            OnDelete::SetNull,
+        ),
+        updated(data_source_group::UPDATED),
+    ],
+    ..BASE
+};
+
+/// Columns of a template block, in value field order.
+pub const TEMPLATE_BLOCK_COLUMNS: [ColumnSpec; 9] = [
+    trimmed("id", MAX_NAME_CHARS),
+    text("parent_type", MAX_NAME_CHARS),
+    optional_text("parent_block_id", MAX_NAME_CHARS),
+    flag("has_children"),
+    text("type", MAX_NAME_CHARS),
+    text("payload", MAX_TEMPLATE_CONTENT_BYTES),
+    text("plain_text", MAX_TEMPLATE_CONTENT_BYTES),
+    CREATED_TIME,
+    LAST_EDITED_TIME,
+];
+
+/// An owned template block table: a template's blocks in preorder. Notes keeps every template
+/// within its content bound, and the adapter checks that ids are unique and parents exist.
+const fn template_blocks(table: &'static str) -> OwnedTable {
+    OwnedTable {
+        table,
+        parent_column: "template_id",
+        order: OwnedOrder::Ordinal("ordinal"),
+        columns: &TEMPLATE_BLOCK_COLUMNS,
+        references: &[],
+        unique: &[],
+        max_rows: MAX_TEMPLATE_BLOCKS,
+        codec: OwnedCodec::Generic,
+        nested: &[],
+        bound: OwnedBound::Domain,
+    }
+}
+
+/// The blocks of a page template.
+pub const PAGE_TEMPLATE_BLOCKS: OwnedTable = template_blocks(PAGE_TEMPLATE_BLOCKS_OWNED);
+
+/// The blocks of a data source template.
+pub const DATA_SOURCE_TEMPLATE_BLOCKS: OwnedTable =
+    template_blocks(DATA_SOURCE_TEMPLATE_BLOCKS_OWNED);
+
+/// `notes_data_source_templates`. A template is edited as a whole snapshot, so its properties
+/// and blocks are one group.
+pub const DATA_SOURCE_TEMPLATES: TableSpec = TableSpec {
+    id: DATA_SOURCE_TEMPLATES_TABLE,
+    name: "notes_data_source_templates",
+    groups: &[
+        immutable(
+            data_source_template_group::CREATED,
+            "created",
+            &[row_key("data_source_id"), CREATED_TIME],
+            &[reference_column(
+                "data_source_id",
+                DATA_SOURCES_TABLE,
+                OnDelete::Cascade,
+            )],
+        ),
+        reference(
+            data_source_template_group::SOURCE,
+            "source",
+            &[row_key("source_page_id")],
+            PAGES_TABLE,
+            OnDelete::SetNull,
+        ),
+        register(
+            data_source_template_group::NAME,
+            "name",
+            &[text("name", MAX_NAME_CHARS)],
+        ),
+        surfaced(GroupSpec {
+            storage: GroupStorage::Owned {
+                columns: &[text("properties", MAX_TEMPLATE_CONTENT_BYTES)],
+                tables: &[DATA_SOURCE_TEMPLATE_BLOCKS],
+            },
+            ..register(data_source_template_group::CONTENT, "content", &[])
+        }),
+        updated(data_source_template_group::UPDATED),
+    ],
+    ..BASE
+};
+
+/// `notes_page_templates`. A template is edited as a whole snapshot, so its properties,
+/// appearance, and blocks are one group.
+pub const PAGE_TEMPLATES: TableSpec = TableSpec {
+    id: PAGE_TEMPLATES_TABLE,
+    name: "notes_page_templates",
+    groups: &[
+        group(
+            page_template_group::CREATED,
+            "created",
+            MergeKind::Immutable,
+            &[CREATED_TIME],
+            &[],
+        ),
+        reference(
+            page_template_group::SOURCE,
+            "source",
+            &[row_key("source_page_id")],
+            PAGES_TABLE,
+            OnDelete::SetNull,
+        ),
+        register(
+            page_template_group::NAME,
+            "name",
+            &[trimmed("name", MAX_NAME_CHARS)],
+        ),
+        surfaced(GroupSpec {
+            storage: GroupStorage::Owned {
+                columns: &[
+                    text("properties", MAX_TEMPLATE_CONTENT_BYTES),
+                    optional_text("icon", MAX_TEXT_CHARS),
+                    optional_text("cover", MAX_TEXT_CHARS),
+                ],
+                tables: &[PAGE_TEMPLATE_BLOCKS],
+            },
+            ..register(page_template_group::CONTENT, "content", &[])
+        }),
+        updated(page_template_group::UPDATED),
+    ],
+    ..BASE
+};
+
+/// A composite-key Notes table keyed by `sync_key`.
+const KEYED: TableSpec = TableSpec {
+    key_column: SYNC_KEY_COLUMN,
+    ..BASE
+};
+
+/// `notes_data_source_properties`, keyed by data source and property id. Names are unique per
+/// data source only through Notes writes, so reads suffix a name that a merge repeats.
+pub const PROPERTIES: TableSpec = TableSpec {
+    id: PROPERTIES_TABLE,
+    name: "notes_data_source_properties",
+    groups: &[
+        immutable(
+            property_group::IDENTITY,
+            "identity",
+            &[
+                row_key("data_source_id"),
+                trimmed("property_id", MAX_NAME_CHARS),
+            ],
+            &[reference_column(
+                "data_source_id",
+                DATA_SOURCES_TABLE,
+                OnDelete::Cascade,
+            )],
+        ),
+        register(
+            property_group::NAME,
+            "name",
+            &[trimmed("name", MAX_NAME_CHARS)],
+        ),
+        surfaced(register(
+            property_group::CONFIG,
+            "config",
+            &[
+                trimmed("type", MAX_NAME_CHARS),
+                text("config", MAX_TEXT_CHARS),
+            ],
+        )),
+        position(property_group::POSITION, &[order_key("order_key")]),
+        exists(property_group::EXISTS),
+    ],
+    derived_key: Some(DerivedKey {
+        exists_group: property_group::EXISTS,
+        prefix: Some(PROPERTY_KEY_PREFIX),
+        key_inputs: &["data_source_id", "property_id"],
+    }),
+    ..KEYED
+};
+
+/// `notes_data_source_property_options`, keyed by data source, property, and option id. An
+/// option names its property by the property's `sync_key`, so it goes with the property, and
+/// concurrent option adds both survive.
+pub const OPTIONS: TableSpec = TableSpec {
+    id: OPTIONS_TABLE,
+    name: "notes_data_source_property_options",
+    groups: &[
+        immutable(
+            option_group::IDENTITY,
+            "identity",
+            &[
+                text("data_source_id", MAX_NAME_CHARS),
+                text("property_id", MAX_NAME_CHARS),
+                trimmed("option_id", MAX_NAME_CHARS),
+            ],
+            &[],
+        ),
+        reference(
+            option_group::PROPERTY,
+            "property",
+            &[row_key("property_key")],
+            PROPERTIES_TABLE,
+            OnDelete::Cascade,
+        ),
+        register(option_group::NAME, "name", &[text("name", MAX_NAME_CHARS)]),
+        register(
+            option_group::COLOR,
+            "color",
+            &[text("color", MAX_NAME_CHARS)],
+        ),
+        register(
+            option_group::STATUS_GROUP,
+            "status_group",
+            &[optional_text("status_group", MAX_NAME_CHARS)],
+        ),
+        position(option_group::POSITION, &[order_key("position")]),
+        exists(option_group::EXISTS),
+    ],
+    derived_key: Some(DerivedKey {
+        exists_group: option_group::EXISTS,
+        prefix: Some(OPTION_KEY_PREFIX),
+        key_inputs: &["data_source_id", "property_id", "option_id"],
+    }),
+    ..KEYED
+};
+
+/// `notes_page_property_values`, keyed by page and property id. A value keeps its own type, so
+/// a concurrent property type change leaves it stored and readable as a mismatch.
+pub const VALUES: TableSpec = TableSpec {
+    id: VALUES_TABLE,
+    name: "notes_page_property_values",
+    groups: &[
+        immutable(
+            value_group::IDENTITY,
+            "identity",
+            &[row_key("page_id"), trimmed("property_id", MAX_NAME_CHARS)],
+            &[reference_column("page_id", PAGES_TABLE, OnDelete::Cascade)],
+        ),
+        surfaced(register(
+            value_group::VALUE,
+            "value",
+            &[
+                trimmed("value_type", MAX_NAME_CHARS),
+                text("value", MAX_TEXT_CHARS),
+            ],
+        )),
+        exists(value_group::EXISTS),
+    ],
+    derived_key: Some(DerivedKey {
+        exists_group: value_group::EXISTS,
+        prefix: Some(VALUE_KEY_PREFIX),
+        key_inputs: &["page_id", "property_id"],
+    }),
+    ..KEYED
+};
+
+/// `notes_relation_edges`, keyed by source page, source property, and target page.
+pub const RELATION_EDGES: TableSpec = TableSpec {
+    id: RELATION_EDGES_TABLE,
+    name: "notes_relation_edges",
+    groups: &[
+        immutable(
+            relation_edge_group::IDENTITY,
+            "identity",
+            &[
+                row_key("source_page_id"),
+                trimmed("source_property_id", MAX_NAME_CHARS),
+                row_key("target_page_id"),
+            ],
+            &[
+                reference_column("source_page_id", PAGES_TABLE, OnDelete::Cascade),
+                reference_column("target_page_id", PAGES_TABLE, OnDelete::Cascade),
+            ],
+        ),
+        register(relation_edge_group::CREATED, "created", &[CREATED_TIME]),
+        exists(relation_edge_group::EXISTS),
+    ],
+    derived_key: Some(DerivedKey {
+        exists_group: relation_edge_group::EXISTS,
+        prefix: Some(RELATION_EDGE_KEY_PREFIX),
+        key_inputs: &["source_page_id", "source_property_id", "target_page_id"],
+    }),
+    ..KEYED
+};
+
+/// `notes_database_views`.
+pub const VIEWS: TableSpec = TableSpec {
+    id: VIEWS_TABLE,
+    name: "notes_database_views",
+    groups: &[
+        immutable(
+            view_group::PARENT,
+            "parent",
+            &[
+                row_key("database_id"),
+                row_key("data_source_id"),
+                CREATED_TIME,
+            ],
+            &[
+                reference_column("database_id", DATABASES_TABLE, OnDelete::Cascade),
+                reference_column("data_source_id", DATA_SOURCES_TABLE, OnDelete::Cascade),
+            ],
+        ),
+        register(
+            view_group::ORIGIN,
+            "origin",
+            &[
+                SOURCE_COLUMNS[0],
+                SOURCE_COLUMNS[1],
+                SOURCE_COLUMNS[2],
+                SOURCE_COLUMNS[3],
+                optional_text("url", MAX_TEXT_CHARS),
+            ],
+        ),
+        register(view_group::NAME, "name", &[text("name", MAX_NAME_CHARS)]),
+        group(
+            view_group::LAYOUT,
+            "layout",
+            MergeKind::Coupled,
+            &[
+                text("type", MAX_NAME_CHARS),
+                optional_text("filter", MAX_TEXT_CHARS),
+                text("sorts", MAX_TEXT_CHARS),
+                optional_text("configuration", MAX_TEXT_CHARS),
+            ],
+            &[],
+        ),
+        position(view_group::POSITION, &[order_key("order_key")]),
+        updated(view_group::UPDATED),
+    ],
+    ..BASE
+};
+
 /// A device table without domain triggers or assets.
 const fn device(name: &'static str) -> DeviceTable {
     DeviceTable {
@@ -546,7 +1227,22 @@ pub const DOMAIN: DomainManifest = DomainManifest {
         first: 288,
         last: 351,
     },
-    tables: &[LOCAL_USERS, FOLDERS, PAGES, BLOCKS, ALIASES],
+    tables: &[
+        LOCAL_USERS,
+        FOLDERS,
+        PAGES,
+        BLOCKS,
+        DATABASES,
+        DATA_SOURCES,
+        DATA_SOURCE_TEMPLATES,
+        ALIASES,
+        PROPERTIES,
+        OPTIONS,
+        VALUES,
+        RELATION_EDGES,
+        VIEWS,
+        PAGE_TEMPLATES,
+    ],
     derived: &[
         "notes_asset_references",
         "notes_backlink_index",

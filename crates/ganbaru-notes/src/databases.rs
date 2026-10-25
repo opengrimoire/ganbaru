@@ -704,7 +704,7 @@ async fn load_created_database_tx(
                 last_edited_time
          FROM notes_database_views
          WHERE database_id = ?
-         ORDER BY sort_order ASC, created_time ASC, id ASC
+         ORDER BY order_key ASC, id ASC
          LIMIT 1",
     )
     .bind(database_id)
@@ -884,7 +884,7 @@ async fn load_source_view_tx(
                 last_edited_time
          FROM notes_database_views
          WHERE data_source_id = ? AND type = 'table'
-         ORDER BY sort_order ASC, created_time ASC, id ASC
+         ORDER BY order_key ASC, id ASC
          LIMIT 1",
     )
     .bind(data_source_id.trim())

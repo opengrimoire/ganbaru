@@ -4,6 +4,12 @@
 //! a remote delete of a parent block removes the page nested under it everywhere, a parked
 //! `child_page` block survives the delete of its former parent and nests again, a trashed page
 //! keeps a concurrent title edit and restores, and duplicate page aliases settle on one row.
+//!
+//! Notes databases across replicas: received databases take their parents from their block,
+//! concurrent option adds and edits to different property groups all survive, a value written
+//! against a concurrent type change stays as a mismatch, dual relation links and unlinks read the
+//! same on both sides, a template snapshot replicates whole, and deleting a database block
+//! removes its data source, rows, and values everywhere.
 
 use sqlx::SqliteConnection;
 
@@ -12,7 +18,9 @@ use super::replica::{Replica, converge, quoted, rank};
 use crate::Hooks;
 use crate::hooks::{ChangeSink, HookFuture, MaterializeHook};
 use crate::manifest::TableSpec;
-use crate::manifest::vault::notes::DOMAIN;
+use crate::manifest::vault::notes::{
+    DOMAIN, OPTION_KEY_PREFIX, PROPERTY_KEY_PREFIX, RELATION_EDGE_KEY_PREFIX, VALUE_KEY_PREFIX,
+};
 
 const CREATED: &str = "2027-01-01T00:00:00.000Z";
 const EDITED: &str = "2027-01-02T00:00:00.000Z";
@@ -624,6 +632,500 @@ fn concurrent_duplicate_page_aliases_settle_on_the_lowest_key() {
                 .await,
                 vec!["name-a:HOME".to_string()],
                 "replica {}",
+                replica.index
+            );
+        }
+        assert_converged(&mut replicas).await;
+    });
+}
+
+/// The derived sync key of a Notes row with identity `parts` under `prefix`.
+fn derived(prefix: &str, parts: &[&str]) -> String {
+    ganbaru_sync_contracts::derived_key(prefix, parts)
+        .unwrap()
+        .as_str()
+        .to_string()
+}
+
+/// SQL adding a property of data source `source`.
+fn property_sql(
+    source: &str,
+    id: &str,
+    name: &str,
+    kind: &str,
+    config: &str,
+    order: u32,
+) -> String {
+    format!(
+        "INSERT INTO notes_data_source_properties
+             (data_source_id, property_id, sync_key, name, type, config, order_key)
+         VALUES ({source}, {id}, {key}, {name}, {kind}, {config}, {order});",
+        key = quoted(&derived(PROPERTY_KEY_PREFIX, &[source, id])),
+        source = quoted(source),
+        id = quoted(id),
+        name = quoted(name),
+        kind = quoted(kind),
+        config = quoted(config),
+        order = quoted(&rank(order)),
+    )
+}
+
+/// SQL adding option `id` to property `property` of data source `source`.
+fn option_sql(source: &str, property: &str, id: &str, name: &str, position: u32) -> String {
+    format!(
+        "INSERT INTO notes_data_source_property_options
+             (data_source_id, property_id, option_id, sync_key, property_key, name, color,
+              position)
+         VALUES ({source_q}, {property_q}, {id_q}, {key}, {property_key}, {name}, 'default',
+                 {position});",
+        key = quoted(&derived(OPTION_KEY_PREFIX, &[source, property, id])),
+        property_key = quoted(&derived(PROPERTY_KEY_PREFIX, &[source, property])),
+        source_q = quoted(source),
+        property_q = quoted(property),
+        id_q = quoted(id),
+        name = quoted(name),
+        position = quoted(&rank(position)),
+    )
+}
+
+/// SQL storing value `value` of type `kind` for property `property` of row page `page`.
+fn value_sql(page: &str, property: &str, kind: &str, value: &str) -> String {
+    format!(
+        "INSERT INTO notes_page_property_values (page_id, property_id, sync_key, value_type, value)
+         VALUES ({page_q}, {property_q}, {key}, {kind}, {value})
+         ON CONFLICT (page_id, property_id) DO UPDATE SET
+             value_type = excluded.value_type, value = excluded.value;",
+        key = quoted(&derived(VALUE_KEY_PREFIX, &[page, property])),
+        page_q = quoted(page),
+        property_q = quoted(property),
+        kind = quoted(kind),
+        value = quoted(value),
+    )
+}
+
+/// SQL adding the relation edge from `source` under `property` to `target`.
+fn edge_sql(source: &str, property: &str, target: &str) -> String {
+    format!(
+        "INSERT INTO notes_relation_edges
+             (source_page_id, source_property_id, target_page_id, sync_key, created_time)
+         VALUES ({source_q}, {property_q}, {target_q}, {key}, {created});",
+        key = quoted(&derived(
+            RELATION_EDGE_KEY_PREFIX,
+            &[source, property, target]
+        )),
+        source_q = quoted(source),
+        property_q = quoted(property),
+        target_q = quoted(target),
+        created = quoted(CREATED),
+    )
+}
+
+/// SQL adding a `child_database` block, its database, and data source `source` on the shared
+/// page, with a title property and row pages `rows`.
+fn database_sql(database: &str, source: &str, position: u32, rows: &[&str]) -> String {
+    let mut sql = format!(
+        "BEGIN;
+         INSERT INTO notes_blocks
+             (id, page_id, parent_type, parent_page_id, type, order_key, created_time,
+              last_edited_time)
+         VALUES ({database_q}, {page}, 'page_id', {page}, 'child_database', {order}, {created},
+                 {created});
+         INSERT INTO notes_databases
+             (id, block_id, parent_type, parent_page_id, title, created_time, last_edited_time)
+         VALUES ({database_q}, {database_q}, 'page_id', {page}, 'Tasks', {created}, {created});
+         INSERT INTO notes_data_sources (id, database_id, title, created_time, last_edited_time)
+         VALUES ({source_q}, {database_q}, 'Tasks', {created}, {created});
+         {title}",
+        database_q = quoted(database),
+        source_q = quoted(source),
+        page = quoted(PAGE),
+        order = quoted(&rank(10 + position)),
+        created = quoted(CREATED),
+        title = property_sql(source, "title", "Name", "title", "{}", 0),
+    );
+    for row in rows {
+        sql.push_str(&format!(
+            "INSERT INTO notes_pages
+                 (id, parent_type, parent_data_source_id, title, created_time, last_edited_time)
+             VALUES ({row}, 'data_source_id', {source_q}, {row}, {created}, {created});",
+            row = quoted(row),
+            source_q = quoted(source),
+            created = quoted(CREATED),
+        ));
+    }
+    sql.push_str("COMMIT;");
+    sql
+}
+
+#[test]
+fn received_databases_get_their_parents_from_their_block() {
+    block_on(async {
+        let mut replicas = shared(2, &database_sql("db", "source", 0, &["row-1"])).await;
+        for replica in replicas.iter_mut() {
+            assert_eq!(
+                texts(
+                    replica,
+                    "SELECT parent_type || ':' || parent_page_id FROM notes_databases"
+                )
+                .await,
+                vec![format!("page_id:{PAGE}")],
+                "replica {}",
+                replica.index
+            );
+        }
+        // Notes writes the parent columns with a local move; the receiver derives them.
+        replicas[0]
+            .exec(&format!(
+                "{}UPDATE notes_databases
+                 SET parent_type = 'block_id', parent_page_id = NULL, parent_block_id = {};",
+                nest_sql("db", BLOCK_A),
+                quoted(BLOCK_A),
+            ))
+            .await;
+        converge(&mut replicas).await;
+        assert_eq!(
+            texts(
+                &mut replicas[1],
+                "SELECT parent_type || ':' || parent_block_id FROM notes_databases"
+            )
+            .await,
+            vec![format!("block_id:{BLOCK_A}")]
+        );
+        assert_converged(&mut replicas).await;
+    });
+}
+
+#[test]
+fn concurrent_option_adds_and_property_edits_all_survive() {
+    block_on(async {
+        let setup = format!(
+            "{}{}",
+            database_sql("db", "source", 0, &["row-1"]),
+            property_sql("source", "stage", "Stage", "select", "{\"select\":{}}", 1),
+        );
+        let mut replicas = shared(2, &setup).await;
+        replicas[0]
+            .exec(&format!(
+                "{}UPDATE notes_data_source_properties SET name = 'Phase' WHERE property_id = 'stage';",
+                option_sql("source", "stage", "todo", "To do", 1)
+            ))
+            .await;
+        replicas[1]
+            .exec(&format!(
+                "{}UPDATE notes_data_source_properties SET order_key = {} WHERE property_id = 'stage';",
+                option_sql("source", "stage", "done", "Done", 2),
+                quoted(&rank(5)),
+            ))
+            .await;
+        converge(&mut replicas).await;
+        for replica in replicas.iter_mut() {
+            assert_eq!(
+                texts(
+                    replica,
+                    "SELECT option_id || ':' || name FROM notes_data_source_property_options
+                     ORDER BY position, option_id"
+                )
+                .await,
+                vec!["todo:To do".to_string(), "done:Done".to_string()],
+                "replica {}",
+                replica.index
+            );
+            assert_eq!(
+                texts(
+                    replica,
+                    "SELECT name || ':' || order_key FROM notes_data_source_properties
+                     WHERE property_id = 'stage'"
+                )
+                .await,
+                vec![format!("Phase:{}", rank(5))],
+                "replica {}",
+                replica.index
+            );
+        }
+        assert_converged(&mut replicas).await;
+    });
+}
+
+#[test]
+fn a_value_written_against_a_concurrent_type_change_stays_as_a_mismatch() {
+    block_on(async {
+        let setup = format!(
+            "{}{}",
+            database_sql("db", "source", 0, &["row-1"]),
+            property_sql(
+                "source",
+                "notes",
+                "Notes",
+                "rich_text",
+                "{\"rich_text\":{}}",
+                1
+            ),
+        );
+        let mut replicas = shared(2, &setup).await;
+        replicas[0]
+            .exec(
+                "UPDATE notes_data_source_properties
+                 SET type = 'number', config = '{\"number\":{\"format\":\"number\"}}'
+                 WHERE property_id = 'notes';",
+            )
+            .await;
+        replicas[1]
+            .exec(&value_sql(
+                "row-1",
+                "notes",
+                "rich_text",
+                "{\"rich_text\":[{\"plain_text\":\"seven\"}]}",
+            ))
+            .await;
+        converge(&mut replicas).await;
+        for replica in replicas.iter_mut() {
+            assert_eq!(
+                texts(
+                    replica,
+                    "SELECT property.type || ':' || value.value_type
+                     FROM notes_page_property_values AS value
+                     JOIN notes_data_source_properties AS property
+                       ON property.property_id = value.property_id
+                     WHERE value.page_id = 'row-1'"
+                )
+                .await,
+                vec!["number:rich_text".to_string()],
+                "replica {} keeps the value with its own type",
+                replica.index
+            );
+        }
+        assert_converged(&mut replicas).await;
+    });
+}
+
+/// A pair of data sources whose relation properties name each other.
+fn dual_relation_sql() -> String {
+    let relation = |target: &str, synced: &str| {
+        serde_json::json!({
+            "relation": {
+                "data_source_id": target,
+                "type": "dual_property",
+                "dual_property": { "synced_property_id": synced },
+            }
+        })
+        .to_string()
+    };
+    format!(
+        "{}{}{}{}",
+        database_sql("db-a", "source-a", 0, &["task-1"]),
+        database_sql("db-b", "source-b", 1, &["person-1"]),
+        property_sql(
+            "source-a",
+            "people",
+            "People",
+            "relation",
+            &relation("source-b", "tasks"),
+            1
+        ),
+        property_sql(
+            "source-b",
+            "tasks",
+            "Tasks",
+            "relation",
+            &relation("source-a", "people"),
+            1
+        ),
+    )
+}
+
+/// Every link `notes_relation_links` reads, as `source>property>target`.
+async fn links(replica: &mut Replica) -> Vec<String> {
+    texts(
+        replica,
+        "SELECT DISTINCT source_page_id || '>' || source_property_id || '>' || target_page_id
+         FROM notes_relation_links ORDER BY 1",
+    )
+    .await
+}
+
+#[test]
+fn dual_relation_links_and_unlinks_converge_on_both_sides() {
+    block_on(async {
+        let mut replicas = shared(2, &dual_relation_sql()).await;
+        // Device 0 links from the task side, stored under the canonical property.
+        replicas[0]
+            .exec(&edge_sql("task-1", "people", "person-1"))
+            .await;
+        converge(&mut replicas).await;
+        let linked = vec![
+            "person-1>tasks>task-1".to_string(),
+            "task-1>people>person-1".to_string(),
+        ];
+        for replica in replicas.iter_mut() {
+            assert_eq!(links(replica).await, linked, "replica {}", replica.index);
+        }
+
+        // Device 1 unlinks from the person side while device 0 links the same pair again,
+        // written as the reverse orientation by a device that saw the pairing differently.
+        replicas[1]
+            .exec("DELETE FROM notes_relation_edges WHERE source_page_id = 'task-1';")
+            .await;
+        replicas[0]
+            .exec(&edge_sql("person-1", "tasks", "task-1"))
+            .await;
+        converge(&mut replicas).await;
+        for replica in replicas.iter_mut() {
+            assert_eq!(
+                links(replica).await,
+                linked,
+                "replica {}: the reverse edge still links both sides",
+                replica.index
+            );
+        }
+
+        replicas[1].exec("DELETE FROM notes_relation_edges;").await;
+        converge(&mut replicas).await;
+        for replica in replicas.iter_mut() {
+            assert!(links(replica).await.is_empty(), "replica {}", replica.index);
+        }
+        assert_converged(&mut replicas).await;
+    });
+}
+
+/// SQL replacing the blocks of template `template` with paragraphs named by `texts`, the second
+/// and later nested under the first.
+fn template_blocks_sql(template: &str, texts: &[&str]) -> String {
+    let mut sql = format!(
+        "BEGIN; DELETE FROM notes_page_template_blocks WHERE template_id = {};",
+        quoted(template)
+    );
+    for (ordinal, text) in texts.iter().enumerate() {
+        let (parent_type, parent) = if ordinal == 0 {
+            ("template", "NULL".to_string())
+        } else {
+            ("block_id", quoted(&format!("{template}-{}", texts[0])))
+        };
+        sql.push_str(&format!(
+            "INSERT INTO notes_page_template_blocks
+                 (template_id, ordinal, id, parent_type, parent_block_id, type, payload,
+                  plain_text, created_time, last_edited_time)
+             VALUES ({template_q}, {ordinal}, {id}, '{parent_type}', {parent}, 'paragraph',
+                     {payload}, {text_q}, {created}, {created});",
+            template_q = quoted(template),
+            id = quoted(&format!("{template}-{text}")),
+            payload = quoted(&rich_text(text)),
+            text_q = quoted(text),
+            created = quoted(CREATED),
+        ));
+    }
+    sql.push_str("COMMIT;");
+    sql
+}
+
+/// Template `template`'s blocks as `id<parent` in ordinal order.
+async fn template_blocks(replica: &mut Replica, template: &str) -> Vec<String> {
+    texts(
+        replica,
+        &format!(
+            "SELECT id || '<' || coalesce(parent_block_id, '-') FROM notes_page_template_blocks
+             WHERE template_id = {} ORDER BY ordinal",
+            quoted(template)
+        ),
+    )
+    .await
+}
+
+#[test]
+fn a_template_snapshot_replicates_whole_and_concurrent_snapshots_never_mix() {
+    block_on(async {
+        let setup = format!(
+            "INSERT INTO notes_page_templates (id, name, created_time, last_edited_time)
+             VALUES ('tpl', 'Weekly', {created}, {created});
+             {blocks}",
+            created = quoted(CREATED),
+            blocks = template_blocks_sql("tpl", &["goals", "review"]),
+        );
+        let mut replicas = shared(2, &setup).await;
+        assert_eq!(
+            template_blocks(&mut replicas[1], "tpl").await,
+            vec![
+                "tpl-goals<-".to_string(),
+                "tpl-review<tpl-goals".to_string()
+            ]
+        );
+        replicas[0]
+            .exec(&format!(
+                "{}UPDATE notes_page_templates SET name = 'Weekly plan' WHERE id = 'tpl';",
+                template_blocks_sql("tpl", &["plan", "wins", "risks"])
+            ))
+            .await;
+        replicas[1]
+            .exec(&template_blocks_sql("tpl", &["notes"]))
+            .await;
+        converge(&mut replicas).await;
+        let first = template_blocks(&mut replicas[0], "tpl").await;
+        assert!(
+            first
+                == vec![
+                    "tpl-plan<-".to_string(),
+                    "tpl-wins<tpl-plan".to_string(),
+                    "tpl-risks<tpl-plan".to_string(),
+                ]
+                || first == vec!["tpl-notes<-".to_string()],
+            "one whole snapshot wins: {first:?}"
+        );
+        for replica in replicas.iter_mut() {
+            assert_eq!(template_blocks(replica, "tpl").await, first);
+            assert_eq!(
+                texts(replica, "SELECT name FROM notes_page_templates").await,
+                vec!["Weekly plan".to_string()]
+            );
+        }
+        assert_converged(&mut replicas).await;
+    });
+}
+
+#[test]
+fn deleting_a_database_block_removes_its_data_source_rows_and_values_everywhere() {
+    block_on(async {
+        let setup = format!(
+            "{}{}{}",
+            database_sql("db", "source", 0, &["row-1", "row-2"]),
+            property_sql(
+                "source",
+                "notes",
+                "Notes",
+                "rich_text",
+                "{\"rich_text\":{}}",
+                1
+            ),
+            value_sql("row-1", "notes", "rich_text", "{\"rich_text\":[]}"),
+        );
+        let mut replicas = shared(2, &setup).await;
+        replicas[1]
+            .exec("UPDATE notes_pages SET title = 'Renamed' WHERE id = 'row-2';")
+            .await;
+        replicas[0]
+            .exec("DELETE FROM notes_blocks WHERE id = 'db';")
+            .await;
+        converge(&mut replicas).await;
+        for replica in replicas.iter_mut() {
+            for table in [
+                "notes_databases",
+                "notes_data_sources",
+                "notes_data_source_properties",
+                "notes_page_property_values",
+            ] {
+                assert_eq!(
+                    texts(
+                        replica,
+                        &format!("SELECT CAST(COUNT(*) AS TEXT) FROM {table}")
+                    )
+                    .await,
+                    vec!["0".to_string()],
+                    "replica {} {table}",
+                    replica.index
+                );
+            }
+            assert_eq!(
+                texts(replica, "SELECT id FROM notes_pages ORDER BY id").await,
+                vec![PAGE.to_string()],
+                "replica {}: row pages go with their data source",
                 replica.index
             );
         }

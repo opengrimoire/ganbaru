@@ -4,9 +4,11 @@
 //! The hook receives only the connection and a change sink, so the desktop service and the
 //! headless Android pass run the same code. For the changed keys of an apply it fills the
 //! hook-derived columns (a page's `parent_type`, `parent_page_id`, and `parent_block_id`, a
-//! block's `page_id` and `plain_text`), refreshes the reminder candidates of changed blocks,
-//! invalidates the fingerprints of the search and link indexes so the next read rebuilds them,
-//! queues history snapshots of the touched pages in `notes_page_history_pending`, queues the
+//! block's `page_id` and `plain_text`, a database's parent columns), refreshes the reminder
+//! candidates of changed blocks and property values, forgets cached rollups that read changed
+//! data sources, properties, options, values, or relation edges, invalidates the fingerprints
+//! of the search and link indexes so the next read rebuilds them, queues history snapshots of
+//! the touched pages in `notes_page_history_pending`, queues the
 //! changed page and block keys for structure repair in `notes_sync_repair_pending`, and reports
 //! every changed row under its table name. It writes only device-local rows and hook-derived
 //! columns, which sync never captures.
@@ -14,7 +16,10 @@
 use crate::block_storage::compose_block_content;
 use crate::validation::plain_text_from_payload;
 use ganbaru_sync::manifest::TableSpec;
-use ganbaru_sync::manifest::vault::notes::{BLOCKS_TABLE, DOMAIN, PAGES_TABLE};
+use ganbaru_sync::manifest::vault::notes::{
+    BLOCKS_TABLE, DATA_SOURCES_TABLE, DATABASES_TABLE, DOMAIN, OPTIONS_TABLE, PAGES_TABLE,
+    PROPERTIES_TABLE, RELATION_EDGES_TABLE, VALUES_TABLE,
+};
 use ganbaru_sync::{ChangeSink, HookError, HookFuture, Hooks, MaterializeHook};
 use serde_json::Value;
 use sqlx::{Connection, SqliteConnection};
@@ -80,9 +85,191 @@ pub async fn refresh_after_apply(
         queue_repair(conn, "page", keys).await?;
     } else if table == BLOCKS_TABLE {
         refresh_blocks(conn, keys).await?;
+        refresh_database_parents(conn, keys).await?;
         queue_repair(conn, "block", keys).await?;
+    } else if table == DATABASES_TABLE {
+        refresh_databases(conn, keys).await?;
+    } else if table == DATA_SOURCES_TABLE {
+        invalidate_rollups(conn, keys, false).await?;
+    } else if table == PROPERTIES_TABLE || table == OPTIONS_TABLE {
+        let table_name = if table == PROPERTIES_TABLE {
+            "notes_data_source_properties"
+        } else {
+            "notes_data_source_property_options"
+        };
+        let (sources, removed) = present(conn, table_name, "data_source_id", keys).await?;
+        invalidate_rollups(conn, &sources, removed).await?;
+        refresh_property_reminders(conn, &[], true).await?;
+    } else if table == VALUES_TABLE {
+        let (pages, removed) = present(conn, "notes_page_property_values", "page_id", keys).await?;
+        let sources = data_sources_of(conn, &pages).await?;
+        invalidate_rollups(conn, &sources, removed).await?;
+        refresh_property_reminders(conn, &pages, removed).await?;
+        queue_page_history(conn, &pages).await?;
+    } else if table == RELATION_EDGES_TABLE {
+        let (sources_pages, removed) =
+            present(conn, "notes_relation_edges", "source_page_id", keys).await?;
+        let (target_pages, _) =
+            present(conn, "notes_relation_edges", "target_page_id", keys).await?;
+        let mut pages = sources_pages.clone();
+        pages.extend(target_pages);
+        let sources = data_sources_of(conn, &pages).await?;
+        invalidate_rollups(conn, &sources, removed).await?;
+        queue_page_history(conn, &sources_pages).await?;
     }
     invalidate_indexes(conn).await
+}
+
+/// Sets the parent columns of the databases among `database_ids` to the placement of their
+/// `child_database` block. Databases whose columns already agree, or whose block has no valid
+/// placement, are left alone.
+pub async fn refresh_database_parents(
+    conn: &mut SqliteConnection,
+    database_ids: &[String],
+) -> Result<(), String> {
+    sqlx::query(
+        "WITH placed(id, kind, parent_page, parent_block) AS (
+             SELECT database.id,
+                 CASE WHEN block.parent_page_id IS NOT NULL THEN 'page_id' ELSE 'block_id' END,
+                 block.parent_page_id,
+                 block.parent_block_id
+             FROM notes_databases AS database
+             JOIN notes_blocks AS block ON block.id = database.block_id
+             WHERE database.id IN (SELECT value FROM json_each(?1))
+               AND (block.parent_page_id IS NULL) <> (block.parent_block_id IS NULL)
+         )
+         UPDATE notes_databases
+         SET parent_type = placed.kind,
+             parent_page_id = placed.parent_page,
+             parent_block_id = placed.parent_block
+         FROM placed
+         WHERE notes_databases.id = placed.id
+           AND (notes_databases.parent_type IS NOT placed.kind
+                OR notes_databases.parent_page_id IS NOT placed.parent_page
+                OR notes_databases.parent_block_id IS NOT placed.parent_block)",
+    )
+    .bind(keys_json(database_ids)?)
+    .execute(&mut *conn)
+    .await
+    .map_err(|error| format!("refresh synced Notes database parents: {error}"))?;
+    Ok(())
+}
+
+async fn refresh_databases(
+    conn: &mut SqliteConnection,
+    database_ids: &[String],
+) -> Result<(), String> {
+    refresh_database_parents(conn, database_ids).await?;
+    let pages: Vec<String> = sqlx::query_scalar(
+        "SELECT DISTINCT page_id FROM notes_blocks
+         WHERE id IN (SELECT value FROM json_each(?1)) AND page_id <> ''",
+    )
+    .bind(keys_json(database_ids)?)
+    .fetch_all(&mut *conn)
+    .await
+    .map_err(|error| format!("load pages of synced Notes databases: {error}"))?;
+    queue_page_history(conn, &pages).await
+}
+
+/// Forgets cached rollups that may read changed rows: those reading or read from
+/// `data_source_ids`, or every cached rollup when `all` is set, because a removed row no longer
+/// says where it lived.
+async fn invalidate_rollups(
+    conn: &mut SqliteConnection,
+    data_source_ids: &[String],
+    all: bool,
+) -> Result<(), String> {
+    let result = if all {
+        sqlx::query("DELETE FROM notes_data_source_rollup_cache")
+            .execute(&mut *conn)
+            .await
+    } else {
+        sqlx::query(
+            "DELETE FROM notes_data_source_rollup_cache
+             WHERE source_data_source_id IN (SELECT value FROM json_each(?1))
+                OR target_data_source_id IN (SELECT value FROM json_each(?1))",
+        )
+        .bind(keys_json(data_source_ids)?)
+        .execute(&mut *conn)
+        .await
+    };
+    result.map_err(|error| format!("invalidate synced Notes rollups: {error}"))?;
+    Ok(())
+}
+
+/// The distinct values of `column` in the rows of the derived-key table `table` whose
+/// `sync_key` is among `keys`, and whether some key names no row because it was removed.
+async fn present(
+    conn: &mut SqliteConnection,
+    table: &str,
+    column: &str,
+    keys: &[String],
+) -> Result<(Vec<String>, bool), String> {
+    let found: Vec<(String, String)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        "SELECT sync_key, {column} FROM {table}
+         WHERE sync_key IN (SELECT value FROM json_each(?1))"
+    )))
+    .bind(keys_json(keys)?)
+    .fetch_all(&mut *conn)
+    .await
+    .map_err(|error| format!("load synced {table} rows: {error}"))?;
+    let unique_keys: BTreeSet<&str> = keys.iter().map(String::as_str).collect();
+    let removed = found.len() < unique_keys.len();
+    let values: BTreeSet<String> = found.into_iter().map(|(_, value)| value).collect();
+    Ok((values.into_iter().collect(), removed))
+}
+
+/// The data sources whose rows are among `page_ids`.
+async fn data_sources_of(
+    conn: &mut SqliteConnection,
+    page_ids: &[String],
+) -> Result<Vec<String>, String> {
+    sqlx::query_scalar(
+        "SELECT DISTINCT parent_data_source_id FROM notes_pages
+         WHERE id IN (SELECT value FROM json_each(?1)) AND parent_data_source_id IS NOT NULL",
+    )
+    .bind(keys_json(page_ids)?)
+    .fetch_all(&mut *conn)
+    .await
+    .map_err(|error| format!("load data sources of synced Notes rows: {error}"))
+}
+
+/// Refreshes the date property reminders of `page_ids`, and of every page with a pending
+/// property reminder when `all` is set, settling as delivered those first seen after their time.
+async fn refresh_property_reminders(
+    conn: &mut SqliteConnection,
+    page_ids: &[String],
+    all: bool,
+) -> Result<(), String> {
+    let mut pages: BTreeSet<String> = page_ids.iter().cloned().collect();
+    if all {
+        let pending: Vec<String> = sqlx::query_scalar(
+            "SELECT DISTINCT source_id FROM notes_mention_notifications
+             WHERE source_type = ?1 AND status = 'pending'",
+        )
+        .bind(crate::mention_notifications::PAGE_PROPERTY_SOURCE)
+        .fetch_all(&mut *conn)
+        .await
+        .map_err(|error| format!("load pending Notes property reminders: {error}"))?;
+        pages.extend(pending);
+    }
+    if pages.is_empty() {
+        return Ok(());
+    }
+    let pages: Vec<String> = pages.into_iter().collect();
+    let mut tx = conn
+        .begin()
+        .await
+        .map_err(|error| format!("begin synced Notes reminder refresh: {error}"))?;
+    let source = crate::mention_notifications::PAGE_PROPERTY_SOURCE;
+    let known = reminder_ids(&mut tx, source, &pages).await?;
+    for page_id in &pages {
+        crate::mention_notifications::sync_page_properties_tx(&mut tx, page_id).await?;
+    }
+    settle_past_reminders(&mut tx, source, &pages, &known).await?;
+    tx.commit()
+        .await
+        .map_err(|error| format!("commit synced Notes reminder refresh: {error}"))
 }
 
 /// Records `keys` of `kind` (`page` or `block`) for the Notes structure repair, which clears
@@ -255,7 +442,7 @@ async fn refresh_blocks(conn: &mut SqliteConnection, block_ids: &[String]) -> Re
             crate::mention_notifications::clear_source_tx(&mut tx, "block", block_id).await?;
         }
     }
-    let known_reminders = reminder_ids(&mut tx, block_ids).await?;
+    let known_reminders = reminder_ids(&mut tx, "block", block_ids).await?;
     let mut pages = BTreeSet::new();
     for block in &blocks {
         let mut payload = compose_block_content(&block.block_type, &block.attrs, &block.text)?;
@@ -290,7 +477,7 @@ async fn refresh_blocks(conn: &mut SqliteConnection, block_ids: &[String]) -> Re
         .await?;
         pages.insert(block.page_id.clone());
     }
-    settle_past_reminders(&mut tx, block_ids, &known_reminders).await?;
+    settle_past_reminders(&mut tx, "block", block_ids, &known_reminders).await?;
     tx.commit()
         .await
         .map_err(|error| format!("commit synced Notes block refresh: {error}"))?;
@@ -305,16 +492,19 @@ async fn refresh_blocks(conn: &mut SqliteConnection, block_ids: &[String]) -> Re
     queue_page_history(conn, &pages.into_iter().collect::<Vec<_>>()).await
 }
 
-/// Ids of the reminder candidates of `block_ids` that exist before a refresh.
+/// Ids of the reminder candidates of the `source_type` sources `source_ids` that exist before a
+/// refresh.
 async fn reminder_ids(
     conn: &mut SqliteConnection,
-    block_ids: &[String],
+    source_type: &str,
+    source_ids: &[String],
 ) -> Result<Vec<String>, String> {
     sqlx::query_scalar(
         "SELECT id FROM notes_mention_notifications
-         WHERE source_type = 'block' AND source_id IN (SELECT value FROM json_each(?1))",
+         WHERE source_type = ?2 AND source_id IN (SELECT value FROM json_each(?1))",
     )
-    .bind(keys_json(block_ids)?)
+    .bind(keys_json(source_ids)?)
+    .bind(source_type)
     .fetch_all(&mut *conn)
     .await
     .map_err(|error| format!("load synced Notes reminder candidates: {error}"))
@@ -324,7 +514,8 @@ async fn reminder_ids(
 /// that first sees a mention or reminder from another device after its moment never notifies.
 async fn settle_past_reminders(
     conn: &mut SqliteConnection,
-    block_ids: &[String],
+    source_type: &str,
+    source_ids: &[String],
     known: &[String],
 ) -> Result<(), String> {
     let known = serde_json::to_string(known)
@@ -334,15 +525,16 @@ async fn settle_past_reminders(
          SET status = 'delivered',
              delivered_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
              last_edited_time = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-         WHERE source_type = 'block'
+         WHERE source_type = ?3
            AND source_id IN (SELECT value FROM json_each(?1))
            AND id NOT IN (SELECT value FROM json_each(?2))
            AND status = 'pending'
            AND COALESCE(trigger_at, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
                <= strftime('%Y-%m-%dT%H:%M:%fZ', 'now')",
     )
-    .bind(keys_json(block_ids)?)
+    .bind(keys_json(source_ids)?)
     .bind(known)
+    .bind(source_type)
     .execute(&mut *conn)
     .await
     .map_err(|error| format!("settle synced Notes reminder candidates: {error}"))?;

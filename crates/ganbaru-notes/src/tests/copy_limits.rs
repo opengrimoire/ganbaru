@@ -116,8 +116,21 @@ fn copy_limits_accumulate_database_source_bytes_across_one_compound_edit() {
         )
         .await;
         // Each copy fits individually, but two copies exceed the shared source budget.
-        sqlx::query("UPDATE notes_data_sources SET description = json_array(json_object('type', 'text', 'text', json_object('content', replace(hex(zeroblob(17 * 1024 * 1024)), '00', 'x')))) WHERE id = ?")
-            .bind(DATA_SOURCE_A).execute(&pool).await.unwrap();
+        // Replicated fields stay within the sync text bound, so the bytes come from many
+        // properties whose configs each hold a large description.
+        sqlx::query(
+            "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 70)
+             INSERT INTO notes_data_source_properties
+                 (data_source_id, property_id, sync_key, name, type, config, order_key)
+             SELECT ?1, 'bulk-' || i, 'pending:bulk-' || i, 'Bulk ' || i, 'rich_text',
+                    json_object('description', replace(hex(zeroblob(250 * 1024)), '00', 'x')),
+                    'a0'
+             FROM n",
+        )
+        .bind(DATA_SOURCE_A)
+        .execute(&pool)
+        .await
+        .unwrap();
         let revision = reads::get_block_row(&pool, BLOCK_A, false)
             .await
             .unwrap()

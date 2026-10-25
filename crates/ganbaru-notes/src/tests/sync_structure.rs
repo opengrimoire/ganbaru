@@ -687,8 +687,8 @@ fn removing_a_database_block_removes_its_row_pages_through_nested_databases() {
         .unwrap();
         insert_row_page(&pool, PAGE_C, DATA_SOURCE_B, "Inner row", json!({})).await;
 
-        // While applying, the writer's own page deletes remove the row pages, so the trigger
-        // waits; a local removal of the block takes them along.
+        // Row pages cascade from their data source through foreign keys, so an apply removes
+        // them the same way a local removal of the block does.
         sqlx::query("UPDATE sync_apply_state SET applying = 1 WHERE singleton = 1")
             .execute(&pool)
             .await
@@ -703,10 +703,7 @@ fn removing_a_database_block_removes_its_row_pages_through_nested_databases() {
             .fetch_one(&mut *tx)
             .await
             .unwrap();
-        assert_eq!(
-            kept, 3,
-            "apply leaves row pages to the writer's own deletes"
-        );
+        assert_eq!(kept, 1, "apply removes row pages through foreign keys");
         tx.rollback().await.unwrap();
         sqlx::query("UPDATE sync_apply_state SET applying = 0 WHERE singleton = 1")
             .execute(&pool)
@@ -732,12 +729,12 @@ fn removing_a_database_block_removes_its_row_pages_through_nested_databases() {
 }
 
 #[test]
-fn a_row_page_for_an_unknown_data_source_is_not_listed_or_counted() {
+fn a_row_page_cannot_name_an_absent_data_source() {
     crate::test_block_on(async {
         let pool = migrated_memory_pool().await;
         create_page(&pool, PAGE_A, BLOCK_A).await;
         for (id, in_trash) in [(PAGE_B, 0_i64), (PAGE_C, 1_i64)] {
-            sqlx::query(
+            let inserted = sqlx::query(
                 "INSERT INTO notes_pages
                      (id, parent_type, parent_data_source_id, title, in_trash, trashed_time)
                  VALUES (?1, 'data_source_id', 'absent-source', 'Unplaced', ?2,
@@ -746,8 +743,11 @@ fn a_row_page_for_an_unknown_data_source_is_not_listed_or_counted() {
             .bind(id)
             .bind(in_trash)
             .execute(&pool)
-            .await
-            .unwrap();
+            .await;
+            assert!(
+                inserted.is_err(),
+                "a row page's data source is a foreign key, so no read can meet an unplaced row"
+            );
         }
 
         let listed = serde_json::to_value(reads::list_pages(&pool).await.unwrap()).unwrap();

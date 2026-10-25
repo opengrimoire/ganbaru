@@ -53,6 +53,7 @@ mod recursion_cycles;
 mod schema_validation;
 mod search;
 mod suggestions;
+mod sync_databases;
 mod sync_key_conversion;
 mod sync_structure;
 mod undo;

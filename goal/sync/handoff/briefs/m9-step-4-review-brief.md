@@ -1,0 +1,13 @@
+You review branch `feat/sync-chat-conversations` (worktree /home/victor/ganbaru/.claude/worktrees/agent-a264b46ecb33f2bed, HEAD 9a019a8d, which already merges feat/sync 419c6128) before it merges into feat/sync. It is milestone 9 step 4 of Ganbaru's sync work (Chat group B: conversations, memberships, folder grants, sync keys, conversion pass, revocation-wins priorities, comparators) plus step 3 review follow-ups. Read-only: do not edit, commit, or switch branches; use `git -C <worktree>` with absolute paths. Prefer reading over building; if you run Cargo, use `exec 9>/home/victor/.cache/ganbaru-checks.lock; flock 9; CARGO_TARGET_DIR=/home/victor/.cache/ganbaru-targets/review cargo ...` with `-j 4` and `--test-threads=4`.
+
+Inputs: the brief <SCRATCHPAD>/m9-step-4-brief.md, the progress entry <SCRATCHPAD>/milestone-9-step-4-progress.md, the plan /home/victor/ganbaru/goal/sync/milestone_9.md (Design, step 4 row, Risks, Implementation checks, Progress for steps 1 to 3), and `git diff 419c6128...feat/sync-chat-conversations`.
+
+Focus on security and data safety, ranked by severity, each with a concrete failure scenario and file:line:
+1. Authorization: can concurrent edits, a reordered apply, or a hostile paired writer widen access (a membership or folder grant that survives a concurrent revocation, a priority that lets the less restrictive value win, a comparator in `access/channels.rs`, `access.rs`, or `internal_mcp_tools/authorization.rs` that reads a stale or tombstoned row)? Does the hook revoke every authorization a merged state no longer covers, including on apply paths that skip the hook?
+2. Migration `20261025060716_chat_conversations_replication.sql`: data preserved on real vaults, derived default conversation and channel ids (collisions, an older used default channel keeping its id), sync key backfill, unique index changes, triggers that freeze ids and creation times outside apply (do any legitimate app writes break?), idempotency.
+3. Conversion pass at vault open and the startup placeholder assertion: deterministic across devices, crash-safe, behavior on failure.
+4. Step 3 follow-ups: the older-stricter-pointer test fails if the arm is removed, stale checks by revision id end to end (DTO and frontend validator), the copied-restrictiveness refusal and what happens to the refused row.
+5. Android: the claim that Android never holds an active authorization, so no revocation jobs queue there.
+Note missing tests, docs that disagree with code, and the manifest fixture.
+
+Final report under 350 words: verdict (merge, merge with follow-ups, or fix first) and findings by severity with suggested fixes.

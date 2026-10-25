@@ -122,7 +122,8 @@ BEGIN
 END;
 
 CREATE TRIGGER chat_generic_membership_audience_update
-AFTER UPDATE ON chat_conversation_memberships
+AFTER UPDATE OF conversation_id, participant_id, membership_role, revision, removed_at,
+    created_at, updated_at ON chat_conversation_memberships
 WHEN (SELECT applying FROM sync_apply_state WHERE singleton = 1) = 0
 BEGIN
     UPDATE chat_conversation_audience_state
@@ -228,7 +229,11 @@ BEGIN
 END;
 
 CREATE TRIGGER chat_teammate_channel_membership_audience_update
-AFTER UPDATE ON chat_teammate_channel_memberships
+AFTER UPDATE OF conversation_id, teammate_id, access_profile_id, read_history,
+    read_history_inherits_profile, participate, participate_inherits_profile, history_boundary,
+    history_boundary_inherits_profile, history_from_ordinal, runtime_approval_policy,
+    scratch_runtime_approval_policy, created_at, updated_at, removed_at
+ON chat_teammate_channel_memberships
 WHEN (SELECT applying FROM sync_apply_state WHERE singleton = 1) = 0
 BEGIN
     UPDATE chat_conversation_audience_state
@@ -604,6 +609,59 @@ CREATE TEMP TABLE chat_conversations_replication_guard (
 );
 INSERT INTO chat_conversations_replication_guard SELECT COUNT(*) FROM pragma_foreign_key_check;
 DROP TABLE chat_conversations_replication_guard;
+
+-- The effective revision of each teammate and access profile fails closed: once the revision a
+-- current pointer names has arrived, it is effective only while it belongs to that teammate or
+-- profile and matches the restrictiveness the pointer copies, and otherwise there is no
+-- effective row. The copy only ranks concurrent pointers during the sync merge, so a pointer
+-- that disagrees with its revision can only come from a corrupt or dishonest operation. Until
+-- the named revision arrives, the newest arrived revision stands in, and a teammate without any
+-- policy revision has no row.
+DROP VIEW chat_teammate_effective_policies;
+CREATE VIEW chat_teammate_effective_policies AS
+SELECT policy.*
+FROM chat_teammates teammate
+JOIN chat_teammate_policy_revisions_numbered policy
+  ON policy.id = CASE
+      WHEN EXISTS (
+          SELECT 1 FROM chat_teammate_policy_revisions named
+          WHERE named.id = teammate.current_policy_revision_id
+      ) THEN (
+          SELECT named.id FROM chat_teammate_policy_revisions named
+          WHERE named.id = teammate.current_policy_revision_id
+            AND named.teammate_id = teammate.participant_id
+            AND named.safety_mode IS teammate.current_policy_safety_mode
+      )
+      ELSE (
+          SELECT newest.id FROM chat_teammate_policy_revisions newest
+          WHERE newest.teammate_id = teammate.participant_id
+          ORDER BY newest.created_at DESC, newest.id DESC
+          LIMIT 1
+      )
+  END;
+
+DROP VIEW chat_access_profile_effective_revisions;
+CREATE VIEW chat_access_profile_effective_revisions AS
+SELECT revision.*
+FROM chat_access_profiles profile
+JOIN chat_access_profile_revisions_numbered revision
+  ON revision.id = CASE
+      WHEN EXISTS (
+          SELECT 1 FROM chat_access_profile_revisions named
+          WHERE named.id = profile.current_revision_id
+      ) THEN (
+          SELECT named.id FROM chat_access_profile_revisions named
+          WHERE named.id = profile.current_revision_id
+            AND named.access_profile_id = profile.id
+            AND named.maximum_folder_capability IS profile.current_maximum_folder_capability
+      )
+      ELSE (
+          SELECT newest.id FROM chat_access_profile_revisions newest
+          WHERE newest.access_profile_id = profile.id
+          ORDER BY newest.created_at DESC, newest.id DESC
+          LIMIT 1
+      )
+  END;
 
 -- Sync triggers rendered by ganbaru-sync from the vault manifest; the conformance test fails when these differ from the current rendering.
 

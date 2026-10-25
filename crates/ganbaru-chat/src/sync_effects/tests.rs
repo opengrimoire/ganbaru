@@ -422,14 +422,24 @@ async fn point_profile_at(pool: &SqlitePool, revision_id: &str, capability: &str
     .unwrap();
 }
 
-/// Runs the hook for `keys` of `table` and returns the error code it refused them with.
-async fn hook_refusal(pool: &SqlitePool, table: &str, keys: &[&str]) -> Option<ChatErrorCode> {
-    let keys: Vec<String> = keys.iter().map(|key| (*key).to_string()).collect();
-    let mut connection = pool.acquire().await.unwrap();
-    after_materialize(&mut connection, table, &keys)
+/// Runs the hook for `keys` of `table` and returns the pointers it found mismatched.
+async fn mismatched(pool: &SqlitePool, table: &str, keys: &[&str]) -> Vec<String> {
+    run_hook(pool, table, keys)
         .await
-        .err()
-        .map(|error| error.code)
+        .mismatched_pointers
+        .into_iter()
+        .collect()
+}
+
+/// Number of effective rows `view` holds for `owner_column = owner`.
+async fn effective_rows(pool: &SqlitePool, view: &str, owner_column: &str, owner: &str) -> i64 {
+    sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+        "SELECT COUNT(*) FROM {view} WHERE {owner_column} = ?"
+    )))
+    .bind(owner)
+    .fetch_one(pool)
+    .await
+    .unwrap()
 }
 
 /// Points the seeded teammate at its seeded policy revision with a copied `safety_mode`.
@@ -447,61 +457,99 @@ async fn point_teammate_policy_at(pool: &SqlitePool, safety_mode: &str) {
 }
 
 #[tokio::test]
-async fn pointers_whose_copied_restrictiveness_differs_from_their_revision_are_refused() {
+async fn pointers_whose_copied_restrictiveness_differs_from_their_revision_are_contained() {
     let pool = migrated_pool().await;
     seed_organization(&pool).await;
+    let access_before = access_state(&pool).await[0].1;
     set_applying(&pool, true).await;
+    let teammate = vec![TEAMMATE_ID.to_string()];
+    let profile = vec![PROFILE_ID.to_string()];
+    let policies = "chat_teammate_effective_policies";
+    let profiles = "chat_access_profile_effective_revisions";
 
     point_teammate_policy_at(&pool, "full_access").await;
     assert_eq!(
-        hook_refusal(&pool, TEAMMATES_TABLE, &[TEAMMATE_ID]).await,
-        Some(ChatErrorCode::Validation)
+        mismatched(&pool, TEAMMATES_TABLE, &[TEAMMATE_ID]).await,
+        teammate
     );
     assert_eq!(
-        hook_refusal(&pool, POLICY_REVISIONS_TABLE, &["policy:sync-effects"]).await,
-        Some(ChatErrorCode::Validation)
+        effective_rows(&pool, policies, "teammate_id", TEAMMATE_ID).await,
+        0
     );
+    assert_eq!(
+        authorization_states(&pool).await,
+        vec![(
+            "authorization:first".to_string(),
+            "revoked".to_string(),
+            MISMATCHED_POINTER_REASON.to_string()
+        )]
+    );
+    assert_eq!(queued_jobs(&pool).await.len(), 1);
+    assert_eq!(access_state(&pool).await[0].1, access_before + 1);
+    assert_eq!(
+        mismatched(&pool, POLICY_REVISIONS_TABLE, &["policy:sync-effects"]).await,
+        teammate
+    );
+    // Later rows still apply after a contained pointer.
+    run_hook(&pool, MESSAGES_TABLE, &["item:first"]).await;
+
     point_teammate_policy_at(&pool, "ask_for_approval").await;
-    assert_eq!(
-        hook_refusal(&pool, TEAMMATES_TABLE, &[TEAMMATE_ID]).await,
-        None
+    assert!(
+        mismatched(&pool, TEAMMATES_TABLE, &[TEAMMATE_ID])
+            .await
+            .is_empty()
+    );
+    assert!(
+        mismatched(&pool, POLICY_REVISIONS_TABLE, &["policy:sync-effects"])
+            .await
+            .is_empty()
     );
     assert_eq!(
-        hook_refusal(&pool, POLICY_REVISIONS_TABLE, &["policy:sync-effects"]).await,
-        None
+        effective_rows(&pool, policies, "teammate_id", TEAMMATE_ID).await,
+        1
     );
 
     point_profile_at(&pool, FIRST_PROFILE_REVISION_ID, "publish").await;
     assert_eq!(
-        hook_refusal(&pool, ACCESS_PROFILES_TABLE, &[PROFILE_ID]).await,
-        Some(ChatErrorCode::Validation)
+        mismatched(&pool, ACCESS_PROFILES_TABLE, &[PROFILE_ID]).await,
+        profile
     );
     assert_eq!(
-        hook_refusal(
+        mismatched(
             &pool,
             ACCESS_PROFILE_REVISIONS_TABLE,
             &[FIRST_PROFILE_REVISION_ID]
         )
         .await,
-        Some(ChatErrorCode::Validation)
+        profile
+    );
+    assert_eq!(
+        effective_rows(&pool, profiles, "access_profile_id", PROFILE_ID).await,
+        0
     );
 
     // A pointer that arrives before its revision applies, and the revision is checked on arrival.
     let pending = "profile-revision:sync-effects:2";
     point_profile_at(&pool, pending, "read").await;
-    assert_eq!(
-        hook_refusal(&pool, ACCESS_PROFILES_TABLE, &[PROFILE_ID]).await,
-        None
+    assert!(
+        mismatched(&pool, ACCESS_PROFILES_TABLE, &[PROFILE_ID])
+            .await
+            .is_empty()
     );
     insert_profile_revision(&pool, 2, "publish").await;
     assert_eq!(
-        hook_refusal(&pool, ACCESS_PROFILE_REVISIONS_TABLE, &[pending]).await,
-        Some(ChatErrorCode::Validation)
+        mismatched(&pool, ACCESS_PROFILE_REVISIONS_TABLE, &[pending]).await,
+        profile
     );
     point_profile_at(&pool, pending, "publish").await;
+    assert!(
+        mismatched(&pool, ACCESS_PROFILE_REVISIONS_TABLE, &[pending])
+            .await
+            .is_empty()
+    );
     assert_eq!(
-        hook_refusal(&pool, ACCESS_PROFILE_REVISIONS_TABLE, &[pending]).await,
-        None
+        effective_rows(&pool, profiles, "access_profile_id", PROFILE_ID).await,
+        1
     );
 }
 
@@ -681,4 +729,133 @@ async fn an_applied_grant_narrowing_revokes_and_a_widening_keeps_authority() {
         )]
     );
     assert_eq!(queued_jobs(&pool).await.len(), 1);
+}
+
+/// A deleted row no longer names its teammate, so the hook sweeps every teammate that holds an
+/// active authorization.
+#[tokio::test]
+async fn an_applied_membership_deletion_revokes_the_authorization_it_covered() {
+    let pool = migrated_pool().await;
+    seed_organization(&pool).await;
+    let access_before = access_state(&pool).await[0].1;
+
+    set_applying(&pool, true).await;
+    sqlx::query("DELETE FROM chat_teammate_channel_memberships WHERE sync_key = ?")
+        .bind("channel-membership:sync-effects")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let effects = run_hook(
+        &pool,
+        CHANNEL_MEMBERSHIPS_TABLE,
+        &["channel-membership:sync-effects"],
+    )
+    .await;
+
+    assert_eq!(
+        effects.revoked_teammates,
+        BTreeSet::from([TEAMMATE_ID.to_string()])
+    );
+    assert_eq!(
+        authorization_states(&pool).await,
+        vec![(
+            "authorization:first".to_string(),
+            "revoked".to_string(),
+            ACCESS_REDUCTION_REASON.to_string()
+        )]
+    );
+    assert_eq!(queued_jobs(&pool).await.len(), 1);
+    assert_eq!(access_state(&pool).await[0].1, access_before + 1);
+
+    let replayed = run_hook(
+        &pool,
+        CHANNEL_MEMBERSHIPS_TABLE,
+        &["channel-membership:sync-effects"],
+    )
+    .await;
+    assert!(replayed.revoked_teammates.is_empty());
+    assert_eq!(queued_jobs(&pool).await.len(), 1);
+}
+
+#[tokio::test]
+async fn a_stricter_scratch_override_revokes_and_an_equal_one_keeps_authority() {
+    let pool = migrated_pool().await;
+    seed_organization(&pool).await;
+    sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
+        "INSERT INTO chat_scratch_scopes (id, reply_thread_id, teammate_id, created_at, updated_at)
+         VALUES ('scratch:sync-effects', 'reply:sync-effects', '{TEAMMATE_ID}', '{NOW}', '{NOW}');
+         INSERT INTO chat_scratch_generations
+            (id, scratch_scope_id, generation, created_at, updated_at)
+         VALUES ('generation:sync-effects', 'scratch:sync-effects', 1, '{NOW}', '{NOW}');
+         INSERT INTO chat_execution_environments
+            (id, scratch_generation_id, kind, display_name, created_at, updated_at)
+         VALUES ('environment:scratch', 'generation:sync-effects', 'scratch', 'Scratch', '{NOW}',
+                 '{NOW}');"
+    )))
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO chat_assignment_authorization_revisions
+            (id, assignment_id, revision, requester_participant_id,
+             teammate_policy_revision_id, teammate_access_revision,
+             destination_conversation_id, access_profile_revision_id, execution_environment_id,
+             resolved_runtime_approval_policy, scope_digest, decision_state, created_at)
+         VALUES ('authorization:scratch', 'assignment:sync-effects', 2,
+                 'participant:local-owner', 'policy:sync-effects', 1, ?, ?,
+                 'environment:scratch', 'auto_approve', printf('%064d', 0), 'allowed', ?)",
+    )
+    .bind(conversation_id())
+    .bind(FIRST_PROFILE_REVISION_ID)
+    .bind(NOW)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    set_applying(&pool, true).await;
+    set_scratch_override(&pool, "auto_approve").await;
+    let unchanged = run_hook(
+        &pool,
+        CHANNEL_MEMBERSHIPS_TABLE,
+        &["channel-membership:sync-effects"],
+    )
+    .await;
+    assert!(unchanged.revoked_teammates.is_empty());
+
+    set_scratch_override(&pool, "ask").await;
+    let effects = run_hook(
+        &pool,
+        CHANNEL_MEMBERSHIPS_TABLE,
+        &["channel-membership:sync-effects"],
+    )
+    .await;
+
+    assert_eq!(
+        effects.revoked_teammates,
+        BTreeSet::from([TEAMMATE_ID.to_string()])
+    );
+    let states: Vec<(String, String)> = authorization_states(&pool)
+        .await
+        .into_iter()
+        .map(|(id, state, _)| (id, state))
+        .collect();
+    assert_eq!(
+        states,
+        vec![
+            ("authorization:first".to_string(), "revoked".to_string()),
+            ("authorization:scratch".to_string(), "revoked".to_string()),
+        ]
+    );
+}
+
+/// Sets the seeded channel membership's scratch runtime approval override to `policy`.
+async fn set_scratch_override(pool: &SqlitePool, policy: &str) {
+    sqlx::query(
+        "UPDATE chat_teammate_channel_memberships SET scratch_runtime_approval_policy = ?
+         WHERE sync_key = 'channel-membership:sync-effects'",
+    )
+    .bind(policy)
+    .execute(pool)
+    .await
+    .unwrap();
 }

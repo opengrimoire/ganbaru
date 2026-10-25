@@ -95,6 +95,7 @@ fn only_revoked_teammates_are_reported() {
                 "participant:a".to_string(),
             ]),
             search_rebuilt: BTreeSet::from(["item:rebuilt".to_string()]),
+            mismatched_pointers: BTreeSet::from(["participant:mismatched".to_string()]),
         },
         &mut sink,
     );
@@ -173,4 +174,68 @@ async fn materialized_teammates_get_access_state_without_waking_the_drain() {
             .unwrap();
     assert_eq!(access_rows, 1);
     assert!(sink.0.is_empty());
+}
+
+/// A hostile writer could send a pointer whose copy disagrees with its revision; failing the hook
+/// would turn that row into a sync error that stops every later apply on this device.
+#[tokio::test]
+async fn a_mismatched_pointer_applies_without_effective_access_or_blocking_later_rows() {
+    let pool = migrated_pool().await;
+    sqlx::query("UPDATE sync_apply_state SET applying = 1 WHERE singleton = 1")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
+        "INSERT INTO chat_participants (id, participant_kind, display_name, created_at, updated_at)
+         VALUES ('{TEAMMATE_ID}', 'ai_teammate', 'Hook agent', '{NOW}', '{NOW}'),
+                ('participant:later', 'ai_teammate', 'Later agent', '{NOW}', '{NOW}');
+         INSERT INTO chat_teammates (participant_id, role, created_at, updated_at)
+         VALUES ('{TEAMMATE_ID}', 'Test', '{NOW}', '{NOW}'),
+                ('participant:later', 'Test', '{NOW}', '{NOW}');
+         INSERT INTO chat_teammate_policy_revisions
+            (id, teammate_id, provider_instance_id, model_selection_data, created_at)
+         VALUES ('policy:hook', '{TEAMMATE_ID}', 'codex-personal', '{{}}', '{NOW}');
+         UPDATE chat_teammates
+         SET current_policy_revision_id = 'policy:hook', current_policy_safety_mode = 'full_access'
+         WHERE participant_id = '{TEAMMATE_ID}';"
+    )))
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let mut connection = pool.acquire().await.unwrap();
+    let mut sink = CollectingSink::default();
+    ChatApplyHook
+        .after_materialize(
+            &mut connection,
+            &chat::TEAMMATES,
+            &[TEAMMATE_ID.to_string()],
+            &mut sink,
+        )
+        .await
+        .unwrap();
+    ChatApplyHook
+        .after_materialize(
+            &mut connection,
+            &chat::TEAMMATES,
+            &["participant:later".to_string()],
+            &mut sink,
+        )
+        .await
+        .unwrap();
+    drop(connection);
+
+    let effective: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM chat_teammate_effective_policies WHERE teammate_id = ?",
+    )
+    .bind(TEAMMATE_ID)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(effective, 0);
+    let access_rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM chat_teammate_access_state")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(access_rows, 2);
 }

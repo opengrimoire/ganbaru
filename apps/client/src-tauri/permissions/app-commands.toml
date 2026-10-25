@@ -645,6 +645,7 @@ commands.allow = [
   "sync_recovery_discard",
   "sync_recovery_list",
   "sync_recovery_restore",
+  "sync_reset_state",
   "sync_set_paused",
   "sync_status",
   "sync_subscribe",

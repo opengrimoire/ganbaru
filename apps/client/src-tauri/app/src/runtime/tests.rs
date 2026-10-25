@@ -116,6 +116,7 @@ fn mobile_runtime_excludes_desktop_only_commands() {
         "chat::interaction_commands::",
         "chat::preview::",
         "distractions::commands::",
+        "crate::sync::commands::sync_reset_state",
         "distractions::state_files::",
         "distractions::usage::",
         "distractions::limits_read::",

@@ -40,6 +40,7 @@ use ganbaru_sync_replica::authority::{
 };
 use ganbaru_sync_replica::now_ms;
 use ganbaru_sync_replica::outbox::Outbox;
+use ganbaru_sync_replica::reset;
 use sqlx::SqlitePool;
 use std::collections::BTreeSet;
 #[cfg(any(mobile, test))]
@@ -115,6 +116,8 @@ pub(crate) struct RuntimeState {
     pause_request: Mutex<Option<bool>>,
     /// Recovery actions waiting for the next pass.
     recovery: Mutex<Vec<RecoveryRequest>>,
+    /// Reset sync state requests waiting for the next pass, with where each answer goes.
+    resets: Mutex<Vec<ResetReply>>,
     status: Mutex<SyncStatusView>,
     task: Mutex<Option<ServiceTask>>,
     /// Number of the latest pass that started.
@@ -136,6 +139,7 @@ impl Default for RuntimeState {
             proposals: Mutex::default(),
             pause_request: Mutex::default(),
             recovery: Mutex::default(),
+            resets: Mutex::default(),
             status: Mutex::default(),
             task: Mutex::default(),
             passes_started: AtomicU64::new(0),
@@ -225,6 +229,25 @@ impl RuntimeState {
             .unwrap_or_default()
     }
 
+    /// Queues Reset sync state for the service and wakes it. The receiver gets the outcome.
+    #[cfg(desktop)]
+    pub(crate) fn request_reset(&self) -> Result<oneshot::Receiver<Result<(), String>>, String> {
+        let (reply, receiver) = oneshot::channel();
+        self.resets
+            .lock()
+            .map_err(|_| "sync reset lock is unavailable".to_string())?
+            .push(reply);
+        self.now.notify_one();
+        Ok(receiver)
+    }
+
+    fn take_reset_requests(&self) -> Vec<ResetReply> {
+        self.resets
+            .lock()
+            .map(|mut requests| std::mem::take(&mut *requests))
+            .unwrap_or_default()
+    }
+
     fn take_recovery_requests(&self) -> Vec<RecoveryRequest> {
         self.recovery
             .lock()
@@ -263,6 +286,9 @@ struct ProposalRequest {
     proposal: SignedProposal,
     reply: oneshot::Sender<ProposalOutcome>,
 }
+
+/// Where the outcome of one Reset sync state request goes.
+type ResetReply = oneshot::Sender<Result<(), String>>;
 
 struct ServiceTask {
     stop: Arc<Notify>,
@@ -684,9 +710,10 @@ impl ServiceState {
             ..SyncStatusView::default()
         };
         let mut recovery = runtime.take_recovery_requests();
+        let mut resets = runtime.take_reset_requests();
         let mut succeeded = false;
         let next = match self
-            .pass_inner(host, runtime, &mut view, &mut recovery)
+            .pass_inner(host, runtime, &mut view, &mut recovery, &mut resets)
             .await
         {
             Ok(next) => {
@@ -706,6 +733,9 @@ impl ServiceState {
                 .reply
                 .send(Err("sync is not ready on this device".to_string()));
         }
+        for reply in resets {
+            let _ = reply.send(Err("sync is not ready on this device".to_string()));
+        }
         self.publish(host, runtime, view);
         runtime
             .changes
@@ -724,6 +754,7 @@ impl ServiceState {
         runtime: &RuntimeState,
         view: &mut SyncStatusView,
         recovery: &mut Vec<RecoveryRequest>,
+        resets: &mut Vec<ResetReply>,
     ) -> Result<Next, String> {
         if !host.sync_enabled()? {
             return Ok(Next::Idle);
@@ -748,6 +779,24 @@ impl ServiceState {
         } else {
             SyncRole::Hub
         });
+        if !resets.is_empty() {
+            let outcome = if peer.is_some() {
+                Err("only the coordinating computer can reset sync state".to_string())
+            } else {
+                self.reset_sync_state(host, &pool, &manager, &vault_id)
+                    .await
+            };
+            if outcome.is_ok() {
+                #[cfg(desktop)]
+                {
+                    runtime.stability.clear();
+                    runtime.set_pairing_charter(None)?;
+                }
+            }
+            for reply in resets.drain(..) {
+                let _ = reply.send(outcome.clone());
+            }
+        }
         let session =
             match Session::open(host, pool.clone(), &vault_id, KeyRelease::Request).await? {
                 Some(session) => Some(session),
@@ -902,6 +951,36 @@ impl ServiceState {
             view.set_clock_ahead(&status, &clock_warnings, &names);
         }
         Ok(next)
+    }
+
+    /// Reset sync state on the coordinator: unlinks every device linked for the vault, because
+    /// each pinned the charter the reset discards, clears the engine tables, and removes this
+    /// installation's writer state. The rest of the pass founds a new space with a new charter
+    /// and republishes every current row, and unlinked devices pair again. A pending handoff
+    /// refuses the reset before anything changes.
+    async fn reset_sync_state<H: SyncHost>(
+        &mut self,
+        host: &H,
+        pool: &SqlitePool,
+        manager: &PairingManager,
+        vault_id: &str,
+    ) -> Result<(), String> {
+        manager.ensure_can_unlink()?;
+        for peer in manager.linked_peers_for(vault_id)? {
+            manager.unlink_device(&peer.device_id)?;
+        }
+        *self = Self {
+            vault_id: Some(vault_id.to_string()),
+            view: std::mem::take(&mut self.view),
+            ..Self::default()
+        };
+        {
+            let mut conn = acquire(pool).await?;
+            reset::reset_database(&mut conn).await?;
+        }
+        let files = host.sync_files(vault_id)?;
+        let keys = host.key_store()?;
+        blocking(move || reset::remove_installation_state(&files, keys.as_ref())).await
     }
 
     /// On the coordinator, computes stability over the devices enrolled and not removed in the
@@ -1322,6 +1401,16 @@ impl<'a, H: SyncHost> Session<'a, H> {
         }))
     }
 
+    /// Creates the vault's space row when it is missing, as on a fresh vault or after Reset sync
+    /// state, so the charter can be read and installed before the session starts.
+    async fn init_space(&self, conn: &mut sqlx::SqliteConnection) -> Result<(), String> {
+        self.engine
+            .init_space(conn, &self.files.vault_id, now_ms()?)
+            .await
+            .map(|_| ())
+            .map_err(|error| format!("initialize sync space: {error}"))
+    }
+
     /// Tells the host which tables changed and what the registered hooks reported.
     async fn report(&self, tables: Vec<String>, notices: &[ChangeNotice]) {
         self.host.report_changes(tables, notices).await;
@@ -1346,10 +1435,7 @@ impl<'a, H: SyncHost> Session<'a, H> {
             local::reset_applying(&mut conn)
                 .await
                 .map_err(|error| format!("reset sync apply state: {error}"))?;
-            self.engine
-                .init_space(&mut conn, &self.files.vault_id, now_ms()?)
-                .await
-                .map_err(|error| format!("initialize sync space: {error}"))?;
+            self.init_space(&mut conn).await?;
             self.engine
                 .refuse_legacy_state(&mut conn, &self.ctx)
                 .await
@@ -1698,6 +1784,7 @@ impl<'a, H: SyncHost> Session<'a, H> {
             let device_id = manager.device_id()?;
             let installed = {
                 let mut conn = acquire(&self.pool).await?;
+                self.init_space(&mut conn).await?;
                 self.engine
                     .charter(&mut conn, &self.ctx)
                     .await
@@ -1725,6 +1812,12 @@ impl<'a, H: SyncHost> Session<'a, H> {
                 now_ms: now_ms()?,
             };
             let mut conn = acquire(&self.pool).await?;
+            // Writers without a charter come from a build before the authorization log, and
+            // only Reset sync state may found a space over them.
+            self.engine
+                .refuse_legacy_state(&mut conn, &self.ctx)
+                .await
+                .map_err(|error| format!("open sync space: {error}"))?;
             let charter =
                 ensure_charter(&self.engine, &mut conn, &self.ctx, &anchor, &founding).await?;
             Ok(self.pinned_charter(&charter, &device_id))
@@ -1755,6 +1848,7 @@ impl<'a, H: SyncHost> Session<'a, H> {
         let (charter, _) =
             ganbaru_handoff::protocol::decode_sync_charter(&pinned.charter, &pinned.person_key)?;
         let mut conn = acquire(&self.pool).await?;
+        self.init_space(&mut conn).await?;
         match self
             .engine
             .charter(&mut conn, &self.ctx)

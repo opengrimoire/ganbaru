@@ -2785,6 +2785,111 @@ fn first_seal_of_the_dense_music_library_is_recorded() {
     });
 }
 
+#[test]
+fn reset_sync_state_founds_a_new_space_that_republishes_every_row() {
+    use crate::reset;
+    use crate::writer::{SyncKey, SyncKeyStore, read_record};
+    block_on(async {
+        let mut hub = Replica::new("reset-sync-state", HUB_DEVICE).await;
+        hub.seal_note("note-before-reset").await;
+        let files = hub.directory.files();
+        let keys = hub.directory.keys();
+        let old_writer = hub.writer.record().writer_id.clone();
+        std::fs::create_dir_all(files.vault_directory()).expect("vault sync directory");
+        std::fs::write(files.outbox_path(), b"[]").expect("write outbox");
+        std::fs::write(files.carry_path(), b"carry").expect("write carry bundle");
+        let old_charter = hub
+            .engine
+            .charter(&mut *acquire(&hub.pool).await, &hub.ctx)
+            .await
+            .expect("read charter")
+            .expect("charter");
+
+        reset::reset_database(&mut *acquire(&hub.pool).await)
+            .await
+            .expect("reset database");
+        reset::remove_installation_state(&files, &keys).expect("remove installation state");
+
+        assert!(
+            read_record(&files.record_path())
+                .expect("read record")
+                .is_none()
+        );
+        assert!(!files.outbox_path().exists() && !files.carry_path().exists());
+        assert!(
+            keys.read(VAULT_ID, SyncKey::Writer(&old_writer))
+                .expect("read writer key")
+                .is_none()
+        );
+
+        let mut conn = acquire(&hub.pool).await;
+        hub.engine
+            .init_space(&mut conn, VAULT_ID, NOW_MS + 1)
+            .await
+            .expect("initialize space");
+        hub.engine
+            .refuse_legacy_state(&mut conn, &hub.ctx)
+            .await
+            .expect("the reset space is current");
+        hub.engine
+            .seed_captures(&mut conn, NOW_MS + 1)
+            .await
+            .expect("seed captures");
+        let founding = Founding {
+            device_id: HUB_DEVICE,
+            tls_fingerprint: [23; 32],
+            discovery_key: [24; 32],
+            person: &person(),
+            now_ms: NOW_MS + 1,
+        };
+        let charter = ensure_charter(&hub.engine, &mut conn, &hub.ctx, &hub_keys(), &founding)
+            .await
+            .expect("found the space again");
+        assert_ne!(
+            charter, old_charter,
+            "phones pinned the old charter and pair again"
+        );
+        let view = hub
+            .engine
+            .authorization(&mut conn, &hub.ctx)
+            .await
+            .expect("read authorization")
+            .expect("authorization view");
+        assert_eq!(view.anchor_device_id, HUB_DEVICE);
+        assert!(
+            view.devices
+                .iter()
+                .all(|device| device.device_id == HUB_DEVICE),
+            "devices the old space enrolled pair again"
+        );
+        drop(conn);
+
+        hub.writer = create_writer(
+            &files,
+            &keys,
+            SuccessorPlan::default(),
+            &device_key(HUB_DEVICE),
+            HUB_DEVICE,
+            NOW_MS + 1,
+        )
+        .expect("create writer");
+        hub.seal().await;
+        let mut conn = acquire(&hub.pool).await;
+        assert_eq!(
+            local::pending_captures(&mut conn).await.expect("captures"),
+            0
+        );
+        let published: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM sync_rows WHERE row_key = ?")
+            .bind("note-before-reset")
+            .fetch_one(&mut *conn)
+            .await
+            .expect("read rows");
+        assert_eq!(published, 1, "the note is published again");
+        drop(conn);
+        hub.close().await;
+    });
+}
+
 mod calendar_conflicts;
 mod calendar_recovery;
 mod projects_conflicts;

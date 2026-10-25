@@ -144,6 +144,9 @@ async fn hub_vault(
     ganbaru_notes::sync_keys::convert(&pool)
         .await
         .expect("convert hub notes");
+    ganbaru_chat::conversion::convert(&pool)
+        .await
+        .expect("convert hub chat");
     insert_identity(&pool, person).await;
     let now = now_ms().expect("clock");
     let mut conn = acquire(&pool).await.expect("hub connection");
@@ -249,6 +252,9 @@ async fn phone_vault(
     ganbaru_notes::sync_keys::convert(&pool)
         .await
         .expect("convert phone notes");
+    ganbaru_chat::conversion::convert(&pool)
+        .await
+        .expect("convert phone chat");
     insert_identity(&pool, person).await;
     insert_note(&pool, "note-phone").await;
     let engine = Engine::vault();

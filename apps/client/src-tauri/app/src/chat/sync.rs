@@ -2,11 +2,19 @@
 //!
 //! The post-apply hook runs `ganbaru_chat::sync_effects::after_materialize` inside the engine
 //! transaction with only the connection and a change sink, so the headless Android pass runs it
-//! too: it creates the device-local access state of arrived teammates, bumps the audience and
-//! access counters an arrived effective profile revision affects, and revokes authorizations a
-//! narrowing revision no longer allows. It reports each teammate it revoked. On desktop the app
-//! host hands those reports to [`on_sync_notices`], which wakes the access revocation drain so the
-//! revoked runs stop. Dispatch and the readers of teammates and profiles read the effective rows
+//! too: it creates the device-local access state of arrived teammates and audience state of
+//! arrived conversations, bumps the audience and access counters an arrived effective profile
+//! revision, membership, or folder grant affects, and revokes authorizations a narrowing revision
+//! or a removed or narrowed membership or grant no longer covers. A teammate or profile pointer
+//! that copies restrictiveness differing from the revision it names has no effective revision,
+//! so its teammates are refused; the hook revokes their authorizations and logs the pointer
+//! rather than failing the apply, which would stop every later apply. It reports each teammate
+//! it revoked and each conversation the apply deleted, whose cascade removed the authorizations
+//! and runs that targeted it. On desktop the app host hands those reports to
+//! [`on_sync_notices`], which wakes the access revocation drain so the revoked runs and the runs
+//! whose authorization is gone stop. Android
+//! never holds an active authorization, since runs execute only on desktop, so it has no drain to
+//! wake. Dispatch and the readers of teammates and profiles read the effective rows
 //! when they run, and views learn about the changed tables from the applied tables event.
 
 use ganbaru_chat::sync_effects::{self, ChatSyncEffects};
@@ -19,10 +27,21 @@ use sqlx::SqliteConnection;
 /// the key is the teammate participant id.
 pub(crate) const CHAT_ACCESS_REVOKED_TOPIC: &str = "chat-access-revoked";
 
+/// Change notice topic of a conversation an apply deleted; the key is the conversation id.
+pub(crate) const CHAT_CONVERSATION_REMOVED_TOPIC: &str = "chat-conversation-removed";
+
 /// Replicated tables whose applied rows feed device-local Chat state, each registered with
 /// [`ChatApplyHook`].
-const HOOKED_TABLES: [&TableSpec; 3] =
-    [&chat::TEAMMATES, &chat::PROFILES, &chat::PROFILE_REVISIONS];
+const HOOKED_TABLES: [&TableSpec; 8] = [
+    &chat::TEAMMATES,
+    &chat::POLICY_REVISIONS,
+    &chat::PROFILES,
+    &chat::PROFILE_REVISIONS,
+    &chat::CONVERSATIONS,
+    &chat::MEMBERSHIPS,
+    &chat::CHANNEL_MEMBERSHIPS,
+    &chat::FOLDER_GRANTS,
+];
 
 /// Recomputes device-local Chat state after sync materializes Chat rows and reports revocations.
 struct ChatApplyHook;
@@ -32,9 +51,21 @@ fn hook_error(error: ganbaru_chat_contracts::models::ChatError) -> HookError {
 }
 
 /// Reports the work `effects` leaves for services outside the engine transaction.
+///
+/// A mismatched pointer is logged rather than reported, since its teammates are already refused
+/// and only an honest edit from another device can repair it.
 fn report_effects(effects: ChatSyncEffects, changes: &mut dyn ChangeSink) {
+    for owner_id in &effects.mismatched_pointers {
+        eprintln!(
+            "Synced Chat row {owner_id} copies restrictiveness that differs from the revision it \
+             names, so its teammates have no effective access"
+        );
+    }
     for teammate_id in effects.revoked_teammates {
         changes.report(CHAT_ACCESS_REVOKED_TOPIC, teammate_id);
+    }
+    for conversation_id in effects.removed_conversations {
+        changes.report(CHAT_CONVERSATION_REMOVED_TOPIC, conversation_id);
     }
 }
 
@@ -68,15 +99,17 @@ pub(crate) use waker::{RevocationWaker, on_sync_notices};
 
 #[cfg(desktop)]
 mod waker {
-    use super::CHAT_ACCESS_REVOKED_TOPIC;
+    use super::{CHAT_ACCESS_REVOKED_TOPIC, CHAT_CONVERSATION_REMOVED_TOPIC};
     use ganbaru_sync::ChangeNotice;
     use tauri::{AppHandle, Manager, Runtime};
 
-    /// Whether sync change `notices` report revoked Chat authorizations.
+    /// Whether sync change `notices` report revoked Chat authorizations or deleted
+    /// conversations, whose cascade removed the authorizations that targeted them.
     pub(super) fn access_revoked(notices: &[ChangeNotice]) -> bool {
-        notices
-            .iter()
-            .any(|notice| notice.topic == CHAT_ACCESS_REVOKED_TOPIC)
+        notices.iter().any(|notice| {
+            notice.topic == CHAT_ACCESS_REVOKED_TOPIC
+                || notice.topic == CHAT_CONVERSATION_REMOVED_TOPIC
+        })
     }
 
     /// Starts the access revocation drain of the running app.
@@ -97,12 +130,33 @@ mod waker {
     /// Wakes the access revocation drain when sync change `notices` report revoked
     /// authorizations, so the runs they granted stop on this device.
     pub(crate) fn on_sync_notices<R: Runtime>(app: &AppHandle<R>, notices: &[ChangeNotice]) {
-        if !access_revoked(notices) {
-            return;
+        if access_revoked(notices) {
+            super::RevocationWake::wake_revocation_drain(app);
         }
+    }
+
+    /// Starts the drain through the waker desktop setup manages, if it is running.
+    pub(super) fn wake<R: Runtime>(app: &AppHandle<R>) {
         if let Some(waker) = app.try_state::<RevocationWaker>() {
             (waker.0)();
         }
+    }
+}
+
+/// Starts the access revocation drain after a change on this device that may have removed
+/// authorizations by cascade, so the runs they granted stop now instead of at the next
+/// unrelated drain. Every local command whose delete cascades into Chat conversations or
+/// authorizations calls it after committing. Android never holds an active authorization, so
+/// it has no drain and waking does nothing there.
+pub(crate) trait RevocationWake {
+    /// Starts the drain.
+    fn wake_revocation_drain(&self);
+}
+
+impl<R: tauri::Runtime> RevocationWake for tauri::AppHandle<R> {
+    fn wake_revocation_drain(&self) {
+        #[cfg(desktop)]
+        waker::wake(self);
     }
 }
 

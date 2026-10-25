@@ -5,6 +5,7 @@
 //! rows. Chat creates these rows on demand where it is writable. The default conversation and
 //! channel ids derive from the project id, so every device that creates them agrees on the ids.
 
+use crate::conversion::membership_key;
 use crate::models::{ChatError, ChatErrorCode, ChatResult, UtcTimestamp};
 use ganbaru_sync_contracts::derived_key;
 use sqlx::SqliteConnection;
@@ -168,10 +169,12 @@ async fn ensure_default_channel(
     .execute(&mut *connection)
     .await
     .map_err(persistence_error)?;
+    let membership_key = membership_key(&conversation_id, LOCAL_OWNER_PARTICIPANT_ID)
+        .map_err(|_| invalid_project_error())?;
     sqlx::query(
         "INSERT INTO chat_conversation_memberships
-            (conversation_id, participant_id, membership_role, created_at, updated_at)
-         SELECT ?, ?, 'owner', ?, ?
+            (conversation_id, participant_id, sync_key, membership_role, created_at, updated_at)
+         SELECT ?, ?, ?, 'owner', ?, ?
          WHERE NOT EXISTS (
              SELECT 1 FROM chat_conversation_memberships
              WHERE conversation_id = ? AND participant_id = ?
@@ -179,6 +182,7 @@ async fn ensure_default_channel(
     )
     .bind(&conversation_id)
     .bind(LOCAL_OWNER_PARTICIPANT_ID)
+    .bind(&membership_key)
     .bind(now.as_str())
     .bind(now.as_str())
     .bind(&conversation_id)

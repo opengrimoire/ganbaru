@@ -2,6 +2,7 @@
 
 use crate::db;
 use chrono::{DateTime, SecondsFormat, Utc};
+use ganbaru_chat::conversion::membership_key;
 use ganbaru_chat::ids::new_id;
 use ganbaru_chat::project_defaults;
 use ganbaru_chat_contracts::models::{
@@ -115,11 +116,15 @@ pub async fn chat_create_channel(
     .map_err(persistence_error)?;
     sqlx::query(
         "INSERT INTO chat_conversation_memberships
-            (conversation_id, participant_id, membership_role, created_at, updated_at)
-         VALUES (?, ?, 'owner', ?, ?)",
+            (conversation_id, participant_id, sync_key, membership_role, created_at, updated_at)
+         VALUES (?, ?, ?, 'owner', ?, ?)",
     )
     .bind(conversation_id.as_str())
     .bind(LOCAL_PARTICIPANT_ID)
+    .bind(sync_key(membership_key(
+        conversation_id.as_str(),
+        LOCAL_PARTICIPANT_ID,
+    ))?)
     .bind(now.as_str())
     .bind(now.as_str())
     .execute(&mut *transaction)
@@ -664,6 +669,17 @@ pub(crate) fn u64_value(value: i64) -> ChatResult<u64> {
         ChatError::new(
             ChatErrorCode::Persistence,
             "Stored Chat number is invalid",
+            false,
+        )
+    })
+}
+
+/// Maps a failed `sync_key` derivation, which only an id outside the row key bounds causes.
+pub(crate) fn sync_key(derived: Result<String, String>) -> ChatResult<String> {
+    derived.map_err(|_| {
+        ChatError::new(
+            ChatErrorCode::Validation,
+            "Chat identifiers are too long to save",
             false,
         )
     })

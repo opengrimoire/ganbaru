@@ -8,6 +8,7 @@ import {
   parseChatMessageSearchResults,
   parseChatScheduledMessage,
   parseChatScheduledMessageDispatch,
+  parseChatTeammateAccess,
   parseChatVaultConfig,
   parseCanonicalRuntimeEvent,
   parseCanonicalStoredEvent,
@@ -853,5 +854,37 @@ describe("Chat read and error contracts", () => {
     };
     expect(parseChatError(fixture)).toEqual(fixture);
     expect(() => parseChatError({ ...fixture, details: undefined })).toThrow("details is not valid JSON");
+  });
+
+  it("keeps the effective profile revision id of teammate channel access", () => {
+    const channel = {
+      channelId: "channel:general",
+      conversationId: "conversation:general",
+      projectId: "project-1",
+      groupId: "group-1",
+      channelName: "general",
+      accessProfileId: "access-profile:build",
+      accessProfileRevisionId: "access-profile-revision:build:2",
+      accessProfileRevision: 2,
+      capabilities: { readHistory: true, participate: true },
+      historyBoundary: { kind: "entire" },
+      runtimeApprovalOverride: null,
+      scratchRuntimeApprovalOverride: "ask",
+      folderGrants: [],
+      membershipRevision: 1,
+      removedAt: null,
+    };
+    const access = {
+      teammateId: "participant:agent",
+      accessRevision: 3,
+      teammateDefaultRuntimeApproval: "autoApprove",
+      channels: [channel],
+    };
+
+    expect(parseChatTeammateAccess(access)).toEqual(access);
+    expect(() => parseChatTeammateAccess({
+      ...access,
+      channels: [{ ...channel, accessProfileRevisionId: undefined }],
+    })).toThrow("accessProfileRevisionId");
   });
 });

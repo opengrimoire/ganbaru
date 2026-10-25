@@ -52,21 +52,21 @@ INSERT INTO chat_channels (id, project_id, conversation_id, name, is_default, cr
 VALUES ('channel-general', 'project-chat', 'conversation-general', 'general', 1,
         '2026-10-23T00:00:00.000Z', '2026-10-23T00:00:00.000Z');
 INSERT INTO chat_conversation_memberships
-    (conversation_id, participant_id, membership_role, created_at, updated_at)
-VALUES ('conversation-general', 'participant:local-owner', 'owner',
+    (conversation_id, participant_id, sync_key, membership_role, created_at, updated_at)
+VALUES ('conversation-general', 'participant:local-owner', 'membership-owner', 'owner',
         '2026-10-23T00:00:00.000Z', '2026-10-23T00:00:00.000Z'),
-       ('conversation-general', 'participant-teammate', 'member',
+       ('conversation-general', 'participant-teammate', 'membership-teammate', 'member',
         '2026-10-23T00:00:00.000Z', '2026-10-23T00:00:00.000Z');
 INSERT INTO chat_teammate_channel_memberships
-    (conversation_id, teammate_id, access_profile_id, created_at, updated_at)
-VALUES ('conversation-general', 'participant-teammate', 'access-profile:edit-files',
-        '2026-10-23T00:00:00.000Z', '2026-10-23T00:00:00.000Z');
+    (conversation_id, teammate_id, sync_key, access_profile_id, created_at, updated_at)
+VALUES ('conversation-general', 'participant-teammate', 'channel-membership-teammate',
+        'access-profile:edit-files', '2026-10-23T00:00:00.000Z', '2026-10-23T00:00:00.000Z');
 INSERT INTO chat_teammate_working_folder_grants
-    (conversation_id, teammate_id, project_id, working_folder_id, capability, created_at)
-VALUES ('conversation-general', 'participant-teammate', 'project-chat', 'folder-managed', 'edit',
-        '2026-10-23T00:00:00.000Z'),
-       ('conversation-general', 'participant-teammate', 'project-chat', 'folder-archived', 'read',
-        '2026-10-23T00:00:00.000Z');
+    (conversation_id, teammate_id, project_id, working_folder_id, sync_key, capability, created_at)
+VALUES ('conversation-general', 'participant-teammate', 'project-chat', 'folder-managed',
+        'grant-managed', 'edit', '2026-10-23T00:00:00.000Z'),
+       ('conversation-general', 'participant-teammate', 'project-chat', 'folder-archived',
+        'grant-archived', 'read', '2026-10-23T00:00:00.000Z');
 
 INSERT INTO chat_conversation_items (id, conversation_id, item_kind, ordinal, created_at)
 VALUES ('item-root', 'conversation-general', 'message', 1, '2026-10-23T00:00:00.000Z');

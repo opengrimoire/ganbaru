@@ -694,16 +694,17 @@ mod tests {
     const AUTHORIZATION: &str = "authorization:reuse";
     const TEAMMATE: &str = "participant:scratch-agent";
 
+    /// Returns the default channel conversation of the test project, whose id is derived.
+    fn destination_conversation() -> String {
+        ganbaru_chat::project_defaults::default_channel_ids("project-chat")
+            .unwrap()
+            .0
+    }
+
     /// Builds a real-schema scratch assignment without disabling foreign keys or triggers.
     async fn pool_with_scratch_assignment(scope_owner: &str) -> SqlitePool {
         let pool = crate::chat::tests::repository::pool_with_thread().await;
-        sqlx::query(
-            "UPDATE chat_conversations SET id = 'conversation:scratch'
-             WHERE project_id = 'project-chat' AND conversation_kind = 'channel'",
-        )
-        .execute(&pool)
-        .await
-        .unwrap();
+        let conversation = destination_conversation();
         for (id, name) in [
             (TEAMMATE, "Scratch agent"),
             ("participant:other-agent", "Other agent"),
@@ -737,22 +738,25 @@ mod tests {
                 (id, teammate_id, provider_instance_id, model_selection_data, created_at)
              VALUES ('policy:scratch', '{TEAMMATE}', 'codex-personal', '{{}}', '{NOW}');
              INSERT INTO chat_conversation_memberships
-                (conversation_id, participant_id, membership_role, created_at, updated_at)
-             VALUES ('conversation:scratch', '{TEAMMATE}', 'member', '{NOW}', '{NOW}');
+                (conversation_id, participant_id, sync_key, membership_role, created_at,
+                 updated_at)
+             VALUES ('{conversation}', '{TEAMMATE}', 'membership:scratch', 'member',
+                     '{NOW}', '{NOW}');
              INSERT INTO chat_teammate_channel_memberships
-                (conversation_id, teammate_id, access_profile_id,
+                (conversation_id, teammate_id, sync_key, access_profile_id,
                  read_history, participate, history_boundary, created_at, updated_at)
-             VALUES ('conversation:scratch', '{TEAMMATE}', 'access-profile:conversation-only',
+             VALUES ('{conversation}', '{TEAMMATE}', 'channel-membership:scratch',
+                     'access-profile:conversation-only',
                      1, 1, 'entire', '{NOW}', '{NOW}');
              INSERT INTO chat_conversation_items
                 (id, conversation_id, item_kind, ordinal, created_at)
-             VALUES ('item:scratch', 'conversation:scratch', 'message', 1, '{NOW}');
+             VALUES ('item:scratch', '{conversation}', 'message', 1, '{NOW}');
              INSERT INTO chat_communication_messages
                 (item_id, author_participant_id, created_at)
              VALUES ('item:scratch', 'participant:local-owner', '{NOW}');
              INSERT INTO chat_reply_threads
                 (id, conversation_id, root_item_id, last_activity_at, created_at, updated_at)
-             VALUES ('reply:scratch', 'conversation:scratch', 'item:scratch', '{NOW}', '{NOW}', '{NOW}');
+             VALUES ('reply:scratch', '{conversation}', 'item:scratch', '{NOW}', '{NOW}', '{NOW}');
              INSERT INTO chat_work_assignments
                 (id, reply_thread_id, teammate_id, triggering_message_item_id, state, created_at, updated_at)
              VALUES ('assignment:scratch', 'reply:scratch', '{TEAMMATE}', 'item:scratch',
@@ -786,7 +790,7 @@ mod tests {
                  execution_environment_id, resolved_runtime_approval_policy, scope_digest,
                  decision_state, created_at)
              VALUES ('{AUTHORIZATION}', 'assignment:scratch', 1, 'participant:local-owner',
-                     'policy:scratch', 1, 'conversation:scratch', 'access-profile-revision:conversation-only:1',
+                     'policy:scratch', 1, '{conversation}', 'access-profile-revision:conversation-only:1',
                      'environment:scratch', 'ask', printf('%064d', 0), 'allowed', '{NOW}');
              INSERT INTO chat_turns
                 (id, thread_id, ordinal, state, safety_mode, interaction_mode, created_at, updated_at)
@@ -809,10 +813,11 @@ mod tests {
                 (scratch_generation_id, conversation_id, lower_ordinal, high_ordinal,
                  audience_revision, created_at)
              SELECT ?, conversation_id, 1, 1, revision, ?
-             FROM chat_conversation_audience_state WHERE conversation_id = 'conversation:scratch'",
+             FROM chat_conversation_audience_state WHERE conversation_id = ?",
         )
         .bind(GENERATION)
         .bind(NOW)
+        .bind(destination_conversation())
         .execute(pool)
         .await
         .unwrap();

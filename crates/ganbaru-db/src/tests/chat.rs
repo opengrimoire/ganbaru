@@ -1,5 +1,12 @@
-use super::helpers::migrated_memory_pool;
+use super::helpers::{
+    insert_default_channel, memory_pool_migrated_through, migrate_through, migrated_memory_pool,
+};
 use sqlx::{AssertSqlSafe, Row};
+
+/// The migration before Chat conversations replication.
+const BEFORE_CONVERSATIONS_REPLICATION: i64 = 20261025015209;
+/// The migration that replicates Chat conversations and removes empty random default channels.
+const CONVERSATIONS_REPLICATION: i64 = 20261025183055;
 
 const NOW: &str = "2026-07-20T12:00:00Z";
 
@@ -225,11 +232,12 @@ fn schema_creates_chat_tables_indexes_and_no_device_paths() {
             "idx_chat_resources_workspace_kind",
             "idx_chat_browser_artifacts_thread",
             "idx_chat_provider_cleanup_jobs_retry",
-            "idx_chat_channels_project_name",
             "idx_chat_channels_project_default",
             "idx_chat_channels_active_project",
+            "idx_chat_channels_conversation",
             "chat_participants_local_user_identity",
-            "idx_chat_teammate_working_folder_grants_default",
+            "idx_chat_conversation_memberships_participant",
+            "idx_chat_teammate_working_folder_grants_folder",
             "idx_chat_access_profiles_builtin",
             "idx_chat_teammate_channel_memberships_teammate",
             "idx_chat_assignment_authorization_revisions_active",
@@ -335,39 +343,94 @@ fn schema_creates_chat_tables_indexes_and_no_device_paths() {
 }
 
 #[test]
-fn fresh_projects_create_general_owner_membership_and_primary_folder() {
+fn fresh_vaults_seed_primary_folders_but_no_chat_conversations_or_pending_keys() {
     super::block_on(async {
         let pool = migrated_memory_pool().await;
         let projects: i64 = sqlx::query_scalar("SELECT count(*) FROM projects")
             .fetch_one(&pool)
             .await
             .unwrap();
-        let general_channels: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM chat_channels WHERE is_default = 1 AND name = 'general'",
-        )
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-        let owner_memberships: i64 = sqlx::query_scalar(
-            "SELECT count(*)
-             FROM chat_channels channel
-             JOIN chat_conversation_memberships membership
-               ON membership.conversation_id = channel.conversation_id
-             WHERE channel.is_default = 1
-               AND membership.participant_id = 'participant:local-owner'
-               AND membership.membership_role = 'owner'",
-        )
-        .fetch_one(&pool)
-        .await
-        .unwrap();
         let primary_folders: i64 =
             sqlx::query_scalar("SELECT count(*) FROM project_primary_working_folders")
                 .fetch_one(&pool)
                 .await
                 .unwrap();
-        assert_eq!(general_channels, projects);
-        assert_eq!(owner_memberships, projects);
+        assert!(projects > 0);
         assert_eq!(primary_folders, projects);
+        // Default channels are created on demand with derived ids, so a fresh vault holds no
+        // conversation rows whose random ids would duplicate across devices.
+        for table in [
+            "chat_conversations",
+            "chat_channels",
+            "chat_conversation_memberships",
+            "chat_conversation_audience_state",
+        ] {
+            let rows: i64 =
+                sqlx::query_scalar(AssertSqlSafe(format!("SELECT count(*) FROM {table}")))
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+            assert_eq!(rows, 0, "{table}");
+        }
+        for table in [
+            "chat_conversation_memberships",
+            "chat_teammate_channel_memberships",
+            "chat_teammate_working_folder_grants",
+        ] {
+            let pending: i64 = sqlx::query_scalar(AssertSqlSafe(format!(
+                "SELECT count(*) FROM {table} WHERE sync_key GLOB 'pending:*'"
+            )))
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            assert_eq!(pending, 0, "{table}");
+        }
+    });
+}
+
+#[test]
+fn the_migration_removes_empty_random_default_channels_and_keeps_used_ones() {
+    super::block_on(async {
+        let pool = memory_pool_migrated_through(BEFORE_CONVERSATIONS_REPLICATION).await;
+        let channels: Vec<(String, String)> = sqlx::query_as(
+            "SELECT id, conversation_id FROM chat_channels WHERE is_default = 1 ORDER BY id",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert!(channels.len() >= 2);
+        let (used_channel, used_conversation) = channels[0].clone();
+        sqlx::query(
+            "INSERT INTO chat_conversation_read_cursors
+                 (conversation_id, participant_id, last_read_root_ordinal, updated_at)
+             VALUES (?, 'participant:local-owner', 1, '2026-10-25T00:00:00.000Z')",
+        )
+        .bind(&used_conversation)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        migrate_through(&pool, CONVERSATIONS_REPLICATION)
+            .await
+            .unwrap();
+        let kept: Vec<String> = sqlx::query_scalar("SELECT id FROM chat_channels ORDER BY id")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+        assert_eq!(kept, [used_channel]);
+        let membership_keys: Vec<String> = sqlx::query_scalar(
+            "SELECT sync_key FROM chat_conversation_memberships WHERE conversation_id = ?",
+        )
+        .bind(&used_conversation)
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(membership_keys, ["pending:1"]);
+        let conversations: i64 = sqlx::query_scalar("SELECT count(*) FROM chat_conversations")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(conversations, 1);
     });
 }
 
@@ -530,12 +593,7 @@ fn access_profile_revisions_are_immutable_and_do_not_create_memberships() {
 fn live_profile_expansion_preserves_active_access_revision_and_membership_intent() {
     super::block_on(async {
         let pool = migrated_memory_pool().await;
-        let conversation_id: String = sqlx::query_scalar(
-            "SELECT conversation_id FROM chat_channels WHERE is_default = 1 LIMIT 1",
-        )
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+        let (conversation_id, _) = insert_default_channel(&pool).await;
         sqlx::query(
             "INSERT INTO chat_participants
                 (id, participant_kind, display_name, created_at, updated_at)
@@ -580,8 +638,9 @@ fn live_profile_expansion_preserves_active_access_revision_and_membership_intent
         .unwrap();
         sqlx::query(
             "INSERT INTO chat_conversation_memberships
-                (conversation_id, participant_id, membership_role, created_at, updated_at)
-             VALUES (?, 'teammate:profile-test', 'member', ?, ?)",
+                (conversation_id, participant_id, sync_key, membership_role, created_at,
+                 updated_at)
+             VALUES (?, 'teammate:profile-test', 'membership:profile-test', 'member', ?, ?)",
         )
         .bind(&conversation_id)
         .bind(NOW)
@@ -591,12 +650,13 @@ fn live_profile_expansion_preserves_active_access_revision_and_membership_intent
         .unwrap();
         sqlx::query(
             "INSERT INTO chat_teammate_channel_memberships
-                (conversation_id, teammate_id, access_profile_id,
+                (conversation_id, teammate_id, sync_key, access_profile_id,
                  read_history, read_history_inherits_profile,
                  participate, participate_inherits_profile,
                  history_boundary, history_boundary_inherits_profile,
                  created_at, updated_at)
-             VALUES (?, 'teammate:profile-test', 'access-profile:test',
+             VALUES (?, 'teammate:profile-test', 'channel-membership:profile-test',
+                     'access-profile:test',
                      1, 1, 1, 1, 'entire', 1, ?, ?)",
         )
         .bind(&conversation_id)
@@ -618,9 +678,9 @@ fn live_profile_expansion_preserves_active_access_revision_and_membership_intent
         .unwrap();
         sqlx::query(
             "INSERT INTO chat_teammate_working_folder_grants
-                (conversation_id, teammate_id, project_id, working_folder_id,
+                (conversation_id, teammate_id, project_id, working_folder_id, sync_key,
                  capability, capability_inherits_profile, created_at)
-             VALUES (?, 'teammate:profile-test', ?, ?, 'read', 1, ?)",
+             VALUES (?, 'teammate:profile-test', ?, ?, 'grant:profile-test', 'read', 1, ?)",
         )
         .bind(&conversation_id)
         .bind(project_id)
@@ -899,6 +959,7 @@ fn authorization_source_snapshots_are_immutable_and_folder_policy_is_required() 
 fn scheduled_message_schema_retains_attachments_until_the_schedule_is_removed() {
     super::block_on(async {
         let pool = migrated_memory_pool().await;
+        insert_default_channel(&pool).await;
         let (channel_id, working_folder_id): (String, String) = sqlx::query_as(
             "SELECT channel.id, folder.working_folder_id
              FROM chat_channels channel

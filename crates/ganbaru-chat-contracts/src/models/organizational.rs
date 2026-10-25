@@ -177,6 +177,7 @@ pub struct ChatTeammateChannelAccessRead {
     pub conversation_id: ChatConversationId,
     pub channel_name: String,
     pub access_profile_id: ChatAccessProfileId,
+    pub access_profile_revision_id: ChatAccessProfileRevisionId,
     pub access_profile_revision: u64,
     pub capabilities: ChatChannelCapabilities,
     pub history_boundary: ChatHistoryBoundary,

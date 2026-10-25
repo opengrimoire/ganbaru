@@ -17,6 +17,7 @@ use super::common::{
     wire_folder_capability, wire_history_boundary, wire_runtime_approval_policy,
 };
 use super::*;
+use ganbaru_chat::conversion::{channel_membership_key, folder_grant_key, membership_key};
 use ganbaru_chat::coordination::access::history_boundary_is_expansion;
 use sqlx::SqlitePool;
 use std::collections::{BTreeMap, BTreeSet};
@@ -29,6 +30,7 @@ struct ResolvedChannelAccess {
     conversation_id: ChatConversationId,
     channel_name: String,
     access_profile_id: ChatAccessProfileId,
+    access_profile_revision_id: ChatAccessProfileRevisionId,
     access_profile_revision: u64,
     profile_default_channel_capabilities: ChatChannelCapabilities,
     profile_default_history_boundary: ChatHistoryBoundary,
@@ -365,8 +367,9 @@ pub async fn chat_replace_teammate_access(
     for channel in &resolved {
         sqlx::query(
             "INSERT INTO chat_conversation_memberships
-                (conversation_id, participant_id, membership_role, created_at, updated_at)
-             VALUES (?, ?, 'member', ?, ?)
+                (conversation_id, participant_id, sync_key, membership_role, created_at,
+                 updated_at)
+             VALUES (?, ?, ?, 'member', ?, ?)
              ON CONFLICT(conversation_id, participant_id) DO UPDATE SET
                 membership_role = 'member', removed_at = NULL,
                 revision = chat_conversation_memberships.revision + 1,
@@ -374,6 +377,10 @@ pub async fn chat_replace_teammate_access(
         )
         .bind(channel.conversation_id.as_str())
         .bind(request.teammate_id.as_str())
+        .bind(sync_key(membership_key(
+            channel.conversation_id.as_str(),
+            request.teammate_id.as_str(),
+        ))?)
         .bind(now.as_str())
         .bind(now.as_str())
         .execute(&mut *transaction)
@@ -399,13 +406,13 @@ pub async fn chat_replace_teammate_access(
             == wire_history_boundary(&channel.profile_default_history_boundary);
         sqlx::query(
             "INSERT INTO chat_teammate_channel_memberships
-                (conversation_id, teammate_id, access_profile_id,
+                (conversation_id, teammate_id, sync_key, access_profile_id,
                  read_history, read_history_inherits_profile,
                  participate, participate_inherits_profile,
                  history_boundary, history_boundary_inherits_profile,
                  history_from_ordinal, runtime_approval_policy,
                  scratch_runtime_approval_policy, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT(conversation_id, teammate_id) DO UPDATE SET
                 access_profile_id = excluded.access_profile_id,
                 read_history = excluded.read_history,
@@ -421,6 +428,10 @@ pub async fn chat_replace_teammate_access(
         )
         .bind(channel.conversation_id.as_str())
         .bind(request.teammate_id.as_str())
+        .bind(sync_key(channel_membership_key(
+            channel.conversation_id.as_str(),
+            request.teammate_id.as_str(),
+        ))?)
         .bind(channel.access_profile_id.as_str())
         .bind(channel.capabilities.read_history)
         .bind(read_history_inherits_profile)
@@ -459,13 +470,12 @@ pub async fn chat_replace_teammate_access(
         for grant in &channel.folder_grants {
             sqlx::query(
                 "INSERT INTO chat_teammate_working_folder_grants
-                    (conversation_id, teammate_id, project_id, working_folder_id,
+                    (conversation_id, teammate_id, project_id, working_folder_id, sync_key,
                      capability, capability_inherits_profile,
                      is_default, runtime_approval_policy,
                      revision, created_at, revoked_at)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, NULL)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, NULL)
                  ON CONFLICT(conversation_id, teammate_id, working_folder_id) DO UPDATE SET
-                    project_id = excluded.project_id,
                     capability = excluded.capability,
                     capability_inherits_profile = excluded.capability_inherits_profile,
                     is_default = excluded.is_default,
@@ -477,6 +487,11 @@ pub async fn chat_replace_teammate_access(
             .bind(request.teammate_id.as_str())
             .bind(&channel.project_id)
             .bind(grant.working_folder_id.as_str())
+            .bind(sync_key(folder_grant_key(
+                channel.conversation_id.as_str(),
+                request.teammate_id.as_str(),
+                grant.working_folder_id.as_str(),
+            ))?)
             .bind(wire_folder_capability(grant.capability))
             .bind(grant.capability == channel.profile_maximum_folder_capability)
             .bind(grant.is_default)
@@ -558,7 +573,11 @@ async fn preview_teammate_access(
     })
 }
 
-async fn require_expected_profile_revisions_in_transaction(
+/// Refuses the save unless every channel's profile still has the effective revision the draft
+/// names. Revision ids are compared because display numbers follow creation order, so a synced
+/// revision created earlier can shift the numbers and give another revision the number the draft
+/// saw.
+pub(super) async fn require_expected_profile_revisions_in_transaction(
     transaction: &mut Transaction<'_, Sqlite>,
     channels: &[ChatTeammateChannelAccessInput],
 ) -> ChatResult<()> {
@@ -567,13 +586,13 @@ async fn require_expected_profile_revisions_in_transaction(
         .map(|channel| {
             (
                 channel.access_profile_id.as_str(),
-                channel.access_profile_revision,
+                channel.access_profile_revision_id.as_str(),
             )
         })
         .collect::<BTreeSet<_>>();
-    for (access_profile_id, expected_revision) in expected {
-        let latest_revision = sqlx::query_scalar::<_, i64>(
-            "SELECT revision.revision
+    for (access_profile_id, expected_revision_id) in expected {
+        let effective_revision_id = sqlx::query_scalar::<_, String>(
+            "SELECT revision.id
              FROM chat_access_profiles profile
              JOIN chat_access_profile_effective_revisions revision
                ON revision.access_profile_id = profile.id
@@ -583,14 +602,14 @@ async fn require_expected_profile_revisions_in_transaction(
         .fetch_optional(&mut **transaction)
         .await
         .map_err(persistence_error)?;
-        let Some(latest_revision) = latest_revision else {
+        let Some(effective_revision_id) = effective_revision_id else {
             return Err(ChatError::new(
                 ChatErrorCode::StaleRevision,
                 "An access profile became unavailable before teammate access could be saved",
                 true,
             ));
         };
-        if u64_value(latest_revision)? != expected_revision {
+        if effective_revision_id != expected_revision_id {
             return Err(ChatError::new(
                 ChatErrorCode::StaleRevision,
                 "An access profile changed before teammate access could be saved",

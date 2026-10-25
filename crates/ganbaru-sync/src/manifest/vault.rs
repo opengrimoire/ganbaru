@@ -17,7 +17,7 @@ pub mod quick_notes;
 pub mod themes;
 
 /// Current vault manifest version.
-pub const VAULT_MANIFEST_VERSION: u16 = 14;
+pub const VAULT_MANIFEST_VERSION: u16 = 15;
 
 /// Registered vault domains in dependency order, one line per domain.
 pub const VAULT_DOMAINS: &[&DomainManifest] = &[

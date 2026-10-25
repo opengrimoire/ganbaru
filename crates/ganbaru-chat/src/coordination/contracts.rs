@@ -94,7 +94,10 @@ pub struct ChatFolderGrantInput {
 pub struct ChatTeammateChannelAccessInput {
     pub channel_id: ChatChannelId,
     pub access_profile_id: ChatAccessProfileId,
-    pub access_profile_revision: u64,
+    /// Effective profile revision the draft was made against. Saving refuses a draft whose
+    /// profile now has another effective revision, which a synced pointer can name even when it
+    /// is older than the one the draft saw.
+    pub access_profile_revision_id: ChatAccessProfileRevisionId,
     pub capabilities: ChatChannelCapabilities,
     pub history_boundary: ChatHistoryBoundary,
     pub runtime_approval_override: Option<ChatRuntimeApprovalPolicy>,

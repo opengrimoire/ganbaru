@@ -1,8 +1,9 @@
 //! Retained-reference disclosure checks for access previews and transactions.
 
 use super::{
-    ChatAccessIssueCode, ChatAccessProfileId, ChatAccessValidationIssue, ChatChannelCapabilities,
-    ChatChannelId, ChatConversationId, ChatHistoryBoundary, ChatResult,
+    ChatAccessIssueCode, ChatAccessProfileId, ChatAccessProfileRevisionId,
+    ChatAccessValidationIssue, ChatChannelCapabilities, ChatChannelId, ChatConversationId,
+    ChatHistoryBoundary, ChatResult,
 };
 use super::{ResolvedChannelAccess, history_boundary_is_expansion, issue};
 use crate::chat::channels::{identifier_error, persistence_error, u64_value};
@@ -200,7 +201,8 @@ async fn read_effective_disclosure_access_in_transaction(
     let rows = sqlx::query(
         "SELECT channel.id AS channel_id, channel.project_id, project.group_id,
                 channel.conversation_id, channel.name AS channel_name,
-                ai.access_profile_id, profile_revision.revision AS access_profile_revision,
+                ai.access_profile_id, profile_revision.id AS access_profile_revision_id,
+                profile_revision.revision AS access_profile_revision,
                 profile_revision.default_read_history AS profile_read_history,
                 profile_revision.default_participate AS profile_participate,
                 profile_revision.default_history_boundary AS profile_history_boundary,
@@ -323,6 +325,11 @@ async fn read_effective_disclosure_access_in_transaction(
             channel_name: row.try_get("channel_name").map_err(persistence_error)?,
             access_profile_id: ChatAccessProfileId::new(
                 row.try_get::<String, _>("access_profile_id")
+                    .map_err(persistence_error)?,
+            )
+            .map_err(identifier_error)?,
+            access_profile_revision_id: ChatAccessProfileRevisionId::new(
+                row.try_get::<String, _>("access_profile_revision_id")
                     .map_err(persistence_error)?,
             )
             .map_err(identifier_error)?,

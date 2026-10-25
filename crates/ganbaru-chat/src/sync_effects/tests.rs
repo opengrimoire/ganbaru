@@ -7,6 +7,7 @@ const NOW: &str = "2026-10-24T09:00:00.000Z";
 const PROJECT_ID: &str = "project-sync-effects";
 const TEAMMATE_ID: &str = "participant:sync-effects-agent";
 const PROFILE_ID: &str = "access-profile:sync-effects";
+const FIRST_PROFILE_REVISION_ID: &str = "profile-revision:sync-effects:1";
 
 type AccessStateRow = (String, i64, String);
 type SearchRow = (String, String, Option<String>, String, String);
@@ -107,10 +108,17 @@ async fn seed_organization(pool: &SqlitePool) {
     .execute(pool)
     .await
     .unwrap();
-    insert_authorization(pool, "authorization:first", 1).await;
+    insert_authorization(pool, "authorization:first", 1, FIRST_PROFILE_REVISION_ID).await;
 }
 
-async fn insert_authorization(pool: &SqlitePool, id: &str, revision: i64) {
+/// Inserts an allowed authorization of the seeded assignment granted under
+/// `profile_revision_id`.
+async fn insert_authorization(
+    pool: &SqlitePool,
+    id: &str,
+    revision: i64,
+    profile_revision_id: &str,
+) {
     sqlx::query(
         "INSERT INTO chat_assignment_authorization_revisions
             (id, assignment_id, revision, requester_participant_id,
@@ -118,12 +126,13 @@ async fn insert_authorization(pool: &SqlitePool, id: &str, revision: i64) {
              destination_conversation_id, access_profile_revision_id,
              resolved_runtime_approval_policy, scope_digest, decision_state, created_at)
          VALUES (?, 'assignment:sync-effects', ?, 'participant:local-owner',
-                 'policy:sync-effects', 1, ?, 'profile-revision:sync-effects:1',
+                 'policy:sync-effects', 1, ?, ?,
                  'ask', printf('%064d', 0), 'allowed', ?)",
     )
     .bind(id)
     .bind(revision)
     .bind(conversation_id())
+    .bind(profile_revision_id)
     .bind(NOW)
     .execute(pool)
     .await
@@ -323,7 +332,7 @@ async fn narrowed_profile_revisions_revoke_once_and_widened_ones_keep_authority(
     assert_eq!(queued_jobs(&pool).await.len(), 1);
 
     set_applying(&pool, false).await;
-    insert_authorization(&pool, "authorization:second", 2).await;
+    insert_authorization(&pool, "authorization:second", 2, FIRST_PROFILE_REVISION_ID).await;
     set_applying(&pool, true).await;
     let access_after_narrowing = access_state(&pool).await[0].1;
     let widened = insert_profile_revision(&pool, 3, "publish").await;
@@ -338,6 +347,78 @@ async fn narrowed_profile_revisions_revoke_once_and_widened_ones_keep_authority(
     assert_eq!(access_state(&pool).await[0].1, access_after_narrowing);
     assert_eq!(authorization_states(&pool).await[1].1, "allowed");
     assert_eq!(queued_jobs(&pool).await.len(), 1);
+}
+
+/// Teammate policy pointers have no counterpart: dispatch reads the effective policy revision when
+/// it runs and authorizations never carry a wider policy, so policy rows never revoke.
+#[tokio::test]
+async fn a_pointer_naming_an_older_stricter_revision_revokes_what_the_wider_one_allowed() {
+    let pool = migrated_pool().await;
+    seed_organization(&pool).await;
+
+    set_applying(&pool, true).await;
+    let stricter = insert_profile_revision(&pool, 2, "edit").await;
+    let wider = insert_profile_revision(&pool, 3, "publish").await;
+    point_profile_at(&pool, &wider, "publish").await;
+    let widened = run_hook(&pool, ACCESS_PROFILES_TABLE, &[PROFILE_ID]).await;
+    assert!(widened.revoked_teammates.is_empty());
+    assert!(widened.access_revised.is_empty());
+
+    set_applying(&pool, false).await;
+    insert_authorization(&pool, "authorization:wider", 2, &wider).await;
+    set_applying(&pool, true).await;
+    let access_before = access_state(&pool).await[0].1;
+
+    // The stricter revision is older than the wider one and as wide as the revision before it,
+    // so only the comparison with later revisions can find the narrowing.
+    point_profile_at(&pool, &stricter, "edit").await;
+    let effects = run_hook(&pool, ACCESS_PROFILES_TABLE, &[PROFILE_ID]).await;
+
+    assert_eq!(
+        effects.revoked_teammates,
+        BTreeSet::from([TEAMMATE_ID.to_string()])
+    );
+    assert_eq!(
+        effects.access_revised,
+        BTreeSet::from([TEAMMATE_ID.to_string()])
+    );
+    assert_eq!(access_state(&pool).await[0].1, access_before + 1);
+    let states = authorization_states(&pool).await;
+    assert!(
+        states
+            .iter()
+            .all(|(_, state, reason)| state == "revoked" && reason == PROFILE_REDUCTION_REASON),
+        "{states:?}"
+    );
+    assert_eq!(
+        queued_jobs(&pool).await,
+        vec![
+            (
+                TEAMMATE_ID.to_string(),
+                Some("authorization:first".to_string())
+            ),
+            (
+                TEAMMATE_ID.to_string(),
+                Some("authorization:wider".to_string())
+            ),
+        ]
+    );
+}
+
+/// Points the seeded profile at `revision_id`, copying its folder capability the way commands
+/// and the coupled sync group do.
+async fn point_profile_at(pool: &SqlitePool, revision_id: &str, capability: &str) {
+    sqlx::query(
+        "UPDATE chat_access_profiles
+         SET current_revision_id = ?, current_maximum_folder_capability = ?
+         WHERE id = ?",
+    )
+    .bind(revision_id)
+    .bind(capability)
+    .bind(PROFILE_ID)
+    .execute(pool)
+    .await
+    .unwrap();
 }
 
 #[tokio::test]

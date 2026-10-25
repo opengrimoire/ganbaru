@@ -2,7 +2,9 @@
 
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use ganbaru_handoff::protocol::{ControlMessage, SyncAsset, SyncAssetKey, SyncSeq};
+#[cfg(desktop)]
+use ganbaru_handoff::protocol::ControlMessage;
+use ganbaru_handoff::protocol::{SyncAsset, SyncAssetKey, SyncSeq};
 use ganbaru_sync::assets::AssetRef;
 use ganbaru_sync_contracts::{Digest32, ProposalRejection, Seq, VersionVector, WriterId};
 
@@ -131,6 +133,7 @@ pub fn bytes_from_wire(text: &str) -> Result<Vec<u8>, String> {
 }
 
 /// The answer to a proposal: the revision that holds it, or the wire value of its rejection.
+#[cfg(desktop)]
 pub fn proposed_to_wire(outcome: Result<u64, ProposalRejection>) -> ControlMessage {
     match outcome {
         Ok(revision) => ControlMessage::SyncProposed {

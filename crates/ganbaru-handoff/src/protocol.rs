@@ -2095,6 +2095,7 @@ mod tests {
         let proposal = ganbaru_sync_contracts::sign_proposal(
             &ganbaru_sync_contracts::Proposal {
                 space: ganbaru_sync_contracts::SpaceId::personal("vault-1"),
+                charter: [7; 32],
                 author: admin.public_key(),
                 created_at_ms: 1,
                 entry: ganbaru_sync_contracts::Entry::Remove(ganbaru_sync_contracts::Remove {

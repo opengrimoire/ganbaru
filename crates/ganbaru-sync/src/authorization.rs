@@ -60,6 +60,8 @@ pub struct AuthorizationView {
     /// Revision past which the epoch is frozen because a writer of its anchor forked; only a
     /// handover continues the log then.
     pub frozen_at: Option<u64>,
+    /// Hash of the charter the selected chain starts from, which every proposal names.
+    pub charter: Digest32,
     /// Every device the selected chain enrolled, removed ones included, by device id.
     pub devices: Vec<EnrolledDevice>,
 }
@@ -87,6 +89,8 @@ pub(crate) struct AuthState {
     entry_hash: Digest32,
     /// Entry hash that opened the current epoch: the charter hash for epoch 0.
     epoch_root: Digest32,
+    /// Hash of the charter, which every proposal of the space names.
+    charter: Digest32,
     anchor_device_id: String,
     recovery_admin_key: AdminPublicKey,
     devices: BTreeMap<String, DeviceState>,
@@ -129,6 +133,7 @@ impl AuthState {
             revision: 0,
             entry_hash: hash,
             epoch_root: hash,
+            charter: hash,
             anchor_device_id: body.anchor_device_id.clone(),
             recovery_admin_key: body.recovery_admin_key,
             devices: BTreeMap::from([(body.anchor_device_id.clone(), anchor)]),
@@ -160,7 +165,7 @@ impl AuthState {
     /// Whether `record` may follow this state.
     pub(crate) fn check(&self, record: &AuthorizationRecord) -> Result<(), ProposalRejection> {
         let proposal = &record.proposal.proposal;
-        if proposal.space != self.space {
+        if proposal.space != self.space || proposal.charter != self.charter {
             return Err(ProposalRejection::WrongSpace);
         }
         if record.revision != self.revision + 1 || record.previous_entry_hash != self.entry_hash {
@@ -307,6 +312,7 @@ impl AuthState {
             revision: self.revision,
             anchor_device_id: self.anchor_device_id.clone(),
             frozen_at: self.frozen_at,
+            charter: self.charter,
             devices: self
                 .devices
                 .iter()
@@ -994,7 +1000,7 @@ impl Engine {
         let revision = record.revision;
         writer
             .reservation
-            .reserve_entry(revision, record.hash())
+            .reserve_entry(state.charter, revision, record.hash())
             .map_err(SyncError::Reservation)?;
         let seq = sealer
             .seal_authorization(

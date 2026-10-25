@@ -1569,6 +1569,16 @@ impl<'a, H: SyncHost> Session<'a, H> {
             }
             WriterCheck::Successor(plan) => self.create_successor(plan).await?,
         };
+        if let Some(active) = writer.as_mut() {
+            let mut conn = acquire(&self.pool).await?;
+            let charter = self
+                .engine
+                .authorization(&mut conn, &self.ctx)
+                .await
+                .map_err(|error| format!("read sync authorization: {error}"))?
+                .map(|view| view.charter);
+            active.settle_sequenced(charter)?;
+        }
         Ok(writer.is_some())
     }
 
@@ -1951,6 +1961,7 @@ impl<'a, H: SyncHost> Session<'a, H> {
                 authority::queue_reconciliation(
                     &mut outbox,
                     self.ctx.space,
+                    view.charter,
                     &anchor.admin,
                     changes,
                     now_ms()?,

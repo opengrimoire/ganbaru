@@ -37,7 +37,7 @@ pub struct WriterRecord {
     /// Retired writers whose keys still wait to be removed.
     pub retired_keys: Vec<String>,
     /// The last authorization entry this installation reserved as the anchor, kept across
-    /// successor writers, so a database restored behind it can be detected.
+    /// successor writers of the same charter, so a database restored behind it can be detected.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sequenced: Option<SequencedEntry>,
 }
@@ -46,6 +46,8 @@ pub struct WriterRecord {
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SequencedEntry {
+    /// Hash of the charter the log starts from, base64url without padding.
+    pub charter: String,
     /// Revision of the entry.
     pub revision: u64,
     /// Entry hash, base64url without padding.
@@ -55,10 +57,51 @@ pub struct SequencedEntry {
 impl SequencedEntry {
     /// The decoded entry hash, or `None` when the record holds a malformed one.
     pub fn hash(&self) -> Option<Digest32> {
-        URL_SAFE_NO_PAD
-            .decode(&self.entry_hash)
-            .ok()
-            .and_then(|bytes| bytes.try_into().ok())
+        decode_digest(&self.entry_hash)
+    }
+
+    /// The decoded charter hash, or `None` when the record holds a malformed one.
+    pub fn charter(&self) -> Option<Digest32> {
+        decode_digest(&self.charter)
+    }
+}
+
+fn decode_digest(text: &str) -> Option<Digest32> {
+    URL_SAFE_NO_PAD
+        .decode(text)
+        .ok()
+        .and_then(|bytes| bytes.try_into().ok())
+}
+
+/// How the anchor's recorded high-water compares with the selected log.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SequencedCheck {
+    /// The log holds the recorded entry, or nothing is recorded.
+    Current,
+    /// The record is ahead by exactly the entry it reserved last: that seal rolled back.
+    RolledBack,
+    /// The record is ahead by more than one entry, so the database is older than the log this
+    /// installation sequenced: it was restored from a backup or copied.
+    Restored {
+        /// The revision the record reached.
+        recorded: u64,
+    },
+}
+
+/// Compares the recorded high-water with the revision of the selected head. A reservation is
+/// written before its seal commits, so being ahead by one is a rolled back seal, not a restore.
+pub fn sequenced_check(
+    sequenced: Option<&SequencedEntry>,
+    selected_revision: u64,
+) -> SequencedCheck {
+    match sequenced.map(|entry| entry.revision) {
+        Some(recorded) if recorded > selected_revision.saturating_add(1) => {
+            SequencedCheck::Restored { recorded }
+        }
+        Some(recorded) if recorded == selected_revision.saturating_add(1) => {
+            SequencedCheck::RolledBack
+        }
+        _ => SequencedCheck::Current,
     }
 }
 
@@ -346,6 +389,20 @@ impl ActiveWriter {
         self.reservation.replace(next)
     }
 
+    /// Clears the recorded high-water when the space has no charter or starts from another one,
+    /// because it then describes a log a Reset cleared.
+    pub fn settle_sequenced(&mut self, charter: Option<Digest32>) -> Result<(), String> {
+        let Some(sequenced) = self.reservation.record.sequenced.as_ref() else {
+            return Ok(());
+        };
+        if charter.is_some() && sequenced.charter() == charter {
+            return Ok(());
+        }
+        let mut next = self.reservation.record.clone();
+        next.sequenced = None;
+        self.reservation.replace(next)
+    }
+
     /// Records whether exchanges are paused on this device.
     pub fn set_paused(&mut self, paused: bool) -> Result<(), String> {
         if self.reservation.record.paused == paused {
@@ -397,12 +454,24 @@ impl SequenceReservation for RecordReservation {
         self.replace(next).map_err(std::io::Error::other)
     }
 
-    fn reserve_entry(&mut self, revision: u64, entry_hash: Digest32) -> std::io::Result<()> {
+    fn reserve_entry(
+        &mut self,
+        charter: Digest32,
+        revision: u64,
+        entry_hash: Digest32,
+    ) -> std::io::Result<()> {
         let entry = SequencedEntry {
+            charter: URL_SAFE_NO_PAD.encode(charter),
             revision,
             entry_hash: URL_SAFE_NO_PAD.encode(entry_hash),
         };
-        let current = self.record.sequenced.as_ref();
+        // A high-water of another charter belongs to a log a Reset cleared, so it never holds
+        // back the current one.
+        let current = self
+            .record
+            .sequenced
+            .as_ref()
+            .filter(|current| current.charter == entry.charter);
         if current.is_some_and(|current| current.revision > revision || *current == entry) {
             return Ok(());
         }

@@ -12,9 +12,9 @@
 //! record encoding, so records chain independently of the writer that sealed them, which lets the
 //! chain continue across an anchor handover.
 //!
-//! A signed proposal is: version (1) | space id (16) | author admin public key (32) | created at
-//! milliseconds (8) | entry kind (1) | entry length (4) and entry | admin signature (64) over the
-//! proposal domain and everything before it. Its hash, the proposal hash digest of the unsigned
+//! A signed proposal is: version (1) | space id (16) | charter hash (32) | author admin public key
+//! (32) | created at milliseconds (8) | entry kind (1) | entry length (4) and entry | admin
+//! signature (64) over the proposal domain and everything before it. Its hash, the proposal hash digest of the unsigned
 //! encoding, makes resubmission idempotent. Decoding verifies the signature against the embedded
 //! author key; whether that key is an admin of the space at the record's revision is the log's
 //! question.
@@ -58,7 +58,7 @@ use crate::vector::VersionVector;
 use ganbaru_contacts::validate_display_text;
 use std::fmt;
 
-const PROPOSAL_VERSION: u8 = 1;
+const PROPOSAL_VERSION: u8 = 2;
 
 const ENTRY_ENROLL: u8 = 0;
 const ENTRY_REMOVE: u8 = 1;
@@ -485,6 +485,10 @@ impl Entry {
 pub struct Proposal {
     /// Space the change applies to.
     pub space: SpaceId,
+    /// Hash of the charter the author's chain starts from. An anchor refuses a proposal made
+    /// for another charter, so a proposal signed before Reset sync state cannot be replayed into
+    /// the space founded after it.
+    pub charter: Digest32,
     /// Admin key of the author.
     pub author: AdminPublicKey,
     /// Creation time in Unix milliseconds; distinguishes deliberate re-proposals.
@@ -505,6 +509,7 @@ pub struct SignedProposal {
 fn encode_unsigned_proposal(proposal: &Proposal, writer: &mut Writer) {
     writer.u8(PROPOSAL_VERSION);
     writer.raw(proposal.space.as_bytes());
+    writer.raw(&proposal.charter);
     writer.raw(proposal.author.as_bytes());
     writer.i64(proposal.created_at_ms);
     writer.u8(proposal.entry.kind());
@@ -549,6 +554,7 @@ impl SignedProposal {
             return Err(AuthorizationError::Version);
         }
         let space = SpaceId::from_bytes(reader.array()?);
+        let charter = reader.array::<DIGEST_BYTES>()?;
         let author = AdminPublicKey::from_bytes(reader.array::<PUBLIC_KEY_BYTES>()?);
         let created_at_ms = reader.i64()?;
         let kind = reader.u8()?;
@@ -556,6 +562,7 @@ impl SignedProposal {
         let signature = reader.array::<SIGNATURE_BYTES>()?;
         let proposal = Proposal {
             space,
+            charter,
             author,
             created_at_ms,
             entry,
@@ -797,7 +804,7 @@ pub fn entry_hash(record_bytes: &[u8]) -> Digest32 {
 pub enum ProposalRejection {
     /// The receiver is not the anchor of the current epoch.
     NotAnchor,
-    /// The proposal names another space.
+    /// The proposal names another space, or a charter other than the one the space starts from.
     WrongSpace,
     /// The author key is not an admin key at the current revision.
     NotAdmin,

@@ -6,13 +6,16 @@ use super::{
 };
 use crate::authority::{self, Enrollment, enroll_entry, propose, remove_entry};
 use crate::outbox::{MAX_OUTBOX_PROPOSALS, Outbox, is_final};
-use crate::writer::{MemoryKeyStore, SuccessorPlan, create_writer, read_record};
+use crate::writer::{
+    MemoryKeyStore, SequencedCheck, SequencedEntry, SuccessorPlan, create_writer, read_record,
+    sequenced_check,
+};
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use ganbaru_db::DatabasePoolRegistry;
 use ganbaru_sync::Engine;
 use ganbaru_sync_contracts::{
-    DeviceKeyPair, DeviceKind, ProposalRejection, SignedProposal, SpaceId,
+    DeviceKeyPair, DeviceKind, Digest32, ProposalRejection, SignedProposal, SpaceId,
 };
 
 fn enrollment(device_id: &str, seed: u8) -> Enrollment {
@@ -27,9 +30,22 @@ fn enrollment(device_id: &str, seed: u8) -> Enrollment {
     }
 }
 
+/// Charter hash of proposals in tests that never sequence them.
+const ANY_CHARTER: Digest32 = [0; 32];
+
 fn enroll_proposal(device_id: &str, seed: u8, now_ms: u64) -> SignedProposal {
+    enroll_proposal_under(ANY_CHARTER, device_id, seed, now_ms)
+}
+
+fn enroll_proposal_under(
+    charter: Digest32,
+    device_id: &str,
+    seed: u8,
+    now_ms: u64,
+) -> SignedProposal {
     propose(
         SpaceId::personal(VAULT_ID),
+        charter,
         &anchor_keys().admin,
         enroll_entry(enrollment(device_id, seed)),
         now_ms,
@@ -123,6 +139,7 @@ fn the_outbox_is_bounded() {
     let deferred = authority::queue_reconciliation(
         &mut outbox,
         space,
+        ANY_CHARTER,
         &admin,
         authority::Reconciliation {
             enroll: vec![enrollment("device-laptop", 41)],
@@ -205,9 +222,13 @@ fn the_anchor_sequences_its_outbox_reserves_each_entry_and_keeps_final_rejection
         .expect("create writer");
 
         let mut outbox = Outbox::load(&files.outbox_path()).expect("load");
-        let enroll = enroll_proposal("device-phone", 30, NOW_MS);
+        let charter = authority::charter_hash(&engine, &mut conn, &ctx)
+            .await
+            .expect("charter");
+        let enroll = enroll_proposal_under(charter, "device-phone", 30, NOW_MS);
         let remove_anchor = propose(
             ctx.space,
+            charter,
             &anchor_keys().admin,
             remove_entry(DEVICE_ID),
             NOW_MS,
@@ -247,6 +268,11 @@ fn the_anchor_sequences_its_outbox_reserves_each_entry_and_keeps_final_rejection
         let sequenced_entry = record.sequenced.expect("sequenced entry");
         assert_eq!(sequenced_entry.revision, revision);
         assert!(sequenced_entry.hash().is_some());
+        assert_eq!(sequenced_entry.charter(), Some(charter));
+        assert_eq!(
+            sequenced_check(Some(&sequenced_entry), revision),
+            SequencedCheck::Current
+        );
 
         // Replaying a sequenced proposal returns its revision without sealing again.
         let replayed = authority::sequence(
@@ -267,6 +293,27 @@ fn the_anchor_sequences_its_outbox_reserves_each_entry_and_keeps_final_rejection
         drop(conn);
         registry.close_all().await.expect("close pools");
     });
+}
+
+#[test]
+fn a_record_one_entry_ahead_is_a_rolled_back_seal_and_further_ahead_is_a_restore() {
+    let at = |revision: u64| SequencedEntry {
+        charter: URL_SAFE_NO_PAD.encode([1; 32]),
+        revision,
+        entry_hash: URL_SAFE_NO_PAD.encode([2; 32]),
+    };
+    assert_eq!(sequenced_check(None, 7), SequencedCheck::Current);
+    assert_eq!(sequenced_check(Some(&at(7)), 7), SequencedCheck::Current);
+    assert_eq!(
+        sequenced_check(Some(&at(5)), 7),
+        SequencedCheck::Current,
+        "a log another anchor extended is not a restore"
+    );
+    assert_eq!(sequenced_check(Some(&at(8)), 7), SequencedCheck::RolledBack);
+    assert_eq!(
+        sequenced_check(Some(&at(9)), 7),
+        SequencedCheck::Restored { recorded: 9 }
+    );
 }
 
 #[test]
@@ -353,12 +400,20 @@ fn reconciliation_proposes_each_membership_change_once() {
         remove: vec!["device-tablet".to_string()],
     };
 
-    let added = authority::queue_reconciliation(&mut outbox, space, &admin, changes(), NOW_MS)
-        .expect("queue changes");
+    let added =
+        authority::queue_reconciliation(&mut outbox, space, ANY_CHARTER, &admin, changes(), NOW_MS)
+            .expect("queue changes");
     assert_eq!(added, 2);
     // A later pass signs at a new time, which is a new proposal hash, yet proposes nothing.
-    let again = authority::queue_reconciliation(&mut outbox, space, &admin, changes(), NOW_MS + 1)
-        .expect("queue again");
+    let again = authority::queue_reconciliation(
+        &mut outbox,
+        space,
+        ANY_CHARTER,
+        &admin,
+        changes(),
+        NOW_MS + 1,
+    )
+    .expect("queue again");
     assert_eq!(again, 0);
 
     // A finally rejected change is never proposed again, even with a new label.
@@ -375,6 +430,7 @@ fn reconciliation_proposes_each_membership_change_once() {
     let relinked = authority::queue_reconciliation(
         &mut outbox,
         space,
+        ANY_CHARTER,
         &admin,
         authority::Reconciliation {
             enroll: vec![relabeled, enrollment("device-laptop", 41)],

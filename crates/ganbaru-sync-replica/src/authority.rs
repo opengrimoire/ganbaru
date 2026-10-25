@@ -10,9 +10,9 @@ use ganbaru_handoff::protocol::DeviceKind as HandoffDeviceKind;
 use ganbaru_sync::{Engine, LocalWriter, SpaceContext};
 use ganbaru_sync_contracts::bounds::{DISCOVERY_KEY_BYTES, TLS_FINGERPRINT_BYTES};
 use ganbaru_sync_contracts::{
-    AdminKeyPair, Charter, DeviceKeyPair, DeviceKind, DevicePublicKey, DeviceRole, Enroll, Entry,
-    Proposal, ProposalRejection, RecoverySeed, Remove, SignedCharter, SignedProposal, SpaceId,
-    sign_charter, sign_proposal,
+    AdminKeyPair, Charter, DeviceKeyPair, DeviceKind, DevicePublicKey, DeviceRole, Digest32,
+    Enroll, Entry, Proposal, ProposalRejection, RecoverySeed, Remove, SignedCharter,
+    SignedProposal, SpaceId, sign_charter, sign_proposal,
 };
 use sqlx::SqliteConnection;
 
@@ -169,6 +169,7 @@ pub struct Reconciliation {
 pub fn queue_reconciliation(
     outbox: &mut Outbox,
     space: SpaceId,
+    charter: Digest32,
     admin: &AdminKeyPair,
     changes: Reconciliation,
     now_ms: u64,
@@ -187,7 +188,7 @@ pub fn queue_reconciliation(
         if !outbox.has_room() {
             break;
         }
-        added += usize::from(outbox.add(propose(space, admin, entry, now_ms)?)?);
+        added += usize::from(outbox.add(propose(space, charter, admin, entry, now_ms)?)?);
     }
     Ok(added)
 }
@@ -204,6 +205,7 @@ fn same_change(left: &Entry, right: &Entry) -> bool {
 /// Signs `entry` as a proposal of the admin key for the space.
 pub fn propose(
     space: SpaceId,
+    charter: Digest32,
     admin: &AdminKeyPair,
     entry: Entry,
     now_ms: u64,
@@ -211,6 +213,7 @@ pub fn propose(
     sign_proposal(
         &Proposal {
             space,
+            charter,
             author: admin.public_key(),
             created_at_ms: millis(now_ms)?,
             entry,
@@ -272,7 +275,13 @@ pub async fn enroll(
     enrollment: Enrollment,
     now_ms: u64,
 ) -> Result<u64, String> {
-    let proposal = propose(ctx.space, admin, enroll_entry(enrollment), now_ms)?;
+    let proposal = propose(
+        ctx.space,
+        charter_hash(engine, conn, ctx).await?,
+        admin,
+        enroll_entry(enrollment),
+        now_ms,
+    )?;
     accepted(sequence(engine, conn, ctx, writer, &proposal, now_ms).await?)
 }
 
@@ -287,12 +296,32 @@ pub async fn remove(
     device_id: &str,
     now_ms: u64,
 ) -> Result<u64, String> {
-    let proposal = propose(ctx.space, admin, remove_entry(device_id), now_ms)?;
+    let proposal = propose(
+        ctx.space,
+        charter_hash(engine, conn, ctx).await?,
+        admin,
+        remove_entry(device_id),
+        now_ms,
+    )?;
     accepted(sequence(engine, conn, ctx, writer, &proposal, now_ms).await?)
 }
 
 fn accepted(outcome: Result<u64, ProposalRejection>) -> Result<u64, String> {
     outcome.map_err(|rejection| format!("sync proposal rejected: {rejection}"))
+}
+
+/// Hash of the installed charter, which every proposal for the space names.
+pub async fn charter_hash(
+    engine: &Engine,
+    conn: &mut SqliteConnection,
+    ctx: &SpaceContext,
+) -> Result<Digest32, String> {
+    engine
+        .charter(conn, ctx)
+        .await
+        .map_err(|error| format!("read sync charter: {error}"))?
+        .map(|charter| charter.hash())
+        .ok_or_else(|| "the sync space has no charter".to_string())
 }
 
 /// The discovery key of the charter, which a non-removal entry ignores.

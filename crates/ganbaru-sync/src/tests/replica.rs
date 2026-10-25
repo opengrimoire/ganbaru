@@ -160,8 +160,19 @@ pub(super) fn test_charter(person: &PersonKeyPair, space: SpaceId) -> SignedChar
     .expect("test charter should sign")
 }
 
-/// A proposal of `entry` for `space` signed by `admin`.
+/// A proposal of `entry` for `space` under the test charter, signed by `admin`.
 pub(super) fn proposal(
+    space: SpaceId,
+    admin: &AdminKeyPair,
+    created_at_ms: u64,
+    entry: Entry,
+) -> SignedProposal {
+    person_proposal(&person(), space, admin, created_at_ms, entry)
+}
+
+/// A proposal of `entry` for `space` under `person`'s test charter, signed by `admin`.
+pub(super) fn person_proposal(
+    person: &PersonKeyPair,
     space: SpaceId,
     admin: &AdminKeyPair,
     created_at_ms: u64,
@@ -170,6 +181,7 @@ pub(super) fn proposal(
     sign_proposal(
         &Proposal {
             space,
+            charter: test_charter(person, space).hash(),
             author: admin.public_key(),
             created_at_ms: created_at_ms as i64,
             entry,
@@ -303,7 +315,7 @@ async fn space_template(vault_id: &str, person: &PersonKeyPair) -> Vec<u8> {
             .sequence_proposal(
                 &mut conn,
                 &ctx,
-                &proposal(space, &admin, START_MS, entry),
+                &person_proposal(person, space, &admin, START_MS, entry),
                 [0; 32],
                 &mut authority.local(),
                 START_MS,
@@ -462,7 +474,8 @@ impl Replica {
         &mut self,
         entry: Entry,
     ) -> SyncResult<Result<u64, ProposalRejection>> {
-        let signed = proposal(
+        let signed = person_proposal(
+            &self.person,
             self.ctx.space,
             &anchor_admin(&self.person),
             self.now_ms,
@@ -498,7 +511,7 @@ impl Replica {
             continues_from_revision: revision,
             continues_from_hash: hash,
         });
-        proposal(self.ctx.space, admin, self.now_ms, entry)
+        person_proposal(&self.person, self.ctx.space, admin, self.now_ms, entry)
     }
 
     /// Seals a signed handover as the new anchor, with the old anchor's stored vector when known.

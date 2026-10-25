@@ -180,6 +180,14 @@ async fn shared_vault_image() -> Vec<u8> {
 }
 
 impl Replica {
+    /// Hash of the charter this replica holds, which its proposals name.
+    async fn charter(&self) -> ganbaru_sync_contracts::Digest32 {
+        let mut conn = acquire(&self.pool).await;
+        authority::charter_hash(&self.engine, &mut conn, &self.ctx)
+            .await
+            .expect("charter")
+    }
+
     async fn new(label: &str, device_id: &str) -> Self {
         let directory = TestDirectory::new(label);
         let registry = DatabasePoolRegistry::default();
@@ -994,6 +1002,7 @@ fn proposals_reach_the_anchor_through_the_hub_until_the_chain_holds_them() {
         };
         let enroll = authority::propose(
             hub_replica.ctx.space,
+            hub_replica.charter().await,
             &hub_keys().admin,
             authority::enroll_entry(laptop),
             NOW_MS,
@@ -1057,6 +1066,7 @@ fn proposals_reach_the_anchor_through_the_hub_until_the_chain_holds_them() {
         let mut outbox = Outbox::load(&path).expect("empty outbox");
         let duplicate = authority::propose(
             hub_replica.ctx.space,
+            hub_replica.charter().await,
             &hub_keys().admin,
             authority::enroll_entry(Enrollment {
                 device_id: PHONE_DEVICE.to_string(),
@@ -2804,6 +2814,28 @@ fn reset_sync_state_founds_a_new_space_that_republishes_every_row() {
             .await
             .expect("read charter")
             .expect("charter");
+        let old_enroll = authority::propose(
+            hub.ctx.space,
+            old_charter.hash(),
+            &hub_keys().admin,
+            authority::enroll_entry(Enrollment {
+                device_id: "device-laptop".to_string(),
+                device_key: device_key("device-laptop").public_key(),
+                tls_fingerprint: [27; 32],
+                label: "Laptop".to_string(),
+                device_kind: DeviceKind::Desktop,
+            }),
+            NOW_MS,
+        )
+        .expect("sign enrollment");
+        let old_remove = authority::propose(
+            hub.ctx.space,
+            old_charter.hash(),
+            &hub_keys().admin,
+            authority::remove_entry(PHONE_DEVICE),
+            NOW_MS,
+        )
+        .expect("sign removal");
 
         reset::reset_database(&mut *acquire(&hub.pool).await)
             .await
@@ -2875,6 +2907,22 @@ fn reset_sync_state_founds_a_new_space_that_republishes_every_row() {
         .expect("create writer");
         hub.seal().await;
         let mut conn = acquire(&hub.pool).await;
+        for replayed in [&old_enroll, &old_remove] {
+            assert_eq!(
+                authority::sequence(
+                    &hub.engine,
+                    &mut conn,
+                    &hub.ctx,
+                    &mut hub.writer.local(),
+                    replayed,
+                    NOW_MS + 2,
+                )
+                .await
+                .expect("sequence"),
+                Err(ProposalRejection::WrongSpace),
+                "a proposal signed for the old charter does not replay into the new one"
+            );
+        }
         assert_eq!(
             local::pending_captures(&mut conn).await.expect("captures"),
             0
@@ -2887,6 +2935,184 @@ fn reset_sync_state_founds_a_new_space_that_republishes_every_row() {
         assert_eq!(published, 1, "the note is published again");
         drop(conn);
         hub.close().await;
+    });
+}
+
+#[test]
+fn a_reset_interrupted_after_the_database_is_cleared_is_repaired_on_the_next_start() {
+    use crate::reset;
+    use crate::writer::{WriterCheck, check_writer, read_stored_writer};
+    block_on(async {
+        // The crash lands before the installation state goes, or after the outbox went but
+        // before the record and the writer keys did.
+        for outbox_removed in [false, true] {
+            let label = format!("reset-interrupted-{outbox_removed}");
+            let mut hub = Replica::new(&label, HUB_DEVICE).await;
+            hub.seal_note("note-before-reset").await;
+            let files = hub.directory.files();
+            let keys = hub.directory.keys();
+            let old_charter = hub.charter().await;
+            {
+                let mut conn = acquire(&hub.pool).await;
+                authority::enroll(
+                    &hub.engine,
+                    &mut conn,
+                    &hub.ctx,
+                    &hub_keys().admin,
+                    &mut hub.writer.local(),
+                    Enrollment {
+                        device_id: "laptop-before-reset".to_string(),
+                        device_key: device_key("laptop-before-reset").public_key(),
+                        tls_fingerprint: [27; 32],
+                        label: "Laptop".to_string(),
+                        device_kind: DeviceKind::Desktop,
+                    },
+                    NOW_MS,
+                )
+                .await
+                .expect("sequence an enrollment before the reset");
+            }
+            let recorded = hub
+                .writer
+                .record()
+                .sequenced
+                .clone()
+                .expect("the anchor recorded its high-water");
+            assert_eq!(recorded.charter(), Some(old_charter));
+            let mut outbox = Outbox::load(&files.outbox_path()).expect("empty outbox");
+            outbox
+                .add(
+                    authority::propose(
+                        hub.ctx.space,
+                        old_charter,
+                        &hub_keys().admin,
+                        authority::remove_entry(PHONE_DEVICE),
+                        NOW_MS,
+                    )
+                    .expect("sign removal"),
+                )
+                .expect("queue removal");
+
+            reset::reset_database(&mut *acquire(&hub.pool).await)
+                .await
+                .expect("reset database");
+            if outbox_removed {
+                Outbox::remove(&files.outbox_path()).expect("remove outbox");
+            }
+
+            let mut conn = acquire(&hub.pool).await;
+            hub.engine
+                .init_space(&mut conn, VAULT_ID, NOW_MS + 1)
+                .await
+                .expect("initialize space");
+            hub.engine
+                .refuse_legacy_state(&mut conn, &hub.ctx)
+                .await
+                .expect("the reset space is current");
+            hub.engine
+                .seed_captures(&mut conn, NOW_MS + 1)
+                .await
+                .expect("seed captures");
+            let founding = Founding {
+                device_id: HUB_DEVICE,
+                tls_fingerprint: [23; 32],
+                discovery_key: [24; 32],
+                person: &person(),
+                now_ms: NOW_MS + 1,
+            };
+            ensure_charter(&hub.engine, &mut conn, &hub.ctx, &hub_keys(), &founding)
+                .await
+                .expect("found the space again");
+            let stored = read_stored_writer(&files, &keys).expect("read stored writer");
+            assert!(stored.is_some(), "the crash left the old record");
+            let check = check_writer(
+                &hub.engine,
+                &mut conn,
+                &hub.ctx,
+                &files,
+                &device_key(HUB_DEVICE).public_key(),
+                stored,
+            )
+            .await
+            .expect("check writer");
+            let WriterCheck::Successor(plan) = check else {
+                panic!("the cleared space lacks the recorded writer");
+            };
+            drop(conn);
+            hub.writer = create_writer(
+                &files,
+                &keys,
+                plan,
+                &device_key(HUB_DEVICE),
+                HUB_DEVICE,
+                NOW_MS + 1,
+            )
+            .expect("create successor");
+            assert_eq!(
+                hub.writer.record().sequenced.as_ref(),
+                Some(&recorded),
+                "the successor carries the record until the charter is checked"
+            );
+            hub.writer
+                .settle_sequenced(Some(old_charter))
+                .expect("settle against the old charter");
+            assert!(
+                hub.writer.record().sequenced.is_some(),
+                "the same charter keeps it"
+            );
+            let new_charter = hub.charter().await;
+            assert_ne!(
+                new_charter, old_charter,
+                "the reset founded another charter"
+            );
+            hub.writer
+                .settle_sequenced(Some(new_charter))
+                .expect("settle against the new charter");
+            assert_eq!(
+                hub.writer.record().sequenced,
+                None,
+                "a high-water of the cleared log never reads as a restore"
+            );
+            let stored = std::fs::read_to_string(files.record_path()).expect("read record");
+            assert!(
+                !stored.contains("\"sequenced\""),
+                "the cleared high-water is durable"
+            );
+
+            let mut outbox = Outbox::load(&files.outbox_path()).expect("load outbox");
+            let mut conn = acquire(&hub.pool).await;
+            let sequenced = authority::sequence_outbox(
+                &hub.engine,
+                &mut conn,
+                &hub.ctx,
+                &mut hub.writer.local(),
+                &mut outbox,
+                NOW_MS + 2,
+            )
+            .await
+            .expect("sequence outbox");
+            assert_eq!(sequenced, 0, "the old proposal does not replay");
+            assert!(
+                outbox
+                    .entries()
+                    .iter()
+                    .all(|entry| entry.rejection == Some(ProposalRejection::WrongSpace)),
+                "a proposal for the old charter is refused for good"
+            );
+            drop(conn);
+
+            hub.seal().await;
+            let mut conn = acquire(&hub.pool).await;
+            let published: i64 =
+                sqlx::query_scalar("SELECT COUNT(*) FROM sync_rows WHERE row_key = ?")
+                    .bind("note-before-reset")
+                    .fetch_one(&mut *conn)
+                    .await
+                    .expect("read rows");
+            assert_eq!(published, 1, "the successor publishes the note again");
+            drop(conn);
+            hub.close().await;
+        }
     });
 }
 

@@ -17,13 +17,17 @@ pub async fn reset_database(conn: &mut SqliteConnection) -> Result<(), String> {
         .map_err(|error| format!("reset sync state: {error}"))
 }
 
-/// Removes this installation's writer state of a vault: the writer keys its record names, the
-/// record, a carry-forward bundle, and the proposal outbox, which all belong to the cleared
-/// chain. The device key and the anchor keys stay, so the new charter names the same device and
+/// Removes this installation's writer state of a vault: the proposal outbox, a carry-forward
+/// bundle, the writer keys its record names, and the record, which all belong to the cleared
+/// chain. The outbox goes first so a crash part way never leaves proposals for the old charter
+/// beside a fresh record; the anchor refuses such proposals anyway because they name the old
+/// charter. The device key and the anchor keys stay, so the new charter names the same device and
 /// admin keys. Run it after [`reset_database`]: a crash between the two leaves a record whose
 /// writer the space lacks, which the next pass replaces with a successor. Key stores may block,
 /// so callers run this off the async runtime.
 pub fn remove_installation_state(files: &SyncFiles, keys: &dyn SyncKeyStore) -> Result<(), String> {
+    Outbox::remove(&files.outbox_path())?;
+    carry_forward::remove_bundle(files)?;
     let record_path = files.record_path();
     // An unreadable record names no key this installation can still find, and the reset
     // removes it either way.
@@ -36,8 +40,6 @@ pub fn remove_installation_state(files: &SyncFiles, keys: &dyn SyncKeyStore) -> 
             keys.remove(&files.vault_id, SyncKey::Writer(writer_id))?;
         }
     }
-    carry_forward::remove_bundle(files)?;
-    Outbox::remove(&files.outbox_path())?;
     match std::fs::remove_file(&record_path) {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),

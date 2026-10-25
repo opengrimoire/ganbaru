@@ -231,6 +231,11 @@ impl Outbox {
         }
     }
 
+    /// The entry of the proposal with `hash`, waiting or finally rejected.
+    pub fn get(&self, hash: &Digest32) -> Option<&OutboxEntry> {
+        self.position(hash).map(|index| &self.entries[index])
+    }
+
     fn position(&self, hash: &Digest32) -> Option<usize> {
         self.entries
             .iter()

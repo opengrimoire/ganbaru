@@ -6,13 +6,14 @@ use super::assets::{
     blocking, partition_held, write_staged,
 };
 use super::wire::{
-    asset_from_wire, asset_key, bytes_from_wire, bytes_to_wire, forked_to_wire, hash_to_wire,
-    ops_from_wire, ops_to_wire, proposed_to_wire, vector_from_wire, vector_to_wire,
+    asset_from_wire, asset_key, bytes_from_wire, bytes_to_wire, forked_to_wire, hash_from_wire,
+    hash_to_wire, ops_from_wire, ops_to_wire, proposed_to_wire, vector_from_wire, vector_to_wire,
     writer_from_wire,
 };
 use ganbaru_handoff::protocol::{
     ControlMessage, SYNC_ASSET_CHUNK_BYTES, SyncAsset, SyncAssetKey, SyncRefusal, SyncRefusalCode,
-    decode_sync_proposal, validate_coordinator_endpoints, validate_discovery_key,
+    decode_sync_proposal, encode_sync_proposal, validate_coordinator_endpoints,
+    validate_discovery_key,
 };
 use ganbaru_sync::assets::AssetRef;
 use ganbaru_sync::manifest::Manifest;
@@ -20,7 +21,7 @@ use ganbaru_sync::{
     Engine, EvidenceOutcome, SpaceContext, StoreOutcome, StoreRefusal, SyncError, local,
 };
 use ganbaru_sync_contracts::{
-    Envelope, ProposalRejection, Seq, SignedProposal, VersionVector, WriterId,
+    Digest32, Envelope, ProposalRejection, Seq, SignedProposal, VersionVector, WriterId,
 };
 use sqlx::SqlitePool;
 use std::collections::{BTreeSet, HashMap};
@@ -69,6 +70,20 @@ pub type HubProposals = Arc<
             SignedProposal,
         )
             -> Pin<Box<dyn Future<Output = Result<Result<u64, ProposalRejection>, String>> + Send>>
+        + Send
+        + Sync,
+>;
+
+/// Hands an anchor that is not the hub the proposals the hub holds for it. The first argument
+/// is the authenticated device id of the requester, the second the final rejections the anchor
+/// gave proposals of an earlier answer, named by proposal hash. The coordinator's service owns
+/// the outbox the proposals wait in and answers only the device the selected log names as
+/// anchor.
+pub type HubForwards = Arc<
+    dyn Fn(
+            String,
+            Vec<(Digest32, ProposalRejection)>,
+        ) -> Pin<Box<dyn Future<Output = Result<Vec<SignedProposal>, String>> + Send>>
         + Send
         + Sync,
 >;
@@ -176,6 +191,8 @@ pub struct SyncHub {
     stability: HubStability,
     /// Where proposals go; without it the hub answers that it is not the anchor.
     proposals: Option<HubProposals>,
+    /// Where an anchor that is not the hub collects proposals; without it the hub holds none.
+    forwards: Option<HubForwards>,
 }
 
 /// The received prefix of an upload, staged in a temporary file beside its final path.
@@ -196,12 +213,19 @@ impl SyncHub {
             contact: None,
             stability: HubStability::default(),
             proposals: None,
+            forwards: None,
         }
     }
 
     /// Sets where the hub hands the proposals linked devices send.
     pub fn with_proposals(mut self, proposals: HubProposals) -> Self {
         self.proposals = Some(proposals);
+        self
+    }
+
+    /// Sets where an anchor that is not the hub collects the proposals the hub holds for it.
+    pub fn with_forwards(mut self, forwards: HubForwards) -> Self {
+        self.forwards = Some(forwards);
         self
     }
 
@@ -354,6 +378,26 @@ impl SyncHub {
                     self.changes.send_modify(|generation| *generation += 1);
                 }
                 Ok(proposed_to_wire(outcome))
+            }
+            ControlMessage::SyncForward { settled, .. } => {
+                let settled = settled
+                    .iter()
+                    .map(|entry| {
+                        let rejection = ProposalRejection::from_u8(entry.rejection)
+                            .ok_or_else(|| "sync proposal rejection is invalid".to_string())?;
+                        Ok((hash_from_wire(&entry.proposal)?, rejection))
+                    })
+                    .collect::<Result<Vec<_>, String>>()
+                    .map_err(invalid)?;
+                let proposals = match self.forwards.as_ref() {
+                    Some(forward) => forward(device_id, settled)
+                        .await
+                        .map_err(HubError::unavailable)?,
+                    None => Vec::new(),
+                };
+                Ok(ControlMessage::SyncForwarded {
+                    proposals: proposals.iter().map(encode_sync_proposal).collect(),
+                })
             }
             ControlMessage::SyncForkEvidence {
                 writer, evidence, ..

@@ -2,20 +2,22 @@
 //! the admin-signed proposals it places in its outbox, and the sequencing of proposals through
 //! the engine.
 
-use super::outbox::Outbox;
+use super::outbox::{Outbox, is_final};
 use super::writer::{
     SelectedHead, SequencedCheck, SyncKey, SyncKeyStore, WriterRecord, ensure_device_key,
     sequenced_check,
 };
 use ganbaru_contacts::PersonKeyPair;
 use ganbaru_handoff::discovery::DiscoveryKey;
-use ganbaru_handoff::protocol::DeviceKind as HandoffDeviceKind;
-use ganbaru_sync::{Engine, LocalWriter, SpaceContext};
+use ganbaru_handoff::protocol::{
+    DeviceKind as HandoffDeviceKind, MAX_SYNC_FORWARDED_PROPOSALS, encode_sync_proposal,
+};
+use ganbaru_sync::{AuthorizationView, Engine, LocalWriter, SpaceContext};
 use ganbaru_sync_contracts::bounds::{DISCOVERY_KEY_BYTES, TLS_FINGERPRINT_BYTES};
 use ganbaru_sync_contracts::{
-    AdminKeyPair, Charter, DeviceKeyPair, DeviceKind, DevicePublicKey, DeviceRole, Digest32,
-    Enroll, Entry, Handover, Proposal, ProposalRejection, RecoverySeed, Remove, SignedCharter,
-    SignedProposal, SpaceId, VersionVector, sign_charter, sign_proposal,
+    AdminKeyPair, AdminPublicKey, Charter, DeviceKeyPair, DeviceKind, DevicePublicKey, DeviceRole,
+    Digest32, Enroll, Entry, Handover, Proposal, ProposalRejection, RecoverySeed, Remove, SetRole,
+    SignedCharter, SignedProposal, SpaceId, VersionVector, sign_charter, sign_proposal,
 };
 use sqlx::SqliteConnection;
 
@@ -273,6 +275,129 @@ pub async fn sequence_outbox(
     }
     outbox.prune(engine, conn, ctx).await?;
     Ok(sequenced)
+}
+
+/// Bytes of encoded proposals one forward answer carries at most, well inside a control frame.
+/// A single proposal larger than this still travels alone.
+const FORWARD_BUDGET_BYTES: usize = 768 * 1024;
+
+/// On a hub that is not the anchor, answers a proposal a linked device sent: the revision when
+/// the selected chain holds it, the final rejection the anchor gave it, or `NotAnchor` after
+/// keeping it in the outbox for the anchor to collect. A full outbox keeps nothing, and the
+/// sender keeps the proposal in its own outbox either way.
+pub async fn hold_for_anchor(
+    engine: &Engine,
+    conn: &mut SqliteConnection,
+    ctx: &SpaceContext,
+    outbox: &mut Outbox,
+    proposal: SignedProposal,
+) -> Result<Result<u64, ProposalRejection>, String> {
+    let hash = proposal.hash();
+    if let Some(revision) = engine
+        .proposal_revision(conn, ctx, &hash)
+        .await
+        .map_err(|error| format!("read sync proposal revision: {error}"))?
+    {
+        return Ok(Ok(revision));
+    }
+    if let Some(rejection) = outbox.get(&hash).and_then(|entry| entry.rejection) {
+        return Ok(Err(rejection));
+    }
+    if outbox.has_room() {
+        outbox.add(proposal)?;
+    }
+    Ok(Err(ProposalRejection::NotAnchor))
+}
+
+/// Answers a forward request of `requester`. Only the device the selected log names as anchor
+/// is answered: its final rejections are recorded, and the waiting proposals it should
+/// sequence next are returned, oldest first and bounded by count and bytes, after proposals
+/// the selected chain holds are dropped. Any other requester receives nothing and settles
+/// nothing.
+pub async fn collect_forwards(
+    engine: &Engine,
+    conn: &mut SqliteConnection,
+    ctx: &SpaceContext,
+    outbox: &mut Outbox,
+    requester: &str,
+    settled: &[(Digest32, ProposalRejection)],
+) -> Result<Vec<SignedProposal>, String> {
+    let anchors = engine
+        .authorization(conn, ctx)
+        .await
+        .map_err(|error| format!("read sync authorization: {error}"))?
+        .is_some_and(|view| view.anchor_device_id == requester);
+    if !anchors {
+        return Ok(Vec::new());
+    }
+    for (hash, rejection) in settled {
+        outbox.settle(hash, Err(*rejection))?;
+    }
+    outbox.prune(engine, conn, ctx).await?;
+    let mut bytes = 0;
+    let mut forwarded = Vec::new();
+    for proposal in outbox.pending() {
+        let size = encode_sync_proposal(&proposal).len();
+        if forwarded.len() == MAX_SYNC_FORWARDED_PROPOSALS
+            || (!forwarded.is_empty() && bytes + size > FORWARD_BUDGET_BYTES)
+        {
+            break;
+        }
+        bytes += size;
+        forwarded.push(proposal);
+    }
+    Ok(forwarded)
+}
+
+/// Sequences the proposals a hub forwarded through the anchor's writer and returns the final
+/// rejections, which the next forward reports so the hub stops holding them. Accepted
+/// proposals need no report: the hub finds them in the chain once it applies the entries.
+pub async fn sequence_forwarded(
+    engine: &Engine,
+    conn: &mut SqliteConnection,
+    ctx: &SpaceContext,
+    writer: &mut LocalWriter<'_>,
+    proposals: &[SignedProposal],
+    now_ms: u64,
+) -> Result<Vec<(Digest32, ProposalRejection)>, String> {
+    let mut rejected = Vec::new();
+    for proposal in proposals {
+        if let Err(rejection) = sequence(engine, conn, ctx, writer, proposal, now_ms).await?
+            && is_final(rejection)
+        {
+            rejected.push((proposal.hash(), rejection));
+        }
+    }
+    Ok(rejected)
+}
+
+/// The entry that makes an enrolled desktop an admin with `admin_key`, which lets it sign
+/// proposals and take the anchor.
+pub fn promote_entry(device_id: &str, admin_key: AdminPublicKey) -> Entry {
+    Entry::SetRole(SetRole::Device {
+        device_id: device_id.to_string(),
+        role: DeviceRole::Admin(admin_key),
+    })
+}
+
+/// The entry that names a new recovery admin key, as regenerating the recovery kit does.
+pub fn recovery_entry(recovery: &RecoverySeed) -> Result<Entry, String> {
+    Ok(Entry::SetRole(SetRole::Recovery {
+        recovery_admin_key: recovery
+            .recovery_admin_key()
+            .map_err(|error| format!("derive the recovery admin key: {error}"))?
+            .public_key(),
+    }))
+}
+
+/// Whether the selected log names `admin_key` as the role of the enrolled, unremoved device
+/// `device_id`. Only such a device may take the anchor.
+pub fn is_admin(view: &AuthorizationView, device_id: &str, admin_key: &AdminPublicKey) -> bool {
+    view.devices.iter().any(|device| {
+        device.device_id == device_id
+            && device.removed_revision.is_none()
+            && matches!(&device.role, DeviceRole::Admin(key) if key == admin_key)
+    })
 }
 
 /// Enrolls a device as a member through the anchor's writer and returns the revision.

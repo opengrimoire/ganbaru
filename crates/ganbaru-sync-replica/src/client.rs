@@ -9,13 +9,13 @@ use super::wire::{
 };
 use ganbaru_handoff::protocol::{
     ControlMessage, MAX_SYNC_HASHES, PROTOCOL_VERSION, SYNC_PAGE_BYTES, SyncProbe, SyncRefusal,
-    SyncRefusalCode, encode_sync_proposal,
+    SyncRefusalCode, SyncSettledProposal, decode_sync_proposal, encode_sync_proposal,
 };
 use ganbaru_sync::{
     Engine, EvidenceOutcome, EvidenceRefusal, SpaceContext, StoreOutcome, StoreRefusal,
 };
 use ganbaru_sync_contracts::{
-    Envelope, ProposalRejection, Seq, SignedProposal, VersionVector, WriterId,
+    Digest32, Envelope, ProposalRejection, Seq, SignedProposal, VersionVector, WriterId,
 };
 use sqlx::SqlitePool;
 use std::collections::{BTreeMap, BTreeSet};
@@ -676,6 +676,40 @@ pub async fn replay_outbox<T: SyncTransport>(
         outbox.settle(&proposal.hash(), outcome)?;
     }
     Ok(sequenced)
+}
+
+/// On an anchor that is not the hub, reports the final rejections it gave proposals of an
+/// earlier forward and collects the proposals the hub holds for it. The hub answers only the
+/// device the selected log names as anchor; anyone else receives none.
+pub async fn forward<T: SyncTransport>(
+    transport: &T,
+    ids: &PeerIds,
+    settled: &[(Digest32, ProposalRejection)],
+) -> Result<Vec<SignedProposal>, String> {
+    let request = ControlMessage::SyncForward {
+        protocol_version: PROTOCOL_VERSION,
+        vault_id: ids.vault_id.clone(),
+        device_id: ids.device_id.clone(),
+        settled: settled
+            .iter()
+            .map(|(hash, rejection)| SyncSettledProposal {
+                proposal: hash_to_wire(hash),
+                rejection: rejection.as_u8(),
+            })
+            .collect(),
+    };
+    let proposals = answer(
+        transport.request(request).await?,
+        "SyncForwarded",
+        |response| match response {
+            ControlMessage::SyncForwarded { proposals } => Some(proposals),
+            _ => None,
+        },
+    )?;
+    proposals
+        .iter()
+        .map(|proposal| decode_sync_proposal(proposal))
+        .collect()
 }
 
 /// Extracts the expected response, or reports the hub's error.

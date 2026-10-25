@@ -1,6 +1,8 @@
 //! The anchor's authority over a vault's space: the keys it founds the space with, the charter,
-//! and the enroll and remove proposals it sequences directly through the engine.
+//! the admin-signed proposals it places in its outbox, and the sequencing of proposals through
+//! the engine.
 
+use super::outbox::Outbox;
 use super::writer::{SyncKey, SyncKeyStore, ensure_device_key};
 use ganbaru_contacts::PersonKeyPair;
 use ganbaru_handoff::discovery::DiscoveryKey;
@@ -9,7 +11,8 @@ use ganbaru_sync::{Engine, LocalWriter, SpaceContext};
 use ganbaru_sync_contracts::bounds::{DISCOVERY_KEY_BYTES, TLS_FINGERPRINT_BYTES};
 use ganbaru_sync_contracts::{
     AdminKeyPair, Charter, DeviceKeyPair, DeviceKind, DevicePublicKey, DeviceRole, Enroll, Entry,
-    Proposal, ProposalRejection, RecoverySeed, Remove, SignedCharter, sign_charter, sign_proposal,
+    Proposal, ProposalRejection, RecoverySeed, Remove, SignedCharter, SignedProposal, SpaceId,
+    sign_charter, sign_proposal,
 };
 use sqlx::SqliteConnection;
 
@@ -129,6 +132,131 @@ pub fn device_kind(kind: HandoffDeviceKind) -> DeviceKind {
     }
 }
 
+/// The entry that enrolls a linked device as a member.
+pub fn enroll_entry(enrollment: Enrollment) -> Entry {
+    Entry::Enroll(Enroll {
+        device_id: enrollment.device_id,
+        device_key: enrollment.device_key,
+        tls_fingerprint: enrollment.tls_fingerprint,
+        label: enrollment.label,
+        device_kind: enrollment.device_kind,
+        role: DeviceRole::Member,
+    })
+}
+
+/// The entry that removes a device.
+pub fn remove_entry(device_id: &str) -> Entry {
+    Entry::Remove(Remove {
+        device_id: device_id.to_string(),
+    })
+}
+
+/// The membership changes a reconciliation of linked devices with the space wants.
+#[derive(Default)]
+pub struct Reconciliation {
+    /// Linked devices the space does not know.
+    pub enroll: Vec<Enrollment>,
+    /// Enrolled devices that are no longer linked.
+    pub remove: Vec<String>,
+}
+
+/// Places a proposal signed by `admin` in the outbox for each change of `changes` that no
+/// proposal exists for yet, waiting or finally rejected, matched by change kind and device id.
+/// A finally rejected change is never proposed again, so a removed device that links again
+/// stays removed. Returns how many proposals it added.
+pub fn queue_reconciliation(
+    outbox: &mut Outbox,
+    space: SpaceId,
+    admin: &AdminKeyPair,
+    changes: Reconciliation,
+    now_ms: u64,
+) -> Result<usize, String> {
+    let entries = changes.enroll.into_iter().map(enroll_entry).chain(
+        changes
+            .remove
+            .iter()
+            .map(|device_id| remove_entry(device_id)),
+    );
+    let mut added = 0;
+    for entry in entries {
+        if outbox.find(|queued| same_change(queued, &entry)).is_some() {
+            continue;
+        }
+        added += usize::from(outbox.add(propose(space, admin, entry, now_ms)?)?);
+    }
+    Ok(added)
+}
+
+/// Whether two entries make the same membership change to the same device.
+fn same_change(left: &Entry, right: &Entry) -> bool {
+    match (left, right) {
+        (Entry::Enroll(left), Entry::Enroll(right)) => left.device_id == right.device_id,
+        (Entry::Remove(left), Entry::Remove(right)) => left.device_id == right.device_id,
+        _ => false,
+    }
+}
+
+/// Signs `entry` as a proposal of the admin key for the space.
+pub fn propose(
+    space: SpaceId,
+    admin: &AdminKeyPair,
+    entry: Entry,
+    now_ms: u64,
+) -> Result<SignedProposal, String> {
+    sign_proposal(
+        &Proposal {
+            space,
+            author: admin.public_key(),
+            created_at_ms: millis(now_ms)?,
+            entry,
+        },
+        admin,
+    )
+    .map_err(|error| format!("sign sync proposal: {error}"))
+}
+
+/// Sequences an admin-signed proposal through the anchor's writer. A removal takes a fresh
+/// discovery key; every other entry ignores it. Returns the revision, or why the anchor
+/// rejected the proposal; a proposal already in the selected chain returns its revision.
+pub async fn sequence(
+    engine: &Engine,
+    conn: &mut SqliteConnection,
+    ctx: &SpaceContext,
+    writer: &mut LocalWriter<'_>,
+    proposal: &SignedProposal,
+    now_ms: u64,
+) -> Result<Result<u64, ProposalRejection>, String> {
+    let discovery_key = match proposal.proposal.entry {
+        Entry::Remove(_) => *DiscoveryKey::generate()?.as_bytes(),
+        _ => current_discovery_key(engine, conn, ctx).await?,
+    };
+    engine
+        .sequence_proposal(conn, ctx, proposal, discovery_key, writer, now_ms)
+        .await
+        .map_err(|error| format!("sequence sync proposal: {error}"))
+}
+
+/// Sequences every waiting proposal of the anchor's outbox in order, records final rejections,
+/// and drops the proposals the selected chain now holds. Returns how many proposals were
+/// sequenced or replayed.
+pub async fn sequence_outbox(
+    engine: &Engine,
+    conn: &mut SqliteConnection,
+    ctx: &SpaceContext,
+    writer: &mut LocalWriter<'_>,
+    outbox: &mut Outbox,
+    now_ms: u64,
+) -> Result<usize, String> {
+    let mut sequenced = 0;
+    for proposal in outbox.pending() {
+        let outcome = sequence(engine, conn, ctx, writer, &proposal, now_ms).await?;
+        sequenced += usize::from(outcome.is_ok());
+        outbox.settle(&proposal.hash(), outcome)?;
+    }
+    outbox.prune(engine, conn, ctx).await?;
+    Ok(sequenced)
+}
+
 /// Enrolls a device as a member through the anchor's writer and returns the revision.
 pub async fn enroll(
     engine: &Engine,
@@ -139,26 +267,8 @@ pub async fn enroll(
     enrollment: Enrollment,
     now_ms: u64,
 ) -> Result<u64, String> {
-    let entry = Entry::Enroll(Enroll {
-        device_id: enrollment.device_id,
-        device_key: enrollment.device_key,
-        tls_fingerprint: enrollment.tls_fingerprint,
-        label: enrollment.label,
-        device_kind: enrollment.device_kind,
-        role: DeviceRole::Member,
-    });
-    let discovery_key = current_discovery_key(engine, conn, ctx).await?;
-    sequence(
-        engine,
-        conn,
-        ctx,
-        admin,
-        writer,
-        entry,
-        discovery_key,
-        now_ms,
-    )
-    .await
+    let proposal = propose(ctx.space, admin, enroll_entry(enrollment), now_ms)?;
+    accepted(sequence(engine, conn, ctx, writer, &proposal, now_ms).await?)
 }
 
 /// Removes a device through the anchor's writer with a fresh discovery key and returns the
@@ -172,21 +282,12 @@ pub async fn remove(
     device_id: &str,
     now_ms: u64,
 ) -> Result<u64, String> {
-    let entry = Entry::Remove(Remove {
-        device_id: device_id.to_string(),
-    });
-    let discovery_key = *DiscoveryKey::generate()?.as_bytes();
-    sequence(
-        engine,
-        conn,
-        ctx,
-        admin,
-        writer,
-        entry,
-        discovery_key,
-        now_ms,
-    )
-    .await
+    let proposal = propose(ctx.space, admin, remove_entry(device_id), now_ms)?;
+    accepted(sequence(engine, conn, ctx, writer, &proposal, now_ms).await?)
+}
+
+fn accepted(outcome: Result<u64, ProposalRejection>) -> Result<u64, String> {
+    outcome.map_err(|rejection| format!("sync proposal rejected: {rejection}"))
 }
 
 /// The discovery key of the charter, which a non-removal entry ignores.
@@ -201,34 +302,6 @@ async fn current_discovery_key(
         .map_err(|error| format!("read sync charter: {error}"))?
         .map(|charter| charter.charter.discovery_key)
         .ok_or_else(|| "the sync space has no charter".to_string())
-}
-
-#[allow(clippy::too_many_arguments)]
-async fn sequence(
-    engine: &Engine,
-    conn: &mut SqliteConnection,
-    ctx: &SpaceContext,
-    admin: &AdminKeyPair,
-    writer: &mut LocalWriter<'_>,
-    entry: Entry,
-    discovery_key: [u8; DISCOVERY_KEY_BYTES],
-    now_ms: u64,
-) -> Result<u64, String> {
-    let proposal = sign_proposal(
-        &Proposal {
-            space: ctx.space,
-            author: admin.public_key(),
-            created_at_ms: millis(now_ms)?,
-            entry,
-        },
-        admin,
-    )
-    .map_err(|error| format!("sign sync proposal: {error}"))?;
-    engine
-        .sequence_proposal(conn, ctx, &proposal, discovery_key, writer, now_ms)
-        .await
-        .map_err(|error| format!("sequence sync proposal: {error}"))?
-        .map_err(|rejection: ProposalRejection| format!("sync proposal rejected: {rejection:?}"))
 }
 
 fn millis(now_ms: u64) -> Result<i64, String> {

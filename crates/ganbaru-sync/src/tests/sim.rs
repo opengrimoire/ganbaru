@@ -1731,6 +1731,7 @@ impl Sim {
             .map(|index| CountedDevice {
                 device_id: device_id(index),
                 linked_at_ms: Some(START_MS),
+                anchor: false,
             })
             .collect();
         let hub = &mut self.hub;

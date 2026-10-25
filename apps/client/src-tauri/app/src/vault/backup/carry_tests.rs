@@ -347,3 +347,103 @@ async fn replacement_carries_operations_and_device_state_through_failed_attempts
     assert!(!files.carry_path().exists());
     fs::remove_dir_all(parent).unwrap();
 }
+
+/// Authorization entries the anchor sequenced through its own writer and never sent travel
+/// with its other operations, so a replacement that predates an enrollment keeps it.
+#[tokio::test]
+async fn replacement_carries_the_anchors_unsent_authorization_entries() {
+    let parent = crate::vault::tests::unique_path("carry-authorization");
+    let source = parent.join("owner");
+    let staging = parent.join("staging");
+    fs::create_dir_all(&source).unwrap();
+    let vault_id = crate::vault::initialize_vault(&source).unwrap().vault_id;
+    let engine = Engine::vault();
+    let keys = MemoryKeys::default();
+    let owner_files = SyncFiles::new(parent.join("owner-sync"), &vault_id).unwrap();
+    let now = crate::sync::now_ms().unwrap();
+    let registry = DatabasePoolRegistry::default();
+
+    let pool = registry.connect_path(database_path(&source)).await.unwrap();
+    let mut conn = pool.acquire().await.unwrap();
+    let ctx = sync_context(&mut conn, &vault_id, now).await;
+    let anchor = anchor_keys();
+    let founding = Founding {
+        device_id: OWNER_DEVICE,
+        tls_fingerprint: [12; 32],
+        discovery_key: [13; 32],
+        person: &person(),
+        now_ms: now,
+    };
+    ensure_charter(&engine, &mut conn, &ctx, &anchor, &founding)
+        .await
+        .unwrap();
+    let mut owner = create_writer(
+        &owner_files,
+        &keys,
+        SuccessorPlan::default(),
+        &anchor.device,
+        OWNER_DEVICE,
+        now,
+    )
+    .unwrap();
+    execute(
+        &mut conn,
+        "INSERT INTO quick_notes (id, title, order_key) VALUES ('note-owner', 'Owner', 'a0')",
+    )
+    .await;
+    engine
+        .seal(&mut conn, &ctx, &mut owner.local(), now)
+        .await
+        .unwrap();
+    drop(conn);
+    registry.close_all().await.unwrap();
+    hand_off(&source, &staging, &parent, "older", &vault_id).await;
+
+    // The anchor enrolls a device after the snapshot and sends the entry nowhere.
+    let pool = registry.connect_path(database_path(&source)).await.unwrap();
+    let mut conn = pool.acquire().await.unwrap();
+    let enrollment = Enrollment {
+        device_id: RECEIVING_DEVICE.to_owned(),
+        device_key: receiver_device().public_key(),
+        tls_fingerprint: [14; 32],
+        label: "Receiver".to_owned(),
+        device_kind: DeviceKind::Desktop,
+    };
+    authority::enroll(
+        &engine,
+        &mut conn,
+        &ctx,
+        &anchor.admin,
+        &mut owner.local(),
+        enrollment,
+        now,
+    )
+    .await
+    .unwrap();
+    drop(conn);
+    registry.close_all().await.unwrap();
+
+    carry_into_replacement(&engine, &staging, &source, &owner_files, now)
+        .await
+        .unwrap();
+    replace_vault(&staging, &source, &parent.join("older-rollback")).unwrap();
+
+    let pool = registry.connect_path(database_path(&source)).await.unwrap();
+    let mut conn = pool.acquire().await.unwrap();
+    let view = engine
+        .authorization(&mut conn, &ctx)
+        .await
+        .unwrap()
+        .expect("the replacement keeps the charter");
+    assert_eq!(view.revision, 1);
+    assert!(
+        view.devices
+            .iter()
+            .any(|device| device.device_id == RECEIVING_DEVICE),
+        "the unsent enrollment survives the replacement"
+    );
+    drop(conn);
+    registry.close_all().await.unwrap();
+    assert!(!owner_files.carry_path().exists());
+    fs::remove_dir_all(parent).unwrap();
+}

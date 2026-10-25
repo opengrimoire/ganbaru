@@ -11,12 +11,13 @@ mod sync;
 pub use sync::{
     DISCOVERY_KEY_BYTES, MAX_COORDINATOR_ENDPOINTS, MAX_SYNC_ASSET_BYTES, MAX_SYNC_ASSETS,
     MAX_SYNC_EVIDENCE_OPS, MAX_SYNC_HASHES, SYNC_ASSET_CHUNK_BYTES, SYNC_PAGE_BYTES, SyncAsset,
-    SyncAssetKey, SyncProbe, SyncRefusal, SyncRefusalCode, SyncSeq, decode_sync_device_key,
-    encode_sync_device_key, validate_coordinator_endpoint, validate_coordinator_endpoints,
+    SyncAssetKey, SyncProbe, SyncRefusal, SyncRefusalCode, SyncSeq, decode_sync_charter,
+    decode_sync_device_key, decode_sync_proposal, encode_sync_charter, encode_sync_device_key,
+    encode_sync_proposal, validate_coordinator_endpoint, validate_coordinator_endpoints,
     validate_discovery_key,
 };
 
-pub const PROTOCOL_VERSION: u16 = 12;
+pub const PROTOCOL_VERSION: u16 = 13;
 pub const MAX_CONTROL_BYTES: usize = 1024 * 1024;
 /// Frame bound before the peer presents a linked certificate. Enrollment (with its 8 KiB
 /// certificate) and contact requests fit well inside it.
@@ -210,11 +211,19 @@ pub enum ControlMessage {
         /// Device key that certifies the device's sync writers, which the anchor enrolls.
         sync_device_key: String,
     },
+    /// The coordinator linked the device. `charter` is the vault's space charter and
+    /// `person_key` the person key that signed it; both are present once the coordinator founded
+    /// the space, and both are absent when founding failed and the device learns the charter from
+    /// the vault bundle instead.
     Enrolled {
         protocol_version: u16,
         coordinator_device_id: String,
         #[serde(default)]
         coordinator_device_label: Option<String>,
+        #[serde(default)]
+        charter: Option<String>,
+        #[serde(default)]
+        person_key: Option<String>,
     },
     RequestBundle {
         protocol_version: u16,
@@ -450,6 +459,19 @@ pub enum ControlMessage {
     SyncAssetReceived {
         received: u32,
     },
+    /// Authenticated: an admin-signed proposal for the anchor to sequence. Only the anchor
+    /// sequences; any other hub answers with the `not_anchor` rejection.
+    SyncPropose {
+        protocol_version: u16,
+        vault_id: String,
+        device_id: String,
+        proposal: String,
+    },
+    /// The revision that holds the proposal, or the wire value of the rejection.
+    SyncProposed {
+        revision: Option<u64>,
+        rejection: Option<u8>,
+    },
     Error {
         code: String,
         message: String,
@@ -506,6 +528,11 @@ impl ControlMessage {
                 vault_id,
                 device_id,
                 ..
+            }
+            | Self::SyncPropose {
+                vault_id,
+                device_id,
+                ..
             } => Some((vault_id, device_id)),
             _ => None,
         }
@@ -539,11 +566,27 @@ impl ControlMessage {
                 protocol_version,
                 coordinator_device_id,
                 coordinator_device_label,
+                charter,
+                person_key,
             } => {
                 validate_protocol(*protocol_version)?;
                 validate_identifier("coordinator device id", coordinator_device_id)?;
                 if let Some(label) = coordinator_device_label {
                     validate_device_label("coordinator device label", label)?;
+                }
+                match (charter, person_key) {
+                    (Some(charter), Some(person_key)) => {
+                        let (charter, _) = decode_sync_charter(charter, person_key)?;
+                        if charter.charter.anchor_device_id != *coordinator_device_id {
+                            return Err("the sync charter names a different anchor".to_string());
+                        }
+                    }
+                    (None, None) => {}
+                    _ => {
+                        return Err(
+                            "the sync charter and its person key travel together".to_string()
+                        );
+                    }
                 }
             }
             Self::RequestBundle {
@@ -862,6 +905,19 @@ impl ControlMessage {
                 sync::validate_asset_chunk(asset, *offset, data)?;
             }
             Self::SyncAssetReceived { received } => sync::validate_asset_received(*received)?,
+            Self::SyncPropose {
+                protocol_version,
+                vault_id,
+                device_id,
+                proposal,
+            } => {
+                validate_sync_peer(*protocol_version, vault_id, device_id)?;
+                decode_sync_proposal(proposal)?;
+            }
+            Self::SyncProposed {
+                revision,
+                rejection,
+            } => sync::validate_proposed(*revision, *rejection)?,
             Self::Error { code, message, .. } => {
                 validate_identifier("error code", code)?;
                 if message.is_empty() || message.len() > 1024 {
@@ -1373,6 +1429,8 @@ mod tests {
             protocol_version: PROTOCOL_VERSION,
             coordinator_device_id: "device-desktop".to_string(),
             coordinator_device_label: Some(label.to_string()),
+            charter: None,
+            person_key: None,
         };
         for label in ["phone\u{0007}", "a\u{202E}b", "a\u{200F}b", ""] {
             assert!(enroll(label).validate().is_err(), "{label:?}");
@@ -1970,6 +2028,121 @@ mod tests {
         }
         assert!(pair(vec![op(1)]).validate().is_err());
         assert!(pair(vec![op(1), op(2), op(3)]).validate().is_err());
+    }
+
+    fn signed_charter(
+        person: &ganbaru_contacts::PersonKeyPair,
+        anchor_device_id: &str,
+    ) -> ganbaru_sync_contracts::SignedCharter {
+        let admin = ganbaru_sync_contracts::AdminKeyPair::from_seed(&[5; 32]).expect("admin");
+        ganbaru_sync_contracts::sign_charter(
+            &ganbaru_sync_contracts::Charter {
+                space: ganbaru_sync_contracts::SpaceId::personal("vault-1"),
+                anchor_device_id: anchor_device_id.to_string(),
+                anchor_device_key: test_device_key(),
+                anchor_tls_fingerprint: [6; 32],
+                anchor_admin_key: admin.public_key(),
+                recovery_admin_key: admin.public_key(),
+                discovery_key: [7; 32],
+                created_at_ms: 1,
+            },
+            person,
+        )
+        .expect("sign charter")
+    }
+
+    #[test]
+    fn pairing_response_carries_a_charter_its_person_key_verifies() {
+        let person = ganbaru_contacts::PersonKeyPair::from_seed(&[8; 32]).expect("person");
+        let other = ganbaru_contacts::PersonKeyPair::from_seed(&[9; 32]).expect("other");
+        let enrolled =
+            |charter: Option<String>, person_key: Option<String>| ControlMessage::Enrolled {
+                protocol_version: PROTOCOL_VERSION,
+                coordinator_device_id: "device-desktop".to_string(),
+                coordinator_device_label: None,
+                charter,
+                person_key,
+            };
+        let charter = encode_sync_charter(&signed_charter(&person, "device-desktop"));
+        let person_key = person.public_key().to_text();
+        let valid = enrolled(Some(charter.clone()), Some(person_key.clone()));
+        assert_eq!(frame_round_trip(&valid), Ok(valid.clone()));
+        assert_eq!(enrolled(None, None).validate(), Ok(()));
+
+        let foreign_anchor = encode_sync_charter(&signed_charter(&person, "device-other"));
+        let mut tampered =
+            base64::Engine::decode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, &charter)
+                .expect("charter bytes");
+        let last = tampered.len() - 1;
+        tampered[last] ^= 1;
+        let tampered =
+            base64::Engine::encode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, tampered);
+        for invalid in [
+            enrolled(Some(charter.clone()), None),
+            enrolled(None, Some(person_key.clone())),
+            enrolled(Some(charter.clone()), Some(other.public_key().to_text())),
+            enrolled(Some(foreign_anchor), Some(person_key.clone())),
+            enrolled(Some(tampered), Some(person_key.clone())),
+            enrolled(Some("A".repeat(4096)), Some(person_key.clone())),
+        ] {
+            assert!(invalid.validate().is_err(), "{invalid:?}");
+        }
+    }
+
+    #[test]
+    fn proposals_round_trip_verified_and_answers_name_one_outcome() {
+        let admin = ganbaru_sync_contracts::AdminKeyPair::from_seed(&[5; 32]).expect("admin");
+        let proposal = ganbaru_sync_contracts::sign_proposal(
+            &ganbaru_sync_contracts::Proposal {
+                space: ganbaru_sync_contracts::SpaceId::personal("vault-1"),
+                author: admin.public_key(),
+                created_at_ms: 1,
+                entry: ganbaru_sync_contracts::Entry::Remove(ganbaru_sync_contracts::Remove {
+                    device_id: "device-phone".to_string(),
+                }),
+            },
+            &admin,
+        )
+        .expect("sign proposal");
+        let propose = |proposal: String| ControlMessage::SyncPropose {
+            protocol_version: PROTOCOL_VERSION,
+            vault_id: "vault-1".to_string(),
+            device_id: "device-desktop".to_string(),
+            proposal,
+        };
+        let text = encode_sync_proposal(&proposal);
+        let message = propose(text.clone());
+        assert_eq!(frame_round_trip(&message), Ok(message.clone()));
+        assert_eq!(message.sync_peer(), Some(("vault-1", "device-desktop")));
+        assert_eq!(decode_sync_proposal(&text), Ok(proposal));
+        let mut forged =
+            base64::Engine::decode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, &text)
+                .expect("proposal bytes");
+        let last = forged.len() - 1;
+        forged[last] ^= 1;
+        let forged =
+            base64::Engine::encode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, forged);
+        for invalid in [String::new(), forged, "not base64!".to_string()] {
+            assert!(propose(invalid.clone()).validate().is_err(), "{invalid:?}");
+        }
+
+        let answer = |revision, rejection| ControlMessage::SyncProposed {
+            revision,
+            rejection,
+        };
+        let not_anchor = ganbaru_sync_contracts::ProposalRejection::NotAnchor.as_u8();
+        for valid in [answer(Some(3), None), answer(None, Some(not_anchor))] {
+            assert_eq!(frame_round_trip(&valid), Ok(valid.clone()));
+        }
+        for invalid in [
+            answer(None, None),
+            answer(Some(3), Some(not_anchor)),
+            answer(Some(0), None),
+            answer(Some(u64::MAX), None),
+            answer(None, Some(u8::MAX)),
+        ] {
+            assert!(invalid.validate().is_err(), "{invalid:?}");
+        }
     }
 
     #[test]

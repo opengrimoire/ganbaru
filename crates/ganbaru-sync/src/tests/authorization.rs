@@ -1142,3 +1142,32 @@ fn the_anchor_rejects_entries_its_rules_forbid() {
         assert_devices_replay_the_selected_chain(&mut hub).await;
     });
 }
+
+#[test]
+fn a_proposal_has_a_revision_once_the_selected_chain_holds_it() {
+    block_on(async {
+        let mut hub = Replica::anchor(0, 62).await;
+        let mut member = Replica::new(1, 62).await;
+        let signed = proposal(
+            hub.ctx.space,
+            &anchor_admin(&person()),
+            hub.now_ms,
+            enroll_entry(&person(), 24, DeviceRole::Member),
+        );
+        let hash = signed.hash();
+        let revision_of = async |replica: &mut Replica| {
+            replica
+                .engine
+                .proposal_revision(&mut replica.conn, &replica.ctx, &hash)
+                .await
+                .unwrap()
+        };
+        assert_eq!(revision_of(&mut hub).await, None);
+        let revision = hub.sequence_signed(&signed).await.unwrap().unwrap();
+        assert_eq!(revision_of(&mut hub).await, Some(revision));
+        assert_eq!(revision_of(&mut member).await, None);
+        member.pull(&mut hub).await;
+        member.apply_all().await.unwrap();
+        assert_eq!(revision_of(&mut member).await, Some(revision));
+    });
+}

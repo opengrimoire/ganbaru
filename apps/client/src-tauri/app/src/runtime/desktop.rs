@@ -897,6 +897,7 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
             crate::sync::commands::sync_recovery_list,
             crate::sync::commands::sync_recovery_restore,
             crate::sync::commands::sync_recovery_discard,
+            crate::sync::commands::sync_reset_state,
             contacts::contacts_list,
             contacts::contacts_local_card,
             contacts::contacts_regenerate_card,

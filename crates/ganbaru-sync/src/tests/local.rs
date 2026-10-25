@@ -543,3 +543,172 @@ fn read_only_uris_keep_reserved_characters_in_the_file_name() {
     let uri = local::read_only_uri(std::path::Path::new("/data/a b%c?d#e/\u{fc}.sqlite")).unwrap();
     assert_eq!(uri, "file:/data/a%20b%25c%3Fd%23e/%C3%BC.sqlite?mode=ro");
 }
+
+#[test]
+fn reset_sync_state_clears_engine_tables_and_the_next_open_republishes_every_row() {
+    block_on(async {
+        let mut replica = Replica::anchor(0, 31).await;
+        add_note(&mut replica, "note-1", "One").await;
+        add_note(&mut replica, "note-2", "Two").await;
+        replica.seal().await.unwrap();
+        assert!(replica.count("SELECT COUNT(*) FROM sync_ops").await > 0);
+
+        local::reset_sync_state(&mut replica.conn).await.unwrap();
+
+        for table in crate::manifest::SYNC_TABLES
+            .iter()
+            .chain(crate::manifest::SYNC_LOCAL_TABLES)
+        {
+            let rows = replica
+                .count(&format!("SELECT COUNT(*) FROM \"{table}\""))
+                .await;
+            let expected = i64::from(*table == "sync_apply_state");
+            assert_eq!(rows, expected, "{table} after the reset");
+        }
+        assert_eq!(
+            replica
+                .count("SELECT applying FROM sync_apply_state WHERE singleton = 1")
+                .await,
+            0
+        );
+        assert_eq!(replica.count("SELECT COUNT(*) FROM quick_notes").await, 2);
+
+        let ctx = replica.ctx.clone();
+        let space = replica
+            .engine
+            .init_space(&mut replica.conn, VAULT_ID, replica.now_ms)
+            .await
+            .unwrap();
+        assert_eq!(space, ctx.space);
+        assert!(
+            replica
+                .engine
+                .charter(&mut replica.conn, &ctx)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        replica
+            .engine
+            .refuse_legacy_state(&mut replica.conn, &ctx)
+            .await
+            .unwrap();
+        let seeded = replica
+            .engine
+            .seed_captures(&mut replica.conn, replica.now_ms)
+            .await
+            .unwrap();
+        assert!(seeded.contains(&"quick_notes"), "{seeded:?}");
+        assert!(has_pending_captures(&mut replica.conn).await.unwrap());
+
+        let charter = super::replica::test_charter(&replica.person, ctx.space);
+        replica
+            .engine
+            .install_charter(&mut replica.conn, &ctx, &charter)
+            .await
+            .unwrap();
+        replica.rotate();
+        replica.seal().await.unwrap();
+        assert!(!has_pending_captures(&mut replica.conn).await.unwrap());
+        assert_eq!(
+            replica
+                .count(
+                    "SELECT COUNT(DISTINCT row_key) FROM sync_rows
+                     WHERE row_key IN ('note-1', 'note-2')"
+                )
+                .await,
+            2,
+            "every current note is published again"
+        );
+    });
+}
+
+/// The app rotates once when sealing or acknowledging finds its writer inactive. Captures are
+/// not bound to a writer and a refused seal rolls back, so the successor seals every capture
+/// taken under the inactive writer and none is orphaned.
+#[test]
+fn rotating_after_an_inactive_writer_seals_every_pending_capture() {
+    block_on(async {
+        for state in ["retired", "revoked", "forked"] {
+            let mut replica = Replica::anchor(0, 31).await;
+            add_note(&mut replica, "note-1", "One").await;
+            replica.seal().await.unwrap();
+            add_note(&mut replica, "note-2", "Two").await;
+            replica
+                .exec("UPDATE quick_notes SET title = 'Edited' WHERE id = 'note-1'")
+                .await;
+            let old = replica.writer();
+            let hex: String = old.as_bytes().iter().map(|b| format!("{b:02x}")).collect();
+            replica
+                .exec(&format!(
+                    "UPDATE sync_writers SET state = '{state}', cutoff_seq = 2
+                     WHERE writer_id = x'{hex}'"
+                ))
+                .await;
+
+            let acknowledged = replica
+                .engine
+                .acknowledge(
+                    &mut replica.conn,
+                    &replica.ctx,
+                    &mut replica.identity.local(),
+                    replica.now_ms,
+                )
+                .await;
+            assert!(
+                matches!(acknowledged, Err(crate::SyncError::WriterInactive(id)) if id == old),
+                "{state}: {acknowledged:?}"
+            );
+            assert!(
+                matches!(
+                    replica.seal().await,
+                    Err(crate::SyncError::WriterInactive(_))
+                ),
+                "{state}"
+            );
+            assert!(
+                has_pending_captures(&mut replica.conn).await.unwrap(),
+                "{state}: the refused seal keeps its captures"
+            );
+
+            replica.rotate();
+            replica
+                .engine
+                .acknowledge(
+                    &mut replica.conn,
+                    &replica.ctx,
+                    &mut replica.identity.local(),
+                    replica.now_ms,
+                )
+                .await
+                .unwrap();
+            replica.seal().await.unwrap();
+            assert!(
+                !has_pending_captures(&mut replica.conn).await.unwrap(),
+                "{state}"
+            );
+            let successor = replica.writer();
+            let successor_hex: String = successor
+                .as_bytes()
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect();
+            assert!(
+                replica
+                    .count(&format!(
+                        "SELECT COUNT(*) FROM sync_ops WHERE writer_id = x'{successor_hex}'"
+                    ))
+                    .await
+                    > 1,
+                "{state}: the successor sealed the captures after its genesis"
+            );
+            assert_eq!(
+                replica
+                    .count("SELECT COUNT(*) FROM sync_rows WHERE row_key = 'note-2'")
+                    .await,
+                1,
+                "{state}"
+            );
+        }
+    });
+}

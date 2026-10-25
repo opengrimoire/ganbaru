@@ -200,6 +200,80 @@ pub fn decode_sync_device_key(
         .map_err(|_| "sync device key is invalid".to_string())
 }
 
+/// Base64url length of the largest space charter.
+const MAX_CHARTER_TEXT_BYTES: usize =
+    (ganbaru_sync_contracts::bounds::MAX_CHARTER_BYTES * 4).div_ceil(3);
+
+/// The unpadded base64url form of a space charter, as the pairing response carries it.
+pub fn encode_sync_charter(charter: &ganbaru_sync_contracts::SignedCharter) -> String {
+    base64::Engine::encode(
+        &base64::engine::general_purpose::URL_SAFE_NO_PAD,
+        charter.encode(),
+    )
+}
+
+/// Decodes a space charter and the person key it names, and verifies the charter's signature
+/// with that key.
+pub fn decode_sync_charter(
+    charter: &str,
+    person_key: &str,
+) -> Result<
+    (
+        ganbaru_sync_contracts::SignedCharter,
+        ganbaru_contacts::PersonPublicKey,
+    ),
+    String,
+> {
+    let person_key = ganbaru_contacts::PersonPublicKey::from_text(person_key)
+        .map_err(|_| "sync person key is invalid".to_string())?;
+    if charter.is_empty() || charter.len() > MAX_CHARTER_TEXT_BYTES || !is_base64url(charter) {
+        return Err("sync charter is invalid".to_string());
+    }
+    let bytes = base64::Engine::decode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, charter)
+        .map_err(|_| "sync charter is invalid".to_string())?;
+    let charter = ganbaru_sync_contracts::SignedCharter::decode(&bytes)
+        .map_err(|error| format!("sync charter is invalid: {error}"))?;
+    charter
+        .verify(&person_key)
+        .map_err(|_| "sync charter signature is invalid".to_string())?;
+    Ok((charter, person_key))
+}
+
+/// The unpadded base64url form of an admin-signed proposal.
+pub fn encode_sync_proposal(proposal: &ganbaru_sync_contracts::SignedProposal) -> String {
+    base64::Engine::encode(
+        &base64::engine::general_purpose::URL_SAFE_NO_PAD,
+        proposal.encode(),
+    )
+}
+
+/// Decodes an admin-signed proposal and verifies its signature.
+pub fn decode_sync_proposal(text: &str) -> Result<ganbaru_sync_contracts::SignedProposal, String> {
+    if text.is_empty() || text.len() > MAX_OPERATION_TEXT_BYTES || !is_base64url(text) {
+        return Err("sync proposal is invalid".to_string());
+    }
+    let bytes = base64::Engine::decode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, text)
+        .map_err(|_| "sync proposal is invalid".to_string())?;
+    ganbaru_sync_contracts::SignedProposal::decode(&bytes)
+        .map_err(|error| format!("sync proposal is invalid: {error}"))
+}
+
+/// Checks the anchor's answer to a proposal: exactly one of a revision or a known rejection.
+pub(super) fn validate_proposed(
+    revision: Option<u64>,
+    rejection: Option<u8>,
+) -> Result<(), String> {
+    match (revision, rejection) {
+        (Some(revision), None) if i64::try_from(revision).is_ok() && revision > 0 => Ok(()),
+        (None, Some(code))
+            if ganbaru_sync_contracts::ProposalRejection::from_u8(code).is_some() =>
+        {
+            Ok(())
+        }
+        _ => Err("sync proposal answer is invalid".to_string()),
+    }
+}
+
 pub(super) fn validate_writer(writer: &str) -> Result<(), String> {
     if writer.len() != WRITER_TEXT_LENGTH || !is_lower_hex(writer) {
         return Err("sync writer id is invalid".to_string());

@@ -3,7 +3,9 @@
 use ganbaru_sync_contracts::VersionVector;
 
 use super::block_on;
-use super::replica::{Replica, device_id, person, template_vector};
+use super::replica::{
+    ANCHOR_DEVICE_ID, ENROLLED_DEVICES, Replica, START_MS, device_id, person, template_vector,
+};
 use crate::stability::{CountedDevice, DORMANCY_MS, DeviceStanding, Stability};
 
 async fn acknowledge(replica: &mut Replica) {
@@ -28,6 +30,7 @@ fn counted(index: usize, since_ms: u64) -> CountedDevice {
     CountedDevice {
         device_id: device_id(index),
         linked_at_ms: Some(since_ms),
+        anchor: false,
     }
 }
 
@@ -148,6 +151,7 @@ fn a_device_without_a_link_time_needs_a_new_link_and_never_holds_stability() {
         let unlinked = CountedDevice {
             device_id: super::replica::device_id(5),
             linked_at_ms: None,
+            anchor: false,
         };
         let result = stability(
             &mut hub,
@@ -200,5 +204,83 @@ fn stability_never_counts_inactive_writers_or_unknown_contexts() {
         let genesis: VersionVector = [(a.writer(), 1)].into_iter().collect();
         assert_eq!(result.devices[0].acknowledged, genesis);
         assert_eq!(result.stable, genesis);
+    });
+}
+
+#[test]
+fn the_counted_set_is_every_enrolled_device_not_removed_besides_the_local_one() {
+    block_on(async {
+        let mut hub = Replica::anchor(0, 31).await;
+        let counted = hub
+            .engine
+            .counted_devices(&mut hub.conn, &hub.ctx, ANCHOR_DEVICE_ID)
+            .await
+            .unwrap();
+        let mut expected: Vec<String> = (0..ENROLLED_DEVICES).map(device_id).collect();
+        expected.sort();
+        let ids: Vec<String> = counted
+            .iter()
+            .map(|device| device.device_id.clone())
+            .collect();
+        assert_eq!(ids, expected, "the anchor leaves itself out");
+        assert!(counted.iter().all(|device| !device.anchor));
+        assert!(
+            counted
+                .iter()
+                .all(|device| device.linked_at_ms == Some(START_MS)),
+            "enrollment time is when the replica stored the enrolling entry"
+        );
+
+        hub.now_ms += 1_000;
+        hub.remove(&device_id(1)).await.unwrap();
+        let counted = hub
+            .engine
+            .counted_devices(&mut hub.conn, &hub.ctx, ANCHOR_DEVICE_ID)
+            .await
+            .unwrap();
+        assert_eq!(counted.len(), ENROLLED_DEVICES - 1);
+        assert!(
+            counted
+                .iter()
+                .all(|device| device.device_id != device_id(1))
+        );
+    });
+}
+
+#[test]
+fn a_member_counts_the_anchor_from_the_charter_and_never_finds_it_dormant() {
+    block_on(async {
+        let mut member = Replica::new(1, 32).await;
+        let counted = member
+            .engine
+            .counted_devices(&mut member.conn, &member.ctx, &device_id(1))
+            .await
+            .unwrap();
+        let anchor = counted
+            .iter()
+            .find(|device| device.device_id == ANCHOR_DEVICE_ID)
+            .expect("the anchor is counted");
+        assert!(anchor.anchor);
+        assert_eq!(
+            anchor.linked_at_ms,
+            Some(START_MS),
+            "the charter enrolls it"
+        );
+        assert!(
+            counted
+                .iter()
+                .all(|device| device.device_id != device_id(1))
+        );
+
+        member.now_ms = START_MS + DORMANCY_MS + 1;
+        let result = stability(&mut member, &counted).await;
+        for device in &result.devices {
+            let expected = if device.device_id == ANCHOR_DEVICE_ID {
+                DeviceStanding::Counted
+            } else {
+                DeviceStanding::Dormant
+            };
+            assert_eq!(device.standing, expected, "{}", device.device_id);
+        }
     });
 }

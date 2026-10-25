@@ -12,7 +12,7 @@ use crate::acknowledge::ACKNOWLEDGEMENT_INTERVAL_MS;
 use crate::domains::themes::PALETTE_SIZE;
 use crate::manifest::vault::music::PLAYLISTS_TABLE;
 use crate::manifest::vault::quick_notes::NOTES_TABLE;
-use crate::{LateChange, LateKind};
+use crate::{HoldReason, LateChange, LateKind, StoreOutcome};
 
 const CREATED_AT: &str = "2027-01-01T00:00:00.000Z";
 const EDITED_AT: &str = "2027-01-02T00:00:00.000Z";
@@ -331,6 +331,58 @@ fn an_honest_edit_of_a_late_row_keeps_its_effects_and_a_restore_brings_the_row_b
             assert_eq!(replica.domain_dump().await, settled);
             replica.check_invariants().await;
         }
+    });
+}
+
+#[test]
+fn late_operations_stored_after_their_removal_list_their_rows_until_the_next_engine_write() {
+    block_on(async {
+        let (mut anchor, mut removed, mut honest) = trio(209).await;
+        edit(&mut honest, &note("note-kept", "Draft", 0)).await;
+        spread(&mut anchor, &mut honest).await;
+        deliver(&mut removed, &mut honest).await;
+        let device = removed.device_id.clone();
+        anchor.remove(&device).await.unwrap();
+        deliver(&mut honest, &mut anchor).await;
+        let before = honest.domain_dump().await;
+
+        // The removal applied before the late operations arrive, so storing them excludes them
+        // and lists the rows they write for the next engine write.
+        edit(
+            &mut removed,
+            &format!(
+                "UPDATE quick_notes SET title = 'Late' WHERE id = 'note-kept';{}",
+                note("note-late", "Late", 1)
+            ),
+        )
+        .await;
+        let known = honest.stored_vector().await;
+        let late = removed.ops_since(&known).await;
+        assert!(!late.is_empty());
+        let outcomes = honest.receive(&late).await;
+        assert!(outcomes.iter().all(|outcome| *outcome
+            == StoreOutcome::Stored {
+                held: Some(HoldReason::Invalid)
+            }));
+        let listed = "SELECT count(*) FROM sync_stale_rows
+                      WHERE row_key IN ('note-kept', 'note-late')";
+        assert_eq!(honest.count(listed).await, 2);
+        assert_eq!(honest.domain_dump().await, before);
+
+        honest.apply_all().await.unwrap();
+        assert_eq!(
+            honest.count("SELECT count(*) FROM sync_stale_rows").await,
+            0
+        );
+        assert_eq!(honest.domain_dump().await, before, "late rows stay hidden");
+        assert_eq!(
+            late_rows(&mut honest).await,
+            vec![
+                ("note-kept".to_owned(), LateKind::Values),
+                ("note-late".to_owned(), LateKind::Created),
+            ]
+        );
+        honest.check_invariants().await;
     });
 }
 

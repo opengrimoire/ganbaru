@@ -60,6 +60,11 @@ fn hot_domain_queries_use_expected_indexes() {
                 "SELECT seq FROM sync_ops WHERE space_id = zeroblob(16) AND writer_id = zeroblob(16) AND seq < 300 AND group_continues = 0 ORDER BY seq DESC LIMIT 1",
                 "idx_sync_ops_chain_ends",
             ),
+            (
+                "sync latest storage order",
+                "SELECT max(stored_order) FROM sync_ops WHERE space_id = zeroblob(16)",
+                "idx_sync_ops_stored_order",
+            ),
         ];
         for (name, sql, expected) in cases {
             let plan = query_plan(&pool, sql).await;

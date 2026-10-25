@@ -21,6 +21,7 @@ use tokio::sync::Notify;
 mod assets;
 mod backup;
 mod exchange;
+mod outbox;
 
 fn block_on<F: std::future::Future>(future: F) -> F::Output {
     tokio::runtime::Builder::new_current_thread()
@@ -188,6 +189,7 @@ fn record(last_committed_seq: u64, reserved_through: u64) -> WriterRecord {
         last_committed_seq,
         paused: false,
         retired_keys: Vec::new(),
+        sequenced: None,
     }
 }
 

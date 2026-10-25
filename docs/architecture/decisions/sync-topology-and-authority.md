@@ -1,6 +1,6 @@
 # Sync topology and authority decisions
 
-**Status: Reference.** Recorded 2026-10-09, after Quick notes replication was implemented in source through a single coordinator hub. This record sets the planned direction for removing that single point; none of it is implemented yet. The engine itself is explained by [Sync engine decisions](sync-engine.md), the contract by [Device linking and synchronization](../../data/sync.md), and people, spaces, and roles by [Contacts and invitations](../../features/collaboration/README.md).
+**Status: Reference.** Recorded 2026-10-09, after Quick notes replication was implemented in source through a single coordinator hub. This record sets the planned direction for removing that single point. The anchored authorization log, device and admin keys, and anchor sequencing on the coordinator are implemented in source; anchor handover, recovery kits, and LAN peer exchange are not. The engine itself is explained by [Sync engine decisions](sync-engine.md), the contract by [Device linking and synchronization](../../data/sync.md), and people, spaces, and roles by [Contacts and invitations](../../features/collaboration/README.md).
 
 ## Constraints
 

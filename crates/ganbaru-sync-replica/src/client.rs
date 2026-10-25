@@ -1,19 +1,22 @@
 //! The device side of sync: one exchange pushes what the hub lacks, pulls what this replica
 //! lacks, and reports a fork of this installation's writers so the service can re-seal.
 
+use super::outbox::Outbox;
 use super::wire::BOOTSTRAP_REQUIRED;
 use super::wire::{
-    forked_from_wire, hash_from_wire, hash_to_wire, ops_from_wire, ops_to_wire, vector_from_wire,
-    vector_to_wire, writer_from_wire,
+    forked_from_wire, hash_from_wire, hash_to_wire, ops_from_wire, ops_to_wire, proposed_from_wire,
+    vector_from_wire, vector_to_wire, writer_from_wire,
 };
 use ganbaru_handoff::protocol::{
     ControlMessage, MAX_SYNC_HASHES, PROTOCOL_VERSION, SYNC_PAGE_BYTES, SyncProbe, SyncRefusal,
-    SyncRefusalCode,
+    SyncRefusalCode, encode_sync_proposal,
 };
 use ganbaru_sync::{
     Engine, EvidenceOutcome, EvidenceRefusal, SpaceContext, StoreOutcome, StoreRefusal,
 };
-use ganbaru_sync_contracts::{Envelope, Seq, VersionVector, WriterId};
+use ganbaru_sync_contracts::{
+    Envelope, ProposalRejection, Seq, SignedProposal, VersionVector, WriterId,
+};
 use sqlx::SqlitePool;
 use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
@@ -600,6 +603,51 @@ pub async fn wait<T: SyncTransport>(
         },
     )?;
     vector_from_wire(&stored)
+}
+
+/// Sends an admin-signed proposal to the hub and returns the revision that holds it, or why the
+/// anchor rejected it. A hub that is not the anchor answers [`ProposalRejection::NotAnchor`].
+pub async fn propose<T: SyncTransport>(
+    transport: &T,
+    ids: &PeerIds,
+    proposal: &SignedProposal,
+) -> Result<Result<u64, ProposalRejection>, String> {
+    let request = ControlMessage::SyncPropose {
+        protocol_version: PROTOCOL_VERSION,
+        vault_id: ids.vault_id.clone(),
+        device_id: ids.device_id.clone(),
+        proposal: encode_sync_proposal(proposal),
+    };
+    let (revision, rejection) = answer(
+        transport.request(request).await?,
+        "SyncProposed",
+        |response| match response {
+            ControlMessage::SyncProposed {
+                revision,
+                rejection,
+            } => Some((revision, rejection)),
+            _ => None,
+        },
+    )?;
+    proposed_from_wire(revision, rejection)
+}
+
+/// Sends every waiting proposal of the outbox to the hub and records each answer. A revision
+/// leaves the proposal waiting until [`Outbox::prune`] finds it in the selected chain, after the
+/// exchange brings the entry and the pass applies it. Returns how many proposals the anchor
+/// sequenced.
+pub async fn replay_outbox<T: SyncTransport>(
+    transport: &T,
+    ids: &PeerIds,
+    outbox: &mut Outbox,
+) -> Result<usize, String> {
+    let mut sequenced = 0;
+    for proposal in outbox.pending() {
+        let outcome = propose(transport, ids, &proposal).await?;
+        sequenced += usize::from(outcome.is_ok());
+        outbox.settle(&proposal.hash(), outcome)?;
+    }
+    Ok(sequenced)
 }
 
 /// Extracts the expected response, or reports the hub's error.

@@ -1493,6 +1493,9 @@ impl<'a, H: SyncHost> Session<'a, H> {
             return Ok(());
         }
         let repair = ganbaru_notes::sync_repair::repair_pending(&self.pool).await?;
+        for failed in &repair.failed_keys {
+            eprintln!("notes structure repair kept a failing key pending: {failed}");
+        }
         if !repair.unplaced_blocks.is_empty() {
             eprintln!(
                 "notes structure repair left {} block cycles without a page",

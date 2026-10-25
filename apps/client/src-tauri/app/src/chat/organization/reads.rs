@@ -1,9 +1,9 @@
 //! SQLite read models for organizational Chat state.
 
 use super::common::{
-    parse_access_profile_builtin_key, parse_approval_policy, parse_folder_capability,
-    parse_history_boundary, parse_json, parse_participant_kind, parse_runtime_approval_policy,
-    parse_work_state, u32_value,
+    ACTIVE_FOLDER_GRANTS_SQL, parse_access_profile_builtin_key, parse_approval_policy,
+    parse_folder_capability, parse_history_boundary, parse_json, parse_participant_kind,
+    parse_runtime_approval_policy, parse_work_state, u32_value,
 };
 use super::workflow::{parse_model_selection, read_message_references};
 use super::{
@@ -113,23 +113,12 @@ async fn read_roster_ai_access(
     let Some(row) = row else {
         return Ok(None);
     };
-    let grant_rows = sqlx::query(
-        "SELECT grant_row.working_folder_id, folder.display_name,
-                grant_row.capability, grant_row.capability_inherits_profile,
-                grant_row.is_default,
-                grant_row.runtime_approval_policy, grant_row.revision,
-                grant_row.revoked_at
-         FROM chat_teammate_working_folder_grants grant_row
-         JOIN project_working_folders folder ON folder.id = grant_row.working_folder_id
-         WHERE grant_row.conversation_id = ? AND grant_row.teammate_id = ?
-           AND grant_row.revoked_at IS NULL
-         ORDER BY grant_row.is_default DESC, folder.sort_order, folder.display_name, folder.id",
-    )
-    .bind(conversation_id.as_str())
-    .bind(teammate_id.as_str())
-    .fetch_all(pool)
-    .await
-    .map_err(persistence_error)?;
+    let grant_rows = sqlx::query(ACTIVE_FOLDER_GRANTS_SQL)
+        .bind(conversation_id.as_str())
+        .bind(teammate_id.as_str())
+        .fetch_all(pool)
+        .await
+        .map_err(persistence_error)?;
     let mut folder_grants = Vec::with_capacity(grant_rows.len());
     let profile_folder_capability = parse_folder_capability(
         &row.try_get::<String, _>("profile_folder_capability")

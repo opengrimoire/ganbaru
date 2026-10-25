@@ -9,6 +9,7 @@ pub mod agent_runs;
 pub mod checkpoints;
 #[cfg(feature = "native-runtime")]
 pub mod composer;
+pub mod conversion;
 pub mod coordination;
 pub mod credentials;
 #[cfg(feature = "native-runtime")]

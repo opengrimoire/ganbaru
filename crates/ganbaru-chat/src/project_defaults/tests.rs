@@ -140,10 +140,22 @@ async fn default_channel_uses_derived_ids_with_owner_membership_and_folder_envir
 async fn default_chat_rows_are_created_once() {
     let pool = migrated_pool().await;
     insert_project_without_chat_rows(&pool).await;
-    ensure(&pool, PROJECT_ID).await.unwrap();
+    ensure_everything(&pool).await;
     let first = chat_row_counts(&pool).await;
+    let projects: i64 = sqlx::query_scalar("SELECT count(*) FROM projects")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(first.1, projects, "every project has one default channel");
 
-    ensure(&pool, PROJECT_ID).await.unwrap();
+    ensure_everything(&pool).await;
+
+    assert_eq!(chat_row_counts(&pool).await, first);
+}
+
+/// Runs every entry point that creates default Chat rows once.
+async fn ensure_everything(pool: &SqlitePool) {
+    ensure(pool, PROJECT_ID).await.unwrap();
     let mut connection = pool.acquire().await.unwrap();
     ensure_all_project_chat_defaults(&mut connection, &now())
         .await
@@ -151,26 +163,72 @@ async fn default_chat_rows_are_created_once() {
     ensure_working_folder_chat_defaults(&mut connection, EXTERNAL_FOLDER_ID, &now())
         .await
         .unwrap();
-    drop(connection);
-
-    assert_eq!(chat_row_counts(&pool).await, first);
 }
 
 #[tokio::test]
 async fn existing_default_channel_keeps_its_id() {
     let pool = migrated_pool().await;
-    let (project_id, channel_id): (String, String) = sqlx::query_as(
-        "SELECT project_id, id FROM chat_channels WHERE is_default = 1 ORDER BY project_id LIMIT 1",
+    insert_project_without_chat_rows(&pool).await;
+    let conversation_id = "conversation:used-default";
+    let channel_id = "channel:used-default";
+    let owner_key =
+        crate::conversion::membership_key(conversation_id, LOCAL_OWNER_PARTICIPANT_ID).unwrap();
+    let created = now();
+    let created = created.as_str();
+    sqlx::query(
+        "INSERT INTO chat_conversations
+             (id, project_id, conversation_kind, last_activity_at, created_at, updated_at)
+         VALUES (?, ?, 'channel', ?, ?, ?)",
     )
-    .fetch_one(&pool)
+    .bind(conversation_id)
+    .bind(PROJECT_ID)
+    .bind(created)
+    .bind(created)
+    .bind(created)
+    .execute(&pool)
     .await
     .unwrap();
+    sqlx::query(
+        "INSERT INTO chat_channels
+             (id, project_id, conversation_id, name, is_default, created_at, updated_at)
+         VALUES (?, ?, ?, ?, 1, ?, ?)",
+    )
+    .bind(channel_id)
+    .bind(PROJECT_ID)
+    .bind(conversation_id)
+    .bind(DEFAULT_CHANNEL_NAME)
+    .bind(created)
+    .bind(created)
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO chat_conversation_memberships
+             (conversation_id, participant_id, sync_key, membership_role, created_at, updated_at)
+         VALUES (?, ?, ?, 'owner', ?, ?)",
+    )
+    .bind(conversation_id)
+    .bind(LOCAL_OWNER_PARTICIPANT_ID)
+    .bind(owner_key)
+    .bind(created)
+    .bind(created)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    ensure(&pool, PROJECT_ID).await.unwrap();
     let before = chat_row_counts(&pool).await;
+    ensure(&pool, PROJECT_ID).await.unwrap();
 
-    ensure(&pool, &project_id).await.unwrap();
-
-    assert_eq!(default_channel(&pool, &project_id).await.0, channel_id);
-    assert_ne!(channel_id, default_channel_ids(&project_id).unwrap().1);
+    let channels: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM chat_channels WHERE project_id = ?")
+            .bind(PROJECT_ID)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(channels, 1);
+    assert_eq!(default_channel(&pool, PROJECT_ID).await.0, channel_id);
+    assert_ne!(channel_id, default_channel_ids(PROJECT_ID).unwrap().1);
     assert_eq!(chat_row_counts(&pool).await, before);
 }
 

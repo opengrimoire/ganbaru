@@ -280,6 +280,10 @@ export function parseChatTeammateChannelAccess(
     groupId: readIdentifier(record.groupId, `${label}.groupId`),
     channelName: readString(record.channelName, `${label}.channelName`),
     accessProfileId: readIdentifier(record.accessProfileId, `${label}.accessProfileId`),
+    accessProfileRevisionId: readIdentifier(
+      record.accessProfileRevisionId,
+      `${label}.accessProfileRevisionId`,
+    ),
     accessProfileRevision: readNonNegativeSafeInteger(
       record.accessProfileRevision,
       `${label}.accessProfileRevision`,

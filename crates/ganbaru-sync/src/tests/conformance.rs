@@ -1655,7 +1655,7 @@ fn manifests_are_well_formed() {
             31, 511, 7, 127, 31, 7, 3, 7, 1023, 7, 127, 31, 63, 15, 63, 3, 2047, 15, 31, 31, 15,
             255, 127, 65535, 31, 7, 31, 255, 127, 31, 8191, 31, 15, 7, 31, 15, 15, 1, 15, 15, 31,
             31, 15, 63, 134217727, 65535, 3, 15, 63, 15, 7, 1, 63, 3, 7, 31, 31, 31, 7, 15, 1, 15,
-            1023, 127, 7, 15, 31, 1, 31, 1
+            1023, 127, 7, 15, 31, 1, 31, 1, 15, 31, 31, 15, 15
         ]
     );
 }
@@ -2067,8 +2067,8 @@ const RECORDED_MANIFESTS: &[(u16, &str)] = &[
     (12, include_str!("fixtures/vault_manifest_v12.txt")),
     (13, include_str!("fixtures/vault_manifest_v13.txt")),
     (14, include_str!("fixtures/vault_manifest_v14.txt")),
+    (15, include_str!("fixtures/vault_manifest_v15.txt")),
 ];
-
 #[test]
 fn vault_manifest_changes_only_with_a_version_bump() {
     let (version, recorded) = RECORDED_MANIFESTS

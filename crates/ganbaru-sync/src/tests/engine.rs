@@ -2362,6 +2362,10 @@ fn recovery_root_tables_follow_cascades_and_leave_out_derived_keys() {
             // Participants and teammates carry recoverable names and roles.
             crate::manifest::vault::chat::PARTICIPANTS_TABLE,
             crate::manifest::vault::chat::TEAMMATES_TABLE,
+            // Channels carry recoverable names, and their conversations, like those of the
+            // derived-key memberships and grants, root the offers that cascade into them.
+            crate::manifest::vault::chat::CONVERSATIONS_TABLE,
+            crate::manifest::vault::chat::CHANNELS_TABLE,
             ITEMS_TABLE,
             CYCLE_A_TABLE,
             CYCLE_B_TABLE,

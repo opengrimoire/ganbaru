@@ -448,7 +448,7 @@
     const capability = profile?.latestRevision.maximumFolderCapability ?? "none";
     editor.accessDraft = applyAccessProfileToScope(editor.accessDraft, selectedIds, {
       id: accessProfileId,
-      revision: profile?.latestRevision.revision ?? 0,
+      revisionId: profile?.latestRevision.id ?? "",
       maximumFolderCapability: capability,
     });
     if (capability !== "none") {

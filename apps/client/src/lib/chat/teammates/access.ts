@@ -110,7 +110,7 @@ export function applyAccessProfileToScope(
   channelIds: ReadonlySet<string>,
   profile: {
     id: string;
-    revision: number;
+    revisionId: string;
     maximumFolderCapability: ChatFolderCapability;
   },
 ): ChatTeammateChannelAccessInput[] {
@@ -118,7 +118,7 @@ export function applyAccessProfileToScope(
     ? {
         ...channel,
         accessProfileId: profile.id,
-        accessProfileRevision: profile.revision,
+        accessProfileRevisionId: profile.revisionId,
         folderGrants: channel.folderGrants.filter((grant) => folderCapabilityFits(
           grant.capability,
           profile.maximumFolderCapability,

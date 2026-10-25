@@ -4,6 +4,7 @@ mod budgets;
 mod calendar;
 mod capture;
 mod chains;
+mod chat;
 mod compaction;
 mod conformance;
 mod distractions;

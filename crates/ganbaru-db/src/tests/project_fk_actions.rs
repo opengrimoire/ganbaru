@@ -1,14 +1,12 @@
-use super::helpers::{memory_pool_migrated_through, migrate_through, migrated_memory_pool};
+use super::helpers::{
+    load_project_chat_graph, memory_pool_migrated_through, migrate_through, migrated_memory_pool,
+};
 use crate::run_migrations;
 use sqlx::{AssertSqlSafe, Row, SqlitePool};
 use std::collections::BTreeMap;
 
 const BEFORE_FK_ACTIONS: i64 = 20261023045510;
 const FK_ACTIONS: i64 = 20261023071334;
-
-/// One project with tasks, an archived external folder, soft-deleted statuses and priorities,
-/// and a Chat graph that references the project and both working folders.
-const PROJECT_CHAT_GRAPH: &str = include_str!("project_chat_graph.sql");
 
 /// Tables the migration rebuilds.
 const REBUILT_TABLES: [&str; 14] = [
@@ -58,13 +56,6 @@ const PROJECT_ROW_TABLES: [&str; 18] = [
     "chat_scratch_promotions",
     "chat_scratch_cleanup_jobs",
 ];
-
-async fn load_project_chat_graph(pool: &SqlitePool) {
-    sqlx::raw_sql(PROJECT_CHAT_GRAPH)
-        .execute(pool)
-        .await
-        .unwrap();
-}
 
 async fn row_counts(pool: &SqlitePool) -> BTreeMap<String, i64> {
     let tables: Vec<String> = sqlx::query_scalar(

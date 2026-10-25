@@ -1,13 +1,12 @@
-use super::helpers::{memory_pool_migrated_through, migrate_through, migrated_memory_pool};
+use super::helpers::{
+    load_project_chat_graph, memory_pool_migrated_through, migrate_through, migrated_memory_pool,
+};
 use crate::run_migrations;
 use sqlx::{AssertSqlSafe, Row, SqlitePool};
 use std::collections::BTreeMap;
 
 const BEFORE_CHAT_LOCAL_TABLES: i64 = 20261024093938;
 const CHAT_LOCAL_TABLES: i64 = 20261024142304;
-
-/// One project with a Chat graph of teammates, assignments, authorizations, runs, and scratch.
-const PROJECT_CHAT_GRAPH: &str = include_str!("project_chat_graph.sql");
 
 /// A queued access revocation job for the fixture authorization.
 const REVOCATION_JOB: &str = "INSERT INTO chat_access_revocation_jobs
@@ -109,10 +108,7 @@ const REPLICATED_CHAT_TABLES: [&str; 29] = [
 ];
 
 async fn load_seeded_graph(pool: &SqlitePool) {
-    sqlx::raw_sql(PROJECT_CHAT_GRAPH)
-        .execute(pool)
-        .await
-        .unwrap();
+    load_project_chat_graph(pool).await;
     sqlx::raw_sql(REVOCATION_JOB).execute(pool).await.unwrap();
 }
 

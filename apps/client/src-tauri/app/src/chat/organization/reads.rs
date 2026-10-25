@@ -7,8 +7,8 @@ use super::common::{
 };
 use super::workflow::{parse_model_selection, read_message_references};
 use super::{
-    LOCAL_PARTICIPANT_ID, i64_value, identifier_error, now_timestamp, optional_timestamp,
-    persistence_error, timestamp, u64_value,
+    LOCAL_PARTICIPANT_ID, identifier_error, now_timestamp, optional_timestamp, persistence_error,
+    timestamp, u64_value,
 };
 use ganbaru_chat::coordination::access::history_boundary_is_expansion;
 use ganbaru_chat_contracts::models::*;
@@ -85,7 +85,7 @@ async fn read_roster_ai_access(
     teammate_id: &ChatParticipantId,
 ) -> ChatResult<Option<ChatChannelRosterAiSummary>> {
     let row = sqlx::query(
-        "SELECT membership.access_profile_id, profile.latest_revision,
+        "SELECT membership.access_profile_id, profile_revision.revision AS latest_revision,
                 profile.builtin_key, profile.display_name,
                 profile_revision.default_read_history AS profile_read_history,
                 profile_revision.default_participate AS profile_participate,
@@ -100,9 +100,8 @@ async fn read_roster_ai_access(
                 membership.scratch_runtime_approval_policy
          FROM chat_teammate_channel_memberships membership
          JOIN chat_access_profiles profile ON profile.id = membership.access_profile_id
-         JOIN chat_access_profile_revisions profile_revision
+         JOIN chat_access_profile_effective_revisions profile_revision
            ON profile_revision.access_profile_id = profile.id
-          AND profile_revision.revision = profile.latest_revision
          WHERE membership.conversation_id = ? AND membership.teammate_id = ?
            AND membership.removed_at IS NULL",
     )
@@ -329,54 +328,59 @@ pub(super) async fn read_teammate(
 ) -> ChatResult<ChatAiTeammateRead> {
     let lifecycle = super::teammate_lifecycle::read_teammate_lifecycle(pool, teammate_id).await?;
     let row = sqlx::query(
-        "SELECT role, instructions, latest_policy_revision,
+        "SELECT teammate.role, teammate.instructions, policy.id AS policy_revision_id,
                 (SELECT count(*) FROM chat_conversation_memberships membership
                  WHERE membership.participant_id = teammate.participant_id
                    AND membership.removed_at IS NULL) AS channel_count
-         FROM chat_teammates teammate WHERE participant_id = ?",
+         FROM chat_teammates teammate
+         LEFT JOIN chat_teammate_effective_policies policy
+           ON policy.teammate_id = teammate.participant_id
+         WHERE teammate.participant_id = ?",
     )
     .bind(teammate_id.as_str())
     .fetch_optional(pool)
     .await
     .map_err(persistence_error)?
     .ok_or_else(|| ChatError::new(ChatErrorCode::NotFound, "AI teammate was not found", true))?;
-    let latest_revision = u64_value(
-        row.try_get("latest_policy_revision")
-            .map_err(persistence_error)?,
-    )?;
+    let policy_revision_id: Option<String> = row
+        .try_get("policy_revision_id")
+        .map_err(persistence_error)?;
+    let latest_policy = match policy_revision_id {
+        Some(policy_revision_id) => {
+            Some(read_policy(pool, teammate_id, &policy_revision_id).await?)
+        }
+        None => None,
+    };
     Ok(ChatAiTeammateRead {
         participant: read_participant(pool, teammate_id).await?,
         role: row.try_get("role").map_err(persistence_error)?,
         instructions: row.try_get("instructions").map_err(persistence_error)?,
-        configuration_state: if latest_revision == 0 {
-            ChatTeammateConfigurationState::NeedsSetup
-        } else {
+        configuration_state: if latest_policy.is_some() {
             ChatTeammateConfigurationState::Healthy
-        },
-        latest_policy: if latest_revision == 0 {
-            None
         } else {
-            Some(read_policy(pool, teammate_id, latest_revision).await?)
+            ChatTeammateConfigurationState::NeedsSetup
         },
+        latest_policy,
         channel_count: u64_value(row.try_get("channel_count").map_err(persistence_error)?)?,
         active_assignment_count: lifecycle.active_assignment_count,
     })
 }
 
+/// Reads one teammate policy revision together with its display number.
 pub(super) async fn read_policy(
     pool: &SqlitePool,
     teammate_id: &ChatParticipantId,
-    revision: u64,
+    policy_revision_id: &str,
 ) -> ChatResult<ChatTeammatePolicyRead> {
     let row = sqlx::query(
-        "SELECT id, provider_instance_id, safety_mode, model_selection_schema_version,
+        "SELECT id, revision, provider_instance_id, safety_mode, model_selection_schema_version,
                 model_selection_data, effort, speed, provider_options_schema_version,
                 provider_options_data, created_at
-         FROM chat_teammate_policy_revisions
-         WHERE teammate_id = ? AND revision = ?",
+         FROM chat_teammate_policy_revisions_numbered
+         WHERE teammate_id = ? AND id = ?",
     )
     .bind(teammate_id.as_str())
-    .bind(i64_value(revision)?)
+    .bind(policy_revision_id)
     .fetch_optional(pool)
     .await
     .map_err(persistence_error)?
@@ -397,7 +401,7 @@ pub(super) async fn read_policy(
         )
         .map_err(identifier_error)?,
         teammate_id: teammate_id.clone(),
-        revision,
+        revision: u64_value(row.try_get("revision").map_err(persistence_error)?)?,
         provider_instance_id: ProviderInstanceId::new(
             row.try_get::<String, _>("provider_instance_id")
                 .map_err(persistence_error)?,

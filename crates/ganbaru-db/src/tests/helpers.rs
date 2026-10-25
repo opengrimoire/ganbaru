@@ -111,3 +111,46 @@ pub(super) async fn migrate_through(
         .run(pool)
         .await
 }
+
+/// One project with tasks, an archived external folder, soft-deleted statuses and priorities,
+/// and a Chat graph of teammates, assignments, authorizations, runs, and scratch that references
+/// the project and both working folders.
+const PROJECT_CHAT_GRAPH: &str = include_str!("project_chat_graph.sql");
+
+/// The graph's teammate policy revision as the current schema stores it.
+const POLICY_REVISION: &str = "INSERT INTO chat_teammate_policy_revisions
+    (id, teammate_id, provider_instance_id, model_selection_data, created_at)
+VALUES ('policy-1', 'participant-teammate', 'codex-personal', '{}', '2026-10-23T00:00:00.000Z');";
+
+/// The same policy revision for schemas before Chat identity replication, which store its
+/// number.
+const NUMBERED_POLICY_REVISION: &str = "INSERT INTO chat_teammate_policy_revisions
+    (id, teammate_id, revision, provider_instance_id, model_selection_data, created_at)
+VALUES ('policy-1', 'participant-teammate', 1, 'codex-personal', '{}', '2026-10-23T00:00:00.000Z');";
+
+/// Loads the project and Chat graph in the shape the schema of `pool` stores, so upgrade tests
+/// that stop before Chat identity replication share the graph with current schema tests.
+pub(super) async fn load_project_chat_graph(pool: &SqlitePool) {
+    assert!(
+        PROJECT_CHAT_GRAPH.contains(POLICY_REVISION),
+        "the graph inserts its policy revision in the current shape"
+    );
+    let numbered: bool = sqlx::query_scalar(
+        "SELECT EXISTS(
+           SELECT 1 FROM pragma_table_info('chat_teammate_policy_revisions')
+           WHERE name = 'revision'
+         )",
+    )
+    .fetch_one(pool)
+    .await
+    .unwrap();
+    let graph = if numbered {
+        PROJECT_CHAT_GRAPH.replace(POLICY_REVISION, NUMBERED_POLICY_REVISION)
+    } else {
+        PROJECT_CHAT_GRAPH.to_string()
+    };
+    sqlx::raw_sql(sqlx::AssertSqlSafe(graph))
+        .execute(pool)
+        .await
+        .unwrap();
+}

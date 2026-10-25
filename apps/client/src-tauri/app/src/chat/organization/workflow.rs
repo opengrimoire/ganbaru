@@ -503,9 +503,8 @@ async fn insert_message_reference(
                   AND destination_ai.removed_at IS NULL
                  LEFT JOIN chat_access_profiles destination_profile
                    ON destination_profile.id = destination_ai.access_profile_id
-                 LEFT JOIN chat_access_profile_revisions destination_revision
+                 LEFT JOIN chat_access_profile_effective_revisions destination_revision
                    ON destination_revision.access_profile_id = destination_profile.id
-                  AND destination_revision.revision = destination_profile.latest_revision
                  WHERE destination.conversation_id = ?
                    AND destination.removed_at IS NULL
                    AND (
@@ -527,9 +526,8 @@ async fn insert_message_reference(
                       AND source_ai.removed_at IS NULL
                      LEFT JOIN chat_access_profiles source_profile
                        ON source_profile.id = source_ai.access_profile_id
-                     LEFT JOIN chat_access_profile_revisions source_revision
+                     LEFT JOIN chat_access_profile_effective_revisions source_revision
                        ON source_revision.access_profile_id = source_profile.id
-                      AND source_revision.revision = source_profile.latest_revision
                      WHERE source_membership.conversation_id = ?
                        AND source_membership.participant_id = destination.participant_id
                        AND source_membership.removed_at IS NULL
@@ -578,9 +576,8 @@ async fn insert_message_reference(
                   AND destination_ai.removed_at IS NULL
                  LEFT JOIN chat_access_profiles destination_profile
                    ON destination_profile.id = destination_ai.access_profile_id
-                 LEFT JOIN chat_access_profile_revisions destination_revision
+                 LEFT JOIN chat_access_profile_effective_revisions destination_revision
                    ON destination_revision.access_profile_id = destination_profile.id
-                  AND destination_revision.revision = destination_profile.latest_revision
                  JOIN chat_conversation_memberships source_membership
                    ON source_membership.participant_id = destination.participant_id
                   AND source_membership.conversation_id = ?
@@ -591,9 +588,8 @@ async fn insert_message_reference(
                   AND source_ai.removed_at IS NULL
                  LEFT JOIN chat_access_profiles source_profile
                    ON source_profile.id = source_ai.access_profile_id
-                 LEFT JOIN chat_access_profile_revisions source_revision
+                 LEFT JOIN chat_access_profile_effective_revisions source_revision
                    ON source_revision.access_profile_id = source_profile.id
-                  AND source_revision.revision = source_profile.latest_revision
                  WHERE destination.conversation_id = ?
                    AND destination.removed_at IS NULL
                    AND (
@@ -632,9 +628,8 @@ async fn insert_message_reference(
                          AND ai_membership.removed_at IS NULL
                         JOIN chat_access_profiles profile
                           ON profile.id = ai_membership.access_profile_id
-                        JOIN chat_access_profile_revisions profile_revision
+                        JOIN chat_access_profile_effective_revisions profile_revision
                           ON profile_revision.access_profile_id = profile.id
-                         AND profile_revision.revision = profile.latest_revision
                         WHERE membership.conversation_id = ?
                           AND membership.participant_id = ?
                           AND membership.removed_at IS NULL
@@ -943,20 +938,21 @@ pub(super) async fn require_participating_teammate(
 ) -> ChatResult<()> {
     let row = sqlx::query(
         "SELECT membership.removed_at, participant.archived_at,
-                teammate.latest_policy_revision, ai_membership.participate,
+                policy.id AS policy_revision_id, ai_membership.participate,
                 ai_membership.participate_inherits_profile,
                 profile_revision.default_participate
          FROM chat_conversation_memberships membership
          JOIN chat_participants participant ON participant.id = membership.participant_id
          JOIN chat_teammates teammate ON teammate.participant_id = membership.participant_id
+         LEFT JOIN chat_teammate_effective_policies policy
+           ON policy.teammate_id = teammate.participant_id
          JOIN chat_teammate_channel_memberships ai_membership
            ON ai_membership.conversation_id = membership.conversation_id
           AND ai_membership.teammate_id = membership.participant_id
           AND ai_membership.removed_at IS NULL
          JOIN chat_access_profiles profile ON profile.id = ai_membership.access_profile_id
-         JOIN chat_access_profile_revisions profile_revision
+         JOIN chat_access_profile_effective_revisions profile_revision
            ON profile_revision.access_profile_id = profile.id
-          AND profile_revision.revision = profile.latest_revision
          WHERE membership.conversation_id = ? AND membership.participant_id = ?",
     )
     .bind(conversation_id.as_str())
@@ -979,9 +975,9 @@ pub(super) async fn require_participating_teammate(
             .map_err(persistence_error)?
             .is_none()
         && row
-            .try_get::<i64, _>("latest_policy_revision")
+            .try_get::<Option<String>, _>("policy_revision_id")
             .map_err(persistence_error)?
-            > 0
+            .is_some()
         && if row
             .try_get::<i64, _>("participate_inherits_profile")
             .map_err(persistence_error)?
@@ -1009,11 +1005,11 @@ pub(super) async fn require_participating_teammate(
     Ok(())
 }
 
+/// Appends a teammate policy revision and points the teammate's current policy at it.
 #[cfg(desktop)]
 pub(super) async fn insert_policy_revision(
     transaction: &mut Transaction<'_, Sqlite>,
     teammate_id: &ChatParticipantId,
-    revision: u64,
     policy: &ChatTeammatePolicyInput,
     now: &UtcTimestamp,
 ) -> ChatResult<()> {
@@ -1023,26 +1019,39 @@ pub(super) async fn insert_policy_revision(
         model_options: policy.model_options.clone(),
     })
     .map_err(serialization_error)?;
+    let policy_revision_id = new_id("teammate-policy")?;
+    let safety_mode = wire_approval_policy(policy.safety_mode);
     sqlx::query(
         "INSERT INTO chat_teammate_policy_revisions
-            (id, teammate_id, revision, provider_instance_id,
+            (id, teammate_id, provider_instance_id,
              safety_mode,
              model_selection_schema_version, model_selection_data, effort, speed,
              provider_options_schema_version, provider_options_data,
              interaction_mode, created_at)
-         VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, 'build', ?)",
+         VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, ?, 'build', ?)",
     )
-    .bind(new_id("teammate-policy")?)
+    .bind(policy_revision_id.as_str())
     .bind(teammate_id.as_str())
-    .bind(i64_value(revision)?)
     .bind(policy.provider_instance_id.as_str())
-    .bind(wire_approval_policy(policy.safety_mode))
+    .bind(safety_mode)
     .bind(selection)
     .bind(policy.effort.as_deref())
     .bind(policy.speed.as_deref())
     .bind(i64::from(policy.provider_options.schema_version))
     .bind(json_object(&policy.provider_options, "providerOptions")?)
     .bind(now.as_str())
+    .execute(&mut **transaction)
+    .await
+    .map_err(persistence_error)?;
+    sqlx::query(
+        "UPDATE chat_teammates
+         SET current_policy_revision_id = ?, current_policy_safety_mode = ?, updated_at = ?
+         WHERE participant_id = ?",
+    )
+    .bind(policy_revision_id.as_str())
+    .bind(safety_mode)
+    .bind(now.as_str())
+    .bind(teammate_id.as_str())
     .execute(&mut **transaction)
     .await
     .map_err(persistence_error)?;

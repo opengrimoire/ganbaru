@@ -122,7 +122,6 @@ async fn dispatch_claimed_assignment(
             authorization.scope_digest,
             authorization.decision_state,
             authorization.revoked_at AS authorization_revoked_at,
-            policy.revision AS policy_revision,
             teammate.instructions,
             channel.project_id,
             project.status AS project_status,
@@ -159,9 +158,8 @@ async fn dispatch_claimed_assignment(
           AND channel_access.teammate_id = membership.participant_id
           AND channel_access.removed_at IS NULL
          JOIN chat_access_profiles profile ON profile.id = channel_access.access_profile_id
-         JOIN chat_access_profile_revisions profile_revision
+         JOIN chat_access_profile_effective_revisions profile_revision
            ON profile_revision.access_profile_id = profile.id
-          AND profile_revision.revision = profile.latest_revision
          JOIN chat_assignment_dispatch_jobs job ON job.assignment_id = assignment.id
          WHERE assignment.id = ?
            AND CASE
@@ -245,8 +243,10 @@ async fn dispatch_claimed_assignment(
             .map_err(persistence_error)?,
     )
     .map_err(identifier_error)?;
-    let policy_revision = u64_value(row.try_get("policy_revision").map_err(persistence_error)?)?;
-    let policy = read_policy(pool, &teammate_id, policy_revision).await?;
+    let policy_revision_id: String = row
+        .try_get("teammate_policy_revision_id")
+        .map_err(persistence_error)?;
+    let policy = read_policy(pool, &teammate_id, &policy_revision_id).await?;
     let resolved_runtime_approval = parse_runtime_approval_policy(
         &row.try_get::<String, _>("resolved_runtime_approval_policy")
             .map_err(persistence_error)?,
@@ -520,9 +520,8 @@ async fn require_live_folder_target(
             AND channel_access.teammate_id = live.teammate_id
             AND channel_access.removed_at IS NULL
            JOIN chat_access_profiles profile ON profile.id = channel_access.access_profile_id
-           JOIN chat_access_profile_revisions profile_revision
+           JOIN chat_access_profile_effective_revisions profile_revision
              ON profile_revision.access_profile_id = profile.id
-            AND profile_revision.revision = profile.latest_revision
            WHERE frozen.authorization_revision_id = ?
              AND frozen.working_folder_id = ?
              AND frozen.is_execution_target = 1
@@ -784,9 +783,8 @@ pub(super) async fn deliver_assignment_input(
           AND channel_access.teammate_id = membership.participant_id
           AND channel_access.removed_at IS NULL
          JOIN chat_access_profiles profile ON profile.id = channel_access.access_profile_id
-         JOIN chat_access_profile_revisions profile_revision
+         JOIN chat_access_profile_effective_revisions profile_revision
            ON profile_revision.access_profile_id = profile.id
-          AND profile_revision.revision = profile.latest_revision
          JOIN chat_work_assignment_inputs input ON input.assignment_id = run.assignment_id
          JOIN chat_communication_messages message ON message.item_id = input.message_item_id
          JOIN chat_communication_message_revisions revision

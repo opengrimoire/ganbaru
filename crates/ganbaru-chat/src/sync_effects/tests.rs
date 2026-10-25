@@ -66,14 +66,14 @@ async fn seed_organization(pool: &SqlitePool) {
          INSERT INTO chat_teammates (participant_id, role, created_at, updated_at)
          VALUES ('{TEAMMATE_ID}', 'Test', '{NOW}', '{NOW}');
          INSERT INTO chat_teammate_policy_revisions
-            (id, teammate_id, revision, provider_instance_id, model_selection_data, created_at)
-         VALUES ('policy:sync-effects', '{TEAMMATE_ID}', 1, 'codex-personal', '{{}}', '{NOW}');
+            (id, teammate_id, provider_instance_id, model_selection_data, created_at)
+         VALUES ('policy:sync-effects', '{TEAMMATE_ID}', 'codex-personal', '{{}}', '{NOW}');
          INSERT INTO chat_access_profiles (id, display_name, created_at, updated_at)
          VALUES ('{PROFILE_ID}', 'Sync profile', '{NOW}', '{NOW}');
          INSERT INTO chat_access_profile_revisions
-            (id, access_profile_id, revision, default_read_history, default_participate,
+            (id, access_profile_id, default_read_history, default_participate,
              default_history_boundary, maximum_folder_capability, created_at)
-         VALUES ('profile-revision:sync-effects:1', '{PROFILE_ID}', 1, 1, 1, 'entire', 'edit',
+         VALUES ('profile-revision:sync-effects:1', '{PROFILE_ID}', 1, 1, 'entire', 'edit',
                  '{NOW}');
          INSERT INTO chat_conversation_memberships
             (conversation_id, participant_id, membership_role, created_at, updated_at)
@@ -134,13 +134,12 @@ async fn insert_profile_revision(pool: &SqlitePool, revision: i64, capability: &
     let id = format!("profile-revision:sync-effects:{revision}");
     sqlx::query(
         "INSERT INTO chat_access_profile_revisions
-            (id, access_profile_id, revision, default_read_history, default_participate,
+            (id, access_profile_id, default_read_history, default_participate,
              default_history_boundary, maximum_folder_capability, created_at)
-         VALUES (?, ?, ?, 1, 1, 'entire', ?, ?)",
+         VALUES (?, ?, 1, 1, 'entire', ?, ?)",
     )
     .bind(&id)
     .bind(PROFILE_ID)
-    .bind(revision)
     .bind(capability)
     .bind(format!("2026-10-24T09:0{revision}:00.000Z"))
     .execute(pool)

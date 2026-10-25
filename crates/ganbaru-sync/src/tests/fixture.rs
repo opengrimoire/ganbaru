@@ -21,8 +21,8 @@ use crate::assets::{AssetClass, LocalAssetColumn, LocalDigest};
 use crate::domains::{vault_adapters, vault_hooks};
 use crate::hooks::{ChangeSink, HookFuture, MaterializeHook};
 use crate::manifest::vault::{
-    VAULT_MANIFEST_VERSION, calendar, chat, contacts, distractions, focus, music, preferences,
-    projects, quick_notes, themes,
+    VAULT_MANIFEST_VERSION, calendar, chat, contacts, distractions, focus, music, notes,
+    preferences, projects, quick_notes, themes,
 };
 use crate::manifest::{
     AcyclicSpec, Collation, ColumnSpec, ColumnType, DerivedKey, DeviceTable, DomainManifest,
@@ -1387,6 +1387,7 @@ pub(super) const TEST_DOMAINS: &[&DomainManifest] = &[
     &calendar::DOMAIN,
     &focus::DOMAIN,
     &distractions::DOMAIN,
+    &notes::DOMAIN,
     &chat::DOMAIN,
     &FIXTURE_DOMAIN,
 ];
@@ -1400,13 +1401,13 @@ pub(super) fn test_adapters() -> Adapters {
     vault_adapters().with(Box::new(FixtureAdapter))
 }
 
-/// An engine for [`TEST_MANIFEST`] with [`test_adapters`], the vault hooks, and [`FixtureHook`]
-/// on lists.
+/// An engine for [`TEST_MANIFEST`] with [`test_adapters`], the vault hooks, the Notes hooks, and
+/// [`FixtureHook`] on lists.
 pub(super) fn test_engine() -> Engine {
     Engine::with(
         &TEST_MANIFEST,
         test_adapters(),
-        vault_hooks().with(LISTS_TABLE, Box::new(FixtureHook)),
+        super::notes::with_notes_hooks(vault_hooks()).with(LISTS_TABLE, Box::new(FixtureHook)),
     )
     .expect("the test manifest, adapters, and hooks should agree")
 }

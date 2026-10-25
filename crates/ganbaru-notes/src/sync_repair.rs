@@ -1,0 +1,562 @@
+//! Notes structure repair after sync apply.
+//!
+//! Merged placement can leave Notes structure the editor never writes: two devices each nest a
+//! block under the other's block, a chain of nested blocks grows deeper than
+//! [`MAX_BLOCK_DEPTH`](crate::writes::MAX_BLOCK_DEPTH), or two pages each become nested in the
+//! other through their `child_page` blocks. Folders and row parents keep the engine tree repair;
+//! blocks and nested pages have two-sided placement the engine does not walk, so Notes repairs
+//! them here in one ordinary local transaction that sync captures and replicates.
+//!
+//! The rules are deterministic given the same rows:
+//!
+//! - A page that names a block which is not its own `child_page` block becomes a root page of
+//!   its project, and its own `child_page` block, if any, moves to the trash.
+//! - A `child_page` block outside the trash whose page names no block and is not a row page
+//!   nests that page again.
+//! - A block in a cycle: the smallest block id of the cycle becomes a root block of its page,
+//!   after that page's last root block. Its page is the hook-derived `page_id` of that block, or
+//!   else the page of the smallest cycle member with a known page. A cycle without any known
+//!   page stays unplaced and is counted in the report.
+//! - A block deeper than the bound: the block at depth `MAX_BLOCK_DEPTH + 1` of its ancestry
+//!   becomes a root block of the page that ancestry reaches.
+//! - A page nested in itself through `child_page` blocks: the smallest page id of the cycle
+//!   becomes a root page of its project, and its `child_page` block moves to the trash, as
+//!   when a page is moved out of its parent.
+//!
+//! Pairing runs first, so a page it nests again is part of the cycle check.
+//!
+//! The hook-derived `page_id` of a block in a cycle is the value it held before the cycle
+//! formed, so devices that received the operations in a different order can derive different
+//! pages for the same cycle. Repair runs only where Notes is writable, which keeps one device
+//! deciding while Notes has a single writer.
+
+use crate::writes::MAX_BLOCK_DEPTH;
+use ganbaru_sync_contracts::OrderKey;
+use sqlx::{Connection, SqliteConnection, SqlitePool};
+use std::collections::{BTreeMap, BTreeSet};
+
+/// What one repair pass changed.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct StructureRepair {
+    /// Blocks moved to the root of a page to break a cycle.
+    pub cycle_blocks: Vec<String>,
+    /// Blocks moved to the root of a page because their ancestry was too deep.
+    pub deep_blocks: Vec<String>,
+    /// Smallest block id of each cycle no page could be found for.
+    pub unplaced_blocks: Vec<String>,
+    /// Pages moved to the root of their project to break a nesting cycle.
+    pub detached_pages: Vec<String>,
+    /// Pages moved to the root of their project because they named a block that is not their
+    /// own `child_page` block.
+    pub unpaired_pages: Vec<String>,
+    /// Pages nested again under their own `child_page` block.
+    pub paired_pages: Vec<String>,
+}
+
+impl StructureRepair {
+    /// Whether the pass wrote nothing. Unplaced cycles are left as they are, so they count as
+    /// unchanged and are reported through `unplaced_blocks`.
+    pub fn is_empty(&self) -> bool {
+        self.cycle_blocks.is_empty()
+            && self.deep_blocks.is_empty()
+            && self.detached_pages.is_empty()
+            && self.unpaired_pages.is_empty()
+            && self.paired_pages.is_empty()
+    }
+}
+
+/// One block's placement as repair reads it.
+#[derive(Debug, Clone, sqlx::FromRow)]
+struct Placement {
+    id: String,
+    parent_page_id: Option<String>,
+    parent_block_id: Option<String>,
+    page_id: String,
+}
+
+/// Where one block's ancestry ends.
+enum Walk {
+    /// The ancestry reaches `page`; `chain` runs from the block up to its root block.
+    Page { page: String, chain: Vec<String> },
+    /// The ancestry loops; `members` are the blocks of the loop.
+    Cycle { members: Vec<String> },
+    /// The ancestry names a block that does not exist.
+    Broken,
+}
+
+/// Repairs the structure around the changed `page_ids` and `block_ids` in one local transaction.
+pub async fn repair_structure(
+    pool: &SqlitePool,
+    page_ids: &[String],
+    block_ids: &[String],
+) -> Result<StructureRepair, String> {
+    let mut conn = pool
+        .acquire()
+        .await
+        .map_err(|error| format!("acquire Notes structure repair connection: {error}"))?;
+    repair_structure_on(&mut conn, page_ids, block_ids).await
+}
+
+/// [`repair_structure`] on one connection.
+pub async fn repair_structure_on(
+    conn: &mut SqliteConnection,
+    page_ids: &[String],
+    block_ids: &[String],
+) -> Result<StructureRepair, String> {
+    let mut tx = conn
+        .begin()
+        .await
+        .map_err(|error| format!("begin Notes structure repair: {error}"))?;
+    let report = repair_keys(&mut tx, page_ids, block_ids).await?;
+    tx.commit()
+        .await
+        .map_err(|error| format!("commit Notes structure repair: {error}"))?;
+    Ok(report)
+}
+
+/// Whether `notes_sync_repair_pending` holds keys still to repair.
+pub async fn has_pending(pool: &SqlitePool) -> Result<bool, String> {
+    sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM notes_sync_repair_pending)")
+        .fetch_one(pool)
+        .await
+        .map_err(|error| format!("check pending Notes structure repair: {error}"))
+}
+
+/// Repairs the structure around every key in `notes_sync_repair_pending` and clears those keys
+/// in the same transaction, so a failed repair keeps them for the next call.
+pub async fn repair_pending(pool: &SqlitePool) -> Result<StructureRepair, String> {
+    let mut conn = pool
+        .acquire()
+        .await
+        .map_err(|error| format!("acquire Notes structure repair connection: {error}"))?;
+    repair_pending_on(&mut conn).await
+}
+
+/// [`repair_pending`] on one connection.
+pub async fn repair_pending_on(conn: &mut SqliteConnection) -> Result<StructureRepair, String> {
+    let mut tx = conn
+        .begin()
+        .await
+        .map_err(|error| format!("begin Notes structure repair: {error}"))?;
+    let pending: Vec<(String, String)> = sqlx::query_as(
+        "SELECT kind, row_key FROM notes_sync_repair_pending ORDER BY kind, row_key",
+    )
+    .fetch_all(&mut *tx)
+    .await
+    .map_err(|error| format!("load pending Notes structure repair: {error}"))?;
+    if pending.is_empty() {
+        return Ok(StructureRepair::default());
+    }
+    let (pages, blocks): (Vec<_>, Vec<_>) =
+        pending.into_iter().partition(|(kind, _)| kind == "page");
+    let pages: Vec<String> = pages.into_iter().map(|(_, key)| key).collect();
+    let blocks: Vec<String> = blocks.into_iter().map(|(_, key)| key).collect();
+    let report = repair_keys(&mut tx, &pages, &blocks).await?;
+    sqlx::query(
+        "DELETE FROM notes_sync_repair_pending
+         WHERE (kind = 'page' AND row_key IN (SELECT value FROM json_each(?1)))
+            OR (kind = 'block' AND row_key IN (SELECT value FROM json_each(?2)))",
+    )
+    .bind(keys_json(&pages)?)
+    .bind(keys_json(&blocks)?)
+    .execute(&mut *tx)
+    .await
+    .map_err(|error| format!("clear pending Notes structure repair: {error}"))?;
+    tx.commit()
+        .await
+        .map_err(|error| format!("commit Notes structure repair: {error}"))?;
+    Ok(report)
+}
+
+async fn repair_keys(
+    conn: &mut SqliteConnection,
+    page_ids: &[String],
+    block_ids: &[String],
+) -> Result<StructureRepair, String> {
+    let mut report = StructureRepair::default();
+    repair_pairing(conn, page_ids, block_ids, &mut report).await?;
+    repair_blocks(conn, block_ids, &mut report).await?;
+    repair_page_nesting(conn, page_ids, block_ids, &mut report).await?;
+    Ok(report)
+}
+
+fn keys_json(keys: &[String]) -> Result<String, String> {
+    serde_json::to_string(keys).map_err(|error| format!("encode Notes repair keys: {error}"))
+}
+
+/// Loads `block_ids`, their descendants within the depth bound, and every ancestor of those.
+async fn load_placements(
+    conn: &mut SqliteConnection,
+    block_ids: &[String],
+) -> Result<BTreeMap<String, Placement>, String> {
+    let rows: Vec<Placement> = sqlx::query_as(
+        "WITH RECURSIVE
+         seed(id) AS (SELECT value FROM json_each(?1)),
+         down(id, depth) AS (
+             SELECT id, 0 FROM notes_blocks WHERE id IN seed
+             UNION
+             SELECT child.id, down.depth + 1
+             FROM notes_blocks AS child
+             JOIN down ON child.parent_block_id = down.id
+             WHERE down.depth < ?2
+         ),
+         up(id) AS (
+             SELECT id FROM down
+             UNION
+             SELECT block.parent_block_id
+             FROM notes_blocks AS block
+             JOIN up ON block.id = up.id
+             WHERE block.parent_block_id IS NOT NULL
+         )
+         SELECT id, parent_page_id, parent_block_id, page_id
+         FROM notes_blocks WHERE id IN up",
+    )
+    .bind(keys_json(block_ids)?)
+    .bind(MAX_BLOCK_DEPTH)
+    .fetch_all(&mut *conn)
+    .await
+    .map_err(|error| format!("load Notes block placement for repair: {error}"))?;
+    Ok(rows.into_iter().map(|row| (row.id.clone(), row)).collect())
+}
+
+fn walk(placements: &BTreeMap<String, Placement>, start: &str) -> Walk {
+    let mut chain: Vec<String> = Vec::new();
+    let mut position: BTreeMap<String, usize> = BTreeMap::new();
+    let mut current = start.to_string();
+    loop {
+        let Some(row) = placements.get(&current) else {
+            return Walk::Broken;
+        };
+        position.insert(current.clone(), chain.len());
+        chain.push(current.clone());
+        if let Some(page) = &row.parent_page_id {
+            return Walk::Page {
+                page: page.clone(),
+                chain,
+            };
+        }
+        let Some(parent) = &row.parent_block_id else {
+            return Walk::Broken;
+        };
+        if let Some(&at) = position.get(parent) {
+            return Walk::Cycle {
+                members: chain.split_off(at),
+            };
+        }
+        current = parent.clone();
+    }
+}
+
+/// Breaks block cycles and over-deep ancestry among the loaded blocks, in block id order.
+async fn repair_blocks(
+    conn: &mut SqliteConnection,
+    block_ids: &[String],
+    report: &mut StructureRepair,
+) -> Result<(), String> {
+    if block_ids.is_empty() {
+        return Ok(());
+    }
+    let mut placements = load_placements(conn, block_ids).await?;
+    let mut unplaced: BTreeSet<String> = BTreeSet::new();
+    let depth_bound = usize::try_from(MAX_BLOCK_DEPTH)
+        .map_err(|error| format!("convert Notes block depth bound: {error}"))?;
+    let ids: Vec<String> = placements.keys().cloned().collect();
+    let mut moved: Vec<String> = Vec::new();
+    for id in ids {
+        loop {
+            match walk(&placements, &id) {
+                Walk::Broken => break,
+                Walk::Page { page, chain } => {
+                    if chain.len() <= depth_bound {
+                        break;
+                    }
+                    let target = chain[chain.len() - depth_bound - 1].clone();
+                    move_to_page_root(conn, &mut placements, &target, &page).await?;
+                    report.deep_blocks.push(target.clone());
+                    moved.push(target);
+                }
+                Walk::Cycle { members } => {
+                    let Some(chosen) = members.iter().min().cloned() else {
+                        break;
+                    };
+                    if unplaced.contains(&chosen) {
+                        break;
+                    }
+                    match cycle_page(conn, &placements, &chosen, &members).await? {
+                        Some(page) => {
+                            move_to_page_root(conn, &mut placements, &chosen, &page).await?;
+                            report.cycle_blocks.push(chosen.clone());
+                            moved.push(chosen);
+                        }
+                        None => {
+                            unplaced.insert(chosen.clone());
+                            report.unplaced_blocks.push(chosen);
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if !moved.is_empty() {
+        crate::sync_apply::refresh_block_pages(conn, &moved).await?;
+        let pages: Vec<String> = sqlx::query_scalar(
+            "SELECT DISTINCT page_id FROM notes_blocks
+             WHERE id IN (SELECT value FROM json_each(?1)) AND page_id <> ''",
+        )
+        .bind(keys_json(&moved)?)
+        .fetch_all(&mut *conn)
+        .await
+        .map_err(|error| format!("load pages of repaired Notes blocks: {error}"))?;
+        crate::sync_apply::queue_page_history(conn, &pages).await?;
+    }
+    Ok(())
+}
+
+/// The page a cycle moves to: the known page of `chosen`, else of the smallest member with one.
+async fn cycle_page(
+    conn: &mut SqliteConnection,
+    placements: &BTreeMap<String, Placement>,
+    chosen: &str,
+    members: &[String],
+) -> Result<Option<String>, String> {
+    let mut candidates: Vec<&str> = vec![chosen];
+    let mut rest: Vec<&str> = members.iter().map(String::as_str).collect();
+    rest.sort_unstable();
+    candidates.extend(rest.into_iter().filter(|member| *member != chosen));
+    for candidate in candidates {
+        let Some(page) = placements
+            .get(candidate)
+            .map(|row| row.page_id.as_str())
+            .filter(|page| !page.is_empty())
+        else {
+            continue;
+        };
+        let exists: bool =
+            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM notes_pages WHERE id = ?)")
+                .bind(page)
+                .fetch_one(&mut *conn)
+                .await
+                .map_err(|error| format!("check Notes repair page: {error}"))?;
+        if exists {
+            return Ok(Some(page.to_string()));
+        }
+    }
+    Ok(None)
+}
+
+/// Makes `block_id` a root block of `page_id`, placed after the page's last root block.
+async fn move_to_page_root(
+    conn: &mut SqliteConnection,
+    placements: &mut BTreeMap<String, Placement>,
+    block_id: &str,
+    page_id: &str,
+) -> Result<(), String> {
+    let keys: Vec<String> = sqlx::query_scalar(
+        "SELECT order_key FROM notes_blocks WHERE parent_page_id = ? AND id <> ?",
+    )
+    .bind(page_id)
+    .bind(block_id)
+    .fetch_all(&mut *conn)
+    .await
+    .map_err(|error| format!("load Notes root order keys: {error}"))?;
+    let last = keys
+        .iter()
+        .filter_map(|key| OrderKey::parse(key).ok())
+        .max();
+    let order_key = match last {
+        Some(last) => last
+            .key_after()
+            .map_err(|error| format!("order repaired Notes block: {error}"))?,
+        None => OrderKey::first(),
+    };
+    sqlx::query(
+        "UPDATE notes_blocks
+         SET parent_type = 'page_id',
+             parent_page_id = ?1,
+             parent_block_id = NULL,
+             page_id = ?1,
+             order_key = ?2,
+             last_edited_time = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+         WHERE id = ?3",
+    )
+    .bind(page_id)
+    .bind(order_key.as_str())
+    .bind(block_id)
+    .execute(&mut *conn)
+    .await
+    .map_err(|error| format!("move repaired Notes block: {error}"))?;
+    if let Some(row) = placements.get_mut(block_id) {
+        row.parent_page_id = Some(page_id.to_string());
+        row.parent_block_id = None;
+        row.page_id = page_id.to_string();
+    }
+    Ok(())
+}
+
+/// Moves the smallest page of every nesting cycle that touches the changed rows to the root of
+/// its project and trashes its `child_page` block.
+async fn repair_page_nesting(
+    conn: &mut SqliteConnection,
+    page_ids: &[String],
+    block_ids: &[String],
+    report: &mut StructureRepair,
+) -> Result<(), String> {
+    let mut seeds: Vec<String> = page_ids.to_vec();
+    seeds.extend(block_ids.iter().cloned());
+    if seeds.is_empty() {
+        return Ok(());
+    }
+    let containers: Vec<(String, Option<String>)> = sqlx::query_as(
+        "WITH RECURSIVE
+         seed(id) AS (
+             SELECT value FROM json_each(?1)
+             UNION
+             SELECT page_id FROM notes_blocks WHERE id IN (SELECT value FROM json_each(?1))
+         ),
+         up(id) AS (
+             SELECT id FROM notes_pages WHERE id IN seed
+             UNION
+             SELECT block.page_id
+             FROM notes_pages AS page
+             JOIN up ON page.id = up.id
+             JOIN notes_blocks AS block ON block.id = page.child_block_id
+             WHERE block.page_id <> ''
+         )
+         SELECT page.id, NULLIF(block.page_id, '')
+         FROM notes_pages AS page
+         LEFT JOIN notes_blocks AS block ON block.id = page.child_block_id
+         WHERE page.id IN up",
+    )
+    .bind(keys_json(&seeds)?)
+    .fetch_all(&mut *conn)
+    .await
+    .map_err(|error| format!("load Notes page nesting for repair: {error}"))?;
+    let mut container: BTreeMap<String, Option<String>> = containers.into_iter().collect();
+    let pages: Vec<String> = container.keys().cloned().collect();
+    for page in pages {
+        let mut seen: Vec<String> = Vec::new();
+        let mut current = Some(page);
+        while let Some(id) = current {
+            if let Some(at) = seen.iter().position(|item| *item == id) {
+                if let Some(chosen) = seen[at..].iter().min().cloned() {
+                    place_at_project_root(conn, &chosen).await?;
+                    container.insert(chosen.clone(), None);
+                    report.detached_pages.push(chosen);
+                }
+                break;
+            }
+            seen.push(id.clone());
+            current = container.get(&id).cloned().flatten();
+        }
+    }
+    Ok(())
+}
+
+/// Pairs the changed pages with their own `child_page` blocks: a page that names any other
+/// block leaves for the root of its project, and a page that names no block while its own
+/// `child_page` block is outside the trash nests under that block again.
+async fn repair_pairing(
+    conn: &mut SqliteConnection,
+    page_ids: &[String],
+    block_ids: &[String],
+    report: &mut StructureRepair,
+) -> Result<(), String> {
+    let mut seeds: Vec<String> = page_ids.to_vec();
+    seeds.extend(block_ids.iter().cloned());
+    if seeds.is_empty() {
+        return Ok(());
+    }
+    let seeds = keys_json(&seeds)?;
+    let unpaired: Vec<String> = sqlx::query_scalar(
+        "SELECT page.id FROM notes_pages AS page
+         WHERE page.id IN (SELECT value FROM json_each(?1))
+           AND page.child_block_id IS NOT NULL
+           AND NOT EXISTS (
+               SELECT 1 FROM notes_blocks AS block
+               WHERE block.id = page.child_block_id
+                 AND block.id = page.id
+                 AND block.type = 'child_page'
+           )
+         ORDER BY page.id",
+    )
+    .bind(&seeds)
+    .fetch_all(&mut *conn)
+    .await
+    .map_err(|error| format!("load unpaired Notes pages: {error}"))?;
+    for page in unpaired {
+        place_at_project_root(conn, &page).await?;
+        report.unpaired_pages.push(page);
+    }
+    let mut paired: Vec<String> = sqlx::query_scalar(
+        "UPDATE notes_pages
+         SET child_block_id = notes_pages.id,
+             parent_type = CASE WHEN block.parent_page_id IS NOT NULL THEN 'page_id'
+                                ELSE 'block_id' END,
+             parent_page_id = block.parent_page_id,
+             parent_block_id = block.parent_block_id,
+             folder_id = NULL,
+             project_id = NULL,
+             last_edited_time = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+         FROM notes_blocks AS block
+         WHERE block.id = notes_pages.id
+           AND notes_pages.id IN (SELECT value FROM json_each(?1))
+           AND notes_pages.child_block_id IS NULL
+           AND notes_pages.parent_data_source_id IS NULL
+           AND block.type = 'child_page'
+           AND block.in_trash = 0
+         RETURNING notes_pages.id",
+    )
+    .bind(&seeds)
+    .fetch_all(&mut *conn)
+    .await
+    .map_err(|error| format!("nest Notes pages under their blocks: {error}"))?;
+    if !paired.is_empty() {
+        paired.sort_unstable();
+        crate::sync_apply::queue_page_history(conn, &paired).await?;
+        report.paired_pages.extend(paired);
+    }
+    Ok(())
+}
+
+/// Makes `page_id` a root page of the project it belongs to, or of no project when its
+/// placement reaches none, and trashes its own `child_page` block, the same placement a move
+/// out of its parent leaves.
+async fn place_at_project_root(conn: &mut SqliteConnection, page_id: &str) -> Result<(), String> {
+    let project: Option<String> = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+        "SELECT {} FROM notes_pages AS page WHERE page.id = ?",
+        crate::structure::page_project_sql("page")
+    )))
+    .bind(page_id)
+    .fetch_optional(&mut *conn)
+    .await
+    .map_err(|error| format!("load project of repaired Notes page: {error}"))?
+    .flatten();
+    sqlx::query(
+        "UPDATE notes_pages
+         SET child_block_id = NULL,
+             parent_type = 'workspace',
+             parent_page_id = NULL,
+             parent_block_id = NULL,
+             folder_id = NULL,
+             project_id = ?,
+             last_edited_time = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+         WHERE id = ?",
+    )
+    .bind(project.as_deref())
+    .bind(page_id)
+    .execute(&mut *conn)
+    .await
+    .map_err(|error| format!("move repaired Notes page to its project root: {error}"))?;
+    sqlx::query(
+        "UPDATE notes_blocks
+         SET in_trash = 1,
+             last_edited_time = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+         WHERE id = ? AND type = 'child_page' AND in_trash = 0",
+    )
+    .bind(page_id)
+    .execute(&mut *conn)
+    .await
+    .map_err(|error| format!("trash repaired Notes page block: {error}"))?;
+    crate::sync_apply::queue_page_history(conn, &[page_id.to_string()]).await
+}

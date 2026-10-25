@@ -122,16 +122,24 @@ fn schema_creates_normalized_notes_database_tables() {
 fn schema_keeps_notes_page_project_and_trash_owner_in_columns() {
     super::block_on(async {
         let pool = migrated_memory_pool().await;
-        let notes_triggers: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM sqlite_schema
-             WHERE type = 'trigger' AND tbl_name LIKE 'notes_%'",
+        let notes_triggers: Vec<String> = sqlx::query_scalar(
+            "SELECT name FROM sqlite_schema
+             WHERE type = 'trigger' AND tbl_name LIKE 'notes_%' AND name NOT LIKE 'sync\\_%' ESCAPE '\\'
+             ORDER BY name",
         )
-        .fetch_one(&pool)
+        .fetch_all(&pool)
         .await
         .unwrap();
         assert_eq!(
-            notes_triggers, 0,
-            "Notes rules are checked by writes, not triggers"
+            notes_triggers,
+            [
+                "notes_data_sources_delete_row_pages",
+                "notes_pages_local_nesting_insert",
+                "notes_pages_local_nesting_update",
+                "notes_pages_park_child_page_blocks",
+            ],
+            "Notes rules are checked by writes, except row page removal and moved-out \
+             child_page block parking through foreign key cascades, and local nested page pairing"
         );
 
         sqlx::query("INSERT INTO project_groups (id, name, order_key) VALUES ('folder-group', 'Folders', 'a0')")
@@ -1524,6 +1532,12 @@ const BEFORE_NOTES_SYNC_STRUCTURE: i64 = 20261024045821;
 /// The Notes structure preparation migration.
 pub(super) const NOTES_SYNC_STRUCTURE: i64 = 20261024075934;
 
+/// Last migration before Notes structure replication.
+const BEFORE_NOTES_STRUCTURE_REPLICATION: i64 = 20261025051154;
+
+/// The migration that makes Notes structure replicated.
+const NOTES_STRUCTURE_REPLICATION: i64 = 20261025091420;
+
 /// Every block type the Notes schema accepts.
 const FIXTURE_BLOCK_TYPES: [&str; 37] = [
     "paragraph",
@@ -1884,7 +1898,7 @@ fn fresh_vault_notes_blocks_store_split_content_and_order_keys() {
             );
         }
         let notes_triggers: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM sqlite_schema WHERE type = 'trigger' AND tbl_name IN ('notes_blocks', 'notes_pages', 'notes_folders')",
+            "SELECT COUNT(*) FROM sqlite_schema WHERE type = 'trigger' AND tbl_name IN ('notes_blocks', 'notes_pages', 'notes_folders') AND name NOT LIKE 'sync\\_%' ESCAPE '\\' AND name NOT LIKE 'notes\\_pages\\_local\\_nesting\\_%' ESCAPE '\\' AND name <> 'notes_pages_park_child_page_blocks'",
         )
         .fetch_one(&pool)
         .await
@@ -1965,8 +1979,11 @@ fn fresh_vault_nested_pages_follow_their_child_page_block() {
             .await
             .expect("the block reference is checked at commit");
 
+        // Local writes keep the parent columns paired with `child_block_id`; remote placement
+        // is paired by the Notes structure repair.
         for statement in [
             "UPDATE notes_pages SET child_block_id = NULL WHERE id = 'child'",
+            "UPDATE notes_pages SET parent_type = 'workspace', parent_page_id = NULL WHERE id = 'child'",
             "UPDATE notes_pages SET child_block_id = 'parent' WHERE id = 'child'",
             "UPDATE notes_pages SET child_block_id = 'parent' WHERE id = 'parent'",
             "UPDATE notes_pages SET folder_id = 'folder' WHERE id = 'child'",
@@ -1989,6 +2006,15 @@ fn fresh_vault_nested_pages_follow_their_child_page_block() {
             .is_err(),
             "a nested page needs its child_page block"
         );
+        sqlx::raw_sql(
+            "UPDATE sync_apply_state SET applying = 1;
+             UPDATE notes_pages SET child_block_id = NULL WHERE id = 'child';
+             UPDATE notes_pages SET child_block_id = 'child' WHERE id = 'child';
+             UPDATE sync_apply_state SET applying = 0;",
+        )
+        .execute(&pool)
+        .await
+        .expect("apply writes placement before the hook derives the parent columns");
 
         sqlx::query("DELETE FROM notes_blocks WHERE id = 'child'")
             .execute(&pool)
@@ -1999,5 +2025,155 @@ fn fresh_vault_nested_pages_follow_their_child_page_block() {
             .await
             .unwrap();
         assert_eq!(pages, vec!["parent".to_string()]);
+    });
+}
+
+/// Columns of `notes_pages` the replication migration copies.
+const REPLICATED_PAGE_COLUMNS: &str = "id, parent_type, parent_page_id, parent_block_id, \
+    parent_data_source_id, child_block_id, project_id, title, icon, cover, in_trash, trash_owner, \
+    archived, source_provider, source_object_id, source_workspace_id, source_last_edited_time, \
+    url, public_url, created_time, last_edited_time, trashed_time, folder_id, parent_row_page_id";
+
+/// Columns of `notes_blocks` the replication migration copies.
+const REPLICATED_BLOCK_COLUMNS: &str = "id, page_id, parent_type, parent_page_id, \
+    parent_block_id, in_trash, trash_owner, type, attrs, text, plain_text, order_key, \
+    source_provider, source_object_id, source_last_edited_time, created_time, last_edited_time";
+
+/// Every row of `table` as one JSON array of `columns` per row, ordered by id.
+async fn row_values(pool: &sqlx::SqlitePool, table: &str, columns: &str) -> Vec<String> {
+    sqlx::query_scalar(AssertSqlSafe(format!(
+        "SELECT json_array({columns}) FROM {table} ORDER BY id"
+    )))
+    .fetch_all(pool)
+    .await
+    .unwrap()
+}
+
+#[test]
+fn notes_structure_replication_keeps_seeded_structure_and_adds_sync_state() {
+    super::block_on(async {
+        let pool =
+            super::helpers::memory_pool_migrated_through(BEFORE_NOTES_STRUCTURE_REPLICATION).await;
+        sqlx::raw_sql(
+            "INSERT INTO project_groups (id, name, order_key) VALUES ('group', 'G', 'a0');
+             INSERT INTO projects (id, group_id, name, order_key) VALUES ('project', 'group', 'P', 'a0');
+             INSERT INTO notes_folders (id, project_id, name) VALUES ('folder', 'project', 'F');
+             INSERT INTO notes_pages (id, parent_type, title, folder_id, created_time)
+                 VALUES ('parent', 'workspace', 'Parent', 'folder', '2026-10-01T00:00:00Z');
+             INSERT INTO notes_pages (id, parent_type, title, project_id, icon, in_trash, trash_owner, trashed_time, url, public_url)
+                 VALUES ('trashed', 'workspace', 'Trashed', 'project', '{\"type\":\"emoji\",\"emoji\":\"x\"}', 1, 'trashed',
+                     '2026-10-02T00:00:00Z', 'https://example.test/a', 'https://example.test/b');
+             INSERT INTO notes_page_aliases (id, page_id, alias, normalized_alias)
+                 VALUES ('home', 'parent', 'Home', 'home');
+             INSERT INTO notes_blocks (id, page_id, parent_type, parent_page_id, type, plain_text, order_key)
+                 VALUES ('root', 'parent', 'page_id', 'parent', 'paragraph', 'root text', 'a0');
+             INSERT INTO notes_blocks (id, page_id, parent_type, parent_block_id, type, plain_text, order_key)
+                 VALUES ('nested', 'parent', 'block_id', 'root', 'paragraph', 'nested text', 'a0');
+             INSERT INTO notes_blocks (id, page_id, parent_type, parent_page_id, type, plain_text, order_key, in_trash, trash_owner)
+                 VALUES ('gone', 'parent', 'page_id', 'parent', 'paragraph', 'gone text', 'a3', 1, 'gone');",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let mut tx = pool.begin().await.unwrap();
+        for statement in [
+            "INSERT INTO notes_pages (id, parent_type, parent_page_id, child_block_id, title)
+             VALUES ('child', 'page_id', 'parent', 'child', 'Child')",
+            "INSERT INTO notes_blocks (id, page_id, parent_type, parent_page_id, type, order_key)
+             VALUES ('child', 'parent', 'page_id', 'parent', 'child_page', 'a1')",
+            "INSERT INTO notes_pages (id, parent_type, parent_block_id, child_block_id, title)
+             VALUES ('deep', 'block_id', 'root', 'deep', 'Deep')",
+            "INSERT INTO notes_blocks (id, page_id, parent_type, parent_block_id, type, order_key)
+             VALUES ('deep', 'parent', 'block_id', 'root', 'child_page', 'a1')",
+            "INSERT INTO notes_blocks (id, page_id, parent_type, parent_page_id, type, order_key)
+             VALUES ('db', 'parent', 'page_id', 'parent', 'child_database', 'a2')",
+            "INSERT INTO notes_databases (id, block_id, parent_type, parent_page_id, title)
+             VALUES ('db', 'db', 'page_id', 'parent', 'Tasks')",
+            "INSERT INTO notes_data_sources (id, database_id, title) VALUES ('source', 'db', 'Tasks')",
+            "INSERT INTO notes_pages (id, parent_type, parent_data_source_id, title)
+             VALUES ('row', 'data_source_id', 'source', 'Row')",
+            "INSERT INTO notes_pages (id, parent_type, parent_data_source_id, parent_row_page_id, title)
+             VALUES ('subrow', 'data_source_id', 'source', 'row', 'Subrow')",
+        ] {
+            sqlx::query(statement).execute(&mut *tx).await.unwrap();
+        }
+        tx.commit().await.unwrap();
+        let pages_before = row_values(&pool, "notes_pages", REPLICATED_PAGE_COLUMNS).await;
+        let blocks_before = row_values(&pool, "notes_blocks", REPLICATED_BLOCK_COLUMNS).await;
+        let aliases_before = row_values(
+            &pool,
+            "notes_page_aliases",
+            "id, page_id, alias, normalized_alias",
+        )
+        .await;
+        assert_eq!(pages_before.len(), 6);
+        assert_eq!(blocks_before.len(), 6);
+
+        super::helpers::migrate_through(&pool, NOTES_STRUCTURE_REPLICATION)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            row_values(&pool, "notes_pages", REPLICATED_PAGE_COLUMNS).await,
+            pages_before
+        );
+        assert_eq!(
+            row_values(&pool, "notes_blocks", REPLICATED_BLOCK_COLUMNS).await,
+            blocks_before
+        );
+        assert_eq!(
+            row_values(
+                &pool,
+                "notes_page_aliases",
+                "id, page_id, alias, normalized_alias"
+            )
+            .await,
+            aliases_before
+        );
+        let sources: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM notes_data_sources")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(sources, 1);
+
+        let pending: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM sqlite_schema WHERE type = 'table'
+             AND name IN ('notes_page_history_pending', 'notes_sync_repair_pending')",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(pending, 2);
+        for table in [
+            "notes_local_users",
+            "notes_folders",
+            "notes_pages",
+            "notes_page_aliases",
+            "notes_blocks",
+        ] {
+            let sync_triggers: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM sqlite_schema
+                 WHERE type = 'trigger' AND tbl_name = ? AND name LIKE 'sync\\_%' ESCAPE '\\'",
+            )
+            .bind(table)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            assert_eq!(sync_triggers, 7, "{table}");
+        }
+        // Placement columns the Notes hook maintains carry no foreign key.
+        let page_keys: Vec<String> = sqlx::query_scalar(
+            "SELECT \"from\" FROM pragma_foreign_key_list('notes_pages') ORDER BY \"from\"",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert!(!page_keys.contains(&"parent_page_id".to_string()));
+        assert!(!page_keys.contains(&"parent_data_source_id".to_string()));
+        let violations: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM pragma_foreign_key_check")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(violations, 0);
     });
 }

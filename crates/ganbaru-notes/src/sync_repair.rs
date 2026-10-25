@@ -22,6 +22,8 @@
 //! - A page nested in itself through `child_page` blocks: the smallest page id of the cycle
 //!   becomes a root page of its project, and its `child_page` block moves to the trash, as
 //!   when a page is moved out of its parent.
+//! - A row page whose row parent is not a row of the same data source, because one of them
+//!   moved to another source or out of its database concurrently, loses its row parent.
 //!
 //! Pairing runs first, so a page it nests again is part of the cycle check.
 //!
@@ -55,6 +57,8 @@ pub struct StructureRepair {
     pub unpaired_pages: Vec<String>,
     /// Pages nested again under their own `child_page` block.
     pub paired_pages: Vec<String>,
+    /// Row pages whose row parent was cleared because it is not a row of the same data source.
+    pub detached_rows: Vec<String>,
     /// Pending keys whose own repair failed, as `kind:key: error`. They stay pending for the
     /// next pass while every other key is repaired.
     pub failed_keys: Vec<String>,
@@ -69,6 +73,7 @@ impl StructureRepair {
             && self.detached_pages.is_empty()
             && self.unpaired_pages.is_empty()
             && self.paired_pages.is_empty()
+            && self.detached_rows.is_empty()
     }
 }
 
@@ -188,6 +193,7 @@ impl StructureRepair {
         self.detached_pages.extend(other.detached_pages);
         self.unpaired_pages.extend(other.unpaired_pages);
         self.paired_pages.extend(other.paired_pages);
+        self.detached_rows.extend(other.detached_rows);
         self.failed_keys.extend(other.failed_keys);
     }
 }
@@ -236,7 +242,44 @@ async fn repair_keys(
     repair_pairing(conn, page_ids, block_ids, &mut report).await?;
     repair_blocks(conn, block_ids, &mut report).await?;
     repair_page_nesting(conn, page_ids, block_ids, &mut report).await?;
+    repair_row_parents(conn, page_ids, &mut report).await?;
     Ok(report)
+}
+
+/// Clears the row parent of the changed pages, and of the rows under them, where the parent is
+/// not a row of the same data source.
+async fn repair_row_parents(
+    conn: &mut SqliteConnection,
+    page_ids: &[String],
+    report: &mut StructureRepair,
+) -> Result<(), String> {
+    if page_ids.is_empty() {
+        return Ok(());
+    }
+    let mut detached: Vec<String> = sqlx::query_scalar(
+        "UPDATE notes_pages
+         SET parent_row_page_id = NULL
+         WHERE parent_row_page_id IS NOT NULL
+           AND (id IN (SELECT value FROM json_each(?1))
+                OR parent_row_page_id IN (SELECT value FROM json_each(?1)))
+           AND NOT EXISTS (
+               SELECT 1 FROM notes_pages AS parent
+               WHERE parent.id = notes_pages.parent_row_page_id
+                 AND notes_pages.parent_data_source_id IS NOT NULL
+                 AND parent.parent_data_source_id = notes_pages.parent_data_source_id
+           )
+         RETURNING id",
+    )
+    .bind(keys_json(page_ids)?)
+    .fetch_all(&mut *conn)
+    .await
+    .map_err(|error| format!("clear Notes row parents across data sources: {error}"))?;
+    if !detached.is_empty() {
+        detached.sort_unstable();
+        crate::sync_apply::queue_page_history(conn, &detached).await?;
+        report.detached_rows.extend(detached);
+    }
+    Ok(())
 }
 
 fn keys_json(keys: &[String]) -> Result<String, String> {

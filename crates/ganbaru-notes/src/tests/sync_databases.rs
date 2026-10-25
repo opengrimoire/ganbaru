@@ -462,3 +462,57 @@ fn template_saves_refuse_blocks_with_missing_parents_or_too_many_blocks() {
         assert!(refusal.contains("block limit"), "{refusal}");
     });
 }
+
+#[test]
+fn repair_clears_a_row_parent_left_in_another_data_source() {
+    crate::test_block_on(async {
+        let pool = migrated_memory_pool().await;
+        database_with_row(&pool).await;
+        create_database(
+            &pool,
+            DATABASE_B,
+            DATA_SOURCE_B,
+            DATABASE_VIEW_B,
+            "Other",
+            DATABASE_A,
+        )
+        .await;
+        insert_row_page(&pool, PAGE_C, DATA_SOURCE_A, "Child", json!({})).await;
+        sqlx::query("UPDATE notes_pages SET parent_row_page_id = ? WHERE id = ?")
+            .bind(PAGE_B)
+            .bind(PAGE_C)
+            .execute(&pool)
+            .await
+            .unwrap();
+        // A merge moved the parent row to another data source while its child stayed.
+        set_applying(&pool, true).await;
+        sqlx::query("UPDATE notes_pages SET parent_data_source_id = ? WHERE id = ?")
+            .bind(DATA_SOURCE_B)
+            .bind(PAGE_B)
+            .execute(&pool)
+            .await
+            .unwrap();
+        set_applying(&pool, false).await;
+
+        let report = crate::sync_repair::repair_structure(&pool, &[PAGE_B.to_string()], &[])
+            .await
+            .unwrap();
+
+        assert_eq!(report.detached_rows, vec![PAGE_C.to_string()]);
+        let parent: Option<String> =
+            sqlx::query_scalar("SELECT parent_row_page_id FROM notes_pages WHERE id = ?")
+                .bind(PAGE_C)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(parent, None);
+        let again = crate::sync_repair::repair_structure(
+            &pool,
+            &[PAGE_B.to_string(), PAGE_C.to_string()],
+            &[],
+        )
+        .await
+        .unwrap();
+        assert!(again.is_empty(), "the repair reaches a fixed point");
+    });
+}

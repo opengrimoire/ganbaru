@@ -27,7 +27,7 @@ use super::writer::{
 use crate::vault::handoff::pairing::PairingManager;
 use ganbaru_db::{DatabaseAccessMode, DatabasePoolRegistry};
 use ganbaru_handoff::protocol::SyncRefusalCode;
-use ganbaru_sync::stability::{CountedDevice, DeviceStanding};
+use ganbaru_sync::stability::DeviceStanding;
 use ganbaru_sync::{
     ChangeNotice, Engine, SealReport, SpaceContext, SyncError, compaction_limit, hold, local,
 };
@@ -763,9 +763,7 @@ impl ServiceState {
             session
                 .reconcile_devices(&manager, &vault_id, &mut self.writer)
                 .await?;
-            let stable = self
-                .stability(host, &session, &manager, &vault_id, view)
-                .await?;
+            let stable = self.stability(host, &session, &manager, view).await?;
             #[cfg(desktop)]
             runtime.stability.publish(&vault_id, stable.clone());
             next = Self::compact(&session, &stable, next).await?;
@@ -803,29 +801,23 @@ impl ServiceState {
         Ok(next)
     }
 
-    /// On the coordinator, computes stability over the vault's linked devices and names the
-    /// devices it does not count. A device whose link record has no valid time must be linked
-    /// again before it counts.
+    /// On the coordinator, computes stability over the devices enrolled and not removed in the
+    /// selected authorization log and names the devices it does not count.
     async fn stability<H: SyncHost>(
         &mut self,
         host: &H,
         session: &Session<'_, H>,
         manager: &PairingManager,
-        vault_id: &str,
         view: &mut SyncStatusView,
     ) -> Result<VersionVector, String> {
         let now = now_ms()?;
-        let devices: Vec<CountedDevice> = manager
-            .linked_peers_for(vault_id)?
-            .into_iter()
-            .map(|peer| CountedDevice {
-                device_id: peer.device_id,
-                linked_at_ms: u64::try_from(peer.linked_at_ms)
-                    .ok()
-                    .filter(|linked_at| *linked_at > 0),
-            })
-            .collect();
+        let local_device_id = host.device_id()?;
         let mut conn = acquire(&session.pool).await?;
+        let devices = session
+            .engine
+            .counted_devices(&mut conn, &session.ctx, &local_device_id)
+            .await
+            .map_err(|error| format!("read the sync counted set: {error}"))?;
         let stability = session
             .engine
             .stability(&mut conn, &session.ctx, &devices, now)

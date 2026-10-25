@@ -296,6 +296,11 @@ impl AuthState {
         )
     }
 
+    /// Device id of the anchor of the current epoch.
+    pub(crate) fn anchor_device_id(&self) -> &str {
+        &self.anchor_device_id
+    }
+
     pub(crate) fn view(&self) -> AuthorizationView {
         AuthorizationView {
             epoch: self.epoch,
@@ -387,6 +392,25 @@ pub(crate) async fn load_charter(
         .map(|bytes| {
             SignedCharter::decode(&bytes).map_err(|_| corrupt("stored charter does not decode"))
         })
+        .transpose()
+}
+
+/// The revision at which the selected chain holds a proposal.
+async fn selected_proposal_revision(
+    conn: &mut SqliteConnection,
+    space: SpaceId,
+    proposal_hash: &Digest32,
+) -> SyncResult<Option<u64>> {
+    let revision: Option<i64> = sqlx::query_scalar(
+        "SELECT revision FROM sync_auth_entries
+         WHERE space_id = ? AND proposal_hash = ? AND selected = 1",
+    )
+    .bind(space.as_bytes().as_slice())
+    .bind(proposal_hash.as_slice())
+    .fetch_optional(&mut *conn)
+    .await?;
+    revision
+        .map(|revision| stored_u64(revision, "revision"))
         .transpose()
 }
 
@@ -800,6 +824,18 @@ impl Engine {
             .map(|selection| selection.state.view()))
     }
 
+    /// The revision at which the selected chain holds the proposal with `proposal_hash`, if it
+    /// does. An outbox drops a proposal once its own replica holds it.
+    pub async fn proposal_revision(
+        &self,
+        conn: &mut SqliteConnection,
+        ctx: &SpaceContext,
+        proposal_hash: &Digest32,
+    ) -> SyncResult<Option<u64>> {
+        log::ensure_space(conn, ctx.space).await?;
+        selected_proposal_revision(conn, ctx.space, proposal_hash).await
+    }
+
     /// Fails with [`SyncError::ResetRequired`] when the space holds sync state from before the
     /// authorization log, which this build does not read.
     pub async fn refuse_legacy_state(
@@ -875,16 +911,10 @@ impl Engine {
     ) -> SyncResult<Result<u64, ProposalRejection>> {
         let mut tx = conn.begin().await?;
         log::ensure_space(&mut tx, ctx.space).await?;
-        let replayed: Option<i64> = sqlx::query_scalar(
-            "SELECT revision FROM sync_auth_entries
-             WHERE space_id = ? AND proposal_hash = ? AND selected = 1",
-        )
-        .bind(ctx.space.as_bytes().as_slice())
-        .bind(proposal.hash().as_slice())
-        .fetch_optional(&mut *tx)
-        .await?;
-        if let Some(revision) = replayed {
-            return Ok(Ok(stored_u64(revision, "revision")?));
+        if let Some(revision) =
+            selected_proposal_revision(&mut tx, ctx.space, &proposal.hash()).await?
+        {
+            return Ok(Ok(revision));
         }
         let Some(selection) = select(&mut tx, ctx.space).await? else {
             return Err(SyncError::ResetRequired("the space has no charter"));
@@ -962,6 +992,10 @@ impl Engine {
             .await?
             .ok_or_else(|| corrupt("sealer slot has no writer"))?;
         let revision = record.revision;
+        writer
+            .reservation
+            .reserve_entry(revision, record.hash())
+            .map_err(SyncError::Reservation)?;
         let seq = sealer
             .seal_authorization(
                 self,

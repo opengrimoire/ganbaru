@@ -18,7 +18,7 @@ pub use sync::{
     validate_discovery_key,
 };
 
-pub const PROTOCOL_VERSION: u16 = 13;
+pub const PROTOCOL_VERSION: u16 = 14;
 pub const MAX_CONTROL_BYTES: usize = 1024 * 1024;
 /// Frame bound before the peer presents a linked certificate. Enrollment (with its 8 KiB
 /// certificate) and contact requests fit well inside it.

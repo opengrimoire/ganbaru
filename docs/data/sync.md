@@ -113,7 +113,7 @@ Source: `crates/ganbaru-sync-contracts/`, `crates/ganbaru-sync/`, `crates/ganbar
 
 ### Exchange
 
-The coordinator desktop is the hub, and clients never exchange directly. Sync requests, including content-addressed asset transfers, share the existing mutual TLS listener under handoff protocol 13, with one request and one response per connection. Every request names the vault and device and is authenticated as an enrolled peer before it reaches the hub. The personal space id derives from the vault id.
+The coordinator desktop is the hub, and clients never exchange directly. Sync requests, including content-addressed asset transfers, share the existing mutual TLS listener under handoff protocol 14, with one request and one response per connection. Every request names the vault and device and is authenticated as an enrolled peer before it reaches the hub. The personal space id derives from the vault id.
 
 | Request | Response | Purpose |
 | --- | --- | --- |

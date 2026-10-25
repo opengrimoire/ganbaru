@@ -57,15 +57,18 @@ pub struct SealReport {
     pub changed_tables: Vec<&'static str>,
     /// Changes the registered hooks reported while materializing.
     pub notices: Vec<ChangeNotice>,
-    /// Captures remain beyond the transaction budget, so the caller seals again.
+    /// Captures, or stale rows a chain deferred, remain beyond the transaction budget, so the
+    /// caller seals again; each seal takes a bounded number of stale rows back.
     pub more: bool,
 }
 
 impl SealReport {
-    /// Records what the materialization of the call changed.
+    /// Records what the materialization of the call changed, and asks for another call while
+    /// it left stale rows listed.
     pub(crate) fn record(&mut self, materialized: Materialized) {
         self.changed_tables = materialized.tables;
         self.notices = materialized.notices;
+        self.more |= materialized.stale_left;
     }
 
     pub(crate) fn absorb(&mut self, other: Self) {

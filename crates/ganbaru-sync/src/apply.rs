@@ -56,9 +56,13 @@ pub const MAX_CHANGES_PER_APPLY: usize = 16;
 pub const MAX_BYTES_PER_APPLY: usize = 1 << 20;
 /// Largest envelope read ahead with its writer's next candidate. Each writer holds at most one.
 const PREFETCH_ENVELOPE_BYTES: usize = 64 * 1024;
-/// Most stale rows one engine write takes back, so the rows a chain deferred are repaired and
-/// materialized over several bounded writes. It matches what one seal transaction may carry.
-const MAX_STALE_ROWS_PER_WRITE: usize = crate::MAX_CHANGES_PER_SEAL;
+/// Most listed stale rows one engine write takes back, so the rows a chain deferred are
+/// repaired and materialized over several bounded writes. The write also plans the rows whose
+/// references reach a taken row again, through referrers that are hidden or missing from the
+/// domain, as any write that changes the row does, see [`repair::expand_references`]. Those
+/// referrers are not bounded here: deferring some of them would materialize a row without the
+/// rows that follow it. Their repairs seal as one group in as many operations as they need.
+pub(crate) const MAX_STALE_ROWS_PER_WRITE: usize = crate::MAX_CHANGES_PER_SEAL;
 
 /// A writer whose operations carry clocks far ahead of local time.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -265,11 +269,11 @@ fn candidate_from_row(row: &SqliteRow) -> SyncResult<Candidate> {
 enum GroupScan {
     /// The chain the candidate belongs to is closed, and every operation of it from the
     /// candidate on is stored and ready in turn. Holds the operations after the candidate that
-    /// complete its group, in sequence order, and whether the group opens a chain that later
-    /// groups finish.
+    /// complete its group, in sequence order, and, when the group opens a chain that later
+    /// groups finish, when the last operation of that chain was stored.
     Complete {
         rest: Vec<(Candidate, VersionVector)>,
-        opens: bool,
+        opens: Option<u64>,
     },
     /// The chain is not closed yet, or an operation of it waits.
     Waiting {
@@ -311,7 +315,7 @@ async fn chain_position(
 
 /// Up to `limit` stored operations of `writer` after `after`, in sequence order, with the
 /// columns `seq, kind, state, hold_reason, excluded_revision IS NOT NULL, group_continues,
-/// length(envelope), clock, context, authorization_revision`.
+/// length(envelope), clock, context, authorization_revision, stored_at_ms`.
 async fn chain_rows(
     conn: &mut SqliteConnection,
     ctx: &SpaceContext,
@@ -321,7 +325,7 @@ async fn chain_rows(
 ) -> SyncResult<Vec<SqliteRow>> {
     Ok(sqlx::query(
         "SELECT seq, kind, state, hold_reason, excluded_revision IS NOT NULL, group_continues,
-            length(envelope), clock, context, authorization_revision
+            length(envelope), clock, context, authorization_revision, stored_at_ms
          FROM sync_ops
          WHERE space_id = ? AND writer_id = ? AND seq > ?
          ORDER BY seq LIMIT ?",
@@ -381,21 +385,21 @@ fn chain_extent(
 /// whole chain is stored and closed, so a chain that never closes applies nothing, and once
 /// one group applied, the next apply calls finish the chain. Each operation of the chain
 /// must be ready once the ones before it applied, without operations of other writers between
-/// them, and sealed against a revision the candidates were read against.
+/// them, and sealed against `revision`, the revision the candidates were read against.
 async fn scan_group(
     engine: &Engine,
     conn: &mut SqliteConnection,
     ctx: &SpaceContext,
     batch: &Batch,
     first: &Candidate,
-    heads: &Heads,
+    (revision, excluding): (u64, &BTreeMap<WriterId, Excluding>),
 ) -> SyncResult<GroupScan> {
     let position = chain_position(conn, ctx, first.writer, first.seq).await?;
     let room = MAX_OPERATIONS_PER_CHAIN - position - 1;
     if !first.continues || room == 0 {
         return Ok(GroupScan::Complete {
             rest: Vec::new(),
-            opens: false,
+            opens: None,
         });
     }
     let cutoff = log::writer(conn, ctx.space, first.writer)
@@ -439,8 +443,8 @@ async fn scan_group(
                 None => return Ok(GroupScan::Invalid(seq)),
             },
         };
-        let revision = stored_u64(row.try_get(9)?, "authorization revision")?;
-        if revision > heads.revision || !exclusion::ready(&applied, &context, &heads.excluding) {
+        let sealed_against = stored_u64(row.try_get(9)?, "authorization revision")?;
+        if sealed_against > revision || !exclusion::ready(&applied, &context, excluding) {
             return Ok(GroupScan::Waiting { on_others: true });
         }
         applied.set(first.writer, seq);
@@ -462,7 +466,15 @@ async fn scan_group(
         bytes = bytes.saturating_add(length);
         grouping = !ends_group(continues, operations, bytes);
     }
-    let opens = position == 0 && rest.len() < extent;
+    let opens = if position == 0 && rest.len() < extent {
+        let mut closed_at = 0;
+        for row in &rows[..extent] {
+            closed_at = closed_at.max(stored_u64(row.try_get(10)?, "stored time")?);
+        }
+        Some(closed_at)
+    } else {
+        None
+    };
     Ok(GroupScan::Complete { rest, opens })
 }
 
@@ -616,6 +628,58 @@ impl Heads {
             .partition_point(|other| (other.clock, other.writer) < (next.clock, next.writer));
         self.candidates.insert(position, next);
         Ok(())
+    }
+
+    /// The first chain the candidates not in `blocked` could open now, as `(stored time of its
+    /// last operation, writer)`. Chains open in that order instead of clock order, so a writer
+    /// whose clocks run low cannot open every chain before one that has waited longer: every
+    /// receiver stamps the stored time itself, and a chain sent later is stored later.
+    async fn first_opener(
+        &mut self,
+        engine: &Engine,
+        conn: &mut SqliteConnection,
+        ctx: &SpaceContext,
+        batch: &Batch,
+        blocked: &BTreeSet<WriterId>,
+    ) -> SyncResult<Option<(u64, WriterId)>> {
+        let mut first = None;
+        for index in 0..self.candidates.len() {
+            let candidate = &mut self.candidates[index];
+            if !candidate.continues || blocked.contains(&candidate.writer) {
+                continue;
+            }
+            // A candidate whose header cannot be read is held when it is taken.
+            if candidate.context.is_none() {
+                candidate.context =
+                    resolve_context(engine, conn, ctx, candidate.writer, candidate.seq).await?;
+            }
+            let candidate = &self.candidates[index];
+            let ready = candidate
+                .context
+                .as_ref()
+                .is_some_and(|context| exclusion::ready(&batch.applied, context, &self.excluding));
+            if !ready {
+                continue;
+            }
+            let scan = scan_group(
+                engine,
+                conn,
+                ctx,
+                batch,
+                candidate,
+                (self.revision, &self.excluding),
+            )
+            .await?;
+            if let GroupScan::Complete {
+                opens: Some(closed_at),
+                ..
+            } = scan
+            {
+                let key = (closed_at, candidate.writer);
+                first = Some(first.map_or(key, |earlier: (u64, WriterId)| earlier.min(key)));
+            }
+        }
+        Ok(first)
     }
 }
 
@@ -1028,8 +1092,9 @@ async fn repairs_wait(
 /// write, or cascade to, are sealed first and the merge is planned again. Captures of dirty
 /// tables are sealed before repairs as `constrained` says. While repairs wait for a chain, see
 /// [`repairs_wait`], every repair waits and the dirty rows are listed as stale rows. Once no
-/// chain is open, each finish takes back at most [`MAX_STALE_ROWS_PER_WRITE`] stale rows and
-/// seals their repairs, and says whether more remain, see [`MAX_OPERATIONS_PER_CHAIN`].
+/// chain is open, each finish takes back at most [`MAX_STALE_ROWS_PER_WRITE`] stale rows,
+/// plans them with the rows that reference them, seals their repairs, and says whether more
+/// remain, see [`MAX_OPERATIONS_PER_CHAIN`].
 /// Without a writer that can seal them, or when they exceed what a bounded slot may still
 /// seal, it returns `None` and writes nothing, so the caller rolls back.
 #[allow(clippy::too_many_arguments)]
@@ -1253,11 +1318,14 @@ impl Engine {
         let mut heads = Heads::load(&mut tx, ctx).await?;
         // Chains open one at a time, and only once the rows the last one deferred were taken
         // back, so repairs wait for one chain at a time and every deferral ends. A call that
-        // cannot seal repairs defers none and opens chains freely.
+        // cannot seal repairs defers none and opens chains freely. Of the chains that could
+        // open, the one stored whole first opens, see [`Heads::first_opener`]. It is found once
+        // per call, so a call scans each candidate's chain at most once for it.
         let may_seal = slot.may_seal(&mut tx, ctx).await?;
         let chain_open = may_seal && chain_resuming(&mut tx, ctx).await?;
         let stale_waiting = may_seal && exclusion::stale_rows_listed(&mut tx).await?;
         let mut opened = false;
+        let mut winner: Option<(u64, WriterId)> = None;
         let mut gated = false;
         while let Some((mut candidate, context)) = heads
             .take_ready(self, &mut tx, ctx, &batch, &blocked, &mut report)
@@ -1270,14 +1338,41 @@ impl Engine {
                 report.more = true;
                 break;
             }
-            let rest = match scan_group(self, &mut tx, ctx, &batch, &candidate, &heads).await? {
+            let scan = scan_group(
+                self,
+                &mut tx,
+                ctx,
+                &batch,
+                &candidate,
+                (heads.revision, &heads.excluding),
+            )
+            .await?;
+            let rest = match scan {
                 GroupScan::Complete { rest, opens } => {
-                    if opens && (chain_open || stale_waiting || opened) {
-                        gated = true;
-                        blocked.insert(candidate.writer);
-                        continue;
+                    if let Some(closed_at) = opens {
+                        let waits = if chain_open || stale_waiting || opened {
+                            true
+                        } else if let Some((_, writer)) = winner {
+                            writer != candidate.writer
+                        } else {
+                            let others = heads
+                                .first_opener(self, &mut tx, ctx, &batch, &blocked)
+                                .await?;
+                            match others {
+                                Some(first) if first < (closed_at, candidate.writer) => {
+                                    winner = Some(first);
+                                    true
+                                }
+                                _ => false,
+                            }
+                        };
+                        if waits {
+                            gated = true;
+                            blocked.insert(candidate.writer);
+                            continue;
+                        }
+                        opened = true;
                     }
-                    opened |= opens;
                     rest
                 }
                 GroupScan::Waiting { on_others } => {
@@ -1463,9 +1558,9 @@ impl Engine {
         if deferred && report.applied > 0 {
             report.more = true;
         }
-        // A gated chain opens in a later call once the open chain applied or the finish took
-        // the deferred rows back.
-        if gated && (report.applied > 0 || (stale_waiting && !chain_open)) {
+        // A gated chain opens in a later call once the open chain applied, the chain it waited
+        // for was held, or the finish took the deferred rows back.
+        if gated && (report.applied > 0 || report.held > 0 || (stale_waiting && !chain_open)) {
             report.more = true;
         }
         flush_applied(&mut tx, ctx, &batch, &mut advanced).await?;

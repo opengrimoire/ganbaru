@@ -172,6 +172,14 @@ CREATE TABLE notes_page_history_pending (
     queued_at TEXT NOT NULL CHECK (trim(queued_at) <> '')
 );
 
+-- Pages and blocks that remote changes touched and the Notes structure repair has not yet
+-- committed for. A failed or skipped repair keeps its keys for the next pass.
+CREATE TABLE notes_sync_repair_pending (
+    kind TEXT NOT NULL CHECK (kind IN ('page', 'block')),
+    row_key TEXT NOT NULL CHECK (trim(row_key) <> ''),
+    PRIMARY KEY (kind, row_key)
+) WITHOUT ROWID;
+
 -- Local writes keep a nested page paired with its `child_page` block: a page nested under a
 -- page or a block names the block that shares its id, and no other page names a block. Remote
 -- placement is paired by the Notes structure repair, because apply derives the parent columns

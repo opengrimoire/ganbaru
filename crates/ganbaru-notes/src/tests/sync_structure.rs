@@ -374,6 +374,67 @@ fn repair_nests_a_page_again_under_its_own_child_page_block() {
 }
 
 #[test]
+fn a_failed_pending_repair_keeps_its_keys_and_the_next_pass_repairs_them() {
+    crate::test_block_on(async {
+        let pool = migrated_memory_pool().await;
+        nest_a_under_project_page_b(&pool).await;
+        set_applying(&pool, true).await;
+        sqlx::query(
+            "UPDATE notes_pages
+             SET parent_type = 'workspace', parent_page_id = NULL, child_block_id = NULL
+             WHERE id = ?",
+        )
+        .bind(PAGE_A)
+        .execute(&pool)
+        .await
+        .unwrap();
+        let mut conn = pool.acquire().await.unwrap();
+        refresh_after_apply(&mut conn, PAGES_TABLE, &[PAGE_A.to_string()])
+            .await
+            .unwrap();
+        drop(conn);
+        set_applying(&pool, false).await;
+        let pending = || async {
+            sqlx::query_scalar::<_, String>(
+                "SELECT kind || ':' || row_key FROM notes_sync_repair_pending ORDER BY kind, row_key",
+            )
+            .fetch_all(&pool)
+            .await
+            .unwrap()
+        };
+        assert_eq!(pending().await, vec![format!("page:{PAGE_A}")]);
+        assert!(crate::sync_repair::has_pending(&pool).await.unwrap());
+
+        sqlx::query(
+            "CREATE TEMP TRIGGER fail_repair BEFORE UPDATE ON notes_pages
+             BEGIN SELECT RAISE(ABORT, 'repair blocked'); END",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let failed = crate::sync_repair::repair_pending(&pool).await;
+        assert!(failed.unwrap_err().contains("repair blocked"));
+        assert_eq!(pending().await, vec![format!("page:{PAGE_A}")]);
+        assert_eq!(page_nesting(&pool, PAGE_A).await.0, "workspace");
+
+        sqlx::query("DROP TRIGGER temp.fail_repair")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let report = crate::sync_repair::repair_pending(&pool).await.unwrap();
+        assert_eq!(report.paired_pages, vec![PAGE_A.to_string()]);
+        assert!(pending().await.is_empty());
+        assert_eq!(page_nesting(&pool, PAGE_A).await.0, "page_id");
+        assert!(
+            crate::sync_repair::repair_pending(&pool)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    });
+}
+
+#[test]
 fn a_page_moved_out_of_its_parent_is_not_nested_again() {
     crate::test_block_on(async {
         let pool = migrated_memory_pool().await;

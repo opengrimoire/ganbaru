@@ -6,7 +6,8 @@
 //! hook-derived columns (a page's `parent_type`, `parent_page_id`, and `parent_block_id`, a
 //! block's `page_id` and `plain_text`), refreshes the reminder candidates of changed blocks,
 //! invalidates the fingerprints of the search and link indexes so the next read rebuilds them,
-//! queues history snapshots of the touched pages in `notes_page_history_pending`, and reports
+//! queues history snapshots of the touched pages in `notes_page_history_pending`, queues the
+//! changed page and block keys for structure repair in `notes_sync_repair_pending`, and reports
 //! every changed row under its table name. It writes only device-local rows and hook-derived
 //! columns, which sync never captures.
 
@@ -76,10 +77,32 @@ pub async fn refresh_after_apply(
     }
     if table == PAGES_TABLE {
         refresh_pages(conn, keys).await?;
+        queue_repair(conn, "page", keys).await?;
     } else if table == BLOCKS_TABLE {
         refresh_blocks(conn, keys).await?;
+        queue_repair(conn, "block", keys).await?;
     }
     invalidate_indexes(conn).await
+}
+
+/// Records `keys` of `kind` (`page` or `block`) for the Notes structure repair, which clears
+/// them in the transaction that repairs them.
+async fn queue_repair(
+    conn: &mut SqliteConnection,
+    kind: &str,
+    keys: &[String],
+) -> Result<(), String> {
+    sqlx::query(
+        "INSERT INTO notes_sync_repair_pending (kind, row_key)
+         SELECT ?1, value FROM json_each(?2) WHERE trim(value) <> ''
+         ON CONFLICT (kind, row_key) DO NOTHING",
+    )
+    .bind(kind)
+    .bind(keys_json(keys)?)
+    .execute(&mut *conn)
+    .await
+    .map_err(|error| format!("queue Notes structure repair: {error}"))?;
+    Ok(())
 }
 
 fn keys_json(keys: &[String]) -> Result<String, String> {

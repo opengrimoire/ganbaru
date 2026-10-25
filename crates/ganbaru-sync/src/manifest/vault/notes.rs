@@ -561,6 +561,7 @@ pub const DOMAIN: DomainManifest = DomainManifest {
         device("notes_project_history_bundle_references"),
         device("notes_project_history_dirty"),
         device("notes_project_history_versions"),
+        device("notes_sync_repair_pending"),
         device("notes_undo_state"),
     ],
     engine: &[],

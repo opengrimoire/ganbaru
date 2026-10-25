@@ -107,13 +107,76 @@ pub async fn repair_structure_on(
         .begin()
         .await
         .map_err(|error| format!("begin Notes structure repair: {error}"))?;
-    let mut report = StructureRepair::default();
-    repair_pairing(&mut tx, page_ids, block_ids, &mut report).await?;
-    repair_blocks(&mut tx, block_ids, &mut report).await?;
-    repair_page_nesting(&mut tx, page_ids, block_ids, &mut report).await?;
+    let report = repair_keys(&mut tx, page_ids, block_ids).await?;
     tx.commit()
         .await
         .map_err(|error| format!("commit Notes structure repair: {error}"))?;
+    Ok(report)
+}
+
+/// Whether `notes_sync_repair_pending` holds keys still to repair.
+pub async fn has_pending(pool: &SqlitePool) -> Result<bool, String> {
+    sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM notes_sync_repair_pending)")
+        .fetch_one(pool)
+        .await
+        .map_err(|error| format!("check pending Notes structure repair: {error}"))
+}
+
+/// Repairs the structure around every key in `notes_sync_repair_pending` and clears those keys
+/// in the same transaction, so a failed repair keeps them for the next call.
+pub async fn repair_pending(pool: &SqlitePool) -> Result<StructureRepair, String> {
+    let mut conn = pool
+        .acquire()
+        .await
+        .map_err(|error| format!("acquire Notes structure repair connection: {error}"))?;
+    repair_pending_on(&mut conn).await
+}
+
+/// [`repair_pending`] on one connection.
+pub async fn repair_pending_on(conn: &mut SqliteConnection) -> Result<StructureRepair, String> {
+    let mut tx = conn
+        .begin()
+        .await
+        .map_err(|error| format!("begin Notes structure repair: {error}"))?;
+    let pending: Vec<(String, String)> = sqlx::query_as(
+        "SELECT kind, row_key FROM notes_sync_repair_pending ORDER BY kind, row_key",
+    )
+    .fetch_all(&mut *tx)
+    .await
+    .map_err(|error| format!("load pending Notes structure repair: {error}"))?;
+    if pending.is_empty() {
+        return Ok(StructureRepair::default());
+    }
+    let (pages, blocks): (Vec<_>, Vec<_>) =
+        pending.into_iter().partition(|(kind, _)| kind == "page");
+    let pages: Vec<String> = pages.into_iter().map(|(_, key)| key).collect();
+    let blocks: Vec<String> = blocks.into_iter().map(|(_, key)| key).collect();
+    let report = repair_keys(&mut tx, &pages, &blocks).await?;
+    sqlx::query(
+        "DELETE FROM notes_sync_repair_pending
+         WHERE (kind = 'page' AND row_key IN (SELECT value FROM json_each(?1)))
+            OR (kind = 'block' AND row_key IN (SELECT value FROM json_each(?2)))",
+    )
+    .bind(keys_json(&pages)?)
+    .bind(keys_json(&blocks)?)
+    .execute(&mut *tx)
+    .await
+    .map_err(|error| format!("clear pending Notes structure repair: {error}"))?;
+    tx.commit()
+        .await
+        .map_err(|error| format!("commit Notes structure repair: {error}"))?;
+    Ok(report)
+}
+
+async fn repair_keys(
+    conn: &mut SqliteConnection,
+    page_ids: &[String],
+    block_ids: &[String],
+) -> Result<StructureRepair, String> {
+    let mut report = StructureRepair::default();
+    repair_pairing(conn, page_ids, block_ids, &mut report).await?;
+    repair_blocks(conn, block_ids, &mut report).await?;
+    repair_page_nesting(conn, page_ids, block_ids, &mut report).await?;
     Ok(report)
 }
 

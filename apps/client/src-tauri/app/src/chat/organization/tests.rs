@@ -171,7 +171,20 @@ async fn seed_review_assignment_with_stranded_replies(pool: &SqlitePool) {
          VALUES ('project:review', 'group:review', 'Review', 'a1');
          INSERT INTO project_working_folders
              (id, project_id, display_name, kind, managed_relative_path)
-         VALUES ('folder:review', 'project:review', 'Review', 'managed', 'projects/review');",
+         VALUES ('folder:review', 'project:review', 'Review', 'managed', 'projects/review');
+         INSERT INTO chat_conversations
+             (id, project_id, conversation_kind, last_activity_at, created_at, updated_at)
+         VALUES ('conversation:review', 'project:review', 'channel', '2026-08-04T17:00:00.000Z',
+                 '2026-08-04T17:00:00.000Z', '2026-08-04T17:00:00.000Z');
+         INSERT INTO chat_channels
+             (id, project_id, conversation_id, name, is_default, created_at, updated_at)
+         VALUES ('channel:review', 'project:review', 'conversation:review', 'general', 1,
+                 '2026-08-04T17:00:00.000Z', '2026-08-04T17:00:00.000Z');
+         INSERT INTO chat_conversation_memberships
+             (conversation_id, participant_id, sync_key, membership_role, created_at,
+              updated_at)
+         VALUES ('conversation:review', 'participant:local-owner', 'membership:review-owner',
+                 'owner', '2026-08-04T17:00:00.000Z', '2026-08-04T17:00:00.000Z');",
     )
     .execute(pool)
     .await
@@ -186,11 +199,7 @@ async fn seed_review_assignment_with_stranded_replies(pool: &SqlitePool) {
     .unwrap();
     drop(connection);
     sqlx::raw_sql(
-        "UPDATE chat_conversations SET id = 'conversation:review'
-         WHERE project_id = 'project:review' AND conversation_kind = 'channel';
-         UPDATE chat_channels SET id = 'channel:review'
-         WHERE project_id = 'project:review' AND is_default = 1;
-         INSERT INTO chat_participants
+        "INSERT INTO chat_participants
              (id, participant_kind, display_name, created_at, updated_at)
          VALUES (
              'participant:review-agent', 'ai_teammate', 'Review agent',
@@ -211,28 +220,29 @@ async fn seed_review_assignment_with_stranded_replies(pool: &SqlitePool) {
              '2026-08-04T17:00:00.000Z'
          );
          INSERT INTO chat_conversation_memberships
-             (conversation_id, participant_id, membership_role, created_at, updated_at)
+             (conversation_id, participant_id, sync_key, membership_role, created_at,
+              updated_at)
          VALUES (
-             'conversation:review', 'participant:review-agent', 'member',
+             'conversation:review', 'participant:review-agent', 'membership:review', 'member',
              '2026-08-04T17:00:00.000Z', '2026-08-04T17:00:00.000Z'
          );
          INSERT INTO chat_teammate_channel_memberships
-             (conversation_id, teammate_id, access_profile_id,
+             (conversation_id, teammate_id, sync_key, access_profile_id,
               read_history, read_history_inherits_profile,
               participate, participate_inherits_profile,
               history_boundary, history_boundary_inherits_profile,
               created_at, updated_at)
          VALUES (
-             'conversation:review', 'participant:review-agent',
+             'conversation:review', 'participant:review-agent', 'channel-membership:review',
              'access-profile:build-and-test', 1, 1, 1, 1, 'entire', 1,
              '2026-08-04T17:00:00.000Z', '2026-08-04T17:00:00.000Z'
          );
          INSERT INTO chat_teammate_working_folder_grants
-             (conversation_id, teammate_id, project_id, working_folder_id,
+             (conversation_id, teammate_id, project_id, working_folder_id, sync_key,
               capability, capability_inherits_profile, is_default, created_at)
          VALUES (
              'conversation:review', 'participant:review-agent', 'project:review',
-             'folder:review', 'execute', 1, 1, '2026-08-04T17:00:00.000Z'
+             'folder:review', 'grant:review', 'execute', 1, 1, '2026-08-04T17:00:00.000Z'
          );
          UPDATE chat_teammate_access_state
          SET access_revision = 1, updated_at = '2026-08-04T17:00:00.000Z'
@@ -1123,12 +1133,15 @@ fn removing_a_teammate_from_a_channel_keeps_the_rows_and_hides_them_from_readers
              VALUES ('channel-design', 'project-design', 'conversation-design', 'design', 0,
                      '2026-08-14T17:30:00.000Z', '2026-08-14T17:30:00.000Z');
              INSERT INTO chat_conversation_memberships
-                 (conversation_id, participant_id, membership_role, created_at, updated_at)
-             VALUES ('conversation-design', 'participant:design-agent', 'member',
-                     '2026-08-14T17:30:00.000Z', '2026-08-14T17:30:00.000Z');
+                 (conversation_id, participant_id, sync_key, membership_role, created_at,
+                  updated_at)
+             VALUES ('conversation-design', 'participant:design-agent', 'membership:design',
+                     'member', '2026-08-14T17:30:00.000Z', '2026-08-14T17:30:00.000Z');
              INSERT INTO chat_teammate_channel_memberships
-                 (conversation_id, teammate_id, access_profile_id, created_at, updated_at)
-             VALUES ('conversation-design', 'participant:design-agent', 'access-profile:edit-files',
+                 (conversation_id, teammate_id, sync_key, access_profile_id, created_at,
+                  updated_at)
+             VALUES ('conversation-design', 'participant:design-agent',
+                     'channel-membership:design', 'access-profile:edit-files',
                      '2026-08-14T17:30:00.000Z', '2026-08-14T17:30:00.000Z');",
         )
         .execute(&pool)

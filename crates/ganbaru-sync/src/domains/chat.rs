@@ -3,16 +3,24 @@
 //!
 //! A teammate's current policy and an access profile's current revision are coupled with a copy
 //! of the revision's restrictiveness. Concurrent edits keep the more restrictive one: asking
-//! for approval outranks a custom mode, which outranks approving for the user, which outranks
-//! full access, and a lower maximum folder capability outranks a higher one. An edit made after
+//! for approval outranks approving for the user, which outranks full access, which outranks a
+//! custom mode that defers to the provider, and a lower maximum folder capability outranks a
+//! higher one. An edit made after
 //! seeing the other still wins by causality.
+//!
+//! Conversation memberships, AI channel memberships, and working folder grants keep the narrower
+//! access among concurrent edits: removal and revocation first, then the stricter approval
+//! override, folder capability, and channel capabilities. A channel archive outranks a
+//! concurrent unarchive.
 
 use ganbaru_sync_contracts::{Field, GroupId, TableId, Value};
 
 use crate::adapter::{AdapterError, DomainAdapter, Presentation};
 use crate::manifest::vault::chat::{
-    ADAPTER, PARTICIPANTS_TABLE, POLICY_REVISIONS_TABLE, PROFILE_REVISIONS_TABLE, PROFILES_TABLE,
-    TEAMMATES_TABLE, participant_group, policy_revision_group, profile_group,
+    ADAPTER, CHANNEL_MEMBERSHIPS_TABLE, CHANNELS_TABLE, CONVERSATIONS_TABLE, FOLDER_GRANTS_TABLE,
+    MEMBERSHIPS_TABLE, PARTICIPANTS_TABLE, POLICY_REVISIONS_TABLE, PROFILE_REVISIONS_TABLE,
+    PROFILES_TABLE, TEAMMATES_TABLE, channel_group, channel_membership_group, conversation_group,
+    folder_grant_group, membership_group, participant_group, policy_revision_group, profile_group,
     profile_revision_group, teammate_group,
 };
 
@@ -59,6 +67,23 @@ pub const BUILTIN_PROFILE_KEYS: [&str; 5] = [
 pub const HISTORY_BOUNDARIES: [&str; 2] = ["entire", "from_grant"];
 /// Maximum folder capabilities, least restrictive first.
 pub const FOLDER_CAPABILITIES: [&str; 5] = ["publish", "execute", "edit", "read", "none"];
+/// Characters of a channel name.
+pub const MAX_CHANNEL_NAME_CHARS: usize = 80;
+/// Characters of a channel topic.
+pub const MAX_CHANNEL_TOPIC_CHARS: usize = 250;
+/// Conversation kinds.
+pub const CONVERSATION_KINDS: [&str; 3] = ["channel", "direct_message", "task_discussion"];
+/// Conversation membership roles, least restrictive first.
+pub const MEMBERSHIP_ROLES: [&str; 2] = ["owner", "member"];
+/// Runtime approval overrides, least restrictive first. Provider custom defers to the
+/// provider's own configuration, mirroring the custom safety mode.
+pub const APPROVAL_POLICIES: [&str; 4] = ["provider_custom", "unattended", "auto_approve", "ask"];
+/// The approval override that asks every time, which ranks above inheriting.
+const ASK_APPROVAL_POLICY: &str = "ask";
+/// How many [`APPROVAL_POLICIES`] rank below inheriting.
+const APPROVAL_RANKED_POLICIES: usize = 3;
+/// Rank of no approval override.
+const INHERITED_APPROVAL_RANK: u8 = 4;
 
 fn text(field: &Field) -> Result<&str, AdapterError> {
     match field {
@@ -305,6 +330,187 @@ fn validate_profile_revision(group: GroupId, fields: &[Field]) -> Result<(), Ada
     }
 }
 
+fn validate_conversation(group: GroupId, fields: &[Field]) -> Result<(), AdapterError> {
+    match (group, fields) {
+        (conversation_group::CREATED, [_project, kind, created_at]) => {
+            one_of(kind, &CONVERSATION_KINDS, "chat conversation kind")?;
+            timestamp(created_at)
+        }
+        (conversation_group::ACTIVITY | conversation_group::UPDATED, [at]) => timestamp(at),
+        (conversation_group::LIFECYCLE, [archived_at]) => optional_timestamp(archived_at),
+        _ => Err(AdapterError("chat conversation value")),
+    }
+}
+
+fn validate_membership(group: GroupId, fields: &[Field]) -> Result<(), AdapterError> {
+    match (group, fields) {
+        (membership_group::IDENTITY, [_, _]) | (membership_group::EXISTS, []) => Ok(()),
+        (membership_group::MEMBERSHIP, [role, removed_at]) => {
+            one_of(role, &MEMBERSHIP_ROLES, "chat membership role")?;
+            optional_timestamp(removed_at)
+        }
+        (membership_group::CREATED | membership_group::UPDATED, [at]) => timestamp(at),
+        _ => Err(AdapterError("chat membership value")),
+    }
+}
+
+/// A history boundary and its ordinal: `entire` with none, or `from_grant` with one of at
+/// least 1.
+fn history_pair(boundary: &Field, ordinal: &Field) -> Result<(), AdapterError> {
+    one_of(boundary, &HISTORY_BOUNDARIES, "chat history boundary")?;
+    match (text(boundary)?, ordinal) {
+        ("entire", Field::Null) => Ok(()),
+        ("from_grant", Field::Integer(ordinal)) if *ordinal >= 1 => Ok(()),
+        _ => Err(AdapterError("chat history boundary ordinal")),
+    }
+}
+
+fn validate_channel_membership(group: GroupId, fields: &[Field]) -> Result<(), AdapterError> {
+    match (group, fields) {
+        (channel_membership_group::IDENTITY, [_, _]) | (channel_membership_group::EXISTS, []) => {
+            Ok(())
+        }
+        (
+            channel_membership_group::ACCESS,
+            [
+                _profile,
+                read_history,
+                read_history_inherits,
+                participate,
+                participate_inherits,
+                boundary,
+                boundary_inherits,
+                ordinal,
+                approval,
+                scratch_approval,
+                removed_at,
+            ],
+        ) => {
+            for value in [
+                read_history,
+                read_history_inherits,
+                participate,
+                participate_inherits,
+                boundary_inherits,
+            ] {
+                flag(value)?;
+            }
+            history_pair(boundary, ordinal)?;
+            optional_one_of(approval, &APPROVAL_POLICIES, "chat approval policy")?;
+            optional_one_of(scratch_approval, &APPROVAL_POLICIES, "chat approval policy")?;
+            optional_timestamp(removed_at)
+        }
+        (channel_membership_group::CREATED | channel_membership_group::UPDATED, [at]) => {
+            timestamp(at)
+        }
+        _ => Err(AdapterError("chat channel membership value")),
+    }
+}
+
+fn validate_folder_grant(group: GroupId, fields: &[Field]) -> Result<(), AdapterError> {
+    match (group, fields) {
+        (folder_grant_group::IDENTITY, [_, _, _]) | (folder_grant_group::EXISTS, []) => Ok(()),
+        (folder_grant_group::GRANT, [capability, inherits, is_default, approval, revoked_at]) => {
+            one_of(
+                capability,
+                &FOLDER_CAPABILITIES,
+                "chat folder grant capability",
+            )?;
+            flag(inherits)?;
+            flag(is_default)?;
+            optional_one_of(approval, &APPROVAL_POLICIES, "chat approval policy")?;
+            optional_timestamp(revoked_at)
+        }
+        (folder_grant_group::CREATED, [_project, created_at]) => timestamp(created_at),
+        _ => Err(AdapterError("chat folder grant value")),
+    }
+}
+
+fn validate_channel(group: GroupId, fields: &[Field]) -> Result<(), AdapterError> {
+    match (group, fields) {
+        (channel_group::CREATED, [_project, _conversation, is_default, created_at]) => {
+            flag(is_default)?;
+            timestamp(created_at)
+        }
+        (channel_group::DETAILS, [name, topic]) => {
+            bounded(name, 1, MAX_CHANNEL_NAME_CHARS, "chat channel name")?;
+            bounded(topic, 0, MAX_CHANNEL_TOPIC_CHARS, "chat channel topic")
+        }
+        (channel_group::LIFECYCLE, [archived_at]) => optional_timestamp(archived_at),
+        (channel_group::UPDATED, [at]) => timestamp(at),
+        _ => Err(AdapterError("chat channel value")),
+    }
+}
+
+/// Priority of an ended row: a removal or revocation outranks every live value.
+const ENDED: u8 = u8::MAX;
+
+/// Rank of an approval override, 1 for the least restrictive: the explicit policies in
+/// [`APPROVAL_POLICIES`] order, then no override, which inherits the stricter default of asking,
+/// then an explicit `ask`.
+fn approval_rank(field: Option<&Field>) -> u8 {
+    match field {
+        None | Some(Field::Null) => INHERITED_APPROVAL_RANK,
+        Some(Field::Text(text)) if text == ASK_APPROVAL_POLICY => INHERITED_APPROVAL_RANK + 1,
+        field => restrictiveness(field, &APPROVAL_POLICIES[..APPROVAL_RANKED_POLICIES]).max(1),
+    }
+}
+
+/// Number of approval override ranks.
+const APPROVAL_RANKS: u8 = INHERITED_APPROVAL_RANK + 1;
+
+/// Whether the field at `index` is set, which marks a removal or revocation.
+fn ended(fields: &[Field], index: usize) -> bool {
+    !matches!(fields.get(index), None | Some(Field::Null))
+}
+
+/// A membership removal wins, then demotion to member over promotion to owner.
+fn membership_priority(fields: &[Field]) -> u8 {
+    if ended(fields, 1) {
+        ENDED
+    } else {
+        restrictiveness(fields.first(), &MEMBERSHIP_ROLES)
+    }
+}
+
+/// A channel removal wins, then the stricter channel approval override, then the stricter
+/// scratch approval override, then the value that clears more of history reading,
+/// participation, and full history.
+fn channel_membership_priority(fields: &[Field]) -> u8 {
+    if ended(fields, 10) {
+        return ENDED;
+    }
+    let cleared = [
+        matches!(fields.get(1), Some(Field::Integer(0))),
+        matches!(fields.get(3), Some(Field::Integer(0))),
+        matches!(fields.get(5), Some(Field::Text(text)) if text == "from_grant"),
+    ]
+    .into_iter()
+    .filter(|cleared| *cleared)
+    .count();
+    let cleared = u8::try_from(cleared).unwrap_or(0);
+    let approvals =
+        (approval_rank(fields.get(8)) - 1) * APPROVAL_RANKS + (approval_rank(fields.get(9)) - 1);
+    1 + approvals * CLEARED_RANKS + cleared
+}
+
+/// Number of cleared channel capability counts, zero to three.
+const CLEARED_RANKS: u8 = 4;
+
+/// A revocation wins, then the lower folder capability, then the stricter approval override.
+fn folder_grant_priority(fields: &[Field]) -> u8 {
+    if ended(fields, 4) {
+        return ENDED;
+    }
+    let capability = restrictiveness(fields.first(), &FOLDER_CAPABILITIES).max(1);
+    1 + (capability - 1) * APPROVAL_RANKS + (approval_rank(fields.get(3)) - 1)
+}
+
+/// An archive wins over a concurrent unarchive.
+fn channel_lifecycle_priority(fields: &[Field]) -> u8 {
+    if ended(fields, 0) { 2 } else { 1 }
+}
+
 /// One plus the position of `field`'s text in `ranked`, least restrictive first, or 0 for null
 /// or anything else, so a cleared pointer never outranks a set one.
 fn restrictiveness(field: Option<&Field>, ranked: &[&str]) -> u8 {
@@ -343,6 +549,14 @@ impl DomainAdapter for ChatAdapter {
             restrictiveness(copied, &SAFETY_MODES)
         } else if table == PROFILES_TABLE && group == profile_group::CURRENT {
             restrictiveness(copied, &FOLDER_CAPABILITIES)
+        } else if table == MEMBERSHIPS_TABLE && group == membership_group::MEMBERSHIP {
+            membership_priority(value.fields())
+        } else if table == CHANNEL_MEMBERSHIPS_TABLE && group == channel_membership_group::ACCESS {
+            channel_membership_priority(value.fields())
+        } else if table == FOLDER_GRANTS_TABLE && group == folder_grant_group::GRANT {
+            folder_grant_priority(value.fields())
+        } else if table == CHANNELS_TABLE && group == channel_group::LIFECYCLE {
+            channel_lifecycle_priority(value.fields())
         } else {
             0
         }
@@ -360,6 +574,16 @@ impl DomainAdapter for ChatAdapter {
             validate_profile(group, fields)
         } else if table == PROFILE_REVISIONS_TABLE {
             validate_profile_revision(group, fields)
+        } else if table == CONVERSATIONS_TABLE {
+            validate_conversation(group, fields)
+        } else if table == MEMBERSHIPS_TABLE {
+            validate_membership(group, fields)
+        } else if table == CHANNEL_MEMBERSHIPS_TABLE {
+            validate_channel_membership(group, fields)
+        } else if table == FOLDER_GRANTS_TABLE {
+            validate_folder_grant(group, fields)
+        } else if table == CHANNELS_TABLE {
+            validate_channel(group, fields)
         } else {
             Ok(())
         }
@@ -585,5 +809,277 @@ mod tests {
         assert!(profile_revision(1, "execute").is_ok());
         assert!(profile_revision(2, "execute").is_err());
         assert!(profile_revision(1, "admin").is_err());
+    }
+
+    fn optional(text: Option<&str>) -> Field {
+        text.map_or(Field::Null, t)
+    }
+
+    fn membership(role: &str, removed: bool) -> Value {
+        value(vec![t(role), optional(removed.then_some(AT))])
+    }
+
+    /// An AI channel membership access value with each capability set or cleared.
+    fn channel_access(
+        read_history: bool,
+        participate: bool,
+        from_grant: bool,
+        approval: Option<&str>,
+        scratch_approval: Option<&str>,
+        removed: bool,
+    ) -> Value {
+        value(vec![
+            t("profile-1"),
+            Field::Integer(i64::from(read_history)),
+            Field::Integer(0),
+            Field::Integer(i64::from(participate)),
+            Field::Integer(0),
+            t(if from_grant { "from_grant" } else { "entire" }),
+            Field::Integer(0),
+            if from_grant {
+                Field::Integer(3)
+            } else {
+                Field::Null
+            },
+            optional(approval),
+            optional(scratch_approval),
+            optional(removed.then_some(AT)),
+        ])
+    }
+
+    fn grant(capability: &str, approval: Option<&str>, revoked: bool) -> Value {
+        value(vec![
+            t(capability),
+            Field::Integer(0),
+            Field::Integer(1),
+            optional(approval),
+            optional(revoked.then_some(AT)),
+        ])
+    }
+
+    #[test]
+    fn chat_membership_priorities_prefer_removal_then_demotion() {
+        let adapter = ChatAdapter;
+        let priority = |value: &Value| {
+            adapter.priority(MEMBERSHIPS_TABLE, membership_group::MEMBERSHIP, value)
+        };
+        assert!(priority(&membership("owner", true)) > priority(&membership("member", false)));
+        assert_eq!(
+            priority(&membership("owner", true)),
+            priority(&membership("member", true))
+        );
+        assert!(priority(&membership("member", false)) > priority(&membership("owner", false)));
+        assert_eq!(
+            adapter.priority(
+                MEMBERSHIPS_TABLE,
+                membership_group::CREATED,
+                &value(vec![t(AT)])
+            ),
+            0
+        );
+    }
+
+    #[test]
+    fn chat_channel_membership_priorities_prefer_removal_then_stricter_approval_then_fewer_capabilities()
+     {
+        let adapter = ChatAdapter;
+        let priority = |value: &Value| {
+            adapter.priority(
+                CHANNEL_MEMBERSHIPS_TABLE,
+                channel_membership_group::ACCESS,
+                value,
+            )
+        };
+        let open = channel_access(true, true, false, Some("provider_custom"), None, false);
+        let removed = channel_access(true, true, false, Some("provider_custom"), None, true);
+        let strictest_live = channel_access(false, false, true, Some("ask"), Some("ask"), false);
+        assert!(priority(&removed) > priority(&strictest_live));
+
+        // Approval overrides, least restrictive first, with no override between the explicit
+        // relaxing policies and an explicit ask.
+        let approvals = [
+            Some("provider_custom"),
+            Some("unattended"),
+            Some("auto_approve"),
+            None,
+            Some("ask"),
+        ];
+        for pair in approvals.windows(2) {
+            let looser = channel_access(false, false, true, pair[0], Some("ask"), false);
+            let stricter = channel_access(true, true, false, pair[1], None, false);
+            assert!(priority(&stricter) > priority(&looser), "{pair:?}");
+            let looser = channel_access(false, false, true, None, pair[0], false);
+            let stricter = channel_access(true, true, false, None, pair[1], false);
+            assert!(priority(&stricter) > priority(&looser), "scratch {pair:?}");
+        }
+        // The channel override outranks the scratch override.
+        assert!(
+            priority(&channel_access(
+                true,
+                true,
+                false,
+                Some("ask"),
+                Some("unattended"),
+                false
+            )) > priority(&channel_access(true, true, false, None, Some("ask"), false))
+        );
+
+        // With equal overrides, clearing more capabilities wins.
+        let cleared = [
+            channel_access(true, true, false, None, None, false),
+            channel_access(false, true, false, None, None, false),
+            channel_access(false, false, false, None, None, false),
+            channel_access(false, false, true, None, None, false),
+        ];
+        for pair in cleared.windows(2) {
+            assert!(priority(&pair[1]) > priority(&pair[0]));
+        }
+        assert!(priority(&open) >= 1);
+        assert!(priority(&strictest_live) < u8::MAX);
+    }
+
+    #[test]
+    fn chat_folder_grant_priorities_prefer_revocation_then_lower_capability_then_stricter_approval()
+    {
+        let adapter = ChatAdapter;
+        let priority =
+            |value: &Value| adapter.priority(FOLDER_GRANTS_TABLE, folder_grant_group::GRANT, value);
+        assert!(
+            priority(&grant("publish", None, true)) > priority(&grant("none", Some("ask"), false))
+        );
+        for pair in FOLDER_CAPABILITIES.windows(2) {
+            assert!(
+                priority(&grant(pair[1], Some("provider_custom"), false))
+                    > priority(&grant(pair[0], Some("ask"), false)),
+                "{pair:?}"
+            );
+        }
+        let approvals = [
+            Some("provider_custom"),
+            Some("unattended"),
+            Some("auto_approve"),
+            None,
+            Some("ask"),
+        ];
+        for pair in approvals.windows(2) {
+            assert!(
+                priority(&grant("edit", pair[1], false)) > priority(&grant("edit", pair[0], false)),
+                "{pair:?}"
+            );
+        }
+        assert!(priority(&grant("none", Some("ask"), false)) < u8::MAX);
+    }
+
+    #[test]
+    fn chat_channel_archive_outranks_unarchive() {
+        let adapter = ChatAdapter;
+        let priority = |archived: Option<&str>| {
+            adapter.priority(
+                CHANNELS_TABLE,
+                channel_group::LIFECYCLE,
+                &value(vec![optional(archived)]),
+            )
+        };
+        assert!(priority(Some(AT)) > priority(None));
+        assert_eq!(
+            adapter.priority(
+                CHANNELS_TABLE,
+                channel_group::DETAILS,
+                &value(vec![t("general"), t("")])
+            ),
+            0
+        );
+    }
+
+    #[test]
+    fn chat_conversation_access_validation_mirrors_the_table_checks() {
+        let adapter = ChatAdapter;
+        let check = |table, group, fields| adapter.validate(table, group, &value(fields));
+
+        assert!(
+            check(
+                CONVERSATIONS_TABLE,
+                conversation_group::CREATED,
+                vec![t("project-1"), t("channel"), t(AT)]
+            )
+            .is_ok()
+        );
+        assert!(
+            check(
+                CONVERSATIONS_TABLE,
+                conversation_group::CREATED,
+                vec![t("project-1"), t("thread"), t(AT)]
+            )
+            .is_err()
+        );
+        assert!(
+            adapter
+                .validate(
+                    MEMBERSHIPS_TABLE,
+                    membership_group::MEMBERSHIP,
+                    &membership("member", true)
+                )
+                .is_ok()
+        );
+        assert!(
+            adapter
+                .validate(
+                    MEMBERSHIPS_TABLE,
+                    membership_group::MEMBERSHIP,
+                    &membership("admin", false)
+                )
+                .is_err()
+        );
+
+        let access = |boundary: &str, ordinal: Field, approval: &str| {
+            let mut fields = channel_access(true, true, false, None, None, false)
+                .fields()
+                .to_vec();
+            fields[5] = t(boundary);
+            fields[7] = ordinal;
+            fields[8] = t(approval);
+            check(
+                CHANNEL_MEMBERSHIPS_TABLE,
+                channel_membership_group::ACCESS,
+                fields,
+            )
+        };
+        assert!(access("entire", Field::Null, "ask").is_ok());
+        assert!(access("from_grant", Field::Integer(1), "unattended").is_ok());
+        assert!(access("from_grant", Field::Null, "ask").is_err());
+        assert!(access("from_grant", Field::Integer(0), "ask").is_err());
+        assert!(access("entire", Field::Integer(2), "ask").is_err());
+        assert!(access("entire", Field::Null, "always").is_err());
+
+        assert!(
+            adapter
+                .validate(
+                    FOLDER_GRANTS_TABLE,
+                    folder_grant_group::GRANT,
+                    &grant("execute", Some("auto_approve"), true)
+                )
+                .is_ok()
+        );
+        assert!(
+            adapter
+                .validate(
+                    FOLDER_GRANTS_TABLE,
+                    folder_grant_group::GRANT,
+                    &grant("admin", None, false)
+                )
+                .is_err()
+        );
+
+        let details = |name: &str, topic: &str| {
+            check(
+                CHANNELS_TABLE,
+                channel_group::DETAILS,
+                vec![t(name), t(topic)],
+            )
+        };
+        assert!(details("general", "").is_ok());
+        assert!(details("", "").is_err());
+        assert!(details(&"n".repeat(MAX_CHANNEL_NAME_CHARS + 1), "").is_err());
+        assert!(details("general", &"t".repeat(MAX_CHANNEL_TOPIC_CHARS + 1)).is_err());
     }
 }

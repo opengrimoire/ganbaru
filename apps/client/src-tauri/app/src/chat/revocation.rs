@@ -635,6 +635,8 @@ pub(crate) mod tests {
     /// and a queued follow-up run for the same assignment.
     pub(crate) async fn pool_with_folder_runs() -> SqlitePool {
         let pool = crate::chat::tests::repository::pool_with_thread().await;
+        let (conversation, _) =
+            ganbaru_chat::project_defaults::default_channel_ids("project-chat").unwrap();
         sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
             "INSERT INTO project_working_folders
                 (id, project_id, display_name, kind, managed_relative_path,
@@ -644,8 +646,6 @@ pub(crate) mod tests {
                  'none', 1, '{NOW}', '{NOW}'),
                 ('workspace-3', 'project-chat', 'Unrelated', 'external', NULL,
                  'none', 2, '{NOW}', '{NOW}');
-             UPDATE chat_conversations SET id = 'conversation:folders'
-             WHERE project_id = 'project-chat' AND conversation_kind = 'channel';
              INSERT INTO chat_participants
                 (id, participant_kind, display_name, created_at, updated_at)
              VALUES ('{TEAMMATE}', 'ai_teammate', 'Folder agent', '{NOW}', '{NOW}');
@@ -655,30 +655,32 @@ pub(crate) mod tests {
                 (id, teammate_id, provider_instance_id, model_selection_data, created_at)
              VALUES ('policy:folders', '{TEAMMATE}', 'codex-personal', '{{}}', '{NOW}');
              INSERT INTO chat_conversation_memberships
-                (conversation_id, participant_id, membership_role, created_at, updated_at)
-             VALUES ('conversation:folders', '{TEAMMATE}', 'member', '{NOW}', '{NOW}');
+                (conversation_id, participant_id, sync_key, membership_role, created_at,
+                 updated_at)
+             VALUES ('{conversation}', '{TEAMMATE}', 'membership:folders', 'member',
+                     '{NOW}', '{NOW}');
              INSERT INTO chat_teammate_channel_memberships
-                (conversation_id, teammate_id, access_profile_id,
+                (conversation_id, teammate_id, sync_key, access_profile_id,
                  read_history, participate, history_boundary, created_at, updated_at)
-             VALUES ('conversation:folders', '{TEAMMATE}', 'access-profile:build-and-test',
-                     1, 1, 'entire', '{NOW}', '{NOW}');
+             VALUES ('{conversation}', '{TEAMMATE}', 'channel-membership:folders',
+                     'access-profile:build-and-test', 1, 1, 'entire', '{NOW}', '{NOW}');
              INSERT INTO chat_teammate_working_folder_grants
-                (conversation_id, teammate_id, project_id, working_folder_id,
+                (conversation_id, teammate_id, project_id, working_folder_id, sync_key,
                  capability, capability_inherits_profile, is_default, created_at)
              VALUES
-                ('conversation:folders', '{TEAMMATE}', 'project-chat', 'workspace-1',
-                 'execute', 1, 1, '{NOW}'),
-                ('conversation:folders', '{TEAMMATE}', 'project-chat', 'workspace-2',
-                 'read', 0, 0, '{NOW}');
+                ('{conversation}', '{TEAMMATE}', 'project-chat', 'workspace-1',
+                 'grant:folders-1', 'execute', 1, 1, '{NOW}'),
+                ('{conversation}', '{TEAMMATE}', 'project-chat', 'workspace-2',
+                 'grant:folders-2', 'read', 0, 0, '{NOW}');
              INSERT INTO chat_conversation_items
                 (id, conversation_id, item_kind, ordinal, created_at)
-             VALUES ('item:folders', 'conversation:folders', 'message', 1, '{NOW}');
+             VALUES ('item:folders', '{conversation}', 'message', 1, '{NOW}');
              INSERT INTO chat_communication_messages
                 (item_id, author_participant_id, created_at)
              VALUES ('item:folders', 'participant:local-owner', '{NOW}');
              INSERT INTO chat_reply_threads
                 (id, conversation_id, root_item_id, last_activity_at, created_at, updated_at)
-             VALUES ('reply:folders', 'conversation:folders', 'item:folders',
+             VALUES ('reply:folders', '{conversation}', 'item:folders',
                      '{NOW}', '{NOW}', '{NOW}');
              INSERT INTO chat_work_assignments
                 (id, reply_thread_id, teammate_id, triggering_message_item_id, state,
@@ -693,11 +695,11 @@ pub(crate) mod tests {
                  resolved_runtime_approval_policy, scope_digest, decision_state, created_at)
              VALUES
                 ('authorization:working', 'assignment:folders', 1, 'participant:local-owner',
-                 'policy:folders', 1, 'conversation:folders',
+                 'policy:folders', 1, '{conversation}',
                  'access-profile-revision:build-and-test:1', (SELECT id FROM chat_execution_environments WHERE working_folder_id = 'workspace-1'),
                  'workspace-1', 'ask', printf('%064d', 0), 'allowed', '{NOW}'),
                 ('authorization:queued', 'assignment:folders', 2, 'participant:local-owner',
-                 'policy:folders', 1, 'conversation:folders',
+                 'policy:folders', 1, '{conversation}',
                  'access-profile-revision:build-and-test:1', (SELECT id FROM chat_execution_environments WHERE working_folder_id = 'workspace-1'),
                  'workspace-1', 'ask', printf('%064d', 0), 'allowed', '{NOW}');
              INSERT INTO chat_assignment_authorized_folder_sources

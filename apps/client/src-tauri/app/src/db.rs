@@ -260,7 +260,7 @@ async fn connect_with_access(
     }
 }
 
-/// Runs the Projects, Calendar, and Notes conversion passes on a writable database the registry just opened, so placeholder
+/// Runs the Projects, Calendar, Notes, and Chat conversion passes on a writable database the registry just opened, so placeholder
 /// keys left by migrations are rewritten before any command or sync capture reads them. The passes are idempotent, so
 /// a concurrent first open that runs them twice changes nothing the second time.
 async fn convert_sync_keys(pool: &sqlx::SqlitePool, database_path: &Path) -> Result<(), String> {
@@ -272,7 +272,9 @@ async fn convert_sync_keys(pool: &sqlx::SqlitePool, database_path: &Path) -> Res
     ganbaru_calendar::conversion::convert(pool).await?;
     ganbaru_calendar::conversion::assert_converted(pool).await?;
     ganbaru_notes::sync_keys::convert(pool).await?;
-    ganbaru_notes::sync_keys::assert_converted(pool).await
+    ganbaru_notes::sync_keys::assert_converted(pool).await?;
+    ganbaru_chat::conversion::convert(pool).await?;
+    ganbaru_chat::conversion::assert_converted(pool).await
 }
 
 /// Opens the active vault for sync work and returns the pool only when this device may write

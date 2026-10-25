@@ -1,5 +1,7 @@
 //! Durable organizational messages, reply threads, teammates, and work assignments.
 
+#[cfg(desktop)]
+use super::channels::sync_key;
 use super::channels::{
     chat_pool, i64_value, identifier_error, now_timestamp, optional_timestamp, persistence_error,
     timestamp, u64_value,

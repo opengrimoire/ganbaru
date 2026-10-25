@@ -11,8 +11,8 @@ use super::{
 use super::{ResolvedChannelAccess, history_boundary_is_expansion, issue};
 use crate::chat::channels::{identifier_error, optional_timestamp, persistence_error, u64_value};
 use crate::chat::organization::common::{
-    parse_approval_policy, parse_folder_capability, parse_history_boundary,
-    parse_runtime_approval_policy, teammate_runtime_approval,
+    ACTIVE_FOLDER_GRANTS_SQL, parse_approval_policy, parse_folder_capability,
+    parse_history_boundary, parse_runtime_approval_policy, teammate_runtime_approval,
 };
 use sqlx::{Row, SqlitePool};
 use std::collections::BTreeSet;
@@ -72,23 +72,12 @@ pub(in crate::chat::organization) async fn read_teammate_access(
                 .map_err(persistence_error)?,
         )
         .map_err(identifier_error)?;
-        let grant_rows = sqlx::query(
-            "SELECT grant_row.working_folder_id, folder.display_name,
-                    grant_row.capability, grant_row.capability_inherits_profile,
-                    grant_row.is_default,
-                    grant_row.runtime_approval_policy, grant_row.revision,
-                    grant_row.revoked_at
-             FROM chat_teammate_working_folder_grants grant_row
-             JOIN project_working_folders folder ON folder.id = grant_row.working_folder_id
-             WHERE grant_row.conversation_id = ? AND grant_row.teammate_id = ?
-               AND grant_row.revoked_at IS NULL
-             ORDER BY grant_row.is_default DESC, folder.sort_order, folder.display_name, folder.id",
-        )
-        .bind(conversation_id.as_str())
-        .bind(teammate_id.as_str())
-        .fetch_all(pool)
-        .await
-        .map_err(persistence_error)?;
+        let grant_rows = sqlx::query(ACTIVE_FOLDER_GRANTS_SQL)
+            .bind(conversation_id.as_str())
+            .bind(teammate_id.as_str())
+            .fetch_all(pool)
+            .await
+            .map_err(persistence_error)?;
         let profile_folder_capability = parse_folder_capability(
             &row.try_get::<String, _>("profile_folder_capability")
                 .map_err(persistence_error)?,

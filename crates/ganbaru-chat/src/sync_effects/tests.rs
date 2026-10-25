@@ -77,13 +77,14 @@ async fn seed_organization(pool: &SqlitePool) {
          VALUES ('profile-revision:sync-effects:1', '{PROFILE_ID}', 1, 1, 'entire', 'edit',
                  '{NOW}');
          INSERT INTO chat_conversation_memberships
-            (conversation_id, participant_id, membership_role, created_at, updated_at)
-         VALUES ('{conversation}', '{TEAMMATE_ID}', 'member', '{NOW}', '{NOW}');
+            (conversation_id, participant_id, sync_key, membership_role, created_at, updated_at)
+         VALUES ('{conversation}', '{TEAMMATE_ID}', 'membership:sync-effects', 'member', '{NOW}',
+                 '{NOW}');
          INSERT INTO chat_teammate_channel_memberships
-            (conversation_id, teammate_id, access_profile_id,
+            (conversation_id, teammate_id, sync_key, access_profile_id,
              read_history, participate, history_boundary, created_at, updated_at)
-         VALUES ('{conversation}', '{TEAMMATE_ID}', '{PROFILE_ID}', 1, 1, 'entire',
-                 '{NOW}', '{NOW}');
+         VALUES ('{conversation}', '{TEAMMATE_ID}', 'channel-membership:sync-effects',
+                 '{PROFILE_ID}', 1, 1, 'entire', '{NOW}', '{NOW}');
          INSERT INTO chat_conversation_items (id, conversation_id, item_kind, ordinal, created_at)
          VALUES ('item:first', '{conversation}', 'message', 1, '{NOW}'),
                 ('item:second', '{conversation}', 'message', 2, '{NOW}');
@@ -563,4 +564,121 @@ async fn search_follows_revisions_that_arrive_after_their_message_and_deleted_me
         remaining,
         vec!["item:first".to_string(), "item:late".to_string()]
     );
+}
+
+#[tokio::test]
+async fn an_applied_membership_removal_revokes_the_authorization_it_covered_once() {
+    let pool = migrated_pool().await;
+    seed_organization(&pool).await;
+    let access_before = access_state(&pool).await[0].1;
+    let audience_before = audience_revision(&pool).await.unwrap();
+
+    set_applying(&pool, true).await;
+    sqlx::query(
+        "UPDATE chat_conversation_memberships
+         SET removed_at = '2026-10-24T09:05:00.000Z', updated_at = '2026-10-24T09:05:00.000Z'
+         WHERE participant_id = ?",
+    )
+    .bind(TEAMMATE_ID)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let effects = run_hook(&pool, MEMBERSHIPS_TABLE, &["membership:sync-effects"]).await;
+
+    assert_eq!(
+        effects.revoked_teammates,
+        BTreeSet::from([TEAMMATE_ID.to_string()])
+    );
+    assert_eq!(
+        effects.audience_revised,
+        BTreeSet::from([conversation_id()])
+    );
+    assert_eq!(
+        authorization_states(&pool).await,
+        vec![(
+            "authorization:first".to_string(),
+            "revoked".to_string(),
+            ACCESS_REDUCTION_REASON.to_string()
+        )]
+    );
+    assert_eq!(queued_jobs(&pool).await.len(), 1);
+    assert_eq!(access_state(&pool).await[0].1, access_before + 1);
+    assert_eq!(audience_revision(&pool).await, Some(audience_before + 1));
+
+    let replayed = run_hook(&pool, MEMBERSHIPS_TABLE, &["membership:sync-effects"]).await;
+    assert!(replayed.revoked_teammates.is_empty());
+    assert_eq!(queued_jobs(&pool).await.len(), 1);
+    assert!(
+        run_hook(&pool, MEMBERSHIPS_TABLE, &["membership:unknown"])
+            .await
+            .is_empty()
+    );
+}
+
+/// Sets the seeded teammate's grant on the seeded folder to `capability`.
+async fn set_grant_capability(pool: &SqlitePool, capability: &str) {
+    sqlx::query(
+        "UPDATE chat_teammate_working_folder_grants SET capability = ?, revision = revision + 1
+         WHERE teammate_id = ?",
+    )
+    .bind(capability)
+    .bind(TEAMMATE_ID)
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn an_applied_grant_narrowing_revokes_and_a_widening_keeps_authority() {
+    let pool = migrated_pool().await;
+    seed_organization(&pool).await;
+    let conversation = conversation_id();
+    sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
+        "INSERT INTO project_working_folders
+            (id, project_id, display_name, kind, managed_relative_path, created_at, updated_at)
+         VALUES ('folder:sync-effects', '{PROJECT_ID}', 'Sync', 'managed',
+                 'projects/{PROJECT_ID}-grant', '{NOW}', '{NOW}');
+         INSERT INTO chat_teammate_working_folder_grants
+            (conversation_id, teammate_id, working_folder_id, sync_key, project_id, capability,
+             is_default, created_at)
+         VALUES ('{conversation}', '{TEAMMATE_ID}', 'folder:sync-effects', 'grant:sync-effects',
+                 '{PROJECT_ID}', 'edit', 1, '{NOW}');
+         INSERT INTO chat_assignment_authorized_folder_sources
+            (authorization_revision_id, root_handle, working_folder_id, capability,
+             is_execution_target, resolved_runtime_approval_policy, created_at)
+         VALUES ('authorization:first', printf('%064d', 1), 'folder:sync-effects', 'edit', 1,
+                 'ask', '{NOW}');"
+    )))
+    .execute(&pool)
+    .await
+    .unwrap();
+    let access_before = access_state(&pool).await[0].1;
+
+    set_applying(&pool, true).await;
+    set_grant_capability(&pool, "publish").await;
+    let widened = run_hook(&pool, FOLDER_GRANTS_TABLE, &["grant:sync-effects"]).await;
+    assert!(widened.revoked_teammates.is_empty());
+    assert!(widened.audience_revised.is_empty());
+    assert_eq!(
+        widened.access_revised,
+        BTreeSet::from([TEAMMATE_ID.to_string()])
+    );
+    assert_eq!(authorization_states(&pool).await[0].1, "allowed");
+    assert_eq!(access_state(&pool).await[0].1, access_before + 1);
+
+    set_grant_capability(&pool, "read").await;
+    let narrowed = run_hook(&pool, FOLDER_GRANTS_TABLE, &["grant:sync-effects"]).await;
+    assert_eq!(
+        narrowed.revoked_teammates,
+        BTreeSet::from([TEAMMATE_ID.to_string()])
+    );
+    assert_eq!(
+        authorization_states(&pool).await,
+        vec![(
+            "authorization:first".to_string(),
+            "revoked".to_string(),
+            ACCESS_REDUCTION_REASON.to_string()
+        )]
+    );
+    assert_eq!(queued_jobs(&pool).await.len(), 1);
 }

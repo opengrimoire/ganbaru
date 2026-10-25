@@ -1238,14 +1238,15 @@ impl<'a, H: SyncHost> Session<'a, H> {
             .await;
     }
 
-    /// Start order: refuse Projects, Calendar, and Notes placeholder keys, clear a stale apply flag,
-    /// refuse sync state from before the authorization log, seed captures of tables that start
-    /// to replicate, import a carry bundle a failed replacement left, check the writer, and apply
-    /// what the import could not apply before local captures were sealed.
+    /// Start order: refuse Projects, Calendar, Notes, and Chat placeholder keys, clear a stale
+    /// apply flag, refuse sync state from before the authorization log, seed captures of tables
+    /// that start to replicate, import a carry bundle a failed replacement left, check the
+    /// writer, and apply what the import could not apply before local captures were sealed.
     async fn start(&self, writer: &mut Option<ActiveWriter>) -> Result<(), String> {
         ganbaru_projects::conversion::assert_converted(&self.pool).await?;
         ganbaru_calendar::conversion::assert_converted(&self.pool).await?;
         ganbaru_notes::sync_keys::assert_converted(&self.pool).await?;
+        ganbaru_chat::conversion::assert_converted(&self.pool).await?;
         let imported = {
             let mut conn = acquire(&self.pool).await?;
             local::reset_applying(&mut conn)

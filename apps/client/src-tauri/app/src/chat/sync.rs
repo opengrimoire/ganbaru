@@ -2,13 +2,15 @@
 //!
 //! The post-apply hook runs `ganbaru_chat::sync_effects::after_materialize` inside the engine
 //! transaction with only the connection and a change sink, so the headless Android pass runs it
-//! too: it creates the device-local access state of arrived teammates, bumps the audience and
-//! access counters an arrived effective profile revision affects, and revokes authorizations a
-//! narrowing revision no longer allows. It refuses the apply when a teammate or profile pointer
-//! copies restrictiveness that differs from the revision it names. It reports each teammate it
-//! revoked. On desktop the app
-//! host hands those reports to [`on_sync_notices`], which wakes the access revocation drain so the
-//! revoked runs stop. Dispatch and the readers of teammates and profiles read the effective rows
+//! too: it creates the device-local access state of arrived teammates and audience state of
+//! arrived conversations, bumps the audience and access counters an arrived effective profile
+//! revision, membership, or folder grant affects, and revokes authorizations a narrowing revision
+//! or a removed or narrowed membership or grant no longer covers. It refuses the apply when a
+//! teammate or profile pointer copies restrictiveness that differs from the revision it names.
+//! It reports each teammate it revoked. On desktop the app host hands those reports to
+//! [`on_sync_notices`], which wakes the access revocation drain so the revoked runs stop. Android
+//! never holds an active authorization, since runs execute only on desktop, so it has no drain to
+//! wake. Dispatch and the readers of teammates and profiles read the effective rows
 //! when they run, and views learn about the changed tables from the applied tables event.
 
 use ganbaru_chat::sync_effects::{self, ChatSyncEffects};
@@ -23,11 +25,15 @@ pub(crate) const CHAT_ACCESS_REVOKED_TOPIC: &str = "chat-access-revoked";
 
 /// Replicated tables whose applied rows feed device-local Chat state, each registered with
 /// [`ChatApplyHook`].
-const HOOKED_TABLES: [&TableSpec; 4] = [
+const HOOKED_TABLES: [&TableSpec; 8] = [
     &chat::TEAMMATES,
     &chat::POLICY_REVISIONS,
     &chat::PROFILES,
     &chat::PROFILE_REVISIONS,
+    &chat::CONVERSATIONS,
+    &chat::MEMBERSHIPS,
+    &chat::CHANNEL_MEMBERSHIPS,
+    &chat::FOLDER_GRANTS,
 ];
 
 /// Recomputes device-local Chat state after sync materializes Chat rows and reports revocations.

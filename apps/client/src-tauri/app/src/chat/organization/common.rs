@@ -12,6 +12,27 @@ use std::collections::BTreeSet;
 
 pub(super) const MAX_MESSAGE_BYTES: usize = 128 * 1024;
 
+/// Active folder grants of one AI channel membership, bound to the conversation and teammate.
+///
+/// Concurrent edits on two devices can each leave a default grant after sync merges them, so
+/// only the default grant with the lowest working folder id reads as the default. Execution
+/// context selection breaks the tie the same way.
+pub(super) const ACTIVE_FOLDER_GRANTS_SQL: &str = "SELECT grant_row.working_folder_id,
+        folder.display_name, grant_row.capability, grant_row.capability_inherits_profile,
+        (grant_row.is_default <> 0 AND NOT EXISTS (
+            SELECT 1 FROM chat_teammate_working_folder_grants other
+            WHERE other.conversation_id = grant_row.conversation_id
+              AND other.teammate_id = grant_row.teammate_id
+              AND other.revoked_at IS NULL AND other.is_default <> 0
+              AND other.working_folder_id < grant_row.working_folder_id
+        )) AS is_default,
+        grant_row.runtime_approval_policy, grant_row.revision, grant_row.revoked_at
+ FROM chat_teammate_working_folder_grants grant_row
+ JOIN project_working_folders folder ON folder.id = grant_row.working_folder_id
+ WHERE grant_row.conversation_id = ? AND grant_row.teammate_id = ?
+   AND grant_row.revoked_at IS NULL
+ ORDER BY is_default DESC, folder.sort_order, folder.display_name, folder.id";
+
 pub(super) fn has_thread_eligible_mention(request: &PostChatMessageCommand) -> bool {
     request.references.iter().any(|reference| {
         matches!(

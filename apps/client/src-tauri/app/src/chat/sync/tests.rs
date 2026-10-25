@@ -32,6 +32,25 @@ async fn migrated_pool() -> SqlitePool {
     pool
 }
 
+/// Chat writes the keys the manifest derives, so a row a device writes and the same row another
+/// device writes concurrently share one key.
+#[test]
+fn chat_derives_sync_keys_with_the_manifest_prefixes() {
+    use ganbaru_chat::conversion;
+    assert_eq!(
+        conversion::MEMBERSHIP_KEY_PREFIX,
+        chat::MEMBERSHIP_KEY_PREFIX
+    );
+    assert_eq!(
+        conversion::CHANNEL_MEMBERSHIP_KEY_PREFIX,
+        chat::CHANNEL_MEMBERSHIP_KEY_PREFIX
+    );
+    assert_eq!(
+        conversion::FOLDER_GRANT_KEY_PREFIX,
+        chat::FOLDER_GRANT_KEY_PREFIX
+    );
+}
+
 #[test]
 fn every_replicated_table_with_derived_chat_state_has_a_hook() {
     let derived = [
@@ -40,6 +59,9 @@ fn every_replicated_table_with_derived_chat_state_has_a_hook() {
         sync_effects::CONVERSATIONS_TABLE,
         sync_effects::ACCESS_PROFILES_TABLE,
         sync_effects::ACCESS_PROFILE_REVISIONS_TABLE,
+        sync_effects::MEMBERSHIPS_TABLE,
+        sync_effects::CHANNEL_MEMBERSHIPS_TABLE,
+        sync_effects::FOLDER_GRANTS_TABLE,
         sync_effects::MESSAGES_TABLE,
         sync_effects::MESSAGE_REVISIONS_TABLE,
     ];

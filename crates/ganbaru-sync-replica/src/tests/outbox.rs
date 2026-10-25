@@ -254,10 +254,18 @@ fn the_anchor_sequences_its_outbox_reserves_each_entry_and_keeps_final_rejection
             .await
             .expect("read revision")
             .expect("the chain holds the enrollment");
-        assert_eq!(outbox.entries().len(), 1, "the held proposal is dropped");
-        assert_eq!(outbox.entries()[0].proposal, remove_anchor);
+        assert_eq!(outbox.entries().len(), 2);
         assert_eq!(
-            outbox.entries()[0].rejection,
+            (
+                outbox.entries()[0].proposal.clone(),
+                outbox.entries()[0].held
+            ),
+            (enroll.clone(), Some(0)),
+            "the held proposal stays until a later epoch keeps it"
+        );
+        assert_eq!(outbox.entries()[1].proposal, remove_anchor);
+        assert_eq!(
+            outbox.entries()[1].rejection,
             Some(ProposalRejection::NamesAnchor)
         );
         assert!(outbox.pending().is_empty());
@@ -311,6 +319,7 @@ fn a_record_one_entry_ahead_is_a_rolled_back_seal_and_further_ahead_is_a_restore
         epoch,
         revision,
         entry_hash: URL_SAFE_NO_PAD.encode([2; 32]),
+        restored: false,
     };
     let head = |epoch: u32, revision: u64| SelectedHead {
         charter: [1; 32],
@@ -330,6 +339,15 @@ fn a_record_one_entry_ahead_is_a_rolled_back_seal_and_further_ahead_is_a_restore
     assert_eq!(
         sequenced_check(Some(&at(0, 8)), head(0, 7)),
         SequencedCheck::RolledBack
+    );
+    let restored = SequencedEntry {
+        restored: true,
+        ..at(0, 8)
+    };
+    assert_eq!(
+        sequenced_check(Some(&restored), head(0, 7)),
+        SequencedCheck::Restored { recorded: 8 },
+        "one entry ahead after the writer lost part of its chain is a restore"
     );
     assert_eq!(
         sequenced_check(Some(&at(0, 9)), head(0, 7)),
@@ -418,12 +436,20 @@ fn a_restored_anchor_sees_its_lost_entries_and_hands_over_to_itself() {
             .await
             .expect("open backup");
         let mut conn = acquire(&restored).await;
-        // Sequencing leaves the record's committed sequence behind the entries, so the backup's
-        // shorter chain still matches it; a successor writer would carry the record too.
-        let WriterCheck::Ready(writer) = check(&engine, &mut conn, &ctx, &directory).await else {
-            panic!("the restored database still holds the writer chain");
+        // No commit was recorded after sequencing, so the backup's shorter chain still matches
+        // the record; the high-water still retires the writer, because members may hold the
+        // lost entries at its later sequences.
+        let WriterCheck::Successor(plan) = check(&engine, &mut conn, &ctx, &directory).await else {
+            panic!("a database behind the high-water keeps no writer");
         };
-        let mut writer = *writer;
+        assert!(plan.sequenced().is_some_and(|entry| entry.restored));
+        let old_writer = read_record(&files.record_path())
+            .expect("read record")
+            .expect("record")
+            .writer_id;
+        let mut writer = create_writer(&files, &keys, plan, &device(), DEVICE_ID, NOW_MS)
+            .expect("create successor");
+        assert_ne!(writer.id().to_hex(), old_writer);
         assert_eq!(
             authority::restore_check(&engine, &mut conn, &ctx, writer.record())
                 .await
@@ -471,6 +497,89 @@ fn a_restored_anchor_sees_its_lost_entries_and_hands_over_to_itself() {
         .await
         .expect("enroll again");
         assert_eq!(enrolled, 3);
+        drop(conn);
+        registry.close_all().await.expect("close pools");
+    });
+}
+
+#[test]
+fn a_restore_that_loses_one_recorded_entry_is_not_a_rolled_back_seal() {
+    block_on(async {
+        let directory = TestDirectory::new("outbox-restore-one");
+        let registry = DatabasePoolRegistry::default();
+        let engine = Engine::vault();
+        let files = directory.files();
+        let keys = directory.keys();
+        let admin = anchor_keys().admin;
+        let pool = create_vault(&registry, &directory.path().join("vault.sqlite")).await;
+        let mut conn = acquire(&pool).await;
+        let ctx = context(&mut conn).await;
+        let mut writer = create_writer(
+            &files,
+            &keys,
+            SuccessorPlan::default(),
+            &device(),
+            DEVICE_ID,
+            NOW_MS,
+        )
+        .expect("create writer");
+        for (index, (device_id, seed)) in [("device-phone", 40), ("device-tablet", 41)]
+            .into_iter()
+            .enumerate()
+        {
+            if index == 1 {
+                sqlx::query("VACUUM INTO ?")
+                    .bind(
+                        directory
+                            .path()
+                            .join("backup.sqlite")
+                            .to_string_lossy()
+                            .into_owned(),
+                    )
+                    .execute(&mut *conn)
+                    .await
+                    .expect("back up the vault");
+            }
+            authority::enroll(
+                &engine,
+                &mut conn,
+                &ctx,
+                &admin,
+                &mut writer.local(),
+                enrollment(device_id, seed),
+                NOW_MS,
+            )
+            .await
+            .expect("enroll");
+            // The service records the commit after every sequencing step.
+            let seq = engine
+                .stored_vector(&mut conn, &ctx)
+                .await
+                .expect("stored vector")
+                .get(&writer.id());
+            writer.committed(seq).expect("record commit");
+        }
+        drop(writer);
+        drop(conn);
+
+        // The backup lacks only revision 2, which a rolled back seal would look like, but the
+        // writer's recorded chain is gone too.
+        let restored = registry
+            .connect_path(&directory.path().join("backup.sqlite"))
+            .await
+            .expect("open backup");
+        let mut conn = acquire(&restored).await;
+        let WriterCheck::Successor(plan) = check(&engine, &mut conn, &ctx, &directory).await else {
+            panic!("the restored database lost the writer's committed chain");
+        };
+        let writer = create_writer(&files, &keys, plan, &device(), DEVICE_ID, NOW_MS)
+            .expect("create successor");
+        assert_eq!(
+            authority::restore_check(&engine, &mut conn, &ctx, writer.record())
+                .await
+                .expect("check"),
+            SequencedCheck::Restored { recorded: 2 }
+        );
         drop(conn);
         registry.close_all().await.expect("close pools");
     });

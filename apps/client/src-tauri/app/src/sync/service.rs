@@ -45,7 +45,7 @@ use ganbaru_sync_replica::authority::{
 };
 use ganbaru_sync_replica::now_ms;
 use ganbaru_sync_replica::outbox::Outbox;
-use ganbaru_sync_replica::quarantine::Quarantine;
+use ganbaru_sync_replica::quarantine::{PullSkips, Quarantine};
 use ganbaru_sync_replica::reset;
 #[cfg(desktop)]
 use ganbaru_sync_replica::writer::SequencedCheck;
@@ -455,15 +455,29 @@ pub(crate) fn quarantined_devices<R: Runtime>(
     app: &AppHandle<R>,
 ) -> crate::vault::handoff::transport::QuarantinedDevices {
     let app = app.clone();
+    // The last list read for each vault, which stands in when the file cannot be read.
+    let last_known: Arc<Mutex<std::collections::BTreeMap<String, BTreeSet<String>>>> =
+        Arc::default();
     Arc::new(move || {
         let app = app.clone();
+        let last_known = last_known.clone();
         Box::pin(async move {
             let vault_id = app.active_vault_id()?;
             let path = app.sync_files(&vault_id)?.quarantine_path();
-            Ok(blocking(move || Quarantine::load(&path))
-                .await?
-                .devices()
-                .clone())
+            let loaded = blocking(move || Quarantine::load(&path)).await;
+            let mut last_known = last_known
+                .lock()
+                .map_err(|_| "sync quarantine cache is unavailable".to_string())?;
+            match loaded {
+                Ok(quarantine) => {
+                    last_known.insert(vault_id, quarantine.devices().clone());
+                    Ok(quarantine.devices().clone())
+                }
+                Err(error) => {
+                    eprintln!("sync: read the quarantine list, keeping the last one read: {error}");
+                    Ok(last_known.get(&vault_id).cloned().unwrap_or_default())
+                }
+            }
         })
     })
 }
@@ -778,6 +792,8 @@ struct ServiceState {
     /// The head of the active writer the hub last confirmed holding with the same hash, which
     /// bounds compaction of this installation's own writers.
     confirmed: Option<(WriterId, Seq)>,
+    /// Operations of quarantined devices pulls already turned away.
+    pull_skips: PullSkips,
     /// When this anchor first found its database restored behind its own log, in Unix
     /// milliseconds; it sequences nothing until the log catches up or it hands over to itself.
     #[cfg(desktop)]
@@ -835,42 +851,61 @@ impl ServiceState {
 
     /// Whether this installation may sequence for the space. An anchor whose database holds
     /// less of the log than its writer record says it sealed was restored from a backup or
-    /// copied: it sequences nothing while linked devices push back what it lost, and once the
-    /// catch-up window passes, or at once without linked devices, it seals a handover to itself
-    /// so the next epoch supersedes the entries it never got back. A device that is not the
-    /// anchor is always ready, since it sequences nothing.
+    /// copied: it moves to a successor writer at once, so nothing it seals reuses a sequence of
+    /// the lost entries members may hold, and sequences nothing while members push back what it
+    /// lost. Once the catch-up window passes, or at once when `members_reachable` is false, it
+    /// seals a handover to itself so the next epoch supersedes the entries it never got back.
+    /// The coordinator passes whether it has linked devices; a linked desktop that anchors
+    /// always has the coordinator. A device that is not the anchor is always ready, since it
+    /// sequences nothing.
     #[cfg(desktop)]
     async fn anchor_ready(
         &mut self,
         session: &Session<'_, impl SyncHost>,
         manager: &PairingManager,
-        vault_id: &str,
+        members_reachable: bool,
     ) -> Result<bool, String> {
-        let Some(active) = self.writer.as_mut() else {
+        let Some(active) = self.writer.as_ref() else {
             return Ok(true);
         };
         if !session.anchors_here(manager).await? {
             self.restored_since = None;
             return Ok(true);
         }
-        let mut conn = acquire(&session.pool).await?;
-        let check =
+        let check = {
+            let mut conn = acquire(&session.pool).await?;
             authority::restore_check(&session.engine, &mut conn, &session.ctx, active.record())
-                .await?;
+                .await?
+        };
         let SequencedCheck::Restored { recorded } = check else {
             self.restored_since = None;
             return Ok(true);
         };
+        // The writer check retires a writer whose database is behind its log; a restore found
+        // while the writer was already active retires it here.
+        if !active
+            .record()
+            .sequenced
+            .as_ref()
+            .is_some_and(|entry| entry.restored)
+            && !session.rotate_restored(&mut self.writer).await?
+        {
+            return Ok(false);
+        }
         let now = now_ms()?;
         let since = *self.restored_since.get_or_insert(now);
         let window = u64::try_from(RESTORE_CATCH_UP_WINDOW.as_millis()).unwrap_or(u64::MAX);
-        if now.saturating_sub(since) < window && !manager.linked_peers_for(vault_id)?.is_empty() {
+        if now.saturating_sub(since) < window && members_reachable {
             eprintln!(
                 "sync: the database was restored behind authorization revision {recorded}; \
                  waiting for linked devices to return the log"
             );
             return Ok(false);
         }
+        let Some(active) = self.writer.as_mut() else {
+            return Ok(false);
+        };
+        let mut conn = acquire(&session.pool).await?;
         let head = session
             .engine
             .authorization(&mut conn, &session.ctx)
@@ -899,12 +934,15 @@ impl ServiceState {
         )
         .await?
         .map_err(|rejection| format!("hand the restored anchor over to itself: {rejection}"))?;
+        drop(conn);
+        session.record_commit(active).await?;
         eprintln!(
             "sync: the database was restored behind authorization revision {recorded}; \
              the anchor continued the log in a new epoch at revision {revision}"
         );
         // A record of a lost epoch the handover only reached can still name a later revision;
         // the next pass then seals one more handover, whose epoch passes it.
+        let mut conn = acquire(&session.pool).await?;
         let check =
             authority::restore_check(&session.engine, &mut conn, &session.ctx, active.record())
                 .await?;
@@ -1135,10 +1173,15 @@ impl ServiceState {
         {
             #[cfg(desktop)]
             {
-                let current = matches!(next, Next::Online(_)) && view.state == SyncState::Idle;
+                let hub_stored = match &next {
+                    Next::Online(wait) if view.state == SyncState::Idle => Some(wait.known.clone()),
+                    _ => None,
+                };
                 for request in take_anchor.drain(..) {
-                    let outcome = if current {
-                        session.take_anchor(&manager, &mut self.writer).await
+                    let outcome = if let Some(hub_stored) = hub_stored.as_ref() {
+                        session
+                            .take_anchor(&manager, &mut self.writer, hub_stored)
+                            .await
                     } else {
                         Err(
                             "taking the anchor needs a current exchange with the coordinator"
@@ -1150,20 +1193,27 @@ impl ServiceState {
                     }
                     request.answer(outcome);
                 }
+                // A linked desktop that anchors checks for a restore as the coordinator does;
+                // members return lost entries through the coordinator's exchange.
+                // A restored anchor sequences nothing while it waits.
                 if session.anchors_here(&manager).await? {
-                    match session
-                        .anchor_as_member(
-                            &assets.transport,
-                            &assets.ids,
-                            &mut self.writer,
-                            &mut self.settled,
-                        )
-                        .await
-                    {
-                        // The coordinator learns of the entries on the next exchange.
-                        Ok(true) => next = Next::Continue,
-                        Ok(false) => {}
-                        Err(error) => eprintln!("sync: collect proposals for the anchor: {error}"),
+                    if self.anchor_ready(&session, &manager, true).await? {
+                        match session
+                            .anchor_as_member(
+                                &assets.transport,
+                                &assets.ids,
+                                &mut self.writer,
+                                &mut self.settled,
+                            )
+                            .await
+                        {
+                            // The coordinator learns of the entries on the next exchange.
+                            Ok(true) => next = Next::Continue,
+                            Ok(false) => {}
+                            Err(error) => {
+                                eprintln!("sync: collect proposals for the anchor: {error}");
+                            }
+                        }
                     }
                 } else {
                     session.replay_outbox(&assets.transport, &assets.ids).await;
@@ -1202,7 +1252,11 @@ impl ServiceState {
         let acknowledged = session.acknowledge(&mut self.writer).await?;
         if is_hub {
             #[cfg(desktop)]
-            let anchor_ready = self.anchor_ready(&session, &manager, &vault_id).await?;
+            let anchor_ready = {
+                let members_reachable = !manager.linked_peers_for(&vault_id)?.is_empty();
+                self.anchor_ready(&session, &manager, members_reachable)
+                    .await?
+            };
             #[cfg(mobile)]
             let anchor_ready = true;
             if anchor_ready {
@@ -1291,11 +1345,15 @@ impl ServiceState {
             view: std::mem::take(&mut self.view),
             ..Self::default()
         };
+        let files = host.sync_files(vault_id)?;
+        {
+            let files = files.clone();
+            blocking(move || reset::forget_high_water(&files)).await?;
+        }
         {
             let mut conn = acquire(pool).await?;
             reset::reset_database(&mut conn).await?;
         }
-        let files = host.sync_files(vault_id)?;
         let keys = host.key_store()?;
         blocking(move || reset::remove_installation_state(&files, keys.as_ref())).await
     }
@@ -1400,6 +1458,7 @@ impl ServiceState {
                 writer: self.writer.as_ref().map(ActiveWriter::id),
                 own_writers: &own_writers,
                 quarantined: quarantine.devices(),
+                pull_skips: Some(&self.pull_skips),
                 max_bytes: super::client::MAX_EXCHANGE_BYTES,
             };
             match client.exchange().await {
@@ -1923,6 +1982,18 @@ impl<'a, H: SyncHost> Session<'a, H> {
         Ok(writer.is_some())
     }
 
+    /// Replaces the writer of an anchor whose database was restored behind its log, keeping the
+    /// high-water marked as restored.
+    #[cfg(desktop)]
+    async fn rotate_restored(&self, writer: &mut Option<ActiveWriter>) -> Result<bool, String> {
+        let plan = writer
+            .as_ref()
+            .map(SuccessorPlan::after_restore)
+            .unwrap_or_default();
+        *writer = self.create_successor(plan).await?;
+        Ok(writer.is_some())
+    }
+
     /// Seals with the writer, rotating once when the space no longer accepts it.
     async fn seal(&self, writer: &mut Option<ActiveWriter>) -> Result<SealReport, String> {
         for attempt in 0..2 {
@@ -2122,6 +2193,10 @@ impl<'a, H: SyncHost> Session<'a, H> {
             if let Some(charter) = installed {
                 return Ok(Some(self.pinned_charter(&charter)));
             }
+            let record_path = self.files.record_path();
+            let record =
+                blocking(move || ganbaru_sync_replica::writer::read_record(&record_path)).await?;
+            reset::refuse_refounding(record.as_ref())?;
             let Some(person) = self.host.person_key(&self.ctx.person_key).await? else {
                 return Err(
                     "the person key that founds the sync space is missing on this device"
@@ -2299,6 +2374,10 @@ impl<'a, H: SyncHost> Session<'a, H> {
                 now_ms()?,
             )
             .await?;
+            drop(conn);
+            // The record must name what sequencing sealed, or a restored database behind those
+            // entries would still match the writer.
+            self.record_commit(active).await?;
             Ok(())
         }
         #[cfg(mobile)]
@@ -2366,6 +2445,11 @@ impl<'a, H: SyncHost> Session<'a, H> {
                 _ => Ok(Err(ProposalRejection::NotAnchor)),
             };
             let _ = request.reply.send(outcome);
+        }
+        if let (Ok(true), Some(active)) = (&anchor, writer.as_mut())
+            && let Err(error) = self.record_commit(active).await
+        {
+            eprintln!("sync: record the sequenced entries: {error}");
         }
     }
 

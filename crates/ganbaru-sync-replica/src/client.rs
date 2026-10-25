@@ -2,6 +2,7 @@
 //! lacks, and reports a fork of this installation's writers so the service can re-seal.
 
 use super::outbox::Outbox;
+use super::quarantine::PullSkips;
 use super::wire::BOOTSTRAP_REQUIRED;
 use super::wire::{
     forked_from_wire, hash_from_wire, hash_to_wire, ops_from_wire, ops_to_wire, proposed_from_wire,
@@ -99,6 +100,8 @@ pub struct ClientSession<'a, T: SyncTransport> {
     pub own_writers: &'a BTreeSet<WriterId>,
     /// Devices this installation quarantined, whose writers' operations it does not store.
     pub quarantined: &'a BTreeSet<String>,
+    /// Operations of quarantined devices earlier pulls turned away, which later pulls move past.
+    pub pull_skips: Option<&'a PullSkips>,
     /// Operation bytes after which a direction stops, normally [`MAX_EXCHANGE_BYTES`].
     pub max_bytes: usize,
 }
@@ -258,7 +261,10 @@ impl<T: SyncTransport> ClientSession<'_, T> {
         let mut moved = 0usize;
         // Operations this replica refuses without a fork, counted as known so the next page
         // moves past them.
-        let mut skipped = VersionVector::new();
+        let mut skipped = self
+            .pull_skips
+            .map(|skips| skips.for_quarantine(self.quarantined))
+            .unwrap_or_default();
         loop {
             let mut known = self.stored().await?;
             known.merge(&skipped);
@@ -304,9 +310,16 @@ impl<T: SyncTransport> ClientSession<'_, T> {
                     // An operation past a cutoff this replica already knows, which a hub still
                     // holds until its next apply excludes it, or of a quarantined device.
                     StoreOutcome::Duplicate => {}
-                    StoreOutcome::Refused(StoreRefusal::Revoked | StoreRefusal::Quarantined) => {
+                    StoreOutcome::Refused(
+                        refusal @ (StoreRefusal::Revoked | StoreRefusal::Quarantined),
+                    ) => {
                         if let Ok(envelope) = Envelope::decode(op) {
                             skipped.advance(envelope.writer, envelope.seq);
+                            if *refusal == StoreRefusal::Quarantined
+                                && let Some(skips) = self.pull_skips
+                            {
+                                skips.advance(envelope.writer, envelope.seq);
+                            }
                         }
                     }
                     StoreOutcome::Refused(refusal) => {

@@ -12,6 +12,7 @@ use ganbaru_atomic_files::{
     FileAccess, FinalSymlink, create_private_directories, read_regular_file_capped,
     write_file_atomically,
 };
+use ganbaru_sync_contracts::{Seq, VersionVector, WriterId};
 use serde::{Deserialize, Serialize};
 
 const QUARANTINE_SCHEMA_VERSION: u32 = 1;
@@ -136,4 +137,32 @@ fn validate_device_id(device_id: &str) -> Result<(), String> {
         return Err("sync quarantine names a malformed device id".to_string());
     }
     Ok(())
+}
+
+/// Operations of quarantined devices a client already turned away when pulling, kept across
+/// exchanges so later pulls move past them instead of downloading them again. Forgotten when
+/// the quarantine changes, so lifting it lets the operations arrive.
+#[derive(Debug, Default)]
+pub struct PullSkips {
+    inner: std::sync::Mutex<(BTreeSet<String>, VersionVector)>,
+}
+
+impl PullSkips {
+    /// The skipped operations for the quarantine `devices`, starting over when it changed.
+    pub fn for_quarantine(&self, devices: &BTreeSet<String>) -> VersionVector {
+        let Ok(mut inner) = self.inner.lock() else {
+            return VersionVector::new();
+        };
+        if inner.0 != *devices {
+            *inner = (devices.clone(), VersionVector::new());
+        }
+        inner.1.clone()
+    }
+
+    /// Remembers that a pull turned away the operations of `writer` through `seq`.
+    pub fn advance(&self, writer: WriterId, seq: Seq) {
+        if let Ok(mut inner) = self.inner.lock() {
+            inner.1.advance(writer, seq);
+        }
+    }
 }

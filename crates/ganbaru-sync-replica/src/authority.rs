@@ -387,19 +387,61 @@ pub fn recovery_entry(recovery: &RecoverySeed) -> Result<Entry, String> {
     }))
 }
 
-/// Replaces the vault's recovery seed with a fresh one and returns it, for a regenerated
-/// recovery kit. The key store keeps the new seed, as it keeps the founding one, until the user
-/// saves the kit, so a later Reset founds its charter with the kit the user holds. The log names
-/// the new recovery admin key once the anchor sequences [`recovery_entry`]. Key stores may
-/// block, so callers run this off the async runtime.
-pub fn rotate_recovery_seed(
+/// Replaces the vault's recovery kit and returns the new seed. The `set role` proposal naming
+/// the new recovery admin key enters the outbox first and the seed is stored after, so a full
+/// outbox changes nothing and a failed store withdraws the proposal: the log never names a key
+/// whose seed is gone. The key store keeps the new seed until the user saves the kit. A kit
+/// that still waits is never overwritten while it may still sign: one the log names must be
+/// saved first, and one whose proposal still waits must be sequenced or rejected first. Key
+/// stores may block, so callers run this off the async runtime.
+pub fn regenerate_recovery_kit(
     keys: &dyn SyncKeyStore,
     vault_id: &str,
+    outbox: &mut Outbox,
+    view: &AuthorizationView,
+    space: SpaceId,
+    admin: &AdminKeyPair,
+    now_ms: u64,
 ) -> Result<RecoverySeed, String> {
+    if let Some(waiting) = pending_recovery_seed(keys, vault_id)? {
+        let key = recovery_public_key(&waiting)?;
+        if key == view.recovery_admin_key {
+            return Err("save the waiting recovery kit before replacing it".to_string());
+        }
+        let proposed = outbox.entries().iter().any(|entry| {
+            entry.rejection.is_none()
+                && matches!(
+                    &entry.proposal.proposal.entry,
+                    Entry::SetRole(SetRole::Recovery { recovery_admin_key })
+                        if *recovery_admin_key == key
+                )
+        });
+        if proposed {
+            return Err("the waiting recovery kit is not sequenced yet".to_string());
+        }
+    }
     let seed =
         RecoverySeed::generate().map_err(|error| format!("create sync recovery seed: {error}"))?;
-    keys.write(vault_id, SyncKey::RecoverySeed, seed.as_bytes())?;
+    let proposal = propose(space, view.charter, admin, recovery_entry(&seed)?, now_ms)?;
+    let hash = proposal.hash();
+    outbox.add(proposal)?;
+    if let Err(error) = keys.write(vault_id, SyncKey::RecoverySeed, seed.as_bytes()) {
+        outbox.withdraw(&hash)?;
+        return Err(error);
+    }
     Ok(seed)
+}
+
+fn recovery_public_key(seed: &RecoverySeed) -> Result<AdminPublicKey, String> {
+    Ok(seed
+        .recovery_admin_key()
+        .map_err(|error| format!("derive the recovery admin key: {error}"))?
+        .public_key())
+}
+
+/// Whether the selected log names the recovery admin key `seed` derives, so its kit signs.
+pub fn recovery_kit_active(view: &AuthorizationView, seed: &RecoverySeed) -> Result<bool, String> {
+    Ok(recovery_public_key(seed)? == view.recovery_admin_key)
 }
 
 /// The recovery seed whose kit waits for the user to save it, if the key store still holds
@@ -418,9 +460,22 @@ pub fn pending_recovery_seed(
         .transpose()
 }
 
-/// Deletes the recovery seed once the user saved its kit, so no device keeps it. Key stores may
-/// block, so callers run this off the async runtime.
-pub fn forget_recovery_seed(keys: &dyn SyncKeyStore, vault_id: &str) -> Result<(), String> {
+/// Deletes the recovery seed once the user saved its kit, so no device keeps it. A kit the
+/// selected log does not name yet is kept, because forgetting it could leave no kit that signs.
+/// Key stores may block, so callers run this off the async runtime.
+pub fn forget_recovery_seed(
+    keys: &dyn SyncKeyStore,
+    vault_id: &str,
+    view: &AuthorizationView,
+) -> Result<(), String> {
+    if let Some(seed) = pending_recovery_seed(keys, vault_id)?
+        && !recovery_kit_active(view, &seed)?
+    {
+        return Err(
+            "the anchor has not sequenced this recovery kit yet; keep it until it is active"
+                .to_string(),
+        );
+    }
     keys.remove(vault_id, SyncKey::RecoverySeed)
 }
 

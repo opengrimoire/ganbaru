@@ -12,7 +12,7 @@ use crate::vault::handoff::pairing::PairingManager;
 use ganbaru_handoff::protocol::decode_sync_admin_key;
 use ganbaru_sync::AuthorizationView;
 use ganbaru_sync_contracts::{
-    AdminKeyPair, DeviceKind, Digest32, Entry, ProposalRejection, SignedProposal,
+    AdminKeyPair, DeviceKind, Digest32, Entry, ProposalRejection, SignedProposal, VersionVector,
 };
 use ganbaru_sync_replica::authority::{self, ensure_admin_key};
 use ganbaru_sync_replica::client::{self, PeerIds, SyncTransport};
@@ -21,8 +21,9 @@ use ganbaru_sync_replica::outbox::Outbox;
 use ganbaru_sync_replica::writer::ActiveWriter;
 use tokio::sync::oneshot;
 
-/// Authority work a person asks this desktop for, run by the next pass.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// Authority work a person asks this desktop for, run by the next pass. Its debug form never
+/// shows a recovery kit code.
+#[derive(Clone, PartialEq, Eq)]
 pub(crate) enum AuthorityAction {
     /// Seal a handover that makes this linked desktop the anchor.
     TakeAnchor,
@@ -41,8 +42,25 @@ pub(crate) enum AuthorityAction {
     ProposeRemoval(String),
 }
 
-/// What an authority action produced.
-#[derive(Debug, Clone, PartialEq, Eq)]
+impl std::fmt::Debug for AuthorityAction {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::TakeAnchor => formatter.write_str("TakeAnchor"),
+            Self::Promote(device_id) => formatter.debug_tuple("Promote").field(device_id).finish(),
+            Self::RegenerateRecoveryKit => formatter.write_str("RegenerateRecoveryKit"),
+            Self::PendingRecoveryKit => formatter.write_str("PendingRecoveryKit"),
+            Self::RecoveryKitSaved => formatter.write_str("RecoveryKitSaved"),
+            Self::UseRecoveryKit(_) => formatter.write_str("UseRecoveryKit(<redacted>)"),
+            Self::ProposeRemoval(device_id) => formatter
+                .debug_tuple("ProposeRemoval")
+                .field(device_id)
+                .finish(),
+        }
+    }
+}
+
+/// What an authority action produced. Its debug form never shows a recovery kit code.
+#[derive(Clone, PartialEq, Eq)]
 pub(crate) enum AuthorityAnswer {
     /// The proposal waits in the outbox for the anchor, or the action needed none.
     Proposed,
@@ -54,8 +72,9 @@ pub(crate) enum AuthorityAnswer {
     PendingRecoveryKit(Option<PendingRecoveryKit>),
 }
 
-/// A recovery kit whose seed the key store holds until the user saves it.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+/// A recovery kit whose seed the key store holds until the user saves it. Its debug form never
+/// shows the code.
+#[derive(Clone, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct PendingRecoveryKit {
     /// The grouped kit code with its checksum.
@@ -63,6 +82,30 @@ pub(crate) struct PendingRecoveryKit {
     /// Whether the selected log names the kit's recovery admin key; a regenerated kit is
     /// inactive until the anchor sequences it.
     pub(crate) active: bool,
+}
+
+impl std::fmt::Debug for AuthorityAnswer {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Proposed => formatter.write_str("Proposed"),
+            Self::Anchored(revision) => formatter.debug_tuple("Anchored").field(revision).finish(),
+            Self::RecoveryKit(_) => formatter.write_str("RecoveryKit(<redacted>)"),
+            Self::PendingRecoveryKit(kit) => formatter
+                .debug_tuple("PendingRecoveryKit")
+                .field(kit)
+                .finish(),
+        }
+    }
+}
+
+impl std::fmt::Debug for PendingRecoveryKit {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("PendingRecoveryKit")
+            .field("code", &"<redacted>")
+            .field("active", &self.active)
+            .finish()
+    }
 }
 
 /// An authority action with where its answer goes, if anyone waits for it.
@@ -199,7 +242,9 @@ impl<H: SyncHost> Session<'_, H> {
             AuthorityAction::RecoveryKitSaved => {
                 let keys = self.keys.clone();
                 let vault_id = self.files.vault_id.clone();
-                blocking(move || authority::forget_recovery_seed(keys.as_ref(), &vault_id)).await?;
+                let view = admin.view.clone();
+                blocking(move || authority::forget_recovery_seed(keys.as_ref(), &vault_id, &view))
+                    .await?;
                 return Ok(AuthorityAnswer::Proposed);
             }
             AuthorityAction::UseRecoveryKit(code) => {
@@ -247,11 +292,22 @@ impl<H: SyncHost> Session<'_, H> {
             AuthorityAction::RegenerateRecoveryKit => {
                 let keys = self.keys.clone();
                 let vault_id = self.files.vault_id.clone();
-                let seed =
-                    blocking(move || authority::rotate_recovery_seed(keys.as_ref(), &vault_id))
-                        .await?;
-                self.queue_proposal(&admin, authority::recovery_entry(&seed)?)
-                    .await?;
+                let path = self.files.outbox_path();
+                let space = self.ctx.space;
+                let now = now_ms()?;
+                let seed = blocking(move || {
+                    let mut outbox = Outbox::load(&path)?;
+                    authority::regenerate_recovery_kit(
+                        keys.as_ref(),
+                        &vault_id,
+                        &mut outbox,
+                        &admin.view,
+                        space,
+                        &admin.admin,
+                        now,
+                    )
+                })
+                .await?;
                 Ok(AuthorityAnswer::RecoveryKit(seed.kit_code()))
             }
             AuthorityAction::ProposeRemoval(device_id) => {
@@ -280,11 +336,7 @@ impl<H: SyncHost> Session<'_, H> {
         else {
             return Ok(AuthorityAnswer::PendingRecoveryKit(None));
         };
-        let active = seed
-            .recovery_admin_key()
-            .map_err(|error| format!("derive the recovery admin key: {error}"))?
-            .public_key()
-            == admin.view.recovery_admin_key;
+        let active = authority::recovery_kit_active(&admin.view, &seed)?;
         Ok(AuthorityAnswer::PendingRecoveryKit(Some(
             PendingRecoveryKit {
                 code: seed.kit_code(),
@@ -326,13 +378,16 @@ impl<H: SyncHost> Session<'_, H> {
     }
 
     /// Seals a handover that makes this linked desktop the anchor. Runs only after an exchange
-    /// that left this device current with the coordinator, whose stored vector then stands in
-    /// for the old anchor's: everything the coordinator stored reached this device, so the new
-    /// anchor refuses removals only until it holds what it already holds.
+    /// that left this device current with the coordinator. The old anchor vector is the
+    /// per-writer maximum of this device's stored vector and `hub_stored`, what the coordinator
+    /// reported storing in that exchange, so the new anchor refuses removals until it knows
+    /// every writer either stored. Proposals the coordinator sequenced after the exchange are
+    /// superseded by the handover and return from the outboxes that hold them.
     pub(super) async fn take_anchor(
         &self,
         manager: &PairingManager,
         writer: &mut Option<ActiveWriter>,
+        hub_stored: &VersionVector,
     ) -> Result<AuthorityAnswer, String> {
         let admin = self.admin_context(manager).await?;
         if admin.anchors() {
@@ -345,11 +400,12 @@ impl<H: SyncHost> Session<'_, H> {
             return Err("the sync writer is not ready".to_string());
         };
         let mut conn = acquire(&self.pool).await?;
-        let stored = self
+        let mut stored = self
             .engine
             .stored_vector(&mut conn, &self.ctx)
             .await
             .map_err(|error| format!("read sync stored vector: {error}"))?;
+        stored.merge(hub_stored);
         let revision = authority::seal_handover_here(
             &self.engine,
             &mut conn,
@@ -457,7 +513,7 @@ impl<H: SyncHost> Session<'_, H> {
 
     /// Records the head the writer sealed through sequencing, so its record matches the log,
     /// and returns it.
-    async fn record_commit(&self, active: &mut ActiveWriter) -> Result<u64, String> {
+    pub(super) async fn record_commit(&self, active: &mut ActiveWriter) -> Result<u64, String> {
         let seq = self.stored_head(active).await?;
         active.committed(seq)?;
         Ok(seq)

@@ -103,6 +103,20 @@ impl LocalPair {
                 let charter = charter.clone();
                 Box::pin(async move { Ok(Some(charter)) })
             }),
+            None,
+        )
+        .await
+    }
+
+    /// A coordinator whose listener reads the quarantined devices from `quarantined`.
+    async fn start_with_quarantine(quarantined: QuarantinedDevices) -> Self {
+        Self::start_with_sealer(
+            None,
+            server::limits::ConnectionLimits::default(),
+            EnrollmentApprovals::default(),
+            LanAdmission::default(),
+            test_enrollment_sealer(),
+            Some(quarantined),
         )
         .await
     }
@@ -126,7 +140,15 @@ impl LocalPair {
         approvals: EnrollmentApprovals,
         admission: LanAdmission,
     ) -> Self {
-        Self::start_with_sealer(hub, limits, approvals, admission, test_enrollment_sealer()).await
+        Self::start_with_sealer(
+            hub,
+            limits,
+            approvals,
+            admission,
+            test_enrollment_sealer(),
+            None,
+        )
+        .await
     }
 
     async fn start_with_sealer(
@@ -135,6 +157,7 @@ impl LocalPair {
         approvals: EnrollmentApprovals,
         admission: LanAdmission,
         sealer: EnrollmentSealer,
+        quarantined: Option<QuarantinedDevices>,
     ) -> Self {
         let desktop_root = TestDirectory::new("desktop");
         let phone_root = TestDirectory::new("phone");
@@ -173,6 +196,7 @@ impl LocalPair {
                 enrollment_sealer: Some(sealer),
                 approvals: approvals.clone(),
                 admission,
+                quarantined,
                 ..CoordinatorServices::default()
             },
             receiver,
@@ -2101,5 +2125,51 @@ async fn sync_states_refresh_the_remembered_coordinator_contact() {
         linked_pin(&pair.phone).reported_endpoints,
         endpoints,
         "an unreportable endpoint list is not stored"
+    );
+}
+
+#[tokio::test]
+async fn the_listener_refuses_a_quarantined_device_and_survives_an_unreadable_list() {
+    type List = Result<std::collections::BTreeSet<String>, String>;
+    let list: std::sync::Arc<std::sync::Mutex<List>> =
+        std::sync::Arc::new(std::sync::Mutex::new(Ok(std::collections::BTreeSet::new())));
+    let source = list.clone();
+    let pair = LocalPair::start_with_quarantine(std::sync::Arc::new(move || {
+        let current = source.lock().expect("list").clone();
+        Box::pin(async move { current })
+    }))
+    .await;
+    pair.enroll().await;
+    // This listener serves no coordinator operations, so a device that passes admission gets
+    // that answer, while a refused one loses the connection after the handshake.
+    let served = || async {
+        let outcome =
+            probe_coordinator(&pair.phone, super::super::protocol::test_compatibility(), 0).await;
+        match outcome {
+            Ok(_) => true,
+            Err(error) => error.contains("coordinator operations are unavailable"),
+        }
+    };
+    assert!(served().await, "a linked device is served");
+
+    *list.lock().expect("list") = Ok(std::collections::BTreeSet::from([
+        "device-phone".to_string()
+    ]));
+    assert!(
+        !served().await,
+        "a quarantined device is turned away after the handshake"
+    );
+    assert!(
+        pair.phone
+            .coordinator_pin()
+            .expect("coordinator pin")
+            .is_some(),
+        "a quarantine is not an unlink"
+    );
+
+    *list.lock().expect("list") = Err("the quarantine list is damaged".to_string());
+    assert!(
+        served().await,
+        "an unreadable list turns no linked device away"
     );
 }

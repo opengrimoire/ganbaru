@@ -442,6 +442,27 @@ async fn selected_proposal_revision(
         .transpose()
 }
 
+async fn selected_proposal_position(
+    conn: &mut SqliteConnection,
+    space: SpaceId,
+    proposal_hash: &Digest32,
+) -> SyncResult<Option<(u32, u64)>> {
+    let row: Option<(i64, i64)> = sqlx::query_as(
+        "SELECT epoch, revision FROM sync_auth_entries
+         WHERE space_id = ? AND proposal_hash = ? AND selected = 1",
+    )
+    .bind(space.as_bytes().as_slice())
+    .bind(proposal_hash.as_slice())
+    .fetch_optional(&mut *conn)
+    .await?;
+    row.map(|(epoch, revision)| {
+        let epoch =
+            u32::try_from(epoch).map_err(|_| corrupt("authorization epoch is out of range"))?;
+        Ok((epoch, stored_u64(revision, "revision")?))
+    })
+    .transpose()
+}
+
 /// Every stored entry, deduplicated by entry hash.
 async fn load_nodes(conn: &mut SqliteConnection, space: SpaceId) -> SyncResult<Vec<Node>> {
     let rows = sqlx::query(
@@ -862,6 +883,19 @@ impl Engine {
     ) -> SyncResult<Option<u64>> {
         log::ensure_space(conn, ctx.space).await?;
         selected_proposal_revision(conn, ctx.space, proposal_hash).await
+    }
+
+    /// The epoch and revision at which the selected chain holds the proposal with
+    /// `proposal_hash`, if it does. An outbox keeps a held proposal until a later epoch kept it,
+    /// because a handover from an earlier revision would supersede it.
+    pub async fn proposal_position(
+        &self,
+        conn: &mut SqliteConnection,
+        ctx: &SpaceContext,
+        proposal_hash: &Digest32,
+    ) -> SyncResult<Option<(u32, u64)>> {
+        log::ensure_space(conn, ctx.space).await?;
+        selected_proposal_position(conn, ctx.space, proposal_hash).await
     }
 
     /// Fails with [`SyncError::ResetRequired`] when the space holds sync state from before the

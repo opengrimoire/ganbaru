@@ -49,12 +49,22 @@ pub struct OutboxEntry {
     pub proposal: SignedProposal,
     /// The final rejection the anchor gave, or `None` while the proposal waits.
     pub rejection: Option<ProposalRejection>,
+    /// The epoch of the selected entry that holds the proposal, once the local replica holds
+    /// it. A held proposal is kept until a later epoch kept it too, because a handover sealed
+    /// from an earlier revision supersedes it and then it waits again.
+    pub held: Option<u32>,
 }
 
 impl OutboxEntry {
     /// Whether the proposal still waits for an anchor.
     pub fn pending(&self) -> bool {
-        self.rejection.is_none()
+        self.rejection.is_none() && self.held.is_none()
+    }
+
+    /// Whether [`Outbox::add`] may drop the entry to make room: a final rejection or a held
+    /// proposal.
+    fn evictable(&self) -> bool {
+        !self.pending()
     }
 }
 
@@ -71,6 +81,8 @@ struct StoredProposal {
     proposal: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     rejection: Option<u8>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    held: Option<u32>,
 }
 
 /// The outbox file of one vault with the proposals it holds.
@@ -142,16 +154,15 @@ impl Outbox {
     }
 
     /// Whether [`Self::add`] can take another proposal: the outbox is below its bound or holds
-    /// a final rejection it can drop.
+    /// a final rejection or a held proposal it can drop.
     pub fn has_room(&self) -> bool {
-        self.entries.len() < MAX_OUTBOX_PROPOSALS
-            || self.entries.iter().any(|entry| !entry.pending())
+        self.entries.len() < MAX_OUTBOX_PROPOSALS || self.entries.iter().any(OutboxEntry::evictable)
     }
 
     /// Adds a waiting proposal and writes the outbox. A proposal already present is left as it
-    /// is. At the bound the oldest final rejection makes room, so rejections never block new
-    /// proposals; an outbox full of waiting proposals refuses. Returns whether the proposal was
-    /// added.
+    /// is. At the bound the oldest final rejection makes room, then the oldest held proposal, so
+    /// neither blocks new proposals; an outbox full of waiting proposals refuses. Returns
+    /// whether the proposal was added.
     pub fn add(&mut self, proposal: SignedProposal) -> Result<bool, String> {
         let hash = proposal.hash();
         if self.position(&hash).is_some() {
@@ -159,17 +170,33 @@ impl Outbox {
         }
         let mut next = self.entries.clone();
         if next.len() >= MAX_OUTBOX_PROPOSALS {
-            let Some(rejected) = next.iter().position(|entry| !entry.pending()) else {
+            let Some(evicted) = next
+                .iter()
+                .position(|entry| entry.rejection.is_some())
+                .or_else(|| next.iter().position(OutboxEntry::evictable))
+            else {
                 return Err("sync proposal outbox is full".to_string());
             };
-            next.remove(rejected);
+            next.remove(evicted);
         }
         next.push(OutboxEntry {
             proposal,
             rejection: None,
+            held: None,
         });
         self.replace(next)?;
         Ok(true)
+    }
+
+    /// Withdraws a proposal that was never sent, as when its signer could not keep the secret
+    /// it names.
+    pub fn withdraw(&mut self, hash: &Digest32) -> Result<(), String> {
+        let Some(index) = self.position(hash) else {
+            return Ok(());
+        };
+        let mut next = self.entries.clone();
+        next.remove(index);
+        self.replace(next)
     }
 
     /// Records the anchor's answer to a proposal. A final rejection marks it rejected, so it is
@@ -197,26 +224,42 @@ impl Outbox {
         self.replace(next)
     }
 
-    /// Drops every waiting proposal the selected chain of the local replica holds.
+    /// Follows the selected chain of the local replica: a waiting proposal it holds is marked
+    /// held at the epoch of its entry; a held proposal is dropped once the chain is in a later
+    /// epoch that still holds it, and waits again when a handover from an earlier revision
+    /// superseded its entry, so the next anchor sequences it again.
     pub async fn prune(
         &mut self,
         engine: &Engine,
         conn: &mut SqliteConnection,
         ctx: &SpaceContext,
     ) -> Result<(), String> {
+        let epoch = engine
+            .authorization(conn, ctx)
+            .await
+            .map_err(|error| format!("read sync authorization: {error}"))?
+            .map(|view| view.epoch);
         let mut next = Vec::with_capacity(self.entries.len());
         for entry in &self.entries {
-            let held = entry.pending()
-                && engine
-                    .proposal_revision(conn, ctx, &entry.proposal.hash())
-                    .await
-                    .map_err(|error| format!("read sync proposal revision: {error}"))?
-                    .is_some();
-            if !held {
+            if entry.rejection.is_some() {
                 next.push(entry.clone());
+                continue;
             }
+            let position = engine
+                .proposal_position(conn, ctx, &entry.proposal.hash())
+                .await
+                .map_err(|error| format!("read sync proposal revision: {error}"))?;
+            let held = match position {
+                Some((held_at, _)) if epoch.is_some_and(|epoch| epoch > held_at) => continue,
+                Some((held_at, _)) => Some(held_at),
+                None => None,
+            };
+            next.push(OutboxEntry {
+                held,
+                ..entry.clone()
+            });
         }
-        if next.len() == self.entries.len() {
+        if next == self.entries {
             return Ok(());
         }
         self.replace(next)
@@ -250,6 +293,7 @@ impl Outbox {
                 .map(|entry| StoredProposal {
                     proposal: URL_SAFE_NO_PAD.encode(entry.proposal.encode()),
                     rejection: entry.rejection.map(ProposalRejection::as_u8),
+                    held: entry.held,
                 })
                 .collect(),
         };
@@ -286,5 +330,6 @@ fn decode_entry(stored: StoredProposal) -> Result<OutboxEntry, String> {
     Ok(OutboxEntry {
         proposal,
         rejection,
+        held: stored.held,
     })
 }

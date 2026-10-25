@@ -6,9 +6,43 @@
 
 use crate::carry_forward;
 use crate::outbox::Outbox;
-use crate::writer::{SyncFiles, SyncKey, SyncKeyStore, read_record};
+use crate::writer::{SyncFiles, SyncKey, SyncKeyStore, WriterRecord, read_record, write_record};
 use ganbaru_sync::local;
 use sqlx::SqliteConnection;
+
+/// Drops the anchor's authorization high-water from the writer record, the first step of a
+/// Reset. Founding refuses a space without a charter while the record names a high-water,
+/// because that database was restored from before the space was founded; a Reset that crashes
+/// after clearing the database must still found anew on the next pass. A crash before the
+/// database is cleared leaves the old log without a high-water until the anchor sequences again.
+pub fn forget_high_water(files: &SyncFiles) -> Result<(), String> {
+    let path = files.record_path();
+    match read_record(&path) {
+        Ok(Some(record)) if record.sequenced.is_some() => write_record(
+            &path,
+            &WriterRecord {
+                sequenced: None,
+                ..record
+            },
+        ),
+        // An unreadable record is removed by the rest of the reset.
+        Ok(_) | Err(_) => Ok(()),
+    }
+}
+
+/// Refuses to found a new space while the writer record still names the high-water of a log:
+/// the database lost its charter to a restore from before the space was founded, and a new
+/// charter would leave every linked device refusing it. Only Reset sync state founds anew.
+pub fn refuse_refounding(record: Option<&WriterRecord>) -> Result<(), String> {
+    if record.is_some_and(|record| record.sequenced.is_some()) {
+        return Err(
+            "this database was restored from before the vault's sync space was founded; restore \
+             a newer backup or reset sync state"
+                .to_string(),
+        );
+    }
+    Ok(())
+}
 
 /// Clears every engine table of the vault database, keeping domain rows.
 pub async fn reset_database(conn: &mut SqliteConnection) -> Result<(), String> {

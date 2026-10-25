@@ -12,6 +12,7 @@ use crate::hub::{
     OpenHubVault, SyncHub,
 };
 use crate::outbox::Outbox;
+use crate::quarantine::PullSkips;
 use crate::recovery::{
     RecoveredRow, RecoveryAction, RecoveryChoice, RecoveryRestorers, RestoreFuture,
 };
@@ -354,7 +355,35 @@ impl Replica {
             writer: Some(active),
             own_writers,
             quarantined: &BTreeSet::new(),
+            pull_skips: None,
             max_bytes,
+        }
+        .exchange()
+        .await
+    }
+
+    /// Exchanges as an installation that quarantined `quarantined`, remembering what its pulls
+    /// turned away in `skips`.
+    async fn exchange_quarantining<T: SyncTransport>(
+        &self,
+        transport: &T,
+        ids: &PeerIds,
+        quarantined: &BTreeSet<String>,
+        skips: &PullSkips,
+    ) -> Result<Exchange, String> {
+        let engine = Engine::vault();
+        let own_writers = self.writer.own_writers();
+        ClientSession {
+            transport,
+            ids,
+            engine: &engine,
+            pool: &self.pool,
+            ctx: &self.ctx,
+            writer: Some(self.writer.id()),
+            own_writers: &own_writers,
+            quarantined,
+            pull_skips: Some(skips),
+            max_bytes: MAX_EXCHANGE_BYTES,
         }
         .exchange()
         .await
@@ -565,6 +594,89 @@ fn exchange_pushes_and_pulls_until_both_replicas_hold_every_operation() {
         assert_eq!((again.pushed, again.pulled), (0, 0));
         hub_replica.close().await;
         phone.close().await;
+    });
+}
+
+/// A transport that counts the operations pulls download.
+struct CountingTransport<'a> {
+    inner: &'a DirectTransport,
+    pulled: std::sync::atomic::AtomicUsize,
+}
+
+impl SyncTransport for CountingTransport<'_> {
+    async fn request(&self, message: ControlMessage) -> Result<ControlMessage, String> {
+        let response = self.inner.request(message).await?;
+        if let ControlMessage::SyncOps { ops, .. } = &response {
+            self.pulled
+                .fetch_add(ops.len(), std::sync::atomic::Ordering::Relaxed);
+        }
+        Ok(response)
+    }
+}
+
+#[test]
+fn a_client_pulls_a_quarantined_backlog_once_until_the_quarantine_changes() {
+    block_on(async {
+        let hub_replica = Replica::new("hub-pull-skips", HUB_DEVICE).await;
+        let mut phone = Replica::new("phone-pull-skips", PHONE_DEVICE).await;
+        let tablet = Replica::new("tablet-pull-skips", TABLET_DEVICE).await;
+        let (transport, _changes) = hub(&hub_replica);
+        phone.seal_note("note-phone-1").await;
+        phone.seal_note("note-phone-2").await;
+        done(
+            phone
+                .exchange(&transport, &phone_ids())
+                .await
+                .expect("push"),
+        );
+
+        let counting = CountingTransport {
+            inner: &transport,
+            pulled: std::sync::atomic::AtomicUsize::new(0),
+        };
+        let tablet_ids = PeerIds {
+            vault_id: VAULT_ID.to_string(),
+            device_id: TABLET_DEVICE.to_string(),
+        };
+        let quarantined = BTreeSet::from([PHONE_DEVICE.to_string()]);
+        let skips = PullSkips::default();
+        let first = done(
+            tablet
+                .exchange_quarantining(&counting, &tablet_ids, &quarantined, &skips)
+                .await
+                .expect("first exchange"),
+        );
+        assert_eq!(first.problem, None);
+        let downloaded = counting.pulled.load(std::sync::atomic::Ordering::Relaxed);
+        assert!(downloaded > 0);
+        assert_eq!(tablet.stored().await.get(&phone.writer.id()), 0);
+
+        done(
+            tablet
+                .exchange_quarantining(&counting, &tablet_ids, &quarantined, &skips)
+                .await
+                .expect("second exchange"),
+        );
+        assert_eq!(
+            counting.pulled.load(std::sync::atomic::Ordering::Relaxed),
+            downloaded,
+            "the turned away backlog is not downloaded again"
+        );
+
+        // Lifting the quarantine forgets the skips, so the operations arrive.
+        done(
+            tablet
+                .exchange_quarantining(&counting, &tablet_ids, &BTreeSet::new(), &skips)
+                .await
+                .expect("exchange after lifting"),
+        );
+        assert_eq!(
+            tablet.stored().await.get(&phone.writer.id()),
+            phone.stored().await.get(&phone.writer.id())
+        );
+        hub_replica.close().await;
+        phone.close().await;
+        tablet.close().await;
     });
 }
 
@@ -2987,7 +3099,7 @@ fn reset_sync_state_founds_a_new_space_that_republishes_every_row() {
 #[test]
 fn a_reset_interrupted_after_the_database_is_cleared_is_repaired_on_the_next_start() {
     use crate::reset;
-    use crate::writer::{WriterCheck, check_writer, read_stored_writer};
+    use crate::writer::{WriterCheck, check_writer, read_record, read_stored_writer};
     block_on(async {
         // The crash lands before the installation state goes, or after the outbox went but
         // before the record and the writer keys did.
@@ -3039,6 +3151,13 @@ fn a_reset_interrupted_after_the_database_is_cleared_is_repaired_on_the_next_sta
                 )
                 .expect("queue removal");
 
+            // A database without a charter beside a record naming a high-water was restored from
+            // before founding, so only the Reset's first step lets a new charter be founded.
+            let record = || read_record(&files.record_path()).expect("read record");
+            assert!(reset::refuse_refounding(record().as_ref()).is_err());
+            reset::forget_high_water(&files).expect("forget the high-water");
+            assert_eq!(record().and_then(|record| record.sequenced), None);
+            reset::refuse_refounding(record().as_ref()).expect("the reset may found anew");
             reset::reset_database(&mut *acquire(&hub.pool).await)
                 .await
                 .expect("reset database");
@@ -3095,30 +3214,46 @@ fn a_reset_interrupted_after_the_database_is_cleared_is_repaired_on_the_next_sta
             )
             .expect("create successor");
             assert_eq!(
-                hub.writer.record().sequenced.as_ref(),
-                Some(&recorded),
-                "the successor carries the record until the charter is checked"
-            );
-            hub.writer
-                .settle_sequenced(Some(old_charter))
-                .expect("settle against the old charter");
-            assert!(
-                hub.writer.record().sequenced.is_some(),
-                "the same charter keeps it"
+                hub.writer.record().sequenced,
+                None,
+                "a high-water of the cleared log never reads as a restore"
             );
             let new_charter = hub.charter().await;
             assert_ne!(
                 new_charter, old_charter,
                 "the reset founded another charter"
             );
+            // A record that still named the old charter is cleared against the new one.
+            let mut kept = hub.writer.record().clone();
+            kept.sequenced = Some(recorded.clone());
+            crate::writer::write_record(&files.record_path(), &kept).expect("write record");
+            let stored = read_stored_writer(&files, &keys).expect("read stored writer");
+            let mut conn = acquire(&hub.pool).await;
+            let WriterCheck::Ready(writer) = check_writer(
+                &hub.engine,
+                &mut conn,
+                &hub.ctx,
+                &files,
+                &device_key(HUB_DEVICE).public_key(),
+                stored,
+            )
+            .await
+            .expect("check writer") else {
+                panic!("the successor still matches its chain");
+            };
+            drop(conn);
+            hub.writer = *writer;
+            hub.writer
+                .settle_sequenced(None)
+                .expect("settle without a charter");
+            assert!(
+                hub.writer.record().sequenced.is_some(),
+                "a space without a charter keeps the high-water"
+            );
             hub.writer
                 .settle_sequenced(Some(new_charter))
                 .expect("settle against the new charter");
-            assert_eq!(
-                hub.writer.record().sequenced,
-                None,
-                "a high-water of the cleared log never reads as a restore"
-            );
+            assert_eq!(hub.writer.record().sequenced, None);
             let stored = std::fs::read_to_string(files.record_path()).expect("read record");
             assert!(
                 !stored.contains("\"sequenced\""),

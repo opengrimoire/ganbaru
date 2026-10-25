@@ -269,7 +269,7 @@ async fn handle_connection(
     if let Some(quarantined) = quarantined.as_ref()
         && peer_certificate.is_some()
         && let Ok(peer) = manager.authenticated_peer(peer_certificate.as_ref())
-        && quarantined().await?.contains(&peer.device_id)
+        && refuses_quarantined(quarantined().await, &peer.device_id)
     {
         return Err(format!("refused quarantined device {}", peer.device_id));
     }
@@ -1069,4 +1069,20 @@ where
         },
     ))
     .await
+}
+
+/// Whether the listener turns a linked device away as quarantined. A quarantine list that
+/// cannot be read is reported and refuses no one, so a damaged file never locks every linked
+/// device out, handoff recovery included.
+pub(crate) fn refuses_quarantined(
+    quarantined: Result<BTreeSet<String>, String>,
+    device_id: &str,
+) -> bool {
+    match quarantined {
+        Ok(devices) => devices.contains(device_id),
+        Err(error) => {
+            eprintln!("sync: read the quarantine list: {error}");
+            false
+        }
+    }
 }

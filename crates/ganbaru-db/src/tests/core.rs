@@ -90,8 +90,7 @@ fn fresh_database_applies_clean_baseline() {
             "notes_pages",
             "notes_blocks",
             "notes_block_view_state",
-            "notes_data_source_row_hierarchy",
-            "idx_notes_data_source_row_hierarchy_parent",
+            "idx_notes_pages_parent_row",
             "notes_search_fts",
             "idx_notes_project_history_dirty_deadlines",
         ] {

@@ -50,16 +50,18 @@ async fn set_graph_trash(
     in_trash: bool,
 ) -> Result<(), String> {
     let (table, column, id) = root_location(&root);
-    let (state, raw): (i64, String) = sqlx::query_as(AssertSqlSafe(format!(
-        "SELECT in_trash, {column} FROM {table} WHERE id = ?"
+    let state: i64 = sqlx::query_scalar(AssertSqlSafe(format!(
+        "SELECT in_trash FROM {table} WHERE id = ?"
     )))
     .bind(id)
     .fetch_optional(&mut **tx)
     .await
     .map_err(|e| format!("load Notes trash root: {e}"))?
     .ok_or_else(|| "Notes trash target not found".to_string())?;
-    let mut metadata: Value =
-        serde_json::from_str(&raw).map_err(|e| format!("parse Notes trash metadata: {e}"))?;
+    let mut metadata = match column {
+        Some(column) => read_metadata(tx, table, column, id).await?,
+        None => Value::Object(serde_json::Map::new()),
+    };
     if in_trash {
         if state != 0 {
             return Ok(());
@@ -92,10 +94,13 @@ async fn set_graph_trash(
                 last_edited_time = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ? AND in_trash = 0")
                 .bind(source).execute(&mut **tx).await.map_err(|e| format!("trash owned Notes database source: {e}"))?;
         }
-        // The journal lists only active records changed by this operation.
-        metadata[JOURNAL_KEY] = serde_json::to_value(&journal)
-            .map_err(|e| format!("serialize Notes trash journal: {e}"))?;
-        write_metadata(tx, table, column, id, &metadata).await?;
+        // The journal lists only active records changed by this operation. Page roots keep no
+        // journal: their trash owner token finds the same graph on restore.
+        if let Some(column) = column {
+            metadata[JOURNAL_KEY] = serde_json::to_value(&journal)
+                .map_err(|e| format!("serialize Notes trash journal: {e}"))?;
+            write_metadata(tx, table, column, id, &metadata).await?;
+        }
     } else {
         let journal = metadata
             .get(JOURNAL_KEY)
@@ -103,18 +108,10 @@ async fn set_graph_trash(
             .map(serde_json::from_value::<TrashJournal>)
             .transpose()
             .map_err(|e| format!("parse Notes trash journal: {e}"))?;
-        if let Some(journal) = journal {
+        if let (Some(journal), Some(column)) = (journal, column) {
             validate_journal(&journal)?;
             restore_journal(tx, &journal).await?;
-            let raw: String = sqlx::query_scalar(AssertSqlSafe(format!(
-                "SELECT {column} FROM {table} WHERE id = ?"
-            )))
-            .bind(id)
-            .fetch_one(&mut **tx)
-            .await
-            .map_err(|e| format!("reload restored Notes metadata: {e}"))?;
-            metadata = serde_json::from_str(&raw)
-                .map_err(|e| format!("parse restored Notes metadata: {e}"))?;
+            metadata = read_metadata(tx, table, column, id).await?;
             if let Some(object) = metadata.as_object_mut() {
                 object.remove(JOURNAL_KEY);
             }
@@ -168,13 +165,33 @@ async fn root_trash_owner(
     Ok(owner.flatten())
 }
 
-fn root_location(root: &TrashObject) -> (&'static str, &'static str, &str) {
+/// The table of a trash graph object and the JSON column that holds its trash journal when it is
+/// the root. Only block roots keep a journal: page roots restore through their trash owner token,
+/// and databases and sources are trashed only as part of a page or block graph.
+fn root_location(root: &TrashObject) -> (&'static str, Option<&'static str>, &str) {
     match root {
-        TrashObject::Page(id) => ("notes_pages", "properties", id),
-        TrashObject::Block(id) => ("notes_blocks", "attrs", id),
-        TrashObject::Database(id) => ("notes_databases", "description", id),
-        TrashObject::Source(id) => ("notes_data_sources", "properties", id),
+        TrashObject::Page(id) => ("notes_pages", None, id),
+        TrashObject::Block(id) => ("notes_blocks", Some("attrs"), id),
+        TrashObject::Database(id) => ("notes_databases", None, id),
+        TrashObject::Source(id) => ("notes_data_sources", None, id),
     }
+}
+
+/// Reads the JSON metadata column that holds a trash root's journal.
+async fn read_metadata(
+    tx: &mut Transaction<'_, Sqlite>,
+    table: &str,
+    column: &str,
+    id: &str,
+) -> Result<Value, String> {
+    let raw: String = sqlx::query_scalar(AssertSqlSafe(format!(
+        "SELECT {column} FROM {table} WHERE id = ?"
+    )))
+    .bind(id)
+    .fetch_one(&mut **tx)
+    .await
+    .map_err(|e| format!("load Notes trash metadata: {e}"))?;
+    serde_json::from_str(&raw).map_err(|e| format!("parse Notes trash metadata: {e}"))
 }
 
 async fn write_metadata(

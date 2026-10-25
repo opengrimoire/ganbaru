@@ -742,15 +742,16 @@ async fn load_database_export(
     let rows = if data_source_id.is_empty() {
         Vec::new()
     } else {
-        sqlx::query_as::<_, (String, String, String, String)>(
-            "SELECT id, title, properties, last_edited_time
-             FROM notes_pages
-             WHERE parent_type = 'data_source_id'
-               AND parent_data_source_id = ?
-               AND in_trash = 0
-               AND archived = 0
-             ORDER BY title COLLATE NOCASE ASC, id ASC",
-        )
+        sqlx::query_as::<_, (String, String, String, String)>(sqlx::AssertSqlSafe(format!(
+            "SELECT page.id, page.title, {} AS properties, page.last_edited_time
+             FROM notes_pages AS page
+             WHERE page.parent_type = 'data_source_id'
+               AND page.parent_data_source_id = ?
+               AND page.in_trash = 0
+               AND page.archived = 0
+             ORDER BY page.title COLLATE NOCASE ASC, page.id ASC",
+            crate::page_property_storage::page_properties_sql("page")
+        )))
         .bind(data_source_id)
         .fetch_all(pool)
         .await

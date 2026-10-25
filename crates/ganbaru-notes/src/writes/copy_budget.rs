@@ -52,7 +52,10 @@ impl CopyBudget {
         id: &str,
     ) -> Result<(), String> {
         let bytes: i64 = sqlx::query_scalar(
-            "SELECT length(CAST(title AS BLOB)) + length(CAST(properties AS BLOB))
+            "SELECT length(CAST(title AS BLOB))
+                + coalesce((SELECT sum(length(CAST(stored_value.value AS BLOB)))
+                    FROM notes_page_property_values AS stored_value
+                    WHERE stored_value.page_id = notes_pages.id), 0)
                 + coalesce(length(CAST(icon AS BLOB)), 0)
                 + coalesce(length(CAST(cover AS BLOB)), 0)
                 + coalesce(length(CAST(source_provider AS BLOB)), 0)

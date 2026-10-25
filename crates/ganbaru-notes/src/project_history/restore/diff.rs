@@ -12,17 +12,32 @@ use sqlx::{AssertSqlSafe, QueryBuilder, Sqlite, Transaction};
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 /// Restored tables in insertion order with their primary key columns.
-const RESTORE_TABLES: [(&str, &[&str]); 21] = [
+const RESTORE_TABLES: [(&str, &[&str]); 24] = [
     ("notes_assets", &["id"]),
     ("notes_folders", &["id"]),
     ("notes_pages", &["id"]),
     ("notes_blocks", &["id"]),
     ("notes_databases", &["id"]),
     ("notes_data_sources", &["id"]),
-    ("notes_data_source_row_hierarchy", &["row_page_id"]),
+    (
+        "notes_data_source_properties",
+        &["data_source_id", "property_id"],
+    ),
+    (
+        "notes_data_source_property_options",
+        &["data_source_id", "property_id", "option_id"],
+    ),
+    ("notes_page_property_values", &["page_id", "property_id"]),
+    (
+        "notes_relation_edges",
+        &["source_page_id", "source_property_id", "target_page_id"],
+    ),
     ("notes_database_views", &["id"]),
     ("notes_data_source_templates", &["id"]),
-    ("notes_data_source_template_blocks", &["template_id", "id"]),
+    (
+        "notes_data_source_template_blocks",
+        &["template_id", "ordinal"],
+    ),
     ("notes_page_aliases", &["id"]),
     ("notes_page_notification_settings", &["page_id", "user_id"]),
     ("notes_comment_threads", &["id"]),
@@ -41,6 +56,9 @@ const RESTORE_TABLES: [(&str, &[&str]); 21] = [
         &["asset_id", "owner_type", "owner_id", "role"],
     ),
 ];
+
+const TEMPLATE_BLOCKS_TABLE: &str = "notes_data_source_template_blocks";
+const RELATION_EDGES_TABLE: &str = "notes_relation_edges";
 
 /// Upper bound on ids bound into one `IN` list, well under the SQLite variable limit.
 const BIND_CHUNK: usize = 500;
@@ -116,6 +134,7 @@ pub(super) async fn remove_omitted_rows_tx(
     copied_ids: &HashMap<String, String>,
 ) -> Result<(), String> {
     let owners = BundleOwners::collect(bundle);
+    let replaced_templates = replaced_template_ids(current, bundle);
     for (table, key_columns) in RESTORE_TABLES {
         if table == "notes_assets" {
             continue;
@@ -130,6 +149,9 @@ pub(super) async fn remove_omitted_rows_tx(
                 Some(bundle_row) if table == "notes_page_aliases" && *bundle_row != row => {
                     Removal::Delete
                 }
+                Some(_) if is_replaced_template_block(table, row, &replaced_templates) => {
+                    Removal::Delete
+                }
                 Some(_) => Removal::Keep,
                 None => omitted_row_removal(table, row, &owners),
             };
@@ -141,6 +163,44 @@ pub(super) async fn remove_omitted_rows_tx(
         }
     }
     Ok(())
+}
+
+/// Template blocks are an owned snapshot keyed by ordinal, so a template whose block list differs
+/// between the current graph and the bundle is replaced whole instead of row by row. Updating
+/// single ordinals in place could collide on the unique block id or lose children to the parent
+/// cascade.
+fn replaced_template_ids(
+    current: &BTreeMap<String, Vec<Value>>,
+    bundle: &BTreeMap<String, Vec<Value>>,
+) -> HashSet<String> {
+    let current = template_blocks_by_template(current);
+    let bundle = template_blocks_by_template(bundle);
+    bundle
+        .iter()
+        .filter(|(template_id, blocks)| current.get(*template_id) != Some(*blocks))
+        .map(|(template_id, _)| template_id.clone())
+        .collect()
+}
+
+/// Groups template block rows by template, each list sorted by ordinal.
+fn template_blocks_by_template(
+    rows: &BTreeMap<String, Vec<Value>>,
+) -> BTreeMap<String, Vec<&Value>> {
+    let mut grouped = BTreeMap::<String, Vec<&Value>>::new();
+    for row in rows.get(TEMPLATE_BLOCKS_TABLE).into_iter().flatten() {
+        if let Some(template_id) = json_optional_string(row, "template_id") {
+            grouped.entry(template_id).or_default().push(row);
+        }
+    }
+    for blocks in grouped.values_mut() {
+        blocks.sort_by_key(|row| row.get("ordinal").and_then(Value::as_i64));
+    }
+    grouped
+}
+
+fn is_replaced_template_block(table: &str, row: &Value, replaced: &HashSet<String>) -> bool {
+    table == TEMPLATE_BLOCKS_TABLE
+        && json_optional_string(row, "template_id").is_some_and(|id| replaced.contains(&id))
 }
 
 /// Changed aliases are deleted with the omitted ones, since their unique normalized alias could
@@ -167,7 +227,9 @@ fn omitted_row_removal(table: &str, row: &Value, owners: &BundleOwners) -> Remov
             owners.owns(row, "page_id", &owners.pages)
                 || owners.owns(row, "normalized_alias", &owners.normalized_aliases),
         ),
-        "notes_data_source_row_hierarchy" | "notes_data_source_templates" => {
+        "notes_data_source_templates"
+        | "notes_data_source_properties"
+        | "notes_data_source_property_options" => {
             gated(owners.owns(row, "data_source_id", &owners.data_sources))
         }
         "notes_database_views" => gated(
@@ -177,6 +239,8 @@ fn omitted_row_removal(table: &str, row: &Value, owners: &BundleOwners) -> Remov
         "notes_data_source_template_blocks" => {
             gated(owners.owns(row, "template_id", &owners.templates))
         }
+        "notes_page_property_values" => gated(owners.owns(row, "page_id", &owners.pages)),
+        "notes_relation_edges" => gated(owners.owns(row, "source_page_id", &owners.pages)),
         "notes_page_notification_settings"
         | "notes_comment_threads"
         | "notes_suggestions"
@@ -269,6 +333,7 @@ pub(super) async fn write_bundle_rows_tx(
     current: &BTreeMap<String, Vec<Value>>,
     bundle: &BTreeMap<String, Vec<Value>>,
 ) -> Result<(), String> {
+    let replaced_templates = replaced_template_ids(current, bundle);
     for (table, key_columns) in RESTORE_TABLES {
         let Some(table_rows) = bundle.get(table) else {
             continue;
@@ -279,11 +344,15 @@ pub(super) async fn write_bundle_rows_tx(
             if current_rows
                 .get(&key)
                 .is_some_and(|current| *current == row)
+                && !is_replaced_template_block(table, row, &replaced_templates)
             {
                 continue;
             }
             if table == "notes_blocks" {
                 check_bundle_block_bounds(row)?;
+            }
+            if table == RELATION_EDGES_TABLE && !relation_edge_endpoints_exist_tx(tx, row).await? {
+                continue;
             }
             upsert_json_row_tx(tx, table, key_columns, row).await?;
         }
@@ -308,18 +377,35 @@ fn check_bundle_block_bounds(row: &Value) -> Result<(), String> {
 }
 
 /// Orders rows so that each write satisfies the unique constraints a later write relies on:
-/// folders come parents first, and default templates come after the rows that clear an old
-/// default.
+/// folders come parents first.
 fn rows_in_write_order<'a>(table: &str, rows: &'a [Value]) -> Result<Vec<&'a Value>, String> {
     match table {
         "notes_folders" => super::folder_rows_in_restore_order(rows),
-        "notes_data_source_templates" => {
-            let mut ordered = rows.iter().collect::<Vec<_>>();
-            ordered.sort_by_key(|row| row.get("is_default").and_then(Value::as_i64) == Some(1));
-            Ok(ordered)
-        }
         _ => Ok(rows.iter().collect()),
     }
+}
+
+/// Whether both pages of a bundle relation edge exist. An edge to a page outside the project
+/// whose page has since been deleted is dropped instead of failing the restore.
+async fn relation_edge_endpoints_exist_tx(
+    tx: &mut Transaction<'_, Sqlite>,
+    row: &Value,
+) -> Result<bool, String> {
+    let (Some(source), Some(target)) = (
+        json_optional_string(row, "source_page_id"),
+        json_optional_string(row, "target_page_id"),
+    ) else {
+        return Err("Notes history relation edge row has no pages".to_string());
+    };
+    let count: i64 =
+        sqlx::query_scalar("SELECT COUNT(DISTINCT id) FROM notes_pages WHERE id IN (?, ?)")
+            .bind(&source)
+            .bind(&target)
+            .fetch_one(&mut **tx)
+            .await
+            .map_err(|e| format!("check restored Notes relation edge pages: {e}"))?;
+    let expected = if source == target { 1 } else { 2 };
+    Ok(count == expected)
 }
 
 async fn upsert_json_row_tx(
@@ -392,9 +478,8 @@ async fn upsert_json_row_tx(
     Ok(())
 }
 
-/// Clears per-page state that a restore makes stale: undo history, relation links, and rollup
-/// values of every page the current graph or the bundle names. Relation links and rollups are
-/// derived and rebuild as rows are edited or read.
+/// Clears per-page state that a restore makes stale: undo history and rollup values of every
+/// page the current graph or the bundle names. Rollups are derived and rebuild as they are read.
 pub(super) async fn clear_page_derived_state_tx(
     tx: &mut Transaction<'_, Sqlite>,
     page_ids: &HashSet<String>,
@@ -419,17 +504,6 @@ pub(super) async fn clear_page_derived_state_tx(
                 .await
                 .map_err(|e| format!("{context}: {e}"))?;
         }
-        let mut query = QueryBuilder::<Sqlite>::new(
-            "DELETE FROM notes_data_source_relation_links WHERE source_page_id IN (",
-        );
-        push_id_list(&mut query, chunk);
-        query.push(" OR target_page_id IN (");
-        push_id_list(&mut query, chunk);
-        query
-            .build()
-            .execute(&mut **tx)
-            .await
-            .map_err(|e| format!("clear restored Notes relation links: {e}"))?;
     }
     Ok(())
 }

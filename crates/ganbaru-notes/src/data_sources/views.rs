@@ -109,14 +109,16 @@ pub(crate) async fn load_active_data_source_and_database_tx(
     data_source_id: &str,
     view_kind: &str,
 ) -> Result<(NoteDataSourceRow, NoteDatabaseRow), String> {
-    let data_source = sqlx::query_as::<_, NoteDataSourceRow>(
-        "SELECT data_source.*
+    let data_source = sqlx::query_as::<_, NoteDataSourceRow>(concat!(
+        "SELECT ",
+        crate::note_data_source_row_columns!("data_source"),
+        "
          FROM notes_data_sources AS data_source
          JOIN notes_databases AS database ON database.id = data_source.database_id
          WHERE data_source.id = ?
            AND data_source.in_trash = 0
            AND database.in_trash = 0",
-    )
+    ))
     .bind(data_source_id.trim())
     .fetch_optional(&mut **tx)
     .await
@@ -411,6 +413,7 @@ fn normalized_row_properties(
         }
         let value = existing_property_value(current_object, property)
             .and_then(|value| canonical_stored_property_value(property, value).ok())
+            .or_else(|| mismatched_property_value(current_object, property))
             .unwrap_or_else(|| default_property_value(property, fallback_title));
         if property.property_type == "title" {
             title = title_from_property_value(&value).unwrap_or_else(|| fallback_title.to_string());
@@ -432,6 +435,26 @@ fn existing_property_value<'a>(
                 .values()
                 .find(|value| property_value_matches_schema(property, value))
         })
+}
+
+/// A stored value for `property` written under another property type. It reads with its own type until the next
+/// edit of that cell replaces it, so a schema type change never discards it silently.
+fn mismatched_property_value(
+    current: &Map<String, Value>,
+    property: &ViewProperty,
+) -> Option<Value> {
+    current
+        .get(&property.key)
+        .into_iter()
+        .chain(current.values())
+        .find(|value| {
+            crate::page_property_storage::is_mismatched_value(
+                value,
+                &property.id,
+                &property.property_type,
+            )
+        })
+        .cloned()
 }
 
 fn property_value_matches_schema(property: &ViewProperty, value: &Value) -> bool {

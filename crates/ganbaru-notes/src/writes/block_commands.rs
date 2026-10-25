@@ -8,7 +8,6 @@ use super::parents::{
     touch_parent_block, validate_block_update_children, validate_block_update_parent,
     validate_children_for_parent,
 };
-use super::payloads::page_row_properties_for_title;
 use super::sort::next_order_keys;
 use crate::block_storage::write_block_content;
 use crate::models::{
@@ -156,16 +155,14 @@ pub(super) async fn update_block_tx(
             .get("title")
             .and_then(Value::as_str)
             .unwrap_or_default();
-        let page = load_page_row(tx, block_id).await?;
+        load_page_row(tx, block_id).await?;
         sqlx::query(
             "UPDATE notes_pages
              SET title = ?,
-                 properties = ?,
                  last_edited_time = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
              WHERE id = ?",
         )
         .bind(title)
-        .bind(page_row_properties_for_title(&page, title)?)
         .bind(block_id)
         .execute(&mut **tx)
         .await

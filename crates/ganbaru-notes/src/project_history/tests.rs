@@ -58,8 +58,8 @@ async fn seed_empty_project(pool: &SqlitePool) {
 
 async fn insert_project_page(pool: &SqlitePool, page_id: &str, block_id: &str, text: &str) {
     sqlx::query(
-        "INSERT INTO notes_pages (id, parent_type, title, project_id, properties)
-         VALUES (?, 'workspace', ?, ?, json_object('title', json_object()))",
+        "INSERT INTO notes_pages (id, parent_type, title, project_id)
+         VALUES (?, 'workspace', ?, ?)",
     )
     .bind(page_id)
     .bind(text)

@@ -137,12 +137,7 @@ fn create_local_database_inside_notes_page() {
             DATABASE_A
         );
 
-        let properties: String =
-            sqlx::query_scalar("SELECT properties FROM notes_data_sources WHERE id = ?")
-                .bind(DATA_SOURCE_A)
-                .fetch_one(&pool)
-                .await
-                .unwrap();
+        let properties = stored_schema(&pool, DATA_SOURCE_A).await.to_string();
         let properties_json: serde_json::Value = serde_json::from_str(&properties).unwrap();
         assert_eq!(properties_json["Name"]["type"], "title");
 

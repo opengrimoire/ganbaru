@@ -253,7 +253,6 @@ async fn write_valid_rows_tx(
             &page_id,
             schema_properties,
             properties,
-            true,
         )
         .await?;
         imported_page_ids.push(page_id);
@@ -287,20 +286,19 @@ async fn insert_row_page_tx(
             parent_type,
             parent_data_source_id,
             title,
-            properties,
             source_provider,
             source_object_id
          )
-         VALUES (?, 'data_source_id', ?, ?, ?, 'csv', ?)",
+         VALUES (?, 'data_source_id', ?, ?, 'csv', ?)",
     )
     .bind(page_id)
     .bind(data_source_id)
     .bind(&row.title)
-    .bind(properties.to_string())
     .bind(format!("row:{}", row.row_number))
     .execute(&mut **tx)
     .await
     .map_err(|e| format!("insert CSV data source row page: {e}"))?;
+    crate::page_property_storage::write_page_properties(tx, page_id, properties).await?;
     Ok(())
 }
 
@@ -804,14 +802,16 @@ async fn load_active_data_source_and_database_tx(
     tx: &mut Transaction<'_, Sqlite>,
     data_source_id: &str,
 ) -> Result<(NoteDataSourceRow, NoteDatabaseRow), String> {
-    let data_source = sqlx::query_as::<_, NoteDataSourceRow>(
-        "SELECT data_source.*
+    let data_source = sqlx::query_as::<_, NoteDataSourceRow>(concat!(
+        "SELECT ",
+        crate::note_data_source_row_columns!("data_source"),
+        "
          FROM notes_data_sources AS data_source
          JOIN notes_databases AS database ON database.id = data_source.database_id
          WHERE data_source.id = ?
            AND data_source.in_trash = 0
            AND database.in_trash = 0",
-    )
+    ))
     .bind(data_source_id.trim())
     .fetch_optional(&mut **tx)
     .await

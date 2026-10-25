@@ -267,18 +267,10 @@ pub async fn sync_current_data_source_property_asset_references_tx(
     tx: &mut Transaction<'_, Sqlite>,
     data_source_id: &str,
 ) -> Result<(), String> {
-    let properties: String = sqlx::query_scalar(
-        "SELECT properties
-         FROM notes_data_sources
-         WHERE id = ? AND in_trash = 0",
-    )
-    .bind(data_source_id.trim())
-    .fetch_optional(&mut **tx)
-    .await
-    .map_err(|e| format!("load notes data source properties for asset references: {e}"))?
-    .ok_or_else(|| "data source not found".to_string())?;
-    let schema_properties: Value = serde_json::from_str(&properties)
-        .map_err(|e| format!("parse data source properties for asset references: {e}"))?;
+    let schema_properties =
+        crate::property_storage::load_active_data_source_properties(tx, data_source_id.trim())
+            .await?
+            .ok_or_else(|| "data source not found".to_string())?;
     sync_data_source_property_asset_references_tx(tx, data_source_id, &schema_properties).await
 }
 
@@ -306,12 +298,13 @@ pub async fn sync_data_source_property_asset_references_tx(
     if property_ids.is_empty() {
         return Ok(());
     }
-    let rows = sqlx::query_as::<_, (String,)>(
-        "SELECT properties
-         FROM notes_pages
-         WHERE parent_type = 'data_source_id'
-           AND parent_data_source_id = ?",
-    )
+    let rows = sqlx::query_as::<_, (String,)>(sqlx::AssertSqlSafe(format!(
+        "SELECT {} AS properties
+         FROM notes_pages AS page
+         WHERE page.parent_type = 'data_source_id'
+           AND page.parent_data_source_id = ?",
+        crate::page_property_storage::page_properties_sql("page")
+    )))
     .bind(data_source_id)
     .fetch_all(&mut **tx)
     .await

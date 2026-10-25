@@ -1,0 +1,22 @@
+Fix round for milestone 11 step 6b (branch `feat/sync-anchor-handover`, worktree `/home/user/wt/engine`, HEAD b1c3ffd). A fresh review returned "fix first". Same rules as before (implementer brief, lock, CARGO_INCREMENTAL=0, unsigned commits, no amend or rebase, no merge into feat/sync). The orchestrator bumped `PROTOCOL_VERSION` to 14 in b1c3ffd; keep it. Your target dir is named in the task message (the old engine dir was reassigned, so the first build rebuilds workspace crates). Verify each finding against source first; if one is wrong, say why in the progress entry instead of changing code. Commit in coherent pieces and update the progress file after each commit.
+
+High:
+1. The restore self-handover can reuse sequence numbers members already hold. The hub never records the writer commit after sequencing (`service.rs` ~2293 and ~891; `anchor.rs` ~386 does), so after a restore the writer check returns Ready and the same writer seals the handover at a sequence a lost entry already used; `tests/outbox.rs` ~423 asserts this. Members see a fork of the anchor's writer and exclude the handover. Fix: record the commit after every hub sequencing step, and force a successor writer on `Restored` before sealing. Fix the test to assert the successor writer and that members accept the handover.
+
+Medium:
+2. A linked desktop that holds the anchor has no restore check: `anchor_ready` runs only on the hub (`service.rs` ~843); `anchor_as_member` (`anchor.rs` ~375, called at `service.rs` ~1153) sequences from a restored head. Apply the same restore detection and self-handover there.
+3. Restoring a backup taken before the first link silently founds a new charter: with no charter, `settle_sequenced` clears the high-water (`writer.rs` ~421) and `found_space` (`service.rs` ~2110) founds a new one, so every member then fails with "different charter". Refuse to found while the writer record names a charter; only Reset allows it. Test.
+4. Taking the anchor races the old anchor: the hub can still sequence entry N+1 after B's exchange; B's handover from N supersedes it, but `Outbox::prune` (`outbox.rs` ~201) already dropped that proposal, so a promotion or recovery key is silently lost. Also the old anchor vector is B's own stored vector (`anchor.rs` ~359), so `catching_up` can never fire in production. Fix: keep sequenced proposals until a handover's starting revision covers them (resubmit superseded ones to the new anchor), and use the per-writer maximum of B's vector and the hub's reported stored vector. Test the race.
+5. Recovery kit can be left unusable: regenerate (`anchor.rs` ~247) overwrites the seed before the proposal is queued (a full outbox loses the old seed and the log never names the new key); `RecoveryKitSaved` (`anchor.rs` ~199) deletes a seed whose key the log does not name yet. Queue first and write the seed after (or keep both until the entry is sequenced), and refuse to forget a seed whose key is not active in the log. Test both.
+
+Low (fix when cheap, else record why):
+6. A restore that loses exactly one entry is treated as a rolled-back seal; the plan also counts a writer rotation as a restore signal. Add it.
+7. A removal by a non-hub anchor that quarantined the device uses its stale cutoffs, so operations the hub and members applied become late changes. Use cutoffs that cover what the hub reports.
+8. An unreadable `quarantine.json` makes the listener refuse every linked connection (`server.rs` ~272), including handoff recovery. Fail to a logged error that keeps the last known set (or empty with a status warning), not a total refusal.
+9. Seed exposure: `sync_recovery_kit_pending` returns the code on every call (return it once, or only while unsaved and say so in docs); `AuthorityAction` derives `Debug` with the kit code inside (redact). Record that the seed stays in the keyring until the step 8 UI confirms it.
+10. Add a random nonce to new charters so a Reset charter never collides with the old one by founding millisecond.
+11. A client pulls a quarantined device's backlog again on every exchange; skip it durably (advance past it or remember the skip) if cheap.
+
+Tests: cover the listener refusal of a quarantined peer if a unit-level seam exists, the client's pull-side skip, and the restore wait window with members returning entries. Correct the progress entry: `PROTOCOL_VERSION` is 14 (b1c3ffd).
+
+Checks: the original brief's full check list (skip Android, record it as not run). Final report under 300 words.

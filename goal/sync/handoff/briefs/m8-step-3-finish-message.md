@@ -1,0 +1,13 @@
+Finish the fix round of milestone 8 step 3 (Notes structure replication, `domain` track, not engine: do not edit engine files).
+
+Worktree `/home/user/wt/domain`, branch `feat/sync-notes-structure`, target dir `/root/.cache/ganbaru-targets/domain`.
+
+Read: the implementer brief (path in your prompt), the original brief `/home/user/ganbaru/goal/sync/handoff/briefs/m8-step-3-brief.md` (its full check list), the fix message `/home/user/ganbaru/goal/sync/handoff/briefs/m8-step-3-fix-message.md`, the plan `/home/user/ganbaru/goal/sync/milestone_8.md`, and the progress so far `/tmp/claude-0/-home-user-ganbaru/801a952b-bd25-5890-82d7-9ac7c14fac3d/scratchpad/milestone-8-step-3-progress.md` (extend it). Fixes 1 to 4 are committed (d86cdd93, c0245185, 3c30f5af).
+
+State: the previous agent's uncommitted, unverified work is applied and staged in the worktree (`git status`): a durable pending-repair marker (`has_pending` in `sync_repair`), service retry wiring, migration and manifest edits, and tests. Review it critically, finish fix item 5 (persist a Local pending-repair marker, retry on the next pass or startup, clear on success, test that a failed repair is retried), and commit.
+
+Then the Low items (fix when cheap, else record the reason), and the Coverage items of the fix message.
+
+Open engine-shape question, coordinator guidance: a page moved out of a parent keeps its `child_page` block trashed; once that block is purged its key is tombstoned and nesting the page again inserts block id = page id, which `sync_recreate` aborts. Same for project restore reinserting a purged `child_page` block. Evaluate, in this order, and pick the first that is correct and in proportion: (a) a Notes-only fix that never tombstones the `child_page` block key while its page is live (for example retention and purge paths skip or re-home such a block so the key stays live and re-nesting reuses the row in place), (b) a clear, localized refusal on synced vaults with no data loss, recording an engine follow-up for a revive shape. Record the choice and why in the progress entry. Do not edit engine files.
+
+Version handling: feat/sync is `e76a492`. Before final checks, check `git log -1 feat/sync`. If it moved (Chat milestone 9 step 4 may land first with manifest 14), merge it (`merge: feat/sync into feat/sync-notes-structure`), take the next free `VAULT_MANIFEST_VERSION`, rename your unlanded migration to a fresh UTC timestamp so it sorts last, regenerate the manifest fixture, and rerun the full check list from the original brief (skip Android; record as not run). Final report under 300 words.

@@ -10,9 +10,10 @@ mod sync;
 
 pub use sync::{
     DISCOVERY_KEY_BYTES, MAX_COORDINATOR_ENDPOINTS, MAX_SYNC_ASSET_BYTES, MAX_SYNC_ASSETS,
-    MAX_SYNC_EVIDENCE_OPS, MAX_SYNC_HASHES, SYNC_ASSET_CHUNK_BYTES, SYNC_PAGE_BYTES, SyncAsset,
-    SyncAssetKey, SyncProbe, SyncRefusal, SyncRefusalCode, SyncSeq, decode_sync_charter,
-    decode_sync_device_key, decode_sync_proposal, encode_sync_charter, encode_sync_device_key,
+    MAX_SYNC_EVIDENCE_OPS, MAX_SYNC_FORWARDED_PROPOSALS, MAX_SYNC_HASHES, SYNC_ASSET_CHUNK_BYTES,
+    SYNC_PAGE_BYTES, SyncAsset, SyncAssetKey, SyncProbe, SyncRefusal, SyncRefusalCode, SyncSeq,
+    SyncSettledProposal, decode_sync_admin_key, decode_sync_charter, decode_sync_device_key,
+    decode_sync_proposal, encode_sync_admin_key, encode_sync_charter, encode_sync_device_key,
     encode_sync_proposal, validate_coordinator_endpoint, validate_coordinator_endpoints,
     validate_discovery_key,
 };
@@ -210,6 +211,10 @@ pub enum ControlMessage {
         device_certificate: String,
         /// Device key that certifies the device's sync writers, which the anchor enrolls.
         sync_device_key: String,
+        /// Admin key a desktop proposes authorization changes with once an admin promotes it;
+        /// phones send none.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        sync_admin_key: Option<String>,
     },
     /// The coordinator linked the device. `charter` is the vault's space charter and
     /// `person_key` the person key that signed it; both are present once the coordinator founded
@@ -472,6 +477,19 @@ pub enum ControlMessage {
         revision: Option<u64>,
         rejection: Option<u8>,
     },
+    /// Authenticated: the anchor, while another device coordinates, asks the hub for the
+    /// proposals the hub holds for it and reports the final rejections of proposals it took
+    /// earlier. The hub answers only the anchor of its selected chain.
+    SyncForward {
+        protocol_version: u16,
+        vault_id: String,
+        device_id: String,
+        settled: Vec<SyncSettledProposal>,
+    },
+    /// The proposals the hub holds for the anchor, oldest first.
+    SyncForwarded {
+        proposals: Vec<String>,
+    },
     Error {
         code: String,
         message: String,
@@ -533,6 +551,11 @@ impl ControlMessage {
                 vault_id,
                 device_id,
                 ..
+            }
+            | Self::SyncForward {
+                vault_id,
+                device_id,
+                ..
             } => Some((vault_id, device_id)),
             _ => None,
         }
@@ -550,6 +573,7 @@ impl ControlMessage {
                 device_kind: _,
                 device_certificate,
                 sync_device_key,
+                sync_admin_key,
             } => {
                 validate_protocol(*protocol_version)?;
                 validate_identifier("invitation id", invitation_id)?;
@@ -561,6 +585,9 @@ impl ControlMessage {
                     return Err("device certificate is invalid".to_string());
                 }
                 decode_sync_device_key(sync_device_key)?;
+                if let Some(key) = sync_admin_key {
+                    decode_sync_admin_key(key)?;
+                }
             }
             Self::Enrolled {
                 protocol_version,
@@ -915,6 +942,16 @@ impl ControlMessage {
                 revision,
                 rejection,
             } => sync::validate_proposed(*revision, *rejection)?,
+            Self::SyncForward {
+                protocol_version,
+                vault_id,
+                device_id,
+                settled,
+            } => {
+                validate_sync_peer(*protocol_version, vault_id, device_id)?;
+                sync::validate_settled(settled)?;
+            }
+            Self::SyncForwarded { proposals } => sync::validate_forwarded(proposals)?,
             Self::Error { code, message, .. } => {
                 validate_identifier("error code", code)?;
                 if message.is_empty() || message.len() > 1024 {
@@ -1371,6 +1408,7 @@ mod tests {
             device_kind: DeviceKind::Phone,
             device_certificate: "certificate".to_string(),
             sync_device_key: encode_sync_device_key(&test_device_key()),
+            sync_admin_key: None,
         };
         for output in [format!("{invitation:?}"), format!("{enroll:?}")] {
             assert!(!output.contains(&secret), "{output}");
@@ -1421,6 +1459,7 @@ mod tests {
             device_kind: DeviceKind::Phone,
             device_certificate: "certificate".to_string(),
             sync_device_key: encode_sync_device_key(&test_device_key()),
+            sync_admin_key: None,
         };
         let enrolled = |label: &str| ControlMessage::Enrolled {
             protocol_version: PROTOCOL_VERSION,
@@ -1462,6 +1501,7 @@ mod tests {
                 device_kind,
                 device_certificate,
                 sync_device_key: key,
+                sync_admin_key: None,
             },
             _ => unreachable!(),
         };
@@ -1479,6 +1519,57 @@ mod tests {
             Ok(test_device_key()),
             "the device key round-trips"
         );
+
+        let admin = ganbaru_sync_contracts::AdminKeyPair::from_seed(&[6; 32])
+            .expect("admin")
+            .public_key();
+        let with_admin = |key: Option<String>| match enroll("Desktop") {
+            ControlMessage::Enroll {
+                protocol_version,
+                invitation_id,
+                secret,
+                vault_id,
+                device_id,
+                device_label,
+                device_kind: _,
+                device_certificate,
+                sync_device_key,
+                ..
+            } => ControlMessage::Enroll {
+                protocol_version,
+                invitation_id,
+                secret,
+                vault_id,
+                device_id,
+                device_label,
+                device_kind: DeviceKind::Computer,
+                device_certificate,
+                sync_device_key,
+                sync_admin_key: key,
+            },
+            _ => unreachable!(),
+        };
+        let admin_text = encode_sync_admin_key(&admin);
+        let desktop = with_admin(Some(admin_text.clone()));
+        assert_eq!(desktop.validate(), Ok(()));
+        assert_eq!(decode_sync_admin_key(&admin_text), Ok(admin));
+        let serialized = serde_json::to_value(&desktop).expect("serialize enrollment");
+        assert_eq!(serialized["sync_admin_key"], admin_text.as_str());
+        let phone = serde_json::to_value(with_admin(None)).expect("serialize enrollment");
+        assert!(
+            phone.get("sync_admin_key").is_none(),
+            "an enrollment without an admin key leaves the field out"
+        );
+        assert_eq!(
+            serde_json::from_value::<ControlMessage>(phone).expect("parse enrollment"),
+            with_admin(None)
+        );
+        for invalid in [String::new(), admin_text[1..].to_string(), "+".repeat(43)] {
+            assert!(
+                with_admin(Some(invalid.clone())).validate().is_err(),
+                "{invalid:?}"
+            );
+        }
     }
 
     #[test]
@@ -2142,6 +2233,42 @@ mod tests {
             answer(Some(0), None),
             answer(Some(u64::MAX), None),
             answer(None, Some(u8::MAX)),
+        ] {
+            assert!(invalid.validate().is_err(), "{invalid:?}");
+        }
+
+        let forward = |settled: Vec<SyncSettledProposal>| ControlMessage::SyncForward {
+            protocol_version: PROTOCOL_VERSION,
+            vault_id: "vault-1".to_string(),
+            device_id: "device-laptop".to_string(),
+            settled,
+        };
+        let rejected = |proposal: String, rejection: u8| SyncSettledProposal {
+            proposal,
+            rejection,
+        };
+        let hash = "ab".repeat(32);
+        let removed = ganbaru_sync_contracts::ProposalRejection::DeviceRemoved.as_u8();
+        let request = forward(vec![rejected(hash.clone(), removed)]);
+        assert_eq!(frame_round_trip(&request), Ok(request.clone()));
+        assert_eq!(request.sync_peer(), Some(("vault-1", "device-laptop")));
+        for invalid in [
+            forward(vec![rejected("AB".repeat(32), removed)]),
+            forward(vec![rejected(hash[1..].to_string(), removed)]),
+            forward(vec![rejected(hash.clone(), u8::MAX)]),
+            forward(vec![
+                rejected(hash.clone(), removed);
+                MAX_SYNC_FORWARDED_PROPOSALS + 1
+            ]),
+        ] {
+            assert!(invalid.validate().is_err(), "{invalid:?}");
+        }
+        let forwarded = |proposals: Vec<String>| ControlMessage::SyncForwarded { proposals };
+        let held = forwarded(vec![text.clone(); MAX_SYNC_FORWARDED_PROPOSALS]);
+        assert_eq!(frame_round_trip(&held), Ok(held.clone()));
+        for invalid in [
+            forwarded(vec![text.clone(); MAX_SYNC_FORWARDED_PROPOSALS + 1]),
+            forwarded(vec![String::new()]),
         ] {
             assert!(invalid.validate().is_err(), "{invalid:?}");
         }

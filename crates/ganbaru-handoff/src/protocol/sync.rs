@@ -258,6 +258,63 @@ pub fn decode_sync_proposal(text: &str) -> Result<ganbaru_sync_contracts::Signed
         .map_err(|error| format!("sync proposal is invalid: {error}"))
 }
 
+/// The unpadded base64url form of a sync admin public key, as a desktop's enrollment carries it.
+pub fn encode_sync_admin_key(key: &ganbaru_sync_contracts::AdminPublicKey) -> String {
+    base64::Engine::encode(
+        &base64::engine::general_purpose::URL_SAFE_NO_PAD,
+        key.as_bytes(),
+    )
+}
+
+/// Decodes the unpadded base64url form of a sync admin public key.
+pub fn decode_sync_admin_key(text: &str) -> Result<ganbaru_sync_contracts::AdminPublicKey, String> {
+    let bytes = base64::Engine::decode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, text)
+        .map_err(|_| "sync admin key is invalid".to_string())?;
+    ganbaru_sync_contracts::AdminPublicKey::from_slice(&bytes)
+        .map_err(|_| "sync admin key is invalid".to_string())
+}
+
+/// Proposals a hub hands the anchor in one forward answer, and final rejections the anchor
+/// reports in one forward request.
+pub const MAX_SYNC_FORWARDED_PROPOSALS: usize = 32;
+
+/// A final rejection the anchor gave a proposal a hub forwarded, named by the proposal hash.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncSettledProposal {
+    /// Lowercase hex of the proposal hash.
+    pub proposal: String,
+    /// Wire value of the rejection.
+    pub rejection: u8,
+}
+
+/// Checks the rejections a forward request reports: bounded, hex hashes, known rejections.
+pub(super) fn validate_settled(settled: &[SyncSettledProposal]) -> Result<(), String> {
+    if settled.len() > MAX_SYNC_FORWARDED_PROPOSALS {
+        return Err("sync forward settles too many proposals".to_string());
+    }
+    for entry in settled {
+        if entry.proposal.len() != HASH_TEXT_LENGTH || !is_lower_hex(&entry.proposal) {
+            return Err("sync proposal hash is invalid".to_string());
+        }
+        if ganbaru_sync_contracts::ProposalRejection::from_u8(entry.rejection).is_none() {
+            return Err("sync proposal rejection is invalid".to_string());
+        }
+    }
+    Ok(())
+}
+
+/// Checks the proposals a forward answer carries: bounded and each verified.
+pub(super) fn validate_forwarded(proposals: &[String]) -> Result<(), String> {
+    if proposals.len() > MAX_SYNC_FORWARDED_PROPOSALS {
+        return Err("sync forward carries too many proposals".to_string());
+    }
+    for proposal in proposals {
+        decode_sync_proposal(proposal)?;
+    }
+    Ok(())
+}
+
 /// Checks the anchor's answer to a proposal: exactly one of a revision or a known rejection.
 pub(super) fn validate_proposed(
     revision: Option<u64>,

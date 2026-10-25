@@ -36,7 +36,8 @@ use ganbaru_sync_contracts::{DevicePublicKey, Seq, VersionVector, WriterId};
 use ganbaru_sync_contracts::{ProposalRejection, SignedCharter, SignedProposal};
 #[cfg(desktop)]
 use ganbaru_sync_replica::authority::{
-    self, AnchorKeys, Founding, ensure_anchor_keys, ensure_charter,
+    self, AnchorKeys, Founding, ensure_admin_key as ensure_stored_admin_key, ensure_anchor_keys,
+    ensure_charter,
 };
 use ganbaru_sync_replica::now_ms;
 use ganbaru_sync_replica::outbox::Outbox;
@@ -2272,6 +2273,21 @@ pub(crate) async fn ensure_device_key<H: SyncHost>(
     let vault_id = vault_id.to_string();
     blocking(move || {
         ensure_stored_device_key(keys.as_ref(), &vault_id).map(|device| device.public_key())
+    })
+    .await
+}
+
+/// The public half of this desktop's admin key for `vault_id`, created once. Pairing sends it,
+/// so an admin can later promote this desktop and let it take the anchor.
+#[cfg(desktop)]
+pub(crate) async fn ensure_admin_key<H: SyncHost>(
+    host: &H,
+    vault_id: &str,
+) -> Result<ganbaru_sync_contracts::AdminPublicKey, String> {
+    let keys = host.key_store()?;
+    let vault_id = vault_id.to_string();
+    blocking(move || {
+        ensure_stored_admin_key(keys.as_ref(), &vault_id).map(|admin| admin.public_key())
     })
     .await
 }

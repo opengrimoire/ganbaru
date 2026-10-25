@@ -337,6 +337,7 @@ async fn handle_connection(
             device_kind,
             device_certificate,
             sync_device_key,
+            sync_admin_key,
             ..
         } => {
             if peer_certificate.is_some() {
@@ -357,6 +358,7 @@ async fn handle_connection(
                 device_kind,
                 certificate_b64: &device_certificate,
                 sync_device_key: &sync_device_key,
+                sync_admin_key: sync_admin_key.as_deref(),
             };
             // The invitation is checked when the request arrives, so time spent waiting for the
             // user does not expire it.

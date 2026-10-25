@@ -31,16 +31,7 @@ pub struct AnchorKeys {
 /// callers run this off the async runtime.
 pub fn ensure_anchor_keys(keys: &dyn SyncKeyStore, vault_id: &str) -> Result<AnchorKeys, String> {
     let device = ensure_device_key(keys, vault_id)?;
-    let admin = match keys.read(vault_id, SyncKey::Admin)? {
-        Some(pkcs8) => AdminKeyPair::from_pkcs8(&pkcs8)
-            .map_err(|error| format!("decode sync admin key: {error}"))?,
-        None => {
-            let (pkcs8, admin) = AdminKeyPair::generate()
-                .map_err(|error| format!("create sync admin key: {error}"))?;
-            keys.write(vault_id, SyncKey::Admin, &pkcs8)?;
-            admin
-        }
-    };
+    let admin = ensure_admin_key(keys, vault_id)?;
     let recovery = match keys.read(vault_id, SyncKey::RecoverySeed)? {
         Some(bytes) => RecoverySeed::from_bytes(
             bytes
@@ -59,6 +50,22 @@ pub fn ensure_anchor_keys(keys: &dyn SyncKeyStore, vault_id: &str) -> Result<Anc
         admin,
         recovery,
     })
+}
+
+/// Reads the admin key of a vault, creating it once. A desktop that links to a coordinator
+/// sends its public half at pairing, so an admin can later promote it without another link.
+/// Key stores may block, so callers run this off the async runtime.
+pub fn ensure_admin_key(keys: &dyn SyncKeyStore, vault_id: &str) -> Result<AdminKeyPair, String> {
+    match keys.read(vault_id, SyncKey::Admin)? {
+        Some(pkcs8) => AdminKeyPair::from_pkcs8(&pkcs8)
+            .map_err(|error| format!("decode sync admin key: {error}")),
+        None => {
+            let (pkcs8, admin) = AdminKeyPair::generate()
+                .map_err(|error| format!("create sync admin key: {error}"))?;
+            keys.write(vault_id, SyncKey::Admin, &pkcs8)?;
+            Ok(admin)
+        }
+    }
 }
 
 /// What the first anchor founds a space with besides its keys.

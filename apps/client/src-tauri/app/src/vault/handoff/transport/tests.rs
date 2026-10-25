@@ -197,6 +197,7 @@ impl LocalPair {
                 "Phone".to_string(),
                 DeviceKind::Phone,
                 &test_sync_device_key(),
+                None,
             ),
         )
         .await
@@ -349,6 +350,7 @@ fn spawn_phone_enrollment(
             "Phone".to_string(),
             DeviceKind::Phone,
             &test_sync_device_key(),
+            None,
         )
         .await
     })
@@ -1048,6 +1050,7 @@ async fn invitation_replay_is_rejected_by_coordinator() {
         "Phone".to_string(),
         DeviceKind::Phone,
         &test_sync_device_key(),
+        None,
     )
     .await
     .unwrap_err();
@@ -1079,6 +1082,9 @@ async fn several_enrolled_devices_authenticate_with_distinct_certificates() {
             unix_time_ms(),
         )
         .expect("create second invitation");
+    let laptop_admin = ganbaru_sync_contracts::AdminKeyPair::from_seed(&[6; 32])
+        .expect("admin key")
+        .public_key();
     approving(
         &pair.approvals,
         super::enroll(
@@ -1087,6 +1093,7 @@ async fn several_enrolled_devices_authenticate_with_distinct_certificates() {
             "Laptop".to_string(),
             DeviceKind::Computer,
             &test_sync_device_key(),
+            Some(&laptop_admin),
         ),
     )
     .await
@@ -1094,6 +1101,16 @@ async fn several_enrolled_devices_authenticate_with_distinct_certificates() {
 
     let peers = pair.desktop.linked_peers().expect("linked devices");
     assert_eq!(peers.len(), 2);
+    let admin_keys: Vec<(&str, Option<&str>)> = peers
+        .iter()
+        .map(|peer| (peer.device_label.as_str(), peer.sync_admin_key.as_deref()))
+        .collect();
+    let laptop_admin = super::super::protocol::encode_sync_admin_key(&laptop_admin);
+    assert!(admin_keys.contains(&("Phone", None)), "{admin_keys:?}");
+    assert!(
+        admin_keys.contains(&("Laptop", Some(laptop_admin.as_str()))),
+        "a linked desktop keeps the admin key it sent: {admin_keys:?}"
+    );
     assert_ne!(
         peers[0].certificate_fingerprint,
         peers[1].certificate_fingerprint

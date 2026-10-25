@@ -169,6 +169,7 @@ pub(crate) async fn enroll(
     device_label: String,
     device_kind: super::protocol::DeviceKind,
     sync_device_key: &ganbaru_sync_contracts::DevicePublicKey,
+    sync_admin_key: Option<&ganbaru_sync_contracts::AdminPublicKey>,
 ) -> Result<(), String> {
     invitation.validate(unix_time_ms())?;
     let endpoint = invitation
@@ -189,6 +190,7 @@ pub(crate) async fn enroll(
             device_kind,
             device_certificate: encode_certificate(&identity.certificate),
             sync_device_key: super::protocol::encode_sync_device_key(sync_device_key),
+            sync_admin_key: sync_admin_key.map(super::protocol::encode_sync_admin_key),
         },
     ))
     .await?;

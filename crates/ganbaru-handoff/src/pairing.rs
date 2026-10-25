@@ -22,7 +22,9 @@ use super::protocol::{
     validate_identifier,
 };
 #[cfg(desktop)]
-use super::protocol::{DISCOVERY_KEY_BYTES, PROTOCOL_VERSION, decode_sync_device_key};
+use super::protocol::{
+    DISCOVERY_KEY_BYTES, PROTOCOL_VERSION, decode_sync_admin_key, decode_sync_device_key,
+};
 use base64::Engine;
 use rcgen::{CertificateParams, DnType, KeyPair};
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
@@ -100,6 +102,10 @@ pub struct LinkedPeer {
     pub certificate_fingerprint: String,
     /// Public half of the device key the device enrolls in the vault's sync space, base64url.
     pub sync_device_key: String,
+    /// Public half of the admin key a linked computer sent, base64url, which an admin promotes
+    /// it with. Phones never hold one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sync_admin_key: Option<String>,
     /// Enrollment time; at the stored limit, the oldest memberships of other vaults are revoked first.
     #[serde(default)]
     pub linked_at_ms: i64,
@@ -346,6 +352,8 @@ pub struct Enrollment<'a> {
     pub certificate_b64: &'a str,
     /// Public half of the device's sync device key, base64url.
     pub sync_device_key: &'a str,
+    /// Public half of a computer's sync admin key, base64url.
+    pub sync_admin_key: Option<&'a str>,
 }
 
 #[derive(Default)]
@@ -1234,6 +1242,9 @@ fn admit_enrollment(
     validate_device_label("device label", enrollment.device_label)?;
     let certificate = decode_certificate(enrollment.certificate_b64)?;
     decode_sync_device_key(enrollment.sync_device_key)?;
+    if let Some(key) = enrollment.sync_admin_key {
+        decode_sync_admin_key(key)?;
+    }
     let pending = inner
         .invitations
         .get(enrollment.invitation_id)
@@ -1255,6 +1266,11 @@ fn admit_enrollment(
         certificate: enrollment.certificate_b64.to_string(),
         certificate_fingerprint: certificate_fingerprint(certificate.as_ref()),
         sync_device_key: enrollment.sync_device_key.to_string(),
+        // Only a computer can become an admin, so a phone's key is not kept.
+        sync_admin_key: enrollment
+            .sync_admin_key
+            .filter(|_| enrollment.device_kind == DeviceKind::Computer)
+            .map(str::to_string),
         linked_at_ms: now_ms,
     };
     let state = initialized_state(inner)?;

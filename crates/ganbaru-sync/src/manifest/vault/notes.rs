@@ -21,8 +21,9 @@ use crate::domains::notes::{
 };
 use crate::manifest::vault::projects::PROJECTS_TABLE;
 use crate::manifest::{
-    Collation, ColumnSpec, ColumnType, DeviceTable, DomainManifest, GroupSpec, GroupStorage,
-    MergeKind, OnDelete, ReferenceColumn, Resolution, TableIdRange, TableSpec, TreeSpec, group_id,
+    Collation, ColumnSpec, ColumnType, DeviceTable, DomainManifest, DomainTrigger, GroupSpec,
+    GroupStorage, MergeKind, OnDelete, ReferenceColumn, Resolution, TableIdRange, TableSpec,
+    TreeSpec, TriggerPolicy, group_id,
 };
 
 /// Domain name for Notes.
@@ -413,8 +414,21 @@ pub const PAGES: TableSpec = TableSpec {
         position_group: None,
         max_depth: Some(MAX_ROW_DEPTH),
     }),
+    triggers: &[
+        gated("notes_pages_local_nesting_insert"),
+        gated("notes_pages_local_nesting_update"),
+        gated("notes_pages_park_child_page_blocks"),
+    ],
     ..BASE
 };
+
+/// A domain trigger that does not fire while the engine applies.
+const fn gated(name: &'static str) -> DomainTrigger {
+    DomainTrigger {
+        name,
+        policy: TriggerPolicy::Gated,
+    }
+}
 
 /// `notes_page_aliases`.
 pub const ALIASES: TableSpec = TableSpec {
@@ -494,13 +508,15 @@ pub const BLOCKS: TableSpec = TableSpec {
             "text",
             &[text("text", MAX_BLOCK_TEXT_BYTES)],
         )),
-        register(
+        group(
             block_group::LIFECYCLE,
             "lifecycle",
+            MergeKind::Coupled,
             &[
                 flag("in_trash"),
                 optional_text("trash_owner", MAX_TEXT_CHARS),
             ],
+            &[],
         ),
         updated(block_group::UPDATED),
     ],

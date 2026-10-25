@@ -1,6 +1,6 @@
 //! Notes adapter: the value checks that mirror the Notes structure table checks, the block
 //! parent kind derived from block placement, and the lifecycle priority that lets a trashed page
-//! win over a concurrent restore.
+//! or block win over a concurrent restore.
 
 use ganbaru_sync_contracts::bounds::MAX_TEXT_FIELD_BYTES;
 use ganbaru_sync_contracts::{Field, GroupId, TableId, Value};
@@ -209,10 +209,12 @@ impl DomainAdapter for NotesAdapter {
         }
     }
 
-    /// A trashed page wins over a concurrent restore, so trashing a subtree is never undone
-    /// halfway by an edit that did not see it.
+    /// A trashed page or block wins over a concurrent restore, so trashing a subtree is never
+    /// undone halfway by an edit that did not see it.
     fn priority(&self, table: TableId, group: GroupId, value: &Value) -> u8 {
-        if table != PAGES_TABLE || group != page_group::LIFECYCLE {
+        let lifecycle = (table == PAGES_TABLE && group == page_group::LIFECYCLE)
+            || (table == BLOCKS_TABLE && group == block_group::LIFECYCLE);
+        if !lifecycle {
             return 0;
         }
         match value.fields() {
@@ -373,7 +375,7 @@ mod tests {
     }
 
     #[test]
-    fn a_trashed_page_outranks_a_restored_one() {
+    fn a_trashed_page_or_block_outranks_a_restored_one() {
         let adapter = NotesAdapter;
         let lifecycle = |in_trash: i64| {
             adapter.priority(
@@ -383,5 +385,21 @@ mod tests {
             )
         };
         assert!(lifecycle(1) > lifecycle(0));
+        let block = |in_trash: i64| {
+            adapter.priority(
+                BLOCKS_TABLE,
+                block_group::LIFECYCLE,
+                &value(vec![Field::Integer(in_trash), Field::Null]),
+            )
+        };
+        assert!(block(1) > block(0));
+        assert_eq!(
+            adapter.priority(
+                BLOCKS_TABLE,
+                block_group::TEXT,
+                &value(vec![Field::Integer(1)])
+            ),
+            0
+        );
     }
 }

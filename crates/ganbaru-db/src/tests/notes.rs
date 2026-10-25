@@ -136,9 +136,10 @@ fn schema_keeps_notes_page_project_and_trash_owner_in_columns() {
                 "notes_data_sources_delete_row_pages",
                 "notes_pages_local_nesting_insert",
                 "notes_pages_local_nesting_update",
+                "notes_pages_park_child_page_blocks",
             ],
-            "Notes rules are checked by writes, except row page removal through foreign key \
-             cascades and local nested page pairing"
+            "Notes rules are checked by writes, except row page removal and moved-out \
+             child_page block parking through foreign key cascades, and local nested page pairing"
         );
 
         sqlx::query("INSERT INTO project_groups (id, name, order_key) VALUES ('folder-group', 'Folders', 'a0')")
@@ -1897,7 +1898,7 @@ fn fresh_vault_notes_blocks_store_split_content_and_order_keys() {
             );
         }
         let notes_triggers: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM sqlite_schema WHERE type = 'trigger' AND tbl_name IN ('notes_blocks', 'notes_pages', 'notes_folders') AND name NOT LIKE 'sync\\_%' ESCAPE '\\' AND name NOT LIKE 'notes\\_pages\\_local\\_nesting\\_%' ESCAPE '\\'",
+            "SELECT COUNT(*) FROM sqlite_schema WHERE type = 'trigger' AND tbl_name IN ('notes_blocks', 'notes_pages', 'notes_folders') AND name NOT LIKE 'sync\\_%' ESCAPE '\\' AND name NOT LIKE 'notes\\_pages\\_local\\_nesting\\_%' ESCAPE '\\' AND name <> 'notes_pages_park_child_page_blocks'",
         )
         .fetch_one(&pool)
         .await
@@ -2027,25 +2028,26 @@ fn fresh_vault_nested_pages_follow_their_child_page_block() {
     });
 }
 
-/// A page row as the replication migration test reads it back.
-type ReplicatedPageRow = (
-    String,
-    String,
-    Option<String>,
-    Option<String>,
-    Option<String>,
-    String,
-);
+/// Columns of `notes_pages` the replication migration copies.
+const REPLICATED_PAGE_COLUMNS: &str = "id, parent_type, parent_page_id, parent_block_id, \
+    parent_data_source_id, child_block_id, project_id, title, icon, cover, in_trash, trash_owner, \
+    archived, source_provider, source_object_id, source_workspace_id, source_last_edited_time, \
+    url, public_url, created_time, last_edited_time, trashed_time, folder_id, parent_row_page_id";
 
-/// A block row as the replication migration test reads it back.
-type ReplicatedBlockRow = (
-    String,
-    String,
-    Option<String>,
-    Option<String>,
-    String,
-    String,
-);
+/// Columns of `notes_blocks` the replication migration copies.
+const REPLICATED_BLOCK_COLUMNS: &str = "id, page_id, parent_type, parent_page_id, \
+    parent_block_id, in_trash, trash_owner, type, attrs, text, plain_text, order_key, \
+    source_provider, source_object_id, source_last_edited_time, created_time, last_edited_time";
+
+/// Every row of `table` as one JSON array of `columns` per row, ordered by id.
+async fn row_values(pool: &sqlx::SqlitePool, table: &str, columns: &str) -> Vec<String> {
+    sqlx::query_scalar(AssertSqlSafe(format!(
+        "SELECT json_array({columns}) FROM {table} ORDER BY id"
+    )))
+    .fetch_all(pool)
+    .await
+    .unwrap()
+}
 
 #[test]
 fn notes_structure_replication_keeps_seeded_structure_and_adds_sync_state() {
@@ -2058,85 +2060,90 @@ fn notes_structure_replication_keeps_seeded_structure_and_adds_sync_state() {
              INSERT INTO notes_folders (id, project_id, name) VALUES ('folder', 'project', 'F');
              INSERT INTO notes_pages (id, parent_type, title, folder_id, created_time)
                  VALUES ('parent', 'workspace', 'Parent', 'folder', '2026-10-01T00:00:00Z');
+             INSERT INTO notes_pages (id, parent_type, title, project_id, icon, in_trash, trash_owner, trashed_time, url, public_url)
+                 VALUES ('trashed', 'workspace', 'Trashed', 'project', '{\"type\":\"emoji\",\"emoji\":\"x\"}', 1, 'trashed',
+                     '2026-10-02T00:00:00Z', 'https://example.test/a', 'https://example.test/b');
              INSERT INTO notes_page_aliases (id, page_id, alias, normalized_alias)
                  VALUES ('home', 'parent', 'Home', 'home');
              INSERT INTO notes_blocks (id, page_id, parent_type, parent_page_id, type, plain_text, order_key)
                  VALUES ('root', 'parent', 'page_id', 'parent', 'paragraph', 'root text', 'a0');
              INSERT INTO notes_blocks (id, page_id, parent_type, parent_block_id, type, plain_text, order_key)
-                 VALUES ('nested', 'parent', 'block_id', 'root', 'paragraph', 'nested text', 'a0');",
+                 VALUES ('nested', 'parent', 'block_id', 'root', 'paragraph', 'nested text', 'a0');
+             INSERT INTO notes_blocks (id, page_id, parent_type, parent_page_id, type, plain_text, order_key, in_trash, trash_owner)
+                 VALUES ('gone', 'parent', 'page_id', 'parent', 'paragraph', 'gone text', 'a3', 1, 'gone');",
         )
         .execute(&pool)
         .await
         .unwrap();
         let mut tx = pool.begin().await.unwrap();
-        sqlx::query(
+        for statement in [
             "INSERT INTO notes_pages (id, parent_type, parent_page_id, child_block_id, title)
              VALUES ('child', 'page_id', 'parent', 'child', 'Child')",
-        )
-        .execute(&mut *tx)
-        .await
-        .unwrap();
-        sqlx::query(
             "INSERT INTO notes_blocks (id, page_id, parent_type, parent_page_id, type, order_key)
              VALUES ('child', 'parent', 'page_id', 'parent', 'child_page', 'a1')",
-        )
-        .execute(&mut *tx)
-        .await
-        .unwrap();
+            "INSERT INTO notes_pages (id, parent_type, parent_block_id, child_block_id, title)
+             VALUES ('deep', 'block_id', 'root', 'deep', 'Deep')",
+            "INSERT INTO notes_blocks (id, page_id, parent_type, parent_block_id, type, order_key)
+             VALUES ('deep', 'parent', 'block_id', 'root', 'child_page', 'a1')",
+            "INSERT INTO notes_blocks (id, page_id, parent_type, parent_page_id, type, order_key)
+             VALUES ('db', 'parent', 'page_id', 'parent', 'child_database', 'a2')",
+            "INSERT INTO notes_databases (id, block_id, parent_type, parent_page_id, title)
+             VALUES ('db', 'db', 'page_id', 'parent', 'Tasks')",
+            "INSERT INTO notes_data_sources (id, database_id, title) VALUES ('source', 'db', 'Tasks')",
+            "INSERT INTO notes_pages (id, parent_type, parent_data_source_id, title)
+             VALUES ('row', 'data_source_id', 'source', 'Row')",
+            "INSERT INTO notes_pages (id, parent_type, parent_data_source_id, parent_row_page_id, title)
+             VALUES ('subrow', 'data_source_id', 'source', 'row', 'Subrow')",
+        ] {
+            sqlx::query(statement).execute(&mut *tx).await.unwrap();
+        }
         tx.commit().await.unwrap();
+        let pages_before = row_values(&pool, "notes_pages", REPLICATED_PAGE_COLUMNS).await;
+        let blocks_before = row_values(&pool, "notes_blocks", REPLICATED_BLOCK_COLUMNS).await;
+        let aliases_before = row_values(
+            &pool,
+            "notes_page_aliases",
+            "id, page_id, alias, normalized_alias",
+        )
+        .await;
+        assert_eq!(pages_before.len(), 6);
+        assert_eq!(blocks_before.len(), 6);
 
         super::helpers::migrate_through(&pool, NOTES_STRUCTURE_REPLICATION)
             .await
             .unwrap();
 
-        let pages: Vec<ReplicatedPageRow> = sqlx::query_as(
-            "SELECT id, parent_type, parent_page_id, child_block_id, folder_id, created_time
-             FROM notes_pages ORDER BY id",
-        )
-        .fetch_all(&pool)
-        .await
-        .unwrap();
-        assert_eq!(pages.len(), 2);
-        assert_eq!(pages[0].0, "child");
-        assert_eq!(pages[0].1, "page_id");
-        assert_eq!(pages[0].2.as_deref(), Some("parent"));
-        assert_eq!(pages[0].3.as_deref(), Some("child"));
-        assert_eq!(pages[1].4.as_deref(), Some("folder"));
-        assert_eq!(pages[1].5, "2026-10-01T00:00:00Z");
-        let blocks: Vec<ReplicatedBlockRow> = sqlx::query_as(
-            "SELECT id, page_id, parent_page_id, parent_block_id, plain_text, order_key
-             FROM notes_blocks ORDER BY id",
-        )
-        .fetch_all(&pool)
-        .await
-        .unwrap();
         assert_eq!(
-            blocks
-                .iter()
-                .map(|block| (block.0.as_str(), block.1.as_str(), block.5.as_str()))
-                .collect::<Vec<_>>(),
-            vec![
-                ("child", "parent", "a1"),
-                ("nested", "parent", "a0"),
-                ("root", "parent", "a0")
-            ]
+            row_values(&pool, "notes_pages", REPLICATED_PAGE_COLUMNS).await,
+            pages_before
         );
-        assert_eq!(blocks[1].3.as_deref(), Some("root"));
-        assert_eq!(blocks[1].4, "nested text");
-        assert_eq!(blocks[2].2.as_deref(), Some("parent"));
-        let names: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM notes_page_aliases")
+        assert_eq!(
+            row_values(&pool, "notes_blocks", REPLICATED_BLOCK_COLUMNS).await,
+            blocks_before
+        );
+        assert_eq!(
+            row_values(
+                &pool,
+                "notes_page_aliases",
+                "id, page_id, alias, normalized_alias"
+            )
+            .await,
+            aliases_before
+        );
+        let sources: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM notes_data_sources")
             .fetch_one(&pool)
             .await
             .unwrap();
-        assert_eq!(names, 1);
+        assert_eq!(sources, 1);
 
-        let pending: Option<i64> = sqlx::query_scalar(
-            "SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'notes_page_history_pending'",
+        let pending: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM sqlite_schema WHERE type = 'table'
+             AND name IN ('notes_page_history_pending', 'notes_sync_repair_pending')",
         )
-        .fetch_optional(&pool)
+        .fetch_one(&pool)
         .await
         .unwrap();
-        assert_eq!(pending, Some(1));
+        assert_eq!(pending, 2);
         for table in [
             "notes_local_users",
             "notes_folders",

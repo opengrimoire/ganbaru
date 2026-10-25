@@ -603,17 +603,33 @@ fn removing_a_database_block_removes_its_row_pages_through_nested_databases() {
         .unwrap();
         insert_row_page(&pool, PAGE_C, DATA_SOURCE_B, "Inner row", json!({})).await;
 
-        // A received block delete purges the block the way a sync apply does.
+        // While applying, the writer's own page deletes remove the row pages, so the trigger
+        // waits; a local removal of the block takes them along.
         sqlx::query("UPDATE sync_apply_state SET applying = 1 WHERE singleton = 1")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let mut tx = pool.begin().await.unwrap();
+        sqlx::query("DELETE FROM notes_blocks WHERE id = ?")
+            .bind(DATABASE_A)
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        let kept: i64 = sqlx::query_scalar("SELECT count(*) FROM notes_pages")
+            .fetch_one(&mut *tx)
+            .await
+            .unwrap();
+        assert_eq!(
+            kept, 3,
+            "apply leaves row pages to the writer's own deletes"
+        );
+        tx.rollback().await.unwrap();
+        sqlx::query("UPDATE sync_apply_state SET applying = 0 WHERE singleton = 1")
             .execute(&pool)
             .await
             .unwrap();
         sqlx::query("DELETE FROM notes_blocks WHERE id = ?")
             .bind(DATABASE_A)
-            .execute(&pool)
-            .await
-            .unwrap();
-        sqlx::query("UPDATE sync_apply_state SET applying = 0 WHERE singleton = 1")
             .execute(&pool)
             .await
             .unwrap();
@@ -693,7 +709,7 @@ fn a_row_page_for_an_unknown_data_source_is_not_listed_or_counted() {
 }
 
 #[test]
-fn purging_a_former_parent_keeps_a_page_moved_out_of_it() {
+fn purging_a_former_parent_keeps_a_moved_out_page_and_parks_its_published_block() {
     crate::test_block_on(async {
         let pool = migrated_memory_pool().await;
         create_page(&pool, PAGE_A, BLOCK_A).await;
@@ -709,12 +725,43 @@ fn purging_a_former_parent_keeps_a_page_moved_out_of_it() {
         writes::move_page(&pool, PAGE_B, to(workspace_parent()))
             .await
             .unwrap();
+        // Sync published the block, so its key may never be created again.
+        sqlx::query("INSERT INTO sync_rows (table_id, row_key, state) VALUES (?, ?, 'live')")
+            .bind(i64::from(BLOCKS_TABLE.0))
+            .bind(PAGE_B)
+            .execute(&pool)
+            .await
+            .unwrap();
         writes::trash_page(&pool, PAGE_A, true).await.unwrap();
         let deleted = writes::permanently_delete_page(&pool, PAGE_A)
             .await
             .unwrap();
 
         assert_eq!(deleted, vec![PAGE_A.to_string()]);
+        let parked: (String, Option<String>, Option<String>, i64) = sqlx::query_as(
+            "SELECT page_id, parent_page_id, parent_block_id, in_trash FROM notes_blocks WHERE id = ?",
+        )
+        .bind(PAGE_B)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            parked,
+            (PAGE_B.to_string(), Some(PAGE_B.to_string()), None, 1),
+            "the block a moved-out page left behind is parked under that page"
+        );
+        writes::trash_page(&pool, PAGE_B, true).await.unwrap();
+        writes::trash_page(&pool, PAGE_B, false).await.unwrap();
+        let still_trashed: i64 =
+            sqlx::query_scalar("SELECT in_trash FROM notes_blocks WHERE id = ?")
+                .bind(PAGE_B)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            still_trashed, 1,
+            "restoring the page keeps its parked block hidden"
+        );
         let page_b: i64 = sqlx::query_scalar("SELECT in_trash FROM notes_pages WHERE id = ?")
             .bind(PAGE_B)
             .fetch_one(&pool)

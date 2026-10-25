@@ -146,7 +146,8 @@ pub(super) async fn load_page_block_subtree_rows(
     load_page_block_subtree_rows_for_copy(tx, page_id, false, budget).await
 }
 
-/// Include paired notes trashed with their containing page when pasting a cut note.
+/// Include paired notes trashed with their containing page when pasting a cut note. A
+/// `child_page` block parked under its own page is never copied.
 pub(super) async fn load_page_block_subtree_rows_for_copy(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     page_id: &str,
@@ -157,7 +158,7 @@ pub(super) async fn load_page_block_subtree_rows_for_copy(
         "WITH RECURSIVE eligible AS (
             SELECT block.id, block.parent_type, block.parent_page_id, block.parent_block_id, block.order_key
             FROM notes_blocks AS block
-            WHERE block.page_id = ? AND (block.in_trash = 0 OR (
+            WHERE block.page_id = ? AND block.id <> block.page_id AND (block.in_trash = 0 OR (
                 ? AND EXISTS (
                     SELECT 1 FROM notes_pages AS child
                     JOIN notes_pages AS parent ON parent.id = block.page_id

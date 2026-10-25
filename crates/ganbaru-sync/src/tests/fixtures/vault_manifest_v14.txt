@@ -524,7 +524,7 @@ table 292 notes_blocks replicated key id
   group 2 position order_key:order_key
   group 3 register type:text(..=200) attrs:text(..=65536)
   group 4 register surfaced recoverable text:text(..=262144)
-  group 5 register in_trash:flag trash_owner:optional_text(..=262144)
+  group 5 coupled in_trash:flag trash_owner:optional_text(..=262144)
   group 6 max last_edited_time:timestamp
   check parent_page_id,parent_block_id within 1
 table 291 notes_page_aliases replicated key id redirects

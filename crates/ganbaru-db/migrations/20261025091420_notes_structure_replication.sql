@@ -205,9 +205,11 @@ END;
 -- Row pages leave with their data source on every path that removes it, including foreign key
 -- cascades from a purged block or database. The walk collects the whole content subtree in
 -- this one statement because SQLite does not fire this trigger again for data sources that
--- the deleted pages cascade away while it runs.
+-- the deleted pages cascade away while it runs. Apply skips it: the writer that removed the
+-- data source also deleted its row pages, and reads hide a row page whose data source is gone.
 CREATE TRIGGER notes_data_sources_delete_row_pages
 AFTER DELETE ON notes_data_sources
+WHEN (SELECT applying FROM sync_apply_state WHERE singleton = 1) = 0
 BEGIN
     DELETE FROM notes_pages
     WHERE id IN (
@@ -232,6 +234,31 @@ BEGIN
         )
         SELECT id FROM subtree
     );
+END;
+
+-- A page moved out of its parent keeps its trashed `child_page` block, whose id is the page id.
+-- Before a local delete of the page that holds such a block, the block moves under its own
+-- page, still trashed, so its published key stays live and nesting the page again rewrites the
+-- block in place instead of creating a deleted key again. Remote deletes come from the writer
+-- that already parked its blocks, so apply skips this.
+CREATE TRIGGER notes_pages_park_child_page_blocks
+BEFORE DELETE ON notes_pages
+WHEN (SELECT applying FROM sync_apply_state WHERE singleton = 1) = 0
+BEGIN
+    UPDATE notes_blocks
+    SET page_id = id,
+        parent_type = 'page_id',
+        parent_page_id = id,
+        parent_block_id = NULL,
+        in_trash = 1,
+        trash_owner = NULL
+    WHERE page_id = OLD.id
+        AND type = 'child_page'
+        AND id <> OLD.id
+        AND EXISTS (
+            SELECT 1 FROM notes_pages AS page
+            WHERE page.id = notes_blocks.id AND page.child_block_id IS NULL
+        );
 END;
 
 CREATE TEMP TABLE notes_structure_replication_guard (violations INTEGER NOT NULL CHECK (violations = 0));

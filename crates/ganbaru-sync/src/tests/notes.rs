@@ -1,8 +1,9 @@
 //! Notes structure across replicas: concurrent edits to different block groups merge, received
 //! rows get their hook-derived parents, pages, and plain text from the real Notes hook, a block
 //! cycle from concurrent moves is repaired by the Notes repair pass and the repair replicates,
-//! a remote delete of a parent block removes the page nested under it everywhere, a trashed page keeps a concurrent title edit and restores, and duplicate page aliases settle
-//! on one row.
+//! a remote delete of a parent block removes the page nested under it everywhere, a parked
+//! `child_page` block survives the delete of its former parent and nests again, a trashed page
+//! keeps a concurrent title edit and restores, and duplicate page aliases settle on one row.
 
 use sqlx::SqliteConnection;
 
@@ -440,6 +441,106 @@ fn a_remote_delete_of_the_parent_block_removes_the_nested_page_everywhere() {
         .await
         .unwrap();
         assert!(report.is_empty());
+        assert_converged(&mut replicas).await;
+    });
+}
+
+/// SQL nesting page `id` under page `parent` through its own `child_page` block at `position`.
+fn nest_page_sql(id: &str, parent: &str, position: u32) -> String {
+    format!(
+        "BEGIN;
+         UPDATE notes_blocks
+         SET page_id = {parent}, parent_type = 'page_id', parent_page_id = {parent},
+             parent_block_id = NULL, in_trash = 0, order_key = {order}
+         WHERE id = {id};
+         UPDATE notes_pages
+         SET parent_type = 'page_id', parent_page_id = {parent}, child_block_id = {id}
+         WHERE id = {id};
+         COMMIT;",
+        id = quoted(id),
+        parent = quoted(parent),
+        order = quoted(&rank(position)),
+    )
+}
+
+#[test]
+fn a_parked_child_page_block_survives_its_former_parent_delete_and_nests_again() {
+    block_on(async {
+        let setup = format!(
+            "INSERT INTO notes_pages (id, parent_type, title, created_time, last_edited_time)
+             VALUES ('former', 'workspace', 'Former', {created}, {created}),
+                    ('next', 'workspace', 'Next', {created}, {created});
+             BEGIN;
+             INSERT INTO notes_pages
+                 (id, parent_type, parent_page_id, child_block_id, title, created_time,
+                  last_edited_time)
+             VALUES ('child', 'page_id', 'former', 'child', 'Child', {created}, {created});
+             INSERT INTO notes_blocks
+                 (id, page_id, parent_type, parent_page_id, type, plain_text, order_key,
+                  created_time, last_edited_time)
+             VALUES ('child', 'former', 'page_id', 'former', 'child_page', 'Child', {order},
+                     {created}, {created});
+             COMMIT;",
+            created = quoted(CREATED),
+            order = quoted(&rank(1)),
+        );
+        let mut replicas = shared(2, &setup).await;
+        replicas[0]
+            .exec(
+                "BEGIN;
+                 UPDATE notes_blocks SET in_trash = 1 WHERE id = 'child';
+                 UPDATE notes_pages
+                 SET parent_type = 'workspace', parent_page_id = NULL, child_block_id = NULL
+                 WHERE id = 'child';
+                 COMMIT;",
+            )
+            .await;
+        converge(&mut replicas).await;
+
+        // The delete parks the block under its own page; both changes travel in one batch.
+        replicas[0]
+            .exec("DELETE FROM notes_pages WHERE id = 'former';")
+            .await;
+        converge(&mut replicas).await;
+        let block = "SELECT id || '>' || parent_page_id || '@' || page_id || ':' || in_trash
+                     FROM notes_blocks WHERE id = 'child'";
+        for replica in replicas.iter_mut() {
+            assert_eq!(
+                texts(replica, block).await,
+                vec!["child>child@child:1".to_string()],
+                "replica {}",
+                replica.index
+            );
+            assert_eq!(
+                texts(replica, "SELECT id FROM notes_pages ORDER BY id").await,
+                vec!["child".to_string(), "next".to_string(), PAGE.to_string()],
+                "replica {}",
+                replica.index
+            );
+        }
+        assert_converged(&mut replicas).await;
+
+        replicas[1].exec(&nest_page_sql("child", "next", 1)).await;
+        converge(&mut replicas).await;
+        for replica in replicas.iter_mut() {
+            assert_eq!(
+                texts(replica, block).await,
+                vec!["child>next@next:0".to_string()],
+                "replica {}",
+                replica.index
+            );
+            assert_eq!(
+                texts(
+                    replica,
+                    "SELECT parent_type || ':' || parent_page_id || ':' || child_block_id
+                     FROM notes_pages WHERE id = 'child'",
+                )
+                .await,
+                vec!["page_id:next:child".to_string()],
+                "replica {}",
+                replica.index
+            );
+        }
         assert_converged(&mut replicas).await;
     });
 }

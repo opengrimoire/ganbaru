@@ -177,6 +177,10 @@ const ICS_PLAIN_MAX_BYTES: u64 = 25 * 1024 * 1024;
 /// comments and future tokens while rejecting accidental large-file picks.
 const THEME_JSON_MAX_BYTES: u64 = 1024 * 1024;
 
+/// A recovery kit text file holds one code and a short localized explanation.
+#[cfg(desktop)]
+const RECOVERY_KIT_TEXT_MAX_BYTES: u64 = 16 * 1024;
+
 #[cfg(target_os = "ios")]
 const THEME_JSON_DOCUMENT_FILTERS: &[&str] = &["json"];
 
@@ -553,6 +557,37 @@ pub async fn vault_pick_and_write_theme_json(
     Ok(ThemeJsonWriteOutcome::saved_to_selected_file())
 }
 
+/// Open a native save dialog and write the vault's recovery kit as a plain text file. Returns
+/// whether the user picked a file.
+#[cfg(desktop)]
+#[tauri::command]
+pub async fn vault_pick_and_write_recovery_kit(
+    app: tauri::AppHandle,
+    default_name: String,
+    contents: String,
+) -> Result<bool, String> {
+    require_text_within_limit(&contents, RECOVERY_KIT_TEXT_MAX_BYTES, "recovery kit")?;
+    let default_name = default_file_name(&default_name, "recovery-kit", "txt");
+    let start_directory = existing_downloads_directory(&app);
+    let Some(path) = on_dialog_thread(move || {
+        pick_save_path(
+            &app,
+            "Save recovery kit",
+            &default_name,
+            "Text",
+            &["txt"],
+            start_directory,
+        )
+    })
+    .await??
+    else {
+        return Ok(false);
+    };
+    require_extension(&path, &["txt"], "recovery kit")?;
+    write_text_file_atomically(&path, &contents, FileAccess::Default)?;
+    Ok(true)
+}
+
 #[cfg(target_os = "ios")]
 fn finish_mobile_document_access<R: Runtime, T>(
     app: &tauri::AppHandle<R>,
@@ -721,6 +756,19 @@ mod tests {
         assert_eq!(
             default_file_name("midnight.JSON", "theme", "json"),
             "midnight.JSON"
+        );
+    }
+
+    #[cfg(desktop)]
+    #[test]
+    fn recovery_kit_text_is_capped_and_saved_as_txt() {
+        let within = "A".repeat(RECOVERY_KIT_TEXT_MAX_BYTES as usize);
+        assert!(require_text_within_limit(&within, RECOVERY_KIT_TEXT_MAX_BYTES, "kit").is_ok());
+        let over = format!("{within}A");
+        assert!(require_text_within_limit(&over, RECOVERY_KIT_TEXT_MAX_BYTES, "kit").is_err());
+        assert_eq!(
+            default_file_name("../Ganbaru recovery kit", "recovery-kit", "txt"),
+            "Ganbaru recovery kit.txt"
         );
     }
 

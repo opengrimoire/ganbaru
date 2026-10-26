@@ -189,6 +189,11 @@ pub(crate) struct SyncStatusView {
     pub conflicts: Vec<TableCount>,
     /// Recovery offers, per table of their root row.
     pub recovery: Vec<TableCount>,
+    /// Changes of this device the anchor has not confirmed storing. A removal sequenced before
+    /// the anchor stores them excludes them, so the interface asks to reach the anchor.
+    pub unconfirmed: usize,
+    /// When the oldest unconfirmed change was stored, in Unix milliseconds.
+    pub oldest_unconfirmed_at_ms: Option<u64>,
     /// Devices whose merged edits carry clocks far ahead of this device, so they win
     /// concurrent edits until the clocks agree.
     pub clock_ahead_devices: Vec<DeviceRef>,
@@ -214,6 +219,8 @@ impl SyncStatusView {
         };
         self.conflicts = TableCount::list(&status.conflicts);
         self.recovery = TableCount::list(&status.recovery);
+        self.unconfirmed = status.unconfirmed;
+        self.oldest_unconfirmed_at_ms = status.oldest_unconfirmed_ms;
     }
 
     /// Names the linked devices the coordinator does not count, with why, in device id order.
@@ -516,5 +523,27 @@ mod tests {
 
         view.set_counts(&SyncStatus::default());
         assert!(view.conflicts.is_empty() && view.recovery.is_empty());
+    }
+
+    #[test]
+    fn sync_status_reports_unconfirmed_changes_and_their_age() {
+        let status = SyncStatus {
+            unconfirmed: 4,
+            oldest_unconfirmed_ms: Some(1_800_000_000_000),
+            ..SyncStatus::default()
+        };
+        let mut view = SyncStatusView::default();
+        view.set_counts(&status);
+        let wire = serde_json::to_value(&view).expect("serialize status");
+        assert_eq!(wire["unconfirmed"], serde_json::json!(4));
+        assert_eq!(
+            wire["oldestUnconfirmedAtMs"],
+            serde_json::json!(1_800_000_000_000_u64)
+        );
+
+        view.set_counts(&SyncStatus::default());
+        let wire = serde_json::to_value(&view).expect("serialize status");
+        assert_eq!(wire["unconfirmed"], serde_json::json!(0));
+        assert_eq!(wire["oldestUnconfirmedAtMs"], serde_json::Value::Null);
     }
 }

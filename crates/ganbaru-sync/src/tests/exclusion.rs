@@ -654,3 +654,46 @@ fn the_anchor_and_the_removed_device_retain_nothing_and_keep_their_own_operation
         );
     });
 }
+
+#[test]
+fn status_counts_own_changes_until_the_anchor_confirms_storing_them() {
+    block_on(async {
+        let (mut anchor, _removed, mut honest) = trio(207).await;
+        spread(&mut anchor, &mut honest).await;
+        edit(&mut honest, &note("note-first", "Draft", 0)).await;
+        edit(&mut honest, &note("note-second", "Draft", 1)).await;
+        let status = honest
+            .engine
+            .status(&mut honest.conn, &honest.ctx)
+            .await
+            .unwrap();
+        assert_eq!(status.unconfirmed, 2);
+        assert!(status.oldest_unconfirmed_ms.is_some());
+
+        deliver(&mut anchor, &mut honest).await;
+        let stored = anchor.stored_vector().await;
+        let anchor_device = anchor.device_id.clone();
+        assert!(
+            honest
+                .engine
+                .record_anchor_marks(&mut honest.conn, &honest.ctx, &anchor_device, &stored)
+                .await
+                .unwrap()
+        );
+        let status = honest
+            .engine
+            .status(&mut honest.conn, &honest.ctx)
+            .await
+            .unwrap();
+        assert_eq!(status.unconfirmed, 0);
+        assert_eq!(status.oldest_unconfirmed_ms, None);
+
+        edit(&mut anchor, &note("note-anchor", "Draft", 2)).await;
+        let status = anchor
+            .engine
+            .status(&mut anchor.conn, &anchor.ctx)
+            .await
+            .unwrap();
+        assert_eq!(status.unconfirmed, 0, "the anchor confirms its own changes");
+    });
+}

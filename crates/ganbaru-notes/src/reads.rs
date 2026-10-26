@@ -73,10 +73,8 @@ async fn list_page_summary_window(
                 .map_err(|_| "invalid page summary cursor".to_string())
         })
         .transpose()?;
-    let mut count = QueryBuilder::<Sqlite>::new(format!(
-        "SELECT COUNT(*) FROM notes_pages WHERE {} AND in_trash = ",
-        crate::structure::placed_page_sql("notes_pages")
-    ));
+    let mut count =
+        QueryBuilder::<Sqlite>::new("SELECT COUNT(*) FROM notes_pages WHERE in_trash = ");
     count.push_bind(in_trash);
     if let Some(archived) = archived {
         count.push(" AND archived = ").push_bind(archived);
@@ -93,9 +91,8 @@ async fn list_page_summary_window(
         .await
         .map_err(|e| format!("count notes page summary window: {e}"))?;
     let mut query = QueryBuilder::<Sqlite>::new(format!(
-        "SELECT {} FROM notes_pages WHERE {} AND in_trash = ",
-        crate::workspace_shell::page_projection(),
-        crate::structure::placed_page_sql("notes_pages")
+        "SELECT {} FROM notes_pages WHERE in_trash = ",
+        crate::workspace_shell::page_projection()
     ));
     query.push_bind(in_trash);
     if let Some(archived) = archived {
@@ -447,10 +444,9 @@ async fn list_pages_by_state(
         sqlx::query_as::<_, NotePageRow>(sqlx::AssertSqlSafe(format!(
             "SELECT {}
              FROM notes_pages
-             WHERE {} AND in_trash = ? AND archived = ?
+             WHERE in_trash = ? AND archived = ?
              ORDER BY last_edited_time DESC, title COLLATE NOCASE ASC, id ASC",
-            crate::structure::page_row_columns("notes_pages"),
-            crate::structure::placed_page_sql("notes_pages")
+            crate::structure::page_row_columns("notes_pages")
         )))
         .bind(if in_trash { 1_i64 } else { 0_i64 })
         .bind(if archived { 1_i64 } else { 0_i64 })
@@ -460,10 +456,9 @@ async fn list_pages_by_state(
         sqlx::query_as::<_, NotePageRow>(sqlx::AssertSqlSafe(format!(
             "SELECT {}
              FROM notes_pages
-             WHERE {} AND in_trash = ?
+             WHERE in_trash = ?
              ORDER BY last_edited_time DESC, title COLLATE NOCASE ASC, id ASC",
-            crate::structure::page_row_columns("notes_pages"),
-            crate::structure::placed_page_sql("notes_pages")
+            crate::structure::page_row_columns("notes_pages")
         )))
         .bind(if in_trash { 1_i64 } else { 0_i64 })
         .fetch_all(pool)

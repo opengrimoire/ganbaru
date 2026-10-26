@@ -32,7 +32,9 @@ const STATUS_OPTION_TYPE: &str = "status";
 macro_rules! note_data_source_properties_json {
     ($alias:literal) => {
         concat!(
-            "(SELECT json_group_object(stored_property.name, json(CASE ",
+            "(SELECT json_group_object(",
+            $crate::note_data_source_property_name!(),
+            ", json(CASE ",
             "WHEN stored_property.type IN ('select', 'multi_select') THEN json_set(",
             $crate::note_data_source_property_base_json!(),
             ", '$.' || stored_property.type || '.options', json(",
@@ -60,12 +62,49 @@ macro_rules! note_data_source_properties_json {
     };
 }
 
+/// A stored property's name as reads show it.
+///
+/// Notes writes keep names unique per data source, but two devices can add or rename properties
+/// to the same name concurrently. Every property but the one with the smallest id then reads as
+/// `name (property_id)`, so the composed schema, keyed by name, never hides a property and the
+/// next schema write stores the suffixed name. The rule depends only on replicated rows, so every
+/// device reads the same names.
+#[macro_export]
+#[doc(hidden)]
+macro_rules! note_data_source_property_name {
+    () => {
+        $crate::note_data_source_property_name!("stored_property")
+    };
+    ($alias:literal) => {
+        concat!(
+            "(CASE WHEN EXISTS (SELECT 1 FROM notes_data_source_properties AS same_name ",
+            "WHERE same_name.data_source_id = ",
+            $alias,
+            ".data_source_id AND same_name.name = ",
+            $alias,
+            ".name AND same_name.property_id < ",
+            $alias,
+            ".property_id) THEN ",
+            $alias,
+            ".name || ' (' || ",
+            $alias,
+            ".property_id || ')' ELSE ",
+            $alias,
+            ".name END)"
+        )
+    };
+}
+
 /// A stored property's config with its id, name, and type restored.
 #[macro_export]
 #[doc(hidden)]
 macro_rules! note_data_source_property_base_json {
     () => {
-        "json_set(stored_property.config, '$.id', stored_property.property_id, '$.name', stored_property.name, '$.type', stored_property.type)"
+        concat!(
+            "json_set(stored_property.config, '$.id', stored_property.property_id, '$.name', ",
+            $crate::note_data_source_property_name!(),
+            ", '$.type', stored_property.type)"
+        )
     };
 }
 
@@ -562,8 +601,9 @@ async fn write_property_options(
         }
         sqlx::query(
             "INSERT INTO notes_data_source_property_options
-               (data_source_id, property_id, option_id, sync_key, name, color, status_group, position)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+               (data_source_id, property_id, option_id, sync_key, property_key, name, color,
+                status_group, position)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT (data_source_id, property_id, option_id) DO UPDATE SET
                name = excluded.name,
                color = excluded.color,
@@ -573,11 +613,8 @@ async fn write_property_options(
         .bind(data_source_id)
         .bind(&property.property_id)
         .bind(&option.option_id)
-        .bind(PROPERTY_OPTIONS.key(&[
-            data_source_id,
-            &property.property_id,
-            &option.option_id,
-        ])?)
+        .bind(PROPERTY_OPTIONS.key(&[data_source_id, &property.property_id, &option.option_id])?)
+        .bind(PROPERTIES.key(&[data_source_id, &property.property_id])?)
         .bind(&option.name)
         .bind(&option.color)
         .bind(&option.status_group)

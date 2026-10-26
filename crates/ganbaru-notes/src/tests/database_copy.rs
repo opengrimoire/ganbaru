@@ -105,11 +105,12 @@ fn database_copy_across_notes_keeps_schema_views_rows_templates_and_self_relatio
             .into_iter()
             .enumerate()
         {
-            sqlx::query("INSERT INTO notes_database_views (id, database_id, data_source_id, name, type, configuration, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?)")
+            sqlx::query("INSERT INTO notes_database_views (id, database_id, data_source_id, name, type, configuration, order_key) VALUES (?, ?, ?, ?, ?, ?, ?)")
                 .bind(format!("98989898-9898-4989-8989-{index:012}"))
                 .bind(DATABASE_A).bind(DATA_SOURCE_A).bind(view_type).bind(view_type)
                 .bind(json!({"type": view_type, (view_type): {"property_order": ["title", "priority"]}}).to_string())
-                .bind((index + 1) as f64).execute(&pool).await.unwrap();
+                .bind(ganbaru_sync_contracts::OrderKey::rank(u32::try_from(index + 1).unwrap()).unwrap().into_string())
+                .execute(&pool).await.unwrap();
         }
         let copied = serde_json::to_value(
             databases::duplicate_database(&pool, duplicate_request(DATABASE_B))

@@ -144,7 +144,7 @@ fn notes_sync_databases_migration_rekeys_templates_and_names_database_blocks() {
 }
 
 #[test]
-fn fresh_vault_template_blocks_are_keyed_by_ordinal_with_unique_ids() {
+fn fresh_vault_template_blocks_are_owned_rows_keyed_by_ordinal() {
     super::block_on(async {
         let pool = super::helpers::migrated_memory_pool().await;
         sqlx::raw_sql(
@@ -159,9 +159,9 @@ fn fresh_vault_template_blocks_are_keyed_by_ordinal_with_unique_ids() {
             "INSERT INTO notes_page_template_blocks (template_id, ordinal, id, parent_type, type, payload)
                VALUES ('pt', 0, 'other', 'template', 'paragraph', '{}')",
             "INSERT INTO notes_page_template_blocks (template_id, ordinal, id, parent_type, type, payload)
-               VALUES ('pt', 1, 'root', 'template', 'paragraph', '{}')",
-            "INSERT INTO notes_page_template_blocks (template_id, ordinal, id, parent_type, type, payload)
                VALUES ('pt', -1, 'negative', 'template', 'paragraph', '{}')",
+            "INSERT INTO notes_page_template_blocks (template_id, ordinal, id, parent_type, type, payload)
+               VALUES ('pt', 1, ' ', 'template', 'paragraph', '{}')",
         ] {
             assert!(
                 sqlx::raw_sql(sqlx::AssertSqlSafe(statement))
@@ -171,29 +171,27 @@ fn fresh_vault_template_blocks_are_keyed_by_ordinal_with_unique_ids() {
                 "{statement}"
             );
         }
-        // The parent link is deferred, so a snapshot may list a child before its parent.
-        let mut tx = pool.begin().await.unwrap();
+        // Block ids and parent links inside a template are checked by Notes save validation and
+        // the sync adapter, not by the schema, so the owned rows of one template can arrive in
+        // any order.
         sqlx::raw_sql(
             "INSERT INTO notes_page_template_blocks (template_id, ordinal, id, parent_type, parent_block_id, type, payload)
                VALUES ('pt', 2, 'child', 'block_id', 'later', 'paragraph', '{}');
              INSERT INTO notes_page_template_blocks (template_id, ordinal, id, parent_type, type, payload)
                VALUES ('pt', 1, 'later', 'template', 'toggle', '{}');",
         )
-        .execute(&mut *tx)
+        .execute(&pool)
         .await
         .unwrap();
-        tx.commit().await.unwrap();
-        sqlx::query("DELETE FROM notes_page_template_blocks WHERE id = 'later'")
+        sqlx::query("DELETE FROM notes_page_templates WHERE id = 'pt'")
             .execute(&pool)
             .await
             .unwrap();
-        let ids: Vec<String> = sqlx::query_scalar(
-            "SELECT id FROM notes_page_template_blocks WHERE template_id = 'pt' ORDER BY ordinal",
-        )
-        .fetch_all(&pool)
-        .await
-        .unwrap();
-        assert_eq!(ids, vec!["root".to_string()], "the parent link cascades");
+        let remaining: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM notes_page_template_blocks")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(remaining, 0, "template blocks go with their template");
     });
 }
 

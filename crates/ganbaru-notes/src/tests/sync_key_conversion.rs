@@ -107,10 +107,13 @@ fn placeholder_keys_convert_to_derived_keys_once_and_gate_the_assertion() {
         assert_converted(&pool).await.unwrap();
         assert_eq!(convert(&pool).await.unwrap(), 0);
 
+        // Sync keeps published keys from changing, except a placeholder that becomes its derived
+        // key, so planting placeholders again drops that guard, as before the tables replicated.
         for table in DERIVED_KEY_TABLES {
-            sqlx::query(sqlx::AssertSqlSafe(format!(
-                "UPDATE {} SET sync_key = 'pending:' || rowid",
-                table.table
+            sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
+                "DROP TRIGGER sync_immutable_{table};
+                 UPDATE {table} SET sync_key = 'pending:' || rowid",
+                table = table.table
             )))
             .execute(&pool)
             .await

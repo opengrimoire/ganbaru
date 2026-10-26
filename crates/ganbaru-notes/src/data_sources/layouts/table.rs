@@ -436,7 +436,7 @@ pub(crate) async fn ensure_table_view_row_tx(
         "generated_database_view_id",
     )
     .await?;
-    let sort_order = data_sources::views::next_view_sort_order_tx(tx, database_id).await?;
+    let order_key = data_sources::views::next_view_order_key_tx(tx, database_id).await?;
     sqlx::query(
         "INSERT INTO notes_database_views (
             id,
@@ -446,7 +446,7 @@ pub(crate) async fn ensure_table_view_row_tx(
             type,
             sorts,
             configuration,
-            sort_order
+            order_key
          )
          VALUES (?, ?, ?, 'Table', 'table', '[]', ?, ?)",
     )
@@ -457,7 +457,7 @@ pub(crate) async fn ensure_table_view_row_tx(
         &data_source.properties,
         "data source properties",
     )?)?)
-    .bind(sort_order)
+    .bind(order_key)
     .execute(&mut **tx)
     .await
     .map_err(|e| format!("insert notes table view: {e}"))?;

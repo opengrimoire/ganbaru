@@ -390,22 +390,27 @@ async fn create_copy_id_map(
     Ok(map)
 }
 
-/// Fresh ids for bundle folders and aliases that sync published and that have since been
-/// deleted. Sync never lets a deleted published key be created again, so these rows come back
-/// under new ids; rows sync never published keep their ids. Aliases already copied with their
-/// page are left to `copy_ids`.
+/// Fresh ids for bundle folders, aliases, data sources, views, and data source templates that
+/// sync published and that have since been deleted. Sync never lets a deleted published key be
+/// created again, so these rows come back under new ids; rows sync never published keep their
+/// ids. Rows already copied with their page or database are left to `copy_ids`.
 async fn renew_deleted_published_ids_tx(
     tx: &mut Transaction<'_, Sqlite>,
     rows: &BTreeMap<String, Vec<Value>>,
     copy_ids: &HashMap<String, String>,
 ) -> Result<HashMap<String, String>, String> {
-    use ganbaru_sync::manifest::vault::notes::{ALIASES_TABLE, FOLDERS_TABLE};
+    use ganbaru_sync::manifest::vault::notes::{
+        ALIASES_TABLE, DATA_SOURCE_TEMPLATES_TABLE, DATA_SOURCES_TABLE, FOLDERS_TABLE, VIEWS_TABLE,
+    };
 
     let mut renewed = HashMap::new();
     let mut reserved = copy_ids.values().cloned().collect::<HashSet<_>>();
     for (table, table_id) in [
         ("notes_folders", FOLDERS_TABLE),
         ("notes_page_aliases", ALIASES_TABLE),
+        ("notes_data_sources", DATA_SOURCES_TABLE),
+        ("notes_database_views", VIEWS_TABLE),
+        ("notes_data_source_templates", DATA_SOURCE_TEMPLATES_TABLE),
     ] {
         let sql = format!(
             "SELECT EXISTS (SELECT 1 FROM sync_rows WHERE table_id = ?1 AND row_key = ?2)
@@ -454,6 +459,17 @@ fn refresh_derived_sync_keys(rows: &mut BTreeMap<String, Vec<Value>>) -> Result<
                 .ok_or_else(|| format!("Notes history {} row is not an object", table.table))?;
             object.insert("sync_key".to_string(), Value::String(key));
         }
+    }
+    for row in rows
+        .get_mut(crate::sync_keys::PROPERTY_OPTIONS.table)
+        .into_iter()
+        .flatten()
+    {
+        let property_key = crate::sync_keys::PROPERTIES.row_key(row)?;
+        let object = row
+            .as_object_mut()
+            .ok_or_else(|| "Notes history option row is not an object".to_string())?;
+        object.insert("property_key".to_string(), Value::String(property_key));
     }
     Ok(())
 }

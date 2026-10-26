@@ -3,17 +3,18 @@
 //! or block win over a concurrent restore.
 
 use ganbaru_sync_contracts::bounds::MAX_TEXT_FIELD_BYTES;
-use ganbaru_sync_contracts::{Field, GroupId, TableId, Value};
+use ganbaru_sync_contracts::{Field, GroupId, GroupValue, TableId, Value, derived_key};
 
 use crate::adapter::{AdapterError, DomainAdapter, Presentation};
 use crate::codec;
 use crate::manifest::OwnedTable;
 use crate::manifest::vault::notes::{
     ADAPTER, ALIASES_TABLE, BLOCKS_TABLE, DATA_SOURCE_TEMPLATE_BLOCKS, DATA_SOURCE_TEMPLATES_TABLE,
-    DATA_SOURCES_TABLE, DATABASES_TABLE, FOLDERS_TABLE, PAGE_TEMPLATE_BLOCKS, PAGE_TEMPLATES_TABLE,
-    PAGES_TABLE, PROPERTIES_TABLE, VALUES_TABLE, VIEWS_TABLE, alias_group, block_group,
-    data_source_group, data_source_template_group, database_group, folder_group, page_group,
-    page_template_group, property_group, value_group, view_group,
+    DATA_SOURCES_TABLE, DATABASES_TABLE, FOLDERS_TABLE, OPTIONS_TABLE, PAGE_TEMPLATE_BLOCKS,
+    PAGE_TEMPLATES_TABLE, PAGES_TABLE, PROPERTIES_TABLE, PROPERTY_KEY_PREFIX, VALUES_TABLE,
+    VIEWS_TABLE, alias_group, block_group, data_source_group, data_source_template_group,
+    database_group, folder_group, option_group, page_group, page_template_group, property_group,
+    value_group, view_group,
 };
 
 /// Characters of a free text column without a narrower Notes limit.
@@ -325,6 +326,31 @@ fn validate_data_source_template(group: GroupId, fields: &[Field]) -> Result<(),
     }
 }
 
+/// Checks that an option names the property its identity derives, so an option never attaches
+/// to another property.
+fn validate_option_row(groups: &[GroupValue]) -> Result<(), AdapterError> {
+    const WHAT: &str = "notes option property key";
+    let fields = |group: GroupId| {
+        groups
+            .iter()
+            .find(|value| value.group == group)
+            .map(|value| value.value.fields())
+    };
+    let (Some([data_source, property, _]), Some([property_key])) = (
+        fields(option_group::IDENTITY),
+        fields(option_group::PROPERTY),
+    ) else {
+        return Err(AdapterError(WHAT));
+    };
+    let expected = derived_key(PROPERTY_KEY_PREFIX, &[text(data_source)?, text(property)?])
+        .map_err(|_| AdapterError(WHAT))?;
+    if text(property_key)? == expected.as_str() {
+        Ok(())
+    } else {
+        Err(AdapterError(WHAT))
+    }
+}
+
 /// Whether `group` of `table` is a trash state where trashing wins.
 fn is_lifecycle(table: TableId, group: GroupId) -> bool {
     (table == PAGES_TABLE && group == page_group::LIFECYCLE)
@@ -409,6 +435,14 @@ impl DomainAdapter for NotesAdapter {
             validate_page_template(group, fields)
         } else if table == DATA_SOURCE_TEMPLATES_TABLE {
             validate_data_source_template(group, fields)
+        } else {
+            Ok(())
+        }
+    }
+
+    fn validate_row(&self, table: TableId, groups: &[GroupValue]) -> Result<(), AdapterError> {
+        if table == OPTIONS_TABLE {
+            validate_option_row(groups)
         } else {
             Ok(())
         }
@@ -643,6 +677,33 @@ mod tests {
         };
         assert!(trashed(DATABASES_TABLE, database_group::LIFECYCLE));
         assert!(trashed(DATA_SOURCES_TABLE, data_source_group::LIFECYCLE));
+    }
+
+    #[test]
+    fn an_option_names_the_property_its_identity_derives() {
+        let adapter = NotesAdapter;
+        let row = |property_key: &str| {
+            adapter.validate_row(
+                OPTIONS_TABLE,
+                &[
+                    GroupValue::new(
+                        OPTIONS_TABLE,
+                        option_group::IDENTITY,
+                        value(vec![t("source-1"), t("status"), t("done")]),
+                    ),
+                    GroupValue::new(
+                        OPTIONS_TABLE,
+                        option_group::PROPERTY,
+                        value(vec![t(property_key)]),
+                    ),
+                ],
+            )
+        };
+        let own = derived_key(PROPERTY_KEY_PREFIX, &["source-1", "status"]).unwrap();
+        let other = derived_key(PROPERTY_KEY_PREFIX, &["source-2", "status"]).unwrap();
+        assert_eq!(row(own.as_str()), Ok(()));
+        assert!(row(other.as_str()).is_err());
+        assert!(row("not-a-key").is_err());
     }
 
     #[test]

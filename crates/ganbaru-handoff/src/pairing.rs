@@ -231,6 +231,14 @@ fn validate_pinned_endpoint(label: &str, endpoint: &str) -> Result<(), String> {
         .map_err(|error| format!("{label} is refused: {error}"))
 }
 
+/// Why this device unlinked itself without the person asking.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum UnlinkReason {
+    /// Its protected private keys can no longer be opened, so it must link again with new keys.
+    KeyProtectionLost,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct RevokedPeer {
@@ -253,6 +261,9 @@ struct PairingStateFile {
     coordinator: Option<CoordinatorPin>,
     #[serde(default)]
     revoked_by_coordinator: bool,
+    /// Set when this device unlinked itself; cleared by the next link.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    unlink_reason: Option<UnlinkReason>,
     #[serde(default)]
     replica_ready: bool,
     #[serde(default)]
@@ -410,6 +421,7 @@ impl PairingManager {
                 revoked_peers: BTreeMap::new(),
                 coordinator: None,
                 revoked_by_coordinator: false,
+                unlink_reason: None,
                 replica_ready: false,
                 pending_acknowledgement: None,
                 outgoing_transfer: None,
@@ -724,6 +736,36 @@ impl PairingManager {
     }
 
     pub fn unlink(&self) -> Result<(), String> {
+        self.unlink_with(None)
+    }
+
+    /// Unlinks every peer and the coordinator because of `reason`, which stays recorded until
+    /// the next link so the device can tell the person why it is unlinked. Like [`Self::unlink`]
+    /// it waits for an active handoff to finish.
+    pub fn unlink_for(&self, reason: UnlinkReason) -> Result<(), String> {
+        self.unlink_with(Some(reason))
+    }
+
+    /// Why this device last unlinked itself, until it links again.
+    pub fn unlink_reason(&self) -> Result<Option<UnlinkReason>, String> {
+        let inner = self.lock()?;
+        Ok(initialized_state(&inner)?.unlink_reason)
+    }
+
+    /// Whether this device pins a coordinator or has linked peers.
+    pub fn has_links(&self) -> Result<bool, String> {
+        let inner = self.lock()?;
+        let state = initialized_state(&inner)?;
+        Ok(state.coordinator.is_some() || !state.linked_peers.is_empty())
+    }
+
+    /// Clears the cached TLS key, so the next [`Self::identity`] reads the key store again.
+    pub fn forget_cached_identity_key(&self) -> Result<(), String> {
+        self.lock()?.private_key = None;
+        Ok(())
+    }
+
+    fn unlink_with(&self, reason: Option<UnlinkReason>) -> Result<(), String> {
         let mut inner = self.lock()?;
         let previous = initialized_state(&inner)?.clone();
         if previous.pending_acknowledgement.is_some()
@@ -741,6 +783,7 @@ impl PairingManager {
         state.prune_discovery_keys();
         state.coordinator = None;
         state.revoked_by_coordinator = false;
+        state.unlink_reason = reason;
         state.replica_ready = false;
         state.completed_activation = None;
         if let Err(error) = persist_initialized_state(&inner) {
@@ -980,6 +1023,7 @@ impl PairingManager {
             charter,
         });
         state.revoked_by_coordinator = false;
+        state.unlink_reason = None;
         if let Err(error) = persist_initialized_state(&inner) {
             inner.state = Some(previous);
             return Err(error);

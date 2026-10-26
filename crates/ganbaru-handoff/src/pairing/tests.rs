@@ -1675,6 +1675,62 @@ fn a_lost_tls_key_blocks_a_linked_device_until_it_is_unlinked() {
 }
 
 #[test]
+fn a_device_unlinked_for_lost_key_protection_keeps_the_reason_until_it_links_again() {
+    use crate::key_wrap::{
+        KeyWrapper, ProtectedIdentityKeyStore, TestKeyWrapper, linking_key_alias,
+    };
+    let (phone_root, phone, invitation, certificate) = linked_phone("protection-lost");
+    let wrapper = Arc::new(TestKeyWrapper::default());
+    let keys = phone_root.path().join("linking");
+    phone
+        .set_identity_key_store(Arc::new(ProtectedIdentityKeyStore::new(
+            keys.clone(),
+            wrapper.clone(),
+        )))
+        .expect("key store");
+    let (_, original) = phone.identity().expect("identity");
+    assert!(!state_text(phone_root.path()).contains("privateKey"));
+    assert!(phone.has_links().expect("links"));
+
+    phone
+        .unlink_for(UnlinkReason::KeyProtectionLost)
+        .expect("unlink");
+    wrapper
+        .forget(&linking_key_alias("device-phone"))
+        .expect("forget");
+    crate::key_wrap::remove_key_file(
+        &ProtectedIdentityKeyStore::new(keys.clone(), wrapper.clone()).path("device-phone"),
+    )
+    .expect("remove key");
+    phone
+        .forget_cached_identity_key()
+        .expect("forget cached key");
+    assert!(!phone.has_links().expect("links"));
+
+    let restarted = PairingManager::default();
+    restarted
+        .set_identity_key_store(Arc::new(ProtectedIdentityKeyStore::new(
+            keys,
+            wrapper.clone(),
+        )))
+        .expect("key store");
+    restarted
+        .initialize(phone_root.path().to_path_buf(), "device-phone".to_string())
+        .expect("restart");
+    assert_eq!(
+        restarted.unlink_reason().expect("reason"),
+        Some(UnlinkReason::KeyProtectionLost)
+    );
+    let (_, replaced) = restarted.identity().expect("fresh identity");
+    assert_ne!(replaced.certificate, original.certificate);
+
+    restarted
+        .record_coordinator(&invitation, &certificate, None)
+        .expect("link again");
+    assert_eq!(restarted.unlink_reason().expect("reason"), None);
+}
+
+#[test]
 fn an_unreadable_key_store_reports_the_failure_without_replacing_the_identity() {
     let temporary = TestDirectory::new("key-store-unreadable");
     let store = Arc::new(MemoryKeyStore::default());

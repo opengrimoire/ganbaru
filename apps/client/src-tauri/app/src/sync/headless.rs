@@ -1,8 +1,9 @@
 //! Android background sync: the JNI entry Android's WorkManager worker calls to run one headless
-//! pass, the coordinator records its network service discovery browse hands to the dialer, and
-//! the scheduling state the app sends to the background sync plugin.
+//! pass, the JNI entry that registers the Android Keystore bridge, the coordinator records its
+//! network service discovery browse hands to the dialer, and the scheduling state the app sends
+//! to the background sync plugin.
 //!
-//! Everything except the JNI symbol and the plugin call is platform-neutral, so desktop tests
+//! Everything except the JNI symbols and the plugin call is platform-neutral, so desktop tests
 //! cover the input bounds, record validation, outcome mapping, and panic containment.
 
 #![allow(
@@ -408,6 +409,33 @@ pub extern "system" fn native_sync_run_pass<'local>(
             std::mem::forget(payload);
             std::ptr::null_mut()
         }
+    }
+}
+
+/// JNI entry of Kotlin's static `SyncNative.registerKeystore(SyncKeystore)`. It keeps the
+/// Kotlin object that seals device-local key files with the Android Keystore, so the app and a
+/// background pass reach the same platform key.
+#[cfg(target_os = "android")]
+// SAFETY: The unique symbol matches Kotlin's static registerKeystore(SyncKeystore): Unit in
+// org.opengrimoire.ganbaru.mobile.sync.SyncNative per the JNI naming rules. The parameters use
+// the jni crate's transparent wrappers for JNIEnv*, jclass, and jobject, and the function
+// returns nothing, so the ABI matches the JNI signature. The object is kept only through a
+// global reference the jni crate creates. Every panic, including a panic-on-drop payload, is
+// contained before returning to Java.
+#[unsafe(export_name = "Java_org_opengrimoire_ganbaru_mobile_sync_SyncNative_registerKeystore")]
+pub extern "system" fn native_sync_register_keystore<'local>(
+    mut env: jni::JNIEnv<'local>,
+    _class: jni::objects::JClass<'local>,
+    keystore: jni::objects::JObject<'local>,
+) {
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        if let Err(error) = super::key_protection::android::register(&mut env, &keystore) {
+            eprintln!("background sync: register the key store: {error}");
+        }
+    }));
+    if let Err(payload) = result {
+        // A panic payload can itself panic on drop. Keep unwinding out of JNI.
+        std::mem::forget(payload);
     }
 }
 

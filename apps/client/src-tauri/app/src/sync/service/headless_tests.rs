@@ -172,9 +172,10 @@ async fn hub_vault(
         .expect("found hub space");
     let mut writer = create_writer(
         &SyncFiles::new(directory.join("sync"), VAULT_ID).expect("hub sync files"),
-        &FileKeyStore {
-            directory: directory.join("keys"),
-        },
+        &FileKeyStore::new(
+            directory.join("keys"),
+            crate::sync::key_protection::test_wrapper(),
+        ),
         SuccessorPlan::default(),
         &anchor.device,
         COORDINATOR_DEVICE,
@@ -276,9 +277,13 @@ async fn phone_vault(
     drop(pool);
     registry.close_all().await.expect("close phone pools");
     let key_path = crate::contacts::identity::person_key_path_in(config_dir, VAULT_ID);
-    std::fs::create_dir_all(key_path.parent().expect("key directory"))
-        .expect("create key directory");
-    std::fs::write(&key_path, person_pkcs8).expect("store person key");
+    crate::contacts::identity::write_key_file(
+        crate::sync::key_protection::test_wrapper().as_ref(),
+        &key_path,
+        VAULT_ID,
+        person_pkcs8,
+    )
+    .expect("store person key");
     database
 }
 

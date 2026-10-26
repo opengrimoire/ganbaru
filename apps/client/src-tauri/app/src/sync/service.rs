@@ -985,6 +985,7 @@ impl ServiceState {
             }
             Err(error) => {
                 eprintln!("sync: {error}");
+                unlink_if_key_protection_lost(host, &error).await;
                 view.state = SyncState::Error;
                 view.last_error = Some(error);
                 Next::Retry
@@ -2654,6 +2655,38 @@ pub(crate) fn enrollment_sealer<R: Runtime>(
 /// Device-local sync files of a vault.
 pub(crate) fn sync_files<H: SyncHost>(host: &H, vault_id: &str) -> Result<SyncFiles, String> {
     host.sync_files(vault_id)
+}
+
+/// Unlinks this device when a pass failed because a sealed key file can no longer be opened,
+/// so the device enrolls again with fresh keys instead of retrying a key it cannot recover. A
+/// host without file keys, or a device that is not linked, is left as it is.
+async fn unlink_if_key_protection_lost<H: SyncHost>(host: &H, error: &str) {
+    if !ganbaru_handoff::key_wrap::is_key_protection_lost(error) {
+        return;
+    }
+    let Some(wrapper) = host.key_wrapper() else {
+        return;
+    };
+    let pairing = host.pairing();
+    let result = match host.config_dir() {
+        Ok(config_dir) => {
+            blocking(move || {
+                if !pairing.has_links()? {
+                    return Ok(());
+                }
+                super::key_protection::unlink_after_key_loss(
+                    &config_dir,
+                    &pairing,
+                    wrapper.as_ref(),
+                )
+            })
+            .await
+        }
+        Err(error) => Err(error),
+    };
+    if let Err(error) = result {
+        eprintln!("sync: unlink after losing protected keys: {error}");
+    }
 }
 
 /// Owned names of engine-reported domain tables.

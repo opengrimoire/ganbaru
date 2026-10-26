@@ -11,6 +11,7 @@ pub(crate) mod devices;
 #[cfg(any(target_os = "android", test))]
 pub(crate) mod headless;
 mod host;
+pub(crate) mod key_protection;
 mod recovery;
 mod service;
 mod status;

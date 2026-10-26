@@ -4,7 +4,11 @@ import android.util.Log
 import org.json.JSONException
 import org.json.JSONObject
 
-/** The Rust background pass entry, loaded on demand when WorkManager starts the process. */
+/**
+ * The Rust background pass entry, loaded on demand when WorkManager starts the process. Loading
+ * also registers [SyncKeystore] with Rust, so the app and a background pass seal key files with the
+ * same Android Keystore keys.
+ */
 internal object SyncNative {
   /** The Rust library name, which the Android project check matches against the Cargo library name. */
   const val NATIVE_LIBRARY = "ganbaru_lib"
@@ -13,15 +17,30 @@ internal object SyncNative {
   private val loaded: Boolean by lazy {
     try {
       System.loadLibrary(NATIVE_LIBRARY)
-      true
     } catch (error: UnsatisfiedLinkError) {
       Log.e(TAG, "Native background sync is not available", error)
-      false
+      return@lazy false
     } catch (error: SecurityException) {
       Log.e(TAG, "Native background sync could not be loaded", error)
-      false
+      return@lazy false
     }
+    try {
+      registerKeystore(SyncKeystore)
+    } catch (error: LinkageError) {
+      Log.e(TAG, "Native key protection is not linked", error)
+    }
+    true
   }
+
+  /** Hands Rust the object that seals device-local key files with the Android Keystore. */
+  @JvmStatic
+  external fun registerKeystore(keystore: SyncKeystore)
+
+  /**
+   * Loads the library and registers the key store bridge once per process. The plugin calls it
+   * when the app starts, before Rust needs a sealed key; returns whether the library loaded.
+   */
+  fun ensureLoaded(): Boolean = loaded
 
   /**
    * Runs one headless pass for the app config directory with optional discovered records JSON

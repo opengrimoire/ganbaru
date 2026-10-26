@@ -142,7 +142,11 @@ fn comment_rows_round_trip_and_receivers_fill_their_pages() {
             "first 0-5"
         );
         assert_eq!(
-            single(reader, "SELECT emoji || ' ' || sync_key FROM notes_comment_reactions").await,
+            single(
+                reader,
+                "SELECT emoji || ' ' || sync_key FROM notes_comment_reactions"
+            )
+            .await,
             format!(
                 "+1 {}",
                 derived_key(REACTION_KEY_PREFIX, &["comment-a", PERSON, "+1"]).unwrap()
@@ -394,7 +398,10 @@ fn a_suggestion_accept_and_a_concurrent_block_edit_both_apply() {
             ),
         )
         .await;
-        assert!(["later", "second edited"].contains(&text.as_str()), "{text}");
+        assert!(
+            ["later", "second edited"].contains(&text.as_str()),
+            "{text}"
+        );
         for replica in replicas.iter_mut() {
             assert_eq!(
                 suggestion_status(replica).await,
@@ -431,11 +438,9 @@ fn a_crash_while_sealing_or_applying_comment_rows_leaves_nothing_partial() {
         let mut replicas = shared(2, "").await;
         replicas[0].exec(&comments_sql()).await;
         for name in ["seal.reserve", "seal.before_commit"] {
-            let report = after_rollback(
-                &mut replicas[0],
-                name,
-                async |r: &mut Replica| r.seal().await,
-            )
+            let report = after_rollback(&mut replicas[0], name, async |r: &mut Replica| {
+                r.seal().await
+            })
             .await;
             assert_eq!(report.sealed_ops, 1, "{name}: the rows seal together");
             if name == "seal.reserve" {

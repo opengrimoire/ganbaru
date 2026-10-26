@@ -19,8 +19,8 @@ use crate::validation::plain_text_from_payload;
 use ganbaru_sync::manifest::TableSpec;
 use ganbaru_sync::manifest::vault::notes::{
     ANCHORS_TABLE, BLOCKS_TABLE, COMMENTS_TABLE, DATA_SOURCES_TABLE, DATABASES_TABLE, DOMAIN,
-    OPTIONS_TABLE, PAGES_TABLE, REACTIONS_TABLE, SUGGESTIONS_TABLE, THREADS_TABLE,
-    PROPERTIES_TABLE, RELATION_EDGES_TABLE, VALUES_TABLE, value_group,
+    OPTIONS_TABLE, PAGES_TABLE, PROPERTIES_TABLE, REACTIONS_TABLE, RELATION_EDGES_TABLE,
+    SUGGESTIONS_TABLE, THREADS_TABLE, VALUES_TABLE, value_group,
 };
 use ganbaru_sync::{ChangeSink, HookError, HookFuture, Hooks, MaterializeHook};
 use serde_json::Value;

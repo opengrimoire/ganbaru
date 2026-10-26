@@ -914,7 +914,8 @@ mod tests {
     #[test]
     fn comment_threads_anchors_and_suggestions_mirror_the_table_checks() {
         let adapter = NotesAdapter;
-        let check = |table, group, fields: Vec<Field>| adapter.validate(table, group, &value(fields));
+        let check =
+            |table, group, fields: Vec<Field>| adapter.validate(table, group, &value(fields));
         let created = |kind: &str, page: Field, block: Field| {
             check(
                 THREADS_TABLE,
@@ -975,7 +976,13 @@ mod tests {
             check(
                 SUGGESTIONS_TABLE,
                 suggestion_group::STATUS,
-                vec![t(status), accepted.clone(), accepted, rejected.clone(), rejected],
+                vec![
+                    t(status),
+                    accepted.clone(),
+                    accepted,
+                    rejected.clone(),
+                    rejected,
+                ],
             )
         };
         decision(SUGGESTION_OPEN, Field::Null, Field::Null).unwrap();
@@ -988,15 +995,20 @@ mod tests {
     #[test]
     fn a_deleted_comment_and_an_accepted_suggestion_outrank_their_alternatives() {
         let adapter = NotesAdapter;
-        let deleted = |at: Field| {
-            adapter.priority(COMMENTS_TABLE, comment_group::DELETED, &value(vec![at]))
-        };
+        let deleted =
+            |at: Field| adapter.priority(COMMENTS_TABLE, comment_group::DELETED, &value(vec![at]));
         assert!(deleted(t("now")) > deleted(Field::Null));
         let decided = |status: &str| {
             adapter.priority(
                 SUGGESTIONS_TABLE,
                 suggestion_group::STATUS,
-                &value(vec![t(status), Field::Null, Field::Null, Field::Null, Field::Null]),
+                &value(vec![
+                    t(status),
+                    Field::Null,
+                    Field::Null,
+                    Field::Null,
+                    Field::Null,
+                ]),
             )
         };
         assert!(decided(SUGGESTION_ACCEPTED) > decided(SUGGESTION_REJECTED));

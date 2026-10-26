@@ -1459,10 +1459,7 @@ pub const REACTIONS: TableSpec = TableSpec {
         register(
             reaction_group::CREATED,
             "created",
-            &[
-                CREATED_TIME,
-                optional_text("display_name", MAX_TEXT_CHARS),
-            ],
+            &[CREATED_TIME, optional_text("display_name", MAX_TEXT_CHARS)],
         ),
         exists(reaction_group::EXISTS),
     ],

@@ -91,6 +91,10 @@ export interface SyncStatusView {
   connection: SyncConnectionView | null;
   /** Why connectivity is degraded, without repeats. */
   degraded: SyncDegradedReason[];
+  /** Changes this device made that the anchor has not confirmed storing yet. */
+  unconfirmed: number;
+  /** When the oldest unconfirmed change was made, in Unix milliseconds. */
+  oldestUnconfirmedAtMs: number | null;
 }
 
 export interface SyncDeviceRef {
@@ -134,7 +138,120 @@ export const OFF_SYNC_STATUS: SyncStatusView = {
   uncountedDevices: [],
   connection: null,
   degraded: [],
+  unconfirmed: 0,
+  oldestUnconfirmedAtMs: null,
 };
+
+export const SYNC_DEVICE_KINDS = ["desktop", "mobile"] as const;
+export type SyncDeviceKind = (typeof SYNC_DEVICE_KINDS)[number];
+
+export const SYNC_AUTHORITY_ROLES = ["admin", "member"] as const;
+export type SyncAuthorityRole = (typeof SYNC_AUTHORITY_ROLES)[number];
+
+/** A device enrolled in the vault's sync space. */
+export interface SyncAuthorityDevice {
+  device: SyncDeviceRef;
+  kind: SyncDeviceKind;
+  role: SyncAuthorityRole;
+  enrolledRevision: number;
+  /** Set once the anchor sequenced the device's removal. */
+  removedRevision: number | null;
+  /** Whether this installation quarantined the device. */
+  quarantined: boolean;
+  /** Whether the device is the anchor that orders membership and role changes. */
+  anchor: boolean;
+}
+
+/** The authorization state of the vault's sync space as this device last applied it. */
+export interface SyncAuthorityView {
+  anchorDeviceId: string;
+  epoch: number;
+  revision: number;
+  /** Whether the space stopped accepting changes until a handover settles. */
+  frozen: boolean;
+  /** Whether this device is an admin desktop that holds its admin key. */
+  ownIsAdmin: boolean;
+  devices: SyncAuthorityDevice[];
+}
+
+export const SYNC_PROPOSAL_CHANGES = [
+  "enroll",
+  "remove",
+  "makeAdmin",
+  "makeMember",
+  "replaceRecoveryKit",
+  "resolveLate",
+  "handover",
+  "unknown",
+] as const;
+export type SyncProposalChange = (typeof SYNC_PROPOSAL_CHANGES)[number];
+
+export const SYNC_OUTBOX_STATES = ["pending", "held", "rejected"] as const;
+export type SyncOutboxState = (typeof SYNC_OUTBOX_STATES)[number];
+
+/** Why the anchor refused a proposal, by the stable names the native side reports. */
+export const SYNC_PROPOSAL_REJECTIONS = [
+  "not_anchor",
+  "wrong_space",
+  "not_admin",
+  "malformed",
+  "unsupported_entry",
+  "already_enrolled",
+  "unknown_device",
+  "device_removed",
+  "names_anchor",
+  "admin_not_desktop",
+  "last_admin",
+  "unknown_removal",
+  "handover_conflict",
+  "epoch_frozen",
+  "catching_up",
+] as const;
+export type SyncProposalRejection = (typeof SYNC_PROPOSAL_REJECTIONS)[number];
+
+/** A proposal this device made that waits for the anchor or that the anchor refused. */
+export interface SyncOutboxEntry {
+  change: SyncProposalChange;
+  /** Device the change names, when it names one. */
+  target: SyncDeviceRef | null;
+  createdAtMs: number;
+  state: SyncOutboxState;
+  /** Set only on a rejected proposal. */
+  rejection: SyncProposalRejection | null;
+}
+
+export const SYNC_LATE_KINDS = ["values", "tombstone", "created"] as const;
+export type SyncLateKind = (typeof SYNC_LATE_KINDS)[number];
+
+/** A row a removed device changed after its removal, waiting for an admin to decide. */
+export interface SyncLateChange {
+  removalRevision: number;
+  /** The removed device. */
+  device: SyncDeviceRef;
+  table: string;
+  rowKey: string;
+  kind: SyncLateKind;
+  title: string;
+  preview: string;
+  /** When the newest late value was written; null for a deletion. */
+  changedAtMs: number | null;
+  /** Whether this device already proposed a decision the anchor has not sequenced yet. */
+  decisionPending: boolean;
+}
+
+export interface SyncLateChangeTarget {
+  removalRevision: number;
+  table: string;
+  rowKey: string;
+}
+
+/** A recovery kit this desktop holds until the user confirms saving it. */
+export interface SyncPendingRecoveryKit {
+  /** The grouped kit code with its checksum. */
+  code: string;
+  /** Whether the vault already trusts the kit; a regenerated kit waits for the anchor. */
+  active: boolean;
+}
 
 function readConnection(value: unknown, label: string): SyncConnectionView {
   const row = readRecord(value, label);
@@ -196,7 +313,94 @@ export function mapSyncStatus(value: unknown): SyncStatusView {
     uncountedDevices: readArray(row.uncountedDevices, "sync status.uncountedDevices", readUncountedDevice),
     connection: readNullable(row.connection, "sync status.connection", readConnection),
     degraded: readDegradedReasons(row.degraded, "sync status.degraded"),
+    unconfirmed: readNonNegativeSafeInteger(row.unconfirmed, "sync status.unconfirmed"),
+    oldestUnconfirmedAtMs: readNullable(
+      row.oldestUnconfirmedAtMs,
+      "sync status.oldestUnconfirmedAtMs",
+      readNonNegativeSafeInteger,
+    ),
   };
+}
+
+function readAuthorityDevice(value: unknown, label: string): SyncAuthorityDevice {
+  const row = readRecord(value, label);
+  return {
+    device: mapSyncDeviceRef(row.device, `${label}.device`),
+    kind: readEnum(row.kind, SYNC_DEVICE_KINDS, `${label}.kind`),
+    role: readEnum(row.role, SYNC_AUTHORITY_ROLES, `${label}.role`),
+    enrolledRevision: readNonNegativeSafeInteger(row.enrolledRevision, `${label}.enrolledRevision`),
+    removedRevision: readNullable(row.removedRevision, `${label}.removedRevision`, readNonNegativeSafeInteger),
+    quarantined: readBoolean(row.quarantined, `${label}.quarantined`),
+    anchor: readBoolean(row.anchor, `${label}.anchor`),
+  };
+}
+
+/** Validates the authorization state of the vault's sync space from the native side. */
+export function mapSyncAuthority(value: unknown): SyncAuthorityView {
+  const row = readRecord(value, "sync authority");
+  const view: SyncAuthorityView = {
+    anchorDeviceId: readString(row.anchorDeviceId, "sync authority.anchorDeviceId"),
+    epoch: readNonNegativeSafeInteger(row.epoch, "sync authority.epoch"),
+    revision: readNonNegativeSafeInteger(row.revision, "sync authority.revision"),
+    frozen: readBoolean(row.frozen, "sync authority.frozen"),
+    ownIsAdmin: readBoolean(row.ownIsAdmin, "sync authority.ownIsAdmin"),
+    devices: readArray(row.devices, "sync authority.devices", readAuthorityDevice),
+  };
+  const ids = view.devices.map((entry) => entry.device.deviceId);
+  if (new Set(ids).size !== ids.length) throw new Error("sync authority.devices must not repeat a device");
+  if (view.devices.filter((entry) => entry.anchor).length > 1) {
+    throw new Error("sync authority.devices must have at most one anchor");
+  }
+  return view;
+}
+
+/** Validates an outbox entry from the native side. */
+export function mapSyncOutboxEntry(value: unknown, label: string): SyncOutboxEntry {
+  const row = readRecord(value, label);
+  const state = readEnum(row.state, SYNC_OUTBOX_STATES, `${label}.state`);
+  const rejection = readNullable(row.rejection, `${label}.rejection`, (reason, reasonLabel) =>
+    readEnum(reason, SYNC_PROPOSAL_REJECTIONS, reasonLabel),
+  );
+  if ((state === "rejected") !== (rejection !== null)) {
+    throw new Error(`${label}.rejection must be set exactly when the proposal was rejected`);
+  }
+  return {
+    change: readEnum(row.change, SYNC_PROPOSAL_CHANGES, `${label}.change`),
+    target: readNullable(row.target, `${label}.target`, mapSyncDeviceRef),
+    createdAtMs: readNonNegativeSafeInteger(row.createdAtMs, `${label}.createdAtMs`),
+    state,
+    rejection,
+  };
+}
+
+/** Validates a late change from the native side. */
+export function mapSyncLateChange(value: unknown, label: string): SyncLateChange {
+  const row = readRecord(value, label);
+  return {
+    removalRevision: readNonNegativeSafeInteger(row.removalRevision, `${label}.removalRevision`),
+    device: mapSyncDeviceRef(row.device, `${label}.device`),
+    table: readString(row.table, `${label}.table`),
+    rowKey: readString(row.rowKey, `${label}.rowKey`),
+    kind: readEnum(row.kind, SYNC_LATE_KINDS, `${label}.kind`),
+    title: readString(row.title, `${label}.title`),
+    preview: readString(row.preview, `${label}.preview`),
+    changedAtMs: readNullable(row.changedAtMs, `${label}.changedAtMs`, readNonNegativeSafeInteger),
+    decisionPending: readBoolean(row.decisionPending, `${label}.decisionPending`),
+  };
+}
+
+/** Validates a pending recovery kit from the native side. */
+export function mapSyncPendingRecoveryKit(value: unknown, label: string): SyncPendingRecoveryKit {
+  const row = readRecord(value, label);
+  const code = readString(row.code, `${label}.code`);
+  if (code.trim().length === 0) throw new Error(`${label}.code must not be empty`);
+  return { code, active: readBoolean(row.active, `${label}.active`) };
+}
+
+function readKitCode(value: unknown, label: string): string {
+  const code = readString(value, label);
+  if (code.trim().length === 0) throw new Error(`${label} must not be empty`);
+  return code;
 }
 
 /** Validates a device reference from the native side. */
@@ -259,6 +463,97 @@ export async function restoreSyncRecovery(target: SyncRecoveryTarget): Promise<s
 
 export async function discardSyncRecovery(target: SyncRecoveryTarget): Promise<void> {
   await invoke("sync_recovery_discard", { target });
+}
+
+/** The authorization state of the active vault's sync space, or null before it joined one. */
+export async function getSyncAuthority(): Promise<SyncAuthorityView | null> {
+  return readNullable(await invoke<unknown>("sync_authority"), "sync authority", (value) => mapSyncAuthority(value));
+}
+
+/** Proposals this device made that wait for the anchor or that it refused, newest first. */
+export async function listSyncOutbox(): Promise<SyncOutboxEntry[]> {
+  return readArray(await invoke<unknown>("sync_outbox_list"), "sync outbox", mapSyncOutboxEntry);
+}
+
+/** Rows removed devices changed after their removal that no admin decided yet. */
+export async function listSyncLateChanges(): Promise<SyncLateChange[]> {
+  return readArray(await invoke<unknown>("sync_late_changes"), "sync late changes", mapSyncLateChange);
+}
+
+/** On an admin desktop, keeps a late change and proposes the decision to the anchor. */
+export async function restoreSyncLateChange(target: SyncLateChangeTarget): Promise<void> {
+  await invoke("sync_late_change_restore", { target });
+}
+
+/** On an admin desktop, proposes discarding a late change for good. */
+export async function discardSyncLateChange(target: SyncLateChangeTarget): Promise<void> {
+  await invoke("sync_late_change_discard", { target });
+}
+
+/** On an admin desktop, proposes removing another device from the vault. */
+export async function removeSyncDevice(deviceId: string): Promise<void> {
+  await invoke("sync_remove_device", { deviceId });
+}
+
+/** Stops accepting a device's connections and changes on this installation at once. */
+export async function quarantineSyncDevice(deviceId: string): Promise<void> {
+  await invoke("sync_quarantine_device", { deviceId });
+}
+
+/** Lifts a quarantine on this installation. */
+export async function liftSyncQuarantine(deviceId: string): Promise<void> {
+  await invoke("sync_quarantine_lift", { deviceId });
+}
+
+/** On a linked admin desktop, takes the anchor in a planned handover and returns its revision. */
+export async function takeSyncAnchor(): Promise<number> {
+  return readNonNegativeSafeInteger(await invoke<unknown>("sync_take_anchor"), "handover revision");
+}
+
+/** On the coordinating desktop, proposes making a linked desktop an admin. */
+export async function promoteSyncDevice(deviceId: string): Promise<void> {
+  await invoke("sync_promote_device", { deviceId });
+}
+
+/** Replaces the recovery kit on an admin desktop and returns the new code, shown once. */
+export async function regenerateSyncRecoveryKit(): Promise<string> {
+  return readKitCode(await invoke<unknown>("sync_regenerate_recovery_kit"), "recovery kit code");
+}
+
+/** The recovery kit this admin desktop holds until the user confirms saving it, or null. */
+export async function getPendingSyncRecoveryKit(): Promise<SyncPendingRecoveryKit | null> {
+  return readNullable(
+    await invoke<unknown>("sync_recovery_kit_pending"),
+    "pending recovery kit",
+    mapSyncPendingRecoveryKit,
+  );
+}
+
+/** Deletes the recovery seed from this desktop after the user saved the kit. */
+export async function confirmSyncRecoveryKitSaved(): Promise<void> {
+  await invoke("sync_recovery_kit_saved");
+}
+
+/** Proposes making this enrolled desktop an admin with a recovery kit code. */
+export async function useSyncRecoveryKit(code: string): Promise<void> {
+  await invoke("sync_use_recovery_kit", { code });
+}
+
+/** On the coordinating desktop, unlinks every device and starts sync over from current data. */
+export async function resetSyncState(): Promise<void> {
+  await invoke("sync_reset_state");
+}
+
+/**
+ * Asks where to save the recovery kit as a text file and writes it.
+ *
+ * @returns Whether the user picked a file.
+ */
+export async function saveSyncRecoveryKitFile(defaultName: string, contents: string): Promise<boolean> {
+  return readBoolean(
+    await invoke<unknown>("vault_pick_and_write_recovery_kit", { defaultName, contents }),
+    "recovery kit saved",
+  );
 }
 
 type SyncNoticeListener = (notice: SyncNotice) => void;

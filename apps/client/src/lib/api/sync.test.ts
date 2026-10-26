@@ -1,13 +1,27 @@
 import { describe, expect, it, vi } from "vitest";
 import { invoke } from "@tauri-apps/api/core";
 import {
+  discardSyncLateChange,
+  getPendingSyncRecoveryKit,
+  getSyncAuthority,
   listenSyncApplied,
   listenSyncStatus,
+  listSyncLateChanges,
+  listSyncOutbox,
   listSyncRecovery,
+  mapSyncAuthority,
+  mapSyncLateChange,
   mapSyncNotice,
+  mapSyncOutboxEntry,
+  mapSyncPendingRecoveryKit,
   mapSyncStatus,
   OFF_SYNC_STATUS,
+  regenerateSyncRecoveryKit,
+  removeSyncDevice,
+  restoreSyncLateChange,
   restoreSyncRecovery,
+  saveSyncRecoveryKitFile,
+  takeSyncAnchor,
 } from "./sync";
 
 const channels = vi.hoisted(() => [] as { onmessage: (value: unknown) => void }[]);
@@ -39,6 +53,8 @@ function validStatus(): Record<string, unknown> {
     uncountedDevices: [{ device: { deviceId: "device-c", deviceLabel: "Old phone", ownDevice: false }, standing: "dormant" }],
     connection: { network: "lan", address: "192.168.1.20:43821" },
     degraded: ["localNetworkDenied"],
+    unconfirmed: 3,
+    oldestUnconfirmedAtMs: 500,
   };
 }
 
@@ -60,6 +76,8 @@ describe("sync API boundary", () => {
       uncountedDevices: [{ device: { deviceId: "device-c", deviceLabel: "Old phone", ownDevice: false }, standing: "dormant" }],
       connection: { network: "lan", address: "192.168.1.20:43821" },
       degraded: ["localNetworkDenied"],
+      unconfirmed: 3,
+      oldestUnconfirmedAtMs: 500,
     });
   });
 
@@ -215,5 +233,154 @@ describe("sync API boundary", () => {
     vi.mocked(invoke).mockResolvedValueOnce("note-9");
     await expect(restoreSyncRecovery({ table: "quick_notes", rowKey: "note-1" })).resolves.toBe("note-9");
     expect(invoke).toHaveBeenLastCalledWith("sync_recovery_restore", { target: { table: "quick_notes", rowKey: "note-1" } });
+  });
+
+  it("rejects malformed unconfirmed counts", () => {
+    expect(() => mapSyncStatus({ ...validStatus(), unconfirmed: -1 })).toThrow();
+    expect(() => mapSyncStatus({ ...validStatus(), unconfirmed: undefined })).toThrow();
+    expect(() => mapSyncStatus({ ...validStatus(), oldestUnconfirmedAtMs: "yesterday" })).toThrow();
+  });
+});
+
+function validDevice(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    device: { deviceId: "device-a", deviceLabel: "Desk", ownDevice: true },
+    kind: "desktop",
+    role: "admin",
+    enrolledRevision: 1,
+    removedRevision: null,
+    quarantined: false,
+    anchor: true,
+    ...overrides,
+  };
+}
+
+function validAuthority(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    anchorDeviceId: "device-a",
+    epoch: 1,
+    revision: 4,
+    frozen: false,
+    ownIsAdmin: true,
+    devices: [
+      validDevice(),
+      validDevice({
+        device: { deviceId: "device-b", deviceLabel: null, ownDevice: false },
+        kind: "mobile",
+        role: "member",
+        enrolledRevision: 2,
+        removedRevision: 4,
+        quarantined: true,
+        anchor: false,
+      }),
+    ],
+    ...overrides,
+  };
+}
+
+function validLateChange(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    removalRevision: 4,
+    device: { deviceId: "device-b", deviceLabel: null, ownDevice: false },
+    table: "quick_notes",
+    rowKey: "note-1",
+    kind: "values",
+    title: "Plan",
+    preview: "Start",
+    changedAtMs: 3_000,
+    decisionPending: false,
+    ...overrides,
+  };
+}
+
+describe("sync authority API boundary", () => {
+  it("maps the authority state with every device field", async () => {
+    vi.mocked(invoke).mockResolvedValueOnce(validAuthority());
+    const authority = await getSyncAuthority();
+    expect(authority?.devices[1]).toEqual({
+      device: { deviceId: "device-b", deviceLabel: null, ownDevice: false },
+      kind: "mobile",
+      role: "member",
+      enrolledRevision: 2,
+      removedRevision: 4,
+      quarantined: true,
+      anchor: false,
+    });
+    expect(authority?.ownIsAdmin).toBe(true);
+    vi.mocked(invoke).mockResolvedValueOnce(null);
+    await expect(getSyncAuthority()).resolves.toBeNull();
+  });
+
+  it("rejects malformed authority states", () => {
+    expect(() => mapSyncAuthority(validAuthority({ frozen: "no" }))).toThrow();
+    expect(() => mapSyncAuthority(validAuthority({ devices: [validDevice({ role: "owner" })] }))).toThrow();
+    expect(() => mapSyncAuthority(validAuthority({ devices: [validDevice({ kind: "tablet" })] }))).toThrow();
+    expect(() => mapSyncAuthority(validAuthority({ devices: [validDevice({ removedRevision: -1 })] }))).toThrow();
+    expect(() => mapSyncAuthority(validAuthority({ devices: [validDevice(), validDevice()] }))).toThrow();
+    expect(() =>
+      mapSyncAuthority(validAuthority({
+        devices: [validDevice(), validDevice({ device: { deviceId: "device-c", deviceLabel: null, ownDevice: false } })],
+      })),
+    ).toThrow();
+  });
+
+  it("maps outbox entries and ties the rejection reason to the rejected state", async () => {
+    const target = { deviceId: "device-b", deviceLabel: "Phone", ownDevice: false };
+    vi.mocked(invoke).mockResolvedValueOnce([
+      { change: "remove", target, createdAtMs: 9, state: "rejected", rejection: "last_admin" },
+      { change: "replaceRecoveryKit", target: null, createdAtMs: 8, state: "pending", rejection: null },
+      { change: "handover", target: null, createdAtMs: 7, state: "held", rejection: null },
+    ]);
+    const entries = await listSyncOutbox();
+    expect(entries.map((entry) => [entry.change, entry.state, entry.rejection])).toEqual([
+      ["remove", "rejected", "last_admin"],
+      ["replaceRecoveryKit", "pending", null],
+      ["handover", "held", null],
+    ]);
+    expect(entries[0]?.target).toEqual(target);
+    expect(() => mapSyncOutboxEntry({ change: "remove", target: null, createdAtMs: 1, state: "rejected", rejection: null }, "entry")).toThrow();
+    expect(() => mapSyncOutboxEntry({ change: "remove", target: null, createdAtMs: 1, state: "pending", rejection: "not_admin" }, "entry")).toThrow();
+    expect(() => mapSyncOutboxEntry({ change: "remove", target: null, createdAtMs: 1, state: "rejected", rejection: "bad_luck" }, "entry")).toThrow();
+    expect(() => mapSyncOutboxEntry({ change: "rename", target: null, createdAtMs: 1, state: "pending", rejection: null }, "entry")).toThrow();
+  });
+
+  it("maps late changes, including a deletion without a time", async () => {
+    vi.mocked(invoke).mockResolvedValueOnce([validLateChange(), validLateChange({ kind: "tombstone", changedAtMs: null, decisionPending: true })]);
+    const changes = await listSyncLateChanges();
+    expect(changes[0]).toEqual({ ...validLateChange() });
+    expect(changes[1]).toMatchObject({ kind: "tombstone", changedAtMs: null, decisionPending: true });
+    expect(() => mapSyncLateChange(validLateChange({ kind: "moved" }), "late")).toThrow();
+    expect(() => mapSyncLateChange(validLateChange({ removalRevision: undefined }), "late")).toThrow();
+    expect(() => mapSyncLateChange(validLateChange({ decisionPending: 1 }), "late")).toThrow();
+  });
+
+  it("maps the pending recovery kit and refuses an empty code", async () => {
+    vi.mocked(invoke).mockResolvedValueOnce({ code: "ABCD-EFGH", active: true });
+    await expect(getPendingSyncRecoveryKit()).resolves.toEqual({ code: "ABCD-EFGH", active: true });
+    vi.mocked(invoke).mockResolvedValueOnce(null);
+    await expect(getPendingSyncRecoveryKit()).resolves.toBeNull();
+    expect(() => mapSyncPendingRecoveryKit({ code: " ", active: true }, "kit")).toThrow();
+    vi.mocked(invoke).mockResolvedValueOnce("");
+    await expect(regenerateSyncRecoveryKit()).rejects.toThrow();
+    vi.mocked(invoke).mockResolvedValueOnce("ABCD-EFGH");
+    await expect(regenerateSyncRecoveryKit()).resolves.toBe("ABCD-EFGH");
+  });
+
+  it("sends late change targets, device ids, and kit text with their native names", async () => {
+    vi.mocked(invoke).mockResolvedValue(undefined);
+    const target = { removalRevision: 4, table: "quick_notes", rowKey: "note-1" };
+    await restoreSyncLateChange(target);
+    expect(invoke).toHaveBeenLastCalledWith("sync_late_change_restore", { target });
+    await discardSyncLateChange(target);
+    expect(invoke).toHaveBeenLastCalledWith("sync_late_change_discard", { target });
+    await removeSyncDevice("device-b");
+    expect(invoke).toHaveBeenLastCalledWith("sync_remove_device", { deviceId: "device-b" });
+    vi.mocked(invoke).mockResolvedValueOnce(true);
+    await expect(saveSyncRecoveryKitFile("kit.txt", "code")).resolves.toBe(true);
+    expect(invoke).toHaveBeenLastCalledWith("vault_pick_and_write_recovery_kit", { defaultName: "kit.txt", contents: "code" });
+    vi.mocked(invoke).mockResolvedValueOnce("yes");
+    await expect(saveSyncRecoveryKitFile("kit.txt", "code")).rejects.toThrow();
+    vi.mocked(invoke).mockResolvedValueOnce(-1);
+    await expect(takeSyncAnchor()).rejects.toThrow();
   });
 });

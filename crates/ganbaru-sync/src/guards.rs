@@ -60,16 +60,29 @@ pub async fn guarded_tables(
     Ok(tables)
 }
 
+/// Name of the guard trigger of `action` on `table`.
+fn guard_name(table: &str, action: &str) -> String {
+    format!("sync_guard_{table}_{}", action.to_ascii_lowercase())
+}
+
+/// Whether this connection guards `table`, so a local edit of it outside apply aborts.
+pub(crate) async fn is_guarded_here(conn: &mut SqliteConnection, table: &str) -> SyncResult<bool> {
+    let found: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM sqlite_temp_master WHERE type = 'trigger' AND name = ?",
+    )
+    .bind(guard_name(table, "UPDATE"))
+    .fetch_one(&mut *conn)
+    .await?;
+    Ok(found > 0)
+}
+
 /// Statements creating the guards of one table.
 fn render_guards(table: &str) -> Vec<String> {
     let quoted_table = quote_identifier(table);
     GUARDED_ACTIONS
         .iter()
         .map(|action| {
-            let trigger = quote_identifier(&format!(
-                "sync_guard_{table}_{}",
-                action.to_ascii_lowercase()
-            ));
+            let trigger = quote_identifier(&guard_name(table, action));
             format!(
                 "CREATE TEMP TRIGGER IF NOT EXISTS {trigger} BEFORE {action} ON main.{quoted_table}
                  WHEN {OUTSIDE_APPLY}

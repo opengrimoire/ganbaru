@@ -55,7 +55,7 @@ Updated during the local session on the mini PC (2026-10-25). Milestone 8 step 4
 Progress snapshots are in `progress/`; their live copies were in the session scratch directory, so check each branch's log for later commits.
 
 1. `feat/sync-android-keystore` (pushed): milestone 11 step 7, head c0cc1f3c, all checks had passed. A fresh Opus security review (standing in for the external review) returned fix first; the fix round is `briefs/m11-step-7-fix-message.md` and has not started. Next: the fix round (it merges feat/sync first), a delta review, land. Open question for the maintainer: `androidx.test:runner:1.5.0` may be a new test-only dependency.
-2. `feat/sync-authority-ui`: milestone 11 step 8 (brief `briefs/m11-step-8-brief.md`). Running when this was written; check origin and the worktree for commits. Next: finish, fresh Opus review, land.
+2. Milestone 11 step 8 (authority UI) landed as merge e4b65518; its low review findings are in `briefs/m11-step-9-followups.md`.
 3. `feat/sync-notes-comments`: milestone 8 step 5 with the step 4 review follow-ups (briefs `m8-step-5-brief.md`, `m8-step-5-followups.md`). Running its final tests when this was written. Next: finish, fresh Opus review, land.
 
 Ready brief not started: `briefs/m9-step-5-brief.md` (Chat timeline, with step 4 follow-ups). Engine lows for the next engine step: `briefs/engine-next-followups.md`.

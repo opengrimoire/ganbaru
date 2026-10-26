@@ -217,3 +217,7 @@
 ### Milestone 11 step 7 security review (2026-10-25)
 
 - A fresh Opus security review stood in for the external review of the Keystore step and returned fix first. High: `UnrecoverableKeyException` was treated as permanent key loss although Android 12+ wraps transient errors in it, so one transient error unlinked the device and wiped key files; a 4-byte `GKWR` envelope panicked before the length check. Medium: deleting before unlinking was not crash safe, an unlinked phone with a lost key could not relink, and StrongBox fallback was too narrow. Low: JNI exception order, substring matching of remote error text that let a hostile coordinator trigger a wipe, an over-broad wipe across vaults, and missing host tests. The fix round is queued for the next free implementer slot. Whether `androidx.test:runner` is a new test-only dependency is still open; if it is new, it needs maintainer approval before release.
+
+### Milestone 11 step 8 (2026-10-25)
+
+- Authority UI landed (merge e4b65518). The review found no authorization hole and returned merge with follow-ups; the coordinator applied the three mediums before landing: the recovery kit file is written owner-only, quarantine on an admin desktop warns that it also proposes removal, and discarding a late change asks for confirmation. Lows go to step 9 (`briefs/m11-step-9-followups.md`). The Android bundle module limit rose from 1323 to 1329 for six new sync modules. The manual checklist for the new screens is in milestone 11's Progress entry for step 8.

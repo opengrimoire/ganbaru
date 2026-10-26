@@ -173,7 +173,7 @@ pub(crate) async fn plan_database_copy(
         schema_ids.insert(source.id.clone(), property_ids);
     }
     let source_views: Vec<String> = sqlx::query_scalar(
-        "SELECT id FROM notes_database_views WHERE database_id = ? ORDER BY sort_order, id LIMIT ?",
+        "SELECT id FROM notes_database_views WHERE database_id = ? ORDER BY order_key, id LIMIT ?",
     )
     .bind(&block.id)
     .bind((MAX_COPY_OBJECTS + 1) as i64)
@@ -290,8 +290,8 @@ pub(crate) async fn insert_database_copy(
         crate::property_storage::copy_data_source_properties(tx, source, id).await?;
     }
     for (source, id) in &copy.views {
-        sqlx::query("INSERT INTO notes_database_views (id, database_id, data_source_id, name, type, filter, sorts, configuration, sort_order)
-            SELECT ?, ?, ?, name, type, filter, sorts, configuration, sort_order FROM notes_database_views WHERE id = ?")
+        sqlx::query("INSERT INTO notes_database_views (id, database_id, data_source_id, name, type, filter, sorts, configuration, order_key)
+            SELECT ?, ?, ?, name, type, filter, sorts, configuration, order_key FROM notes_database_views WHERE id = ?")
             .bind(id).bind(&copy.id)
             .bind(sqlx::query_scalar::<_, String>("SELECT data_source_id FROM notes_database_views WHERE id = ?")
                 .bind(source).fetch_one(&mut **tx).await.map_err(|e| format!("resolve copied view source: {e}"))?

@@ -70,19 +70,36 @@ pub(crate) async fn prepare_view_mutation_tx(
     crate::project_history::mark_page_dirty_tx(tx, &page_id, summary, false).await
 }
 
-pub(crate) async fn next_view_sort_order_tx(
+/// The order key that places a new view after every view of `database_id`.
+pub(crate) async fn next_view_order_key_tx(
     tx: &mut Transaction<'_, Sqlite>,
     database_id: &str,
-) -> Result<f64, String> {
-    sqlx::query_scalar(
-        "SELECT COALESCE(MAX(sort_order) + 1, 1)
-         FROM notes_database_views
-         WHERE database_id = ?",
-    )
-    .bind(database_id.trim())
-    .fetch_one(&mut **tx)
-    .await
-    .map_err(|e| format!("prepare notes database view order: {e}"))
+) -> Result<String, String> {
+    next_view_order_key(tx, database_id).await
+}
+
+/// [`next_view_order_key_tx`] on one connection.
+pub(crate) async fn next_view_order_key(
+    connection: &mut sqlx::SqliteConnection,
+    database_id: &str,
+) -> Result<String, String> {
+    let keys: Vec<String> =
+        sqlx::query_scalar("SELECT order_key FROM notes_database_views WHERE database_id = ?")
+            .bind(database_id.trim())
+            .fetch_all(&mut *connection)
+            .await
+            .map_err(|e| format!("prepare notes database view order: {e}"))?;
+    let last = keys
+        .iter()
+        .filter_map(|key| ganbaru_sync_contracts::OrderKey::parse(key).ok())
+        .max();
+    match last {
+        Some(last) => last
+            .key_after()
+            .map(ganbaru_sync_contracts::OrderKey::into_string)
+            .map_err(|e| format!("order notes database view: {e}")),
+        None => Ok(ganbaru_sync_contracts::OrderKey::first().into_string()),
+    }
 }
 
 pub(crate) async fn generate_uuid_tx(
@@ -670,7 +687,7 @@ pub(crate) async fn load_scoped_view_row_tx(
                     last_edited_time
              FROM notes_database_views
              WHERE database_id = ? AND data_source_id = ? AND type = ?
-             ORDER BY sort_order ASC, created_time ASC, id ASC
+             ORDER BY order_key ASC, id ASC
              LIMIT 1",
         )
         .bind(database_id.trim())
@@ -697,7 +714,7 @@ pub(crate) async fn load_scoped_view_row_tx(
                     last_edited_time
              FROM notes_database_views
              WHERE data_source_id = ? AND type = ?
-             ORDER BY sort_order ASC, created_time ASC, id ASC
+             ORDER BY order_key ASC, id ASC
              LIMIT 1",
         )
         .bind(data_source_id.trim())

@@ -2359,6 +2359,12 @@ fn recovery_root_tables_follow_cascades_and_leave_out_derived_keys() {
             // Pages and blocks cascade into each other and carry recoverable content.
             crate::manifest::vault::notes::PAGES_TABLE,
             crate::manifest::vault::notes::BLOCKS_TABLE,
+            // Databases and data sources cascade into the derived-key properties and values;
+            // templates carry recoverable content snapshots.
+            crate::manifest::vault::notes::DATABASES_TABLE,
+            crate::manifest::vault::notes::DATA_SOURCES_TABLE,
+            crate::manifest::vault::notes::DATA_SOURCE_TEMPLATES_TABLE,
+            crate::manifest::vault::notes::PAGE_TEMPLATES_TABLE,
             // Participants and teammates carry recoverable names and roles.
             crate::manifest::vault::chat::PARTICIPANTS_TABLE,
             crate::manifest::vault::chat::TEAMMATES_TABLE,

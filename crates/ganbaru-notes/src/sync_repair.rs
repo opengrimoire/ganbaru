@@ -22,8 +22,14 @@
 //! - A page nested in itself through `child_page` blocks: the smallest page id of the cycle
 //!   becomes a root page of its project, and its `child_page` block moves to the trash, as
 //!   when a page is moved out of its parent.
+//! - A row page whose row parent is not a row of the same data source, because one of them
+//!   moved to another source or out of its database concurrently, loses its row parent.
 //!
 //! Pairing runs first, so a page it nests again is part of the cycle check.
+//!
+//! Repair writes only placement, trash, and project values and leaves `last_edited_time`
+//! unchanged: it is not an edit, and a timestamp read from the clock would differ between devices
+//! that repair the same rows.
 //!
 //! The hook-derived `page_id` of a block in a cycle is the value it held before the cycle
 //! formed, so devices that received the operations in a different order can derive different
@@ -51,17 +57,23 @@ pub struct StructureRepair {
     pub unpaired_pages: Vec<String>,
     /// Pages nested again under their own `child_page` block.
     pub paired_pages: Vec<String>,
+    /// Row pages whose row parent was cleared because it is not a row of the same data source.
+    pub detached_rows: Vec<String>,
+    /// Pending keys whose own repair failed, as `kind:key: error`. They stay pending for the
+    /// next pass while every other key is repaired.
+    pub failed_keys: Vec<String>,
 }
 
 impl StructureRepair {
-    /// Whether the pass wrote nothing. Unplaced cycles are left as they are, so they count as
-    /// unchanged and are reported through `unplaced_blocks`.
+    /// Whether the pass wrote nothing. Unplaced cycles and failed keys are left as they are, so
+    /// they count as unchanged and are reported through `unplaced_blocks` and `failed_keys`.
     pub fn is_empty(&self) -> bool {
         self.cycle_blocks.is_empty()
             && self.deep_blocks.is_empty()
             && self.detached_pages.is_empty()
             && self.unpaired_pages.is_empty()
             && self.paired_pages.is_empty()
+            && self.detached_rows.is_empty()
     }
 }
 
@@ -122,8 +134,12 @@ pub async fn has_pending(pool: &SqlitePool) -> Result<bool, String> {
         .map_err(|error| format!("check pending Notes structure repair: {error}"))
 }
 
-/// Repairs the structure around every key in `notes_sync_repair_pending` and clears those keys
-/// in the same transaction, so a failed repair keeps them for the next call.
+/// Repairs the structure around every key in `notes_sync_repair_pending` and clears each key in
+/// the transaction that repairs it, so a failed repair keeps it for the next call.
+///
+/// Keys whose row no longer exists are dropped first. The remaining keys are repaired together;
+/// when that fails, each key is repaired in its own transaction, so one key that always fails
+/// never blocks the others. Such keys are listed in [`StructureRepair::failed_keys`].
 pub async fn repair_pending(pool: &SqlitePool) -> Result<StructureRepair, String> {
     let mut conn = pool
         .acquire()
@@ -134,23 +150,72 @@ pub async fn repair_pending(pool: &SqlitePool) -> Result<StructureRepair, String
 
 /// [`repair_pending`] on one connection.
 pub async fn repair_pending_on(conn: &mut SqliteConnection) -> Result<StructureRepair, String> {
-    let mut tx = conn
-        .begin()
-        .await
-        .map_err(|error| format!("begin Notes structure repair: {error}"))?;
+    sqlx::query(
+        "DELETE FROM notes_sync_repair_pending
+         WHERE (kind = 'page'
+                AND NOT EXISTS (SELECT 1 FROM notes_pages WHERE id = row_key))
+            OR (kind = 'block'
+                AND NOT EXISTS (SELECT 1 FROM notes_blocks WHERE id = row_key))",
+    )
+    .execute(&mut *conn)
+    .await
+    .map_err(|error| format!("prune pending Notes structure repair: {error}"))?;
     let pending: Vec<(String, String)> = sqlx::query_as(
         "SELECT kind, row_key FROM notes_sync_repair_pending ORDER BY kind, row_key",
     )
-    .fetch_all(&mut *tx)
+    .fetch_all(&mut *conn)
     .await
     .map_err(|error| format!("load pending Notes structure repair: {error}"))?;
     if pending.is_empty() {
         return Ok(StructureRepair::default());
     }
-    let (pages, blocks): (Vec<_>, Vec<_>) =
-        pending.into_iter().partition(|(kind, _)| kind == "page");
-    let pages: Vec<String> = pages.into_iter().map(|(_, key)| key).collect();
-    let blocks: Vec<String> = blocks.into_iter().map(|(_, key)| key).collect();
+    if let Ok(report) = repair_pending_keys(conn, &pending).await {
+        return Ok(report);
+    }
+    let mut report = StructureRepair::default();
+    for key in &pending {
+        match repair_pending_keys(conn, std::slice::from_ref(key)).await {
+            Ok(repaired) => report.extend(repaired),
+            Err(error) => report
+                .failed_keys
+                .push(format!("{}:{}: {error}", key.0, key.1)),
+        }
+    }
+    Ok(report)
+}
+
+impl StructureRepair {
+    /// Adds what `other` changed and reported to this report.
+    fn extend(&mut self, other: StructureRepair) {
+        self.cycle_blocks.extend(other.cycle_blocks);
+        self.deep_blocks.extend(other.deep_blocks);
+        self.unplaced_blocks.extend(other.unplaced_blocks);
+        self.detached_pages.extend(other.detached_pages);
+        self.unpaired_pages.extend(other.unpaired_pages);
+        self.paired_pages.extend(other.paired_pages);
+        self.detached_rows.extend(other.detached_rows);
+        self.failed_keys.extend(other.failed_keys);
+    }
+}
+
+/// Repairs `pending` `(kind, key)` pairs and clears them in one transaction.
+async fn repair_pending_keys(
+    conn: &mut SqliteConnection,
+    pending: &[(String, String)],
+) -> Result<StructureRepair, String> {
+    let mut tx = conn
+        .begin()
+        .await
+        .map_err(|error| format!("begin Notes structure repair: {error}"))?;
+    let keys_of = |kind: &str| -> Vec<String> {
+        pending
+            .iter()
+            .filter(|(pending_kind, _)| pending_kind == kind)
+            .map(|(_, key)| key.clone())
+            .collect()
+    };
+    let pages = keys_of("page");
+    let blocks = keys_of("block");
     let report = repair_keys(&mut tx, &pages, &blocks).await?;
     sqlx::query(
         "DELETE FROM notes_sync_repair_pending
@@ -177,7 +242,44 @@ async fn repair_keys(
     repair_pairing(conn, page_ids, block_ids, &mut report).await?;
     repair_blocks(conn, block_ids, &mut report).await?;
     repair_page_nesting(conn, page_ids, block_ids, &mut report).await?;
+    repair_row_parents(conn, page_ids, &mut report).await?;
     Ok(report)
+}
+
+/// Clears the row parent of the changed pages, and of the rows under them, where the parent is
+/// not a row of the same data source.
+async fn repair_row_parents(
+    conn: &mut SqliteConnection,
+    page_ids: &[String],
+    report: &mut StructureRepair,
+) -> Result<(), String> {
+    if page_ids.is_empty() {
+        return Ok(());
+    }
+    let mut detached: Vec<String> = sqlx::query_scalar(
+        "UPDATE notes_pages
+         SET parent_row_page_id = NULL
+         WHERE parent_row_page_id IS NOT NULL
+           AND (id IN (SELECT value FROM json_each(?1))
+                OR parent_row_page_id IN (SELECT value FROM json_each(?1)))
+           AND NOT EXISTS (
+               SELECT 1 FROM notes_pages AS parent
+               WHERE parent.id = notes_pages.parent_row_page_id
+                 AND notes_pages.parent_data_source_id IS NOT NULL
+                 AND parent.parent_data_source_id = notes_pages.parent_data_source_id
+           )
+         RETURNING id",
+    )
+    .bind(keys_json(page_ids)?)
+    .fetch_all(&mut *conn)
+    .await
+    .map_err(|error| format!("clear Notes row parents across data sources: {error}"))?;
+    if !detached.is_empty() {
+        detached.sort_unstable();
+        crate::sync_apply::queue_page_history(conn, &detached).await?;
+        report.detached_rows.extend(detached);
+    }
+    Ok(())
 }
 
 fn keys_json(keys: &[String]) -> Result<String, String> {
@@ -376,8 +478,7 @@ async fn move_to_page_root(
              parent_page_id = ?1,
              parent_block_id = NULL,
              page_id = ?1,
-             order_key = ?2,
-             last_edited_time = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+             order_key = ?2
          WHERE id = ?3",
     )
     .bind(page_id)
@@ -496,8 +597,7 @@ async fn repair_pairing(
              parent_page_id = block.parent_page_id,
              parent_block_id = block.parent_block_id,
              folder_id = NULL,
-             project_id = NULL,
-             last_edited_time = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+             project_id = NULL
          FROM notes_blocks AS block
          WHERE block.id = notes_pages.id
            AND notes_pages.id IN (SELECT value FROM json_each(?1))
@@ -539,8 +639,7 @@ async fn place_at_project_root(conn: &mut SqliteConnection, page_id: &str) -> Re
              parent_page_id = NULL,
              parent_block_id = NULL,
              folder_id = NULL,
-             project_id = ?,
-             last_edited_time = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+             project_id = ?
          WHERE id = ?",
     )
     .bind(project.as_deref())
@@ -550,8 +649,7 @@ async fn place_at_project_root(conn: &mut SqliteConnection, page_id: &str) -> Re
     .map_err(|error| format!("move repaired Notes page to its project root: {error}"))?;
     sqlx::query(
         "UPDATE notes_blocks
-         SET in_trash = 1,
-             last_edited_time = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+         SET in_trash = 1
          WHERE id = ? AND type = 'child_page' AND in_trash = 0",
     )
     .bind(page_id)

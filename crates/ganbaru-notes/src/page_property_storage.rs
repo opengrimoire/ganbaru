@@ -27,11 +27,12 @@ pub const UNSTORED_VALUE_TYPES: &[&str] = &["title", "relation", "formula", "rol
 /// outside a data source, with the title as one plain rich text item. Row pages add one entry
 /// per stored value whose property still exists, typed with the value's own type, so a value
 /// written before a concurrent type change reads with its original type. Relation properties
-/// list their related pages in link creation order.
+/// list their related pages in link creation order. Entries are named as the schema names its
+/// properties, so a name a merge repeated reads apart.
 pub(crate) fn page_properties_sql(page: &str) -> String {
     format!(
         "(SELECT json_group_object(composed.name, json(composed.value)) FROM (
-            SELECT COALESCE(title_property.name, 'title') AS name,
+            SELECT COALESCE({title_name}, 'title') AS name,
                    json_object(
                        'id', COALESCE(title_property.property_id, 'title'),
                        'type', 'title',
@@ -49,7 +50,7 @@ pub(crate) fn page_properties_sql(page: &str) -> String {
               ON title_property.data_source_id = {page}.parent_data_source_id
              AND title_property.type = 'title'
             UNION ALL
-            SELECT value_property.name,
+            SELECT {value_name},
                    json_object(
                        'id', stored_value.property_id,
                        'type', stored_value.value_type,
@@ -61,7 +62,7 @@ pub(crate) fn page_properties_sql(page: &str) -> String {
             WHERE stored_value.page_id = {page}.id
               AND value_property.type NOT IN ('title', 'relation')
             UNION ALL
-            SELECT relation_property.name,
+            SELECT {relation_name},
                    json_object(
                        'id', relation_property.property_id,
                        'type', 'relation',
@@ -80,7 +81,10 @@ pub(crate) fn page_properties_sql(page: &str) -> String {
             FROM notes_data_source_properties AS relation_property
             WHERE relation_property.data_source_id = {page}.parent_data_source_id
               AND relation_property.type = 'relation'
-        ) AS composed)"
+        ) AS composed)",
+        title_name = crate::note_data_source_property_name!("title_property"),
+        value_name = crate::note_data_source_property_name!("value_property"),
+        relation_name = crate::note_data_source_property_name!("relation_property"),
     )
 }
 

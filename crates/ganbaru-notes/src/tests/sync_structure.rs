@@ -412,8 +412,10 @@ fn a_failed_pending_repair_keeps_its_keys_and_the_next_pass_repairs_them() {
         .execute(&pool)
         .await
         .unwrap();
-        let failed = crate::sync_repair::repair_pending(&pool).await;
-        assert!(failed.unwrap_err().contains("repair blocked"));
+        let failed = crate::sync_repair::repair_pending(&pool).await.unwrap();
+        assert!(failed.is_empty());
+        assert_eq!(failed.failed_keys.len(), 1);
+        assert!(failed.failed_keys[0].contains("repair blocked"));
         assert_eq!(pending().await, vec![format!("page:{PAGE_A}")]);
         assert_eq!(page_nesting(&pool, PAGE_A).await.0, "workspace");
 
@@ -430,6 +432,88 @@ fn a_failed_pending_repair_keeps_its_keys_and_the_next_pass_repairs_them() {
                 .await
                 .unwrap()
                 .is_empty()
+        );
+    });
+}
+
+#[test]
+fn a_key_that_always_fails_does_not_block_other_repairs_and_gone_keys_are_dropped() {
+    crate::test_block_on(async {
+        let pool = migrated_memory_pool().await;
+        nest_a_under_project_page_b(&pool).await;
+        create_page(&pool, PAGE_C, BLOCK_C).await;
+        writes::move_page(
+            &pool,
+            PAGE_C,
+            NoteMovePage {
+                parent: page_parent(PAGE_B),
+                folder_id: None,
+            },
+        )
+        .await
+        .unwrap();
+        set_applying(&pool, true).await;
+        sqlx::query(
+            "UPDATE notes_pages
+             SET parent_type = 'workspace', parent_page_id = NULL, child_block_id = NULL
+             WHERE id IN (?, ?)",
+        )
+        .bind(PAGE_A)
+        .bind(PAGE_C)
+        .execute(&pool)
+        .await
+        .unwrap();
+        set_applying(&pool, false).await;
+        let edited_before: Vec<String> = sqlx::query_scalar(
+            "SELECT last_edited_time FROM notes_pages WHERE id IN (?, ?) ORDER BY id",
+        )
+        .bind(PAGE_A)
+        .bind(PAGE_C)
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO notes_sync_repair_pending (kind, row_key)
+             VALUES ('page', ?), ('page', ?), ('page', 'gone-page'), ('block', 'gone-block')",
+        )
+        .bind(PAGE_A)
+        .bind(PAGE_C)
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(sqlx::AssertSqlSafe(format!(
+            "CREATE TEMP TRIGGER fail_one_repair BEFORE UPDATE ON notes_pages
+             WHEN NEW.id = '{PAGE_C}'
+             BEGIN SELECT RAISE(ABORT, 'repair blocked'); END"
+        )))
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let report = crate::sync_repair::repair_pending(&pool).await.unwrap();
+
+        assert_eq!(report.paired_pages, vec![PAGE_A.to_string()]);
+        assert_eq!(report.failed_keys.len(), 1);
+        assert!(report.failed_keys[0].starts_with(&format!("page:{PAGE_C}: ")));
+        let pending: Vec<String> = sqlx::query_scalar(
+            "SELECT kind || ':' || row_key FROM notes_sync_repair_pending ORDER BY kind, row_key",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(pending, vec![format!("page:{PAGE_C}")]);
+        assert_eq!(page_nesting(&pool, PAGE_A).await.0, "page_id");
+        let edited_after: Vec<String> = sqlx::query_scalar(
+            "SELECT last_edited_time FROM notes_pages WHERE id IN (?, ?) ORDER BY id",
+        )
+        .bind(PAGE_A)
+        .bind(PAGE_C)
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            edited_after, edited_before,
+            "repair keeps the edit time, so devices repairing the same rows write equal values"
         );
     });
 }
@@ -603,8 +687,8 @@ fn removing_a_database_block_removes_its_row_pages_through_nested_databases() {
         .unwrap();
         insert_row_page(&pool, PAGE_C, DATA_SOURCE_B, "Inner row", json!({})).await;
 
-        // While applying, the writer's own page deletes remove the row pages, so the trigger
-        // waits; a local removal of the block takes them along.
+        // Row pages cascade from their data source through foreign keys, so an apply removes
+        // them the same way a local removal of the block does.
         sqlx::query("UPDATE sync_apply_state SET applying = 1 WHERE singleton = 1")
             .execute(&pool)
             .await
@@ -619,10 +703,7 @@ fn removing_a_database_block_removes_its_row_pages_through_nested_databases() {
             .fetch_one(&mut *tx)
             .await
             .unwrap();
-        assert_eq!(
-            kept, 3,
-            "apply leaves row pages to the writer's own deletes"
-        );
+        assert_eq!(kept, 1, "apply removes row pages through foreign keys");
         tx.rollback().await.unwrap();
         sqlx::query("UPDATE sync_apply_state SET applying = 0 WHERE singleton = 1")
             .execute(&pool)
@@ -648,12 +729,12 @@ fn removing_a_database_block_removes_its_row_pages_through_nested_databases() {
 }
 
 #[test]
-fn a_row_page_for_an_unknown_data_source_is_not_listed_or_counted() {
+fn a_row_page_cannot_name_an_absent_data_source() {
     crate::test_block_on(async {
         let pool = migrated_memory_pool().await;
         create_page(&pool, PAGE_A, BLOCK_A).await;
         for (id, in_trash) in [(PAGE_B, 0_i64), (PAGE_C, 1_i64)] {
-            sqlx::query(
+            let inserted = sqlx::query(
                 "INSERT INTO notes_pages
                      (id, parent_type, parent_data_source_id, title, in_trash, trashed_time)
                  VALUES (?1, 'data_source_id', 'absent-source', 'Unplaced', ?2,
@@ -662,8 +743,11 @@ fn a_row_page_for_an_unknown_data_source_is_not_listed_or_counted() {
             .bind(id)
             .bind(in_trash)
             .execute(&pool)
-            .await
-            .unwrap();
+            .await;
+            assert!(
+                inserted.is_err(),
+                "a row page's data source is a foreign key, so no read can meet an unplaced row"
+            );
         }
 
         let listed = serde_json::to_value(reads::list_pages(&pool).await.unwrap()).unwrap();

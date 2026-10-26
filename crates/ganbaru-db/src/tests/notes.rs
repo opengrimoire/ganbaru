@@ -133,13 +133,12 @@ fn schema_keeps_notes_page_project_and_trash_owner_in_columns() {
         assert_eq!(
             notes_triggers,
             [
-                "notes_data_sources_delete_row_pages",
                 "notes_pages_local_nesting_insert",
                 "notes_pages_local_nesting_update",
                 "notes_pages_park_child_page_blocks",
             ],
-            "Notes rules are checked by writes, except row page removal and moved-out \
-             child_page block parking through foreign key cascades, and local nested page pairing"
+            "Notes rules are checked by writes, except moved-out child_page block parking \
+             through foreign key cascades and local nested page pairing"
         );
 
         sqlx::query("INSERT INTO project_groups (id, name, order_key) VALUES ('folder-group', 'Folders', 'a0')")
@@ -1482,14 +1481,17 @@ fn notes_block_types_accept_six_heading_levels_in_blocks_and_templates() {
                 .await
                 .unwrap();
             }
-            assert!(
-                sqlx::query(AssertSqlSafe(format!(
-                    "UPDATE {table} SET type = 'heading_7' WHERE id = 'parent'"
-                )))
-                .execute(&pool)
-                .await
-                .is_err()
-            );
+            // Template blocks are owned sync rows whose types Notes and the sync adapter check.
+            if table == "notes_blocks" {
+                assert!(
+                    sqlx::query(AssertSqlSafe(format!(
+                        "UPDATE {table} SET type = 'heading_7' WHERE id = 'parent'"
+                    )))
+                    .execute(&pool)
+                    .await
+                    .is_err()
+                );
+            }
         }
         assert_eq!(
             sqlx::query_scalar::<_, i64>("PRAGMA foreign_keys")
@@ -1537,6 +1539,12 @@ const BEFORE_NOTES_STRUCTURE_REPLICATION: i64 = 20261025051154;
 
 /// The migration that makes Notes structure replicated.
 const NOTES_STRUCTURE_REPLICATION: i64 = 20261025091420;
+
+/// Last migration before Notes databases replication.
+const BEFORE_NOTES_DATABASES_REPLICATION: i64 = 20261025183055;
+
+/// The migration that makes Notes databases and templates replicated.
+const NOTES_DATABASES_REPLICATION: i64 = 20261025212528;
 
 /// Every block type the Notes schema accepts.
 const FIXTURE_BLOCK_TYPES: [&str; 37] = [
@@ -2170,6 +2178,161 @@ fn notes_structure_replication_keeps_seeded_structure_and_adds_sync_state() {
         .unwrap();
         assert!(!page_keys.contains(&"parent_page_id".to_string()));
         assert!(!page_keys.contains(&"parent_data_source_id".to_string()));
+        let violations: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM pragma_foreign_key_check")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(violations, 0);
+    });
+}
+
+#[test]
+fn notes_databases_replication_keeps_databases_and_converts_views_options_and_rows() {
+    super::block_on(async {
+        let pool =
+            super::helpers::memory_pool_migrated_through(BEFORE_NOTES_DATABASES_REPLICATION).await;
+        sqlx::raw_sql(
+            "INSERT INTO notes_pages (id, parent_type, title) VALUES ('page', 'workspace', 'Page');
+             INSERT INTO notes_blocks (id, page_id, parent_type, parent_page_id, type, order_key)
+                 VALUES ('db', 'page', 'page_id', 'page', 'child_database', 'a0');
+             INSERT INTO notes_databases (id, block_id, parent_type, parent_page_id, title)
+                 VALUES ('db', 'db', 'page_id', 'page', 'Tasks');
+             INSERT INTO notes_data_sources (id, database_id, title) VALUES ('source', 'db', 'Tasks');
+             INSERT INTO notes_data_source_properties
+                 (data_source_id, property_id, sync_key, name, type, config, order_key)
+                 VALUES ('source', 'stage', 'key-stage', 'Stage', 'select', '{}', 'a1');
+             INSERT INTO notes_data_source_property_options
+                 (data_source_id, property_id, option_id, sync_key, name, position)
+                 VALUES ('source', 'stage', 'todo', 'key-todo', 'To do', 'a0');
+             INSERT INTO notes_pages (id, parent_type, parent_data_source_id, title)
+                 VALUES ('row', 'data_source_id', 'source', 'Row');
+             INSERT INTO notes_pages (id, parent_type, parent_data_source_id, title)
+                 VALUES ('orphan', 'data_source_id', 'gone', 'Orphan');
+             INSERT INTO notes_database_views (id, database_id, data_source_id, name, type, sort_order)
+                 VALUES ('view-late', 'db', 'source', 'Late', 'table', 2.0),
+                        ('view-early', 'db', 'source', 'Early', 'board', 1.0);
+             INSERT INTO notes_page_templates (id, name) VALUES ('template', 'Weekly');
+             INSERT INTO notes_page_template_blocks
+                 (template_id, ordinal, id, parent_type, parent_block_id, type, payload)
+                 VALUES ('template', 0, 'goals', 'template', NULL, 'paragraph', '{}'),
+                        ('template', 1, 'review', 'block_id', 'goals', 'paragraph', '{}');",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let databases_before = row_values(
+            &pool,
+            "notes_databases",
+            "id, block_id, parent_type, parent_page_id, parent_block_id, title",
+        )
+        .await;
+        let blocks_before = row_values(
+            &pool,
+            "notes_page_template_blocks",
+            "template_id, ordinal, parent_type, parent_block_id, type, payload",
+        )
+        .await;
+
+        super::helpers::migrate_through(&pool, NOTES_DATABASES_REPLICATION)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            row_values(
+                &pool,
+                "notes_databases",
+                "id, block_id, parent_type, parent_page_id, parent_block_id, title",
+            )
+            .await,
+            databases_before
+        );
+        assert_eq!(
+            row_values(
+                &pool,
+                "notes_page_template_blocks",
+                "template_id, ordinal, parent_type, parent_block_id, type, payload",
+            )
+            .await,
+            blocks_before
+        );
+        let views: Vec<String> =
+            sqlx::query_scalar("SELECT id FROM notes_database_views ORDER BY order_key, id")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        assert_eq!(views, ["view-early", "view-late"], "views keep their order");
+        let property_key: String = sqlx::query_scalar(
+            "SELECT property_key FROM notes_data_source_property_options WHERE option_id = 'todo'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(property_key, "key-stage");
+        let pages: Vec<(String, String, Option<String>)> = sqlx::query_as(
+            "SELECT id, parent_type, parent_data_source_id FROM notes_pages
+             WHERE id IN ('row', 'orphan') ORDER BY id",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            pages,
+            [
+                ("orphan".to_string(), "workspace".to_string(), None),
+                (
+                    "row".to_string(),
+                    "data_source_id".to_string(),
+                    Some("source".to_string())
+                ),
+            ],
+            "a row page without its data source becomes a workspace page"
+        );
+
+        let page_keys: Vec<(String, String, String)> = sqlx::query_as(
+            "SELECT \"from\", \"table\", on_delete FROM pragma_foreign_key_list('notes_pages')
+             WHERE \"from\" = 'parent_data_source_id'",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            page_keys,
+            [(
+                "parent_data_source_id".to_string(),
+                "notes_data_sources".to_string(),
+                "CASCADE".to_string()
+            )]
+        );
+        sqlx::query("DELETE FROM notes_data_sources WHERE id = 'source'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let remaining: i64 = sqlx::query_scalar(
+            "SELECT (SELECT count(*) FROM notes_pages WHERE id = 'row')
+                  + (SELECT count(*) FROM notes_data_source_property_options)",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(remaining, 0, "row pages cascade from their data source");
+        for table in [
+            "notes_pages",
+            "notes_databases",
+            "notes_data_sources",
+            "notes_database_views",
+            "notes_page_templates",
+            "notes_data_source_templates",
+        ] {
+            let sync_triggers: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM sqlite_schema
+                 WHERE type = 'trigger' AND tbl_name = ? AND name LIKE 'sync\\_%' ESCAPE '\\'",
+            )
+            .bind(table)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            assert_eq!(sync_triggers, 7, "{table}");
+        }
         let violations: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM pragma_foreign_key_check")
             .fetch_one(&pool)
             .await

@@ -707,6 +707,9 @@ async fn resolve_page_template_parent(
 /// A template replicates as one owned snapshot, so the whole snapshot must fit one operation.
 pub const MAX_TEMPLATE_CONTENT_BYTES: i64 = 256 * 1024;
 
+/// Upper bound on the number of snapshot blocks of one template, as sync declares it.
+pub use ganbaru_sync::manifest::vault::notes::MAX_TEMPLATE_BLOCKS;
+
 /// The template tables whose snapshots share [`MAX_TEMPLATE_CONTENT_BYTES`].
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum TemplateKind {
@@ -759,6 +762,39 @@ pub(crate) async fn ensure_template_content_size_tx(
         return Err(format!(
             "template content is {bytes} bytes, above the {MAX_TEMPLATE_CONTENT_BYTES} byte limit"
         ));
+    }
+    let blocks_table = match kind {
+        TemplateKind::Page => "notes_page_template_blocks",
+        TemplateKind::DataSource => "notes_data_source_template_blocks",
+    };
+    let (count, duplicates, misplaced): (i64, i64, i64) =
+        sqlx::query_as(sqlx::AssertSqlSafe(format!(
+            "SELECT
+                COUNT(*),
+                COUNT(*) - COUNT(DISTINCT id),
+                COALESCE(SUM(CASE
+                    WHEN parent_type = 'template' AND parent_block_id IS NULL THEN 0
+                    WHEN parent_type = 'block_id' AND EXISTS (
+                        SELECT 1 FROM {blocks_table} AS parent
+                        WHERE parent.template_id = block.template_id
+                          AND parent.id = block.parent_block_id
+                    ) THEN 0
+                    ELSE 1 END), 0)
+             FROM {blocks_table} AS block
+             WHERE block.template_id = ?1"
+        )))
+        .bind(template_id)
+        .fetch_one(&mut **tx)
+        .await
+        .map_err(|e| format!("check notes template blocks: {e}"))?;
+    let max_blocks = MAX_TEMPLATE_BLOCKS as i64;
+    if count > max_blocks {
+        return Err(format!(
+            "template has {count} blocks, above the {max_blocks} block limit"
+        ));
+    }
+    if duplicates > 0 || misplaced > 0 {
+        return Err("template blocks must have unique ids and parents inside the template".into());
     }
     Ok(())
 }

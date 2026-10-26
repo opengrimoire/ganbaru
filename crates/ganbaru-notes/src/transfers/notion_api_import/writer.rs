@@ -388,14 +388,13 @@ async fn insert_database_objects(
             type,
             sorts,
             configuration,
-            sort_order,
             source_provider,
             source_object_id,
             source_workspace_id,
             source_last_edited_time,
             url
          )
-         VALUES (?, ?, ?, 'Table', 'table', ?, ?, 1000, 'notion', ?, ?, ?, ?)",
+         VALUES (?, ?, ?, 'Table', 'table', ?, ?, 'notion', ?, ?, ?, ?)",
     )
     .bind(view_id)
     .bind(&block.id)

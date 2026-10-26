@@ -14,7 +14,7 @@ const MAX_NOTIFICATION_BATCH: usize = 200;
 const MAX_PLAIN_TEXT_LENGTH: usize = 500;
 const MAX_SOURCE_TEXT_LENGTH: usize = 2000;
 /// Reminders of a database row's date properties, keyed by the row page and named by their property.
-const PAGE_PROPERTY_SOURCE: &str = "page_property";
+pub(crate) const PAGE_PROPERTY_SOURCE: &str = "page_property";
 
 struct MentionNotificationCandidate {
     kind: &'static str,

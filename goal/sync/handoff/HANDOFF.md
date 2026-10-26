@@ -54,7 +54,7 @@ Updated during the local session on the mini PC (2026-10-25). Milestone 8 step 4
 
 Progress snapshots are in `progress/`; their live copies were in the session scratch directory, so check each branch's log for later commits.
 
-1. `feat/sync-android-keystore` (pushed): milestone 11 step 7, head c0cc1f3c, all checks had passed. A fresh Opus security review (standing in for the external review) returned fix first; the fix round is `briefs/m11-step-7-fix-message.md` and has not started. Next: the fix round (it merges feat/sync first), a delta review, land. Open question for the maintainer: `androidx.test:runner:1.5.0` may be a new test-only dependency.
+1. `feat/sync-android-keystore` (pushed, head 2c23ff2d): milestone 11 step 7. The fix round for the security review is done (all ten findings fixed, checks passed after merging feat/sync 0f832fa4; the last Kotlin-only commit came after the gate). Next: merge feat/sync, a fresh delta security review of `c0cc1f3c..2c23ff2d`, then land. Blocked on the maintainer: `androidx.test:runner:1.5.0` is declared as a test-only dependency (espresso-core 3.5.0 appears to pull it already, unconfirmed without Gradle).
 2. Milestone 11 step 8 (authority UI) landed as merge e4b65518; its low review findings are in `briefs/m11-step-9-followups.md`.
 3. `feat/sync-notes-comments`: milestone 8 step 5 with the step 4 review follow-ups (briefs `m8-step-5-brief.md`, `m8-step-5-followups.md`). Running its final tests when this was written. Next: finish, fresh Opus review, land.
 

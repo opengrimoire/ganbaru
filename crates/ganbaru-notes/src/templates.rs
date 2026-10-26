@@ -767,7 +767,9 @@ pub(crate) async fn ensure_template_content_size_tx(
         TemplateKind::Page => "notes_page_template_blocks",
         TemplateKind::DataSource => "notes_data_source_template_blocks",
     };
-    let (count, duplicates, misplaced): (i64, i64, i64) =
+    let block_types = serde_json::to_string(crate::validation::NOTE_BLOCK_TYPES)
+        .map_err(|e| format!("encode notes block types: {e}"))?;
+    let (count, duplicates, misplaced, invalid): (i64, i64, i64, i64) =
         sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "SELECT
                 COUNT(*),
@@ -779,14 +781,22 @@ pub(crate) async fn ensure_template_content_size_tx(
                         WHERE parent.template_id = block.template_id
                           AND parent.id = block.parent_block_id
                     ) THEN 0
-                    ELSE 1 END), 0)
+                    ELSE 1 END), 0),
+                COALESCE(SUM(
+                    type NOT IN (SELECT value FROM json_each(?2))
+                    OR NOT json_valid(payload)
+                ), 0)
              FROM {blocks_table} AS block
              WHERE block.template_id = ?1"
         )))
         .bind(template_id)
+        .bind(block_types)
         .fetch_one(&mut **tx)
         .await
         .map_err(|e| format!("check notes template blocks: {e}"))?;
+    if invalid > 0 {
+        return Err("template blocks must have a known type and a JSON payload".into());
+    }
     let max_blocks = MAX_TEMPLATE_BLOCKS as i64;
     if count > max_blocks {
         return Err(format!(

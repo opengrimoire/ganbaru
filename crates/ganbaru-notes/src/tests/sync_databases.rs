@@ -1,7 +1,8 @@
 use super::helpers::*;
 use crate::sync_apply::refresh_after_apply;
 use ganbaru_sync::manifest::vault::notes::{
-    BLOCKS_TABLE, DATABASES_TABLE, PROPERTIES_TABLE, RELATION_EDGES_TABLE, VALUES_TABLE,
+    BLOCKS_TABLE, DATABASES_TABLE, PAGES_TABLE, PROPERTIES_TABLE, RELATION_EDGES_TABLE,
+    VALUES_TABLE,
 };
 
 async fn set_applying(pool: &SqlitePool, applying: bool) {
@@ -464,6 +465,47 @@ fn template_saves_refuse_blocks_with_missing_parents_or_too_many_blocks() {
 }
 
 #[test]
+fn template_saves_refuse_unknown_block_types_and_payloads_that_are_not_json() {
+    crate::test_block_on(async {
+        let pool = migrated_memory_pool().await;
+        sqlx::query("INSERT INTO notes_page_templates (id, name) VALUES (?, 'Template')")
+            .bind(TEMPLATE_A)
+            .execute(&pool)
+            .await
+            .unwrap();
+        for (block_type, payload) in [("paragraph", "{}"), ("bogus", "{}"), ("paragraph", "{")] {
+            let mut tx = pool.begin().await.unwrap();
+            sqlx::query(
+                "INSERT INTO notes_page_template_blocks
+                     (template_id, ordinal, id, parent_type, type, payload)
+                 VALUES (?, 0, 'block', 'template', ?, ?)",
+            )
+            .bind(TEMPLATE_A)
+            .bind(block_type)
+            .bind(payload)
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+            let checked = crate::templates::ensure_template_content_size_tx(
+                &mut tx,
+                crate::templates::TemplateKind::Page,
+                TEMPLATE_A,
+            )
+            .await;
+            if block_type == "paragraph" && payload == "{}" {
+                assert_eq!(checked, Ok(()));
+            } else {
+                let refusal = checked.unwrap_err();
+                assert!(
+                    refusal.contains("known type"),
+                    "{block_type} {payload}: {refusal}"
+                );
+            }
+        }
+    });
+}
+
+#[test]
 fn repair_clears_a_row_parent_left_in_another_data_source() {
     crate::test_block_on(async {
         let pool = migrated_memory_pool().await;
@@ -514,5 +556,86 @@ fn repair_clears_a_row_parent_left_in_another_data_source() {
         .await
         .unwrap();
         assert!(again.is_empty(), "the repair reaches a fixed point");
+    });
+}
+
+async fn cache_rollup_of(pool: &SqlitePool, page_id: &str, source: &str, target: &str) {
+    sqlx::query(
+        "INSERT INTO notes_data_source_rollup_cache
+             (source_page_id, source_data_source_id, source_property_id, source_property_name,
+              relation_property_id, rollup_property_id, target_data_source_id, value)
+         VALUES (?1, ?2, 'rollup', 'Rollup', 'relation', 'rollup', ?3, '{}')",
+    )
+    .bind(page_id)
+    .bind(source)
+    .bind(target)
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
+async fn refresh_page(pool: &SqlitePool, page_id: &str) {
+    let mut conn = pool.acquire().await.unwrap();
+    refresh_after_apply(&mut conn, PAGES_TABLE, &[page_id.to_string()])
+        .await
+        .unwrap();
+}
+
+#[test]
+fn sync_hook_forgets_rollups_of_pages_that_moved_or_were_deleted() {
+    crate::test_block_on(async {
+        let pool = migrated_memory_pool().await;
+        database_with_row(&pool).await;
+        create_database(
+            &pool,
+            DATABASE_B,
+            DATA_SOURCE_B,
+            DATABASE_VIEW_B,
+            "Other",
+            DATABASE_A,
+        )
+        .await;
+        insert_row_page(&pool, PAGE_C, DATA_SOURCE_B, "Other row", json!({})).await;
+
+        // A row moved from A to B keeps a rollup cached under A, which only it names.
+        cache_rollup_of(&pool, PAGE_B, DATA_SOURCE_A, DATA_SOURCE_A).await;
+        set_applying(&pool, true).await;
+        sqlx::query("UPDATE notes_pages SET parent_data_source_id = ? WHERE id = ?")
+            .bind(DATA_SOURCE_B)
+            .bind(PAGE_B)
+            .execute(&pool)
+            .await
+            .unwrap();
+        set_applying(&pool, false).await;
+        refresh_page(&pool, PAGE_B).await;
+        assert_eq!(cached_rollups(&pool).await, 0, "the rollup the move left");
+
+        // A rollup whose relation edges reach a changed page reads it, wherever it lives.
+        let edge_key = crate::sync_keys::RELATION_EDGES
+            .key(&[PAGE_C, "relation", PAGE_B])
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO notes_relation_edges
+                 (source_page_id, source_property_id, target_page_id, sync_key)
+             VALUES (?, 'relation', ?, ?)",
+        )
+        .bind(PAGE_C)
+        .bind(PAGE_B)
+        .bind(&edge_key)
+        .execute(&pool)
+        .await
+        .unwrap();
+        cache_rollup_of(&pool, PAGE_C, DATA_SOURCE_A, DATA_SOURCE_A).await;
+        refresh_page(&pool, PAGE_B).await;
+        assert_eq!(cached_rollups(&pool).await, 0, "a rollup reaching the page");
+
+        // A deleted page no longer says which rollups read it.
+        cache_rollup_of(&pool, PAGE_C, DATA_SOURCE_B, DATA_SOURCE_B).await;
+        refresh_page(&pool, "99999999-9999-4999-8999-999999999999").await;
+        assert_eq!(
+            cached_rollups(&pool).await,
+            0,
+            "a missing page forgets every rollup"
+        );
     });
 }

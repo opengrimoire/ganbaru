@@ -18,7 +18,7 @@ use crate::validation::plain_text_from_payload;
 use ganbaru_sync::manifest::TableSpec;
 use ganbaru_sync::manifest::vault::notes::{
     BLOCKS_TABLE, DATA_SOURCES_TABLE, DATABASES_TABLE, DOMAIN, OPTIONS_TABLE, PAGES_TABLE,
-    PROPERTIES_TABLE, RELATION_EDGES_TABLE, VALUES_TABLE,
+    PROPERTIES_TABLE, RELATION_EDGES_TABLE, VALUES_TABLE, value_group,
 };
 use ganbaru_sync::{ChangeSink, HookError, HookFuture, Hooks, MaterializeHook};
 use serde_json::Value;
@@ -101,10 +101,14 @@ pub async fn refresh_after_apply(
         invalidate_rollups(conn, &sources, removed).await?;
         refresh_property_reminders(conn, &[], true).await?;
     } else if table == VALUES_TABLE {
-        let (pages, removed) = present(conn, "notes_page_property_values", "page_id", keys).await?;
+        let (mut pages, removed) =
+            present(conn, "notes_page_property_values", "page_id", keys).await?;
         let sources = data_sources_of(conn, &pages).await?;
         invalidate_rollups(conn, &sources, removed).await?;
         refresh_property_reminders(conn, &pages, removed).await?;
+        if removed {
+            pages.extend(recorded_value_pages(conn, keys).await?);
+        }
         queue_page_history(conn, &pages).await?;
     } else if table == RELATION_EDGES_TABLE {
         let (sources_pages, removed) =
@@ -217,6 +221,26 @@ async fn present(
     let removed = found.len() < unique_keys.len();
     let values: BTreeSet<String> = found.into_iter().map(|(_, value)| value).collect();
     Ok((values.into_iter().collect(), removed))
+}
+
+/// The pages that the property values keyed by `keys` belong to, as the sync engine recorded
+/// them with each version of the value identity. A removed value row no longer names its page,
+/// but the engine keeps the identity versions of absent rows.
+async fn recorded_value_pages(
+    conn: &mut SqliteConnection,
+    keys: &[String],
+) -> Result<Vec<String>, String> {
+    sqlx::query_scalar(
+        "SELECT DISTINCT ref_key FROM sync_version_refs
+         WHERE table_id = ?2 AND group_id = ?3 AND field = 0
+           AND row_key IN (SELECT value FROM json_each(?1))",
+    )
+    .bind(keys_json(keys)?)
+    .bind(i64::from(VALUES_TABLE.0))
+    .bind(i64::from(value_group::IDENTITY.get()))
+    .fetch_all(&mut *conn)
+    .await
+    .map_err(|error| format!("load pages of removed Notes values: {error}"))
 }
 
 /// The data sources whose rows are among `page_ids`.
@@ -348,17 +372,55 @@ async fn refresh_pages(conn: &mut SqliteConnection, page_ids: &[String]) -> Resu
     .execute(&mut *conn)
     .await
     .map_err(|error| format!("refresh synced Notes child page titles: {error}"))?;
-    let mut tx = conn
-        .begin()
-        .await
-        .map_err(|error| format!("begin synced Notes page refresh: {error}"))?;
-    for page_id in page_ids {
-        crate::data_sources::rollups::invalidate_rollup_cache_for_page_tx(&mut tx, page_id).await?;
-    }
-    tx.commit()
-        .await
-        .map_err(|error| format!("commit synced Notes page refresh: {error}"))?;
+    invalidate_page_rollups(conn, page_ids).await?;
     queue_page_history(conn, page_ids).await
+}
+
+/// Forgets cached rollups that may read the changed pages `page_ids`.
+///
+/// A page that no longer exists says neither where it lived nor which edges the deletion
+/// cascaded away, so every cached rollup is forgotten. Otherwise the rollups of the pages'
+/// current data sources go, along with those computed for the pages themselves (which name the
+/// data source a moved page left) and those whose relation edges reach the pages.
+async fn invalidate_page_rollups(
+    conn: &mut SqliteConnection,
+    page_ids: &[String],
+) -> Result<(), String> {
+    let existing: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM notes_pages WHERE id IN (SELECT value FROM json_each(?1))",
+    )
+    .bind(keys_json(page_ids)?)
+    .fetch_one(&mut *conn)
+    .await
+    .map_err(|error| format!("count synced Notes pages: {error}"))?;
+    let unique: BTreeSet<&str> = page_ids.iter().map(String::as_str).collect();
+    if usize::try_from(existing).unwrap_or(usize::MAX) < unique.len() {
+        return invalidate_rollups(conn, &[], true).await;
+    }
+    let mut sources: BTreeSet<String> =
+        data_sources_of(conn, page_ids).await?.into_iter().collect();
+    let previous: Vec<String> = sqlx::query_scalar(
+        "SELECT DISTINCT source_data_source_id FROM notes_data_source_rollup_cache
+         WHERE source_page_id IN (SELECT value FROM json_each(?1))",
+    )
+    .bind(keys_json(page_ids)?)
+    .fetch_all(&mut *conn)
+    .await
+    .map_err(|error| format!("load cached rollups of synced Notes pages: {error}"))?;
+    sources.extend(previous);
+    invalidate_rollups(conn, &sources.into_iter().collect::<Vec<_>>(), false).await?;
+    sqlx::query(
+        "DELETE FROM notes_data_source_rollup_cache
+         WHERE source_page_id IN (
+             SELECT source_page_id FROM notes_relation_edges
+             WHERE target_page_id IN (SELECT value FROM json_each(?1))
+         )",
+    )
+    .bind(keys_json(page_ids)?)
+    .execute(&mut *conn)
+    .await
+    .map_err(|error| format!("invalidate rollups reaching synced Notes pages: {error}"))?;
+    Ok(())
 }
 
 /// Sets `page_id` of `block_ids` and every block nested under them to the page their ancestry

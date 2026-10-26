@@ -1132,3 +1132,39 @@ fn deleting_a_database_block_removes_its_data_source_rows_and_values_everywhere(
         assert_converged(&mut replicas).await;
     });
 }
+
+#[test]
+fn a_remotely_removed_value_queues_the_history_of_its_page() {
+    block_on(async {
+        let setup = format!(
+            "{}{}{}",
+            database_sql("db", "source", 0, &["row-1"]),
+            property_sql(
+                "source",
+                "notes",
+                "Notes",
+                "rich_text",
+                "{\"rich_text\":{}}",
+                1
+            ),
+            value_sql("row-1", "notes", "rich_text", "{\"rich_text\":[]}"),
+        );
+        let mut replicas = shared(2, &setup).await;
+        replicas[1]
+            .exec("DELETE FROM notes_page_history_pending;")
+            .await;
+        replicas[0]
+            .exec("DELETE FROM notes_page_property_values WHERE page_id = 'row-1';")
+            .await;
+        converge(&mut replicas).await;
+        assert_eq!(
+            texts(
+                &mut replicas[1],
+                "SELECT page_id FROM notes_page_history_pending ORDER BY page_id"
+            )
+            .await,
+            vec!["row-1".to_string()]
+        );
+        assert_converged(&mut replicas).await;
+    });
+}

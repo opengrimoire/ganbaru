@@ -221,3 +221,7 @@
 ### Milestone 11 step 8 (2026-10-25)
 
 - Authority UI landed (merge e4b65518). The review found no authorization hole and returned merge with follow-ups; the coordinator applied the three mediums before landing: the recovery kit file is written owner-only, quarantine on an admin desktop warns that it also proposes removal, and discarding a late change asks for confirmation. Lows go to step 9 (`briefs/m11-step-9-followups.md`). The Android bundle module limit rose from 1323 to 1329 for six new sync modules. The manual checklist for the new screens is in milestone 11's Progress entry for step 8.
+
+### End of the local session (2026-10-26)
+
+- The session ended for its budget. Landed: milestone 8 step 4, engine follow-up 5, milestone 11 step 8. Pushed and unlanded: `feat/sync-android-keystore` (step 7 fix round done, delta review and the `androidx.test:runner` dependency approval pending) and `feat/sync-notes-comments` (milestone 8 step 5 committed, full checks and review pending). `pnpm -w run validate` was not run on feat/sync this session; its last full pass predates these landings, and the focused gates of each landing passed.

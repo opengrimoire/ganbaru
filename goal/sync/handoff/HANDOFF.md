@@ -44,11 +44,11 @@ Out of scope: the multi-person sharing goal. Its plans (`goal/sharing/`) are not
 
 ## State on feat/sync
 
-Updated during the local session on the mini PC (2026-10-25). Milestone 8 step 4 (merge 833a93da) and engine follow-up 5 (merge 74c19103) have landed, after the cloud session's three branches. Landed topic branches were deleted on origin.
+Updated at the end of the local session on the mini PC (2026-10-26). Milestone 8 step 4 (merge 833a93da), engine follow-up 5 (merge 74c19103), and milestone 11 step 8 (merge e4b65518) have landed, after the cloud session's three branches. Landed topic branches were deleted on origin.
 
 - `VAULT_MANIFEST_VERSION` is 16, handoff `PROTOCOL_VERSION` is 14, the last migration is `20261025212528_notes_databases_replication.sql`.
-- Done in source: milestones 2 to 7, milestone 8 steps 1 to 4, milestone 9 steps 1 to 4, milestone 10 steps 1 to 4, milestone 11 steps 1 to 6, engine follow-ups 1 to 5.
-- Remaining: milestone 8 steps 5 to 8, milestone 9 steps 5 to 10 (docs part of 10), milestone 10 steps 5 to 7, milestone 11 steps 7 to 10, milestone 12 steps 1 to 11, milestone closes, a clean `pnpm -w run validate`, and the final report.
+- Done in source: milestones 2 to 7, milestone 8 steps 1 to 4, milestone 9 steps 1 to 4, milestone 10 steps 1 to 4, milestone 11 steps 1 to 6 and 8, engine follow-ups 1 to 5.
+- Remaining: milestone 8 steps 5 to 8, milestone 9 steps 5 to 10 (docs part of 10), milestone 10 steps 5 to 7, milestone 11 steps 7, 9, and 10, milestone 12 steps 1 to 11, milestone closes, a clean `pnpm -w run validate`, and the final report.
 
 ## In-flight branches
 
@@ -56,7 +56,7 @@ Progress snapshots are in `progress/`; their live copies were in the session scr
 
 1. `feat/sync-android-keystore` (pushed, head 2c23ff2d): milestone 11 step 7. The fix round for the security review is done (all ten findings fixed, checks passed after merging feat/sync 0f832fa4; the last Kotlin-only commit came after the gate). Next: merge feat/sync, a fresh delta security review of `c0cc1f3c..2c23ff2d`, then land. Blocked on the maintainer: `androidx.test:runner:1.5.0` is declared as a test-only dependency (espresso-core 3.5.0 appears to pull it already, unconfirmed without Gradle).
 2. Milestone 11 step 8 (authority UI) landed as merge e4b65518; its low review findings are in `briefs/m11-step-9-followups.md`.
-3. `feat/sync-notes-comments`: milestone 8 step 5 with the step 4 review follow-ups (briefs `m8-step-5-brief.md`, `m8-step-5-followups.md`). Running its final tests when this was written. Next: finish, fresh Opus review, land.
+3. `feat/sync-notes-comments` (pushed, head 3cc77cde, clean worktree): milestone 8 step 5. Step 4 review follow-ups (c892a7ab, a25c4d17, 8c2f54f4) and the comments conversion (faafac4d, manifest 17, migration `20261026034408_notes_comments_replication.sql`, docs 6cbcf4c2, tests 3cc77cde) are committed; focused tests passed. Stopped for the session budget while running clippy. Next: merge feat/sync (check manifest number and migration order), the full check list and Android check from the brief, finish the progress entry, fresh Opus review, land.
 
 Ready brief not started: `briefs/m9-step-5-brief.md` (Chat timeline, with step 4 follow-ups). Engine lows for the next engine step: `briefs/engine-next-followups.md`.
 

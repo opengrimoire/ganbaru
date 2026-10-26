@@ -65,6 +65,10 @@ pub trait KeyWrapper: Send + Sync {
     /// Deletes the key named `alias`, so nothing it sealed opens again. A missing key is not an
     /// error.
     fn forget(&self, alias: &str) -> Result<(), WrapError>;
+    /// Told by [`open`] when something sealed with `alias` was found that can never be opened.
+    /// It is the only signal of a lost key: error text can carry remote messages, so callers
+    /// never infer loss from it. The default ignores it.
+    fn note_lost(&self, _alias: &str) {}
 }
 
 /// Name of the platform key that seals the sync and person keys of `vault_id`.
@@ -144,19 +148,28 @@ pub fn open(
     reference: &str,
     envelope: &[u8],
 ) -> Result<Vec<u8>, String> {
+    let lost_here = |detail: &str| {
+        wrapper.note_lost(alias);
+        lost(detail)
+    };
     if !is_envelope(envelope) {
-        return Err(lost("the key file is not protected by this device"));
-    }
-    if envelope[MAGIC.len()] != VERSION {
-        return Err(lost("the key file has an unknown protection version"));
+        return Err(lost_here("the key file is not protected by this device"));
     }
     if !(MIN_ENVELOPE_BYTES..=MAX_ENVELOPE_BYTES).contains(&envelope.len()) {
-        return Err(lost("the key file has an invalid length"));
+        return Err(lost_here("the key file has an invalid length"));
+    }
+    if envelope[MAGIC.len()] != VERSION {
+        return Err(lost_here("the key file has an unknown protection version"));
     }
     let sealed = &envelope[HEADER_BYTES..];
     let plaintext = wrapper
         .unwrap(alias, &associated_data(reference), sealed)
-        .map_err(wrap_error)?;
+        .map_err(|error| {
+            if matches!(error, WrapError::Invalidated(_)) {
+                wrapper.note_lost(alias);
+            }
+            wrap_error(error)
+        })?;
     if plaintext.len() != sealed.len() - NONCE_BYTES - TAG_BYTES {
         let mut plaintext = plaintext;
         wipe(&mut plaintext);
@@ -179,6 +192,7 @@ pub fn read_protected_file(
             Ok(bytes) => bytes,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
             Err(error) if error.kind() == std::io::ErrorKind::FileTooLarge => {
+                wrapper.note_lost(alias);
                 return Err(lost("the key file has an invalid length"));
             }
             Err(error) => return Err(format!("read protected key: {error}")),
@@ -211,6 +225,15 @@ pub fn remove_key_file(path: &Path) -> Result<(), String> {
 /// Deletes every key file directly in `directory`, sealed or not, and returns how many it
 /// removed. A missing directory holds nothing.
 pub fn remove_key_files(directory: &Path) -> Result<usize, String> {
+    remove_key_files_where(directory, |_| true)
+}
+
+/// Deletes the key files directly in `directory` whose file stem `matches` accepts, and returns
+/// how many it removed. A missing directory holds nothing.
+pub fn remove_key_files_where(
+    directory: &Path,
+    matches: impl Fn(&str) -> bool,
+) -> Result<usize, String> {
     let entries = match std::fs::read_dir(directory) {
         Ok(entries) => entries,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(0),
@@ -226,6 +249,10 @@ pub fn remove_key_files(directory: &Path) -> Result<usize, String> {
             .is_dir();
         if is_directory
             || path.extension().and_then(|extension| extension.to_str()) != Some(KEY_FILE_EXTENSION)
+            || !path
+                .file_stem()
+                .and_then(|stem| stem.to_str())
+                .is_some_and(&matches)
         {
             continue;
         }
@@ -235,11 +262,20 @@ pub fn remove_key_files(directory: &Path) -> Result<usize, String> {
     Ok(removed)
 }
 
-/// Deletes every key file directly in `directory` that is not an envelope, such as a plaintext
-/// key an older build wrote, and returns the paths it removed. Envelopes are left alone, since
-/// telling a current one from a lost one needs the platform key. A missing directory holds
-/// nothing.
+/// Deletes every key file directly in `directory` that is not an envelope and returns the
+/// paths it removed; see [`unprotected_key_files`].
 pub fn remove_unprotected_key_files(directory: &Path) -> Result<Vec<PathBuf>, String> {
+    let removed = unprotected_key_files(directory)?;
+    for path in &removed {
+        remove_key_file(path)?;
+    }
+    Ok(removed)
+}
+
+/// The key files directly in `directory` that are not envelopes, such as a plaintext key an
+/// older build wrote, without changing them. Envelopes are left out, since telling a current
+/// one from a lost one needs the platform key. A missing directory holds nothing.
+pub fn unprotected_key_files(directory: &Path) -> Result<Vec<PathBuf>, String> {
     let entries = match std::fs::read_dir(directory) {
         Ok(entries) => entries,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
@@ -275,11 +311,7 @@ pub fn remove_unprotected_key_files(directory: &Path) -> Result<Vec<PathBuf>, St
             }
             Err(error) => return Err(format!("read protected key: {error}")),
         };
-        if !protected {
-            if path.is_dir() {
-                continue;
-            }
-            remove_key_file(&path)?;
+        if !protected && !path.is_dir() {
             removed.push(path);
         }
     }
@@ -350,6 +382,7 @@ pub fn wipe(bytes: &mut [u8]) {
 pub struct TestKeyWrapper {
     keys: std::sync::Mutex<std::collections::HashMap<String, [u8; 32]>>,
     unavailable: std::sync::atomic::AtomicBool,
+    noted_lost: std::sync::Mutex<Vec<String>>,
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -358,6 +391,14 @@ impl TestKeyWrapper {
     pub fn set_unavailable(&self, unavailable: bool) {
         self.unavailable
             .store(unavailable, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// The aliases [`KeyWrapper::note_lost`] reported, oldest first.
+    pub fn noted_lost(&self) -> Vec<String> {
+        self.noted_lost
+            .lock()
+            .map(|noted| noted.clone())
+            .unwrap_or_default()
     }
 
     /// Whether a key named `alias` exists.
@@ -456,6 +497,12 @@ impl KeyWrapper for TestKeyWrapper {
             .remove(alias);
         Ok(())
     }
+
+    fn note_lost(&self, alias: &str) {
+        if let Ok(mut noted) = self.noted_lost.lock() {
+            noted.push(alias.to_string());
+        }
+    }
 }
 
 #[cfg(test)]
@@ -514,6 +561,33 @@ mod tests {
         envelope[MAGIC.len()] = VERSION + 1;
         let future = open(&wrapper, ALIAS, REFERENCE, &envelope).expect_err("version");
         assert!(is_key_protection_lost(&future));
+    }
+
+    #[test]
+    fn every_truncated_envelope_is_a_lost_key_without_panicking() {
+        let wrapper = TestKeyWrapper::default();
+        let envelope = seal(&wrapper, ALIAS, REFERENCE, b"secret key").expect("seal");
+        for length in 0..MIN_ENVELOPE_BYTES {
+            let error = open(&wrapper, ALIAS, REFERENCE, &envelope[..length])
+                .expect_err("truncated envelope");
+            assert!(is_key_protection_lost(&error), "length {length}");
+        }
+        let header_only = open(&wrapper, ALIAS, REFERENCE, &MAGIC).expect_err("magic only");
+        assert!(is_key_protection_lost(&header_only));
+        assert_eq!(wrapper.noted_lost().len(), MIN_ENVELOPE_BYTES + 1);
+    }
+
+    #[test]
+    fn an_unreachable_key_store_reports_no_loss() {
+        let wrapper = TestKeyWrapper::default();
+        let envelope = seal(&wrapper, ALIAS, REFERENCE, b"secret key").expect("seal");
+        wrapper.set_unavailable(true);
+        open(&wrapper, ALIAS, REFERENCE, &envelope).expect_err("unavailable");
+        assert!(wrapper.noted_lost().is_empty());
+        wrapper.set_unavailable(false);
+        wrapper.forget(ALIAS).expect("forget");
+        open(&wrapper, ALIAS, REFERENCE, &envelope).expect_err("forgotten");
+        assert_eq!(wrapper.noted_lost(), vec![ALIAS.to_string()]);
     }
 
     #[test]
@@ -600,6 +674,24 @@ mod tests {
     }
 
     #[test]
+    fn a_filtered_removal_keeps_key_files_it_does_not_match() {
+        let directory = directory("filtered");
+        std::fs::create_dir_all(&directory).expect("directory");
+        let ours = directory.join("device-key-vault-1.key");
+        let theirs = directory.join("device-key-vault-2.key");
+        let record = directory.join("writer-vault-1.json");
+        for path in [&ours, &theirs, &record] {
+            std::fs::write(path, b"x").expect("write");
+        }
+        let removed =
+            remove_key_files_where(&directory, |stem| stem.ends_with("-vault-1")).expect("remove");
+        assert_eq!(removed, 1);
+        assert!(!ours.exists());
+        assert!(theirs.exists() && record.exists());
+        std::fs::remove_dir_all(directory).expect("clean up");
+    }
+
+    #[test]
     fn the_startup_scan_removes_only_unprotected_key_files() {
         let directory = directory("scan");
         let wrapper = TestKeyWrapper::default();
@@ -611,7 +703,11 @@ mod tests {
         std::fs::write(&empty, []).expect("empty");
         let record = directory.join("writer-vault-1.json");
         std::fs::write(&record, b"{}").expect("record");
+        let mut found = unprotected_key_files(&directory).expect("look");
+        found.sort();
+        assert!(plaintext.exists() && empty.exists());
         let mut removed = remove_unprotected_key_files(&directory).expect("scan");
+        assert_eq!(found, removed);
         removed.sort();
         let mut expected = vec![empty.clone(), plaintext.clone()];
         expected.sort();

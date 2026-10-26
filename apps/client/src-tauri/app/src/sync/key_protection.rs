@@ -1,18 +1,19 @@
 //! Protection of the private key files a mobile device keeps in its app config directory: the
 //! platform key that seals them (an Android Keystore key reached over JNI), the startup removal
-//! of key files found unsealed, and the unlink once sealed keys can no longer be opened.
+//! of key files found unsealed, and the recovery once sealed keys can no longer be opened.
 //! Desktop keeps the same keys in the operating-system keyring instead.
 //!
-//! Losing protected keys is never repaired in place: the device unlinks with
-//! [`UnlinkReason::KeyProtectionLost`], every key file and platform key goes, and linking again
-//! creates fresh keys.
+//! Losing protected keys is never repaired in place. A linked device first unlinks with
+//! [`UnlinkReason::KeyProtectionLost`]; then the key files sealed with the lost platform key and
+//! that key itself go, and the keys are created again. An unlinked device replaces a lost
+//! linking key with a fresh identity on its own.
 
 use crate::vault::handoff::pairing::{PairingManager, UnlinkReason};
-#[cfg(not(any(test, target_os = "android")))]
 use ganbaru_handoff::key_wrap::WrapError;
 use ganbaru_handoff::key_wrap::{self, KeyWrapper, ProtectedIdentityKeyStore};
+use std::collections::BTreeSet;
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 /// Directory under the app config directory that holds the sealed linking TLS key.
 const LINKING_KEY_DIRECTORY: &str = "linking";
@@ -24,6 +25,18 @@ const KEY_DIRECTORIES: [&str; 3] = [
     crate::contacts::identity::KEY_DIRECTORY,
     LINKING_KEY_DIRECTORY,
 ];
+
+/// Directories under the app config directory that hold the key files a vault's platform key
+/// seals: the sync keys and the person key.
+const VAULT_KEY_DIRECTORIES: [&str; 2] = [
+    super::host::SYNC_DIRECTORY,
+    crate::contacts::identity::KEY_DIRECTORY,
+];
+
+/// Platform key alias the health probe seals with and forgets again.
+const PROBE_ALIAS: &str = "ganbaru-key-probe";
+/// Key reference the health probe binds its envelope to.
+const PROBE_REFERENCE: &str = "key-probe";
 
 /// The platform key wrapper of this build: the Android Keystore on Android, a shared in-memory
 /// stand-in in tests, and none elsewhere, where every seal fails as unavailable.
@@ -86,62 +99,173 @@ pub(crate) fn identity_key_store(
     ProtectedIdentityKeyStore::new(config_dir.join(LINKING_KEY_DIRECTORY), wrapper)
 }
 
-/// Deletes every private key file in the app config directory `config_dir` that is not sealed,
-/// such as one an older build wrote in plaintext, and unlinks a linked device when it found
-/// one, because a key that sat in plaintext may have been copied. Failures are logged: the
-/// next start scans again, and a pass that reads an unsealed key unlinks too.
+/// The platform key wrapper every key file of the process goes through. It records each alias
+/// [`key_wrap::open`] reports as lost, which is the only signal that starts a recovery: error
+/// text can carry messages from a remote hub, so it never decides that keys are lost.
+pub(crate) struct KeyProtection {
+    inner: Arc<dyn KeyWrapper>,
+    lost: Mutex<BTreeSet<String>>,
+}
+
 #[cfg_attr(not(any(mobile, test)), allow(dead_code))]
-pub(crate) fn remove_unprotected_keys(
-    config_dir: &Path,
-    pairing: &PairingManager,
-    wrapper: &dyn KeyWrapper,
-) {
-    let mut removed = 0_usize;
-    for directory in KEY_DIRECTORIES {
-        match key_wrap::remove_unprotected_key_files(&config_dir.join(directory)) {
-            Ok(paths) => removed += paths.len(),
-            Err(error) => eprintln!("key protection: {error}"),
+impl KeyProtection {
+    pub(crate) fn new(inner: Arc<dyn KeyWrapper>) -> Self {
+        Self {
+            inner,
+            lost: Mutex::default(),
         }
     }
-    if removed == 0 {
-        return;
-    }
-    eprintln!("key protection: removed {removed} private key files that were not sealed");
-    match pairing.has_links() {
-        Ok(false) => {}
-        Ok(true) => {
-            if let Err(error) = unlink_after_key_loss(config_dir, pairing, wrapper) {
-                eprintln!("key protection: {error}");
-            }
+
+    /// The aliases reported lost since the last call, in alias order.
+    pub(crate) fn take_lost(&self) -> Vec<String> {
+        match self.lost.lock() {
+            Ok(mut lost) => std::mem::take(&mut *lost).into_iter().collect(),
+            Err(_) => Vec::new(),
         }
-        Err(error) => eprintln!("key protection: {error}"),
     }
 }
 
-/// Unlinks this device because its protected keys can no longer be opened, then removes every
-/// private key file and the platform keys that sealed them, so linking again starts from fresh
-/// keys and a fresh linking identity. An active handoff keeps the device linked and its keys in
-/// place until it finishes; the next pass that fails to open a key tries again.
-pub(crate) fn unlink_after_key_loss(
+impl KeyWrapper for KeyProtection {
+    fn wrap(&self, alias: &str, aad: &[u8], plaintext: &[u8]) -> Result<Vec<u8>, WrapError> {
+        self.inner.wrap(alias, aad, plaintext)
+    }
+
+    fn unwrap(&self, alias: &str, aad: &[u8], sealed: &[u8]) -> Result<Vec<u8>, WrapError> {
+        self.inner.unwrap(alias, aad, sealed)
+    }
+
+    fn forget(&self, alias: &str) -> Result<(), WrapError> {
+        self.inner.forget(alias)
+    }
+
+    fn note_lost(&self, alias: &str) {
+        self.inner.note_lost(alias);
+        if let Ok(mut lost) = self.lost.lock() {
+            lost.insert(alias.to_string());
+        }
+    }
+}
+
+/// Deletes every private key file in the app config directory `config_dir` that is not sealed,
+/// such as one an older build wrote in plaintext. A linked device unlinks durably first, because
+/// a key that sat in plaintext may have been copied; if the unlink fails the files stay, so the
+/// next start unlinks and deletes again. Failures are logged.
+#[cfg_attr(not(any(mobile, test)), allow(dead_code))]
+pub(crate) fn remove_unprotected_keys(config_dir: &Path, pairing: &PairingManager) {
+    let mut found = Vec::new();
+    for directory in KEY_DIRECTORIES {
+        match key_wrap::unprotected_key_files(&config_dir.join(directory)) {
+            Ok(paths) => found.extend(paths),
+            Err(error) => eprintln!("key protection: {error}"),
+        }
+    }
+    if found.is_empty() {
+        return;
+    }
+    match pairing.has_links() {
+        Ok(false) => {}
+        Ok(true) => {
+            if let Err(error) = pairing.unlink_for(UnlinkReason::KeyProtectionLost) {
+                eprintln!("key protection: unlink before removing unsealed keys: {error}");
+                return;
+            }
+            eprintln!("key protection: unlinked because private key files were not sealed");
+        }
+        Err(error) => {
+            eprintln!("key protection: {error}");
+            return;
+        }
+    }
+    let linking = config_dir.join(LINKING_KEY_DIRECTORY);
+    let mut removed = 0_usize;
+    let mut linking_key_removed = false;
+    for path in found {
+        match key_wrap::remove_key_file(&path) {
+            Ok(()) => {
+                removed += 1;
+                linking_key_removed |= path.parent() == Some(linking.as_path());
+            }
+            Err(error) => eprintln!("key protection: {error}"),
+        }
+    }
+    eprintln!("key protection: removed {removed} private key files that were not sealed");
+    if linking_key_removed && let Err(error) = pairing.forget_cached_identity_key() {
+        eprintln!("key protection: {error}");
+    }
+}
+
+/// Whether the platform key store seals and opens again right now, checked with a throwaway
+/// key. A store that fails the probe is unavailable, which is no proof of a lost key.
+fn key_store_is_healthy(wrapper: &dyn KeyWrapper) -> bool {
+    let probe = b"key protection probe";
+    let healthy = key_wrap::seal(wrapper, PROBE_ALIAS, PROBE_REFERENCE, probe)
+        .and_then(|envelope| key_wrap::open(wrapper, PROBE_ALIAS, PROBE_REFERENCE, &envelope))
+        .is_ok_and(|opened| opened == probe);
+    if let Err(error) = wrapper.forget(PROBE_ALIAS) {
+        eprintln!("key protection: forget the probe key: {error:?}");
+    }
+    healthy
+}
+
+/// Whether the key file stem `stem` holds a key of `vault_id`, sealed with its vault alias.
+fn is_vault_key_file(stem: &str, vault_id: &str) -> bool {
+    ["device-key", "admin-key", "recovery-seed", "person-key"]
+        .iter()
+        .any(|kind| stem == format!("{kind}-{vault_id}"))
+        || stem.starts_with(&format!("writer-key-{vault_id}-"))
+}
+
+/// Recovers from the platform key aliases in `lost`, whose sealed key files can no longer be
+/// opened. Nothing happens unless a probe shows the key store working, so an unavailable store
+/// is retried later instead of read as a loss. A linked device unlinks durably before any file
+/// goes. Then each lost vault alias loses that vault's key files and its platform key, and a
+/// lost linking key of a device that was linked loses its file, cached copy, and platform key;
+/// an unlinked device replaces its linking identity on the next read instead. Key files of other
+/// vaults stay. An active handoff keeps the device linked and its keys in place until it
+/// finishes; the next pass that fails to open a key tries again.
+pub(crate) fn recover_after_key_loss(
     config_dir: &Path,
     pairing: &PairingManager,
     wrapper: &dyn KeyWrapper,
+    lost: &[String],
 ) -> Result<(), String> {
-    pairing
-        .unlink_for(UnlinkReason::KeyProtectionLost)
-        .map_err(|error| format!("unlink after losing protected keys: {error}"))?;
-    eprintln!("key protection: unlinked because protected keys can no longer be opened");
-    for directory in KEY_DIRECTORIES {
-        key_wrap::remove_key_files(&config_dir.join(directory))?;
+    if lost.is_empty() {
+        return Ok(());
     }
-    pairing.forget_cached_identity_key()?;
-    let mut aliases = vec![key_wrap::linking_key_alias(&pairing.device_id()?)];
-    if let Ok(vault_id) = crate::vault::active_vault_id_in(config_dir) {
-        aliases.push(key_wrap::vault_keys_alias(&vault_id));
+    if !key_store_is_healthy(wrapper) {
+        return Err("the key store failed a health check; keys are kept for a later pass".into());
     }
-    for alias in aliases {
-        // The sealed files are gone, so a platform key left behind protects nothing.
-        if let Err(error) = wrapper.forget(&alias) {
+    let linked = pairing.has_links()?;
+    if linked {
+        pairing
+            .unlink_for(UnlinkReason::KeyProtectionLost)
+            .map_err(|error| format!("unlink after losing protected keys: {error}"))?;
+        eprintln!("key protection: unlinked because protected keys can no longer be opened");
+    }
+    let device_id = pairing.device_id()?;
+    let linking_alias = key_wrap::linking_key_alias(&device_id);
+    let vault_prefix = key_wrap::vault_keys_alias("");
+    for alias in lost {
+        if *alias == linking_alias {
+            if !linked {
+                continue;
+            }
+            let stem = format!("linking-key-{device_id}");
+            key_wrap::remove_key_files_where(&config_dir.join(LINKING_KEY_DIRECTORY), |name| {
+                name == stem
+            })?;
+            pairing.forget_cached_identity_key()?;
+        } else if let Some(vault_id) = alias.strip_prefix(&vault_prefix) {
+            for directory in VAULT_KEY_DIRECTORIES {
+                key_wrap::remove_key_files_where(&config_dir.join(directory), |name| {
+                    is_vault_key_file(name, vault_id)
+                })?;
+            }
+        } else {
+            continue;
+        }
+        // The files it sealed are gone, so the platform key protects nothing.
+        if let Err(error) = wrapper.forget(alias) {
             eprintln!("key protection: forget a platform key: {error:?}");
         }
     }
@@ -277,6 +401,11 @@ pub(crate) mod android {
         let mut values = vec![JValue::Object(&alias)];
         values.extend(arrays.iter().map(|array| JValue::Object(array)));
         let returned = env.call_method(keystore, method, signature, &values);
+        // JNI allows no other call while an exception is pending, so a thrown exception is
+        // cleared before the arguments are zeroed; `returned` still reports the failure.
+        if env.exception_check().unwrap_or(true) {
+            let _ = env.exception_clear();
+        }
         if secret {
             for (array, argument) in arrays.iter().zip(arguments) {
                 let _ = env.set_byte_array_region(array, 0, &vec![0; argument.len()]);
@@ -413,7 +542,7 @@ mod tests {
     }
 
     #[test]
-    fn losing_protected_keys_removes_every_key_file_and_platform_key() {
+    fn an_unlinked_device_loses_only_the_keys_of_the_vault_whose_platform_key_is_gone() {
         let config = ConfigDirectory::new("lost");
         let wrapper = Arc::new(TestKeyWrapper::default());
         let managers = ProcessManagers::with_key_wrapper(wrapper.clone());
@@ -421,6 +550,55 @@ mod tests {
             .load_pairing(&config.0, "device-phone".to_string())
             .expect("load pairing");
         let (_, original) = managers.pairing().identity().expect("identity");
+        let seal = |directory: &str, vault_id: &str, reference: &str| {
+            let path = config
+                .0
+                .join(directory)
+                .join(format!("{}.key", reference.replace(':', "-")));
+            key_wrap::write_protected_file(
+                wrapper.as_ref(),
+                &key_wrap::vault_keys_alias(vault_id),
+                reference,
+                &path,
+                b"private key",
+            )
+            .expect("seal key file");
+            path
+        };
+        let person = seal("contacts", "vault-1", "person-key:vault-1");
+        let writer = seal("sync", "vault-1", "writer-key:vault-1:writer-1");
+        let other = seal("sync", "vault-12", "device-key:vault-12");
+        let lost = vec![
+            key_wrap::vault_keys_alias("vault-1"),
+            key_wrap::linking_key_alias("device-phone"),
+        ];
+
+        recover_after_key_loss(&config.0, managers.pairing(), wrapper.as_ref(), &lost)
+            .expect("recover");
+        assert_eq!(managers.pairing().unlink_reason().expect("reason"), None);
+        assert!(!person.exists() && !writer.exists());
+        assert!(other.exists());
+        assert!(!wrapper.has_key(&key_wrap::vault_keys_alias("vault-1")));
+        assert!(wrapper.has_key(&key_wrap::vault_keys_alias("vault-12")));
+        assert!(
+            identity_key_store(&config.0, wrapper.clone())
+                .path("device-phone")
+                .exists(),
+            "an unlinked device replaces its own linking identity"
+        );
+        assert!(wrapper.has_key(&key_wrap::linking_key_alias("device-phone")));
+        let (_, kept) = managers.pairing().identity().expect("identity");
+        assert_eq!(kept.certificate, original.certificate);
+    }
+
+    #[test]
+    fn an_unavailable_key_store_keeps_every_key_for_a_later_pass() {
+        let config = ConfigDirectory::new("unavailable");
+        let wrapper = Arc::new(TestKeyWrapper::default());
+        let managers = ProcessManagers::with_key_wrapper(wrapper.clone());
+        managers
+            .load_pairing(&config.0, "device-phone".to_string())
+            .expect("load pairing");
         let person = config.0.join("contacts").join("person-key-vault-1.key");
         key_wrap::write_protected_file(
             wrapper.as_ref(),
@@ -430,20 +608,28 @@ mod tests {
             b"person key",
         )
         .expect("seal person key");
+        wrapper.set_unavailable(true);
+        let lost = vec![key_wrap::vault_keys_alias("vault-1")];
+        recover_after_key_loss(&config.0, managers.pairing(), wrapper.as_ref(), &lost)
+            .expect_err("unhealthy");
+        wrapper.set_unavailable(false);
+        assert!(person.exists());
+        assert!(wrapper.has_key(&key_wrap::vault_keys_alias("vault-1")));
+    }
 
-        unlink_after_key_loss(&config.0, managers.pairing(), wrapper.as_ref()).expect("unlink");
-        assert_eq!(
-            managers.pairing().unlink_reason().expect("reason"),
-            Some(UnlinkReason::KeyProtectionLost)
-        );
-        assert!(!person.exists());
-        assert!(
-            !identity_key_store(&config.0, wrapper.clone())
-                .path("device-phone")
-                .exists()
-        );
-        assert!(!wrapper.has_key(&key_wrap::linking_key_alias("device-phone")));
-        let (_, replaced) = managers.pairing().identity().expect("fresh identity");
-        assert_ne!(replaced.certificate, original.certificate);
+    #[test]
+    fn the_key_protection_wrapper_records_each_lost_alias_once() {
+        let protection = KeyProtection::new(Arc::new(TestKeyWrapper::default()));
+        let envelope =
+            key_wrap::seal(&protection, "alias-a", "reference", b"private key").expect("seal");
+        key_wrap::open(&protection, "alias-a", "reference", &envelope).expect("open");
+        assert!(protection.take_lost().is_empty());
+        protection.forget("alias-a").expect("forget");
+        for _ in 0..2 {
+            key_wrap::open(&protection, "alias-a", "reference", &envelope).expect_err("lost");
+        }
+        key_wrap::open(&protection, "alias-b", "reference", b"not an envelope").expect_err("raw");
+        assert_eq!(protection.take_lost(), vec!["alias-a", "alias-b"]);
+        assert!(protection.take_lost().is_empty());
     }
 }

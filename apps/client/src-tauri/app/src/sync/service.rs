@@ -985,7 +985,7 @@ impl ServiceState {
             }
             Err(error) => {
                 eprintln!("sync: {error}");
-                unlink_if_key_protection_lost(host, &error).await;
+                recover_if_key_protection_lost(host).await;
                 view.state = SyncState::Error;
                 view.last_error = Some(error);
                 Next::Retry
@@ -2660,27 +2660,28 @@ pub(crate) fn sync_files<H: SyncHost>(host: &H, vault_id: &str) -> Result<SyncFi
     host.sync_files(vault_id)
 }
 
-/// Unlinks this device when a pass failed because a sealed key file can no longer be opened,
-/// so the device enrolls again with fresh keys instead of retrying a key it cannot recover. A
-/// host without file keys, or a device that is not linked, is left as it is.
-async fn unlink_if_key_protection_lost<H: SyncHost>(host: &H, error: &str) {
-    if !ganbaru_handoff::key_wrap::is_key_protection_lost(error) {
-        return;
-    }
-    let Some(wrapper) = host.key_wrapper() else {
+/// Recovers after a failed pass when opening a sealed key file reported its platform key lost,
+/// so the device enrolls again with fresh keys instead of retrying a key it cannot recover; see
+/// [`super::key_protection::recover_after_key_loss`]. Only the losses the key wrapper recorded
+/// count, never the pass error, whose text can come from a remote hub. A host without file keys
+/// is left as it is.
+async fn recover_if_key_protection_lost<H: SyncHost>(host: &H) {
+    let Some(protection) = host.key_protection() else {
         return;
     };
+    let lost = protection.take_lost();
+    if lost.is_empty() {
+        return;
+    }
     let pairing = host.pairing();
     let result = match host.config_dir() {
         Ok(config_dir) => {
             blocking(move || {
-                if !pairing.has_links()? {
-                    return Ok(());
-                }
-                super::key_protection::unlink_after_key_loss(
+                super::key_protection::recover_after_key_loss(
                     &config_dir,
                     &pairing,
-                    wrapper.as_ref(),
+                    protection.as_ref(),
+                    &lost,
                 )
             })
             .await
@@ -2688,7 +2689,7 @@ async fn unlink_if_key_protection_lost<H: SyncHost>(host: &H, error: &str) {
         Err(error) => Err(error),
     };
     if let Err(error) = result {
-        eprintln!("sync: unlink after losing protected keys: {error}");
+        eprintln!("sync: recover after losing protected keys: {error}");
     }
 }
 

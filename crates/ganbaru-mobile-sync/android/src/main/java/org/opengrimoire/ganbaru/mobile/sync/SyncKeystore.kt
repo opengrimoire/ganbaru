@@ -1,5 +1,6 @@
 package org.opengrimoire.ganbaru.mobile.sync
 
+import android.os.Build
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyPermanentlyInvalidatedException
 import android.security.keystore.KeyProperties
@@ -41,18 +42,18 @@ internal object SyncKeystore {
   private const val TAG_BITS = 128
   private const val NONCE_BYTES = 12
   private const val MAX_DETAIL_BYTES = 256
+  private const val MAX_CAUSE_DEPTH = 8
 
-  /** Encrypts [plaintext] bound to [aad] under the key of [alias], creating the key on first use. */
+  /**
+   * Encrypts [plaintext] bound to [aad] under the key of [alias], creating the key on first use. A
+   * key that was permanently invalidated is replaced, since nothing it sealed opens again anyway.
+   */
   fun wrap(alias: String, aad: ByteArray, plaintext: ByteArray): ByteArray = try {
-    val cipher = Cipher.getInstance(TRANSFORMATION)
-    cipher.init(Cipher.ENCRYPT_MODE, keyFor(alias))
-    cipher.updateAAD(aad)
-    val sealed = cipher.doFinal(plaintext)
-    val nonce = cipher.iv
-    if (nonce.size != NONCE_BYTES) {
-      failure(STATUS_UNAVAILABLE, "UnexpectedNonceLength")
-    } else {
-      success(nonce + sealed)
+    try {
+      seal(alias, aad, plaintext)
+    } catch (error: KeyPermanentlyInvalidatedException) {
+      keyStore().deleteEntry(alias)
+      seal(alias, aad, plaintext)
     }
   } catch (error: GeneralSecurityException) {
     failure(statusOf(error), error)
@@ -101,18 +102,48 @@ internal object SyncKeystore {
     failure(STATUS_UNAVAILABLE, error)
   }
 
+  private fun seal(alias: String, aad: ByteArray, plaintext: ByteArray): ByteArray {
+    val cipher = Cipher.getInstance(TRANSFORMATION)
+    cipher.init(Cipher.ENCRYPT_MODE, keyFor(alias))
+    cipher.updateAAD(aad)
+    val sealed = cipher.doFinal(plaintext)
+    val nonce = cipher.iv
+    return if (nonce.size != NONCE_BYTES) {
+      failure(STATUS_UNAVAILABLE, "UnexpectedNonceLength")
+    } else {
+      success(nonce + sealed)
+    }
+  }
+
   private fun keyStore(): KeyStore = KeyStore.getInstance(PROVIDER).apply { load(null) }
 
   private fun existingKey(alias: String): SecretKey? =
     keyStore().getKey(alias, null) as? SecretKey
 
-  /** The key of [alias], generated once when missing. Generation is serialized per process. */
+  /**
+   * The key of [alias], generated once when missing or permanently lost. Generation is serialized
+   * per process.
+   */
   @Synchronized
-  private fun keyFor(alias: String): SecretKey = existingKey(alias) ?: generate(alias)
+  private fun keyFor(alias: String): SecretKey {
+    val existing = try {
+      existingKey(alias)
+    } catch (error: UnrecoverableKeyException) {
+      if (!isPermanentLoss(error)) throw error
+      keyStore().deleteEntry(alias)
+      null
+    }
+    return existing ?: generate(alias)
+  }
 
+  /**
+   * Generates the key of [alias] in StrongBox, or in the regular Keystore when StrongBox refuses.
+   * StrongBox reports more than [StrongBoxUnavailableException]: some devices fail generation
+   * with a plain [ProviderException], so any provider failure falls back.
+   */
   private fun generate(alias: String): SecretKey = try {
     generate(alias, strongBox = true)
-  } catch (error: StrongBoxUnavailableException) {
+  } catch (error: ProviderException) {
     generate(alias, strongBox = false)
   }
 
@@ -132,12 +163,36 @@ internal object SyncKeystore {
     return generator.generateKey()
   }
 
+  /**
+   * Whether [error] means the key is gone for good. [UnrecoverableKeyException] also wraps
+   * transient Keystore failures, such as a busy or restarting keystore daemon, so it counts only
+   * when its cause chain shows permanent invalidation or a key that no longer exists.
+   */
   private fun statusOf(error: GeneralSecurityException): Byte = when (error) {
     is AEADBadTagException,
     is KeyPermanentlyInvalidatedException,
-    is UnrecoverableKeyException,
     -> STATUS_INVALIDATED
+    is UnrecoverableKeyException ->
+      if (isPermanentLoss(error)) STATUS_INVALIDATED else STATUS_UNAVAILABLE
     else -> STATUS_UNAVAILABLE
+  }
+
+  private fun isPermanentLoss(error: Throwable): Boolean {
+    var cause: Throwable? = error
+    var depth = 0
+    while (cause != null && depth < MAX_CAUSE_DEPTH) {
+      if (cause is KeyPermanentlyInvalidatedException) return true
+      if (
+        Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+        cause is android.security.KeyStoreException &&
+        cause.numericErrorCode == android.security.KeyStoreException.ERROR_KEY_DOES_NOT_EXIST
+      ) {
+        return true
+      }
+      cause = cause.cause
+      depth += 1
+    }
+    return false
   }
 
   private fun success(payload: ByteArray): ByteArray {

@@ -579,3 +579,163 @@ async fn a_stopped_live_runtime_fails_the_delegation() {
         "a registered service without a task cannot run the pass"
     );
 }
+
+/// A phone enrolled with a local hub, its managers sealing with `wrapper`, and a headless host
+/// on them.
+async fn linked_phone_host(
+    wrapper: Arc<ganbaru_handoff::key_wrap::TestKeyWrapper>,
+) -> (LocalPair, ProcessManagers, HeadlessHost) {
+    let pair = LocalPair::start_with_hub(None).await;
+    pair.enroll().await;
+    let config_dir = pair.phone_config_dir();
+    crate::vault::activate_test_vault(
+        config_dir,
+        &config_dir.join("vault"),
+        VAULT_ID,
+        PHONE_DEVICE,
+    )
+    .expect("activate phone vault");
+    let managers = ProcessManagers::with_key_wrapper(wrapper);
+    managers
+        .load_pairing(config_dir, PHONE_DEVICE.to_string())
+        .expect("load pairing");
+    managers.load_ownership(config_dir).expect("load ownership");
+    let host = HeadlessHost::open_with(config_dir, &managers).expect("open headless host");
+    assert!(host.pairing().has_links().expect("links"));
+    (pair, managers, host)
+}
+
+/// Seals the key `reference` of `vault_id` into `directory` under the app config directory.
+fn seal_vault_key(
+    wrapper: &dyn ganbaru_handoff::key_wrap::KeyWrapper,
+    config_dir: &Path,
+    directory: &str,
+    vault_id: &str,
+    reference: &str,
+) -> PathBuf {
+    let path = config_dir
+        .join(directory)
+        .join(format!("{}.key", reference.replace(':', "-")));
+    ganbaru_handoff::key_wrap::write_protected_file(
+        wrapper,
+        &ganbaru_handoff::key_wrap::vault_keys_alias(vault_id),
+        reference,
+        &path,
+        b"private key",
+    )
+    .expect("seal key file");
+    path
+}
+
+#[tokio::test]
+async fn a_failed_pass_without_a_recorded_key_loss_keeps_the_phone_linked() {
+    // A pass error can carry any text from the hub, including the lost-key message, so the
+    // hook reads only the losses the key wrapper recorded and takes no error text at all.
+    let wrapper = Arc::new(ganbaru_handoff::key_wrap::TestKeyWrapper::default());
+    let (pair, _managers, host) = linked_phone_host(wrapper.clone()).await;
+    let device_key = seal_vault_key(
+        wrapper.as_ref(),
+        pair.phone_config_dir(),
+        "sync",
+        VAULT_ID,
+        &format!("device-key:{VAULT_ID}"),
+    );
+    recover_if_key_protection_lost(&host).await;
+    assert!(host.pairing().has_links().expect("links"));
+    assert!(device_key.exists());
+}
+
+#[tokio::test]
+async fn a_recorded_vault_key_loss_unlinks_and_removes_only_that_vaults_keys() {
+    use ganbaru_handoff::key_wrap::{
+        KeyWrapper, is_key_protection_lost, read_protected_file, vault_keys_alias,
+    };
+    let wrapper = Arc::new(ganbaru_handoff::key_wrap::TestKeyWrapper::default());
+    let (pair, managers, host) = linked_phone_host(wrapper.clone()).await;
+    let config_dir = pair.phone_config_dir();
+    let device_reference = format!("device-key:{VAULT_ID}");
+    let lost_device = seal_vault_key(
+        wrapper.as_ref(),
+        config_dir,
+        "sync",
+        VAULT_ID,
+        &device_reference,
+    );
+    let lost_writer = seal_vault_key(
+        wrapper.as_ref(),
+        config_dir,
+        "sync",
+        VAULT_ID,
+        &format!("writer-key:{VAULT_ID}:writer-1"),
+    );
+    let lost_person = seal_vault_key(
+        wrapper.as_ref(),
+        config_dir,
+        crate::contacts::identity::KEY_DIRECTORY,
+        VAULT_ID,
+        &format!("person-key:{VAULT_ID}"),
+    );
+    let other_vault = seal_vault_key(
+        wrapper.as_ref(),
+        config_dir,
+        "sync",
+        "vault-2",
+        "device-key:vault-2",
+    );
+    let lost_alias = vault_keys_alias(VAULT_ID);
+    wrapper.forget(&lost_alias).expect("lose the vault key");
+    let read = || {
+        read_protected_file(
+            managers.key_wrapper().as_ref(),
+            &lost_alias,
+            &device_reference,
+            &lost_device,
+        )
+        .expect_err("lost key")
+    };
+    assert!(is_key_protection_lost(&read()));
+
+    wrapper.set_unavailable(true);
+    recover_if_key_protection_lost(&host).await;
+    assert!(
+        host.pairing().has_links().expect("links"),
+        "an unavailable key store is retried later"
+    );
+    assert!(lost_device.exists());
+    wrapper.set_unavailable(false);
+
+    read();
+    recover_if_key_protection_lost(&host).await;
+    assert!(!host.pairing().has_links().expect("links"));
+    assert_eq!(
+        host.pairing().unlink_reason().expect("reason"),
+        Some(crate::vault::handoff::pairing::UnlinkReason::KeyProtectionLost)
+    );
+    assert!(!lost_device.exists() && !lost_writer.exists() && !lost_person.exists());
+    assert!(other_vault.exists(), "another vault keeps its keys");
+    assert!(wrapper.has_key(&vault_keys_alias("vault-2")));
+}
+
+#[tokio::test]
+async fn unsealed_keys_on_a_linked_phone_unlink_it_and_are_removed() {
+    let pair = LocalPair::start_with_hub(None).await;
+    pair.enroll().await;
+    let config_dir = pair.phone_config_dir();
+    let plaintext = config_dir
+        .join("sync")
+        .join(format!("device-key-{VAULT_ID}.key"));
+    std::fs::create_dir_all(plaintext.parent().expect("parent")).expect("sync directory");
+    std::fs::write(&plaintext, [0x30, 0x51, 0x02]).expect("plaintext key");
+    let managers = ProcessManagers::with_key_wrapper(Arc::new(
+        ganbaru_handoff::key_wrap::TestKeyWrapper::default(),
+    ));
+    managers
+        .load_pairing(config_dir, PHONE_DEVICE.to_string())
+        .expect("load pairing");
+    assert!(!plaintext.exists());
+    assert!(!managers.pairing().has_links().expect("links"));
+    assert_eq!(
+        managers.pairing().unlink_reason().expect("reason"),
+        Some(crate::vault::handoff::pairing::UnlinkReason::KeyProtectionLost)
+    );
+}

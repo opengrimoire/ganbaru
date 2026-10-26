@@ -1731,6 +1731,72 @@ fn a_device_unlinked_for_lost_key_protection_keeps_the_reason_until_it_links_aga
 }
 
 #[test]
+fn an_unlinked_device_whose_sealed_key_is_lost_gets_a_fresh_identity() {
+    use crate::key_wrap::{
+        KeyWrapper, ProtectedIdentityKeyStore, TestKeyWrapper, linking_key_alias,
+    };
+    let temporary = TestDirectory::new("protection-lost-unlinked");
+    let wrapper = Arc::new(TestKeyWrapper::default());
+    let keys = temporary.path().join("linking");
+    let open = || {
+        let manager = PairingManager::default();
+        manager
+            .set_identity_key_store(Arc::new(ProtectedIdentityKeyStore::new(
+                keys.clone(),
+                wrapper.clone(),
+            )))
+            .expect("key store");
+        manager
+            .initialize(temporary.path().to_path_buf(), "device-phone".to_string())
+            .expect("initialize");
+        manager
+    };
+    let (_, original) = open().identity().expect("identity");
+    wrapper
+        .forget(&linking_key_alias("device-phone"))
+        .expect("forget");
+
+    let restarted = open();
+    assert!(!restarted.has_links().expect("links"));
+    let (_, replaced) = restarted.identity().expect("fresh identity");
+    assert_ne!(replaced.certificate, original.certificate);
+    let (_, reopened) = open().identity().expect("reopened identity");
+    assert_eq!(reopened.certificate, replaced.certificate);
+}
+
+#[test]
+fn a_linked_device_whose_sealed_key_is_lost_keeps_its_identity_until_unlinked() {
+    use crate::key_wrap::{
+        KeyWrapper, ProtectedIdentityKeyStore, TestKeyWrapper, linking_key_alias,
+    };
+    let (phone_root, phone, _, _) = linked_phone("protection-lost-linked");
+    let wrapper = Arc::new(TestKeyWrapper::default());
+    let keys = phone_root.path().join("linking");
+    phone
+        .set_identity_key_store(Arc::new(ProtectedIdentityKeyStore::new(
+            keys.clone(),
+            wrapper.clone(),
+        )))
+        .expect("key store");
+    phone.identity().expect("identity");
+    let before = state_text(phone_root.path());
+    wrapper
+        .forget(&linking_key_alias("device-phone"))
+        .expect("forget");
+
+    let restarted = PairingManager::default();
+    restarted
+        .set_identity_key_store(Arc::new(ProtectedIdentityKeyStore::new(keys, wrapper)))
+        .expect("key store");
+    restarted
+        .initialize(phone_root.path().to_path_buf(), "device-phone".to_string())
+        .expect("restart");
+    let error = restarted.identity().map(|_| ()).unwrap_err();
+    assert_eq!(error, DEVICE_KEY_MISSING_ERROR);
+    assert_eq!(state_text(phone_root.path()), before);
+}
+
+#[test]
 fn an_unreadable_key_store_reports_the_failure_without_replacing_the_identity() {
     let temporary = TestDirectory::new("key-store-unreadable");
     let store = Arc::new(MemoryKeyStore::default());

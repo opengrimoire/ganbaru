@@ -2,6 +2,7 @@
 //! host built from the app config directory runs a pass without a Tauri runtime, such as when
 //! Android wakes the app in the background.
 
+use super::key_protection::KeyProtection;
 use super::status::{DegradedReasons, SyncRole, SyncStatusView, emit_applied, emit_status};
 use super::writer::{SyncFiles, SyncKeyStore};
 use crate::db::DatabaseState;
@@ -12,7 +13,6 @@ use crate::vault::ownership::VaultOwnershipManager;
 #[cfg(any(mobile, test))]
 use crate::vault::process_managers::ProcessManagers;
 use ganbaru_contacts::{PersonKeyPair, PersonPublicKey};
-use ganbaru_handoff::key_wrap::KeyWrapper;
 use ganbaru_sync::manifest::vault::VAULT_MANIFEST;
 use ganbaru_sync::{ChangeNotice, Engine, Hooks};
 use sqlx::SqlitePool;
@@ -65,9 +65,10 @@ pub(crate) trait SyncHost: Clone + Send + Sync + 'static {
     /// Where writer keys are kept.
     fn key_store(&self) -> Result<Arc<dyn SyncKeyStore>, String>;
 
-    /// The platform key that seals device-local key files, when this host keeps keys in files.
-    /// A host whose keys live in the operating system keyring has none.
-    fn key_wrapper(&self) -> Option<Arc<dyn KeyWrapper>> {
+    /// The platform key that seals device-local key files and records the keys found lost, when
+    /// this host keeps keys in files. A host whose keys live in the operating system keyring has
+    /// none.
+    fn key_protection(&self) -> Option<Arc<KeyProtection>> {
         None
     }
 
@@ -214,8 +215,8 @@ impl<R: Runtime> SyncHost for AppHandle<R> {
     }
 
     #[cfg(mobile)]
-    fn key_wrapper(&self) -> Option<Arc<dyn KeyWrapper>> {
-        Some(crate::vault::process_managers::process_managers().key_wrapper())
+    fn key_protection(&self) -> Option<Arc<KeyProtection>> {
+        Some(crate::vault::process_managers::process_managers().key_protection())
     }
 
     fn engine(&self) -> Result<Engine, String> {
@@ -297,7 +298,7 @@ struct HeadlessParts {
     pairing: PairingManager,
     ownership: VaultOwnershipManager,
     pools: DatabaseState,
-    key_wrapper: Arc<dyn KeyWrapper>,
+    key_protection: Arc<KeyProtection>,
     hooks: Box<dyn Fn() -> Hooks + Send + Sync>,
 }
 
@@ -341,7 +342,7 @@ impl HeadlessHost {
             pairing,
             ownership,
             pools: crate::db::vault_pools().clone(),
-            key_wrapper: managers.key_wrapper(),
+            key_protection: managers.key_protection(),
             hooks: Box::new(vault_hooks),
         })))
     }
@@ -379,12 +380,12 @@ impl SyncHost for HeadlessHost {
     fn key_store(&self) -> Result<Arc<dyn SyncKeyStore>, String> {
         Ok(Arc::new(super::writer::FileKeyStore::new(
             self.sync_directory()?,
-            self.0.key_wrapper.clone(),
+            self.0.key_protection.clone(),
         )))
     }
 
-    fn key_wrapper(&self) -> Option<Arc<dyn KeyWrapper>> {
-        Some(self.0.key_wrapper.clone())
+    fn key_protection(&self) -> Option<Arc<KeyProtection>> {
+        Some(self.0.key_protection.clone())
     }
 
     fn engine(&self) -> Result<Engine, String> {
@@ -398,7 +399,7 @@ impl SyncHost for HeadlessHost {
         let vault_id = self.active_vault_id()?;
         let path = crate::contacts::identity::person_key_path_in(&self.0.config_dir, &vault_id);
         let public_key = *public_key;
-        let wrapper = self.0.key_wrapper.clone();
+        let wrapper = self.0.key_protection.clone();
         super::service::blocking(move || {
             crate::contacts::identity::person_key_file_matching(
                 wrapper.as_ref(),

@@ -532,6 +532,9 @@ impl PairingManager {
                     key
                 }
                 Ok(None) => return self.replace_lost_identity(&device_id),
+                Err(error) if crate::key_wrap::is_key_protection_lost(&error) => {
+                    return self.replace_lost_identity(&device_id);
+                }
                 Err(error) => return Err(format!("{DEVICE_KEY_UNAVAILABLE_ERROR}: {error}")),
             },
             (None, None) => {
@@ -593,8 +596,9 @@ impl PairingManager {
         }
     }
 
-    /// Creates a fresh identity after the stored key vanished, but only while no peer or
-    /// coordinator pins the old certificate; otherwise the user must unlink first.
+    /// Creates a fresh identity after the stored key vanished or can never be opened again, but
+    /// only while no peer or coordinator pins the old certificate; otherwise the device must be
+    /// unlinked first.
     fn replace_lost_identity(&self, device_id: &str) -> Result<(String, TlsIdentity), String> {
         {
             let mut inner = self.lock()?;

@@ -49,12 +49,20 @@ pub const RELATION_EDGES: DerivedKeyTable = DerivedKeyTable {
     columns: &["source_page_id", "source_property_id", "target_page_id"],
 };
 
+/// Comment reactions, keyed by comment, author, and emoji.
+pub const COMMENT_REACTIONS: DerivedKeyTable = DerivedKeyTable {
+    table: "notes_comment_reactions",
+    prefix: "notes-comment-reaction",
+    columns: &["comment_id", "created_by", "emoji"],
+};
+
 /// Every Notes table with a derived `sync_key`.
 pub const DERIVED_KEY_TABLES: &[DerivedKeyTable] = &[
     PROPERTIES,
     PROPERTY_OPTIONS,
     PROPERTY_VALUES,
     RELATION_EDGES,
+    COMMENT_REACTIONS,
 ];
 
 /// Matches placeholder keys.

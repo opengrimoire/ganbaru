@@ -4,8 +4,9 @@
 //! The hook receives only the connection and a change sink, so the desktop service and the
 //! headless Android pass run the same code. For the changed keys of an apply it fills the
 //! hook-derived columns (a page's `parent_type`, `parent_page_id`, and `parent_block_id`, a
-//! block's `page_id` and `plain_text`, a database's parent columns), refreshes the reminder
-//! candidates of changed blocks and property values, forgets cached rollups that read changed
+//! block's `page_id` and `plain_text`, a database's parent columns, and the `page_id` of comment
+//! threads, anchors, and suggestions), refreshes the reminder candidates of changed blocks,
+//! property values, and comments, forgets cached rollups that read changed
 //! data sources, properties, options, values, or relation edges, invalidates the fingerprints
 //! of the search and link indexes so the next read rebuilds them, queues history snapshots of
 //! the touched pages in `notes_page_history_pending`, queues the
@@ -17,7 +18,8 @@ use crate::block_storage::compose_block_content;
 use crate::validation::plain_text_from_payload;
 use ganbaru_sync::manifest::TableSpec;
 use ganbaru_sync::manifest::vault::notes::{
-    BLOCKS_TABLE, DATA_SOURCES_TABLE, DATABASES_TABLE, DOMAIN, OPTIONS_TABLE, PAGES_TABLE,
+    ANCHORS_TABLE, BLOCKS_TABLE, COMMENTS_TABLE, DATA_SOURCES_TABLE, DATABASES_TABLE, DOMAIN,
+    OPTIONS_TABLE, PAGES_TABLE, REACTIONS_TABLE, SUGGESTIONS_TABLE, THREADS_TABLE,
     PROPERTIES_TABLE, RELATION_EDGES_TABLE, VALUES_TABLE, value_group,
 };
 use ganbaru_sync::{ChangeSink, HookError, HookFuture, Hooks, MaterializeHook};
@@ -86,6 +88,8 @@ pub async fn refresh_after_apply(
     } else if table == BLOCKS_TABLE {
         refresh_blocks(conn, keys).await?;
         refresh_database_parents(conn, keys).await?;
+        let pages = refresh_comment_pages(conn).await?;
+        queue_page_history(conn, &pages).await?;
         queue_repair(conn, "block", keys).await?;
     } else if table == DATABASES_TABLE {
         refresh_databases(conn, keys).await?;
@@ -120,8 +124,146 @@ pub async fn refresh_after_apply(
         let sources = data_sources_of(conn, &pages).await?;
         invalidate_rollups(conn, &sources, removed).await?;
         queue_page_history(conn, &sources_pages).await?;
+    } else if table == THREADS_TABLE || table == ANCHORS_TABLE || table == SUGGESTIONS_TABLE {
+        let pages = refresh_comment_pages(conn).await?;
+        queue_page_history(conn, &pages).await?;
+    } else if table == COMMENTS_TABLE {
+        refresh_comments(conn, keys).await?;
+    } else if table == REACTIONS_TABLE {
+        let (comments, _) = present(conn, "notes_comment_reactions", "comment_id", keys).await?;
+        let pages = comment_pages(conn, &comments).await?;
+        queue_page_history(conn, &pages).await?;
     }
     invalidate_indexes(conn).await
+}
+
+/// Sets `page_id` of every comment thread, anchor, and suggestion to the page its parent page
+/// or block is on, and returns the pages they now sit on. A row whose block has no page yet
+/// keeps its value until the block is placed.
+async fn refresh_comment_pages(conn: &mut SqliteConnection) -> Result<Vec<String>, String> {
+    let mut pages = BTreeSet::new();
+    for sql in [
+        "UPDATE notes_comment_threads
+         SET page_id = placed.page_id
+         FROM (
+             SELECT thread.id, COALESCE(thread.parent_page_id, block.page_id) AS page_id
+             FROM notes_comment_threads AS thread
+             LEFT JOIN notes_blocks AS block ON block.id = thread.parent_block_id
+         ) AS placed
+         WHERE notes_comment_threads.id = placed.id
+           AND placed.page_id IS NOT NULL AND placed.page_id <> ''
+           AND notes_comment_threads.page_id <> placed.page_id
+         RETURNING notes_comment_threads.page_id",
+        "UPDATE notes_comment_thread_anchors
+         SET page_id = block.page_id
+         FROM notes_blocks AS block
+         WHERE block.id = notes_comment_thread_anchors.block_id
+           AND block.page_id <> '' AND notes_comment_thread_anchors.page_id <> block.page_id
+         RETURNING notes_comment_thread_anchors.page_id",
+        "UPDATE notes_suggestions
+         SET page_id = block.page_id
+         FROM notes_blocks AS block
+         WHERE block.id = notes_suggestions.block_id
+           AND block.page_id <> '' AND notes_suggestions.page_id <> block.page_id
+         RETURNING notes_suggestions.page_id",
+    ] {
+        let moved: Vec<String> = sqlx::query_scalar(sql)
+            .fetch_all(&mut *conn)
+            .await
+            .map_err(|error| format!("refresh synced Notes comment pages: {error}"))?;
+        pages.extend(moved);
+    }
+    Ok(pages.into_iter().collect())
+}
+
+/// The distinct pages of the threads that hold the comments among `comment_ids`.
+async fn comment_pages(
+    conn: &mut SqliteConnection,
+    comment_ids: &[String],
+) -> Result<Vec<String>, String> {
+    sqlx::query_scalar(
+        "SELECT DISTINCT thread.page_id
+         FROM notes_comments AS comment
+         JOIN notes_comment_threads AS thread ON thread.id = comment.thread_id
+         WHERE comment.id IN (SELECT value FROM json_each(?1)) AND thread.page_id <> ''",
+    )
+    .bind(keys_json(comment_ids)?)
+    .fetch_all(&mut *conn)
+    .await
+    .map_err(|error| format!("load pages of synced Notes comments: {error}"))
+}
+
+/// One changed comment with the placement of its thread.
+#[derive(sqlx::FromRow)]
+struct ChangedComment {
+    id: String,
+    rich_text: String,
+    plain_text: String,
+    deleted: bool,
+    page_id: String,
+    parent_block_id: Option<String>,
+}
+
+/// Refreshes the mention candidates of the comments among `comment_ids` and queues history
+/// snapshots of their pages. A removed or deleted comment loses its pending candidates and its
+/// attachment references; Notes assets do not replicate, so a remote comment records none.
+async fn refresh_comments(
+    conn: &mut SqliteConnection,
+    comment_ids: &[String],
+) -> Result<(), String> {
+    let comments: Vec<ChangedComment> = sqlx::query_as(
+        "SELECT comment.id, comment.rich_text, comment.plain_text,
+                comment.deleted_at IS NOT NULL AS deleted, thread.page_id,
+                thread.parent_block_id
+         FROM notes_comments AS comment
+         JOIN notes_comment_threads AS thread ON thread.id = comment.thread_id
+         WHERE comment.id IN (SELECT value FROM json_each(?1))",
+    )
+    .bind(keys_json(comment_ids)?)
+    .fetch_all(&mut *conn)
+    .await
+    .map_err(|error| format!("load synced Notes comments: {error}"))?;
+    let live: BTreeSet<&str> = comments
+        .iter()
+        .filter(|comment| !comment.deleted && !comment.page_id.is_empty())
+        .map(|comment| comment.id.as_str())
+        .collect();
+    let mut tx = conn
+        .begin()
+        .await
+        .map_err(|error| format!("begin synced Notes comment refresh: {error}"))?;
+    for comment_id in comment_ids {
+        if !live.contains(comment_id.as_str()) {
+            crate::mention_notifications::clear_source_tx(&mut tx, "comment", comment_id).await?;
+            crate::assets::sync_comment_asset_references_tx(&mut tx, "", comment_id, &[]).await?;
+        }
+    }
+    let known_reminders = reminder_ids(&mut tx, "comment", comment_ids).await?;
+    let mut pages = BTreeSet::new();
+    for comment in &comments {
+        if !comment.page_id.is_empty() {
+            pages.insert(comment.page_id.clone());
+        }
+        if !live.contains(comment.id.as_str()) {
+            continue;
+        }
+        let rich_text: Vec<Value> = serde_json::from_str(&comment.rich_text)
+            .map_err(|error| format!("parse synced Notes comment text: {error}"))?;
+        crate::mention_notifications::sync_comment_tx(
+            &mut tx,
+            &comment.id,
+            &comment.page_id,
+            comment.parent_block_id.as_deref(),
+            &rich_text,
+            &comment.plain_text,
+        )
+        .await?;
+    }
+    settle_past_reminders(&mut tx, "comment", comment_ids, &known_reminders).await?;
+    tx.commit()
+        .await
+        .map_err(|error| format!("commit synced Notes comment refresh: {error}"))?;
+    queue_page_history(conn, &pages.into_iter().collect::<Vec<_>>()).await
 }
 
 /// Sets the parent columns of the databases among `database_ids` to the placement of their

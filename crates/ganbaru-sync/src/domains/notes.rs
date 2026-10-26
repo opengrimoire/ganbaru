@@ -9,12 +9,14 @@ use crate::adapter::{AdapterError, DomainAdapter, Presentation};
 use crate::codec;
 use crate::manifest::OwnedTable;
 use crate::manifest::vault::notes::{
-    ADAPTER, ALIASES_TABLE, BLOCKS_TABLE, DATA_SOURCE_TEMPLATE_BLOCKS, DATA_SOURCE_TEMPLATES_TABLE,
-    DATA_SOURCES_TABLE, DATABASES_TABLE, FOLDERS_TABLE, OPTIONS_TABLE, PAGE_TEMPLATE_BLOCKS,
-    PAGE_TEMPLATES_TABLE, PAGES_TABLE, PROPERTIES_TABLE, PROPERTY_KEY_PREFIX, VALUES_TABLE,
-    VIEWS_TABLE, alias_group, block_group, data_source_group, data_source_template_group,
-    database_group, folder_group, option_group, page_group, page_template_group, property_group,
-    value_group, view_group,
+    ADAPTER, ALIASES_TABLE, ANCHORS_TABLE, BLOCKS_TABLE, COMMENTS_TABLE,
+    DATA_SOURCE_TEMPLATE_BLOCKS, DATA_SOURCE_TEMPLATES_TABLE, DATA_SOURCES_TABLE, DATABASES_TABLE,
+    FOLDERS_TABLE, OPTIONS_TABLE, PAGE_TEMPLATE_BLOCKS, PAGE_TEMPLATES_TABLE, PAGES_TABLE,
+    PROPERTIES_TABLE, PROPERTY_KEY_PREFIX, REACTIONS_TABLE, SUGGESTIONS_TABLE, THREADS_TABLE,
+    VALUES_TABLE, VIEWS_TABLE, alias_group, anchor_group, block_group, comment_group,
+    data_source_group, data_source_template_group, database_group, folder_group, option_group,
+    page_group, page_template_group, property_group, reaction_group, suggestion_group,
+    thread_group, value_group, view_group,
 };
 
 /// Characters of a free text column without a narrower Notes limit.
@@ -215,6 +217,13 @@ fn json(field: &Field, what: &'static str) -> Result<(), AdapterError> {
         .map_err(|_| AdapterError(what))
 }
 
+/// A JSON array.
+fn json_array(field: &Field, what: &'static str) -> Result<(), AdapterError> {
+    serde_json::from_str::<Vec<serde_json::Value>>(text(field)?)
+        .map(|_| ())
+        .map_err(|_| AdapterError(what))
+}
+
 fn validate_database(group: GroupId, fields: &[Field]) -> Result<(), AdapterError> {
     match (group, fields) {
         (database_group::TITLE, [_, rich_text]) => json(rich_text, "notes database title"),
@@ -326,6 +335,161 @@ fn validate_data_source_template(group: GroupId, fields: &[Field]) -> Result<(),
     }
 }
 
+/// Thread status values, as the Notes check allows them.
+pub const THREAD_OPEN: &str = "open";
+/// A resolved thread.
+pub const THREAD_RESOLVED: &str = "resolved";
+/// Suggestion status values, as the Notes check allows them.
+pub const SUGGESTION_OPEN: &str = "open";
+/// An accepted suggestion.
+pub const SUGGESTION_ACCEPTED: &str = "accepted";
+/// A rejected suggestion.
+pub const SUGGESTION_REJECTED: &str = "rejected";
+
+fn validate_thread(group: GroupId, fields: &[Field]) -> Result<(), AdapterError> {
+    match (group, fields) {
+        (thread_group::CREATED, [kind, parent_page, parent_block, _]) => {
+            if block_parent_kind(parent_page, parent_block) == Some(text(kind)?) {
+                Ok(())
+            } else {
+                Err(AdapterError("notes comment thread parent"))
+            }
+        }
+        (thread_group::STATUS, [status, resolved_at, resolved_by]) => {
+            let open = is_null(resolved_at) && is_null(resolved_by);
+            let resolved = !is_null(resolved_at) && !is_null(resolved_by);
+            match text(status)? {
+                THREAD_OPEN if open => Ok(()),
+                THREAD_RESOLVED if resolved => Ok(()),
+                _ => Err(AdapterError("notes comment thread status")),
+            }
+        }
+        _ => Ok(()),
+    }
+}
+
+/// An offset pair whose end lies after its start.
+fn ordered_range(start: &Field, end: &Field, what: &'static str) -> Result<(), AdapterError> {
+    match (start, end) {
+        (Field::Integer(start), Field::Integer(end)) if end > start => Ok(()),
+        _ => Err(AdapterError(what)),
+    }
+}
+
+fn validate_anchor(group: GroupId, fields: &[Field]) -> Result<(), AdapterError> {
+    match (group, fields) {
+        (anchor_group::RANGE, [start, end, quote, _, _]) => {
+            ordered_range(start, end, "notes comment anchor range")?;
+            not_blank(quote, "notes comment anchor text")
+        }
+        _ => Ok(()),
+    }
+}
+
+fn validate_comment(group: GroupId, fields: &[Field]) -> Result<(), AdapterError> {
+    match (group, fields) {
+        (comment_group::CREATED, [_, author, display_name, _]) => {
+            not_blank(author, "notes comment author")?;
+            optional_json(display_name, "notes comment author name")
+        }
+        (comment_group::BODY, [rich_text, _, attachments]) => {
+            json_array(rich_text, "notes comment text")?;
+            json_array(attachments, "notes comment attachments")
+        }
+        _ => Ok(()),
+    }
+}
+
+fn validate_reaction(group: GroupId, fields: &[Field]) -> Result<(), AdapterError> {
+    match (group, fields) {
+        (reaction_group::IDENTITY, [_, author, emoji]) => {
+            not_blank(author, "notes reaction author")?;
+            not_blank(emoji, "notes reaction emoji")
+        }
+        (reaction_group::CREATED, [_, display_name]) => {
+            optional_json(display_name, "notes reaction author name")
+        }
+        _ => Ok(()),
+    }
+}
+
+fn validate_suggestion(group: GroupId, fields: &[Field]) -> Result<(), AdapterError> {
+    match (group, fields) {
+        (suggestion_group::CONTENT, [_, _, display_name, start, end, original, ..]) => {
+            optional_json(display_name, "notes suggestion author name")?;
+            ordered_range(start, end, "notes suggestion range")?;
+            not_blank(original, "notes suggestion original text")
+        }
+        (
+            suggestion_group::STATUS,
+            [status, accepted_at, accepted_by, rejected_at, rejected_by],
+        ) => {
+            let undecided = is_null(accepted_at)
+                && is_null(accepted_by)
+                && is_null(rejected_at)
+                && is_null(rejected_by);
+            let accepted = !is_null(accepted_at) && is_null(rejected_at) && is_null(rejected_by);
+            let rejected = !is_null(rejected_at) && is_null(accepted_at) && is_null(accepted_by);
+            match text(status)? {
+                SUGGESTION_OPEN if undecided => Ok(()),
+                SUGGESTION_ACCEPTED if accepted => Ok(()),
+                SUGGESTION_REJECTED if rejected => Ok(()),
+                _ => Err(AdapterError("notes suggestion status")),
+            }
+        }
+        _ => Ok(()),
+    }
+}
+
+/// The rank of a coupled decision state: a deleted comment over a live one, and an accepted
+/// suggestion over a rejected one over an open one. Thread status has no rank, so concurrent
+/// resolves and reopens settle by version order.
+fn decision_priority(table: TableId, group: GroupId, value: &Value) -> u8 {
+    match value.fields() {
+        [deleted_at] if table == COMMENTS_TABLE && group == comment_group::DELETED => {
+            u8::from(!is_null(deleted_at))
+        }
+        [Field::Text(status), ..]
+            if table == SUGGESTIONS_TABLE && group == suggestion_group::STATUS =>
+        {
+            match status.as_str() {
+                SUGGESTION_ACCEPTED => 2,
+                SUGGESTION_REJECTED => 1,
+                _ => 0,
+            }
+        }
+        _ => 0,
+    }
+}
+
+/// The text field `field` of the first value of `group` among `values`.
+fn group_text(values: &[(GroupId, Value)], group: GroupId, field: usize) -> Option<&str> {
+    values
+        .iter()
+        .filter(|(id, _)| *id == group)
+        .find_map(|(_, value)| match value.fields().get(field) {
+            Some(Field::Text(text)) => Some(text.as_str()),
+            _ => None,
+        })
+}
+
+/// The preview of a comment's plain text or a suggestion's proposed text, falling back to the
+/// text it replaces when it proposes a removal.
+fn preview(table: TableId, values: &[(GroupId, Value)]) -> String {
+    let text = if table == COMMENTS_TABLE {
+        group_text(values, comment_group::BODY, 1)
+    } else if table == SUGGESTIONS_TABLE {
+        group_text(values, suggestion_group::CONTENT, 6)
+            .filter(|proposed| !proposed.is_empty())
+            .or_else(|| group_text(values, suggestion_group::CONTENT, 5))
+    } else if table == ANCHORS_TABLE {
+        group_text(values, anchor_group::RANGE, 2)
+    } else {
+        None
+    };
+    text.unwrap_or_default().to_owned()
+}
+
 /// Checks that an option names the property its identity derives, so an option never attaches
 /// to another property.
 fn validate_option_row(groups: &[GroupValue]) -> Result<(), AdapterError> {
@@ -400,10 +564,11 @@ impl DomainAdapter for NotesAdapter {
     }
 
     /// A trashed page, block, database, or data source wins over a concurrent restore, so
-    /// trashing a subtree is never undone halfway by an edit that did not see it.
+    /// trashing a subtree is never undone halfway by an edit that did not see it. A deleted
+    /// comment wins over a concurrent restore, and an accepted suggestion over a rejected one.
     fn priority(&self, table: TableId, group: GroupId, value: &Value) -> u8 {
         if !is_lifecycle(table, group) {
-            return 0;
+            return decision_priority(table, group, value);
         }
         match value.fields() {
             [Field::Integer(1), ..] => 1,
@@ -435,6 +600,16 @@ impl DomainAdapter for NotesAdapter {
             validate_page_template(group, fields)
         } else if table == DATA_SOURCE_TEMPLATES_TABLE {
             validate_data_source_template(group, fields)
+        } else if table == THREADS_TABLE {
+            validate_thread(group, fields)
+        } else if table == ANCHORS_TABLE {
+            validate_anchor(group, fields)
+        } else if table == COMMENTS_TABLE {
+            validate_comment(group, fields)
+        } else if table == REACTIONS_TABLE {
+            validate_reaction(group, fields)
+        } else if table == SUGGESTIONS_TABLE {
+            validate_suggestion(group, fields)
         } else {
             Ok(())
         }
@@ -448,8 +623,9 @@ impl DomainAdapter for NotesAdapter {
         }
     }
 
-    /// A page, database, data source, property, view, or template presents its title or name;
-    /// Notes is owner-only, so other rows present nothing yet.
+    /// A page, database, data source, property, view, or template presents its title or name.
+    /// A comment previews its plain text, a suggestion its proposed text, and an anchor its
+    /// quoted text; a thread presents nothing of its own.
     fn presentation(&self, table: TableId, values: &[(GroupId, Value)]) -> Presentation {
         let title = title_group(table)
             .and_then(|title_group| {
@@ -464,7 +640,7 @@ impl DomainAdapter for NotesAdapter {
             .unwrap_or_default();
         Presentation {
             title,
-            preview: String::new(),
+            preview: preview(table, values),
         }
     }
 }
@@ -733,5 +909,142 @@ mod tests {
             ),
             0
         );
+    }
+
+    #[test]
+    fn comment_threads_anchors_and_suggestions_mirror_the_table_checks() {
+        let adapter = NotesAdapter;
+        let check = |table, group, fields: Vec<Field>| adapter.validate(table, group, &value(fields));
+        let created = |kind: &str, page: Field, block: Field| {
+            check(
+                THREADS_TABLE,
+                thread_group::CREATED,
+                vec![t(kind), page, block, t("2027-01-01T00:00:00.000Z")],
+            )
+        };
+        created(BLOCK_PARENT_PAGE, t("page"), Field::Null).unwrap();
+        created(BLOCK_PARENT_BLOCK, Field::Null, t("block")).unwrap();
+        assert!(created(BLOCK_PARENT_PAGE, Field::Null, t("block")).is_err());
+        assert!(created(BLOCK_PARENT_BLOCK, t("page"), t("block")).is_err());
+
+        let status = |status: &str, at: Field, by: Field| {
+            check(THREADS_TABLE, thread_group::STATUS, vec![t(status), at, by])
+        };
+        status(THREAD_OPEN, Field::Null, Field::Null).unwrap();
+        status(THREAD_RESOLVED, t("now"), t("person")).unwrap();
+        assert!(status(THREAD_RESOLVED, t("now"), Field::Null).is_err());
+        assert!(status(THREAD_OPEN, t("now"), t("person")).is_err());
+
+        let range = |start: i64, end: i64, quote: &str| {
+            check(
+                ANCHORS_TABLE,
+                anchor_group::RANGE,
+                vec![
+                    Field::Integer(start),
+                    Field::Integer(end),
+                    t(quote),
+                    t(""),
+                    t(""),
+                ],
+            )
+        };
+        range(0, 4, "word").unwrap();
+        assert!(range(4, 4, "word").is_err());
+        assert!(range(0, 4, "  ").is_err());
+
+        let body = |rich_text: &str, attachments: &str| {
+            check(
+                COMMENTS_TABLE,
+                comment_group::BODY,
+                vec![t(rich_text), t(""), t(attachments)],
+            )
+        };
+        body("[]", "[]").unwrap();
+        assert!(body("{}", "[]").is_err());
+        assert!(body("[]", "{").is_err());
+        assert!(
+            check(
+                REACTIONS_TABLE,
+                reaction_group::IDENTITY,
+                vec![t("comment"), t("person"), t(" ")],
+            )
+            .is_err()
+        );
+
+        let decision = |status: &str, accepted: Field, rejected: Field| {
+            check(
+                SUGGESTIONS_TABLE,
+                suggestion_group::STATUS,
+                vec![t(status), accepted.clone(), accepted, rejected.clone(), rejected],
+            )
+        };
+        decision(SUGGESTION_OPEN, Field::Null, Field::Null).unwrap();
+        decision(SUGGESTION_ACCEPTED, t("now"), Field::Null).unwrap();
+        decision(SUGGESTION_REJECTED, Field::Null, t("now")).unwrap();
+        assert!(decision(SUGGESTION_ACCEPTED, t("now"), t("now")).is_err());
+        assert!(decision(SUGGESTION_OPEN, Field::Null, t("now")).is_err());
+    }
+
+    #[test]
+    fn a_deleted_comment_and_an_accepted_suggestion_outrank_their_alternatives() {
+        let adapter = NotesAdapter;
+        let deleted = |at: Field| {
+            adapter.priority(COMMENTS_TABLE, comment_group::DELETED, &value(vec![at]))
+        };
+        assert!(deleted(t("now")) > deleted(Field::Null));
+        let decided = |status: &str| {
+            adapter.priority(
+                SUGGESTIONS_TABLE,
+                suggestion_group::STATUS,
+                &value(vec![t(status), Field::Null, Field::Null, Field::Null, Field::Null]),
+            )
+        };
+        assert!(decided(SUGGESTION_ACCEPTED) > decided(SUGGESTION_REJECTED));
+        assert!(decided(SUGGESTION_REJECTED) > decided(SUGGESTION_OPEN));
+        assert_eq!(
+            adapter.priority(
+                THREADS_TABLE,
+                thread_group::STATUS,
+                &value(vec![t(THREAD_RESOLVED), t("now"), t("person")]),
+            ),
+            0
+        );
+    }
+
+    #[test]
+    fn comments_and_suggestions_preview_their_text() {
+        let adapter = NotesAdapter;
+        let comment = adapter.presentation(
+            COMMENTS_TABLE,
+            &[(
+                comment_group::BODY,
+                value(vec![t("[]"), t("Looks good"), t("[]")]),
+            )],
+        );
+        assert_eq!(comment.preview, "Looks good");
+        let suggestion = |proposed: &str| {
+            adapter
+                .presentation(
+                    SUGGESTIONS_TABLE,
+                    &[(
+                        suggestion_group::CONTENT,
+                        value(vec![
+                            t("block"),
+                            t("person"),
+                            Field::Null,
+                            Field::Integer(0),
+                            Field::Integer(3),
+                            t("old"),
+                            t(proposed),
+                            t(""),
+                            t(""),
+                            t("2027-01-01T00:00:00.000Z"),
+                        ]),
+                    )],
+                )
+                .preview
+        };
+        assert_eq!(suggestion("new"), "new");
+        assert_eq!(suggestion(""), "old");
     }
 }

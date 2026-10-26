@@ -390,17 +390,19 @@ async fn create_copy_id_map(
     Ok(map)
 }
 
-/// Fresh ids for bundle folders, aliases, data sources, views, and data source templates that
-/// sync published and that have since been deleted. Sync never lets a deleted published key be
-/// created again, so these rows come back under new ids; rows sync never published keep their
-/// ids. Rows already copied with their page or database are left to `copy_ids`.
+/// Fresh ids for bundle folders, aliases, data sources, views, data source templates, comment
+/// threads, comments, and suggestions that sync published and that have since been deleted.
+/// Sync never lets a deleted published key be created again, so these rows come back under new
+/// ids; rows sync never published keep their ids. Rows already copied with their page or
+/// database are left to `copy_ids`.
 async fn renew_deleted_published_ids_tx(
     tx: &mut Transaction<'_, Sqlite>,
     rows: &BTreeMap<String, Vec<Value>>,
     copy_ids: &HashMap<String, String>,
 ) -> Result<HashMap<String, String>, String> {
     use ganbaru_sync::manifest::vault::notes::{
-        ALIASES_TABLE, DATA_SOURCE_TEMPLATES_TABLE, DATA_SOURCES_TABLE, FOLDERS_TABLE, VIEWS_TABLE,
+        ALIASES_TABLE, COMMENTS_TABLE, DATA_SOURCE_TEMPLATES_TABLE, DATA_SOURCES_TABLE,
+        FOLDERS_TABLE, SUGGESTIONS_TABLE, THREADS_TABLE, VIEWS_TABLE,
     };
 
     let mut renewed = HashMap::new();
@@ -411,6 +413,9 @@ async fn renew_deleted_published_ids_tx(
         ("notes_data_sources", DATA_SOURCES_TABLE),
         ("notes_database_views", VIEWS_TABLE),
         ("notes_data_source_templates", DATA_SOURCE_TEMPLATES_TABLE),
+        ("notes_comment_threads", THREADS_TABLE),
+        ("notes_comments", COMMENTS_TABLE),
+        ("notes_suggestions", SUGGESTIONS_TABLE),
     ] {
         let sql = format!(
             "SELECT EXISTS (SELECT 1 FROM sync_rows WHERE table_id = ?1 AND row_key = ?2)

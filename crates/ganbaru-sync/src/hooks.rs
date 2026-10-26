@@ -93,15 +93,20 @@ pub trait MaterializeHook: Send + Sync {
     /// A returned value that differs from the winner's is written to the domain row and
     /// captured like a local edit of the group, which the next seal publishes as a write that
     /// supersedes every version passed here; one equal to the winner's writes nothing. The
-    /// engine skips the row while it holds a local capture, or when this connection may not
-    /// edit the table, and reports a value that breaks the group's rules as an invalid row
-    /// instead of writing it.
+    /// engine settles only in a pass whose call could seal the capture and while no chain of
+    /// apply groups is open, so the chain's last pass decides the state the whole chain
+    /// leaves. It skips the row while it holds a local capture, or when this connection may
+    /// not edit the table, and reports a value that breaks the group's rules, the adapter's
+    /// derived columns, or a constraint of the domain table as an invalid row instead of
+    /// writing it.
     ///
     /// Every device decides the same versions, so the result must depend only on `versions`
     /// and on replicated rows, never on device-local state; devices that settle concurrently
     /// then write equal values, which converge without a conflict. Return `None` whenever
-    /// the winner already satisfies the rule, so a group that only ever holds settled values
-    /// needs no further settle. The hook reads through `conn` and must not write.
+    /// the winner already satisfies the rule, and settle only on a value the static priority
+    /// ranks at least as high as every version passed here, so a group that only ever holds settled
+    /// values needs no further settle and settles never go back and forth. The hook reads
+    /// through `conn` and must not write.
     fn settle<'a>(
         &'a self,
         conn: &'a mut SqliteConnection,

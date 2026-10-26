@@ -1088,7 +1088,8 @@ async fn repairs_wait(
 /// Seals repairs for hidden duplicates, detached tree rows, and cascades, refreshes row flags,
 /// and materializes every dirty row, running the registered hooks, then captures the groups an
 /// exclusion left to republish. Groups hooks settle stay captured for the next seal, see
-/// [`crate::hooks::MaterializeHook::settle`]. Returns what it changed.
+/// [`crate::hooks::MaterializeHook::settle`]; hooks settle only when `slot` may seal and no
+/// chain is open. Returns what it changed.
 ///
 /// A materialization never overwrites a local edit that is not sealed: captured rows it would
 /// write, or cascade to, are sealed first and the merge is planned again. Captures of dirty
@@ -1175,7 +1176,10 @@ pub(crate) async fn finish(
         if captured.is_empty() {
             // Rows whose capture stays keep their values: the capture may still be sealed.
             let mut elisions = plan.elisions(engine, &pending);
-            let mut changed = materialize::execute(engine, conn, plan, now_ms).await?;
+            // A settle is a local edit, so it needs a slot that could seal it, and it waits
+            // with the repairs for the state the whole chain leaves.
+            let settles = !resuming && slot.may_seal(conn, ctx).await?;
+            let mut changed = materialize::execute(engine, conn, plan, settles, now_ms).await?;
             changed.stale_left = stale_left;
             report.invalid_rows.append(&mut changed.refused);
             // A settled row holds its captured value instead of the winner.

@@ -1,15 +1,20 @@
 //! Hooks that settle concurrent versions of a group: an inheriting approval override ranked
 //! least strict that resolves stricter than a concurrent explicit one is settled on the
 //! stricter value by every device that decides both, each device writes at most one settle,
-//! equal settles converge quietly, and a crash before the settle is sealed loses nothing.
+//! equal settles converge quietly, and a crash before the settle is sealed loses nothing. A
+//! device that cannot seal settles nothing, settles wait for an open chain, refused values
+//! leave apply going, and an elided winner is stored back before its row is overwritten.
 
+use ganbaru_sync_contracts::Field;
+use ganbaru_sync_contracts::bounds::MAX_OPERATIONS_PER_GROUP;
 use sqlx::SqliteConnection;
 
 use super::block_on;
 use super::fixture::{
-    ASK, LISTS_TABLE, OVERRIDES_TABLE, OverrideHook, TEST_MANIFEST, UNATTENDED, list_group,
-    override_group, test_adapters, test_engine_with,
+    ASK, LISTS_TABLE, OVERRIDES_TABLE, OverrideHook, RESERVED, TEST_MANIFEST, UNATTENDED,
+    UNDERIVABLE, list_group, override_group, test_adapters, test_engine_with,
 };
+use super::groups::{insert_note, new_ops, reseal_chain};
 use super::replica::{Replica, connection_from, converge, pair, quoted};
 use crate::error::failpoints;
 use crate::hooks::{ChangeSink, HookFuture, Hooks, MaterializeHook};
@@ -286,21 +291,218 @@ fn a_device_that_may_not_edit_the_table_leaves_the_settle_to_one_that_may() {
 #[test]
 fn a_settled_value_that_breaks_the_group_rules_is_reported_and_not_written() {
     block_on(async {
+        // Refused by the adapter's validation, by a CHECK of the domain table the manifest does
+        // not describe, and by the adapter's derived columns.
+        for replacement in ["never", RESERVED, UNDERIVABLE] {
+            let mut replicas = concurrent_clear_and_loose_set().await;
+            replicas[0].engine = test_engine_with(OverrideHook {
+                replacement: Some(replacement),
+            });
+            let reports = pull(&mut replicas, 0, 1).await;
+            let refused: Vec<_> = reports
+                .iter()
+                .filter_map(|report| report.seal.as_ref())
+                .flat_map(|seal| &seal.invalid_rows)
+                .collect();
+            assert_eq!(refused.len(), 1, "{replacement}");
+            assert_eq!(refused[0].table, OVERRIDES_TABLE);
+            assert_eq!(refused[0].row_key, KEY);
+            let replica = &mut replicas[0];
+            assert_eq!(policy(replica).await.as_deref(), Some(UNATTENDED));
+            assert_eq!(pending(replica).await, 0);
+            assert_eq!(policy_versions(replica).await, (2, 2));
+            replica.check_invariants().await;
+            replica.check_version_values().await;
+
+            // Apply keeps going: a later operation on the row applies.
+            set_fallback(&mut replicas[1], UNATTENDED).await;
+            let reports = pull(&mut replicas, 0, 1).await;
+            assert!(reports.iter().all(|report| !report.pending_captures));
+            assert_eq!(fallback(&mut replicas[0]).await, UNATTENDED);
+        }
+    });
+}
+
+/// Sets the fallback of [`KEY`] locally and seals it.
+async fn set_fallback(replica: &mut Replica, fallback: &str) {
+    replica
+        .exec(&format!(
+            "UPDATE fixture_overrides SET fallback = {} WHERE id = {}",
+            quoted(fallback),
+            quoted(KEY)
+        ))
+        .await;
+    assert_eq!(replica.seal().await.unwrap().sealed_ops, 1);
+}
+
+async fn fallback(replica: &mut Replica) -> String {
+    sqlx::query_scalar("SELECT fallback FROM fixture_overrides WHERE id = ?")
+        .bind(KEY)
+        .fetch_one(&mut replica.conn)
+        .await
+        .unwrap()
+}
+
+async fn apply_without_writer(replica: &mut Replica) -> ApplyReport {
+    replica
+        .engine
+        .apply(&mut replica.conn, &replica.ctx, None, replica.now_ms)
+        .await
+        .unwrap()
+}
+
+/// Delivers what `from` has and `to` lacks without applying it.
+async fn deliver(replicas: &mut [Replica], to: usize, from: usize) {
+    let (to, from) = pair(replicas, to, from);
+    let known = to.stored_vector().await;
+    let ops = from.ops_since(&known).await;
+    to.receive(&ops).await;
+}
+
+#[test]
+fn a_device_without_a_writer_settles_nothing_and_keeps_applying_the_row() {
+    block_on(async {
         let mut replicas = concurrent_clear_and_loose_set().await;
-        replicas[0].engine = test_engine_with(OverrideHook {
-            replacement: Some("never"),
-        });
-        let reports = pull(&mut replicas, 0, 1).await;
-        let refused: Vec<_> = reports
-            .iter()
-            .filter_map(|report| report.seal.as_ref())
-            .flat_map(|seal| &seal.invalid_rows)
-            .collect();
-        assert_eq!(refused.len(), 1);
-        assert_eq!(refused[0].table, OVERRIDES_TABLE);
-        assert_eq!(refused[0].row_key, KEY);
+        deliver(&mut replicas, 0, 1).await;
+        let report = apply_without_writer(&mut replicas[0]).await;
+        assert!(report.applied > 0);
         assert_eq!(policy(&mut replicas[0]).await.as_deref(), Some(UNATTENDED));
         assert_eq!(pending(&mut replicas[0]).await, 0);
+        assert_eq!(policy_versions(&mut replicas[0]).await, (2, 2));
+
+        // A capture left behind would stop every later operation on the row.
+        set_fallback(&mut replicas[1], UNATTENDED).await;
+        deliver(&mut replicas, 0, 1).await;
+        let report = apply_without_writer(&mut replicas[0]).await;
+        assert!(!report.pending_captures);
+        assert!(report.applied > 0);
+        assert_eq!(fallback(&mut replicas[0]).await, UNATTENDED);
+        assert_eq!(pending(&mut replicas[0]).await, 0);
+        replicas[0].check_invariants().await;
+    });
+}
+
+#[test]
+fn a_device_whose_writer_is_no_longer_active_settles_nothing() {
+    block_on(async {
+        for state in ["retired", "revoked", "forked"] {
+            let mut replicas = concurrent_clear_and_loose_set().await;
+            let writer = replicas[0].writer();
+            let head = replicas[0].stored_vector().await.get(&writer);
+            let hex: String = writer
+                .as_bytes()
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect();
+            replicas[0]
+                .exec(&format!(
+                    "UPDATE sync_writers SET state = '{state}', cutoff_seq = {head}
+                     WHERE writer_id = x'{hex}'"
+                ))
+                .await;
+            deliver(&mut replicas, 0, 1).await;
+            let report = replicas[0].apply_once().await.unwrap();
+            assert!(report.applied > 0, "{state}");
+            let replica = &mut replicas[0];
+            assert_eq!(
+                policy(replica).await.as_deref(),
+                Some(UNATTENDED),
+                "{state}"
+            );
+            assert_eq!(pending(replica).await, 0, "{state}");
+            assert_eq!(policy_versions(replica).await, (2, 2), "{state}");
+        }
+    });
+}
+
+#[test]
+fn settles_wait_for_an_open_chain_and_its_last_pass_settles() {
+    block_on(async {
+        let mut replicas = shared(ASK, Some(ASK)).await;
+        replicas[1].exec(&insert_note(1, 9_999)).await;
+        replicas[1].seal().await.unwrap();
+        converge(&mut replicas).await;
+        set_policy(&mut replicas[0], None).await;
+
+        // Replica 1's chain sets the looser policy in its first group and then adds notes.
+        let author = &mut replicas[1];
+        let previous = author.own_ops().await.pop().unwrap();
+        let known = author.stored_vector().await;
+        set_policy(author, Some(UNATTENDED)).await;
+        for index in 0..MAX_OPERATIONS_PER_GROUP {
+            author.exec(&insert_note(1, index)).await;
+            assert_eq!(author.seal().await.unwrap().sealed_ops, 1);
+        }
+        let ops = new_ops(author, &known).await;
+        let mut flags = vec![true; ops.len()];
+        flags[ops.len() - 1] = false;
+        let chain = reseal_chain(author, &previous, &ops, &flags, |_, _| {});
+
+        let receiver = &mut replicas[0];
+        receiver.receive(&chain).await;
+        let first = receiver.apply_once().await.unwrap();
+        assert_eq!(first.applied, MAX_OPERATIONS_PER_GROUP);
+        assert!(first.more);
+        assert_eq!(policy(receiver).await.as_deref(), Some(UNATTENDED));
+        assert_eq!(pending(receiver).await, 0);
+        assert!(receiver.count("SELECT count(*) FROM sync_stale_rows").await > 0);
+
+        receiver.apply_all().await.unwrap();
+        assert_eq!(policy(receiver).await.as_deref(), Some(ASK));
+        assert_eq!(pending(receiver).await, 1);
+        assert_eq!(
+            receiver.count("SELECT count(*) FROM sync_stale_rows").await,
+            0
+        );
+        assert_eq!(receiver.seal().await.unwrap().sealed_ops, 1);
+        assert_eq!(policy_versions(receiver).await, (1, 1));
+        receiver.check_invariants().await;
+        receiver.check_version_values().await;
+    });
+}
+
+/// How many policy versions of [`KEY`] by `writer` keep a null, elided value.
+async fn elided_policy(replica: &mut Replica, writer: ganbaru_sync_contracts::WriterId) -> i64 {
+    let hex: String = writer
+        .as_bytes()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    replica
+        .count(&format!(
+            "SELECT count(*) FROM sync_register_versions
+             WHERE table_id = {} AND row_key = {} AND group_id = {} AND writer_id = x'{hex}'
+                AND value IS NULL",
+            OVERRIDES_TABLE.0,
+            quoted(KEY),
+            override_group::POLICY.get()
+        ))
+        .await
+}
+
+#[test]
+fn a_settle_stores_back_the_elided_winner_before_overwriting_its_row() {
+    block_on(async {
+        let mut replicas = concurrent_clear_and_loose_set().await;
+        let loose = replicas[1].writer();
+        assert_eq!(elided_policy(&mut replicas[1], loose).await, 1);
+
+        pull(&mut replicas, 1, 0).await;
+        let replica = &mut replicas[1];
+        assert_eq!(policy(replica).await.as_deref(), Some(ASK));
+        assert_eq!(pending(replica).await, 1);
+        assert_eq!(elided_policy(replica, loose).await, 0);
+        assert_eq!(policy_versions(replica).await, (2, 2));
+        let versions =
+            crate::merge::versions(&replica.engine, &mut replica.conn, OVERRIDES_TABLE, KEY)
+                .await
+                .unwrap();
+        assert!(versions.iter().any(|version| {
+            version.writer == loose
+                && version.value.fields() == [Field::Text(UNATTENDED.to_string())]
+        }));
+        replica.check_invariants().await;
+        replica.check_version_values().await;
     });
 }
 

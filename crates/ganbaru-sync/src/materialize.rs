@@ -758,7 +758,13 @@ async fn settle(
                 {
                     continue;
                 }
-                if let Err(reason) = validate::group_value(engine, table, group, &value) {
+                let written = match settled_update(engine, table, group, &value)? {
+                    Ok(update) => write_settled(engine, conn, table, key, group, &update, now_ms)
+                        .await?
+                        .err(),
+                    Err(reason) => Some(reason),
+                };
+                if let Some(reason) = written {
                     materialized.refused.push(InvalidRow {
                         table: table.id,
                         row_key: key.clone(),
@@ -766,8 +772,6 @@ async fn settle(
                     });
                     continue;
                 }
-                write_settled(engine, conn, table, key, group, &value).await?;
-                seal::capture_edit(conn, table.id, key, group.mask(), now_ms).await?;
                 changed[index].insert(key.clone());
                 materialized.settled.insert((table.id, key.clone()));
             }
@@ -776,16 +780,17 @@ async fn settle(
     Ok(())
 }
 
-/// Writes a settled value into the columns of its group and the derived columns the adapter
-/// computes from it, storing again a winner the row held while its value was elided.
-async fn write_settled(
+/// The update that writes a settled value into the columns of its group and the derived
+/// columns the adapter computes from it, or why the value breaks the group's rules.
+fn settled_update(
     engine: &Engine,
-    conn: &mut SqliteConnection,
     table: &'static TableSpec,
-    key: &str,
     group: &'static GroupSpec,
     value: &ganbaru_sync_contracts::Value,
-) -> SyncResult<()> {
+) -> SyncResult<Result<Update, validate::Invalid>> {
+    if let Err(reason) = validate::group_value(engine, table, group, value) {
+        return Ok(Err(reason));
+    }
     let mut columns: Vec<(&'static str, Field)> = group
         .columns()
         .iter()
@@ -793,9 +798,10 @@ async fn write_settled(
         .map(|(column, field)| (column.name, field.clone()))
         .collect();
     if let Some(adapter) = engine.adapter(table) {
-        let derived = adapter
-            .derived(table.id, group.id, value)
-            .map_err(|error| corrupt(format!("settled value: {error}")))?;
+        let derived = match adapter.derived(table.id, group.id, value) {
+            Ok(derived) => derived,
+            Err(error) => return Ok(Err(error.0)),
+        };
         if let Some((column, _)) = derived
             .iter()
             .find(|(column, _)| !table.derived_columns.contains(column))
@@ -806,21 +812,57 @@ async fn write_settled(
         }
         columns.extend(derived);
     }
-    hydrate::persist(engine, conn, table, key, Some(&BTreeSet::from([group.id]))).await?;
-    let update = Update {
+    Ok(Ok(Update {
         columns,
         owned: Vec::new(),
         bump: group.bumps_revision,
-    };
-    execute_update(conn, table, key, &update).await
+    }))
 }
 
-/// Writes a [`Plan`] into the domain tables, lets hooks settle concurrent versions, then runs
-/// the registered hooks, and returns what changed.
+/// Writes a settled `update` and captures it as a local edit of `group`, storing again a winner
+/// the row held while its value was elided. Inside a savepoint, so a value a constraint of the
+/// domain table refuses writes nothing and is returned as invalid instead of failing apply.
+async fn write_settled(
+    engine: &Engine,
+    conn: &mut SqliteConnection,
+    table: &'static TableSpec,
+    key: &str,
+    group: &'static GroupSpec,
+    update: &Update,
+    now_ms: u64,
+) -> SyncResult<Result<(), validate::Invalid>> {
+    let mut savepoint = sqlx::Connection::begin(&mut *conn).await?;
+    hydrate::persist(
+        engine,
+        &mut savepoint,
+        table,
+        key,
+        Some(&BTreeSet::from([group.id])),
+    )
+    .await?;
+    match execute_update(&mut savepoint, table, key, update).await {
+        Ok(()) => {}
+        Err(SyncError::Database(sqlx::Error::Database(error)))
+            if error.kind() != sqlx::error::ErrorKind::Other =>
+        {
+            savepoint.rollback().await?;
+            return Ok(Err("settled value refused by the domain table"));
+        }
+        Err(error) => return Err(error),
+    }
+    seal::capture_edit(&mut savepoint, table.id, key, group.mask(), now_ms).await?;
+    savepoint.commit().await?;
+    Ok(Ok(()))
+}
+
+/// Writes a [`Plan`] into the domain tables, lets hooks settle concurrent versions when
+/// `settles` says the caller could seal the settled values, then runs the registered hooks,
+/// and returns what changed.
 pub(crate) async fn execute(
     engine: &Engine,
     conn: &mut SqliteConnection,
     plan: Plan,
+    settles: bool,
     now_ms: u64,
 ) -> SyncResult<Materialized> {
     let tables = engine.manifest().tables;
@@ -918,15 +960,17 @@ pub(crate) async fn execute(
     }
 
     let mut materialized = Materialized::default();
-    settle(
-        engine,
-        conn,
-        &plans,
-        &mut changed,
-        now_ms,
-        &mut materialized,
-    )
-    .await?;
+    if settles {
+        settle(
+            engine,
+            conn,
+            &plans,
+            &mut changed,
+            now_ms,
+            &mut materialized,
+        )
+        .await?;
+    }
 
     let mut notices = Notices::default();
     for (table, keys) in tables.iter().zip(&changed) {

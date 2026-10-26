@@ -1155,6 +1155,12 @@ pub(super) mod override_group {
 pub(super) const ASK: &str = "ask";
 /// Loosest override policy.
 pub(super) const UNATTENDED: &str = "unattended";
+/// A policy the adapter accepts and the override table's `CHECK` refuses, standing for a domain
+/// constraint the manifest does not describe.
+pub(super) const RESERVED: &str = "reserved";
+/// A policy the adapter accepts and derives nothing from, refusing it in
+/// [`FixtureAdapter::derived`].
+pub(super) const UNDERIVABLE: &str = "underivable";
 
 /// Strictness of a policy, which also ranks an explicit override among concurrent ones; zero
 /// for an unknown policy.
@@ -1225,11 +1231,18 @@ impl DomainAdapter for FixtureAdapter {
 
     fn derived(
         &self,
-        _table: TableId,
-        _group: GroupId,
-        _value: &Value,
+        table: TableId,
+        group: GroupId,
+        value: &Value,
     ) -> Result<Vec<(&'static str, Field)>, AdapterError> {
-        Ok(Vec::new())
+        match (table, group, value.fields().first()) {
+            (OVERRIDES_TABLE, override_group::POLICY, Some(Field::Text(policy)))
+                if policy == UNDERIVABLE =>
+            {
+                Err(AdapterError("underivable policy"))
+            }
+            _ => Ok(Vec::new()),
+        }
     }
 
     fn priority(&self, table: TableId, group: GroupId, value: &Value) -> u8 {
@@ -1249,6 +1262,11 @@ impl DomainAdapter for FixtureAdapter {
     fn validate(&self, table: TableId, group: GroupId, value: &Value) -> Result<(), AdapterError> {
         let known = match (table, group, value.fields().first()) {
             (OVERRIDES_TABLE, override_group::POLICY, Some(Field::Null)) => true,
+            (OVERRIDES_TABLE, override_group::POLICY, Some(Field::Text(policy)))
+                if policy == RESERVED || policy == UNDERIVABLE =>
+            {
+                true
+            }
             (
                 OVERRIDES_TABLE,
                 override_group::POLICY | override_group::FALLBACK,
@@ -1727,7 +1745,7 @@ fn fixture_schema() -> String {
              id TEXT PRIMARY KEY CHECK (trim(id) <> ''),
              created_at TEXT NOT NULL,
              fallback TEXT NOT NULL CHECK (length(fallback) <= 20),
-             policy TEXT CHECK (length(policy) <= 20)
+             policy TEXT CHECK (length(policy) <= 20 AND policy IS NOT '{RESERVED}')
          );
          CREATE TABLE fixture_items_index (
              item_id TEXT PRIMARY KEY,

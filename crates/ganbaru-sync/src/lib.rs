@@ -84,7 +84,10 @@ pub use status::{HeldCounts, HeldOp, SyncStatus, WriterSummary};
 pub use store::{HoldReason, StoreOutcome, StoreRefusal};
 
 use domains::{vault_adapters, vault_hooks};
-pub use hooks::{ChangeNotice, ChangeSink, HookError, HookFuture, Hooks, MaterializeHook};
+pub use hooks::{
+    ChangeNotice, ChangeSink, ConcurrentVersion, HookError, HookFuture, Hooks, MaterializeHook,
+    SettleFuture,
+};
 use manifest::Manifest;
 use manifest::vault::VAULT_MANIFEST;
 
@@ -149,7 +152,8 @@ impl Engine {
     /// An engine for a manifest, its domain adapters, and its hooks. Refuses a manifest that
     /// fails [`Manifest::validate`], names an unregistered adapter, leaves a registered adapter
     /// unnamed, an adapter asset group the table lacks or whose domain declares no asset class,
-    /// or a hook of a table the manifest does not replicate.
+    /// a hook of a table the manifest does not replicate, or a hook that settles a group it may
+    /// not, see [`MaterializeHook::settled_groups`].
     pub fn with(manifest: &'static Manifest, adapters: Adapters, hooks: Hooks) -> SyncResult<Self> {
         manifest.validate().map_err(SyncError::InvalidManifest)?;
         if let Some(table) = hooks
@@ -160,6 +164,17 @@ impl Engine {
                 "a hook is registered for unknown table {}",
                 table.0
             )));
+        }
+        for table in manifest.tables {
+            for group in hooks.settled_groups(table) {
+                if let Some(problem) = hooks::settle_problem(table, *group) {
+                    return Err(SyncError::InvalidManifest(format!(
+                        "the hook of {} settles group {}: it {problem}",
+                        table.name,
+                        group.get()
+                    )));
+                }
+            }
         }
         for table in manifest.tables {
             if let Some(name) = table.adapter

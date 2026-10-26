@@ -27,6 +27,7 @@ const KEY_DIRECTORIES: [&str; 3] = [
 
 /// The platform key wrapper of this build: the Android Keystore on Android, a shared in-memory
 /// stand-in in tests, and none elsewhere, where every seal fails as unavailable.
+#[cfg_attr(not(any(mobile, test)), allow(dead_code))]
 pub(crate) fn platform_wrapper() -> Arc<dyn KeyWrapper> {
     #[cfg(test)]
     {
@@ -53,6 +54,7 @@ pub(crate) fn test_wrapper() -> Arc<key_wrap::TestKeyWrapper> {
 
 /// The wrapper of builds without a platform key store; nothing it would seal is ever written.
 #[cfg(not(any(test, target_os = "android")))]
+#[cfg_attr(not(mobile), allow(dead_code))]
 struct NoPlatformKey;
 
 #[cfg(not(any(test, target_os = "android")))]
@@ -76,6 +78,7 @@ impl KeyWrapper for NoPlatformKey {
 
 /// Where the linking TLS key of this device is sealed, inside the app config directory
 /// `config_dir`.
+#[cfg_attr(not(any(mobile, test)), allow(dead_code))]
 pub(crate) fn identity_key_store(
     config_dir: &Path,
     wrapper: Arc<dyn KeyWrapper>,
@@ -87,6 +90,7 @@ pub(crate) fn identity_key_store(
 /// such as one an older build wrote in plaintext, and unlinks a linked device when it found
 /// one, because a key that sat in plaintext may have been copied. Failures are logged: the
 /// next start scans again, and a pass that reads an unsealed key unlinks too.
+#[cfg_attr(not(any(mobile, test)), allow(dead_code))]
 pub(crate) fn remove_unprotected_keys(
     config_dir: &Path,
     pairing: &PairingManager,

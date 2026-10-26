@@ -2,7 +2,7 @@ Finish the fix round of milestone 8 step 3 (Notes structure replication, `domain
 
 Worktree `/home/user/wt/domain`, branch `feat/sync-notes-structure`, target dir `/root/.cache/ganbaru-targets/domain`.
 
-Read: the implementer brief (path in your prompt), the original brief `/home/user/ganbaru/goal/sync/handoff/briefs/m8-step-3-brief.md` (its full check list), the fix message `/home/user/ganbaru/goal/sync/handoff/briefs/m8-step-3-fix-message.md`, the plan `/home/user/ganbaru/goal/sync/milestone_8.md`, and the progress so far `/tmp/claude-0/-home-user-ganbaru/801a952b-bd25-5890-82d7-9ac7c14fac3d/scratchpad/milestone-8-step-3-progress.md` (extend it). Fixes 1 to 4 are committed (d86cdd93, c0245185, 3c30f5af).
+Read: the implementer brief (path in your prompt), the original brief `/home/user/ganbaru/goal/sync/handoff/briefs/m8-step-3-brief.md` (its full check list), the fix message `/home/user/ganbaru/goal/sync/handoff/briefs/m8-step-3-fix-message.md`, the plan `/home/user/ganbaru/goal/sync/milestone_8.md`, and the progress so far `<SCRATCHPAD>/milestone-8-step-3-progress.md` (extend it). Fixes 1 to 4 are committed (d86cdd93, c0245185, 3c30f5af).
 
 State: the previous agent's uncommitted, unverified work is applied and staged in the worktree (`git status`): a durable pending-repair marker (`has_pending` in `sync_repair`), service retry wiring, migration and manifest edits, and tests. Review it critically, finish fix item 5 (persist a Local pending-repair marker, retry on the next pass or startup, clear on success, test that a failed repair is retried), and commit.
 

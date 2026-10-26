@@ -44,6 +44,12 @@ internal object SyncKeystore {
   private const val MAX_DETAIL_BYTES = 256
   private const val MAX_CAUSE_DEPTH = 8
 
+  /** Keystore error codes (API 33+) that mean the key can never be used again. */
+  private val PERMANENT_KEYSTORE_ERRORS = setOf(
+    android.security.KeyStoreException.ERROR_KEY_DOES_NOT_EXIST,
+    android.security.KeyStoreException.ERROR_KEY_CORRUPTED,
+  )
+
   /**
    * Encrypts [plaintext] bound to [aad] under the key of [alias], creating the key on first use. A
    * key that was permanently invalidated is replaced, since nothing it sealed opens again anyway.
@@ -185,7 +191,7 @@ internal object SyncKeystore {
       if (
         Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
         cause is android.security.KeyStoreException &&
-        cause.numericErrorCode == android.security.KeyStoreException.ERROR_KEY_DOES_NOT_EXIST
+        cause.numericErrorCode in PERMANENT_KEYSTORE_ERRORS
       ) {
         return true
       }

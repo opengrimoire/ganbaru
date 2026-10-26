@@ -153,9 +153,9 @@ async fn insert_table_tx(
     name: &str,
     properties: &Value,
 ) -> Result<(), String> {
-    let sort_order = data_sources::views::next_view_sort_order_tx(tx, database_id).await?;
-    sqlx::query("INSERT INTO notes_database_views (id, database_id, data_source_id, name, type, sorts, configuration, sort_order) VALUES (?, ?, ?, ?, 'table', '[]', ?, ?)")
-        .bind(view_id).bind(database_id).bind(source_id).bind(name).bind(data_sources::layouts::table::default_table_configuration(properties)?.to_string()).bind(sort_order)
+    let order_key = data_sources::views::next_view_order_key_tx(tx, database_id).await?;
+    sqlx::query("INSERT INTO notes_database_views (id, database_id, data_source_id, name, type, sorts, configuration, order_key) VALUES (?, ?, ?, ?, 'table', '[]', ?, ?)")
+        .bind(view_id).bind(database_id).bind(source_id).bind(name).bind(data_sources::layouts::table::default_table_configuration(properties)?.to_string()).bind(order_key)
         .execute(&mut **tx).await.map_err(|error| format!("create source table view: {error}"))?;
     Ok(())
 }

@@ -732,7 +732,7 @@ async fn load_database_export(
                 configuration
          FROM notes_database_views
          WHERE database_id = ?
-         ORDER BY sort_order ASC, id ASC",
+         ORDER BY order_key ASC, id ASC",
     )
     .bind(&database_id)
     .fetch_all(pool)

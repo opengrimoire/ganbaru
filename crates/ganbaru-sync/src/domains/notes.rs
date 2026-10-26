@@ -6,9 +6,14 @@ use ganbaru_sync_contracts::bounds::MAX_TEXT_FIELD_BYTES;
 use ganbaru_sync_contracts::{Field, GroupId, TableId, Value};
 
 use crate::adapter::{AdapterError, DomainAdapter, Presentation};
+use crate::codec;
+use crate::manifest::OwnedTable;
 use crate::manifest::vault::notes::{
-    ADAPTER, ALIASES_TABLE, BLOCKS_TABLE, FOLDERS_TABLE, PAGES_TABLE, alias_group, block_group,
-    folder_group, page_group,
+    ADAPTER, ALIASES_TABLE, BLOCKS_TABLE, DATA_SOURCE_TEMPLATE_BLOCKS, DATA_SOURCE_TEMPLATES_TABLE,
+    DATA_SOURCES_TABLE, DATABASES_TABLE, FOLDERS_TABLE, PAGE_TEMPLATE_BLOCKS, PAGE_TEMPLATES_TABLE,
+    PAGES_TABLE, PROPERTIES_TABLE, VALUES_TABLE, VIEWS_TABLE, alias_group, block_group,
+    data_source_group, data_source_template_group, database_group, folder_group, page_group,
+    page_template_group, property_group, value_group, view_group,
 };
 
 /// Characters of a free text column without a narrower Notes limit.
@@ -19,6 +24,25 @@ pub const MAX_NAME_CHARS: usize = 200;
 pub const MAX_BLOCK_TEXT_BYTES: usize = 256 * 1024;
 /// Bytes of a block's attributes JSON.
 pub const MAX_BLOCK_ATTRS_BYTES: usize = 64 * 1024;
+/// Bytes of one template's row and blocks together, as Notes measures them on save.
+pub const MAX_TEMPLATE_CONTENT_BYTES: usize = 256 * 1024;
+
+/// View types the `notes_database_views.type` check allows.
+pub const VIEW_TYPES: [&str; 10] = [
+    "table",
+    "board",
+    "list",
+    "calendar",
+    "timeline",
+    "gallery",
+    "form",
+    "chart",
+    "map",
+    "dashboard",
+];
+
+/// Parent kind of a template block at the root of its template.
+pub const TEMPLATE_PARENT_ROOT: &str = "template";
 
 /// Block types the `notes_blocks.type` check allows.
 pub const BLOCK_TYPES: [&str; 37] = [
@@ -183,6 +207,146 @@ fn validate_block(group: GroupId, fields: &[Field]) -> Result<(), AdapterError> 
     }
 }
 
+/// Valid JSON of any shape.
+fn json(field: &Field, what: &'static str) -> Result<(), AdapterError> {
+    serde_json::from_str::<serde_json::Value>(text(field)?)
+        .map(|_| ())
+        .map_err(|_| AdapterError(what))
+}
+
+fn validate_database(group: GroupId, fields: &[Field]) -> Result<(), AdapterError> {
+    match (group, fields) {
+        (database_group::TITLE, [_, rich_text]) => json(rich_text, "notes database title"),
+        (database_group::DESCRIPTION, [description]) => {
+            json(description, "notes database description")
+        }
+        (database_group::APPEARANCE, [icon, cover]) => {
+            optional_json(icon, "notes database icon")?;
+            optional_json(cover, "notes database cover")
+        }
+        _ => Ok(()),
+    }
+}
+
+fn validate_data_source(group: GroupId, fields: &[Field]) -> Result<(), AdapterError> {
+    match (group, fields) {
+        (data_source_group::TITLE, [_, rich_text]) => json(rich_text, "notes data source title"),
+        (data_source_group::DESCRIPTION, [description]) => {
+            json(description, "notes data source description")
+        }
+        (data_source_group::ICON, [icon]) => optional_json(icon, "notes data source icon"),
+        _ => Ok(()),
+    }
+}
+
+fn validate_property(group: GroupId, fields: &[Field]) -> Result<(), AdapterError> {
+    match (group, fields) {
+        (property_group::CONFIG, [_, config]) => {
+            json_object(config, MAX_TEXT_CHARS, "notes property config")
+        }
+        _ => Ok(()),
+    }
+}
+
+fn validate_value(group: GroupId, fields: &[Field]) -> Result<(), AdapterError> {
+    match (group, fields) {
+        (value_group::VALUE, [_, value]) => json(value, "notes property value"),
+        _ => Ok(()),
+    }
+}
+
+fn validate_view(group: GroupId, fields: &[Field]) -> Result<(), AdapterError> {
+    match (group, fields) {
+        (view_group::LAYOUT, [kind, filter, sorts, configuration]) => {
+            if !VIEW_TYPES.contains(&text(kind)?) {
+                return Err(AdapterError("notes view type"));
+            }
+            optional_json(filter, "notes view filter")?;
+            json(sorts, "notes view sorts")?;
+            optional_json(configuration, "notes view configuration")
+        }
+        _ => Ok(()),
+    }
+}
+
+/// The template blocks encoded in `blob`: types and payloads valid, ids unique, and every block
+/// either at the root with no parent or under another block of the same template.
+fn validate_template_blocks(owned: &OwnedTable, blob: &Field) -> Result<(), AdapterError> {
+    const WHAT: &str = "notes template blocks";
+    let Field::Blob(bytes) = blob else {
+        return Err(AdapterError(WHAT));
+    };
+    let rows = codec::decode(owned, bytes).map_err(|_| AdapterError(WHAT))?;
+    let mut ids = std::collections::BTreeSet::new();
+    for row in &rows {
+        let [Field::Text(id), ..] = row.fields.as_slice() else {
+            return Err(AdapterError(WHAT));
+        };
+        if !ids.insert(id.as_str()) {
+            return Err(AdapterError("notes template block ids"));
+        }
+    }
+    for row in &rows {
+        let [_, parent_type, parent, _, kind, payload, ..] = row.fields.as_slice() else {
+            return Err(AdapterError(WHAT));
+        };
+        match (text(parent_type)?, parent) {
+            (TEMPLATE_PARENT_ROOT, Field::Null) => {}
+            (BLOCK_PARENT_BLOCK, Field::Text(parent)) if ids.contains(parent.as_str()) => {}
+            _ => return Err(AdapterError("notes template block parent")),
+        }
+        if !BLOCK_TYPES.contains(&text(kind)?) {
+            return Err(AdapterError("notes template block type"));
+        }
+        json(payload, "notes template block payload")?;
+    }
+    Ok(())
+}
+
+fn validate_page_template(group: GroupId, fields: &[Field]) -> Result<(), AdapterError> {
+    match (group, fields) {
+        (page_template_group::CONTENT, [properties, icon, cover, blocks]) => {
+            json(properties, "notes template properties")?;
+            optional_json(icon, "notes template icon")?;
+            optional_json(cover, "notes template cover")?;
+            validate_template_blocks(&PAGE_TEMPLATE_BLOCKS, blocks)
+        }
+        _ => Ok(()),
+    }
+}
+
+fn validate_data_source_template(group: GroupId, fields: &[Field]) -> Result<(), AdapterError> {
+    match (group, fields) {
+        (data_source_template_group::CONTENT, [properties, blocks]) => {
+            json(properties, "notes template properties")?;
+            validate_template_blocks(&DATA_SOURCE_TEMPLATE_BLOCKS, blocks)
+        }
+        _ => Ok(()),
+    }
+}
+
+/// Whether `group` of `table` is a trash state where trashing wins.
+fn is_lifecycle(table: TableId, group: GroupId) -> bool {
+    (table == PAGES_TABLE && group == page_group::LIFECYCLE)
+        || (table == BLOCKS_TABLE && group == block_group::LIFECYCLE)
+        || (table == DATABASES_TABLE && group == database_group::LIFECYCLE)
+        || (table == DATA_SOURCES_TABLE && group == data_source_group::LIFECYCLE)
+}
+
+/// The group holding the name a table presents, if any.
+fn title_group(table: TableId) -> Option<GroupId> {
+    match table {
+        PAGES_TABLE => Some(page_group::TITLE),
+        DATABASES_TABLE => Some(database_group::TITLE),
+        DATA_SOURCES_TABLE => Some(data_source_group::TITLE),
+        PROPERTIES_TABLE => Some(property_group::NAME),
+        VIEWS_TABLE => Some(view_group::NAME),
+        PAGE_TEMPLATES_TABLE => Some(page_template_group::NAME),
+        DATA_SOURCE_TEMPLATES_TABLE => Some(data_source_template_group::NAME),
+        _ => None,
+    }
+}
+
 /// Validation, derived block parent kinds, and lifecycle priorities for Notes tables.
 pub struct NotesAdapter;
 
@@ -209,12 +373,10 @@ impl DomainAdapter for NotesAdapter {
         }
     }
 
-    /// A trashed page or block wins over a concurrent restore, so trashing a subtree is never
-    /// undone halfway by an edit that did not see it.
+    /// A trashed page, block, database, or data source wins over a concurrent restore, so
+    /// trashing a subtree is never undone halfway by an edit that did not see it.
     fn priority(&self, table: TableId, group: GroupId, value: &Value) -> u8 {
-        let lifecycle = (table == PAGES_TABLE && group == page_group::LIFECYCLE)
-            || (table == BLOCKS_TABLE && group == block_group::LIFECYCLE);
-        if !lifecycle {
+        if !is_lifecycle(table, group) {
             return 0;
         }
         match value.fields() {
@@ -233,19 +395,37 @@ impl DomainAdapter for NotesAdapter {
             validate_alias(group, fields)
         } else if table == BLOCKS_TABLE {
             validate_block(group, fields)
+        } else if table == DATABASES_TABLE {
+            validate_database(group, fields)
+        } else if table == DATA_SOURCES_TABLE {
+            validate_data_source(group, fields)
+        } else if table == PROPERTIES_TABLE {
+            validate_property(group, fields)
+        } else if table == VALUES_TABLE {
+            validate_value(group, fields)
+        } else if table == VIEWS_TABLE {
+            validate_view(group, fields)
+        } else if table == PAGE_TEMPLATES_TABLE {
+            validate_page_template(group, fields)
+        } else if table == DATA_SOURCE_TEMPLATES_TABLE {
+            validate_data_source_template(group, fields)
         } else {
             Ok(())
         }
     }
 
-    /// A page presents its title; Notes is owner-only, so other rows present nothing yet.
+    /// A page, database, data source, property, view, or template presents its title or name;
+    /// Notes is owner-only, so other rows present nothing yet.
     fn presentation(&self, table: TableId, values: &[(GroupId, Value)]) -> Presentation {
-        let title = values
-            .iter()
-            .filter(|(group, _)| table == PAGES_TABLE && *group == page_group::TITLE)
-            .find_map(|(_, value)| match value.fields() {
-                [Field::Text(title)] => Some(title.clone()),
-                _ => None,
+        let title = title_group(table)
+            .and_then(|title_group| {
+                values
+                    .iter()
+                    .filter(|(group, _)| *group == title_group)
+                    .find_map(|(_, value)| match value.fields().first() {
+                        Some(Field::Text(title)) => Some(title.clone()),
+                        _ => None,
+                    })
             })
             .unwrap_or_default();
         Presentation {
@@ -372,6 +552,97 @@ mod tests {
                 )
                 .is_err()
         );
+    }
+
+    /// A template content value of `properties` and the template blocks `rows`, each
+    /// `(id, parent_type, parent, type, payload)`.
+    fn template_content(rows: &[(&str, &str, Option<&str>, &str, &str)]) -> Value {
+        let rows = rows
+            .iter()
+            .map(|(id, parent_type, parent, kind, payload)| {
+                crate::codec::OwnedRow::flat(vec![
+                    t(id),
+                    t(parent_type),
+                    parent.map_or(Field::Null, t),
+                    Field::Integer(0),
+                    t(kind),
+                    t(payload),
+                    t(""),
+                    t("2027-01-01T00:00:00.000Z"),
+                    t("2027-01-01T00:00:00.000Z"),
+                ])
+            })
+            .collect::<Vec<_>>();
+        let blob = codec::encode(&DATA_SOURCE_TEMPLATE_BLOCKS, &rows).unwrap();
+        value(vec![t("{}"), Field::Blob(blob)])
+    }
+
+    #[test]
+    fn template_blocks_need_unique_ids_parents_inside_the_template_and_valid_content() {
+        let adapter = NotesAdapter;
+        let validate = |rows: &[(&str, &str, Option<&str>, &str, &str)]| {
+            adapter.validate(
+                DATA_SOURCE_TEMPLATES_TABLE,
+                data_source_template_group::CONTENT,
+                &template_content(rows),
+            )
+        };
+        validate(&[
+            ("root", "template", None, "toggle", "{}"),
+            ("child", "block_id", Some("root"), "paragraph", "{}"),
+        ])
+        .unwrap();
+        for invalid in [
+            vec![("root", "template", Some("root"), "paragraph", "{}")],
+            vec![("child", "block_id", Some("missing"), "paragraph", "{}")],
+            vec![
+                ("same", "template", None, "paragraph", "{}"),
+                ("same", "template", None, "paragraph", "{}"),
+            ],
+            vec![("root", "template", None, "sticker", "{}")],
+            vec![("root", "template", None, "paragraph", "{")],
+        ] {
+            assert!(validate(&invalid).is_err(), "{invalid:?}");
+        }
+    }
+
+    #[test]
+    fn database_values_views_and_configs_mirror_the_table_checks() {
+        let adapter = NotesAdapter;
+        let layout = |kind: &str, sorts: &str| {
+            adapter.validate(
+                VIEWS_TABLE,
+                view_group::LAYOUT,
+                &value(vec![t(kind), Field::Null, t(sorts), Field::Null]),
+            )
+        };
+        layout("board", "[]").unwrap();
+        assert!(layout("kanbanish", "[]").is_err());
+        assert!(layout("table", "not json").is_err());
+        assert!(
+            adapter
+                .validate(
+                    PROPERTIES_TABLE,
+                    property_group::CONFIG,
+                    &value(vec![t("select"), t("[]")])
+                )
+                .is_err()
+        );
+        assert!(
+            adapter
+                .validate(
+                    VALUES_TABLE,
+                    value_group::VALUE,
+                    &value(vec![t("number"), t("{")])
+                )
+                .is_err()
+        );
+        let trashed = |table, group| {
+            adapter.priority(table, group, &value(vec![Field::Integer(1)]))
+                > adapter.priority(table, group, &value(vec![Field::Integer(0)]))
+        };
+        assert!(trashed(DATABASES_TABLE, database_group::LIFECYCLE));
+        assert!(trashed(DATA_SOURCES_TABLE, data_source_group::LIFECYCLE));
     }
 
     #[test]

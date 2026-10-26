@@ -58,6 +58,8 @@ Progress snapshots are in `progress/`; their live copies were in the session scr
 2. Milestone 11 step 8 (authority UI) landed as merge e4b65518; its low review findings are in `briefs/m11-step-9-followups.md`.
 3. `feat/sync-notes-comments` (pushed, head 3cc77cde, clean worktree): milestone 8 step 5. Step 4 review follow-ups (c892a7ab, a25c4d17, 8c2f54f4) and the comments conversion (faafac4d, manifest 17, migration `20261026034408_notes_comments_replication.sql`, docs 6cbcf4c2, tests 3cc77cde) are committed; focused tests passed. Stopped for the session budget while running clippy. Next: merge feat/sync (check manifest number and migration order), the full check list and Android check from the brief, finish the progress entry, fresh Opus review, land.
 
+WIP patches: none (both in-flight worktrees were clean when stopped). Briefs copied from the session scratch directory are in `briefs/`; copy them to your scratch directory and replace its paths. The ready-to-paste resume prompt is `NEXT_PROMPT.md`.
+
 Ready brief not started: `briefs/m9-step-5-brief.md` (Chat timeline, with step 4 follow-ups). Engine lows for the next engine step: `briefs/engine-next-followups.md`.
 
 

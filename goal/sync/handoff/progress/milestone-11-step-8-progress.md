@@ -1,0 +1,17 @@
+- [x] Step 8: authority UI.
+  - 2026-10-25, branch `feat/sync-authority-ui` from feat/sync 802c7c1f, merged feat/sync 66c0a368 as 5349eaa5.
+  - Commits: 4364e290 feat(sync): expose authority, outbox, late change, and confirmation commands; 5349eaa5 merge: feat/sync into feat/sync-authority-ui; 9d10c64f feat(sync): show device roles, outbox, late changes, and recovery kit in settings; 0638f800 refactor(sync): drop unused authority catalog strings (client check rerun). All signed.
+  - Checks (after the merge): `cargo test -p ganbaru-tauri-app --lib sync` (61 passed), workspace clippy `--all-targets -D warnings`, `cargo fmt --check`, `cargo check -p ganbaru --bin ganbaru`, Android check (baseline warnings only); vitest `api/sync.test.ts`, `sync/authority.test.ts`, `sync/status.test.ts`, `stores/sync.test.ts`, `stores/sync-authority.test.ts` (all passed); `pnpm --dir apps/client run check`, `pnpm -w run editor-check`, `pnpm -w run bundle-contracts` (passed after raising the Android source module ceiling from 1323 to 1329 for the six new sync modules). Before the merge: `runtime` tests (126 passed) and `cargo test -p ganbaru-sync --lib status_counts_own`.
+  - Commands added: `sync_authority`, `sync_outbox_list`, `sync_late_changes` (desktop and mobile); `sync_late_change_restore`, `sync_late_change_discard`, `sync_remove_device`, `vault_pick_and_write_recovery_kit` (desktop). Status gained `unconfirmed` and `oldestUnconfirmedAtMs`.
+  - Plan-silent decisions:
+    - Unconfirmed changes are a durable engine count of own Changes ops past the anchor mark; Settings suggests taking the anchor once the oldest is 30 days old (`SYNC_HANDOVER_SUGGESTION_MS`).
+    - Late changes are decided one row per ResolveLate proposal; restore seals the late values with the local writer first.
+    - The coordinator removes devices through the existing unlink, so Remove is hidden when the status role is hub; promote is coordinator only (it holds pairing admin keys); take anchor is linked admin desktops only.
+    - Quarantine and lift are device-local and offered on every device, including Android and members, for live non-anchor devices.
+    - Kit use is offered only to a non-admin enrolled desktop whose status is idle or syncing (anchor reachable proxy).
+    - The kit text file is composed localized on the frontend without the vault name (no frontend source for it); the native dialog title is English like its siblings.
+    - Reset sync is a coordinator-only button with a confirmation dialog.
+    - No `docs/features/` sync doc exists; `docs/features/README.md` routes sync to `docs/data/sync.md`, so the user-visible rules went there.
+    - The pending kit is fetched only on desktop builds after `sync_authority` reports an admin.
+  - Manual UI checks for the maintainer: devices list badges and action buttons at narrow widths; remove, quarantine, take anchor, kit saved, kit regenerate, and reset confirmation dialogs; kit code display and the saved .txt content; kit use form (no focus contour); outbox rejected reasons; late change rows with Keep and Discard; unconfirmed notice; Android shows only quarantine and lift.
+  - Notes for step 9: forced handover and kit use without a reachable anchor are not offered (`canUseSyncRecoveryKit` requires idle or syncing, `canTakeSyncAnchor` requires a client role and an unfrozen space); quarantining the anchor is not offered and belongs with forced handover.

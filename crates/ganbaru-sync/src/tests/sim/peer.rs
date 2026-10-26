@@ -410,6 +410,7 @@ impl PeerSim {
                 clock_ms: START_MS,
                 created: 0,
                 spares: 0,
+                overrides: super::Overrides::new(seed),
             },
             states,
             outbox: Vec::new(),

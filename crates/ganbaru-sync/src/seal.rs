@@ -2104,6 +2104,30 @@ pub(crate) async fn force_capture(
     Ok(())
 }
 
+/// Records a capture of `mask` on a local row without forcing it, as a capture trigger does for
+/// a local edit: the next seal leaves out a group whose value equals its uncontested winner.
+pub(crate) async fn capture_edit(
+    conn: &mut SqliteConnection,
+    table: TableId,
+    key: &str,
+    mask: GroupMask,
+    now_ms: u64,
+) -> SyncResult<()> {
+    sqlx::query(
+        "INSERT INTO sync_capture
+            (table_id, row_key, mask, forced_mask, created, deleted, replaced_by, captured_at_ms)
+         VALUES (?, ?, ?, 0, 0, 0, NULL, ?)
+         ON CONFLICT (table_id, row_key) DO UPDATE SET mask = mask | excluded.mask",
+    )
+    .bind(table_param(table))
+    .bind(key)
+    .bind(mask_param(mask))
+    .bind(clamp_ms(now_ms))
+    .execute(&mut *conn)
+    .await?;
+    Ok(())
+}
+
 /// Records a delete capture for a live row of a derived-key table that its domain table does
 /// not hold, so the next seal writes its existence register as absent again.
 pub(crate) async fn force_delete_capture(

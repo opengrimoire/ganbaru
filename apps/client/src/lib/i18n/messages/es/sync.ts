@@ -144,8 +144,6 @@ export const sync = {
     regenerateTitle: "Crear un kit de recuperación nuevo",
     regenerateMessage: "El kit actual deja de funcionar cuando el ancla confirme el nuevo.",
     regenerateFailed: "No se pudo crear un kit de recuperación nuevo",
-    loadFailed: "No se pudo cargar el kit de recuperación",
-    use: "Usar un kit de recuperación",
     useDescription: "Escribe un código de kit para hacer administradora a esta computadora. El ancla debe estar disponible.",
     useSubmit: "Usar kit",
     useSent: "Se envió al ancla. Esta computadora será administradora cuando el ancla lo confirme.",
@@ -159,7 +157,6 @@ export const sync = {
   outbox: {
     heading: "Cambios en espera del ancla",
     description: "Cambios de dispositivos y roles que propuso este dispositivo. El ancla confirma o rechaza cada uno.",
-    loadFailed: "No se pudieron cargar los cambios en espera",
     change: {
       enroll: (device: string) => `Agregar ${device}`,
       remove: (device: string) => `Quitar ${device}`,
@@ -197,7 +194,6 @@ export const sync = {
     heading: "Cambios tardíos",
     description: "Cambios que hicieron dispositivos quitados después de quitarlos. Conserva o descarta cada uno.",
     adminOnly: "Una computadora administradora decide estos cambios.",
-    loadFailed: "No se pudieron cargar los cambios tardíos",
     kind: {
       values: "Editado",
       tombstone: "Eliminado",

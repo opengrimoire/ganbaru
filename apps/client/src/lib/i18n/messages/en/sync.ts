@@ -134,8 +134,6 @@ export const sync = {
     regenerateTitle: "Make a new recovery kit",
     regenerateMessage: "The current kit stops working once the anchor confirms the new one.",
     regenerateFailed: "A new recovery kit could not be made",
-    loadFailed: "The recovery kit could not be loaded",
-    use: "Use a recovery kit",
     useDescription: "Enter a kit code to make this computer an admin. The anchor must be reachable.",
     useSubmit: "Use kit",
     useSent: "Sent to the anchor. This computer becomes an admin once the anchor confirms it.",
@@ -149,7 +147,6 @@ export const sync = {
   outbox: {
     heading: "Changes waiting for the anchor",
     description: "Device and role changes this device proposed. The anchor confirms or refuses each one.",
-    loadFailed: "Waiting changes could not be loaded",
     change: {
       enroll: (device: string) => `Add ${device}`,
       remove: (device: string) => `Remove ${device}`,
@@ -187,7 +184,6 @@ export const sync = {
     heading: "Late changes",
     description: "Changes removed devices made after they were removed. Keep or discard each one.",
     adminOnly: "An admin computer decides these changes.",
-    loadFailed: "Late changes could not be loaded",
     kind: {
       values: "Edited",
       tombstone: "Deleted",

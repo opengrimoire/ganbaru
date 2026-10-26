@@ -4,7 +4,7 @@ You implement one plan step (or fix round) of the concurrent sync goal in the Ga
 
 ## Path mapping
 
-Older briefs name paths on a previous host. Map them: `/home/victor/ganbaru` is `/home/user/ganbaru` (main checkout, the orchestrator's; never edit or build there), `/home/victor/.cache` is `/root/.cache`, `/home/victor/.claude/CLAUDE.md` is `/root/.claude/CLAUDE.md`, and `<SCRATCHPAD>` is `/tmp/claude-0/-home-user-ganbaru/801a952b-bd25-5890-82d7-9ac7c14fac3d/scratchpad`.
+Older briefs name paths on a previous host. Map them: `/home/victor/ganbaru` is `/home/user/ganbaru` (main checkout, the orchestrator's; never edit or build there), `/home/victor/.cache` is `/root/.cache`, `/home/victor/.claude/CLAUDE.md` is `/root/.claude/CLAUDE.md`, and `<SCRATCHPAD>` is `<SCRATCHPAD>`.
 
 ## Read first
 
@@ -50,4 +50,4 @@ Write your progress entry to `<SCRATCHPAD>/milestone-N-step-K-progress.md` (if a
 
 Branch name, commit hashes and messages, checks run with pass or fail, deviations from the plan and why, anything the next step or the orchestrator must know. No diff dumps.
 
-Target dirs are a pool reassigned between worktrees by the orchestrator, who touches every tracked file of the receiving worktree first so Cargo rebuilds its workspace crates. Use only the target dir your task names.
+Target dirs are a pool reassigned between worktrees by the orchestrator, who touches every tracked file of the receiving worktree first so Cargo rebuilds its workspace crates; a dir's name may not match your worktree. Use only the target dir your task names, and never rename or move a target dir (build-script outputs embed absolute paths).

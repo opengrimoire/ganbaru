@@ -1,12 +1,15 @@
-//! Tauri commands for the sync status, controls, recovery offers, quarantine, and the
-//! authority actions of an admin desktop.
+//! Tauri commands for the sync status, controls, recovery offers, quarantine, the authority
+//! read models, and the authority actions of an admin desktop.
 
+use super::authority::{self, AuthorityView, LateChangeView, OutboxEntryView};
 use super::host::SyncHost;
 use super::recovery::{self, RecoveryAction, RecoveryChoice, RecoveryEntryView};
 #[cfg(desktop)]
-use super::service::{AuthorityAction, AuthorityAnswer, PendingRecoveryKit};
+use super::service::{AuthorityAction, AuthorityAnswer, LateDecision, PendingRecoveryKit};
 use super::service::{SyncRuntime, blocking};
 use super::status::{SyncNotice, SyncStatusView, SyncSubscribers};
+#[cfg(desktop)]
+use ganbaru_sync_contracts::LateResolution;
 use ganbaru_sync_replica::quarantine::Quarantine;
 use serde::Deserialize;
 use std::time::Duration;
@@ -254,6 +257,111 @@ pub async fn sync_use_recovery_kit(
         .map(|_| ())
 }
 
+/// The selected authorization state of the active vault's sync space: the anchor, every
+/// enrolled device with its role, and whether this installation is an admin. `None` before the
+/// vault joined a sync space.
+#[tauri::command]
+pub async fn sync_authority<R: Runtime>(
+    app: AppHandle<R>,
+) -> Result<Option<AuthorityView>, String> {
+    authority::read(&app).await
+}
+
+/// The authorization proposals this device made that wait for the anchor or that the anchor
+/// refused, newest first.
+#[tauri::command]
+pub async fn sync_outbox_list<R: Runtime>(
+    app: AppHandle<R>,
+) -> Result<Vec<OutboxEntryView>, String> {
+    authority::outbox(&app).await
+}
+
+/// Rows removed devices changed after their removal cutoff that no admin decided yet.
+#[tauri::command]
+pub async fn sync_late_changes<R: Runtime>(
+    app: AppHandle<R>,
+) -> Result<Vec<LateChangeView>, String> {
+    authority::late_changes(&app).await
+}
+
+/// A late change, by removal revision, table name, and row key.
+#[cfg(desktop)]
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LateChangeTarget {
+    removal_revision: u64,
+    table: String,
+    row_key: String,
+}
+
+/// On an admin desktop, applies a late change with the local writer and proposes restoring it,
+/// so every device records the decision once the anchor sequences it.
+#[cfg(desktop)]
+#[tauri::command]
+pub async fn sync_late_change_restore(
+    runtime: State<'_, SyncRuntime>,
+    target: LateChangeTarget,
+) -> Result<(), String> {
+    resolve_late(&runtime, target, LateResolution::Restore).await
+}
+
+/// On an admin desktop, proposes discarding a late change for good.
+#[cfg(desktop)]
+#[tauri::command]
+pub async fn sync_late_change_discard(
+    runtime: State<'_, SyncRuntime>,
+    target: LateChangeTarget,
+) -> Result<(), String> {
+    resolve_late(&runtime, target, LateResolution::Discard).await
+}
+
+/// On an admin desktop, proposes removing another enrolled device from the vault. The removal
+/// is permanent once the anchor sequences it; the anchor itself cannot be removed.
+#[cfg(desktop)]
+#[tauri::command]
+pub async fn sync_remove_device(
+    runtime: State<'_, SyncRuntime>,
+    device_id: String,
+) -> Result<(), String> {
+    run_authority(&runtime, AuthorityAction::Remove(device_id)).await?;
+    runtime.sync_now();
+    Ok(())
+}
+
+#[cfg(desktop)]
+async fn resolve_late(
+    runtime: &SyncRuntime,
+    target: LateChangeTarget,
+    resolution: LateResolution,
+) -> Result<(), String> {
+    let decision = late_decision(target, resolution)?;
+    run_authority(runtime, AuthorityAction::ResolveLate(decision)).await?;
+    runtime.sync_now();
+    Ok(())
+}
+
+/// Resolves the table name of a late change target against the vault manifest.
+#[cfg(desktop)]
+fn late_decision(
+    target: LateChangeTarget,
+    resolution: LateResolution,
+) -> Result<LateDecision, String> {
+    let table = ganbaru_sync::Engine::vault()
+        .manifest()
+        .table_named(&target.table)
+        .ok_or_else(|| "the late change names an unknown table".to_string())?
+        .id;
+    if target.removal_revision == 0 {
+        return Err("the late change names no removal".to_string());
+    }
+    Ok(LateDecision {
+        removal_revision: target.removal_revision,
+        table,
+        row_key: target.row_key,
+        resolution,
+    })
+}
+
 #[cfg(desktop)]
 async fn run_authority(
     runtime: &SyncRuntime,
@@ -286,4 +394,43 @@ async fn close_recovery(
         .await
         .map_err(|_| "sync did not run the recovery action in time".to_string())?
         .map_err(|_| "sync stopped before the recovery action ran".to_string())?
+}
+
+#[cfg(all(test, desktop))]
+mod tests {
+    use super::*;
+
+    fn target(removal_revision: u64, table: &str) -> LateChangeTarget {
+        LateChangeTarget {
+            removal_revision,
+            table: table.to_string(),
+            row_key: "note-late".to_string(),
+        }
+    }
+
+    #[test]
+    fn sync_late_decision_resolves_the_table_by_name() {
+        let decision =
+            late_decision(target(3, "quick_notes"), LateResolution::Discard).expect("decision");
+        let table = ganbaru_sync::Engine::vault()
+            .manifest()
+            .table_named("quick_notes")
+            .expect("quick notes table")
+            .id;
+        assert_eq!(
+            decision,
+            LateDecision {
+                removal_revision: 3,
+                table,
+                row_key: "note-late".to_string(),
+                resolution: LateResolution::Discard,
+            }
+        );
+    }
+
+    #[test]
+    fn sync_late_decision_refuses_unknown_tables_and_missing_removals() {
+        assert!(late_decision(target(3, "sync_ops"), LateResolution::Restore).is_err());
+        assert!(late_decision(target(0, "quick_notes"), LateResolution::Restore).is_err());
+    }
 }

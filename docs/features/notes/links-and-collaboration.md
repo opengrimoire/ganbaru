@@ -1,6 +1,6 @@
 # Notes links and collaboration
 
-Status: implemented for local links, backlinks, comments, suggestions, mentions, and notifications. Shared access control and sync are planned.
+Status: implemented for local links, backlinks, comments, suggestions, mentions, and notifications. Comments and suggestions replicate with the Notes structure from the vault owner; shared access control is planned.
 
 ## Inline links
 
@@ -62,7 +62,7 @@ Notification previews and deep links obey the same effective page access as dire
 
 Comment and suggestion mutations append local operation records with actor snapshots, entity versions, and explicit state transitions. Comment body edits currently use last-writer-wins metadata because there is no multi-author rich-text merge for comment bodies.
 
-Resolve, reopen, accept, and reject operations validate base versions. Future sync must surface conflicting stale decisions rather than silently applying them.
+Resolve, reopen, accept, and reject operations validate base versions. Across devices, comment threads, comments, reactions, and suggestions replicate as described in [Notes and Projects](../../data/schema/notes-and-projects.md#sync): concurrent edits, resolves, and deletes of one comment all apply, and an accepted suggestion outranks a concurrent reject.
 
 ## Access
 

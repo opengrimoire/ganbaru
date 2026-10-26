@@ -107,6 +107,8 @@ export const sync = {
     quarantineTitle: "Quarantine device",
     quarantineMessage: (device: string) =>
       `Stop accepting changes from ${device} on this device right away? You can lift the quarantine later.`,
+    quarantineAdminMessage: (device: string) =>
+      `Stop accepting changes from ${device} right away and propose removing it from the vault? Lifting the quarantine later does not undo the removal once the anchor applies it.`,
     quarantineFailed: "The device could not be quarantined",
     lift: "Lift quarantine",
     liftFailed: "The quarantine could not be lifted",
@@ -193,6 +195,8 @@ export const sync = {
     byAt: (kind: string, device: string, time: string) => `${kind} on ${device}, ${time}`,
     restore: "Keep",
     discard: "Discard",
+    discardTitle: "Discard change",
+    discardMessage: "Discard this change on every device? Once the anchor applies the decision, it cannot be undone.",
     restored: "Change kept. The anchor records the decision.",
     discarded: "Change discarded. The anchor records the decision.",
     restoreFailed: "The change could not be kept",

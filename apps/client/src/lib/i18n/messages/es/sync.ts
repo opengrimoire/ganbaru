@@ -117,6 +117,8 @@ export const sync = {
     quarantineTitle: "Poner dispositivo en cuarentena",
     quarantineMessage: (device: string) =>
       `¿Dejar de aceptar cambios de ${device} en este dispositivo ahora mismo? Puedes levantar la cuarentena después.`,
+    quarantineAdminMessage: (device: string) =>
+      `¿Dejar de aceptar cambios de ${device} ahora mismo y proponer quitarlo de la bóveda? Levantar la cuarentena después no deshace la eliminación una vez que el ancla la aplica.`,
     quarantineFailed: "No se pudo poner el dispositivo en cuarentena",
     lift: "Levantar cuarentena",
     liftFailed: "No se pudo levantar la cuarentena",
@@ -203,6 +205,8 @@ export const sync = {
     byAt: (kind: string, device: string, time: string) => `${kind} en ${device}, ${time}`,
     restore: "Conservar",
     discard: "Descartar",
+    discardTitle: "Descartar cambio",
+    discardMessage: "¿Descartar este cambio en todos los dispositivos? Una vez que el ancla aplica la decisión, no se puede deshacer.",
     restored: "Se conservó el cambio. El ancla registra la decisión.",
     discarded: "Se descartó el cambio. El ancla registra la decisión.",
     restoreFailed: "No se pudo conservar el cambio",

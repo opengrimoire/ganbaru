@@ -164,7 +164,9 @@
 {:else if confirmation?.kind === "quarantine"}
   <ConfirmDialog
     title={t("sync.authority.quarantineTitle")}
-    message={t("sync.authority.quarantineMessage", syncAuthorityDeviceName(t, confirmation.device))}
+    message={context.authority.ownIsAdmin
+      ? t("sync.authority.quarantineAdminMessage", syncAuthorityDeviceName(t, confirmation.device))
+      : t("sync.authority.quarantineMessage", syncAuthorityDeviceName(t, confirmation.device))}
     confirmLabel={t("sync.authority.quarantine")}
     cancelLabel={t("common.cancel")}
     onConfirm={confirm}

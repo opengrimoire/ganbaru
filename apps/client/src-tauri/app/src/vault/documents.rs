@@ -584,7 +584,7 @@ pub async fn vault_pick_and_write_recovery_kit(
         return Ok(false);
     };
     require_extension(&path, &["txt"], "recovery kit")?;
-    write_text_file_atomically(&path, &contents, FileAccess::Default)?;
+    write_text_file_atomically(&path, &contents, FileAccess::OwnerOnly)?;
     Ok(true)
 }
 

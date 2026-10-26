@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { SyncLateChange } from "$lib/api/sync";
+  import ConfirmDialog from "$lib/components/ui/ConfirmDialog.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { getSyncAuthorityState } from "$lib/stores/sync-authority.svelte";
@@ -25,6 +26,13 @@
   let busyKey = $state<string | null>(null);
   let message = $state("");
   let failed = $state(false);
+  let pendingDiscard = $state<SyncLateChange | null>(null);
+
+  function confirmDiscard(): void {
+    const change = pendingDiscard;
+    pendingDiscard = null;
+    if (change) void act(change, false);
+  }
 
   async function act(change: SyncLateChange, restore: boolean): Promise<void> {
     if (busyKey) return;
@@ -66,7 +74,7 @@
           <button type="button" class={buttonClass} disabled={busyKey !== null} onclick={() => void act(change, true)}>
             {t("sync.late.restore")}
           </button>
-          <button type="button" class={buttonClass} disabled={busyKey !== null} onclick={() => void act(change, false)}>
+          <button type="button" class={buttonClass} disabled={busyKey !== null} onclick={() => { pendingDiscard = change; }}>
             {t("sync.late.discard")}
           </button>
         </div>
@@ -84,3 +92,13 @@
     {/if}
   {/if}
 </div>
+{#if pendingDiscard}
+  <ConfirmDialog
+    title={t("sync.late.discardTitle")}
+    message={t("sync.late.discardMessage")}
+    confirmLabel={t("sync.late.discard")}
+    cancelLabel={t("common.cancel")}
+    onConfirm={confirmDiscard}
+    onCancel={() => { pendingDiscard = null; }}
+  />
+{/if}

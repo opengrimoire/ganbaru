@@ -29,6 +29,12 @@ pub const MAX_BLOCK_TEXT_BYTES: usize = 256 * 1024;
 pub const MAX_BLOCK_ATTRS_BYTES: usize = 64 * 1024;
 /// Bytes of one template's row and blocks together, as Notes measures them on save.
 pub const MAX_TEMPLATE_CONTENT_BYTES: usize = 256 * 1024;
+/// Attachments of one comment.
+pub const MAX_COMMENT_ATTACHMENTS: usize = 100;
+/// Bytes of one comment's attachments JSON.
+pub const MAX_COMMENT_ATTACHMENTS_BYTES: usize = 50 * 1024;
+/// Bytes of one reaction emoji.
+pub const MAX_REACTION_EMOJI_BYTES: usize = 64;
 
 /// View types the `notes_database_views.type` check allows.
 pub const VIEW_TYPES: [&str; 10] = [
@@ -394,17 +400,37 @@ fn validate_comment(group: GroupId, fields: &[Field]) -> Result<(), AdapterError
         }
         (comment_group::BODY, [rich_text, _, attachments]) => {
             json_array(rich_text, "notes comment text")?;
-            json_array(attachments, "notes comment attachments")
+            comment_attachments(attachments)
         }
         _ => Ok(()),
     }
+}
+
+/// A comment's attachments: a JSON array of at most [`MAX_COMMENT_ATTACHMENTS`] objects within
+/// [`MAX_COMMENT_ATTACHMENTS_BYTES`], as Notes checks them on a local write.
+fn comment_attachments(field: &Field) -> Result<(), AdapterError> {
+    const WHAT: &str = "notes comment attachments";
+    let json = text(field)?;
+    if json.len() > MAX_COMMENT_ATTACHMENTS_BYTES {
+        return Err(AdapterError(WHAT));
+    }
+    let attachments =
+        serde_json::from_str::<Vec<serde_json::Value>>(json).map_err(|_| AdapterError(WHAT))?;
+    if attachments.len() > MAX_COMMENT_ATTACHMENTS || !attachments.iter().all(|a| a.is_object()) {
+        return Err(AdapterError(WHAT));
+    }
+    Ok(())
 }
 
 fn validate_reaction(group: GroupId, fields: &[Field]) -> Result<(), AdapterError> {
     match (group, fields) {
         (reaction_group::IDENTITY, [_, author, emoji]) => {
             not_blank(author, "notes reaction author")?;
-            not_blank(emoji, "notes reaction emoji")
+            not_blank(emoji, "notes reaction emoji")?;
+            if text(emoji)?.len() > MAX_REACTION_EMOJI_BYTES {
+                return Err(AdapterError("notes reaction emoji"));
+            }
+            Ok(())
         }
         (reaction_group::CREATED, [_, display_name]) => {
             optional_json(display_name, "notes reaction author name")
@@ -963,14 +989,24 @@ mod tests {
         body("[]", "[]").unwrap();
         assert!(body("{}", "[]").is_err());
         assert!(body("[]", "{").is_err());
-        assert!(
+        assert!(body("[]", "[1]").is_err());
+        let attachments = |count: usize, name: &str| {
+            serde_json::Value::Array(vec![serde_json::json!({ "name": name }); count]).to_string()
+        };
+        body("[]", &attachments(MAX_COMMENT_ATTACHMENTS, "a")).unwrap();
+        assert!(body("[]", &attachments(MAX_COMMENT_ATTACHMENTS + 1, "a")).is_err());
+        let wide = "a".repeat(MAX_COMMENT_ATTACHMENTS_BYTES / 4);
+        assert!(body("[]", &attachments(4, &wide)).is_err());
+        let reaction = |emoji: &str| {
             check(
                 REACTIONS_TABLE,
                 reaction_group::IDENTITY,
-                vec![t("comment"), t("person"), t(" ")],
+                vec![t("comment"), t("person"), t(emoji)],
             )
-            .is_err()
-        );
+        };
+        reaction("👍").unwrap();
+        assert!(reaction(" ").is_err());
+        assert!(reaction(&"👍".repeat(MAX_REACTION_EMOJI_BYTES / 4 + 1)).is_err());
 
         let decision = |status: &str, accepted: Field, rejected: Field| {
             check(

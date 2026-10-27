@@ -6,17 +6,25 @@
 //! revocation wins over a concurrent widening, and a later re-add that saw the removal wins over
 //! it. Device-local Chat rows stay on their device.
 
+use std::sync::{Arc, Mutex};
+
 use ganbaru_sync_contracts::derived_key;
+use sqlx::SqliteConnection;
 
 use super::block_on;
+use super::fixture::{
+    FixtureHook, LISTS_TABLE, OVERRIDES_TABLE, OverrideHook, TEST_MANIFEST, test_adapters,
+};
 use super::replica::{Replica, converge, quoted};
 use super::sim::Rng;
 use crate::error::failpoints;
+use crate::hooks::{ChangeSink, HookFuture, MaterializeHook};
+use crate::manifest::TableSpec;
 use crate::manifest::vault::chat::{
-    CHANNEL_MEMBERSHIP_KEY_PREFIX, CHANNELS_TABLE, FOLDER_GRANT_KEY_PREFIX, MEMBERSHIP_KEY_PREFIX,
-    PARTICIPANTS_TABLE,
+    CHANNEL_MEMBERSHIP_KEY_PREFIX, CHANNELS_TABLE, CONVERSATIONS_TABLE, FOLDER_GRANT_KEY_PREFIX,
+    MEMBERSHIP_KEY_PREFIX, PARTICIPANTS_TABLE,
 };
-use crate::{SyncError, SyncResult};
+use crate::{Engine, SyncError, SyncResult};
 
 const SALT: u64 = 73;
 const TEAMMATE: &str = "participant:reviewer";
@@ -1104,5 +1112,87 @@ fn chat_simulated_revoke_against_widen_on_a_grant_and_a_membership_keeps_revocat
                 }
             }
         }
+    });
+}
+
+/// Records the conversation keys a materialization handed the hook whose rows are gone, as the
+/// app's Chat hook reports removed conversations.
+#[derive(Default)]
+struct RemovedConversations(Arc<Mutex<Vec<String>>>);
+
+impl MaterializeHook for RemovedConversations {
+    fn after_materialize<'a>(
+        &'a self,
+        conn: &'a mut SqliteConnection,
+        _table: &'static TableSpec,
+        changed_keys: &'a [String],
+        _changes: &'a mut dyn ChangeSink,
+    ) -> HookFuture<'a> {
+        Box::pin(async move {
+            for key in changed_keys {
+                let present: i64 =
+                    sqlx::query_scalar("SELECT count(*) FROM chat_conversations WHERE id = ?")
+                        .bind(key)
+                        .fetch_one(&mut *conn)
+                        .await?;
+                if present == 0 {
+                    self.0.lock().unwrap().push(key.clone());
+                }
+            }
+            Ok(())
+        })
+    }
+}
+
+/// A project group deleted on one replica cascades into the conversations of its projects on
+/// the other, and the receiver's Chat hook is handed those conversation keys, so it can report
+/// them removed.
+#[test]
+fn chat_hook_sees_conversations_an_applied_group_delete_cascades_away() {
+    block_on(async {
+        let mut replicas = replicas(2).await;
+        replicas[0]
+            .exec(&format!("{}{}", identity_sql(), conversation_sql()))
+            .await;
+        converge(&mut replicas).await;
+
+        let removed = RemovedConversations::default();
+        let seen = Arc::clone(&removed.0);
+        replicas[1].engine = Engine::with(
+            &TEST_MANIFEST,
+            test_adapters(),
+            super::notes::with_notes_hooks(crate::domains::vault_hooks())
+                .with(LISTS_TABLE, Box::new(FixtureHook))
+                .with(OVERRIDES_TABLE, Box::new(OverrideHook::default()))
+                .with(CONVERSATIONS_TABLE, Box::new(removed)),
+        )
+        .unwrap();
+        let group = replicas[0]
+            .scalar_text(&format!(
+                "SELECT group_id FROM projects WHERE id = {}",
+                quoted(PROJECT)
+            ))
+            .await
+            .expect("the project has a group");
+        replicas[0]
+            .exec(&format!(
+                "DELETE FROM project_groups WHERE id = {}",
+                quoted(&group)
+            ))
+            .await;
+        converge(&mut replicas).await;
+
+        for replica in &mut replicas {
+            assert_eq!(
+                replica
+                    .count(
+                        "SELECT count(*) FROM chat_conversations
+                         WHERE id = 'conversation:design'"
+                    )
+                    .await,
+                0
+            );
+        }
+        assert_eq!(*seen.lock().unwrap(), vec![CONVERSATION.to_owned()]);
     });
 }

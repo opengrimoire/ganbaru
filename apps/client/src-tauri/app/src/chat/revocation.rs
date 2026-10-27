@@ -136,21 +136,55 @@ pub(crate) async fn revoke_and_stop_active_runs(
     Ok(())
 }
 
+/// Stops orphaned runs and drains ready revocation jobs, scheduling a retry when anything is
+/// left or any part failed. Returns the jobs completed, or the first failure of the pass.
 pub(crate) async fn drain_access_revocation_jobs(
     app: &tauri::AppHandle,
     pool: &SqlitePool,
 ) -> ChatResult<u64> {
-    let orphans_left = stop_orphaned_runs_logged(&AppOrphanedRunHost(app), pool).await;
-    recover_stale_claims(pool).await?;
-    let completed = drain_ready_jobs(app, pool).await?;
-    if orphans_left || has_pending_jobs(pool).await? {
+    let pass = run_drain_pass(app, pool).await;
+    if pass.retry {
         let retry_app = app.clone();
         let retry_pool = pool.clone();
         tauri::async_runtime::spawn(async move {
             retry_pending_jobs(retry_app, retry_pool).await;
         });
     }
-    Ok(completed)
+    pass.completed
+}
+
+/// What one pass over every part of a revocation drain found.
+#[derive(Debug)]
+struct DrainPass {
+    /// Jobs completed, or the first failure of the pass.
+    completed: ChatResult<u64>,
+    /// Whether a later pass is needed: an orphaned run is left, a part failed, or jobs remain.
+    retry: bool,
+}
+
+/// Runs every part of a drain, so a failure of one part never skips the others.
+async fn run_drain_pass(app: &tauri::AppHandle, pool: &SqlitePool) -> DrainPass {
+    let orphans_left = stop_orphaned_runs_logged(&AppOrphanedRunHost(app), pool).await;
+    let recovered = recover_stale_claims(pool).await;
+    let drained = drain_ready_jobs(app, pool).await;
+    let pending = has_pending_jobs(pool).await;
+    drain_pass(orphans_left, recovered, drained, pending)
+}
+
+/// Combines the results of the parts of one drain pass. Any failure, an orphaned run left, or a
+/// pending job schedules a retry; the pass reports the first failure, else the jobs completed.
+fn drain_pass(
+    orphans_left: bool,
+    recovered: ChatResult<()>,
+    drained: ChatResult<u64>,
+    pending: ChatResult<bool>,
+) -> DrainPass {
+    let retry =
+        orphans_left || recovered.is_err() || drained.is_err() || !matches!(pending, Ok(false));
+    let completed = recovered
+        .and(drained)
+        .and_then(|count| pending.map(|_| count));
+    DrainPass { completed, retry }
 }
 
 /// Runtime services the orphaned run sweep acts on.
@@ -390,21 +424,17 @@ async fn drain_ready_jobs(app: &tauri::AppHandle, pool: &SqlitePool) -> ChatResu
     Ok(completed)
 }
 
-/// Polls until no job and no orphaned run is left, retrying orphaned runs whose shutdown failed
-/// as well as pending jobs.
+/// Polls until a full drain pass leaves no job, no orphaned run, and no failed part, retrying
+/// orphaned runs whose shutdown failed, failed parts, and pending jobs.
 async fn retry_pending_jobs(app: tauri::AppHandle, pool: SqlitePool) {
     for _ in 0..REVOCATION_RETRY_MAX_POLLS {
         tokio::time::sleep(REVOCATION_RETRY_POLL).await;
-        let orphans_left = stop_orphaned_runs_logged(&AppOrphanedRunHost(&app), &pool).await;
-        if recover_stale_claims(&pool).await.is_err()
-            || drain_ready_jobs(&app, &pool).await.is_err()
-        {
-            return;
+        let pass = run_drain_pass(&app, &pool).await;
+        if let Err(error) = &pass.completed {
+            eprintln!("Chat revocation retry failed with code {:?}", error.code);
         }
-        match has_pending_jobs(&pool).await {
-            Ok(true) => {}
-            Ok(false) if orphans_left => {}
-            Ok(false) | Err(_) => return,
+        if !pass.retry {
+            return;
         }
     }
 }
@@ -801,14 +831,14 @@ fn persistence_error<T>(_error: T) -> ChatError {
 pub(crate) mod tests {
     use super::{
         ActiveRunSelector, InternalMcpRunScope, OrphanedRunHost, REVOCATION_DRAIN_BATCH_SIZE,
-        REVOCATION_RETRY_MAX_POLLS, REVOCATION_RETRY_MAX_SECONDS, missing_authorizations,
-        retry_delay_seconds, revocation_error, revoke_active_run_authorizations,
-        stop_orphaned_run_scopes, stop_orphaned_runs_logged,
+        REVOCATION_RETRY_MAX_POLLS, REVOCATION_RETRY_MAX_SECONDS, drain_pass,
+        missing_authorizations, retry_delay_seconds, revocation_error,
+        revoke_active_run_authorizations, stop_orphaned_run_scopes, stop_orphaned_runs_logged,
     };
     use crate::chat::sync::RevocationWake;
     use ganbaru_chat_contracts::models::{
-        ChatAgentRunId, ChatAuthorizationRevisionId, ChatConversationId, ChatResult,
-        ChatRuntimeApprovalPolicy, ChatThreadId, ChatTurnId, ChatWorkAssignmentId,
+        ChatAgentRunId, ChatAuthorizationRevisionId, ChatConversationId, ChatError, ChatErrorCode,
+        ChatResult, ChatRuntimeApprovalPolicy, ChatThreadId, ChatTurnId, ChatWorkAssignmentId,
         ProjectWorkingFolderId,
     };
     use sqlx::SqlitePool;
@@ -1255,5 +1285,44 @@ pub(crate) mod tests {
         assert_eq!(retry_delay_seconds(0), 5);
         assert_eq!(retry_delay_seconds(1), 10);
         assert_eq!(retry_delay_seconds(100), REVOCATION_RETRY_MAX_SECONDS);
+    }
+
+    /// A failure of the drain part named `part`.
+    fn part_failure(part: &str) -> ChatError {
+        ChatError::new(ChatErrorCode::Persistence, part, true)
+    }
+
+    #[test]
+    fn a_drain_pass_retries_when_any_part_failed_or_left_work() {
+        let clean = drain_pass(false, Ok(()), Ok(3), Ok(false));
+        assert!(!clean.retry);
+        assert_eq!(clean.completed.unwrap(), 3);
+
+        // Each reason alone schedules the retry.
+        assert!(drain_pass(true, Ok(()), Ok(0), Ok(false)).retry);
+        assert!(drain_pass(false, Ok(()), Ok(0), Ok(true)).retry);
+        assert!(drain_pass(false, Err(part_failure("recover")), Ok(0), Ok(false)).retry);
+        assert!(drain_pass(false, Ok(()), Err(part_failure("drain")), Ok(false)).retry);
+        assert!(drain_pass(false, Ok(()), Ok(0), Err(part_failure("pending"))).retry);
+
+        // An orphan shutdown that failed together with a failed recovery still retries, and the
+        // pass reports the first failure.
+        let failed = drain_pass(
+            true,
+            Err(part_failure("recover")),
+            Err(part_failure("drain")),
+            Err(part_failure("pending")),
+        );
+        assert!(failed.retry);
+        assert_eq!(failed.completed.unwrap_err().message, "recover");
+        let drain_failed = drain_pass(
+            false,
+            Ok(()),
+            Err(part_failure("drain")),
+            Err(part_failure("pending")),
+        );
+        assert_eq!(drain_failed.completed.unwrap_err().message, "drain");
+        let pending_failed = drain_pass(false, Ok(()), Ok(2), Err(part_failure("pending")));
+        assert_eq!(pending_failed.completed.unwrap_err().message, "pending");
     }
 }

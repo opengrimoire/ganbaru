@@ -202,12 +202,9 @@ async fn insert_dispatch_failure_message(
     let hash = sha256_hex(format!("{}:{claim_token}", assignment_id.as_str()).as_bytes());
     let item_id = format!("organizational-item:{hash}");
     let revision_id = format!("organizational-revision:{hash}");
-    let order_key = crate::timeline::next_order_key(
-        &mut **transaction,
-        &conversation_id,
-        Some(&reply_thread_id),
-    )
-    .await?;
+    let order_key =
+        crate::timeline::next_order_key(transaction, &conversation_id, Some(&reply_thread_id))
+            .await?;
     sqlx::query(
         "INSERT INTO chat_conversation_items
             (id, conversation_id, reply_thread_id, item_kind, order_key, created_at)

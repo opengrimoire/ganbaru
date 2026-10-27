@@ -313,7 +313,7 @@ async fn insert_projected_teammate_message(
             .await
             .map_err(persistence_error)?;
     let order_key = crate::timeline::next_order_key(
-        &mut **transaction,
+        transaction,
         &conversation_id,
         Some(target.reply_thread_id.as_str()),
     )

@@ -312,24 +312,22 @@ async fn insert_projected_teammate_message(
             .fetch_one(&mut **transaction)
             .await
             .map_err(persistence_error)?;
-    let ordinal: i64 = sqlx::query_scalar(
-        "SELECT coalesce(max(ordinal), 0) + 1
-         FROM chat_conversation_items WHERE reply_thread_id = ?",
+    let order_key = crate::timeline::next_order_key(
+        &mut **transaction,
+        &conversation_id,
+        Some(target.reply_thread_id.as_str()),
     )
-    .bind(target.reply_thread_id.as_str())
-    .fetch_one(&mut **transaction)
-    .await
-    .map_err(persistence_error)?;
+    .await?;
     let revision_id = format!("organizational-revision:{event_hash}");
     sqlx::query(
         "INSERT INTO chat_conversation_items
-            (id, conversation_id, reply_thread_id, item_kind, ordinal, created_at)
+            (id, conversation_id, reply_thread_id, item_kind, order_key, created_at)
          VALUES (?, ?, ?, 'message', ?, ?)",
     )
     .bind(&item_id)
     .bind(&conversation_id)
     .bind(target.reply_thread_id.as_str())
-    .bind(ordinal)
+    .bind(&order_key)
     .bind(runtime.created_at.as_str())
     .execute(&mut **transaction)
     .await
@@ -353,16 +351,17 @@ async fn insert_projected_teammate_message(
         "agentRunId": target.run_id,
         "payload": payload,
     });
+    let bounded = crate::timeline::bounded_projected_revision(markdown, rich_content.clone())?;
     sqlx::query(
         "INSERT INTO chat_communication_message_revisions
-            (id, message_item_id, revision, normalized_markdown,
+            (id, message_item_id, normalized_markdown,
              rich_content_schema_version, rich_content_data, created_at)
-         VALUES (?, ?, 1, ?, 1, ?, ?)",
+         VALUES (?, ?, ?, 1, ?, ?)",
     )
     .bind(&revision_id)
     .bind(&item_id)
-    .bind(markdown)
-    .bind(serde_json::to_string(&rich_content).map_err(serialization_error)?)
+    .bind(&bounded.normalized_markdown)
+    .bind(&bounded.rich_content_data)
     .bind(runtime.created_at.as_str())
     .execute(&mut **transaction)
     .await
@@ -388,7 +387,7 @@ async fn insert_projected_teammate_message(
     .map_err(persistence_error)?;
     sqlx::query(
         "UPDATE chat_reply_threads
-         SET reply_count = reply_count + 1, last_activity_at = ?,
+         SET last_activity_at = ?,
              revision = revision + 1, updated_at = ? WHERE id = ?",
     )
     .bind(runtime.created_at.as_str())

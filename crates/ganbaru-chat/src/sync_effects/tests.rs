@@ -85,16 +85,16 @@ async fn seed_organization(pool: &SqlitePool) {
              read_history, participate, history_boundary, created_at, updated_at)
          VALUES ('{conversation}', '{TEAMMATE_ID}', 'channel-membership:sync-effects',
                  '{PROFILE_ID}', 1, 1, 'entire', '{NOW}', '{NOW}');
-         INSERT INTO chat_conversation_items (id, conversation_id, item_kind, ordinal, created_at)
-         VALUES ('item:first', '{conversation}', 'message', 1, '{NOW}'),
-                ('item:second', '{conversation}', 'message', 2, '{NOW}');
+         INSERT INTO chat_conversation_items (id, conversation_id, item_kind, order_key, created_at)
+         VALUES ('item:first', '{conversation}', 'message', 'c000', '{NOW}'),
+                ('item:second', '{conversation}', 'message', 'c001', '{NOW}');
          INSERT INTO chat_communication_messages (item_id, author_participant_id, created_at)
          VALUES ('item:first', 'participant:local-owner', '{NOW}'),
                 ('item:second', '{TEAMMATE_ID}', '{NOW}');
          INSERT INTO chat_communication_message_revisions
-            (id, message_item_id, revision, normalized_markdown, created_at)
-         VALUES ('revision:first', 'item:first', 1, 'Plan the release', '{NOW}'),
-                ('revision:second', 'item:second', 1, 'Release notes drafted', '{NOW}');
+            (id, message_item_id, normalized_markdown, created_at)
+         VALUES ('revision:first', 'item:first', 'Plan the release', '{NOW}'),
+                ('revision:second', 'item:second', 'Release notes drafted', '{NOW}');
          UPDATE chat_communication_messages
          SET current_revision_id = 'revision:' || substr(item_id, 6);
          INSERT INTO chat_reply_threads
@@ -561,8 +561,8 @@ async fn search_follows_revisions_that_arrive_after_their_message_and_deleted_me
 
     set_applying(&pool, true).await;
     sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
-        "INSERT INTO chat_conversation_items (id, conversation_id, item_kind, ordinal, created_at)
-         VALUES ('item:late', '{conversation}', 'message', 3, '{NOW}');
+        "INSERT INTO chat_conversation_items (id, conversation_id, item_kind, order_key, created_at)
+         VALUES ('item:late', '{conversation}', 'message', 'c002', '{NOW}');
          INSERT INTO chat_communication_messages (item_id, author_participant_id, created_at)
          VALUES ('item:late', '{TEAMMATE_ID}', '{NOW}');"
     )))
@@ -574,8 +574,8 @@ async fn search_follows_revisions_that_arrive_after_their_message_and_deleted_me
 
     sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
         "INSERT INTO chat_communication_message_revisions
-            (id, message_item_id, revision, normalized_markdown, created_at)
-         VALUES ('revision:late', 'item:late', 1, 'Arrived after its message', '{NOW}');
+            (id, message_item_id, normalized_markdown, created_at)
+         VALUES ('revision:late', 'item:late', 'Arrived after its message', '{NOW}');
          UPDATE chat_communication_messages SET current_revision_id = 'revision:late'
          WHERE item_id = 'item:late';"
     )))

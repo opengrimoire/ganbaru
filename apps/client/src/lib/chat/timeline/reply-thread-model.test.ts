@@ -69,7 +69,7 @@ function message(
   authorId: string,
   createdAt: string,
   value: VersionedJson["value"] = { type: "doc" },
-  ordinal = 1,
+  position = 1,
 ): ChatMessageRead {
   return {
     itemId,
@@ -91,14 +91,14 @@ function message(
     attachmentIds: [],
     references: [],
     replyThread: null,
-    ordinal,
+    orderKey: `c${String(position).padStart(3, "0")}`,
     editedAt: null,
     createdAt,
   };
 }
 
 describe("reply thread execution placement", () => {
-  it("replaces run projections with exact turns at their durable ordinals", () => {
+  it("replaces run projections with exact turns at their durable positions", () => {
     const replies = [
       message("approval", "teammate-1", "2026-08-02T08:00:00Z", {
         type: "agent_update",
@@ -120,6 +120,21 @@ describe("reply thread execution placement", () => {
     expect(replyThreadRenderEntries(replies, [olderRun, currentRun], new Set([olderRun.id, currentRun.id]))
       .map((entry) => entry.key))
       .toEqual(["execution:run-1", "retry", "execution:run-2"]);
+  });
+
+  it("orders replies that share an order key by item id before placing runs", () => {
+    const replies = [
+      message("c-note", "local-user", "2026-08-02T08:02:00Z", { type: "doc" }, 3),
+      message("b-retry", "local-user", "2026-08-02T08:00:00Z", { type: "doc" }, 2),
+      message("a-result", "teammate-1", "2026-08-02T08:01:00Z", {
+        type: "agent_update",
+        agentRunId: "run-1",
+      }, 2),
+    ];
+    const run = agentRun("run-1", "thread-1");
+
+    expect(replyThreadRenderEntries(replies, [run], new Set([run.id])).map((entry) => entry.key))
+      .toEqual(["execution:run-1", "b-retry", "c-note"]);
   });
 
   it("retains projections owned by a run whose exact turn is not loaded", () => {

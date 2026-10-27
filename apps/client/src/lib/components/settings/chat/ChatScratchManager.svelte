@@ -410,7 +410,7 @@
                 </div>
                 <div class="source-summary">
                   <strong>{t("settings.chat.teammates.scratchManager.sources")}</strong>
-                  {#if generation.retainedSources.length === 0}<small>{t("settings.chat.teammates.scratchManager.noSources")}</small>{:else}{#each generation.retainedSources as source (source.channelId)}<small>{t("settings.chat.teammates.scratchManager.sourceRange", source.channelName, source.lowerOrdinal, source.highOrdinal)}</small>{/each}{/if}
+                  {#if generation.retainedSources.length === 0}<small>{t("settings.chat.teammates.scratchManager.noSources")}</small>{:else}{#each generation.retainedSources as source (source.channelId)}<small>{t("settings.chat.teammates.scratchManager.sourceRange", source.channelName)}</small>{/each}{/if}
                 </div>
               </article>
             {/each}

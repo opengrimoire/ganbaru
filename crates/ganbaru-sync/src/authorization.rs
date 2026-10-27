@@ -40,6 +40,8 @@ pub struct EnrolledDevice {
     pub device_key: DevicePublicKey,
     /// SHA-256 fingerprint of its TLS certificate.
     pub tls_fingerprint: [u8; 32],
+    /// Label the enrollment recorded, if any.
+    pub label: Option<String>,
     /// Form factor.
     pub kind: DeviceKind,
     /// Role, with the admin key of an admin.
@@ -341,6 +343,7 @@ impl AuthState {
                     device_id: device_id.clone(),
                     device_key: device.device_key,
                     tls_fingerprint: device.tls_fingerprint,
+                    label: device.label.clone(),
                     kind: device.kind,
                     role: device.role,
                     enrolled_revision: device.enrolled,

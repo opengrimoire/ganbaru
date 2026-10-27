@@ -44,28 +44,33 @@ Out of scope: the multi-person sharing goal. Its plans (`goal/sharing/`) are not
 
 ## State on feat/sync
 
-Updated at the end of the cloud session (2026-10-25). The three earlier in-flight branches have landed: Notes structure (milestone 8 step 3, merge 9fce4b75), Chat conversations (milestone 9 step 4, merge 20b0aec3), and anchor handover (milestone 11 step 6b, merge 78910455). Their records are in the plans' Progress sections, `progress/`, and `final-report-notes.md`. Landed topic branches remain on origin because the cloud proxy refused remote branch deletion; they can be deleted.
+Updated at the end of the local session on the mini PC (2026-10-26). Milestone 8 step 4 (merge 833a93da), engine follow-up 5 (merge 74c19103), and milestone 11 step 8 (merge e4b65518) have landed, after the cloud session's three branches. Landed topic branches were deleted on origin.
 
-- `VAULT_MANIFEST_VERSION` is 15, handoff `PROTOCOL_VERSION` is 14, the last migration is `20261025183055_chat_conversations_replication.sql`.
-- Done in source: milestones 2 to 7, milestone 8 steps 1 to 3, milestone 9 steps 1 to 4, milestone 10 steps 1 to 4, milestone 11 steps 1 to 6.
-- Remaining: milestone 8 steps 4 to 8, milestone 9 steps 5 to 10 (docs part of 10), milestone 10 steps 5 to 7, milestone 11 steps 7 to 10, milestone 12 steps 1 to 11, milestone closes, a clean `pnpm -w run validate`, and the final report.
+- `VAULT_MANIFEST_VERSION` is 16, handoff `PROTOCOL_VERSION` is 14, the last migration is `20261025212528_notes_databases_replication.sql`.
+- Done in source: milestones 2 to 7, milestone 8 steps 1 to 4, milestone 9 steps 1 to 4, milestone 10 steps 1 to 4, milestone 11 steps 1 to 6 and 8, engine follow-ups 1 to 5.
+- Remaining: milestone 8 steps 5 to 8, milestone 9 steps 5 to 10 (docs part of 10), milestone 10 steps 5 to 7, milestone 11 steps 7, 9, and 10, milestone 12 steps 1 to 11, milestone closes, a clean `pnpm -w run validate`, and the final report.
 
-## In-flight branches (pushed to origin)
+## In-flight branches
 
-1. `feat/sync-notes-databases`: milestone 8 step 4 (brief `briefs/m8-step-4-brief.md`, progress `progress/milestone-8-step-4-progress.md`). Head 54e48d26: step 3 follow-ups (a666f5ab, e9ed247a), the step 4 tables (6da2e333), a row parent fix (bd05f22c), and a merge of feat/sync afdcb488 (manifest 16 expected; check that its migration still sorts last). Its agent was stopped while running the final check list after that merge; no uncommitted work. Next: rerun the brief's full check list, finish the progress entry, fresh Opus review, land.
-2. `feat/sync-hook-concurrent-groups`: engine follow-up 5 (brief `briefs/engine-fu5-brief.md`, progress `progress/engine-fu5-progress.md`). Head e3b653e8, all checks passed, no manifest or wire change. A fresh review returned "fix first": the fix round is written in `briefs/engine-fu5-fix-message.md` and has not started (settles on devices that cannot seal, settles mid-chain, CHECK and derived errors aborting apply, docs on monotonic settles). Next: the fix round, a delta review, land.
-3. `feat/sync-android-keystore`: milestone 11 step 7, cut from feat/sync a6a0ca59 with no commits yet (its agent was stopped while reading). Start it from `briefs/m11-step-7-brief.md`. It must land before milestone 9 step 9, which uses its `settled_groups` and `settle` hook methods to settle the concurrent inherit versus explicit approval override case (see `final-report-notes.md`).
+Progress snapshots are in `progress/`; their live copies were in the session scratch directory, so check each branch's log for later commits.
 
-Ready brief not started: `briefs/m9-step-5-brief.md` (Chat timeline, with step 4 follow-ups).
+1. `feat/sync-android-keystore` (pushed, head 2c23ff2d): milestone 11 step 7. The fix round for the security review is done (all ten findings fixed, checks passed after merging feat/sync 0f832fa4; the last Kotlin-only commit came after the gate). Next: merge feat/sync, a fresh delta security review of `c0cc1f3c..2c23ff2d`, then land. Blocked on the maintainer: `androidx.test:runner:1.5.0` is declared as a test-only dependency (espresso-core 3.5.0 appears to pull it already, unconfirmed without Gradle).
+2. Milestone 11 step 8 (authority UI) landed as merge e4b65518; its low review findings are in `briefs/m11-step-9-followups.md`.
+3. `feat/sync-notes-comments` (pushed, head 3cc77cde, clean worktree): milestone 8 step 5. Step 4 review follow-ups (c892a7ab, a25c4d17, 8c2f54f4) and the comments conversion (faafac4d, manifest 17, migration `20261026034408_notes_comments_replication.sql`, docs 6cbcf4c2, tests 3cc77cde) are committed; focused tests passed. Stopped for the session budget while running clippy. Next: merge feat/sync (check manifest number and migration order), the full check list and Android check from the brief, finish the progress entry, fresh Opus review, land.
+
+WIP patches: none (both in-flight worktrees were clean when stopped). Briefs copied from the session scratch directory are in `briefs/`; copy them to your scratch directory and replace its paths. The ready-to-paste resume prompt is `NEXT_PROMPT.md`.
+
+Ready brief not started: `briefs/m9-step-5-brief.md` (Chat timeline, with step 4 follow-ups). Engine lows for the next engine step: `briefs/engine-next-followups.md`.
+
 
 Cloud host notes: `implementer-brief-cloud.md` is the brief used there (per-worktree Cargo target dirs with `CARGO_INCREMENTAL=0`, never renamed or shared; disk was the binding limit). Recommended scheduling: keep the engine track running continuously (it is the longest chain) and alternate Chat and Notes steps in the second implementer slot.
 
 ## Next steps in order
 
-1. Finish, review, and land the in-flight branches above (step 7 may run beside the others; at most two implementers).
+1. Finish, review, and land the in-flight branches above (at most two implementers at once).
 2. Milestone 9 steps 5 to 9 and the docs part of 10, one at a time on the `chat` track.
-3. Milestone 8 steps 5 to 8 on the `domain` track, after step 4 lands.
-4. On the `engine` track, serially: milestone 11 steps 7 to 10 (step 9 uses the internal Opus security review, a user decision), then milestone 10 steps 5 to 7. Engine follow-up 5 must land before milestone 9 step 9.
+3. Milestone 8 steps 6 to 8 on the `domain` track, after step 5 lands.
+4. On the `engine` track, serially: milestone 11 steps 9 and 10 (step 9 uses the internal Opus security review, a user decision), then milestone 10 steps 5 to 7.
 5. Milestone 12 steps 1 to 11.
 6. Close each milestone (validate, review, advisor), then a final clean `pnpm -w run validate` on feat/sync.
 7. Final report: the pending physical acceptance checklists, deduplicated from each milestone's Manual acceptance section and `final-report-notes.md`, plus the pre-release items recorded there (Calendar duplicate repair references, the untested `drain_and_flush`, step 9 notes on the discovery key and trust in final rejections). If time allows, the Calendar duplicate repair follow-up.

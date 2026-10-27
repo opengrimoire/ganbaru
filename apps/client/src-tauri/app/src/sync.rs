@@ -5,6 +5,7 @@
 //! Tauri runtime share it.
 
 mod asset_collection;
+mod authority;
 pub(crate) mod commands;
 mod connectivity;
 pub(crate) mod devices;

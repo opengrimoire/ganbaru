@@ -19,7 +19,10 @@ fn a_comment_too_large_to_replicate_is_refused_on_create_and_edit() {
             .await
             .err()
             .unwrap();
-        assert!(refusal.starts_with("notes-comment-too-large: "), "{refusal}");
+        assert!(
+            refusal.starts_with("notes-comment-too-large: "),
+            "{refusal}"
+        );
         let stored: i64 = sqlx::query_scalar("SELECT count(*) FROM notes_comments")
             .fetch_one(&pool)
             .await
@@ -40,7 +43,10 @@ fn a_comment_too_large_to_replicate_is_refused_on_create_and_edit() {
         .await
         .err()
         .unwrap();
-        assert!(refusal.starts_with("notes-comment-too-large: "), "{refusal}");
+        assert!(
+            refusal.starts_with("notes-comment-too-large: "),
+            "{refusal}"
+        );
         let text: String = sqlx::query_scalar("SELECT plain_text FROM notes_comments WHERE id = ?")
             .bind(COMMENT_A)
             .fetch_one(&pool)

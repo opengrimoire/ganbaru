@@ -26,7 +26,7 @@ use super::writer::{
 };
 use crate::vault::handoff::pairing::{PairingManager, PinnedCharter};
 #[cfg(desktop)]
-pub(crate) use anchor::{AuthorityAction, AuthorityAnswer, PendingRecoveryKit};
+pub(crate) use anchor::{AuthorityAction, AuthorityAnswer, LateDecision, PendingRecoveryKit};
 #[cfg(desktop)]
 use anchor::{AuthorityRequest, ForwardRequest};
 use ganbaru_db::{DatabaseAccessMode, DatabasePoolRegistry};
@@ -1167,14 +1167,21 @@ impl ServiceState {
         }
         self.apply_new(&session).await?;
         #[cfg(desktop)]
-        let mut take_anchor = session
-            .run_proposal_actions(
-                &manager,
-                &vault_id,
-                is_hub,
-                runtime.take_authority_requests(),
-            )
-            .await;
+        let mut take_anchor = {
+            let (take_anchor, restored) = session
+                .run_proposal_actions(
+                    &manager,
+                    &vault_id,
+                    is_hub,
+                    &mut self.writer,
+                    runtime.take_authority_requests(),
+                )
+                .await;
+            if !restored.is_empty() {
+                host.emit_applied(restored.into_iter().collect());
+            }
+            take_anchor
+        };
         if let Some((assets, _)) = asset_peer.as_ref()
             && view.state != SyncState::Offline
         {

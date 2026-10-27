@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 
 use ganbaru_sync_contracts::hlc::{self, CLOCK_WARNING_AHEAD_MS, Hlc};
-use ganbaru_sync_contracts::{Envelope, Seq, TableId, WriterId};
+use ganbaru_sync_contracts::{Envelope, OperationKind, Seq, TableId, WriterId};
 use sqlx::{Connection, Row, SqliteConnection};
 
 use crate::error::{SyncResult, corrupt, failpoint};
@@ -88,6 +88,12 @@ pub struct SyncStatus {
     /// Recovery offers per table name of their root row, for tables that have any. Each
     /// offer counts once however many deleted descendants it brings back.
     pub recovery: Vec<(&'static str, usize)>,
+    /// Change operations of this device the anchor has not confirmed storing yet. They can still
+    /// be excluded if a removal of this device is sequenced before the anchor stores them. Always
+    /// 0 on the anchor itself.
+    pub unconfirmed: usize,
+    /// When the oldest unconfirmed change operation was stored, in Unix milliseconds.
+    pub oldest_unconfirmed_ms: Option<u64>,
 }
 
 fn count(value: i64) -> SyncResult<usize> {
@@ -185,6 +191,25 @@ impl Engine {
                 .ok_or_else(|| corrupt("recovery offer on a row of an unknown table"))?;
             status.recovery.push((table.name, offers));
         }
+        let (unconfirmed, oldest): (i64, Option<i64>) = sqlx::query_as(
+            "SELECT count(*), min(o.stored_at_ms)
+             FROM sync_ops o
+             JOIN sync_spaces s ON s.space_id = o.space_id
+             JOIN sync_writers w ON w.space_id = o.space_id AND w.writer_id = o.writer_id
+             LEFT JOIN sync_anchor_marks m ON m.space_id = o.space_id AND m.writer_id = o.writer_id
+             WHERE o.space_id = ? AND o.kind = ? AND o.excluded_revision IS NULL
+                AND w.device_id = s.local_device_id
+                AND s.anchor_device_id IS NOT NULL AND s.anchor_device_id <> s.local_device_id
+                AND o.seq > coalesce(m.seq, 0)",
+        )
+        .bind(ctx.space.as_bytes().as_slice())
+        .bind(i64::from(OperationKind::Changes.as_u8()))
+        .fetch_one(&mut *conn)
+        .await?;
+        status.unconfirmed = count(unconfirmed)?;
+        status.oldest_unconfirmed_ms = oldest
+            .map(|stored| stored_u64(stored, "unconfirmed stored time"))
+            .transpose()?;
         Ok(status)
     }
 

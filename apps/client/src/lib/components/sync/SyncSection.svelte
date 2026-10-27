@@ -23,6 +23,20 @@
   import { syncPresentations } from "$lib/sync/presentations";
   import { openMobileBackgroundExecutionSettings } from "$lib/scheduling/mobile-background-execution";
   import SyncRecoveryList from "./SyncRecoveryList.svelte";
+  import SyncDevicesList from "./SyncDevicesList.svelte";
+  import SyncLateChanges from "./SyncLateChanges.svelte";
+  import SyncOutboxList from "./SyncOutboxList.svelte";
+  import SyncRecoveryKit from "./SyncRecoveryKit.svelte";
+  import ConfirmDialog from "$lib/components/ui/ConfirmDialog.svelte";
+  import { getSyncAuthorityState } from "$lib/stores/sync-authority.svelte";
+  import {
+    canManageSyncRecoveryKit,
+    canResetSyncState,
+    canResolveSyncLateChanges,
+    canUseSyncRecoveryKit,
+    type SyncAuthorityContext,
+    syncUnconfirmedNotice,
+  } from "$lib/sync/authority";
 
   let {
     buttonClass,
@@ -54,6 +68,36 @@
   const stateLabel = $derived(syncStateLabel(t, status.state));
   const connectionLabel = $derived(syncConnectionLabel(t, status));
   const degradedRows = $derived(syncDegradedRows(t, status));
+  const authorityState = getSyncAuthorityState();
+  let resetConfirming = $state(false);
+  let resetting = $state(false);
+  let resetMessage = $state("");
+  const unconfirmed = $derived(syncUnconfirmedNotice(t, localization.locale, status, now));
+  const authorityContext = $derived<SyncAuthorityContext | null>(
+    authorityState.authority
+      ? { authority: authorityState.authority, statusRole: status.role, mobileLayout }
+      : null,
+  );
+  const canManageKit = $derived(authorityContext !== null && canManageSyncRecoveryKit(authorityContext));
+  const canUseKit = $derived(authorityContext !== null && canUseSyncRecoveryKit(authorityContext, status.state));
+  const canReset = $derived(canResetSyncState(status.role, mobileLayout));
+
+  async function resetSync(): Promise<void> {
+    resetConfirming = false;
+    if (resetting) return;
+    resetting = true;
+    actionError = "";
+    resetMessage = "";
+    try {
+      await authorityState.resetSyncState();
+      resetMessage = t("sync.reset.done");
+    } catch (cause: unknown) {
+      console.warn("sync reset failed", cause);
+      actionError = t("sync.reset.failed");
+    } finally {
+      resetting = false;
+    }
+  }
 
   /** Whether this section can run `action` here. */
   function canRunDegradedAction(action: SyncDegradedAction): boolean {
@@ -101,6 +145,7 @@
   }
 
   $effect(() => sync.subscribe());
+  $effect(() => authorityState.subscribe());
 
   $effect(() => {
     const timer = setInterval(() => { now = Date.now(); }, CLOCK_TICK_MS);
@@ -161,6 +206,14 @@
         <Notice tone="warning" role="status" copy={false} message={entry.line} />
       {/each}
       {#each conflictLines as entry (entry.table)}<div class="text-foreground">{entry.line}</div>{/each}
+      {#if unconfirmed}
+        <Notice
+          tone={unconfirmed.suggestHandover ? "warning" : "neutral"}
+          role="status"
+          copy={false}
+          message={unconfirmed.lines.join(" ")}
+        />
+      {/if}
     </div>
 
     {#if held.length > 0}
@@ -189,13 +242,52 @@
         <RefreshCw size={14} strokeWidth={1.8} class={requesting ? "animate-spin" : ""} aria-hidden="true" />
         {t("sync.syncNow")}
       </button>
+      {#if canReset}
+        <button type="button" class={buttonClass} disabled={resetting} onclick={() => { resetConfirming = true; }}>
+          {t("sync.reset.action")}
+        </button>
+      {/if}
     </div>
     {#if actionError}
       <Notice class="px-1 text-[0.8rem] leading-5" message={actionError} />
+    {:else if resetMessage}
+      <p role="status" class="px-1 text-[0.8rem] leading-5 text-muted-foreground">{resetMessage}</p>
     {/if}
 
     {#if recoveryTotal > 0}
       <SyncRecoveryList {buttonClass} {mobileLayout} recoveryCount={recoveryTotal} {now} />
     {/if}
+
+    {#if authorityState.loadFailed && !authorityContext}
+      <Notice class="px-1 text-[0.8rem] leading-5" message={t("sync.authority.loadFailed")} copy={false} onRetry={authorityState.refresh} />
+    {/if}
+    {#if authorityContext}
+      <SyncDevicesList {buttonClass} {mobileLayout} context={authorityContext} />
+      {#if authorityState.outbox.length > 0}
+        <SyncOutboxList entries={authorityState.outbox} {now} />
+      {/if}
+      {#if authorityState.lateChanges.length > 0}
+        <SyncLateChanges
+          buttonClass={mobileLayout ? `${buttonClass} min-h-12` : buttonClass}
+          changes={authorityState.lateChanges}
+          canResolve={canResolveSyncLateChanges(authorityContext)}
+          {now}
+        />
+      {/if}
+      {#if canManageKit || canUseKit}
+        <SyncRecoveryKit {buttonClass} canManage={canManageKit} canUse={canUseKit} pendingKit={authorityState.pendingKit} />
+      {/if}
+    {/if}
   {/if}
 </div>
+
+{#if resetConfirming}
+  <ConfirmDialog
+    title={t("sync.reset.title")}
+    message={t("sync.reset.message")}
+    confirmLabel={t("sync.reset.action")}
+    cancelLabel={t("common.cancel")}
+    onConfirm={() => void resetSync()}
+    onCancel={() => { resetConfirming = false; }}
+  />
+{/if}

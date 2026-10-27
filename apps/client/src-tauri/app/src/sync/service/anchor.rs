@@ -12,13 +12,15 @@ use crate::vault::handoff::pairing::PairingManager;
 use ganbaru_handoff::protocol::decode_sync_admin_key;
 use ganbaru_sync::AuthorizationView;
 use ganbaru_sync_contracts::{
-    AdminKeyPair, DeviceKind, Digest32, Entry, ProposalRejection, SignedProposal, VersionVector,
+    AdminKeyPair, DeviceKind, Digest32, Entry, LateResolution, LateRow, ProposalRejection,
+    ResolveLate, RowKey, SignedProposal, TableId, VersionVector,
 };
 use ganbaru_sync_replica::authority::{self, ensure_admin_key};
 use ganbaru_sync_replica::client::{self, PeerIds, SyncTransport};
 use ganbaru_sync_replica::now_ms;
 use ganbaru_sync_replica::outbox::Outbox;
 use ganbaru_sync_replica::writer::ActiveWriter;
+use std::collections::BTreeSet;
 use tokio::sync::oneshot;
 
 /// Authority work a person asks this desktop for, run by the next pass. Its debug form never
@@ -40,6 +42,23 @@ pub(crate) enum AuthorityAction {
     UseRecoveryKit(String),
     /// Propose removing a device this desktop quarantined.
     ProposeRemoval(String),
+    /// Propose removing a device from the vault, refusing what the anchor would reject.
+    Remove(String),
+    /// Restore or discard one late change, which needs the local writer for a restore.
+    ResolveLate(LateDecision),
+}
+
+/// An admin's decision on one late change.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct LateDecision {
+    /// Revision of the removal that excluded the change.
+    pub(crate) removal_revision: u64,
+    /// Table of the row.
+    pub(crate) table: TableId,
+    /// Row key.
+    pub(crate) row_key: String,
+    /// Whether the late change is applied or dropped.
+    pub(crate) resolution: LateResolution,
 }
 
 impl std::fmt::Debug for AuthorityAction {
@@ -54,6 +73,11 @@ impl std::fmt::Debug for AuthorityAction {
             Self::ProposeRemoval(device_id) => formatter
                 .debug_tuple("ProposeRemoval")
                 .field(device_id)
+                .finish(),
+            Self::Remove(device_id) => formatter.debug_tuple("Remove").field(device_id).finish(),
+            Self::ResolveLate(decision) => formatter
+                .debug_tuple("ResolveLate")
+                .field(decision)
                 .finish(),
         }
     }
@@ -201,27 +225,92 @@ impl<H: SyncHost> Session<'_, H> {
         .await
     }
 
-    /// Runs every proposal action and answers it, and returns the requests to take the anchor,
-    /// which wait for the exchange of the pass.
+    /// Runs every proposal action and answers it. Returns the requests to take the anchor, which
+    /// wait for the exchange of the pass, and the names of the tables restored late changes
+    /// wrote.
     pub(super) async fn run_proposal_actions(
         &self,
         manager: &PairingManager,
         vault_id: &str,
         is_hub: bool,
+        writer: &mut Option<ActiveWriter>,
         requests: Vec<AuthorityRequest>,
-    ) -> Vec<AuthorityRequest> {
+    ) -> (Vec<AuthorityRequest>, BTreeSet<String>) {
         let mut take_anchor = Vec::new();
+        let mut restored = BTreeSet::new();
         for request in requests {
-            if request.action == AuthorityAction::TakeAnchor {
-                take_anchor.push(request);
-                continue;
-            }
-            let outcome = self
-                .propose_action(manager, vault_id, is_hub, &request.action)
-                .await;
+            let outcome = match &request.action {
+                AuthorityAction::TakeAnchor => {
+                    take_anchor.push(request);
+                    continue;
+                }
+                AuthorityAction::ResolveLate(decision) => {
+                    self.resolve_late(manager, writer, decision, &mut restored)
+                        .await
+                }
+                action => self.propose_action(manager, vault_id, is_hub, action).await,
+            };
             request.answer(outcome);
         }
-        take_anchor
+        (take_anchor, restored)
+    }
+
+    /// Restores or discards one late change: a restore first seals the late values with the
+    /// local writer, then both propose the decision so every replica records it once the anchor
+    /// sequences it. Adds the table a restore wrote to `restored`.
+    async fn resolve_late(
+        &self,
+        manager: &PairingManager,
+        writer: &mut Option<ActiveWriter>,
+        decision: &LateDecision,
+        restored: &mut BTreeSet<String>,
+    ) -> Result<AuthorityAnswer, String> {
+        let admin = self.admin_context(manager).await?;
+        if !admin.is_admin() {
+            return Err("only an admin desktop can decide late changes".to_string());
+        }
+        let row = RowKey::new(decision.row_key.clone())
+            .map_err(|_| "the late change names an invalid row".to_string())?;
+        if decision.resolution == LateResolution::Restore {
+            let Some(active) = writer.as_mut() else {
+                return Err("the sync writer is not ready".to_string());
+            };
+            let mut conn = acquire(&self.pool).await?;
+            let late = self
+                .engine
+                .late_changes(&mut conn, &self.ctx)
+                .await
+                .map_err(|error| format!("read late changes: {error}"))?
+                .into_iter()
+                .find(|late| {
+                    late.removal_revision == decision.removal_revision
+                        && late.table == decision.table
+                        && late.row_key == decision.row_key
+                })
+                .ok_or_else(|| "the late change is already decided".to_string())?;
+            let report = self
+                .engine
+                .restore_late_change(&mut conn, &self.ctx, &late, &mut active.local(), now_ms()?)
+                .await
+                .map_err(|error| format!("restore the late change: {error}"))?;
+            drop(conn);
+            if report.sealed_ops > 0 {
+                self.record_commit(active).await?;
+                if let Some(table) = self.engine.manifest().table(decision.table) {
+                    restored.insert(table.name.to_string());
+                }
+            }
+        }
+        let entry = Entry::ResolveLate(ResolveLate {
+            removal_revision: decision.removal_revision,
+            rows: vec![LateRow {
+                table: decision.table,
+                row,
+                resolution: decision.resolution,
+            }],
+        });
+        self.queue_proposal(&admin, entry).await?;
+        Ok(AuthorityAnswer::Proposed)
     }
 
     /// Runs one proposal action. `vault_id` names the vault whose linked devices the
@@ -267,6 +356,26 @@ impl<H: SyncHost> Session<'_, H> {
             | AuthorityAction::RecoveryKitSaved
             | AuthorityAction::UseRecoveryKit(_) => {
                 Err("the recovery kit action ran on the admin path".to_string())
+            }
+            AuthorityAction::ResolveLate(_) => {
+                Err("deciding a late change runs with the sync writer".to_string())
+            }
+            AuthorityAction::Remove(device_id) => {
+                if *device_id == admin.device_id {
+                    return Err("this device cannot remove itself".to_string());
+                }
+                if *device_id == admin.view.anchor_device_id {
+                    return Err("the anchor cannot be removed before a handover".to_string());
+                }
+                let live = admin.view.devices.iter().any(|device| {
+                    device.device_id == *device_id && device.removed_revision.is_none()
+                });
+                if !live {
+                    return Err("the device is not enrolled in the vault's sync space".to_string());
+                }
+                self.queue_proposal(&admin, authority::remove_entry(device_id))
+                    .await?;
+                Ok(AuthorityAnswer::Proposed)
             }
             AuthorityAction::Promote(device_id) => {
                 if !is_hub {

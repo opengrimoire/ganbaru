@@ -4,7 +4,9 @@
 //! elsewhere is hidden and offered for recovery, a suggestion accept and a concurrent block
 //! edit both apply, an accept outranks a concurrent reject, an apply refreshes only the comment
 //! rows of the rows it changed, remote resolves, decisions, anchors, and removed reactions queue
-//! page history, and a crash while sealing or applying comment rows leaves nothing partial.
+//! page history, a removed reaction and a concurrent re-add of it converge on the re-add, a
+//! remote comment mention settles without a notification, and a crash while sealing or applying
+//! comment rows leaves nothing partial.
 
 use ganbaru_sync_contracts::derived_key;
 
@@ -555,5 +557,79 @@ fn remote_resolves_decisions_anchors_and_removed_reactions_queue_page_history() 
                 "{sql}"
             );
         }
+    });
+}
+
+#[test]
+fn a_removed_reaction_and_a_concurrent_re_add_of_it_converge() {
+    block_on(async {
+        let mut replicas = comments(2).await;
+        let reaction = derived_key(REACTION_KEY_PREFIX, &["comment-a", PERSON, "+1"]).unwrap();
+        replicas[0]
+            .exec("DELETE FROM notes_comment_reactions;")
+            .await;
+        replicas[1]
+            .exec(&format!(
+                "DELETE FROM notes_comment_reactions;
+                 INSERT INTO notes_comment_reactions
+                     (comment_id, created_by, emoji, sync_key, created_time)
+                 VALUES ('comment-a', {person}, '+1', {key}, {edited});",
+                person = quoted(PERSON),
+                key = quoted(reaction.as_str()),
+                edited = quoted(EDITED),
+            ))
+            .await;
+        converge(&mut replicas).await;
+        assert_converged(&mut replicas).await;
+        for replica in replicas.iter_mut() {
+            assert_eq!(
+                texts(
+                    replica,
+                    "SELECT emoji || ' ' || sync_key FROM notes_comment_reactions"
+                )
+                .await,
+                [format!("+1 {reaction}")],
+                "replica {}",
+                replica.index
+            );
+        }
+    });
+}
+
+#[test]
+fn a_remote_comment_mention_settles_without_a_notification() {
+    block_on(async {
+        let mut replicas = comments(2).await;
+        let mention = serde_json::json!([
+            {
+                "type": "mention",
+                "mention": { "type": "user", "user": { "id": PERSON } },
+                "plain_text": "@Person",
+            },
+            { "type": "text", "text": { "content": " please" }, "plain_text": " please" },
+        ])
+        .to_string();
+        replicas[0]
+            .exec(&format!(
+                "INSERT INTO notes_comments
+                     (id, thread_id, rich_text, plain_text, created_by, created_time,
+                      last_edited_time)
+                 VALUES ('comment-b', 'thread-a', {text}, '@Person please', {person}, {created},
+                         {created});",
+                text = quoted(&mention),
+                person = quoted(PERSON),
+                created = quoted(CREATED),
+            ))
+            .await;
+        converge(&mut replicas).await;
+        assert_eq!(
+            texts(
+                &mut replicas[1],
+                "SELECT kind || ' ' || target_id || ' ' || status
+                 FROM notes_mention_notifications WHERE comment_id = 'comment-b'",
+            )
+            .await,
+            [format!("user_mention {PERSON} delivered")]
+        );
     });
 }

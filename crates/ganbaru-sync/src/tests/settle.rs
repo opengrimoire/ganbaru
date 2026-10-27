@@ -11,8 +11,8 @@ use sqlx::SqliteConnection;
 
 use super::block_on;
 use super::fixture::{
-    ASK, LISTS_TABLE, OVERRIDES_TABLE, OverrideHook, RESERVED, TEST_MANIFEST, UNATTENDED,
-    UNDERIVABLE, list_group, override_group, test_adapters, test_engine_with,
+    ASK, FORBIDDEN, LISTS_TABLE, OVERRIDES_TABLE, OverrideHook, RESERVED, TEST_MANIFEST,
+    UNATTENDED, UNDERIVABLE, list_group, override_group, test_adapters, test_engine_with,
 };
 use super::groups::{insert_note, new_ops, reseal_chain};
 use super::replica::{Replica, connection_from, converge, pair, quoted};
@@ -292,8 +292,8 @@ fn a_device_that_may_not_edit_the_table_leaves_the_settle_to_one_that_may() {
 fn a_settled_value_that_breaks_the_group_rules_is_reported_and_not_written() {
     block_on(async {
         // Refused by the adapter's validation, by a CHECK of the domain table the manifest does
-        // not describe, and by the adapter's derived columns.
-        for replacement in ["never", RESERVED, UNDERIVABLE] {
+        // not describe, by the adapter's derived columns, and by a domain trigger that aborts.
+        for replacement in ["never", RESERVED, UNDERIVABLE, FORBIDDEN] {
             let mut replicas = concurrent_clear_and_loose_set().await;
             replicas[0].engine = test_engine_with(OverrideHook {
                 replacement: Some(replacement),

@@ -674,7 +674,9 @@ pub struct TableSpec {
     pub groups: &'static [GroupSpec],
     /// Columns kept per replica and never replicated.
     pub local_columns: &'static [LocalColumn],
-    /// Columns derived from group values by the domain adapter.
+    /// Columns derived from group values by the domain adapter. They never hold foreign keys:
+    /// the engine writes them beside a settled value, where a foreign key would only fail at
+    /// the commit of the whole apply. The schema conformance tests enforce it.
     pub derived_columns: &'static [&'static str],
     /// Columns a [`crate::hooks::MaterializeHook`] and domain code maintain from other rows,
     /// outside every group. They are never captured, have defaults and no foreign keys, and are

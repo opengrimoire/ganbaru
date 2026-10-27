@@ -1161,6 +1161,9 @@ pub(super) const RESERVED: &str = "reserved";
 /// A policy the adapter accepts and derives nothing from, refusing it in
 /// [`FixtureAdapter::derived`].
 pub(super) const UNDERIVABLE: &str = "underivable";
+/// A policy the adapter accepts and a `RAISE(ABORT)` trigger on the override table refuses,
+/// standing for a domain trigger that guards a value.
+pub(super) const FORBIDDEN: &str = "forbidden";
 
 /// Strictness of a policy, which also ranks an explicit override among concurrent ones; zero
 /// for an unknown policy.
@@ -1210,6 +1213,10 @@ pub(super) const OVERRIDES: TableSpec = TableSpec {
         },
     ],
     adapter: Some(FIXTURE_ADAPTER),
+    triggers: &[DomainTrigger {
+        name: "fixture_overrides_refuse_forbidden",
+        policy: TriggerPolicy::ApplierVisible,
+    }],
     holds_deletes: false,
     ..MEMOS
 };
@@ -1263,7 +1270,7 @@ impl DomainAdapter for FixtureAdapter {
         let known = match (table, group, value.fields().first()) {
             (OVERRIDES_TABLE, override_group::POLICY, Some(Field::Null)) => true,
             (OVERRIDES_TABLE, override_group::POLICY, Some(Field::Text(policy)))
-                if policy == RESERVED || policy == UNDERIVABLE =>
+                if policy == RESERVED || policy == UNDERIVABLE || policy == FORBIDDEN =>
             {
                 true
             }
@@ -1759,6 +1766,12 @@ fn fixture_schema() -> String {
          WHEN {NOT_APPLYING}
          BEGIN
              INSERT INTO fixture_item_marks (item_id, mark) VALUES (NEW.id, 1);
+         END;
+         CREATE TRIGGER fixture_overrides_refuse_forbidden BEFORE UPDATE OF policy
+             ON fixture_overrides
+         WHEN NEW.policy IS '{FORBIDDEN}'
+         BEGIN
+             SELECT RAISE(ABORT, 'fixture overrides never forbid');
          END;
          CREATE TRIGGER fixture_item_marks_refuse_negative BEFORE INSERT ON fixture_item_marks
          WHEN NEW.mark < 0

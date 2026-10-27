@@ -20,7 +20,7 @@ use ganbaru_sync::manifest::TableSpec;
 use ganbaru_sync::manifest::vault::notes::{
     ANCHORS_TABLE, BLOCKS_TABLE, COMMENTS_TABLE, DATA_SOURCES_TABLE, DATABASES_TABLE, DOMAIN,
     OPTIONS_TABLE, PAGES_TABLE, PROPERTIES_TABLE, REACTIONS_TABLE, RELATION_EDGES_TABLE,
-    SUGGESTIONS_TABLE, THREADS_TABLE, VALUES_TABLE, value_group,
+    SUGGESTIONS_TABLE, THREADS_TABLE, VALUES_TABLE, reaction_group, value_group,
 };
 use ganbaru_sync::{ChangeSink, HookError, HookFuture, Hooks, MaterializeHook};
 use serde_json::Value;
@@ -88,7 +88,8 @@ pub async fn refresh_after_apply(
     } else if table == BLOCKS_TABLE {
         refresh_blocks(conn, keys).await?;
         refresh_database_parents(conn, keys).await?;
-        let pages = refresh_comment_pages(conn).await?;
+        let blocks = blocks_with_descendants(conn, keys).await?;
+        let pages = refresh_comment_pages(conn, CommentScope::Blocks(&blocks)).await?;
         queue_page_history(conn, &pages).await?;
         queue_repair(conn, "block", keys).await?;
     } else if table == DATABASES_TABLE {
@@ -111,7 +112,8 @@ pub async fn refresh_after_apply(
         invalidate_rollups(conn, &sources, removed).await?;
         refresh_property_reminders(conn, &pages, removed).await?;
         if removed {
-            pages.extend(recorded_value_pages(conn, keys).await?);
+            let identity = (VALUES_TABLE, value_group::IDENTITY);
+            pages.extend(recorded_references(conn, identity, keys).await?);
         }
         queue_page_history(conn, &pages).await?;
     } else if table == RELATION_EDGES_TABLE {
@@ -124,24 +126,80 @@ pub async fn refresh_after_apply(
         let sources = data_sources_of(conn, &pages).await?;
         invalidate_rollups(conn, &sources, removed).await?;
         queue_page_history(conn, &sources_pages).await?;
-    } else if table == THREADS_TABLE || table == ANCHORS_TABLE || table == SUGGESTIONS_TABLE {
-        let pages = refresh_comment_pages(conn).await?;
+    } else if table == THREADS_TABLE || table == ANCHORS_TABLE {
+        let pages = refresh_comment_pages(conn, CommentScope::Threads(keys)).await?;
+        queue_page_history(conn, &pages).await?;
+    } else if table == SUGGESTIONS_TABLE {
+        let pages = refresh_comment_pages(conn, CommentScope::Suggestions(keys)).await?;
         queue_page_history(conn, &pages).await?;
     } else if table == COMMENTS_TABLE {
         refresh_comments(conn, keys).await?;
     } else if table == REACTIONS_TABLE {
-        let (comments, _) = present(conn, "notes_comment_reactions", "comment_id", keys).await?;
+        let (mut comments, removed) =
+            present(conn, "notes_comment_reactions", "comment_id", keys).await?;
+        if removed {
+            let identity = (REACTIONS_TABLE, reaction_group::IDENTITY);
+            comments.extend(recorded_references(conn, identity, keys).await?);
+        }
         let pages = comment_pages(conn, &comments).await?;
         queue_page_history(conn, &pages).await?;
     }
     invalidate_indexes(conn).await
 }
 
-/// Sets `page_id` of every comment thread, anchor, and suggestion to the page its parent page
-/// or block is on, and returns the pages they now sit on. A row whose block has no page yet
-/// keeps its value until the block is placed.
-async fn refresh_comment_pages(conn: &mut SqliteConnection) -> Result<Vec<String>, String> {
-    let mut pages = BTreeSet::new();
+/// The comment rows whose placement an apply may have changed.
+#[derive(Clone, Copy)]
+enum CommentScope<'a> {
+    /// Threads, anchors, and suggestions on these blocks.
+    Blocks(&'a [String]),
+    /// These threads and their anchors.
+    Threads(&'a [String]),
+    /// These suggestions.
+    Suggestions(&'a [String]),
+}
+
+/// `block_ids` and every block nested under them within the depth bound, the blocks whose
+/// `page_id` a block apply may have changed.
+async fn blocks_with_descendants(
+    conn: &mut SqliteConnection,
+    block_ids: &[String],
+) -> Result<Vec<String>, String> {
+    sqlx::query_scalar(
+        "WITH RECURSIVE affected(id, depth) AS (
+             SELECT value, 0 FROM json_each(?1)
+             UNION
+             SELECT child.id, affected.depth + 1
+             FROM notes_blocks AS child
+             JOIN affected ON child.parent_block_id = affected.id
+             WHERE affected.depth < ?2
+         )
+         SELECT DISTINCT id FROM affected",
+    )
+    .bind(keys_json(block_ids)?)
+    .bind(crate::writes::MAX_BLOCK_DEPTH)
+    .fetch_all(&mut *conn)
+    .await
+    .map_err(|error| format!("load nested synced Notes blocks: {error}"))
+}
+
+/// Sets `page_id` of the comment threads, anchors, and suggestions in `scope` to the page their
+/// parent page or block is on, and returns the pages the rows in scope sit on. A row whose block
+/// has no page yet keeps its value until the block is placed.
+async fn refresh_comment_pages(
+    conn: &mut SqliteConnection,
+    scope: CommentScope<'_>,
+) -> Result<Vec<String>, String> {
+    let empty: &[String] = &[];
+    let (blocks, threads, suggestions) = match scope {
+        CommentScope::Blocks(keys) => (keys, empty, empty),
+        CommentScope::Threads(keys) => (empty, keys, empty),
+        CommentScope::Suggestions(keys) => (empty, empty, keys),
+    };
+    let (blocks, threads, suggestions) = (
+        keys_json(blocks)?,
+        keys_json(threads)?,
+        keys_json(suggestions)?,
+    );
     for sql in [
         "UPDATE notes_comment_threads
          SET page_id = placed.page_id
@@ -149,31 +207,54 @@ async fn refresh_comment_pages(conn: &mut SqliteConnection) -> Result<Vec<String
              SELECT thread.id, COALESCE(thread.parent_page_id, block.page_id) AS page_id
              FROM notes_comment_threads AS thread
              LEFT JOIN notes_blocks AS block ON block.id = thread.parent_block_id
+             WHERE thread.parent_block_id IN (SELECT value FROM json_each(?1))
+                OR thread.id IN (SELECT value FROM json_each(?2))
          ) AS placed
          WHERE notes_comment_threads.id = placed.id
            AND placed.page_id IS NOT NULL AND placed.page_id <> ''
-           AND notes_comment_threads.page_id <> placed.page_id
-         RETURNING notes_comment_threads.page_id",
+           AND notes_comment_threads.page_id <> placed.page_id",
         "UPDATE notes_comment_thread_anchors
          SET page_id = block.page_id
          FROM notes_blocks AS block
          WHERE block.id = notes_comment_thread_anchors.block_id
-           AND block.page_id <> '' AND notes_comment_thread_anchors.page_id <> block.page_id
-         RETURNING notes_comment_thread_anchors.page_id",
+           AND (notes_comment_thread_anchors.block_id IN (SELECT value FROM json_each(?1))
+                OR notes_comment_thread_anchors.thread_id IN (SELECT value FROM json_each(?2)))
+           AND block.page_id <> '' AND notes_comment_thread_anchors.page_id <> block.page_id",
         "UPDATE notes_suggestions
          SET page_id = block.page_id
          FROM notes_blocks AS block
          WHERE block.id = notes_suggestions.block_id
-           AND block.page_id <> '' AND notes_suggestions.page_id <> block.page_id
-         RETURNING notes_suggestions.page_id",
+           AND (notes_suggestions.block_id IN (SELECT value FROM json_each(?1))
+                OR notes_suggestions.id IN (SELECT value FROM json_each(?3)))
+           AND block.page_id <> '' AND notes_suggestions.page_id <> block.page_id",
     ] {
-        let moved: Vec<String> = sqlx::query_scalar(sql)
-            .fetch_all(&mut *conn)
+        sqlx::query(sql)
+            .bind(&blocks)
+            .bind(&threads)
+            .bind(&suggestions)
+            .execute(&mut *conn)
             .await
             .map_err(|error| format!("refresh synced Notes comment pages: {error}"))?;
-        pages.extend(moved);
     }
-    Ok(pages.into_iter().collect())
+    sqlx::query_scalar(
+        "SELECT page_id FROM notes_comment_threads
+         WHERE parent_block_id IN (SELECT value FROM json_each(?1))
+            OR id IN (SELECT value FROM json_each(?2))
+         UNION
+         SELECT page_id FROM notes_comment_thread_anchors
+         WHERE block_id IN (SELECT value FROM json_each(?1))
+            OR thread_id IN (SELECT value FROM json_each(?2))
+         UNION
+         SELECT page_id FROM notes_suggestions
+         WHERE block_id IN (SELECT value FROM json_each(?1))
+            OR id IN (SELECT value FROM json_each(?3))",
+    )
+    .bind(&blocks)
+    .bind(&threads)
+    .bind(&suggestions)
+    .fetch_all(&mut *conn)
+    .await
+    .map_err(|error| format!("load pages of synced Notes comment rows: {error}"))
 }
 
 /// The distinct pages of the threads that hold the comments among `comment_ids`.
@@ -365,11 +446,16 @@ async fn present(
     Ok((values.into_iter().collect(), removed))
 }
 
-/// The pages that the property values keyed by `keys` belong to, as the sync engine recorded
-/// them with each version of the value identity. A removed value row no longer names its page,
-/// but the engine keeps the identity versions of absent rows.
-async fn recorded_value_pages(
+/// The rows that the first reference of the identity group `identity` names for the rows keyed
+/// by `keys`, as the sync engine recorded them with each version of that group: the page of a
+/// property value, or the comment of a reaction. A removed row no longer names them, but the
+/// engine keeps the identity versions of absent rows.
+async fn recorded_references(
     conn: &mut SqliteConnection,
+    (table, group): (
+        ganbaru_sync_contracts::TableId,
+        ganbaru_sync_contracts::GroupId,
+    ),
     keys: &[String],
 ) -> Result<Vec<String>, String> {
     sqlx::query_scalar(
@@ -378,11 +464,11 @@ async fn recorded_value_pages(
            AND row_key IN (SELECT value FROM json_each(?1))",
     )
     .bind(keys_json(keys)?)
-    .bind(i64::from(VALUES_TABLE.0))
-    .bind(i64::from(value_group::IDENTITY.get()))
+    .bind(i64::from(table.0))
+    .bind(i64::from(group.get()))
     .fetch_all(&mut *conn)
     .await
-    .map_err(|error| format!("load pages of removed Notes values: {error}"))
+    .map_err(|error| format!("load references of removed Notes rows: {error}"))
 }
 
 /// The data sources whose rows are among `page_ids`.

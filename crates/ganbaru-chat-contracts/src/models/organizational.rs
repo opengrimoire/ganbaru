@@ -68,7 +68,7 @@ pub enum ChatHistoryBoundary {
     FromGrant {
         /// Captured by the server. Commands may omit this value.
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        lower_ordinal: Option<u64>,
+        lower_order_key: Option<String>,
     },
 }
 
@@ -347,8 +347,8 @@ pub enum ChatScratchDeviceAvailability {
 pub struct ChatScratchSourceSummaryRead {
     pub channel_id: ChatChannelId,
     pub channel_name: String,
-    pub lower_ordinal: u64,
-    pub high_ordinal: u64,
+    pub lower_order_key: String,
+    pub high_order_key: String,
     pub audience_revision: u64,
 }
 
@@ -545,12 +545,12 @@ mod tests {
     fn tagged_organizational_contracts_use_camel_case_fields() {
         let history = serde_json::from_value::<ChatHistoryBoundary>(json!({
             "kind": "fromGrant",
-            "lowerOrdinal": 7
+            "lowerOrderKey": "c007"
         }))
         .unwrap();
         assert_eq!(
             serde_json::to_value(history).unwrap(),
-            json!({ "kind": "fromGrant", "lowerOrdinal": 7 })
+            json!({ "kind": "fromGrant", "lowerOrderKey": "c007" })
         );
 
         let target = serde_json::from_value::<ChatExecutionTarget>(json!({
@@ -790,7 +790,8 @@ pub struct ChatMessageRead {
     pub attachment_ids: Vec<ChatAttachmentId>,
     pub references: Vec<ChatMessageReference>,
     pub reply_thread: Option<ChatReplyThreadSummaryRead>,
-    pub ordinal: u64,
+    /// Position of the item within its scope; items order by `(order_key, item_id)`.
+    pub order_key: String,
     pub edited_at: Option<UtcTimestamp>,
     pub created_at: UtcTimestamp,
 }
@@ -886,7 +887,8 @@ pub struct ChatMessageSearchResultRead {
     pub conversation_id: ChatConversationId,
     pub reply_thread_id: Option<ChatReplyThreadId>,
     pub message_item_id: ChatConversationItemId,
-    pub ordinal: u64,
+    /// Page cursor of the page that ends with this message.
+    pub anchor_cursor: String,
     pub author_participant_id: ChatParticipantId,
     pub author_kind: ChatParticipantKind,
     pub author_display_name: String,

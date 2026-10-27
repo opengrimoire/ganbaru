@@ -891,8 +891,8 @@ pub(crate) mod tests {
                 ('{conversation}', '{TEAMMATE}', 'project-chat', 'workspace-2',
                  'grant:folders-2', 'read', 0, 0, '{NOW}');
              INSERT INTO chat_conversation_items
-                (id, conversation_id, item_kind, ordinal, created_at)
-             VALUES ('item:folders', '{conversation}', 'message', 1, '{NOW}');
+                (id, conversation_id, item_kind, order_key, created_at)
+             VALUES ('item:folders', '{conversation}', 'message', 'a1', '{NOW}');
              INSERT INTO chat_communication_messages
                 (item_id, author_participant_id, created_at)
              VALUES ('item:folders', 'participant:local-owner', '{NOW}');

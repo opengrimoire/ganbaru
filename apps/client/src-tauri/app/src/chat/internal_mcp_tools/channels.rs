@@ -19,8 +19,8 @@ pub(super) async fn list_referenced_channels(context: &HostToolContext<'_>) -> C
         channels.push(json!({
             "sourceHandle": source.source_handle,
             "label": source.label_snapshot,
-            "lowerOrdinal": source.lower_ordinal,
-            "highOrdinal": source.high_ordinal,
+            "lowerOrderKey": source.lower_order_key,
+            "highOrderKey": source.high_order_key,
         }));
     }
     Ok(json!({ "channels": channels, "truncated": false }))
@@ -73,27 +73,37 @@ pub(super) async fn channel_messages(
     );
     query.push_bind(source_handle);
     query.push(
-        " JOIN chat_communication_message_revision_ordinals cutoff_ordinal \
-            ON cutoff_ordinal.message_revision_id = source_grant.source_revision_cutoff_id \
-         JOIN chat_communication_message_revisions revision \
-            ON revision.message_item_id = message.item_id \
-           AND revision.revision = ( \
-             SELECT max(candidate.revision) \
+        " JOIN chat_communication_message_revisions cutoff \
+            ON cutoff.id = source_grant.source_revision_cutoff_id \
+         JOIN chat_communication_message_revisions_numbered revision \
+            ON revision.id = ( \
+             SELECT candidate.id \
              FROM chat_communication_message_revisions candidate \
-             JOIN chat_communication_message_revision_ordinals candidate_ordinal \
-               ON candidate_ordinal.message_revision_id = candidate.id \
              WHERE candidate.message_item_id = message.item_id \
-               AND candidate_ordinal.ordinal <= cutoff_ordinal.ordinal \
+               AND (candidate.created_at, candidate.id) <= (cutoff.created_at, cutoff.id) \
+             ORDER BY candidate.created_at DESC, candidate.id DESC LIMIT 1 \
            ) \
          LEFT JOIN chat_reply_threads reply_thread ON reply_thread.id = item.reply_thread_id \
          LEFT JOIN chat_conversation_items root_item ON root_item.id = reply_thread.root_item_id \
          WHERE item.conversation_id = ",
     );
     query.push_bind(&source.conversation_id);
-    query.push(" AND message.deleted_at IS NULL AND coalesce(root_item.ordinal, item.ordinal) >= ");
-    query.push_bind(i64::try_from(source.lower_ordinal).map_err(|_| generic_denial_error())?);
-    query.push(" AND coalesce(root_item.ordinal, item.ordinal) <= ");
-    query.push_bind(i64::try_from(source.high_ordinal).map_err(|_| generic_denial_error())?);
+    query.push(
+        " AND message.deleted_at IS NULL \
+          AND (coalesce(root_item.order_key, item.order_key), coalesce(root_item.id, item.id)) \
+              >= (",
+    );
+    query.push_bind(&source.lower_order_key);
+    query.push(", ");
+    query.push_bind(&source.lower_item_id);
+    query.push(
+        ") AND (coalesce(root_item.order_key, item.order_key), coalesce(root_item.id, item.id)) \
+              <= (",
+    );
+    query.push_bind(&source.high_order_key);
+    query.push(", ");
+    query.push_bind(&source.high_item_id);
+    query.push(")");
     if let Some(cursor) = cursor {
         query.push(" AND (item.created_at < ");
         query.push_bind(cursor.before_created_at);
@@ -133,7 +143,7 @@ pub(super) async fn channel_messages(
             "revision": u64::try_from(row.try_get::<i64, _>("revision").map_err(persistence_error)?)
                 .map_err(|_| generic_denial_error())?,
             "author": {
-                "id": row.try_get::<String, _>("author_id").map_err(persistence_error)?,
+                "id": row.try_get::<Option<String>, _>("author_id").map_err(persistence_error)?,
                 "displayName": row.try_get::<String, _>("author_name").map_err(persistence_error)?,
             },
             "createdAt": created_at,

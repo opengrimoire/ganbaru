@@ -14,3 +14,24 @@ impl SyncTransport for PairedTransport {
         crate::vault::handoff::transport::sync_request(&self.0, message).await
     }
 }
+
+/// Sends requests to one member listener, pinned to the certificate fingerprint its enrollment
+/// recorded in the selected log.
+#[derive(Clone)]
+pub(crate) struct MemberTransport {
+    pub manager: PairingManager,
+    pub endpoints: Vec<String>,
+    pub fingerprint: String,
+}
+
+impl SyncTransport for MemberTransport {
+    async fn request(&self, message: ControlMessage) -> Result<ControlMessage, String> {
+        crate::vault::handoff::transport::member_sync_request(
+            &self.manager,
+            &self.endpoints,
+            &self.fingerprint,
+            message,
+        )
+        .await
+    }
+}

@@ -10,21 +10,33 @@ use std::collections::HashSet;
 
 /// Accepts a client certificate only when it is byte for byte one of the pinned device
 /// certificates, with no intermediates. Device certificates are self-signed and identified by
-/// fingerprint, so path building, subjects, and validity dates never decide trust. A client may
-/// still connect without a certificate to enroll; it then stays on the unauthenticated budget.
+/// fingerprint, so path building, subjects, and validity dates never decide trust. On the
+/// coordinator a client may still connect without a certificate to enroll; it then stays on the
+/// unauthenticated budget. A member listener requires a certificate.
 #[derive(Debug)]
 pub(super) struct PinnedClientVerifier {
     fingerprints: HashSet<String>,
+    mandatory: bool,
     algorithms: WebPkiSupportedAlgorithms,
 }
 
 impl PinnedClientVerifier {
+    /// The coordinator's verifier: pinned to linked device certificates, client auth optional.
     pub(super) fn new(certificates: &[CertificateDer<'_>]) -> Self {
-        Self {
-            fingerprints: certificates
+        Self::pinned(
+            certificates
                 .iter()
-                .map(|certificate| certificate_fingerprint(certificate.as_ref()))
-                .collect(),
+                .map(|certificate| certificate_fingerprint(certificate.as_ref())),
+            false,
+        )
+    }
+
+    /// A verifier pinned to lowercase hex SHA-256 `fingerprints`, requiring a client
+    /// certificate when `mandatory`.
+    pub(super) fn pinned(fingerprints: impl IntoIterator<Item = String>, mandatory: bool) -> Self {
+        Self {
+            fingerprints: fingerprints.into_iter().collect(),
+            mandatory,
             algorithms: rustls::crypto::ring::default_provider().signature_verification_algorithms,
         }
     }
@@ -36,7 +48,7 @@ impl ClientCertVerifier for PinnedClientVerifier {
     }
 
     fn client_auth_mandatory(&self) -> bool {
-        false
+        self.mandatory
     }
 
     fn root_hint_subjects(&self) -> &[DistinguishedName] {
@@ -55,7 +67,7 @@ impl ClientCertVerifier for PinnedClientVerifier {
                 .contains(&certificate_fingerprint(end_entity.as_ref()))
         {
             return Err(rustls::Error::General(
-                "device certificate is not linked to this coordinator".to_string(),
+                "device certificate is not admitted by this listener".to_string(),
             ));
         }
         Ok(ClientCertVerified::assertion())

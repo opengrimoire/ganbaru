@@ -20,8 +20,8 @@ use crate::wire::{asset_to_wire, bytes_to_wire};
 use crate::writer::{ActiveWriter, SuccessorPlan, create_writer};
 use ganbaru_db::DatabasePoolRegistry;
 use ganbaru_handoff::protocol::{
-    ControlMessage, PROTOCOL_VERSION, SYNC_ASSET_CHUNK_BYTES, SYNC_PAGE_BYTES, SyncAsset,
-    SyncRefusalCode,
+    ControlMessage, MemberEndpoint, PROTOCOL_VERSION, SYNC_ASSET_CHUNK_BYTES, SYNC_PAGE_BYTES,
+    SyncAsset, SyncRefusalCode,
 };
 use ganbaru_quick_notes::images;
 use ganbaru_sync::assets::AssetRef;
@@ -357,6 +357,7 @@ impl Replica {
             quarantined: &BTreeSet::new(),
             pull_skips: None,
             max_bytes,
+            listening: &[],
         }
         .exchange()
         .await
@@ -384,6 +385,7 @@ impl Replica {
             quarantined,
             pull_skips: Some(skips),
             max_bytes: MAX_EXCHANGE_BYTES,
+            listening: &[],
         }
         .exchange()
         .await
@@ -523,10 +525,14 @@ fn hub(replica: &Replica) -> (DirectTransport, watch::Sender<u64>) {
 /// The contact a test hub reports.
 fn test_contact() -> HubContact {
     HubContact {
-        endpoints: vec![
-            "192.168.1.20:43821".to_string(),
-            "[fd00::20]:43821".to_string(),
-        ],
+        members: ["192.168.1.20:43821", "[fd00::20]:43821"]
+            .into_iter()
+            .map(|endpoint| MemberEndpoint {
+                device_id: HUB_DEVICE.to_string(),
+                endpoint: endpoint.to_string(),
+                observed_ms: 1_700_000_000_000,
+            })
+            .collect(),
         discovery_key: bytes_to_wire(&[7; ganbaru_handoff::protocol::DISCOVERY_KEY_BYTES]),
     }
 }
@@ -808,6 +814,7 @@ fn sync_states_carry_the_coordinator_contact_from_its_source() {
             manifest_version: Engine::vault().manifest().version,
             stored: Vec::new(),
             probe: None,
+            listening: vec!["192.168.1.40:43821".to_string()],
         };
         let wait = ControlMessage::SyncWait {
             protocol_version: PROTOCOL_VERSION,
@@ -819,16 +826,43 @@ fn sync_states_carry_the_coordinator_contact_from_its_source() {
         for request in [hello.clone(), wait] {
             match transport.request(request).await.expect("sync state") {
                 ControlMessage::SyncState {
-                    coordinator_endpoints,
+                    members,
                     discovery_key,
                     ..
                 } => {
-                    assert_eq!(coordinator_endpoints, expected.endpoints);
+                    assert_eq!(members, expected.members);
                     assert_eq!(discovery_key, expected.discovery_key);
                 }
                 other => panic!("expected a sync state, got {other:?}"),
             }
         }
+
+        let hints = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let recorded = hints.clone();
+        let hinted = SyncHub::new(open_hub(&hub_replica), watch::Sender::new(0))
+            .with_contact(contact_source(test_contact()))
+            .with_peer_hints(Arc::new(
+                move |vault: &str, device: &str, listening: &[String]| {
+                    recorded.lock().expect("hints").push((
+                        vault.to_string(),
+                        device.to_string(),
+                        listening.to_vec(),
+                    ));
+                },
+            ));
+        assert!(matches!(
+            hinted.respond(hello.clone()).await,
+            ControlMessage::SyncState { .. }
+        ));
+        assert_eq!(
+            *hints.lock().expect("hints"),
+            [(
+                VAULT_ID.to_string(),
+                PHONE_DEVICE.to_string(),
+                vec!["192.168.1.40:43821".to_string()]
+            )],
+            "a hello hands the member's listener endpoints to the peer book"
+        );
 
         let silent = SyncHub::new(open_hub(&hub_replica), watch::Sender::new(0));
         assert_eq!(
@@ -838,7 +872,11 @@ fn sync_states_carry_the_coordinator_contact_from_its_source() {
         );
         let public = SyncHub::new(open_hub(&hub_replica), watch::Sender::new(0)).with_contact(
             contact_source(HubContact {
-                endpoints: vec!["203.0.113.5:43821".to_string()],
+                members: vec![MemberEndpoint {
+                    device_id: HUB_DEVICE.to_string(),
+                    endpoint: "203.0.113.5:43821".to_string(),
+                    observed_ms: 1,
+                }],
                 ..test_contact()
             }),
         );
@@ -1643,6 +1681,85 @@ fn fork_evidence_travels_between_members_through_the_hub() {
         phone.close().await;
         tablet.close().await;
         late.close().await;
+    });
+}
+
+/// The hub of a member listener on `replica`: it serves exchanges but sequences no proposal and
+/// forwards none, and it reports the anchor's remembered contact.
+fn member_hub(replica: &Replica) -> DirectTransport {
+    DirectTransport(
+        SyncHub::new(open_hub(replica), watch::Sender::new(0))
+            .with_contact(contact_source(test_contact())),
+    )
+}
+
+#[test]
+fn two_members_exchange_while_the_anchor_is_offline() {
+    block_on(async {
+        let hub_replica = Replica::new("hub-peers", HUB_DEVICE).await;
+        let mut phone = Replica::new("phone-peers", PHONE_DEVICE).await;
+        let mut tablet = Replica::new("tablet-peers", TABLET_DEVICE).await;
+        let (anchor, _changes) = hub(&hub_replica);
+        for (replica, ids) in [(&phone, phone_ids()), (&tablet, tablet_ids())] {
+            done(replica.exchange(&anchor, &ids).await.expect("exchange"));
+        }
+        let anchor_vector = hub_replica.stored().await;
+        hub_replica.close().await;
+
+        // The anchor is gone; the phone and the tablet reach each other's member listeners.
+        phone.seal_note("note-phone-offline").await;
+        tablet.seal_note("note-tablet-offline").await;
+        let exchanged = done(
+            phone
+                .exchange(&member_hub(&tablet), &phone_ids())
+                .await
+                .expect("exchange with the tablet"),
+        );
+        assert_eq!(exchanged.problem, None);
+        assert!(exchanged.pushed > 0 && exchanged.pulled > 0);
+        assert_eq!(phone.stored().await, tablet.stored().await);
+        assert!(phone.stored().await.dominates(&anchor_vector));
+        phone.apply().await;
+        tablet.apply().await;
+        for replica in [&phone, &tablet] {
+            assert!(replica.has_note("note-phone-offline").await);
+            assert!(replica.has_note("note-tablet-offline").await);
+        }
+        phone.close().await;
+        tablet.close().await;
+    });
+}
+
+#[test]
+fn a_new_installation_takes_the_anchor_chain_from_a_member_before_other_writers() {
+    block_on(async {
+        let mut hub_replica = Replica::new("hub-chain-first", HUB_DEVICE).await;
+        let mut phone = Replica::new("phone-chain-first", PHONE_DEVICE).await;
+        let (anchor, _changes) = hub(&hub_replica);
+        hub_replica.seal_note("note-anchor").await;
+        phone.seal_note("note-phone").await;
+        done(
+            phone
+                .exchange(&anchor, &phone_ids())
+                .await
+                .expect("exchange"),
+        );
+        hub_replica.close().await;
+
+        // A tablet installation that never met the anchor pulls everything from the phone in
+        // one exchange: arrival order puts the anchor's chain before the geneses it enrolled,
+        // so no writer is refused as unknown or unenrolled.
+        let tablet = Replica::new("tablet-chain-first", TABLET_DEVICE).await;
+        let exchanged = done(
+            tablet
+                .exchange(&member_hub(&phone), &tablet_ids())
+                .await
+                .expect("exchange with the phone"),
+        );
+        assert_eq!(exchanged.problem, None);
+        assert_eq!(tablet.stored().await, phone.stored().await);
+        phone.close().await;
+        tablet.close().await;
     });
 }
 

@@ -448,6 +448,33 @@ pub(crate) fn sync_hub<R: Runtime>(app: &AppHandle<R>) -> SyncHub {
         .with_forwards(forwards)
 }
 
+/// The hub a member listener routes admitted sync requests to, serving the active vault. It
+/// takes no proposals and forwards none: those go to the coordinator, so only the anchor's
+/// signed answer settles one.
+#[cfg(desktop)]
+pub(crate) fn member_hub<R: Runtime>(app: &AppHandle<R>) -> SyncHub {
+    let opener = app.clone();
+    let open: OpenHubVault = Arc::new(move || {
+        let app = opener.clone();
+        Box::pin(async move { open_hub_vault(&app).await })
+    });
+    let runtime = app.state::<SyncRuntime>();
+    SyncHub::new(open, runtime.changes.clone()).with_stability(runtime.stability.clone())
+}
+
+/// Admission of the active vault's member listener, read from the selected log and the
+/// quarantine for every connection.
+#[cfg(desktop)]
+pub(crate) fn member_admission_source<R: Runtime>(
+    app: &AppHandle<R>,
+) -> crate::vault::handoff::transport::MemberAdmissionSource {
+    let app = app.clone();
+    Arc::new(move || {
+        let app = app.clone();
+        Box::pin(async move { super::peers::member_admission(&app).await })
+    })
+}
+
 /// The devices this installation quarantined in the active vault, which the coordinator
 /// listener refuses.
 #[cfg(desktop)]
@@ -515,6 +542,10 @@ pub(crate) async fn stop_for_vault_handoff<R: Runtime>(app: &AppHandle<R>) -> Re
         .lock()
         .map_err(|_| "sync service lock is unavailable".to_string())?
         .take();
+    #[cfg(desktop)]
+    app.state::<crate::vault::handoff::MemberListenerLifecycle>()
+        .stop()
+        .await;
     if let Some(mut task) = task {
         task.stop.notify_one();
         if tokio::time::timeout_at(deadline, &mut task.handle)
@@ -1457,6 +1488,7 @@ impl ServiceState {
     ) -> Result<Next, String> {
         let path = session.files.quarantine_path();
         let quarantine = blocking(move || Quarantine::load(&path)).await?;
+        let listening = session.host.serve_members().await;
         for _ in 0..MAX_FORK_RECOVERIES {
             let own_writers = self
                 .writer
@@ -1474,15 +1506,31 @@ impl ServiceState {
                 quarantined: quarantine.devices(),
                 pull_skips: Some(&self.pull_skips),
                 max_bytes: super::client::MAX_EXCHANGE_BYTES,
+                listening: &listening,
             };
             match client.exchange().await {
                 Err(error) => {
+                    // Members still exchange with each other while the coordinator is away.
+                    self.exchange_members(session, &wait, quarantine.devices(), &listening, false)
+                        .await;
                     view.state = SyncState::Offline;
                     view.last_error = Some(error);
                     return Ok(Next::Retry);
                 }
                 Ok(Exchange::Done(done)) => {
                     view.last_exchange_at_ms = Some(now_ms()?);
+                    if let Err(error) = super::peers::record_reported_peers(
+                        session.files.peers_path(),
+                        &session.engine,
+                        &session.pool,
+                        &session.ctx,
+                        quarantine.devices(),
+                        done.members.clone(),
+                    )
+                    .await
+                    {
+                        eprintln!("sync: record reported members: {error}");
+                    }
                     if done.pulled > 0 {
                         self.assets.hub_changed();
                     }
@@ -1538,6 +1586,13 @@ impl ServiceState {
                     {
                         wait.hub = authority::without_writers(&done.hub, &skipped);
                     }
+                    let members = self
+                        .exchange_members(session, &wait, quarantine.devices(), &listening, true)
+                        .await;
+                    if members.pulled > 0 {
+                        // Apply what members brought, then exchange it with the coordinator.
+                        return Ok(Next::Continue);
+                    }
                     wait.known = done.known;
                     wait.known.merge(&skipped);
                     return Ok(Next::Online(Box::new(wait)));
@@ -1552,6 +1607,43 @@ impl ServiceState {
             }
         }
         Err("sync fork recovery did not settle".to_string())
+    }
+
+    /// Exchanges with the other members the pass plan picks. A failure only delays what members
+    /// would bring until a later pass, so it is logged.
+    async fn exchange_members<H: SyncHost>(
+        &self,
+        session: &Session<'_, H>,
+        wait: &OnlineWait,
+        quarantined: &BTreeSet<String>,
+        listening: &[String],
+        coordinator_reachable: bool,
+    ) -> super::peers::MemberPassOutcome {
+        let own_writers = self
+            .writer
+            .as_ref()
+            .map(ActiveWriter::own_writers)
+            .unwrap_or_default();
+        let pass = super::peers::MemberPass {
+            manager: &wait.transport.0,
+            ids: &wait.ids,
+            engine: &session.engine,
+            pool: &session.pool,
+            ctx: &session.ctx,
+            writer: self.writer.as_ref().map(ActiveWriter::id),
+            own_writers: &own_writers,
+            quarantined,
+            pull_skips: &self.pull_skips,
+            listening,
+            peers_path: session.files.peers_path(),
+        };
+        match super::peers::exchange_with_members(pass, coordinator_reachable).await {
+            Ok(outcome) => outcome,
+            Err(error) => {
+                eprintln!("sync: member exchanges: {error}");
+                super::peers::MemberPassOutcome::default()
+            }
+        }
     }
 
     /// Uploads the managed assets this device holds and the hub lacks, ahead of the operations

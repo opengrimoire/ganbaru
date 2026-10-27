@@ -361,6 +361,11 @@ impl SyncFiles {
     pub fn quarantine_path(&self) -> PathBuf {
         self.vault_directory().join("quarantine.json")
     }
+
+    /// Where the other members of the vault last listened.
+    pub fn peers_path(&self) -> PathBuf {
+        self.vault_directory().join("peers.json")
+    }
 }
 
 pub fn read_record(path: &Path) -> Result<Option<WriterRecord>, String> {

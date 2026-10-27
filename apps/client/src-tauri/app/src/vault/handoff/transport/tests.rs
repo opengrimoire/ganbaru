@@ -1660,6 +1660,7 @@ async fn sync_requests_reach_the_hub_only_from_enrolled_devices() {
         manifest_version: 1,
         stored: Vec::new(),
         probe: None,
+        listening: Vec::new(),
     };
     let unauthenticated = unauthenticated_exchange(
         &pair.invitation.endpoint,
@@ -2115,12 +2116,26 @@ async fn sync_states_refresh_the_remembered_coordinator_contact() {
         "192.168.1.20:43821".to_string(),
         "[fd00::20]:43821".to_string(),
     ];
-    record_reported_contact(&pair.phone, &endpoints, &key);
+    let coordinator = linked_pin(&pair.phone).device_id;
+    let member = |device_id: &str, endpoint: &str| super::super::protocol::MemberEndpoint {
+        device_id: device_id.to_string(),
+        endpoint: endpoint.to_string(),
+        observed_ms: 1_700_000_000_000,
+    };
+    let mut members: Vec<_> = endpoints
+        .iter()
+        .map(|endpoint| member(&coordinator, endpoint))
+        .collect();
+    members.push(member("device-other-member", "192.168.1.30:43821"));
+    record_reported_contact(&pair.phone, &members, &key);
     let pin = linked_pin(&pair.phone);
-    assert_eq!(pin.reported_endpoints, endpoints);
+    assert_eq!(
+        pin.reported_endpoints, endpoints,
+        "only the coordinator's own endpoints refresh its pin"
+    );
     assert_eq!(pin.discovery_key.as_deref(), Some(key.as_str()));
 
-    record_reported_contact(&pair.phone, &["8.8.8.8:43821".to_string()], &key);
+    record_reported_contact(&pair.phone, &[member(&coordinator, "8.8.8.8:43821")], &key);
     assert_eq!(
         linked_pin(&pair.phone).reported_endpoints,
         endpoints,

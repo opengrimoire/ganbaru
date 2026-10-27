@@ -40,6 +40,9 @@ pub(super) mod admission;
 mod client_verifier;
 pub(super) mod limits;
 mod listener;
+mod member;
+pub(super) use member::serve_member;
+pub(crate) use member::{MemberAdmissionSource, MemberServices};
 
 const UPLOAD_REQUEST_WAIT: Duration = Duration::from_secs(10);
 const UPLOAD_REQUEST_POLL_INTERVAL: Duration = Duration::from_millis(200);
@@ -122,6 +125,24 @@ pub(crate) async fn serve_with_coordinator(
     shutdown: tokio::sync::oneshot::Receiver<()>,
 ) {
     serve_with_limits(
+        listener,
+        ConnectionLimits::default(),
+        super::LOOPBACK_PEERS,
+        manager,
+        services,
+        shutdown,
+    )
+    .await;
+}
+
+/// Serves `listener` as the sync listener of a member desktop until shutdown.
+pub(crate) async fn serve_member_listener(
+    listener: CoordinatorListener,
+    manager: PairingManager,
+    services: MemberServices,
+    shutdown: tokio::sync::oneshot::Receiver<()>,
+) {
+    serve_member(
         listener,
         ConnectionLimits::default(),
         super::LOOPBACK_PEERS,

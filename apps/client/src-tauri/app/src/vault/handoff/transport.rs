@@ -7,7 +7,8 @@ pub(crate) use dial_report::{CoordinatorDialReport, coordinator_dial_report};
 use dial_report::{DialOutcome, record_dial};
 #[cfg(desktop)]
 pub(crate) use server::{
-    CoordinatorListener, CoordinatorServices, EnrollmentSealer, LanAdmission, QuarantinedDevices,
+    CoordinatorListener, CoordinatorServices, EnrollmentSealer, LanAdmission,
+    MemberAdmissionSource, MemberServices, QuarantinedDevices, serve_member_listener,
     serve_with_coordinator,
 };
 
@@ -518,19 +519,73 @@ pub(crate) async fn sync_request(
 ) -> Result<ControlMessage, String> {
     let response = authenticated_exchange(manager, message).await?;
     if let ControlMessage::SyncState {
-        coordinator_endpoints,
+        members,
         discovery_key,
         ..
     } = &response
     {
-        record_reported_contact(manager, coordinator_endpoints, discovery_key);
+        record_reported_contact(manager, members, discovery_key);
     }
     Ok(response)
 }
 
-/// Remembers the contact a coordinator reported in a sync state. A failure only delays address
-/// refresh until the next exchange, so it is logged instead of failing the sync.
-fn record_reported_contact(manager: &PairingManager, endpoints: &[String], discovery_key: &str) {
+/// Sends one sync message to the member listener whose certificate has `fingerprint`, the one
+/// its enrollment recorded in the selected log, trying `endpoints` in order until one answers.
+pub(crate) async fn member_sync_request(
+    manager: &PairingManager,
+    endpoints: &[String],
+    fingerprint: &str,
+    message: ControlMessage,
+) -> Result<ControlMessage, String> {
+    let (_, identity) = load_tls_identity(manager).await?;
+    let mut failures = Vec::new();
+    for endpoint in endpoints {
+        let address = match endpoint.parse::<SocketAddr>() {
+            Ok(address) => address,
+            Err(error) => {
+                failures.push(format!("{endpoint}: {error}"));
+                continue;
+            }
+        };
+        let mut stream = match connect_pinned(address, fingerprint, Some(identity.clone())).await {
+            Ok(stream) => stream,
+            Err(error) => {
+                failures.push(format!("{endpoint}: {error}"));
+                continue;
+            }
+        };
+        timeout_control(write_control(&mut stream, &message)).await?;
+        return timeout_control(read_control(&mut stream)).await;
+    }
+    Err(if failures.is_empty() {
+        "no endpoint is known for this member".to_string()
+    } else {
+        format!("reach member: {}", failures.join("; "))
+    })
+}
+
+/// The endpoints `members` reports for `device_id`, in reported order and within the bound a
+/// coordinator pin keeps.
+pub(crate) fn endpoints_of(
+    members: &[super::protocol::MemberEndpoint],
+    device_id: &str,
+) -> Vec<String> {
+    members
+        .iter()
+        .filter(|member| member.device_id == device_id)
+        .map(|member| member.endpoint.clone())
+        .take(super::protocol::MAX_COORDINATOR_ENDPOINTS)
+        .collect()
+}
+
+/// Remembers the contact a coordinator reported in a sync state: the endpoints it reported for
+/// itself and the discovery key. A failure only delays address refresh until the next exchange,
+/// so it is logged instead of failing the sync.
+fn record_reported_contact(
+    manager: &PairingManager,
+    members: &[super::protocol::MemberEndpoint],
+    discovery_key: &str,
+) {
     let recorded = manager.coordinator_pin().and_then(|coordinator| {
         let Some(coordinator) = coordinator else {
             return Ok(false);
@@ -540,7 +595,7 @@ fn record_reported_contact(manager: &PairingManager, endpoints: &[String], disco
             &coordinator.certificate_fingerprint,
             super::pairing::CoordinatorContact {
                 last_endpoint: None,
-                reported_endpoints: Some(endpoints.to_vec()),
+                reported_endpoints: Some(endpoints_of(members, &coordinator.device_id)),
                 discovery_key: Some(discovery_key.to_string()),
             },
         )

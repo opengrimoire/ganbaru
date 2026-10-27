@@ -11,9 +11,9 @@ use super::wire::{
     writer_from_wire,
 };
 use ganbaru_handoff::protocol::{
-    ControlMessage, SYNC_ASSET_CHUNK_BYTES, SyncAsset, SyncAssetKey, SyncRefusal, SyncRefusalCode,
-    decode_sync_proposal, encode_sync_proposal, validate_coordinator_endpoints,
-    validate_discovery_key,
+    ControlMessage, MemberEndpoint, SYNC_ASSET_CHUNK_BYTES, SyncAsset, SyncAssetKey, SyncRefusal,
+    SyncRefusalCode, decode_sync_proposal, encode_sync_proposal, validate_discovery_key,
+    validate_member_endpoints,
 };
 use ganbaru_sync::assets::AssetRef;
 use ganbaru_sync::manifest::Manifest;
@@ -88,16 +88,20 @@ pub type HubForwards = Arc<
         + Sync,
 >;
 
-/// How linked devices reach the coordinator: the listener endpoints it reports now and the
-/// vault's discovery key.
+/// How linked devices reach the members of a vault: the listener endpoints the hub knows, its
+/// own first, and the vault's discovery key.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HubContact {
-    pub endpoints: Vec<String>,
+    pub members: Vec<MemberEndpoint>,
     pub discovery_key: String,
 }
 
-/// Reports the coordinator's contact for the vault with the given ID.
+/// Reports the hub's contact for the vault with the given ID.
 pub type HubContactSource = Arc<dyn Fn(&str) -> Result<HubContact, String> + Send + Sync>;
+
+/// Receives the listener endpoints an authenticated member reported in its sync hello, with
+/// the vault and device ids it presented, so the hub's peer book learns where members listen.
+pub type HubPeerHints = Arc<dyn Fn(&str, &str, &[String]) + Send + Sync>;
 
 /// Stability the coordinator service last computed, published for the sync states the hub
 /// answers. A vault without a published value reports an empty stable vector, which every
@@ -187,6 +191,8 @@ pub struct SyncHub {
     uploads: Arc<Mutex<HashMap<String, PendingUpload>>>,
     /// The contact every sync state carries; without it the hub answers no state.
     contact: Option<HubContactSource>,
+    /// Where member listener endpoints from sync hellos go; without it they are ignored.
+    peer_hints: Option<HubPeerHints>,
     /// The stable vector every sync state carries.
     stability: HubStability,
     /// Where proposals go; without it the hub answers that it is not the anchor.
@@ -211,6 +217,7 @@ impl SyncHub {
             waits: Arc::default(),
             uploads: Arc::default(),
             contact: None,
+            peer_hints: None,
             stability: HubStability::default(),
             proposals: None,
             forwards: None,
@@ -229,9 +236,15 @@ impl SyncHub {
         self
     }
 
-    /// Sets where the hub reads the coordinator contact that each sync state reports.
+    /// Sets where the hub reads the member contact that each sync state reports.
     pub fn with_contact(mut self, contact: HubContactSource) -> Self {
         self.contact = Some(contact);
+        self
+    }
+
+    /// Sets where the hub reports the listener endpoints members send in their sync hellos.
+    pub fn with_peer_hints(mut self, hints: HubPeerHints) -> Self {
+        self.peer_hints = Some(hints);
         self
     }
 
@@ -249,17 +262,17 @@ impl SyncHub {
         })
     }
 
-    /// The coordinator contact for `vault_id`, checked against the wire bounds so a bad source
+    /// The member contact for `vault_id`, checked against the wire bounds so a bad source
     /// fails this request instead of the frame.
     fn contact(&self, vault_id: &str) -> Result<HubContact, HubError> {
         let source = self
             .contact
             .as_ref()
-            .ok_or_else(|| HubError::unavailable("the coordinator cannot report its contact"))?;
+            .ok_or_else(|| HubError::unavailable("the hub cannot report its contact"))?;
         let contact = source(vault_id).map_err(HubError::unavailable)?;
-        validate_coordinator_endpoints(&contact.endpoints)
+        validate_member_endpoints(&contact.members)
             .and_then(|()| validate_discovery_key(&contact.discovery_key))
-            .map_err(|error| HubError::failed(format!("coordinator contact: {error}")))?;
+            .map_err(|error| HubError::failed(format!("member contact: {error}")))?;
         Ok(contact)
     }
 
@@ -329,7 +342,15 @@ impl SyncHub {
                 self.receive(&assets, &device_id, &asset, offset, data)
                     .await
             }
-            ControlMessage::SyncHello { probe, stored, .. } => {
+            ControlMessage::SyncHello {
+                probe,
+                stored,
+                listening,
+                ..
+            } => {
+                if let Some(hints) = self.peer_hints.as_ref() {
+                    hints(&vault_id, &device_id, &listening);
+                }
                 let probe = match probe {
                     Some(probe) => {
                         Some((writer_from_wire(&probe.writer).map_err(invalid)?, probe.seq))
@@ -701,7 +722,7 @@ impl HubSession {
             manifest_version: self.engine.manifest().version,
             stored: vector_to_wire(stored),
             probe_hash,
-            coordinator_endpoints: report.contact.endpoints,
+            members: report.contact.members,
             discovery_key: report.contact.discovery_key,
             stable: vector_to_wire(&stable),
             bootstrap_required,

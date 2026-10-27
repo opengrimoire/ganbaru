@@ -15,10 +15,11 @@ pub use sync::{
     SyncSettledProposal, decode_sync_admin_key, decode_sync_charter, decode_sync_device_key,
     decode_sync_proposal, encode_sync_admin_key, encode_sync_charter, encode_sync_device_key,
     encode_sync_proposal, validate_coordinator_endpoint, validate_coordinator_endpoints,
-    validate_discovery_key,
+    validate_discovery_key, validate_member_endpoints,
 };
+pub use sync::{MAX_MEMBER_ENDPOINTS, MemberEndpoint};
 
-pub const PROTOCOL_VERSION: u16 = 14;
+pub const PROTOCOL_VERSION: u16 = 15;
 pub const MAX_CONTROL_BYTES: usize = 1024 * 1024;
 /// Frame bound before the peer presents a linked certificate. Enrollment (with its 8 KiB
 /// certificate) and contact requests fit well inside it.
@@ -344,7 +345,8 @@ pub enum ControlMessage {
         public_key: String,
         private_key_pkcs8: String,
     },
-    /// Authenticated: a linked device compares its stored operations with the hub's.
+    /// Authenticated: a linked device compares its stored operations with the hub's, and
+    /// reports the endpoints its own sync listener serves on, empty when it does not listen.
     SyncHello {
         protocol_version: u16,
         vault_id: String,
@@ -352,18 +354,19 @@ pub enum ControlMessage {
         manifest_version: u16,
         stored: Vec<SyncSeq>,
         probe: Option<SyncProbe>,
+        listening: Vec<String>,
     },
     /// The hub's stored operations and its hash at the probed sequence, when it holds it, plus
-    /// the listener endpoints the coordinator reports now and the vault's discovery key, so a
-    /// linked device follows address changes without relinking. `stable` lists the operations
-    /// every counted device holds, and `bootstrap_required` tells the device that the hub no
-    /// longer holds operations it lacks. `forked` lists the writers the hub holds fork evidence
-    /// for, each with the sequence where its copies differ.
+    /// the member listener endpoints the hub knows, its own first, and the vault's discovery
+    /// key, so a linked device follows address changes without relinking. `stable` lists the
+    /// operations every counted device holds, and `bootstrap_required` tells the device that
+    /// the hub no longer holds operations it lacks. `forked` lists the writers the hub holds
+    /// fork evidence for, each with the sequence where its copies differ.
     SyncState {
         manifest_version: u16,
         stored: Vec<SyncSeq>,
         probe_hash: Option<String>,
-        coordinator_endpoints: Vec<String>,
+        members: Vec<MemberEndpoint>,
         discovery_key: String,
         stable: Vec<SyncSeq>,
         bootstrap_required: bool,
@@ -808,18 +811,20 @@ impl ControlMessage {
                 manifest_version: _,
                 stored,
                 probe,
+                listening,
             } => {
                 validate_sync_peer(*protocol_version, vault_id, device_id)?;
                 sync::validate_vector(stored)?;
                 if let Some(probe) = probe {
                     sync::validate_probe(probe)?;
                 }
+                sync::validate_coordinator_endpoints(listening)?;
             }
             Self::SyncState {
                 manifest_version: _,
                 stored,
                 probe_hash,
-                coordinator_endpoints,
+                members,
                 discovery_key,
                 stable,
                 bootstrap_required: _,
@@ -831,7 +836,7 @@ impl ControlMessage {
                 if let Some(hash) = probe_hash {
                     sync::validate_hashes(std::slice::from_ref(hash))?;
                 }
-                sync::validate_coordinator_endpoints(coordinator_endpoints)?;
+                sync::validate_member_endpoints(members)?;
                 sync::validate_discovery_key(discovery_key)?;
             }
             Self::SyncPush {
@@ -1924,7 +1929,24 @@ mod tests {
         )
     }
 
+    /// Member endpoints of distinct devices, one per endpoint.
+    fn members(endpoints: &[&str]) -> Vec<MemberEndpoint> {
+        endpoints
+            .iter()
+            .zip(0u64..)
+            .map(|(endpoint, index)| MemberEndpoint {
+                device_id: format!("device-{index}"),
+                endpoint: (*endpoint).to_string(),
+                observed_ms: 1_700_000_000_000 + index,
+            })
+            .collect()
+    }
+
     fn sync_state(endpoints: &[&str], discovery_key: String) -> ControlMessage {
+        sync_state_with(members(endpoints), discovery_key)
+    }
+
+    fn sync_state_with(members: Vec<MemberEndpoint>, discovery_key: String) -> ControlMessage {
         ControlMessage::SyncState {
             manifest_version: 1,
             stored: vec![SyncSeq {
@@ -1932,7 +1954,7 @@ mod tests {
                 seq: 3,
             }],
             probe_hash: Some("c".repeat(64)),
-            coordinator_endpoints: endpoints.iter().map(ToString::to_string).collect(),
+            members,
             discovery_key,
             stable: vec![SyncSeq {
                 writer: "a".repeat(32),
@@ -1971,7 +1993,7 @@ mod tests {
         assert_eq!(frame_round_trip(&state), Ok(state));
         let empty = sync_state(&[], discovery_key_of(DISCOVERY_KEY_BYTES));
         assert_eq!(frame_round_trip(&empty), Ok(empty));
-        let full = vec!["192.168.1.20:43821"; MAX_COORDINATOR_ENDPOINTS];
+        let full = vec!["192.168.1.20:43821"; MAX_MEMBER_ENDPOINTS];
         assert_eq!(
             sync_state(&full, discovery_key_of(DISCOVERY_KEY_BYTES)).validate(),
             Ok(())
@@ -1979,10 +2001,71 @@ mod tests {
     }
 
     #[test]
+    fn member_endpoints_keep_their_wire_shape() {
+        let member = MemberEndpoint {
+            device_id: "device-laptop".to_string(),
+            endpoint: "192.168.1.20:43821".to_string(),
+            observed_ms: 1_700_000_000_123,
+        };
+        assert_eq!(
+            serde_json::to_value(&member).expect("serialize member endpoint"),
+            serde_json::json!({
+                "deviceId": "device-laptop",
+                "endpoint": "192.168.1.20:43821",
+                "observedMs": 1_700_000_000_123u64,
+            })
+        );
+        let hello = ControlMessage::SyncHello {
+            protocol_version: PROTOCOL_VERSION,
+            vault_id: "vault-1".to_string(),
+            device_id: "device-laptop".to_string(),
+            manifest_version: 1,
+            stored: Vec::new(),
+            probe: None,
+            listening: vec!["192.168.1.20:43821".to_string()],
+        };
+        let wire = serde_json::to_value(&hello).expect("serialize sync hello");
+        assert_eq!(wire["listening"], serde_json::json!(["192.168.1.20:43821"]));
+        assert_eq!(wire["protocol_version"], serde_json::json!(15));
+        assert_eq!(frame_round_trip(&hello), Ok(hello));
+    }
+
+    #[test]
+    fn sync_hello_refuses_too_many_or_unreportable_listening_endpoints() {
+        let hello = |listening: Vec<&str>| ControlMessage::SyncHello {
+            protocol_version: PROTOCOL_VERSION,
+            vault_id: "vault-1".to_string(),
+            device_id: "device-laptop".to_string(),
+            manifest_version: 1,
+            stored: Vec::new(),
+            probe: None,
+            listening: listening.into_iter().map(ToString::to_string).collect(),
+        };
+        assert_eq!(hello(Vec::new()).validate(), Ok(()));
+        assert_eq!(
+            hello(vec!["192.168.1.20:43821"; MAX_COORDINATOR_ENDPOINTS]).validate(),
+            Ok(())
+        );
+        assert!(
+            hello(vec!["192.168.1.20:43821"; MAX_COORDINATOR_ENDPOINTS + 1])
+                .validate()
+                .is_err()
+        );
+        assert!(hello(vec!["203.0.113.5:43821"]).validate().is_err());
+    }
+
+    #[test]
     fn sync_state_refuses_unreportable_endpoints_and_malformed_keys() {
         let key = discovery_key_of(DISCOVERY_KEY_BYTES);
-        let nine = vec!["192.168.1.20:43821"; MAX_COORDINATOR_ENDPOINTS + 1];
-        assert!(sync_state(&nine, key.clone()).validate().is_err());
+        let over = vec!["192.168.1.20:43821"; MAX_MEMBER_ENDPOINTS + 1];
+        assert!(sync_state(&over, key.clone()).validate().is_err());
+        let mut repeated = members(&["192.168.1.20:43821", "192.168.1.21:43821"]);
+        repeated[1].device_id = repeated[0].device_id.clone();
+        repeated[1].endpoint = repeated[0].endpoint.clone();
+        assert!(sync_state_with(repeated, key.clone()).validate().is_err());
+        let mut unnamed = members(&["192.168.1.20:43821"]);
+        unnamed[0].device_id = "device one".to_string();
+        assert!(sync_state_with(unnamed, key.clone()).validate().is_err());
         for endpoint in [
             "203.0.113.5:43821",
             "127.0.0.1:43821",
@@ -2283,6 +2366,7 @@ mod tests {
             manifest_version: 1,
             stored: Vec::new(),
             probe: None,
+            listening: Vec::new(),
         };
         assert_eq!(hello(PROTOCOL_VERSION).validate(), Ok(()));
         assert_eq!(

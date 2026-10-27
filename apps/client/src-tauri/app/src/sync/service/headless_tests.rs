@@ -218,7 +218,11 @@ fn serving_hub(pool: SqlitePool, assets: PathBuf) -> SyncHub {
         })
     });
     let contact = HubContact {
-        endpoints: vec!["192.168.1.20:43821".to_string()],
+        members: vec![ganbaru_handoff::protocol::MemberEndpoint {
+            device_id: "device-hub".to_string(),
+            endpoint: "192.168.1.20:43821".to_string(),
+            observed_ms: 1,
+        }],
         discovery_key: URL_SAFE_NO_PAD.encode([7; ganbaru_handoff::protocol::DISCOVERY_KEY_BYTES]),
     };
     SyncHub::new(open, watch::Sender::new(0))

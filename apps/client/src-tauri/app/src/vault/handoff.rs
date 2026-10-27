@@ -116,6 +116,8 @@ impl CoordinatorLifecycle {
         if let Some(port) = self.port()? {
             return Ok(port);
         }
+        // The member listener holds the same port while this desktop was a linked member.
+        app.state::<MemberListenerLifecycle>().stop().await;
         let listener = transport::CoordinatorListener::bind(port)
             .map_err(|error| format!("bind vault handoff coordinator: {error}"))?;
         let port = listener
@@ -128,7 +130,14 @@ impl CoordinatorLifecycle {
             coordinator: Some(requests.clone()),
             contacts: Some(contacts),
             hub: Some(
-                crate::sync::sync_hub(&app).with_contact(hub_contact_source(manager.clone(), port)),
+                crate::sync::sync_hub(&app)
+                    .with_contact(hub_contact_source(
+                        app.clone(),
+                        manager.clone(),
+                        port,
+                        DiscoverySource::Coordinator,
+                    ))
+                    .with_peer_hints(crate::sync::peer_hints(app.clone())),
             ),
             enrollment_sealer: Some(crate::sync::enrollment_sealer(&app)),
             approvals: app
@@ -380,6 +389,105 @@ pub(crate) async fn ensure_desktop_coordinator<R: Runtime>(
         .map(Some)
 }
 
+/// The sync listener of a member desktop: a linked device that does not coordinate the vault
+/// serves sync requests from the other members on the coordinator port, which it never binds
+/// for anything else.
+#[derive(Default)]
+#[cfg(desktop)]
+pub(crate) struct MemberListenerLifecycle {
+    runtime: tokio::sync::Mutex<Option<MemberListenerRuntime>>,
+}
+
+#[cfg(desktop)]
+struct MemberListenerRuntime {
+    vault_id: String,
+    port: u16,
+    shutdown: tokio::sync::oneshot::Sender<()>,
+    served: tauri::async_runtime::JoinHandle<()>,
+}
+
+#[cfg(desktop)]
+impl MemberListenerLifecycle {
+    /// Stops the listener and waits until it released its port.
+    pub(crate) async fn stop(&self) {
+        let runtime = self.runtime.lock().await.take();
+        if let Some(runtime) = runtime {
+            let _ = runtime.shutdown.send(());
+            if let Err(error) = runtime.served.await {
+                eprintln!("sync member listener: stop: {error}");
+            }
+        }
+    }
+
+    /// Asks the listener to stop without waiting, for app exit.
+    pub(crate) fn stop_now(&self) {
+        if let Ok(mut runtime) = self.runtime.try_lock()
+            && let Some(runtime) = runtime.take()
+        {
+            let _ = runtime.shutdown.send(());
+        }
+    }
+}
+
+/// Keeps the member listener of the pinned vault running while this desktop is a linked member,
+/// and returns the endpoints it is reachable at. A desktop without a coordinator pin stops it,
+/// since it either coordinates the vault itself or is not linked.
+#[cfg(desktop)]
+pub(crate) async fn ensure_member_listener<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> Result<Vec<String>, String> {
+    let lifecycle = app.state::<MemberListenerLifecycle>();
+    let manager = app.state::<PairingManager>().inner().clone();
+    let Some(pin) = manager.coordinator_pin()? else {
+        lifecycle.stop().await;
+        return Ok(Vec::new());
+    };
+    if app.state::<CoordinatorLifecycle>().port()?.is_some() {
+        lifecycle.stop().await;
+        return Ok(Vec::new());
+    }
+    let mut runtime = lifecycle.runtime.lock().await;
+    if let Some(running) = runtime.as_ref()
+        && running.vault_id == pin.vault_id
+        && !running.served.inner().is_finished()
+    {
+        return Ok(local_addresses::reported_endpoints(running.port));
+    }
+    if let Some(stale) = runtime.take() {
+        let _ = stale.shutdown.send(());
+        let _ = stale.served.await;
+    }
+    let port = coordinator_port(&app.config().identifier);
+    let listener = transport::CoordinatorListener::bind(port)
+        .map_err(|error| format!("bind member sync listener: {error}"))?;
+    let port = listener
+        .port()
+        .map_err(|error| format!("read member sync listener port: {error}"))?;
+    let services = transport::MemberServices {
+        hub: crate::sync::member_hub(app)
+            .with_contact(hub_contact_source(
+                app.clone(),
+                manager.clone(),
+                port,
+                DiscoverySource::Pin,
+            ))
+            .with_peer_hints(crate::sync::peer_hints(app.clone())),
+        admission: crate::sync::member_admission_source(app),
+        lan: lan_admission(app, port)?,
+    };
+    let (shutdown, receiver) = tokio::sync::oneshot::channel();
+    let served = tauri::async_runtime::spawn(transport::serve_member_listener(
+        listener, manager, services, receiver,
+    ));
+    *runtime = Some(MemberListenerRuntime {
+        vault_id: pin.vault_id,
+        port,
+        shutdown,
+        served,
+    });
+    Ok(local_addresses::reported_endpoints(port))
+}
+
 #[cfg(desktop)]
 #[tauri::command]
 pub(crate) async fn handoff_create_pairing_invitation<R: Runtime>(
@@ -426,17 +534,53 @@ fn lan_admission<R: Runtime>(
     Ok(transport::LanAdmission::linux_firewall(config_dir, port))
 }
 
-/// What the sync hub of a coordinator listening on `port` reports to linked devices: its current
-/// listener endpoints, refreshed at most every few seconds, and the vault's discovery key.
+/// Where a hub's contact takes the vault's discovery key from.
 #[cfg(desktop)]
-fn hub_contact_source(manager: PairingManager, port: u16) -> crate::sync::hub::HubContactSource {
+#[derive(Clone, Copy)]
+enum DiscoverySource {
+    /// The coordinator's own key for the vault.
+    Coordinator,
+    /// The key the coordinator reported in its latest sync state, kept in the pin.
+    Pin,
+}
+
+/// What the sync hub of a desktop listening on `port` reports to linked devices: its current
+/// listener endpoints under its own device id, refreshed at most every few seconds, then the
+/// peer book's other members, and the vault's discovery key.
+#[cfg(desktop)]
+fn hub_contact_source<R: Runtime>(
+    app: tauri::AppHandle<R>,
+    manager: PairingManager,
+    port: u16,
+    discovery: DiscoverySource,
+) -> crate::sync::hub::HubContactSource {
     let endpoints = std::sync::Arc::new(local_addresses::ReportedEndpointCache::default());
     std::sync::Arc::new(move |vault_id: &str| {
-        Ok(crate::sync::hub::HubContact {
-            endpoints: endpoints.get_or_refresh(std::time::Instant::now(), || {
+        let device_id = manager.device_id()?;
+        let observed_ms = u64::try_from(protocol::unix_time_ms()).unwrap_or_default();
+        let own = endpoints
+            .get_or_refresh(std::time::Instant::now(), || {
                 local_addresses::reported_endpoints(port)
-            }),
-            discovery_key: manager.discovery_key(vault_id)?,
+            })
+            .into_iter()
+            .map(|endpoint| protocol::MemberEndpoint {
+                device_id: device_id.clone(),
+                endpoint,
+                observed_ms,
+            })
+            .collect();
+        let book = crate::sync::read_peer_book(&app, vault_id);
+        let discovery_key = match discovery {
+            DiscoverySource::Coordinator => manager.discovery_key(vault_id)?,
+            DiscoverySource::Pin => manager
+                .coordinator_pin()?
+                .filter(|pin| pin.vault_id == vault_id)
+                .and_then(|pin| pin.discovery_key)
+                .ok_or_else(|| "this device has no discovery key for the vault".to_string())?,
+        };
+        Ok(crate::sync::hub::HubContact {
+            members: crate::sync::reported_members(&device_id, own, &book),
+            discovery_key,
         })
     })
 }

@@ -25,6 +25,8 @@ const WRITER_TEXT_LENGTH: usize = 32;
 const HASH_TEXT_LENGTH: usize = 64;
 /// Listener endpoints a coordinator reports in one sync state, and a linked device keeps.
 pub const MAX_COORDINATOR_ENDPOINTS: usize = 8;
+/// Member listener endpoints one sync state reports, and a peer book keeps.
+pub const MAX_MEMBER_ENDPOINTS: usize = 32;
 /// Bytes of a vault discovery key.
 pub const DISCOVERY_KEY_BYTES: usize = 32;
 
@@ -174,6 +176,35 @@ pub fn validate_coordinator_endpoint(endpoint: &str) -> Result<SocketAddr, Strin
         .and_then(|_| crate::dial::reportable_address(address.ip()))
         .map_err(|error| format!("coordinator endpoint is refused: {error}"))?;
     Ok(address)
+}
+
+/// One listener endpoint of a vault member, as the reporting hub last observed it.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MemberEndpoint {
+    /// Handoff device id of the member that listens there.
+    pub device_id: String,
+    /// Socket address of the member's listener.
+    pub endpoint: String,
+    /// When the reporting hub last saw the member report it, in Unix milliseconds.
+    pub observed_ms: u64,
+}
+
+/// Checks the member endpoints a sync state reports: at most [`MAX_MEMBER_ENDPOINTS`], each
+/// naming a valid device id and an endpoint that may be dialed on a LAN, with no repeated pair.
+pub fn validate_member_endpoints(members: &[MemberEndpoint]) -> Result<(), String> {
+    if members.len() > MAX_MEMBER_ENDPOINTS {
+        return Err("member endpoint list is too large".to_string());
+    }
+    let mut seen = std::collections::BTreeSet::new();
+    for member in members {
+        super::validate_identifier("member device id", &member.device_id)?;
+        validate_coordinator_endpoint(&member.endpoint)?;
+        if !seen.insert((member.device_id.as_str(), member.endpoint.as_str())) {
+            return Err("member endpoint list repeats an endpoint".to_string());
+        }
+    }
+    Ok(())
 }
 
 /// Checks that a discovery key is the unpadded base64url form of exactly

@@ -9,8 +9,8 @@ use super::wire::{
     vector_from_wire, vector_to_wire, writer_from_wire,
 };
 use ganbaru_handoff::protocol::{
-    ControlMessage, MAX_SYNC_HASHES, PROTOCOL_VERSION, SYNC_PAGE_BYTES, SyncProbe, SyncRefusal,
-    SyncRefusalCode, SyncSettledProposal, decode_sync_proposal, encode_sync_proposal,
+    ControlMessage, MAX_SYNC_HASHES, MemberEndpoint, PROTOCOL_VERSION, SYNC_PAGE_BYTES, SyncProbe,
+    SyncRefusal, SyncRefusalCode, SyncSettledProposal, decode_sync_proposal, encode_sync_proposal,
 };
 use ganbaru_sync::{
     Engine, EvidenceOutcome, EvidenceRefusal, SpaceContext, StoreOutcome, StoreRefusal,
@@ -79,6 +79,8 @@ pub struct Exchanged {
     /// The hub's stored vector as of its last answer to a hello or push. When the hub is the
     /// anchor, it marks what the anchor stores, see `Engine::record_anchor_marks`.
     pub hub: VersionVector,
+    /// The member listener endpoints the hub reported in its sync state.
+    pub members: Vec<MemberEndpoint>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -104,6 +106,9 @@ pub struct ClientSession<'a, T: SyncTransport> {
     pub pull_skips: Option<&'a PullSkips>,
     /// Operation bytes after which a direction stops, normally [`MAX_EXCHANGE_BYTES`].
     pub max_bytes: usize,
+    /// Endpoints this device's own sync listener serves on, reported in the hello; empty when
+    /// it does not listen.
+    pub listening: &'a [String],
 }
 
 impl<T: SyncTransport> ClientSession<'_, T> {
@@ -131,8 +136,14 @@ impl<T: SyncTransport> ClientSession<'_, T> {
                 seq: *seq,
                 hash: hash_to_wire(hash),
             }),
+            listening: self
+                .listening
+                .iter()
+                .take(ganbaru_handoff::protocol::MAX_COORDINATOR_ENDPOINTS)
+                .cloned()
+                .collect(),
         };
-        let (stored, probe_hash, stable, bootstrap_required, forked) = answer(
+        let (stored, probe_hash, stable, bootstrap_required, forked, members) = answer(
             self.transport.request(hello).await?,
             "SyncState",
             |response| match response {
@@ -142,8 +153,16 @@ impl<T: SyncTransport> ClientSession<'_, T> {
                     stable,
                     bootstrap_required,
                     forked,
+                    members,
                     ..
-                } => Some((stored, probe_hash, stable, bootstrap_required, forked)),
+                } => Some((
+                    stored,
+                    probe_hash,
+                    stable,
+                    bootstrap_required,
+                    forked,
+                    members,
+                )),
                 _ => None,
             },
         )?;
@@ -171,6 +190,7 @@ impl<T: SyncTransport> ClientSession<'_, T> {
             stable: vector_from_wire(&stable)?,
             bootstrap_required,
             confirmed,
+            members,
             ..Exchanged::default()
         };
         let pushed = self.push(&mut hub, &mut exchanged).await?;

@@ -255,6 +255,15 @@ fn database_subitems_history_restores_canonical_edges_and_copies_moved_graphs_in
             .unwrap();
         assert_ne!(copied.1, child_id);
         assert_ne!(copied.2, parent_id);
+        // A copied database keeps sharing its id with its `child_database` block.
+        let databases: Vec<(String, String)> =
+            sqlx::query_as("SELECT id, block_id FROM notes_databases ORDER BY id")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        assert_eq!(databases.len(), 2);
+        assert!(databases.iter().all(|(id, block_id)| id == block_id));
+        assert!(databases.iter().any(|(id, _)| id != database_id));
         let shared_ownership: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM notes_pages WHERE id IN (?, ?) AND parent_data_source_id = ?",
         )

@@ -91,6 +91,23 @@ fn placeholder_keys_convert_to_derived_keys_once_and_gate_the_assertion() {
             .unwrap();
         }
 
+        comments::create_comment(
+            &pool,
+            NoteCommentCreate {
+                id: COMMENT_A.to_string(),
+                parent: Some(page_parent(PAGE_A)),
+                discussion_id: None,
+                anchor: None,
+                rich_text: vec![rich_text("Looks good")],
+                attachments: None,
+            },
+        )
+        .await
+        .unwrap();
+        comments::toggle_comment_reaction(&pool, COMMENT_A, "👍")
+            .await
+            .unwrap();
+
         let derived = sync_keys(&pool).await;
         for table in DERIVED_KEY_TABLES {
             assert!(

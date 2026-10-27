@@ -3,31 +3,42 @@ use crate::assets;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 
+/// Sets the page of the comment threads, anchors, and suggestions on `block_id` and the blocks
+/// nested under it to `page_id`, so they follow a block moved to another page.
 pub(super) async fn update_block_comment_thread_pages(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     block_id: &str,
     page_id: &str,
 ) -> Result<(), String> {
-    sqlx::query(
-        "WITH RECURSIVE subtree(id, depth) AS (
-            SELECT id, 1 FROM notes_blocks WHERE id = ?
-            UNION
-            SELECT notes_blocks.id, subtree.depth + 1
-            FROM notes_blocks
-            JOIN subtree ON notes_blocks.parent_block_id = subtree.id
-            WHERE subtree.depth < ?
-         )
-         UPDATE notes_comment_threads
-         SET page_id = ?
-         WHERE parent_type = 'block_id'
-           AND parent_block_id IN (SELECT id FROM subtree)",
-    )
-    .bind(block_id)
-    .bind(crate::writes::MAX_BLOCK_DEPTH)
-    .bind(page_id)
-    .execute(&mut **tx)
-    .await
-    .map_err(|e| format!("move notes block comment threads: {e}"))?;
+    for (table, condition) in [
+        (
+            "notes_comment_threads",
+            "parent_type = 'block_id' AND parent_block_id",
+        ),
+        ("notes_comment_thread_anchors", "block_id"),
+        ("notes_suggestions", "block_id"),
+    ] {
+        let sql = format!(
+            "WITH RECURSIVE subtree(id, depth) AS (
+                SELECT id, 1 FROM notes_blocks WHERE id = ?
+                UNION
+                SELECT notes_blocks.id, subtree.depth + 1
+                FROM notes_blocks
+                JOIN subtree ON notes_blocks.parent_block_id = subtree.id
+                WHERE subtree.depth < ?
+             )
+             UPDATE {table}
+             SET page_id = ?
+             WHERE {condition} IN (SELECT id FROM subtree)"
+        );
+        sqlx::query(sqlx::AssertSqlSafe(sql.as_str()))
+            .bind(block_id)
+            .bind(crate::writes::MAX_BLOCK_DEPTH)
+            .bind(page_id)
+            .execute(&mut **tx)
+            .await
+            .map_err(|e| format!("move notes block comments in {table}: {e}"))?;
+    }
     Ok(())
 }
 

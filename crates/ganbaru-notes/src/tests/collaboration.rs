@@ -105,7 +105,13 @@ fn local_authors_store_no_name_and_follow_the_profile_preference() {
             "Alice"
         );
 
+        // Imports write the author snapshot when they create a comment, and sync keeps it
+        // immutable afterwards, so the guard is dropped to plant an imported snapshot in place.
         let imported_name = r#"{"type":"user","resolved_name":"Imported author"}"#;
+        sqlx::raw_sql("DROP TRIGGER sync_immutable_notes_comments")
+            .execute(&pool)
+            .await
+            .unwrap();
         sqlx::query("UPDATE notes_comments SET display_name = ? WHERE id = ?")
             .bind(imported_name)
             .bind(COMMENT_A)

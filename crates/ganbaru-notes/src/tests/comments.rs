@@ -129,17 +129,31 @@ fn comment_unread_state_tracks_local_identity() {
             .execute(&pool)
             .await
             .unwrap();
+        // Authorship and creation time are immutable, so the remote comment replaces the row.
+        let (rich_text_json, plain_text): (String, String) =
+            sqlx::query_as("SELECT rich_text, plain_text FROM notes_comments WHERE id = ?")
+                .bind(COMMENT_A)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        sqlx::query("DELETE FROM notes_comments WHERE id = ?")
+            .bind(COMMENT_A)
+            .execute(&pool)
+            .await
+            .unwrap();
         sqlx::query(
-            "UPDATE notes_comments
-             SET created_by = ?,
-                 display_name = ?,
-                 created_time = '2000-01-01T00:00:00.000Z',
-                 last_edited_time = '2000-01-01T00:00:00.000Z'
-             WHERE id = ?",
+            "INSERT INTO notes_comments (
+                 id, thread_id, rich_text, plain_text, created_by, display_name, created_time,
+                 last_edited_time
+             )
+             VALUES (?, ?, ?, ?, ?, ?, '2000-01-01T00:00:00.000Z', '2000-01-01T00:00:00.000Z')",
         )
+        .bind(COMMENT_A)
+        .bind(&thread_id)
+        .bind(rich_text_json)
+        .bind(plain_text)
         .bind("99999999-9999-4999-8999-999999999999")
         .bind(json!({"type": "user", "resolved_name": "Reviewer"}).to_string())
-        .bind(COMMENT_A)
         .execute(&pool)
         .await
         .unwrap();
@@ -326,6 +340,89 @@ fn inline_comment_anchors_persist_on_block_threads() {
 }
 
 #[test]
+fn block_comments_and_suggestions_follow_a_block_moved_to_another_page() {
+    crate::test_block_on(async {
+        let pool = migrated_memory_pool().await;
+        create_page(&pool, PAGE_A, BLOCK_A).await;
+        create_page(&pool, PAGE_B, BLOCK_C).await;
+        writes::append_block_children(
+            &pool,
+            NoteAppendBlockChildren {
+                parent: page_parent(PAGE_A),
+                after: Some(BLOCK_A.to_string()),
+                children: vec![block(
+                    BLOCK_B,
+                    "paragraph",
+                    paragraph_payload("Alpha beta gamma"),
+                )],
+            },
+        )
+        .await
+        .unwrap();
+        comments::create_comment(
+            &pool,
+            NoteCommentCreate {
+                id: COMMENT_A.to_string(),
+                parent: Some(block_parent(BLOCK_B)),
+                discussion_id: None,
+                anchor: Some(NoteCommentAnchorCreate {
+                    start: 6,
+                    end: 10,
+                    text: "beta".to_string(),
+                    prefix: "Alpha ".to_string(),
+                    suffix: " gamma".to_string(),
+                }),
+                rich_text: vec![rich_text("Inline note")],
+                attachments: None,
+            },
+        )
+        .await
+        .unwrap();
+        suggestions::create_suggestion(
+            &pool,
+            NoteSuggestionCreate {
+                id: COMMENT_B.to_string(),
+                block_id: BLOCK_B.to_string(),
+                range_start: 6,
+                range_end: 10,
+                original_text: "beta".to_string(),
+                proposed_text: "delta".to_string(),
+                prefix: "Alpha ".to_string(),
+                suffix: " gamma".to_string(),
+            },
+        )
+        .await
+        .unwrap();
+
+        writes::move_block(
+            &pool,
+            BLOCK_B,
+            NoteMoveBlock {
+                parent: page_parent(PAGE_B),
+                after: None,
+                before: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        for table in [
+            "notes_comment_threads",
+            "notes_comment_thread_anchors",
+            "notes_suggestions",
+        ] {
+            let pages: Vec<String> = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
+                "SELECT DISTINCT page_id FROM {table}"
+            )))
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+            assert_eq!(pages, vec![PAGE_B.to_string()], "{table}");
+        }
+    });
+}
+
+#[test]
 fn comment_reactions_toggle_per_person_and_group_by_emoji() {
     crate::test_block_on(async {
         let pool = migrated_memory_pool().await;
@@ -362,10 +459,16 @@ fn comment_reactions_toggle_per_person_and_group_by_emoji() {
         assert_eq!(reactions[1]["emoji"], "🎉");
 
         sqlx::query(
-            "INSERT INTO notes_comment_reactions (comment_id, created_by, display_name, emoji)
-             VALUES (?, 'person-b', '{\"type\":\"user\",\"resolved_name\":\"Bea\"}', '👍')",
+            "INSERT INTO notes_comment_reactions
+                 (comment_id, created_by, display_name, emoji, sync_key)
+             VALUES (?, 'person-b', '{\"type\":\"user\",\"resolved_name\":\"Bea\"}', '👍', ?)",
         )
         .bind(COMMENT_A)
+        .bind(
+            crate::sync_keys::COMMENT_REACTIONS
+                .key(&[COMMENT_A, "person-b", "👍"])
+                .unwrap(),
+        )
         .execute(&pool)
         .await
         .unwrap();

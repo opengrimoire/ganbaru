@@ -1,0 +1,11 @@
+Step 5 review follow-ups for milestone 8 step 6 (fresh Opus review of feat/sync-notes-comments, verdict merge with follow-ups). Do these first, in their own commits, then the step 6 assets conversion. Verify each against source; if one is wrong, record why in the progress entry instead of changing code.
+
+1. Medium: `crates/ganbaru-notes/src/sync_apply.rs` ~143, `refresh_comment_pages` updates every thread, anchor, and suggestion row on each apply. Limit the refresh to the keys the apply changed (and the pages of moved blocks), so an apply costs in proportion to its changes. Add a test that an unrelated apply does not touch other pages' comment rows.
+2. Low: no page history entry is queued for thread status, suggestion decision, anchor, or removed reaction changes from remote applies. Queue history consistently with local edits of the same kind, or record why a change kind has no history.
+3. Low: the option `property_key` group is a mutable register and partial writes skip `validate_row` (`crates/ganbaru-sync/src/manifest/vault/notes.rs` ~1175, `crates/ganbaru-sync/src/validate.rs` ~163). Make the option's `property_key` fixed at creation, or validate partial writes of that group. Do not edit engine-track files; if the fix needs one, record the exact need.
+4. Low: the anchor `thread_id` reference is not declared in the manifest. Declare it (Cascade into threads) or record why it cannot be.
+5. Low: a local comment can exceed the 256 KiB sync bound, so the capture trigger aborts with an opaque error. Bound comment body size at the local write path with a typed, localized error (check how Quick notes and blocks bound content).
+6. Low: remote reaction kind (20 per comment) and attachment limits are not enforced on apply. Enforce them in adapter validation or the hook, consistent with local limits.
+7. Docs: `docs/data/sync.md` ~78 and `docs/data/schema/notes-and-projects.md` ~75 say remote comments refresh mention candidates; mentions from remote comments settle as delivered. Fix both to match code.
+8. Tests: a removed reaction versus a concurrent re-add of the same reaction; a remote comment raises no notification.
+Optional, only if cheap: block duplicate does not copy anchors, reactions, or suggestions (pre-existing; record if left).

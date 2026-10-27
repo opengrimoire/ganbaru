@@ -35,6 +35,12 @@ pub const MAX_COMMENT_ATTACHMENTS: usize = 100;
 pub const MAX_COMMENT_ATTACHMENTS_BYTES: usize = 50 * 1024;
 /// Bytes of one reaction emoji.
 pub const MAX_REACTION_EMOJI_BYTES: usize = 64;
+/// Bytes of one page icon image.
+pub const MAX_PAGE_ICON_BYTES: u32 = 3 * 1024 * 1024;
+/// Bytes of one page cover image.
+pub const MAX_PAGE_COVER_BYTES: u32 = 8 * 1024 * 1024;
+/// Bytes of one file attached to a block, a property value, or a comment.
+pub const MAX_FILE_BYTES: u32 = 50 * 1024 * 1024;
 
 /// View types the `notes_database_views.type` check allows.
 pub const VIEW_TYPES: [&str; 10] = [

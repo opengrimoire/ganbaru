@@ -28,9 +28,10 @@
 
 use ganbaru_sync_contracts::{GroupId, TableId};
 
+use crate::assets::{AssetClass, LocalAssetColumn, LocalDigest};
 use crate::domains::notes::{
-    MAX_BLOCK_ATTRS_BYTES, MAX_BLOCK_TEXT_BYTES, MAX_NAME_CHARS, MAX_TEMPLATE_CONTENT_BYTES,
-    MAX_TEXT_CHARS,
+    MAX_BLOCK_ATTRS_BYTES, MAX_BLOCK_TEXT_BYTES, MAX_FILE_BYTES, MAX_NAME_CHARS,
+    MAX_PAGE_COVER_BYTES, MAX_PAGE_ICON_BYTES, MAX_TEMPLATE_CONTENT_BYTES, MAX_TEXT_CHARS,
 };
 use crate::manifest::vault::projects::PROJECTS_TABLE;
 use crate::manifest::{
@@ -45,6 +46,31 @@ pub const DOMAIN_NAME: &str = "notes";
 
 /// Domain adapter name for Notes.
 pub const ADAPTER: &str = "notes";
+
+/// Page icon images, at most 3 MiB each.
+pub const PAGE_ICONS_CLASS: AssetClass = AssetClass {
+    name: "notes/page-icons",
+    max_bytes: MAX_PAGE_ICON_BYTES,
+};
+
+/// Page and database cover images, at most 8 MiB each.
+pub const PAGE_COVERS_CLASS: AssetClass = AssetClass {
+    name: "notes/page-covers",
+    max_bytes: MAX_PAGE_COVER_BYTES,
+};
+
+/// Files attached to blocks, file property values, and comments, at most 50 MiB each.
+pub const FILES_CLASS: AssetClass = AssetClass {
+    name: "notes/files",
+    max_bytes: MAX_FILE_BYTES,
+};
+
+/// Names of every Notes asset class, which an asset id `{class}:{sha256}` may name.
+pub const ASSET_CLASS_NAMES: &[&str] = &[
+    PAGE_ICONS_CLASS.name,
+    PAGE_COVERS_CLASS.name,
+    FILES_CLASS.name,
+];
 
 /// `notes_local_users`.
 pub const LOCAL_USERS_TABLE: TableId = TableId(288);
@@ -1597,7 +1623,17 @@ pub const DOMAIN: DomainManifest = DomainManifest {
         device("notes_page_history_settings"),
         device("notes_page_history_snapshots"),
         device("notes_page_notification_settings"),
-        device("notes_project_history_asset_pins"),
+        DeviceTable {
+            name: "notes_project_history_asset_pins",
+            triggers: &[],
+            assets: &[LocalAssetColumn {
+                column: "asset_id",
+                json_path: None,
+                digest: LocalDigest::AssetId {
+                    classes: ASSET_CLASS_NAMES,
+                },
+            }],
+        },
         device("notes_project_history_bundle_references"),
         device("notes_project_history_dirty"),
         device("notes_project_history_versions"),
@@ -1606,5 +1642,5 @@ pub const DOMAIN: DomainManifest = DomainManifest {
     ],
     engine: &[],
     replica_writable: false,
-    assets: &[],
+    assets: &[PAGE_ICONS_CLASS, PAGE_COVERS_CLASS, FILES_CLASS],
 };

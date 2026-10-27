@@ -14,8 +14,9 @@ use crate::assets::{
 };
 use crate::blocking::run_blocking;
 
-const NOTES_FILE_MAX_DISPLAY_MEGABYTES: usize = 50;
-pub(crate) const NOTES_FILE_MAX_BYTES: usize = NOTES_FILE_MAX_DISPLAY_MEGABYTES * 1024 * 1024;
+pub(crate) const NOTES_FILE_MAX_BYTES: usize =
+    ganbaru_sync::domains::notes::MAX_FILE_BYTES as usize;
+const NOTES_FILE_MAX_DISPLAY_MEGABYTES: usize = NOTES_FILE_MAX_BYTES / (1024 * 1024);
 const NOTES_FILE_PREVIEW_MAX_DISPLAY_MEGABYTES: i64 = 25;
 const NOTES_FILE_PREVIEW_MAX_BYTES: i64 = NOTES_FILE_PREVIEW_MAX_DISPLAY_MEGABYTES * 1024 * 1024;
 const NOTES_FILE_DIR: &str = "notes/files";
@@ -715,6 +716,9 @@ struct StoredNotesFile {
 }
 
 /// Classify, hash, and write file bytes into the managed Notes folder. Runs on a blocking worker.
+///
+/// The file is named `{sha256}.{ext}` with the extension sync derives from the content type, so
+/// every device stores the same bytes under the same name.
 fn store_notes_file_bytes(
     vault_root: &Path,
     requested_kind: NotesFileAssetKind,
@@ -722,10 +726,10 @@ fn store_notes_file_bytes(
     bytes: &[u8],
 ) -> Result<StoredNotesFile, String> {
     ensure_notes_file_size(bytes)?;
-    let (kind, content_type, extension) =
-        classify_selected_file(requested_kind, source_path, bytes)?;
+    let (kind, content_type, _) = classify_selected_file(requested_kind, source_path, bytes)?;
     let sha256 = hex_hash(bytes);
-    let file_name = format!("{sha256}.{extension}");
+    let file_name = ganbaru_sync::assets::file_name(&sha256, content_type)
+        .map_err(|error| format!("name notes file: {error}"))?;
     let relative_path = format!("{NOTES_FILE_DIR}/{file_name}");
     let path = active_notes_file_dir(vault_root).join(file_name);
     if !ganbaru_atomic_files::is_regular_file(&path) {

@@ -15,8 +15,8 @@ use crate::assets::{self, ASSET_SOURCE_LOCAL_UPLOAD, ASSET_STATE_AVAILABLE, Mana
 use crate::blocking::run_blocking;
 use ganbaru_atomic_files::{FinalSymlink, read_regular_file_capped};
 
-const PAGE_ICON_MAX_DISPLAY_MEGABYTES: usize = 3;
-const PAGE_ICON_MAX_BYTES: usize = PAGE_ICON_MAX_DISPLAY_MEGABYTES * 1024 * 1024;
+const PAGE_ICON_MAX_BYTES: usize = ganbaru_sync::domains::notes::MAX_PAGE_ICON_BYTES as usize;
+const PAGE_ICON_MAX_DISPLAY_MEGABYTES: usize = PAGE_ICON_MAX_BYTES / (1024 * 1024);
 const PAGE_ICON_MAX_BASE64_CHARS: usize = PAGE_ICON_MAX_BYTES.div_ceil(3) * 4;
 const PAGE_ICON_DIR: &str = "notes/page-icons";
 pub const PAGE_ICON_ALLOWED_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "webp"];
@@ -203,7 +203,8 @@ pub async fn save_page_icon_bytes(
         ensure_page_icon_size(&bytes)?;
         let kind = validate_page_icon_image(&bytes)?.kind;
         let sha256 = hex_hash(&bytes);
-        let file_name = format!("{}.{}", sha256, kind.extension());
+        let file_name = ganbaru_sync::assets::file_name(&sha256, kind.mime_type())
+            .map_err(|error| format!("name page icon file: {error}"))?;
         let relative_path = format!("{PAGE_ICON_DIR}/{file_name}");
         let path = active_page_icon_dir(&vault_root).join(file_name);
         if !ganbaru_atomic_files::is_regular_file(&path) {

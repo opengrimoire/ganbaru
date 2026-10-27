@@ -666,7 +666,7 @@ async fn a_recorded_vault_key_loss_unlinks_and_removes_only_that_vaults_keys() {
         config_dir,
         "sync",
         VAULT_ID,
-        &format!("writer-key:{VAULT_ID}:writer-1"),
+        &format!("writer-key:{VAULT_ID}:0a1b"),
     );
     let lost_person = seal_vault_key(
         wrapper.as_ref(),
@@ -714,6 +714,60 @@ async fn a_recorded_vault_key_loss_unlinks_and_removes_only_that_vaults_keys() {
     assert!(!lost_device.exists() && !lost_writer.exists() && !lost_person.exists());
     assert!(other_vault.exists(), "another vault keeps its keys");
     assert!(wrapper.has_key(&vault_keys_alias("vault-2")));
+}
+
+#[tokio::test]
+async fn a_replaced_linking_key_on_a_relinked_phone_keeps_it_linked_after_a_failed_pass() {
+    use ganbaru_handoff::key_wrap::{linking_key_alias, open, seal};
+    let wrapper = Arc::new(ganbaru_handoff::key_wrap::TestKeyWrapper::default());
+    let (_pair, managers, host) = linked_phone_host(wrapper).await;
+    let protection = managers.key_protection();
+    let alias = linking_key_alias(PHONE_DEVICE);
+    // The linking key was found lost while the phone was unlinked, then replaced and sealed with
+    // a key the platform store generated again; the phone linked anew afterwards.
+    open(protection.as_ref(), &alias, "linking-key", b"lost").expect_err("lost key");
+    seal(protection.as_ref(), &alias, "linking-key", b"fresh key").expect("seal");
+    recover_if_key_protection_lost(&host).await;
+    assert!(host.pairing().has_links().expect("links"));
+    assert_eq!(host.pairing().unlink_reason().expect("reason"), None);
+}
+
+#[tokio::test]
+async fn a_lost_key_of_a_vault_without_links_removes_only_its_keys_and_keeps_the_phone_linked() {
+    use ganbaru_handoff::key_wrap::{KeyWrapper, read_protected_file, vault_keys_alias};
+    let wrapper = Arc::new(ganbaru_handoff::key_wrap::TestKeyWrapper::default());
+    let (pair, managers, host) = linked_phone_host(wrapper.clone()).await;
+    let config_dir = pair.phone_config_dir();
+    let linked_key = seal_vault_key(
+        wrapper.as_ref(),
+        config_dir,
+        "sync",
+        VAULT_ID,
+        &format!("device-key:{VAULT_ID}"),
+    );
+    let inactive_key = seal_vault_key(
+        wrapper.as_ref(),
+        config_dir,
+        "sync",
+        "vault-2",
+        "device-key:vault-2",
+    );
+    wrapper
+        .forget(&vault_keys_alias("vault-2"))
+        .expect("lose the inactive vault key");
+    read_protected_file(
+        managers.key_wrapper().as_ref(),
+        &vault_keys_alias("vault-2"),
+        "device-key:vault-2",
+        &inactive_key,
+    )
+    .expect_err("lost key");
+
+    recover_if_key_protection_lost(&host).await;
+    assert!(host.pairing().has_links().expect("links"));
+    assert_eq!(host.pairing().unlink_reason().expect("reason"), None);
+    assert!(!inactive_key.exists());
+    assert!(linked_key.exists(), "the linked vault keeps its keys");
 }
 
 #[tokio::test]

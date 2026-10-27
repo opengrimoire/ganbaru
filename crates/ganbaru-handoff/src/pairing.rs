@@ -610,6 +610,13 @@ impl PairingManager {
             if !state.linked_peers.is_empty() || state.coordinator.is_some() {
                 return Err(DEVICE_KEY_MISSING_ERROR.to_string());
             }
+            // The old file can never be opened, and removing it clears the key store's record
+            // of a lost key, so a later failure on a relinked device is not read as that loss.
+            if let Some(store) = inner.key_store.as_ref()
+                && let Err(error) = store.remove(device_id)
+            {
+                eprintln!("remove the lost device linking key: {error}");
+            }
             let mut next = state.clone();
             next.identity = create_identity(device_id.to_string())?;
             let path = inner

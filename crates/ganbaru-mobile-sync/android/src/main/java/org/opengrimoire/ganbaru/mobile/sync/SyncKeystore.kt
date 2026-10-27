@@ -4,7 +4,6 @@ import android.os.Build
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyPermanentlyInvalidatedException
 import android.security.keystore.KeyProperties
-import android.security.keystore.StrongBoxUnavailableException
 import java.io.IOException
 import java.security.GeneralSecurityException
 import java.security.KeyStore
@@ -104,6 +103,8 @@ internal object SyncKeystore {
     success(ByteArray(0))
   } catch (error: GeneralSecurityException) {
     failure(STATUS_UNAVAILABLE, error)
+  } catch (error: ProviderException) {
+    failure(STATUS_UNAVAILABLE, error)
   } catch (error: IOException) {
     failure(STATUS_UNAVAILABLE, error)
   }
@@ -144,7 +145,8 @@ internal object SyncKeystore {
 
   /**
    * Generates the key of [alias] in StrongBox, or in the regular Keystore when StrongBox refuses.
-   * StrongBox reports more than [StrongBoxUnavailableException]: some devices fail generation
+   * StrongBox reports more than
+   * [android.security.keystore.StrongBoxUnavailableException]: some devices fail generation
    * with a plain [ProviderException], so any provider failure falls back.
    */
   private fun generate(alias: String): SecretKey = try {

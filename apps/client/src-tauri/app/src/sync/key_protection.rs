@@ -101,7 +101,10 @@ pub(crate) fn identity_key_store(
 
 /// The platform key wrapper every key file of the process goes through. It records each alias
 /// [`key_wrap::open`] reports as lost, which is the only signal that starts a recovery: error
-/// text can carry messages from a remote hub, so it never decides that keys are lost.
+/// text can carry messages from a remote hub, so it never decides that keys are lost. An alias
+/// leaves the record once it seals or opens a key again or its only file is removed, so a loss
+/// already repaired (a replaced linking identity, a platform key the store generated again)
+/// never unlinks a device later. The health probe's alias is never recorded.
 pub(crate) struct KeyProtection {
     inner: Arc<dyn KeyWrapper>,
     lost: Mutex<BTreeSet<String>>,
@@ -140,8 +143,18 @@ impl KeyWrapper for KeyProtection {
 
     fn note_lost(&self, alias: &str) {
         self.inner.note_lost(alias);
+        if alias == PROBE_ALIAS {
+            return;
+        }
         if let Ok(mut lost) = self.lost.lock() {
             lost.insert(alias.to_string());
+        }
+    }
+
+    fn note_recovered(&self, alias: &str) {
+        self.inner.note_recovered(alias);
+        if let Ok(mut lost) = self.lost.lock() {
+            lost.remove(alias);
         }
     }
 }
@@ -207,18 +220,52 @@ fn key_store_is_healthy(wrapper: &dyn KeyWrapper) -> bool {
     healthy
 }
 
-/// Whether the key file stem `stem` holds a key of `vault_id`, sealed with its vault alias.
+/// Whether the key file stem `stem` holds a key of `vault_id`, sealed with its vault alias. A
+/// writer key stem is `writer-key-{vault}-{writer}` with a hexadecimal writer ID, so the part
+/// after the vault ID must be hexadecimal alone: the key of a vault whose ID extends `vault_id`
+/// with `-...` never matches. A vault ID the identifier rules refuse matches nothing.
 fn is_vault_key_file(stem: &str, vault_id: &str) -> bool {
-    ["device-key", "admin-key", "recovery-seed", "person-key"]
-        .iter()
-        .any(|kind| stem == format!("{kind}-{vault_id}"))
-        || stem.starts_with(&format!("writer-key-{vault_id}-"))
+    if ganbaru_handoff::protocol::validate_identifier("vault id", vault_id).is_err() {
+        return false;
+    }
+    let is_writer_key = stem
+        .strip_prefix(&format!("writer-key-{vault_id}-"))
+        .is_some_and(|writer| {
+            !writer.is_empty() && writer.bytes().all(|byte| byte.is_ascii_hexdigit())
+        });
+    is_writer_key
+        || ["device-key", "admin-key", "recovery-seed", "person-key"]
+            .iter()
+            .any(|kind| stem == format!("{kind}-{vault_id}"))
+}
+
+/// Whether a lost alias in `lost` held keys the device's links depend on: its own linking key,
+/// or the keys of a vault it is linked for. The keys of a vault no link uses go without
+/// unlinking.
+fn loses_link(
+    pairing: &PairingManager,
+    lost: &[String],
+    linking_alias: &str,
+    vault_prefix: &str,
+) -> Result<bool, String> {
+    for alias in lost {
+        if alias == linking_alias {
+            return Ok(true);
+        }
+        if let Some(vault_id) = alias.strip_prefix(vault_prefix)
+            && pairing.is_linked_for(vault_id)?
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 /// Recovers from the platform key aliases in `lost`, whose sealed key files can no longer be
 /// opened. Nothing happens unless a probe shows the key store working, so an unavailable store
 /// is retried later instead of read as a loss. A linked device unlinks durably before any file
-/// goes. Then each lost vault alias loses that vault's key files and its platform key, and a
+/// goes, but only when it lost its linking key or the keys of a vault it is linked for. Then
+/// each lost vault alias loses that vault's key files and its platform key, and a
 /// lost linking key of a device that was linked loses its file, cached copy, and platform key;
 /// an unlinked device replaces its linking identity on the next read instead. Key files of other
 /// vaults stay. An active handoff keeps the device linked and its keys in place until it
@@ -236,15 +283,15 @@ pub(crate) fn recover_after_key_loss(
         return Err("the key store failed a health check; keys are kept for a later pass".into());
     }
     let linked = pairing.has_links()?;
-    if linked {
+    let device_id = pairing.device_id()?;
+    let linking_alias = key_wrap::linking_key_alias(&device_id);
+    let vault_prefix = key_wrap::vault_keys_alias("");
+    if linked && loses_link(pairing, lost, &linking_alias, &vault_prefix)? {
         pairing
             .unlink_for(UnlinkReason::KeyProtectionLost)
             .map_err(|error| format!("unlink after losing protected keys: {error}"))?;
         eprintln!("key protection: unlinked because protected keys can no longer be opened");
     }
-    let device_id = pairing.device_id()?;
-    let linking_alias = key_wrap::linking_key_alias(&device_id);
-    let vault_prefix = key_wrap::vault_keys_alias("");
     for alias in lost {
         if *alias == linking_alias {
             if !linked {
@@ -566,8 +613,9 @@ mod tests {
             path
         };
         let person = seal("contacts", "vault-1", "person-key:vault-1");
-        let writer = seal("sync", "vault-1", "writer-key:vault-1:writer-1");
+        let writer = seal("sync", "vault-1", "writer-key:vault-1:0a1b");
         let other = seal("sync", "vault-12", "device-key:vault-12");
+        let extended = seal("sync", "vault-1-2", "writer-key:vault-1-2:0a1b");
         let lost = vec![
             key_wrap::vault_keys_alias("vault-1"),
             key_wrap::linking_key_alias("device-phone"),
@@ -578,6 +626,10 @@ mod tests {
         assert_eq!(managers.pairing().unlink_reason().expect("reason"), None);
         assert!(!person.exists() && !writer.exists());
         assert!(other.exists());
+        assert!(
+            extended.exists(),
+            "a vault ID that extends another matches none of its keys"
+        );
         assert!(!wrapper.has_key(&key_wrap::vault_keys_alias("vault-1")));
         assert!(wrapper.has_key(&key_wrap::vault_keys_alias("vault-12")));
         assert!(
@@ -631,5 +683,47 @@ mod tests {
         key_wrap::open(&protection, "alias-b", "reference", b"not an envelope").expect_err("raw");
         assert_eq!(protection.take_lost(), vec!["alias-a", "alias-b"]);
         assert!(protection.take_lost().is_empty());
+    }
+
+    #[test]
+    fn a_key_that_works_again_leaves_the_record_and_the_probe_is_never_recorded() {
+        let protection = KeyProtection::new(Arc::new(TestKeyWrapper::default()));
+        key_wrap::open(&protection, "alias-a", "reference", b"not an envelope").expect_err("raw");
+        key_wrap::open(&protection, PROBE_ALIAS, PROBE_REFERENCE, b"raw").expect_err("raw");
+        // The platform store generated the lost key again and sealed with it.
+        key_wrap::seal(&protection, "alias-a", "reference", b"private key").expect("seal");
+        assert!(protection.take_lost().is_empty());
+    }
+
+    #[test]
+    fn a_replaced_linking_identity_leaves_no_recorded_loss() {
+        let config = ConfigDirectory::new("replaced");
+        let wrapper = Arc::new(TestKeyWrapper::default());
+        let managers = ProcessManagers::with_key_wrapper(wrapper.clone());
+        managers
+            .load_pairing(&config.0, "device-phone".to_string())
+            .expect("load pairing");
+        let (_, original) = managers.pairing().identity().expect("identity");
+        wrapper
+            .forget(&key_wrap::linking_key_alias("device-phone"))
+            .expect("lose the linking key");
+        managers
+            .pairing()
+            .forget_cached_identity_key()
+            .expect("forget cached key");
+        let (_, replaced) = managers.pairing().identity().expect("replaced identity");
+        assert_ne!(replaced.certificate, original.certificate);
+        assert!(
+            managers.key_protection().take_lost().is_empty(),
+            "a relinked device must not read the replaced key as lost"
+        );
+    }
+
+    #[test]
+    fn vault_key_files_match_only_their_own_vault() {
+        assert!(is_vault_key_file("writer-key-vault-1-0a1b", "vault-1"));
+        assert!(!is_vault_key_file("writer-key-vault-1-2-0a1b", "vault-1"));
+        assert!(!is_vault_key_file("writer-key-vault-1-", "vault-1"));
+        assert!(!is_vault_key_file("device-key-vault/1", "vault/1"));
     }
 }

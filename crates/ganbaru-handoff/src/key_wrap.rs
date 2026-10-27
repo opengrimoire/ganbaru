@@ -69,6 +69,11 @@ pub trait KeyWrapper: Send + Sync {
     /// It is the only signal of a lost key: error text can carry remote messages, so callers
     /// never infer loss from it. The default ignores it.
     fn note_lost(&self, _alias: &str) {}
+    /// Told by [`seal`] and [`open`] when `alias` sealed or opened a key, and by a key store
+    /// that removed the only file `alias` sealed: an earlier [`Self::note_lost`] for `alias`
+    /// no longer stands, because its key works again or nothing lost under it remains. The
+    /// default ignores it.
+    fn note_recovered(&self, _alias: &str) {}
 }
 
 /// Name of the platform key that seals the sync and person keys of `vault_id`.
@@ -137,6 +142,7 @@ pub fn seal(
     envelope.extend_from_slice(&MAGIC);
     envelope.push(VERSION);
     envelope.extend_from_slice(&sealed);
+    wrapper.note_recovered(alias);
     Ok(envelope)
 }
 
@@ -177,6 +183,7 @@ pub fn open(
             "the key store returned a key of the wrong length",
         ));
     }
+    wrapper.note_recovered(alias);
     Ok(plaintext)
 }
 
@@ -363,8 +370,12 @@ impl crate::pairing::IdentityKeyStore for ProtectedIdentityKeyStore {
         )
     }
 
+    /// Removes the protected file of `device_id`, the only file its linking alias seals, so a
+    /// loss noted for that alias no longer stands.
     fn remove(&self, device_id: &str) -> Result<(), String> {
-        remove_key_file(&self.path(device_id))
+        remove_key_file(&self.path(device_id))?;
+        self.wrapper.note_recovered(&linking_key_alias(device_id));
+        Ok(())
     }
 }
 
@@ -383,6 +394,7 @@ pub struct TestKeyWrapper {
     keys: std::sync::Mutex<std::collections::HashMap<String, [u8; 32]>>,
     unavailable: std::sync::atomic::AtomicBool,
     noted_lost: std::sync::Mutex<Vec<String>>,
+    noted_recovered: std::sync::Mutex<Vec<String>>,
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -396,6 +408,14 @@ impl TestKeyWrapper {
     /// The aliases [`KeyWrapper::note_lost`] reported, oldest first.
     pub fn noted_lost(&self) -> Vec<String> {
         self.noted_lost
+            .lock()
+            .map(|noted| noted.clone())
+            .unwrap_or_default()
+    }
+
+    /// The aliases [`KeyWrapper::note_recovered`] reported, oldest first.
+    pub fn noted_recovered(&self) -> Vec<String> {
+        self.noted_recovered
             .lock()
             .map(|noted| noted.clone())
             .unwrap_or_default()
@@ -503,6 +523,12 @@ impl KeyWrapper for TestKeyWrapper {
             noted.push(alias.to_string());
         }
     }
+
+    fn note_recovered(&self, alias: &str) {
+        if let Ok(mut noted) = self.noted_recovered.lock() {
+            noted.push(alias.to_string());
+        }
+    }
 }
 
 #[cfg(test)]
@@ -588,6 +614,29 @@ mod tests {
         wrapper.forget(ALIAS).expect("forget");
         open(&wrapper, ALIAS, REFERENCE, &envelope).expect_err("forgotten");
         assert_eq!(wrapper.noted_lost(), vec![ALIAS.to_string()]);
+    }
+
+    #[test]
+    fn a_working_key_or_a_removed_linking_file_reports_recovery_and_failures_do_not() {
+        let wrapper = TestKeyWrapper::default();
+        let envelope = seal(&wrapper, ALIAS, REFERENCE, b"secret key").expect("seal");
+        open(&wrapper, ALIAS, REFERENCE, &envelope).expect("open");
+        assert_eq!(wrapper.noted_recovered(), vec![ALIAS, ALIAS]);
+        wrapper.set_unavailable(true);
+        open(&wrapper, ALIAS, REFERENCE, &envelope).expect_err("offline");
+        seal(&wrapper, ALIAS, REFERENCE, b"secret key").expect_err("offline");
+        wrapper.set_unavailable(false);
+        open(&wrapper, ALIAS, REFERENCE, b"not an envelope").expect_err("raw");
+        assert_eq!(wrapper.noted_recovered().len(), 2);
+
+        let shared = std::sync::Arc::new(TestKeyWrapper::default());
+        let store = ProtectedIdentityKeyStore::new(directory("recovered"), shared.clone());
+        crate::pairing::IdentityKeyStore::remove(&store, "device-phone").expect("remove");
+        assert_eq!(
+            shared.noted_recovered(),
+            vec![linking_key_alias("device-phone")]
+        );
+        let _ = std::fs::remove_dir_all(store.directory.clone());
     }
 
     #[test]

@@ -349,6 +349,12 @@ pub(crate) async fn insert_database_copy(
                 .bind(block.has_children).bind(block.block_type).bind(payload.to_string()).bind(block.plain_text).bind(block.ordinal)
                 .execute(&mut **tx).await.map_err(|e| format!("copy template body: {e}"))?;
         }
+        crate::templates::ensure_template_content_size_tx(
+            tx,
+            crate::templates::TemplateKind::DataSource,
+            id,
+        )
+        .await?;
     }
     Ok(())
 }

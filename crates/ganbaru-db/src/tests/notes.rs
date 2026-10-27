@@ -337,8 +337,8 @@ fn schema_creates_notes_comment_reactions_and_notification_preferences() {
 
         let insert_reaction = |emoji: &'static str, created_by: &'static str| {
             sqlx::query(
-                "INSERT INTO notes_comment_reactions (comment_id, created_by, display_name, emoji)
-                 VALUES ('comment-a', ?, '{\"type\":\"user\",\"resolved_name\":\"You\"}', ?)",
+                "INSERT INTO notes_comment_reactions (comment_id, created_by, display_name, emoji, sync_key)
+                 VALUES ('comment-a', ?1, '{\"type\":\"user\",\"resolved_name\":\"You\"}', ?2, 'reaction:' || ?1 || ':' || ?2)",
             )
             .bind(created_by)
             .bind(emoji)

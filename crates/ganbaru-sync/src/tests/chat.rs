@@ -4,7 +4,10 @@
 //! more restrictive one whatever order the replicas exchange in. Conversations, channels,
 //! memberships, AI channel access, and working folder grants follow them: a concurrent removal or
 //! revocation wins over a concurrent widening, and a later re-add that saw the removal wins over
-//! it. Device-local Chat rows stay on their device.
+//! it. The timeline follows: messages, revisions, reply threads, and read cursors arrive whole,
+//! concurrent posts that take one order key read in one order everywhere, read cursors only move
+//! forward, and the Chat hook is handed applied messages and revisions to refresh search. Device
+//! local Chat rows stay on their device.
 
 use std::sync::{Arc, Mutex};
 
@@ -21,8 +24,10 @@ use crate::error::failpoints;
 use crate::hooks::{ChangeSink, HookFuture, MaterializeHook};
 use crate::manifest::TableSpec;
 use crate::manifest::vault::chat::{
-    CHANNEL_MEMBERSHIP_KEY_PREFIX, CHANNELS_TABLE, CONVERSATIONS_TABLE, FOLDER_GRANT_KEY_PREFIX,
-    MEMBERSHIP_KEY_PREFIX, PARTICIPANTS_TABLE,
+    CHANNEL_MEMBERSHIP_KEY_PREFIX, CHANNELS_TABLE, CONVERSATION_CURSOR_KEY_PREFIX,
+    CONVERSATIONS_TABLE, FOLDER_GRANT_KEY_PREFIX, MEMBERSHIP_KEY_PREFIX, MESSAGES_TABLE,
+    PARTICIPANTS_TABLE, REPLY_CURSOR_KEY_PREFIX, REPLY_CURSORS_TABLE, REPLY_THREAD_KEY_PREFIX,
+    REPLY_THREADS_TABLE, REVISIONS_TABLE,
 };
 use crate::{Engine, SyncError, SyncResult};
 
@@ -1194,5 +1199,397 @@ fn chat_hook_sees_conversations_an_applied_group_delete_cascades_away() {
             );
         }
         assert_eq!(*seen.lock().unwrap(), vec![CONVERSATION.to_owned()]);
+    });
+}
+
+/// Root message of the reply thread in the timeline tests.
+const ROOT: &str = "item:root";
+
+/// The reply thread under [`ROOT`].
+fn thread() -> String {
+    key(REPLY_THREAD_KEY_PREFIX, &[ROOT])
+}
+
+/// SQL posting message `item` by [`OWNER`] at `order_key` in [`CONVERSATION`], in `thread` when
+/// given, with its first revision `{item}:0` holding `markdown` as the current one.
+fn message_sql(item: &str, thread: Option<&str>, order_key: &str, markdown: &str) -> String {
+    format!(
+        "INSERT INTO chat_conversation_items
+            (id, conversation_id, reply_thread_id, item_kind, order_key, created_at)
+         VALUES ({item}, {conversation}, {thread}, 'message', {order_key}, {created});
+         INSERT INTO chat_communication_messages
+            (item_id, author_participant_id, created_at, author_label_snapshot)
+         VALUES ({item}, {owner}, {created}, 'Owner');
+         INSERT INTO chat_communication_message_revisions
+            (id, message_item_id, normalized_markdown, created_at)
+         VALUES ({revision}, {item}, {markdown}, {created});
+         UPDATE chat_communication_messages SET current_revision_id = {revision}
+         WHERE item_id = {item};",
+        item = quoted(item),
+        conversation = quoted(CONVERSATION),
+        thread = optional(thread),
+        order_key = quoted(order_key),
+        owner = quoted(OWNER),
+        created = quoted(CREATED),
+        revision = quoted(&format!("{item}:0")),
+        markdown = quoted(markdown),
+    )
+}
+
+/// SQL editing `item` to revision `revision` holding `markdown`, created at `created_at`.
+fn edit_sql(item: &str, revision: &str, markdown: &str, created_at: &str) -> String {
+    format!(
+        "INSERT INTO chat_communication_message_revisions
+            (id, message_item_id, normalized_markdown, created_at)
+         VALUES ({revision}, {item}, {markdown}, {created_at});
+         UPDATE chat_communication_messages
+         SET current_revision_id = {revision}, edited_at = {created_at}
+         WHERE item_id = {item};",
+        item = quoted(item),
+        revision = quoted(revision),
+        markdown = quoted(markdown),
+        created_at = quoted(created_at),
+    )
+}
+
+/// SQL opening the reply thread under [`ROOT`], which must exist.
+fn thread_sql() -> String {
+    format!(
+        "INSERT INTO chat_reply_threads
+            (id, conversation_id, root_item_id, last_activity_at, created_at, updated_at)
+         VALUES ({thread}, {conversation}, {root}, {created}, {created}, {created});",
+        thread = quoted(&thread()),
+        conversation = quoted(CONVERSATION),
+        root = quoted(ROOT),
+        created = quoted(CREATED),
+    )
+}
+
+/// SQL moving [`OWNER`]'s read cursor of [`CONVERSATION`] to `(order_key, item)` when that is
+/// later than where it is, as the app writes it.
+fn read_sql(order_key: &str, item: &str, updated_at: &str) -> String {
+    format!(
+        "INSERT INTO chat_conversation_read_cursors
+            (conversation_id, participant_id, sync_key, last_read_order_key, last_read_item_id,
+             updated_at)
+         VALUES ({conversation}, {owner}, {sync_key}, {order_key}, {item}, {updated_at})
+         ON CONFLICT (conversation_id, participant_id) DO UPDATE SET
+            last_read_order_key = excluded.last_read_order_key,
+            last_read_item_id = excluded.last_read_item_id,
+            updated_at = excluded.updated_at
+         WHERE (excluded.last_read_order_key, excluded.last_read_item_id)
+             > (last_read_order_key, last_read_item_id);",
+        conversation = quoted(CONVERSATION),
+        owner = quoted(OWNER),
+        sync_key = quoted(&key(
+            CONVERSATION_CURSOR_KEY_PREFIX,
+            &[CONVERSATION, OWNER]
+        )),
+        order_key = quoted(order_key),
+        item = quoted(item),
+        updated_at = quoted(updated_at),
+    )
+}
+
+/// The ids of the root timeline of [`CONVERSATION`] in reading order.
+async fn root_order(replica: &mut Replica) -> String {
+    replica
+        .scalar_text(
+            "SELECT group_concat(id, ' ') FROM (
+                SELECT id FROM chat_conversation_items
+                WHERE conversation_id = 'conversation:design' AND reply_thread_id IS NULL
+                ORDER BY order_key, id)",
+        )
+        .await
+        .unwrap_or_default()
+}
+
+/// [`OWNER`]'s read position in [`CONVERSATION`] as `order_key item`.
+async fn read_position(replica: &mut Replica) -> String {
+    replica
+        .scalar_text(
+            "SELECT last_read_order_key || ' ' || last_read_item_id
+             FROM chat_conversation_read_cursors
+             WHERE participant_id = 'participant:local-owner'",
+        )
+        .await
+        .expect("the cursor arrived")
+}
+
+/// Captured timeline rows as `table_id row_key`.
+async fn timeline_captures(replica: &mut Replica) -> Vec<String> {
+    sqlx::query_scalar(
+        "SELECT table_id || ' ' || row_key FROM sync_capture
+         WHERE table_id BETWEEN ? AND ? ORDER BY table_id, row_key",
+    )
+    .bind(i64::from(REPLY_THREADS_TABLE.0))
+    .bind(i64::from(REPLY_CURSORS_TABLE.0))
+    .fetch_all(&mut replica.conn)
+    .await
+    .unwrap()
+}
+
+/// Replicas sharing the identity and conversation rows.
+async fn conversation_replicas(count: usize) -> Vec<Replica> {
+    let mut replicas = replicas(count).await;
+    replicas[0]
+        .exec(&format!("{}{}", identity_sql(), conversation_sql()))
+        .await;
+    converge(&mut replicas).await;
+    replicas
+}
+
+#[test]
+fn chat_timeline_rows_round_trip_with_their_derived_keys() {
+    block_on(async {
+        let mut replicas = conversation_replicas(2).await;
+        replicas[0]
+            .exec(&format!(
+                "{}{}{}{}",
+                message_sql(ROOT, None, "c001", "Root"),
+                thread_sql(),
+                message_sql("item:reply", Some(&thread()), "c001", "Reply"),
+                edit_sql(ROOT, "item:root:1", "Root edited", &at(1, 0)),
+            ))
+            .await;
+        replicas[0]
+            .exec(&format!(
+                "{}INSERT INTO chat_reply_thread_read_cursors
+                    (reply_thread_id, participant_id, sync_key, last_read_order_key,
+                     last_read_item_id, updated_at)
+                 VALUES ({thread}, {owner}, {sync_key}, 'c001', 'item:reply', {created});",
+                read_sql("c001", ROOT, CREATED),
+                thread = quoted(&thread()),
+                owner = quoted(OWNER),
+                sync_key = quoted(&key(REPLY_CURSOR_KEY_PREFIX, &[&thread(), OWNER])),
+                created = quoted(CREATED),
+            ))
+            .await;
+        converge(&mut replicas).await;
+        assert_converged(&mut replicas).await;
+
+        let reader = &mut replicas[1];
+        assert_eq!(
+            reader
+                .scalar_text(
+                    "SELECT item.order_key || ' ' || revision.normalized_markdown || ' '
+                            || revision.revision || ' ' || (message.edited_at IS NOT NULL)
+                     FROM chat_conversation_items item
+                     JOIN chat_communication_messages message ON message.item_id = item.id
+                     JOIN chat_communication_message_revisions_numbered revision
+                       ON revision.id = message.current_revision_id
+                     WHERE item.id = 'item:root'",
+                )
+                .await
+                .as_deref(),
+            Some("c001 Root edited 2 1")
+        );
+        assert_eq!(
+            reader
+                .scalar_text(
+                    "SELECT thread.root_item_id || ' ' || item.id
+                     FROM chat_reply_threads thread
+                     JOIN chat_conversation_items item ON item.reply_thread_id = thread.id",
+                )
+                .await
+                .as_deref(),
+            Some("item:root item:reply")
+        );
+        assert_eq!(read_position(reader).await, "c001 item:root");
+        assert_eq!(
+            reader
+                .scalar_text(
+                    "SELECT sync_key || ' ' || last_read_order_key || ' ' || last_read_item_id
+                     FROM chat_reply_thread_read_cursors",
+                )
+                .await,
+            Some(format!(
+                "{} c001 item:reply",
+                key(REPLY_CURSOR_KEY_PREFIX, &[&thread(), OWNER])
+            ))
+        );
+    });
+}
+
+#[test]
+fn chat_a_crash_while_sealing_or_applying_timeline_rows_leaves_nothing_partial() {
+    block_on(async {
+        let mut replicas = conversation_replicas(2).await;
+        replicas[0]
+            .exec(&format!(
+                "{}{}{}",
+                message_sql(ROOT, None, "c001", "Root"),
+                thread_sql(),
+                message_sql("item:reply", Some(&thread()), "c001", "Reply"),
+            ))
+            .await;
+        // Two items, two messages, two revisions, and the thread.
+        assert_eq!(timeline_captures(&mut replicas[0]).await.len(), 7);
+        for name in ["seal.reserve", "seal.before_commit"] {
+            let report = after_rollback(&mut replicas[0], name, async |r: &mut Replica| {
+                r.seal().await
+            })
+            .await;
+            assert_eq!(report.sealed_ops, 1, "{name}: the rows seal together");
+            assert!(timeline_captures(&mut replicas[0]).await.is_empty());
+            if name == "seal.reserve" {
+                replicas[0]
+                    .exec(&edit_sql(ROOT, "item:root:1", "Root edited", &at(1, 0)))
+                    .await;
+            }
+        }
+
+        let (author, rest) = replicas.split_at_mut(1);
+        let reader = &mut rest[0];
+        let known = reader.stored_vector().await;
+        let ops = author[0].ops_since(&known).await;
+        reader.receive(&ops).await;
+        assert_eq!(
+            reader
+                .count("SELECT count(*) FROM chat_conversation_items")
+                .await,
+            0
+        );
+        after_rollback(reader, "apply.before_commit", async |r: &mut Replica| {
+            r.apply_all().await
+        })
+        .await;
+        assert_eq!(root_order(reader).await, "item:root");
+        assert_converged(&mut replicas).await;
+    });
+}
+
+#[test]
+fn chat_concurrent_posts_with_one_order_key_read_in_one_order_everywhere() {
+    block_on(async {
+        let mut replicas = conversation_replicas(3).await;
+        replicas[0]
+            .exec(&message_sql("item:first", None, "c001", "First"))
+            .await;
+        converge(&mut replicas).await;
+        // Each replica appends after the last key it sees, so all three take the same key.
+        for (index, item) in ["item:c", "item:a", "item:b"].into_iter().enumerate() {
+            replicas[index]
+                .exec(&message_sql(item, None, "c002", item))
+                .await;
+        }
+        converge(&mut replicas).await;
+        assert_converged(&mut replicas).await;
+        for replica in &mut replicas {
+            assert_eq!(
+                root_order(replica).await,
+                "item:first item:a item:b item:c"
+            );
+        }
+    });
+}
+
+#[test]
+fn chat_read_cursors_only_move_forward_and_unchanged_reads_capture_nothing() {
+    block_on(async {
+        let mut replicas = conversation_replicas(2).await;
+        replicas[0]
+            .exec(&format!(
+                "{}{}{}",
+                message_sql("item:a", None, "c001", "A"),
+                message_sql("item:b", None, "c001", "B"),
+                read_sql("", "", CREATED),
+            ))
+            .await;
+        converge(&mut replicas).await;
+
+        // A later read on one replica and an earlier one on the other keep the later.
+        replicas[0].exec(&read_sql("c001", "item:b", &at(1, 0))).await;
+        replicas[1]
+            .exec(
+                "UPDATE chat_conversation_read_cursors
+                 SET last_read_order_key = 'c001', last_read_item_id = 'item:a',
+                     updated_at = '2026-10-24T09:02:00.000Z'",
+            )
+            .await;
+        converge(&mut replicas).await;
+        assert_converged(&mut replicas).await;
+        for replica in &mut replicas {
+            assert_eq!(read_position(replica).await, "c001 item:b");
+        }
+
+        // Reading the same or an earlier item again rewrites nothing.
+        let replica = &mut replicas[0];
+        replica.exec(&read_sql("c001", "item:b", &at(3, 0))).await;
+        replica.exec(&read_sql("c001", "item:a", &at(4, 0))).await;
+        assert!(timeline_captures(replica).await.is_empty());
+        assert_eq!(
+            replica
+                .scalar_text("SELECT updated_at FROM chat_conversation_read_cursors")
+                .await,
+            Some(at(2, 0))
+        );
+    });
+}
+
+/// Records the tables and keys an applied materialization handed the hook.
+#[derive(Clone, Default)]
+struct RecordingHook(Arc<Mutex<Vec<String>>>);
+
+impl MaterializeHook for RecordingHook {
+    fn after_materialize<'a>(
+        &'a self,
+        _conn: &'a mut SqliteConnection,
+        table: &'static TableSpec,
+        changed_keys: &'a [String],
+        _changes: &'a mut dyn ChangeSink,
+    ) -> HookFuture<'a> {
+        Box::pin(async move {
+            let mut seen = self.0.lock().unwrap();
+            seen.extend(changed_keys.iter().map(|key| format!("{} {key}", table.name)));
+            Ok(())
+        })
+    }
+}
+
+/// Search rows follow local writes through triggers, which stay quiet while applying, so the
+/// receiver's Chat hook is handed the applied messages and revisions to rebuild them.
+#[test]
+fn chat_hook_sees_applied_messages_and_revisions_for_search() {
+    block_on(async {
+        let mut replicas = conversation_replicas(2).await;
+        let hook = RecordingHook::default();
+        let seen = Arc::clone(&hook.0);
+        replicas[1].engine = Engine::with(
+            &TEST_MANIFEST,
+            test_adapters(),
+            super::notes::with_notes_hooks(crate::domains::vault_hooks())
+                .with(LISTS_TABLE, Box::new(FixtureHook))
+                .with(OVERRIDES_TABLE, Box::new(OverrideHook::default()))
+                .with(MESSAGES_TABLE, Box::new(hook.clone()))
+                .with(REVISIONS_TABLE, Box::new(hook)),
+        )
+        .unwrap();
+        replicas[0]
+            .exec(&message_sql(ROOT, None, "c001", "Searchable"))
+            .await;
+        assert_eq!(
+            replicas[0]
+                .count("SELECT count(*) FROM chat_communication_search_fts")
+                .await,
+            1
+        );
+        converge(&mut replicas).await;
+
+        let mut keys = seen.lock().unwrap().clone();
+        keys.sort();
+        assert_eq!(
+            keys,
+            vec![
+                "chat_communication_message_revisions item:root:0".to_owned(),
+                "chat_communication_messages item:root".to_owned(),
+            ]
+        );
+        assert_eq!(
+            replicas[1]
+                .count("SELECT count(*) FROM chat_communication_search_fts")
+                .await,
+            0
+        );
     });
 }

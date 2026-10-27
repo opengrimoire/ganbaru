@@ -1656,7 +1656,7 @@ fn manifests_are_well_formed() {
             255, 127, 65535, 31, 7, 31, 255, 127, 31, 8191, 31, 15, 7, 31, 15, 15, 1, 15, 15, 31,
             31, 15, 63, 134217727, 65535, 3, 15, 63, 15, 7, 1, 63, 3, 7, 31, 31, 31, 7, 15, 1, 15,
             1023, 127, 255, 255, 31, 7, 31, 127, 7, 7, 63, 31, 15, 31, 1, 31, 1, 15, 31, 31, 15,
-            15
+            15, 31, 1, 15, 1, 1, 1, 1, 1, 1, 1, 15, 15
         ]
     );
 }
@@ -2070,6 +2070,7 @@ const RECORDED_MANIFESTS: &[(u16, &str)] = &[
     (14, include_str!("fixtures/vault_manifest_v14.txt")),
     (15, include_str!("fixtures/vault_manifest_v15.txt")),
     (16, include_str!("fixtures/vault_manifest_v16.txt")),
+    (17, include_str!("fixtures/vault_manifest_v17.txt")),
 ];
 #[test]
 fn vault_manifest_changes_only_with_a_version_bump() {

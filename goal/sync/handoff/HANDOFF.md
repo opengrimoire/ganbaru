@@ -47,7 +47,7 @@ Out of scope: the multi-person sharing goal. Its plans (`goal/sharing/`) are not
 Updated at the end of the local session on the mini PC (2026-10-26). Milestone 8 step 4 (merge 833a93da), engine follow-up 5 (merge 74c19103), and milestone 11 step 8 (merge e4b65518) have landed, after the cloud session's three branches. Landed topic branches were deleted on origin.
 
 - `VAULT_MANIFEST_VERSION` is 16, handoff `PROTOCOL_VERSION` is 14, the last migration is `20261025212528_notes_databases_replication.sql`.
-- Done in source: milestones 2 to 7, milestone 8 steps 1 to 4, milestone 9 steps 1 to 4, milestone 10 steps 1 to 4, milestone 11 steps 1 to 6 and 8, engine follow-ups 1 to 5.
+- Done in source: milestones 2 to 7, milestone 8 steps 1 to 4, milestone 9 steps 1 to 4, milestone 10 steps 1 to 4, milestone 11 steps 1 to 8 (step 7 merge c35c5dc0, 2026-10-27), engine follow-ups 1 to 5.
 - Remaining: milestone 8 steps 5 to 8, milestone 9 steps 5 to 10 (docs part of 10), milestone 10 steps 5 to 7, milestone 11 steps 7, 9, and 10, milestone 12 steps 1 to 11, milestone closes, a clean `pnpm -w run validate`, and the final report.
 
 ## In-flight branches

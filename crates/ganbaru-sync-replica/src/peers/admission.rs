@@ -6,6 +6,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+#[cfg(desktop)]
 use ganbaru_handoff::protocol::ControlMessage;
 use ganbaru_sync::AuthorizationView;
 
@@ -124,7 +125,9 @@ impl MemberAdmission {
     }
 
     /// Whether a connection whose certificate has `fingerprint` may have `request` answered:
-    /// a sync request for this vault that names the device the certificate enrolled.
+    /// a sync request for this vault that names the device the certificate enrolled. Only
+    /// desktops run a member listener.
+    #[cfg(desktop)]
     pub fn request(
         &self,
         fingerprint: &str,

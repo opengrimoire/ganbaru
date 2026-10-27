@@ -44,10 +44,13 @@ pub(crate) struct MemberServices {
     pub lan: LanAdmission,
 }
 
+/// A TLS configuration and the admitted certificate fingerprints it was built for.
+type CachedConfig = Option<(BTreeSet<String>, Arc<rustls::ServerConfig>)>;
+
 /// TLS configuration built once per admitted certificate set, so connections reuse it until
 /// the log or the quarantine changes the set.
 #[derive(Clone, Default)]
-struct MemberConfigCache(Arc<Mutex<Option<(BTreeSet<String>, Arc<rustls::ServerConfig>)>>>);
+struct MemberConfigCache(Arc<Mutex<CachedConfig>>);
 
 impl MemberConfigCache {
     async fn current(
@@ -72,13 +75,7 @@ impl MemberConfigCache {
         Ok(config)
     }
 
-    #[allow(clippy::type_complexity)]
-    fn lock(
-        &self,
-    ) -> Result<
-        std::sync::MutexGuard<'_, Option<(BTreeSet<String>, Arc<rustls::ServerConfig>)>>,
-        String,
-    > {
+    fn lock(&self) -> Result<std::sync::MutexGuard<'_, CachedConfig>, String> {
         self.0
             .lock()
             .map_err(|_| "member listener TLS configuration lock is unavailable".to_string())

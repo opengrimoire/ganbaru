@@ -1,18 +1,27 @@
 //! LAN peer exchange glue for the active vault: admission of member listeners from the selected
 //! log, and the device-local peer book of member endpoints that hubs report and dials use.
 
+#[cfg(desktop)]
 use super::host::SyncHost;
 use super::service::blocking;
 use super::transport::MemberTransport;
 use crate::vault::handoff::pairing::PairingManager;
-use ganbaru_handoff::protocol::{MAX_MEMBER_ENDPOINTS, MemberEndpoint};
-use ganbaru_sync::{AuthorizationView, Engine, SpaceContext, local};
+#[cfg(desktop)]
+use ganbaru_handoff::protocol::MAX_MEMBER_ENDPOINTS;
+use ganbaru_handoff::protocol::MemberEndpoint;
+#[cfg(desktop)]
+use ganbaru_sync::local;
+use ganbaru_sync::{AuthorizationView, Engine, SpaceContext};
 use ganbaru_sync_contracts::{DeviceKind, WriterId};
 use ganbaru_sync_replica::client::{ClientSession, Exchange, PeerIds};
-use ganbaru_sync_replica::peers::admission::{MemberAdmission, fingerprint_hex};
+#[cfg(desktop)]
+use ganbaru_sync_replica::peers::admission::MemberAdmission;
+use ganbaru_sync_replica::peers::admission::fingerprint_hex;
 use ganbaru_sync_replica::peers::book::{PeerBook, PeerEndpoints};
 use ganbaru_sync_replica::peers::plan::{PlanInput, PlannedPeer, plan_pass};
-use ganbaru_sync_replica::quarantine::{PullSkips, Quarantine};
+use ganbaru_sync_replica::quarantine::PullSkips;
+#[cfg(desktop)]
+use ganbaru_sync_replica::quarantine::Quarantine;
 use sqlx::SqlitePool;
 use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
@@ -58,6 +67,7 @@ pub(super) async fn record_reported_peers(
 
 /// The selected authorization state of the active vault, or `None` while sync does not run
 /// there or the space is not known yet.
+#[cfg(desktop)]
 pub(super) async fn selected_authorization<H: SyncHost>(
     host: &H,
 ) -> Result<Option<(String, AuthorizationView)>, String> {
@@ -101,6 +111,7 @@ pub(super) fn live_members(
 
 /// Admission of the active vault's member listener: the selected log and this installation's
 /// quarantine. `None` while sync does not run there.
+#[cfg(desktop)]
 pub(crate) async fn member_admission<H: SyncHost>(
     host: &H,
 ) -> Result<Option<MemberAdmission>, String> {
@@ -142,6 +153,7 @@ pub(super) fn update_peer_book(
 }
 
 /// The peer book of `vault_id`, empty when it cannot be read.
+#[cfg(desktop)]
 pub(crate) fn read_peer_book<H: SyncHost>(host: &H, vault_id: &str) -> PeerEndpoints {
     host.sync_files(vault_id)
         .and_then(|files| PeerBook::load(&files.peers_path()))
@@ -151,6 +163,7 @@ pub(crate) fn read_peer_book<H: SyncHost>(host: &H, vault_id: &str) -> PeerEndpo
 
 /// What a hub reports as member endpoints: its own listener endpoints first, then the peer
 /// book's newest entries for other devices, at most [`MAX_MEMBER_ENDPOINTS`].
+#[cfg(desktop)]
 pub(crate) fn reported_members(
     own_device_id: &str,
     own: Vec<MemberEndpoint>,

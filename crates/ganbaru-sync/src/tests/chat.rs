@@ -278,7 +278,7 @@ fn chat_identity_rows_round_trip_with_every_replicated_value() {
 
 /// Arms `name`, checks that `call` fails there leaving `replica` exactly as it was, then runs
 /// the call again disarmed.
-async fn after_rollback<T: std::fmt::Debug>(
+pub(super) async fn after_rollback<T: std::fmt::Debug>(
     replica: &mut Replica,
     name: &'static str,
     mut call: impl AsyncFnMut(&mut Replica) -> SyncResult<T>,

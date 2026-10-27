@@ -985,6 +985,7 @@ impl ServiceState {
             }
             Err(error) => {
                 eprintln!("sync: {error}");
+                recover_if_key_protection_lost(host).await;
                 view.state = SyncState::Error;
                 view.last_error = Some(error);
                 Next::Retry
@@ -2664,6 +2665,39 @@ pub(crate) fn enrollment_sealer<R: Runtime>(
 /// Device-local sync files of a vault.
 pub(crate) fn sync_files<H: SyncHost>(host: &H, vault_id: &str) -> Result<SyncFiles, String> {
     host.sync_files(vault_id)
+}
+
+/// Recovers after a failed pass when opening a sealed key file reported its platform key lost,
+/// so the device enrolls again with fresh keys instead of retrying a key it cannot recover; see
+/// [`super::key_protection::recover_after_key_loss`]. Only the losses the key wrapper recorded
+/// count, never the pass error, whose text can come from a remote hub. A host without file keys
+/// is left as it is.
+async fn recover_if_key_protection_lost<H: SyncHost>(host: &H) {
+    let Some(protection) = host.key_protection() else {
+        return;
+    };
+    let lost = protection.take_lost();
+    if lost.is_empty() {
+        return;
+    }
+    let pairing = host.pairing();
+    let result = match host.config_dir() {
+        Ok(config_dir) => {
+            blocking(move || {
+                super::key_protection::recover_after_key_loss(
+                    &config_dir,
+                    &pairing,
+                    protection.as_ref(),
+                    &lost,
+                )
+            })
+            .await
+        }
+        Err(error) => Err(error),
+    };
+    if let Err(error) = result {
+        eprintln!("sync: recover after losing protected keys: {error}");
+    }
 }
 
 /// Owned names of engine-reported domain tables.

@@ -2365,6 +2365,10 @@ fn recovery_root_tables_follow_cascades_and_leave_out_derived_keys() {
             crate::manifest::vault::notes::DATA_SOURCES_TABLE,
             crate::manifest::vault::notes::DATA_SOURCE_TEMPLATES_TABLE,
             crate::manifest::vault::notes::PAGE_TEMPLATES_TABLE,
+            // Threads and comments carry recoverable status and bodies, and root the offers of
+            // the anchors and derived-key reactions that cascade from them.
+            crate::manifest::vault::notes::THREADS_TABLE,
+            crate::manifest::vault::notes::COMMENTS_TABLE,
             // Participants and teammates carry recoverable names and roles.
             crate::manifest::vault::chat::PARTICIPANTS_TABLE,
             crate::manifest::vault::chat::TEAMMATES_TABLE,

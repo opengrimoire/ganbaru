@@ -54,6 +54,11 @@ class MobileSyncPlugin(private val activity: Activity) : Plugin(activity) {
 
   private var networkCallback: ConnectivityManager.NetworkCallback? = null
 
+  init {
+    // Rust reads sealed key files soon after startup, so the Keystore bridge registers first.
+    SyncNative.ensureLoaded()
+  }
+
   override fun load(webView: WebView) {
     val connectivity = context.getSystemService(ConnectivityManager::class.java) ?: return
     val callback = object : ConnectivityManager.NetworkCallback() {

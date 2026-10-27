@@ -15,10 +15,16 @@
 //! again. A row page cascades from its data source. Template blocks are owned rows of their
 //! template's content group (ids 301 and 303 stay reserved for them).
 //!
+//! Comment threads, their inline anchors, comments, reactions, and suggestions replicate. The
+//! page columns of threads, anchors, and suggestions are hook columns derived from the parent
+//! page or block. A resolved status, a deletion, and an accepted or rejected suggestion are
+//! coupled states the adapter ranks, so concurrent decisions settle the same way everywhere. A
+//! reaction is keyed by the derived key of its comment, author, and emoji with an existence
+//! register, so toggling it again adds the same row back.
+//!
 //! Search, link, backlink, asset reference, and rollup indexes and their state rows are derived.
 //! Undo state, edit receipts, read and mute state, notification settings and notifications, view
-//! state, and every history table stay on the device. Comments and suggestions are not converted
-//! yet. Ids 304 to 351 are reserved.
+//! state, and every history table stay on the device. Ids 308 and 310 to 351 are reserved.
 
 use ganbaru_sync_contracts::{GroupId, TableId};
 
@@ -68,6 +74,16 @@ pub const VIEWS_TABLE: TableId = TableId(299);
 pub const PAGE_TEMPLATES_TABLE: TableId = TableId(300);
 /// `notes_data_source_templates`.
 pub const DATA_SOURCE_TEMPLATES_TABLE: TableId = TableId(302);
+/// `notes_comment_threads`.
+pub const THREADS_TABLE: TableId = TableId(304);
+/// `notes_comment_thread_anchors`.
+pub const ANCHORS_TABLE: TableId = TableId(305);
+/// `notes_comments`.
+pub const COMMENTS_TABLE: TableId = TableId(306);
+/// `notes_suggestions`.
+pub const SUGGESTIONS_TABLE: TableId = TableId(307);
+/// `notes_comment_reactions`.
+pub const REACTIONS_TABLE: TableId = TableId(309);
 
 /// Owned `notes_page_template_blocks` of a page template's content (id 301 is reserved for it).
 pub const PAGE_TEMPLATE_BLOCKS_OWNED: &str = "notes_page_template_blocks";
@@ -83,6 +99,15 @@ pub const OPTION_KEY_PREFIX: &str = "notes-property-option";
 pub const VALUE_KEY_PREFIX: &str = "notes-property-value";
 /// Derived key prefix of `notes_relation_edges`.
 pub const RELATION_EDGE_KEY_PREFIX: &str = "notes-relation-edge";
+/// Derived key prefix of `notes_comment_reactions`.
+pub const REACTION_KEY_PREFIX: &str = "notes-comment-reaction";
+
+/// Greatest characters of an anchored or suggested text span, as Notes checks it.
+pub const MAX_SPAN_CHARS: usize = 2_000;
+/// Greatest characters of the context kept before or after a span, as Notes checks it.
+pub const MAX_CONTEXT_CHARS: usize = 120;
+/// Greatest characters of a reaction emoji, as Notes checks it.
+pub const MAX_EMOJI_CHARS: usize = 16;
 
 /// Greatest number of blocks one template holds; template writes refuse more, so the smallest
 /// encoded blocks still fit one blob field.
@@ -325,6 +350,76 @@ pub mod data_source_template_group {
     pub const CONTENT: GroupId = group_id(3);
     /// `last_edited_time`.
     pub const UPDATED: GroupId = group_id(4);
+}
+
+/// Comment thread field groups.
+pub mod thread_group {
+    use super::{GroupId, group_id};
+
+    /// `parent_type`, `parent_page_id`, `parent_block_id`, and `created_time`, fixed at
+    /// creation.
+    pub const CREATED: GroupId = group_id(0);
+    /// Import source identity.
+    pub const ORIGIN: GroupId = group_id(1);
+    /// `status`, `resolved_at`, and `resolved_by`.
+    pub const STATUS: GroupId = group_id(2);
+    /// `last_edited_time`.
+    pub const UPDATED: GroupId = group_id(3);
+}
+
+/// Comment thread anchor field groups.
+pub mod anchor_group {
+    use super::{GroupId, group_id};
+
+    /// `created_time`.
+    pub const CREATED: GroupId = group_id(0);
+    /// `block_id`.
+    pub const BLOCK: GroupId = group_id(1);
+    /// The offsets and the quoted text with its context.
+    pub const RANGE: GroupId = group_id(2);
+    /// `last_edited_time`.
+    pub const UPDATED: GroupId = group_id(3);
+}
+
+/// Comment field groups.
+pub mod comment_group {
+    use super::{GroupId, group_id};
+
+    /// `thread_id`, the author, and `created_time`, fixed at creation.
+    pub const CREATED: GroupId = group_id(0);
+    /// Import source identity.
+    pub const ORIGIN: GroupId = group_id(1);
+    /// `rich_text`, `plain_text`, and `attachments`.
+    pub const BODY: GroupId = group_id(2);
+    /// `deleted_at`.
+    pub const DELETED: GroupId = group_id(3);
+    /// `last_edited_time`.
+    pub const UPDATED: GroupId = group_id(4);
+}
+
+/// Comment reaction field groups.
+pub mod reaction_group {
+    use super::{GroupId, group_id};
+
+    /// `comment_id`, `created_by`, and `emoji`.
+    pub const IDENTITY: GroupId = group_id(0);
+    /// `created_time` and `display_name`.
+    pub const CREATED: GroupId = group_id(1);
+    /// Existence register.
+    pub const EXISTS: GroupId = group_id(2);
+}
+
+/// Suggestion field groups.
+pub mod suggestion_group {
+    use super::{GroupId, group_id};
+
+    /// The block, author, range, original and proposed text, and `created_time`, fixed at
+    /// creation.
+    pub const CONTENT: GroupId = group_id(0);
+    /// `status` with the time and person of the decision.
+    pub const STATUS: GroupId = group_id(1);
+    /// `last_edited_time`.
+    pub const UPDATED: GroupId = group_id(2);
 }
 
 /// A hidden, non-recoverable group.
@@ -1210,6 +1305,234 @@ pub const VIEWS: TableSpec = TableSpec {
     ..BASE
 };
 
+/// A non-negative integer offset into block text.
+const fn offset(name: &'static str, min: i64) -> ColumnSpec {
+    ColumnSpec {
+        name,
+        ty: ColumnType::Integer { min, max: i64::MAX },
+    }
+}
+
+/// `notes_comment_threads`. A thread's `page_id` is a hook column: its parent page, or the page
+/// of its parent block.
+pub const THREADS: TableSpec = TableSpec {
+    id: THREADS_TABLE,
+    name: "notes_comment_threads",
+    groups: &[
+        immutable(
+            thread_group::CREATED,
+            "created",
+            &[
+                text("parent_type", MAX_NAME_CHARS),
+                row_key("parent_page_id"),
+                row_key("parent_block_id"),
+                CREATED_TIME,
+            ],
+            &[
+                reference_column("parent_page_id", PAGES_TABLE, OnDelete::Cascade),
+                reference_column("parent_block_id", BLOCKS_TABLE, OnDelete::Cascade),
+            ],
+        ),
+        register(thread_group::ORIGIN, "origin", &SOURCE_COLUMNS),
+        surfaced(group(
+            thread_group::STATUS,
+            "status",
+            MergeKind::Coupled,
+            &[
+                text("status", MAX_NAME_CHARS),
+                optional_timestamp("resolved_at"),
+                optional_text("resolved_by", MAX_TEXT_CHARS),
+            ],
+            &[],
+        )),
+        updated(thread_group::UPDATED),
+    ],
+    hook_columns: &["page_id"],
+    resolutions: &[
+        within(
+            &["parent_type", "parent_page_id", "parent_block_id"],
+            thread_group::CREATED,
+        ),
+        within(
+            &["status", "resolved_at", "resolved_by"],
+            thread_group::STATUS,
+        ),
+    ],
+    ..BASE
+};
+
+/// `notes_comment_thread_anchors`, keyed by its thread. Its `page_id` is a hook column: the page
+/// of its block.
+pub const ANCHORS: TableSpec = TableSpec {
+    id: ANCHORS_TABLE,
+    name: "notes_comment_thread_anchors",
+    key_column: "thread_id",
+    groups: &[
+        immutable(anchor_group::CREATED, "created", &[CREATED_TIME], &[]),
+        reference(
+            anchor_group::BLOCK,
+            "block",
+            &[row_key("block_id")],
+            BLOCKS_TABLE,
+            OnDelete::Cascade,
+        ),
+        register(
+            anchor_group::RANGE,
+            "range",
+            &[
+                offset("start_offset", 0),
+                offset("end_offset", 1),
+                text("anchor_text", MAX_SPAN_CHARS),
+                text("prefix_text", MAX_CONTEXT_CHARS),
+                text("suffix_text", MAX_CONTEXT_CHARS),
+            ],
+        ),
+        updated(anchor_group::UPDATED),
+    ],
+    hook_columns: &["page_id"],
+    resolutions: &[within(&["start_offset", "end_offset"], anchor_group::RANGE)],
+    ..BASE
+};
+
+/// `notes_comments`. A deleted comment keeps its row, so a deletion wins over a concurrent edit.
+pub const COMMENTS: TableSpec = TableSpec {
+    id: COMMENTS_TABLE,
+    name: "notes_comments",
+    groups: &[
+        immutable(
+            comment_group::CREATED,
+            "created",
+            &[
+                row_key("thread_id"),
+                text("created_by", MAX_NAME_CHARS),
+                optional_text("display_name", MAX_TEXT_CHARS),
+                CREATED_TIME,
+            ],
+            &[reference_column(
+                "thread_id",
+                THREADS_TABLE,
+                OnDelete::Cascade,
+            )],
+        ),
+        register(comment_group::ORIGIN, "origin", &SOURCE_COLUMNS),
+        surfaced(register(
+            comment_group::BODY,
+            "body",
+            &[
+                text("rich_text", MAX_TEXT_CHARS),
+                text("plain_text", MAX_TEXT_CHARS),
+                text("attachments", MAX_TEXT_CHARS),
+            ],
+        )),
+        group(
+            comment_group::DELETED,
+            "deleted",
+            MergeKind::Coupled,
+            &[optional_timestamp("deleted_at")],
+            &[],
+        ),
+        updated(comment_group::UPDATED),
+    ],
+    ..BASE
+};
+
+/// `notes_comment_reactions`, keyed by comment, author, and emoji. Removing a reaction writes
+/// its existence register, so adding it again revives the same row.
+pub const REACTIONS: TableSpec = TableSpec {
+    id: REACTIONS_TABLE,
+    name: "notes_comment_reactions",
+    groups: &[
+        immutable(
+            reaction_group::IDENTITY,
+            "identity",
+            &[
+                row_key("comment_id"),
+                text("created_by", MAX_NAME_CHARS),
+                text("emoji", MAX_EMOJI_CHARS),
+            ],
+            &[reference_column(
+                "comment_id",
+                COMMENTS_TABLE,
+                OnDelete::Cascade,
+            )],
+        ),
+        register(
+            reaction_group::CREATED,
+            "created",
+            &[CREATED_TIME, optional_text("display_name", MAX_TEXT_CHARS)],
+        ),
+        exists(reaction_group::EXISTS),
+    ],
+    derived_key: Some(DerivedKey {
+        exists_group: reaction_group::EXISTS,
+        prefix: Some(REACTION_KEY_PREFIX),
+        key_inputs: &["comment_id", "created_by", "emoji"],
+    }),
+    ..KEYED
+};
+
+/// `notes_suggestions`. A suggestion's content is fixed; only its decision changes, and an
+/// acceptance wins over a concurrent rejection. Its `page_id` is a hook column: the page of its
+/// block.
+pub const SUGGESTIONS: TableSpec = TableSpec {
+    id: SUGGESTIONS_TABLE,
+    name: "notes_suggestions",
+    groups: &[
+        immutable(
+            suggestion_group::CONTENT,
+            "content",
+            &[
+                row_key("block_id"),
+                row_key("created_by"),
+                optional_text("display_name", MAX_TEXT_CHARS),
+                offset("range_start", 0),
+                offset("range_end", 1),
+                text("original_text", MAX_SPAN_CHARS),
+                text("proposed_text", MAX_SPAN_CHARS),
+                text("prefix_text", MAX_CONTEXT_CHARS),
+                text("suffix_text", MAX_CONTEXT_CHARS),
+                CREATED_TIME,
+            ],
+            &[
+                reference_column("block_id", BLOCKS_TABLE, OnDelete::Cascade),
+                reference_column("created_by", LOCAL_USERS_TABLE, OnDelete::Cascade),
+            ],
+        ),
+        group(
+            suggestion_group::STATUS,
+            "status",
+            MergeKind::Coupled,
+            &[
+                text("status", MAX_NAME_CHARS),
+                optional_timestamp("accepted_at"),
+                row_key("accepted_by"),
+                optional_timestamp("rejected_at"),
+                row_key("rejected_by"),
+            ],
+            &[
+                reference_column("accepted_by", LOCAL_USERS_TABLE, OnDelete::SetNull),
+                reference_column("rejected_by", LOCAL_USERS_TABLE, OnDelete::SetNull),
+            ],
+        ),
+        updated(suggestion_group::UPDATED),
+    ],
+    hook_columns: &["page_id"],
+    resolutions: &[
+        within(&["range_start", "range_end"], suggestion_group::CONTENT),
+        within(
+            &[
+                "status",
+                "accepted_at",
+                "accepted_by",
+                "rejected_at",
+                "rejected_by",
+            ],
+            suggestion_group::STATUS,
+        ),
+    ],
+    ..BASE
+};
+
 /// A device table without domain triggers or assets.
 const fn device(name: &'static str) -> DeviceTable {
     DeviceTable {
@@ -1242,6 +1565,11 @@ pub const DOMAIN: DomainManifest = DomainManifest {
         RELATION_EDGES,
         VIEWS,
         PAGE_TEMPLATES,
+        THREADS,
+        ANCHORS,
+        COMMENTS,
+        REACTIONS,
+        SUGGESTIONS,
     ],
     derived: &[
         "notes_asset_references",

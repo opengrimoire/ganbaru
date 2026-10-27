@@ -464,12 +464,13 @@ pub async fn toggle_comment_reaction(
             ));
         }
         sqlx::query(
-            "INSERT INTO notes_comment_reactions (comment_id, created_by, emoji)
-             VALUES (?, ?, ?)",
+            "INSERT INTO notes_comment_reactions (comment_id, created_by, emoji, sync_key)
+             VALUES (?, ?, ?, ?)",
         )
         .bind(comment_id)
         .bind(&local_user.id)
         .bind(emoji)
+        .bind(crate::sync_keys::COMMENT_REACTIONS.key(&[comment_id, &local_user.id, emoji])?)
         .execute(&mut *tx)
         .await
         .map_err(|e| format!("add notes comment reaction: {e}"))?;

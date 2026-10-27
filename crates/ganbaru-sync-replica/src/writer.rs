@@ -3,6 +3,7 @@
 
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use ganbaru_handoff::key_wrap::{self, KeyWrapper};
 use ganbaru_sync::local::LocalWriterHead;
 use ganbaru_sync::{Engine, LocalWriter, SequenceReservation, SpaceContext, WriterState};
 use ganbaru_sync_contracts::{
@@ -13,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use sqlx::SqliteConnection;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 const RECORD_SCHEMA_VERSION: u32 = 1;
 /// Sequences one reservation write makes durable ahead of sealing.
@@ -207,39 +208,53 @@ impl SyncKeyStore for KeyringStore {
     }
 }
 
-/// Key store of one private file per secret, used on Android and in tests.
+/// Key store of one private file per secret, used on Android and in tests. Each file holds only
+/// the envelope the vault's platform key sealed, never the secret itself; a file that does not
+/// open reports [`ganbaru_handoff::key_wrap::KEY_PROTECTION_LOST_ERROR`].
 pub struct FileKeyStore {
-    pub directory: PathBuf,
+    directory: PathBuf,
+    wrapper: Arc<dyn KeyWrapper>,
 }
 
 impl FileKeyStore {
+    pub fn new(directory: PathBuf, wrapper: Arc<dyn KeyWrapper>) -> Self {
+        Self { directory, wrapper }
+    }
+
     fn path(&self, vault_id: &str, key: SyncKey<'_>) -> PathBuf {
         self.directory.join(format!(
-            "{}.key",
-            key_reference(vault_id, key).replace(':', "-")
+            "{}.{}",
+            key_reference(vault_id, key).replace(':', "-"),
+            key_wrap::KEY_FILE_EXTENSION
         ))
     }
 }
 
 impl SyncKeyStore for FileKeyStore {
     fn read(&self, vault_id: &str, key: SyncKey<'_>) -> Result<Option<Vec<u8>>, String> {
-        match std::fs::read(self.path(vault_id, key)) {
-            Ok(bytes) => Ok(Some(bytes)),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-            Err(error) => Err(format!("read sync key: {error}")),
-        }
+        key_wrap::read_protected_file(
+            self.wrapper.as_ref(),
+            &key_wrap::vault_keys_alias(vault_id),
+            &key_reference(vault_id, key),
+            &self.path(vault_id, key),
+        )
+        .map_err(|error| format!("read sync key: {error}"))
     }
 
     fn write(&self, vault_id: &str, key: SyncKey<'_>, secret: &[u8]) -> Result<(), String> {
-        ganbaru_handoff::pairing::write_private_file_atomically(&self.path(vault_id, key), secret)
+        key_wrap::write_protected_file(
+            self.wrapper.as_ref(),
+            &key_wrap::vault_keys_alias(vault_id),
+            &key_reference(vault_id, key),
+            &self.path(vault_id, key),
+            secret,
+        )
+        .map_err(|error| format!("store sync key: {error}"))
     }
 
     fn remove(&self, vault_id: &str, key: SyncKey<'_>) -> Result<(), String> {
-        match std::fs::remove_file(self.path(vault_id, key)) {
-            Ok(()) => Ok(()),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(error) => Err(format!("remove sync key: {error}")),
-        }
+        key_wrap::remove_key_file(&self.path(vault_id, key))
+            .map_err(|error| format!("remove sync key: {error}"))
     }
 }
 

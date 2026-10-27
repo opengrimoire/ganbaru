@@ -10,6 +10,8 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use ganbaru_contacts::{
     CARD_NONCE_BYTES, PersonKeyPair, PersonPublicKey, decode_nonce, encode_nonce, random_bytes,
 };
+#[cfg(any(mobile, test))]
+use ganbaru_handoff::key_wrap::{self, KeyWrapper};
 use sqlx::{FromRow, SqlitePool};
 use std::sync::Mutex;
 use tauri::{AppHandle, Manager, Runtime};
@@ -17,8 +19,8 @@ use tauri::{AppHandle, Manager, Runtime};
 #[cfg(desktop)]
 const KEYRING_SERVICE: &str = "com.ganbaru.contacts";
 const KEY_REFERENCE_PREFIX: &str = "person-key:";
-#[cfg(any(mobile, test))]
-const KEY_DIRECTORY: &str = "contacts";
+/// Directory under the app config directory that holds the sealed person key copies on mobile.
+pub(crate) const KEY_DIRECTORY: &str = "contacts";
 #[cfg(desktop)]
 const KEY_UNAVAILABLE_CODE: &str = "key_unavailable";
 
@@ -259,39 +261,64 @@ pub(crate) fn person_key_path_in(
         .join(format!("{}.key", key_reference(vault_id).replace(':', "-")))
 }
 
-/// The person key stored in the file at `path` when it matches `public_key`. It reads no vault
-/// database, so it is usable while the vault is quiesced.
+/// The person key of `vault_id` sealed in the file at `path` when it matches `public_key`. It
+/// reads no vault database, so it is usable while the vault is quiesced.
 #[cfg(any(mobile, test))]
 pub(crate) fn person_key_file_matching(
+    wrapper: &dyn KeyWrapper,
     path: &std::path::Path,
+    vault_id: &str,
     public_key: &PersonPublicKey,
 ) -> Result<Option<PersonKeyPair>, String> {
-    Ok(read_key_file(path)?
+    Ok(read_key_file(wrapper, path, vault_id)?
         .and_then(|bytes| PersonKeyPair::from_pkcs8(&bytes).ok())
         .filter(|key| key.public_key() == *public_key))
 }
 
+/// The person key of `vault_id` sealed in the file at `path`, sealed with the vault's platform
+/// key.
 #[cfg(any(mobile, test))]
-fn read_key_file(path: &std::path::Path) -> Result<Option<Vec<u8>>, String> {
-    match std::fs::read(path) {
-        Ok(bytes) => Ok(Some(bytes)),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(error) => Err(format!("read person key: {error}")),
-    }
+fn read_key_file(
+    wrapper: &dyn KeyWrapper,
+    path: &std::path::Path,
+    vault_id: &str,
+) -> Result<Option<Vec<u8>>, String> {
+    key_wrap::read_protected_file(
+        wrapper,
+        &key_wrap::vault_keys_alias(vault_id),
+        &key_reference(vault_id),
+        path,
+    )
+    .map_err(|error| format!("read person key: {error}"))
 }
 
-#[cfg(mobile)]
-fn write_key_sync(path: &std::path::Path, pkcs8: &[u8]) -> Result<(), String> {
-    crate::vault::handoff::pairing::write_private_file_atomically(path, pkcs8)
+/// Seals the person key `pkcs8` of `vault_id` into the file at `path`.
+#[cfg(any(mobile, test))]
+pub(crate) fn write_key_file(
+    wrapper: &dyn KeyWrapper,
+    path: &std::path::Path,
+    vault_id: &str,
+    pkcs8: &[u8],
+) -> Result<(), String> {
+    key_wrap::write_protected_file(
+        wrapper,
+        &key_wrap::vault_keys_alias(vault_id),
+        &key_reference(vault_id),
+        path,
+        pkcs8,
+    )
+    .map_err(|error| format!("store person key: {error}"))
 }
 
 #[cfg(mobile)]
 fn remove_key_sync(path: &std::path::Path) -> Result<(), String> {
-    match std::fs::remove_file(path) {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(format!("remove person key: {error}")),
-    }
+    key_wrap::remove_key_file(path).map_err(|error| format!("remove person key: {error}"))
+}
+
+/// The platform key that seals the person key on mobile.
+#[cfg(mobile)]
+fn platform_wrapper() -> std::sync::Arc<dyn KeyWrapper> {
+    crate::vault::process_managers::process_managers().key_wrapper()
 }
 
 async fn load_key<R: Runtime>(app: &AppHandle<R>) -> Result<Option<Vec<u8>>, String> {
@@ -308,7 +335,10 @@ async fn load_key_for_vault<R: Runtime>(
     #[cfg(mobile)]
     let task = {
         let path = key_path(app, &vault_id)?;
-        tauri::async_runtime::spawn_blocking(move || read_key_file(&path))
+        let wrapper = platform_wrapper();
+        tauri::async_runtime::spawn_blocking(move || {
+            read_key_file(wrapper.as_ref(), &path, &vault_id)
+        })
     };
     task.await
         .map_err(|error| format!("person key task: {error}"))?
@@ -321,7 +351,10 @@ async fn store_key<R: Runtime>(app: &AppHandle<R>, pkcs8: Vec<u8>) -> Result<(),
     #[cfg(mobile)]
     let task = {
         let path = key_path(app, &vault_id)?;
-        tauri::async_runtime::spawn_blocking(move || write_key_sync(&path, &pkcs8))
+        let wrapper = platform_wrapper();
+        tauri::async_runtime::spawn_blocking(move || {
+            write_key_file(wrapper.as_ref(), &path, &vault_id, &pkcs8)
+        })
     };
     task.await
         .map_err(|error| format!("person key task: {error}"))?

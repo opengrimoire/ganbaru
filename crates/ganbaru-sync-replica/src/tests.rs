@@ -7,6 +7,7 @@ use super::writer::{
 };
 use ganbaru_contacts::PersonKeyPair;
 use ganbaru_db::{DatabaseAccessMode, DatabasePoolRegistry};
+use ganbaru_handoff::key_wrap::{KeyWrapper, TestKeyWrapper, is_key_protection_lost};
 use ganbaru_sync::local::{self, LocalWriterHead};
 use ganbaru_sync::{Engine, SpaceContext, WriterState};
 use ganbaru_sync_contracts::{AdminKeyPair, DeviceKeyPair, RecoverySeed};
@@ -36,6 +37,14 @@ const VAULT_ID: &str = "vault-sync-test";
 const DEVICE_ID: &str = "device-test";
 const NOW_MS: u64 = 1_800_000_000_000;
 
+/// The platform key stand-in every test key store of this process shares, so a store opened
+/// again reads what an earlier one wrote.
+fn test_wrapper() -> Arc<TestKeyWrapper> {
+    static WRAPPER: std::sync::LazyLock<Arc<TestKeyWrapper>> =
+        std::sync::LazyLock::new(|| Arc::new(TestKeyWrapper::default()));
+    WRAPPER.clone()
+}
+
 struct TestDirectory(PathBuf);
 
 impl TestDirectory {
@@ -60,9 +69,7 @@ impl TestDirectory {
     }
 
     fn keys(&self) -> FileKeyStore {
-        FileKeyStore {
-            directory: self.0.join("keys"),
-        }
+        FileKeyStore::new(self.0.join("keys"), test_wrapper())
     }
 }
 
@@ -294,6 +301,50 @@ fn records_naming_a_non_canonical_writer_id_are_refused() {
     .expect("write record");
     assert!(read_record(&files.record_path()).expect("read").is_some());
     assert!(outside.exists());
+}
+
+#[test]
+fn file_key_store_keeps_only_sealed_keys_and_reports_unopenable_ones_as_lost() {
+    let directory = TestDirectory::new("sealed-keys");
+    let wrapper = Arc::new(TestKeyWrapper::default());
+    let keys = FileKeyStore::new(directory.path().join("keys"), wrapper.clone());
+    let (pkcs8, _) = DeviceKeyPair::generate().expect("device key");
+    keys.write(VAULT_ID, SyncKey::Device, pkcs8.as_slice())
+        .expect("store device key");
+    let path = directory
+        .path()
+        .join("keys")
+        .join(format!("device-key-{VAULT_ID}.key"));
+    let stored = std::fs::read(&path).expect("stored file");
+    assert!(ganbaru_handoff::key_wrap::is_envelope(&stored));
+    assert!(
+        !stored
+            .windows(pkcs8.as_slice().len())
+            .any(|window| window == pkcs8.as_slice())
+    );
+    assert_eq!(
+        keys.read(VAULT_ID, SyncKey::Device).expect("read"),
+        Some(pkcs8.as_slice().to_vec())
+    );
+
+    wrapper.set_unavailable(true);
+    let offline = keys.read(VAULT_ID, SyncKey::Device).expect_err("offline");
+    assert!(!is_key_protection_lost(&offline), "{offline}");
+    wrapper.set_unavailable(false);
+
+    std::fs::write(&path, pkcs8.as_slice()).expect("plaintext copy");
+    let plaintext = keys.read(VAULT_ID, SyncKey::Device).expect_err("plaintext");
+    assert!(is_key_protection_lost(&plaintext), "{plaintext}");
+
+    keys.write(VAULT_ID, SyncKey::Device, pkcs8.as_slice())
+        .expect("store again");
+    wrapper
+        .forget(&ganbaru_handoff::key_wrap::vault_keys_alias(VAULT_ID))
+        .expect("forget platform key");
+    let forgotten = keys.read(VAULT_ID, SyncKey::Device).expect_err("forgotten");
+    assert!(is_key_protection_lost(&forgotten), "{forgotten}");
+    keys.remove(VAULT_ID, SyncKey::Device).expect("remove");
+    assert_eq!(keys.read(VAULT_ID, SyncKey::Device).expect("removed"), None);
 }
 
 #[test]

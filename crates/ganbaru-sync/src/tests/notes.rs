@@ -22,10 +22,10 @@ use crate::manifest::vault::notes::{
     DOMAIN, OPTION_KEY_PREFIX, PROPERTY_KEY_PREFIX, RELATION_EDGE_KEY_PREFIX, VALUE_KEY_PREFIX,
 };
 
-const CREATED: &str = "2027-01-01T00:00:00.000Z";
-const EDITED: &str = "2027-01-02T00:00:00.000Z";
-const PAGE: &str = "page-shared";
-const BLOCK_A: &str = "block-a";
+pub(super) const CREATED: &str = "2027-01-01T00:00:00.000Z";
+pub(super) const EDITED: &str = "2027-01-02T00:00:00.000Z";
+pub(super) const PAGE: &str = "page-shared";
+pub(super) const BLOCK_A: &str = "block-a";
 const BLOCK_B: &str = "block-b";
 
 /// Runs the Notes crate's post-apply refresh, as the app's Notes hook does.
@@ -107,21 +107,21 @@ fn page_sql() -> String {
 }
 
 /// Every replica holding the shared page and `sql`, with operations exchanged.
-async fn shared(count: usize, sql: &str) -> Vec<Replica> {
+pub(super) async fn shared(count: usize, sql: &str) -> Vec<Replica> {
     let mut replicas = replicas(count).await;
     replicas[0].exec(&format!("{}{sql}", page_sql())).await;
     converge(&mut replicas).await;
     replicas
 }
 
-async fn texts(replica: &mut Replica, sql: &str) -> Vec<String> {
+pub(super) async fn texts(replica: &mut Replica, sql: &str) -> Vec<String> {
     sqlx::query_scalar(sqlx::AssertSqlSafe(sql))
         .fetch_all(&mut replica.conn)
         .await
         .unwrap_or_else(|error| panic!("{sql}: {error}"))
 }
 
-async fn assert_converged(replicas: &mut [Replica]) {
+pub(super) async fn assert_converged(replicas: &mut [Replica]) {
     let first = replicas[0].domain_dump().await;
     for replica in replicas.iter_mut().skip(1) {
         assert_eq!(
@@ -1129,6 +1129,42 @@ fn deleting_a_database_block_removes_its_data_source_rows_and_values_everywhere(
                 replica.index
             );
         }
+        assert_converged(&mut replicas).await;
+    });
+}
+
+#[test]
+fn a_remotely_removed_value_queues_the_history_of_its_page() {
+    block_on(async {
+        let setup = format!(
+            "{}{}{}",
+            database_sql("db", "source", 0, &["row-1"]),
+            property_sql(
+                "source",
+                "notes",
+                "Notes",
+                "rich_text",
+                "{\"rich_text\":{}}",
+                1
+            ),
+            value_sql("row-1", "notes", "rich_text", "{\"rich_text\":[]}"),
+        );
+        let mut replicas = shared(2, &setup).await;
+        replicas[1]
+            .exec("DELETE FROM notes_page_history_pending;")
+            .await;
+        replicas[0]
+            .exec("DELETE FROM notes_page_property_values WHERE page_id = 'row-1';")
+            .await;
+        converge(&mut replicas).await;
+        assert_eq!(
+            texts(
+                &mut replicas[1],
+                "SELECT page_id FROM notes_page_history_pending ORDER BY page_id"
+            )
+            .await,
+            vec!["row-1".to_string()]
+        );
         assert_converged(&mut replicas).await;
     });
 }

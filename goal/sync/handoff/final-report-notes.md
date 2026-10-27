@@ -225,3 +225,8 @@
 ### End of the local session (2026-10-26)
 
 - The session ended for its budget. Landed: milestone 8 step 4, engine follow-up 5, milestone 11 step 8. Pushed and unlanded: `feat/sync-android-keystore` (step 7 fix round done, delta review and the `androidx.test:runner` dependency approval pending) and `feat/sync-notes-comments` (milestone 8 step 5 committed, full checks and review pending). `pnpm -w run validate` was not run on feat/sync this session; its last full pass predates these landings, and the focused gates of each landing passed.
+
+## Orchestrator session on the mini PC (2026-10-27)
+
+- `androidx.test:runner:1.5.0` (milestone 11 step 7): the maintainer delegated the decision. Kept as a direct androidTest-only declaration: it is a Google AndroidX test artifact, the app module already resolves it through espresso-core 3.5.0, it never ships in an APK, and declaring it directly makes the plugin's instrumented test compile on its own. Gradle resolution is unverified on this host.
+- Milestone 8 step 5 landed (merge 26180e64) after a fresh Opus review with verdict merge with follow-ups; the follow-ups (one Medium on the comment page refresh cost, Lows on history, option `property_key` validation, anchor thread reference, comment size bound, remote reaction limits, docs, and tests) were carried into step 6 (`briefs/m8-step-6-followups.md`), since none loses data.

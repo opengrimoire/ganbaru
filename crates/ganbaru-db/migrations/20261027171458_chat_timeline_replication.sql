@@ -222,7 +222,6 @@ END;
 
 CREATE TRIGGER chat_communication_search_delete
 AFTER DELETE ON chat_communication_messages
-WHEN (SELECT applying FROM sync_apply_state WHERE singleton = 1) = 0
 BEGIN
     DELETE FROM chat_communication_search_fts WHERE message_item_id = OLD.item_id;
 END;

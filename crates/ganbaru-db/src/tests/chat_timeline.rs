@@ -31,10 +31,10 @@ WHERE conversation_id = 'conversation-general' AND teammate_id = 'participant-te
 INSERT INTO chat_message_references
     (id, message_revision_id, reference_kind, label_snapshot, plain_text_projection,
      start_offset, end_offset, ordinal, created_at)
-VALUES ('reference-channel', 'message-revision-root', 'channel', 'general', 'general', 13, 20, 3,
+VALUES ('reference-channel', 'message-revision-root', 'channel', 'general', 'general', 17, 24, 4,
         '2026-10-23T00:00:00.000Z'),
-       ('reference-channel-empty', 'message-revision-root', 'channel', 'general', 'general', 21,
-        28, 4, '2026-10-23T00:00:00.000Z');
+       ('reference-channel-empty', 'message-revision-root', 'channel', 'general', 'general', 25,
+        32, 5, '2026-10-23T00:00:00.000Z');
 INSERT INTO chat_channel_reference_targets
     (reference_id, channel_id, source_conversation_id, destination_conversation_id,
      source_lower_ordinal, source_high_ordinal, source_revision_cutoff_id,
@@ -130,7 +130,10 @@ fn timeline_migration_keeps_rows_order_and_every_position_on_the_same_items() {
             ["item-root", "item-root-4", "item-root-7"],
             "root items keep ordinal order across ordinal gaps"
         );
-        assert_eq!(order_after["reply-thread"], ["item-reply-b", "item-reply-a"]);
+        assert_eq!(
+            order_after["reply-thread"],
+            ["item-reply-b", "item-reply-a"]
+        );
 
         let cursors: Vec<(String, String, String)> = sqlx::query_as(
             "SELECT participant_id, last_read_order_key, last_read_item_id
@@ -143,7 +146,11 @@ fn timeline_migration_keeps_rows_order_and_every_position_on_the_same_items() {
             cursors,
             [
                 ("participant-teammate".into(), String::new(), String::new()),
-                ("participant:local-owner".into(), "c001".into(), "item-root-4".into()),
+                (
+                    "participant:local-owner".into(),
+                    "c001".into(),
+                    "item-root-4".into()
+                ),
             ],
             "a cursor holds the last item at or before its ordinal, and '' before every item"
         );
@@ -199,7 +206,10 @@ fn timeline_migration_keeps_rows_order_and_every_position_on_the_same_items() {
         .fetch_one(&pool)
         .await
         .unwrap();
-        assert_eq!(empty_range, 1, "a reference without a range keeps no bounds");
+        assert_eq!(
+            empty_range, 1,
+            "a reference without a range keeps no bounds"
+        );
 
         let source: (String, String, String, String) = sqlx::query_as(
             "SELECT lower_order_key, lower_item_id, high_order_key, high_item_id
@@ -210,7 +220,12 @@ fn timeline_migration_keeps_rows_order_and_every_position_on_the_same_items() {
         .unwrap();
         assert_eq!(
             source,
-            ("c000".into(), String::new(), "c000".into(), "item-root".into())
+            (
+                "c000".into(),
+                String::new(),
+                "c000".into(),
+                "item-root".into()
+            )
         );
 
         for table in [

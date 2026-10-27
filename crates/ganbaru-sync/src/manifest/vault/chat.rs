@@ -496,6 +496,14 @@ const fn applier_visible(name: &'static str) -> DomainTrigger {
     }
 }
 
+/// A trigger that writes only the device-local search index and keeps firing during apply.
+const fn derived_index(name: &'static str) -> DomainTrigger {
+    DomainTrigger {
+        name,
+        policy: TriggerPolicy::DerivedIndex,
+    }
+}
+
 const fn gated(name: &'static str) -> DomainTrigger {
     DomainTrigger {
         name,
@@ -1082,7 +1090,7 @@ pub const MESSAGES: TableSpec = TableSpec {
     ],
     triggers: &[
         gated("chat_communication_message_current_revision_update"),
-        gated("chat_communication_search_delete"),
+        derived_index("chat_communication_search_delete"),
         gated("chat_communication_search_insert"),
     ],
     ..BASE

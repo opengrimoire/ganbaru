@@ -1281,10 +1281,7 @@ fn read_sql(order_key: &str, item: &str, updated_at: &str) -> String {
              > (last_read_order_key, last_read_item_id);",
         conversation = quoted(CONVERSATION),
         owner = quoted(OWNER),
-        sync_key = quoted(&key(
-            CONVERSATION_CURSOR_KEY_PREFIX,
-            &[CONVERSATION, OWNER]
-        )),
+        sync_key = quoted(&key(CONVERSATION_CURSOR_KEY_PREFIX, &[CONVERSATION, OWNER])),
         order_key = quoted(order_key),
         item = quoted(item),
         updated_at = quoted(updated_at),
@@ -1476,10 +1473,7 @@ fn chat_concurrent_posts_with_one_order_key_read_in_one_order_everywhere() {
         converge(&mut replicas).await;
         assert_converged(&mut replicas).await;
         for replica in &mut replicas {
-            assert_eq!(
-                root_order(replica).await,
-                "item:first item:a item:b item:c"
-            );
+            assert_eq!(root_order(replica).await, "item:first item:a item:b item:c");
         }
     });
 }
@@ -1499,7 +1493,9 @@ fn chat_read_cursors_only_move_forward_and_unchanged_reads_capture_nothing() {
         converge(&mut replicas).await;
 
         // A later read on one replica and an earlier one on the other keep the later.
-        replicas[0].exec(&read_sql("c001", "item:b", &at(1, 0))).await;
+        replicas[0]
+            .exec(&read_sql("c001", "item:b", &at(1, 0)))
+            .await;
         replicas[1]
             .exec(
                 "UPDATE chat_conversation_read_cursors
@@ -1541,7 +1537,11 @@ impl MaterializeHook for RecordingHook {
     ) -> HookFuture<'a> {
         Box::pin(async move {
             let mut seen = self.0.lock().unwrap();
-            seen.extend(changed_keys.iter().map(|key| format!("{} {key}", table.name)));
+            seen.extend(
+                changed_keys
+                    .iter()
+                    .map(|key| format!("{} {key}", table.name)),
+            );
             Ok(())
         })
     }

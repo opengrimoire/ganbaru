@@ -99,14 +99,31 @@ fn write_zip_archive_inner(
 /// Reads one managed asset for export. The path must name a managed Notes asset directory,
 /// no folder between the vault and the file may be a symlink, the file itself must be a regular
 /// file, and its bytes must match the recorded size and SHA-256, so a planted link or swapped
-/// file cannot place other local data in the archive.
+/// file cannot place other local data in the archive. When the stored path cannot be read,
+/// the fallback paths of the same bytes are tried in order, under the same checks.
 fn read_exported_asset(
     vault_root: &Path,
     asset: &NoteHtmlExportAssetDto,
 ) -> Result<Vec<u8>, String> {
-    validate_managed_asset_path(&asset.source_path)
+    let primary = read_exported_asset_at(vault_root, asset, &asset.source_path);
+    if primary.is_ok() {
+        return primary;
+    }
+    asset
+        .fallback_source_paths
+        .iter()
+        .find_map(|path| read_exported_asset_at(vault_root, asset, path).ok())
+        .map_or(primary, Ok)
+}
+
+fn read_exported_asset_at(
+    vault_root: &Path,
+    asset: &NoteHtmlExportAssetDto,
+    source_path: &str,
+) -> Result<Vec<u8>, String> {
+    validate_managed_asset_path(source_path)
         .map_err(|error| format!("Managed asset path is not exportable: {error}"))?;
-    let source = vault_root.join(ASSETS_DIR).join(&asset.source_path);
+    let source = vault_root.join(ASSETS_DIR).join(source_path);
     let folder = source
         .parent()
         .ok_or_else(|| "Managed asset path is not exportable".to_string())?;
@@ -178,6 +195,7 @@ mod tests {
             sha256: hex_hash(bytes),
             storage_state: "available".to_string(),
             exported: true,
+            fallback_source_paths: Vec::new(),
         }
     }
 
@@ -239,6 +257,30 @@ mod tests {
             "Managed asset no longer matches its recorded size and digest"
         );
         assert!(messages[1].starts_with("Managed asset path is not exportable"));
+        fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn an_exported_asset_reads_a_referenced_path_of_its_bytes_when_its_own_path_is_absent() {
+        let base = temp_vault();
+        let vault = base.join("vault");
+        let files = vault.join("assets/notes/files");
+        fs::create_dir_all(&files).unwrap();
+        let bytes = b"same bytes";
+        fs::write(files.join("held.csv"), bytes).unwrap();
+        fs::write(files.join("other.md"), b"other bytes").unwrap();
+        let mut asset = exported_asset("notes/files/absent.txt", bytes);
+        asset.fallback_source_paths = vec![
+            "notes/files/other.md".to_string(),
+            "notes/files/held.csv".to_string(),
+        ];
+        let mut archive = archive_with(vec![asset]);
+        let target = base.join("export.zip");
+
+        write_archive(&vault, &target, &mut archive).unwrap();
+
+        assert_eq!(archive_entries(&target), ["assets/notes/files/absent.txt"]);
+        assert!(archive.dto.diagnostics.is_empty());
         fs::remove_dir_all(base).unwrap();
     }
 

@@ -26,6 +26,7 @@ export const collaboration = {
   commentRemoveAttachment: (name: string) => `Remove ${name}`,
   commentAttachFailed: (message: string) => `Could not attach the file: ${message}`,
   commentSendFailed: (message: string) => `Could not save the comment: ${message}`,
+  commentTooLarge: "This comment is too long to save. Shorten it and try again.",
   commentEdited: "(edited)",
   commentAuthorUnknown: "Unknown",
   commentAddReaction: "Add reaction",

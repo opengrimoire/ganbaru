@@ -22,22 +22,28 @@
 //! reaction is keyed by the derived key of its comment, author, and emoji with an existence
 //! register, so toggling it again adds the same row back.
 //!
+//! Asset rows replicate, keyed by `{class}:{sha256}`, and their bytes travel as three asset
+//! classes: page icons, page covers, and files. Block, page, database, data source, value,
+//! comment, and template JSON name the files they reference. Project history asset pins are a
+//! device table whose asset ids keep pinned files from the sweep.
+//!
 //! Search, link, backlink, asset reference, and rollup indexes and their state rows are derived.
 //! Undo state, edit receipts, read and mute state, notification settings and notifications, view
-//! state, and every history table stay on the device. Ids 308 and 310 to 351 are reserved.
+//! state, and every history table stay on the device. Ids 310 to 351 are reserved.
 
 use ganbaru_sync_contracts::{GroupId, TableId};
 
+use crate::assets::{AssetClass, LocalAssetColumn, LocalDigest, MAX_CONTENT_TYPE_BYTES};
 use crate::domains::notes::{
-    MAX_BLOCK_ATTRS_BYTES, MAX_BLOCK_TEXT_BYTES, MAX_NAME_CHARS, MAX_TEMPLATE_CONTENT_BYTES,
-    MAX_TEXT_CHARS,
+    MAX_BLOCK_ATTRS_BYTES, MAX_BLOCK_TEXT_BYTES, MAX_FILE_BYTES, MAX_NAME_CHARS,
+    MAX_PAGE_COVER_BYTES, MAX_PAGE_ICON_BYTES, MAX_TEMPLATE_CONTENT_BYTES, MAX_TEXT_CHARS,
 };
 use crate::manifest::vault::projects::PROJECTS_TABLE;
 use crate::manifest::{
     Collation, ColumnSpec, ColumnType, DerivedKey, DeviceTable, DomainManifest, DomainTrigger,
-    GroupSpec, GroupStorage, MergeKind, OnDelete, OwnedBound, OwnedCodec, OwnedOrder, OwnedTable,
-    ReferenceColumn, Resolution, SYNC_KEY_COLUMN, TableIdRange, TableSpec, TreeSpec, TriggerPolicy,
-    group_id,
+    GroupSpec, GroupStorage, LocalColumn, MergeKind, OnDelete, OwnedBound, OwnedCodec, OwnedOrder,
+    OwnedTable, ReferenceColumn, Resolution, SYNC_KEY_COLUMN, TableIdRange, TableSpec, TreeSpec,
+    TriggerPolicy, group_id,
 };
 
 /// Domain name for Notes.
@@ -45,6 +51,31 @@ pub const DOMAIN_NAME: &str = "notes";
 
 /// Domain adapter name for Notes.
 pub const ADAPTER: &str = "notes";
+
+/// Page icon images, at most 3 MiB each.
+pub const PAGE_ICONS_CLASS: AssetClass = AssetClass {
+    name: "notes/page-icons",
+    max_bytes: MAX_PAGE_ICON_BYTES,
+};
+
+/// Page and database cover images, at most 8 MiB each.
+pub const PAGE_COVERS_CLASS: AssetClass = AssetClass {
+    name: "notes/page-covers",
+    max_bytes: MAX_PAGE_COVER_BYTES,
+};
+
+/// Files attached to blocks, file property values, and comments, at most 50 MiB each.
+pub const FILES_CLASS: AssetClass = AssetClass {
+    name: "notes/files",
+    max_bytes: MAX_FILE_BYTES,
+};
+
+/// Names of every Notes asset class, which an asset id `{class}:{sha256}` may name.
+pub const ASSET_CLASS_NAMES: &[&str] = &[
+    PAGE_ICONS_CLASS.name,
+    PAGE_COVERS_CLASS.name,
+    FILES_CLASS.name,
+];
 
 /// `notes_local_users`.
 pub const LOCAL_USERS_TABLE: TableId = TableId(288);
@@ -82,6 +113,8 @@ pub const ANCHORS_TABLE: TableId = TableId(305);
 pub const COMMENTS_TABLE: TableId = TableId(306);
 /// `notes_suggestions`.
 pub const SUGGESTIONS_TABLE: TableId = TableId(307);
+/// `notes_assets`.
+pub const ASSETS_TABLE: TableId = TableId(308);
 /// `notes_comment_reactions`.
 pub const REACTIONS_TABLE: TableId = TableId(309);
 
@@ -420,6 +453,16 @@ pub mod suggestion_group {
     pub const STATUS: GroupId = group_id(1);
     /// `last_edited_time`.
     pub const UPDATED: GroupId = group_id(2);
+}
+
+/// Asset field groups.
+pub mod asset_group {
+    use super::{GroupId, group_id};
+
+    /// `asset_path`, `kind`, `content_type`, `byte_size`, and `sha256`, computed from the bytes.
+    pub const CONTENT: GroupId = group_id(0);
+    /// `source_type`, `original_name`, and `created_at`.
+    pub const DETAILS: GroupId = group_id(1);
 }
 
 /// A hidden, non-recoverable group.
@@ -1533,6 +1576,79 @@ pub const SUGGESTIONS: TableSpec = TableSpec {
     ..BASE
 };
 
+/// `notes_assets`, keyed by its asset id `{class}:{sha256}`. The content group is immutable:
+/// when two devices add the same bytes under different content types, one write wins
+/// everywhere and references under the other path still resolve the row by digest; the source
+/// type, original name, and creation time are a register. A row is never deleted.
+/// Whether this device holds the bytes (`storage_state` and `missing_at`) and when this device
+/// last changed the row (`updated_at`, which the Notes hook stamps on arrival) stay local.
+pub const ASSETS: TableSpec = TableSpec {
+    id: ASSETS_TABLE,
+    name: "notes_assets",
+    groups: &[
+        immutable(
+            asset_group::CONTENT,
+            "content",
+            &[
+                text("asset_path", MAX_NAME_CHARS),
+                text("kind", MAX_NAME_CHARS),
+                text("content_type", MAX_CONTENT_TYPE_BYTES),
+                ColumnSpec {
+                    name: "byte_size",
+                    ty: ColumnType::Integer {
+                        min: 1,
+                        max: MAX_FILE_BYTES as i64,
+                    },
+                },
+                text("sha256", MAX_NAME_CHARS),
+            ],
+            &[],
+        ),
+        register(
+            asset_group::DETAILS,
+            "details",
+            &[
+                text("source_type", MAX_NAME_CHARS),
+                optional_text("original_name", MAX_TEXT_CHARS),
+                timestamp("created_at"),
+            ],
+        ),
+    ],
+    local_columns: &[
+        LocalColumn {
+            name: "storage_state",
+            materialize: "'available'",
+        },
+        LocalColumn {
+            name: "missing_at",
+            materialize: "NULL",
+        },
+        LocalColumn {
+            name: "updated_at",
+            materialize: "'1970-01-01T00:00:00.000Z'",
+        },
+    ],
+    resolutions: &[within(&["kind", "content_type"], asset_group::CONTENT)],
+    ..BASE
+};
+
+/// The managed files a page's undo and redo entries name: the block snapshots they hold carry
+/// each file's bare digest, which keeps a file of that digest in every Notes class.
+const UNDO_STATE_ASSETS: [LocalAssetColumn; 3] = [
+    undo_state_asset(PAGE_ICONS_CLASS.name),
+    undo_state_asset(PAGE_COVERS_CLASS.name),
+    undo_state_asset(FILES_CLASS.name),
+];
+
+/// A digest anywhere in the undo state payload naming a file of `class`.
+const fn undo_state_asset(class: &'static str) -> LocalAssetColumn {
+    LocalAssetColumn {
+        column: "state_payload",
+        json_path: Some("$"),
+        digest: LocalDigest::Sha256 { class },
+    }
+}
+
 /// A device table without domain triggers or assets.
 const fn device(name: &'static str) -> DeviceTable {
     DeviceTable {
@@ -1570,6 +1686,7 @@ pub const DOMAIN: DomainManifest = DomainManifest {
         COMMENTS,
         REACTIONS,
         SUGGESTIONS,
+        ASSETS,
     ],
     derived: &[
         "notes_asset_references",
@@ -1595,16 +1712,40 @@ pub const DOMAIN: DomainManifest = DomainManifest {
         device("notes_mention_notifications"),
         device("notes_page_history_pending"),
         device("notes_page_history_settings"),
-        device("notes_page_history_snapshots"),
+        DeviceTable {
+            name: "notes_page_history_snapshots",
+            triggers: &[],
+            assets: &[LocalAssetColumn {
+                column: "asset_ids",
+                json_path: Some("$"),
+                digest: LocalDigest::AssetId {
+                    classes: ASSET_CLASS_NAMES,
+                },
+            }],
+        },
         device("notes_page_notification_settings"),
-        device("notes_project_history_asset_pins"),
+        DeviceTable {
+            name: "notes_project_history_asset_pins",
+            triggers: &[],
+            assets: &[LocalAssetColumn {
+                column: "asset_id",
+                json_path: None,
+                digest: LocalDigest::AssetId {
+                    classes: ASSET_CLASS_NAMES,
+                },
+            }],
+        },
         device("notes_project_history_bundle_references"),
         device("notes_project_history_dirty"),
         device("notes_project_history_versions"),
         device("notes_sync_repair_pending"),
-        device("notes_undo_state"),
+        DeviceTable {
+            name: "notes_undo_state",
+            triggers: &[],
+            assets: &UNDO_STATE_ASSETS,
+        },
     ],
     engine: &[],
     replica_writable: false,
-    assets: &[],
+    assets: &[PAGE_ICONS_CLASS, PAGE_COVERS_CLASS, FILES_CLASS],
 };

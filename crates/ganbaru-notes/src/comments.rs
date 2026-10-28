@@ -15,12 +15,15 @@ use std::collections::{HashMap, HashSet};
 
 const COMMENT_ANCHOR_MAX_TEXT_LENGTH: usize = 2000;
 const COMMENT_ANCHOR_MAX_CONTEXT_LENGTH: usize = 120;
-const COMMENT_ATTACHMENTS_MAX_COUNT: usize = 100;
-const COMMENT_ATTACHMENTS_MAX_BYTES: usize = 50 * 1024;
+const COMMENT_ATTACHMENTS_MAX_COUNT: usize = ganbaru_sync::domains::notes::MAX_COMMENT_ATTACHMENTS;
+const COMMENT_ATTACHMENTS_MAX_BYTES: usize =
+    ganbaru_sync::domains::notes::MAX_COMMENT_ATTACHMENTS_BYTES;
 const COMMENT_THREAD_READ_MAX_BATCH: usize = 200;
 /// Matches the reaction column limit so validation fails before SQLite does.
 const COMMENT_REACTION_MAX_CHARS: usize = 16;
-const COMMENT_REACTION_MAX_BYTES: usize = 64;
+const COMMENT_REACTION_MAX_BYTES: usize = ganbaru_sync::domains::notes::MAX_REACTION_EMOJI_BYTES;
+/// Distinct reactions one device lets a comment collect. Sync applies remote reactions without
+/// this cap, since reactions from other devices are separate rows a merge cannot refuse.
 const COMMENT_REACTION_MAX_KINDS: i64 = 20;
 
 struct CommentParentTarget {

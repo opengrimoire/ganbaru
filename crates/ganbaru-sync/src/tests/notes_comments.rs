@@ -2,8 +2,11 @@
 //! round trip and receivers fill their pages, concurrent comment edits and resolves both apply,
 //! a comment delete and a concurrent edit both apply, a comment added on a block deleted
 //! elsewhere is hidden and offered for recovery, a suggestion accept and a concurrent block
-//! edit both apply, an accept outranks a concurrent reject, and a crash while sealing or
-//! applying comment rows leaves nothing partial.
+//! edit both apply, an accept outranks a concurrent reject, an apply refreshes only the comment
+//! rows of the rows it changed, remote resolves, decisions, anchors, and removed reactions queue
+//! page history, a removed reaction and a concurrent re-add of it converge on the re-add, a
+//! remote comment mention settles without a notification, and a crash while sealing or applying
+//! comment rows leaves nothing partial.
 
 use ganbaru_sync_contracts::derived_key;
 
@@ -471,5 +474,162 @@ fn a_crash_while_sealing_or_applying_comment_rows_leaves_nothing_partial() {
             "Edited"
         );
         assert_converged(&mut replicas).await;
+    });
+}
+
+#[test]
+fn an_apply_refreshes_only_the_comment_rows_of_the_rows_it_changed() {
+    block_on(async {
+        let mut replicas = comments(2).await;
+        // Hook columns are not captured, so a stale page stays local to the reader and shows
+        // which rows a later apply refreshes.
+        replicas[1]
+            .exec(
+                "UPDATE notes_comment_threads SET page_id = 'stale';
+                 UPDATE notes_comment_thread_anchors SET page_id = 'stale';
+                 UPDATE notes_suggestions SET page_id = 'stale';",
+            )
+            .await;
+        replicas[0].exec(&block_text_sql("second edited")).await;
+        converge(&mut replicas).await;
+        assert_eq!(
+            comment_pages(&mut replicas[1]).await,
+            [
+                "thread@stale".to_string(),
+                "anchor@stale".to_string(),
+                format!("suggestion@{PAGE}")
+            ]
+        );
+
+        replicas[0]
+            .exec(&format!(
+                "UPDATE notes_blocks SET last_edited_time = {} WHERE id = {};",
+                quoted("2027-01-03T00:00:00.000Z"),
+                quoted(BLOCK_A)
+            ))
+            .await;
+        converge(&mut replicas).await;
+        assert_eq!(
+            comment_pages(&mut replicas[1]).await,
+            [
+                format!("thread@{PAGE}"),
+                format!("anchor@{PAGE}"),
+                format!("suggestion@{PAGE}")
+            ]
+        );
+    });
+}
+
+#[test]
+fn remote_resolves_decisions_anchors_and_removed_reactions_queue_page_history() {
+    block_on(async {
+        let mut replicas = comments(2).await;
+        for sql in [
+            format!(
+                "UPDATE notes_comment_threads
+                 SET status = 'resolved', resolved_at = {edited}, resolved_by = {person},
+                     last_edited_time = {edited}
+                 WHERE id = 'thread-a';",
+                edited = quoted(EDITED),
+                person = quoted(PERSON),
+            ),
+            format!(
+                "UPDATE notes_comment_thread_anchors
+                 SET start_offset = 1, anchor_text = 'irst', last_edited_time = {}
+                 WHERE thread_id = 'thread-a';",
+                quoted(EDITED)
+            ),
+            reject_sql(),
+            "DELETE FROM notes_comment_reactions;".to_string(),
+        ] {
+            replicas[1]
+                .exec("DELETE FROM notes_page_history_pending;")
+                .await;
+            replicas[0].exec(&sql).await;
+            converge(&mut replicas).await;
+            assert_eq!(
+                texts(
+                    &mut replicas[1],
+                    "SELECT page_id FROM notes_page_history_pending"
+                )
+                .await,
+                [PAGE.to_string()],
+                "{sql}"
+            );
+        }
+    });
+}
+
+#[test]
+fn a_removed_reaction_and_a_concurrent_re_add_of_it_converge() {
+    block_on(async {
+        let mut replicas = comments(2).await;
+        let reaction = derived_key(REACTION_KEY_PREFIX, &["comment-a", PERSON, "+1"]).unwrap();
+        replicas[0]
+            .exec("DELETE FROM notes_comment_reactions;")
+            .await;
+        replicas[1]
+            .exec(&format!(
+                "DELETE FROM notes_comment_reactions;
+                 INSERT INTO notes_comment_reactions
+                     (comment_id, created_by, emoji, sync_key, created_time)
+                 VALUES ('comment-a', {person}, '+1', {key}, {edited});",
+                person = quoted(PERSON),
+                key = quoted(reaction.as_str()),
+                edited = quoted(EDITED),
+            ))
+            .await;
+        converge(&mut replicas).await;
+        assert_converged(&mut replicas).await;
+        for replica in replicas.iter_mut() {
+            assert_eq!(
+                texts(
+                    replica,
+                    "SELECT emoji || ' ' || sync_key FROM notes_comment_reactions"
+                )
+                .await,
+                [format!("+1 {reaction}")],
+                "replica {}",
+                replica.index
+            );
+        }
+    });
+}
+
+#[test]
+fn a_remote_comment_mention_settles_without_a_notification() {
+    block_on(async {
+        let mut replicas = comments(2).await;
+        let mention = serde_json::json!([
+            {
+                "type": "mention",
+                "mention": { "type": "user", "user": { "id": PERSON } },
+                "plain_text": "@Person",
+            },
+            { "type": "text", "text": { "content": " please" }, "plain_text": " please" },
+        ])
+        .to_string();
+        replicas[0]
+            .exec(&format!(
+                "INSERT INTO notes_comments
+                     (id, thread_id, rich_text, plain_text, created_by, created_time,
+                      last_edited_time)
+                 VALUES ('comment-b', 'thread-a', {text}, '@Person please', {person}, {created},
+                         {created});",
+                text = quoted(&mention),
+                person = quoted(PERSON),
+                created = quoted(CREATED),
+            ))
+            .await;
+        converge(&mut replicas).await;
+        assert_eq!(
+            texts(
+                &mut replicas[1],
+                "SELECT kind || ' ' || target_id || ' ' || status
+                 FROM notes_mention_notifications WHERE comment_id = 'comment-b'",
+            )
+            .await,
+            [format!("user_mention {PERSON} delivered")]
+        );
     });
 }

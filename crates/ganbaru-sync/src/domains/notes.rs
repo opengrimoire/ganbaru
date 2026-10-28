@@ -1,22 +1,24 @@
 //! Notes adapter: the value checks that mirror the Notes structure table checks, the block
-//! parent kind derived from block placement, and the lifecycle priority that lets a trashed page
-//! or block win over a concurrent restore.
+//! parent kind derived from block placement, the lifecycle priority that lets a trashed page or
+//! block win over a concurrent restore, and the managed files Notes JSON references.
 
 use ganbaru_sync_contracts::bounds::MAX_TEXT_FIELD_BYTES;
 use ganbaru_sync_contracts::{Field, GroupId, GroupValue, TableId, Value, derived_key};
 
 use crate::adapter::{AdapterError, DomainAdapter, Presentation};
+use crate::assets::{AssetClass, AssetRef, CONTENT_TYPE_EXTENSIONS, file_name};
 use crate::codec;
 use crate::manifest::OwnedTable;
 use crate::manifest::vault::notes::{
-    ADAPTER, ALIASES_TABLE, ANCHORS_TABLE, BLOCKS_TABLE, COMMENTS_TABLE,
+    ADAPTER, ALIASES_TABLE, ANCHORS_TABLE, ASSETS_TABLE, BLOCKS_TABLE, COMMENTS_TABLE,
     DATA_SOURCE_TEMPLATE_BLOCKS, DATA_SOURCE_TEMPLATES_TABLE, DATA_SOURCES_TABLE, DATABASES_TABLE,
-    FOLDERS_TABLE, OPTIONS_TABLE, PAGE_TEMPLATE_BLOCKS, PAGE_TEMPLATES_TABLE, PAGES_TABLE,
-    PROPERTIES_TABLE, PROPERTY_KEY_PREFIX, REACTIONS_TABLE, SUGGESTIONS_TABLE, THREADS_TABLE,
-    VALUES_TABLE, VIEWS_TABLE, alias_group, anchor_group, block_group, comment_group,
-    data_source_group, data_source_template_group, database_group, folder_group, option_group,
-    page_group, page_template_group, property_group, reaction_group, suggestion_group,
-    thread_group, value_group, view_group,
+    FILES_CLASS, FOLDERS_TABLE, OPTIONS_TABLE, PAGE_COVERS_CLASS, PAGE_ICONS_CLASS,
+    PAGE_TEMPLATE_BLOCKS, PAGE_TEMPLATES_TABLE, PAGES_TABLE, PROPERTIES_TABLE, PROPERTY_KEY_PREFIX,
+    REACTIONS_TABLE, SUGGESTIONS_TABLE, THREADS_TABLE, VALUES_TABLE, VIEWS_TABLE, alias_group,
+    anchor_group, asset_group, block_group, comment_group, data_source_group,
+    data_source_template_group, database_group, folder_group, option_group, page_group,
+    page_template_group, property_group, reaction_group, suggestion_group, thread_group,
+    value_group, view_group,
 };
 
 /// Characters of a free text column without a narrower Notes limit.
@@ -29,6 +31,18 @@ pub const MAX_BLOCK_TEXT_BYTES: usize = 256 * 1024;
 pub const MAX_BLOCK_ATTRS_BYTES: usize = 64 * 1024;
 /// Bytes of one template's row and blocks together, as Notes measures them on save.
 pub const MAX_TEMPLATE_CONTENT_BYTES: usize = 256 * 1024;
+/// Attachments of one comment.
+pub const MAX_COMMENT_ATTACHMENTS: usize = 100;
+/// Bytes of one comment's attachments JSON.
+pub const MAX_COMMENT_ATTACHMENTS_BYTES: usize = 50 * 1024;
+/// Bytes of one reaction emoji.
+pub const MAX_REACTION_EMOJI_BYTES: usize = 64;
+/// Bytes of one page icon image.
+pub const MAX_PAGE_ICON_BYTES: u32 = 3 * 1024 * 1024;
+/// Bytes of one page cover image.
+pub const MAX_PAGE_COVER_BYTES: u32 = 8 * 1024 * 1024;
+/// Bytes of one file attached to a block, a property value, or a comment.
+pub const MAX_FILE_BYTES: u32 = 50 * 1024 * 1024;
 
 /// View types the `notes_database_views.type` check allows.
 pub const VIEW_TYPES: [&str; 10] = [
@@ -394,17 +408,37 @@ fn validate_comment(group: GroupId, fields: &[Field]) -> Result<(), AdapterError
         }
         (comment_group::BODY, [rich_text, _, attachments]) => {
             json_array(rich_text, "notes comment text")?;
-            json_array(attachments, "notes comment attachments")
+            comment_attachments(attachments)
         }
         _ => Ok(()),
     }
+}
+
+/// A comment's attachments: a JSON array of at most [`MAX_COMMENT_ATTACHMENTS`] objects within
+/// [`MAX_COMMENT_ATTACHMENTS_BYTES`], as Notes checks them on a local write.
+fn comment_attachments(field: &Field) -> Result<(), AdapterError> {
+    const WHAT: &str = "notes comment attachments";
+    let json = text(field)?;
+    if json.len() > MAX_COMMENT_ATTACHMENTS_BYTES {
+        return Err(AdapterError(WHAT));
+    }
+    let attachments =
+        serde_json::from_str::<Vec<serde_json::Value>>(json).map_err(|_| AdapterError(WHAT))?;
+    if attachments.len() > MAX_COMMENT_ATTACHMENTS || !attachments.iter().all(|a| a.is_object()) {
+        return Err(AdapterError(WHAT));
+    }
+    Ok(())
 }
 
 fn validate_reaction(group: GroupId, fields: &[Field]) -> Result<(), AdapterError> {
     match (group, fields) {
         (reaction_group::IDENTITY, [_, author, emoji]) => {
             not_blank(author, "notes reaction author")?;
-            not_blank(emoji, "notes reaction emoji")
+            not_blank(emoji, "notes reaction emoji")?;
+            if text(emoji)?.len() > MAX_REACTION_EMOJI_BYTES {
+                return Err(AdapterError("notes reaction emoji"));
+            }
+            Ok(())
         }
         (reaction_group::CREATED, [_, display_name]) => {
             optional_json(display_name, "notes reaction author name")
@@ -537,12 +571,232 @@ fn title_group(table: TableId) -> Option<GroupId> {
     }
 }
 
+/// Image content types a Notes image asset may have; page icons and covers are only these.
+pub const ASSET_IMAGE_CONTENT_TYPES: [&str; 3] = ["image/png", "image/jpeg", "image/webp"];
+/// Source types the `notes_assets.source_type` check allows.
+pub const ASSET_SOURCE_TYPES: [&str; 4] = [
+    "local_upload",
+    "generated",
+    "imported",
+    "external_reference",
+];
+
+/// The asset class whose directory holds `asset_path` directly, with the file name after it.
+fn asset_class_of(asset_path: &str) -> Option<(&'static AssetClass, &str)> {
+    [&PAGE_ICONS_CLASS, &PAGE_COVERS_CLASS, &FILES_CLASS]
+        .into_iter()
+        .find_map(|class| {
+            let name = asset_path.strip_prefix(class.name)?.strip_prefix('/')?;
+            Some((class, name))
+        })
+}
+
+/// The `notes_assets.kind` of a content type, or `None` for a type Notes refuses. The type is
+/// compared in lowercase, so SVG is refused whatever its case.
+pub fn asset_kind(content_type: &str) -> Option<&'static str> {
+    let content_type = content_type.to_ascii_lowercase();
+    let content_type = content_type.as_str();
+    if ASSET_IMAGE_CONTENT_TYPES.contains(&content_type) {
+        Some("image")
+    } else if content_type.starts_with("image/svg") {
+        None
+    } else if content_type.starts_with("video/") {
+        Some("video")
+    } else if content_type.starts_with("audio/") {
+        Some("audio")
+    } else if content_type == "application/pdf" {
+        Some("pdf")
+    } else {
+        Some("file")
+    }
+}
+
+/// How strictly a managed file's name must match its digest and content type.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum AssetName {
+    /// An asset row: the name is exactly `{sha256}.{ext}` of its content type, and the content
+    /// type is a lowercase type of the sync extension table or `application/octet-stream`.
+    Canonical,
+    /// A reference in a value: the stem is the digest and the extension is any alphanumeric
+    /// one, so a file written under the extension of its source path stays referenced and the
+    /// sweep keeps it. Such a file never transfers, since peers ask for the canonical name.
+    Digest,
+}
+
+/// Content types an asset row may carry: those of the sync extension table and the generic
+/// binary type Notes gives a file of unknown type.
+fn asset_content_type_allowed(content_type: &str) -> bool {
+    content_type == "application/octet-stream"
+        || CONTENT_TYPE_EXTENSIONS
+            .iter()
+            .any(|(known, _)| *known == content_type)
+}
+
+/// The asset a managed file names: its path is in a Notes class, its name follows `naming`,
+/// the size fits the class, and page icons and covers are images. Anything else names no
+/// asset.
+fn managed_asset(
+    asset_path: &str,
+    content_type: &str,
+    byte_size: i64,
+    sha256: &str,
+    naming: AssetName,
+) -> Option<AssetRef> {
+    let (class, name) = asset_class_of(asset_path)?;
+    let kind = asset_kind(content_type)?;
+    if !std::ptr::eq(class, &FILES_CLASS) && kind != "image" {
+        return None;
+    }
+    let named = match naming {
+        AssetName::Canonical => {
+            asset_content_type_allowed(content_type)
+                && file_name(sha256, content_type).ok()? == name
+        }
+        AssetName::Digest => name.split_once('.').is_some_and(|(stem, extension)| {
+            stem == sha256
+                && !extension.is_empty()
+                && extension.bytes().all(|byte| byte.is_ascii_alphanumeric())
+        }),
+    };
+    if !named {
+        return None;
+    }
+    let byte_size = u32::try_from(byte_size).ok()?;
+    AssetRef::new(class, sha256.to_owned(), content_type.to_owned(), byte_size).ok()
+}
+
+/// Every managed file object in `json`: an object with `ganbaru_asset_path`, `content_type`,
+/// `sha256`, and `byte_size`, at any depth.
+fn collect_json_assets(json: &serde_json::Value, assets: &mut Vec<AssetRef>) {
+    match json {
+        serde_json::Value::Object(object) => {
+            let file = (
+                object.get("ganbaru_asset_path").and_then(|v| v.as_str()),
+                object.get("content_type").and_then(|v| v.as_str()),
+                object.get("byte_size").and_then(|v| v.as_i64()),
+                object.get("sha256").and_then(|v| v.as_str()),
+            );
+            if let (Some(path), Some(content_type), Some(size), Some(sha256)) = file
+                && let Some(asset) =
+                    managed_asset(path.trim(), content_type, size, sha256, AssetName::Digest)
+            {
+                assets.push(asset);
+            }
+            for nested in object.values() {
+                collect_json_assets(nested, assets);
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for item in items {
+                collect_json_assets(item, assets);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// The managed files the JSON text fields of `fields` name, and those of the template blocks in
+/// a blob field of `owned`. Fields that are not JSON name nothing.
+fn collect_field_assets(fields: &[Field], owned: Option<&OwnedTable>, assets: &mut Vec<AssetRef>) {
+    for field in fields {
+        match field {
+            Field::Text(text) if text.contains("ganbaru_asset_path") => {
+                if let Ok(json) = serde_json::from_str::<serde_json::Value>(text) {
+                    collect_json_assets(&json, assets);
+                }
+            }
+            Field::Blob(bytes) => {
+                if let Some(rows) = owned.and_then(|owned| codec::decode(owned, bytes).ok()) {
+                    for row in &rows {
+                        collect_field_assets(&row.fields, None, assets);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// An asset row's content: the path is `{class}/{sha256}.{ext}` of its own digest and content
+/// type in a Notes class, the size fits that class, and the kind is the one its content type
+/// implies.
+fn validate_asset(group: GroupId, fields: &[Field]) -> Result<(), AdapterError> {
+    match (group, fields) {
+        (asset_group::CONTENT, [path, kind, content_type, Field::Integer(size), sha256]) => {
+            let asset = managed_asset(
+                text(path)?,
+                text(content_type)?,
+                *size,
+                text(sha256)?,
+                AssetName::Canonical,
+            )
+            .ok_or(AdapterError("notes asset content"))?;
+            if asset_kind(asset.content_type()) != Some(text(kind)?) {
+                return Err(AdapterError("notes asset kind"));
+            }
+            Ok(())
+        }
+        (asset_group::CONTENT, _) => Err(AdapterError("notes asset content")),
+        (asset_group::DETAILS, [source_type, original_name, _]) => {
+            if !ASSET_SOURCE_TYPES.contains(&text(source_type)?) {
+                return Err(AdapterError("notes asset source type"));
+            }
+            if let Field::Text(name) = original_name
+                && name.chars().any(char::is_control)
+            {
+                return Err(AdapterError("notes asset original name"));
+            }
+            Ok(())
+        }
+        _ => Ok(()),
+    }
+}
+
 /// Validation, derived block parent kinds, and lifecycle priorities for Notes tables.
 pub struct NotesAdapter;
 
 impl DomainAdapter for NotesAdapter {
     fn name(&self) -> &'static str {
         ADAPTER
+    }
+
+    /// Groups whose JSON may name managed files: block attributes, page and database icons and
+    /// covers, data source icons, property values, comment attachments, and template content.
+    /// Asset rows themselves reference nothing, so an unreferenced file can be swept.
+    fn asset_groups(&self, table: TableId) -> &'static [GroupId] {
+        match table {
+            BLOCKS_TABLE => &[block_group::KIND],
+            PAGES_TABLE => &[page_group::APPEARANCE],
+            DATABASES_TABLE => &[database_group::APPEARANCE],
+            DATA_SOURCES_TABLE => &[data_source_group::ICON],
+            VALUES_TABLE => &[value_group::VALUE],
+            COMMENTS_TABLE => &[comment_group::BODY],
+            PAGE_TEMPLATES_TABLE => &[page_template_group::CONTENT],
+            DATA_SOURCE_TEMPLATES_TABLE => &[data_source_template_group::CONTENT],
+            _ => &[],
+        }
+    }
+
+    /// The managed files a group's JSON names, by digest whatever the file's extension. A
+    /// reference that does not name a file of a Notes class by its digest is skipped rather
+    /// than refused, so one stale reference never blocks the referenced set of the whole vault.
+    fn asset_refs(
+        &self,
+        table: TableId,
+        group: GroupId,
+        value: &Value,
+    ) -> Result<Vec<AssetRef>, AdapterError> {
+        if !self.asset_groups(table).contains(&group) {
+            return Ok(Vec::new());
+        }
+        let owned = match table {
+            PAGE_TEMPLATES_TABLE => Some(&PAGE_TEMPLATE_BLOCKS),
+            DATA_SOURCE_TEMPLATES_TABLE => Some(&DATA_SOURCE_TEMPLATE_BLOCKS),
+            _ => None,
+        };
+        let mut assets = Vec::new();
+        collect_field_assets(value.fields(), owned, &mut assets);
+        Ok(assets)
     }
 
     /// A block's `parent_type` follows its placement.
@@ -610,6 +864,8 @@ impl DomainAdapter for NotesAdapter {
             validate_reaction(group, fields)
         } else if table == SUGGESTIONS_TABLE {
             validate_suggestion(group, fields)
+        } else if table == ASSETS_TABLE {
+            validate_asset(group, fields)
         } else {
             Ok(())
         }
@@ -963,14 +1219,24 @@ mod tests {
         body("[]", "[]").unwrap();
         assert!(body("{}", "[]").is_err());
         assert!(body("[]", "{").is_err());
-        assert!(
+        assert!(body("[]", "[1]").is_err());
+        let attachments = |count: usize, name: &str| {
+            serde_json::Value::Array(vec![serde_json::json!({ "name": name }); count]).to_string()
+        };
+        body("[]", &attachments(MAX_COMMENT_ATTACHMENTS, "a")).unwrap();
+        assert!(body("[]", &attachments(MAX_COMMENT_ATTACHMENTS + 1, "a")).is_err());
+        let wide = "a".repeat(MAX_COMMENT_ATTACHMENTS_BYTES / 4);
+        assert!(body("[]", &attachments(4, &wide)).is_err());
+        let reaction = |emoji: &str| {
             check(
                 REACTIONS_TABLE,
                 reaction_group::IDENTITY,
-                vec![t("comment"), t("person"), t(" ")],
+                vec![t("comment"), t("person"), t(emoji)],
             )
-            .is_err()
-        );
+        };
+        reaction("👍").unwrap();
+        assert!(reaction(" ").is_err());
+        assert!(reaction(&"👍".repeat(MAX_REACTION_EMOJI_BYTES / 4 + 1)).is_err());
 
         let decision = |status: &str, accepted: Field, rejected: Field| {
             check(
@@ -1058,5 +1324,157 @@ mod tests {
         };
         assert_eq!(suggestion("new"), "new");
         assert_eq!(suggestion(""), "old");
+    }
+
+    fn asset_content(path: &str, kind: &str, content_type: &str, size: i64, sha: &str) -> Value {
+        value(vec![
+            t(path),
+            t(kind),
+            t(content_type),
+            Field::Integer(size),
+            t(sha),
+        ])
+    }
+
+    #[test]
+    fn asset_rows_name_their_own_digest_within_the_class_bound() {
+        let adapter = NotesAdapter;
+        let sha = "a".repeat(64);
+        let check = |path: String, kind: &str, content_type: &str, size: i64| {
+            adapter.validate(
+                ASSETS_TABLE,
+                asset_group::CONTENT,
+                &asset_content(&path, kind, content_type, size, &sha),
+            )
+        };
+        let icon = || format!("notes/page-icons/{sha}.png");
+        let file = |extension: &str| format!("notes/files/{sha}.{extension}");
+        check(icon(), "image", "image/png", i64::from(MAX_PAGE_ICON_BYTES)).unwrap();
+        check(
+            format!("notes/page-covers/{sha}.jpg"),
+            "image",
+            "image/jpeg",
+            i64::from(MAX_PAGE_COVER_BYTES),
+        )
+        .unwrap();
+        check(
+            file("pdf"),
+            "pdf",
+            "application/pdf",
+            i64::from(MAX_FILE_BYTES),
+        )
+        .unwrap();
+        check(file("bin"), "file", "application/octet-stream", 1).unwrap();
+        for (path, kind, content_type, size) in [
+            // Above the class bound.
+            (
+                icon(),
+                "image",
+                "image/png",
+                i64::from(MAX_PAGE_ICON_BYTES) + 1,
+            ),
+            (
+                file("pdf"),
+                "pdf",
+                "application/pdf",
+                i64::from(MAX_FILE_BYTES) + 1,
+            ),
+            (icon(), "image", "image/png", 0),
+            // A name that is not the digest name of the row's bytes.
+            (
+                format!("notes/files/{}.pdf", "b".repeat(64)),
+                "pdf",
+                "application/pdf",
+                10,
+            ),
+            (file("png"), "pdf", "application/pdf", 10),
+            // A kind its content type does not imply, or a type Notes refuses.
+            (file("pdf"), "file", "application/pdf", 10),
+            (icon(), "file", "image/png", 10),
+            (
+                format!("notes/page-icons/{sha}.pdf"),
+                "pdf",
+                "application/pdf",
+                10,
+            ),
+            (file("svg"), "file", "image/svg+xml", 10),
+            (file("bin"), "file", "IMAGE/SVG+XML", 10),
+            // A content type outside the sync extension table, or not in lowercase.
+            (file("bin"), "file", "application/zip", 10),
+            (file("bin"), "pdf", "Application/PDF", 10),
+            // Outside the Notes classes.
+            (format!("project-icons/{sha}.png"), "image", "image/png", 10),
+        ] {
+            assert!(
+                check(path.clone(), kind, content_type, size).is_err(),
+                "{path} {kind} {content_type} {size}"
+            );
+        }
+        let details = |source: &str, name: Field| {
+            adapter.validate(
+                ASSETS_TABLE,
+                asset_group::DETAILS,
+                &value(vec![t(source), name, t("2027-01-01T00:00:00.000Z")]),
+            )
+        };
+        details("local_upload", t("report.pdf")).unwrap();
+        details("imported", Field::Null).unwrap();
+        assert!(details("remote", Field::Null).is_err());
+        assert!(details("local_upload", t("bad\nname")).is_err());
+    }
+
+    #[test]
+    fn asset_refs_report_the_managed_files_notes_json_names() {
+        let adapter = NotesAdapter;
+        let sha = "c".repeat(64);
+        let file = |path: &str, size: i64| {
+            serde_json::json!({
+                "type": "file",
+                "file": {
+                    "content_type": "application/pdf",
+                    "byte_size": size,
+                    "sha256": sha,
+                    "ganbaru_asset_path": path,
+                }
+            })
+            .to_string()
+        };
+        let refs = |attrs: String| {
+            adapter
+                .asset_refs(
+                    BLOCKS_TABLE,
+                    block_group::KIND,
+                    &value(vec![t("file"), t(&attrs)]),
+                )
+                .unwrap()
+        };
+        let found = refs(file(&format!("notes/files/{sha}.pdf"), 42));
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].class().name, "notes/files");
+        assert_eq!(found[0].file_name(), format!("{sha}.pdf"));
+        assert_eq!(found[0].byte_size(), 42);
+        // A file named by its digest under the extension of its source path stays referenced,
+        // so the sweep keeps it.
+        let old_name = refs(file(&format!("notes/files/{sha}.docx"), 42));
+        assert_eq!(old_name.len(), 1);
+        assert_eq!(old_name[0].sha256(), sha);
+        // A stale or foreign reference is skipped rather than refused.
+        assert!(refs(file("notes/files/report.pdf", 42)).is_empty());
+        assert!(refs(file(&format!("notes/files/{}.pdf", "d".repeat(64)), 42)).is_empty());
+        assert!(refs(file(&format!("notes/files/{sha}.p-df"), 42)).is_empty());
+        assert!(refs(file(&format!("notes/files/{sha}.pdf"), -1)).is_empty());
+        assert!(refs(file(&format!("project-icons/{sha}.pdf"), 42)).is_empty());
+        assert!(refs("not json ganbaru_asset_path".to_string()).is_empty());
+        assert!(adapter.asset_groups(ASSETS_TABLE).is_empty());
+        assert!(
+            adapter
+                .asset_refs(
+                    BLOCKS_TABLE,
+                    block_group::TEXT,
+                    &value(vec![t(&file(&format!("notes/files/{sha}.pdf"), 42))])
+                )
+                .unwrap()
+                .is_empty()
+        );
     }
 }

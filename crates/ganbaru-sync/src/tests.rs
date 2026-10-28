@@ -22,6 +22,7 @@ mod local;
 mod local_assets;
 mod music;
 mod notes;
+mod notes_assets;
 mod notes_comments;
 mod owned;
 mod preferences;

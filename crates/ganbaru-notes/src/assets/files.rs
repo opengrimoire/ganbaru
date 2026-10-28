@@ -14,8 +14,9 @@ use crate::assets::{
 };
 use crate::blocking::run_blocking;
 
-const NOTES_FILE_MAX_DISPLAY_MEGABYTES: usize = 50;
-pub(crate) const NOTES_FILE_MAX_BYTES: usize = NOTES_FILE_MAX_DISPLAY_MEGABYTES * 1024 * 1024;
+pub(crate) const NOTES_FILE_MAX_BYTES: usize =
+    ganbaru_sync::domains::notes::MAX_FILE_BYTES as usize;
+const NOTES_FILE_MAX_DISPLAY_MEGABYTES: usize = NOTES_FILE_MAX_BYTES / (1024 * 1024);
 const NOTES_FILE_PREVIEW_MAX_DISPLAY_MEGABYTES: i64 = 25;
 const NOTES_FILE_PREVIEW_MAX_BYTES: i64 = NOTES_FILE_PREVIEW_MAX_DISPLAY_MEGABYTES * 1024 * 1024;
 const NOTES_FILE_DIR: &str = "notes/files";
@@ -559,6 +560,65 @@ fn classify_generic_file(extension: &str, bytes: &[u8]) -> (NotesFileAssetKind, 
     (NotesFileAssetKind::File, generic_content_type(extension))
 }
 
+/// Leading bytes a synced file check reads, enough for every signature the classifier matches.
+const SYNCED_FILE_SIGNATURE_BYTES: u64 = 64 * 1024;
+
+/// Content check of a Notes file a sync peer sent, after its size and digest matched the
+/// reference. A previewable content type must match the signature of the bytes, as it does when
+/// the file is chosen locally; other content types are opaque downloads and any bytes pass.
+pub fn check_synced_notes_file(
+    asset: &ganbaru_sync::assets::AssetRef,
+    path: &Path,
+) -> Result<(), String> {
+    let content_type = asset.content_type();
+    let previewable = content_type.starts_with("image/")
+        || content_type.starts_with("audio/")
+        || content_type.starts_with("video/")
+        || content_type == "application/pdf";
+    if !previewable {
+        return Ok(());
+    }
+    let head = read_synced_file_head(path)?;
+    let matches = if content_type.starts_with("image/") {
+        sniff_image_kind(&head).is_some_and(|kind| kind.content_type() == content_type)
+    } else if content_type == "application/pdf" {
+        head.starts_with(b"%PDF-")
+    } else if content_type.starts_with("audio/") {
+        sniff_media_container(&head)
+            .and_then(audio_content_type)
+            .is_some_and(|detected| detected == content_type)
+    } else {
+        sniff_media_container(&head).is_some_and(|container| {
+            VIDEO_EXTENSIONS
+                .iter()
+                .any(|extension| video_content_type(container, extension) == Some(content_type))
+        })
+    };
+    if !matches {
+        return Err(format!(
+            "the bytes do not match the content type {content_type} the reference names"
+        ));
+    }
+    Ok(())
+}
+
+fn read_synced_file_head(path: &Path) -> Result<Vec<u8>, String> {
+    use std::io::Read;
+    let metadata =
+        fs::symlink_metadata(path).map_err(|error| format!("read synced file: {error}"))?;
+    if !metadata.is_file() {
+        return Err("synced notes file must be a regular file".to_string());
+    }
+    let mut head = Vec::new();
+    fs::File::open(path)
+        .and_then(|file| {
+            file.take(SYNCED_FILE_SIGNATURE_BYTES)
+                .read_to_end(&mut head)
+        })
+        .map_err(|error| format!("read synced file: {error}"))?;
+    Ok(head)
+}
+
 /// Audio and video container families recognized by their leading bytes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum MediaContainer {
@@ -715,6 +775,9 @@ struct StoredNotesFile {
 }
 
 /// Classify, hash, and write file bytes into the managed Notes folder. Runs on a blocking worker.
+///
+/// The file is named `{sha256}.{ext}` with the extension sync derives from the content type, so
+/// every device stores the same bytes under the same name.
 fn store_notes_file_bytes(
     vault_root: &Path,
     requested_kind: NotesFileAssetKind,
@@ -722,10 +785,10 @@ fn store_notes_file_bytes(
     bytes: &[u8],
 ) -> Result<StoredNotesFile, String> {
     ensure_notes_file_size(bytes)?;
-    let (kind, content_type, extension) =
-        classify_selected_file(requested_kind, source_path, bytes)?;
+    let (kind, content_type, _) = classify_selected_file(requested_kind, source_path, bytes)?;
     let sha256 = hex_hash(bytes);
-    let file_name = format!("{sha256}.{extension}");
+    let file_name = ganbaru_sync::assets::file_name(&sha256, content_type)
+        .map_err(|error| format!("name notes file: {error}"))?;
     let relative_path = format!("{NOTES_FILE_DIR}/{file_name}");
     let path = active_notes_file_dir(vault_root).join(file_name);
     if !ganbaru_atomic_files::is_regular_file(&path) {
@@ -807,24 +870,26 @@ pub async fn file_asset_data_url(
     vault_root: &Path,
     relative_path: String,
 ) -> Result<String, String> {
-    let path = asset_path_for_relative(vault_root, &relative_path)?;
-    let asset: Option<(String, i64)> = sqlx::query_as(
-        "SELECT content_type, byte_size
-         FROM notes_assets
-         WHERE asset_path = ? AND asset_path GLOB 'notes/files/*'",
-    )
-    .bind(relative_path.trim())
-    .fetch_optional(pool)
-    .await
-    .map_err(|e| format!("load notes file asset metadata: {e}"))?;
-    let Some((content_type, byte_size)) = asset else {
-        return Err("notes file asset not found".to_string());
-    };
+    let referenced = asset_path_for_relative(vault_root, &relative_path)?;
+    let asset = assets::resolve_asset_row(pool, &relative_path)
+        .await?
+        .filter(|asset| asset.asset_path.starts_with(&format!("{NOTES_FILE_DIR}/")))
+        .ok_or_else(|| "notes file asset not found".to_string())?;
+    let stored = asset_path_for_relative(vault_root, &asset.asset_path)?;
+    let byte_size = asset.byte_size;
     let encoded = run_blocking(move || {
+        // A reference may name its bytes under another content type's extension than the row
+        // that holds them, and only the row's path is guaranteed to arrive from a peer.
+        let path = if ganbaru_atomic_files::is_regular_file(&referenced) {
+            referenced
+        } else {
+            stored
+        };
         read_preview_file_capped(&path, byte_size)
             .map(|bytes| general_purpose::STANDARD.encode(bytes))
     })
     .await;
+    let content_type = asset.content_type;
     let encoded = match encoded {
         Ok(encoded) => encoded,
         Err(error) => {

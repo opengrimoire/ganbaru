@@ -345,9 +345,12 @@ async fn exclude_branches(
     if cut.is_empty() {
         return Ok(());
     }
-    if is_anchor(conn, ctx.space).await? {
-        for (writer, keep, _) in &cut {
+    let anchor = is_anchor(conn, ctx.space).await?;
+    for (writer, keep, _) in &cut {
+        if anchor {
             collect_republish(engine, conn, ctx.space, batch, *writer, *keep).await?;
+        } else {
+            collect_released(engine, conn, ctx.space, batch, *writer, *keep).await?;
         }
     }
     // A row the branch created keeps the honest changes made to it but waits, hidden, for
@@ -421,6 +424,44 @@ pub(crate) async fn reseals_excluded(
     Ok(handed_over)
 }
 
+/// Adds to [`Batch::released`] the groups that `writer` wrote past `keep` in operations this
+/// replica applied while it was the anchor, which kept none of the versions they displaced, so
+/// it seals them again whether or not it is still the anchor. Runs before the exclusion removes
+/// their effects, so it records the values they wrote as restatements, see [`restated`].
+pub(crate) async fn collect_released(
+    engine: &Engine,
+    conn: &mut SqliteConnection,
+    space: SpaceId,
+    batch: &mut Batch,
+    writer: WriterId,
+    keep: Seq,
+) -> SyncResult<()> {
+    let released: Option<i64> = sqlx::query_scalar(
+        "SELECT seq FROM sync_released_marks WHERE space_id = ? AND writer_id = ?",
+    )
+    .bind(space.as_bytes().as_slice())
+    .bind(writer.as_bytes().as_slice())
+    .fetch_optional(&mut *conn)
+    .await?;
+    let Some(released) = released else {
+        return Ok(());
+    };
+    let through = stored_u64(released, "released mark")?;
+    let mut groups = BTreeMap::new();
+    collect_written(engine, conn, space, &mut groups, writer, keep, through).await?;
+    for ((table, key), mask) in groups {
+        if merge::row_state(conn, table, &key).await? == Some(RowState::Live) {
+            record_restated(engine, conn, table, &key, mask).await?;
+        }
+        let entry = batch
+            .released
+            .entry((table, key))
+            .or_insert(GroupMask::EMPTY);
+        *entry = GroupMask(entry.0 | mask.0);
+    }
+    Ok(())
+}
+
 /// Adds to [`Batch::republish`] every group that a stored operation of `writer` past `keep`
 /// writes. Members may have released what those operations displaced once an anchor stored
 /// them, applied or not, so the anchor seals all of them again.
@@ -432,12 +473,40 @@ pub(crate) async fn collect_republish(
     writer: WriterId,
     keep: Seq,
 ) -> SyncResult<()> {
+    collect_written(
+        engine,
+        conn,
+        space,
+        &mut batch.republish,
+        writer,
+        keep,
+        Seq::MAX,
+    )
+    .await
+}
+
+/// Adds to `groups` every group that a stored operation of `writer` in
+/// `(keep, through]` writes.
+async fn collect_written(
+    engine: &Engine,
+    conn: &mut SqliteConnection,
+    space: SpaceId,
+    groups: &mut BTreeMap<(TableId, String), GroupMask>,
+    writer: WriterId,
+    keep: Seq,
+    through: Seq,
+) -> SyncResult<()> {
+    if through <= keep {
+        return Ok(());
+    }
     let envelopes: Vec<Vec<u8>> = sqlx::query_scalar(
-        "SELECT envelope FROM sync_ops WHERE space_id = ? AND writer_id = ? AND seq > ?",
+        "SELECT envelope FROM sync_ops
+         WHERE space_id = ? AND writer_id = ? AND seq > ? AND seq <= ?",
     )
     .bind(space.as_bytes().as_slice())
     .bind(writer.as_bytes().as_slice())
     .bind(seq_i64(keep)?)
+    .bind(i64::try_from(through).unwrap_or(i64::MAX))
     .fetch_all(&mut *conn)
     .await?;
     for envelope in envelopes {
@@ -445,7 +514,7 @@ pub(crate) async fn collect_republish(
             .ok()
             .and_then(|envelope| envelope.operation().ok())
             .ok_or_else(|| corrupt("a stored operation past a cutoff does not decode"))?;
-        written_groups(engine, &operation.content, &mut batch.republish);
+        written_groups(engine, &operation.content, groups);
     }
     Ok(())
 }
@@ -490,15 +559,50 @@ pub(crate) async fn republish(
     capture_groups(engine, conn, std::mem::take(&mut batch.republish), now_ms).await
 }
 
-/// Captures `groups` on live rows, so the next seal publishes their current values. A live row
-/// of a derived-key table its domain table does not hold publishes its existence register as
-/// absent when `groups` names it; any other row the domain table does not hold, and a row an
-/// exclusion left orphaned or a tombstone deleted, is skipped.
+/// Captures the groups [`Batch::released`] holds before the call materializes, while the domain
+/// rows still hold the values the excluded operations wrote, so the seal that comes first in the
+/// same call publishes those values as this replica's own. Released groups leave
+/// [`Batch::republish`], which would only seal them again.
+pub(crate) async fn capture_released(
+    engine: &Engine,
+    conn: &mut SqliteConnection,
+    batch: &mut Batch,
+    now_ms: u64,
+) -> SyncResult<()> {
+    let released = std::mem::take(&mut batch.released);
+    for (row, mask) in &released {
+        if let Some(pending) = batch.republish.get_mut(row) {
+            *pending = GroupMask(pending.0 & !mask.0);
+            if pending.is_empty() {
+                batch.republish.remove(row);
+            }
+        }
+    }
+    capture_rows(engine, conn, released, now_ms, false).await
+}
+
+/// Captures `groups` on live rows, so the next seal publishes their current values, and records
+/// their winning values as restatements. A live row of a derived-key table its domain table does
+/// not hold publishes its existence register as absent when `groups` names it; any other row the
+/// domain table does not hold, and a row an exclusion left orphaned or a tombstone deleted, is
+/// skipped.
 pub(crate) async fn capture_groups(
     engine: &Engine,
     conn: &mut SqliteConnection,
     groups: BTreeMap<(TableId, String), GroupMask>,
     now_ms: u64,
+) -> SyncResult<()> {
+    capture_rows(engine, conn, groups, now_ms, true).await
+}
+
+/// Captures `groups` as [`capture_groups`] does, recording restatements only when `restate`
+/// holds.
+async fn capture_rows(
+    engine: &Engine,
+    conn: &mut SqliteConnection,
+    groups: BTreeMap<(TableId, String), GroupMask>,
+    now_ms: u64,
+    restate: bool,
 ) -> SyncResult<()> {
     for ((table, key), mask) in groups {
         let Some(spec) = engine.manifest().table(table) else {
@@ -511,7 +615,9 @@ pub(crate) async fn capture_groups(
             .await?
             .is_some()
         {
-            record_restated(engine, conn, table, &key, mask).await?;
+            if restate {
+                record_restated(engine, conn, table, &key, mask).await?;
+            }
             seal::force_capture(conn, table, &key, mask, now_ms).await?;
         } else if let Some(exists) = spec.exists_group()
             && mask.contains(exists.id)

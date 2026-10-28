@@ -417,3 +417,46 @@ fn stale_rows_and_restated_groups_keep_one_bounded_entry_each() {
         }
     });
 }
+
+#[test]
+fn released_marks_keep_one_positive_sequence_per_writer_and_go_with_their_space() {
+    super::block_on(async {
+        let pool = super::helpers::migrated_memory_pool().await;
+        sqlx::query(
+            "INSERT INTO sync_spaces (space_id, vault_id, created_at_ms)
+             VALUES (zeroblob(16), 'vault-a', 1)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let released = "INSERT INTO sync_released_marks (space_id, writer_id, seq)
+                        VALUES (zeroblob(16), ?, ?)";
+        for (writer, seq, accepted, reason) in [
+            (
+                vec![1_u8; 16],
+                3,
+                true,
+                "a released mark names a writer and a sequence",
+            ),
+            (vec![1_u8; 16], 4, false, "a writer has one released mark"),
+            (vec![2_u8; 8], 1, false, "a released mark names a writer id"),
+            (vec![3_u8; 16], 0, false, "a released sequence is positive"),
+        ] {
+            let result = sqlx::query(released)
+                .bind(writer)
+                .bind(seq)
+                .execute(&pool)
+                .await;
+            assert_eq!(result.is_ok(), accepted, "{reason}");
+        }
+        sqlx::query("DELETE FROM sync_spaces")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let left: i64 = sqlx::query_scalar("SELECT count(*) FROM sync_released_marks")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(left, 0, "released marks go with their space");
+    });
+}

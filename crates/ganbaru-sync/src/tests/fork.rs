@@ -10,9 +10,10 @@ use ganbaru_sync_contracts::{DeviceRole, Envelope, ProposalRejection};
 
 use super::authorization::{admin_entry, forge_handover, remove_entry, superseded, view};
 use super::block_on;
-use super::exclusion::{deliver, displaced, edit, late_changes, note, title};
+use super::exclusion::{deliver, displaced, edit, late_changes, note, own_head, title};
 use super::replica::{
-    ANCHOR_DEVICE_ID, Replica, anchor_admin, converge, device_id, enroll_entry, pair, person,
+    ANCHOR_DEVICE_ID, Replica, anchor_admin, converge, device_admin, device_id, enroll_entry, pair,
+    person,
 };
 use crate::{
     EvidenceOutcome, EvidenceRefusal, MAX_EXCLUDED_PER_WRITER, StoreOutcome, StoreRefusal,
@@ -483,6 +484,74 @@ fn a_fork_learned_after_the_anchor_confirmed_a_branch_converges_on_the_anchor_wi
         for replica in &mut replicas {
             assert_eq!(replica.dump().await, settled, "replica {}", replica.index);
             assert!(late_changes(replica).await.is_empty());
+        }
+    });
+}
+
+#[test]
+fn the_current_and_a_former_anchor_resealing_one_forked_group_converge() {
+    block_on(async {
+        let mut charter = Replica::anchor(0, 308).await;
+        charter.sequence(admin_entry(20)).await.unwrap().unwrap();
+        let mut successor = Replica::new(20, 308).await;
+        let (mut original, mut clone) = installation(308).await;
+        let mut honest = Replica::new(2, 308).await;
+        deliver(&mut charter, &mut original).await;
+        deliver(&mut successor, &mut charter).await;
+        deliver(&mut honest, &mut charter).await;
+        let before_fork = charter.stored_vector().await;
+        diverge(&mut original, &mut clone).await;
+
+        // The charter anchor applies the original's branch and keeps nothing it displaced. A
+        // handover that never saw the branch installs the successor, which applies the clone's.
+        deliver(&mut charter, &mut original).await;
+        let signed = successor.handover_proposal(&device_admin(20)).await;
+        successor
+            .seal_handover(&signed, Some(before_fork))
+            .await
+            .unwrap()
+            .unwrap();
+        deliver(&mut charter, &mut successor).await;
+        deliver(&mut successor, &mut clone).await;
+        assert_eq!(
+            title(&mut charter, "note-1").await.as_deref(),
+            Some("Original")
+        );
+        assert_eq!(
+            title(&mut successor, "note-1").await.as_deref(),
+            Some("Clone")
+        );
+
+        // Evidence reaches both. The successor re-seals as the anchor of a handed over epoch and
+        // the charter as the former anchor that released what the branch displaced.
+        let heads = [own_head(&mut charter).await, own_head(&mut successor).await];
+        cross(&mut successor, &mut original).await;
+        cross(&mut charter, &mut clone).await;
+        for (replica, before) in [&mut charter, &mut successor].into_iter().zip(heads) {
+            assert_eq!(replica.evidence().await.len(), 1);
+            replica.seal().await.unwrap();
+            assert!(
+                own_head(replica).await > before,
+                "{} re-seals",
+                replica.device_id
+            );
+        }
+        drop(original);
+        drop(clone);
+        let mut replicas = vec![charter, successor, honest];
+        converge(&mut replicas).await;
+        let settled = replicas[0].domain_dump().await;
+        let kept = title(&mut replicas[0], "note-1").await;
+        assert!(kept.is_some());
+        for replica in &mut replicas {
+            assert_eq!(
+                replica.domain_dump().await,
+                settled,
+                "{}",
+                replica.device_id
+            );
+            assert_eq!(title(replica, "note-1").await, kept);
+            replica.check_invariants().await;
         }
     });
 }

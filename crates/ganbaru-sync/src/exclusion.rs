@@ -275,11 +275,15 @@ pub(crate) async fn reconcile(
         ));
         entry.2 |= state == "applied";
     }
-    // An earlier anchor may have stored these operations, which released what they displaced.
-    if !writers.is_empty() && crate::fork::reseals_excluded(conn, ctx.space).await? {
-        for (writer, (cutoff, _, _)) in &writers {
+    // An earlier anchor may have stored these operations, which released what they displaced;
+    // this replica may be that anchor, the current one or a former one.
+    let reseals = !writers.is_empty() && crate::fork::reseals_excluded(conn, ctx.space).await?;
+    for (writer, (cutoff, _, _)) in &writers {
+        if reseals {
             crate::fork::collect_republish(engine, conn, ctx.space, batch, *writer, *cutoff)
                 .await?;
+        } else {
+            crate::fork::collect_released(engine, conn, ctx.space, batch, *writer, *cutoff).await?;
         }
     }
     for (writer, (cutoff, revision, _)) in &writers {
@@ -493,7 +497,9 @@ pub(crate) async fn restore_displaced(
 /// A member retains what an operation supersedes while the operation's writer belongs to
 /// neither the anchor nor the local device and the anchor has not confirmed storing it: only
 /// such an operation can still fall past a removal cutoff. The anchor and a replica that does
-/// not know its own device retain nothing.
+/// not know its own device retain nothing; the anchor instead records, per writer of another
+/// device, the highest sequence it applied, so it seals the groups those operations wrote again
+/// if they are excluded later.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct Retention {
     /// Writers of devices other than the anchor and the local one.
@@ -503,6 +509,11 @@ pub(crate) struct Retention {
     marks: BTreeMap<WriterId, Seq>,
     /// Marks raised since the last flush.
     raised: BTreeSet<WriterId>,
+    /// On the anchor, writers of other devices, whose applied operations release what they
+    /// displace.
+    releasing: BTreeSet<WriterId>,
+    /// Highest sequence applied per releasing writer since the last flush.
+    released: BTreeMap<WriterId, Seq>,
 }
 
 impl Retention {
@@ -516,9 +527,6 @@ impl Retention {
         let Some((Some(anchor), Some(local))) = devices else {
             return Ok(Self::default());
         };
-        if anchor == local {
-            return Ok(Self::default());
-        }
         let mut retention = Self::default();
         let writers: Vec<(Vec<u8>, String)> =
             sqlx::query_as("SELECT writer_id, device_id FROM sync_writers WHERE space_id = ?")
@@ -527,14 +535,30 @@ impl Retention {
                 .await?;
         for (writer, device) in writers {
             let writer = log::writer_id(&writer)?;
-            if device == anchor {
+            if device == local {
+                continue;
+            }
+            if anchor == local {
+                retention.releasing.insert(writer);
+            } else if device == anchor {
                 retention.anchor_writers.insert(writer);
-            } else if device != local {
+            } else {
                 retention.retained.insert(writer);
             }
         }
-        retention.marks = marks(conn, space).await?;
+        if anchor != local {
+            retention.marks = marks(conn, space).await?;
+        }
         Ok(retention)
+    }
+
+    /// Records that the anchor applied the operation `(writer, seq)` without retaining what it
+    /// displaced.
+    pub(crate) fn release(&mut self, writer: WriterId, seq: Seq) {
+        if self.releasing.contains(&writer) {
+            let mark = self.released.entry(writer).or_insert(0);
+            *mark = (*mark).max(seq);
+        }
     }
 
     /// Whether the versions the operation `(writer, seq)` supersedes are retained.
@@ -557,12 +581,14 @@ impl Retention {
         }
     }
 
-    /// Writes raised marks and drops the displaced versions they release.
+    /// Writes raised marks and drops the displaced versions they release, and records what the
+    /// anchor applied.
     pub(crate) async fn flush(
         &mut self,
         conn: &mut SqliteConnection,
         space: SpaceId,
     ) -> SyncResult<()> {
+        self.flush_released(conn, space).await?;
         let raised = std::mem::take(&mut self.raised);
         if raised.is_empty() {
             return Ok(());
@@ -572,6 +598,26 @@ impl Retention {
             .map(|writer| (writer, self.marks.get(&writer).copied().unwrap_or(0)))
             .collect::<Vec<_>>();
         write_marks(conn, space, &marks).await
+    }
+
+    /// Records what the anchor applied, before an authorization entry may exclude it.
+    pub(crate) async fn flush_released(
+        &mut self,
+        conn: &mut SqliteConnection,
+        space: SpaceId,
+    ) -> SyncResult<()> {
+        for (writer, seq) in std::mem::take(&mut self.released) {
+            sqlx::query(
+                "INSERT INTO sync_released_marks (space_id, writer_id, seq) VALUES (?, ?, ?)
+                 ON CONFLICT (space_id, writer_id) DO UPDATE SET seq = max(seq, excluded.seq)",
+            )
+            .bind(space.as_bytes().as_slice())
+            .bind(writer.as_bytes().as_slice())
+            .bind(seq_i64(seq)?)
+            .execute(&mut *conn)
+            .await?;
+        }
+        Ok(())
     }
 }
 
@@ -1481,9 +1527,9 @@ async fn restoring_change(
     }
     let versions = merge::versions(engine, conn, record.table, &record.key).await?;
     let restated = crate::fork::restated(conn, record.table, &record.key).await?;
-    // A version restating an older value the anchor sealed again is no newer edit. Only the
-    // anchor records restatements, so on another admin a restatement still counts as newer and
-    // the group keeps the anchor's value.
+    // A version restating an older value this replica sealed again is no newer edit. Only the
+    // replica that sealed a restatement, the anchor or a former anchor, records it, so on another
+    // admin a restatement still counts as newer and the group keeps the restated value.
     let newer = |group: GroupId, late: &LateValue| {
         versions.iter().any(|version| {
             version.group == group

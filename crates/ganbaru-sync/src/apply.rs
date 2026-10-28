@@ -768,7 +768,7 @@ async fn apply_one(
     sealing: &mut Sealing<'_, '_, '_>,
     candidate: &mut Candidate,
     (context, reach): (&VersionVector, Reach),
-    retention: &Retention,
+    retention: &mut Retention,
     report: &mut ApplyReport,
 ) -> SyncResult<Outcome> {
     let bytes = match candidate.envelope.take() {
@@ -849,6 +849,7 @@ async fn apply_one(
                     return Ok(Outcome::PendingCaptures);
                 }
             }
+            retention.flush_released(conn, ctx.space).await?;
             apply_authorization(
                 engine,
                 conn,
@@ -951,6 +952,7 @@ async fn mark_applied(
     .await?;
     batch.applied.set(candidate.writer, candidate.seq);
     retention.confirm(candidate.writer, &context);
+    retention.release(candidate.writer, candidate.seq);
     batch
         .contexts
         .insert(candidate.writer, candidate.seq, context);
@@ -1111,6 +1113,7 @@ pub(crate) async fn finish(
     now_ms: u64,
     report: &mut SealReport,
 ) -> SyncResult<Option<Materialized>> {
+    fork::capture_released(engine, conn, batch, now_ms).await?;
     let resuming = repairs_wait(conn, ctx, slot).await?;
     let stale_left = !resuming
         && exclusion::take_stale(conn, &mut batch.dirty, MAX_STALE_ROWS_PER_WRITE).await?;
@@ -1439,7 +1442,7 @@ impl Engine {
                         &mut sealing,
                         &mut member,
                         (&member_context, reach),
-                        &retention,
+                        &mut retention,
                         &mut report,
                     )
                     .await?
@@ -1513,7 +1516,7 @@ impl Engine {
                 &mut sealing,
                 &mut candidate,
                 (&context, reach),
-                &retention,
+                &mut retention,
                 &mut report,
             )
             .await?

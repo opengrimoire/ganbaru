@@ -25,6 +25,7 @@
 | `sync_row_creations` | The applied operations that created each published row, so excluding a forked branch can tell whether another operation still creates a row. `sync_rows.creation_pending` marks a row that holds honest changes but no creation and stays hidden until an operation creates it. |
 | `sync_stale_rows` | Rows whose domain state storing an excluded operation may have made stale, and rows an applied chain group left for repair. Engine writes take them back a bounded number at a time once no chain is between groups. |
 | `sync_anchor_marks` | Per writer, the highest sequence the anchor confirmed storing. Device-local; never replicates. |
+| `sync_released_marks` | Per writer of another device, the highest sequence this replica applied while it was the anchor, so it seals the groups those operations wrote again if they are excluded later. Device-local; never replicates. |
 | `sync_restated_groups` | Per group, the value hash the anchor sealed again without a newer edit, so restoring a late change does not count that version as newer. Kept while the row has an undecided late change. Device-local; never replicates. |
 
 ## Invariants

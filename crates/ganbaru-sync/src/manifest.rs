@@ -65,7 +65,11 @@ pub const SYNC_TABLES: &[&str] = &[
 
 /// Engine tables of device-bound state that every manifest classifies as `Local`, so snapshot
 /// copies empty them.
-pub const SYNC_LOCAL_TABLES: &[&str] = &["sync_anchor_marks", "sync_restated_groups"];
+pub const SYNC_LOCAL_TABLES: &[&str] = &[
+    "sync_anchor_marks",
+    "sync_restated_groups",
+    "sync_released_marks",
+];
 
 /// What a domain trigger may do, so applying remote changes cannot be broken by it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

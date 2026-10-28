@@ -5,6 +5,7 @@
     type ProjectDependencyConflict,
   } from "$lib/api/project-conflicts";
   import SyncConflictCard from "$lib/components/sync/SyncConflictCard.svelte";
+  import SyncConflictChoice from "$lib/components/sync/SyncConflictChoice.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { canRestoreDependency, dependencyConflictsForTask } from "$lib/projects/conflicts";
   import { projectConflicts } from "$lib/stores/project-conflicts.svelte";
@@ -26,6 +27,8 @@
   const projects = useProjects();
   const hidden = $derived(dependencyConflictsForTask(projectConflicts.read(projectId), taskId));
   let busyKey = $state<string | null>(null);
+  /** The choice running for `busyKey`, so only its button shows the spinner. */
+  let busyChoice = $state<ProjectDependencyChoice | null>(null);
   let message = $state("");
   let messageKind = $state<"resolved" | "error">("error");
 
@@ -45,6 +48,7 @@
   async function resolve(conflict: ProjectDependencyConflict, choice: ProjectDependencyChoice): Promise<void> {
     if (busyKey !== null) return;
     busyKey = conflict.key;
+    busyChoice = choice;
     message = "";
     try {
       await projects.resolveConflict({
@@ -67,6 +71,7 @@
       }
     } finally {
       busyKey = null;
+      busyChoice = null;
       projectConflicts.invalidate();
     }
   }
@@ -91,18 +96,16 @@
           <div class="text-muted-foreground">{t("projects.conflict.restoreCycles")}</div>
         {/if}
         <div class="flex flex-wrap items-center gap-1">
-          <button
-            class="rounded-md px-1.5 py-0.5 font-medium underline hover:bg-black/10 disabled:opacity-40 dark:hover:bg-white/10"
-            type="button"
+          <SyncConflictChoice
             disabled={busyKey !== null}
+            pending={busyKey === conflict.key && busyChoice === "keep_removed"}
             onclick={() => void resolve(conflict, "keep_removed")}
-          >{t("projects.conflict.keepRemoved")}</button>
-          <button
-            class="rounded-md px-1.5 py-0.5 font-medium underline hover:bg-black/10 disabled:opacity-40 dark:hover:bg-white/10"
-            type="button"
+          >{t("projects.conflict.keepRemoved")}</SyncConflictChoice>
+          <SyncConflictChoice
             disabled={busyKey !== null || !restorable}
+            pending={busyKey === conflict.key && busyChoice === "restore"}
             onclick={() => void resolve(conflict, "restore")}
-          >{t("projects.conflict.restore")}</button>
+          >{t("projects.conflict.restore")}</SyncConflictChoice>
         </div>
       </div>
     {/each}

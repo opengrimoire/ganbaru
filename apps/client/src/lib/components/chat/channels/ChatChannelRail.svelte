@@ -179,6 +179,7 @@
   $effect(() => endChannelTouchDrag);
 
   function searchAuthorDisplayName(result: ChatMessageSearchResultRead): string {
+    if (result.authorParticipantId === null || result.authorKind === null) return result.authorDisplayName;
     return chatParticipantDisplayName(
       {
         id: result.authorParticipantId,

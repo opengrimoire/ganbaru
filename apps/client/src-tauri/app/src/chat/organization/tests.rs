@@ -1502,3 +1502,58 @@ fn channel_reference_ranges_break_equal_order_keys_at_both_ends() {
         assert_eq!(in_range, ["item:tie-a", "item:tie-b"]);
     });
 }
+
+#[test]
+fn message_search_keeps_messages_whose_author_identity_is_gone() {
+    tauri::async_runtime::block_on(async {
+        let pool = migrated_pool().await;
+        seed_review_assignment_with_stranded_replies(&pool).await;
+        seed_review_root_messages(
+            &pool,
+            &[
+                ("item:attributed", "a5", false),
+                ("item:unattributed", "a6", false),
+            ],
+        )
+        .await;
+        sqlx::raw_sql(
+            "UPDATE chat_communication_messages SET author_participant_id = NULL
+             WHERE item_id = 'item:unattributed';
+             UPDATE chat_participants SET display_name = 'Renamed owner'
+             WHERE id = 'participant:local-owner';",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let results = search_messages(
+            &pool,
+            normalized_fts_query("Text of item").unwrap(),
+            Some("project:review"),
+            None,
+        )
+        .await
+        .unwrap();
+        let result = |item_id: &str| {
+            results
+                .iter()
+                .find(|result| result.message_item_id.as_str() == item_id)
+                .unwrap_or_else(|| panic!("search dropped {item_id}"))
+        };
+
+        let attributed = result("item:attributed");
+        assert_eq!(
+            attributed
+                .author_participant_id
+                .as_ref()
+                .map(ChatParticipantId::as_str),
+            Some("participant:local-owner")
+        );
+        assert_eq!(attributed.author_kind, Some(ChatParticipantKind::LocalUser));
+        assert_eq!(attributed.author_display_name, "Renamed owner");
+        let unattributed = result("item:unattributed");
+        assert_eq!(unattributed.author_participant_id, None);
+        assert_eq!(unattributed.author_kind, None);
+        assert_eq!(unattributed.author_display_name, "You");
+    });
+}

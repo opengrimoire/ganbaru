@@ -1414,5 +1414,6 @@ pub const DOMAIN: DomainManifest = DomainManifest {
     ],
     engine: &[],
     replica_writable: true,
+    unconverted: &[],
     assets: &[ARTWORK_CLASS],
 };

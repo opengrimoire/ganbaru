@@ -677,8 +677,11 @@ export interface ChatMessageSearchResultRead {
   messageItemId: ChatConversationItemId;
   /** Channel page cursor that ends at the result, or at its reply thread root. */
   anchorCursor: string;
-  authorParticipantId: ChatParticipantId;
-  authorKind: ChatParticipantKind;
+  /** Author identity, null when the message carries only its author label snapshot. */
+  authorParticipantId: ChatParticipantId | null;
+  /** Author kind, null together with the author identity. */
+  authorKind: ChatParticipantKind | null;
+  /** Author display name, or the author label snapshot when the identity is null. */
   authorDisplayName: string;
   excerpt: string;
   createdAt: UtcTimestamp;

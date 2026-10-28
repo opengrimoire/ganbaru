@@ -16,6 +16,14 @@ pub const MAX_MESSAGE_MARKDOWN_BYTES: usize = 128 * 1024;
 /// enforces. It stays below the replicated text field bound so a revision fits one operation.
 pub const MAX_RICH_CONTENT_BYTES: usize = 192 * 1024;
 
+/// The most attachments one message revision or scheduled message names, which the schema
+/// enforces through the reference ordinal.
+pub const MAX_MESSAGE_ATTACHMENTS: usize = 20;
+
+/// The longest attachment id a message revision or scheduled message may name, which the
+/// reference tables enforce so a revision with its attachments fits one operation.
+pub const MAX_ATTACHMENT_ID_CHARS: usize = 128;
+
 /// Rich content key that marks a projected revision whose Markdown or payload was shortened, so
 /// readers show a localized elision marker.
 pub const TRUNCATED_RICH_CONTENT_KEY: &str = "truncated";

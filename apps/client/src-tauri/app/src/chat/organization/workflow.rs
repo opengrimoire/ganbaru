@@ -1,12 +1,13 @@
 //! Assignment routing, frozen context, and durable organizational messages.
 
+use super::common::{
+    AttachmentReferenceOwner, conversation_item_id, has_thread_eligible_mention,
+    insert_attachment_references, json_object, message_revision_id, new_id, parse_participant_kind,
+    reply_thread_id, serialization_error, wire_participant_kind,
+};
 #[cfg(desktop)]
 use super::common::{
     assignment_input_id, wire_approval_policy, wire_work_state, work_assignment_id,
-};
-use super::common::{
-    conversation_item_id, has_thread_eligible_mention, json_object, message_revision_id, new_id,
-    parse_participant_kind, reply_thread_id, serialization_error, wire_participant_kind,
 };
 #[cfg(desktop)]
 use super::context::freeze_context_package;
@@ -360,20 +361,13 @@ pub(super) async fn insert_communication_message(
         )
         .await?;
     }
-    for (index, attachment_id) in write.request.attachment_ids.iter().enumerate() {
-        sqlx::query(
-            "INSERT INTO chat_communication_attachment_references
-                (message_revision_id, attachment_id, ordinal, created_at)
-             VALUES (?, ?, ?, ?)",
-        )
-        .bind(write.revision_id.as_str())
-        .bind(attachment_id.as_str())
-        .bind(i64::try_from(index).unwrap_or(i64::MAX))
-        .bind(write.now.as_str())
-        .execute(&mut **transaction)
-        .await
-        .map_err(persistence_error)?;
-    }
+    insert_attachment_references(
+        transaction,
+        AttachmentReferenceOwner::Revision,
+        write.revision_id.as_str(),
+        &write.request.attachment_ids,
+    )
+    .await?;
     sqlx::query("UPDATE chat_communication_messages SET current_revision_id = ? WHERE item_id = ?")
         .bind(write.revision_id.as_str())
         .bind(write.item_id.as_str())

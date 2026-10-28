@@ -1048,6 +1048,15 @@ export function parseChatMessageSearchResult(
   label = "Chat message search result",
 ): ChatMessageSearchResultRead {
   const record = readRecord(value, label);
+  const authorParticipantId = readNullable(record.authorParticipantId, `${label}.authorParticipantId`, readIdentifier);
+  const authorKind = readNullable(
+    record.authorKind,
+    `${label}.authorKind`,
+    (kind, path) => readEnum(kind, CHAT_PARTICIPANT_KINDS, path),
+  );
+  if ((authorParticipantId === null) !== (authorKind === null)) {
+    throw new Error(`${label}.authorKind must be present exactly when authorParticipantId is`);
+  }
   return {
     projectId: readIdentifier(record.projectId, `${label}.projectId`),
     channelId: readIdentifier(record.channelId, `${label}.channelId`),
@@ -1056,8 +1065,8 @@ export function parseChatMessageSearchResult(
     replyThreadId: readNullable(record.replyThreadId, `${label}.replyThreadId`, readIdentifier),
     messageItemId: readIdentifier(record.messageItemId, `${label}.messageItemId`),
     anchorCursor: readString(record.anchorCursor, `${label}.anchorCursor`),
-    authorParticipantId: readIdentifier(record.authorParticipantId, `${label}.authorParticipantId`),
-    authorKind: readEnum(record.authorKind, CHAT_PARTICIPANT_KINDS, `${label}.authorKind`),
+    authorParticipantId,
+    authorKind,
     authorDisplayName: readString(record.authorDisplayName, `${label}.authorDisplayName`),
     excerpt: readString(record.excerpt, `${label}.excerpt`),
     createdAt: readUtcTimestamp(record.createdAt, `${label}.createdAt`),

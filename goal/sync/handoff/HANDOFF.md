@@ -44,17 +44,17 @@ Out of scope: the multi-person sharing goal. Its plans (`goal/sharing/`) are not
 
 ## State on feat/sync
 
-Updated by the orchestrator session on the mini PC (2026-10-27). Milestone 11 step 7 (merge c35c5dc0), milestone 8 step 5 (merge 26180e64), milestone 9 step 5 (merge b1e35a51), and milestone 8 step 6 (merge a0301701) have landed. Landed topic branches were deleted on origin.
+Updated by the orchestrator session on the mini PC (2026-10-27). Milestone 11 step 7 (merge c35c5dc0), milestone 8 step 5 (merge 26180e64), milestone 9 step 5 (merge b1e35a51), milestone 8 step 6 (merge a0301701), and milestone 9 step 6 (merge 5ba787a9) have landed. Landed topic branches were deleted on origin.
 
-- `VAULT_MANIFEST_VERSION` is 19, handoff `PROTOCOL_VERSION` is 14, the last migration is `20261028030227_notes_page_history_asset_ids.sql`.
-- Done in source: milestones 2 to 7, milestone 8 steps 1 to 6, milestone 9 steps 1 to 5, milestone 10 steps 1 to 4, milestone 11 steps 1 to 8, engine follow-ups 1 to 5.
-- Remaining: milestone 8 steps 7 and 8, milestone 9 steps 6 to 10 (docs part of 10), milestone 10 steps 5 to 7, milestone 11 steps 9 and 10, milestone 12 steps 1 to 11, milestone closes, a clean `pnpm -w run validate`, and the final report.
+- `VAULT_MANIFEST_VERSION` is 20, handoff `PROTOCOL_VERSION` is 14, the last migration is `20261028052141_chat_attachments_replication.sql`.
+- Done in source: milestones 2 to 7, milestone 8 steps 1 to 6, milestone 9 steps 1 to 6, milestone 10 steps 1 to 4, milestone 11 steps 1 to 8, engine follow-ups 1 to 5.
+- Remaining: milestone 8 steps 7 and 8, milestone 9 steps 7 to 10 (docs part of 10), milestone 10 steps 5 to 7, milestone 11 steps 9 and 10, milestone 12 steps 1 to 11, milestone closes, a clean `pnpm -w run validate`, and the final report.
 
 ## In-flight branches
 
 Progress snapshots are in `progress/`; their live copies were in the session scratch directory, so check each branch's log for later commits.
 
-1. `feat/sync-chat-attachments`: milestone 9 step 6 (brief `briefs/m9-step-6-brief.md`; step 7 follow-ups in `briefs/m9-step-7-followups.md`), implementer running.
+1. `feat/sync-chat-assignments`: milestone 9 step 7 (brief `briefs/m9-step-7-brief.md`), implementer running.
 2. `feat/sync-peer-exchange`: milestone 11 step 9. Part A committed (28bb1032, reviewed); part B (brief `briefs/m11-step-9b-brief.md`) did the review fixes (7651271d); part C (brief `briefs/m11-step-9c-brief.md`) implementer running on the remaining items; the whole-package internal security review follows on the same branch.
 3. `feat/sync-notes-editor`: milestone 8 step 7 (Notes editor rebase and conflict UI, brief `briefs/m8-step-7-brief.md`), implementer running.
 

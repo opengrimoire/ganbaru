@@ -890,8 +890,11 @@ pub struct ChatMessageSearchResultRead {
     pub message_item_id: ChatConversationItemId,
     /// Page cursor of the page that ends with this message.
     pub anchor_cursor: String,
-    pub author_participant_id: ChatParticipantId,
-    pub author_kind: ChatParticipantKind,
+    /// Author identity, absent when the message carries only its author label snapshot.
+    pub author_participant_id: Option<ChatParticipantId>,
+    /// Author kind, absent together with the author identity.
+    pub author_kind: Option<ChatParticipantKind>,
+    /// Author display name, or the author label snapshot when the identity is absent.
     pub author_display_name: String,
     pub excerpt: String,
     pub created_at: UtcTimestamp,

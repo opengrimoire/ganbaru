@@ -258,3 +258,192 @@ async fn a_mismatched_pointer_applies_without_effective_access_or_blocking_later
         .unwrap();
     assert_eq!(access_rows, 2);
 }
+
+const ATTACHMENT_DIGEST: &str = "5f2b0c4e8d6a1b3f7e9c2d4a6b8f0e1c3d5a7b9f1e2c4d6a8b0f2e4c6d8a0b1c";
+const EMPTY_DIGEST: &str = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+
+/// Seeds a project channel message whose revision names one image and one empty text snippet
+/// by value, as a materialized revision from another device does.
+async fn seed_applied_attachment_revision(pool: &SqlitePool) {
+    sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
+        "UPDATE sync_apply_state SET applying = 1 WHERE singleton = 1;
+         INSERT INTO project_groups (id, name, order_key) VALUES ('group:sync', 'Sync', 'a1');
+         INSERT INTO projects (id, group_id, name, order_key)
+         VALUES ('project:sync', 'group:sync', 'Sync', 'a1');
+         INSERT INTO project_working_folders
+             (id, project_id, display_name, kind, managed_relative_path)
+         VALUES ('folder:sync', 'project:sync', 'Sync', 'managed', 'projects/sync');
+         INSERT INTO chat_conversations
+             (id, project_id, conversation_kind, last_activity_at, created_at, updated_at)
+         VALUES ('conversation:sync', 'project:sync', 'channel', '{NOW}', '{NOW}', '{NOW}');
+         INSERT INTO chat_conversation_items
+             (id, conversation_id, item_kind, order_key, created_at)
+         VALUES ('item:sync', 'conversation:sync', 'message', 'a1', '{NOW}');
+         INSERT INTO chat_communication_messages
+             (item_id, author_participant_id, author_label_snapshot, created_at)
+         VALUES ('item:sync', NULL, 'Teammate', '{NOW}');
+         INSERT INTO chat_communication_message_revisions
+             (id, message_item_id, normalized_markdown, created_at)
+         VALUES ('revision:sync', 'item:sync', 'See attached', '{NOW}');
+         UPDATE chat_communication_messages SET current_revision_id = 'revision:sync'
+         WHERE item_id = 'item:sync';
+         INSERT INTO chat_communication_attachment_references
+             (message_revision_id, ordinal, attachment_id, working_folder_id, kind,
+              original_display_name, mime_type, byte_size, sha256)
+         VALUES
+             ('revision:sync', 0, 'attachment:image', 'folder:sync', 'image', 'diagram.png',
+              'image/png', 4096, '{ATTACHMENT_DIGEST}'),
+             ('revision:sync', 1, 'attachment:empty', 'folder:sync', 'text_snippet',
+              'empty.txt', 'text/plain', 0, '{EMPTY_DIGEST}');"
+    )))
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
+async fn attachment_paths(pool: &SqlitePool) -> Vec<(String, String, String)> {
+    sqlx::query_as(
+        "SELECT attachment.id, attachment.managed_relative_path, resource.resource_uri
+         FROM chat_attachments attachment
+         JOIN chat_resources resource ON resource.attachment_id = attachment.id
+         ORDER BY attachment.id",
+    )
+    .fetch_all(pool)
+    .await
+    .unwrap()
+}
+
+/// A materialized revision gives this device attachment rows under the digest file names the
+/// asset transfer writes, and the sweep keeps the file while the reference or the device's
+/// attachment row names its digest.
+#[tokio::test]
+async fn applied_attachment_references_create_local_rows_and_keep_their_files() {
+    let pool = migrated_pool().await;
+    seed_applied_attachment_revision(&pool).await;
+    let mut connection = pool.acquire().await.unwrap();
+    let mut sink = CollectingSink::default();
+    for _ in 0..2 {
+        ChatApplyHook
+            .after_materialize(
+                &mut connection,
+                &chat::REVISIONS,
+                &["revision:sync".to_string()],
+                &mut sink,
+            )
+            .await
+            .unwrap();
+    }
+    drop(connection);
+    assert!(sink.0.is_empty());
+    assert_eq!(
+        attachment_paths(&pool).await,
+        vec![
+            (
+                "attachment:empty".to_string(),
+                format!("assets/chat/attachments/{EMPTY_DIGEST}.txt"),
+                "ganbaru://chat/resource/attachment:empty".to_string(),
+            ),
+            (
+                "attachment:image".to_string(),
+                format!("assets/chat/attachments/{ATTACHMENT_DIGEST}.png"),
+                "ganbaru://chat/resource/attachment:image".to_string(),
+            ),
+        ]
+    );
+
+    sqlx::query("UPDATE sync_apply_state SET applying = 0 WHERE singleton = 1")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let engine = ganbaru_sync::Engine::vault();
+    let class = chat::ATTACHMENTS_CLASS.name;
+    let kept_file = (class, ATTACHMENT_DIGEST.to_string());
+    let mut connection = pool.acquire().await.unwrap();
+    let referenced = engine.referenced_assets(&mut connection).await.unwrap();
+    let referenced: Vec<(&str, &str, u32)> = referenced
+        .iter()
+        .map(|asset| (asset.class().name, asset.sha256(), asset.byte_size()))
+        .collect();
+    assert_eq!(referenced, vec![(class, ATTACHMENT_DIGEST, 4096)]);
+    let kept = engine.kept_asset_digests(&mut connection).await.unwrap();
+    assert!(kept.contains(&kept_file));
+
+    sqlx::query("DELETE FROM chat_communication_attachment_references")
+        .execute(&mut *connection)
+        .await
+        .unwrap();
+    assert!(
+        engine
+            .referenced_assets(&mut connection)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    let kept = engine.kept_asset_digests(&mut connection).await.unwrap();
+    assert!(
+        kept.contains(&kept_file),
+        "the device's attachment row keeps the file"
+    );
+
+    sqlx::query("DELETE FROM chat_attachments")
+        .execute(&mut *connection)
+        .await
+        .unwrap();
+    let kept = engine.kept_asset_digests(&mut connection).await.unwrap();
+    assert!(!kept.contains(&kept_file));
+}
+
+#[tokio::test]
+async fn a_scheduled_attachment_keeps_its_file_after_its_attachment_row_is_gone() {
+    let pool = migrated_pool().await;
+    let engine = ganbaru_sync::Engine::vault();
+    let kept_file = (chat::ATTACHMENTS_CLASS.name, ATTACHMENT_DIGEST.to_string());
+    let mut connection = pool.acquire().await.unwrap();
+    // A working folder delete cascades the attachment row away while the scheduled message
+    // still names its digest; only the reference is seeded, without its scheduled message.
+    sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
+        "PRAGMA foreign_keys = OFF;
+         INSERT INTO chat_scheduled_message_attachment_references
+             (scheduled_message_id, ordinal, attachment_id, working_folder_id, kind,
+              original_display_name, mime_type, byte_size, sha256)
+         VALUES ('scheduled:sync', 0, 'attachment:gone', 'folder:gone', 'image', 'photo.png',
+                 'image/png', 4096, '{ATTACHMENT_DIGEST}');
+         PRAGMA foreign_keys = ON;"
+    )))
+    .execute(&mut *connection)
+    .await
+    .unwrap();
+    let kept = engine.kept_asset_digests(&mut connection).await.unwrap();
+    assert!(
+        kept.contains(&kept_file),
+        "a scheduled reference keeps its file without an attachment row"
+    );
+    assert!(
+        !engine
+            .manifest()
+            .local
+            .contains(&"chat_scheduled_message_attachment_references"),
+        "scheduled references travel with their unconverted scheduled message"
+    );
+
+    // A whole-vault archive keeps scheduled references, since their scheduled message travels
+    // with it.
+    ganbaru_sync::local::prepare_snapshot_copy(&mut connection, engine.manifest())
+        .await
+        .unwrap();
+    let carried: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM chat_scheduled_message_attachment_references")
+            .fetch_one(&mut *connection)
+            .await
+            .unwrap();
+    assert_eq!(carried, 1, "a snapshot copy keeps scheduled references");
+    let kept = engine.kept_asset_digests(&mut connection).await.unwrap();
+    assert!(kept.contains(&kept_file));
+
+    sqlx::query("DELETE FROM chat_scheduled_message_attachment_references")
+        .execute(&mut *connection)
+        .await
+        .unwrap();
+    let kept = engine.kept_asset_digests(&mut connection).await.unwrap();
+    assert!(!kept.contains(&kept_file));
+}

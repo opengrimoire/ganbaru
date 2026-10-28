@@ -15,6 +15,7 @@ use ganbaru_notes::assets::{files, page_covers, page_icons};
 use ganbaru_quick_notes::images;
 use ganbaru_sync::Engine;
 use ganbaru_sync::assets::AssetRef;
+use ganbaru_sync::manifest::vault::chat::ATTACHMENTS_CLASS;
 use ganbaru_sync::manifest::vault::music::ARTWORK_CLASS;
 use ganbaru_sync::manifest::vault::notes::{FILES_CLASS, PAGE_COVERS_CLASS, PAGE_ICONS_CLASS};
 use ganbaru_sync::manifest::vault::preferences::PROFILE_CLASS;
@@ -52,7 +53,11 @@ impl<H: SyncHost> ActiveVaultAssets<H> {
             )
             .with_check(&PAGE_ICONS_CLASS, page_icons::check_synced_page_icon)
             .with_check(&PAGE_COVERS_CLASS, page_covers::check_synced_page_cover)
-            .with_check(&FILES_CLASS, files::check_synced_notes_file);
+            .with_check(&FILES_CLASS, files::check_synced_notes_file)
+            .with_check(
+                &ATTACHMENTS_CLASS,
+                crate::chat::sync::check_synced_attachment,
+            );
         files
             .remove_stale_staging(engine.manifest().asset_classes(), STALE_STAGING_AGE)
             .map_err(|error| error.describe())?;

@@ -98,8 +98,8 @@ pub struct DeviceTable {
     pub name: &'static str,
     /// Domain triggers on the table.
     pub triggers: &'static [DomainTrigger],
-    /// Columns of a `Local` table naming managed asset files the sweep keeps. Empty on engine
-    /// tables.
+    /// Columns of a `Local` or declared unconverted table naming managed asset files the sweep
+    /// keeps. Empty on engine tables.
     pub assets: &'static [LocalAssetColumn],
 }
 
@@ -186,6 +186,11 @@ pub struct DomainManifest {
     /// Whether a linked replica may write the domain's replicated tables. Otherwise guards keep
     /// them owner-only on replicas while the engine still applies remote changes to them.
     pub replica_writable: bool,
+    /// Tables of the domain that sync has not converted yet and that travel with the vault as
+    /// they are, declared only so the sweep keeps the asset files their columns name. They are
+    /// neither `Local` nor engine tables, so snapshot copies and carry-forward leave their rows
+    /// alone. They carry no triggers.
+    pub unconverted: &'static [DeviceTable],
     /// Managed asset classes whose files the domain's values reference.
     pub assets: &'static [AssetClass],
 }

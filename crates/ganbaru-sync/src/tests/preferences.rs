@@ -121,3 +121,56 @@ fn preferences_concurrent_creation_of_one_key_converges() {
         }
     });
 }
+
+#[test]
+fn preferences_chat_behavior_replicates_and_reports_its_key() {
+    block_on(async {
+        let mut replicas = replicas(2).await;
+        set(
+            &mut replicas[0],
+            "chat.behavior.sendKey",
+            "\"mod_enter\"",
+            EARLY,
+        )
+        .await;
+        set(
+            &mut replicas[0],
+            "chat.behavior.terminalScrollbackLines",
+            "2000",
+            EARLY,
+        )
+        .await;
+        replicas[0].seal().await.unwrap();
+        let mut notices = pull_notices(&mut replicas, 1, 0).await;
+        notices.sort_by(|a, b| a.key.cmp(&b.key));
+        assert_eq!(
+            notices,
+            [
+                notice("chat.behavior.sendKey"),
+                notice("chat.behavior.terminalScrollbackLines")
+            ]
+        );
+        assert_eq!(
+            value(&mut replicas[1], "chat.behavior.sendKey")
+                .await
+                .as_deref(),
+            Some(format!("\"mod_enter\"@{EARLY}").as_str())
+        );
+
+        set(&mut replicas[1], "chat.behavior.sendKey", "\"enter\"", LATE).await;
+        replicas[1].seal().await.unwrap();
+        converge(&mut replicas).await;
+        for replica in &mut replicas {
+            assert_eq!(
+                value(replica, "chat.behavior.sendKey").await.as_deref(),
+                Some(format!("\"enter\"@{LATE}").as_str())
+            );
+            assert_eq!(
+                value(replica, "chat.behavior.terminalScrollbackLines")
+                    .await
+                    .as_deref(),
+                Some(format!("2000@{EARLY}").as_str())
+            );
+        }
+    });
+}

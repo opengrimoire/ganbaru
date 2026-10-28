@@ -31,9 +31,10 @@ use super::settings::{
     default_provider_configuration, provider_family_is_discoverable,
     should_discover_default_provider,
 };
+use crate::chat::configuration::{read_chat_configuration, with_behavior, write_chat_behavior};
 use crate::vault;
 use ganbaru_chat_contracts::config::{
-    ChatBehaviorPreferences, ChatPanelPreferences, ChatVaultConfig, RememberedComposerSelection,
+    ChatBehaviorPreferences, ChatConfiguration, ChatPanelPreferences, RememberedComposerSelection,
 };
 #[cfg(test)]
 use ganbaru_chat_contracts::models::ProviderFamilyId;
@@ -75,7 +76,7 @@ pub struct ProviderInstanceRead {
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChatSettingsRead {
-    pub configuration: ChatVaultConfig,
+    pub configuration: ChatConfiguration,
     pub provider_families: Vec<ProviderFamilyMetadataRead>,
     pub provider_instances: Vec<ProviderInstanceRead>,
     pub credential_store_availability: CredentialStoreAvailability,
@@ -107,7 +108,7 @@ pub struct ProviderRefreshResult {
 
 #[tauri::command]
 pub async fn chat_read_settings(app: tauri::AppHandle) -> ChatResult<ChatSettingsRead> {
-    read_settings(&app)
+    read_settings(&app).await
 }
 
 #[tauri::command]
@@ -116,7 +117,7 @@ pub async fn chat_discover_default_providers(
     state: tauri::State<'_, ChatSettingsState>,
 ) -> ChatResult<ChatSettingsRead> {
     discover_default_providers_once(&app, &state).await?;
-    read_settings(&app)
+    read_settings(&app).await
 }
 
 #[tauri::command]
@@ -529,51 +530,52 @@ pub fn chat_update_provider_models(
     read_provider(&app, &instance_id)
 }
 
+/// Stores the portable Chat behavior preferences, which replicate to the vault's other devices.
 #[tauri::command]
-pub fn chat_update_behavior(
+pub async fn chat_update_behavior(
     app: tauri::AppHandle,
-    state: tauri::State<'_, ChatSettingsState>,
     behavior: ChatBehaviorPreferences,
-) -> ChatResult<ChatVaultConfig> {
-    mutate_chat_config(&app, &state, |config| {
-        config.behavior = behavior;
-        Ok(())
-    })
+) -> ChatResult<ChatConfiguration> {
+    write_chat_behavior(&app, &behavior).await?;
+    read_chat_configuration(&app).await
 }
 
 #[tauri::command]
-pub fn chat_update_panels(
+pub async fn chat_update_panels(
     app: tauri::AppHandle,
     state: tauri::State<'_, ChatSettingsState>,
     panels: ChatPanelPreferences,
-) -> ChatResult<ChatVaultConfig> {
-    mutate_chat_config(&app, &state, |config| {
+) -> ChatResult<ChatConfiguration> {
+    let device = mutate_chat_config(&app, &state, |config| {
         config.panels = panels;
         Ok(())
-    })
+    })?;
+    with_behavior(&app, device).await
 }
 
 #[tauri::command]
-pub fn chat_set_working_folder_provider_preference(
+pub async fn chat_set_working_folder_provider_preference(
     app: tauri::AppHandle,
     state: tauri::State<'_, ChatSettingsState>,
     working_folder_id: ProjectWorkingFolderId,
     instance_id: Option<ProviderInstanceId>,
-) -> ChatResult<ChatVaultConfig> {
-    mutate_chat_config(&app, &state, |config| {
+) -> ChatResult<ChatConfiguration> {
+    let device = mutate_chat_config(&app, &state, |config| {
         set_working_folder_provider_preference(config, working_folder_id, instance_id)
-    })
+    })?;
+    with_behavior(&app, device).await
 }
 
 #[tauri::command]
-pub fn chat_remember_composer_selection(
+pub async fn chat_remember_composer_selection(
     app: tauri::AppHandle,
     state: tauri::State<'_, ChatSettingsState>,
     selection: RememberedComposerSelection,
-) -> ChatResult<ChatVaultConfig> {
-    mutate_chat_config(&app, &state, |config| {
+) -> ChatResult<ChatConfiguration> {
+    let device = mutate_chat_config(&app, &state, |config| {
         remember_composer_selection(config, selection)
-    })
+    })?;
+    with_behavior(&app, device).await
 }
 
 /// Store a provider secret under the reference Rust derives for this instance and variable.
@@ -671,7 +673,7 @@ mod tests {
 
     #[test]
     fn an_existing_family_prevents_automatic_replacement() {
-        let mut config = ChatVaultConfig::default();
+        let mut config = ganbaru_chat_contracts::config::ChatDeviceConfig::default();
         let metadata = ProviderDriverRegistry
             .list_metadata()
             .into_iter()
@@ -699,7 +701,7 @@ mod tests {
 
     #[test]
     fn removing_the_default_family_can_disable_automatic_replacement() {
-        let mut config = ChatVaultConfig::default();
+        let mut config = ganbaru_chat_contracts::config::ChatDeviceConfig::default();
         config
             .automatic_provider_setup_disabled
             .insert(ProviderFamilyId::new("claude").unwrap());

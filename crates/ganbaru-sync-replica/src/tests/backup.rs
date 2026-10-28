@@ -7,7 +7,6 @@ use ganbaru_db::DatabasePoolRegistry;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use std::io::Read;
 use std::path::Path;
-use std::sync::Mutex;
 use std::time::Duration;
 use zip::ZipArchive;
 
@@ -83,6 +82,7 @@ fn backup_layout_recognizes_database_sidecars_and_bundle_entries() {
         ("projects/one", true, true),
         ("projects/stray.txt", false, false),
         (VAULT_LOCK_FILE, false, false),
+        ("config.json", false, false),
         ("ganbaru.sqlite-wal", false, false),
         (".git", true, false),
     ] {
@@ -128,7 +128,6 @@ fn backup_archive_carries_the_snapshot_database_and_the_bundle_layout_only() {
             &root,
             &directory.path().join("snapshot.sqlite"),
             &archive,
-            &Mutex::new(()),
         )
         .await
         .expect("create backup archive");
@@ -170,7 +169,6 @@ fn backup_snapshot_archive_leaves_installation_sync_state_behind() {
             &root,
             &directory.path().join("snapshot.sqlite"),
             &archive,
-            &Mutex::new(()),
         )
         .await
         .expect("create snapshot archive");
@@ -207,9 +205,7 @@ fn backup_archive_waits_for_a_running_asset_sweep() {
         let archive = directory.path().join("vault.ganbaru-backup");
         let snapshot = directory.path().join("snapshot.sqlite");
         let gate = ArchiveGate::default();
-        let config_lock = Mutex::new(());
-        let backup =
-            || create_backup_archive(&gate, &pool, &root, &snapshot, &archive, &config_lock);
+        let backup = || create_backup_archive(&gate, &pool, &root, &snapshot, &archive);
 
         let sweep = gate.lock().await;
         assert!(

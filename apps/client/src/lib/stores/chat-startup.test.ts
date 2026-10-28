@@ -36,7 +36,7 @@ function deferred<T>() {
 function settings(sendKey: "enter" | "mod_enter" = "enter"): ChatSettingsRead {
   return {
     configuration: {
-      schemaVersion: 1, providers: [], automaticProviderSetupDisabled: [], rememberedSelections: [],
+      providers: [], automaticProviderSetupDisabled: [], rememberedSelections: [],
       workingFolderProviderPreferences: {}, panels: { inspectorWidthPx: 320 },
       behavior: {
         sendKey, restoreLastSelectedThread: true, showReasoningSummaries: true,

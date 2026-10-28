@@ -3,7 +3,7 @@
 #[cfg(target_os = "android")]
 use super::active_vault_path;
 use super::select_quiesced_vault;
-use super::{APP_SQLITE_FILE, CONFIG_LOCK, VAULT_MANIFEST_FILE, VaultInfo};
+use super::{APP_SQLITE_FILE, VAULT_MANIFEST_FILE, VaultInfo};
 use super::{MAX_VAULT_MANIFEST_BYTES, database_path, parse_vault_manifest, vault_info_from_path};
 #[cfg(target_os = "android")]
 use super::{default_vault_path, ensure_vault_skeleton, path_to_string};
@@ -118,7 +118,6 @@ pub(crate) async fn create_handoff_archive(
         vault_root,
         database_snapshot,
         archive_path,
-        &CONFIG_LOCK,
     )
     .await
 }
@@ -918,7 +917,6 @@ pub async fn vault_backup_to_downloads(
             &vault_root,
             &database_snapshot,
             &archive_path,
-            &CONFIG_LOCK,
         )
         .await?;
         let file_name = backup_file_name();
@@ -1256,7 +1254,6 @@ mod tests {
         }
         for (path, directory) in [
             ("vault.json", false),
-            ("config.json", false),
             (APP_SQLITE_FILE, false),
             ("notes/daily/2026-10-18.md", false),
             ("assets/chat/attachments/context.txt", false),
@@ -1273,6 +1270,7 @@ mod tests {
             (".codex", true),
             (".vscode/settings.json", false),
             ("README.md", false),
+            ("config.json", false),
             ("notes", false),
             ("vault.json", true),
             (super::super::vault_lock::VAULT_LOCK_FILE, false),
@@ -1566,7 +1564,6 @@ mod tests {
             &source,
             &snapshot,
             &archive_path,
-            &CONFIG_LOCK,
         )
         .await
         .unwrap();
@@ -1575,6 +1572,7 @@ mod tests {
         let mut archive = ZipArchive::new(file).unwrap();
         assert!(archive.by_name(&format!("{APP_SQLITE_FILE}-wal")).is_err());
         assert!(archive.by_name(&format!("{APP_SQLITE_FILE}-shm")).is_err());
+        assert!(archive.by_name("config.json").is_err());
         drop(archive);
 
         extract_backup_archive(&archive_path, &staging, None).unwrap();
@@ -1621,10 +1619,7 @@ mod tests {
                 .unwrap();
             assert_eq!(count, 1, "missing portable row in {table}");
         }
-        assert_eq!(
-            fs::read(target.join("config.json")).unwrap(),
-            br#"{"preferences":{"language":"es"},"theme":"handoff-theme"}"#
-        );
+        assert!(!target.join("config.json").exists());
         for (relative, contents) in managed_files {
             assert_eq!(fs::read(target.join(relative)).unwrap(), contents);
         }

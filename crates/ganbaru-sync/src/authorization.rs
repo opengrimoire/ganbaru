@@ -75,6 +75,11 @@ pub struct AuthorizationView {
     pub recovery_admin_key: AdminPublicKey,
     /// Every device the selected chain enrolled, removed ones included, by device id.
     pub devices: Vec<EnrolledDevice>,
+    /// The discovery key devices advertise under now: the charter's, replaced by each removal.
+    pub discovery_key: [u8; DISCOVERY_KEY_BYTES],
+    /// The key the latest removal replaced, which devices that have not applied it yet still
+    /// advertise under.
+    pub previous_discovery_key: Option<[u8; DISCOVERY_KEY_BYTES]>,
 }
 
 /// A device in derived state.
@@ -111,6 +116,9 @@ pub(crate) struct AuthState {
     frozen_at: Option<u64>,
     /// The old anchor's stored vector from the handover that opened the current epoch.
     catch_up: Option<Arc<VersionVector>>,
+    /// The current discovery key and the one the latest removal replaced.
+    discovery_key: [u8; DISCOVERY_KEY_BYTES],
+    previous_discovery_key: Option<[u8; DISCOVERY_KEY_BYTES]>,
 }
 
 /// Revision past which an epoch that `anchor` opened at revision `start` is frozen: the lowest
@@ -153,6 +161,8 @@ impl AuthState {
             frozen_at: frozen_at(&freezes, &body.anchor_device_id, 0),
             freezes,
             catch_up: None,
+            discovery_key: body.discovery_key,
+            previous_discovery_key: None,
         }
     }
 
@@ -290,6 +300,12 @@ impl AuthState {
                         device.cutoffs = cutoffs.iter().copied().collect();
                     }
                 }
+                if let Sequencing::Removal { discovery_key, .. } = &record.sequencing
+                    && *discovery_key != self.discovery_key
+                {
+                    self.previous_discovery_key = Some(self.discovery_key);
+                    self.discovery_key = *discovery_key;
+                }
             }
             Entry::SetRole(SetRole::Device { device_id, role }) => {
                 if let Some(device) = self.devices.get_mut(device_id) {
@@ -350,6 +366,8 @@ impl AuthState {
                     removed_revision: device.removed,
                 })
                 .collect(),
+            discovery_key: self.discovery_key,
+            previous_discovery_key: self.previous_discovery_key,
         }
     }
 }

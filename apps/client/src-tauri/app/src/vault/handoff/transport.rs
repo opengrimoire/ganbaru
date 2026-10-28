@@ -512,19 +512,14 @@ pub(crate) fn sync_peer(manager: &PairingManager) -> Result<Option<(String, Stri
 }
 
 /// Sends one sync message to the coordinator over the linked-device identity. A sync state
-/// response also refreshes the coordinator endpoints and discovery key this device remembers.
+/// response also refreshes the coordinator endpoints this device remembers.
 pub(crate) async fn sync_request(
     manager: &PairingManager,
     message: ControlMessage,
 ) -> Result<ControlMessage, String> {
     let response = authenticated_exchange(manager, message).await?;
-    if let ControlMessage::SyncState {
-        members,
-        discovery_key,
-        ..
-    } = &response
-    {
-        record_reported_contact(manager, members, discovery_key);
+    if let ControlMessage::SyncState { members, .. } = &response {
+        record_reported_contact(manager, members);
     }
     Ok(response)
 }
@@ -579,13 +574,9 @@ pub(crate) fn endpoints_of(
 }
 
 /// Remembers the contact a coordinator reported in a sync state: the endpoints it reported for
-/// itself and the discovery key. A failure only delays address refresh until the next exchange,
+/// itself. A failure only delays address refresh until the next exchange,
 /// so it is logged instead of failing the sync.
-fn record_reported_contact(
-    manager: &PairingManager,
-    members: &[super::protocol::MemberEndpoint],
-    discovery_key: &str,
-) {
+fn record_reported_contact(manager: &PairingManager, members: &[super::protocol::MemberEndpoint]) {
     let recorded = manager.coordinator_pin().and_then(|coordinator| {
         let Some(coordinator) = coordinator else {
             return Ok(false);
@@ -596,7 +587,6 @@ fn record_reported_contact(
             super::pairing::CoordinatorContact {
                 last_endpoint: None,
                 reported_endpoints: Some(endpoints_of(members, &coordinator.device_id)),
-                discovery_key: Some(discovery_key.to_string()),
             },
         )
     });

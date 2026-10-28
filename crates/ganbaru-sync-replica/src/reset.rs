@@ -6,6 +6,8 @@
 
 use crate::carry_forward;
 use crate::outbox::Outbox;
+use crate::peers::anchor_pin::AnchorPin;
+use crate::peers::discovery_keys::DiscoveryKeys;
 use crate::writer::{SyncFiles, SyncKey, SyncKeyStore, WriterRecord, read_record, write_record};
 use ganbaru_sync::local;
 use sqlx::SqliteConnection;
@@ -63,6 +65,8 @@ pub async fn reset_database(conn: &mut SqliteConnection) -> Result<(), String> {
 /// so callers run this off the async runtime.
 pub fn remove_installation_state(files: &SyncFiles, keys: &dyn SyncKeyStore) -> Result<(), String> {
     Outbox::remove(&files.outbox_path())?;
+    AnchorPin::remove(&files.anchor_path())?;
+    DiscoveryKeys::remove(&files.discovery_keys_path())?;
     carry_forward::remove_bundle(files)?;
     let record_path = files.record_path();
     // An unreadable record names no key this installation can still find, and the reset

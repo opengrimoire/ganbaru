@@ -9,6 +9,7 @@ mod authority;
 pub(crate) mod commands;
 mod connectivity;
 pub(crate) mod devices;
+pub(crate) mod discovery_keys;
 #[cfg(any(target_os = "android", test))]
 pub(crate) mod headless;
 mod host;

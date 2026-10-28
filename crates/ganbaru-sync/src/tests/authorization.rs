@@ -1280,3 +1280,39 @@ fn a_removal_cutoff_covers_what_the_coordinator_reported_beyond_the_anchor() {
         assert_eq!(cutoff, Some(i64::try_from(reported).unwrap()));
     });
 }
+
+#[test]
+fn a_removal_rotates_the_discovery_key_and_keeps_the_one_it_replaced() {
+    block_on(async {
+        let mut anchor = Replica::anchor(0, 62).await;
+        let member = Replica::new(1, 62).await;
+        let founded = view(&mut anchor).await;
+        assert_eq!(founded.previous_discovery_key, None);
+        let signed = super::replica::person_proposal(
+            &anchor.person,
+            anchor.ctx.space,
+            &anchor_admin(&anchor.person),
+            anchor.now_ms,
+            remove_entry(&member.device_id),
+        );
+        let rotated = [6; 32];
+        assert_ne!(founded.discovery_key, rotated);
+        anchor
+            .engine
+            .sequence_proposal_covering(
+                &mut anchor.conn,
+                &anchor.ctx,
+                &signed,
+                rotated,
+                &ganbaru_sync_contracts::VersionVector::new(),
+                &mut anchor.identity.local(),
+                anchor.now_ms,
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        let removed = view(&mut anchor).await;
+        assert_eq!(removed.discovery_key, rotated);
+        assert_eq!(removed.previous_discovery_key, Some(founded.discovery_key));
+    });
+}

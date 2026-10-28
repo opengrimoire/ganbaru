@@ -145,14 +145,21 @@ impl AnchorPin {
     }
 }
 
+impl AnchorPin {
+    /// Removes the pin at `path`; a missing file is already removed.
+    pub fn remove(path: &Path) -> Result<(), String> {
+        match std::fs::remove_file(path) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(format!("remove the sync anchor pin: {error}")),
+        }
+    }
+}
+
 /// Removes a pin that cannot be used, reporting why.
 fn remove_damaged(path: &Path, reason: &str) -> Result<(), String> {
     eprintln!("sync: dropping the anchor pin: {reason}");
-    match std::fs::remove_file(path) {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(format!("remove the sync anchor pin: {error}")),
-    }
+    AnchorPin::remove(path)
 }
 
 /// Whether `value` is a lowercase hex SHA-256 fingerprint.

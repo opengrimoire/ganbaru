@@ -15,7 +15,7 @@ pub use sync::{
     SyncSettledProposal, decode_sync_admin_key, decode_sync_charter, decode_sync_device_key,
     decode_sync_proposal, encode_sync_admin_key, encode_sync_charter, encode_sync_device_key,
     encode_sync_proposal, validate_coordinator_endpoint, validate_coordinator_endpoints,
-    validate_discovery_key, validate_member_endpoints,
+    validate_member_endpoints,
 };
 pub use sync::{MAX_MEMBER_ENDPOINTS, MemberEndpoint};
 
@@ -357,8 +357,8 @@ pub enum ControlMessage {
         listening: Vec<String>,
     },
     /// The hub's stored operations and its hash at the probed sequence, when it holds it, plus
-    /// the member listener endpoints the hub knows, its own first, and the vault's discovery
-    /// key, so a linked device follows address changes without relinking. `stable` lists the
+    /// the member listener endpoints the hub knows, its own first, so a linked device follows
+    /// address changes without relinking. `stable` lists the
     /// operations every counted device holds, and `bootstrap_required` tells the device that
     /// the hub no longer holds operations it lacks. `forked` lists the writers the hub holds
     /// fork evidence for, each with the sequence where its copies differ.
@@ -367,7 +367,6 @@ pub enum ControlMessage {
         stored: Vec<SyncSeq>,
         probe_hash: Option<String>,
         members: Vec<MemberEndpoint>,
-        discovery_key: String,
         stable: Vec<SyncSeq>,
         bootstrap_required: bool,
         forked: Vec<SyncSeq>,
@@ -825,7 +824,6 @@ impl ControlMessage {
                 stored,
                 probe_hash,
                 members,
-                discovery_key,
                 stable,
                 bootstrap_required: _,
                 forked,
@@ -837,7 +835,6 @@ impl ControlMessage {
                     sync::validate_hashes(std::slice::from_ref(hash))?;
                 }
                 sync::validate_member_endpoints(members)?;
-                sync::validate_discovery_key(discovery_key)?;
             }
             Self::SyncPush {
                 protocol_version,
@@ -1922,13 +1919,6 @@ mod tests {
         }
     }
 
-    fn discovery_key_of(bytes: usize) -> String {
-        base64::Engine::encode(
-            &base64::engine::general_purpose::URL_SAFE_NO_PAD,
-            vec![7_u8; bytes],
-        )
-    }
-
     /// Member endpoints of distinct devices, one per endpoint.
     fn members(endpoints: &[&str]) -> Vec<MemberEndpoint> {
         endpoints
@@ -1942,11 +1932,11 @@ mod tests {
             .collect()
     }
 
-    fn sync_state(endpoints: &[&str], discovery_key: String) -> ControlMessage {
-        sync_state_with(members(endpoints), discovery_key)
+    fn sync_state(endpoints: &[&str]) -> ControlMessage {
+        sync_state_with(members(endpoints))
     }
 
-    fn sync_state_with(members: Vec<MemberEndpoint>, discovery_key: String) -> ControlMessage {
+    fn sync_state_with(members: Vec<MemberEndpoint>) -> ControlMessage {
         ControlMessage::SyncState {
             manifest_version: 1,
             stored: vec![SyncSeq {
@@ -1955,7 +1945,6 @@ mod tests {
             }],
             probe_hash: Some("c".repeat(64)),
             members,
-            discovery_key,
             stable: vec![SyncSeq {
                 writer: "a".repeat(32),
                 seq: 2,
@@ -1980,24 +1969,18 @@ mod tests {
     }
 
     #[test]
-    fn sync_state_round_trips_reported_endpoints_and_discovery_key() {
-        let state = sync_state(
-            &[
-                "192.168.1.20:43821",
-                "[fd00::5]:43821",
-                "[2a01:4f8:10:20::5]:43821",
-                "100.64.3.4:43821",
-            ],
-            discovery_key_of(DISCOVERY_KEY_BYTES),
-        );
+    fn sync_state_round_trips_reported_endpoints() {
+        let state = sync_state(&[
+            "192.168.1.20:43821",
+            "[fd00::5]:43821",
+            "[2a01:4f8:10:20::5]:43821",
+            "100.64.3.4:43821",
+        ]);
         assert_eq!(frame_round_trip(&state), Ok(state));
-        let empty = sync_state(&[], discovery_key_of(DISCOVERY_KEY_BYTES));
+        let empty = sync_state(&[]);
         assert_eq!(frame_round_trip(&empty), Ok(empty));
         let full = vec!["192.168.1.20:43821"; MAX_MEMBER_ENDPOINTS];
-        assert_eq!(
-            sync_state(&full, discovery_key_of(DISCOVERY_KEY_BYTES)).validate(),
-            Ok(())
-        );
+        assert_eq!(sync_state(&full).validate(), Ok(()));
     }
 
     #[test]
@@ -2055,17 +2038,16 @@ mod tests {
     }
 
     #[test]
-    fn sync_state_refuses_unreportable_endpoints_and_malformed_keys() {
-        let key = discovery_key_of(DISCOVERY_KEY_BYTES);
+    fn sync_state_refuses_unreportable_endpoints() {
         let over = vec!["192.168.1.20:43821"; MAX_MEMBER_ENDPOINTS + 1];
-        assert!(sync_state(&over, key.clone()).validate().is_err());
+        assert!(sync_state(&over).validate().is_err());
         let mut repeated = members(&["192.168.1.20:43821", "192.168.1.21:43821"]);
         repeated[1].device_id = repeated[0].device_id.clone();
         repeated[1].endpoint = repeated[0].endpoint.clone();
-        assert!(sync_state_with(repeated, key.clone()).validate().is_err());
+        assert!(sync_state_with(repeated).validate().is_err());
         let mut unnamed = members(&["192.168.1.20:43821"]);
         unnamed[0].device_id = "device one".to_string();
-        assert!(sync_state_with(unnamed, key.clone()).validate().is_err());
+        assert!(sync_state_with(unnamed).validate().is_err());
         for endpoint in [
             "203.0.113.5:43821",
             "127.0.0.1:43821",
@@ -2075,28 +2057,15 @@ mod tests {
             "192.168.1.20",
             "",
         ] {
-            let state = sync_state(&["10.0.0.4:43821", endpoint], key.clone());
+            let state = sync_state(&["10.0.0.4:43821", endpoint]);
             assert!(state.validate().is_err(), "{endpoint:?}");
             assert!(frame_round_trip(&state).is_err(), "{endpoint:?}");
-        }
-        for malformed in [
-            discovery_key_of(DISCOVERY_KEY_BYTES - 1),
-            discovery_key_of(DISCOVERY_KEY_BYTES + 1),
-            format!("{key}="),
-            "!".repeat(key.len()),
-            String::new(),
-        ] {
-            assert!(
-                sync_state(&[], malformed.clone()).validate().is_err(),
-                "{malformed:?}"
-            );
         }
     }
 
     #[test]
     fn sync_state_round_trips_stability_and_refuses_malformed_stable_vectors() {
-        let key = discovery_key_of(DISCOVERY_KEY_BYTES);
-        let mut state = sync_state(&[], key.clone());
+        let mut state = sync_state(&[]);
         if let ControlMessage::SyncState {
             bootstrap_required, ..
         } = &mut state
@@ -2114,7 +2083,7 @@ mod tests {
                 seq: 0,
             }],
         ] {
-            let mut state = sync_state(&[], key.clone());
+            let mut state = sync_state(&[]);
             if let ControlMessage::SyncState { stable: field, .. } = &mut state {
                 *field = stable.clone();
             }
@@ -2131,9 +2100,8 @@ mod tests {
 
     #[test]
     fn sync_state_bounds_its_forked_writers() {
-        let key = discovery_key_of(DISCOVERY_KEY_BYTES);
         let with_forked = |forked: Vec<SyncSeq>| {
-            let mut state = sync_state(&[], key.clone());
+            let mut state = sync_state(&[]);
             if let ControlMessage::SyncState { forked: field, .. } = &mut state {
                 *field = forked;
             }

@@ -533,7 +533,6 @@ fn test_contact() -> HubContact {
                 observed_ms: 1_700_000_000_000,
             })
             .collect(),
-        discovery_key: bytes_to_wire(&[7; ganbaru_handoff::protocol::DISCOVERY_KEY_BYTES]),
     }
 }
 
@@ -825,13 +824,8 @@ fn sync_states_carry_the_coordinator_contact_from_its_source() {
         let expected = test_contact();
         for request in [hello.clone(), wait] {
             match transport.request(request).await.expect("sync state") {
-                ControlMessage::SyncState {
-                    members,
-                    discovery_key,
-                    ..
-                } => {
+                ControlMessage::SyncState { members, .. } => {
                     assert_eq!(members, expected.members);
-                    assert_eq!(discovery_key, expected.discovery_key);
                 }
                 other => panic!("expected a sync state, got {other:?}"),
             }
@@ -877,7 +871,6 @@ fn sync_states_carry_the_coordinator_contact_from_its_source() {
                     endpoint: "203.0.113.5:43821".to_string(),
                     observed_ms: 1,
                 }],
-                ..test_contact()
             }),
         );
         assert_eq!(

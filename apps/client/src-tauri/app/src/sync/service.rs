@@ -45,6 +45,7 @@ use ganbaru_sync_replica::authority::{
 };
 use ganbaru_sync_replica::now_ms;
 use ganbaru_sync_replica::outbox::Outbox;
+use ganbaru_sync_replica::peers::discovery_keys::DiscoveryKeys;
 use ganbaru_sync_replica::quarantine::{PullSkips, Quarantine};
 use ganbaru_sync_replica::reset;
 #[cfg(desktop)]
@@ -1156,6 +1157,7 @@ impl ServiceState {
             runtime.set_pairing_charter(None)?;
             session.install_pinned_charter(&manager).await?;
         }
+        session.follow_discovery_keys().await?;
         if !self.started {
             session.start(&mut self.writer).await?;
             self.started = true;
@@ -2441,9 +2443,7 @@ impl<'a, H: SyncHost> Session<'a, H> {
             };
             let anchor = self.anchor_keys().await?;
             let tls_fingerprint = tls_fingerprint(manager.certificate()?.as_ref());
-            let discovery_key = ganbaru_handoff::discovery::DiscoveryKey::decode(
-                &manager.discovery_key(&self.files.vault_id)?,
-            )?;
+            let discovery_key = ganbaru_handoff::discovery::DiscoveryKey::generate()?;
             let founding = Founding {
                 device_id: &device_id,
                 tls_fingerprint,
@@ -2516,6 +2516,25 @@ impl<'a, H: SyncHost> Session<'a, H> {
                 .await
                 .map_err(|error| format!("install the pinned sync charter: {error}")),
         }
+    }
+
+    /// Follows the vault's discovery keys from the authorization log into the device-local file
+    /// and publishes them for the advertiser and coordinator discovery of this process.
+    async fn follow_discovery_keys(&self) -> Result<(), String> {
+        let view = {
+            let mut conn = acquire(&self.pool).await?;
+            self.engine
+                .authorization(&mut conn, &self.ctx)
+                .await
+                .map_err(|error| format!("read sync authorization: {error}"))?
+        };
+        let path = self.files.discovery_keys_path();
+        let vault_id = self.files.vault_id.clone();
+        let now = now_ms()?;
+        let keys =
+            blocking(move || DiscoveryKeys::follow(&path, &vault_id, view.as_ref(), now)).await?;
+        super::discovery_keys::publish(keys);
+        Ok(())
     }
 
     /// The anchor keys of the vault, each created once.

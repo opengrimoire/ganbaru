@@ -192,28 +192,26 @@ impl Drop for ProvidedRecords<'_> {
     }
 }
 
-/// The instance names `pin`'s coordinator may advertise at `unix_seconds`, or none when the pin
-/// carries no valid discovery key or fingerprint.
-pub(crate) fn discovery_names(pin: &CoordinatorPin, unix_seconds: u64) -> Vec<String> {
-    let Some(key) = pin
-        .discovery_key
-        .as_deref()
-        .and_then(|key| DiscoveryKey::decode(key).ok())
-    else {
-        return Vec::new();
-    };
+/// The instance names `pin`'s coordinator may advertise under any of `keys` at `unix_seconds`,
+/// or none without keys or with an invalid pinned fingerprint.
+pub(crate) fn discovery_names(
+    keys: &[DiscoveryKey],
+    pin: &CoordinatorPin,
+    unix_seconds: u64,
+) -> Vec<String> {
     let Some(fingerprint) = decode_certificate_fingerprint(&pin.certificate_fingerprint) else {
         return Vec::new();
     };
-    discovery::expected_instance_names(&key, &[fingerprint], unix_seconds)
+    discovery::expected_instance_names(keys, &[fingerprint], unix_seconds)
 }
 
 fn provided_endpoints_in(
     store: &Mutex<Vec<DiscoveredRecord>>,
+    keys: &[DiscoveryKey],
     pin: &CoordinatorPin,
     unix_seconds: u64,
 ) -> Vec<SocketAddr> {
-    let expected = discovery_names(pin, unix_seconds);
+    let expected = discovery_names(keys, pin, unix_seconds);
     if expected.is_empty() {
         return Vec::new();
     }
@@ -223,17 +221,28 @@ fn provided_endpoints_in(
         .unwrap_or_default()
 }
 
+/// The discovery keys a sync pass of this process published for `pin`'s vault, which the
+/// background pass publishes before it dials.
+#[cfg(target_os = "android")]
+fn published_keys(pin: &CoordinatorPin) -> Vec<DiscoveryKey> {
+    crate::sync::discovery_keys::browsed(&pin.vault_id, unix_now_ms())
+}
+
 /// Endpoints of `pin`'s coordinator among the records the running background pass was given.
 #[cfg(target_os = "android")]
 pub(crate) fn provided_endpoints(pin: &CoordinatorPin) -> Vec<SocketAddr> {
-    provided_endpoints_in(&PROVIDED_RECORDS, pin, unix_now())
+    provided_endpoints_in(&PROVIDED_RECORDS, &published_keys(pin), pin, unix_now())
+}
+
+fn unix_now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX))
+        .unwrap_or_default()
 }
 
 fn unix_now() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|elapsed| elapsed.as_secs())
-        .unwrap_or_default()
+    unix_now_ms() / 1000
 }
 
 /// The outcome the worker acts on. An unreachable coordinator is reported as such even when the
@@ -334,7 +343,7 @@ fn pinned_discovery_names(config_dir: &Path) -> Result<Vec<String>, String> {
     Ok(managers
         .pairing()
         .coordinator_pin()?
-        .map(|pin| discovery_names(&pin, unix_now()))
+        .map(|pin| discovery_names(&published_keys(&pin), &pin, unix_now()))
         .unwrap_or_default())
 }
 
@@ -591,10 +600,13 @@ mod tests {
             certificate_fingerprint: "ab".repeat(32),
             last_endpoint: None,
             reported_endpoints: Vec::new(),
-            // The unpadded base64url form of 32 bytes of 7.
-            discovery_key: Some(format!("{}Bwc", "BwcH".repeat(10))),
             charter: None,
         }
+    }
+
+    /// The vault's discovery key in these tests, 32 bytes of 7.
+    fn keys() -> Vec<DiscoveryKey> {
+        vec![DiscoveryKey::from_bytes([7; 32])]
     }
 
     fn run(records: JavaText, result: Result<HeadlessPass, String>) -> serde_json::Value {
@@ -834,7 +846,7 @@ mod tests {
         let store = store();
         let pin = pin();
         let now = unix_now();
-        let name = discovery_names(&pin, now)[1].clone();
+        let name = discovery_names(&keys(), &pin, now)[1].clone();
         let records = format!(
             r#"[
                 {{"instanceName":"{name}","port":43821,"addresses":["192.168.1.30"],"version":"1"}},
@@ -847,37 +859,59 @@ mod tests {
             config_dir(),
             JavaText::Text(records),
             |_| {
-                seen = provided_endpoints_in(&store, &pin, now);
+                seen = provided_endpoints_in(&store, &keys(), &pin, now);
                 Ok(pass(SyncState::Idle, Some(SyncRole::Client), false))
             },
             |_| Ok(Vec::new()),
         );
         assert_eq!(seen, vec!["192.168.1.30:43821".parse().expect("endpoint")]);
         assert!(store.lock().expect("store").is_empty());
-        assert!(provided_endpoints_in(&store, &pin, now).is_empty());
+        assert!(provided_endpoints_in(&store, &keys(), &pin, now).is_empty());
     }
 
     #[test]
-    fn a_pin_without_a_discovery_key_matches_no_provided_record() {
+    fn without_published_keys_no_provided_record_matches() {
         let store = store();
-        let mut pin = pin();
-        let name = discovery_names(&pin, unix_now())[1].clone();
+        let pin = pin();
+        let name = discovery_names(&keys(), &pin, unix_now())[1].clone();
         *store.lock().expect("store") = vec![DiscoveredRecord {
             instance_name: name,
             port: 43_821,
             addresses: vec!["192.168.1.30".parse().expect("address")],
             version: Some("1".to_string()),
         }];
-        pin.discovery_key = None;
-        assert!(discovery_names(&pin, unix_now()).is_empty());
-        assert!(provided_endpoints_in(&store, &pin, unix_now()).is_empty());
+        assert!(discovery_names(&[], &pin, unix_now()).is_empty());
+        assert!(provided_endpoints_in(&store, &[], &pin, unix_now()).is_empty());
+    }
+
+    #[test]
+    fn a_rotated_key_still_matches_the_previous_one_while_browsed() {
+        let store = store();
+        let pin = pin();
+        let now = unix_now();
+        let previous = discovery_names(&keys(), &pin, now)[1].clone();
+        *store.lock().expect("store") = vec![DiscoveredRecord {
+            instance_name: previous,
+            port: 43_821,
+            addresses: vec!["192.168.1.30".parse().expect("address")],
+            version: Some("1".to_string()),
+        }];
+        let current = DiscoveryKey::from_bytes([8; 32]);
+        assert!(
+            provided_endpoints_in(&store, std::slice::from_ref(&current), &pin, now).is_empty()
+        );
+        let both = [current, DiscoveryKey::from_bytes([7; 32])];
+        assert_eq!(
+            provided_endpoints_in(&store, &both, &pin, now),
+            vec!["192.168.1.30:43821".parse().expect("endpoint")]
+        );
     }
 
     #[test]
     fn discovery_names_are_the_tags_the_coordinator_advertises() {
         let pin = pin();
         let hour_start = 478_000 * 3600;
-        let names = discovery_names(&pin, hour_start);
+        let names = discovery_names(&keys(), &pin, hour_start);
         let fingerprint =
             decode_certificate_fingerprint(&pin.certificate_fingerprint).expect("fingerprint");
         let advertised = discovery::advertisement(

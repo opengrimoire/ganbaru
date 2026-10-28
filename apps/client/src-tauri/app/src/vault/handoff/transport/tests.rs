@@ -1830,7 +1830,6 @@ fn pin_with(
             .iter()
             .map(|endpoint| endpoint.to_string())
             .collect(),
-        discovery_key: None,
         charter: None,
     }
 }
@@ -2110,8 +2109,6 @@ async fn discovery_reaches_a_coordinator_that_moved_after_every_known_endpoint_f
 async fn sync_states_refresh_the_remembered_coordinator_contact() {
     let pair = LocalPair::start().await;
     pair.enroll().await;
-    let key = base64::engine::general_purpose::URL_SAFE_NO_PAD
-        .encode([7_u8; crate::vault::handoff::protocol::DISCOVERY_KEY_BYTES]);
     let endpoints = vec![
         "192.168.1.20:43821".to_string(),
         "[fd00::20]:43821".to_string(),
@@ -2127,15 +2124,14 @@ async fn sync_states_refresh_the_remembered_coordinator_contact() {
         .map(|endpoint| member(&coordinator, endpoint))
         .collect();
     members.push(member("device-other-member", "192.168.1.30:43821"));
-    record_reported_contact(&pair.phone, &members, &key);
+    record_reported_contact(&pair.phone, &members);
     let pin = linked_pin(&pair.phone);
     assert_eq!(
         pin.reported_endpoints, endpoints,
         "only the coordinator's own endpoints refresh its pin"
     );
-    assert_eq!(pin.discovery_key.as_deref(), Some(key.as_str()));
 
-    record_reported_contact(&pair.phone, &[member(&coordinator, "8.8.8.8:43821")], &key);
+    record_reported_contact(&pair.phone, &[member(&coordinator, "8.8.8.8:43821")]);
     assert_eq!(
         linked_pin(&pair.phone).reported_endpoints,
         endpoints,

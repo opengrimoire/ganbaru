@@ -502,7 +502,6 @@ mod tests {
             certificate_fingerprint: "a".repeat(64),
             last_endpoint: None,
             reported_endpoints: vec!["192.168.1.20:43821".to_string()],
-            discovery_key: None,
             charter: None,
         }
     }

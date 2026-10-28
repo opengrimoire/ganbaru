@@ -127,6 +127,8 @@ fn admission_with(fingerprint: &str, removed: bool) -> MemberAdmission {
             enrolled_revision: 2,
             removed_revision: removed.then_some(3),
         }],
+        discovery_key: [5; 32],
+        previous_discovery_key: None,
     };
     MemberAdmission::new(VAULT, &view, &std::collections::BTreeSet::new())
 }

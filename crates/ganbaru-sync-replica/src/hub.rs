@@ -12,8 +12,7 @@ use super::wire::{
 };
 use ganbaru_handoff::protocol::{
     ControlMessage, MemberEndpoint, SYNC_ASSET_CHUNK_BYTES, SyncAsset, SyncAssetKey, SyncRefusal,
-    SyncRefusalCode, decode_sync_proposal, encode_sync_proposal, validate_discovery_key,
-    validate_member_endpoints,
+    SyncRefusalCode, decode_sync_proposal, encode_sync_proposal, validate_member_endpoints,
 };
 use ganbaru_sync::assets::AssetRef;
 use ganbaru_sync::manifest::Manifest;
@@ -89,11 +88,10 @@ pub type HubForwards = Arc<
 >;
 
 /// How linked devices reach the members of a vault: the listener endpoints the hub knows, its
-/// own first, and the vault's discovery key.
+/// own first.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HubContact {
     pub members: Vec<MemberEndpoint>,
-    pub discovery_key: String,
 }
 
 /// Reports the hub's contact for the vault with the given ID.
@@ -284,7 +282,6 @@ impl SyncHub {
             .ok_or_else(|| HubError::unavailable("the hub cannot report its contact"))?;
         let contact = source(vault_id).map_err(HubError::unavailable)?;
         validate_member_endpoints(&contact.members)
-            .and_then(|()| validate_discovery_key(&contact.discovery_key))
             .map_err(|error| HubError::failed(format!("member contact: {error}")))?;
         Ok(contact)
     }
@@ -736,7 +733,6 @@ impl HubSession {
             stored: vector_to_wire(stored),
             probe_hash,
             members: report.contact.members,
-            discovery_key: report.contact.discovery_key,
             stable: vector_to_wire(&stable),
             bootstrap_required,
             forked: forked_to_wire(&forked),

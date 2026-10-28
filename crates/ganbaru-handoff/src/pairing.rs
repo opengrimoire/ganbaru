@@ -18,13 +18,10 @@ use storage::{
 use super::protocol::HandoffCompatibility;
 use super::protocol::{
     BundleMetadata, BundlePurpose, DeviceKind, PairingInvitation, decode_sync_charter,
-    validate_coordinator_endpoints, validate_device_label, validate_discovery_key,
-    validate_identifier,
+    validate_coordinator_endpoints, validate_device_label, validate_identifier,
 };
 #[cfg(desktop)]
-use super::protocol::{
-    DISCOVERY_KEY_BYTES, PROTOCOL_VERSION, decode_sync_admin_key, decode_sync_device_key,
-};
+use super::protocol::{PROTOCOL_VERSION, decode_sync_admin_key, decode_sync_device_key};
 use base64::Engine;
 use rcgen::{CertificateParams, DnType, KeyPair};
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
@@ -129,9 +126,6 @@ pub struct CoordinatorPin {
     /// The listener endpoints the coordinator reported in its latest sync state.
     #[serde(default)]
     pub reported_endpoints: Vec<String>,
-    /// The vault's discovery key from the coordinator's latest sync state.
-    #[serde(default)]
-    pub discovery_key: Option<String>,
     /// The vault's space charter and the person key that signed it, as the coordinator presented
     /// them when this device linked.
     #[serde(default)]
@@ -178,8 +172,6 @@ pub struct CoordinatorContact {
     pub last_endpoint: Option<String>,
     /// The listener endpoints the coordinator reports now.
     pub reported_endpoints: Option<Vec<String>>,
-    /// The vault's current discovery key.
-    pub discovery_key: Option<String>,
 }
 
 impl CoordinatorContact {
@@ -189,9 +181,6 @@ impl CoordinatorContact {
         }
         if let Some(endpoints) = self.reported_endpoints.as_deref() {
             validate_coordinator_endpoints(endpoints)?;
-        }
-        if let Some(key) = self.discovery_key.as_deref() {
-            validate_discovery_key(key)?;
         }
         Ok(())
     }
@@ -209,12 +198,6 @@ impl CoordinatorContact {
             && pin.reported_endpoints != endpoints
         {
             pin.reported_endpoints = endpoints;
-            changed = true;
-        }
-        if let Some(key) = self.discovery_key
-            && pin.discovery_key.as_deref() != Some(key.as_str())
-        {
-            pin.discovery_key = Some(key);
             changed = true;
         }
         changed
@@ -276,18 +259,6 @@ struct PairingStateFile {
     completed_activation: Option<PendingAcknowledgement>,
     #[serde(default)]
     requested_upload: Option<BundlePurpose>,
-    /// Discovery keys of the vaults this coordinator has linked devices for, by vault ID.
-    #[serde(default)]
-    discovery_keys: BTreeMap<String, String>,
-}
-
-impl PairingStateFile {
-    /// Drops the discovery keys of vaults that no linked device uses anymore.
-    fn prune_discovery_keys(&mut self) {
-        let linked_peers = &self.linked_peers;
-        self.discovery_keys
-            .retain(|vault_id, _| linked_peers.values().any(|peer| &peer.vault_id == vault_id));
-    }
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
@@ -428,7 +399,6 @@ impl PairingManager {
                 incoming_transfer: None,
                 completed_activation: None,
                 requested_upload: None,
-                discovery_keys: BTreeMap::new(),
             };
             persist_state(&state_path, &state)?;
             state
@@ -791,7 +761,6 @@ impl PairingManager {
         for peer in removed_peers.into_values() {
             remember_revoked_peer(state, peer, super::protocol::unix_time_ms());
         }
-        state.prune_discovery_keys();
         state.coordinator = None;
         state.revoked_by_coordinator = false;
         state.unlink_reason = reason;
@@ -826,7 +795,6 @@ impl PairingManager {
         if let Some(peer) = removed_peer {
             remember_revoked_peer(state, peer, super::protocol::unix_time_ms());
         }
-        state.prune_discovery_keys();
         let removed_coordinator = state
             .coordinator
             .as_ref()
@@ -965,7 +933,6 @@ impl PairingManager {
         state
             .revoked_peers
             .retain(|_, revoked| revoked.certificate_fingerprint != peer.certificate_fingerprint);
-        state.prune_discovery_keys();
         if let Err(error) = persist_initialized_state(&inner) {
             inner.state = Some(previous);
             return Err(error);
@@ -1012,14 +979,14 @@ impl PairingManager {
         let state = initialized_state_mut(&mut inner)?;
         ensure_enrollment_target(state, invitation)?;
         // Relinking to the same coordinator and vault keeps what its exchanges reported.
-        let (reported_endpoints, discovery_key) = match state.coordinator.take() {
+        let reported_endpoints = match state.coordinator.take() {
             Some(pin)
                 if pin.certificate_fingerprint == fingerprint
                     && pin.vault_id == invitation.vault_id =>
             {
-                (pin.reported_endpoints, pin.discovery_key)
+                pin.reported_endpoints
             }
-            _ => (Vec::new(), None),
+            _ => Vec::new(),
         };
         state.coordinator = Some(CoordinatorPin {
             device_id: invitation.coordinator_device_id.clone(),
@@ -1030,7 +997,6 @@ impl PairingManager {
             certificate_fingerprint: fingerprint,
             last_endpoint: Some(invitation.endpoint.clone()),
             reported_endpoints,
-            discovery_key,
             charter,
         });
         state.revoked_by_coordinator = false;
@@ -1071,34 +1037,6 @@ impl PairingManager {
             return Err(error);
         }
         Ok(true)
-    }
-
-    /// Returns the discovery key of `vault_id`, creating and persisting it the first time a
-    /// vault with linked devices needs one.
-    #[cfg(desktop)]
-    pub fn discovery_key(&self, vault_id: &str) -> Result<String, String> {
-        validate_identifier("vault id", vault_id)?;
-        let mut inner = self.lock()?;
-        let previous = initialized_state(&inner)?.clone();
-        if let Some(key) = previous.discovery_keys.get(vault_id) {
-            return Ok(key.clone());
-        }
-        if !previous
-            .linked_peers
-            .values()
-            .any(|peer| peer.vault_id == vault_id)
-        {
-            return Err("no linked device uses this vault".to_string());
-        }
-        let key = random_discovery_key()?;
-        initialized_state_mut(&mut inner)?
-            .discovery_keys
-            .insert(vault_id.to_string(), key.clone());
-        if let Err(error) = persist_initialized_state(&inner) {
-            inner.state = Some(previous);
-            return Err(error);
-        }
-        Ok(key)
     }
 
     #[cfg(desktop)]
@@ -1366,17 +1304,6 @@ fn admit_enrollment(
         return Err("this certificate belonged to another revoked device".to_string());
     }
     Ok((peer, evicted_device_id))
-}
-
-/// A fresh vault discovery key: [`DISCOVERY_KEY_BYTES`] random bytes as unpadded base64url.
-#[cfg(desktop)]
-fn random_discovery_key() -> Result<String, String> {
-    let mut random = [0_u8; DISCOVERY_KEY_BYTES];
-    rustls::crypto::ring::default_provider()
-        .secure_random
-        .fill(&mut random)
-        .map_err(|_| "secure random generator is unavailable".to_string())?;
-    Ok(base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(random))
 }
 
 #[cfg(desktop)]

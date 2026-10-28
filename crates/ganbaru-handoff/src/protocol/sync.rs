@@ -207,12 +207,6 @@ pub fn validate_member_endpoints(members: &[MemberEndpoint]) -> Result<(), Strin
     Ok(())
 }
 
-/// Checks that a discovery key is the unpadded base64url form of exactly
-/// [`DISCOVERY_KEY_BYTES`] bytes.
-pub fn validate_discovery_key(key: &str) -> Result<(), String> {
-    crate::discovery::DiscoveryKey::decode(key).map(|_| ())
-}
-
 /// The unpadded base64url form of a sync device public key, as enrollment carries it.
 pub fn encode_sync_device_key(key: &ganbaru_sync_contracts::DevicePublicKey) -> String {
     base64::Engine::encode(

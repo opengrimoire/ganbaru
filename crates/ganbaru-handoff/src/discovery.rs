@@ -105,22 +105,26 @@ pub fn seconds_until_next_tag(unix_seconds: u64) -> u64 {
     TAG_HOUR_SECONDS - unix_seconds % TAG_HOUR_SECONDS
 }
 
-/// The instance names that the devices with `fingerprints` may advertise at `unix_seconds`:
-/// their tags for the previous, current, and next hour, so an hour of clock skew between
-/// advertiser and browser still matches.
+/// The instance names that the devices with `fingerprints` may advertise under any of `keys` at
+/// `unix_seconds`: their tags for the previous, current, and next hour, so an hour of clock skew
+/// between advertiser and browser still matches. Several keys cover the day after a removal
+/// rotated the vault's key, while a device that has not followed the rotation still advertises
+/// under the previous one.
 pub fn expected_instance_names(
-    key: &DiscoveryKey,
+    keys: &[DiscoveryKey],
     fingerprints: &[[u8; FINGERPRINT_BYTES]],
     unix_seconds: u64,
 ) -> Vec<String> {
     let hour = tag_hour(unix_seconds);
     let hours = [hour.checked_sub(1), Some(hour), hour.checked_add(1)];
     let mut names = Vec::new();
-    for fingerprint in fingerprints {
-        for hour in hours.into_iter().flatten() {
-            let name = member_tag(key, fingerprint, hour);
-            if !names.contains(&name) {
-                names.push(name);
+    for key in keys {
+        for fingerprint in fingerprints {
+            for hour in hours.into_iter().flatten() {
+                let name = member_tag(key, fingerprint, hour);
+                if !names.contains(&name) {
+                    names.push(name);
+                }
             }
         }
     }
@@ -322,7 +326,11 @@ mod tests {
             )
             .instance_name
         };
-        let expected = expected_instance_names(&key, &[fingerprint()], HOUR_START + 1800);
+        let expected = expected_instance_names(
+            std::slice::from_ref(&key),
+            &[fingerprint()],
+            HOUR_START + 1800,
+        );
         assert_eq!(expected.len(), 3);
         for hour in [477_999, 478_000, 478_001] {
             assert!(expected.contains(&advertised_at(hour)), "hour {hour}");
@@ -336,10 +344,14 @@ mod tests {
     fn expected_names_cover_every_fingerprint_and_start_at_hour_zero() {
         let key = sequential_key();
         let second = [0xcd; FINGERPRINT_BYTES];
-        let names = expected_instance_names(&key, &[fingerprint(), second], HOUR_START);
+        let names = expected_instance_names(
+            std::slice::from_ref(&key),
+            &[fingerprint(), second],
+            HOUR_START,
+        );
         assert_eq!(names.len(), 6);
         assert!(names.contains(&member_tag(&key, &second, 478_001)));
-        let at_epoch = expected_instance_names(&key, &[fingerprint()], 0);
+        let at_epoch = expected_instance_names(std::slice::from_ref(&key), &[fingerprint()], 0);
         assert_eq!(
             at_epoch,
             vec![
@@ -347,6 +359,21 @@ mod tests {
                 member_tag(&key, &fingerprint(), 1)
             ]
         );
+    }
+
+    #[test]
+    fn expected_names_cover_every_key_and_none_without_keys() {
+        let current = sequential_key();
+        let previous = DiscoveryKey::from_bytes([9; DISCOVERY_KEY_BYTES]);
+        let names = expected_instance_names(
+            &[current.clone(), previous.clone()],
+            &[fingerprint()],
+            HOUR_START,
+        );
+        assert_eq!(names.len(), 6);
+        assert!(names.contains(&member_tag(&current, &fingerprint(), 478_000)));
+        assert!(names.contains(&member_tag(&previous, &fingerprint(), 478_000)));
+        assert!(expected_instance_names(&[], &[fingerprint()], HOUR_START).is_empty());
     }
 
     #[test]

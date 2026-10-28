@@ -136,12 +136,7 @@ impl CoordinatorLifecycle {
             contacts: Some(contacts),
             hub: Some(
                 crate::sync::sync_hub(&app)
-                    .with_contact(hub_contact_source(
-                        app.clone(),
-                        manager.clone(),
-                        port,
-                        DiscoverySource::Coordinator,
-                    ))
+                    .with_contact(hub_contact_source(app.clone(), manager.clone(), port))
                     .with_peer_hints(crate::sync::peer_hints(app.clone())),
             ),
             enrollment_sealer: Some(crate::sync::enrollment_sealer(&app)),
@@ -478,12 +473,7 @@ pub(crate) async fn ensure_member_listener<R: Runtime>(
         .map_err(|error| format!("read member sync listener port: {error}"))?;
     let services = transport::MemberServices {
         hub: crate::sync::member_hub(app)
-            .with_contact(hub_contact_source(
-                app.clone(),
-                manager.clone(),
-                port,
-                DiscoverySource::Pin,
-            ))
+            .with_contact(hub_contact_source(app.clone(), manager.clone(), port))
             .with_peer_hints(crate::sync::peer_hints(app.clone())),
         admission: crate::sync::member_admission_source(app),
         lan: lan_admission(app, port)?,
@@ -547,25 +537,14 @@ fn lan_admission<R: Runtime>(
     Ok(transport::LanAdmission::linux_firewall(config_dir, port))
 }
 
-/// Where a hub's contact takes the vault's discovery key from.
-#[cfg(desktop)]
-#[derive(Clone, Copy)]
-enum DiscoverySource {
-    /// The coordinator's own key for the vault.
-    Coordinator,
-    /// The key the coordinator reported in its latest sync state, kept in the pin.
-    Pin,
-}
-
 /// What the sync hub of a desktop listening on `port` reports to linked devices: its current
 /// listener endpoints under its own device id, refreshed at most every few seconds, then the
-/// peer book's other members, and the vault's discovery key.
+/// peer book's other members.
 #[cfg(desktop)]
 fn hub_contact_source<R: Runtime>(
     app: tauri::AppHandle<R>,
     manager: PairingManager,
     port: u16,
-    discovery: DiscoverySource,
 ) -> crate::sync::hub::HubContactSource {
     let endpoints = std::sync::Arc::new(local_addresses::ReportedEndpointCache::default());
     std::sync::Arc::new(move |vault_id: &str| {
@@ -583,17 +562,8 @@ fn hub_contact_source<R: Runtime>(
             })
             .collect();
         let book = crate::sync::read_peer_book(&app, vault_id);
-        let discovery_key = match discovery {
-            DiscoverySource::Coordinator => manager.discovery_key(vault_id)?,
-            DiscoverySource::Pin => manager
-                .coordinator_pin()?
-                .filter(|pin| pin.vault_id == vault_id)
-                .and_then(|pin| pin.discovery_key)
-                .ok_or_else(|| "this device has no discovery key for the vault".to_string())?,
-        };
         Ok(crate::sync::hub::HubContact {
             members: crate::sync::reported_members(&device_id, own, &book),
-            discovery_key,
         })
     })
 }
@@ -1011,7 +981,6 @@ mod tests {
             certificate_fingerprint: "fingerprint".to_string(),
             last_endpoint: None,
             reported_endpoints: Vec::new(),
-            discovery_key: None,
             charter: None,
         };
         assert_eq!(

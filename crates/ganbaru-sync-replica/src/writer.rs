@@ -371,6 +371,11 @@ impl SyncFiles {
     pub fn anchor_path(&self) -> PathBuf {
         self.vault_directory().join("anchor.json")
     }
+
+    /// The discovery keys the log names and when this device first saw the current one.
+    pub fn discovery_keys_path(&self) -> PathBuf {
+        self.vault_directory().join("discovery.json")
+    }
 }
 
 pub fn read_record(path: &Path) -> Result<Option<WriterRecord>, String> {

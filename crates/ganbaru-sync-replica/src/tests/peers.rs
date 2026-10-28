@@ -13,6 +13,9 @@ use crate::peers::book::{
     MAX_ENDPOINTS_PER_PEER, MAX_PEER_BOOK_BYTES, MAX_PEER_ENDPOINTS, OBSERVATION_STEP_MS, PeerBook,
     PeerEndpoints,
 };
+use crate::peers::discovery_keys::{
+    DiscoveryKeys, MAX_DISCOVERY_KEYS_BYTES, PREVIOUS_KEY_BROWSE_MS,
+};
 use crate::peers::plan::{
     DESKTOP_MAX_EXCHANGES, MOBILE_MAX_EXCHANGES, PeerSource, PlanInput, plan_pass,
 };
@@ -43,6 +46,8 @@ fn view(devices: Vec<EnrolledDevice>) -> AuthorizationView {
         charter: [8; 32],
         recovery_admin_key: AdminPublicKey::from_bytes([9; 32]),
         devices,
+        discovery_key: [5; 32],
+        previous_discovery_key: None,
     }
 }
 
@@ -554,4 +559,76 @@ fn anchor_pin_refuses_damaged_files_and_follow_starts_over() {
             .map(|pin| pin.certificate_fingerprint),
         Some(fingerprint)
     );
+}
+
+#[test]
+fn discovery_keys_follow_a_rotation_and_browse_the_previous_key_for_a_day() {
+    let directory = TestDirectory::new("discovery-keys");
+    let path = directory.path().join("vault").join("discovery.json");
+    let mut log = view(vec![device(1, false)]);
+    let founded = DiscoveryKeys::follow(&path, VAULT, Some(&log), 1_000)
+        .expect("follow the charter key")
+        .expect("the log names a key");
+    assert_eq!(founded.current, [5; 32]);
+    assert_eq!(founded.browsed(1_000).len(), 1);
+    // Following the same key keeps the time this device first saw it.
+    let again = DiscoveryKeys::follow(&path, VAULT, Some(&log), 9_000)
+        .expect("follow again")
+        .expect("keys");
+    assert_eq!(again.seen_at_ms, 1_000);
+
+    // A removal rotates the key: only the new key is advertised, and the previous one is
+    // browsed for a day after this device first saw the rotation.
+    log.previous_discovery_key = Some(log.discovery_key);
+    log.discovery_key = [6; 32];
+    let rotated = DiscoveryKeys::follow(&path, VAULT, Some(&log), 50_000)
+        .expect("follow the rotation")
+        .expect("keys");
+    assert_eq!(rotated.advertised().as_bytes(), &[6; 32]);
+    let browsed = |at: u64| -> Vec<[u8; 32]> {
+        rotated
+            .browsed(at)
+            .iter()
+            .map(|key| *key.as_bytes())
+            .collect()
+    };
+    assert_eq!(browsed(50_000), vec![[6; 32], [5; 32]]);
+    assert_eq!(
+        browsed(50_000 + PREVIOUS_KEY_BROWSE_MS - 1),
+        vec![[6; 32], [5; 32]]
+    );
+    assert_eq!(browsed(50_000 + PREVIOUS_KEY_BROWSE_MS), vec![[6; 32]]);
+    // The time survives a restart, and without a readable log the stored keys stand in.
+    assert_eq!(
+        DiscoveryKeys::follow(&path, VAULT, None, 60_000).expect("read the stored keys"),
+        Some(rotated)
+    );
+}
+
+#[test]
+fn discovery_keys_refuse_damaged_files_and_follow_starts_over() {
+    let directory = TestDirectory::new("discovery-keys-corrupt");
+    let path = directory.path().join("discovery.json");
+    let log = view(vec![device(1, false)]);
+    let stored = DiscoveryKeys::follow(&path, VAULT, Some(&log), 1_000)
+        .expect("follow")
+        .expect("keys");
+    assert!(
+        DiscoveryKeys::load(&path, "vault-other").is_err(),
+        "keys of another vault are refused"
+    );
+    std::fs::write(&path, b"{\"schemaVersion\":1}").expect("damage the file");
+    assert!(DiscoveryKeys::load(&path, VAULT).is_err());
+    assert_eq!(
+        DiscoveryKeys::follow(&path, VAULT, None, 2_000).expect("drop the damaged file"),
+        None
+    );
+    assert!(!path.exists());
+    std::fs::write(&path, vec![b' '; MAX_DISCOVERY_KEYS_BYTES + 1]).expect("oversized file");
+    assert!(DiscoveryKeys::load(&path, VAULT).is_err());
+    let rebuilt = DiscoveryKeys::follow(&path, VAULT, Some(&log), 3_000)
+        .expect("follow again")
+        .expect("keys");
+    assert_eq!(rebuilt.current, stored.current);
+    assert_eq!(rebuilt.seen_at_ms, 3_000);
 }

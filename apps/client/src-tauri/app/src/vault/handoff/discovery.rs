@@ -349,7 +349,8 @@ fn refresh_advertisement<R: Runtime>(
 }
 
 /// The discovery key and certificate fingerprint to advertise, or `None` while this device is
-/// linked to another coordinator or the active vault has no linked device.
+/// linked to another coordinator, the active vault has no linked device, or no sync pass
+/// published the vault's discovery key yet.
 fn advertised_identity<R: Runtime>(
     app: &tauri::AppHandle<R>,
     manager: &PairingManager,
@@ -361,7 +362,9 @@ fn advertised_identity<R: Runtime>(
     if manager.linked_peers_for(&vault_id)?.is_empty() {
         return Ok(None);
     }
-    let key = DiscoveryKey::decode(&manager.discovery_key(&vault_id)?)?;
+    let Some(key) = crate::sync::discovery_keys::advertised(&vault_id) else {
+        return Ok(None);
+    };
     let fingerprint =
         decode_certificate_fingerprint(&certificate_fingerprint(manager.certificate()?.as_ref()))
             .ok_or_else(|| "device certificate fingerprint is invalid".to_string())?;
@@ -479,20 +482,21 @@ pub(crate) async fn remembered_endpoints(pin: &CoordinatorPin) -> Vec<SocketAddr
         .remembered(&DiscoveryTarget::of(pin), Instant::now())
 }
 
-/// Browses for `pin`'s coordinator when the pin carries a discovery key and no browse ran in
-/// the last [`DISCOVERY_INTERVAL`], and returns the endpoints worth dialing. Within the
-/// interval it returns what the last browse found instead.
+/// Browses for `pin`'s coordinator when a sync pass published the vault's discovery keys and no
+/// browse ran in the last [`DISCOVERY_INTERVAL`], and returns the endpoints worth dialing.
+/// Within the interval it returns what the last browse found instead.
 pub(crate) async fn discover_coordinator(pin: &CoordinatorPin) -> Vec<SocketAddr> {
-    let Some(key) = pin
-        .discovery_key
-        .as_deref()
-        .and_then(|key| DiscoveryKey::decode(key).ok())
-    else {
-        return Vec::new();
-    };
+    let now_since_epoch = since_epoch(SystemTime::now());
+    let now_ms = u64::try_from(now_since_epoch.as_millis()).unwrap_or(u64::MAX);
+    let keys = crate::sync::discovery_keys::browsed(&pin.vault_id, now_ms);
     let Some(fingerprint) = decode_certificate_fingerprint(&pin.certificate_fingerprint) else {
         return Vec::new();
     };
+    let expected =
+        discovery::expected_instance_names(&keys, &[fingerprint], now_since_epoch.as_secs());
+    if expected.is_empty() {
+        return Vec::new();
+    }
     let target = DiscoveryTarget::of(pin);
     let mut state = CLIENT_DISCOVERY.lock().await;
     let now = Instant::now();
@@ -500,8 +504,6 @@ pub(crate) async fn discover_coordinator(pin: &CoordinatorPin) -> Vec<SocketAddr
         return state.remembered(&target, now);
     }
     state.begin_browse(&target, now);
-    let unix_seconds = since_epoch(SystemTime::now()).as_secs();
-    let expected = discovery::expected_instance_names(&key, &[fingerprint], unix_seconds);
     let records = match browse(expected.clone()).await {
         Ok(records) => records,
         Err(error) => {

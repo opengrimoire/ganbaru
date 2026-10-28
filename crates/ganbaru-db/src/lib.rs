@@ -404,9 +404,11 @@ pub async fn validate_schema_catalog(pool: &SqlitePool) -> Result<usize, String>
 
 const MIGRATIONS_TABLE: &str = "_sqlx_migrations";
 
-async fn read_schema_catalog(pool: &SqlitePool) -> Result<SchemaCatalog, String> {
+async fn read_schema_catalog<'e>(
+    executor: impl sqlx::SqliteExecutor<'e>,
+) -> Result<SchemaCatalog, String> {
     let rows = sqlx::query("SELECT type, name, tbl_name, sql FROM main.sqlite_schema")
-        .fetch_all(pool)
+        .fetch_all(executor)
         .await
         .map_err(|error| format!("read database schema: {error}"))?;
     let mut catalog = SchemaCatalog::new();
@@ -485,6 +487,23 @@ async fn reference_catalog(version: i64) -> Result<Arc<SchemaCatalog>, String> {
     let catalog = Arc::new(built?);
     catalogs.insert(version, catalog.clone());
     Ok(catalog)
+}
+
+/// Records the reference catalog of a database that the embedded migrations through `version`
+/// built from empty, so test fixtures that already ran the chain do not run it again for
+/// validation.
+#[cfg(any(test, feature = "test-support"))]
+async fn remember_reference_catalog(
+    version: i64,
+    conn: &mut SqliteConnection,
+) -> Result<(), String> {
+    let catalog = Arc::new(read_schema_catalog(conn).await?);
+    REFERENCE_CATALOGS
+        .lock()
+        .await
+        .entry(version)
+        .or_insert(catalog);
+    Ok(())
 }
 
 /// Suffixes of the files SQLite keeps beside a database, which it creates with the

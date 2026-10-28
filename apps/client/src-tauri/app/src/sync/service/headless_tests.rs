@@ -129,6 +129,9 @@ async fn hub_vault(
     registry: &DatabasePoolRegistry,
     person: &PersonKeyPair,
 ) -> (SqlitePool, HubSpace) {
+    ganbaru_db::test_support::write_migrated_database(directory.join("ganbaru.sqlite"))
+        .await
+        .expect("write hub vault database");
     let pool = registry
         .connect_path(directory.join("ganbaru.sqlite"))
         .await
@@ -244,6 +247,9 @@ async fn phone_vault(
         PHONE_DEVICE,
     )
     .expect("activate phone vault");
+    ganbaru_db::test_support::write_migrated_database(&database)
+        .await
+        .expect("write phone vault database");
     let registry = DatabasePoolRegistry::default();
     let pool = registry
         .connect_path(&database)

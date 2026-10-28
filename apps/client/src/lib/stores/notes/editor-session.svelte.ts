@@ -78,7 +78,11 @@ import {
   type NotesBlockTreeSnapshot,
 } from "./block-tree";
 import { notesPageSubtreeIds } from "$lib/notes/pages/selection";
-import { createNotesBlockPersistence } from "./persistence";
+import {
+  createNotesBlockPersistence,
+  type NotesBlockConflictChoice,
+  type NotesBlockEditConflict,
+} from "./persistence";
 import { NotesPageSessionController } from "./page-session.svelte";
 import { NotesTreeProjectionController } from "./tree-projection.svelte";
 import { createNotesPageCreationController } from "./page-creation.svelte";
@@ -1021,6 +1025,7 @@ export function createNotesEditorStore(
     flushBlockSave,
     flushPendingBlockSaves,
     discardPendingEditorWrites: discardQueuedEditorWrites,
+    resolveBlockConflict,
   } = createNotesBlockPersistence({
     reconcileCanonicalBlocks: (blocks) => undoController.reconcileCanonicalBlocks(blocks),
     readBlock: (blockId) => treeProjection.blocksById[blockId],
@@ -1032,14 +1037,34 @@ export function createNotesEditorStore(
     onCommitted: publishSelectedPageChange,
     onConflict: () => {
       editorConflict = true;
-      void refreshCanonicalPage().catch((error: unknown) => {
-        editorSaveError = error instanceof Error ? error.message : String(error);
-      });
+      refreshAfterConflict();
     },
+    readCanonicalBlock: readCanonicalBlock,
+    onBlockConflict: (blockId, conflict) => {
+      const { [blockId]: _settled, ...others } = blockConflicts;
+      blockConflicts = conflict ? { ...others, [blockId]: conflict } : others;
+    },
+    onCanonicalChanged: refreshAfterConflict,
     debounceMs: BLOCK_SAVE_DEBOUNCE_MS,
   });
 
   let editorConflict = $state(false);
+  /** Block edits held because another device changed or removed the same block, by block ID. */
+  let blockConflicts = $state<Record<string, NotesBlockEditConflict>>({});
+
+  function refreshAfterConflict(): void {
+    void refreshCanonicalPage().catch((error: unknown) => {
+      editorSaveError = error instanceof Error ? error.message : String(error);
+    });
+  }
+
+  /** Reads one block of the open page as saved, or `null` when it is trashed or gone. */
+  async function readCanonicalBlock(blockId: string): Promise<NotesBlock | null> {
+    const pageId = pageSession.selectedPageId;
+    if (!pageId) return null;
+    const [block] = await hydrateNotesBlocks({ page_id: pageId, block_ids: [blockId] });
+    return block ?? null;
+  }
   let changedPageIds = new Set<string>();
 
   /** Coalesce the commits of one task into a single refresh of other panes and windows showing the page. */
@@ -1723,7 +1748,19 @@ export function createNotesEditorStore(
     /** Whether a local edit was dropped because another window changed the same content first. */
     get editorConflict(): boolean { return editorConflict; },
     dismissEditorConflict: (): void => { editorConflict = false; },
+    /** Block edits of the open page held for the user because another device changed or removed the block. */
+    get blockConflicts(): readonly NotesBlockEditConflict[] { return Object.values(blockConflicts); },
+    resolveBlockConflict: (blockId: string, choice: NotesBlockConflictChoice): Promise<void> =>
+      resolveBlockConflict(blockId, choice),
     refreshCanonicalPage,
+    /**
+     * Shows rows another device changed: the page tree, and the open page with unsaved block edits kept, which
+     * replay on the new content when they save.
+     */
+    refreshAfterSync: (): Promise<void> => {
+      sidebarRefreshCoordinator.schedule("hierarchy");
+      return refreshCanonicalPage();
+    },
     get trashActionError(): string | null { return trashActionError; },
     retryEditorMutations: async () => {
       await retryEditorMutations();

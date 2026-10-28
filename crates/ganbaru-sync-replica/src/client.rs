@@ -493,8 +493,8 @@ impl<T: SyncTransport> ClientSession<'_, T> {
 
     /// Exchanges fork evidence with the hub: fetches the pair of every writer the hub reports
     /// forked that this replica does not know forked at that sequence, and offers the pair of
-    /// every writer this replica knows forked that the hub does not. A pair whose writer this
-    /// replica has not stored yet waits for a later exchange.
+    /// every writer this replica knows forked that the hub does not. A pair whose writer, or the
+    /// operation before its fork, this replica has not stored yet waits for a later exchange.
     async fn share_evidence(
         &self,
         hub_forked: &[(WriterId, Seq)],
@@ -515,7 +515,10 @@ impl<T: SyncTransport> ClientSession<'_, T> {
             }
             let pair = self.request_evidence(*writer, Vec::new()).await?;
             if let Some(EvidenceOutcome::Refused(refusal)) = self.store_evidence(&pair).await?
-                && refusal != EvidenceRefusal::UnknownWriter
+                && !matches!(
+                    refusal,
+                    EvidenceRefusal::UnknownWriter | EvidenceRefusal::UnknownPrefix
+                )
             {
                 exchanged.problem = Some(format!(
                     "this device refused fork evidence of writer {}: {refusal:?}",

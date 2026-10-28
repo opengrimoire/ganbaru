@@ -472,8 +472,19 @@ async fn store_next(
         return Ok(match stored {
             Some((hash, stored)) if hash != envelope.hash() => {
                 // Both operations are signed by the writer key: the pair is fork evidence,
-                // unless compaction dropped the stored body.
-                if !stored.is_empty() {
+                // unless compaction dropped the stored body or the pair proves no revision.
+                if !stored.is_empty()
+                    && let Ok(previous) = Envelope::decode(&stored)
+                    && fork::unprovable(
+                        conn,
+                        ctx.space,
+                        writer.id,
+                        envelope.seq,
+                        [&previous, envelope],
+                    )
+                    .await?
+                    .is_none()
+                {
                     fork::record(
                         conn,
                         ctx.space,

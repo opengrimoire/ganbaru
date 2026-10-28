@@ -5,7 +5,9 @@
 //! one writer at one sequence with different hashes, both signed by its key, prove it. A replica
 //! that holds such a pair stores it in `sync_fork_evidence`, keeps the writer's chain through the
 //! common prefix, and from then on refuses everything past it, so neither branch survives
-//! anywhere: the writer becomes forked with the last shared sequence as its cutoff.
+//! anywhere: the writer becomes forked with the last shared sequence as its cutoff. A pair is
+//! evidence only when both operations decode and neither claims a revision below the shared
+//! operation before them, so every stored fork proves the revision it freezes at.
 //!
 //! Every replica but the forked writer's own device excludes both branches: the merge effects
 //! of applied operations past the prefix are removed, the versions they superseded come back
@@ -72,7 +74,7 @@ pub enum EvidenceOutcome {
 /// Why fork evidence was not stored.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EvidenceRefusal {
-    /// An envelope does not decode.
+    /// An envelope or its operation does not decode.
     Malformed,
     /// An envelope belongs to another space.
     WrongSpace,
@@ -84,6 +86,12 @@ pub enum EvidenceRefusal {
     UnknownWriter,
     /// The writer key did not sign an envelope.
     BadSignature,
+    /// The operation before the fork is not stored here, so the revision it was sealed against
+    /// is unknown.
+    UnknownPrefix,
+    /// An operation claims a revision below the one the operation before the fork was sealed
+    /// against.
+    UnprovableRevision,
 }
 
 /// A forked writer as exclusion and chain selection see it.
@@ -93,9 +101,9 @@ pub(crate) struct Forked {
     pub(crate) seq: Seq,
     /// Device the writer belongs to.
     pub(crate) device_id: String,
-    /// Lowest authorization revision either forked operation was sealed against, when one of
-    /// them decodes.
-    pub(crate) revision: Option<u64>,
+    /// Lowest authorization revision either forked operation was sealed against, which stored
+    /// evidence proves.
+    pub(crate) revision: u64,
 }
 
 impl Forked {
@@ -124,16 +132,7 @@ pub(crate) async fn forked(
     .await?;
     rows.into_iter()
         .map(|(writer, seq, device_id, first, second)| {
-            let revision = [first, second]
-                .iter()
-                .filter_map(|bytes| {
-                    Envelope::decode(bytes)
-                        .ok()?
-                        .operation()
-                        .ok()
-                        .map(|operation| operation.header.authorization_revision)
-                })
-                .min();
+            let revision = claimed_revision(&first)?.min(claimed_revision(&second)?);
             Ok((
                 log::writer_id(&writer)?,
                 Forked {
@@ -176,9 +175,18 @@ pub(crate) async fn unsettle(conn: &mut SqliteConnection, space: SpaceId) -> Syn
     Ok(())
 }
 
-/// Revisions at which forks freeze epochs, by anchor device: the lowest revision of each forked
-/// writer of the device whose forked operations decode. A fork whose operations this version
-/// cannot read freezes at revision 0, so the device's whole epoch waits for a handover.
+/// The authorization revision a stored forked operation was sealed against. Evidence is stored
+/// only once both operations decode, see [`unprovable`].
+fn claimed_revision(bytes: &[u8]) -> SyncResult<u64> {
+    Envelope::decode(bytes)
+        .ok()
+        .and_then(|envelope| envelope.operation().ok())
+        .map(|operation| operation.header.authorization_revision)
+        .ok_or_else(|| corrupt("stored fork evidence does not decode"))
+}
+
+/// Revisions at which forks freeze epochs, by anchor device: the lowest revision each forked
+/// writer of the device proves, see [`unprovable`].
 pub(crate) async fn freezes(
     conn: &mut SqliteConnection,
     space: SpaceId,
@@ -188,7 +196,7 @@ pub(crate) async fn freezes(
         freezes
             .entry(fork.device_id)
             .or_default()
-            .push(fork.revision.unwrap_or(0));
+            .push(fork.revision);
     }
     for revisions in freezes.values_mut() {
         revisions.sort_unstable();
@@ -256,6 +264,48 @@ pub(crate) async fn record(
     Ok(EvidenceOutcome::Stored)
 }
 
+/// Checks that two operations of `writer` at `seq`, both signed by its key, prove the revision
+/// their fork freezes at: both decode, and neither claims a revision below the one the shared
+/// operation before them was sealed against, which this replica must store. Both copies of an
+/// honest fork continue from that operation and seal against what their installation selected
+/// since, so a lower claim cannot be told apart from a forgery: it is refused rather than
+/// freezing an epoch below entries the writer already saw.
+pub(crate) async fn unprovable(
+    conn: &mut SqliteConnection,
+    space: SpaceId,
+    writer: WriterId,
+    seq: Seq,
+    pair: [&Envelope<'_>; 2],
+) -> SyncResult<Option<EvidenceRefusal>> {
+    let mut claimed = Vec::with_capacity(pair.len());
+    for envelope in pair {
+        let Ok(operation) = envelope.operation() else {
+            return Ok(Some(EvidenceRefusal::Malformed));
+        };
+        claimed.push(operation.header.authorization_revision);
+    }
+    if seq <= 1 {
+        return Ok(None);
+    }
+    let prefix: Option<i64> = sqlx::query_scalar(
+        "SELECT authorization_revision FROM sync_ops
+         WHERE space_id = ? AND writer_id = ? AND seq = ?",
+    )
+    .bind(space.as_bytes().as_slice())
+    .bind(writer.as_bytes().as_slice())
+    .bind(seq_i64(seq - 1)?)
+    .fetch_optional(&mut *conn)
+    .await?;
+    let Some(prefix) = prefix else {
+        return Ok(Some(EvidenceRefusal::UnknownPrefix));
+    };
+    let prefix = stored_u64(prefix, "authorization revision")?;
+    Ok(claimed
+        .iter()
+        .any(|revision| *revision < prefix)
+        .then_some(EvidenceRefusal::UnprovableRevision))
+}
+
 /// Checks offered evidence and records it.
 async fn store_evidence(
     conn: &mut SqliteConnection,
@@ -282,6 +332,9 @@ async fn store_evidence(
     };
     if !a.verify(&writer.public_key) || !b.verify(&writer.public_key) {
         return refused(EvidenceRefusal::BadSignature);
+    }
+    if let Some(refusal) = unprovable(conn, ctx.space, a.writer, a.seq, [&a, &b]).await? {
+        return refused(refusal);
     }
     record(
         conn,

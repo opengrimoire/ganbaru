@@ -248,6 +248,7 @@ fn a_promoted_desktop_takes_the_anchor_and_collects_what_the_hub_holds() {
             &laptop.ctx,
             &mut laptop.writer.local(),
             &forwarded,
+            &Default::default(),
             NOW_MS,
         )
         .await
@@ -389,6 +390,7 @@ fn a_regenerated_recovery_kit_replaces_the_recovery_admin_key() {
                 &hub_replica.ctx,
                 &mut hub_replica.writer.local(),
                 &mut outbox,
+                &Default::default(),
                 NOW_MS,
             )
             .await
@@ -850,6 +852,7 @@ fn a_proposal_the_old_anchor_sequenced_after_the_handover_point_is_sequenced_aga
                 &hub_replica.ctx,
                 &mut hub_replica.writer.local(),
                 &mut outbox,
+                &Default::default(),
                 NOW_MS,
             )
             .await
@@ -903,6 +906,7 @@ fn a_proposal_the_old_anchor_sequenced_after_the_handover_point_is_sequenced_aga
             &laptop.ctx,
             &mut laptop.writer.local(),
             &forwarded,
+            &Default::default(),
             NOW_MS,
         )
         .await
@@ -1066,6 +1070,7 @@ fn a_members_proposal_the_handover_superseded_reaches_the_new_anchor() {
             &laptop.ctx,
             &mut laptop.writer.local(),
             &forwarded,
+            &Default::default(),
             NOW_MS,
         )
         .await

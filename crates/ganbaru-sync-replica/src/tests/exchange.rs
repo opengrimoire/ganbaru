@@ -3439,6 +3439,7 @@ fn a_reset_interrupted_after_the_database_is_cleared_is_repaired_on_the_next_sta
                 &hub.ctx,
                 &mut hub.writer.local(),
                 &mut outbox,
+                &Default::default(),
                 NOW_MS + 2,
             )
             .await

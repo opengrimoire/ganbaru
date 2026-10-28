@@ -928,11 +928,41 @@ impl Engine {
         writer: &mut LocalWriter<'_>,
         now_ms: u64,
     ) -> SyncResult<Result<u64, ProposalRejection>> {
+        self.sequence_proposal_covering(
+            conn,
+            ctx,
+            proposal,
+            discovery_key,
+            &VersionVector::new(),
+            writer,
+            now_ms,
+        )
+        .await
+    }
+
+    /// [`Self::sequence_proposal`] on an anchor that may store less than other replicas, such
+    /// as a linked anchor that quarantined a device: a removal's cutoff of each writer is at
+    /// least what `covered` holds, the stored vector the coordinator last reported, so
+    /// operations the coordinator and members already applied do not become late changes.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn sequence_proposal_covering(
+        &self,
+        conn: &mut SqliteConnection,
+        ctx: &SpaceContext,
+        proposal: &SignedProposal,
+        discovery_key: [u8; DISCOVERY_KEY_BYTES],
+        covered: &VersionVector,
+        writer: &mut LocalWriter<'_>,
+        now_ms: u64,
+    ) -> SyncResult<Result<u64, ProposalRejection>> {
         self.sequence(
             conn,
             ctx,
             proposal,
-            Ordering::Anchor { discovery_key },
+            Ordering::Anchor {
+                discovery_key,
+                covered,
+            },
             writer,
             now_ms,
         )
@@ -970,7 +1000,7 @@ impl Engine {
         conn: &mut SqliteConnection,
         ctx: &SpaceContext,
         proposal: &SignedProposal,
-        ordering: Ordering,
+        ordering: Ordering<'_>,
         writer: &mut LocalWriter<'_>,
         now_ms: u64,
     ) -> SyncResult<Result<u64, ProposalRejection>> {
@@ -990,7 +1020,13 @@ impl Engine {
             (Ordering::Anchor { .. }, _) if *local_device != state.anchor_device_id => {
                 return Ok(Err(ProposalRejection::NotAnchor));
             }
-            (Ordering::Anchor { discovery_key }, entry) => {
+            (
+                Ordering::Anchor {
+                    discovery_key,
+                    covered,
+                },
+                entry,
+            ) => {
                 let sequencing = match entry {
                     Entry::Enroll(_) | Entry::SetRole(_) | Entry::ResolveLate(_) => {
                         Sequencing::Empty
@@ -1001,6 +1037,7 @@ impl Engine {
                             ctx.space,
                             &remove.device_id,
                             state.catch_up.as_deref(),
+                            covered,
                         )
                         .await?
                         else {
@@ -1108,10 +1145,12 @@ impl Engine {
 }
 
 /// How a proposal is ordered into the log.
-enum Ordering {
-    /// By the selected anchor, in its epoch; a removal takes the rotated discovery key.
+enum Ordering<'a> {
+    /// By the selected anchor, in its epoch; a removal takes the rotated discovery key, and its
+    /// cutoffs cover at least `covered`.
     Anchor {
         discovery_key: [u8; DISCOVERY_KEY_BYTES],
+        covered: &'a VersionVector,
     },
     /// By the new anchor a handover names, as the first entry of the next epoch.
     Handover {
@@ -1121,13 +1160,16 @@ enum Ordering {
 
 /// Cutoffs of a removal of `device_id`: the stored sequence of each of its writers. In an epoch
 /// a handover opened with the old anchor's stored vector, a writer's cutoff is at least what the
-/// old anchor stored, because those operations are final. `None` while a writer of that vector is
-/// unknown here: it may belong to the removed device, whose cutoff could not be set.
+/// old anchor stored, because those operations are final, and it is at least what `covered`
+/// holds, which other replicas already store. `None` while a writer of the old anchor vector is
+/// unknown here: it may belong to the removed device, whose cutoff could not be set. A writer
+/// `covered` names but this replica never stored has no row and gets no cutoff.
 async fn removal_cutoffs(
     conn: &mut SqliteConnection,
     space: SpaceId,
     device_id: &str,
     catch_up: Option<&VersionVector>,
+    covered: &VersionVector,
 ) -> SyncResult<Option<Vec<(WriterId, Seq)>>> {
     if let Some(old_anchor) = catch_up {
         let rows: Vec<Vec<u8>> =
@@ -1159,7 +1201,7 @@ async fn removal_cutoffs(
             let writer = log::writer_id(writer)?;
             let stored = stored_u64(*seq, "stored sequence")?;
             let finalized = catch_up.map_or(0, |old_anchor| old_anchor.get(&writer));
-            Ok((writer, stored.max(finalized)))
+            Ok((writer, stored.max(finalized).max(covered.get(&writer))))
         })
         .collect::<SyncResult<_>>()
         .map(Some)

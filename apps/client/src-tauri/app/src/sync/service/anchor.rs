@@ -537,13 +537,15 @@ impl<H: SyncHost> Session<'_, H> {
     /// forward and collects what the coordinator holds, sequences it, and sequences this
     /// desktop's own outbox. Returns whether it sealed anything, which the coordinator learns
     /// on the next exchange. The rejections live in memory only: after a restart the
-    /// coordinator forwards the proposals again and they are rejected again.
+    /// coordinator forwards the proposals again and they are rejected again. Removal cutoffs
+    /// cover at least `covered`, the coordinator's last reported stored vector.
     pub(super) async fn anchor_as_member<T: SyncTransport>(
         &self,
         transport: &T,
         ids: &PeerIds,
         writer: &mut Option<ActiveWriter>,
         settled: &mut Vec<(Digest32, ProposalRejection)>,
+        covered: &VersionVector,
     ) -> Result<bool, String> {
         let Some(active) = writer.as_mut() else {
             return Ok(false);
@@ -561,6 +563,7 @@ impl<H: SyncHost> Session<'_, H> {
             &self.ctx,
             &mut active.local(),
             &proposals,
+            covered,
             now,
         )
         .await?;
@@ -571,6 +574,7 @@ impl<H: SyncHost> Session<'_, H> {
                 &self.ctx,
                 &mut active.local(),
                 &mut outbox,
+                covered,
                 now,
             )
             .await?;

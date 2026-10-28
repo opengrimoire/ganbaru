@@ -17,11 +17,13 @@ use ganbaru_sync_replica::client::{ClientSession, Exchange, Exchanged, PeerIds};
 #[cfg(desktop)]
 use ganbaru_sync_replica::peers::admission::MemberAdmission;
 use ganbaru_sync_replica::peers::admission::fingerprint_hex;
+use ganbaru_sync_replica::peers::anchor_pin::AnchorPin;
 use ganbaru_sync_replica::peers::book::{PeerBook, PeerEndpoints};
 use ganbaru_sync_replica::peers::plan::{PlanInput, PlannedPeer, plan_pass};
 use ganbaru_sync_replica::quarantine::PullSkips;
 #[cfg(desktop)]
 use ganbaru_sync_replica::quarantine::Quarantine;
+use ganbaru_sync_replica::writer::SyncFiles;
 use sqlx::SqlitePool;
 use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
@@ -121,11 +123,10 @@ pub(crate) async fn member_admission<H: SyncHost>(
     };
     let path = host.sync_files(&vault_id)?.quarantine_path();
     let quarantined = blocking(move || Quarantine::load(&path)).await?;
-    Ok(Some(MemberAdmission::new(
-        &vault_id,
-        &view,
-        quarantined.devices(),
-    )))
+    let own_device_id = host.pairing().device_id()?;
+    Ok(Some(
+        MemberAdmission::new(&vault_id, &view, quarantined.devices()).served_by(&own_device_id),
+    ))
 }
 
 /// Applies `change` to the peer book at `path` and writes it when it changed.
@@ -195,24 +196,30 @@ pub(super) struct MemberPass<'a> {
     pub quarantined: &'a BTreeSet<String>,
     pub pull_skips: &'a PullSkips,
     pub listening: &'a [String],
-    pub peers_path: PathBuf,
+    pub files: &'a SyncFiles,
 }
 
 /// What the member exchanges of a pass moved.
-#[derive(Debug, Default)]
+#[derive(Default)]
 pub(super) struct MemberPassOutcome {
     /// Operations pulled from members.
     pub pulled: usize,
+    /// A link to the anchor when it is not the coordinator and answered this pass, pinned to
+    /// the certificate its enrollment recorded, so waiting proposals go to it directly instead
+    /// of waiting at the coordinator for its forward request.
+    pub anchor: Option<MemberTransport>,
 }
 
 /// Exchanges with the members the pass plan picks, at most the device kind's limit at once.
 ///
 /// The coordinator exchange already ran with the pinned coordinator, so it is skipped here
-/// while the coordinator is the anchor; after a handover the log's anchor is dialed through the
-/// peer book, pinned to the certificate its enrollment recorded. Every member is pinned that
-/// way, and only the coordinator path sends proposals, so a member's answer never settles one.
-/// What a member refuses, such as an operation of a writer it does not know yet, is logged and
-/// retried on the next pass instead of becoming this device's status.
+/// while the coordinator is the anchor. After a handover the anchor pin follows the log to the
+/// new anchor, which is dialed at the endpoints the peer book holds for it and pinned to the
+/// certificate its enrollment recorded; the waiting proposals go to it directly, so its answer
+/// arrives over a link only the anchor can complete. Every other member is pinned the same way
+/// and never receives proposals. What a member refuses, such as an operation of a writer it
+/// does not know yet, is logged and retried on the next pass instead of becoming this device's
+/// status.
 pub(super) async fn exchange_with_members(
     pass: MemberPass<'_>,
     coordinator_reachable: bool,
@@ -231,11 +238,17 @@ pub(super) async fn exchange_with_members(
             .await
             .map_err(|error| format!("read sync authorization: {error}"))?
     };
+    let anchor_pin = {
+        let path = pass.files.anchor_path();
+        let vault_id = pass.ids.vault_id.clone();
+        let view = view.clone();
+        blocking(move || AnchorPin::follow(&path, &vault_id, view.as_ref())).await?
+    };
     let Some(view) = view else {
         return Ok(MemberPassOutcome::default());
     };
     let mut members = live_members(&view, pass.quarantined);
-    let path = pass.peers_path.clone();
+    let path = pass.files.peers_path();
     let known = blocking(move || {
         Ok(PeerBook::load(&path)
             .map(|book| book.endpoints().clone())
@@ -247,22 +260,21 @@ pub(super) async fn exchange_with_members(
         .iter()
         .find(|device| device.device_id == pass.ids.device_id)
         .map_or(DeviceKind::Desktop, |device| device.kind);
-    let AnchorDial {
-        anchor_is_coordinator,
-        endpoints: anchor_endpoints,
-    } = anchor_dial(&view, &pin, &known);
+    let dial = anchor_pin
+        .as_ref()
+        .map(|anchor| anchor_dial(anchor, &pin, &known));
     // The coordinator exchange already covers an anchor that is the coordinator, so it takes no
     // slot of the fan-out.
-    if anchor_is_coordinator {
+    let direct_anchor = dial.as_ref().filter(|dial| !dial.anchor_is_coordinator);
+    if direct_anchor.is_none() {
         members.remove(&pin.device_id);
     }
     let plan = plan_pass(&PlanInput {
         kind,
         own_device_id: &pass.ids.device_id,
         members: &members,
-        anchor: (!anchor_is_coordinator)
-            .then_some((view.anchor_device_id.as_str(), anchor_endpoints.as_slice())),
-        anchor_reachable: !anchor_is_coordinator || coordinator_reachable,
+        anchor: direct_anchor.map(|dial| (dial.device_id.as_str(), dial.endpoints.as_slice())),
+        anchor_reachable: direct_anchor.is_some() || coordinator_reachable,
         discovered: &BTreeMap::new(),
         known: &known,
     });
@@ -271,22 +283,26 @@ pub(super) async fn exchange_with_members(
         .into_iter()
         .filter(|peer| !peer.endpoints.is_empty())
         .filter_map(|peer| {
-            let fingerprint = view
-                .devices
-                .iter()
-                .find(|device| device.device_id == peer.device_id)
-                .map(|device| fingerprint_hex(&device.tls_fingerprint))?;
+            let fingerprint = match direct_anchor {
+                Some(anchor) if anchor.device_id == peer.device_id => anchor.fingerprint.clone(),
+                _ => view
+                    .devices
+                    .iter()
+                    .find(|device| device.device_id == peer.device_id)
+                    .map(|device| fingerprint_hex(&device.tls_fingerprint))?,
+            };
             Some((peer, fingerprint))
         })
         .collect();
+    let transport = |peer: &PlannedPeer, fingerprint: &str| MemberTransport {
+        manager: pass.manager.clone(),
+        endpoints: peer.endpoints.clone(),
+        fingerprint: fingerprint.to_string(),
+    };
     let exchanges = targets.iter().map(|(peer, fingerprint)| {
         let pass = &pass;
+        let transport = transport(peer, fingerprint);
         async move {
-            let transport = MemberTransport {
-                manager: pass.manager.clone(),
-                endpoints: peer.endpoints.clone(),
-                fingerprint: fingerprint.clone(),
-            };
             let session = ClientSession {
                 transport: &transport,
                 ids: pass.ids,
@@ -305,11 +321,13 @@ pub(super) async fn exchange_with_members(
     });
     let mut outcome = MemberPassOutcome::default();
     let mut reported = Vec::new();
+    let mut anchor_answered = false;
     for (device_id, result) in join_all(exchanges.collect()).await {
         match result {
             Ok(Exchange::Done(done)) => {
                 outcome.pulled += done.pulled;
                 if device_id == view.anchor_device_id {
+                    anchor_answered = true;
                     record_direct_anchor_marks(pass.engine, pass.pool, pass.ctx, &view, &done)
                         .await?;
                 }
@@ -327,10 +345,16 @@ pub(super) async fn exchange_with_members(
             Err(error) => eprintln!("sync: exchange with member {device_id}: {error}"),
         }
     }
+    if anchor_answered {
+        outcome.anchor = targets
+            .iter()
+            .find(|(peer, _)| peer.device_id == view.anchor_device_id)
+            .map(|(peer, fingerprint)| transport(peer, fingerprint));
+    }
     // Also prunes the book against the log when no member reported anything; the file is
     // written only when its content changed.
     record_reported_peers(
-        pass.peers_path,
+        pass.files.peers_path(),
         pass.engine,
         pass.pool,
         pass.ctx,
@@ -361,29 +385,36 @@ async fn record_direct_anchor_marks(
     Ok(())
 }
 
-/// How a pass reaches the anchor the selected log names.
+/// How a pass reaches the anchor its pin names.
 #[derive(Debug, PartialEq, Eq)]
 struct AnchorDial {
+    /// Handoff device id of the anchor.
+    device_id: String,
+    /// The certificate fingerprint every dial to the anchor pins.
+    fingerprint: String,
     /// Whether the pinned coordinator is the anchor, so the coordinator exchange covers it.
     anchor_is_coordinator: bool,
     /// The endpoints to dial the anchor at.
     endpoints: Vec<String>,
 }
 
-/// Reaches the log's anchor through the coordinator pin while it is the anchor, and through
-/// the peer book after a handover. The pin is only read, so a handover never changes it.
+/// Reaches the anchor through the coordinator pin while it is the anchor, and through the peer
+/// book after a handover. The coordinator pin is only read, so a handover never changes it or
+/// its ownership generation.
 fn anchor_dial(
-    view: &AuthorizationView,
+    anchor: &AnchorPin,
     pin: &ganbaru_handoff::pairing::CoordinatorPin,
     known: &PeerEndpoints,
 ) -> AnchorDial {
-    let anchor_is_coordinator = view.anchor_device_id == pin.device_id;
+    let anchor_is_coordinator = anchor.device_id == pin.device_id;
     AnchorDial {
+        device_id: anchor.device_id.clone(),
+        fingerprint: anchor.certificate_fingerprint.clone(),
         anchor_is_coordinator,
         endpoints: if anchor_is_coordinator {
             pin.reported_endpoints.clone()
         } else {
-            known.endpoints(&view.anchor_device_id)
+            known.endpoints(&anchor.device_id)
         },
     }
 }
@@ -449,21 +480,15 @@ where
 mod tests {
     use super::{AnchorDial, anchor_dial};
     use ganbaru_handoff::pairing::CoordinatorPin;
-    use ganbaru_sync::AuthorizationView;
-    use ganbaru_sync_contracts::AdminPublicKey;
+    use ganbaru_sync_replica::peers::anchor_pin::AnchorPin;
     use ganbaru_sync_replica::peers::book::PeerEndpoints;
 
-    fn view(anchor: &str) -> AuthorizationView {
-        AuthorizationView {
+    fn anchor(device_id: &str, fingerprint: char) -> AnchorPin {
+        AnchorPin {
+            vault_id: "vault-1".to_string(),
+            device_id: device_id.to_string(),
+            certificate_fingerprint: fingerprint.to_string().repeat(64),
             epoch: 2,
-            revision: 9,
-            entry_hash: [3; 32],
-            anchor_device_id: anchor.to_string(),
-            frozen_at: None,
-            catch_up: None,
-            charter: [4; 32],
-            recovery_admin_key: AdminPublicKey::from_bytes([5; 32]),
-            devices: Vec::new(),
         }
     }
 
@@ -486,11 +511,13 @@ mod tests {
     fn the_pinned_coordinator_is_dialed_while_it_is_the_anchor() {
         assert_eq!(
             anchor_dial(
-                &view("device-old-anchor"),
+                &anchor("device-old-anchor", 'a'),
                 &pin(),
                 &PeerEndpoints::default()
             ),
             AnchorDial {
+                device_id: "device-old-anchor".to_string(),
+                fingerprint: "a".repeat(64),
                 anchor_is_coordinator: true,
                 endpoints: vec!["192.168.1.20:43821".to_string()],
             }
@@ -507,8 +534,11 @@ mod tests {
             1_700_000_000_000,
         );
         assert_eq!(
-            anchor_dial(&view("device-new-anchor"), &pin, &known),
+            anchor_dial(&anchor("device-new-anchor", 'b'), &pin, &known),
             AnchorDial {
+                device_id: "device-new-anchor".to_string(),
+                // Dials to the new anchor pin its enrollment, never the coordinator certificate.
+                fingerprint: "b".repeat(64),
                 anchor_is_coordinator: false,
                 endpoints: vec!["192.168.1.30:43821".to_string()],
             }
@@ -519,7 +549,11 @@ mod tests {
             ("device-old-anchor", 3)
         );
         // Until a member reports the new anchor, it has no endpoints to dial.
-        let unknown = anchor_dial(&view("device-new-anchor"), &pin, &PeerEndpoints::default());
+        let unknown = anchor_dial(
+            &anchor("device-new-anchor", 'b'),
+            &pin,
+            &PeerEndpoints::default(),
+        );
         assert!(unknown.endpoints.is_empty());
     }
 }

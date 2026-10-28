@@ -420,17 +420,7 @@ pub(crate) fn sync_hub<R: Runtime>(app: &AppHandle<R>) -> SyncHub {
         Box::pin(async move { open_hub_vault(&app).await })
     });
     let runtime = app.state::<SyncRuntime>();
-    let queue = runtime.inner().clone();
-    let proposals: HubProposals = Arc::new(move |proposal| {
-        let runtime = queue.clone();
-        Box::pin(async move {
-            let receiver = runtime.request_proposal(proposal)?;
-            tokio::time::timeout(DELEGATED_PASS_TIMEOUT, receiver)
-                .await
-                .map_err(|_| "the anchor did not sequence the proposal in time".to_string())?
-                .map_err(|_| "the anchor stopped before it sequenced the proposal".to_string())?
-        })
-    });
+    let proposals = hub_proposals(runtime.inner());
     let queue = runtime.inner().clone();
     let forwards: HubForwards = Arc::new(move |device_id, settled| {
         let runtime = queue.clone();
@@ -448,10 +438,28 @@ pub(crate) fn sync_hub<R: Runtime>(app: &AppHandle<R>) -> SyncHub {
         .with_forwards(forwards)
 }
 
-/// The hub a member listener routes admitted sync requests to, serving the active vault. It
-/// takes no proposals and forwards none: those go to the coordinator, so only the anchor's
-/// answer settles one. It relays geneses of other members, which the engine admits only for
-/// enrolled devices.
+/// Hands a proposal a listener received to the pass, which sequences it when this desktop
+/// anchors and answers that it is not the anchor otherwise.
+#[cfg(desktop)]
+fn hub_proposals(runtime: &SyncRuntime) -> HubProposals {
+    let queue = runtime.clone();
+    Arc::new(move |proposal| {
+        let runtime = queue.clone();
+        Box::pin(async move {
+            let receiver = runtime.request_proposal(proposal)?;
+            tokio::time::timeout(DELEGATED_PASS_TIMEOUT, receiver)
+                .await
+                .map_err(|_| "the anchor did not sequence the proposal in time".to_string())?
+                .map_err(|_| "the anchor stopped before it sequenced the proposal".to_string())?
+        })
+    })
+}
+
+/// The hub a member listener routes admitted sync requests to, serving the active vault. Its
+/// admission lets proposals through only while the selected log names this desktop as the
+/// anchor, so a member reaches the anchor directly after a handover; it forwards none, since
+/// the coordinator holds proposals for an anchor members cannot reach. It relays geneses of
+/// other members, which the engine admits only for enrolled devices.
 #[cfg(desktop)]
 pub(crate) fn member_hub<R: Runtime>(app: &AppHandle<R>) -> SyncHub {
     let opener = app.clone();
@@ -462,6 +470,7 @@ pub(crate) fn member_hub<R: Runtime>(app: &AppHandle<R>) -> SyncHub {
     let runtime = app.state::<SyncRuntime>();
     SyncHub::new(open, runtime.changes.clone())
         .with_stability(runtime.stability.clone())
+        .with_proposals(hub_proposals(runtime.inner()))
         .with_relayed_geneses()
 }
 
@@ -832,6 +841,9 @@ struct ServiceState {
     confirmed: Option<(WriterId, Seq)>,
     /// Operations of quarantined devices pulls already turned away.
     pull_skips: PullSkips,
+    /// A link to an anchor that is not the coordinator and answered the last exchange, which
+    /// the pass sends waiting proposals to instead of the coordinator.
+    anchor_link: Option<super::transport::MemberTransport>,
     /// When this anchor first found its database restored behind its own log, in Unix
     /// milliseconds; it sequences nothing until the log catches up or it hands over to itself.
     #[cfg(desktop)]
@@ -840,6 +852,11 @@ struct ServiceState {
     /// which the next forward request reports to the coordinator.
     #[cfg(desktop)]
     settled: Vec<(Digest32, ProposalRejection)>,
+    /// The stored vector the coordinator last reported, quarantined writers included. A
+    /// linked anchor's removal cutoffs cover at least it, since the coordinator and members
+    /// may hold operations of a device the anchor quarantined and never stored.
+    #[cfg(desktop)]
+    hub_reported: VersionVector,
     view: SyncStatusView,
 }
 
@@ -1202,6 +1219,10 @@ impl ServiceState {
             }
         }
         self.apply_new(&session).await?;
+        let anchor_link = self.anchor_link.take();
+        // Whether this linked desktop anchors and may sequence, once the pass checked it.
+        #[cfg(desktop)]
+        let mut linked_anchor_ready: Option<bool> = None;
         #[cfg(desktop)]
         let mut take_anchor = {
             let (take_anchor, restored) = session
@@ -1246,14 +1267,18 @@ impl ServiceState {
                 // A linked desktop that anchors checks for a restore as the coordinator does;
                 // members return lost entries through the coordinator's exchange.
                 // A restored anchor sequences nothing while it waits.
-                if session.anchors_here(&manager).await? {
-                    if self.anchor_ready(&session, &manager, true).await? {
+                let anchors_here = session.anchors_here(&manager).await?;
+                linked_anchor_ready =
+                    Some(anchors_here && self.anchor_ready(&session, &manager, true).await?);
+                if anchors_here {
+                    if linked_anchor_ready == Some(true) {
                         match session
                             .anchor_as_member(
                                 &assets.transport,
                                 &assets.ids,
                                 &mut self.writer,
                                 &mut self.settled,
+                                &self.hub_reported,
                             )
                             .await
                         {
@@ -1265,12 +1290,19 @@ impl ServiceState {
                             }
                         }
                     }
-                } else {
+                } else if anchor_link.is_none() {
                     session.replay_outbox(&assets.transport, &assets.ids).await;
                 }
             }
             #[cfg(mobile)]
-            session.replay_outbox(&assets.transport, &assets.ids).await;
+            if anchor_link.is_none() {
+                session.replay_outbox(&assets.transport, &assets.ids).await;
+            }
+        }
+        // An anchor that is not the coordinator and answered this pass takes the proposals
+        // directly, also while the coordinator is away.
+        if let (Some(link), Some((assets, _))) = (anchor_link.as_ref(), asset_peer.as_ref()) {
+            session.replay_outbox(link, &assets.ids).await;
         }
         #[cfg(desktop)]
         for request in take_anchor {
@@ -1319,6 +1351,7 @@ impl ServiceState {
                         &manager,
                         &mut self.writer,
                         runtime.take_proposal_requests(),
+                        &VersionVector::new(),
                     )
                     .await;
             } else {
@@ -1339,8 +1372,35 @@ impl ServiceState {
             #[cfg(desktop)]
             {
                 runtime.stability.clear();
-                for request in runtime.take_proposal_requests() {
-                    let _ = request.reply.send(Ok(Err(ProposalRejection::NotAnchor)));
+                // A linked anchor sequences what members proposed to its listener directly,
+                // also while the coordinator is away.
+                let requests = runtime.take_proposal_requests();
+                if !requests.is_empty() {
+                    let ready = match linked_anchor_ready {
+                        Some(ready) => ready,
+                        None => {
+                            session.anchors_here(&manager).await?
+                                && self.anchor_ready(&session, &manager, true).await?
+                        }
+                    };
+                    if ready {
+                        session
+                            .sequence_proposals(
+                                &manager,
+                                &mut self.writer,
+                                requests,
+                                &self.hub_reported,
+                            )
+                            .await;
+                        if matches!(next, Next::Online(_)) {
+                            // The coordinator learns of the entries on the next exchange.
+                            next = Next::Continue;
+                        }
+                    } else {
+                        for request in requests {
+                            let _ = request.reply.send(Ok(Err(ProposalRejection::NotAnchor)));
+                        }
+                    }
                 }
             }
             if acknowledged.sealed_ops > 0 && matches!(next, Next::Online(_)) {
@@ -1494,6 +1554,7 @@ impl ServiceState {
         let path = session.files.quarantine_path();
         let quarantine = blocking(move || Quarantine::load(&path)).await?;
         let listening = session.host.serve_members().await;
+        self.anchor_link = None;
         for _ in 0..MAX_FORK_RECOVERIES {
             let own_writers = self
                 .writer
@@ -1516,8 +1577,10 @@ impl ServiceState {
             match client.exchange().await {
                 Err(error) => {
                     // Members still exchange with each other while the coordinator is away.
-                    self.exchange_members(session, &wait, quarantine.devices(), &listening, false)
+                    let members = self
+                        .exchange_members(session, &wait, quarantine.devices(), &listening, false)
                         .await;
+                    self.anchor_link = members.anchor;
                     view.state = SyncState::Offline;
                     view.last_error = Some(error);
                     return Ok(Next::Retry);
@@ -1590,10 +1653,12 @@ impl ServiceState {
                     #[cfg(desktop)]
                     {
                         wait.hub = authority::without_writers(&done.hub, &skipped);
+                        self.hub_reported.clone_from(&done.hub);
                     }
                     let members = self
                         .exchange_members(session, &wait, quarantine.devices(), &listening, true)
                         .await;
+                    self.anchor_link = members.anchor;
                     if members.pulled > 0 {
                         // Apply what members brought, then exchange it with the coordinator.
                         return Ok(Next::Continue);
@@ -1640,7 +1705,7 @@ impl ServiceState {
             quarantined,
             pull_skips: &self.pull_skips,
             listening,
-            peers_path: session.files.peers_path(),
+            files: &session.files,
         };
         match super::peers::exchange_with_members(pass, coordinator_reachable).await {
             Ok(outcome) => outcome,
@@ -2542,6 +2607,7 @@ impl<'a, H: SyncHost> Session<'a, H> {
                 &self.ctx,
                 &mut active.local(),
                 &mut outbox,
+                &VersionVector::new(),
                 now_ms()?,
             )
             .await?;
@@ -2561,13 +2627,15 @@ impl<'a, H: SyncHost> Session<'a, H> {
     /// On the anchor, sequences the proposals linked devices sent through the hub with the
     /// anchor writer and answers each. A coordinator that handed the anchor over holds each in
     /// its outbox for the anchor's forward request. Without a writer, each is answered as not
-    /// reaching the anchor; the sender keeps it in its outbox either way.
+    /// reaching the anchor; the sender keeps it in its outbox either way. Removal cutoffs cover
+    /// at least `covered`, the coordinator's last reported stored vector on a linked anchor.
     #[cfg(desktop)]
     async fn sequence_proposals(
         &self,
         manager: &PairingManager,
         writer: &mut Option<ActiveWriter>,
         requests: Vec<ProposalRequest>,
+        covered: &VersionVector,
     ) {
         if requests.is_empty() {
             return;
@@ -2599,12 +2667,13 @@ impl<'a, H: SyncHost> Session<'a, H> {
                 (Ok(true), Some(active)) => match acquire(&self.pool).await {
                     Ok(mut conn) => match now_ms() {
                         Ok(now) => {
-                            authority::sequence(
+                            authority::sequence_covering(
                                 &self.engine,
                                 &mut conn,
                                 &self.ctx,
                                 &mut active.local(),
                                 &request.proposal,
+                                covered,
                                 now,
                             )
                             .await

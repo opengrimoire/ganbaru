@@ -243,30 +243,57 @@ pub async fn sequence(
     proposal: &SignedProposal,
     now_ms: u64,
 ) -> Result<Result<u64, ProposalRejection>, String> {
+    sequence_covering(
+        engine,
+        conn,
+        ctx,
+        writer,
+        proposal,
+        &VersionVector::new(),
+        now_ms,
+    )
+    .await
+}
+
+/// [`sequence`] on a linked anchor: a removal's cutoffs cover at least `covered`, the stored
+/// vector the coordinator last reported, since the anchor may store less of a device it
+/// quarantined than the coordinator and members already applied.
+pub async fn sequence_covering(
+    engine: &Engine,
+    conn: &mut SqliteConnection,
+    ctx: &SpaceContext,
+    writer: &mut LocalWriter<'_>,
+    proposal: &SignedProposal,
+    covered: &VersionVector,
+    now_ms: u64,
+) -> Result<Result<u64, ProposalRejection>, String> {
     let discovery_key = match proposal.proposal.entry {
         Entry::Remove(_) => *DiscoveryKey::generate()?.as_bytes(),
         _ => current_discovery_key(engine, conn, ctx).await?,
     };
     engine
-        .sequence_proposal(conn, ctx, proposal, discovery_key, writer, now_ms)
+        .sequence_proposal_covering(conn, ctx, proposal, discovery_key, covered, writer, now_ms)
         .await
         .map_err(|error| format!("sequence sync proposal: {error}"))
 }
 
 /// Sequences every waiting proposal of the anchor's outbox in order, records final rejections,
-/// and drops the proposals the selected chain now holds. Returns how many proposals were
-/// sequenced or replayed.
+/// and drops the proposals the selected chain now holds. Removal cutoffs cover at least
+/// `covered`, as in [`sequence_covering`]. Returns how many proposals were sequenced or
+/// replayed.
 pub async fn sequence_outbox(
     engine: &Engine,
     conn: &mut SqliteConnection,
     ctx: &SpaceContext,
     writer: &mut LocalWriter<'_>,
     outbox: &mut Outbox,
+    covered: &VersionVector,
     now_ms: u64,
 ) -> Result<usize, String> {
     let mut sequenced = 0;
     for proposal in outbox.pending() {
-        let outcome = sequence(engine, conn, ctx, writer, &proposal, now_ms).await?;
+        let outcome =
+            sequence_covering(engine, conn, ctx, writer, &proposal, covered, now_ms).await?;
         sequenced += usize::from(outcome.is_ok());
         outbox.settle(&proposal.hash(), outcome)?;
     }
@@ -349,17 +376,21 @@ pub async fn collect_forwards(
 /// Sequences the proposals a hub forwarded through the anchor's writer and returns the final
 /// rejections, which the next forward reports so the hub stops holding them. Accepted
 /// proposals need no report: the hub finds them in the chain once it applies the entries.
+/// Removal cutoffs cover at least `covered`, the hub's stored vector, as in
+/// [`sequence_covering`].
 pub async fn sequence_forwarded(
     engine: &Engine,
     conn: &mut SqliteConnection,
     ctx: &SpaceContext,
     writer: &mut LocalWriter<'_>,
     proposals: &[SignedProposal],
+    covered: &VersionVector,
     now_ms: u64,
 ) -> Result<Vec<(Digest32, ProposalRejection)>, String> {
     let mut rejected = Vec::new();
     for proposal in proposals {
-        if let Err(rejection) = sequence(engine, conn, ctx, writer, proposal, now_ms).await?
+        if let Err(rejection) =
+            sequence_covering(engine, conn, ctx, writer, proposal, covered, now_ms).await?
             && is_final(rejection)
         {
             rejected.push((proposal.hash(), rejection));

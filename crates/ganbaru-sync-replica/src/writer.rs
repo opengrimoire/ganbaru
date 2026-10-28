@@ -366,6 +366,11 @@ impl SyncFiles {
     pub fn peers_path(&self) -> PathBuf {
         self.vault_directory().join("peers.json")
     }
+
+    /// Which device anchors the vault and the certificate its enrollment recorded.
+    pub fn anchor_path(&self) -> PathBuf {
+        self.vault_directory().join("anchor.json")
+    }
 }
 
 pub fn read_record(path: &Path) -> Result<Option<WriterRecord>, String> {

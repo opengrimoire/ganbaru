@@ -8,6 +8,7 @@ use ganbaru_sync_contracts::{AdminPublicKey, DeviceKind, DevicePublicKey, Device
 
 use super::TestDirectory;
 use crate::peers::admission::{MemberAdmission, MemberRefusal, fingerprint_hex};
+use crate::peers::anchor_pin::{AnchorPin, MAX_ANCHOR_PIN_BYTES};
 use crate::peers::book::{
     MAX_ENDPOINTS_PER_PEER, MAX_PEER_BOOK_BYTES, MAX_PEER_ENDPOINTS, OBSERVATION_STEP_MS, PeerBook,
     PeerEndpoints,
@@ -136,25 +137,57 @@ fn member_admission_refuses_requests_that_are_not_sync_or_name_another_device() 
             Err(MemberRefusal::NotSync)
         );
     }
-    for request in [
-        ControlMessage::SyncPropose {
-            protocol_version: PROTOCOL_VERSION,
-            vault_id: VAULT.to_string(),
-            device_id: "device-1".to_string(),
-            proposal: "proposal".to_string(),
-        },
-        ControlMessage::SyncForward {
-            protocol_version: PROTOCOL_VERSION,
-            vault_id: VAULT.to_string(),
-            device_id: "device-1".to_string(),
-            settled: Vec::new(),
-        },
-    ] {
+}
+
+#[test]
+fn only_the_anchor_listener_takes_proposals_and_no_member_listener_forwards() {
+    let propose = ControlMessage::SyncPropose {
+        protocol_version: PROTOCOL_VERSION,
+        vault_id: VAULT.to_string(),
+        device_id: "device-2".to_string(),
+        proposal: "proposal".to_string(),
+    };
+    let forward = ControlMessage::SyncForward {
+        protocol_version: PROTOCOL_VERSION,
+        vault_id: VAULT.to_string(),
+        device_id: "device-2".to_string(),
+        settled: Vec::new(),
+    };
+    let devices = || vec![device(1, false), device(2, false), device(3, false)];
+    let fingerprint = fingerprint_hex(&[2; 32]);
+
+    // The log names device-1 as the anchor.
+    let unnamed = MemberAdmission::new(VAULT, &view(devices()), &BTreeSet::new());
+    let member = unnamed.clone().served_by("device-3");
+    let anchor = unnamed.clone().served_by("device-1");
+    assert!(!unnamed.takes_proposals());
+    assert!(!member.takes_proposals());
+    assert!(anchor.takes_proposals());
+
+    for admission in [&unnamed, &member] {
         assert_eq!(
-            admission.request(&fingerprint, &request),
+            admission.request(&fingerprint, &propose),
             Err(MemberRefusal::Proposal)
         );
     }
+    assert_eq!(anchor.request(&fingerprint, &propose), Ok(()));
+    for admission in [&unnamed, &member, &anchor] {
+        assert_eq!(
+            admission.request(&fingerprint, &forward),
+            Err(MemberRefusal::Forward)
+        );
+    }
+    // A proposal still names the device its certificate enrolled.
+    assert_eq!(
+        anchor.request(&fingerprint_hex(&[3; 32]), &propose),
+        Err(MemberRefusal::DeviceMismatch)
+    );
+    // After a handover to device-3, its listener takes proposals and device-1's does not.
+    let mut handed_over = view(devices());
+    handed_over.anchor_device_id = "device-3".to_string();
+    let after = MemberAdmission::new(VAULT, &handed_over, &BTreeSet::new());
+    assert!(after.clone().served_by("device-3").takes_proposals());
+    assert!(!after.served_by("device-1").takes_proposals());
 }
 
 fn endpoint(last: u8) -> String {
@@ -430,4 +463,95 @@ fn pass_plan_keeps_a_slot_for_an_unreachable_anchor_and_long_polls_a_member() {
     });
     assert!(alone.peers.is_empty());
     assert_eq!(alone.long_poll, None);
+}
+
+#[test]
+fn anchor_pin_follows_a_handover_and_round_trips() {
+    let directory = TestDirectory::new("anchor-pin");
+    let path = directory.path().join("vault").join("anchor.json");
+    let mut log = view(vec![device(1, false), device(2, false)]);
+    let first = AnchorPin::follow(&path, VAULT, Some(&log))
+        .expect("follow the founding anchor")
+        .expect("the anchor is enrolled");
+    assert_eq!(first.device_id, "device-1");
+    assert_eq!(first.certificate_fingerprint, fingerprint_hex(&[1; 32]));
+    assert_eq!(AnchorPin::load(&path, VAULT).expect("load"), Some(first));
+
+    // A handover in a later epoch moves the pin to the new anchor's enrollment.
+    log.epoch = 2;
+    log.anchor_device_id = "device-2".to_string();
+    let moved = AnchorPin::follow(&path, VAULT, Some(&log))
+        .expect("follow the handover")
+        .expect("the new anchor is enrolled");
+    assert_eq!((moved.device_id.as_str(), moved.epoch), ("device-2", 2));
+    assert_eq!(moved.certificate_fingerprint, fingerprint_hex(&[2; 32]));
+    // Without a readable log, the stored pin stands in.
+    assert_eq!(
+        AnchorPin::follow(&path, VAULT, None).expect("read the stored pin"),
+        Some(moved)
+    );
+}
+
+#[test]
+fn anchor_pin_the_log_contradicts_is_replaced_or_dropped() {
+    let directory = TestDirectory::new("anchor-pin-stale");
+    let path = directory.path().join("anchor.json");
+    let stale = AnchorPin {
+        vault_id: VAULT.to_string(),
+        device_id: "device-1".to_string(),
+        certificate_fingerprint: "f".repeat(64),
+        epoch: 1,
+    };
+    stale.store(&path).expect("store a stale pin");
+    // The log's enrollment fingerprint wins over the stored one.
+    let log = view(vec![device(1, false)]);
+    let followed = AnchorPin::follow(&path, VAULT, Some(&log))
+        .expect("follow")
+        .expect("enrolled anchor");
+    assert_eq!(followed.certificate_fingerprint, fingerprint_hex(&[1; 32]));
+    assert_eq!(AnchorPin::load(&path, VAULT).expect("load"), Some(followed));
+
+    // A log that enrolls no anchor leaves nothing to pin.
+    let unenrolled = view(vec![device(2, false)]);
+    assert_eq!(
+        AnchorPin::follow(&path, VAULT, Some(&unenrolled)).expect("follow"),
+        None
+    );
+    assert!(!path.exists());
+}
+
+#[test]
+fn anchor_pin_refuses_damaged_files_and_follow_starts_over() {
+    let directory = TestDirectory::new("anchor-pin-corrupt");
+    let path = directory.path().join("anchor.json");
+    let valid = |device_id: &str, fingerprint: &str, vault_id: &str| {
+        format!(
+            "{{\"schemaVersion\":1,\"vaultId\":\"{vault_id}\",\"deviceId\":\"{device_id}\",\
+             \"certificateFingerprint\":\"{fingerprint}\",\"epoch\":1}}"
+        )
+    };
+    let fingerprint = "a".repeat(64);
+    for damaged in [
+        "not json".to_string(),
+        valid("device-1", &fingerprint, "another-vault"),
+        valid("device 1", &fingerprint, VAULT),
+        valid("device-1", &"A".repeat(64), VAULT),
+        valid("device-1", &"a".repeat(63), VAULT),
+        valid("device-1", &fingerprint, VAULT)
+            .replace("\"schemaVersion\":1", "\"schemaVersion\":9"),
+        valid("device-1", &fingerprint, VAULT).replace('}', ",\"extra\":1}"),
+        "x".repeat(MAX_ANCHOR_PIN_BYTES + 1),
+    ] {
+        std::fs::write(&path, &damaged).expect("write damaged pin");
+        assert!(AnchorPin::load(&path, VAULT).is_err(), "{damaged}");
+        assert_eq!(AnchorPin::follow(&path, VAULT, None).expect("follow"), None);
+        assert!(!path.exists());
+    }
+    std::fs::write(&path, valid("device-1", &fingerprint, VAULT)).expect("write valid pin");
+    assert_eq!(
+        AnchorPin::load(&path, VAULT)
+            .expect("load")
+            .map(|pin| pin.certificate_fingerprint),
+        Some(fingerprint)
+    );
 }

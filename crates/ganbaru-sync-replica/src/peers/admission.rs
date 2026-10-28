@@ -26,9 +26,11 @@ pub enum MemberRefusal {
     VaultMismatch,
     /// The request is not a sync request, which is all a non-anchor listener serves.
     NotSync,
-    /// The request proposes or forwards an authorization change, which only the coordinator
-    /// takes, so the anchor's signed answer is the only final one.
+    /// The request proposes an authorization change to a listener that is not the anchor, so
+    /// only the anchor's signed answer can be final.
     Proposal,
+    /// The request asks for proposals held for the anchor, which only the coordinator holds.
+    Forward,
 }
 
 impl MemberRefusal {
@@ -41,7 +43,8 @@ impl MemberRefusal {
             Self::DeviceMismatch => "member_device_mismatch",
             Self::VaultMismatch => "vault_mismatch",
             Self::NotSync => "sync_only",
-            Self::Proposal => "proposals_to_coordinator",
+            Self::Proposal => "proposals_to_anchor",
+            Self::Forward => "forwards_to_coordinator",
         }
     }
 
@@ -54,7 +57,8 @@ impl MemberRefusal {
             Self::DeviceMismatch => "the request names another device than its certificate",
             Self::VaultMismatch => "this listener serves a different vault",
             Self::NotSync => "this listener serves only sync requests",
-            Self::Proposal => "authorization proposals go to the coordinator",
+            Self::Proposal => "authorization proposals go to the anchor",
+            Self::Forward => "held proposals are collected from the coordinator",
         }
     }
 }
@@ -73,11 +77,14 @@ pub struct MemberAdmission {
     vault_id: String,
     by_fingerprint: BTreeMap<String, Enrolled>,
     quarantined: BTreeSet<String>,
+    anchor_device_id: String,
+    takes_proposals: bool,
 }
 
 impl MemberAdmission {
     /// Admission for `vault_id` from its selected authorization state and the devices this
-    /// installation quarantined.
+    /// installation quarantined. It takes no proposals until [`Self::served_by`] names the
+    /// anchor.
     pub fn new(vault_id: &str, view: &AuthorizationView, quarantined: &BTreeSet<String>) -> Self {
         let by_fingerprint = view
             .devices
@@ -96,7 +103,22 @@ impl MemberAdmission {
             vault_id: vault_id.to_string(),
             by_fingerprint,
             quarantined: quarantined.clone(),
+            anchor_device_id: view.anchor_device_id.clone(),
+            takes_proposals: false,
         }
+    }
+
+    /// The admission of the listener of `own_device_id`, which takes authorization proposals
+    /// exactly when the selected log names it as the anchor.
+    #[must_use]
+    pub fn served_by(mut self, own_device_id: &str) -> Self {
+        self.takes_proposals = self.anchor_device_id == own_device_id;
+        self
+    }
+
+    /// Whether the listener answers authorization proposals, because it anchors the log.
+    pub fn takes_proposals(&self) -> bool {
+        self.takes_proposals
     }
 
     /// The certificate fingerprints a TLS handshake may complete with, in the lowercase hex
@@ -125,7 +147,9 @@ impl MemberAdmission {
     }
 
     /// Whether a connection whose certificate has `fingerprint` may have `request` answered:
-    /// a sync request for this vault that names the device the certificate enrolled. Only
+    /// a sync request for this vault that names the device the certificate enrolled. A
+    /// proposal is answered only by the anchor's listener, and a forward request never, since
+    /// the coordinator holds proposals for an anchor that is not reachable directly. Only
     /// desktops run a member listener.
     #[cfg(desktop)]
     pub fn request(
@@ -135,11 +159,12 @@ impl MemberAdmission {
     ) -> Result<(), MemberRefusal> {
         let (vault_id, device_id) = request.sync_peer().ok_or(MemberRefusal::NotSync)?;
         let enrolled = self.certificate(fingerprint)?;
-        if matches!(
-            request,
-            ControlMessage::SyncPropose { .. } | ControlMessage::SyncForward { .. }
-        ) {
-            return Err(MemberRefusal::Proposal);
+        match request {
+            ControlMessage::SyncPropose { .. } if !self.takes_proposals => {
+                return Err(MemberRefusal::Proposal);
+            }
+            ControlMessage::SyncForward { .. } => return Err(MemberRefusal::Forward),
+            _ => {}
         }
         if vault_id != self.vault_id {
             return Err(MemberRefusal::VaultMismatch);

@@ -1231,3 +1231,52 @@ fn a_proposal_has_a_revision_once_the_selected_chain_holds_it() {
         assert_eq!(revision_of(&mut member).await, Some(revision));
     });
 }
+
+#[test]
+fn a_removal_cutoff_covers_what_the_coordinator_reported_beyond_the_anchor() {
+    block_on(async {
+        let mut anchor = Replica::anchor(0, 61).await;
+        let mut member = Replica::new(1, 61).await;
+        tag(&mut member, "tag-first").await;
+        tag(&mut member, "tag-second").await;
+        let ops = member.own_ops().await;
+        assert!(
+            ops.len() > 2,
+            "the member wrote past what the anchor stores"
+        );
+        // The anchor stores only part of the member's chain, while the coordinator reported
+        // storing all of it.
+        anchor.receive(&ops[..2]).await;
+        let reported = u64::try_from(ops.len()).unwrap();
+        let mut covered = ganbaru_sync_contracts::VersionVector::new();
+        covered.set(member.writer(), reported);
+        let signed = super::replica::person_proposal(
+            &anchor.person,
+            anchor.ctx.space,
+            &anchor_admin(&anchor.person),
+            anchor.now_ms,
+            remove_entry(&member.device_id),
+        );
+        anchor
+            .engine
+            .sequence_proposal_covering(
+                &mut anchor.conn,
+                &anchor.ctx,
+                &signed,
+                [6; 32],
+                &covered,
+                &mut anchor.identity.local(),
+                anchor.now_ms,
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        let cutoff: Option<i64> =
+            sqlx::query_scalar("SELECT cutoff_seq FROM sync_writers WHERE device_id = ?")
+                .bind(&member.device_id)
+                .fetch_one(&mut anchor.conn)
+                .await
+                .unwrap();
+        assert_eq!(cutoff, Some(i64::try_from(reported).unwrap()));
+    });
+}

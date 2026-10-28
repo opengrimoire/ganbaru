@@ -8,7 +8,10 @@
 -- keeps only `failed_at` and `last_error`. Scheduled message references become rows owned by
 -- their scheduled message, keyed by ordinal like its attachment references, and a removed
 -- participant now removes the reference instead of clearing it. Assignments name their
--- executing device as well, and a removed teammate removes its assignments. The uniques two
+-- executing device as well, and a removed teammate removes its assignments. Existing scheduled
+-- messages and assignments take the device of the vault's local sync writer when one is
+-- recorded, so a vault that already syncs never has two devices sending the same row; a vault
+-- that never synced has only the migrating device. The uniques two
 -- devices could break concurrently (one active assignment per reply thread, one input per
 -- message and per ordinal) become plain indexes: input ids derive from their message, and
 -- readers order concurrent rows deterministically. The scheduled client command id stays
@@ -62,7 +65,9 @@ INSERT INTO chat_scheduled_messages_next (
     updated_at
 )
 SELECT
-    id, client_command_id, channel_id, reply_thread_id, NULL,
+    id, client_command_id, channel_id, reply_thread_id,
+    (SELECT local_device_id FROM sync_spaces WHERE local_device_id IS NOT NULL
+     ORDER BY space_id LIMIT 1),
     request_schema_version, request_data, scheduled_for,
     CASE WHEN state = 'failed' THEN updated_at END, last_error, created_at, updated_at
 FROM chat_scheduled_messages;
@@ -177,7 +182,9 @@ INSERT INTO chat_work_assignments_next (
     previous_assignment_id, state, state_reason, revision, settled_at, created_at, updated_at
 )
 SELECT
-    id, reply_thread_id, teammate_id, triggering_message_item_id, NULL,
+    id, reply_thread_id, teammate_id, triggering_message_item_id,
+    (SELECT local_device_id FROM sync_spaces WHERE local_device_id IS NOT NULL
+     ORDER BY space_id LIMIT 1),
     previous_assignment_id, state, state_reason, revision, settled_at, created_at, updated_at
 FROM chat_work_assignments;
 

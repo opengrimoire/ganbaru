@@ -129,6 +129,7 @@ fn mobile_runtime_excludes_desktop_only_commands() {
         "crate::sync::commands::sync_recovery_kit_pending",
         "crate::sync::commands::sync_recovery_kit_saved",
         "crate::sync::commands::sync_use_recovery_kit",
+        "crate::sync::commands::sync_force_anchor",
         "crate::sync::commands::sync_late_change_restore",
         "crate::sync::commands::sync_late_change_discard",
         "crate::sync::commands::sync_remove_device",

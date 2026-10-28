@@ -909,6 +909,7 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
             crate::sync::commands::sync_recovery_kit_pending,
             crate::sync::commands::sync_recovery_kit_saved,
             crate::sync::commands::sync_use_recovery_kit,
+            crate::sync::commands::sync_force_anchor,
             crate::sync::commands::sync_authority,
             crate::sync::commands::sync_outbox_list,
             crate::sync::commands::sync_late_changes,

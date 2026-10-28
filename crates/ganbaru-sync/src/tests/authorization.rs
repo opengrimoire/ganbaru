@@ -12,7 +12,7 @@ use ganbaru_sync_contracts::{
 use super::block_on;
 use super::replica::{
     ANCHOR_DEVICE_ID, Identity, Replica, anchor_admin, device_admin, device_id, device_key,
-    enroll_entry, person, proposal,
+    enroll_entry, person, proposal, recovery_admin,
 };
 use crate::{AuthorizationView, HoldReason, LateChange, StoreOutcome, StoreRefusal};
 
@@ -598,6 +598,87 @@ fn the_named_admin_desktop_seals_a_handover_from_the_head_it_continues() {
             Err(ProposalRejection::NotAnchor)
         );
         assert_devices_replay_the_selected_chain(&mut other).await;
+    });
+}
+
+#[test]
+fn only_the_recovery_key_forces_a_handover_to_a_member_desktop() {
+    block_on(async {
+        let mut hub = Replica::anchor(0, 47).await;
+        hub.sequence(admin_entry(20)).await.unwrap().unwrap();
+        for index in [21, 23] {
+            hub.sequence(enroll_entry(&person(), index, DeviceRole::Member))
+                .await
+                .unwrap()
+                .unwrap();
+        }
+        hub.sequence(Entry::Enroll(Enroll {
+            device_id: device_id(22),
+            device_key: device_key(&person(), 22).public_key(),
+            tls_fingerprint: [3; 32],
+            label: "Phone".to_owned(),
+            device_kind: DeviceKind::Mobile,
+            role: DeviceRole::Member,
+        }))
+        .await
+        .unwrap()
+        .unwrap();
+        hub.remove(&device_id(23)).await.unwrap();
+        let recovery = recovery_admin(&person());
+        let mut member = Replica::new(21, 47).await;
+        let mut phone = Replica::new(22, 47).await;
+        let mut removed = Replica::new(23, 47).await;
+        for replica in [&mut member, &mut phone, &mut removed] {
+            replica.pull(&mut hub).await;
+        }
+
+        // An admin key cannot hand the anchor to a desktop that is not an admin.
+        let by_admin = member.handover_proposal(&device_admin(20)).await;
+        assert_eq!(
+            member.seal_handover(&by_admin, None).await.unwrap(),
+            Err(ProposalRejection::NotAdmin)
+        );
+        // The recovery key can, but only to a live desktop.
+        let to_phone = phone.handover_proposal(&recovery).await;
+        assert_eq!(
+            phone.seal_handover(&to_phone, None).await.unwrap(),
+            Err(ProposalRejection::AdminNotDesktop)
+        );
+        let to_removed = removed.handover_proposal(&recovery).await;
+        assert_eq!(
+            removed.seal_handover(&to_removed, None).await.unwrap(),
+            Err(ProposalRejection::DeviceRemoved)
+        );
+        let forced = member.handover_proposal(&recovery).await;
+        let revision = member.seal_handover(&forced, None).await.unwrap().unwrap();
+
+        // The forced anchor sequences its own promotion signed by the recovery key.
+        let promote = proposal(
+            member.ctx.space,
+            &recovery,
+            member.now_ms,
+            Entry::SetRole(SetRole::Device {
+                device_id: device_id(21),
+                role: DeviceRole::Admin(device_admin(21).public_key()),
+            }),
+        );
+        assert_eq!(
+            member.sequence_signed(&promote).await.unwrap(),
+            Ok(revision + 1)
+        );
+        let opened = view(&mut member).await;
+        assert_eq!(
+            (opened.epoch, opened.anchor_device_id.as_str()),
+            (1, device_id(21).as_str())
+        );
+        hub.pull(&mut member).await;
+        assert_eq!(view(&mut hub).await, opened);
+        assert_eq!(
+            hub.sequence(enroll_entry(&person(), 24, DeviceRole::Member))
+                .await
+                .unwrap(),
+            Err(ProposalRejection::NotAnchor)
+        );
     });
 }
 

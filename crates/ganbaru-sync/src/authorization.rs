@@ -203,7 +203,11 @@ impl AuthState {
                 return Err(ProposalRejection::HandoverConflict);
             }
             let device = self.live_device(&handover.new_anchor_device_id)?;
-            if !matches!(device.role, DeviceRole::Admin(_)) {
+            // The recovery key forces a handover to any live desktop, because the anchor that
+            // would sequence its promotion to admin may be lost. That desktop proposes its own
+            // promotion as the first entry of the new epoch.
+            let forced_by_recovery = proposal.author == self.recovery_admin_key;
+            if !forced_by_recovery && !matches!(device.role, DeviceRole::Admin(_)) {
                 return Err(ProposalRejection::NotAdmin);
             }
             if device.kind != DeviceKind::Desktop {

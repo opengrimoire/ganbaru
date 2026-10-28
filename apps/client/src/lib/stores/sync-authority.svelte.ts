@@ -1,6 +1,7 @@
 import {
   confirmSyncRecoveryKitSaved,
   discardSyncLateChange,
+  forceSyncAnchor,
   getPendingSyncRecoveryKit,
   getSyncAuthority,
   liftSyncQuarantine,
@@ -17,6 +18,7 @@ import {
   takeSyncAnchor,
   useSyncRecoveryKit,
   type SyncAuthorityView,
+  type SyncForceAnchorRequest,
   type SyncLateChange,
   type SyncOutboxEntry,
   type SyncPendingRecoveryKit,
@@ -153,6 +155,7 @@ export function getSyncAuthorityState() {
     liftQuarantine: (deviceId: string) => thenRefresh(() => liftSyncQuarantine(deviceId)),
     promoteDevice: (deviceId: string) => thenRefresh(() => promoteSyncDevice(deviceId)),
     takeAnchor: () => thenRefresh(takeSyncAnchor),
+    forceAnchor: (request: SyncForceAnchorRequest) => thenRefresh(() => forceSyncAnchor(request)),
     restoreLateChange: (change: SyncLateChange) => thenRefresh(() => restoreSyncLateChange(lateTarget(change))),
     discardLateChange: (change: SyncLateChange) => thenRefresh(() => discardSyncLateChange(lateTarget(change))),
     regenerateKit: () => thenRefresh(regenerateSyncRecoveryKit),

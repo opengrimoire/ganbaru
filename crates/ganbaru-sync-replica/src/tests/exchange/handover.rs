@@ -614,6 +614,82 @@ fn a_recovery_kit_promotes_a_member_desktop_that_then_takes_the_anchor() {
     });
 }
 
+#[test]
+fn a_recovery_kit_forces_the_anchor_to_a_member_desktop_without_the_lost_anchor() {
+    block_on(async {
+        let mut hub_replica = Replica::new("hub-kit-force", HUB_DEVICE).await;
+        let mut laptop = Replica::new("laptop-kit-force", LAPTOP_DEVICE).await;
+        let laptop_admin = AdminKeyPair::from_seed(&[32; 32]).expect("admin seed");
+        let charter = hub_replica.charter().await;
+        let space = hub_replica.ctx.space;
+        let enroll = authority::propose(
+            space,
+            charter,
+            &hub_keys().admin,
+            authority::enroll_entry(Enrollment {
+                device_id: LAPTOP_DEVICE.to_string(),
+                device_key: device_key(LAPTOP_DEVICE).public_key(),
+                tls_fingerprint: [33; 32],
+                label: "Laptop".to_string(),
+                device_kind: DeviceKind::Desktop,
+            }),
+            NOW_MS,
+        )
+        .expect("sign enrollment");
+        sequence_here(&mut hub_replica, &enroll).await;
+        laptop
+            .exchange(&forwarding_hub(&hub_replica), &laptop_ids())
+            .await
+            .expect("pull the log");
+        laptop.apply().await;
+        // The anchor is lost from here on.
+        hub_replica.close().await;
+
+        let mut conn = acquire(&laptop.pool).await;
+        let view = laptop
+            .engine
+            .authorization(&mut conn, &laptop.ctx)
+            .await
+            .expect("read authorization")
+            .expect("charter");
+        let recovery =
+            authority::recovery_admin(&view, &hub_keys().recovery.kit_code()).expect("kit");
+        let revision = authority::force_handover_here(
+            &laptop.engine,
+            &mut conn,
+            &laptop.ctx,
+            &recovery,
+            Some(laptop_admin.public_key()),
+            &mut laptop.writer.local(),
+            NOW_MS,
+        )
+        .await
+        .expect("force handover")
+        .expect("the recovery key hands the anchor to a member desktop");
+        let view = laptop
+            .engine
+            .authorization(&mut conn, &laptop.ctx)
+            .await
+            .expect("read authorization")
+            .expect("charter");
+        assert_eq!(
+            (view.revision, view.anchor_device_id.as_str()),
+            (revision, LAPTOP_DEVICE)
+        );
+        assert!(authority::is_admin(
+            &view,
+            LAPTOP_DEVICE,
+            &laptop_admin.public_key()
+        ));
+        assert!(
+            authority::recovery_admin(&view, &RecoverySeed::from_bytes([78; 32]).kit_code())
+                .is_err()
+        );
+        drop(conn);
+        laptop.close().await;
+    });
+}
+
 /// A hub that sequenced two enrollments its database then lost to a backup restore, with a
 /// phone that pulled them before the restore. The hub runs the writer check on the restored
 /// database and continues with the successor it plans.

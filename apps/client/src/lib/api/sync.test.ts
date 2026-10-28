@@ -55,6 +55,7 @@ function validStatus(): Record<string, unknown> {
     degraded: ["localNetworkDenied"],
     unconfirmed: 3,
     oldestUnconfirmedAtMs: 500,
+    anchorUnreachableSinceMs: 700,
   };
 }
 
@@ -78,6 +79,7 @@ describe("sync API boundary", () => {
       degraded: ["localNetworkDenied"],
       unconfirmed: 3,
       oldestUnconfirmedAtMs: 500,
+      anchorUnreachableSinceMs: 700,
     });
   });
 
@@ -239,6 +241,8 @@ describe("sync API boundary", () => {
     expect(() => mapSyncStatus({ ...validStatus(), unconfirmed: -1 })).toThrow();
     expect(() => mapSyncStatus({ ...validStatus(), unconfirmed: undefined })).toThrow();
     expect(() => mapSyncStatus({ ...validStatus(), oldestUnconfirmedAtMs: "yesterday" })).toThrow();
+    expect(() => mapSyncStatus({ ...validStatus(), anchorUnreachableSinceMs: -1 })).toThrow();
+    expect(() => mapSyncStatus({ ...validStatus(), anchorUnreachableSinceMs: undefined })).toThrow();
   });
 });
 

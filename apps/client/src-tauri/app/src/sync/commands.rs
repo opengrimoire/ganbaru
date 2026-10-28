@@ -257,6 +257,40 @@ pub async fn sync_use_recovery_kit(
         .map(|_| ())
 }
 
+/// Forces the anchor to this linked desktop after the anchor is lost: an admin desktop signs
+/// the handover with its admin key, any other enrolled desktop with the recovery admin key
+/// `kit_code` derives, which then also promotes it to admin. With `quarantine_anchor`, it then
+/// quarantines the lost anchor and proposes its removal, which it sequences itself. Returns the
+/// authorization revision of the last entry it sealed.
+#[cfg(desktop)]
+#[tauri::command]
+pub async fn sync_force_anchor<R: Runtime>(
+    app: AppHandle<R>,
+    runtime: State<'_, SyncRuntime>,
+    kit_code: Option<String>,
+    quarantine_anchor: bool,
+) -> Result<u64, String> {
+    let (revision, old_anchor) =
+        match run_authority(&runtime, AuthorityAction::ForceAnchor(kit_code)).await? {
+            AuthorityAnswer::ForcedAnchor {
+                revision,
+                old_anchor,
+            } => (revision, old_anchor),
+            _ => return Err("sync answered forcing the anchor with something else".to_string()),
+        };
+    if quarantine_anchor && old_anchor != app.device_id()? {
+        let path = quarantine_path(&app)?;
+        {
+            let _guard = QUARANTINE_LOCK.lock().await;
+            let target = old_anchor.clone();
+            blocking(move || Quarantine::load(&path)?.add(&target)).await?;
+        }
+        runtime.request_authority_detached(AuthorityAction::ProposeRemoval(old_anchor))?;
+    }
+    runtime.sync_now();
+    Ok(revision)
+}
+
 /// The selected authorization state of the active vault's sync space: the anchor, every
 /// enrolled device with its role, and whether this installation is an admin. `None` before the
 /// vault joined a sync space.

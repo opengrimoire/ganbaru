@@ -34,7 +34,9 @@
     canManageSyncRecoveryKit,
     canResetSyncState,
     canResolveSyncLateChanges,
-    canUseSyncRecoveryKit,
+    syncAnchorUnreachableLine,
+    syncQuarantinableAnchor,
+    syncRecoveryKitUse,
     type SyncAuthorityContext,
     syncUnconfirmedNotice,
   } from "$lib/sync/authority";
@@ -74,13 +76,19 @@
   let resetting = $state(false);
   let resetMessage = $state("");
   const unconfirmed = $derived(syncUnconfirmedNotice(t, localization.locale, status, now));
+  const anchorUnreachable = $derived(syncAnchorUnreachableLine(t, localization.locale, status, now));
   const authorityContext = $derived<SyncAuthorityContext | null>(
     authorityState.authority
-      ? { authority: authorityState.authority, statusRole: status.role, mobileLayout }
+      ? {
+        authority: authorityState.authority,
+        statusRole: status.role,
+        mobileLayout,
+        anchorUnreachableSinceMs: status.anchorUnreachableSinceMs,
+      }
       : null,
   );
   const canManageKit = $derived(authorityContext !== null && canManageSyncRecoveryKit(authorityContext));
-  const canUseKit = $derived(authorityContext !== null && canUseSyncRecoveryKit(authorityContext, status.state));
+  const kitUse = $derived(authorityContext === null ? null : syncRecoveryKitUse(authorityContext, status.state));
   const canReset = $derived(canResetSyncState(status.role, mobileLayout));
 
   async function resetSync(): Promise<void> {
@@ -215,6 +223,9 @@
           message={unconfirmed.lines.join(" ")}
         />
       {/if}
+      {#if anchorUnreachable}
+        <Notice tone="warning" role="status" copy={false} message={anchorUnreachable} />
+      {/if}
     </div>
 
     {#if held.length > 0}
@@ -275,8 +286,14 @@
           {now}
         />
       {/if}
-      {#if canManageKit || canUseKit}
-        <SyncRecoveryKit {buttonClass} canManage={canManageKit} canUse={canUseKit} pendingKit={authorityState.pendingKit} />
+      {#if canManageKit || kitUse}
+        <SyncRecoveryKit
+          {buttonClass}
+          canManage={canManageKit}
+          use={kitUse}
+          anchor={syncQuarantinableAnchor(authorityContext.authority)}
+          pendingKit={authorityState.pendingKit}
+        />
       {/if}
     {/if}
   {/if}

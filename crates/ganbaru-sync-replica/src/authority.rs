@@ -510,6 +510,21 @@ pub fn forget_recovery_seed(
     keys.remove(vault_id, SyncKey::RecoverySeed)
 }
 
+/// The recovery admin key `kit_code` derives. Refuses a code that does not parse or a kit
+/// whose key the selected log does not name. Callers keep the key only as long as they sign
+/// with it.
+pub fn recovery_admin(view: &AuthorizationView, kit_code: &str) -> Result<AdminKeyPair, String> {
+    let seed = RecoverySeed::parse_kit_code(kit_code)
+        .map_err(|error| format!("read the recovery kit: {error}"))?;
+    let recovery = seed
+        .recovery_admin_key()
+        .map_err(|error| format!("derive the recovery admin key: {error}"))?;
+    if recovery.public_key() != view.recovery_admin_key {
+        return Err("this recovery kit does not belong to the vault's current log".to_string());
+    }
+    Ok(recovery)
+}
+
 /// Signs, with the recovery admin key `kit_code` derives, the proposal that makes the enrolled
 /// desktop `device_id` an admin with `admin_key`, so it can take the anchor. The derived key
 /// lives only inside this call. Refuses a code that does not parse or a kit whose key the
@@ -522,14 +537,7 @@ pub fn recovery_promotion(
     admin_key: AdminPublicKey,
     now_ms: u64,
 ) -> Result<SignedProposal, String> {
-    let seed = RecoverySeed::parse_kit_code(kit_code)
-        .map_err(|error| format!("read the recovery kit: {error}"))?;
-    let recovery = seed
-        .recovery_admin_key()
-        .map_err(|error| format!("derive the recovery admin key: {error}"))?;
-    if recovery.public_key() != view.recovery_admin_key {
-        return Err("this recovery kit does not belong to the vault's current log".to_string());
-    }
+    let recovery = recovery_admin(view, kit_code)?;
     propose(
         space,
         view.charter,
@@ -712,6 +720,44 @@ pub async fn seal_handover_here(
         .seal_handover(conn, ctx, &proposal, old_anchor_vector, writer, now_ms)
         .await
         .map_err(|error| format!("seal sync handover: {error}"))
+}
+
+/// Forces the anchor to this desktop after the anchor is lost: signs with `signer` and seals a
+/// handover without an old anchor vector, so operations only the lost anchor stored can become
+/// provisional again. When `promote` is set, which is when the recovery key signs for a desktop
+/// that is not an admin yet, the new anchor then sequences the promotion of its own device to
+/// admin with that key, signed by the same `signer`. Returns the revision of the last entry, or
+/// why the engine rejected one.
+pub async fn force_handover_here(
+    engine: &Engine,
+    conn: &mut SqliteConnection,
+    ctx: &SpaceContext,
+    signer: &AdminKeyPair,
+    promote: Option<AdminPublicKey>,
+    writer: &mut LocalWriter<'_>,
+    now_ms: u64,
+) -> Result<Result<u64, ProposalRejection>, String> {
+    let sealed = seal_handover_here(engine, conn, ctx, signer, writer, None, now_ms).await?;
+    let (Ok(revision), Some(admin_key)) = (sealed, promote) else {
+        return Ok(sealed);
+    };
+    let view = engine
+        .authorization(conn, ctx)
+        .await
+        .map_err(|error| format!("read sync authorization: {error}"))?
+        .ok_or_else(|| "the sync space has no charter".to_string())?;
+    let device_id = writer.certificate.certificate.device_id.clone();
+    let promotion = propose(
+        ctx.space,
+        view.charter,
+        signer,
+        promote_entry(&device_id, admin_key),
+        now_ms,
+    )?;
+    match sequence(engine, conn, ctx, writer, &promotion, now_ms).await? {
+        Ok(promoted) => Ok(Ok(promoted.max(revision))),
+        Err(rejection) => Ok(Err(rejection)),
+    }
 }
 
 fn millis(now_ms: u64) -> Result<i64, String> {

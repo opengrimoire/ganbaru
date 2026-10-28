@@ -46,6 +46,10 @@ pub(crate) enum AuthorityAction {
     Remove(String),
     /// Restore or discard one late change, which needs the local writer for a restore.
     ResolveLate(LateDecision),
+    /// Seal a handover to this linked desktop without the anchor, after the anchor is lost.
+    /// An admin desktop signs with its admin key; any other enrolled desktop signs with the
+    /// recovery admin key the kit code derives, and then promotes itself to admin.
+    ForceAnchor(Option<String>),
 }
 
 /// An admin's decision on one late change.
@@ -79,6 +83,8 @@ impl std::fmt::Debug for AuthorityAction {
                 .debug_tuple("ResolveLate")
                 .field(decision)
                 .finish(),
+            Self::ForceAnchor(None) => formatter.write_str("ForceAnchor(None)"),
+            Self::ForceAnchor(Some(_)) => formatter.write_str("ForceAnchor(<redacted>)"),
         }
     }
 }
@@ -90,6 +96,9 @@ pub(crate) enum AuthorityAnswer {
     Proposed,
     /// The authorization revision of the handover this desktop sealed.
     Anchored(u64),
+    /// The authorization revision of the forced handover, and its promotion when the kit
+    /// signed it, with the device id of the anchor it replaced.
+    ForcedAnchor { revision: u64, old_anchor: String },
     /// The code of the regenerated recovery kit, shown once.
     RecoveryKit(String),
     /// The recovery kit waiting to be saved, if any.
@@ -113,6 +122,14 @@ impl std::fmt::Debug for AuthorityAnswer {
         match self {
             Self::Proposed => formatter.write_str("Proposed"),
             Self::Anchored(revision) => formatter.debug_tuple("Anchored").field(revision).finish(),
+            Self::ForcedAnchor {
+                revision,
+                old_anchor,
+            } => formatter
+                .debug_struct("ForcedAnchor")
+                .field("revision", revision)
+                .field("old_anchor", old_anchor)
+                .finish(),
             Self::RecoveryKit(_) => formatter.write_str("RecoveryKit(<redacted>)"),
             Self::PendingRecoveryKit(kit) => formatter
                 .debug_tuple("PendingRecoveryKit")
@@ -248,6 +265,10 @@ impl<H: SyncHost> Session<'_, H> {
                     self.resolve_late(manager, writer, decision, &mut restored)
                         .await
                 }
+                AuthorityAction::ForceAnchor(kit) => {
+                    self.force_anchor(manager, is_hub, writer, kit.as_deref())
+                        .await
+                }
                 action => self.propose_action(manager, vault_id, is_hub, action).await,
             };
             request.answer(outcome);
@@ -359,6 +380,9 @@ impl<H: SyncHost> Session<'_, H> {
             }
             AuthorityAction::ResolveLate(_) => {
                 Err("deciding a late change runs with the sync writer".to_string())
+            }
+            AuthorityAction::ForceAnchor(_) => {
+                Err("forcing the anchor runs with the sync writer".to_string())
             }
             AuthorityAction::Remove(device_id) => {
                 if *device_id == admin.device_id {
@@ -533,6 +557,71 @@ impl<H: SyncHost> Session<'_, H> {
         Ok(AuthorityAnswer::Anchored(revision))
     }
 
+    /// Forces the anchor to this linked desktop after the anchor is lost, without its stored
+    /// vector, so operations only the lost anchor stored can become provisional again. An admin
+    /// desktop signs with its admin key. Any other enrolled desktop needs `kit`: the recovery
+    /// admin key it derives signs the handover and then this desktop's promotion to admin, and
+    /// is dropped at once. The coordinator does not force the anchor: while it anchors nothing
+    /// is lost, and otherwise its members reach it, so a planned handover applies.
+    async fn force_anchor(
+        &self,
+        manager: &PairingManager,
+        is_hub: bool,
+        writer: &mut Option<ActiveWriter>,
+        kit: Option<&str>,
+    ) -> Result<AuthorityAnswer, String> {
+        if is_hub {
+            return Err("the coordinator takes the anchor through a planned handover".to_string());
+        }
+        let admin = self.admin_context(manager).await?;
+        if admin.anchors() {
+            return Err("this desktop already anchors the vault".to_string());
+        }
+        let device = admin
+            .view
+            .devices
+            .iter()
+            .find(|device| device.device_id == admin.device_id && device.removed_revision.is_none())
+            .ok_or_else(|| "this desktop is not enrolled in the vault's sync space".to_string())?;
+        if device.kind != DeviceKind::Desktop {
+            return Err("only a desktop can anchor the vault".to_string());
+        }
+        let recovery;
+        let (signer, promote) = if admin.is_admin() {
+            (&admin.admin, None)
+        } else {
+            let code = kit.ok_or_else(|| {
+                "only an admin desktop or the recovery kit can take the anchor".to_string()
+            })?;
+            recovery = authority::recovery_admin(&admin.view, code)?;
+            (&recovery, Some(admin.admin.public_key()))
+        };
+        let Some(active) = writer.as_mut() else {
+            return Err("the sync writer is not ready".to_string());
+        };
+        let mut conn = acquire(&self.pool).await?;
+        let revision = authority::force_handover_here(
+            &self.engine,
+            &mut conn,
+            &self.ctx,
+            signer,
+            promote,
+            &mut active.local(),
+            now_ms()?,
+        )
+        .await?
+        .map_err(|rejection| format!("take the anchor: {rejection}"))?;
+        drop(conn);
+        self.record_commit(active).await?;
+        eprintln!(
+            "sync: this desktop forced the anchor at authorization revision {revision} without the lost anchor"
+        );
+        Ok(AuthorityAnswer::ForcedAnchor {
+            revision,
+            old_anchor: admin.view.anchor_device_id.clone(),
+        })
+    }
+
     /// The anchor duties of a linked desktop: reports the final rejections of the last
     /// forward and collects what the coordinator holds, sequences it, and sequences this
     /// desktop's own outbox. Returns whether it sealed anything, which the coordinator learns
@@ -553,21 +642,40 @@ impl<H: SyncHost> Session<'_, H> {
         let proposals = client::forward(transport, ids, settled).await?;
         settled.clear();
         let before = self.stored_head(active).await?;
+        {
+            let mut conn = acquire(&self.pool).await?;
+            *settled = authority::sequence_forwarded(
+                &self.engine,
+                &mut conn,
+                &self.ctx,
+                &mut active.local(),
+                &proposals,
+                covered,
+                now_ms()?,
+            )
+            .await?;
+        }
+        self.sequence_own_outbox(active, covered).await?;
+        let after = self.record_commit(active).await?;
+        Ok(after > before)
+    }
+
+    /// Sequences this anchoring desktop's own waiting proposals, also while the coordinator is
+    /// away, as after a forced handover that proposes removing the lost anchor. Returns whether
+    /// it sealed anything. Removal cutoffs cover at least `covered`.
+    pub(super) async fn sequence_own_outbox(
+        &self,
+        active: &mut ActiveWriter,
+        covered: &VersionVector,
+    ) -> Result<bool, String> {
         let path = self.files.outbox_path();
         let mut outbox = blocking(move || Outbox::load(&path)).await?;
-        let mut conn = acquire(&self.pool).await?;
-        let now = now_ms()?;
-        *settled = authority::sequence_forwarded(
-            &self.engine,
-            &mut conn,
-            &self.ctx,
-            &mut active.local(),
-            &proposals,
-            covered,
-            now,
-        )
-        .await?;
-        if outbox.entries().iter().any(|entry| entry.pending()) {
+        if !outbox.entries().iter().any(|entry| entry.pending()) {
+            return Ok(false);
+        }
+        let before = self.stored_head(active).await?;
+        {
+            let mut conn = acquire(&self.pool).await?;
             authority::sequence_outbox(
                 &self.engine,
                 &mut conn,
@@ -575,11 +683,10 @@ impl<H: SyncHost> Session<'_, H> {
                 &mut active.local(),
                 &mut outbox,
                 covered,
-                now,
+                now_ms()?,
             )
             .await?;
         }
-        drop(conn);
         let after = self.record_commit(active).await?;
         Ok(after > before)
     }

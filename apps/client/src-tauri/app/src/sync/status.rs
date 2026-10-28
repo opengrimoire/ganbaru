@@ -198,6 +198,10 @@ pub(crate) struct SyncStatusView {
     pub unconfirmed: usize,
     /// When the oldest unconfirmed change was stored, in Unix milliseconds.
     pub oldest_unconfirmed_at_ms: Option<u64>,
+    /// On a linked device, since when no pass in this app run reached the anchor, directly or
+    /// as the coordinator, in Unix milliseconds. `None` while the anchor answers, on the
+    /// coordinator, and before the first pass.
+    pub anchor_unreachable_since_ms: Option<u64>,
     /// Devices whose merged edits carry clocks far ahead of this device, so they win
     /// concurrent edits until the clocks agree.
     pub clock_ahead_devices: Vec<DeviceRef>,
@@ -501,6 +505,12 @@ mod tests {
         let empty = serde_json::to_value(SyncStatusView::default()).expect("serialize status");
         assert_eq!(empty["connection"], serde_json::Value::Null);
         assert_eq!(empty["degraded"], serde_json::json!([]));
+        assert_eq!(empty["anchorUnreachableSinceMs"], serde_json::Value::Null);
+        assert!(
+            empty
+                .as_object()
+                .is_some_and(|fields| fields.contains_key("anchorUnreachableSinceMs"))
+        );
     }
 
     #[test]

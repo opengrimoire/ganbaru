@@ -96,6 +96,11 @@ export interface SyncStatusView {
   unconfirmed: number;
   /** When the oldest unconfirmed change was made, in Unix milliseconds. */
   oldestUnconfirmedAtMs: number | null;
+  /**
+   * On a linked device, since when no pass in this app run reached the anchor, in Unix
+   * milliseconds. Null while the anchor answers, on the coordinator, and before the first pass.
+   */
+  anchorUnreachableSinceMs: number | null;
 }
 
 export interface SyncDeviceRef {
@@ -141,6 +146,7 @@ export const OFF_SYNC_STATUS: SyncStatusView = {
   degraded: [],
   unconfirmed: 0,
   oldestUnconfirmedAtMs: null,
+  anchorUnreachableSinceMs: null,
 };
 
 export const SYNC_DEVICE_KINDS = ["desktop", "mobile"] as const;
@@ -318,6 +324,11 @@ export function mapSyncStatus(value: unknown): SyncStatusView {
     oldestUnconfirmedAtMs: readNullable(
       row.oldestUnconfirmedAtMs,
       "sync status.oldestUnconfirmedAtMs",
+      readNonNegativeSafeInteger,
+    ),
+    anchorUnreachableSinceMs: readNullable(
+      row.anchorUnreachableSinceMs,
+      "sync status.anchorUnreachableSinceMs",
       readNonNegativeSafeInteger,
     ),
   };
@@ -533,6 +544,26 @@ export async function getPendingSyncRecoveryKit(): Promise<SyncPendingRecoveryKi
 /** Deletes the recovery seed from this desktop after the user saved the kit. */
 export async function confirmSyncRecoveryKitSaved(): Promise<void> {
   await invoke("sync_recovery_kit_saved");
+}
+
+/** What a forced anchor handover signs with and whether it also quarantines the lost anchor. */
+export interface SyncForceAnchorRequest {
+  /** A recovery kit code, needed only when this desktop is not an admin yet. */
+  kitCode: string | null;
+  /** Whether to quarantine the old anchor here and propose removing it. */
+  quarantineAnchor: boolean;
+}
+
+/**
+ * On a linked desktop whose anchor stopped answering, makes this desktop the anchor without it,
+ * signed with its admin key or, with a kit code, with the recovery key, which also makes it an
+ * admin. Returns the revision of the last entry it sealed.
+ */
+export async function forceSyncAnchor(request: SyncForceAnchorRequest): Promise<number> {
+  return readNonNegativeSafeInteger(
+    await invoke<unknown>("sync_force_anchor", { kitCode: request.kitCode, quarantineAnchor: request.quarantineAnchor }),
+    "forced handover revision",
+  );
 }
 
 /** Proposes making this enrolled desktop an admin with a recovery kit code. */

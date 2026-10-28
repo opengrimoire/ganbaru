@@ -1,10 +1,12 @@
 <script lang="ts">
   import type { SyncAuthorityDevice } from "$lib/api/sync";
+  import Checkbox from "$lib/components/ui/Checkbox.svelte";
   import ConfirmDialog from "$lib/components/ui/ConfirmDialog.svelte";
   import Notice from "$lib/components/ui/Notice.svelte";
   import { getLocalization } from "$lib/i18n/translator.svelte";
   import { getSyncAuthorityState } from "$lib/stores/sync-authority.svelte";
   import {
+    canForceSyncAnchor,
     canTakeSyncAnchor,
     type SyncAuthorityContext,
     syncAuthorityDeviceName,
@@ -12,6 +14,7 @@
     syncDeviceBadgeLabel,
     syncDeviceBadges,
     syncOwnDevice,
+    syncQuarantinableAnchor,
   } from "$lib/sync/authority";
 
   let {
@@ -25,7 +28,8 @@
   } = $props();
 
   type DeviceAction = "remove" | "quarantine" | "lift" | "promote";
-  type Confirmation = { kind: "remove" | "quarantine"; device: SyncAuthorityDevice } | { kind: "takeAnchor" };
+  type AnchorAction = "takeAnchor" | "forceAnchor";
+  type Confirmation = { kind: "remove" | "quarantine"; device: SyncAuthorityDevice } | { kind: AnchorAction };
 
   const { t } = getLocalization();
   const authorityState = getSyncAuthorityState();
@@ -37,30 +41,43 @@
   const actionClass = $derived(mobileLayout ? `${buttonClass} min-h-12` : buttonClass);
   const own = $derived(syncOwnDevice(context.authority));
   const takeAnchor = $derived(canTakeSyncAnchor(context));
+  const forceAnchor = $derived(canForceSyncAnchor(context));
+  const lostAnchor = $derived(syncQuarantinableAnchor(context.authority));
+  const lostAnchorName = $derived(lostAnchor ? syncAuthorityDeviceName(t, lostAnchor) : "");
+  let quarantineAnchor = $state(false);
+  const forceMessage = $derived(
+    quarantineAnchor && lostAnchor
+      ? `${t("sync.authority.forceAnchorMessage")} ${t("sync.authority.forceAnchorQuarantineNote", lostAnchorName)}`
+      : t("sync.authority.forceAnchorMessage"),
+  );
 
-  function failureLabel(action: DeviceAction | "takeAnchor"): string {
+  function failureLabel(action: DeviceAction | AnchorAction): string {
     switch (action) {
       case "remove": return t("sync.authority.removeFailed");
       case "quarantine": return t("sync.authority.quarantineFailed");
       case "lift": return t("sync.authority.liftFailed");
       case "promote": return t("sync.authority.promoteFailed");
       case "takeAnchor": return t("sync.authority.takeAnchorFailed");
+      case "forceAnchor": return t("sync.authority.forceAnchorFailed");
     }
   }
 
-  function successLabel(action: DeviceAction | "takeAnchor"): string {
-    if (action === "takeAnchor") return t("sync.authority.takeAnchorDone");
+  function successLabel(action: DeviceAction | AnchorAction): string {
+    if (action === "takeAnchor" || action === "forceAnchor") return t("sync.authority.takeAnchorDone");
     return action === "remove" || action === "promote" ? t("sync.authority.proposed") : "";
   }
 
-  async function run(action: DeviceAction | "takeAnchor", deviceId: string | null): Promise<void> {
+  async function run(action: DeviceAction | AnchorAction, deviceId: string | null): Promise<void> {
     if (busy) return;
     busy = true;
     message = "";
     failed = false;
     try {
       if (action === "takeAnchor") await authorityState.takeAnchor();
-      else if (deviceId === null) throw new Error("A device action needs a device");
+      else if (action === "forceAnchor") {
+        await authorityState.forceAnchor({ kitCode: null, quarantineAnchor: quarantineAnchor && lostAnchor !== null });
+        quarantineAnchor = false;
+      } else if (deviceId === null) throw new Error("A device action needs a device");
       else if (action === "remove") await authorityState.removeDevice(deviceId);
       else if (action === "quarantine") await authorityState.quarantineDevice(deviceId);
       else if (action === "lift") await authorityState.liftQuarantine(deviceId);
@@ -79,8 +96,8 @@
     const current = confirmation;
     confirmation = null;
     if (!current) return;
-    if (current.kind === "takeAnchor") void run("takeAnchor", null);
-    else void run(current.kind, current.device.device.deviceId);
+    if ("device" in current) void run(current.kind, current.device.device.deviceId);
+    else void run(current.kind, null);
   }
 </script>
 
@@ -143,6 +160,21 @@
       </button>
     </div>
   {/if}
+  {#if forceAnchor}
+    <div class="flex min-w-0 flex-col gap-2">
+      {#if lostAnchor}
+        <label class="flex min-w-0 items-start gap-2 px-1 text-[0.8rem] leading-5 text-foreground">
+          <Checkbox class="mt-0.5" bind:checked={quarantineAnchor} disabled={busy} />
+          <span class="min-w-0">{t("sync.authority.forceAnchorQuarantine", lostAnchorName)}</span>
+        </label>
+      {/if}
+      <div class="flex flex-wrap gap-2">
+        <button type="button" class={actionClass} disabled={busy} onclick={() => { confirmation = { kind: "forceAnchor" }; }}>
+          {t("sync.authority.forceAnchor")}
+        </button>
+      </div>
+    </div>
+  {/if}
   {#if message}
     {#if failed}
       <Notice class="px-1 text-[0.8rem] leading-5" {message} copy={false} />
@@ -179,6 +211,15 @@
     confirmLabel={t("sync.authority.takeAnchor")}
     cancelLabel={t("common.cancel")}
     danger={false}
+    onConfirm={confirm}
+    onCancel={() => { confirmation = null; }}
+  />
+{:else if confirmation?.kind === "forceAnchor"}
+  <ConfirmDialog
+    title={t("sync.authority.forceAnchorTitle")}
+    message={forceMessage}
+    confirmLabel={t("sync.authority.forceAnchor")}
+    cancelLabel={t("common.cancel")}
     onConfirm={confirm}
     onCancel={() => { confirmation = null; }}
   />

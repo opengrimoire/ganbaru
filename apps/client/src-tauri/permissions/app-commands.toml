@@ -642,6 +642,7 @@ commands.allow = [
   "show_project_task_notification",
   "startup_elapsed_ms",
   "sync_authority",
+  "sync_force_anchor",
   "sync_late_change_discard",
   "sync_late_change_restore",
   "sync_late_changes",

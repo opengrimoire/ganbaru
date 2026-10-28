@@ -12,7 +12,7 @@ import {
   canResetSyncState,
   canResolveSyncLateChanges,
   canTakeSyncAnchor,
-  canUseSyncRecoveryKit,
+  canForceSyncAnchor,
   SYNC_HANDOVER_SUGGESTION_MS,
   type SyncAuthorityContext,
   syncDeviceActions,
@@ -23,7 +23,10 @@ import {
   syncLateChangeKey,
   syncLateChangeOrigin,
   syncOutboxChangeLabel,
+  syncAnchorUnreachableLine,
   syncOutboxStateLine,
+  syncQuarantinableAnchor,
+  syncRecoveryKitUse,
   syncRejectionLabel,
   syncUnconfirmedNotice,
 } from "./authority";
@@ -63,6 +66,7 @@ function context(overrides: Partial<SyncAuthorityContext> = {}, authority: Parti
     },
     statusRole: "client",
     mobileLayout: false,
+    anchorUnreachableSinceMs: null,
     ...overrides,
   };
 }
@@ -126,14 +130,41 @@ describe("sync authority controls", () => {
     expect(canTakeSyncAnchor(context({}, { devices: [anchor] }))).toBe(false);
   });
 
-  it("offers kit use only to a non-admin desktop while the anchor is reachable", () => {
+  it("offers a forced handover only to a linked admin desktop whose anchor stopped answering", () => {
+    const lost = { anchorUnreachableSinceMs: NOW - 60_000 };
+    expect(canForceSyncAnchor(context(lost))).toBe(true);
+    expect(canForceSyncAnchor(context(lost, { frozen: true }))).toBe(true);
+    expect(canForceSyncAnchor(context())).toBe(false);
+    expect(canForceSyncAnchor(context({ ...lost, statusRole: "hub" }))).toBe(false);
+    expect(canForceSyncAnchor(context({ ...lost, mobileLayout: true }))).toBe(false);
+    expect(canForceSyncAnchor(context(lost, { ownIsAdmin: false }))).toBe(false);
+    expect(canForceSyncAnchor(context(lost, { devices: [{ ...own, anchor: true }] }))).toBe(false);
+    expect(canForceSyncAnchor(context(lost, { devices: [{ ...own, removedRevision: 3 }, anchor] }))).toBe(false);
+  });
+
+  it("offers the anchor for quarantine only while it is another live device not quarantined yet", () => {
+    expect(syncQuarantinableAnchor(context().authority)).toBe(anchor);
+    expect(syncQuarantinableAnchor(context({}, { devices: [own, { ...anchor, quarantined: true }] }).authority)).toBeNull();
+    expect(syncQuarantinableAnchor(context({}, { devices: [{ ...own, anchor: true }] }).authority)).toBeNull();
+    expect(syncQuarantinableAnchor(context({}, { devices: [own] }).authority)).toBeNull();
+  });
+
+  it("proposes kit use while the anchor answers and forces the handover once it stopped", () => {
     const member = context({}, { ownIsAdmin: false, devices: [{ ...own, role: "member" }, anchor] });
-    expect(canUseSyncRecoveryKit(member, "idle")).toBe(true);
-    expect(canUseSyncRecoveryKit(member, "syncing")).toBe(true);
-    expect(canUseSyncRecoveryKit(member, "offline")).toBe(false);
-    expect(canUseSyncRecoveryKit(context(), "idle")).toBe(false);
-    expect(canUseSyncRecoveryKit({ ...member, mobileLayout: true }, "idle")).toBe(false);
-    expect(canUseSyncRecoveryKit(context({}, { ownIsAdmin: false, devices: [{ ...own, kind: "mobile" }] }), "idle")).toBe(false);
+    expect(syncRecoveryKitUse(member, "idle")).toBe("propose");
+    expect(syncRecoveryKitUse(member, "syncing")).toBe("propose");
+    expect(syncRecoveryKitUse(member, "offline")).toBeNull();
+    expect(syncRecoveryKitUse({ ...member, authority: { ...member.authority, frozen: true } }, "idle")).toBeNull();
+    expect(syncRecoveryKitUse(context(), "idle")).toBeNull();
+    expect(syncRecoveryKitUse({ ...member, mobileLayout: true }, "idle")).toBeNull();
+    expect(syncRecoveryKitUse(context({}, { ownIsAdmin: false, devices: [{ ...own, kind: "mobile" }] }), "idle")).toBeNull();
+
+    const lost = { ...member, anchorUnreachableSinceMs: NOW - 60_000 };
+    expect(syncRecoveryKitUse(lost, "offline")).toBe("force");
+    expect(syncRecoveryKitUse({ ...lost, authority: { ...lost.authority, frozen: true } }, "offline")).toBe("force");
+    expect(syncRecoveryKitUse({ ...lost, statusRole: "hub" }, "offline")).toBeNull();
+    expect(syncRecoveryKitUse({ ...lost, mobileLayout: true }, "offline")).toBeNull();
+    expect(syncRecoveryKitUse({ ...lost, authority: { ...lost.authority, devices: [anchor] } }, "offline")).toBeNull();
   });
 
   it("limits late decisions to admin desktops and reset to the coordinator", () => {
@@ -244,5 +275,13 @@ describe("sync unconfirmed changes", () => {
     expect(old?.lines).toHaveLength(3);
     expect(syncUnconfirmedNotice(t, "en", status({ unconfirmed: 1, oldestUnconfirmedAtMs: NOW - 2_000 }), NOW, 1_000)?.suggestHandover)
       .toBe(true);
+  });
+
+  it("says since when the anchor stopped answering only on a linked device", () => {
+    const since = NOW - 10 * 60_000;
+    expect(syncAnchorUnreachableLine(t, "en", status({ role: "client", anchorUnreachableSinceMs: since }), NOW))
+      .toBe("The anchor stopped answering 10 min ago.");
+    expect(syncAnchorUnreachableLine(t, "en", status({ role: "hub", anchorUnreachableSinceMs: since }), NOW)).toBeNull();
+    expect(syncAnchorUnreachableLine(t, "en", status({ role: "client" }), NOW)).toBeNull();
   });
 });

@@ -12,7 +12,7 @@ use ganbaru_handoff::protocol::MemberEndpoint;
 #[cfg(desktop)]
 use ganbaru_sync::local;
 use ganbaru_sync::{AuthorizationView, Engine, SpaceContext};
-use ganbaru_sync_contracts::{DeviceKind, WriterId};
+use ganbaru_sync_contracts::{DeviceKind, VersionVector, WriterId};
 use ganbaru_sync_replica::client::{ClientSession, Exchange, Exchanged, PeerIds};
 #[cfg(desktop)]
 use ganbaru_sync_replica::peers::admission::MemberAdmission;
@@ -247,6 +247,9 @@ pub(super) struct MemberPassOutcome {
     /// the certificate its enrollment recorded, so waiting proposals go to it directly instead
     /// of waiting at the coordinator for its forward request.
     pub anchor: Option<MemberTransport>,
+    /// What this device knows after a complete exchange with that anchor, which a long poll to
+    /// it starts from while the coordinator is away.
+    pub anchor_known: Option<VersionVector>,
 }
 
 /// Exchanges with the members the pass plan picks, at most the device kind's limit at once.
@@ -371,6 +374,9 @@ pub(super) async fn exchange_with_members(
                     anchor_answered = true;
                     record_direct_anchor_marks(pass.engine, pass.pool, pass.ctx, &view, &done)
                         .await?;
+                    if done.problem.is_none() && !done.more && !done.bootstrap_required {
+                        outcome.anchor_known = Some(done.known.clone());
+                    }
                 }
                 if let Some(problem) = done.problem {
                     eprintln!("sync: member {device_id} refused part of an exchange: {problem}");

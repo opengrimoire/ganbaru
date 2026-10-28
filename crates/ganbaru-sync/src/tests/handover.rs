@@ -150,6 +150,14 @@ impl Log {
     /// Asserts that every arrival order selects `expected` and derives the same state: the
     /// stored order, its reverse, and seeded random orders. Returns what they select.
     fn assert_selected(&self, expected: &At) -> SelectedHead {
+        let selected = self.assert_agreed();
+        assert_eq!(selected.head, expected.hash);
+        selected
+    }
+
+    /// Asserts that every arrival order of [`Self::assert_selected`] selects the same head and
+    /// derives the same state, whichever head that is. Returns what they select.
+    fn assert_agreed(&self) -> SelectedHead {
         let count = self.records.len();
         let forward: Vec<usize> = (0..count).collect();
         let mut orders = vec![forward.clone(), forward.iter().rev().copied().collect()];
@@ -168,8 +176,8 @@ impl Log {
         let mut selected: Option<SelectedHead> = None;
         for order in orders {
             let head = self.select(&order);
-            assert_eq!(head.head, expected.hash, "arrival order {order:?}");
-            assert_eq!(*selected.get_or_insert_with(|| head.clone()), head);
+            let first = selected.get_or_insert_with(|| head.clone());
+            assert_eq!(*first, head, "arrival order {order:?}");
         }
         selected.unwrap()
     }
@@ -833,5 +841,132 @@ fn a_removal_of_the_old_anchor_survives_its_freeze_and_vacates_the_slot() {
             !frozen.devices.contains_key(&device_id(6)),
             "the enrollment the other target sealed does not widen it"
         );
+    }
+}
+
+/// The takeover the round 4 review describes: [`equivocation`] with both targets acting freezes
+/// the old anchor's point and vacates the slot, [`SECOND`] forces a recovery handover at that
+/// point, and the old anchor forces a handover to itself under the recovery, removes both admins,
+/// and enrolls device 7 as an admin that enrolls member 8.
+struct Takeover {
+    log: Log,
+    /// The recovery head [`SECOND`] forces.
+    forced: At,
+}
+
+fn takeover(fresh: bool) -> Takeover {
+    let Handed { mut log, next, .. } = equivocation(fresh, true);
+    let forced = log.handover(&next, &device_admin(SECOND), &device_id(SECOND));
+    let anchor = anchor_admin(&person());
+    let mut taken = log.handover(&forced, &anchor, ANCHOR_DEVICE_ID);
+    for admin in [FIRST, SECOND] {
+        taken = log.append(&taken, &anchor, remove(&device_id(admin)));
+    }
+    let minted = log.append(&taken, &anchor, admin_entry(7));
+    log.append(
+        &minted,
+        &device_admin(7),
+        enroll_entry(&person(), 8, DeviceRole::Member),
+    );
+    Takeover { log, forced }
+}
+
+#[test]
+#[ignore = "milestone 11 step 9 handover redesign: a narrowed removal is invisible to the walk, so the old anchor forces past the recovery"]
+fn an_old_anchor_removed_through_a_freeze_takes_nothing_back_from_the_recovery() {
+    for fresh in [false, true] {
+        let Takeover { log, forced } = takeover(fresh);
+        log.assert_selects(&forced);
+        let selected = log.assert_selected(&forced);
+        assert!(selected.devices[ANCHOR_DEVICE_ID].is_some());
+        assert_eq!(selected.devices[&device_id(FIRST)], None);
+        assert!(!selected.devices.contains_key(&device_id(7)));
+        assert!(!selected.devices.contains_key(&device_id(8)));
+    }
+}
+
+#[test]
+#[ignore = "milestone 11 step 9 handover redesign: the old anchor forces again inside the kit epoch and outranks it"]
+fn a_kit_recovery_stands_after_an_old_anchor_removed_through_a_freeze_forces_again() {
+    for fresh in [false, true] {
+        let Takeover { mut log, forced } = takeover(fresh);
+        let kit = log.handover(&forced, &recovery_admin(&person()), &device_id(MEMBER));
+        log.handover(&kit, &anchor_admin(&person()), ANCHOR_DEVICE_ID);
+        log.assert_selects(&kit);
+        let selected = log.assert_selected(&kit);
+        assert!(!selected.devices.contains_key(&device_id(7)));
+    }
+}
+
+#[test]
+#[ignore = "milestone 11 step 9 handover redesign: an earlier fork to a pre-planted target moves the cut and leaves its handover alone"]
+fn a_target_enrolled_before_the_planned_one_does_not_stand_alone_by_forking_earlier() {
+    for fresh in [false, true] {
+        let (mut log, base) = Log::new();
+        let anchor = anchor_admin(&person());
+        let planted = log.append(&base, &anchor, admin_entry(5));
+        let enrolled = log.append(&planted, &anchor, admin_entry(6));
+        let planned = log.handover(&enrolled, &anchor, &device_id(6));
+        let removed = log.append(&planned, &device_admin(6), remove(ANCHOR_DEVICE_ID));
+        log.append(&removed, &device_admin(6), remove(&device_id(5)));
+        if fresh {
+            log.writer = writer(9);
+        } else {
+            log.freezes
+                .insert(ANCHOR_DEVICE_ID.to_owned(), vec![planted.revision]);
+        }
+        let pushed = log.handover(&planted, &anchor, &device_id(5));
+        let acted = log.append(
+            &pushed,
+            &device_admin(5),
+            enroll_entry(&person(), 8, DeviceRole::Member),
+        );
+        let selected = log.assert_agreed();
+        assert_ne!(selected.head, pushed.hash);
+        assert_ne!(selected.head, acted.hash);
+        assert!(selected.devices[ANCHOR_DEVICE_ID].is_some());
+        assert!(selected.devices[&device_id(5)].is_some());
+    }
+}
+
+#[test]
+#[ignore = "milestone 11 step 9 handover redesign: narrowing collects removals from vetoed subtrees of a contender"]
+fn a_removal_in_a_vetoed_subtree_of_a_contender_does_not_narrow_its_freeze() {
+    for fresh in [false, true] {
+        let Handed {
+            mut log,
+            next,
+            planned,
+            ..
+        } = equivocation(fresh, true);
+        let anchor = anchor_admin(&person());
+        let vetoed = log.handover(&planned, &anchor, ANCHOR_DEVICE_ID);
+        log.append(&vetoed, &anchor, remove(&device_id(MEMBER)));
+        let frozen = log.assert_selected(&next);
+        assert_eq!(frozen.frozen_at, Some(next.revision));
+        assert_eq!(frozen.devices[&device_id(MEMBER)], None);
+    }
+}
+
+#[test]
+#[ignore = "milestone 11 step 9 handover redesign: narrowing collects removals whoever sealed them"]
+fn a_removal_the_old_anchor_seals_under_a_contender_does_not_narrow_its_freeze() {
+    for fresh in [false, true] {
+        let Handed {
+            mut log,
+            next,
+            planned,
+            ..
+        } = handed(fresh, true);
+        let other = better_ranked_handover(&mut log, &next, &planned);
+        let acted = log.append(
+            &other,
+            &device_admin(FIRST),
+            enroll_entry(&person(), 6, DeviceRole::Member),
+        );
+        log.append(&acted, &anchor_admin(&person()), remove(&device_id(MEMBER)));
+        let frozen = log.assert_selected(&next);
+        assert_eq!(frozen.frozen_at, Some(next.revision));
+        assert_eq!(frozen.devices[&device_id(MEMBER)], None);
     }
 }

@@ -21,7 +21,6 @@ mod status;
 mod transport;
 mod vault_assets;
 
-#[cfg(desktop)]
 pub(crate) use ganbaru_sync_replica::hub;
 use ganbaru_sync_replica::{assets, carry_forward, client, writer};
 
@@ -31,17 +30,14 @@ mod tests;
 #[cfg(target_os = "linux")]
 pub(crate) use connectivity::firewall::changed as firewall_changed;
 pub(crate) use ganbaru_sync_replica::now_ms;
-#[cfg(desktop)]
 pub(crate) use peers::{peer_hints, read_peer_book, reported_members};
 pub(crate) use service::{
-    SyncRuntime, ensure_device_key, quiesced_sync, release_runtime_handle,
-    resume_after_vault_handoff, seal_quiesced, setup, stop_for_vault_handoff, sync_files,
+    SyncRuntime, ensure_device_key, member_admission_source, member_hub, quiesced_sync,
+    release_runtime_handle, resume_after_vault_handoff, seal_quiesced, setup,
+    stop_for_vault_handoff, sync_files,
 };
 #[cfg(desktop)]
-pub(crate) use service::{
-    enrollment_sealer, ensure_admin_key, member_admission_source, member_hub, quarantined_devices,
-    sync_hub,
-};
+pub(crate) use service::{enrollment_sealer, ensure_admin_key, quarantined_devices, sync_hub};
 pub(crate) use status::SyncSubscribers;
 #[cfg(desktop)]
 pub(crate) use status::emit_applied;

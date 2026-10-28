@@ -22,6 +22,7 @@ pub(super) struct PinnedClientVerifier {
 
 impl PinnedClientVerifier {
     /// The coordinator's verifier: pinned to linked device certificates, client auth optional.
+    #[cfg(desktop)]
     pub(super) fn new(certificates: &[CertificateDer<'_>]) -> Self {
         Self::pinned(
             certificates

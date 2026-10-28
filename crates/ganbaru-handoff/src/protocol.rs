@@ -501,7 +501,6 @@ pub enum ControlMessage {
 
 impl ControlMessage {
     /// The vault and device a sync request names, or `None` for any other message.
-    #[cfg(desktop)]
     pub fn sync_peer(&self) -> Option<(&str, &str)> {
         match self {
             Self::SyncHello {

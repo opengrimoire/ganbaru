@@ -460,6 +460,15 @@ export async function syncNow(): Promise<void> {
   await invoke("sync_now");
 }
 
+/**
+ * Tells the phone's sync service whether the app is visible. A phone serves other linked
+ * members only while it is in the foreground; hiding the app stops that listener.
+ * @param visible Whether the app is in the foreground.
+ */
+export async function setSyncForeground(visible: boolean): Promise<void> {
+  await invoke("sync_set_foreground", { visible });
+}
+
 export async function setSyncPaused(paused: boolean): Promise<void> {
   await invoke("sync_set_paused", { paused });
 }

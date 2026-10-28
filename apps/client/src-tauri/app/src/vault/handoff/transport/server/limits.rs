@@ -11,6 +11,7 @@
 use std::collections::HashMap;
 use std::net::IpAddr;
 use std::sync::{Arc, Mutex, MutexGuard};
+#[cfg(desktop)]
 use std::time::{Duration, Instant};
 
 /// Connections still in the handshake or without a linked certificate, across all sources.
@@ -21,11 +22,14 @@ pub(in super::super) const MAX_PENDING_CONNECTIONS_PER_SOURCE: usize = 8;
 pub(in super::super) const MAX_AUTHENTICATED_CONNECTIONS: usize = 64;
 /// Contact messages one source may send at once. A requester sends one request and then polls
 /// about once a minute, so even a household behind one address stays far below it.
+#[cfg(desktop)]
 pub(in super::super) const CONTACT_MESSAGE_BURST: u32 = 16;
 /// Time in which one source earns another contact message.
+#[cfg(desktop)]
 pub(in super::super) const CONTACT_MESSAGE_REFILL: Duration = Duration::from_secs(1);
 /// Sources whose contact budget is tracked at once. Sources with a full budget are forgotten
 /// first, so the map only fills when that many sources are sending at the same time.
+#[cfg(desktop)]
 const MAX_CONTACT_SOURCES: usize = 1_024;
 
 /// Groups addresses one host can cheaply rotate through: IPv6 hosts pick any address in their
@@ -53,12 +57,14 @@ impl SourceKey {
 }
 
 /// Token bucket for the contact messages of one source.
+#[cfg(desktop)]
 #[derive(Clone, Copy, Debug)]
 struct ContactBudget {
     tokens: u32,
     refilled_at: Instant,
 }
 
+#[cfg(desktop)]
 impl ContactBudget {
     fn full(now: Instant) -> Self {
         Self {
@@ -94,6 +100,7 @@ struct Counts {
     pending: usize,
     pending_by_source: HashMap<SourceKey, usize>,
     authenticated: usize,
+    #[cfg(desktop)]
     contact_budgets: HashMap<SourceKey, ContactBudget>,
 }
 
@@ -150,6 +157,7 @@ impl ConnectionLimits {
     /// Spends one contact message from the budget of `source`. Returns false when the source
     /// sent too many recently, or when too many sources are sending at once, and the requester
     /// should be told to retry later.
+    #[cfg(desktop)]
     pub(in super::super) fn take_contact_message(&self, source: IpAddr, now: Instant) -> bool {
         let source = SourceKey::from_address(source);
         let mut counts = self.lock();

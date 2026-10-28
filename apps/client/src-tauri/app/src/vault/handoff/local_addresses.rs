@@ -1,8 +1,8 @@
-//! Local addresses this desktop names to other devices.
+//! Local addresses this device names to other devices.
 //!
 //! The coordinator listens on every local address, so the addresses it hands out in invitations,
 //! contact cards, and sync states, and the interfaces the Linux firewall rules open for them, are
-//! chosen separately from the bind.
+//! chosen separately from the bind. A phone's member listener reports only its routed source.
 
 use ganbaru_handoff::dial::{DialAddressClass, reportable_address};
 #[cfg(target_os = "linux")]
@@ -20,10 +20,12 @@ const ROUTE_PROBE_TARGET: (Ipv4Addr, u16) = (Ipv4Addr::new(192, 0, 2, 1), 9);
 const REPORTED_ENDPOINTS_LIFETIME: Duration = Duration::from_secs(5);
 
 /// Error shown when this desktop has no address another device could reach.
+#[cfg(desktop)]
 const NO_LOCAL_NETWORK_ADDRESS: &str = "no local network address is currently available";
 
 /// The address other devices should dial: the IPv4 source of the default route when it is
 /// reportable, otherwise the best reportable interface address.
+#[cfg(desktop)]
 pub(crate) fn preferred_invitation_address() -> Result<IpAddr, String> {
     choose_invitation_address(routed_ipv4_source(), &interface_addresses())
         .ok_or_else(|| NO_LOCAL_NETWORK_ADDRESS.to_string())
@@ -83,6 +85,7 @@ fn select_reported(
 /// A reportable routed source wins. Otherwise a private IPv4 address comes before an IPv4
 /// link-local or overlay one, and a unique local IPv6 address is used only when no IPv4 address
 /// is reportable. Global IPv6 is left out because a receiver accepts it only on its own prefix.
+#[cfg(desktop)]
 fn choose_invitation_address(routed: Option<IpAddr>, candidates: &[IpAddr]) -> Option<IpAddr> {
     if let Some(routed) = routed.filter(|address| address.is_ipv4() && is_reportable(*address)) {
         return Some(routed);
@@ -183,10 +186,12 @@ impl ReportedEndpointCache {
     }
 }
 
+#[cfg(desktop)]
 fn is_reportable(address: IpAddr) -> bool {
     reportable_address(address).is_ok()
 }
 
+#[cfg(desktop)]
 fn is_private_lan(address: IpAddr) -> bool {
     matches!(
         reportable_address(address),
@@ -198,6 +203,7 @@ fn is_ipv4_link_local(address: IpAddr) -> bool {
     matches!(address, IpAddr::V4(address) if address.is_link_local())
 }
 
+#[cfg(desktop)]
 fn is_unique_local(address: IpAddr) -> bool {
     matches!(address, IpAddr::V6(address) if address.is_unique_local())
 }
@@ -211,6 +217,7 @@ fn routed_ipv4_source() -> Option<IpAddr> {
 
 /// Addresses of the interfaces that are not known to be down. Enumeration failures are logged
 /// and yield no addresses, which leaves the routed source as the only candidate.
+#[cfg(desktop)]
 fn interface_addresses() -> Vec<IpAddr> {
     up_interfaces()
         .into_iter()
@@ -218,7 +225,14 @@ fn interface_addresses() -> Vec<IpAddr> {
         .collect()
 }
 
+/// A phone reports only the routed source, the address of the network Android routes through.
+#[cfg(not(desktop))]
+fn interface_addresses() -> Vec<IpAddr> {
+    Vec::new()
+}
+
 /// Interface addresses that are not loopback and not known to be down.
+#[cfg(desktop)]
 fn up_interfaces() -> Vec<if_addrs::Interface> {
     match if_addrs::get_if_addrs() {
         Ok(interfaces) => interfaces
@@ -232,6 +246,7 @@ fn up_interfaces() -> Vec<if_addrs::Interface> {
     }
 }
 
+#[cfg(desktop)]
 fn is_down(status: &if_addrs::IfOperStatus) -> bool {
     matches!(
         status,

@@ -15,7 +15,8 @@ use super::client::{ClientSession, Exchange, ForkPoint, PeerIds, SyncTransport};
 use super::host::HeadlessHost;
 use super::host::SyncHost;
 #[cfg(desktop)]
-use super::hub::{HubForwards, HubProposals, HubStability, HubVault, OpenHubVault, SyncHub};
+use super::hub::{HubForwards, HubProposals, HubStability};
+use super::hub::{HubVault, OpenHubVault, SyncHub};
 use super::recovery::{RecoveryChoice, RecoveryRequest};
 use super::status::{DegradedReasons, SyncErrorCode, SyncRole, SyncState, SyncStatusView};
 use super::transport::PairedTransport;
@@ -133,6 +134,10 @@ pub(crate) struct RuntimeState {
     authority: Mutex<Vec<AuthorityRequest>>,
     /// A pause change waiting for the writer record.
     pause_request: Mutex<Option<bool>>,
+    /// Whether the app is in the foreground, which a phone's member listener requires. False
+    /// until the frontend reports it is visible.
+    #[cfg(any(mobile, test))]
+    foreground: std::sync::atomic::AtomicBool,
     /// Recovery actions waiting for the next pass.
     recovery: Mutex<Vec<RecoveryRequest>>,
     /// Reset sync state requests waiting for the next pass, with where each answer goes.
@@ -161,6 +166,8 @@ impl Default for RuntimeState {
             #[cfg(desktop)]
             authority: Mutex::default(),
             pause_request: Mutex::default(),
+            #[cfg(any(mobile, test))]
+            foreground: std::sync::atomic::AtomicBool::new(false),
             recovery: Mutex::default(),
             resets: Mutex::default(),
             status: Mutex::default(),
@@ -183,6 +190,20 @@ impl RuntimeState {
     /// Runs a pass now instead of waiting for a commit or the fallback interval.
     pub(crate) fn sync_now(&self) {
         self.now.notify_one();
+    }
+
+    /// Records whether the app is in the foreground. A pass serves the member listener only
+    /// while it is.
+    #[cfg(any(mobile, test))]
+    pub(crate) fn set_foreground(&self, visible: bool) {
+        self.foreground.store(visible, Ordering::SeqCst);
+    }
+
+    /// Whether the app is in the foreground.
+    #[cfg(any(mobile, test))]
+    #[cfg_attr(not(mobile), allow(dead_code))]
+    pub(crate) fn in_foreground(&self) -> bool {
+        self.foreground.load(Ordering::SeqCst)
     }
 
     /// Pauses or resumes exchanges on this device. The writer record keeps the choice.
@@ -460,8 +481,8 @@ fn hub_proposals(runtime: &SyncRuntime) -> HubProposals {
 /// admission lets proposals through only while the selected log names this desktop as the
 /// anchor, so a member reaches the anchor directly after a handover; it forwards none, since
 /// the coordinator holds proposals for an anchor members cannot reach. It relays geneses of
-/// other members, which the engine admits only for enrolled devices.
-#[cfg(desktop)]
+/// other members, which the engine admits only for enrolled devices. A phone never anchors, so
+/// its hub takes no proposals and reports no stability.
 pub(crate) fn member_hub<R: Runtime>(app: &AppHandle<R>) -> SyncHub {
     let opener = app.clone();
     let open: OpenHubVault = Arc::new(move || {
@@ -469,15 +490,27 @@ pub(crate) fn member_hub<R: Runtime>(app: &AppHandle<R>) -> SyncHub {
         Box::pin(async move { open_hub_vault(&app).await })
     });
     let runtime = app.state::<SyncRuntime>();
-    SyncHub::new(open, runtime.changes.clone())
-        .with_stability(runtime.stability.clone())
-        .with_proposals(hub_proposals(runtime.inner()))
-        .with_relayed_geneses()
+    with_anchor_services(
+        SyncHub::new(open, runtime.changes.clone()).with_relayed_geneses(),
+        runtime.inner(),
+    )
+}
+
+/// Adds the stability report and proposal sequencing a desktop member serves once it anchors.
+#[cfg(desktop)]
+fn with_anchor_services(hub: SyncHub, runtime: &SyncRuntime) -> SyncHub {
+    hub.with_stability(runtime.stability.clone())
+        .with_proposals(hub_proposals(runtime))
+}
+
+/// A phone never anchors, so its member hub serves no anchor services.
+#[cfg(mobile)]
+fn with_anchor_services(hub: SyncHub, _runtime: &SyncRuntime) -> SyncHub {
+    hub
 }
 
 /// Admission of the active vault's member listener, read from the selected log and the
 /// quarantine for every connection.
-#[cfg(desktop)]
 pub(crate) fn member_admission_source<R: Runtime>(
     app: &AppHandle<R>,
 ) -> crate::vault::handoff::transport::MemberAdmissionSource {
@@ -522,7 +555,6 @@ pub(crate) fn quarantined_devices<R: Runtime>(
     })
 }
 
-#[cfg(desktop)]
 async fn open_hub_vault<R: Runtime>(app: &AppHandle<R>) -> Result<Option<HubVault>, String> {
     if !app.sync_enabled()? {
         return Ok(None);
@@ -555,7 +587,6 @@ pub(crate) async fn stop_for_vault_handoff<R: Runtime>(app: &AppHandle<R>) -> Re
         .lock()
         .map_err(|_| "sync service lock is unavailable".to_string())?
         .take();
-    #[cfg(desktop)]
     app.state::<crate::vault::handoff::MemberListenerLifecycle>()
         .stop()
         .await;

@@ -11,7 +11,6 @@ pub mod authority;
 pub mod backup;
 pub mod carry_forward;
 pub mod client;
-#[cfg(desktop)]
 pub mod hub;
 pub mod outbox;
 pub mod peers;

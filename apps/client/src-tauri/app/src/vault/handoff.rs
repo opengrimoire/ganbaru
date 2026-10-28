@@ -10,7 +10,6 @@ pub(crate) mod discovery;
 pub(crate) mod enrollment_approval;
 #[cfg(desktop)]
 mod key_store;
-#[cfg(desktop)]
 mod local_addresses;
 pub(crate) mod receiver;
 pub(crate) mod source;
@@ -21,9 +20,10 @@ use ganbaru_handoff::network_access;
 pub(crate) use ganbaru_handoff::{pairing, protocol};
 
 use pairing::PairingManager;
-#[cfg(desktop)]
-use protocol::{COORDINATOR_PORT, DEVELOPMENT_COORDINATOR_PORT, QrMatrix, invitation_qr_matrix};
+use protocol::{COORDINATOR_PORT, DEVELOPMENT_COORDINATOR_PORT};
 use protocol::{HandoffCompatibility, decode_invitation, encode_invitation};
+#[cfg(desktop)]
+use protocol::{QrMatrix, invitation_qr_matrix};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 #[cfg(desktop)]
@@ -396,11 +396,10 @@ pub(crate) async fn ensure_desktop_coordinator<R: Runtime>(
         .map(Some)
 }
 
-/// The sync listener of a member desktop: a linked device that does not coordinate the vault
-/// serves sync requests from the other members on the coordinator port, which it never binds
-/// for anything else.
+/// The sync listener of a member: a linked device that does not coordinate the vault serves
+/// sync requests from the other members on the coordinator port, which it never binds for
+/// anything else. A phone runs it only while the app is in the foreground.
 #[derive(Default)]
-#[cfg(desktop)]
 pub(crate) struct MemberListenerLifecycle {
     runtime: tokio::sync::Mutex<Option<MemberListenerRuntime>>,
     /// The port the listener holds, or 0 while it is stopped, readable without waiting for a
@@ -408,17 +407,16 @@ pub(crate) struct MemberListenerLifecycle {
     port: std::sync::atomic::AtomicU16,
 }
 
-#[cfg(desktop)]
 struct MemberListenerRuntime {
     vault_id: String,
     port: u16,
     shutdown: tokio::sync::oneshot::Sender<()>,
     served: tauri::async_runtime::JoinHandle<()>,
-    /// Advertises the listener over DNS-SD until the runtime is dropped.
+    /// Advertises the listener over DNS-SD until the runtime is dropped. Phones never advertise.
+    #[cfg(desktop)]
     _advertiser: discovery::Advertiser,
 }
 
-#[cfg(desktop)]
 impl MemberListenerLifecycle {
     /// Stops the listener and waits until it released its port.
     pub(crate) async fn stop(&self) {
@@ -437,6 +435,7 @@ impl MemberListenerLifecycle {
     }
 
     /// Asks the listener to stop without waiting, for app exit.
+    #[cfg(desktop)]
     pub(crate) fn stop_now(&self) {
         if let Ok(mut runtime) = self.runtime.try_lock()
             && let Some(runtime) = runtime.take()
@@ -456,10 +455,9 @@ impl MemberListenerLifecycle {
     }
 }
 
-/// Keeps the member listener of the pinned vault running while this desktop is a linked member,
-/// and returns the endpoints it is reachable at. A desktop without a coordinator pin stops it,
+/// Keeps the member listener of the pinned vault running while this device is a linked member,
+/// and returns the endpoints it is reachable at. A device without a coordinator pin stops it,
 /// since it either coordinates the vault itself or is not linked.
-#[cfg(desktop)]
 pub(crate) async fn ensure_member_listener<R: Runtime>(
     app: &tauri::AppHandle<R>,
 ) -> Result<Vec<String>, String> {
@@ -472,6 +470,7 @@ pub(crate) async fn ensure_member_listener<R: Runtime>(
         lifecycle.stop_locked(&mut runtime).await;
         return Ok(Vec::new());
     };
+    #[cfg(desktop)]
     if app.state::<CoordinatorLifecycle>().port()?.is_some() {
         lifecycle.stop_locked(&mut runtime).await;
         return Ok(Vec::new());
@@ -500,6 +499,7 @@ pub(crate) async fn ensure_member_listener<R: Runtime>(
         lan: lan_admission(app, port)?,
     };
     let (shutdown, receiver) = tokio::sync::oneshot::channel();
+    #[cfg(desktop)]
     let advertiser = discovery::Advertiser::spawn(
         app.clone(),
         manager.clone(),
@@ -514,6 +514,7 @@ pub(crate) async fn ensure_member_listener<R: Runtime>(
         port,
         shutdown,
         served,
+        #[cfg(desktop)]
         _advertiser: advertiser,
     });
     lifecycle
@@ -571,7 +572,6 @@ fn lan_admission<R: Runtime>(
 /// What the sync hub of a desktop listening on `port` reports to linked devices: its current
 /// listener endpoints under its own device id, refreshed at most every few seconds, then the
 /// peer book's other members.
-#[cfg(desktop)]
 fn hub_contact_source<R: Runtime>(
     app: tauri::AppHandle<R>,
     manager: PairingManager,
@@ -601,7 +601,7 @@ fn hub_contact_source<R: Runtime>(
 
 /// Admission for a coordinator listening on `port`. Only Linux keeps per-network firewall rules,
 /// so other desktops serve every LAN peer.
-#[cfg(all(desktop, not(target_os = "linux")))]
+#[cfg(not(target_os = "linux"))]
 fn lan_admission<R: Runtime>(
     _app: &tauri::AppHandle<R>,
     _port: u16,
@@ -931,7 +931,6 @@ fn network_access_status_for_port<R: Runtime>(
     ))
 }
 
-#[cfg(desktop)]
 fn coordinator_port(identifier: &str) -> u16 {
     if identifier.ends_with(".dev") {
         DEVELOPMENT_COORDINATOR_PORT

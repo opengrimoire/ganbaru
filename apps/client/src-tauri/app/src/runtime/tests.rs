@@ -70,6 +70,7 @@ fn mobile_runtime_registers_portable_core_commands() {
         "crate::sync::commands::sync_subscribe",
         "crate::sync::commands::sync_unsubscribe",
         "crate::sync::commands::sync_now",
+        "crate::sync::commands::sync_set_foreground",
         "crate::sync::commands::sync_set_paused",
         "crate::sync::commands::sync_recovery_list",
         "crate::sync::commands::sync_recovery_restore",

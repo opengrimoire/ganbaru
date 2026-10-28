@@ -35,6 +35,7 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
                 .pairing()
                 .clone(),
         )
+        .manage(vault::handoff::MemberListenerLifecycle::default())
         .manage(vault::handoff::receiver::ReceiverLifecycle::default())
         .manage(vault::handoff::source::SourceLifecycle::default())
         .manage(crate::sync::SyncRuntime::default())
@@ -428,6 +429,7 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
             crate::sync::commands::sync_subscribe,
             crate::sync::commands::sync_unsubscribe,
             crate::sync::commands::sync_now,
+            crate::sync::commands::sync_set_foreground,
             crate::sync::commands::sync_set_paused,
             crate::sync::commands::sync_recovery_list,
             crate::sync::commands::sync_recovery_restore,

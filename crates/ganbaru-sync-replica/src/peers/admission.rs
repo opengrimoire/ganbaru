@@ -6,7 +6,6 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-#[cfg(desktop)]
 use ganbaru_handoff::protocol::ControlMessage;
 use ganbaru_sync::AuthorizationView;
 
@@ -149,9 +148,8 @@ impl MemberAdmission {
     /// Whether a connection whose certificate has `fingerprint` may have `request` answered:
     /// a sync request for this vault that names the device the certificate enrolled. A
     /// proposal is answered only by the anchor's listener, and a forward request never, since
-    /// the coordinator holds proposals for an anchor that is not reachable directly. Only
-    /// desktops run a member listener.
-    #[cfg(desktop)]
+    /// the coordinator holds proposals for an anchor that is not reachable directly. A phone
+    /// runs a member listener only while the app is in the foreground.
     pub fn request(
         &self,
         fingerprint: &str,

@@ -4,14 +4,17 @@
 //! interface needs no rebind. IPv4 and IPv6 use separate sockets, with `IPV6_V6ONLY` set on the
 //! IPv6 one, so every peer arrives with its real address family and the address policy sees
 //! no IPv4-mapped forms. Which networks may connect is decided per connection by the address
-//! policy and admission, keyed by the address each connection arrived on.
+//! policy and admission, keyed by the address each connection arrived on. A phone's member
+//! listener binds the IPv4 socket alone.
 
+#[cfg(desktop)]
 use socket2::{Domain, Protocol, Socket, Type};
 use std::io;
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
 use tokio::net::{TcpListener, TcpStream};
 
 /// Pending connection backlog for each socket.
+#[cfg(desktop)]
 const LISTEN_BACKLOG: i32 = 1024;
 
 /// The coordinator's listening sockets: IPv4 always, IPv6 when the host supports it.
@@ -84,6 +87,7 @@ impl CoordinatorListener {
 /// One nonblocking listening socket on `address`. IPv6 sockets refuse IPv4-mapped traffic.
 /// `SO_REUSEADDR` is set outside Windows, as Tokio does, so a restarted coordinator can bind
 /// while old connections linger; on Windows it would let another process take the port.
+#[cfg(desktop)]
 fn bind_wildcard(address: SocketAddr) -> io::Result<TcpListener> {
     let socket = Socket::new(
         Domain::for_address(address),
@@ -99,6 +103,22 @@ fn bind_wildcard(address: SocketAddr) -> io::Result<TcpListener> {
     socket.bind(&address.into())?;
     socket.listen(LISTEN_BACKLOG)?;
     TcpListener::from_std(socket.into())
+}
+
+/// One nonblocking listening socket on the IPv4 `address`. A phone listens on IPv4 alone,
+/// since the standard library cannot set `IPV6_V6ONLY` before binding and a dual-stack socket
+/// would hand the address policy IPv4-mapped forms.
+#[cfg(not(desktop))]
+fn bind_wildcard(address: SocketAddr) -> io::Result<TcpListener> {
+    if address.is_ipv6() {
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "this platform listens on IPv4 only",
+        ));
+    }
+    let socket = std::net::TcpListener::bind(address)?;
+    socket.set_nonblocking(true)?;
+    TcpListener::from_std(socket)
 }
 
 #[cfg(test)]

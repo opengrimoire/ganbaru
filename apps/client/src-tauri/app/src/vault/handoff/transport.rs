@@ -1,15 +1,15 @@
 //! Pinned client transport and shared resumable archive streaming.
 
 mod dial_report;
-#[cfg(desktop)]
 mod server;
 pub(crate) use dial_report::{CoordinatorDialReport, coordinator_dial_report};
 use dial_report::{DialOutcome, record_dial};
+pub(crate) use server::{
+    CoordinatorListener, LanAdmission, MemberAdmissionSource, MemberServices, serve_member_listener,
+};
 #[cfg(desktop)]
 pub(crate) use server::{
-    CoordinatorListener, CoordinatorServices, EnrollmentSealer, LanAdmission,
-    MemberAdmissionSource, MemberServices, QuarantinedDevices, serve_member_listener,
-    serve_with_coordinator,
+    CoordinatorServices, EnrollmentSealer, QuarantinedDevices, serve_with_coordinator,
 };
 
 use super::pairing::{

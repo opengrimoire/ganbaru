@@ -279,18 +279,29 @@ impl<R: Runtime> SyncHost for AppHandle<R> {
         crate::chat::sync::on_sync_notices(self, notices);
     }
 
-    #[cfg(desktop)]
+    /// A phone serves members only while the app is in the foreground, and checks again after
+    /// the listener started, so a move to the background during the start still stops it.
     async fn serve_members(&self) -> Vec<String> {
-        match crate::vault::handoff::ensure_member_listener(self).await {
+        #[cfg(mobile)]
+        if !self.state::<super::SyncRuntime>().in_foreground() {
+            self.stop_serving_members().await;
+            return Vec::new();
+        }
+        let endpoints = match crate::vault::handoff::ensure_member_listener(self).await {
             Ok(endpoints) => endpoints,
             Err(error) => {
                 eprintln!("sync: member listener: {error}");
                 Vec::new()
             }
+        };
+        #[cfg(mobile)]
+        if !self.state::<super::SyncRuntime>().in_foreground() {
+            self.stop_serving_members().await;
+            return Vec::new();
         }
+        endpoints
     }
 
-    #[cfg(desktop)]
     async fn stop_serving_members(&self) {
         self.state::<crate::vault::handoff::MemberListenerLifecycle>()
             .stop()

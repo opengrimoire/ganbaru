@@ -77,6 +77,26 @@ pub fn sync_now(runtime: State<'_, SyncRuntime>) {
     runtime.sync_now();
 }
 
+/// Reports whether the phone app is in the foreground. Going to the background stops the
+/// member listener before the command returns, so the phone listens only while it is visible;
+/// coming to the foreground runs a pass, which starts the listener when this phone is a linked
+/// member.
+#[cfg(any(mobile, test))]
+#[tauri::command]
+pub async fn sync_set_foreground<R: Runtime>(
+    app: AppHandle<R>,
+    runtime: State<'_, SyncRuntime>,
+    visible: bool,
+) -> Result<(), String> {
+    runtime.set_foreground(visible);
+    if visible {
+        runtime.sync_now();
+    } else {
+        app.stop_serving_members().await;
+    }
+    Ok(())
+}
+
 /// Pauses or resumes exchanges on this device. Local changes keep sealing while paused.
 #[tauri::command]
 pub fn sync_set_paused(runtime: State<'_, SyncRuntime>, paused: bool) -> Result<(), String> {

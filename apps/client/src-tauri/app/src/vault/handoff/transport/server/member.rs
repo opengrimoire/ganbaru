@@ -1,4 +1,5 @@
-//! The sync listener of a member desktop that does not coordinate the vault.
+//! The sync listener of a member that does not coordinate the vault: a desktop, or a phone while
+//! the app is in the foreground.
 //!
 //! It serves only sync requests from the devices the local selected authorization log enrolled
 //! and did not remove, and that this installation did not quarantine. Pairing, other handoff,

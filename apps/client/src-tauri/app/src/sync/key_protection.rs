@@ -11,7 +11,7 @@
 use crate::vault::handoff::pairing::{PairingManager, UnlinkReason};
 use ganbaru_handoff::key_wrap::WrapError;
 use ganbaru_handoff::key_wrap::{self, KeyWrapper, ProtectedIdentityKeyStore};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
@@ -99,15 +99,17 @@ pub(crate) fn identity_key_store(
     ProtectedIdentityKeyStore::new(config_dir.join(LINKING_KEY_DIRECTORY), wrapper)
 }
 
-/// The platform key wrapper every key file of the process goes through. It records each alias
-/// [`key_wrap::open`] reports as lost, which is the only signal that starts a recovery: error
-/// text can carry messages from a remote hub, so it never decides that keys are lost. An alias
-/// leaves the record once it seals or opens a key again or its only file is removed, so a loss
-/// already repaired (a replaced linking identity, a platform key the store generated again)
-/// never unlinks a device later. The health probe's alias is never recorded.
+/// The platform key wrapper every key file of the process goes through. It records each key
+/// reference [`key_wrap::open`] reports as lost, by alias, which is the only signal that starts
+/// a recovery: error text can carry messages from a remote hub, so it never decides that keys
+/// are lost. A reference leaves the record once its key seals or opens again or its file is
+/// removed, so a loss already repaired (a replaced linking identity, a platform key the store
+/// generated again) never unlinks a device later. An alias counts as lost while any of its
+/// references does, so a healthy key under one alias never clears a damaged key under the same
+/// alias. The health probe's alias is never recorded.
 pub(crate) struct KeyProtection {
     inner: Arc<dyn KeyWrapper>,
-    lost: Mutex<BTreeSet<String>>,
+    lost: Mutex<BTreeMap<String, BTreeSet<String>>>,
 }
 
 #[cfg_attr(not(any(mobile, test)), allow(dead_code))]
@@ -119,10 +121,10 @@ impl KeyProtection {
         }
     }
 
-    /// The aliases reported lost since the last call, in alias order.
+    /// The aliases with a key reported lost since the last call, in alias order.
     pub(crate) fn take_lost(&self) -> Vec<String> {
         match self.lost.lock() {
-            Ok(mut lost) => std::mem::take(&mut *lost).into_iter().collect(),
+            Ok(mut lost) => std::mem::take(&mut *lost).into_keys().collect(),
             Err(_) => Vec::new(),
         }
     }
@@ -141,20 +143,27 @@ impl KeyWrapper for KeyProtection {
         self.inner.forget(alias)
     }
 
-    fn note_lost(&self, alias: &str) {
-        self.inner.note_lost(alias);
+    fn note_lost(&self, alias: &str, reference: &str) {
+        self.inner.note_lost(alias, reference);
         if alias == PROBE_ALIAS {
             return;
         }
         if let Ok(mut lost) = self.lost.lock() {
-            lost.insert(alias.to_string());
+            lost.entry(alias.to_string())
+                .or_default()
+                .insert(reference.to_string());
         }
     }
 
-    fn note_recovered(&self, alias: &str) {
-        self.inner.note_recovered(alias);
-        if let Ok(mut lost) = self.lost.lock() {
-            lost.remove(alias);
+    fn note_recovered(&self, alias: &str, reference: &str) {
+        self.inner.note_recovered(alias, reference);
+        if let Ok(mut lost) = self.lost.lock()
+            && let Some(references) = lost.get_mut(alias)
+        {
+            references.remove(reference);
+            if references.is_empty() {
+                lost.remove(alias);
+            }
         }
     }
 }
@@ -692,6 +701,20 @@ mod tests {
         key_wrap::open(&protection, PROBE_ALIAS, PROBE_REFERENCE, b"raw").expect_err("raw");
         // The platform store generated the lost key again and sealed with it.
         key_wrap::seal(&protection, "alias-a", "reference", b"private key").expect("seal");
+        assert!(protection.take_lost().is_empty());
+    }
+
+    #[test]
+    fn a_healthy_key_does_not_clear_a_damaged_key_under_the_same_alias() {
+        let protection = KeyProtection::new(Arc::new(TestKeyWrapper::default()));
+        let device = key_wrap::seal(&protection, "alias-a", "device-key", b"device key")
+            .expect("seal device key");
+        key_wrap::open(&protection, "alias-a", "person-key", b"damaged").expect_err("damaged");
+        key_wrap::open(&protection, "alias-a", "device-key", &device).expect("open device key");
+        assert_eq!(protection.take_lost(), vec!["alias-a"]);
+
+        key_wrap::open(&protection, "alias-a", "person-key", b"damaged").expect_err("damaged");
+        key_wrap::seal(&protection, "alias-a", "person-key", b"person key").expect("replace");
         assert!(protection.take_lost().is_empty());
     }
 

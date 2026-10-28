@@ -238,7 +238,7 @@ export const sync = {
   reset: {
     action: "Restablecer sincronización",
     title: "Restablecer sincronización",
-    message: "¿Desvincular todos los dispositivos y empezar la sincronización de nuevo con los datos de esta computadora? Habrá que volver a vincular cada dispositivo.",
+    message: "¿Desvincular todos los dispositivos y empezar la sincronización de nuevo con los datos de esta computadora? Habrá que volver a vincular cada dispositivo. Esta computadora conserva sus claves de dispositivo y de administración, así que restablecer no reemplaza claves que pudieron copiarse de ella.",
     failed: "No se pudo restablecer la sincronización",
     done: "Se restableció la sincronización. Vuelve a vincular tus otros dispositivos.",
   },

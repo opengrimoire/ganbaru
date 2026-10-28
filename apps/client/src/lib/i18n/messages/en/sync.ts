@@ -224,7 +224,7 @@ export const sync = {
   reset: {
     action: "Reset sync",
     title: "Reset sync",
-    message: "Unlink every device and start sync over from the data on this computer? Each device must be linked again.",
+    message: "Unlink every device and start sync over from the data on this computer? Each device must be linked again. This computer keeps its device and admin keys, so a reset does not replace keys that may have been copied from it.",
     failed: "Sync could not be reset",
     done: "Sync was reset. Link your other devices again.",
   },

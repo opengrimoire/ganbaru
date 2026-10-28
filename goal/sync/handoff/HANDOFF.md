@@ -44,19 +44,19 @@ Out of scope: the multi-person sharing goal. Its plans (`goal/sharing/`) are not
 
 ## State on feat/sync
 
-Updated by the orchestrator session on the mini PC (2026-10-28). Milestone 11 step 7 (merge c35c5dc0), milestone 8 step 5 (merge 26180e64), milestone 9 step 5 (merge b1e35a51), milestone 8 step 6 (merge a0301701), milestone 9 step 6 (merge 5ba787a9), milestone 8 step 7 (merge 49e307c1), milestone 8 step 8 (merge 41d092c7, closing milestone 8), and milestone 9 step 7 (merge 67cbfc05) have landed. Landed topic branches were deleted on origin.
+Updated by the orchestrator session on the mini PC (2026-10-28). Milestone 11 step 7 (merge c35c5dc0), milestone 8 step 5 (merge 26180e64), milestone 9 step 5 (merge b1e35a51), milestone 8 step 6 (merge a0301701), milestone 9 step 6 (merge 5ba787a9), milestone 8 step 7 (merge 49e307c1), milestone 8 step 8 (merge 41d092c7, closing milestone 8), milestone 9 step 7 (merge 67cbfc05), and milestone 9 step 8 (merge 9a770f8f) have landed. Landed topic branches were deleted on origin.
 
 - `VAULT_MANIFEST_VERSION` is 21, handoff `PROTOCOL_VERSION` is 14, the last migration is `20261028081009_chat_assignments_replication.sql`.
-- Done in source: milestones 2 to 7, milestone 8 steps 1 to 8 (closed), milestone 9 steps 1 to 7, milestone 10 steps 1 to 4, milestone 11 steps 1 to 8, engine follow-ups 1 to 5.
-- Remaining: milestone 9 steps 8 to 10 (docs part of 10), milestone 10 steps 5 to 7, milestone 11 steps 9 and 10, milestone 12 steps 1 to 11, milestone closes, a clean `pnpm -w run validate`, and the final report.
+- Done in source: milestones 2 to 7, milestone 8 steps 1 to 8 (closed), milestone 9 steps 1 to 8, milestone 10 steps 1 to 4, milestone 11 steps 1 to 8, engine follow-ups 1 to 5.
+- Remaining: milestone 9 steps 9 and 10 (docs part of 10), milestone 10 steps 5 to 7, milestone 11 steps 9 and 10, milestone 12 steps 1 to 11, milestone closes, a clean `pnpm -w run validate`, and the final report.
 
 ## In-flight branches
 
 Progress snapshots are in `progress/`; their live copies were in the session scratch directory, so check each branch's log for later commits.
 
 1. `feat/sync-peer-exchange`: milestone 11 step 9. Parts A to C are committed. The four-part internal security review (`briefs/m11-security-review-brief.md`, findings in `briefs/m11-security-findings.md`) returned fix first. The first fix round (`briefs/m11-step-9-security-fix-brief.md`) landed on the branch; its delta security review (`briefs/m11-step-9-delta-security-review-brief.md`) returned fix first, and fix round 2 (`briefs/m11-step-9-security-fix2-message.md`, head 974cff5c, all checks passed) had its focused delta security review (`briefs/m11-step-9-delta2-security-review-brief.md`, fix first on the former-anchor handover hole), and fix round 3 (`briefs/m11-step-9-security-fix3-message.md`) is running; a delta review of that one item follows, then landing with protocol 15 or the next free number.
-2. `feat/sync-chat-config`: milestone 9 step 8 (brief `briefs/m9-step-8-brief.md`), implementer finishing its checks; it merges feat/sync (step 7 landed) before review and landing.
-3. `perf/test-migration-speed`: test suite speed (brief `briefs/test-speed-brief.md`), implementer running. Not a plan step; it lands like one after a review.
+2. `perf/test-migration-speed`: test suite speed (brief `briefs/test-speed-brief.md`), implementer running. Not a plan step; it lands like one after a review.
+3. `feat/sync-chat-presentation`: milestone 9 step 9 (brief `briefs/m9-step-9-brief.md`, including every step 9 follow-up from steps 1 to 8), implementer running.
 
 WIP patches: none. Briefs copied from the session scratch directory are in `briefs/`; copy them to your scratch directory and replace its paths. The ready-to-paste resume prompt is `NEXT_PROMPT.md`.
 

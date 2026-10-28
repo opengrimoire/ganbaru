@@ -288,8 +288,8 @@ pub(super) async fn post_message(
     #[cfg(desktop)]
     let dispatch_db_url = db_url.clone();
     let device_id = this_device_id(&app)?;
-    let writers = chat_writers(&app)?;
-    let pool = chat_pool(app, db_url).await?;
+    let pool = chat_pool(app.clone(), db_url).await?;
+    let writers = chat_writers(&app, &pool).await?;
     let posted = persist_post(
         &pool,
         request,

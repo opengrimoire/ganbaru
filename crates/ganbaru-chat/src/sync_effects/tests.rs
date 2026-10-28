@@ -1183,7 +1183,12 @@ async fn a_remotely_settled_assignment_ends_its_dispatch_and_revokes_its_runs_on
     .unwrap();
 
     let working = run_hook(&pool, ASSIGNMENTS_TABLE, &["assignment:sync-effects"]).await;
-    assert!(working.is_empty());
+    assert_eq!(
+        working.started_assignments,
+        BTreeSet::from(["assignment:sync-effects".to_string()])
+    );
+    assert!(working.settled_assignments.is_empty());
+    assert!(working.revoked_teammates.is_empty());
     assert_eq!(dispatch_job_state(&pool).await, "claimed");
 
     set_assignment_state(&pool, "cancelled").await;
@@ -1281,6 +1286,26 @@ async fn queued_assignments_and_pending_inputs_are_reported_for_their_executing_
         BTreeSet::from(["assignment:sync-effects".to_string()])
     );
     assert!(queued.revoked_teammates.is_empty());
+    assert!(queued.started_assignments.is_empty());
+
+    for state in ["working", "waiting_for_answer", "waiting_for_approval"] {
+        set_assignment_state(&pool, state).await;
+        let started = run_hook(&pool, ASSIGNMENTS_TABLE, &["assignment:sync-effects"]).await;
+        assert_eq!(
+            started.started_assignments,
+            BTreeSet::from(["assignment:sync-effects".to_string()]),
+            "{state}"
+        );
+        assert!(started.queued_assignments.is_empty());
+        assert!(started.revoked_teammates.is_empty());
+    }
+    set_assignment_state(&pool, "ready_for_review").await;
+    assert!(
+        run_hook(&pool, ASSIGNMENTS_TABLE, &["assignment:sync-effects"])
+            .await
+            .is_empty()
+    );
+    set_assignment_state(&pool, "queued").await;
 
     let delivered = run_hook(&pool, ASSIGNMENT_INPUTS_TABLE, &["input:first"]).await;
     assert!(delivered.is_empty());
@@ -1294,4 +1319,60 @@ async fn queued_assignments_and_pending_inputs_are_reported_for_their_executing_
         pending.routed_inputs,
         BTreeSet::from(["assignment:sync-effects".to_string()])
     );
+}
+
+async fn settled(
+    pool: &SqlitePool,
+    winner: Option<&str>,
+    versions: &[Option<&str>],
+) -> Option<String> {
+    let mut connection = pool.acquire().await.unwrap();
+    settled_grant_approval(&mut connection, "grant:sync-effects", winner, versions)
+        .await
+        .unwrap()
+}
+
+/// An inheriting grant edit follows the channel override, so when that override is stricter
+/// than a concurrent explicit grant override the merge kept, the channel override settles the
+/// grant; otherwise the winner stands.
+#[tokio::test]
+async fn an_inheriting_grant_edit_settles_onto_a_stricter_channel_override() {
+    let pool = migrated_pool().await;
+    seed_organization(&pool).await;
+    seed_folder_authorization(&pool, "unattended", "unattended").await;
+    let concurrent = [Some("unattended"), None];
+
+    assert_eq!(settled(&pool, Some("unattended"), &concurrent).await, None);
+    set_channel_override(&pool, Some("ask")).await;
+    assert_eq!(
+        settled(&pool, Some("unattended"), &concurrent).await,
+        Some("ask".to_string())
+    );
+    assert_eq!(
+        settled(
+            &pool,
+            Some("unattended"),
+            &[Some("unattended"), Some("auto_approve")]
+        )
+        .await,
+        None
+    );
+    assert_eq!(
+        settled(&pool, Some("ask"), &[Some("ask"), None]).await,
+        None
+    );
+    assert_eq!(settled(&pool, None, &[None, None]).await, None);
+    set_channel_override(&pool, Some("provider_custom")).await;
+    assert_eq!(settled(&pool, Some("unattended"), &concurrent).await, None);
+
+    set_channel_override(&pool, Some("ask")).await;
+    sqlx::query(
+        "UPDATE chat_teammate_channel_memberships SET removed_at = ?
+         WHERE sync_key = 'channel-membership:sync-effects'",
+    )
+    .bind(NOW)
+    .execute(&pool)
+    .await
+    .unwrap();
+    assert_eq!(settled(&pool, Some("unattended"), &concurrent).await, None);
 }

@@ -39,6 +39,39 @@ export const chat = {
   deletePermanently: "Eliminar permanentemente",
   cancel: "Cancelar",
   save: "Guardar",
+  sync: {
+    participantConflicts: (count: number) =>
+      `${count} ${count === 1 ? "nombre se editó" : "nombres se editaron"} en dos dispositivos. Abre los ajustes del chat para elegir qué conservar.`,
+    teammateConflicts: (count: number) =>
+      `${count} ${count === 1 ? "compañero se editó" : "compañeros se editaron"} en dos dispositivos. Abre los ajustes del chat para elegir qué conservar.`,
+    channelConflicts: (count: number) =>
+      `${count} ${count === 1 ? "canal se renombró o editó" : "canales se renombraron o editaron"} en dos dispositivos. Abre los ajustes del chat para elegir qué conservar.`,
+    messageConflicts: (count: number) =>
+      `${count} ${count === 1 ? "mensaje se editó" : "mensajes se editaron"} en dos dispositivos. Abre los ajustes del chat para elegir qué conservar.`,
+    participantUntitled: "Participante sin nombre",
+    teammateUntitled: "Compañero sin nombre",
+    channelUntitled: "Canal sin nombre",
+    messageUntitled: "Mensaje",
+    recoveryNote: "Se eliminó con su proyecto. Al restaurar el proyecto vuelve su canal predeterminado, así que esto solo se puede descartar.",
+  },
+  conflict: {
+    participantTitle: "Este nombre se editó en dos dispositivos",
+    teammateTitle: "Este compañero se editó en dos dispositivos",
+    channelTitle: "Este canal se editó en dos dispositivos",
+    messageTitle: "Este mensaje se editó en dos dispositivos",
+    messageIn: (channel: string) => `En #${channel}`,
+    hint: "Elige la versión que quieres conservar.",
+    empty: "Vacío",
+    shown: "Visible ahora",
+    keepThis: "Conservar esta",
+    useOther: "Usar esta",
+    versionFrom: (device: string, time: string) => `${device}, ${time}`,
+    thisDevice: "Este dispositivo",
+    otherDevice: "Otro dispositivo",
+    resolved: "Este conflicto ya se resolvió",
+    failed: "No se pudo resolver el conflicto",
+    loadFailed: "No se pudieron cargar los conflictos del chat",
+  },
   deleteTitle: "¿Eliminar el chat permanentemente?",
   deleteMessage: (title: string) => `¿Eliminar “${title}” y su historial normalizado, borrador, adjuntos, metadatos de continuación y puntos de control internos? No se eliminan los archivos del repositorio ni el historial general del proveedor.`,
   status: {

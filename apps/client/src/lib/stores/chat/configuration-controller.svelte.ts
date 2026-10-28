@@ -17,7 +17,7 @@ import type {
   RemoveProviderResult,
 } from "$lib/chat/contracts";
 import { BUILD_PLATFORM_PROFILE, platformHasCapability } from "$lib/platform";
-import { configKeyChanged, onConfigChangedElsewhere } from "$lib/vault/config";
+import { announceConfigSaved, configKeyChanged, onConfigChangedElsewhere } from "$lib/vault/config";
 
 /** Portable preference branch holding the Chat behavior, refreshed when sync or a generic preference write changes it. */
 const CHAT_BEHAVIOR_CONFIG_KEY = "chat.behavior";
@@ -41,14 +41,20 @@ export class ChatConfigurationController {
   private settingsRequest = 0;
   private providerDiscoveryPromise: Promise<ChatSettingsRead> | null = null;
   private workingFolderRefreshPromise: Promise<void> | null = null;
+  private readonly stopBehaviorRefresh: () => void;
 
   constructor(private readonly options: ChatConfigurationControllerOptions) {
-    onConfigChangedElsewhere((keys) => {
+    this.stopBehaviorRefresh = onConfigChangedElsewhere((keys) => {
       if (this.settings === null || !configKeyChanged(keys, CHAT_BEHAVIOR_CONFIG_KEY)) return;
       void this.refreshSettings().catch((error: unknown) => {
         console.error("Chat settings refresh after a behavior change failed", error);
       });
     });
+  }
+
+  /** Stops refreshing settings when the Chat behavior changes elsewhere. */
+  dispose(): void {
+    this.stopBehaviorRefresh();
   }
 
   reset(): void {
@@ -180,8 +186,10 @@ export class ChatConfigurationController {
     await this.refreshSettings();
   }
 
+  /** Saves the Chat behavior and has the other windows of the vault reread it, so none writes back a stale copy. */
   async updateBehavior(behavior: ChatBehaviorPreferences): Promise<void> {
     await chatApi.updateChatBehavior(behavior);
+    await announceConfigSaved([CHAT_BEHAVIOR_CONFIG_KEY]);
     await this.refreshSettings();
   }
 

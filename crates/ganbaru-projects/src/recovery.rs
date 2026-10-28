@@ -265,8 +265,11 @@ pub async fn restore_recovered_row(
     let (event_links, descendants): (Vec<_>, Vec<_>) = descendants
         .iter()
         .partition(|descendant| descendant.table == TASK_EVENT_LINKS.id);
+    // Descendants of other domains, such as the project's Chat channels, are not restored: the
+    // restored project has a new id, and Chat creates its default channel when it lists them.
     let mut rows = descendants
         .iter()
+        .filter(|descendant| DOMAIN.tables.iter().any(|spec| spec.id == descendant.table))
         .map(|descendant| {
             RestoredRow::new(descendant.table, &descendant.row_key, &descendant.values)
         })

@@ -887,11 +887,12 @@ pub(super) fn this_device_id<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Ch
     })
 }
 
-/// The devices that can write Chat in the active vault: its owner, and this device when it is a
-/// linked replica that Chat lets write. Other linked replicas are not listed, so while Chat is
-/// owner-only the owner is the only writer.
-pub(super) fn chat_writers<R: tauri::Runtime>(
+/// The devices that can write Chat in the active vault of `pool`: its owner, this device when it
+/// may write the Chat domain, and the linked devices with an active sync writer when linked
+/// replicas write Chat.
+pub(super) async fn chat_writers<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
+    pool: &sqlx::SqlitePool,
 ) -> ChatResult<super::workflow::ChatWriters> {
     let status = crate::vault::ownership::active_status(app).map_err(|error| {
         ChatError::new(
@@ -900,17 +901,42 @@ pub(super) fn chat_writers<R: tauri::Runtime>(
             true,
         )
     })?;
-    Ok(chat_writers_from_status(&status))
+    let linked = active_writer_devices(pool).await?;
+    Ok(chat_writers_from_status(&status, linked))
 }
 
-/// The devices that write Chat under the ownership `status`: the vault owner, and this device
-/// when it may write the Chat domain.
+/// The devices with an active sync writer in the vault of `pool` that the authorization log
+/// has not removed. An unlinked device's writer is revoked or carries a removal cutoff, so it
+/// is not listed.
+pub(super) async fn active_writer_devices(pool: &sqlx::SqlitePool) -> ChatResult<Vec<String>> {
+    sqlx::query_scalar(
+        "SELECT DISTINCT writer.device_id FROM sync_writers writer
+         WHERE writer.state = 'active' AND writer.removal_cutoff_seq IS NULL
+           AND NOT EXISTS (
+             SELECT 1 FROM sync_devices device
+             WHERE device.space_id = writer.space_id AND device.device_id = writer.device_id
+               AND device.removed_revision IS NOT NULL
+           )
+         ORDER BY writer.device_id",
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(persistence_error)
+}
+
+/// The devices that write Chat under the ownership `status`: the vault owner, this device when
+/// it may write the Chat domain, and the `linked` writer devices when the Chat domain lets
+/// linked replicas write, so work a replica executes is not taken for stranded.
 pub(super) fn chat_writers_from_status(
     status: &crate::vault::ownership::VaultOwnershipStatus,
+    linked: impl IntoIterator<Item = String>,
 ) -> super::workflow::ChatWriters {
     let mut devices = vec![status.owner_device_id.clone()];
     if status.can_write_domain(ganbaru_sync::manifest::vault::chat::DOMAIN_NAME) {
         devices.push(status.device_id.clone());
+    }
+    if ganbaru_sync::manifest::vault::chat::DOMAIN.replica_writable {
+        devices.extend(linked);
     }
     super::workflow::ChatWriters::new(devices)
 }

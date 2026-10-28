@@ -246,6 +246,15 @@ export async function refreshConfigKeysFromDisk(keys: Iterable<string>): Promise
 }
 
 /**
+ * Announce keys a native command saved outside the patch queue: copy their saved values into this window's cache and
+ * tell the other windows of the vault to reread them, so no window keeps a stale value it could write back.
+ */
+export async function announceConfigSaved(keys: readonly string[]): Promise<void> {
+  await refreshConfigKeysFromDisk(keys);
+  configChanges.publish(keys);
+}
+
+/**
  * Reread the whole view after sync applied preference rows from a linked device, copy every key whose value differs
  * from the cache into it, and tell subscribers which keys changed. Keys this window is still writing keep the local
  * value, which reaches the other devices once it is saved.

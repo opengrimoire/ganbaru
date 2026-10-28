@@ -10,6 +10,7 @@ use ganbaru_handoff::protocol::SYNC_ASSET_CHUNK_BYTES;
 use ganbaru_sync::Engine;
 use ganbaru_sync::assets::{AssetClass, AssetRef, MAX_ASSET_BYTES};
 use ganbaru_sync::domains::quick_notes::{NoteImage, encode_images};
+use ganbaru_sync::manifest::vault::chat::ATTACHMENTS_CLASS;
 use ganbaru_sync::manifest::vault::notes::FILES_CLASS;
 use ganbaru_sync::manifest::vault::preferences::PROFILE_CLASS;
 use ganbaru_sync::manifest::vault::quick_notes::{IMAGES_CLASS, NOTES_TABLE, note_group};
@@ -122,6 +123,39 @@ fn assets_larger_than_the_old_bound_stream_into_place() {
         .read_chunk(&asset, asset.byte_size() - 7, SYNC_ASSET_CHUNK_BYTES)
         .expect("read tail");
     assert_eq!(tail, large[large.len() - 7..]);
+}
+
+/// A Chat attachment at the class bound streams into place under its digest name, and a larger
+/// one has no reference that could ask for it.
+#[test]
+fn chat_attachments_stream_up_to_their_bound_and_refuse_larger_files() {
+    let directory = TestDirectory::new("assets-chat-attachment");
+    let store = ContentAddressedStore::new(directory.path().to_path_buf());
+    let bound = ATTACHMENTS_CLASS.max_bytes;
+    assert_eq!(bound, 50 * 1024 * 1024);
+    let text = vec![b'a'; bound as usize];
+    let asset = AssetRef::new(
+        &ATTACHMENTS_CLASS,
+        digest(&text),
+        "text/plain".to_string(),
+        bound,
+    )
+    .expect("attachment at the bound");
+    receive(&store, &asset, &text).expect("receive attachment");
+    assert_eq!(
+        entries(directory.path(), &ATTACHMENTS_CLASS),
+        vec![format!("{}.txt", digest(&text))]
+    );
+    assert!(store.holds(&asset).expect("holds"));
+    assert!(
+        AssetRef::new(
+            &ATTACHMENTS_CLASS,
+            digest(&text),
+            "text/plain".to_string(),
+            bound + 1,
+        )
+        .is_err()
+    );
 }
 
 #[test]

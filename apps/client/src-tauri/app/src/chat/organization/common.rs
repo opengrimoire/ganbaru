@@ -11,6 +11,71 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 
 pub(super) use ganbaru_chat::timeline::MAX_MESSAGE_MARKDOWN_BYTES as MAX_MESSAGE_BYTES;
+use ganbaru_chat::timeline::{MAX_ATTACHMENT_ID_CHARS, MAX_MESSAGE_ATTACHMENTS};
+
+/// Owner of attachment references copied by value from the device's attachment rows.
+#[derive(Clone, Copy, Debug)]
+pub(super) enum AttachmentReferenceOwner {
+    /// A message revision, through its replicated owned references.
+    Revision,
+    /// A scheduled message, through its device-local references.
+    ScheduledMessage,
+}
+
+impl AttachmentReferenceOwner {
+    fn insert_sql(self) -> &'static str {
+        match self {
+            Self::Revision => {
+                "INSERT INTO chat_communication_attachment_references
+                     (message_revision_id, ordinal, attachment_id, working_folder_id, kind,
+                      original_display_name, mime_type, byte_size, sha256)
+                 SELECT ?, ?, id, working_folder_id, kind, original_display_name, mime_type,
+                        byte_size, sha256
+                 FROM chat_attachments WHERE id = ?"
+            }
+            Self::ScheduledMessage => {
+                "INSERT INTO chat_scheduled_message_attachment_references
+                     (scheduled_message_id, ordinal, attachment_id, working_folder_id, kind,
+                      original_display_name, mime_type, byte_size, sha256)
+                 SELECT ?, ?, id, working_folder_id, kind, original_display_name, mime_type,
+                        byte_size, sha256
+                 FROM chat_attachments WHERE id = ?"
+            }
+        }
+    }
+}
+
+/// Inserts the references of `owner_id` to `attachment_ids` in order, copying each attachment's
+/// working folder, kind, display name, content type, size, and digest from its row on this
+/// device so the reference stays readable without that row.
+///
+/// # Errors
+///
+/// Returns a validation error when an attachment does not exist on this device.
+pub(super) async fn insert_attachment_references(
+    connection: &mut sqlx::SqliteConnection,
+    owner: AttachmentReferenceOwner,
+    owner_id: &str,
+    attachment_ids: &[ChatAttachmentId],
+) -> ChatResult<()> {
+    for (ordinal, attachment_id) in attachment_ids.iter().enumerate() {
+        let inserted = sqlx::query(owner.insert_sql())
+            .bind(owner_id)
+            .bind(i64::try_from(ordinal).unwrap_or(i64::MAX))
+            .bind(attachment_id.as_str())
+            .execute(&mut *connection)
+            .await
+            .map_err(persistence_error)?
+            .rows_affected();
+        if inserted != 1 {
+            return Err(ChatError::validation(
+                "attachmentIds",
+                "Attachment was not found",
+            ));
+        }
+    }
+    Ok(())
+}
 
 /// Active folder grants of one AI channel membership, bound to the conversation and teammate.
 ///
@@ -144,6 +209,22 @@ pub(super) fn validate_message_request(request: &PostChatMessageCommand) -> Chat
         return Err(ChatError::validation(
             "references",
             "Inline reference ranges must not overlap",
+        ));
+    }
+    if request.attachment_ids.len() > MAX_MESSAGE_ATTACHMENTS {
+        return Err(ChatError::validation(
+            "attachmentIds",
+            "A message can carry at most 20 attachments",
+        ));
+    }
+    if request
+        .attachment_ids
+        .iter()
+        .any(|id| id.as_str().chars().count() > MAX_ATTACHMENT_ID_CHARS)
+    {
+        return Err(ChatError::validation(
+            "attachmentIds",
+            "Attachment ID is too long",
         ));
     }
     let mut attachments = BTreeSet::new();

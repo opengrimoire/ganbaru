@@ -199,7 +199,11 @@ fn fresh_vault_template_blocks_are_owned_rows_keyed_by_ordinal() {
 fn notes_sync_databases_migration_moves_properties_and_options_into_rows() {
     super::block_on(async {
         let pool = super::helpers::memory_pool_migrated_through(NOTES_SYNC_STRUCTURE).await;
+        // Keys are written in key order so the stored text is the same whether or not serde_json
+        // preserves insertion order.
         let schema = serde_json::json!({
+            "Broken": "not an object",
+            "Count": {"id": "count", "name": "Count", "type": "number", "number": {"format": "dollar"}},
             "Name": {"id": "title", "name": "Name", "type": "title", "title": {}},
             "Stage": {"id": "stage", "name": "Stage", "type": "status", "status": {
                 "options": [
@@ -214,9 +218,7 @@ fn notes_sync_databases_migration_moves_properties_and_options_into_rows() {
             }},
             "Tags": {"id": "tags", "name": "Tags", "type": "multi_select", "multi_select": {
                 "options": [{"id": "b", "name": "Beta", "color": "blue"}, {"id": "a", "name": "Alpha", "color": "red"}]
-            }},
-            "Count": {"id": "count", "name": "Count", "type": "number", "number": {"format": "dollar"}},
-            "Broken": "not an object"
+            }}
         });
         insert_database_graph(&pool, &schema).await;
 
@@ -612,19 +614,30 @@ fn notes_sync_databases_migration_keeps_orphans_and_live_json_links_and_resolves
         .unwrap();
         assert_eq!(duplicate, ("A dup".to_string(), "number".to_string()));
 
-        let values: Vec<(String, String, String, String)> = sqlx::query_as(
-            "SELECT page_id, property_id, value_type, value
-             FROM notes_page_property_values ORDER BY page_id, property_id",
-        )
-        .fetch_all(&pool)
-        .await
-        .unwrap();
+        let values: Vec<(String, String, String, serde_json::Value)> =
+            sqlx::query_as::<_, (String, String, String, String)>(
+                "SELECT page_id, property_id, value_type, value
+                 FROM notes_page_property_values ORDER BY page_id, property_id",
+            )
+            .fetch_all(&pool)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|(page, property, value_type, value)| {
+                (
+                    page,
+                    property,
+                    value_type,
+                    serde_json::from_str(&value).unwrap(),
+                )
+            })
+            .collect();
         let value = |page: &str, property: &str, value_type: &str, value: serde_json::Value| {
             (
                 page.to_string(),
                 property.to_string(),
                 value_type.to_string(),
-                value.to_string(),
+                value,
             )
         };
         assert_eq!(

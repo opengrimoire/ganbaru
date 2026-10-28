@@ -18,10 +18,18 @@
 //! when they run, and views learn about the changed tables from the applied tables event.
 
 use ganbaru_chat::sync_effects::{self, ChatSyncEffects};
+use ganbaru_sync::assets::AssetRef;
 use ganbaru_sync::manifest::TableSpec;
 use ganbaru_sync::manifest::vault::chat;
 use ganbaru_sync::{ChangeSink, HookError, HookFuture, Hooks, MaterializeHook};
 use sqlx::SqliteConnection;
+use std::path::Path;
+
+/// Checks a received `chat/attachments` file before the asset store keeps it: its bytes must
+/// carry the signature of the content type its reference names.
+pub(crate) fn check_synced_attachment(asset: &AssetRef, path: &Path) -> Result<(), String> {
+    ganbaru_chat::attachment_files::check_received_file(asset.content_type(), path)
+}
 
 /// Change notice topic of a teammate whose authorizations an applied profile revision revoked;
 /// the key is the teammate participant id.

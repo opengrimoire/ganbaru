@@ -1840,6 +1840,7 @@ impl<'a, H: SyncHost> Session<'a, H> {
         ganbaru_calendar::conversion::assert_converted(&self.pool).await?;
         ganbaru_notes::sync_keys::assert_converted(&self.pool).await?;
         ganbaru_chat::conversion::assert_converted(&self.pool).await?;
+        ganbaru_chat::attachment_files::assert_converted(&self.pool).await?;
         let imported = {
             let mut conn = acquire(&self.pool).await?;
             local::reset_applying(&mut conn)

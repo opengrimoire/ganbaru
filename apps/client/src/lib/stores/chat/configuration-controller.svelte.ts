@@ -19,7 +19,7 @@ import type {
 import { BUILD_PLATFORM_PROFILE, platformHasCapability } from "$lib/platform";
 import { configKeyChanged, onConfigChangedElsewhere } from "$lib/vault/config";
 
-/** Portable preference branch holding the Chat behavior, which another window or device may change. */
+/** Portable preference branch holding the Chat behavior, refreshed when sync or a generic preference write changes it. */
 const CHAT_BEHAVIOR_CONFIG_KEY = "chat.behavior";
 
 const localExecutionAvailable = platformHasCapability(

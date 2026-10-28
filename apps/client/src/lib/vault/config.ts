@@ -93,7 +93,7 @@ function deletePath(root: JsonObject, parts: readonly string[]): void {
   delete current[parts[parts.length - 1]];
 }
 
-/** Parse the config file, or return null when it is not a JSON object. */
+/** Parse the configuration view, or return null when it is not a JSON object. */
 function parseConfig(raw: string): JsonObject | null {
   try {
     const parsed: unknown = JSON.parse(raw);
